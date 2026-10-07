@@ -4,6 +4,7 @@
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -17,8 +18,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <string>
-#include <utility>
 #include <vector>
 
 namespace App::MemorySection
@@ -33,10 +32,12 @@ using UI::Widgets::hoveredIndexFromPlotX;
 using UI::Widgets::initializeOrSmooth;
 using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::NowBarList;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* USED_LABEL = "Used";
 constexpr const char* CACHED_LABEL = "Cached";
 constexpr const char* SWAP_LABEL = "Swap";
@@ -82,7 +83,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     ImGui::TextColored(
         theme.scheme().textPrimary, ICON_FA_MEMORY "  Memory & Swap (%zu samples)", std::min(memHist.size(), timestamps.size()));
-    ImGui::Spacing();
+    // No spacing here: the value strip shares the heading's line (renderNowBarValueStrip()), like every chart's.
 
     const size_t memCount = std::min(memHist.size(), timestamps.size());
     const size_t cachedCount = std::min(cachedHist.size(), timestamps.size());
@@ -105,7 +106,8 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
 
     // The peak of Used over the window, drawn as a reference line labelled PEAK_LABEL. It was
     // "##MemPeak": no legend entry and no tooltip row, so nothing said what the line was (#1007).
-    const double peakMemPercent = UI::Widgets::maxOfSeries(memData);
+    // Over the samples the window shows, not the one trimming keeps left of it (#1145).
+    const double peakMemPercent = UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, memData);
 
     // "N% (used / total)" when the RAM total is known: physical RAM is fixed, so bytes back-calculated
     // from a historical percent are exact. Swap is percent-only: its size can change at runtime.
@@ -113,7 +115,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     {
         if (snap.memoryTotalBytes == 0)
         {
-            return UI::Format::percentCompact(pct);
+            return UI::Format::formatPercent(pct);
         }
         const auto bytes = static_cast<std::uint64_t>((pct / 100.0) * static_cast<double>(snap.memoryTotalBytes));
         return UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct);
@@ -130,41 +132,35 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
             UI::Widgets::drawCollectingHint(alignedCount); // The same "no data yet" state on every chart (#1013)
             if (!memData.empty())
             {
-                plotLineWithFill(USED_LABEL,
-                                 timeData.data(),
-                                 memData.data(),
-                                 UI::Format::checkedCount(memData.size()),
-                                 theme.scheme().chartMemory,
-                                 theme.scheme().chartMemoryFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(USED_LABEL,
+                           timeData.data(),
+                           memData.data(),
+                           UI::Format::checkedCount(memData.size()),
+                           theme.scheme().chartMemory,
+                           theme.scheme().chartMemoryFill,
+                           seriesStyle(SeriesRole::Primary));
             }
 
             if (!cachedData.empty())
             {
-                plotLineWithFill(CACHED_LABEL,
-                                 timeData.data(),
-                                 cachedData.data(),
-                                 UI::Format::checkedCount(cachedData.size()),
-                                 theme.scheme().chartCpu,
-                                 theme.scheme().chartCpuFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(CACHED_LABEL,
+                           timeData.data(),
+                           cachedData.data(),
+                           UI::Format::checkedCount(cachedData.size()),
+                           theme.scheme().chartCpu,
+                           theme.scheme().chartCpuFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
             }
 
             if (!swapData.empty())
             {
-                plotLineWithFill(SWAP_LABEL,
-                                 timeData.data(),
-                                 swapData.data(),
-                                 UI::Format::checkedCount(swapData.size()),
-                                 theme.scheme().chartIo,
-                                 theme.scheme().chartIoFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(SWAP_LABEL,
+                           timeData.data(),
+                           swapData.data(),
+                           UI::Format::checkedCount(swapData.size()),
+                           theme.scheme().chartIo,
+                           theme.scheme().chartIoFill,
+                           seriesStyle(SeriesRole::Secondary, 1));
             }
 
             if (peakMemPercent > 0.0)
@@ -199,15 +195,19 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
                     }
                     if (*idxVal < swapData.size())
                     {
-                        rows.push_back({.label = SWAP_LABEL,
-                                        .color = theme.scheme().chartIo,
-                                        .value = UI::Format::percentCompact(static_cast<double>(swapData[*idxVal]))});
+                        rows.push_back({
+                            .label = SWAP_LABEL,
+                            .color = theme.scheme().chartIo,
+                            .value = UI::Format::formatPercent(static_cast<double>(swapData[*idxVal])),
+                        });
                     }
                     if (peakMemPercent > 0.0)
                     {
-                        rows.push_back({.label = PEAK_LABEL,
-                                        .color = theme.scheme().chartPeakLine,
-                                        .value = UI::Format::percentCompact(peakMemPercent)});
+                        rows.push_back({
+                            .label = PEAK_LABEL,
+                            .color = theme.scheme().chartPeakLine,
+                            .value = UI::Format::formatPercent(peakMemPercent),
+                        });
                     }
                     UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);
                 }
@@ -222,20 +222,20 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     NowBarList memoryBars;
     if (ctx.smoothedMemory != nullptr)
     {
-        const auto addBar = [&](const char* label, double smoothedPercent, std::string tooltip, const ImVec4& color)
+        const auto addBar = [&](const char* label, double smoothedPercent, const UI::InlineText& tooltip, const ImVec4& color)
         {
             const double clamped = std::clamp(smoothedPercent, 0.0, 100.0);
-            memoryBars.push_back({.valueText = UI::Format::percentCompact(clamped),
+            memoryBars.push_back({.valueText = UI::Format::formatPercent(clamped),
                                   .label = label,
-                                  .tooltipText = std::move(tooltip),
+                                  .tooltipText = tooltip,
                                   .value01 = UI::Format::percent01(clamped),
                                   .color = color});
         };
         const auto ramTooltip = [&](const char* label, std::uint64_t bytes, double pct)
         {
             return snap.memoryTotalBytes > 0
-                     ? UI::Widgets::formatTooltipRow(label, UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct))
-                     : std::string{};
+                     ? UI::Widgets::tooltipRowText(label, UI::Format::bytesUsedTotalPercentCompact(bytes, snap.memoryTotalBytes, pct))
+                     : UI::InlineText{};
         };
         if (!memData.empty())
         {
@@ -260,7 +260,7 @@ void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestam
     // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
     const std::array peakEntry{UI::Widgets::ValueStripEntry{
         .label = PEAK_LABEL,
-        .value = UI::Format::percentCompact(peakMemPercent),
+        .value = UI::Format::formatPercent(peakMemPercent),
         .color = theme.scheme().chartPeakLine,
     }};
     const std::span<const UI::Widgets::ValueStripEntry> stripExtras =

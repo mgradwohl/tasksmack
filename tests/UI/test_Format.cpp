@@ -8,11 +8,15 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <clocale>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <locale>
 #include <random>
+#include <string>
+#include <utility>
 #include <vector>
 
 // =============================================================================
@@ -64,6 +68,26 @@ TEST(FormatTest, AffinityMaskHighCores)
 {
     EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF000000000000000ULL), "60-63");
     EXPECT_EQ(UI::Format::formatCpuAffinityMask(0x3000000000000000ULL), "60,61");
+}
+
+// #1247: affinities wider than 64 processors list exactly the processors allowed.
+TEST(FormatTest, AffinityBeyond64Cpus)
+{
+    using Words = std::vector<std::uint64_t>;
+    const auto format = [](const Words& words)
+    {
+        return UI::Format::formatCpuAffinity(words);
+    };
+    EXPECT_EQ(format(Words{}), "-");
+    EXPECT_EQ(format(Words{0, 1ULL << 6U}), "70");                         // taskset -c 70
+    EXPECT_EQ(format(Words{0xF, ~0ULL}), "0-3,64-127");                    // across the word boundary
+    EXPECT_EQ(format(Words{0xF, 1ULL << 6U}), "0-3,70");                   // the issue's example
+    EXPECT_EQ(format(Words{1ULL << 63U, 1}), "63,64");                     // a pair spanning two words
+    EXPECT_EQ(format(Words{0xFULL << 62U, 0x3}), "62-65");                 // a run spanning two words
+    EXPECT_EQ(format(Words{~0ULL, ~0ULL, ~0ULL, ~0ULL}), "0-255");         // all of a 256-CPU machine
+    EXPECT_EQ(format(Words{0x1, 0, 0, 1ULL << 8U}), "0,200");              // whole zero words skipped
+    EXPECT_EQ(format(Words{0, 0, 0}), "-");                                // no processor set
+    EXPECT_EQ(UI::Format::formatCpuAffinityMask(0xF), format(Words{0xF})); // the 64-bit form agrees
 }
 // =============================================================================
 // Epoch Time Formatting Tests
@@ -500,31 +524,31 @@ TEST(FormatTest, ChooseByteUnitSelectsBytes)
 TEST(FormatTest, ChooseByteUnitSelectsKilobytes)
 {
     const auto unit = UI::Format::chooseByteUnit(2048.0);
-    EXPECT_EQ(std::string(unit.suffix), "KB");
+    EXPECT_EQ(std::string(unit.suffix), "KiB");
 }
 
 TEST(FormatTest, ChooseByteUnitSelectsMegabytes)
 {
     const auto unit = UI::Format::chooseByteUnit(2.0 * 1024.0 * 1024.0);
-    EXPECT_EQ(std::string(unit.suffix), "MB");
+    EXPECT_EQ(std::string(unit.suffix), "MiB");
 }
 
 TEST(FormatTest, ChooseByteUnitSelectsGigabytes)
 {
     const auto unit = UI::Format::chooseByteUnit(2.0 * 1024.0 * 1024.0 * 1024.0);
-    EXPECT_EQ(std::string(unit.suffix), "GB");
+    EXPECT_EQ(std::string(unit.suffix), "GiB");
 }
 
 TEST(FormatTest, UnitForTotalBytesWorks)
 {
     const auto unit = UI::Format::unitForTotalBytes(1024ULL * 1024ULL);
-    EXPECT_EQ(std::string(unit.suffix), "MB");
+    EXPECT_EQ(std::string(unit.suffix), "MiB");
 }
 
 TEST(FormatTest, UnitForBytesPerSecondWorks)
 {
     const auto unit = UI::Format::unitForBytesPerSecond(1024.0 * 1024.0);
-    EXPECT_EQ(std::string(unit.suffix), "MB");
+    EXPECT_EQ(std::string(unit.suffix), "MiB");
 }
 
 // =============================================================================
@@ -535,7 +559,7 @@ TEST(FormatTest, FormatBytesFormatsCorrectly)
 {
     const auto result = UI::Format::formatBytes(1536.0);
     EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("KB"));
+    EXPECT_TRUE(result.contains("KiB"));
 }
 
 TEST(FormatTest, FormatBytesWithUnitFormatsCorrectly)
@@ -543,14 +567,14 @@ TEST(FormatTest, FormatBytesWithUnitFormatsCorrectly)
     const auto unit = UI::Format::chooseByteUnit(1024.0 * 1024.0);
     const auto result = UI::Format::formatBytesWithUnit(1024.0 * 1024.0, unit);
     EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("MB"));
+    EXPECT_TRUE(result.contains("MiB"));
 }
 
 TEST(FormatTest, FormatBytesPerSecFormatsCorrectly)
 {
     const auto result = UI::Format::formatBytesPerSec(1024.0 * 1024.0);
     EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("MB"));
+    EXPECT_TRUE(result.contains("MiB"));
     EXPECT_TRUE(result.contains("/s"));
 }
 
@@ -566,7 +590,7 @@ TEST(FormatTest, FormatBytesPerSecWithUnitFormatsCorrectly)
     const auto unit = UI::Format::chooseByteUnit(1024.0);
     const auto result = UI::Format::formatBytesPerSecWithUnit(1024.0, unit);
     EXPECT_FALSE(result.empty());
-    EXPECT_TRUE(result.contains("KB"));
+    EXPECT_TRUE(result.contains("KiB"));
     EXPECT_TRUE(result.contains("/s"));
 }
 
@@ -608,34 +632,34 @@ TEST(FormatTest, SplitBytesForAlignmentSmallBytes)
 TEST(FormatTest, SplitBytesForAlignmentKilobytes)
 {
     const double bytes = 1536.0; // 1.5 KB
-    const auto unit = UI::Format::ByteUnit{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "KiB", .scale = 1024.0, .decimals = 1};
     const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
 
     EXPECT_EQ(parts.wholePart, "1.");
     EXPECT_EQ(parts.decimalPart, "5");
-    EXPECT_EQ(parts.unitPart, " KB");
+    EXPECT_EQ(parts.unitPart, " KiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentMegabytes)
 {
     const double bytes = 1024.0 * 1024.0 * 2.3; // 2.3 MB
-    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1};
     const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
 
     EXPECT_EQ(parts.wholePart, "2.");
     EXPECT_EQ(parts.decimalPart, "3");
-    EXPECT_EQ(parts.unitPart, " MB");
+    EXPECT_EQ(parts.unitPart, " MiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentGigabytes)
 {
     const double bytes = 1024.0 * 1024.0 * 1024.0 * 8.7; // 8.7 GB
-    const auto unit = UI::Format::ByteUnit{.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "GiB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1};
     const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
 
     EXPECT_EQ(parts.wholePart, "8.");
     EXPECT_EQ(parts.decimalPart, "7");
-    EXPECT_EQ(parts.unitPart, " GB");
+    EXPECT_EQ(parts.unitPart, " GiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentRoundingOverflow)
@@ -670,7 +694,7 @@ TEST(FormatTest, SplitBytesForAlignmentThousandRangeKB)
 {
     // 1023 KB = 1,047,552 bytes
     const double bytes = 1023.0 * 1024.0;
-    const auto unit = UI::Format::ByteUnit{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "KiB", .scale = 1024.0, .decimals = 1};
     const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
 
     // Should be "1,023." or similar with locale separator
@@ -678,43 +702,43 @@ TEST(FormatTest, SplitBytesForAlignmentThousandRangeKB)
     EXPECT_TRUE(parts.wholePart.contains("023"));
     EXPECT_TRUE(parts.wholePart.ends_with("."));
     EXPECT_EQ(parts.decimalPart, "0");
-    EXPECT_EQ(parts.unitPart, " KB");
+    EXPECT_EQ(parts.unitPart, " KiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentSingleDigit)
 {
-    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1};
     const auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1024.0 * 5.0, unit);
 
     EXPECT_EQ(parts.wholePart, "5.");
     EXPECT_EQ(parts.decimalPart, "0");
-    EXPECT_EQ(parts.unitPart, " MB");
+    EXPECT_EQ(parts.unitPart, " MiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentDoubleDigit)
 {
-    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1};
     const auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1024.0 * 42.0, unit);
 
     EXPECT_EQ(parts.wholePart, "42.");
     EXPECT_EQ(parts.decimalPart, "0");
-    EXPECT_EQ(parts.unitPart, " MB");
+    EXPECT_EQ(parts.unitPart, " MiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentTripleDigit)
 {
-    const auto unit = UI::Format::ByteUnit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1};
     const auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1024.0 * 512.0, unit);
 
     EXPECT_EQ(parts.wholePart, "512.");
     EXPECT_EQ(parts.decimalPart, "0");
-    EXPECT_EQ(parts.unitPart, " MB");
+    EXPECT_EQ(parts.unitPart, " MiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentFractionalRounding)
 {
     // Test various fractional values and their rounding
-    const auto unit = UI::Format::ByteUnit{.suffix = "KB", .scale = 1024.0, .decimals = 1};
+    const auto unit = UI::Format::ByteUnit{.suffix = "KiB", .scale = 1024.0, .decimals = 1};
 
     // 1.14 KB -> rounds to 1.1
     auto parts = UI::Format::splitBytesForAlignment(1024.0 * 1.14, unit);
@@ -810,7 +834,7 @@ auto compareBytesAlignment(double bytes, const UI::Format::ByteUnit& unit) -> ::
     const bool decimalMatch = (slow.decimalPart.size() == 1 && slow.decimalPart[0] == fast.decimalDigit);
 
     // Compare unit part - fast version uses static strings with leading space
-    // slow version uses " X" format, fast uses static " B", " KB", etc.
+    // slow version uses " X" format, fast uses static " B", " KiB", etc.
     const bool unitMatch = (slow.unitPart == fast.unitPart);
 
     if (!wholeMatch || !decimalMatch || !unitMatch)
@@ -882,9 +906,9 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
     // Test with each unit type
     const std::vector<UI::Format::ByteUnit> units = {
         {.suffix = "B", .scale = 1.0, .decimals = 1},
-        {.suffix = "KB", .scale = 1024.0, .decimals = 1},
-        {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1},
-        {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "KiB", .scale = 1024.0, .decimals = 1},
+        {.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "GiB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
     };
 
     for (const auto& unit : units)
@@ -914,9 +938,9 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
 
     const std::vector<UI::Format::ByteUnit> units = {
         {.suffix = "B", .scale = 1.0, .decimals = 1},
-        {.suffix = "KB", .scale = 1024.0, .decimals = 1},
-        {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1},
-        {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "KiB", .scale = 1024.0, .decimals = 1},
+        {.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "GiB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
     };
 
     constexpr int samplesPerRange = 100;
@@ -1225,9 +1249,9 @@ TEST_F(FormatLocaleTest, SplitBytesPerSecForAlignmentFastUnits)
 {
     const std::vector<std::pair<UI::Format::ByteUnit, std::string>> unitExpected = {
         {{.suffix = "B", .scale = 1.0, .decimals = 1}, " B/s"},
-        {{.suffix = "KB", .scale = 1024.0, .decimals = 1}, " KB/s"},
-        {{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1}, " MB/s"},
-        {{.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1}, " GB/s"},
+        {{.suffix = "KiB", .scale = 1024.0, .decimals = 1}, " KiB/s"},
+        {{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1}, " MiB/s"},
+        {{.suffix = "GiB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1}, " GiB/s"},
     };
 
     for (const auto& [unit, expectedSuffix] : unitExpected)
@@ -1241,9 +1265,9 @@ TEST_F(FormatLocaleTest, SplitBytesPerSecForAlignmentFastMatchesSlowPath)
 {
     const std::vector<UI::Format::ByteUnit> units = {
         {.suffix = "B", .scale = 1.0, .decimals = 1},
-        {.suffix = "KB", .scale = 1024.0, .decimals = 1},
-        {.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 1},
-        {.suffix = "GB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "KiB", .scale = 1024.0, .decimals = 1},
+        {.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 1},
+        {.suffix = "GiB", .scale = 1024.0 * 1024.0 * 1024.0, .decimals = 1},
     };
 
     for (const auto& unit : units)
@@ -1295,28 +1319,28 @@ TEST(FormatTest, ChooseByteUnitHandlesNegativeBytes)
 {
     // Negative bytes (unusual but possible from deltas): chooseByteUnit uses abs()
     const auto unit = UI::Format::chooseByteUnit(-2048.0);
-    EXPECT_EQ(std::string(unit.suffix), "KB");
+    EXPECT_EQ(std::string(unit.suffix), "KiB");
 }
 
 TEST(FormatTest, ChooseByteUnitBoundaryExactlyGB)
 {
     // Exactly 1 GiB → GB unit
     const auto unit = UI::Format::chooseByteUnit(1024.0 * 1024.0 * 1024.0);
-    EXPECT_EQ(std::string(unit.suffix), "GB");
+    EXPECT_EQ(std::string(unit.suffix), "GiB");
 }
 
 TEST(FormatTest, ChooseByteUnitBoundaryExactlyMB)
 {
     // Exactly 1 MiB → MB unit
     const auto unit = UI::Format::chooseByteUnit(1024.0 * 1024.0);
-    EXPECT_EQ(std::string(unit.suffix), "MB");
+    EXPECT_EQ(std::string(unit.suffix), "MiB");
 }
 
 TEST(FormatTest, ChooseByteUnitBoundaryExactlyKB)
 {
     // Exactly 1 KiB → KB unit
     const auto unit = UI::Format::chooseByteUnit(1024.0);
-    EXPECT_EQ(std::string(unit.suffix), "KB");
+    EXPECT_EQ(std::string(unit.suffix), "KiB");
 }
 
 TEST(FormatTest, ChooseByteUnitZeroIsBytes)
@@ -1365,31 +1389,137 @@ TEST(FormatTest, BytesUsedTotalPercentCompactFormatsCorrectly)
 }
 
 // =============================================================================
-// CPU Time Compact Formatting Tests
+// formatDuration: CPU Time, uptime and the time axis share one grammar (#1202)
 // =============================================================================
 
-TEST(FormatTest, FormatCpuTimeCompactFormatsSeconds)
+TEST(FormatTest, FormatDurationUsesTheTwoLargestUnits)
 {
-    const auto result = UI::Format::formatCpuTimeCompact(45.0);
-    EXPECT_EQ(result, "0:45");
+    EXPECT_EQ(UI::Format::formatDuration(0.0), "0s");
+    EXPECT_EQ(UI::Format::formatDuration(45.0), "45s");
+    EXPECT_EQ(UI::Format::formatDuration(125.0), "2m 05s");
+    EXPECT_EQ(UI::Format::formatDuration(3725.0), "1h 02m");
+    EXPECT_EQ(UI::Format::formatDuration((3.0 * 86400.0) + (4.0 * 3600.0) + 59.0), "3d 04h");
 }
 
-TEST(FormatTest, FormatCpuTimeCompactFormatsMinutes)
+TEST(FormatTest, FormatDurationRoundsToTheNearestSecondFirst)
 {
-    const auto result = UI::Format::formatCpuTimeCompact(125.0); // 2:05
-    EXPECT_EQ(result, "2:05");
+    // 59.6 s is a minute, not "60s"; 0.4 s is "0s".
+    EXPECT_EQ(UI::Format::formatDuration(59.6), "1m 00s");
+    EXPECT_EQ(UI::Format::formatDuration(0.4), "0s");
+    EXPECT_EQ(UI::Format::formatDuration(3599.5), "1h 00m");
 }
 
-TEST(FormatTest, FormatCpuTimeCompactFormatsHours)
+TEST(FormatTest, FormatDurationFixedKeepsAZeroMinorPartCompactDropsIt)
 {
-    const auto result = UI::Format::formatCpuTimeCompact(3725.0); // 1:02:05
-    EXPECT_EQ(result, "1:02:05");
+    EXPECT_EQ(UI::Format::formatDuration(300.0), "5m 00s");
+    EXPECT_EQ(UI::Format::formatDuration(300.0, UI::Format::DurationStyle::Compact), "5m");
+    EXPECT_EQ(UI::Format::formatDuration(90.0, UI::Format::DurationStyle::Compact), "1m 30s");
+    EXPECT_EQ(UI::Format::formatDuration(7200.0, UI::Format::DurationStyle::Compact), "2h");
+    EXPECT_EQ(UI::Format::formatDuration(30.0, UI::Format::DurationStyle::Compact), "30s");
 }
 
-TEST(FormatTest, FormatCpuTimeCompactHandlesZero)
+TEST(FormatTest, FormatDurationShowsTheSizeOfANegativeDurationAndNAForNaN)
 {
-    const auto result = UI::Format::formatCpuTimeCompact(0.0);
-    EXPECT_EQ(result, "0:00");
+    EXPECT_EQ(UI::Format::formatDuration(-300.0, UI::Format::DurationStyle::Compact), "5m");
+    EXPECT_EQ(UI::Format::formatDuration(std::numeric_limits<double>::quiet_NaN()), "N/A");
+    // Infinity is capped rather than reaching std::llround
+    EXPECT_FALSE(UI::Format::formatDuration(std::numeric_limits<double>::infinity()).empty());
+}
+
+TEST(FormatTest, FormatUptimeShortUsesTheDurationGrammar)
+{
+    EXPECT_EQ(UI::Format::formatUptimeShort((2ULL * 86400ULL) + (5ULL * 3600ULL) + (30ULL * 60ULL)), "Up: 2d 05h");
+    EXPECT_EQ(UI::Format::formatUptimeShort(45ULL * 60ULL), "Up: 45m 00s");
+}
+
+// =============================================================================
+// Temperature, link speed and terabytes (#1202)
+// =============================================================================
+
+TEST(FormatTest, FormatCelsiusRoundsHalfAwayFromZero)
+{
+    EXPECT_EQ(UI::Format::formatCelsius(65.4), "65°C");
+    EXPECT_EQ(UI::Format::formatCelsius(65.5), "66°C"); // The value strip used to truncate this to 65
+    EXPECT_EQ(UI::Format::formatCelsius(64.5), "65°C"); // and std::format rounded this half to even, 64
+    EXPECT_EQ(UI::Format::formatCelsius(-0.2), "0°C");
+    EXPECT_EQ(UI::Format::formatCelsius(std::numeric_limits<double>::quiet_NaN()), "N/A");
+}
+
+TEST(FormatTest, FormatMegahertzIsWholeMegahertz)
+{
+    EXPECT_EQ(UI::Format::formatMegahertz(1850.0), "1850 MHz");
+    EXPECT_EQ(UI::Format::formatMegahertz(1849.5), "1850 MHz");
+    EXPECT_EQ(UI::Format::formatMegahertz(-0.2), "0 MHz");
+    EXPECT_EQ(UI::Format::formatMegahertz(std::numeric_limits<double>::quiet_NaN()), "N/A");
+}
+
+TEST(FormatTest, FormatLinkSpeedIsADecimalBitRate)
+{
+    // Link speeds are stored in Mbit/s (Linux sysfs speed; Windows TransmitLinkSpeed / 10^6) and
+    // shown in bits, as network hardware is rated (#1373).
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10), "10 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(100), "100 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(866), "866 Mbit/s"); // A Wi-Fi rate
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1000), "1 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(2500), "2.5 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10'000), "10 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(100'000), "100 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(400'000), "400 Gbit/s");
+}
+
+TEST(FormatTest, FormatLinkSpeedRoundsToATenthOfAGigabit)
+{
+    EXPECT_EQ(UI::Format::formatLinkSpeed(999), "999 Mbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1201), "1.2 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1250), "1.3 Gbit/s"); // Half rounds up
+    EXPECT_EQ(UI::Format::formatLinkSpeed(2402), "2.4 Gbit/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeed(1999), "2 Gbit/s"); // Not "2.0 Gbit/s"
+    EXPECT_EQ(UI::Format::formatLinkSpeed(10'049), "10 Gbit/s");
+}
+
+TEST(FormatTest, FormatLinkSpeedUnknownIsADash)
+{
+    // 0 is the probes' "unknown"; the Interface Status table shows "-" for it.
+    EXPECT_EQ(UI::Format::formatLinkSpeed(0), "-");
+}
+
+TEST(FormatTest, FormatLinkSpeedAsByteRateIsInTheRatesUnits)
+{
+    // 1 Gbit/s = 125,000,000 bytes/s = 119.2 MiB/s; 10 Gbit/s = 1.2 GiB/s
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(1000), "119.2 MiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(100), "11.9 MiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(10'000), "1.2 GiB/s");
+    EXPECT_EQ(UI::Format::formatLinkSpeedAsByteRate(1000), UI::Format::formatBytesPerSec(125'000'000.0));
+}
+
+TEST(FormatTest, BytesAboveATebibyteUseTiB)
+{
+    constexpr double TIB = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+    EXPECT_EQ(std::string(UI::Format::chooseByteUnit(TIB).suffix), "TiB");
+    EXPECT_EQ(std::string(UI::Format::chooseByteUnit(TIB - 1.0).suffix), "GiB");
+    EXPECT_EQ(UI::Format::formatBytes(2.0 * TIB), "2.0 TiB");
+    EXPECT_EQ(UI::Format::formatBytesPerSec(1.5 * TIB), "1.5 TiB/s");
+    // The table's aligned cells carry the same unit
+    const auto parts = UI::Format::splitBytesPerSecForAlignmentFast(2.0 * TIB, UI::Format::BYTE_UNIT_TB);
+    EXPECT_EQ(parts.unitPart, " TiB/s");
+}
+
+TEST(FormatTest, CellUnitSuffixCoversEveryByteUnit)
+{
+    for (const UI::Format::ByteUnit* unit : UI::Format::BYTE_UNITS)
+    {
+        EXPECT_EQ(UI::Format::cellUnitSuffix(*unit, false), " " + std::string(unit->suffix));
+        EXPECT_EQ(UI::Format::cellUnitSuffix(*unit, true), " " + std::string(unit->suffix) + "/s");
+    }
+    // A unit that isn't one of them reads as bytes
+    EXPECT_EQ(UI::Format::cellUnitSuffix(UI::Format::ByteUnit{.suffix = "XB", .scale = 1.0, .decimals = 1}, false), " B");
+}
+
+TEST(FormatTest, BytesUsedTotalPercentUsesFormatPercent)
+{
+    // Under 10 % the percent keeps a decimal, as everywhere else (formatPercent())
+    EXPECT_EQ(UI::Format::bytesUsedTotalPercentCompact(1024ULL * 1024ULL * 1024ULL, 16ULL * 1024ULL * 1024ULL * 1024ULL, 6.25),
+              "1.0 GiB / 16.0 GiB (6.3%)");
 }
 
 // =============================================================================
@@ -1399,20 +1529,20 @@ TEST(FormatTest, FormatCpuTimeCompactHandlesZero)
 TEST(FormatTest, SplitBytesForAlignmentNoDecimalUnit)
 {
     // ByteUnit with decimals=0 exercises the else branch (no fractional part)
-    const UI::Format::ByteUnit unit{.suffix = "KB", .scale = 1024.0, .decimals = 0};
+    const UI::Format::ByteUnit unit{.suffix = "KiB", .scale = 1024.0, .decimals = 0};
     const auto parts = UI::Format::splitBytesForAlignment(2048.0, unit);
     EXPECT_EQ(parts.wholePart, "2");
     EXPECT_TRUE(parts.decimalPart.empty());
-    EXPECT_EQ(parts.unitPart, " KB");
+    EXPECT_EQ(parts.unitPart, " KiB");
 }
 
 TEST(FormatTest, SplitBytesForAlignmentNoDecimalZero)
 {
-    const UI::Format::ByteUnit unit{.suffix = "MB", .scale = 1024.0 * 1024.0, .decimals = 0};
+    const UI::Format::ByteUnit unit{.suffix = "MiB", .scale = 1024.0 * 1024.0, .decimals = 0};
     const auto parts = UI::Format::splitBytesForAlignment(0.0, unit);
     EXPECT_EQ(parts.wholePart, "0");
     EXPECT_TRUE(parts.decimalPart.empty());
-    EXPECT_EQ(parts.unitPart, " MB");
+    EXPECT_EQ(parts.unitPart, " MiB");
 }
 
 // =============================================================================
@@ -1483,7 +1613,7 @@ TEST(FormatTest, FormatWattsMatchesThePowerColumn)
 // The table's byte cells (splitBytesForAlignment) and formatBytes/the byte axes agree.
 TEST(FormatTest, FormatBytesMatchesTheByteColumns)
 {
-    // 3.25 MB is an exact half: std::format alone printed "3.2 MB" beside the table's "3.3 MB".
+    // 3.25 MB is an exact half: std::format alone printed "3.2 MiB" beside the table's "3.3 MiB".
     for (const double bytes : {512.0, 1536.0, 3.25 * 1024.0 * 1024.0, 1.5 * 1024.0 * 1024.0 * 1024.0})
     {
         const auto unit = UI::Format::chooseByteUnit(bytes);
@@ -1500,7 +1630,7 @@ TEST(FormatTest, ByteUnitForReturnsTheNamedUnits)
     EXPECT_EQ(&UI::Format::byteUnitFor(2048.0), &UI::Format::BYTE_UNIT_KB);
     EXPECT_EQ(&UI::Format::byteUnitFor(3.0 * 1024.0 * 1024.0), &UI::Format::BYTE_UNIT_MB);
     EXPECT_EQ(&UI::Format::byteUnitFor(5.0 * 1024.0 * 1024.0 * 1024.0), &UI::Format::BYTE_UNIT_GB);
-    EXPECT_EQ(UI::Format::chooseByteUnit(2048.0).suffix, "KB");
+    EXPECT_EQ(UI::Format::chooseByteUnit(2048.0).suffix, "KiB");
 }
 
 TEST(FormatTest, FormatPercentIsWholeFromTenAndOneDecimalBelow)
@@ -1533,4 +1663,253 @@ TEST(FormatTest, FormatPercentMatchesPercentCompactFromTen)
     {
         EXPECT_EQ(UI::Format::formatPercent(percent), UI::Format::percentCompact(percent)) << percent;
     }
+}
+
+// =============================================================================
+// formatFixedLocalizedTo (#1334): the allocation-free formatter behind every chart axis tick must
+// print exactly what std::format("{:.{}Lf}") prints, in every locale.
+// =============================================================================
+
+namespace
+{
+
+/// Numeric punctuation with a chosen decimal point, separator and grouping, without depending on an
+/// OS locale name.
+class TestNumpunct : public std::numpunct<char>
+{
+  public:
+    TestNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
+        : m_DecimalPoint(decimalPoint), m_ThousandsSep(thousandsSep), m_Grouping(std::move(grouping))
+    {}
+
+  protected:
+    [[nodiscard]] char do_decimal_point() const override
+    {
+        return m_DecimalPoint;
+    }
+    [[nodiscard]] char do_thousands_sep() const override
+    {
+        return m_ThousandsSep;
+    }
+    [[nodiscard]] std::string do_grouping() const override
+    {
+        return m_Grouping;
+    }
+
+  private:
+    char m_DecimalPoint;
+    char m_ThousandsSep;
+    std::string m_Grouping;
+};
+
+/// Makes a locale with TestNumpunct global for one scope and restores the previous one after it.
+class ScopedTestNumpunct
+{
+  public:
+    // std::locale takes ownership of the facet and deletes it with its last copy, which the analyzer
+    // does not see.
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
+    ScopedTestNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
+        : m_Previous(
+              std::locale::global(std::locale(std::locale::classic(), new TestNumpunct(decimalPoint, thousandsSep, std::move(grouping)))))
+    {}
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
+    ~ScopedTestNumpunct()
+    {
+        std::locale::global(m_Previous);
+    }
+    ScopedTestNumpunct(const ScopedTestNumpunct&) = delete;
+    ScopedTestNumpunct& operator=(const ScopedTestNumpunct&) = delete;
+    ScopedTestNumpunct(ScopedTestNumpunct&&) = delete;
+    ScopedTestNumpunct& operator=(ScopedTestNumpunct&&) = delete;
+
+  private:
+    std::locale m_Previous;
+};
+
+[[nodiscard]] std::string fastFixed(double value, int decimals)
+{
+    std::array<char, 512> buffer{}; // Room for 1e300 with its separators
+    const std::size_t length = UI::Format::formatFixedLocalizedTo(buffer.data(), buffer.size(), value, decimals);
+    return {buffer.data(), length};
+}
+
+/// Values covering the sign, -0.0, exact binary halves (which std::format rounds to even), group
+/// boundaries and very large magnitudes, plus random ones across the axis ranges.
+[[nodiscard]] std::vector<double> fixedFormatSamples()
+{
+    std::vector<double> values{0.0,
+                               -0.0,
+                               0.04,
+                               0.05,
+                               0.25,
+                               1.25,
+                               2.5,
+                               -2.5,
+                               3.25,
+                               -0.04,
+                               9.95,
+                               99.95,
+                               999.95,
+                               1000.0,
+                               1023.95,
+                               12345.678,
+                               -12345.678,
+                               123456.0,
+                               1234567.891,
+                               -987654321.5,
+                               1.0e15,
+                               -1.0e15,
+                               1.0e20,
+                               123456789012345678.0,
+                               1.0e300,
+                               5e-324,
+                               0.1,
+                               0.15,
+                               0.35,
+                               1e9 / 3.0,
+                               4398046511104.0};
+    std::mt19937 rng(1334); // NOLINT(bugprone-random-generator-seed) -- reproducible samples
+    std::uniform_real_distribution<double> dist(-5.0e9, 5.0e9);
+    for (int i = 0; i < 500; ++i)
+    {
+        values.push_back(dist(rng));
+        values.push_back(dist(rng) / 1024.0 / 1024.0);
+    }
+    return values;
+}
+
+void expectMatchesStdFormat(const char* localeName)
+{
+    for (const double value : fixedFormatSamples())
+    {
+        for (int decimals = 0; decimals <= 3; ++decimals)
+        {
+            EXPECT_EQ(fastFixed(value, decimals), std::format("{:.{}Lf}", value, decimals))
+                << localeName << ": value " << value << ", decimals " << decimals;
+        }
+    }
+}
+
+} // namespace
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatInTheClassicLocale)
+{
+    const ScopedTestNumpunct classic('.', ',', "");
+    expectMatchesStdFormat("classic");
+}
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatWithThousandsGrouping)
+{
+    const ScopedTestNumpunct enUs('.', ',', "\3");
+    expectMatchesStdFormat("en_US-like");
+}
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatWithACommaDecimalAndDotGroups)
+{
+    const ScopedTestNumpunct deDe(',', '.', "\3");
+    expectMatchesStdFormat("de_DE-like");
+}
+
+TEST(FormatFixedLocalizedTest, MatchesStdFormatWithIndianGrouping)
+{
+    // First group of 3, then groups of 2: 12,34,56,789.
+    const ScopedTestNumpunct enIn('.', ',', "\3\2");
+    expectMatchesStdFormat("en_IN-like");
+    EXPECT_EQ(fastFixed(123456789.0, 1), "12,34,56,789.0");
+}
+
+TEST(FormatFixedLocalizedTest, GroupingEndsAtCharMax)
+{
+    // CHAR_MAX ends grouping: one separator, then every remaining digit in one group.
+    const ScopedTestNumpunct limited('.', ' ', std::string{'\3', std::numeric_limits<char>::max()});
+    EXPECT_EQ(fastFixed(123456789.0, 0), "123456 789");
+    EXPECT_EQ(fastFixed(123456789.0, 0), std::format("{:.0Lf}", 123456789.0));
+}
+
+TEST(FormatFixedLocalizedTest, FollowsAGlobalLocaleChange)
+{
+    // The punctuation is cached; replacing the global locale must be noticed on the next call.
+    {
+        const ScopedTestNumpunct comma(',', '.', "\3");
+        EXPECT_EQ(fastFixed(1234.5, 1), "1.234,5");
+    }
+    {
+        const ScopedTestNumpunct dot('.', ',', "\3");
+        EXPECT_EQ(fastFixed(1234.5, 1), "1,234.5");
+    }
+    const ScopedTestNumpunct classic('.', ',', "");
+    EXPECT_EQ(fastFixed(1234.5, 1), "1234.5");
+}
+
+TEST(FormatFixedLocalizedTest, ReturnsZeroWhenItCannotFormatSoCallersFallBack)
+{
+    const ScopedTestNumpunct classic('.', ',', "");
+    std::array<char, 8> small{};
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 123456789.0, 1), 0U) << "does not fit";
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 1234567.0, 0), 7U) << "fits exactly";
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), std::numeric_limits<double>::quiet_NaN(), 1), 0U);
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), std::numeric_limits<double>::infinity(), 1), 0U);
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 1.0, -1), 0U);
+    EXPECT_EQ(UI::Format::formatFixedLocalizedTo(small.data(), small.size(), 1.0, 10), 0U);
+}
+
+TEST(FormatFixedLocalizedTest, ValueFormattersStillPrintNonFiniteValuesLikeStdFormat)
+{
+    // Non-finite values take the std::format fallback, so their text is unchanged.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    // The unit text comes from the ByteUnit itself (IEC names since #1341), not a literal here.
+    using UI::Format::BYTE_UNIT_GB;
+    using UI::Format::BYTE_UNIT_KB;
+    using UI::Format::BYTE_UNIT_MB;
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(inf, BYTE_UNIT_MB), std::format("{:.1Lf} {}", inf, BYTE_UNIT_MB.suffix));
+    EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(-inf, BYTE_UNIT_KB), std::format("{:.1Lf} {}/s", -inf, BYTE_UNIT_KB.suffix));
+    EXPECT_EQ(UI::Format::formatWatts(inf), std::format("{:.1Lf} W", inf));
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(nan, BYTE_UNIT_GB), std::format("{:.1Lf} {}", nan, BYTE_UNIT_GB.suffix));
+}
+
+TEST(FormatFixedLocalizedTest, ByteFormattersMatchTheirStdFormatDefinition)
+{
+    const ScopedTestNumpunct enUs('.', ',', "\3");
+    for (const double bytes : fixedFormatSamples())
+    {
+        for (const auto* unit : {&UI::Format::BYTE_UNIT_B, &UI::Format::BYTE_UNIT_KB, &UI::Format::BYTE_UNIT_MB, &UI::Format::BYTE_UNIT_GB})
+        {
+            const double rounded = UI::Format::roundHalfAwayFromZero(bytes / unit->scale, unit->decimals);
+            const std::string expected = std::format("{:.{}Lf} {}", rounded, unit->decimals, unit->suffix);
+            EXPECT_EQ(UI::Format::formatBytesWithUnit(bytes, *unit), expected) << bytes;
+            EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(bytes, *unit), expected + "/s") << bytes;
+        }
+    }
+}
+
+// #1366: splitBytesForAlignmentFast() took its thousands separator from a per-thread cache that was
+// filled on first use and never refreshed, so a thread that formatted under the "C" locale kept
+// printing "8658." after a grouping locale was made global, while the slow path printed "8,658.".
+TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsAGlobalLocaleChange)
+{
+    const UI::Format::ByteUnit bytesUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
+    constexpr double BYTES = 8658.36;
+    {
+        // Format under "C" first on this thread, as an earlier test or early startup code would.
+        const ScopedTestNumpunct classic('.', ',', "");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+    }
+    {
+        const ScopedTestNumpunct enUs('.', ',', "\3");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8,658.");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+        EXPECT_TRUE(compareBytesAlignment(1234567.0, bytesUnit));
+    }
+    {
+        const ScopedTestNumpunct deDe(',', '.', "\3");
+        EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8.658,");
+        EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+    }
+    // And back to no grouping: the separator goes away again.
+    const ScopedTestNumpunct classic('.', ',', "");
+    EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
+    EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
 }

@@ -100,6 +100,131 @@ TEST(RateAxisTest, MaxOfTwoAndThreeSeriesSpansAllOfThem)
     EXPECT_DOUBLE_EQ(maxOfSeries(a, b, c), 20.0);
 }
 
+// ========== maxOfSeriesSince (#1145) ==========
+
+TEST(RateAxisTest, MaxOfSeriesSinceLeavesOutTheAnchorBeforeTheWindow)
+{
+    // The trim keeps the sample just before the window's left edge (x = -61 for a 60 s window); its
+    // peak is off-screen and must not scale the axis.
+    const std::array<double, 4> x{-61.0, -40.0, -20.0, 0.0};
+    const std::array<float, 4> s{500.0F, 1.0F, 3.0F, 2.0F};
+    EXPECT_DOUBLE_EQ(maxOfSeriesSince(x, -60.0, s), 3.0);
+    EXPECT_DOUBLE_EQ(maxOfSeries(s), 500.0); // What the axis used to be sized to
+}
+
+TEST(RateAxisTest, MaxOfSeriesSinceKeepsASampleExactlyOnTheLeftEdge)
+{
+    const std::array<double, 3> x{-60.0, -30.0, 0.0};
+    const std::array<double, 3> s{7.0, 1.0, 2.0};
+    EXPECT_DOUBLE_EQ(maxOfSeriesSince(x, -60.0, s), 7.0);
+}
+
+TEST(RateAxisTest, MaxOfSeriesSinceAlignsAShorterOrLongerSeriesToTheNewestSamples)
+{
+    const std::array<double, 4> x{-90.0, -50.0, -20.0, 0.0};
+    // Shorter: its values are at x = -20 and 0, both in the window.
+    const std::array<float, 2> shorter{4.0F, 6.0F};
+    EXPECT_DOUBLE_EQ(maxOfSeriesSince(x, -60.0, shorter), 6.0);
+    // Longer: its first value has no x at all, its second is at -90 (before the window).
+    const std::array<float, 5> longer{99.0F, 98.0F, 1.0F, 2.0F, 3.0F};
+    EXPECT_DOUBLE_EQ(maxOfSeriesSince(x, -60.0, longer), 3.0);
+}
+
+TEST(RateAxisTest, MaxOfSeriesSinceIsZeroWhenNothingIsInTheWindow)
+{
+    const std::array<double, 2> x{-200.0, -100.0};
+    const std::array<float, 2> s{5.0F, 8.0F};
+    EXPECT_DOUBLE_EQ(maxOfSeriesSince(x, -60.0, s), 0.0);
+    EXPECT_DOUBLE_EQ(maxOfSeriesSince(std::span<const double>{}, -60.0, std::span<const float>{}), 0.0);
+}
+
+TEST(RateAxisTest, MaxOfSeveralSeriesSinceSpansAllOfThemInTheWindow)
+{
+    const std::array<double, 3> x{-70.0, -10.0, 0.0};
+    const std::array<float, 3> a{100.0F, 2.0F, 1.0F};
+    const std::array<float, 3> b{200.0F, 3.0F, 9.0F};
+    EXPECT_DOUBLE_EQ(maxOfSeriesSince(x, -60.0, a, b), 9.0);
+}
+
+TEST(RateAxisTest, FirstIndexAtOrAfterFindsTheWindowsFirstSample)
+{
+    const std::array<double, 4> x{-61.0, -60.0, -1.0, 0.0};
+    EXPECT_EQ(firstIndexAtOrAfter(x, -60.0), 1U);
+    EXPECT_EQ(firstIndexAtOrAfter(x, -100.0), 0U);
+    EXPECT_EQ(firstIndexAtOrAfter(x, 1.0), 4U);
+}
+
+// ========== withCurrentValues (#1145 review) ==========
+
+TEST(RateAxisTest, ASmoothedValueAboveTheVisibleMaxRaisesTheTarget)
+{
+    // The peak (500) has just left the window, but the bar's smoothed value is still easing down
+    // from it: the axis must cover the bar, or normalizeToUnitInterval() clamps it to full height.
+    const std::array<double, 4> x{-61.0, -40.0, -20.0, 0.0};
+    const std::array<float, 4> s{500.0F, 1.0F, 3.0F, 2.0F};
+    const double target = withCurrentValues(maxOfSeriesSince(x, -60.0, s), {120.0, 2.0});
+    EXPECT_DOUBLE_EQ(target, 120.0);
+    EXPECT_GE(rateAxisUpperBound(target, 1.0), 120.0);
+}
+
+TEST(RateAxisTest, CurrentValuesBelowTheVisibleMaxLeaveItUnchanged)
+{
+    EXPECT_DOUBLE_EQ(withCurrentValues(9.0, {1.0, 8.5}), 9.0);
+    EXPECT_DOUBLE_EQ(withCurrentValues(9.0, {}), 9.0);
+}
+
+TEST(RateAxisTest, NonFiniteCurrentValuesAreIgnored)
+{
+    constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
+    constexpr double INF = std::numeric_limits<double>::infinity();
+    EXPECT_DOUBLE_EQ(withCurrentValues(4.0, {NaN}), 4.0);
+    EXPECT_DOUBLE_EQ(withCurrentValues(4.0, {NaN, INF, -INF, 6.0}), 6.0);
+    // A non-finite or negative visible max counts as 0, as maxOfSeries() would give.
+    EXPECT_DOUBLE_EQ(withCurrentValues(NaN, {NaN}), 0.0);
+    EXPECT_DOUBLE_EQ(withCurrentValues(-3.0, {2.0}), 2.0);
+}
+
+TEST(RateAxisTest, CurrentIfAvailableIsNaNForAnUnavailableReading)
+{
+    EXPECT_DOUBLE_EQ(currentIfAvailable(true, 42.0), 42.0);
+    EXPECT_TRUE(std::isnan(currentIfAvailable(false, 42.0)));
+    // An unavailable bar's stale value does not move the axis.
+    EXPECT_DOUBLE_EQ(withCurrentValues(5.0, {currentIfAvailable(false, 1000.0)}), 5.0);
+}
+
+// ========== sharedAxisUpperBound (#1299) ==========
+
+TEST(RateAxisTest, GridCellsShareTheLargestCellsBound)
+{
+    // A busy disk at 50 MB/s and an idle one at its 1 KiB/s floor: both cells draw to the busy
+    // disk's bound, so the idle one's noise is not scaled up to fill its cell.
+    const std::array<double, 3> bounds{BYTES, 50.0e6, 2.0e6};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(bounds, BYTES), 50.0e6);
+}
+
+TEST(RateAxisTest, SharedBoundOfOneCellIsThatCellsBound)
+{
+    const std::array<double, 1> bounds{3.0e6};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(bounds, BYTES), 3.0e6);
+}
+
+TEST(RateAxisTest, SharedBoundIgnoresNonFiniteAndNonPositiveBounds)
+{
+    constexpr double NaN = std::numeric_limits<double>::quiet_NaN();
+    constexpr double INF = std::numeric_limits<double>::infinity();
+    const std::array<double, 5> bounds{NaN, INF, -5.0, 0.0, 4096.0};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(bounds, BYTES), 4096.0);
+}
+
+TEST(RateAxisTest, SharedBoundFallsBackToTheMinimumSpan)
+{
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(std::span<const double>{}, BYTES), BYTES);
+    const std::array<double, 2> tiny{12.0, 500.0};
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(tiny, BYTES), BYTES);
+    // A nonsensical minimum span counts as 1, as in rateAxisUpperBound().
+    EXPECT_DOUBLE_EQ(sharedAxisUpperBound(std::span<const double>{}, -1.0), 1.0);
+}
+
 // ========== easeAxisUpperBound (#1011) ==========
 
 TEST(RateAxisTest, EasingMovesPartWayTowardTheTargetEachFrame)
@@ -243,6 +368,53 @@ TEST(AxisTickRangeTest, TicksRunFromZeroToTheLastMultipleBelowTheBound)
 
     EXPECT_EQ(axisTickRange(0.0, 1.0).count, 0);
     EXPECT_EQ(axisTickRange(10.0, 0.0).count, 0);
+}
+
+// ========== Time axis (#1202) ==========
+
+TEST(TimeAxisTest, StepsAreWholeSecondsMinutesOrHours)
+{
+    // A 5-minute window with up to 7 labels steps by a minute: 5m 4m 3m 2m 1m now.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(300.0, 7), 60.0);
+    // 1 minute, 7 labels: 10 s steps.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(60.0, 7), 10.0);
+    // 10 minutes, 3 labels: 5 minute steps.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(600.0, 3), 300.0);
+    // 2 minutes, 5 labels: 30 s.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(120.0, 5), 30.0);
+    // A span that is exactly a nice step per interval keeps it.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(150.0, 6), 30.0);
+    // Longer than any listed step: whole days.
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(10.0 * 86400.0, 2), 10.0 * 86400.0);
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(0.0, 7), 0.0);
+    EXPECT_DOUBLE_EQ(niceTimeAxisStep(std::numeric_limits<double>::quiet_NaN(), 7), 0.0);
+}
+
+TEST(TimeAxisTest, TicksAreMultiplesOfTheStepInsideTheWindow)
+{
+    const auto ticks = timeAxisTicks(-300.0, 0.0, 60.0);
+    EXPECT_DOUBLE_EQ(ticks.first, -300.0);
+    EXPECT_DOUBLE_EQ(ticks.last, 0.0);
+    EXPECT_EQ(ticks.count, 6);
+
+    // Scrolled back by 25 s: the ticks stay on whole minutes and "now" is out of view.
+    const auto scrolled = timeAxisTicks(-325.0, -25.0, 60.0);
+    EXPECT_DOUBLE_EQ(scrolled.first, -300.0);
+    EXPECT_DOUBLE_EQ(scrolled.last, -60.0);
+    EXPECT_EQ(scrolled.count, 5);
+
+    EXPECT_EQ(timeAxisTicks(0.0, -10.0, 1.0).count, 0); // Empty window
+    EXPECT_EQ(timeAxisTicks(-10.0, 0.0, 0.0).count, 0); // No step
+    EXPECT_EQ(timeAxisTicks(-9.0, -6.0, 5.0).count, 0); // No multiple inside
+}
+
+TEST(TimeAxisTest, NarrowChartsGetFewerLabels)
+{
+    EXPECT_EQ(timeAxisMaxTicksForWidth(600.0F, 10.0F), 7); // 10 slots, capped
+    EXPECT_EQ(timeAxisMaxTicksForWidth(240.0F, 10.0F), 4); // 240 / 60
+    EXPECT_EQ(timeAxisMaxTicksForWidth(50.0F, 10.0F), 2);  // floor of 2
+    EXPECT_EQ(timeAxisMaxTicksForWidth(0.0F, 10.0F), TIME_AXIS_MAX_TICKS);
+    EXPECT_EQ(timeAxisMaxTicksForWidth(600.0F, 0.0F), TIME_AXIS_MAX_TICKS);
 }
 
 TEST(AxisMaxTicksForHeightTest, ShortChartsGetFewerLabels)

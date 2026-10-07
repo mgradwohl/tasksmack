@@ -1,6 +1,7 @@
 #include "ElevationNoticeLayer.h"
 
 #include "App/DialogGeometry.h"
+#include "App/ElevationNoticeText.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -104,20 +105,7 @@ void ElevationNoticeLayer::renderDialog()
         ImGui::Spacing();
 
         // Platform-specific body text
-#ifdef __linux__
-        constexpr std::string_view bodyText = "TaskSmack is running without elevated privileges.\n\n"
-                                              "File descriptor counts and I/O statistics are\n"
-                                              "unavailable for processes owned by other users.\n\n"
-                                              "For complete data, run:\n"
-                                              "    sudo TaskSmack";
-#elif defined(_WIN32)
-        constexpr std::string_view bodyText = "TaskSmack is running without Administrator privileges.\n\n"
-                                              "Per-process network statistics are unavailable.\n\n"
-                                              "For complete data, run TaskSmack as Administrator.";
-#else
-        constexpr std::string_view bodyText = "TaskSmack is running without elevated privileges.\n\n"
-                                              "Some per-process data may be unavailable.";
-#endif
+        constexpr std::string_view bodyText = ElevationNoticeText::forCurrentPlatform();
 
         // Wrapped to the window, because the width above is now a real constraint rather than a
         // suggestion: on a narrow window the clamp can leave less content width than the longest
@@ -132,6 +120,7 @@ void ElevationNoticeLayer::renderDialog()
 
         // "Don't show again" checkbox
         ImGui::Checkbox("Don't show again", &m_DontShowAgain);
+        ImGui::SetItemTooltip("Settings > Advanced > Show limited-data notice turns it back on");
 
         ImGui::Spacing();
         ImGui::Separator();

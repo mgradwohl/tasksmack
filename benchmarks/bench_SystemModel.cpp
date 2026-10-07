@@ -8,11 +8,16 @@
 #include "Domain/SystemModel.h"
 #include "MemoryTracker.h"
 #include "Platform/Factory.h"
+#include "Platform/SystemTypes.h"
 
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace
@@ -160,5 +165,53 @@ static void BM_SystemModel_MemoryGrowth(benchmark::State& state)
     }
 }
 BENCHMARK(BM_SystemModel_MemoryGrowth)->Iterations(500);
+
+// Per-sample cost against the network interface count, with churn: container hosts run hundreds of
+// veth/bridge interfaces that come and go. Matching each interface to the previous sample by name,
+// and each known interface to this sample, should scale about linearly (#1415); with linear scans it
+// was quadratic. Alternates two interface sets in which a fifth of the interfaces differ, listed in
+// opposite orders. A 10 s window at 1 s steps keeps the history, and so the publish copy, short.
+static void BM_SystemModel_InterfaceChurn(benchmark::State& state)
+{
+    const auto interfaceCount = static_cast<std::size_t>(state.range(0));
+    std::array<Platform::SystemCounters, 2> counterSets;
+    for (std::size_t set = 0; set < counterSets.size(); ++set)
+    {
+        auto& counters = counterSets[set];
+        for (std::size_t i = 0; i < interfaceCount; ++i)
+        {
+            Platform::SystemCounters::InterfaceCounters iface;
+            // Every fifth interface is replaced by a differently named one in the second set.
+            iface.name = ((set == 1) && (i % 5 == 0)) ? "veth-new" + std::to_string(i) : "veth" + std::to_string(i);
+            iface.isVirtual = true;
+            iface.isVirtualKnown = true;
+            counters.networkInterfaces.push_back(std::move(iface));
+        }
+        if (set == 1)
+        {
+            std::ranges::reverse(counters.networkInterfaces);
+        }
+    }
+
+    Domain::SystemModel model(nullptr);
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    double nowSeconds = 1000.0;
+    std::uint64_t bytes = 0;
+    std::size_t sample = 0;
+    for (auto _ : state)
+    {
+        auto& counters = counterSets[sample++ % counterSets.size()];
+        bytes += 1000;
+        for (auto& iface : counters.networkInterfaces)
+        {
+            iface.rxBytes = bytes;
+            iface.txBytes = bytes;
+        }
+        model.updateFromCounters(counters, nowSeconds += 1.0);
+        benchmark::DoNotOptimize(model);
+    }
+    state.SetComplexityN(static_cast<benchmark::IterationCount>(interfaceCount));
+}
+BENCHMARK(BM_SystemModel_InterfaceChurn)->Arg(10)->Arg(100)->Arg(500)->Complexity()->Unit(benchmark::kMicrosecond);
 
 } // namespace

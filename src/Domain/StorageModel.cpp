@@ -5,12 +5,12 @@
 #include "Numeric.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
+#include "PublicationSlot.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -29,16 +29,16 @@ namespace Domain
 namespace
 {
 /// A system-wide rate for the history: NaN when no disk had measured rates in that sample (the
-/// seed transition), so the chart shows a gap rather than a false 0 B/s (#1102).
+/// seed transition), so the chart shows a gap rather than a false 0 B/s (#1102), and when any disk's
+/// sample was thrown out as a counter glitch (#1291), whose missing share would otherwise plot a
+/// false dip in the Total.
 [[nodiscard]] double totalRateOrNaN(const StorageSnapshot& snapshot, double StorageSnapshot::* total)
 {
-    const bool anyRates = std::ranges::any_of(snapshot.disks, &DiskSnapshot::hasRates);
-    return anyRates ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
+    return snapshot.totalsMeasured ? snapshot.*total : std::numeric_limits<double>::quiet_NaN();
 }
 } // namespace
 
-StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe)
-    : m_Probe(std::move(probe)), m_StartTime(std::chrono::steady_clock::now())
+StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe) : m_Probe(std::move(probe))
 {
     applyHistoryCapacity();
 }
@@ -73,11 +73,51 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         return;
     }
 
-    // Use absolute time (since epoch) to match SystemModel's timestamp format
-    const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
-
+    // Read first, then ask for capabilities: a read can re-enumerate the disks and change what the
+    // probe reports (Windows), and one expression would leave the order unspecified.
     const Platform::SystemDiskCounters counters = m_Probe->read();
     const Platform::DiskCapabilities caps = m_Probe->capabilities();
+
+    // One writer at a time from here to the commit: m_DiskStates is writer-owned, and the
+    // publication must be numbered and committed in the order the history was updated.
+    const std::scoped_lock writerLock(m_WriterMutex);
+    applySample(counters, caps, now, /*publishNow=*/true);
+}
+
+void StorageModel::sampleSeries(const CounterSeriesSource& next)
+{
+    const Platform::DiskCapabilities caps = m_Probe ? m_Probe->capabilities() : Platform::DiskCapabilities{};
+    Platform::SystemDiskCounters counters;
+    std::chrono::steady_clock::time_point now{};
+    bool applied = false;
+    // The whole series is one write: no other writer interleaves, and its single publish below is
+    // numbered and committed after every sample it holds (#868).
+    const std::scoped_lock writerLock(m_WriterMutex);
+    while (next(counters, now))
+    {
+        {
+            const std::shared_lock lock(m_Mutex);
+            if (!m_Timestamps.empty() && std::chrono::duration<double>(now.time_since_epoch()).count() <= m_Timestamps.latest())
+            {
+                continue;
+            }
+        }
+        applySample(counters, caps, now, /*publishNow=*/false);
+        applied = true;
+    }
+    if (applied)
+    {
+        publish(); // builds under a shared lock, then commits through the publication slot
+    }
+}
+
+void StorageModel::applySample(const Platform::SystemDiskCounters& counters,
+                               const Platform::DiskCapabilities& caps,
+                               const std::chrono::steady_clock::time_point now,
+                               const bool publishNow)
+{
+    // Use absolute time (since epoch) to match SystemModel's timestamp format
+    const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
 
     StorageSnapshot snapshot;
     snapshot.hasDiskStats = caps.hasDiskStats;
@@ -108,14 +148,19 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         state.hasPrev = true;
     }
 
-    // Compute system-wide totals
+    // Compute system-wide totals, and whether they are a measurement (see totalRateOrNaN()).
+    bool anyRates = false;
+    bool anyRejected = false;
     for (const auto& disk : snapshot.disks)
     {
         snapshot.totalReadBytesPerSec += disk.readBytesPerSec;
         snapshot.totalWriteBytesPerSec += disk.writeBytesPerSec;
         snapshot.totalReadOpsPerSec += disk.readOpsPerSec;
         snapshot.totalWriteOpsPerSec += disk.writeOpsPerSec;
+        anyRates = anyRates || disk.hasRates;
+        anyRejected = anyRejected || disk.ratesRejected;
     }
+    snapshot.totalsMeasured = anyRates && !anyRejected;
 
     // Update shared state
     {
@@ -208,9 +253,11 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         // avoiding an extra deep-copy of the disks vector on every sample.
         m_History.push(std::move(snapshot));
         trimHistory(nowSeconds);
+    }
+    if (publishNow)
+    {
+        // Outside the exclusive lock: the history copies take a shared lock only (#868).
         publish();
-        m_HasPrevSample = true;
-        m_PrevSampleTime = now;
     }
 
     spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",
@@ -221,46 +268,49 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
 
 std::shared_ptr<const StoragePublication> StorageModel::publication() const noexcept
 {
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Publication;
+    return m_Publication.load();
 }
 
 std::uint64_t StorageModel::publicationVersion() const noexcept
 {
-    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
+    return m_Publication.version();
 }
 
 void StorageModel::publish()
 {
+    // Build contents first, commit validity keys last: the version comes from a local candidate and
+    // m_PublicationVersion only advances once the generation is committed, so a throw from the copies
+    // below (std::bad_alloc) leaves the published generation, its version and m_PublicationVersion
+    // consistent. The copies run under a shared lock: the per-field accessors still read alongside,
+    // and publication() doesn't take m_Mutex at all, so no reader waits for them (#868). Nothing else
+    // can write this state meanwhile; the caller holds m_WriterMutex.
     auto publication = std::make_shared<StoragePublication>();
-    // Assign the version from a local candidate rather than mutating m_PublicationVersion
-    // directly here: the history copies below can throw (std::bad_alloc), and if they do,
-    // committing m_PublicationVersion/m_Publication/m_PublishedPublicationVersion only at
-    // the end (see below) keeps all three mutually consistent instead of silently advancing
-    // the version past what was actually published.
-    publication->version = m_PublicationVersion + 1;
-    publication->snapshot = m_LatestSnapshot;
-    publication->timestamps = HistoryUtils::toVector(m_Timestamps);
-    publication->totalReadHistory.reserve(m_History.size());
-    publication->totalWriteHistory.reserve(m_History.size());
-    for (std::size_t i = 0; i < m_History.size(); ++i)
     {
-        const auto& snapshot = m_History.ref(i);
-        publication->totalReadHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalReadBytesPerSec));
-        publication->totalWriteHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalWriteBytesPerSec));
+        const std::shared_lock stateLock(m_Mutex);
+        publication->version = m_PublicationVersion + 1;
+        publication->snapshot = m_LatestSnapshot;
+        publication->timestamps = HistoryUtils::toVector(m_Timestamps);
+        publication->totalReadHistory.reserve(m_History.size());
+        publication->totalWriteHistory.reserve(m_History.size());
+        for (std::size_t i = 0; i < m_History.size(); ++i)
+        {
+            const auto& snapshot = m_History.ref(i);
+            publication->totalReadHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalReadBytesPerSec));
+            publication->totalWriteHistory.push_back(totalRateOrNaN(snapshot, &StorageSnapshot::totalWriteBytesPerSec));
+        }
+        publication->perDiskHistory.reserve(m_DiskOrder.size());
+        for (const auto& name : m_DiskOrder)
+        {
+            publication->perDiskHistory.push_back({
+                .deviceName = name,
+                .readBytesPerSec = HistoryUtils::toVector(m_DiskReadHistory.at(name)),
+                .writeBytesPerSec = HistoryUtils::toVector(m_DiskWriteHistory.at(name)),
+            });
+        }
     }
-    publication->perDiskHistory.reserve(m_DiskOrder.size());
-    for (const auto& name : m_DiskOrder)
-    {
-        publication->perDiskHistory.push_back({
-            .deviceName = name,
-            .readBytesPerSec = HistoryUtils::toVector(m_DiskReadHistory.at(name)),
-            .writeBytesPerSec = HistoryUtils::toVector(m_DiskWriteHistory.at(name)),
-        });
-    }
-    m_PublicationVersion = publication->version;
-    m_Publication = std::move(publication);
-    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
+    const std::uint64_t version = publication->version;
+    m_Publication.commit(std::move(publication));
+    m_PublicationVersion = version;
 }
 
 DiskSnapshot
@@ -313,9 +363,19 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
     const std::uint64_t deltaIoTime = Numeric::counterDelta(current.ioTimeMs, state.prevCounters.ioTimeMs);
 
     // Compute rates
+    const double readBytesPerSec = (Numeric::toDouble(deltaReadSectors) * Numeric::toDouble(current.sectorSize)) / deltaSeconds;
+    const double writeBytesPerSec = (Numeric::toDouble(deltaWriteSectors) * Numeric::toDouble(current.sectorSize)) / deltaSeconds;
+    if (readBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS || writeBytesPerSec > Sampling::MAX_SANE_DISK_RATE_BPS)
+    {
+        // A counter glitch (a reinitialised or re-registered device counter), not I/O: the sample
+        // has no rates, so it reads 0 and its history records a gap instead of a spike that would
+        // blow out the chart's scale (#1291). Flagged so the system Total is a gap too.
+        snap.ratesRejected = true;
+        return snap;
+    }
     snap.hasRates = true;
-    snap.readBytesPerSec = static_cast<double>(deltaReadSectors * current.sectorSize) / deltaSeconds;
-    snap.writeBytesPerSec = static_cast<double>(deltaWriteSectors * current.sectorSize) / deltaSeconds;
+    snap.readBytesPerSec = readBytesPerSec;
+    snap.writeBytesPerSec = writeBytesPerSec;
     snap.readOpsPerSec = Numeric::toDouble(deltaReadOps) / deltaSeconds;
     snap.writeOpsPerSec = Numeric::toDouble(deltaWriteOps) / deltaSeconds;
 
@@ -422,13 +482,23 @@ std::vector<double> StorageModel::historyTimestamps() const
 
 void StorageModel::setMaxHistorySeconds(double seconds)
 {
-    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = std::max(0.0, seconds);
-    applyHistoryCapacity();
-
-    if (!m_Timestamps.empty())
+    const std::scoped_lock writerLock(m_WriterMutex);
     {
-        trimHistory(m_Timestamps.latest());
+        const std::unique_lock lock(m_Mutex);
+        // The same guardrail as SystemModel and GPUModel, so every model keeps the same window (#1145).
+        m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
+        applyHistoryCapacity();
+
+        if (!m_Timestamps.empty())
+        {
+            trimHistory(m_Timestamps.latest());
+        }
+    }
+    // Republish the trimmed history now rather than at the next sample (#1145); see
+    // SystemModel::setMaxHistorySeconds(). Nothing is published before the first sample.
+    if (m_PublicationVersion != 0)
+    {
+        publish();
     }
 }
 

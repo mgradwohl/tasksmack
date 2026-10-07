@@ -1,4 +1,5 @@
 #include "App/Panels/ProcessTableLayout.h"
+#include "App/ProcessColumnConfig.h"
 
 #include <gtest/gtest.h>
 
@@ -69,6 +70,40 @@ TEST(ProcessTableLayoutTest, FitsVisibleWidthOnNonFiniteInput)
     EXPECT_FLOAT_EQ(computeInnerWidth(700.0F, 300.0F, nan), 0.0F);
     EXPECT_FLOAT_EQ(computeInnerWidth(inf, 300.0F, 1000.0F), 0.0F);
     EXPECT_FLOAT_EQ(computeInnerWidth(700.0F, 300.0F, inf), 0.0F);
+}
+
+// ========== Decimal-aligned cells (#1201) ==========
+
+using ProcessTableLayout::layoutUnitAlignedCell;
+
+TEST(ProcessTableLayoutTest, UnitAlignedCellsPutEveryUnitInTheSameSlot)
+{
+    // A 100px cell whose widest unit is 30px: every unit starts at 70, whatever its own width, so
+    // "512.0 B" and "3.2 MiB" end their numbers -- and so their decimal digits -- at the same x.
+    const auto bytes = layoutUnitAlignedCell(40.0F, 12.0F, 30.0F, 100.0F);
+    const auto mebibytes = layoutUnitAlignedCell(25.0F, 28.0F, 30.0F, 100.0F);
+    ASSERT_TRUE(bytes.fits);
+    ASSERT_TRUE(mebibytes.fits);
+    EXPECT_FLOAT_EQ(bytes.unitX, 70.0F);
+    EXPECT_FLOAT_EQ(mebibytes.unitX, 70.0F);
+    EXPECT_FLOAT_EQ(bytes.numberX, 30.0F);
+    EXPECT_FLOAT_EQ(mebibytes.numberX, 45.0F);
+    EXPECT_FLOAT_EQ(bytes.numberX + 40.0F, mebibytes.numberX + 25.0F); // Numbers end together
+    EXPECT_FLOAT_EQ(bytes.itemWidth, 52.0F);
+}
+
+TEST(ProcessTableLayoutTest, UnitAlignedCellWiderThanTheSlotWidensIt)
+{
+    const auto layout = layoutUnitAlignedCell(20.0F, 35.0F, 30.0F, 100.0F);
+    ASSERT_TRUE(layout.fits);
+    EXPECT_FLOAT_EQ(layout.unitX, 65.0F);
+}
+
+TEST(ProcessTableLayoutTest, UnitAlignedCellThatDoesNotFitFallsBack)
+{
+    EXPECT_FALSE(layoutUnitAlignedCell(80.0F, 20.0F, 30.0F, 100.0F).fits); // 80 + 30 > 100
+    EXPECT_TRUE(layoutUnitAlignedCell(70.0F, 20.0F, 30.0F, 100.0F).fits);  // Exactly fills it
+    EXPECT_FALSE(layoutUnitAlignedCell(std::numeric_limits<float>::quiet_NaN(), 20.0F, 30.0F, 100.0F).fits);
 }
 
 // ========== Clipped cell text (#914) ==========
@@ -210,6 +245,114 @@ TEST(ProcessTableLayoutTest, ToolbarMinimumSurvivesDegenerateInput)
     const float nan = std::numeric_limits<float>::quiet_NaN();
     EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(nan, -1.0F, nan), 0.0F);
     EXPECT_FLOAT_EQ(computeToolbarMinimumWidth(200.0F, 100.0F, -5.0F), 200.0F);
+}
+
+// ========== Toolbar status text (#1209) ==========
+
+TEST(ProcessTableLayoutTest, ToolbarStatusSitsRightBeforeTheControls)
+{
+    // Row 0..1000, controls 200 wide with 8 spacing: the text ends at 792.
+    const auto layout = ProcessTableLayout::layoutToolbarStatus(300.0F, 1000.0F, 200.0F, 8.0F, 150.0F, 150.0F);
+    EXPECT_FLOAT_EQ(layout.x, 642.0F);
+    EXPECT_FLOAT_EQ(layout.width, 150.0F);
+    EXPECT_FALSE(layout.clipped);
+}
+
+TEST(ProcessTableLayoutTest, LongActionResultIsBoundedToTheCountTextsWidth)
+{
+    // A long platform error gets no more room than the count text, so the controls do not move.
+    const auto layout =
+        ProcessTableLayout::layoutToolbarStatus(300.0F, 1000.0F, 200.0F, 8.0F, /*textWidthPx=*/900.0F, /*maxWidthPx=*/150.0F);
+    EXPECT_FLOAT_EQ(layout.width, 150.0F);
+    EXPECT_FLOAT_EQ(layout.x + layout.width, 792.0F); // Still ends where the controls begin
+    EXPECT_TRUE(layout.clipped);
+}
+
+TEST(ProcessTableLayoutTest, ToolbarStatusNeverStartsBeforeTheFilterOrOverlapsTheControls)
+{
+    // Only 100 left between the filter (cursor 692) and the controls: the text takes that, clipped.
+    const auto layout = ProcessTableLayout::layoutToolbarStatus(692.0F, 1000.0F, 200.0F, 8.0F, 150.0F, 150.0F);
+    EXPECT_FLOAT_EQ(layout.x, 692.0F);
+    EXPECT_FLOAT_EQ(layout.width, 100.0F);
+    EXPECT_TRUE(layout.clipped);
+
+    // No room at all: nothing drawn past the cursor.
+    const auto none = ProcessTableLayout::layoutToolbarStatus(900.0F, 1000.0F, 200.0F, 8.0F, 150.0F, 150.0F);
+    EXPECT_FLOAT_EQ(none.width, 0.0F);
+    EXPECT_FLOAT_EQ(none.x, 900.0F);
+}
+
+// ========== Header alignment (#1209) ==========
+
+TEST(ProcessTableLayoutTest, RightAlignedHeaderEndsAtTheCellsRightEdge)
+{
+    // A numeric header sits over its right-aligned numbers, not centred above them.
+    EXPECT_FLOAT_EQ(ProcessTableLayout::headerLabelOffset(ColumnAlign::Right, 100.0F, 30.0F, 0.0F), 70.0F);
+    // On the sorted column it ends before ImGui's sort arrow.
+    EXPECT_FLOAT_EQ(ProcessTableLayout::headerLabelOffset(ColumnAlign::Right, 100.0F, 30.0F, 12.0F), 58.0F);
+}
+
+TEST(ProcessTableLayoutTest, LeftAndCentredHeadersFollowTheirCells)
+{
+    EXPECT_FLOAT_EQ(ProcessTableLayout::headerLabelOffset(ColumnAlign::Left, 100.0F, 30.0F, 12.0F), 0.0F);
+    EXPECT_FLOAT_EQ(ProcessTableLayout::headerLabelOffset(ColumnAlign::Center, 100.0F, 30.0F, 0.0F), 35.0F);
+    EXPECT_FLOAT_EQ(ProcessTableLayout::headerLabelOffset(ColumnAlign::Center, 100.0F, 30.0F, 10.0F), 30.0F);
+}
+
+TEST(ProcessTableLayoutTest, HeaderWiderThanItsCellStartsAtTheLeftEdge)
+{
+    for (const ColumnAlign align : {ColumnAlign::Left, ColumnAlign::Center, ColumnAlign::Right})
+    {
+        EXPECT_FLOAT_EQ(ProcessTableLayout::headerLabelOffset(align, 40.0F, 60.0F, 12.0F), 0.0F);
+    }
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(ProcessTableLayout::headerLabelOffset(ColumnAlign::Right, nan, 30.0F, 0.0F), 0.0F);
+}
+
+TEST(ProcessTableLayoutTest, SortArrowReserveMatchesImGuisArrowPlacement)
+{
+    // ImGui: arrow = trunc(fontSize * 0.65 + FramePadding.x) from the cell's outer edge, CellPadding.x
+    // beyond the content region's.
+    EXPECT_FLOAT_EQ(ProcessTableLayout::sortArrowReserve(16.0F, 4.0F, 4.0F), std::trunc((16.0F * 0.65F) + 4.0F) - 4.0F);
+    EXPECT_FLOAT_EQ(ProcessTableLayout::sortArrowReserve(4.0F, 0.0F, 10.0F), 0.0F); // Never negative
+}
+
+// ========== Paused indicator form (#928) ==========
+
+using ProcessTableLayout::choosePausedLabelForm;
+using ProcessTableLayout::PausedLabelForm;
+
+TEST(ProcessTableLayoutTest, PausedLabelIsFullWhenItFits)
+{
+    EXPECT_EQ(choosePausedLabelForm(500.0F, 140.0F, 24.0F), PausedLabelForm::Full);
+    EXPECT_EQ(choosePausedLabelForm(140.0F, 140.0F, 24.0F), PausedLabelForm::Full); // Exactly fits
+}
+
+TEST(ProcessTableLayoutTest, PausedLabelShrinksToItsIconOnANarrowRow)
+{
+    EXPECT_EQ(choosePausedLabelForm(139.0F, 140.0F, 24.0F), PausedLabelForm::IconOnly);
+    // At the content minimum the room is exactly the reserved icon slot; rounding must not hide it.
+    EXPECT_EQ(choosePausedLabelForm(24.0F - 0.001F, 140.0F, 24.0F), PausedLabelForm::IconOnly);
+}
+
+TEST(ProcessTableLayoutTest, PausedLabelHidesOnlyWithoutRoomForTheIcon)
+{
+    EXPECT_EQ(choosePausedLabelForm(10.0F, 140.0F, 24.0F), PausedLabelForm::Hidden);
+    EXPECT_EQ(choosePausedLabelForm(-50.0F, 140.0F, 24.0F), PausedLabelForm::Hidden);
+    EXPECT_EQ(choosePausedLabelForm(std::numeric_limits<float>::quiet_NaN(), 140.0F, 24.0F), PausedLabelForm::Hidden);
+}
+
+// The toolbar minimum reserves the icon slot, so a row at that minimum always shows the indicator.
+TEST(ProcessTableLayoutTest, ToolbarMinimumWithTheIconReservedAlwaysShowsTheIndicator)
+{
+    const float spacing = 8.0F;
+    const float icon = 16.0F;
+    const float othersAfterFilter = 400.0F; // clear button, count, toggle and their spacing
+    const float filterWanted = 200.0F;
+    const float rowMin = computeToolbarMinimumWidth(filterWanted, 103.0F, othersAfterFilter + icon + spacing);
+    // Side by side at the minimum, the room left for the indicator is the reserved slot.
+    const float room = rowMin - filterWanted - othersAfterFilter;
+    EXPECT_NE(choosePausedLabelForm(room, 140.0F + spacing, icon + spacing), PausedLabelForm::Hidden);
 }
 
 } // namespace

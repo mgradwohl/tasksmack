@@ -4,6 +4,7 @@
 #include "App/UserConfigHelpers.h"
 #include "Domain/SamplingConfig.h"
 #include "UI/ChartWidgets.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
@@ -74,7 +75,12 @@ class UserConfigSaveLoadFixture : public ::testing::Test
             }
         }
 
-        UserConfig::get().resetConfigPathForTesting(m_TempDir / "config.toml");
+        // Tests write fixture files through m_ConfigPath, built here from the fixture's own temp
+        // directory, rather than through configPath(): the singleton's default path comes from
+        // XDG_CONFIG_HOME/HOME, and no environment-derived string should reach a file write (#1379).
+        m_ConfigPath = m_TempDir / "config.toml";
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
+        ASSERT_EQ(UserConfig::get().configPath(), m_ConfigPath);
     }
 
     void TearDown() override
@@ -88,6 +94,7 @@ class UserConfigSaveLoadFixture : public ::testing::Test
     }
 
     std::filesystem::path m_TempDir;
+    std::filesystem::path m_ConfigPath;
     std::filesystem::path m_OriginalPath;
 };
 
@@ -876,6 +883,34 @@ TEST_F(UserConfigSaveLoadFixture, ThemeIdRoundTrip)
     EXPECT_EQ(config.settings().themeId, "dracula");
 }
 
+TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeRoundTripThroughTheTheme)
+{
+    // #1187: applyToApplication() hands the theme id and font size to UI::Theme, and
+    // captureFromApplication() reads them back before save(). Dropping or crossing either call
+    // would lose the user's theme or font size on the next save while every file round-trip test
+    // stayed green. The test build's Theme (tests/Mocks/ThemeStub.cpp) keeps what it is given.
+    auto& theme = UI::Theme::get();
+    const std::string originalId = theme.currentThemeId();
+    const UI::FontSize originalSize = theme.currentFontSize();
+
+    auto& config = UserConfig::get();
+    config.settings().themeId = "dracula";
+    config.settings().fontSize = UI::FontSize::ExtraLarge;
+    config.applyToApplication();
+    EXPECT_EQ(theme.currentThemeId(), "dracula");
+    EXPECT_EQ(theme.currentFontSize(), UI::FontSize::ExtraLarge);
+
+    config.settings().themeId = "arctic-fire";
+    config.settings().fontSize = UI::FontSize::Small;
+    config.captureFromApplication();
+    EXPECT_EQ(config.settings().themeId, "dracula");
+    EXPECT_EQ(config.settings().fontSize, UI::FontSize::ExtraLarge);
+
+    // The Theme singleton is process-wide; the chart tests in this binary scale by its font size.
+    theme.setThemeById(originalId);
+    theme.setFontSize(originalSize);
+}
+
 // ========== Load/Save: Font Size Round-Trips ==========
 
 TEST_F(UserConfigSaveLoadFixture, FontSizeSmallRoundTrip)
@@ -1169,15 +1204,28 @@ TEST_F(UserConfigSaveLoadFixture, SaveRemovesRetiredKeysAndKeepsTheRest)
     }
 }
 
+TEST_F(UserConfigSaveLoadFixture, HeaderDescribesTheRateCeilingAsCoveringInterfacesToo)
+{
+    // #1291 extended [metrics] max_sane_rate_bps from per-process rates to interface rates; the
+    // header save() writes into every config.toml must not still call it a per-process ceiling.
+    UserConfig::get().save();
+
+    std::ifstream in(m_TempDir / "config.toml");
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    EXPECT_TRUE(text.contains("max_sane_rate_bps: network rate ceiling for process and interface rates"));
+    EXPECT_FALSE(text.contains("per-process network rate ceiling"));
+}
+
 // ========== Load/Save: Process Columns Round-Trip ==========
 
 TEST_F(UserConfigSaveLoadFixture, ProcessColumnsRoundTrip)
 {
     auto& config = UserConfig::get();
 
-    // Toggle two known columns to stable, self-documenting values.
-    constexpr auto col0 = ProcessColumn::PID;
-    constexpr auto col1 = ProcessColumn::Name;
+    // Toggle two known hideable columns to stable, self-documenting values (PID and Name are always
+    // shown, whatever the file says, #1209).
+    constexpr auto col0 = ProcessColumn::User;
+    constexpr auto col1 = ProcessColumn::Command;
     const bool original0 = config.settings().processColumns.isVisible(col0);
     const bool original1 = config.settings().processColumns.isVisible(col1);
 
@@ -1271,7 +1319,7 @@ TEST(UserConfigMergeTest, KeysDeletedOrClearedStayDeleted)
 
 TEST_F(UserConfigSaveLoadFixture, SaveKeepsKeysTaskSmackDoesNotOwn)
 {
-    const auto path = UserConfig::get().configPath();
+    const auto& path = m_ConfigPath;
     writeFile(path, "[sampling]\ninterval_ms = 500\nfuture_option = 7\n\n[plugin]\nenabled = true\n");
     auto& config = UserConfig::get();
     config.load();
@@ -1285,7 +1333,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsKeysTaskSmackDoesNotOwn)
 
 TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveSavesAndShutdown)
 {
-    const auto path = UserConfig::get().configPath();
+    const auto& path = m_ConfigPath;
     auto& config = UserConfig::get();
     config.settings().refreshIntervalMs = 1000;
     config.settings().themeId = "arctic-fire";
@@ -1310,7 +1358,7 @@ TEST_F(UserConfigSaveLoadFixture, EditsMadeWhileRunningSurviveSavesAndShutdown)
 
 TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEditedOutside)
 {
-    const auto path = UserConfig::get().configPath();
+    const auto& path = m_ConfigPath;
     auto& config = UserConfig::get();
     config.save();
     config.load();
@@ -1337,7 +1385,7 @@ TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEdite
 
 TEST_F(UserConfigSaveLoadFixture, MalformedConfigIsNotReplaced)
 {
-    const auto path = UserConfig::get().configPath();
+    const auto& path = m_ConfigPath;
     const std::string malformed = "[sampling\ninterval_ms = = 5\n";
     writeFile(path, malformed);
     auto& config = UserConfig::get();
@@ -1351,7 +1399,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveLeavesNoTemporaryFileBehind)
 {
     auto& config = UserConfig::get();
     config.save();
-    EXPECT_TRUE(std::filesystem::exists(config.configPath()));
+    EXPECT_TRUE(std::filesystem::exists(m_ConfigPath));
     for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
     {
         EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
@@ -1364,7 +1412,7 @@ TEST_F(UserConfigSaveLoadFixture, FailedWriteLeavesTheOriginalIntactAndALaterSav
     // The data-loss path the atomic replace exists for: writing the new file fails partway. The
     // original must stay byte-for-byte, the temporary file must go, and the change must still be
     // saved by the next successful save (#1222 review).
-    const auto path = UserConfig::get().configPath();
+    const auto& path = m_ConfigPath;
     const std::string original = "[theme]\nid = \"arctic-fire\"\n";
     writeFile(path, original);
     auto& config = UserConfig::get();
@@ -1402,7 +1450,7 @@ TEST_F(UserConfigSaveLoadFixture, FailedWriteLeavesTheOriginalIntactAndALaterSav
 TEST_F(UserConfigSaveLoadFixture, SymlinkedConfigKeepsItsLinkAndUpdatesItsTarget)
 {
     // A dotfiles-managed config is often a symlink: saving must write through it (#1222 review).
-    const auto link = UserConfig::get().configPath();
+    const auto& link = m_ConfigPath;
     const auto target = m_TempDir / "dotfiles-config.toml";
     writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
     std::filesystem::create_symlink(target, link);
@@ -1420,7 +1468,7 @@ TEST_F(UserConfigSaveLoadFixture, SymlinkTargetWithALongNameStillSaves)
 {
     // A 250-byte target name is valid under a 255-byte limit; a temporary named after it with a
     // suffix would not be, and every save would fail (#1222 review).
-    const auto link = UserConfig::get().configPath();
+    const auto& link = m_ConfigPath;
     const auto target = m_TempDir / (std::string(245, 'c') + ".toml");
     writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
     std::filesystem::create_symlink(target, link);
@@ -1438,7 +1486,7 @@ TEST_F(UserConfigSaveLoadFixture, SymlinkToAMissingFileCreatesTheTarget)
 {
     // canonical() needs the target to exist; a link to a file not created yet must still be
     // written through, not refused (#1222 review).
-    const auto link = UserConfig::get().configPath();
+    const auto& link = m_ConfigPath;
     const auto target = m_TempDir / "not-yet-created.toml";
     std::filesystem::create_symlink(target, link);
 
@@ -1454,7 +1502,7 @@ TEST_F(UserConfigSaveLoadFixture, SymlinkToAMissingFileCreatesTheTarget)
 
 TEST_F(UserConfigSaveLoadFixture, LinkLoopIsNotSaved)
 {
-    const auto link = UserConfig::get().configPath();
+    const auto& link = m_ConfigPath;
     const auto other = m_TempDir / "other.toml";
     std::filesystem::create_symlink(other, link);
     std::filesystem::create_symlink(link, other);
@@ -1475,12 +1523,12 @@ TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSe
     // the setting changed in-app is written over it, not every runtime default (#1222 review).
     auto& config = UserConfig::get();
     config.load();
-    writeFile(UserConfig::get().configPath(), "[sampling]\ninterval_ms = 750\n");
+    writeFile(m_ConfigPath, "[sampling]\ninterval_ms = 750\n");
 
     config.settings().themeId = "mocha";
     config.save();
 
-    const auto saved = parsed(UserConfig::get().configPath());
+    const auto saved = parsed(m_ConfigPath);
     EXPECT_EQ(saved["sampling"]["interval_ms"].value<std::int64_t>(), 750);
     EXPECT_EQ(saved["theme"]["id"].value<std::string>(), "mocha");
 }
@@ -1492,7 +1540,7 @@ TEST_F(UserConfigSaveLoadFixture, UnreadableConfigFileIsNotReplaced)
     {
         GTEST_SKIP() << "root can read a mode-000 file";
     }
-    const auto path = UserConfig::get().configPath();
+    const auto& path = m_ConfigPath;
     writeFile(path, "[theme]\nid = \"dracula\"\n");
     std::filesystem::permissions(path, std::filesystem::perms::none);
 
@@ -1508,7 +1556,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigFilesPermissions)
 {
     auto& config = UserConfig::get();
     config.save();
-    const auto path = config.configPath();
+    const auto& path = m_ConfigPath;
     const auto restricted = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
     std::filesystem::permissions(path, restricted);
 
@@ -1523,7 +1571,7 @@ TEST_F(UserConfigSaveLoadFixture, StagingFileIsNeverReadableByOthers)
     // than umask-readable, while an existing config's own, wider mode is still restored.
     auto& config = UserConfig::get();
     config.save();
-    const auto path = config.configPath();
+    const auto& path = m_ConfigPath;
     const auto ownerOnly = std::filesystem::perms::owner_read | std::filesystem::perms::owner_write;
     EXPECT_EQ(std::filesystem::status(path).permissions() & std::filesystem::perms::all, ownerOnly);
 
@@ -1550,7 +1598,7 @@ TEST_F(UserConfigSaveLoadFixture, SavesUnderAUmaskThatMasksOwnerWrite)
     config.save(); // replacing a 0400 config works too
     ::umask(previous);
 
-    EXPECT_EQ(parsed(config.configPath())["theme"]["id"].value<std::string>(), "latte");
+    EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "latte");
     for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
     {
         EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
@@ -1589,7 +1637,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveDropsAnAclTheOriginalDidNotHave)
     // replacement must not either, or its named grants would expose it (#1222 review).
     auto& config = UserConfig::get();
     config.save(); // before the default ACL exists: no ACL of its own
-    const auto path = config.configPath();
+    const auto& path = m_ConfigPath;
     std::vector<char> probe(256);
     ASSERT_LT(::getxattr(path.c_str(), "system.posix_acl_access", probe.data(), probe.size()), 0);
 
@@ -1614,7 +1662,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
     // mode to the new file would let the whole group read it; the ACL must come along (#1222 review).
     auto& config = UserConfig::get();
     config.save();
-    const auto path = config.configPath();
+    const auto& path = m_ConfigPath;
 
     const auto acl = nobodyCanReadAcl();
     if (::setxattr(path.c_str(), "system.posix_acl_access", acl.data(), acl.size(), 0) != 0)
@@ -1649,7 +1697,7 @@ TEST_F(UserConfigSaveLoadFixture, FailedStagingLeavesAnExistingFileAlone)
     ASSERT_TRUE(std::filesystem::exists(theirs));
     std::ifstream in(theirs);
     EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), "not TaskSmack's");
-    EXPECT_FALSE(std::filesystem::exists(config.configPath())); // nothing was saved
+    EXPECT_FALSE(std::filesystem::exists(m_ConfigPath)); // nothing was saved
 }
 
 TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsOwningGroup)
@@ -1670,7 +1718,7 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsOwningGroup)
 
     auto& config = UserConfig::get();
     config.save();
-    const auto path = config.configPath();
+    const auto& path = m_ConfigPath;
     ASSERT_EQ(::chown(path.c_str(), static_cast<uid_t>(-1), configGroup), 0);
     ASSERT_EQ(::chmod(path.c_str(), 0640), 0);
 

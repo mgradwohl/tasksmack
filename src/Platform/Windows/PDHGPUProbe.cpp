@@ -30,6 +30,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Platform
@@ -244,7 +245,10 @@ std::vector<ProcessGPUCounters> PDHGPUProbe::readProcessGPUCounters()
         // ProcessModel will match this against the gpuIdToName map (which includes both gpuId and luidId).
         counter.gpuId = "GPU_" + key.gpuLuid;
         counter.gpuUtilPercent = busiestEngine;
-        counter.gpuMemoryBytes = agg.dedicatedMemory + agg.sharedMemory;
+        // Kept apart, as the adapter figures are: summed, a process could show more "GPU memory"
+        // than the adapter's dedicated usage beside it (#1164).
+        counter.gpuMemoryBytes = agg.dedicatedMemory;
+        counter.gpuSharedMemoryBytes = agg.sharedMemory;
         counter.activeEngines = agg.engines;
 
         result.push_back(std::move(counter));
@@ -392,7 +396,11 @@ GPUCapabilities PDHGPUProbe::capabilities() const
 
     if (m_Impl && m_Impl->initialized)
     {
-        caps.hasPerProcessMetrics = true;
+        // Per-process counters only in the Process role: an Adapter-role probe's
+        // readProcessGPUCounters() updates the adapter totals and returns none (#1365 review).
+        const bool perProcess = m_Impl->role == Role::Process;
+        caps.hasPerProcessMetrics = perProcess;
+        caps.hasPerProcessUtilization = perProcess; // GPU Engine counters: the busiest engine per process
         caps.hasEngineUtilization = true;
         caps.supportsMultiGPU = true;
     }

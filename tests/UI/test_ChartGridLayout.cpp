@@ -1,7 +1,8 @@
 /// @file test_ChartGridLayout.cpp
 /// @brief Tests for UI::Widgets::computeChartGridLayout(), the pure grid-sizing math shared by
 /// CpuCoresSection's per-core grid and StorageSection's per-disk grid (see UI/ChartGrid.h for
-/// the ImGui rendering helper built on top of this).
+/// the ImGui rendering helper built on top of this), and CellOverheadCache, the cell-overhead cache both
+/// grids share (#1180).
 
 #include "UI/ChartGridLayout.h"
 
@@ -313,6 +314,98 @@ TEST(ChartGridLayoutTest, CappedGridNeverExceedsAvailableHeightWhenUncappedFits)
             EXPECT_LE(grid.cellHeight, 300.0F) << "itemCount=" << itemCount << " height=" << height;
             EXPECT_LE(static_cast<float>(grid.rows) * grid.cellHeight, height * 1.001F)
                 << "itemCount=" << itemCount << " height=" << height;
+        }
+    }
+}
+
+// ========== CellOverheadCache (#1180) ==========
+
+TEST(CellOverheadCacheTest, EmptyUntilAMeasurementIsStored)
+{
+    CellOverheadCache cache;
+    const CellStyleMetrics metrics{.textLineHeight = 16.0F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F};
+    EXPECT_FALSE(cache.get(metrics).has_value());
+
+    cache.store(metrics, 31.0F);
+    EXPECT_FLOAT_EQ(cache.get(metrics).value_or(-1.0F), 31.0F); // the next cell, or the next frame
+    const CellStyleMetrics jitter{.textLineHeight = 16.00001F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F};
+    EXPECT_FLOAT_EQ(cache.get(jitter).value_or(-1.0F), 31.0F); // within the tolerance
+}
+
+TEST(CellOverheadCacheTest, AnyChangedMetricMeansRemeasure)
+{
+    CellOverheadCache cache;
+    const CellStyleMetrics base{.textLineHeight = 16.0F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F};
+    cache.store(base, 31.0F);
+
+    EXPECT_FALSE(cache.get({.textLineHeight = 20.0F, .itemSpacingY = 4.0F, .cellPaddingY = 2.0F}).has_value());
+    EXPECT_FALSE(cache.get({.textLineHeight = 16.0F, .itemSpacingY = 5.0F, .cellPaddingY = 2.0F}).has_value());
+    EXPECT_FALSE(cache.get({.textLineHeight = 16.0F, .itemSpacingY = 4.0F, .cellPaddingY = 3.0F}).has_value());
+
+    // A new measurement replaces the old one together with the metrics it was taken under.
+    const CellStyleMetrics larger{.textLineHeight = 20.0F, .itemSpacingY = 5.0F, .cellPaddingY = 3.0F};
+    cache.store(larger, 40.0F);
+    EXPECT_FLOAT_EQ(cache.get(larger).value_or(-1.0F), 40.0F);
+    EXPECT_FALSE(cache.get(base).has_value());
+}
+
+// ========== computeChartGridMinimumHeight (#1370 review) ==========
+
+TEST(ChartGridMinimumHeightTest, ZeroItemsNeedNoHeight)
+{
+    const ChartGridConfig config{.availableWidth = 800.0F, .itemCount = 0, .minCellWidth = 320.0F, .minCellHeight = 170.0F};
+    EXPECT_FLOAT_EQ(computeChartGridMinimumHeight(config), 0.0F);
+}
+
+// As many columns as fit the width at the minimum cell width; every row at the minimum height.
+TEST(ChartGridMinimumHeightTest, RowsAtTheWidestFittingColumnCount)
+{
+    // 2 * (320 + 8) = 656 <= 800 < 984: two columns, so eight items take four rows of 170 + 4.
+    const ChartGridConfig config{.availableWidth = 800.0F,
+                                 .itemCount = 8,
+                                 .minCellWidth = 320.0F,
+                                 .minCellHeight = 170.0F,
+                                 .columnOverhead = 8.0F,
+                                 .rowOverhead = 4.0F};
+    EXPECT_FLOAT_EQ(computeChartGridMinimumHeight(config), 4.0F * 174.0F);
+
+    // Narrower than one cell: one column, one row per item.
+    ChartGridConfig narrow = config;
+    narrow.availableWidth = 200.0F;
+    EXPECT_FLOAT_EQ(computeChartGridMinimumHeight(narrow), 8.0F * 174.0F);
+
+    // Wide enough for all of them: one row.
+    ChartGridConfig wide = config;
+    wide.availableWidth = 4000.0F;
+    EXPECT_FLOAT_EQ(computeChartGridMinimumHeight(wide), 174.0F);
+}
+
+// The minimum is exactly the height computeChartGridLayout() can fit the grid into: at it the
+// chosen layout fits, and a little less height cannot.
+TEST(ChartGridMinimumHeightTest, MatchesTheLayoutsFit)
+{
+    for (const float width : {300.0F, 700.0F, 800.0F, 1300.0F, 2500.0F})
+    {
+        for (const std::size_t items : {std::size_t{2}, std::size_t{3}, std::size_t{5}, std::size_t{8}, std::size_t{13}})
+        {
+            ChartGridConfig config{.availableWidth = width,
+                                   .itemCount = items,
+                                   .minCellWidth = 320.0F,
+                                   .minCellHeight = 169.333F,
+                                   .maxCellHeight = 409.333F,
+                                   .columnOverhead = 8.0F,
+                                   .rowOverhead = 4.0F};
+            const float minimum = computeChartGridMinimumHeight(config);
+
+            config.availableHeight = minimum;
+            const auto atMinimum = computeChartGridLayout(config);
+            EXPECT_LE(static_cast<float>(atMinimum.rows) * (atMinimum.cellHeight + config.rowOverhead), minimum * 1.001F)
+                << "width=" << width << " items=" << items;
+
+            config.availableHeight = minimum - 10.0F;
+            const auto below = computeChartGridLayout(config);
+            EXPECT_GT(static_cast<float>(below.rows) * (below.cellHeight + config.rowOverhead), config.availableHeight)
+                << "width=" << width << " items=" << items;
         }
     }
 }

@@ -6,6 +6,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/google/benchmark.git
     GIT_TAG 192ef10025eb2c4cdd392bc502f0c852196baa48  # v1.9.5 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/benchmark-build"  # per-preset build tree (#1308)
 )
 
 # Disable Google Benchmark tests to speed up build
@@ -52,6 +53,7 @@ else()
     set(PLATFORM_BENCH_SOURCES
         # Linux-specific benchmarks
         bench_NetlinkSocketStats.cpp
+        bench_LinuxProcessProbe.cpp
     )
     set(PLATFORM_SRC_UNDER_BENCH
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
@@ -80,6 +82,9 @@ add_executable(TaskSmackBenchmarks
     bench_Numeric.cpp
     bench_Format.cpp
     bench_UI.cpp
+    bench_ChartGeometry.cpp
+    bench_ModelLimits.cpp
+    bench_ProcessDetailsHistory.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
@@ -87,11 +92,18 @@ add_executable(TaskSmackBenchmarks
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    # bench_ChartGeometry.cpp draws the real charts under a headless ImGui/ImPlot context (#1421):
+    # ChartLegend.cpp for the series marker glyphs, and the test binary's Theme stub (a visible colour
+    # scheme, no fonts) in place of Theme.cpp, which needs a renderer to load its fonts.
+    ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
+    ${CMAKE_SOURCE_DIR}/tests/Mocks/ThemeStub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${PLATFORM_SRC_UNDER_BENCH}
 )
 
 target_include_directories(TaskSmackBenchmarks PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/tests  # Mocks/MockProbes.h, Mocks/MockDiskProbe.h (bench_ModelLimits.cpp, #1422)
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${imgui_SOURCE_DIR}/misc/cpp
@@ -101,6 +113,7 @@ target_include_directories(TaskSmackBenchmarks PRIVATE
 target_link_libraries(TaskSmackBenchmarks PRIVATE
     benchmark::benchmark
     spdlog::spdlog_header_only
+    implot_lib  # And imgui_lib through it: bench_ChartGeometry.cpp renders headless frames (#1421)
 )
 tasksmack_apply_linux_toolchain(TaskSmackBenchmarks)
 
@@ -126,6 +139,7 @@ if(WIN32)
         userenv
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 endif()

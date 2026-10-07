@@ -122,9 +122,11 @@ struct ProcessCapabilities {
 ### Data Refresh (Current Architecture)
 - `ProcessesPanel` performs one synchronous seed read, then transfers its probe to `BackgroundSampler` for periodic process enumeration
 - `SystemMetricsPanel` owns a separate `BackgroundSampler` for System, Storage, and GPU models so system work cannot delay process enumeration
-- System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations
+- System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations. Each builds its generation outside any lock a reader takes and swaps it in through `Domain::PublicationSlot` (a short mutex around a `shared_ptr`), so `publication()` never waits for a history copy (#868); their writers are serialised on a writer mutex so versions commit in order (lock order: writer mutex, then the state mutex, then the slot; GPUModel's probe mutex is never held with its writer mutex)
+- `BackgroundSampler` times every samplable and pass (`metrics()`: last/max duration, overruns, backoffs), logs sustained overruns at most every 30 s, and after a pass that overruns its interval waits as long as the pass took (capped at `REFRESH_INTERVAL_MAX_MS`) instead of sampling back to back; the decision is the pure `Domain::nextSampleTime()` (#1416)
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
+- Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`; 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
 
 ### Panel Lifecycle
 ```cpp
@@ -265,7 +267,8 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 - `Platform::Windows` probes touch real hardware/OS state most CI runners don't have (battery,
   GPU, NVML). See CONTRIBUTING.md "Testing Windows platform-probe code that touches real
   hardware/OS APIs": extract pure logic into a `*Math.h` header taking primitives instead of
-  Win32 structs/handles (`WindowsPowerProbeMath.h`, `DXGIGPUProbeMath.h`, etc.), or — when the
+  Win32 structs/handles (`WindowsPowerProbeMath.h`, `DXGIGPUProbeMath.h`, etc.; their tests live in
+  `tests/Platform/WindowsMath/` and build on every platform, so no `windows.h` there), or — when the
   logic needs a real OS handle/function table it can't take as a primitive — use a
   `friend struct FooTestAccessor;` declared in the production class and defined only in the test
   file (`NVMLGPUProbeTestAccessor` in `test_WindowsNVMLGPUProbe.cpp`).
@@ -308,7 +311,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 - ❌ Using `using namespace std` in headers
 - ❌ Ignoring clang-tidy warnings (the Static Analysis workflow on `main` will fail post-merge — run `tools/clang-tidy.sh` / `tools/clang-tidy.ps1` locally before pushing)
 - ❌ Committing without running clang-format
-- ❌ Adding dependencies without `SYSTEM` keyword in FetchContent
+- ❌ Adding dependencies without `SYSTEM` keyword, or without a per-preset `BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build"`, in FetchContent
 - ❌ Violating Rule of 5 (custom destructor without handling copy/move)
 - ❌ Using raw `new`/`delete` instead of smart pointers
 - ❌ Forgetting to initialize member variables (causes `cppcoreguidelines-pro-type-member-init` warnings)
@@ -321,7 +324,7 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 
 - When modifying project structure, scripts, clang configs, or CMake files → update `CONTRIBUTING.md` and this file
 - New folders under project root → consider `.gitignore`, exclude from clang-format/tidy configs
-- New dependencies → use CMake FetchContent with `SYSTEM` keyword, document in `CONTRIBUTING.md`
+- New dependencies → use CMake FetchContent with `SYSTEM` keyword and a per-preset `BINARY_DIR` (#1308), document in `CONTRIBUTING.md`
 - When editing Markdown docs → run `pwsh -File tools/md-link-audit.ps1` and fix any broken internal links
 - **GLAD dependency:** Requires Python 3.14+ with jinja2 at build time for OpenGL loader generation
 - **GPU mock libraries:** Linux GPU probe tests (NVML/ROCm) depend on mock shared libraries built into `build/<preset>/tests/mocks/`. CTest sets `LD_LIBRARY_PATH` automatically; `tools/coverage.sh` exports it for direct binary runs. If you run the test binary directly without `LD_LIBRARY_PATH` set, GPU mock tests skip gracefully via `GTEST_SKIP()`.

@@ -21,10 +21,12 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -72,8 +74,15 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot)
 {}
 
 LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot)
+    : LinuxSystemProbe(std::move(procRoot), std::move(sysClassNetRoot), std::filesystem::path("/sys/devices/system/cpu"))
+{}
+
+LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
+                                   std::filesystem::path sysClassNetRoot,
+                                   std::filesystem::path cpuSysfsRoot)
     : m_ProcRoot(std::move(procRoot)),
       m_SysClassNetRoot(std::move(sysClassNetRoot)),
+      m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_NumCores(checkedPositiveToSizeT(sysconf(_SC_NPROCESSORS_ONLN), 1U))
 {
@@ -136,7 +145,7 @@ SystemCounters LinuxSystemProbe::read()
     readMemoryCounters(counters, m_ProcRoot);
     readUptime(counters, m_ProcRoot);
     readLoadAvg(counters, m_ProcRoot);
-    readCpuFreq(counters);
+    readCpuFreq(counters, m_CpuSysfsRoot);
     readNetworkCounters(counters);
     readStaticInfo(counters);
     return counters;
@@ -386,18 +395,17 @@ void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesyst
     parseDouble(p, end, counters.loadAvg15);
 }
 
-void LinuxSystemProbe::readCpuFreq(SystemCounters& counters)
+void LinuxSystemProbe::readCpuFreq(SystemCounters& counters, const std::filesystem::path& cpuSysfsRoot)
 {
     // Try scaling_cur_freq first; fall back to cpuinfo_cur_freq (both report kHz).
-    static constexpr std::array<const char*, 2> FREQ_PATHS = {
-        "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
-        "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq",
-    };
+    static constexpr std::array<const char*, 2> FREQ_FILES = {"scaling_cur_freq", "cpuinfo_cur_freq"};
+    const std::filesystem::path cpufreqDir = cpuSysfsRoot / "cpu0" / "cpufreq";
 
     std::array<char, 32> buf{};
-    for (const char* path : FREQ_PATHS)
+    for (const char* file : FREQ_FILES)
     {
-        const std::size_t len = readProcFile(path, buf.data(), buf.size());
+        const std::string path = (cpufreqDir / file).string();
+        const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
         if (len == 0)
         {
             continue;
@@ -513,13 +521,26 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
             ifaceCounters.displayName = ifaceName; // Linux: use system name as display name
             ifaceCounters.rxBytes = rxBytes;
             ifaceCounters.txBytes = txBytes;
-            ifaceCounters.isUp = readInterfaceOperState(ifaceName);
+            ifaceCounters.isUp = readInterfaceOperState(m_SysClassNetRoot, ifaceName);
             ifaceCounters.linkSpeedMbps = getInterfaceLinkSpeed(ifaceName, ifaceCounters.isUp);
-            ifaceCounters.isVirtual = isVirtualInterface(m_SysClassNetRoot, ifaceName);
             counters.networkInterfaces.push_back(std::move(ifaceCounters));
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
+    }
+
+    std::vector<std::string> currentInterfaces;
+    currentInterfaces.reserve(counters.networkInterfaces.size());
+    for (const auto& iface : counters.networkInterfaces)
+    {
+        currentInterfaces.push_back(iface.name);
+    }
+    std::vector<std::optional<bool>> isVirtual;
+    const bool interfaceSetChanged = classifyInterfaces(currentInterfaces, isVirtual);
+    for (std::size_t i = 0; i < counters.networkInterfaces.size(); ++i)
+    {
+        counters.networkInterfaces[i].isVirtual = isVirtual[i].value_or(false);
+        counters.networkInterfaces[i].isVirtualKnown = isVirtual[i].has_value();
     }
 
     // The totals count hardware interfaces only: traffic over a bridge, veth, VPN tunnel or VLAN
@@ -540,15 +561,78 @@ void LinuxSystemProbe::readNetworkCounters(SystemCounters& counters)
     counters.netRxBytes = totalRxBytes;
     counters.netTxBytes = totalTxBytes;
 
-    // Clean up cache entries for interfaces that no longer exist
-    // (e.g., USB network adapters unplugged, VMs/containers destroyed)
-    std::vector<std::string> currentInterfaces;
-    currentInterfaces.reserve(counters.networkInterfaces.size());
-    for (const auto& iface : counters.networkInterfaces)
+    // Clean up cache entries for interfaces that no longer exist (e.g., USB network adapters
+    // unplugged, VMs/containers destroyed). Entries are only ever added for listed interfaces, so
+    // there can be stale ones only after the interface set changed.
+    if (interfaceSetChanged)
     {
-        currentInterfaces.push_back(iface.name);
+        cleanupStaleInterfaceCacheEntries(currentInterfaces);
     }
-    cleanupStaleInterfaceCacheEntries(currentInterfaces);
+}
+
+bool LinuxSystemProbe::classifyInterfaces(const std::vector<std::string>& names, std::vector<std::optional<bool>>& isVirtual)
+{
+    isVirtual.assign(names.size(), std::nullopt);
+    std::vector<std::size_t> toLookUp;
+    bool setChanged = false;
+    {
+        const std::scoped_lock lock(m_InterfaceCacheMutex);
+        setChanged = (names != m_ClassifiedInterfaces);
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            const auto cached = setChanged ? m_InterfaceIsVirtual.end() : m_InterfaceIsVirtual.find(names[i]);
+            if (cached != m_InterfaceIsVirtual.end())
+            {
+                isVirtual[i] = cached->second;
+            }
+            else
+            {
+                toLookUp.push_back(i);
+            }
+        }
+    }
+    if (toLookUp.empty() && !setChanged)
+    {
+        return false;
+    }
+
+    // The sysfs lookups run without the lock, like the link-speed reads.
+    for (const std::size_t i : toLookUp)
+    {
+        isVirtual[i] = isVirtualInterface(m_SysClassNetRoot, names[i]);
+    }
+
+    // Build the cache's entries first and commit its key (the interface set) last, so a cache
+    // that says it is valid for a set always holds entries looked up for that set.
+    const std::scoped_lock lock(m_InterfaceCacheMutex);
+    if (setChanged)
+    {
+        std::unordered_map<std::string, bool> rebuilt;
+        rebuilt.reserve(names.size());
+        for (std::size_t i = 0; i < names.size(); ++i)
+        {
+            if (const std::optional<bool> known = isVirtual[i]; known.has_value())
+            {
+                rebuilt.insert_or_assign(names[i], *known);
+            }
+        }
+        // Copy the key before touching either member, then commit both with non-throwing swaps: a
+        // throw while copying can no longer leave the old key paired with the new entries.
+        auto key = names;
+        m_InterfaceIsVirtual.swap(rebuilt);
+        m_ClassifiedInterfaces.swap(key);
+    }
+    else if (names == m_ClassifiedInterfaces) // unless another read() changed the set meanwhile
+    {
+        for (const std::size_t i : toLookUp)
+        {
+            if (const std::optional<bool> known = isVirtual[i]; known.has_value())
+            {
+                m_InterfaceIsVirtual.insert_or_assign(names[i], *known);
+            }
+        }
+    }
+    return setChanged;
 }
 
 void LinuxSystemProbe::cleanupStaleInterfaceCacheEntries(const std::vector<std::string>& currentInterfaces)
@@ -598,7 +682,7 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
     }
     // Lock released - perform potentially blocking sysfs I/O without holding mutex
 
-    const uint64_t newSpeed = readInterfaceLinkSpeedFromSysfs(ifaceName);
+    const uint64_t newSpeed = readInterfaceLinkSpeedFromSysfs(m_SysClassNetRoot, ifaceName);
 
     // Update cache with new value
     // Use insert_or_assign to handle race conditions:
@@ -616,15 +700,14 @@ uint64_t LinuxSystemProbe::getInterfaceLinkSpeed(const std::string& ifaceName, b
     return newSpeed;
 }
 
-uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName)
+uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
 {
-    // Read link speed from /sys/class/net/<iface>/speed (in Mbps).
+    // Read link speed from <sysClassNetRoot>/<iface>/speed (in Mbps).
     // Returns 0 if unavailable (e.g., virtual interfaces, down interfaces).
-    // Build path in a char array to avoid string concatenation heap allocations.
-    std::array<char, 128> pathBuf{};
-    std::snprintf(pathBuf.data(), pathBuf.size(), "/sys/class/net/%s/speed", ifaceName.c_str());
+    // Read only on a cache miss (getInterfaceLinkSpeed), so building the path costs nothing per sample.
+    const std::string path = (sysClassNetRoot / ifaceName / "speed").string();
     std::array<char, 32> buf{};
-    const std::size_t len = readProcFile(pathBuf.data(), buf.data(), buf.size());
+    const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
     if (len == 0)
     {
         return 0;
@@ -642,29 +725,41 @@ uint64_t LinuxSystemProbe::readInterfaceLinkSpeedFromSysfs(const std::string& if
     return static_cast<uint64_t>(speedMbps);
 }
 
-bool LinuxSystemProbe::isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
+std::optional<bool> LinuxSystemProbe::isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
 {
     // A hardware NIC (PCI, USB, SDIO, Hyper-V netvsc, virtio) has a `device` link to its bus device;
     // a software interface doesn't. When the interface can't be found at all (sysfs not mounted, or
-    // it vanished) it counts as hardware, the pre-#1106 behavior.
+    // it vanished) it can't be classified: the caller counts it as hardware, the pre-#1106 behavior,
+    // and the UI falls back to its name (#1260).
+    // Anything that stops the lookup short of an answer -- a permission or I/O error -- is "can't
+    // tell" too, never "virtual": exists() returns false for those as well, so ec is checked.
     std::error_code ec;
     const auto ifaceDir = sysClassNetRoot / ifaceName;
-    if (!std::filesystem::exists(ifaceDir, ec))
+    if (!std::filesystem::exists(ifaceDir, ec) || ec)
     {
-        return false;
+        return std::nullopt;
     }
-    return !std::filesystem::exists(ifaceDir / "device", ec);
+    // The link itself, not its target: a hardware NIC's `device` link counts even if what it points
+    // at can't be resolved.
+    const auto deviceLink = std::filesystem::symlink_status(ifaceDir / "device", ec);
+    if (deviceLink.type() == std::filesystem::file_type::not_found)
+    {
+        return true;
+    }
+    if (ec)
+    {
+        return std::nullopt;
+    }
+    return false;
 }
 
-bool LinuxSystemProbe::readInterfaceOperState(const std::string& ifaceName)
+bool LinuxSystemProbe::readInterfaceOperState(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName)
 {
-    // Read operational state from /sys/class/net/<iface>/operstate.
+    // Read operational state from <sysClassNetRoot>/<iface>/operstate.
     // Returns true only when the content is "up" (with or without trailing newline).
-    // Build path in a char array to avoid string concatenation heap allocations.
-    std::array<char, 128> pathBuf{};
-    std::snprintf(pathBuf.data(), pathBuf.size(), "/sys/class/net/%s/operstate", ifaceName.c_str());
+    const std::string path = (sysClassNetRoot / ifaceName / "operstate").string();
     std::array<char, 16> buf{};
-    const std::size_t len = readProcFile(pathBuf.data(), buf.data(), buf.size());
+    const std::size_t len = readProcFile(path.c_str(), buf.data(), buf.size());
     // "up\n" is 3 bytes; "up" is 2 — anything shorter cannot be "up".
     return (len >= 2 && buf[0] == 'u' && buf[1] == 'p');
 }

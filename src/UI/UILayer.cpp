@@ -6,11 +6,13 @@
 #include "Core/ResizePerfOperation.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
+#include "UI/ChartWidgets.h"
 #include "UI/DpiScale.h"
 #include "UI/FontFileCache.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/MonospaceFontPath.h"
 #include "UI/RenderMetrics.h"
+#include "UI/TabularDigits.h"
 #include "UI/Theme.h"
 
 #include <SDL3/SDL.h>
@@ -29,6 +31,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <ratio>
 #include <span>
 #include <string>
@@ -69,6 +72,35 @@ ImFont* addFontFromFile(UI::FontFileCache& fontFiles,
         dest[length] = '\0';
     }
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data.data(), static_cast<int>(data.size()), sizePixels, &config, glyphRanges);
+}
+
+/// A body font with tabular digits (#1201): a first source that supplies only '0'-'9', each advanced
+/// by the widest digit's width (UI/TabularDigits.h), then the whole font merged after it for every
+/// other glyph. Without a digit width (FreeType couldn't measure the file) it is the plain font.
+/// Like addFontFromFile(), nullptr if the file can't be read.
+ImFont* addBodyFont(UI::FontFileCache& fontFiles, const std::filesystem::path& path, float sizePixels, std::optional<float> digitRatio)
+{
+    const float digitAdvance = digitRatio.has_value() ? UI::tabularDigitAdvancePx(*digitRatio, sizePixels) : 0.0F;
+    if (digitAdvance > 0.0F)
+    {
+        ImFontConfig digitsConfig;
+        digitsConfig.Flags = ImFontFlags_NoLoadError;
+        digitsConfig.GlyphExcludeRanges = UI::NON_DIGIT_GLYPH_RANGES.data();
+        digitsConfig.GlyphMinAdvanceX = digitAdvance;
+        ImFont* font = addFontFromFile(fontFiles, path, sizePixels, &digitsConfig);
+        if (font != nullptr)
+        {
+            ImFontConfig restConfig;
+            restConfig.Flags = ImFontFlags_NoLoadError;
+            restConfig.MergeMode = true;
+            // The same bytes the digits were just read from, so this does not fail where that worked.
+            (void) addFontFromFile(fontFiles, path, sizePixels, &restConfig);
+            return font;
+        }
+    }
+    ImFontConfig config;
+    config.Flags = ImFontFlags_NoLoadError;
+    return addFontFromFile(fontFiles, path, sizePixels, &config);
 }
 
 float measureDisplayScale()
@@ -139,6 +171,14 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
 
     spdlog::info("Pre-baking fonts for all {} size presets with FreeType renderer", FONT_SIZE_COUNT);
 
+    // Inter's widest digit, so every digit can be given its width (#1201). Read from the bytes the
+    // atlas is built from; measured once for all the presets.
+    const std::optional<float> digitRatio = widestDigitAdvanceRatio(fontFiles.get(fontPath));
+    if (!digitRatio.has_value())
+    {
+        spdlog::warn("Could not measure the digits of {}; numbers will use proportional digits", fontPath);
+    }
+
     // Load fonts for all size presets into a single atlas
     for (const auto size : ALL_FONT_SIZES)
     {
@@ -154,9 +194,7 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
                       fontCfg.largePt,
                       fontSizeLarge);
 
-        ImFontConfig regularConfig;
-        regularConfig.Flags |= ImFontFlags_NoLoadError;
-        ImFont* fontRegular = addFontFromFile(fontFiles, fontPath, fontSizeRegular, &regularConfig);
+        ImFont* fontRegular = addBodyFont(fontFiles, fontPath, fontSizeRegular, digitRatio);
         if (fontRegular == nullptr)
         {
             spdlog::warn("Could not load Inter font from {}, using default", fontPath);
@@ -176,9 +214,7 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
             addFontFromFile(fontFiles, iconFontPath, fontSizeRegular, &iconConfig, ICON_RANGES);
         }
 
-        ImFontConfig largeConfig;
-        largeConfig.Flags |= ImFontFlags_NoLoadError;
-        ImFont* fontLarge = addFontFromFile(fontFiles, fontPath, fontSizeLarge, &largeConfig);
+        ImFont* fontLarge = addBodyFont(fontFiles, fontPath, fontSizeLarge, digitRatio);
         if (fontLarge == nullptr)
         {
             ImFontConfig defaultFontConfig;
@@ -381,7 +417,8 @@ void UILayer::onAttach()
         ImGuiIO& imguiIO = ImGui::GetIO();
         imguiIO.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         imguiIO.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        // imguiIO.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable; // Multi-viewport (optional)
+        // ImGuiConfigFlags_ViewportsEnable (multi-viewport) is never set, so there are no platform
+        // windows to style or render.
 
         // Disable ImGui's default INI file - we store layout state in TOML config
         imguiIO.IniFilename = nullptr;
@@ -423,15 +460,6 @@ void UILayer::onAttach()
 
         // Apply default/fallback theme colors (user config will override later)
         Theme::get().applyImGuiStyle();
-
-        // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones
-        // NOTE: This alpha override is required by ImGui for multi-viewport support - not a theme color
-        ImGuiStyle& style = ImGui::GetStyle();
-        if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
-        {
-            style.WindowRounding = 0.0F;
-            style.Colors[ImGuiCol_WindowBg].w = 1.0F; // NOLINT: Required by ImGui viewports
-        }
 
         // Setup Platform/Renderer backends
         SDL_Window* window = Core::Application::get().getWindow().getHandle();
@@ -477,11 +505,6 @@ void UILayer::onDetach()
     ImGui_ImplSDL3_Shutdown();
     ImPlot::DestroyContext();
     ImGui::DestroyContext();
-}
-
-void UILayer::onUpdate([[maybe_unused]] float deltaTime)
-{
-    // No font rebuild needed - fonts are pre-baked at all sizes
 }
 
 void UILayer::onRender()
@@ -585,6 +608,8 @@ void UILayer::beginFrame()
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    // Let frame-keyed chart caches age and free memory even on frames that draw no charts (#1173).
+    UI::Widgets::trimFrameCaches();
 
     // Push the current font - store pointer so endFrame() can pop without a
     // second Theme lookup.
@@ -637,17 +662,6 @@ void UILayer::endFrame()
             drawCalls += cmdList->CmdBuffer.Size;
         }
         RenderMetrics::get().recordFrameDrawData(drawCalls, drawData->CmdListsCount);
-    }
-
-    // Handle multi-viewport
-    const ImGuiIO& imguiIO = ImGui::GetIO();
-    if ((imguiIO.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0)
-    {
-        SDL_Window* backupWindow = SDL_GL_GetCurrentWindow();
-        SDL_GLContext backupContext = SDL_GL_GetCurrentContext();
-        ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
-        SDL_GL_MakeCurrent(backupWindow, backupContext);
     }
 }
 

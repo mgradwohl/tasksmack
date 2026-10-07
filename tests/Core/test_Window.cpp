@@ -1,16 +1,30 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
+#include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace
 {
@@ -77,6 +91,32 @@ namespace Core
 {
 namespace
 {
+
+// Window::setSize() calls SDL_SyncWindow(), but that only waits a bounded time (100ms on X11),
+// and on a real display the resize is asynchronous (#1309): SDL only updates the size
+// getWidth()/getHeight() report when it processes the resulting configure event, which can come
+// later than that under load or under a compositing window manager (WSLg). Pump events until the
+// window reports the expected size or the deadline passes; the caller still asserts the size, so
+// a resize that never lands still fails.
+void waitForWindowSize(const Window& window, int width, int height)
+{
+    constexpr auto RESIZE_TIMEOUT = std::chrono::seconds{5};
+    constexpr auto POLL_INTERVAL = std::chrono::milliseconds{10};
+    const auto deadline = std::chrono::steady_clock::now() + RESIZE_TIMEOUT;
+    while (window.getSize() != std::pair{width, height} && std::chrono::steady_clock::now() < deadline)
+    {
+        SDL_PumpEvents();
+        std::this_thread::sleep_for(POLL_INTERVAL);
+    }
+}
+
+// True when the window's display is smaller than width x height on either axis.
+bool displaySmallerThan(const Window& window, int width, int height)
+{
+    SDL_Rect bounds{};
+    const SDL_DisplayID display = SDL_GetDisplayForWindow(window.getHandle());
+    return display != 0 && SDL_GetDisplayBounds(display, &bounds) && (bounds.w < width || bounds.h < height);
+}
 
 // Fixture that mirrors the Application constructor/destructor SDL lifecycle.
 // SDL_Init(SDL_INIT_VIDEO) must be called before SDL_CreateWindow; without it
@@ -163,10 +203,24 @@ TEST_F(WindowTest, SetSizeClampsToExpectedBounds)
         Window window(WindowSpecification{.Title = "WindowClampTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         window.setSize(0, -10);
+        waitForWindowSize(window, WINDOW_MIN_DIMENSION, WINDOW_MIN_DIMENSION);
         EXPECT_EQ(window.getWidth(), WINDOW_MIN_DIMENSION);
         EXPECT_EQ(window.getHeight(), WINDOW_MIN_DIMENSION);
 
+        const auto sizeBefore = window.getSize();
         window.setSize(20000, 50000);
+        waitForWindowSize(window, WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION);
+        // A window manager may refuse to grow a window past the display: WSLg's (Weston's XWM)
+        // leaves this 200x200 window at 200x200 in roughly a third of runs, even when asked again
+        // and again, while the X server alone (Xvfb in CI, no window manager) always applies it.
+        // That's the environment declining, not the clamp misbehaving -- skip, as
+        // SetAndGetPositionRoundTrip does for a declined move. TASKSMACK_REQUIRE_DISPLAY=1 (CI)
+        // keeps the strict assertion.
+        if (window.getSize() == sizeBefore && sizeBefore != std::pair{WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION} &&
+            displaySmallerThan(window, WINDOW_MAX_DIMENSION, WINDOW_MAX_DIMENSION) && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window manager declined to grow the window past the display; the minimum clamp was verified";
+        }
         EXPECT_EQ(window.getWidth(), WINDOW_MAX_DIMENSION);
         EXPECT_EQ(window.getHeight(), WINDOW_MAX_DIMENSION);
     }
@@ -411,20 +465,39 @@ TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
             SDL_free(displays);
             GTEST_SKIP() << "No display bounds available";
         }
-        const auto [x, y] = window.getPosition();
-        const SDL_Point topLeft{.x = x, .y = y};
-        bool onADisplay = false;
-        for (int i = 0; i < displayCount; ++i)
+        std::vector<SDL_Rect> displayBounds;
+        for (const SDL_DisplayID id : std::span<const SDL_DisplayID>(displays, static_cast<std::size_t>(displayCount)))
         {
             SDL_Rect bounds{};
-            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - SDL returns a C array
-            if (SDL_GetDisplayBounds(displays[i], &bounds) && SDL_PointInRect(&topLeft, &bounds))
+            if (SDL_GetDisplayBounds(id, &bounds))
             {
-                onADisplay = true;
+                displayBounds.push_back(bounds);
             }
         }
         SDL_free(displays);
-        EXPECT_TRUE(onADisplay) << "window top-left at (" << x << ", " << y << ")";
+        const auto onADisplay = [&displayBounds](std::pair<int, int> position)
+        {
+            const SDL_Point topLeft{.x = position.first, .y = position.second};
+            return std::ranges::any_of(displayBounds, [&topLeft](const SDL_Rect& bounds) { return SDL_PointInRect(&topLeft, &bounds); });
+        };
+
+        // On X11 the move is only a request until the window manager answers, and setPosition()
+        // doesn't wait for it (#1363), so the position read straight away can still be the creation
+        // position -- which may itself be on a display, hiding a move that went off-screen. Wait for
+        // every pending request to be applied before checking: SDL_SyncWindow() waits a bounded time
+        // (100ms on X11) and returns false if it timed out, so retry it until it succeeds or the
+        // deadline passes, and fail if it never does.
+        constexpr auto SYNC_TIMEOUT = std::chrono::seconds{5};
+        const auto deadline = std::chrono::steady_clock::now() + SYNC_TIMEOUT;
+        bool synced = SDL_SyncWindow(window.getHandle());
+        while (!synced && std::chrono::steady_clock::now() < deadline)
+        {
+            SDL_PumpEvents();
+            synced = SDL_SyncWindow(window.getHandle());
+        }
+        ASSERT_TRUE(synced) << "the saved-geometry move was not applied within " << SYNC_TIMEOUT.count() << " s";
+        const auto [x, y] = window.getPosition();
+        EXPECT_TRUE(onADisplay({x, y})) << "window top-left at (" << x << ", " << y << ")";
     }
     catch (const std::exception& e)
     {
@@ -435,6 +508,110 @@ TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
         FAIL() << "Window creation failed unexpectedly: " << e.what();
     }
 }
+
+#ifdef _WIN32
+// #1279: the borderless window's subclass procedure turns only Win+Down into a restore. Every other
+// shell minimize of the client-side maximized window -- the taskbar button, here, with no key held --
+// still reaches SDL and minimizes it, and the window comes back maximized, as a native one does.
+TEST_F(WindowTest, ShellMinimizeWithoutWinDownStillMinimizesTheMaximizedWindow)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "ShellMinimizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        // No Win+Down, whatever the real keyboard is doing.
+        window.setShellRestoreKeysReader([] noexcept { return std::pair{false, false}; });
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+        auto* const hwnd = static_cast<HWND>(
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        ASSERT_NE(hwnd, nullptr);
+
+        SendMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+        SDL_PumpEvents();
+
+        EXPECT_TRUE(window.isMinimized());
+        EXPECT_TRUE(window.isMaximized());
+        EXPECT_FALSE(window.restoreForShellMinimize()); // Win+Down is not held
+        EXPECT_TRUE(window.isMinimized());
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #1279: the fix itself. With Win+Down held, the shell's minimize of the client-side maximized
+// window is dropped and the window is restored to its normal rectangle instead, as the first
+// Win+Down restores a native maximized window. The key state is injected: a locked or headless
+// desktop cannot hold real keys.
+TEST_F(WindowTest, ShellMinimizeWithWinDownRestoresTheMaximizedWindow)
+{
+    try
+    {
+        Window window(WindowSpecification{.Title = "ShellRestoreTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setShellRestoreKeysReader([] noexcept { return std::pair{true, true}; });
+        const auto normalGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(normalGeometry.has_value());
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+        auto* const hwnd = static_cast<HWND>(
+            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        ASSERT_NE(hwnd, nullptr);
+
+        SendMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+        SDL_PumpEvents();
+
+        EXPECT_FALSE(window.isMinimized());
+        EXPECT_FALSE(window.isMaximized());
+        EXPECT_EQ(window.getSize(), (std::pair{normal.width, normal.height}));
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+// #1279: a minimize that did not pass through WM_SYSCOMMAND (here SDL_MinimizeWindow(), standing in
+// for one the shell carried out directly) is undone from SDL_EVENT_WINDOW_MINIMIZED: the window is
+// brought back and restored to its normal rectangle.
+TEST_F(WindowTest, MinimizeAlreadyCarriedOutWithWinDownIsUndoneAndRestored)
+{
+    try
+    {
+        Window window(
+            WindowSpecification{.Title = "ShellRestoreFallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        window.setShellRestoreKeysReader([] noexcept { return std::pair{true, true}; });
+        const auto normalGeometry = window.getNormalGeometry();
+        ASSERT_TRUE(normalGeometry.has_value());
+        const WindowGeometry::Rect normal = normalGeometry.value_or(WindowGeometry::Rect{});
+        window.maximize();
+        if (!window.isMaximized())
+        {
+            GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
+        }
+        window.minimize();
+        SDL_PumpEvents();
+        ASSERT_TRUE(window.isMinimized());
+
+        EXPECT_TRUE(window.restoreForShellMinimize());
+
+        EXPECT_FALSE(window.isMinimized());
+        EXPECT_FALSE(window.isMaximized());
+        EXPECT_EQ(window.getSize(), (std::pair{normal.width, normal.height}));
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+#endif // _WIN32: the shell's Win+Down minimize is Windows behaviour (#1279)
 
 TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
 {

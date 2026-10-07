@@ -5,16 +5,21 @@
 // logic into a small header" pattern (as ProcessTreeFlatten.h and ProcessTreeIndent.h do).
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <initializer_list>
+#include <iterator>
+#include <limits>
 #include <ranges>
+#include <span>
 
 namespace UI::Widgets
 {
 
 /// Minimum spans for the non-negative history axes, chosen so an all-zero window renders one
 /// readable decade rather than a sliver around zero.
-inline constexpr double RATE_AXIS_MIN_SPAN_BYTES_PER_SEC = 1024.0; // 1 KB/s
+inline constexpr double RATE_AXIS_MIN_SPAN_BYTES_PER_SEC = 1024.0; // 1 KiB/s
 inline constexpr double RATE_AXIS_MIN_SPAN_BYTES = 1024.0;         // 1 KiB (a size, not a rate)
 inline constexpr double RATE_AXIS_MIN_SPAN_WATTS = 1.0;            // 1 W
 inline constexpr double RATE_AXIS_MIN_SPAN_COUNT = 10.0;           // 10 items
@@ -130,6 +135,102 @@ struct AxisTickRange
     return {.last = clamped * step, .count = static_cast<int>(clamped) + 1};
 }
 
+// ============================================================================
+// The history charts' time axis (#1202): "5m ... 1m ... now" instead of -300 ... 0 seconds
+// ============================================================================
+
+/// Most labels the time axis shows, however wide the chart is.
+inline constexpr int TIME_AXIS_MAX_TICKS = 7;
+
+/// Width of one time-axis label slot, in ems: room for "10m 30s" and the gap after it.
+inline constexpr float TIME_AXIS_LABEL_SLOT_EM = 6.0F;
+
+/// Labels a time axis `plotWidthPx` wide can show without crowding: one per label slot, at least 2
+/// (the oldest sample and now) and at most TIME_AXIS_MAX_TICKS. A non-positive or non-finite width
+/// gets the cap.
+[[nodiscard]] inline int timeAxisMaxTicksForWidth(float plotWidthPx, float emPx) noexcept
+{
+    if (!std::isfinite(plotWidthPx) || plotWidthPx <= 0.0F || !std::isfinite(emPx) || emPx <= 0.0F)
+    {
+        return TIME_AXIS_MAX_TICKS;
+    }
+    const double fit =
+        std::floor(static_cast<double>(plotWidthPx) / (static_cast<double>(TIME_AXIS_LABEL_SLOT_EM) * static_cast<double>(emPx)));
+    return static_cast<int>(std::clamp(fit, 2.0, static_cast<double>(TIME_AXIS_MAX_TICKS)));
+}
+
+/// The smallest round time step, in seconds, that spaces at most `maxTicks` labels (both ends
+/// included) across `spanSeconds`: 1, 2, 5, 10, 15 or 30 seconds, minutes, then hours, so every
+/// tick reads as a whole number of one unit ("30s", "2m", "1h"). 0 for a span that is not positive
+/// and finite.
+[[nodiscard]] inline double niceTimeAxisStep(double spanSeconds, int maxTicks) noexcept
+{
+    if (!std::isfinite(spanSeconds) || spanSeconds <= 0.0)
+    {
+        return 0.0;
+    }
+    static constexpr std::array<double, 18> STEPS = {
+        1.0,
+        2.0,
+        5.0,
+        10.0,
+        15.0,
+        30.0, // seconds
+        60.0,
+        120.0,
+        300.0,
+        600.0,
+        900.0,
+        1800.0, // minutes
+        3600.0,
+        7200.0,
+        10800.0,
+        21600.0,
+        43200.0,
+        86400.0, // hours, then a day
+    };
+    const double raw = spanSeconds / static_cast<double>(std::max(1, maxTicks - 1));
+    constexpr double TOLERANCE = 1e-9;
+    for (const double step : STEPS)
+    {
+        if (step >= raw * (1.0 - TOLERANCE))
+        {
+            return step;
+        }
+    }
+    // Longer than any history TaskSmack keeps: whole days.
+    return std::ceil(raw / STEPS.back()) * STEPS.back();
+}
+
+/// Ticks at the multiples of a step that fall in [xMin, xMax], for ImPlot::SetupAxisTicks.
+struct TimeAxisTicks
+{
+    double first = 0.0; ///< Oldest tick
+    double last = 0.0;  ///< Newest tick
+    int count = 0;      ///< Number of ticks; 0 if there are none
+};
+
+/// The time axis's ticks: every multiple of `step` seconds between `xMin` and `xMax` (seconds
+/// relative to now, so 0 -- "now" -- is a tick whenever it is in view, and the ticks stay put as the
+/// chart scrolls).
+[[nodiscard]] inline TimeAxisTicks timeAxisTicks(double xMin, double xMax, double step) noexcept
+{
+    if (!std::isfinite(xMin) || !std::isfinite(xMax) || xMax <= xMin || !std::isfinite(step) || step <= 0.0)
+    {
+        return {};
+    }
+    constexpr double TOLERANCE = 1e-9;
+    const double first = std::ceil((xMin / step) - TOLERANCE) * step;
+    const double last = std::floor((xMax / step) + TOLERANCE) * step;
+    if (last < first)
+    {
+        return {};
+    }
+    constexpr double MAX_INTERVALS = 1000.0; // Only guards a nonsensical step
+    const double intervals = std::min(std::round((last - first) / step), MAX_INTERVALS);
+    return {.first = first, .last = first + (intervals * step), .count = static_cast<int>(intervals) + 1};
+}
+
 /// Largest finite, non-negative value across the given series. Empty input yields 0.
 ///
 /// Templated over the range rather than fixed to std::span<const float>: the system panels keep
@@ -155,6 +256,87 @@ template<std::ranges::input_range... Rs>
 [[nodiscard]] double maxOfSeries(const Rs&... series) noexcept
 {
     return std::max({maxOfSeries(series)...});
+}
+
+/// Index of the first entry of the ascending time axis @p x at or after @p xMin; x.size() if none is.
+[[nodiscard]] inline std::size_t firstIndexAtOrAfter(std::span<const double> x, double xMin) noexcept
+{
+    return static_cast<std::size_t>(std::ranges::lower_bound(x, xMin) - x.begin());
+}
+
+/// maxOfSeries() over the samples a chart's window shows: those at x >= @p xMin on the time axis
+/// @p x, where @p series is aligned to the tail of @p x (its last value is at x.back(), as with
+/// tailAlignedSpan()). Values with no x, or before xMin, are left out.
+///
+/// History trimming keeps one sample before the window's left edge, so a chart's line runs off that
+/// edge (HistoryUtils::keepTrimAnchor, #1016), and scrolling back leaves older samples off-screen.
+/// Neither is drawn, so neither may set the axis or a peak line: a peak just left of the window kept
+/// a rate axis scaled to it with nothing visible near the top (#1145). The right edge is not checked:
+/// the newest sample can be stamped a moment after the frame's "now", a little right of x = 0.
+template<std::ranges::sized_range R>
+    requires std::ranges::random_access_range<const R>
+[[nodiscard]] double maxOfSeriesSince(std::span<const double> x, double xMin, const R& series) noexcept
+{
+    const std::size_t visible = x.size() - firstIndexAtOrAfter(x, xMin);
+    const auto count = static_cast<std::size_t>(std::ranges::size(series));
+    const std::size_t skip = (count > visible) ? count - visible : 0;
+    return maxOfSeries(std::ranges::subrange(std::ranges::begin(series) + static_cast<std::ptrdiff_t>(skip), std::ranges::end(series)));
+}
+
+/// maxOfSeriesSince() across several series plotted on the same axis, each aligned to the tail of @p x.
+template<std::ranges::sized_range... Rs>
+    requires(sizeof...(Rs) >= 2)
+[[nodiscard]] double maxOfSeriesSince(std::span<const double> x, double xMin, const Rs&... series) noexcept
+{
+    return std::max({maxOfSeriesSince(x, xMin, series)...});
+}
+
+/// A current value a NowBar shows, or NaN -- which withCurrentValues() ignores -- when the bar shows
+/// N/A instead (an unreadable counter, a series the chart does not draw).
+[[nodiscard]] inline double currentIfAvailable(bool available, double value) noexcept
+{
+    return available ? value : std::numeric_limits<double>::quiet_NaN();
+}
+
+/// The target for an axis whose NowBars show smoothed current values: the larger of @p visibleMax
+/// (maxOfSeriesSince()) and every finite @p current value. Non-finite values are ignored, so an
+/// unavailable reading (currentIfAvailable()) does not move the axis.
+///
+/// The axis is sized to the samples in the window (#1145), but a bar's smoothed value can still be
+/// easing down from a peak that has just scrolled out of it, and when a tab resumes the axis restarts
+/// at the lower target. Either way the bar would exceed the axis and normalizeToUnitInterval() would
+/// clamp it to full height, disagreeing with its own value. Folding the bars' values in keeps every
+/// bar on the axis (#1003). An initializer_list, so per-frame callers allocate nothing (#1171).
+[[nodiscard]] inline double withCurrentValues(double visibleMax, std::initializer_list<double> current) noexcept
+{
+    double best = (std::isfinite(visibleMax) && visibleMax > 0.0) ? visibleMax : 0.0;
+    for (const double value : current)
+    {
+        if (std::isfinite(value) && value > best)
+        {
+            best = value;
+        }
+    }
+    return best;
+}
+
+/// One Y upper bound for a grid of small charts meant to be compared side by side (#1299): the
+/// largest of the cells' own eased upper bounds (easedRateAxisUpperBound()), so a busy cell and an
+/// idle one are drawn to the same scale and the idle one's noise is not blown up to fill its cell.
+/// Each cell still eases its own bound, so the shared one eases whenever the largest does.
+/// Non-finite and non-positive bounds are ignored; with none left the result is @p minSpan (a
+/// non-positive or non-finite @p minSpan counts as 1, as in rateAxisUpperBound()).
+[[nodiscard]] inline double sharedAxisUpperBound(std::span<const double> cellUpperBounds, double minSpan) noexcept
+{
+    double best = (std::isfinite(minSpan) && minSpan > 0.0) ? minSpan : 1.0;
+    for (const double bound : cellUpperBounds)
+    {
+        if (std::isfinite(bound) && bound > best)
+        {
+            best = bound;
+        }
+    }
+    return best;
 }
 
 /// Time constants for easing a rate chart's Y upper bound toward rateAxisUpperBound() (#1011).

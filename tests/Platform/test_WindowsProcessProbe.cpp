@@ -1,8 +1,13 @@
 /// @file test_WindowsProcessProbe.cpp
 /// @brief Integration tests for Platform::WindowsProcessProbe
+///
+/// The pure helpers (WindowsProcessProbeMath.h) are tested on every platform in
+/// WindowsMath/test_WindowsProcessProbeMath.cpp; the tests here need the real probe or
+/// Windows types (the MIB_TCPROW conversions in WindowsTcpRows.h).
 
-#include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
 #include "Platform/Windows/WindowsTcpRows.h"
@@ -13,13 +18,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
 #include <string>
 #include <thread>
-#include <utility>
 #include <vector>
 
 // clang-format off
@@ -59,6 +62,8 @@ TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInve
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasPowerUsage);
     EXPECT_FALSE(caps.hasSharedMemory);
+    // SYSTEM_PROCESS_INFORMATION's PageFaultCount is a 32-bit ULONG that wraps (#1184).
+    EXPECT_EQ(caps.pageFaultCountBits, 32U);
 
     for (int sample = 0; sample < 2; ++sample)
     {
@@ -148,6 +153,72 @@ TEST(WindowsProcessProbeTest, NonElevatedNeverClaimsNetworkCounters)
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasNetworkCounters);
     EXPECT_TRUE(caps.hasReducedPrivileges);
+
+    // ...and those 0 B are not readings (#1285): every process's network bytes are unavailable.
+    for (const auto& proc : probe.enumerate())
+    {
+        EXPECT_FALSE(proc.networkCountersAvailable) << proc.name;
+    }
+}
+
+TEST(WindowsProcessProbeTest, NetworkCountersAreUnavailableForEveryProcessExactlyWhenTheyAreOff)
+{
+    // #1285: per-process network bytes are read for every process (EStats on, elevated) or for none;
+    // the per-process flag follows the capability, whichever way this machine and token go.
+    WindowsProcessProbe probe;
+    for (int sample = 0; sample < 3; ++sample)
+    {
+        (void) probe.enumerate();
+        (void) probe.readSocketTraffic(); // may revoke EStats (#1161); the next enumerate() follows
+    }
+    const auto processes = probe.enumerate();
+    const bool hasNetworkCounters = probe.capabilities().hasNetworkCounters;
+    ASSERT_FALSE(processes.empty());
+    for (const auto& proc : processes)
+    {
+        EXPECT_EQ(proc.networkCountersAvailable, hasNetworkCounters) << proc.name << " (PID " << proc.pid << ")";
+    }
+}
+
+TEST(WindowsProcessProbeTest, HandlesAndIoAreReadEvenForProcessesItCannotOpen)
+{
+    // #1285: handle counts and I/O bytes come from the SystemProcessInformation snapshot, which needs
+    // no access to the process, so a process the probe can't open (protected, or another user's
+    // without elevation) still has real readings -- the System process always owns handles.
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+
+    bool sawSystem = false;
+    int unopenableWithHandles = 0;
+    for (const auto& proc : processes)
+    {
+        EXPECT_TRUE(proc.handleCountAvailable) << proc.name;
+        EXPECT_TRUE(proc.ioCountersAvailable) << proc.name;
+        if (proc.pid == 4)
+        {
+            sawSystem = true;
+            EXPECT_GT(proc.handleCount, 0) << "System process";
+        }
+        if (proc.pid <= 4)
+        {
+            continue; // Idle has no handle table; System is checked above
+        }
+        HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(proc.pid));
+        if (hProcess != nullptr)
+        {
+            CloseHandle(hProcess);
+            continue;
+        }
+        // Minimal processes (Secure System, Registry, Memory Compression) really own no handles.
+        if (proc.handleCount > 0)
+        {
+            ++unopenableWithHandles;
+        }
+    }
+    EXPECT_TRUE(sawSystem);
+    // Protected processes (csrss.exe, smss.exe, ...) refuse PROCESS_QUERY_INFORMATION even elevated,
+    // and still report their handles.
+    EXPECT_GT(unopenableWithHandles, 0) << "expected a protected process with a real handle count";
 }
 
 TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
@@ -162,9 +233,16 @@ TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
     }
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasNetworkCounters && caps.hasReducedPrivileges);
+    // Blocked (#1358) is the elevated counterpart of reduced privileges: never with either flag.
+    EXPECT_FALSE(caps.networkCountersBlocked && caps.hasNetworkCounters);
+    EXPECT_FALSE(caps.networkCountersBlocked && caps.hasReducedPrivileges);
     if (isTestProcessElevated())
     {
         EXPECT_FALSE(caps.hasReducedPrivileges);
+    }
+    else
+    {
+        EXPECT_FALSE(caps.networkCountersBlocked) << "non-elevated, a denial is reduced privileges";
     }
 }
 
@@ -356,25 +434,67 @@ TEST(WindowsProcessProbeTest, ThreadCountsArePositive)
     EXPECT_GT(processesWithThreads, 0) << "At least some processes should have thread counts";
 }
 
-TEST(WindowsProcessProbeTest, StateIsValid)
+TEST(WindowsProcessProbeTest, StateComesFromThreadStates)
 {
+    // #1156: every live process used to read "R". The state now comes from the snapshot's thread
+    // states, for every process: the one enumerating runs (R) and the System Idle Process is Idle
+    // (I). Windows never reports Z. How many of the rest wait depends on the host's load, so the
+    // R/S/T mapping itself is tested on fixed tallies (DeriveProcessStateTest).
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
+    ASSERT_FALSE(processes.empty());
 
-    // Valid Windows process states: R (Running), Z (Zombie/exiting), ? (Unknown)
-    const std::string validStates = "RZ?";
-
-    // Most processes should have valid states
-    int processesWithValidState = 0;
+    const std::string validStates = "RSTI?";
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
     for (const auto& proc : processes)
     {
-        const char state = proc.state;
-        if (validStates.find(state) != std::string::npos)
+        EXPECT_NE(validStates.find(proc.state), std::string::npos) << proc.name << " has state '" << proc.state << "'";
+        if (proc.pid == 0)
         {
-            ++processesWithValidState;
+            EXPECT_EQ(proc.state, 'I') << "System Idle Process";
+        }
+        if (proc.pid == ourPid)
+        {
+            EXPECT_EQ(proc.state, 'R') << "this thread was running while it enumerated";
         }
     }
-    EXPECT_GT(processesWithValidState, 0) << "At least some processes should have valid states";
+}
+
+TEST(WindowsProcessProbeTest, OurCommandIsTheCommandLineNotTheImagePath)
+{
+    // #1156: Command was the image path, so filtering by arguments worked only on Linux.
+    WindowsProcessProbe probe;
+    const auto processes = probe.enumerate();
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    ASSERT_NE(it, processes.end());
+    EXPECT_EQ(it->command, WinString::wideToUtf8(GetCommandLineW()));
+}
+
+TEST(WindowsProcessProbeTest, PriorityChangeShowsOnTheNextSample)
+{
+    // #1156: the priority class was read on the heavy TTL (4-15 s), so the badge kept the old class
+    // for seconds after Set Priority. A base-priority change in the snapshot now re-reads it at once.
+    WindowsProcessProbe probe;
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto ourNice = [&probe, ourPid] -> std::optional<std::int32_t>
+    {
+        const auto processes = probe.enumerate();
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        return it != processes.end() ? std::optional<std::int32_t>(it->nice) : std::nullopt;
+    };
+
+    const DWORD originalClass = GetPriorityClass(GetCurrentProcess());
+    ASSERT_NE(originalClass, 0U);
+    const DWORD otherClass = (originalClass == BELOW_NORMAL_PRIORITY_CLASS) ? NORMAL_PRIORITY_CLASS : BELOW_NORMAL_PRIORITY_CLASS;
+
+    EXPECT_EQ(ourNice(), priorityClassToNice(originalClass)); // First sample: cached for a heavy TTL
+    ASSERT_NE(SetPriorityClass(GetCurrentProcess(), otherClass), FALSE);
+    const auto changed = ourNice();
+    const BOOL restored = SetPriorityClass(GetCurrentProcess(), originalClass);
+    EXPECT_EQ(changed, priorityClassToNice(otherClass));
+    ASSERT_NE(restored, FALSE);
+    EXPECT_EQ(ourNice(), priorityClassToNice(originalClass));
 }
 
 // =============================================================================
@@ -759,10 +879,9 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
 
     ASSERT_NE(it, processes.end());
 
-    // The test process can always be opened with PROCESS_QUERY_INFORMATION (it is our own handle),
-    // so the probe must return a value (not nullopt).
-    ASSERT_TRUE(it->gdiObjectCount.has_value())
-        << "GDI count should be readable for our own process (opened with PROCESS_QUERY_INFORMATION)";
+    // The test process can always be opened (it is our own process), so the probe must return a
+    // value (not nullopt).
+    ASSERT_TRUE(it->gdiObjectCount.has_value()) << "GDI count should be readable for our own process";
 
     // Compare the probe result directly against the Win32 API for our own process.
     SetLastError(0);
@@ -777,319 +896,6 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
 
 namespace
 {
-
-// ==========================================================================
-// calculateDetailTTLsFromTotalRAMBytes: pure RAM-tier logic, no OS calls
-// required. This machine's actual RAM only ever exercises one tier via the
-// real GlobalMemoryStatusEx()-backed member function, so these fabricated
-// byte counts are the only way to reach the other four tiers.
-// ==========================================================================
-
-constexpr std::uint64_t GIB = 1024ULL * 1024 * 1024;
-
-TEST(CalculateDetailTTLsFromTotalRAMBytesTest, BelowTwoGibUsesMostAggressiveCaching)
-{
-    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(GIB); // 1 GiB
-    EXPECT_EQ(ttls.light, std::chrono::milliseconds(4000));
-    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(15000));
-}
-
-TEST(CalculateDetailTTLsFromTotalRAMBytesTest, TwoToFourGibUsesConservativeTier)
-{
-    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(2 * GIB);
-    EXPECT_EQ(ttls.light, std::chrono::milliseconds(3000));
-    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(10000));
-}
-
-TEST(CalculateDetailTTLsFromTotalRAMBytesTest, FourToEightGibUsesBalancedTier)
-{
-    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(4 * GIB);
-    EXPECT_EQ(ttls.light, std::chrono::milliseconds(2000));
-    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(8000));
-}
-
-TEST(CalculateDetailTTLsFromTotalRAMBytesTest, EightToSixteenGibUsesModerateTier)
-{
-    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(8 * GIB);
-    EXPECT_EQ(ttls.light, std::chrono::milliseconds(1500));
-    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(6000));
-}
-
-TEST(CalculateDetailTTLsFromTotalRAMBytesTest, SixteenGibAndAboveUsesMostResponsiveTier)
-{
-    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(16 * GIB);
-    EXPECT_EQ(ttls.light, std::chrono::milliseconds(1000));
-    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(4000));
-
-    // Well above the top tier threshold should stay on the same (top) tier.
-    const auto ttlsHuge = calculateDetailTTLsFromTotalRAMBytes(256 * GIB);
-    EXPECT_EQ(ttlsHuge.light, ttls.light);
-    EXPECT_EQ(ttlsHuge.heavy, ttls.heavy);
-}
-
-TEST(CalculateDetailTTLsFromTotalRAMBytesTest, ZeroBytesFallsIntoLowestTier)
-{
-    const auto ttls = calculateDetailTTLsFromTotalRAMBytes(0);
-    EXPECT_EQ(ttls.light, std::chrono::milliseconds(4000));
-    EXPECT_EQ(ttls.heavy, std::chrono::milliseconds(15000));
-}
-
-// ---------------------------------------------------------------------------
-// classifyEStatsRow (#1100): the per-row decision shared by the IPv4 and IPv6 EStats walks
-// ---------------------------------------------------------------------------
-
-TEST(ClassifyEStatsRowTest, SaneEstablishedReadsAreReported)
-{
-    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, 1'000, 2'000), EStatsRowOutcome::Accumulated);
-    // A just-opened connection reads OK with zero bytes; it is still reported, so Domain tracks it
-    // from now on.
-    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, 0, 0), EStatsRowOutcome::Accumulated);
-}
-
-TEST(ClassifyEStatsRowTest, NonEstablishedRowsAreSkipped)
-{
-    constexpr std::uint32_t LISTEN = 2;
-    constexpr std::uint32_t TIME_WAIT = 11;
-
-    EXPECT_EQ(classifyEStatsRow(LISTEN, 0, 100, 100), EStatsRowOutcome::SkippedState);
-    EXPECT_EQ(classifyEStatsRow(TIME_WAIT, 0, 100, 100), EStatsRowOutcome::SkippedState);
-}
-
-TEST(ClassifyEStatsRowTest, FailedReadsAreNotReported)
-{
-    constexpr std::uint32_t ERROR_NOT_FOUND_CODE = 1168;
-    constexpr std::uint32_t ERROR_ACCESS_DENIED_CODE = 5;
-
-    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
-    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED_CODE, 100, 100), EStatsRowOutcome::ReadFailed);
-}
-
-TEST(ClassifyEStatsRowTest, CountersAboveOneTerabyteAreRejected)
-{
-    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1, 0), EStatsRowOutcome::Garbage);
-    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, 0, MAX_SANE_ESTATS_CONNECTION_BYTES + 1), EStatsRowOutcome::Garbage);
-    // Exactly 1 TB is still accepted (the cap is exclusive).
-    EXPECT_EQ(classifyEStatsRow(TCP_STATE_ESTABLISHED, 0, MAX_SANE_ESTATS_CONNECTION_BYTES, 0), EStatsRowOutcome::Accumulated);
-}
-
-TEST(EStatsSampleCountsTest, Ipv4AndIpv6TalliesAdd)
-{
-    EStatsSampleCounts v4{
-        .total = 10,
-        .established = 4,
-        .enabled = 4,
-        .readOk = 3,
-        .saneReads = 2,
-        .readNotFound = 1,
-        .readFailedOther = 0,
-        .accessDenied = 0,
-        .hasData = 2,
-        .garbage = 1,
-    };
-    const EStatsSampleCounts v6{
-        .total = 5,
-        .established = 2,
-        .enabled = 1,
-        .readOk = 2,
-        .saneReads = 2,
-        .readNotFound = 0,
-        .readFailedOther = 1,
-        .accessDenied = 1,
-        .hasData = 1,
-        .garbage = 0,
-    };
-    v4 += v6;
-    EXPECT_EQ(v4.total, 15U);
-    EXPECT_EQ(v4.established, 6U);
-    EXPECT_EQ(v4.enabled, 5U);
-    EXPECT_EQ(v4.readOk, 5U);
-    EXPECT_EQ(v4.saneReads, 4U);
-    EXPECT_EQ(v4.readNotFound, 1U);
-    EXPECT_EQ(v4.readFailedOther, 1U);
-    EXPECT_EQ(v4.accessDenied, 1U);
-    EXPECT_EQ(v4.hasData, 3U);
-    EXPECT_EQ(v4.garbage, 1U);
-}
-
-TEST(RecordEStatsRowTest, TalliesEachOutcome)
-{
-    // The real per-row tally both table walks use (#1161): NOT_FOUND is counted apart from other
-    // read failures, and a garbage read is a successful read but not a sane one.
-    EStatsSampleCounts counts;
-    constexpr std::uint32_t LISTEN = 2;
-    constexpr std::uint64_t TOO_BIG = MAX_SANE_ESTATS_CONNECTION_BYTES + 1;
-
-    (void) recordEStatsRow(counts, LISTEN, std::nullopt, NO_ERROR, 9, 9);             // not counted
-    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 10, 0); // sane, has data
-    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, 0, 0);  // sane, no data
-    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, NO_ERROR, NO_ERROR, TOO_BIG, 0);
-    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, ERROR_NOT_FOUND, ERROR_NOT_FOUND, 0, 0);
-    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, std::nullopt, ERROR_INVALID_PARAMETER, 0, 0);
-    (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, ERROR_ACCESS_DENIED, ERROR_ACCESS_DENIED, 0, 0);
-
-    EXPECT_EQ(counts.established, 6U);
-    EXPECT_EQ(counts.enabled, 3U);
-    EXPECT_EQ(counts.readOk, 3U);
-    EXPECT_EQ(counts.saneReads, 2U);
-    EXPECT_EQ(counts.hasData, 1U);
-    EXPECT_EQ(counts.garbage, 1U);
-    EXPECT_EQ(counts.readNotFound, 1U);
-    EXPECT_EQ(counts.readFailedOther, 1U); // ACCESS_DENIED is tallied as accessDenied, not here
-    EXPECT_EQ(counts.accessDenied, 1U);
-}
-
-// ---------------------------------------------------------------------------
-// classifyEStatsProbe (#1161): does a real sample prove EStats works?
-// ---------------------------------------------------------------------------
-
-/// Replays a per-row (enableStatus, readStatus) error sequence for ESTABLISHED rows into the
-/// tallies the probe's table walks produce, so each test reads as "the OS returned X, Y, Z".
-struct EStatsRowResult
-{
-    DWORD enableStatus = NO_ERROR;
-    DWORD readStatus = NO_ERROR;
-    std::uint64_t bytesOut = 0;
-    std::uint64_t bytesIn = 0;
-};
-
-EStatsSampleCounts tallyEstablishedRows(const std::vector<EStatsRowResult>& rows)
-{
-    EStatsSampleCounts counts;
-    counts.total = rows.size();
-    for (const auto& row : rows)
-    {
-        (void) recordEStatsRow(counts, TCP_STATE_ESTABLISHED, row.enableStatus, row.readStatus, row.bytesOut, row.bytesIn);
-    }
-    return counts;
-}
-
-TEST(ClassifyEStatsProbeTest, AllAccessDeniedIsUnavailable)
-{
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_ACCESS_DENIED},
-        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_ACCESS_DENIED},
-    });
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
-}
-
-TEST(ClassifyEStatsProbeTest, AnyAccessDeniedIsUnavailableEvenIfSomeReadsWork)
-{
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
-        {.enableStatus = ERROR_ACCESS_DENIED, .readStatus = ERROR_NOT_FOUND},
-    });
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
-}
-
-TEST(ClassifyEStatsProbeTest, DummyRowNotFoundThenEveryRealReadFailingIsUnavailable)
-{
-    // The #1161 case: the constructor's dummy-row probe returned ERROR_NOT_FOUND (which the old
-    // detection treated as "available"), then every real established connection's Set/Get
-    // fails without ever saying ACCESS_DENIED. The old code kept hasNetworkCounters = true and
-    // showed 0 B for every process with no lock icon; a real sample now proves it unavailable.
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
-        {.enableStatus = ERROR_INVALID_PARAMETER, .readStatus = ERROR_NOT_FOUND},
-        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_INVALID_PARAMETER},
-    });
-    ASSERT_EQ(counts.accessDenied, 0U);
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
-}
-
-TEST(ClassifyEStatsProbeTest, ZeroEstablishedConnectionsIsUndetermined)
-{
-    // Nothing to read proves nothing either way: keep trying on the next sample rather than
-    // declaring the feature dead on an idle machine.
-    EXPECT_EQ(classifyEStatsProbe(EStatsSampleCounts{}), EStatsProbeResult::Undetermined);
-
-    EStatsSampleCounts onlyListeners;
-    onlyListeners.total = 40; // e.g. all LISTEN / TIME_WAIT rows
-    EXPECT_EQ(classifyEStatsProbe(onlyListeners), EStatsProbeResult::Undetermined);
-}
-
-TEST(ClassifyEStatsProbeTest, SuccessfulReadsAreAvailable)
-{
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
-        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR},
-    });
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
-}
-
-TEST(ClassifyEStatsProbeTest, ReadsWorkingWithoutEnableAreAvailable)
-{
-    // Collection may already have been enabled by another (elevated) process, so a failed
-    // enable with a successful read still proves the counters are real.
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = ERROR_NOT_FOUND, .readStatus = NO_ERROR},
-        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND}, // connection closed mid-walk
-    });
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Available);
-}
-
-TEST(ClassifyEStatsProbeTest, OnlyNotFoundReadsAreUndetermined)
-{
-    // Every snapshotted connection closed before its EStats read: ERROR_NOT_FOUND for all of
-    // them is an ordinary race, not proof the API is unusable. Before this fix one such sample
-    // permanently disabled the network column.
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
-        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
-    });
-    ASSERT_EQ(counts.readNotFound, 2U);
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Undetermined);
-}
-
-TEST(ClassifyEStatsProbeTest, NotFoundSampleThenSuccessfulSampleIsAvailable)
-{
-    const auto raced = tallyEstablishedRows({{.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND}});
-    ASSERT_EQ(classifyEStatsProbe(raced, 0), EStatsProbeResult::Undetermined);
-
-    // The probe counted one inconclusive sample; the next one reads a live connection.
-    const auto next = tallyEstablishedRows({{.enableStatus = NO_ERROR, .readStatus = NO_ERROR, .bytesOut = 512, .bytesIn = 2048}});
-    EXPECT_EQ(classifyEStatsProbe(next, 1), EStatsProbeResult::Available);
-}
-
-TEST(ClassifyEStatsProbeTest, ReadAccessDeniedIsUnavailable)
-{
-    // ACCESS_DENIED from the read alone (enable succeeded or was skipped) is just as conclusive.
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = NO_ERROR, .readStatus = ERROR_ACCESS_DENIED},
-        {.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND},
-    });
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Unavailable);
-}
-
-TEST(ClassifyEStatsProbeTest, GarbageOnlyReadsAreNotAvailable)
-{
-    // A > 1 TB counter is rejected and never reported, so a sample of only garbage reads
-    // proves nothing; it used to count as a successful read and verify EStats with no data.
-    const auto counts = tallyEstablishedRows({
-        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR, .bytesOut = MAX_SANE_ESTATS_CONNECTION_BYTES + 1},
-        {.enableStatus = NO_ERROR, .readStatus = NO_ERROR, .bytesIn = MAX_SANE_ESTATS_CONNECTION_BYTES + 1},
-    });
-    ASSERT_EQ(counts.readOk, 2U);
-    ASSERT_EQ(counts.saneReads, 0U);
-    EXPECT_EQ(classifyEStatsProbe(counts), EStatsProbeResult::Undetermined);
-}
-
-TEST(ClassifyEStatsProbeTest, InconclusiveSamplesInARowBecomeUnavailable)
-{
-    // A race does not repeat on every sample: after MAX_INCONCLUSIVE_ESTATS_SAMPLES consecutive
-    // NOT_FOUND/garbage-only samples the reads plainly never work, so stop claiming the column.
-    const auto notFound = tallyEstablishedRows({{.enableStatus = ERROR_NOT_FOUND, .readStatus = ERROR_NOT_FOUND}});
-    const auto garbage = tallyEstablishedRows({{.readStatus = NO_ERROR, .bytesOut = MAX_SANE_ESTATS_CONNECTION_BYTES + 1}});
-    for (std::size_t prior = 0; prior + 1 < MAX_INCONCLUSIVE_ESTATS_SAMPLES; ++prior)
-    {
-        EXPECT_EQ(classifyEStatsProbe(notFound, prior), EStatsProbeResult::Undetermined) << prior;
-        EXPECT_EQ(classifyEStatsProbe(garbage, prior), EStatsProbeResult::Undetermined) << prior;
-    }
-    EXPECT_EQ(classifyEStatsProbe(notFound, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Unavailable);
-    EXPECT_EQ(classifyEStatsProbe(garbage, MAX_INCONCLUSIVE_ESTATS_SAMPLES - 1), EStatsProbeResult::Unavailable);
-
-    // An idle sample is never inconclusive in that sense, whatever the streak.
-    EXPECT_EQ(classifyEStatsProbe(EStatsSampleCounts{}, MAX_INCONCLUSIVE_ESTATS_SAMPLES), EStatsProbeResult::Undetermined);
-}
 
 // ---------------------------------------------------------------------------
 // toTcpRow / toTcp6Row (#1100): owner-PID table row -> the row EStats identifies a connection by
@@ -1158,91 +964,8 @@ TEST(TcpRowConversionTest, Ipv6StateComesFromTheOwnerRow)
     EXPECT_EQ(toTcp6Row(owner).State, MIB_TCP_STATE_TIME_WAIT);
 }
 
-// ---------------------------------------------------------------------------
-// estatsConnectionKey (#1256): a stable per-connection key for SocketTrafficAccumulator
-// ---------------------------------------------------------------------------
-
-TcpConnectionEndpoints ipv4Endpoints(std::uint8_t localLast, std::uint32_t localPort, std::uint8_t remoteLast, std::uint32_t remotePort)
-{
-    TcpConnectionEndpoints endpoints;
-    endpoints.family = TcpAddressFamily::IPv4;
-    endpoints.localAddr = {192, 168, 1, localLast};
-    endpoints.localPort = localPort;
-    endpoints.remoteAddr = {10, 0, 0, remoteLast};
-    endpoints.remotePort = remotePort;
-    return endpoints;
-}
-
-TEST(EStatsConnectionKeyTest, SameConnectionHasTheSameKey)
-{
-    const auto endpoints = ipv4Endpoints(10, 0xBB01, 20, 0xD2C3);
-    EXPECT_EQ(estatsConnectionKey(endpoints), estatsConnectionKey(endpoints));
-    EXPECT_NE(estatsConnectionKey(endpoints), 0U);
-    EXPECT_NE(estatsConnectionKey(TcpConnectionEndpoints{}), 0U); // 0 is reserved by the accumulator
-}
-
-TEST(EStatsConnectionKeyTest, UndefinedUpperPortBitsDoNotChangeTheKey)
-{
-    // The owner-PID tables leave the upper 16 bits of the port DWORDs undefined.
-    const auto clean = ipv4Endpoints(10, 0x0000BB01U, 20, 0x0000D2C3U);
-    const auto dirty = ipv4Endpoints(10, 0xDEADBB01U, 20, 0x1234D2C3U);
-    EXPECT_EQ(estatsConnectionKey(clean), estatsConnectionKey(dirty));
-}
-
-TEST(EStatsConnectionKeyTest, SwappedEndpointsAreDifferentConnections)
-{
-    // Both ends of a loopback connection are in the table, owned by different processes.
-    auto forward = ipv4Endpoints(1, 0x1111, 1, 0x2222);
-    forward.localAddr = {127, 0, 0, 1};
-    forward.remoteAddr = {127, 0, 0, 1};
-    auto backward = forward;
-    std::swap(backward.localPort, backward.remotePort);
-    EXPECT_NE(estatsConnectionKey(forward), estatsConnectionKey(backward));
-
-    const auto a = ipv4Endpoints(10, 0x1111, 20, 0x2222);
-    TcpConnectionEndpoints b = a;
-    std::swap(b.localAddr, b.remoteAddr);
-    std::swap(b.localPort, b.remotePort);
-    EXPECT_NE(estatsConnectionKey(a), estatsConnectionKey(b));
-}
-
-TEST(EStatsConnectionKeyTest, EachFieldDistinguishesConnections)
-{
-    const auto base = ipv4Endpoints(10, 0xBB01, 20, 0xD2C3);
-    const std::uint64_t baseKey = estatsConnectionKey(base);
-    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(11, 0xBB01, 20, 0xD2C3)), baseKey);
-    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(10, 0xBB02, 20, 0xD2C3)), baseKey);
-    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(10, 0xBB01, 21, 0xD2C3)), baseKey);
-    EXPECT_NE(estatsConnectionKey(ipv4Endpoints(10, 0xBB01, 20, 0xD2C4)), baseKey);
-
-    TcpConnectionEndpoints v6;
-    v6.family = TcpAddressFamily::IPv6;
-    v6.localAddr = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
-    v6.remoteAddr = {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02};
-    v6.localPort = 0x1111;
-    v6.remotePort = 0x2222;
-    v6.localScopeId = 7;
-    v6.remoteScopeId = 7;
-    TcpConnectionEndpoints otherScope = v6;
-    otherScope.remoteScopeId = 8; // the same link-local addresses on another interface
-    EXPECT_NE(estatsConnectionKey(v6), estatsConnectionKey(otherScope));
-}
-
-TEST(EStatsConnectionKeyTest, Ipv4AndIpv6KeysNeverCollide)
-{
-    // The family is the key's top bit, so no IPv4 key can equal an IPv6 one -- not even for the
-    // same address bytes and ports.
-    constexpr std::uint64_t FAMILY_BIT = 1ULL << 63U;
-    for (std::uint8_t last = 0; last < 64; ++last)
-    {
-        const auto v4 = ipv4Endpoints(last, 0x1111, last, 0x2222);
-        TcpConnectionEndpoints v6 = v4;
-        v6.family = TcpAddressFamily::IPv6;
-        EXPECT_EQ(estatsConnectionKey(v4) & FAMILY_BIT, 0U);
-        EXPECT_EQ(estatsConnectionKey(v6) & FAMILY_BIT, FAMILY_BIT);
-    }
-}
-
+// estatsConnectionKey (#1256) from real owner-PID rows; its pure tests are in
+// WindowsMath/test_WindowsProcessProbeMath.cpp.
 TEST(EStatsConnectionKeyTest, OwnerRowsGiveTheSameKeyEveryRead)
 {
     MIB_TCPROW_OWNER_PID owner{};
@@ -1272,158 +995,6 @@ TEST(EStatsConnectionKeyTest, OwnerRowsGiveTheSameKeyEveryRead)
     EXPECT_EQ(endpoints6.localAddr[0], 0x20U);
     EXPECT_EQ(endpoints6.localAddr[15], 0x01U);
     EXPECT_EQ(endpoints6.remoteScopeId, 12U);
-}
-
-// ---------------------------------------------------------------------------
-// EStats walks through Domain::SocketTrafficAccumulator (#1256): a process's network counter is
-// monotonic, whatever its connections do between samples
-// ---------------------------------------------------------------------------
-
-/// Feeds fabricated EStats walks through makeSocketTrafficReading() and the accumulator
-/// ProcessModel uses, as readSocketTraffic() and ProcessModel::refresh() do.
-struct EStatsTrafficHarness
-{
-    static constexpr std::uint32_t PID = 4242;
-    static constexpr std::uint64_t START_TICKS = 1'000;
-    static constexpr std::uint64_t SECOND_NS = 1'000'000'000ULL;
-
-    Domain::SocketTrafficAccumulator accumulator;
-    std::uint64_t nowNs = 0;
-
-    static EStatsConnectionRead good(std::uint64_t key, std::uint64_t received, std::uint64_t sent, std::uint32_t pid = PID)
-    {
-        return {.key = key, .pid = pid, .outcome = EStatsRowOutcome::Accumulated, .bytesReceived = received, .bytesSent = sent};
-    }
-
-    static EStatsConnectionRead failed(std::uint64_t key, EStatsRowOutcome outcome = EStatsRowOutcome::ReadFailed)
-    {
-        return {.key = key, .pid = PID, .outcome = outcome};
-    }
-
-    /// One sample: returns the process's (received, sent) totals.
-    std::pair<std::uint64_t, std::uint64_t>
-    sample(const std::vector<EStatsConnectionRead>& reads, bool complete = true, std::uint64_t startTicks = START_TICKS)
-    {
-        nowNs += SECOND_NS;
-        std::vector<ProcessCounters> processes(1);
-        processes[0].pid = static_cast<std::int32_t>(PID);
-        processes[0].startTimeTicks = startTicks;
-        accumulator.apply(makeSocketTrafficReading(reads, complete, nowNs), processes);
-        return {processes[0].netReceivedBytes, processes[0].netSentBytes};
-    }
-};
-
-TEST(EStatsSocketTrafficTest, ClosingAConnectionDoesNotLowerTheProcessTotal)
-{
-    // The old per-PID sum read 1'000 + 100 = 1'100, then 200 once B closed: a negative delta, and
-    // the process showed 0 B/s however much A moved (#1256).
-    EStatsTrafficHarness h;
-    (void) h.sample({EStatsTrafficHarness::good(1, 100, 10), EStatsTrafficHarness::good(2, 1'000, 100)}); // baseline
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 150, 20), EStatsTrafficHarness::good(2, 1'500, 200)}),
-              std::make_pair(std::uint64_t{550}, std::uint64_t{110}));
-    // B closed; A moved 50 more in each direction.
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 200, 70)}), std::make_pair(std::uint64_t{600}, std::uint64_t{160}));
-    // Every connection closed: the total holds.
-    EXPECT_EQ(h.sample({}), std::make_pair(std::uint64_t{600}, std::uint64_t{160}));
-}
-
-TEST(EStatsSocketTrafficTest, Ipv4AndIpv6ConnectionsOfOneProcessAddUp)
-{
-    // Before #1100 only IPv4 was walked; both families now feed the same reading.
-    TcpConnectionEndpoints v4;
-    v4.localPort = 0x1111;
-    TcpConnectionEndpoints v6 = v4;
-    v6.family = TcpAddressFamily::IPv6;
-    const std::uint64_t key4 = estatsConnectionKey(v4);
-    const std::uint64_t key6 = estatsConnectionKey(v6);
-
-    EStatsTrafficHarness h;
-    (void) h.sample({EStatsTrafficHarness::good(key4, 0, 0), EStatsTrafficHarness::good(key6, 0, 0)});
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(key4, 1'000, 2'000), EStatsTrafficHarness::good(key6, 30'000, 40'000)}),
-              std::make_pair(std::uint64_t{31'000}, std::uint64_t{42'000}));
-}
-
-TEST(EStatsSocketTrafficTest, AFailedRowReadDoesNotSpike)
-{
-    // A connection whose EStats read fails for one sample (or reads garbage) is reported unreadable
-    // and keeps its baseline in Domain. Left out, it would look closed and then new: its 10'000
-    // lifetime bytes would land in one interval.
-    for (const EStatsRowOutcome outcome : {EStatsRowOutcome::ReadFailed, EStatsRowOutcome::Garbage})
-    {
-        EStatsTrafficHarness h;
-        (void) h.sample({EStatsTrafficHarness::good(1, 10'000, 5'000)}); // baseline
-        EXPECT_EQ(h.sample({EStatsTrafficHarness::failed(1, outcome)}), std::make_pair(std::uint64_t{0}, std::uint64_t{0}));
-        EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 10'300, 5'030)}), std::make_pair(std::uint64_t{300}, std::uint64_t{30}));
-    }
-}
-
-TEST(EStatsSocketTrafficTest, AFailedReadIsReportedUnreadable)
-{
-    // The probe keeps no per-connection state (#1256): a failed or garbage read is reported as an
-    // unreadable sample of a connection still in the table, whatever came before it; rows not in
-    // ESTABLISHED are left out.
-    const std::vector<EStatsConnectionRead> reads{
-        EStatsTrafficHarness::good(1, 100, 10),
-        EStatsTrafficHarness::failed(7),
-        EStatsTrafficHarness::failed(8, EStatsRowOutcome::Garbage),
-        {.key = 9, .pid = 1, .outcome = EStatsRowOutcome::SkippedState},
-    };
-    const auto samples = buildSocketTrafficSamples(reads);
-    ASSERT_EQ(samples.size(), 3U);
-    EXPECT_TRUE(samples[0].readable);
-    EXPECT_EQ(samples[0].bytesReceived, 100U);
-    EXPECT_EQ(samples[0].bytesSent, 10U);
-    for (std::size_t i = 1; i < samples.size(); ++i)
-    {
-        EXPECT_FALSE(samples[i].readable);
-        EXPECT_EQ(samples[i].pid, static_cast<std::int32_t>(EStatsTrafficHarness::PID));
-    }
-    EXPECT_EQ(samples[1].key, 7U);
-    EXPECT_EQ(samples[2].key, 8U);
-}
-
-TEST(EStatsSocketTrafficTest, AConnectionFirstReadFailedDoesNotCreditItsLifetimeBytes)
-{
-    // A connection already open when its first read fails: once it reads, its 50'000 lifetime bytes
-    // only set the baseline instead of landing in one interval (#1256).
-    EStatsTrafficHarness h;
-    (void) h.sample({EStatsTrafficHarness::good(1, 0, 0)}); // baseline
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 10, 1), EStatsTrafficHarness::failed(2)}),
-              std::make_pair(std::uint64_t{10}, std::uint64_t{1}));
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 20, 2), EStatsTrafficHarness::good(2, 50'000, 5'000)}),
-              std::make_pair(std::uint64_t{20}, std::uint64_t{2}));
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 20, 2), EStatsTrafficHarness::good(2, 50'400, 5'040)}),
-              std::make_pair(std::uint64_t{420}, std::uint64_t{42}));
-}
-
-TEST(EStatsSocketTrafficTest, ASampleWithAnUnreadableTableIsSkipped)
-{
-    // If the IPv4 or IPv6 table can't be read, its connections are missing from the walk. Reported,
-    // they'd look closed and then new; the sample reports no reading instead, and the next complete
-    // one measures from the last.
-    EStatsTrafficHarness h;
-    (void) h.sample({EStatsTrafficHarness::good(1, 1'000, 100), EStatsTrafficHarness::good(2, 2'000, 200)}); // baseline
-
-    const auto partial = makeSocketTrafficReading({}, false, 123);
-    EXPECT_EQ(partial.sampleTimeNs, 0U);
-    EXPECT_TRUE(partial.sockets.empty());
-
-    // Only connection 1's table was read this sample: skipped, totals held.
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 1'100, 110)}, false), std::make_pair(std::uint64_t{0}, std::uint64_t{0}));
-    // Both back: only the growth since the baseline is credited.
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 1'300, 130), EStatsTrafficHarness::good(2, 2'500, 250)}),
-              std::make_pair(std::uint64_t{800}, std::uint64_t{80}));
-}
-
-TEST(EStatsSocketTrafficTest, AReusedPidStartsFromZero)
-{
-    // A process identified by PID and start time: a new process reusing the PID doesn't inherit
-    // the old one's bytes (SocketTrafficAccumulator).
-    EStatsTrafficHarness h;
-    (void) h.sample({EStatsTrafficHarness::good(1, 0, 0)});
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(1, 500, 50)}), std::make_pair(std::uint64_t{500}, std::uint64_t{50}));
-    constexpr std::uint64_t NEW_START = EStatsTrafficHarness::START_TICKS + 1;
-    EXPECT_EQ(h.sample({EStatsTrafficHarness::good(2, 40, 4)}, true, NEW_START), std::make_pair(std::uint64_t{40}, std::uint64_t{4}));
 }
 
 TEST(WindowsProcessProbeTest, EnumerateLeavesNetworkCountersToTheSocketReading)

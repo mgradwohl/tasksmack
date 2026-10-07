@@ -8,6 +8,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -46,9 +47,11 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
     if (m_DXGIProbe)
     {
         auto gpus = m_DXGIProbe->enumerateGPUs();
+        restartNVMLIfNVIDIAAdaptersChanged(gpus);
         std::vector<GPUInfo> nvmlGPUs;
         GPUCapabilities nvmlCaps{};
         m_DXGIToNVMLMap.clear();
+        m_NVMLAdapterIds.clear();
 
         // If NVML is available, try to match NVIDIA GPUs for enhanced data
         if (m_NVMLProbe && m_NVMLProbe->isAvailable())
@@ -60,6 +63,9 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
             // Map NVIDIA DXGI adapters to NVML devices by name, each NVML device claimed once so
             // identical cards do not all map to the first (#1040).
             m_DXGIToNVMLMap = mapDXGIToNVML(gpus, nvmlGPUs);
+            // NVML's per-process counters name each device by its matched adapter's id (#1317).
+            m_NVMLAdapterIds = nvmlDeviceAdapterIds(gpus, nvmlGPUs, m_DXGIToNVMLMap);
+            m_NVMLProbe->setProcessGpuIds(m_NVMLAdapterIds);
             // The mapping holds enumeration positions; counter reads are reordered to match by id.
             m_NVMLEnumeratedIds.clear();
             for (const auto& nvmlGPU : nvmlGPUs)
@@ -83,7 +89,7 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         // Build DXGI id → LUID map for PDH per-GPU utilization matching.
         // PDH process counters use "GPU_0x{High}_0x{Low}" as their gpuId; DXGI
         // stores the same value in GPUInfo::luidId. We need to look up a counter's
-        // LUID from its index-based gpuId ("GPU0", "GPU1", …) to match PDH data.
+        // LUID from its gpuId (its PCI location, "PCI_01:00.0_10DE:2684", or LUID) to match PDH data.
         // Clear before rebuilding because enumerateGPUs() may be called multiple times
         // (e.g., on device change) and the adapter list can change between calls.
         m_DXGIIdToLuidId.clear();
@@ -106,6 +112,60 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
     return {};
 }
 
+void WindowsGPUProbe::restartNVMLIfNVIDIAAdaptersChanged(const std::vector<GPUInfo>& dxgiGPUs)
+{
+    std::vector<std::string> nvidiaAdapters = nvidiaAdapterFingerprint(dxgiGPUs);
+    const bool changed = m_NVIDIAAdapters.has_value() && *m_NVIDIAAdapters != nvidiaAdapters;
+    m_NVIDIAAdapters = std::move(nvidiaAdapters);
+    const bool restartedForThisChange = m_NVMLRestartedSinceEnumeration;
+    m_NVMLRestartedSinceEnumeration = false;
+    // NVML lists the GPUs present when it started, so a new NVIDIA adapter is only seen by a restart
+    // (which may wake a sleeping dGPU once, as starting it does) (#1294). A driver reset is seen by
+    // both probes in the same rescan: NVML restarts for the lost GPU, and the new LUID changes the
+    // set here. NVML started after the reset already lists the GPUs present, so a second shutdown
+    // and init for the same change would only cost (and possibly wake) once more.
+    if (changed && m_NVMLProbe)
+    {
+        if (restartedForThisChange)
+        {
+            spdlog::debug("WindowsGPUProbe: NVIDIA adapters changed; NVML already restarted for it");
+            return;
+        }
+        spdlog::info("WindowsGPUProbe: NVIDIA adapters changed; restarting NVML");
+        static_cast<void>(m_NVMLProbe->restart());
+    }
+}
+
+bool WindowsGPUProbe::rescanGPUs(GPURescan depth)
+{
+    // Every probe is rescanned, so no short-circuit: one changing doesn't excuse the other. A DXGI
+    // change means the adapter set did; the re-enumeration it asks for restarts NVML too if the
+    // NVIDIA adapters are among the changes (restartNVMLIfNVIDIAAdaptersChanged()).
+    const bool adaptersChanged = m_DXGIProbe && m_DXGIProbe->rescanGPUs(depth);
+    bool nvmlChanged = false;
+    if (m_NVMLProbe)
+    {
+        const std::uint64_t restartsBefore = m_NVMLProbe->restartCount();
+        // NVML installed and an NVIDIA adapter present, but NVML not running -- it failed to start,
+        // or to restart after a lost GPU (a driver mid-reset, say) -- is tried again at the
+        // full-rescan rate. Without an NVIDIA adapter it never could start; one appearing changes
+        // the adapter set, which restarts NVML anyway.
+        const bool hasNVIDIAAdapter = m_NVIDIAAdapters.has_value() && !m_NVIDIAAdapters->empty();
+        if (depth == GPURescan::Full && !m_NVMLProbe->isAvailable() && m_NVMLProbe->isLoaded() && hasNVIDIAAdapter)
+        {
+            nvmlChanged = m_NVMLProbe->restart();
+        }
+        else
+        {
+            nvmlChanged = m_NVMLProbe->rescanGPUs(depth);
+        }
+        // The enumeration this rescan leads to needn't restart NVML again (see
+        // restartNVMLIfNVIDIAAdaptersChanged()).
+        m_NVMLRestartedSinceEnumeration = m_NVMLRestartedSinceEnumeration || m_NVMLProbe->restartCount() != restartsBefore;
+    }
+    return adaptersChanged || nvmlChanged;
+}
+
 std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
 {
     if (!m_DXGIProbe)
@@ -117,17 +177,42 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
     // neither NVML nor PDH reads this sample publishes a gap rather than 0% and 0 B (#1245).
     auto counters = m_DXGIProbe->readGPUCounters();
 
-    // Merge NVML enhancements for NVIDIA GPUs; returns IDs that got NVML utilization, and fills
-    // nvmlMemoryIds with those whose NVML memory read actually succeeded.
+    // Merge NVML sensors for NVIDIA GPUs, filling nvmlMemoryIds with those whose NVML memory read
+    // actually succeeded. Utilization is PDH's for every adapter, NVIDIA included, so it means what
+    // Task Manager's and the per-process figures do; NVML's is taken (and its GPUs returned) only
+    // when PDH can't supply one at all (#1264).
+    const bool pdhAvailable = m_PDHAdapterProbe && m_PDHAdapterProbe->isAvailable();
     std::unordered_set<std::string> nvmlSourcedIds;
     std::unordered_set<std::string> nvmlMemoryIds;
     if (m_NVMLProbe && m_NVMLProbe->isAvailable())
     {
-        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds);
+        // An NVIDIA GPU PDH saw idle last interval isn't queried through NVML, whose queries could
+        // keep a hybrid dGPU from suspending; its previous NVML readings stand (#1265). Without a PDH
+        // reading for it, it is queried as before.
+        const std::unordered_set<std::string> idleDevices =
+            pdhAvailable ? nvmlDevicesToLeaveIdle(m_NVMLAdapterIds, m_LastPDHUtilization, m_NVMLLastRead, std::chrono::steady_clock::now())
+                         : std::unordered_set<std::string>{};
+        m_NVMLProbe->setIdleDevices(idleDevices);
+        nvmlSourcedIds = mergeNVMLEnhancements(counters, nvmlMemoryIds, /*takeUtilization=*/!pdhAvailable, idleDevices);
+        // Their memory in use is PDH's current figure, not the repeated NVML one.
+        excludeIdleNVMLMemory(nvmlMemoryIds, idleDevices, m_NVMLAdapterIds);
     }
 
-    // For GPUs without NVML, merge PDH per-adapter utilization matched to each adapter
+    // PDH per-adapter utilization matched to each adapter
     mergePDHAdapterUtilization(counters, nvmlSourcedIds);
+
+    // With PDH available NVML's utilization is never taken, so every reading here is PDH's.
+    m_LastPDHUtilization.clear();
+    if (pdhAvailable)
+    {
+        for (const auto& counter : counters)
+        {
+            if (counter.utilizationAvailable)
+            {
+                m_LastPDHUtilization[counter.gpuId] = counter.utilizationPercent;
+            }
+        }
+    }
 
     // And their memory in use, from the same collect: adapter-wide, not this process's (#1029).
     if (m_PDHAdapterProbe && m_PDHAdapterProbe->isAvailable())
@@ -139,7 +224,9 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
 }
 
 std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vector<GPUCounters>& dxgiCounters,
-                                                                       std::unordered_set<std::string>& nvmlMemoryIds)
+                                                                       std::unordered_set<std::string>& nvmlMemoryIds,
+                                                                       bool takeUtilization,
+                                                                       const std::unordered_set<std::string>& idleDevices)
 {
     if (!m_NVMLProbe || !m_NVMLProbe->isAvailable())
     {
@@ -149,6 +236,8 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
 
     // Get NVML counters
     auto nvmlCounters = m_NVMLProbe->readGPUCounters();
+    // Only a real read restarts the idle gate's maximum age (#1265).
+    recordNVMLReads(m_NVMLLastRead, nvmlCounters, idleDevices, std::chrono::steady_clock::now());
     if (nvmlCounters.empty())
     {
         spdlog::debug("WindowsGPUProbe::mergeNVMLEnhancements: NVML returned no counters");
@@ -163,23 +252,20 @@ std::unordered_set<std::string> WindowsGPUProbe::mergeNVMLEnhancements(std::vect
     // m_DXGIToNVMLMap holds positions in enumeration order; NVML reads counters in hash order, so
     // put them back in enumeration order by device id first (#1040).
     return mergeNVMLIntoDXGICounters(
-        dxgiCounters, orderNVMLCountersByIds(nvmlCounters, m_NVMLEnumeratedIds), m_DXGIToNVMLMap, &nvmlMemoryIds);
+        dxgiCounters, orderNVMLCountersByIds(nvmlCounters, m_NVMLEnumeratedIds), m_DXGIToNVMLMap, &nvmlMemoryIds, takeUtilization);
 }
 
 void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiCounters,
                                                  const std::unordered_set<std::string>& nvmlSourcedIds)
 {
-    // Skip if no PDH, or if all GPUs already have utilization data from NVML
-    // (0% at idle is a valid NVML reading, not a sentinel).
+    // Skip if no PDH. (nvmlSourcedIds is empty whenever PDH is available, #1264.)
     if (!m_PDHAdapterProbe || !m_PDHAdapterProbe->isAvailable())
     {
         return;
     }
 
-    // Collect on this sampler's own query every sample, even when NVML covers every GPU and the
-    // result is not used: PDH rates are computed between consecutive collects, so a query left
-    // idle would make its first use after an NVML gap a warm-up with no data, and the next one
-    // span however long the gap was.
+    // Collect on this sampler's own query every sample: PDH rates are computed between
+    // consecutive collects.
     static_cast<void>(m_PDHAdapterProbe->readProcessGPUCounters());
     if (allGPUsHaveNVMLUtilization(dxgiCounters, nvmlSourcedIds))
     {
@@ -200,7 +286,7 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 
     // Assign per-GPU utilization by matching each DXGI counter's LUID-based id
     // to the corresponding PDH bucket. m_DXGIIdToLuidId is populated in
-    // enumerateGPUs() and maps "GPU0" → "GPU_0x00000000_0x0000D3A0".
+    // enumerateGPUs() and maps each adapter's id to its LUID ("GPU_0x00000000_0x0000D3A0").
     assignPDHUtilizationToDXGICounters(dxgiCounters,
                                        utilizationByLuid,
                                        m_DXGIIdToLuidId,
@@ -263,6 +349,8 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
 
         caps.hasEngineUtilization = caps.hasEngineUtilization || pdhCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || pdhCaps.hasPerProcessMetrics;
+        // Per-process counters come from PDH alone (readProcessGPUCounters()), so its utilization does too.
+        caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || pdhCaps.hasPerProcessUtilization;
         caps.supportsMultiGPU = caps.supportsMultiGPU || pdhCaps.supportsMultiGPU;
     }
 

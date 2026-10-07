@@ -22,7 +22,7 @@ enum class FontSize : std::uint8_t
     Large,      // 10pt / 12pt
     ExtraLarge, // 12pt / 14pt
     Huge,       // 14pt / 16pt
-    EvenHuger,  // 16pt / 18pt
+    EvenHuger,  // 16pt / 18pt; "Largest" in Settings, still "even-huger" in config.toml
     Count
 };
 
@@ -117,6 +117,11 @@ struct ColorScheme
     ImVec4 successButton;
     ImVec4 successButtonHovered;
     ImVec4 successButtonActive;
+
+    // Danger button colors (Terminate, Kill): actions that end a process
+    ImVec4 dangerButton;
+    ImVec4 dangerButtonHovered;
+    ImVec4 dangerButtonActive;
 
     // Close button colors (title bar ×)
     ImVec4 closeButtonHovered;
@@ -215,7 +220,7 @@ inline constexpr auto FONT_SIZE_PRESETS = std::to_array<FontSizeConfig>({
     {.name = "Large", .regularPt = 10.0F, .largePt = 12.0F},
     {.name = "Extra Large", .regularPt = 12.0F, .largePt = 14.0F},
     {.name = "Huge", .regularPt = 14.0F, .largePt = 16.0F},
-    {.name = "Even Huger", .regularPt = 16.0F, .largePt = 18.0F},
+    {.name = "Largest", .regularPt = 16.0F, .largePt = 18.0F},
 });
 static_assert(FONT_SIZE_PRESETS.size() == FONT_SIZE_COUNT);
 
@@ -258,6 +263,12 @@ static_assert(FONT_SIZE_PRESETS.size() == FONT_SIZE_COUNT);
 class Theme
 {
   public:
+    /// The style's FramePadding at the reference configuration, scaled by styleScale(). Named so a
+    /// scope that overrides it for its own frames -- the panels' tall tabs -- can restore it for the
+    /// content inside (TabContentScope).
+    static constexpr float FRAME_PADDING_X = 4.0F;
+    static constexpr float FRAME_PADDING_Y = 3.0F;
+
     /// Get the singleton instance
     static auto get() -> Theme&;
 

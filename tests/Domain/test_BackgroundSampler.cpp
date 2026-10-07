@@ -12,17 +12,28 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/ISamplable.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/spdlog.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
 
 using namespace std::chrono_literals;
 
@@ -684,4 +695,323 @@ TEST(BackgroundSamplerTest, SamplableDestroyedWhileSamplerRunningDoesNotCrash)
 
     // If we get here without crashing (or a TSan report), the test passes.
     SUCCEED();
+}
+
+// =============================================================================
+// Thread name (#843 measurement kit)
+// =============================================================================
+
+#if !defined(_WIN32)
+namespace
+{
+class ThreadNameRecordingSamplable : public Domain::ISamplable
+{
+  public:
+    void sample() override
+    {
+        std::array<char, 16> buffer{};
+        const bool ok = pthread_getname_np(pthread_self(), buffer.data(), buffer.size()) == 0;
+        const std::scoped_lock lock(m_Mutex);
+        m_Name = ok ? std::string(buffer.data()) : std::string("<error>");
+        m_Sampled = true;
+        m_Cv.notify_all();
+    }
+
+    [[nodiscard]] std::string waitForName()
+    {
+        std::unique_lock lock(m_Mutex);
+        if (!m_Cv.wait_for(lock, 2000ms, [this] { return m_Sampled; }))
+        {
+            ADD_FAILURE() << "Timeout waiting for a sample";
+        }
+        return m_Name;
+    }
+
+  private:
+    std::mutex m_Mutex;
+    std::condition_variable m_Cv;
+    std::string m_Name;
+    bool m_Sampled = false;
+};
+} // namespace
+
+TEST(BackgroundSamplerTest, SamplerThreadCarriesConfiguredName)
+{
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    config.threadName = "ts-test-sampler";
+    Domain::BackgroundSampler sampler(config);
+    const auto samplable = std::make_shared<ThreadNameRecordingSamplable>();
+    sampler.addSamplable(samplable);
+    sampler.start();
+    EXPECT_EQ(samplable->waitForName(), "ts-test-sampler");
+    sampler.stop();
+}
+
+TEST(BackgroundSamplerTest, SamplerThreadDefaultName)
+{
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    Domain::BackgroundSampler sampler(config);
+    const auto samplable = std::make_shared<ThreadNameRecordingSamplable>();
+    sampler.addSamplable(samplable);
+    sampler.start();
+    EXPECT_EQ(samplable->waitForName(), Platform::SAMPLER_THREAD_NAME);
+    sampler.stop();
+}
+#endif
+
+// =============================================================================
+// Scheduling, Overrun Backoff and Metrics (#1416)
+// =============================================================================
+
+namespace
+{
+
+using SteadyClock = std::chrono::steady_clock;
+const SteadyClock::time_point PASS_START = SteadyClock::time_point{} + std::chrono::hours(1);
+
+/// Sleeps for a fixed time in every sample() and records when each one started.
+class SlowSamplable : public Domain::ISamplable
+{
+  public:
+    explicit SlowSamplable(std::chrono::milliseconds duration) : m_Duration(duration)
+    {}
+
+    void sample() override
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Starts.push_back(SteadyClock::now());
+        }
+        m_Cv.notify_all();
+        std::this_thread::sleep_for(m_Duration);
+    }
+
+    [[nodiscard]] std::vector<SteadyClock::time_point> waitForStarts(std::size_t count)
+    {
+        std::unique_lock lock(m_Mutex);
+        if (!m_Cv.wait_for(lock, 5s, [&] { return m_Starts.size() >= count; }))
+        {
+            ADD_FAILURE() << "Timeout waiting for " << count << " samples. Actual: " << m_Starts.size();
+        }
+        return m_Starts;
+    }
+
+  private:
+    std::chrono::milliseconds m_Duration;
+    std::mutex m_Mutex;
+    std::condition_variable m_Cv;
+    std::vector<SteadyClock::time_point> m_Starts;
+};
+
+} // namespace
+
+TEST(BackgroundSamplerScheduleTest, APassThatFitsKeepsTheFixedCadence)
+{
+    EXPECT_EQ(Domain::nextSampleTime(PASS_START, 30ms, 100ms), PASS_START + 100ms);
+    EXPECT_EQ(Domain::nextSampleTime(PASS_START, 0ms, 1000ms), PASS_START + 1000ms);
+}
+
+TEST(BackgroundSamplerScheduleTest, APassTakingExactlyTheIntervalIsNotAnOverrun)
+{
+    EXPECT_EQ(Domain::nextSampleTime(PASS_START, 100ms, 100ms), PASS_START + 100ms);
+}
+
+TEST(BackgroundSamplerScheduleTest, AnOverrunRestsAsLongAsThePassTookBeforeTheNext)
+{
+    // Not straight away (the old start + interval was already past): after the pass ends, wait
+    // as long as it took, so sampling takes at most about half a core.
+    EXPECT_EQ(Domain::nextSampleTime(PASS_START, 300ms, 100ms), PASS_START + 300ms + 300ms);
+    EXPECT_EQ(Domain::nextSampleTime(PASS_START, 1500ms, 1000ms), PASS_START + 1500ms + 1500ms);
+}
+
+TEST(BackgroundSamplerScheduleTest, TheBackoffIsCappedAtTheSlowestSupportedInterval)
+{
+    const auto maxGap = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
+    EXPECT_EQ(Domain::nextSampleTime(PASS_START, 20s, 1000ms), PASS_START + 20s + maxGap);
+    EXPECT_EQ(Domain::nextSampleTime(PASS_START, maxGap + 1ms, 100ms), PASS_START + maxGap + 1ms + maxGap);
+}
+
+TEST(BackgroundSamplerScheduleTest, TheCadenceResumesWithThePassAfterAnOverrun)
+{
+    // The decision is per pass: no state carries over from an overrun.
+    const auto afterOverrun = Domain::nextSampleTime(PASS_START, 400ms, 100ms);
+    EXPECT_EQ(Domain::nextSampleTime(afterOverrun, 20ms, 100ms), afterOverrun + 100ms);
+}
+
+TEST(BackgroundSamplerScheduleTest, TheNextPassNeverStartsBeforeThisOneEnds)
+{
+    for (const auto duration : {0ms, 99ms, 100ms, 101ms, 250ms, 4999ms, 5000ms, 12000ms})
+    {
+        EXPECT_GE(Domain::nextSampleTime(PASS_START, duration, 100ms), PASS_START + duration) << duration.count() << " ms";
+    }
+}
+
+TEST(BackgroundSamplerTest, AnOverrunningSamplerBacksOffInsteadOfSamplingBackToBack)
+{
+    // A 150 ms sample at the 100 ms interval: before #1416 the next pass started the moment one
+    // finished (starts 150 ms apart, a core kept busy). Now each start waits for the previous pass
+    // to end plus as long again: at least 300 ms apart.
+    constexpr auto SAMPLE_TIME = 150ms;
+    Domain::SamplerConfig config;
+    config.interval = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    Domain::BackgroundSampler sampler(config);
+    const auto samplable = std::make_shared<SlowSamplable>(SAMPLE_TIME);
+    sampler.addSamplable(samplable, "slow");
+    sampler.start();
+    const auto starts = samplable->waitForStarts(3);
+    sampler.stop();
+
+    ASSERT_GE(starts.size(), 3U);
+    for (std::size_t i = 1; i < starts.size(); ++i)
+    {
+        EXPECT_GE(starts[i] - starts[i - 1], 2 * SAMPLE_TIME - 5ms) << "between samples " << (i - 1) << " and " << i;
+    }
+
+    const auto metrics = sampler.metrics();
+    EXPECT_GE(metrics.backoffs, 2U);
+    EXPECT_GE(metrics.pass.overruns, 2U);
+    ASSERT_EQ(metrics.samplables.size(), 1U);
+    EXPECT_EQ(metrics.samplables[0].name, "slow");
+    EXPECT_GE(metrics.samplables[0].overruns, 2U);
+    EXPECT_GE(metrics.samplables[0].lastDuration, SAMPLE_TIME);
+}
+
+TEST(BackgroundSamplerTest, MetricsRecordEachSamplablesDurationWithoutOverruns)
+{
+    constexpr auto SAMPLE_TIME = 20ms;
+    Domain::SamplerConfig config;
+    config.interval = 200ms;
+    Domain::BackgroundSampler sampler(config);
+    const auto slow = std::make_shared<SlowSamplable>(SAMPLE_TIME);
+    const auto fast = std::make_shared<MockSamplable>();
+    sampler.addSamplable(slow, "storage");
+    sampler.addSamplable(fast); // unnamed: labelled by position
+    sampler.start();
+    static_cast<void>(slow->waitForStarts(2));
+    fast->waitForSamples(2);
+    ASSERT_TRUE(waitFor([&] { return sampler.metrics().pass.samples >= 2; }));
+    sampler.stop();
+
+    const auto metrics = sampler.metrics();
+    ASSERT_EQ(metrics.samplables.size(), 2U);
+    EXPECT_EQ(metrics.samplables[0].name, "storage");
+    EXPECT_EQ(metrics.samplables[1].name, "samplable 1");
+    EXPECT_GE(metrics.samplables[0].samples, 2U);
+    EXPECT_GE(metrics.samplables[0].lastDuration, SAMPLE_TIME);
+    EXPECT_GE(metrics.samplables[0].maxDuration, metrics.samplables[0].lastDuration);
+    EXPECT_GE(metrics.pass.maxDuration, metrics.samplables[0].maxDuration);
+    EXPECT_EQ(metrics.samplables[0].overruns, 0U);
+    EXPECT_EQ(metrics.pass.overruns, 0U);
+    EXPECT_EQ(metrics.backoffs, 0U);
+}
+
+namespace
+{
+/// Takes SAMPLE_TIME, then throws, every sample.
+class SlowThrowingSamplable : public Domain::ISamplable
+{
+  public:
+    static constexpr auto SAMPLE_TIME = 150ms;
+
+    void sample() override
+    {
+        std::this_thread::sleep_for(SAMPLE_TIME);
+        m_Calls.fetch_add(1);
+        throw std::runtime_error("probe failed");
+    }
+
+    [[nodiscard]] int calls() const
+    {
+        return m_Calls.load();
+    }
+
+  private:
+    std::atomic<int> m_Calls{0};
+};
+} // namespace
+
+TEST(BackgroundSamplerTest, MetricsTimeASampleThatThrows)
+{
+    // A slow model that throws still counts: its duration, sample and overrun are recorded, so the
+    // overrun report names it rather than a quick model that succeeded (#1416 review).
+    Domain::SamplerConfig config;
+    config.interval = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    Domain::BackgroundSampler sampler(config);
+    const auto throwing = std::make_shared<SlowThrowingSamplable>();
+    const auto quick = std::make_shared<MockSamplable>();
+    sampler.addSamplable(throwing, "failing");
+    sampler.addSamplable(quick, "quick");
+    sampler.start();
+    ASSERT_TRUE(waitFor([&] { return sampler.metrics().pass.samples >= 1; }, 5000ms));
+    sampler.stop();
+
+    const auto metrics = sampler.metrics();
+    ASSERT_EQ(metrics.samplables.size(), 2U);
+    const auto& failing = metrics.samplables[0];
+    EXPECT_EQ(failing.name, "failing");
+    EXPECT_GE(failing.samples, 1U);
+    EXPECT_GE(failing.overruns, 1U);
+    EXPECT_GE(failing.lastDuration, SlowThrowingSamplable::SAMPLE_TIME);
+    EXPECT_GE(failing.maxDuration, failing.lastDuration);
+    EXPECT_GE(metrics.samplables[1].samples, 1U); // the sampler carried on past the throw
+    EXPECT_EQ(metrics.samplables[1].overruns, 0U);
+    EXPECT_GE(metrics.backoffs, 1U);
+    EXPECT_GE(throwing->calls(), 1);
+}
+
+TEST(BackgroundSamplerTest, StopAndDestructionSucceedWithTheShutdownSummaryOnOrOff)
+{
+    // stop() runs from the destructor, so its debug summary must never throw: it copies only scalars
+    // under the metrics lock, skips everything when debug logging is off, and guards the formatting
+    // (#1416 review). Exercise both levels, an explicit stop() and a destructor stopping a running
+    // sampler, and check the summary leaves the metrics intact.
+    const auto previousLevel = spdlog::get_level();
+    for (const auto level : {spdlog::level::debug, spdlog::level::warn})
+    {
+        spdlog::set_level(level);
+        const auto samplable = std::make_shared<MockSamplable>();
+        {
+            Domain::SamplerConfig config;
+            config.interval = 100ms;
+            Domain::BackgroundSampler sampler(config);
+            sampler.addSamplable(samplable, "summary");
+            sampler.start();
+            samplable->waitForSamples(1);
+            EXPECT_NO_THROW(sampler.stop());
+            const auto metrics = sampler.metrics();
+            ASSERT_EQ(metrics.samplables.size(), 1U);
+            EXPECT_EQ(metrics.samplables[0].name, "summary");
+            EXPECT_EQ(metrics.samplables[0].samples, static_cast<std::uint64_t>(samplable->getSampleCount()));
+
+            sampler.start(); // left running: the destructor stops it and logs the summary
+            samplable->waitForSamples(samplable->getSampleCount() + 1);
+        }
+        static_assert(std::is_nothrow_destructible_v<Domain::BackgroundSampler>);
+    }
+    spdlog::set_level(previousLevel);
+}
+
+TEST(BackgroundSamplerTest, MetricsStartOverOnRestart)
+{
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    Domain::BackgroundSampler sampler(config);
+    const auto samplable = std::make_shared<MockSamplable>();
+    sampler.addSamplable(samplable);
+    sampler.start();
+    samplable->waitForSamples(2);
+    sampler.stop();
+    const int firstRunSamples = samplable->getSampleCount();
+    ASSERT_EQ(sampler.metrics().samplables.at(0).samples, static_cast<std::uint64_t>(firstRunSamples));
+
+    // After stop() the sampler thread has joined, so the callback count and the metrics are final and
+    // comparable without racing the sampler: the restarted run's metrics count only its own samples.
+    sampler.start();
+    samplable->waitForSamples(firstRunSamples + 1);
+    sampler.stop();
+    const int secondRunSamples = samplable->getSampleCount() - firstRunSamples;
+    ASSERT_GE(secondRunSamples, 1);
+    EXPECT_EQ(sampler.metrics().samplables.at(0).samples, static_cast<std::uint64_t>(secondRunSamples));
 }

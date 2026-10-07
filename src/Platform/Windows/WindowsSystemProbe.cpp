@@ -7,7 +7,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
 // clang-format off
@@ -18,6 +22,7 @@
 #include <windows.h>
 #include <winternl.h>
 #include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
+#include <cfgmgr32.h>    // CM_Locate_DevNodeW: whether an adapter's device is present (#1284)
 // clang-format on
 
 #undef max
@@ -30,6 +35,7 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <cwchar>
 #include <format>
 #include <span>
 #include <type_traits>
@@ -534,19 +540,129 @@ long WindowsSystemProbe::ticksPerSecond() const
 // isCountedNetworkRow() spells the ifType values out to stay <windows.h>-free (#1257).
 static_assert(IF_TYPE_WWAN_GSM == IF_TYPE_WWANPP);
 static_assert(IF_TYPE_WWAN_CDMA == IF_TYPE_WWANPP2);
+// As are isNotPresentNetworkRow()'s and isHardwareNetworkRow()'s (#1284).
+static_assert(NDIS_PHYSICAL_MEDIUM_BLUETOOTH == NdisPhysicalMediumBluetooth);
+static_assert(IF_OPER_STATUS_UP == IfOperStatusUp);
+static_assert(IF_OPER_STATUS_NOT_PRESENT == IfOperStatusNotPresent);
+
+namespace
+{
+// The Network class's per-interface keys: <class>\{interface GUID}\Connection holds PnPInstanceId,
+// the device instance id of the adapter behind the interface (#1284).
+constexpr const wchar_t* NETWORK_CLASS_KEY = L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\";
+constexpr const wchar_t* PNP_INSTANCE_ID_VALUE = L"PnPInstanceId";
+
+[[nodiscard]] std::wstring guidText(const GUID& guid)
+{
+    return std::format(L"{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+                       guid.Data1,
+                       guid.Data2,
+                       guid.Data3,
+                       guid.Data4[0],
+                       guid.Data4[1],
+                       guid.Data4[2],
+                       guid.Data4[3],
+                       guid.Data4[4],
+                       guid.Data4[5],
+                       guid.Data4[6],
+                       guid.Data4[7]);
+}
+
+// The adapter's PnP device instance id from the registry, or empty when the interface has none
+// (Teredo, 6to4) or it cannot be read.
+[[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid)
+{
+    const std::wstring keyPath = std::wstring(NETWORK_CLASS_KEY) + guidText(interfaceGuid) + L"\\Connection";
+    DWORD bytes = 0;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, keyPath.c_str(), PNP_INSTANCE_ID_VALUE, RRF_RT_REG_SZ, nullptr, nullptr, &bytes) !=
+            ERROR_SUCCESS ||
+        bytes < sizeof(wchar_t))
+    {
+        return {};
+    }
+    std::wstring id(bytes / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, keyPath.c_str(), PNP_INSTANCE_ID_VALUE, RRF_RT_REG_SZ, nullptr, id.data(), &bytes) !=
+        ERROR_SUCCESS)
+    {
+        return {};
+    }
+    id.resize(std::wcslen(id.c_str())); // Drop the terminator RegGetValueW wrote
+    return id;
+}
+
+// Whether the device with this instance id is present: CM_LOCATE_DEVNODE_NORMAL finds only a device
+// node that is in the system (started, disabled or failed); a removed device's is not found.
+[[nodiscard]] DevicePresence devicePresence(const std::wstring& deviceInstanceId)
+{
+    if (deviceInstanceId.empty())
+    {
+        return DevicePresence::Unknown;
+    }
+    std::wstring id = deviceInstanceId; // CM_Locate_DevNodeW takes a non-const id
+    DEVINST devNode = 0;
+    switch (CM_Locate_DevNodeW(&devNode, id.data(), CM_LOCATE_DEVNODE_NORMAL))
+    {
+    case CR_SUCCESS:
+        return DevicePresence::Present;
+    case CR_NO_SUCH_DEVNODE:
+        return DevicePresence::Absent;
+    default:
+        return DevicePresence::Unknown;
+    }
+}
+
+// How long an empty device-id read waits before the registry is asked again (#1369 review).
+constexpr std::chrono::seconds ADAPTER_ID_RETRY_INTERVAL{30};
+
+// The adapter's device instance id, from @p cache or the registry. A found id is kept for good (an
+// interface's adapter never changes); an empty read is not taken as final -- the value may not be
+// written yet, or the read failed -- and is retried after ADAPTER_ID_RETRY_INTERVAL, so a phantom
+// adapter first seen too early is still recognised later rather than listed until restart.
+template<typename Cache>
+[[nodiscard]] const std::wstring& adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid)
+{
+    const auto now = std::chrono::steady_clock::now();
+    std::array<std::uint64_t, 2> guidHalves{};
+    static_assert(sizeof(guidHalves) == sizeof(GUID));
+    std::memcpy(guidHalves.data(), &interfaceGuid, sizeof(GUID));
+    auto& entry = cache[interfaceLuid];
+    // Windows can give a freed LUID to a later interface: a different GUID is a different adapter,
+    // whose id is read afresh rather than inherited (#1369 review).
+    if (entry.guidLow != guidHalves[0] || entry.guidHigh != guidHalves[1])
+    {
+        entry = {};
+        entry.guidLow = guidHalves[0];
+        entry.guidHigh = guidHalves[1];
+    }
+    if (entry.id.empty() && now >= entry.retryAt)
+    {
+        entry.id = readAdapterDeviceInstanceId(interfaceGuid);
+        entry.retryAt = now + ADAPTER_ID_RETRY_INTERVAL;
+    }
+    return entry.id;
+}
+} // namespace
 
 void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 {
     // Use GetIfTable2 for 64-bit counters and proper Unicode interface names.
     // GetIfTable2 allocates the buffer internally; we must free it with FreeMibTable.
     // Available since Windows Vista/Server 2008.
-    MIB_IF_TABLE2* table = nullptr;
-    const DWORD status = GetIfTable2(&table);
-    if (status != NO_ERROR || table == nullptr)
+    MIB_IF_TABLE2* rawTable = nullptr;
+    const DWORD status = GetIfTable2(&rawTable);
+    if (status != NO_ERROR || rawTable == nullptr)
     {
         spdlog::warn("GetIfTable2 failed: {}", status);
         return;
     }
+    // Owned from here, so an exception thrown while the rows are read (the device-id cache and
+    // registry lookups allocate) still frees it; the sampler catches and carries on, so a raw
+    // pointer leaked a table on every failed sample (#1369 review).
+    const auto freeTable = [](MIB_IF_TABLE2* t) noexcept
+    {
+        FreeMibTable(t);
+    };
+    const std::unique_ptr<MIB_IF_TABLE2, decltype(freeTable)> table(rawTable, freeTable);
 
     for (ULONG i = 0; i < table->NumEntries; ++i)
     {
@@ -555,6 +671,16 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // Loopback, non-network types and NDIS filter-module rows are not interfaces of their own
         // (#1030); see isCountedNetworkRow().
         if (!isCountedNetworkRow(row.Type, row.InterfaceAndOperStatusFlags.FilterInterface != 0))
+        {
+            continue;
+        }
+        // Adapters removed from the system stay listed; they carry nothing (#1284). A down row's
+        // device is looked up: down alone doesn't mean removed.
+        const DevicePresence presence =
+            needsDevicePresence(row.OperStatus)
+                ? devicePresence(adapterDeviceInstanceId(m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid))
+                : DevicePresence::Unknown;
+        if (isNotPresentNetworkRow(row.OperStatus, presence))
         {
             continue;
         }
@@ -596,8 +722,11 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         // A software interface -- VPN tunnel, Hyper-V/WSL vEthernet, WAN Miniport -- carries traffic
         // that also crosses a hardware adapter, so the Total leaves it out (#1257, see
-        // sumCountedInterfaces()).
-        ifaceCounters.isVirtual = row.InterfaceAndOperStatusFlags.HardwareInterface == 0;
+        // sumCountedInterfaces()). A Bluetooth PAN link is hardware although its flag is clear (#1284).
+        const bool hardware =
+            isHardwareNetworkRow(row.InterfaceAndOperStatusFlags.HardwareInterface != 0, row.Type, row.PhysicalMediumType);
+        ifaceCounters.isVirtual = !hardware;
+        ifaceCounters.isVirtualKnown = true; // Every MIB_IF_ROW2 carries the flag (#1260)
 
         // 64-bit link speeds in bits/sec - convert to Mbps
         // Use transmit speed (receive speed may differ on asymmetric links)
@@ -614,9 +743,6 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
 
         counters.networkInterfaces.push_back(std::move(ifaceCounters));
     }
-
-    // Free the table allocated by GetIfTable2
-    FreeMibTable(table);
 
     // Hardware interfaces only, unless there are none -- as on Linux and in SystemModel (#1257).
     const NetworkTotals totals = sumCountedInterfaces(counters.networkInterfaces);

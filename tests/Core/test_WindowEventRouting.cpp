@@ -54,12 +54,35 @@ TEST(WindowEventRoutingTest, OsMaximizeIsRouted)
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_MAXIMIZED), Action::SystemMaximized);
 }
 
+TEST(WindowEventRoutingTest, OsRestoreIsRouted)
+{
+    // A window-manager or compositor restore must reach Window::handleSystemRestored(); unrouted, the
+    // restore rectangle from before it outlived it, and a later outside maximize saved that stale
+    // rectangle as the normal size instead of the one chosen since (#1250).
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_RESTORED), Action::SystemRestored);
+}
+
+TEST(WindowEventRoutingTest, MinimizeIsRouted)
+{
+    // A minimize must reach Window::restoreForShellMinimize(): Win+Down on the client-side maximized
+    // window minimized it instead of restoring it (#1279).
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_MINIMIZED), Action::Minimized);
+}
+
+TEST(WindowEventRoutingTest, DisplayScaleChangeIsRouted)
+{
+    // An in-place scale change must refresh the normal geometry's scale: otherwise a later outside
+    // maximize paired the normal rectangle with the old scale, and the next launch rescaled the saved
+    // size wrongly (#1250).
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED), Action::DisplayScaleChanged);
+}
+
 TEST(WindowEventRoutingTest, OtherEventsNeedNoRouting)
 {
     EXPECT_EQ(classify(SDL_EVENT_KEY_DOWN), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_MOUSE_MOTION), Action::None);
     EXPECT_EQ(classify(SDL_EVENT_WINDOW_FOCUS_GAINED), Action::None);
-    EXPECT_EQ(classify(SDL_EVENT_WINDOW_RESTORED), Action::None);
+    EXPECT_EQ(classify(SDL_EVENT_WINDOW_HIDDEN), Action::None);
 }
 
 TEST(WindowEventRoutingTest, ExposeAtTheSameSizeIsNotAResize)

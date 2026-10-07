@@ -450,6 +450,153 @@ inline void appendColumnLine(std::string& out, const ColumnLine& column)
     return out;
 }
 
+/// Returns a sanitised `section` in which every column states its display order, filling in the
+/// default (a column's own index) when the section has no "Order=" at all (#1393).
+///
+/// ImGui writes "Order=" only when some column has been moved, and then for every column. When none
+/// has, it writes a "Column" line only for what else differs -- with nothing resized, just the sorted
+/// column. Its loader then reads that section without ImGuiTableFlags_Reorderable and gives every
+/// column the index of its own line as its display order; a column with no line has index -1, so the
+/// one column that does have a line (the sorted one) is moved to the front. Making the default order
+/// explicit gives the loader the order the table was saved in. A section that already has "Order="
+/// is returned as sanitize() leaves it, so a user's own column order is never touched.
+///
+/// The section is returned unfilled if filling it would take it past MAX_STORED_LINES or
+/// MAX_STORED_BYTES, so the result is always something sanitize() accepts on the next launch.
+[[nodiscard]] inline std::string withExplicitOrder(std::string_view section)
+{
+    std::string clean = sanitize(section); // not const: returned by move below
+    if (clean.empty() || clean.contains(" Order="))
+    {
+        return clean;
+    }
+
+    // Every number here has already passed sanitize(): one to three decimal digits.
+    const auto toNumber = [](std::string_view digits)
+    {
+        std::size_t value = 0;
+        for (const char c : digits)
+        {
+            value = (value * 10) + static_cast<std::size_t>(c - '0');
+        }
+        return value;
+    };
+
+    std::string_view remaining = clean;
+    const std::string_view header = Detail::takeLine(remaining);
+    // The header is "[Table][0xHHHHHHHH,N]", so N runs from the comma to the closing bracket.
+    std::string_view countText = header;
+    countText.remove_prefix(header.find(',') + 1);
+    countText.remove_suffix(1);
+    const std::size_t columnCount = toNumber(countText);
+
+    // Columns that already have a line keep it, with their own index as its order; the others get a
+    // line of their own after them. ImGui reads the lines in any order.
+    std::string covered(columnCount, '\0');
+    std::string out;
+    out.reserve(clean.size() + (columnCount * 20));
+    out.append(header);
+    out.push_back('\n');
+    std::size_t lines = 1;
+    while (!remaining.empty())
+    {
+        const std::string_view line = Detail::takeLine(remaining);
+        ++lines;
+        Detail::ColumnLine column;
+        if (!Detail::parseColumnLine(line, column))
+        {
+            out.append(line);
+            out.push_back('\n');
+            continue;
+        }
+        // A line past the column count is ignored by ImGui, so it is left without an order too.
+        if (const std::size_t index = toNumber(column.index); index < columnCount)
+        {
+            column.order = column.index;
+            covered[index] = '\1';
+        }
+        Detail::appendColumnLine(out, column);
+    }
+
+    for (std::size_t index = 0; index < columnCount; ++index)
+    {
+        if (covered[index] != '\0')
+        {
+            continue;
+        }
+        const std::string digits = std::to_string(index);
+        Detail::ColumnLine column;
+        column.index = digits;
+        column.order = digits;
+        Detail::appendColumnLine(out, column);
+        ++lines;
+    }
+
+    if (lines > MAX_STORED_LINES || out.size() > MAX_STORED_BYTES)
+    {
+        return clean;
+    }
+    return out;
+}
+
+/// Returns a sanitised `section` in which column `columnIndex` is `widthPx` wide (#1209): its
+/// "Width=" replaced, or a line added for it if it has none. Used to save the Name column's list-view
+/// width when the app closes in tree view, which widens Name automatically and is not itself saved.
+/// A fixed column's width only; a stretch column's weight is left alone. The section is returned as
+/// sanitize() leaves it if it is empty, the width is not positive, or adding a line would take it past
+/// MAX_STORED_LINES or MAX_STORED_BYTES.
+[[nodiscard]] inline std::string withColumnWidth(std::string_view section, std::size_t columnIndex, int widthPx)
+{
+    std::string clean = sanitize(section); // not const: returned by move below
+    constexpr int MAX_WIDTH = 99999;       // Five digits, as parseColumnLine() accepts
+    if (clean.empty() || widthPx <= 0 || widthPx > MAX_WIDTH)
+    {
+        return clean;
+    }
+    const std::string indexText = std::to_string(columnIndex);
+    const std::string widthText = std::to_string(widthPx);
+
+    std::string out;
+    out.reserve(clean.size() + 32);
+    std::string_view remaining = clean;
+    bool found = false;
+    std::size_t lines = 0;
+    while (!remaining.empty())
+    {
+        const std::string_view line = Detail::takeLine(remaining);
+        ++lines;
+        Detail::ColumnLine column;
+        if (!Detail::parseColumnLine(line, column))
+        {
+            out.append(line);
+            out.push_back('\n');
+            continue;
+        }
+        if (column.index == indexText)
+        {
+            found = true;
+            if (column.weight.empty())
+            {
+                column.width = widthText;
+            }
+        }
+        Detail::appendColumnLine(out, column);
+    }
+    if (!found)
+    {
+        Detail::ColumnLine column;
+        column.index = indexText;
+        column.width = widthText;
+        Detail::appendColumnLine(out, column);
+        ++lines;
+    }
+    if (lines > MAX_STORED_LINES || out.size() > MAX_STORED_BYTES)
+    {
+        return clean;
+    }
+    return out;
+}
+
 /// Pulls the section for one table out of ImGui's full ini text, sanitised.
 ///
 /// @param ini      Text from ImGui::SaveIniSettingsToMemory().

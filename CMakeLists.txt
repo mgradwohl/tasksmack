@@ -102,8 +102,11 @@ set(TASKSMACK_SOURCES
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
+    src/Core/X11WindowManager.cpp
     src/UI/AssetPath.cpp
+    src/UI/ChartLegend.cpp
     src/UI/MonospaceFontPath.cpp
+    src/UI/TabularDigits.cpp
     src/UI/UILayer.cpp
     src/UI/RenderMetrics.cpp
     src/UI/Theme.cpp
@@ -115,10 +118,12 @@ set(TASKSMACK_SOURCES
     src/App/PlatformOpen.cpp
     src/App/SettingsLayer.cpp
     src/App/ShellLayer.cpp
+    src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/UserConfig.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
+    src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/MemorySection.cpp
@@ -130,6 +135,10 @@ set(TASKSMACK_SOURCES
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
+    src/Platform/ThreadName.cpp
+    # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
+    src/Platform/Synthetic/SyntheticProbes.cpp
+    src/Platform/Synthetic/SyntheticWorkload.cpp
 )
 
 # Platform-specific sources
@@ -177,9 +186,11 @@ set(TASKSMACK_HEADERS
     src/Core/Window.h
     src/Core/Layer.h
     src/UI/AssetPath.h
+    src/UI/TabularDigits.h
     src/UI/UILayer.h
     src/UI/RenderMetrics.h
     src/App/ShellLayer.h
+    src/App/SyntheticScenario.h
     src/App/Panels/ProcessesPanel.h
     src/Platform/Factory.h
     src/Platform/IDiskProbe.h
@@ -191,10 +202,14 @@ set(TASKSMACK_HEADERS
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
+    src/Platform/ThreadName.h
+    src/Platform/Synthetic/SyntheticProbes.h
+    src/Platform/Synthetic/SyntheticWorkload.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ISamplable.h
+    src/Domain/PublicationSlot.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h
 )
@@ -366,6 +381,7 @@ if(WIN32)
         ws2_32
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 

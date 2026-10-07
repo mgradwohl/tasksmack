@@ -1,6 +1,9 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessColumnAvailability.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
@@ -9,6 +12,8 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/ProcessTypes.h"
 
 #include <array>
 #include <chrono>
@@ -25,6 +30,11 @@
 
 struct ImFont; // Forward declaration for TextSizeCache
 
+namespace Domain
+{
+class GPUModel;
+} // namespace Domain
+
 namespace App
 {
 
@@ -34,20 +44,47 @@ namespace App
 using ProcessRowFormat::AlignedCellText;
 using ProcessRowFormat::RowFormatCache;
 
-/// Domain::Priority::getPriorityLabel()'s complete fixed set of possible return values, derived
-/// by calling the real function at one representative nice value per threshold bucket instead
-/// of duplicating its label strings here -- a hand-duplicated copy would silently drift (and
-/// make getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain
-/// ever renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
+/// Domain::Priority::getProcessPriorityLabel()'s complete fixed set of possible return values, taken
+/// from Domain rather than duplicated here -- a hand-duplicated copy would silently drift (and make
+/// getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain ever
+/// renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
 /// AlignedCellText: both ProcessesPanel::TextSizeCache (header) and the free helper functions in
 /// ProcessesPanel.cpp's anonymous namespace need to see it, and it must be visible wherever
 /// TextSizeCache::priorityLabelWidths is sized.
-inline constexpr std::array<std::string_view, 5> PRIORITY_LABELS = {
-    Domain::Priority::getPriorityLabel(Domain::Priority::MIN_NICE),               // < HIGH_THRESHOLD           -> "High"
-    Domain::Priority::getPriorityLabel(Domain::Priority::HIGH_THRESHOLD),         // < ABOVE_NORMAL_THRESHOLD   -> "Above Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::NORMAL_NICE),            // < BELOW_NORMAL_THRESHOLD   -> "Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::BELOW_NORMAL_THRESHOLD), // < IDLE_THRESHOLD          -> "Below Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::MAX_NICE),               // >= IDLE_THRESHOLD          -> "Idle"
+inline constexpr auto PRIORITY_LABELS = Domain::Priority::PROCESS_PRIORITY_LABELS;
+
+/// The font-measured widths the Processes table's per-column cell renderers read (#1382): each
+/// decimal-aligned column's unit slot, the widest unit it can show as its cells print it (#1201),
+/// and PRIORITY_LABELS' widths. Measured by ProcessesPanel::TextSizeCache::populate().
+/// Namespace-scope, like PRIORITY_LABELS, so the renderers in ProcessesPanel.cpp's anonymous
+/// namespace can take it.
+struct ProcessCellWidths
+{
+    float unitBytes = 0.0F;       // " MiB", " GiB", etc.
+    float unitBytesPerSec = 0.0F; // " MiB/s", " GiB/s", etc.
+    float unitPower = 0.0F;       // " W", " mW", " µW"
+    float unavailableText = 0.0F; // ProcessRowFormat::UNAVAILABLE_CELL_TEXT, for free-text cells (#1210)
+
+    // Widths for PRIORITY_LABELS (Domain::Priority::getProcessPriorityLabel()'s fixed label set), in the
+    // same order. That column isn't backed by RowFormatCache (it's a live std::string_view lookup,
+    // not a per-row formatted string), so its width can't ride along with RowFormatCache's per-row
+    // AlignedCellText widths -- cached here instead, alongside the other small fixed-string widths.
+    std::array<float, PRIORITY_LABELS.size()> priorityLabels{};
+    float widestPriorityLabel = 0.0F; // The Priority column's default width fits it (#1280)
+
+    /// The cached width of one of Domain::Priority::getProcessPriorityLabel()'s fixed labels. Returns 0
+    /// for any other string (getProcessPriorityLabel never returns anything else).
+    [[nodiscard]] float priorityLabelWidth(std::string_view label) const noexcept
+    {
+        for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
+        {
+            if (PRIORITY_LABELS[i] == label)
+            {
+                return priorityLabels[i];
+            }
+        }
+        return 0.0F; // Unreachable in practice: getProcessPriorityLabel() only returns PRIORITY_LABELS entries.
+    }
 };
 
 /// Panel for displaying and managing the process list.
@@ -114,6 +151,7 @@ class ProcessesPanel : public Panel
     void setColumnSettings(const ProcessColumnSettings& settings)
     {
         m_ColumnSettings = settings;
+        m_ColumnSettings.keepUnhideableColumnsVisible(); // PID and Name cannot be hidden (#1209)
     }
 
     /// Set the refresh interval (applied by onUpdate cadence checks).
@@ -131,25 +169,40 @@ class ProcessesPanel : public Panel
     /// rendered this session (in which case the caller should keep whatever it already has).
     [[nodiscard]] std::string captureTableLayout() const;
 
-    /// Access the underlying process model (non-owning).
-    [[nodiscard]] Domain::ProcessModel* processModel() const
+    /// The process model this panel owns, null before onAttach() and after onDetach(). Other panels
+    /// should keep it as a weak_ptr, so they never outlive it (#1176).
+    [[nodiscard]] std::shared_ptr<Domain::ProcessModel> processModel() const
     {
-        return m_ProcessModel.get();
+        return m_ProcessModel;
     }
 
-    /// Returns true if the process probe reported reduced privileges at startup.
-    /// Convenience accessor so ShellLayer does not need to include Domain/ProcessModel.h.
+    /// Returns true if the process probe reports reduced privileges, as of the latest snapshot
+    /// generation this panel has fetched (#1254). Convenience accessor so ShellLayer does not need to
+    /// include Domain/ProcessModel.h. UI thread; takes no lock once a generation is cached.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
-    /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
+    /// Narrowest the toolbar row (filter, clear button, the paused indicator's icon-only form (#928),
+    /// process count or a row action's result, the Columns button and the List | Tree control) can be
     /// without overlapping, at the current font and style, for the window's content minimum (#1207).
     /// Measured with a worst-case process count so it does not change as processes come and go.
     /// Needs a frame.
     [[nodiscard]] static float measureToolbarMinimumWidth();
 
-    /// What the process probe can report (all false without a model). Fixed for the probe's
-    /// lifetime, so safe to read from the UI thread at any time.
+    /// What the process probe can report (all false without a model), as of the latest snapshot
+    /// generation this panel has fetched: a probe can withdraw a capability after the first sample
+    /// (#1254). UI thread; takes no lock once a generation is cached.
     [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
+
+    /// The GPU model whose probe decides whether per-process GPU usage can be observed (#1210). Set
+    /// by ShellLayer, which shares it with the process model; kept weakly.
+    void setGpuModel(const std::shared_ptr<const Domain::GPUModel>& gpuModel);
+
+    /// Whether per-process GPU usage can be observed on this system: a GPU model is set and its probe
+    /// has not been found to lack per-process metrics (ProcessColumnAvailability::perProcessGpuSupported()).
+    [[nodiscard]] bool hasPerProcessGpuMetrics() const;
+
+    /// What per-process GPU data can be observed: metrics at all, and utilization among them (#1210).
+    [[nodiscard]] ProcessColumnAvailability::GpuSupport gpuSupport() const;
 
   private:
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
@@ -180,6 +233,47 @@ class ProcessesPanel : public Panel
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;
+    // Visibility asked for in the toolbar's Columns menu (#1209), handed to ImGui inside the table on
+    // the same frame; the menu shows it until then.
+    std::optional<ProcessColumnSettings> m_RequestedColumns;
+    bool m_ResetColumnOrderRequested = false; // "Reset columns" also restores the default order
+    bool m_TableHasDefaultOrder = true;       // As of the last frame, for enabling "Reset columns"
+    // The capabilities the columns' defaults were last applied for: when the probe's change, the
+    // columns whose visibility was not chosen follow them (#1210).
+    Platform::ProcessCapabilities m_ColumnDefaultsCapabilities;
+    ProcessColumnAvailability::GpuSupport m_ColumnDefaultsGpuSupport; // gpuSupport() when they were last applied
+    // gpuSupport(), read once a frame for the GPU columns (#1210)
+    ProcessColumnAvailability::GpuSupport m_GpuSupport;
+    std::weak_ptr<const Domain::GPUModel> m_GpuModel;
+    // Whether the table has been drawn with m_ColumnSettings: from then on, a column ImGui shows or
+    // hides differently is the user's toggle in its header menu; before, it is a restored layout.
+    bool m_TableShowsColumnSettings = false;
+
+    // Tree view gives the Name column room (#1209): adjusted once when the view mode changes. The
+    // width it had before, and the width tree view set (0 when it left it alone), so leaving tree
+    // view can restore a width the user did not change in the meantime.
+    bool m_NameWidthSyncPending = false;
+    float m_NameWidthBeforeTree = 0.0F;
+    float m_NameWidthSetForTree = 0.0F;
+
+    // Process actions from the row menu (#1209), confirmed in the same dialog as Process Details'
+    // Actions tab. Created at attach, like that panel's: this panel is part of the composition root.
+    std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
+    Platform::ProcessActionCapabilities m_ActionCapabilities;
+    struct RowAction
+    {
+        Detail::ProcessAction action = Detail::ProcessAction::None;
+        Platform::ProcessTarget target; // PID and start time: a reused PID is refused (#973)
+        std::string processName;
+    } m_RowAction;
+    bool m_ShowRowActionConfirm = false;
+    Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
+    float m_RowActionResultSeconds = 0.0F;
+    // The process the row menu was opened on, copied on the same right-press that selected it: the
+    // table re-sorts every sample, so by the button's release another row can be under the pointer
+    // and the menu would act on a process other than the highlighted one (#1365).
+    std::optional<Domain::ProcessSnapshot> m_RowMenuTarget;
+    unsigned int m_RowMenuPopupId = 0; // ImGuiID of ROW_MENU_POPUP_ID at the panel's ID stack
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;
@@ -205,6 +299,16 @@ class ProcessesPanel : public Panel
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
         std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
+    // The probe's capabilities published with m_CachedRenderSnapshots' generation (#1254).
+    Platform::ProcessCapabilities m_CachedCapabilities;
+    // The GPU support m_CachedRenderSnapshots' GPU fields were read under (#1210), copied with them:
+    // the cells are formatted by it, not by the GPU model's current state (m_GpuSupport), which can
+    // differ while GPU merges are throttled. Column defaults and headers follow m_GpuSupport.
+    Domain::ProcessModel::GpuSupport m_CachedGpuSupport;
+    // Hold Ctrl to freeze the pane (#928): while frozen, adoptNewerSnapshots() keeps the generation
+    // above, so the rows, their values and their order stay put. Evaluated once per frame in
+    // renderContent(); onUpdate() sees the previous frame's state.
+    ProcessDisplayFreeze::Tracker m_DisplayFreeze;
 
     // Per-frame filter cache: filtered indices, running count, and summary string are rebuilt
     // only when the snapshot version or search term changes (O(1) skip in 59/60 frames).
@@ -230,24 +334,15 @@ class ProcessesPanel : public Panel
         // Column header widths (indexed by ProcessColumn enum)
         std::array<float, processColumnCount()> columnHeaderWidths{};
 
-        // Unit string widths for decimal-aligned rendering
-        // (measured from actual rendered unit strings for accurate alignment)
-        float unitPercentWidth = 0.0F;     // "%"
-        float unitBytesWidth = 0.0F;       // " MB", " GB", etc.
-        float unitBytesPerSecWidth = 0.0F; // " MB/s", " GB/s", etc.
-        float unitPowerWidth = 0.0F;       // " W", " mW", etc.
-        float singleDigitWidth = 0.0F;     // "0" for decimal part
+        // The unit slots and priority label widths the table's cell renderers read (#1201, #1382)
+        ProcessCellWidths cells;
 
         // Static label widths
         float treeViewLabelWidth = 0.0F;
         float listViewLabelWidth = 0.0F;
-
-        // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set).
-        // That column isn't backed by RowFormatCache (it's a live std::string_view lookup, not
-        // a per-row formatted string), so its width can't ride along with RowFormatCache's
-        // per-row AlignedCellText widths -- cached here instead, alongside this panel's other
-        // small fixed-string-set widths.
-        std::array<float, PRIORITY_LABELS.size()> priorityLabelWidths{};
+        float columnsLabelWidth = 0.0F;
+        float caretRightWidth = 0.0F; // Tree expanders (#1209)
+        float caretDownWidth = 0.0F;
 
         // Font pointer and font-atlas generation used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
@@ -268,10 +363,6 @@ class ProcessesPanel : public Panel
         {
             return columnHeaderWidths[toIndex(col)];
         }
-
-        /// Get the cached width of one of Domain::Priority::getPriorityLabel()'s fixed labels.
-        /// Returns 0 for any other string (getPriorityLabel never returns anything else).
-        [[nodiscard]] float getPriorityLabelWidth(std::string_view label) const noexcept;
     };
 
     TextSizeCache m_TextSizeCache;
@@ -291,6 +382,15 @@ class ProcessesPanel : public Panel
     /// Ensure text size cache is populated for current font
     void ensureTextSizeCacheValid();
 
+    /// Adopts the model's latest snapshot generation and its capabilities into the render cache if
+    /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180). Does
+    /// nothing while the pane is frozen by a held Ctrl (#928), except to load the first generation.
+    void adoptNewerSnapshots();
+
+    /// Feeds this frame's keyboard and window state to m_DisplayFreeze (#928). Must be called inside
+    /// the window the pane renders into, since it asks ImGui whether that window is hovered/focused.
+    void updateDisplayFreeze();
+
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
 
@@ -303,12 +403,45 @@ class ProcessesPanel : public Panel
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);
 
+    /// The toolbar's Columns menu: a check per column and "Reset columns" (#1209).
+    void renderColumnsMenu();
+
+    /// Hands the Columns menu's requests to ImGui. Inside the table, after its columns are set up and
+    /// before the first row. Returns true when column visibility was changed this frame.
+    bool applyColumnRequests();
+
+    /// Gives the Name column tree view's width, or back the list's, after a view-mode change (#1209).
+    /// Inside the table, after its columns are set up and before the first row.
+    void syncNameWidthForViewMode();
+
+    /// Switches between list and tree view.
+    void setTreeView(bool enabled);
+
+    /// Selects `proc` as a click on its row does, and tells the other panels.
+    void selectProcess(const Domain::ProcessSnapshot& proc);
+
+    /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
+    void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
+
+    /// Asks to run `action` on `proc`, through the confirmation dialog.
+    void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
+
+    /// The confirmation dialog for a row-menu action, and the action once confirmed.
+    void renderRowActionConfirm();
+
     /// Render a single process row
     /// @param proc The process to render.
     /// @param depth Indentation depth in the tree.
     /// @param hasChildren Whether the process has children.
     /// @param isExpanded Whether the children are visible.
     void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded);
+
+    /// The PID cell: the row's selectable (entered even when the column is scrolled out of view, so
+    /// the row stays clickable, #962) and, when `columnVisible`, the right-aligned PID.
+    void renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible);
+
+    /// The Name cell: the tree indent and expand/collapse control in tree view, then the name (#906).
+    void renderNameCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, int depth, bool hasChildren, bool isExpanded);
 };
 
 } // namespace App

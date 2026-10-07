@@ -11,9 +11,12 @@ on:
     - cron: '0 9 * * 0'
   workflow_dispatch:
 
+# Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
+# complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
+# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   LLVM_VERSION: '23'
@@ -51,19 +54,29 @@ jobs:
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         with:
+          # With predicate-quantifier=every a FILE matches a filter only if it matches all of the
+          # filter's patterns, and the filter is true if ANY changed file matches. So each filter
+          # below is "**" minus a set (negated patterns): it is true when some changed file lies
+          # outside that set, and false only when every changed file lies inside it. The filters
+          # used to list the set itself, which made windows_platform true for any PR touching one
+          # Windows platform file -- skipping the Linux build of a PR that also changed shared code
+          # -- and docs_only never true (no file matches all of its patterns).
           predicate-quantifier: every
           filters: |
-            docs_only:
-              - '**/*.md'
-              - 'docs/**'
-              - '.github/ISSUE_TEMPLATE/**'
-              - '.github/pull_request_template.md'
-              - '.github/PULL_REQUEST_TEMPLATE/**'
-              - 'LICENSE'
-            linux_platform:
-              - 'src/Platform/Linux/**'
-            windows_platform:
-              - 'src/Platform/Windows/**'
+            outside_docs:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/pull_request_template.md'
+              - '!.github/PULL_REQUEST_TEMPLATE/**'
+              - '!LICENSE'
+            outside_linux_platform:
+              - '**'
+              - '!src/Platform/Linux/**'
+            outside_windows_platform:
+              - '**'
+              - '!src/Platform/Windows/**'
 
       - name: Normalize outputs
         id: set_output
@@ -76,19 +89,20 @@ jobs:
           # Shared by both the pull_request (non-bot-PR) and merge_group branches below --
           # steps.filter only actually ran (see its own `if:`) for those two event types.
           emit_platform_outputs() {
-            echo "docs_only=${{ steps.filter.outputs.docs_only }}" >> "$GITHUB_OUTPUT"
-            # With predicate-quantifier=every, linux_platform=true only when every changed
-            # file matches the Linux-specific allowlist.
-            if [[ "${{ steps.filter.outputs.linux_platform }}" = 'true' && \
-                  "${{ steps.filter.outputs.windows_platform }}" = 'false' ]]; then
+            # A set's "only" output is true when no changed file lies outside it (see the filter
+            # step). paths-filter reports 'false' for a filter no file matched, and an empty
+            # change set can't occur for a pull request or merge group.
+            if [[ "${{ steps.filter.outputs.outside_docs }}" = 'false' ]]; then
+              echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            fi
+            if [[ "${{ steps.filter.outputs.outside_linux_platform }}" = 'false' ]]; then
               echo "linux_only=true" >> "$GITHUB_OUTPUT"
             else
               echo "linux_only=false" >> "$GITHUB_OUTPUT"
             fi
-            # With predicate-quantifier=every, windows_platform=true only when every changed
-            # file matches the Windows-specific allowlist.
-            if [[ "${{ steps.filter.outputs.windows_platform }}" = 'true' && \
-                  "${{ steps.filter.outputs.linux_platform }}" = 'false' ]]; then
+            if [[ "${{ steps.filter.outputs.outside_windows_platform }}" = 'false' ]]; then
               echo "windows_only=true" >> "$GITHUB_OUTPUT"
             else
               echo "windows_only=false" >> "$GITHUB_OUTPUT"
@@ -130,7 +144,8 @@ jobs:
   # Release differs from Debug in NDEBUG paths, IPO/LTO, hardening flags and -Werror at -O3, so
   # it is built and tested on every event that builds Debug (and on the weekly schedule), not just
   # at release time (#1134). Linux only on PRs: it runs in parallel with the longer Windows debug
-  # and static-analysis jobs, so it adds runner minutes but no wall-clock time.
+  # and static-analysis jobs, so it adds runner minutes but no wall-clock time. It also builds
+  # the benchmark target (build only), the one PR job that does.
   build-linux-release:
     needs: [detect-docs-only]
     if: >-
@@ -143,6 +158,9 @@ jobs:
     with:
       os: ubuntu-24.04
       build_type: release
+      # Also compile and link TaskSmackBenchmarks (no timing run), so a PR that breaks the
+      # benchmark build fails here rather than on main (#1348).
+      build_benchmarks: true
 
   build-windows-debug:
     needs: [detect-docs-only]
@@ -261,6 +279,73 @@ jobs:
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
+          retention-days: 14
+
+  # Blocking clang-tidy for Windows-only code (#1233). The Linux job above can't see
+  # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
+  # without failing anything. Same event rules as static-analysis (push to main is covered by
+  # static-analysis.yml), and also skipped when every change is Linux-only.
+  static-analysis-windows:
+    name: Static Analysis (Windows)
+    needs: [detect-docs-only]
+    if: >-
+      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'push' || github.ref != 'refs/heads/main') &&
+      needs.detect-docs-only.outputs.linux_only != 'true'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      LLVM_ROOT: C:\Program Files\LLVM
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: windows-tidy-llvm${{ env.LLVM_SEMVER_VERSION }}
+          max-size: 500M
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Sources and population stamps only: <dep>-build holds objects compiled with this
+          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+          path: |
+            .cache/fetchcontent/*
+            !.cache/fetchcontent/*-build
+          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+          restore-keys: ${{ runner.os }}-fetchcontent-
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+
+      - name: Build GLAD
+        shell: pwsh
+        run: cmake --build --preset win-debug --target glad_gl_core_33
+
+      - name: Run clang-tidy (Windows)
+        shell: pwsh
+        run: |
+          pwsh -File tools/clang-tidy.ps1 debug 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          exit $LASTEXITCODE
+
+      - name: Upload clang-tidy results (Windows)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: clang-tidy-results-windows
+          path: clang-tidy-windows-output.txt
           retention-days: 14
 
   include-analysis:
@@ -494,6 +579,7 @@ jobs:
       - build-linux-unity
       - docs-hygiene
       - static-analysis
+      - static-analysis-windows
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -513,6 +599,7 @@ jobs:
           LINUX_UNITY_RESULT:     ${{ needs.build-linux-unity.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
           STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
+          STATIC_ANALYSIS_WINDOWS_RESULT: ${{ needs.static-analysis-windows.result }}
         run: |
           failed=false
 
@@ -571,6 +658,13 @@ jobs:
             if [[ "$STATIC_ANALYSIS_RESULT" != 'success' &&
                   ! ("$STATIC_ANALYSIS_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
               echo "❌ Static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_RESULT"
+              failed=true
+            fi
+            # The Windows job is also skipped, intentionally, when every change is Linux-only.
+            if [[ "$STATIC_ANALYSIS_WINDOWS_RESULT" != 'success' &&
+                  ! ("$STATIC_ANALYSIS_WINDOWS_RESULT" == 'skipped' &&
+                     ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
+              echo "❌ Windows static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_WINDOWS_RESULT"
               failed=true
             fi
           fi

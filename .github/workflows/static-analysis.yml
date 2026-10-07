@@ -5,9 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
+# complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
+# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
 concurrency:
-  group: static-analysis-${{ github.ref }}
-  cancel-in-progress: true
+  group: static-analysis-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   LLVM_VERSION: '23'
@@ -70,13 +73,13 @@ jobs:
           path: clang-tidy-output.txt
           retention-days: 14
 
-  # Advisory-only: surfaces Windows-specific findings (src/Platform/Windows/)
-  # without gating merges. Failures appear in the job log and artifact.
+  # Windows-only code (src/Platform/Windows/, the _WIN32 branches of shared files). Blocking,
+  # like the Linux job: ci.yml runs the same job on pull requests and gates CI Success on it
+  # (#1233); this one covers push to main, which ci.yml leaves to this workflow.
   static-analysis-windows:
-    name: Static Analysis (Windows, advisory)
+    name: Static Analysis (Windows)
     runs-on: windows-2025
     timeout-minutes: 45
-    continue-on-error: true
     permissions:
       contents: read
     env:

@@ -143,7 +143,8 @@ template<typename T> [[nodiscard]] T readAt(const RsmiFrequenciesBuffer& buffer,
 // anonymous-namespace rsmi_status_t/RSMI_STATUS_SUCCESS definitions.
 inline constexpr std::uint32_t kRsmiStatusSuccess = 0;
 
-using StatusStringFn = const char* (*) (std::uint32_t);
+// Trailing-return spelling: clang-format 22 and 23 disagree on the space in `const char* (*)(...)` (#916).
+using StatusStringFn = auto (*)(std::uint32_t) -> const char*;
 using DeviceIdLookupFn = std::uint32_t (*)(std::uint32_t, std::uint64_t*);
 
 /// Resolves a ROCm SMI status code to a human-readable string via the (possibly unresolved)
@@ -199,5 +200,7 @@ using DeviceIdLookupFn = std::uint32_t (*)(std::uint32_t, std::uint64_t*);
                                     static_cast<std::uint32_t>((bdfId >> DEVICE_SHIFT) & DEVICE_MASK),
                                     static_cast<std::uint32_t>(bdfId & FUNCTION_MASK));
 }
+
+// The APU classification (isAmdApu and its tables) lives in AmdApu.h, shared with DRMGPUProbe (#1344).
 
 } // namespace Platform::ROCmGPUProbeMath

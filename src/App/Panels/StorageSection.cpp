@@ -5,9 +5,11 @@
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
+#include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -46,14 +48,27 @@ using UI::Widgets::makeTimeAxisConfig;
 using UI::Widgets::normalizeToUnitInterval;
 using UI::Widgets::NowBar;
 using UI::Widgets::NowBarValues;
-using UI::Widgets::plotLineWithFill;
+using UI::Widgets::plotSeries;
 using UI::Widgets::renderChartGrid;
 using UI::Widgets::renderHistoryWithNowBars;
+using UI::Widgets::SeriesRole;
+using UI::Widgets::seriesStyle;
+using UI::Widgets::sharedAxisUpperBound;
 using UI::Widgets::tailAlignedSpan;
+
+/// One disk cell's data for a frame, gathered before the grid draws (#1299).
+struct DiskCellFrame
+{
+    std::span<const double> times;
+    std::span<const double> readData;
+    std::span<const double> writeData;
+    double currentRead = std::numeric_limits<double>::quiet_NaN();
+    double currentWrite = std::numeric_limits<double>::quiet_NaN();
+};
 
 constexpr size_t STORAGE_NOW_BAR_COLUMNS = 2; // Read, Write
 
-// One label per series, shared by its legend entry, tooltip row and NowBar (#1008).
+// One label per series, shared by its value-strip entry, tooltip row and NowBar (#1008).
 constexpr const char* READ_LABEL = "Read";
 constexpr const char* WRITE_LABEL = "Write";
 
@@ -69,6 +84,44 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
     return std::floor(UI::Widgets::historyPlotMinHeight(ImGui::GetFontSize(), UI::chartEmPx()));
 }
 
+/// The per-disk grid's sizing for a region @p availableWidth x @p availableHeight, shared by the
+/// grid itself and diskGridMinimumHeight() so the reserve the Network and I/O tab keeps for the grid
+/// is the grid it then gets.
+[[nodiscard]] ChartGridConfig diskGridConfig(float availableWidth, float availableHeight, std::size_t diskCount)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    // Approximate overhead used only as a floor for the grid's minimum cell height; the real
+    // per-cell overhead is measured directly in renderDiskCell via cursor position (see its
+    // doc comment and the #823 review that replaced an earlier hand-guessed constant here).
+    // Includes every fixed cost between the grid's chosen outer cellHeight and the plot it
+    // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
+    // renderDiskCell ever sees a height), the label row, and renderDiskCell's nested table
+    // CellPadding -- omitting any of those understates the floor, so the grid can pick a
+    // cellHeight that only fits a plot smaller than minDiskPlotHeight() once the real overhead is
+    // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
+    // grid falling back to more rows/scrolling (#823 review).
+    // Two text lines: the disk's name and, under it, its Read/Write value strip (#1193).
+    const float approxLabelOverhead =
+        (style.WindowPadding.y * 2.0F) + (ImGui::GetTextLineHeight() * 2.0F) + (style.ItemSpacing.y * 2.0F) + (style.CellPadding.y * 2.0F);
+    return ChartGridConfig{
+        .availableWidth = availableWidth,
+        .availableHeight = availableHeight,
+        .itemCount = diskCount,
+        // 30 em is the former fixed 320px at the reference em (32/3 px): the width floor now
+        // scales with the font like the height floor beside it, so a large font gets fewer,
+        // wider cells rather than rate labels and NowBars crowding a fixed 320px (#964).
+        .minCellWidth = MIN_DISK_CELL_WIDTH_EM * ImGui::GetFontSize(),
+        // The same floor and ceiling the Overview's charts keep to (UI/HistoryPlotHeight.h), so the
+        // two tabs follow one rule instead of one never growing and the other never stopping (#923).
+        .minCellHeight = approxLabelOverhead + minDiskPlotHeight(),
+        .maxCellHeight = approxLabelOverhead + UI::Widgets::historyPlotMaxHeight(ImGui::GetFontSize()),
+        .targetCellAspect = 1.0F,
+        // What renderChartGrid() sets around every cell (its table's CellPadding).
+        .columnOverhead = style.CellPadding.x * 2.0F,
+        .rowOverhead = style.CellPadding.y * 2.0F,
+    };
+}
+
 /// Render a single disk cell (label + read/write NowBars + chart). cellHeight is the enclosing
 /// grid cell's *usable content* height (see renderChartGrid's cellWidth/cellHeight doc in
 /// ChartGrid.h -- it's measured via GetContentRegionAvail() inside the cell's BeginChild, not
@@ -77,67 +130,74 @@ constexpr float MIN_DISK_CELL_WIDTH_EM = 30.0F;
 /// with a hand-picked constant -- see #823 review) so the chart fills exactly what's left in the
 /// cell.
 ///
-/// cachedOverhead is measured once per frame (on the first disk) and reused for the rest, and
-/// cached across frames too until the style metrics it's built from change: every cell gets the
-/// same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped
-/// single-line label row, so the resulting vertical overhead is the same across all disks and
-/// doesn't change frame to frame on its own.
+/// The overhead is measured on the first disk and reused for the rest, and cached across frames too
+/// until the style metrics it's built from change (UI::Widgets::CellOverheadCache): every cell gets
+/// the same cellHeight (ImGuiTableFlags_SizingStretchSame) and renders an identically-shaped label
+/// row, so the resulting vertical overhead is the same across all disks and doesn't change frame to
+/// frame on its own.
+///
+/// diskAxisUpper is the grid's shared Y upper bound (sharedAxisUpperBound(), #1299), for the chart's
+/// axis and its bars alike, so a bar and its line show a value at the same height (#1003).
 void renderDiskCell(const std::string& deviceName,
                     std::span<const double> timeData,
                     std::span<const double> readData,
                     std::span<const double> writeData,
                     double currentRead,
                     double currentWrite,
+                    double diskAxisUpper,
                     const UI::Widgets::TimeAxisConfig& axisConfig,
                     const UI::Theme& theme,
                     float cellHeight,
-                    std::optional<float>& cachedOverhead,
+                    UI::Widgets::CellOverheadCache& overheadCache,
+                    const UI::Widgets::CellStyleMetrics& styleMetrics,
                     std::uint64_t dataGeneration)
 {
-    // One upper bound for the chart's Y axis and its bars, so a bar and its line show a value at the
-    // same height (#1003). A per-disk series holds NaN for samples where the disk was absent, and
-    // currentRead/Write are NaN when it is absent from the latest sample (#1015): maxOfSeries skips
-    // them, and the bars show N/A rather than a false 0 B/s, as the GPU fan bar does.
-    const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-        "##DiskAxis", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
-
-    const auto makeBar = [&](const char* label, double current, const ImVec4& color)
+    // The cell has no legend, so its value strip is the chart's key: each bar carries its series'
+    // marker, so Read (the filled primary) and Write (a secondary's marker) differ by more than colour.
+    const auto makeBar = [&](const char* label, double current, const ImVec4& color, ImPlotMarker marker)
     {
         if (!std::isfinite(current))
         {
             return NowBar{.valueText = "N/A",
                           .label = label,
-                          .tooltipText = std::format("{}: not reported this sample", label),
+                          .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
                           .value01 = 0.0,
-                          .color = theme.scheme().textMuted};
+                          .color = theme.scheme().textMuted,
+                          .marker = marker};
         }
         return NowBar{.valueText = UI::Format::formatBytesPerSec(current),
                       .label = label,
                       .tooltipText = {},
                       .value01 = normalizeToUnitInterval(current, diskAxisUpper),
-                      .color = color};
+                      .color = color,
+                      .marker = marker};
     };
     const std::array diskBars{
-        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo),
-        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite),
+        makeBar(READ_LABEL, currentRead, theme.scheme().chartIo, seriesStyle(SeriesRole::Primary).marker),
+        makeBar(WRITE_LABEL, currentWrite, theme.scheme().chartIoWrite, seriesStyle(SeriesRole::Secondary, 0).marker),
     };
 
     const float cellContentTop = ImGui::GetCursorPosY();
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
     // The disk's current rates, readable without hovering (#1193), on their own line under its name.
-    // Compact: exactly one line of "Read: 1.2 MB/s" / "Read: N/A", never wrapped -- the overhead below
+    // Compact: exactly one line of "Read: 1.2 MiB/s" / "Read: N/A", never wrapped -- the overhead below
     // is measured once and the grid budgets one strip line per cell, and the longer "not reported
     // this sample" tooltip text would not fit a minimum-width cell. Hovering a bar still shows it.
     UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::Compact);
-    if (!cachedOverhead.has_value())
+    float measuredOverhead = 0.0F;
+    if (const auto cached = overheadCache.get(styleMetrics))
+    {
+        measuredOverhead = *cached;
+    }
+    else
     {
         // renderHistoryWithNowBars wraps the chart+bars in its own table, whose CellPadding.y
         // (top+bottom) adds a little more height beyond the label -- account for it here rather
         // than clipping the chart against it (#823 review: residual scrollbar after the cell's own
         // WindowPadding was already corrected for).
-        cachedOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        measuredOverhead = (ImGui::GetCursorPosY() - cellContentTop) + (ImGui::GetStyle().CellPadding.y * 2.0F);
+        overheadCache.store(styleMetrics, measuredOverhead);
     }
-    const float measuredOverhead = *cachedOverhead;
     const float plotHeight = std::max(minDiskPlotHeight(), cellHeight - measuredOverhead);
 
     auto diskPlotFn = [&]()
@@ -152,30 +212,29 @@ void renderDiskCell(const std::string& deviceName,
         auto diskCfg = UI::Widgets::rateHistoryConfigWithUpper(
             deviceName.c_str(), axisConfig.xMin, axisConfig.xMax, formatAxisBytesPerSec, diskAxisUpper);
         diskCfg.flags |= ImPlotFlags_NoTitle;
+        // No "Time (s)" or time tick labels in each of the cells (#1206); like every chart, no legend
+        // (#1198): the cell's value strip above names Read and Write.
+        diskCfg.timeAxisLabels = false;
         diskCfg.height = plotHeight;
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(diskCfg, dataGeneration));
         if (chart.active())
         {
             UI::Widgets::drawCollectingHint(timeData.size()); // The same "no data yet" state on every chart (#1013)
             const int count = UI::Format::checkedCount(timeData.size());
-            plotLineWithFill(READ_LABEL,
-                             timeData.data(),
-                             readData.data(),
-                             count,
-                             theme.scheme().chartIo,
-                             theme.scheme().chartIoFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-            plotLineWithFill(WRITE_LABEL,
-                             timeData.data(),
-                             writeData.data(),
-                             count,
-                             theme.scheme().chartIoWrite,
-                             theme.scheme().chartIoWriteFill,
-                             2.0F,
-                             true,
-                             UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+            plotSeries(READ_LABEL,
+                       timeData.data(),
+                       readData.data(),
+                       count,
+                       theme.scheme().chartIo,
+                       theme.scheme().chartIoFill,
+                       seriesStyle(SeriesRole::Primary));
+            plotSeries(WRITE_LABEL,
+                       timeData.data(),
+                       writeData.data(),
+                       count,
+                       theme.scheme().chartIoWrite,
+                       theme.scheme().chartIoWriteFill,
+                       seriesStyle(SeriesRole::Secondary, 0));
 
             if (ImPlot::IsPlotHovered() && !timeData.empty())
             {
@@ -209,6 +268,17 @@ void renderDiskCell(const std::string& deviceName,
 
 } // namespace
 
+float diskGridMinimumHeight(const Domain::StoragePublication* publication, float availableWidth)
+{
+    if (!usesDiskGrid(publication))
+    {
+        return 0.0F;
+    }
+    // The grid's heading line, then its rows (renderStorageSection()).
+    return ImGui::GetTextLineHeightWithSpacing() +
+           UI::Widgets::computeChartGridMinimumHeight(diskGridConfig(availableWidth, 0.0F, publication->perDiskHistory.size()));
+}
+
 void updateSmoothedDiskIO(double targetRead, double targetWrite, float deltaTimeSeconds, RenderContext& ctx)
 {
     if (ctx.smoothedReadBytesPerSec == nullptr || ctx.smoothedWriteBytesPerSec == nullptr || ctx.smoothedInitialized == nullptr)
@@ -231,7 +301,8 @@ void renderStorageSection(RenderContext& ctx)
 
     if (ctx.publication == nullptr)
     {
-        ImGui::TextUnformatted("Storage model not available.");
+        UI::Widgets::renderEmptyState(ICON_FA_HARD_DRIVE "  Disk data unavailable",
+                                      "The storage model is not available, so there is no disk activity to show.");
         return;
     }
 
@@ -264,7 +335,6 @@ void renderStorageSection(RenderContext& ctx)
         ImGui::TextColored(
             theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
 
-        // Pre-build device name → snapshot lookup to avoid O(n²) linear scans in the cell loop.
         const double diskAlpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
         if (ctx.smoothedPerDisk != nullptr)
         {
@@ -274,70 +344,101 @@ void renderStorageSection(RenderContext& ctx)
                           [&](const auto& entry)
                           { return std::ranges::none_of(perDisk, [&](const auto& disk) { return disk.deviceName == entry.first; }); });
         }
-        std::unordered_map<std::string, const Domain::DiskSnapshot*> diskLookup;
-        diskLookup.reserve(diskSnap.disks.size());
-        for (const auto& d : diskSnap.disks)
-        {
-            diskLookup.emplace(d.deviceName, &d);
-        }
 
-        // Approximate overhead used only as a floor for the grid's minimum cell height; the real
-        // per-cell overhead is measured directly in renderDiskCell via cursor position (see its
-        // doc comment and the #823 review that replaced an earlier hand-guessed constant here).
-        // Includes every fixed cost between the grid's chosen outer cellHeight and the plot it
-        // wraps: the bordered GridCell child's own WindowPadding (ChartGrid.h reserves it before
-        // renderDiskCell ever sees a height), the label row, and renderDiskCell's nested table
-        // CellPadding -- omitting any of those understates the floor, so the grid can pick a
-        // cellHeight that only fits a plot smaller than minDiskPlotHeight() once the real overhead is
-        // subtracted, which then clips invisibly against the cell's NoScrollbar instead of the
-        // grid falling back to more rows/scrolling (#823 review).
-        // Two text lines: the disk's name and, under it, its Read/Write value strip (#1193).
-        const float approxLabelOverhead = (ImGui::GetStyle().WindowPadding.y * 2.0F) + (ImGui::GetTextLineHeight() * 2.0F) +
-                                          (ImGui::GetStyle().ItemSpacing.y * 2.0F) + (ImGui::GetStyle().CellPadding.y * 2.0F);
-
-        // Measured once (by renderDiskCell, on the first disk) and reused for the rest -- see
-        // renderDiskCell's doc comment. Cached across frames too, not just across disks within
-        // one frame: remeasure only when the style values it's built from actually change.
-        //
-        // Keyed on the actual style values (text line height, ItemSpacing.y, CellPadding.y)
-        // rather than theme.currentFontSize() alone: today's theme switches happen to leave
-        // those metrics untouched (Theme::applyImGuiStyle sets them to fixed values independent
-        // of the color scheme), but that's a property of the current theme implementation, not
-        // something this cache should have to assume stays true (#823 review).
-        static std::optional<float> cachedOverhead;
-        static float cachedTextLineHeight = -1.0F;
-        static float cachedItemSpacingY = -1.0F;
-        static float cachedCellPaddingY = -1.0F;
-        // Epsilon rather than `==`/`!=` on floats (CodeQL cpp/equality-on-floats): these are
-        // stored style values, not accumulated arithmetic, so exact comparison would actually be
-        // safe here, but a tolerance costs nothing and avoids relying on that.
-        constexpr float STYLE_METRIC_EPSILON = 1e-4F;
-        if (const float textLineHeight = ImGui::GetTextLineHeight(),
-            itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
-            cellPaddingY = ImGui::GetStyle().CellPadding.y;
-            std::abs(cachedTextLineHeight - textLineHeight) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedItemSpacingY - itemSpacingY) > STYLE_METRIC_EPSILON ||
-            std::abs(cachedCellPaddingY - cellPaddingY) > STYLE_METRIC_EPSILON)
-        {
-            cachedOverhead.reset();
-            cachedTextLineHeight = textLineHeight;
-            cachedItemSpacingY = itemSpacingY;
-            cachedCellPaddingY = cellPaddingY;
-        }
+        // Measured once (by renderDiskCell, on the first disk) and reused for the rest, and across
+        // frames until the style metrics it's built from change -- see renderDiskCell's doc comment.
+        static UI::Widgets::CellOverheadCache overheadCache;
+        const UI::Widgets::CellStyleMetrics styleMetrics{
+            .textLineHeight = ImGui::GetTextLineHeight(),
+            .itemSpacingY = ImGui::GetStyle().ItemSpacing.y,
+            .cellPaddingY = ImGui::GetStyle().CellPadding.y,
+        };
 
         const ImVec2 avail = ImGui::GetContentRegionAvail();
-        const ChartGridConfig gridConfig{
-            .availableWidth = avail.x,
-            .availableHeight = avail.y,
-            // 30 em is the former fixed 320px at the reference em (32/3 px): the width floor now
-            // scales with the font like the height floor beside it, so a large font gets fewer,
-            // wider cells rather than rate labels and NowBars crowding a fixed 320px (#964).
-            .minCellWidth = MIN_DISK_CELL_WIDTH_EM * ImGui::GetFontSize(),
-            // The same floor and ceiling the Overview's charts keep to (UI/HistoryPlotHeight.h), so the
-            // two tabs follow one rule instead of one never growing and the other never stopping (#923).
-            .minCellHeight = approxLabelOverhead + minDiskPlotHeight(),
-            .maxCellHeight = approxLabelOverhead + UI::Widgets::historyPlotMaxHeight(ImGui::GetFontSize()),
-        };
+        // The sizing diskGridMinimumHeight() reserved for this grid on the Network and I/O tab.
+        const ChartGridConfig gridConfig = diskGridConfig(avail.x, avail.y, diskCount);
+
+        // One frame's data for each disk cell, gathered before the grid draws so every cell can be
+        // drawn to one shared Y bound (#1299). Reused across frames (UI thread only), so a frame
+        // allocates nothing once it has seen as many disks (#1171).
+        static std::vector<DiskCellFrame> diskFrames;
+        static std::vector<double> diskUpperBounds;
+        diskFrames.clear();
+        diskUpperBounds.clear();
+        for (size_t diskIdx = 0; diskIdx < diskCount; ++diskIdx)
+        {
+            const auto& disk = perDisk[diskIdx];
+            const size_t alignedCount = std::min({diskTimes.size(), disk.readBytesPerSec.size(), disk.writeBytesPerSec.size()});
+
+            // An empty history still draws the cell's chart, with the collecting hint, rather than
+            // plain text in place of the chart (#1013).
+
+            // Views into the published history, plotted as doubles against the double time axis --
+            // no per-frame float copies (#1018). The pooled axis, viewed in place: no per-disk copy
+            // (#1066 review).
+            DiskCellFrame frame{
+                .times = tailAlignedSpan(diskTimes, alignedCount).values,
+                .readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values,
+                .writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values,
+            };
+
+            // Per-disk snapshot values for NowBars. NaN if the disk is missing from the latest sample:
+            // renderDiskCell shows N/A, not 0. The latest sample normally lists the disks in the
+            // history's order, so the same index is checked first; a scan of its few disks covers a
+            // disk added or removed since. A name -> snapshot map rebuilt every frame cost a heap
+            // allocation per disk per frame for keys copied from strings already there (#1171).
+            const Domain::DiskSnapshot* latestDisk = nullptr;
+            if (diskIdx < diskSnap.disks.size() && diskSnap.disks[diskIdx].deviceName == disk.deviceName)
+            {
+                latestDisk = &diskSnap.disks[diskIdx];
+            }
+            else if (const auto it = std::ranges::find(diskSnap.disks, disk.deviceName, &Domain::DiskSnapshot::deviceName);
+                     it != diskSnap.disks.end())
+            {
+                latestDisk = &*it;
+            }
+            if (latestDisk != nullptr)
+            {
+                frame.currentRead = latestDisk->readBytesPerSec;
+                frame.currentWrite = latestDisk->writeBytesPerSec;
+            }
+            if (ctx.smoothedPerDisk != nullptr)
+            {
+                auto& smoothed = (*ctx.smoothedPerDisk)[disk.deviceName];
+                if (std::isfinite(frame.currentRead) && std::isfinite(frame.currentWrite))
+                {
+                    smoothed.readBytesPerSec =
+                        initializeOrSmooth(smoothed.readBytesPerSec, frame.currentRead, diskAlpha, smoothed.initialized);
+                    smoothed.writeBytesPerSec =
+                        initializeOrSmooth(smoothed.writeBytesPerSec, frame.currentWrite, diskAlpha, smoothed.initialized);
+                    smoothed.initialized = true;
+                    frame.currentRead = smoothed.readBytesPerSec;
+                    frame.currentWrite = smoothed.writeBytesPerSec;
+                }
+                else
+                {
+                    // Absent this sample: the bars show N/A, and start afresh when the disk returns.
+                    smoothed.initialized = false;
+                }
+            }
+
+            // This disk's own eased bound (#1011), from the samples in the window (#1145) and its bars'
+            // current values (#1003): a bar easing down from a peak that has just left the window is
+            // not clamped. A per-disk series holds NaN for samples where the disk was absent, and the
+            // current values are NaN when it is absent from the latest sample (#1015): both are skipped.
+            // Keyed by device name, like the cell, so a disk keeps its easing when another is unplugged.
+            ImGui::PushID(disk.deviceName.data(), disk.deviceName.data() + disk.deviceName.size());
+            diskUpperBounds.push_back(UI::Widgets::easedRateAxisUpperBound(
+                "##DiskAxis",
+                UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(frame.times, diskAxis.xMin, frame.readData, frame.writeData),
+                                               {frame.currentRead, frame.currentWrite}),
+                UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC));
+            ImGui::PopID();
+            diskFrames.push_back(frame);
+        }
+        // Every cell is drawn to the largest disk's bound, so cells side by side compare at a glance
+        // and an idle disk's noise is not scaled up to fill its cell (#1299).
+        const double sharedDiskAxisUpper = sharedAxisUpperBound(diskUpperBounds, UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         renderChartGrid(
             "PerDiskGrid",
@@ -345,57 +446,19 @@ void renderStorageSection(RenderContext& ctx)
             gridConfig,
             [&](const size_t diskIdx, float /*cellWidth*/, const float cellHeight)
             {
-                const auto& disk = perDisk[diskIdx];
-                const size_t alignedCount = std::min({diskTimes.size(), disk.readBytesPerSec.size(), disk.writeBytesPerSec.size()});
-
-                // An empty history still draws the cell's chart, with the collecting hint, rather than
-                // plain text in place of the chart (#1013).
-
-                // Views into the published history, plotted as doubles against the double time axis --
-                // no per-frame float copies (#1018).
-                const auto readData = tailAlignedSpan(disk.readBytesPerSec, alignedCount).values;
-                const auto writeData = tailAlignedSpan(disk.writeBytesPerSec, alignedCount).values;
-
-                // Per-disk snapshot values for NowBars (O(1) lookup via pre-built map).
-                // NaN if the disk is missing from the latest sample: renderDiskCell shows N/A, not 0.
-                double diskRead = std::numeric_limits<double>::quiet_NaN();
-                double diskWrite = std::numeric_limits<double>::quiet_NaN();
-                if (const auto it = diskLookup.find(disk.deviceName); it != diskLookup.end())
-                {
-                    diskRead = it->second->readBytesPerSec;
-                    diskWrite = it->second->writeBytesPerSec;
-                }
-                if (ctx.smoothedPerDisk != nullptr)
-                {
-                    auto& smoothed = (*ctx.smoothedPerDisk)[disk.deviceName];
-                    if (std::isfinite(diskRead) && std::isfinite(diskWrite))
-                    {
-                        smoothed.readBytesPerSec = initializeOrSmooth(smoothed.readBytesPerSec, diskRead, diskAlpha, smoothed.initialized);
-                        smoothed.writeBytesPerSec =
-                            initializeOrSmooth(smoothed.writeBytesPerSec, diskWrite, diskAlpha, smoothed.initialized);
-                        smoothed.initialized = true;
-                        diskRead = smoothed.readBytesPerSec;
-                        diskWrite = smoothed.writeBytesPerSec;
-                    }
-                    else
-                    {
-                        // Absent this sample: the bars show N/A, and start afresh when the disk returns.
-                        smoothed.initialized = false;
-                    }
-                }
-
-                // The pooled axis, viewed in place: no per-disk copy (#1066 review).
-                const auto cellTimes = UI::Widgets::tailAlignedSpan(diskTimes, alignedCount).values;
-                renderDiskCell(disk.deviceName,
-                               cellTimes,
-                               readData,
-                               writeData,
-                               diskRead,
-                               diskWrite,
+                const DiskCellFrame& frame = diskFrames[diskIdx];
+                renderDiskCell(perDisk[diskIdx].deviceName,
+                               frame.times,
+                               frame.readData,
+                               frame.writeData,
+                               frame.currentRead,
+                               frame.currentWrite,
+                               sharedDiskAxisUpper,
                                diskAxis,
                                theme,
                                cellHeight,
-                               cachedOverhead,
+                               overheadCache,
+                               styleMetrics,
                                ctx.chartDataGeneration);
             },
             // Disks can be unplugged mid-session, shifting later indices in perDisk -- key each
@@ -415,9 +478,13 @@ void renderStorageSection(RenderContext& ctx)
         const auto readData = tailAlignedSpan(diskReadHist, alignedDisk).values;
         const auto writeData = tailAlignedSpan(diskWriteHist, alignedDisk).values;
 
-        // One upper bound for the chart's Y axis and its bars (#1003).
+        // One upper bound for the chart's Y axis and its bars (#1003), from the samples in the window
+        // (#1145) and the bars' smoothed values, which can lag a peak that has just left it.
         const double diskAxisUpper = UI::Widgets::easedRateAxisUpperBound(
-            "##SystemDiskHistory", UI::Widgets::maxOfSeries(readData, writeData), UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
+            "##SystemDiskHistory",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(aggregateTimes, diskAxis.xMin, readData, writeData),
+                                           {smoothedRead, smoothedWrite}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES_PER_SEC);
 
         const NowBar readBar{.valueText = UI::Format::formatBytesPerSec(smoothedRead),
                              .label = READ_LABEL,
@@ -443,24 +510,20 @@ void renderStorageSection(RenderContext& ctx)
             {
                 UI::Widgets::drawCollectingHint(alignedDisk); // The same "no data yet" state on every chart (#1013)
                 const int count = UI::Format::checkedCount(alignedDisk);
-                plotLineWithFill(READ_LABEL,
-                                 aggregateTimes.data(),
-                                 readData.data(),
-                                 count,
-                                 theme.scheme().chartIo,
-                                 theme.scheme().chartIoFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
-                plotLineWithFill(WRITE_LABEL,
-                                 aggregateTimes.data(),
-                                 writeData.data(),
-                                 count,
-                                 theme.scheme().chartIoWrite,
-                                 theme.scheme().chartIoWriteFill,
-                                 2.0F,
-                                 true,
-                                 UI::Widgets::LINE_PLOT_MAX_POINTS_DENSE);
+                plotSeries(READ_LABEL,
+                           aggregateTimes.data(),
+                           readData.data(),
+                           count,
+                           theme.scheme().chartIo,
+                           theme.scheme().chartIoFill,
+                           seriesStyle(SeriesRole::Primary));
+                plotSeries(WRITE_LABEL,
+                           aggregateTimes.data(),
+                           writeData.data(),
+                           count,
+                           theme.scheme().chartIoWrite,
+                           theme.scheme().chartIoWriteFill,
+                           seriesStyle(SeriesRole::Secondary, 0));
 
                 if (ImPlot::IsPlotHovered())
                 {

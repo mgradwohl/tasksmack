@@ -85,9 +85,10 @@ class Window
     [[nodiscard]] auto getSize() const noexcept -> std::pair<int, int>;
 
     /// The window's normal (restored) rectangle: its live geometry when not maximized, or the
-    /// rectangle it will restore to when maximized (#1121). std::nullopt when it is maximized and
-    /// that rectangle is unknown -- maximized by the compositor or OS rather than by maximize() --
-    /// in which case the caller should keep whatever normal geometry it saved before.
+    /// rectangle it will restore to when maximized (#1121), whoever maximized it (#1250). std::nullopt
+    /// when it is maximized and that rectangle is unknown -- maximized from outside the app before it
+    /// was ever seen at a normal size -- in which case the caller should keep whatever normal geometry
+    /// it saved before.
     [[nodiscard]] auto getNormalGeometry() const -> std::optional<WindowGeometry::Rect>;
     /// The window scale getNormalGeometry()'s rectangle was measured at (#1168): the live scale when
     /// not maximized, the scale captured with the restore rectangle when maximized; 0 if unknown.
@@ -133,7 +134,38 @@ class Window
     /// ShowWindow(SW_MAXIMIZE)) with maximize()'s client-side one, which fills the current display's
     /// usable bounds and records the real normal rectangle as the restore target (#1208). Does
     /// nothing where WindowGeometry::shouldAdoptSystemMaximize() says the OS maximize is right.
-    void adoptSystemMaximize();
+    /// @return Whether the OS maximize was adopted.
+    bool adoptSystemMaximize();
+    /// Handle SDL_EVENT_WINDOW_MAXIMIZED, whoever maximized the window (#1250): when @p adopt, first
+    /// try adoptSystemMaximize(); otherwise, or when it is not adopted, record that the window is
+    /// maximized, with the last geometry it had while normal as the restore target, so that geometry
+    /// -- not the maximized one -- is saved as the normal size on exit. Reads the live flags, so a
+    /// queued event the window has since moved on from changes nothing.
+    void handleSystemMaximized(bool adopt);
+    /// Handle SDL_EVENT_WINDOW_RESTORED: ends a maximize the OS, window manager or compositor can end
+    /// (WindowGeometry::MaximizeState::System) when the live flags say the window is no longer
+    /// maximized (#1250). Never ends a client-side maximize.
+    void handleSystemRestored();
+    /// Handle SDL_EVENT_WINDOW_MOVED / _RESIZED: remember the live geometry as the last normal one
+    /// while the window is normal (not maximized, minimized or fullscreen), as the restore target for
+    /// a maximize from outside the app (#1250). A few cached SDL queries, cheap enough per event.
+    void handleGeometryChanged();
+    /// A minimize from the shell reached the window (#1279): Win32 WM_SYSCOMMAND SC_MINIMIZE, before
+    /// it is carried out, or SDL_EVENT_WINDOW_MINIMIZED, for a minimize that did not come that way.
+    /// When WindowGeometry::shellMinimizeRestores() says it is Win+Down on a client-side maximized
+    /// window, restores the window to its normal rectangle -- un-minimizing it first if the minimize
+    /// already happened -- as the first Win+Down does for a natively maximized window. Reads the
+    /// keyboard state on Windows; does nothing elsewhere.
+    /// @return Whether the window was restored, so a minimize not yet carried out should be dropped.
+    bool restoreForShellMinimize();
+    /// Reads whether {a Windows key, the Down arrow} are held, for restoreForShellMinimize().
+    using ShellRestoreKeysReader = auto (*)() noexcept -> std::pair<bool, bool>;
+    /// Replace how this window reads the Win+Down key state; nullptr restores the real keyboard
+    /// state. A test seam: synthetic input cannot hold keys on a locked or headless desktop (#1279).
+    void setShellRestoreKeysReader(ShellRestoreKeysReader reader) noexcept
+    {
+        m_ShellRestoreKeysReader = reader;
+    }
     void restore();
     void minimize() const;
 
@@ -146,24 +178,23 @@ class Window
     void setHitTestCallback(SDL_HitTest callback, void* callbackData) const;
 
   private:
-    // Record the current rectangle as the restore target, unless the window is already maximized.
-    void rememberRestoreRect();
+    // The live position and size.
+    [[nodiscard]] auto liveRect() const -> WindowGeometry::Rect;
+    // Whether the window is at its normal geometry right now: not maximized (on any route),
+    // minimized or fullscreen.
+    [[nodiscard]] bool isNormalNow() const;
 
     WindowSpecification m_Spec;
     SDL_Window* m_Handle = nullptr;
     SDL_GLContext m_GLContext = nullptr;
     bool m_ShouldClose = false;
 
-    // For borderless window maximize/restore tracking
-    bool m_IsMaximizedBorderless = false;
-    // Whether m_Restore* hold the rectangle the window had when maximize() last maximized it, on
-    // any path (client-side, compositor or SDL_MaximizeWindow). Cleared by restore().
-    bool m_HasRestoreRect = false;
-    int m_RestoreX = 0;
-    int m_RestoreY = 0;
-    int m_RestoreWidth = 0;
-    int m_RestoreHeight = 0;
-    float m_RestoreScale = 0.0F; // getUnitScale() when the restore rectangle was captured (#1168)
+    // How the window is maximized and the rectangle it restores to, through every maximize and
+    // restore whoever starts it (#1250). Its state is the only maximized signal for a borderless
+    // window on a client-side-maximize backend (see isMaximized()).
+    WindowGeometry::NormalGeometryTracker m_Geometry;
+    // See setShellRestoreKeysReader(); nullptr reads the keyboard.
+    ShellRestoreKeysReader m_ShellRestoreKeysReader = nullptr;
 
 #ifdef _WIN32
     // Owned title-bar/taskbar icon handles (opaque void* here so <windows.h> stays out of

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -19,6 +21,10 @@ struct GPUCapabilities
     bool hasPCIeMetrics = false;
     bool hasEngineUtilization = false;
     bool hasPerProcessMetrics = false; // Per-process GPU usage
+    // Of those, per-process utilization (ProcessGPUCounters::gpuUtilPercent). Some backends report a
+    // process's GPU memory and engines but not its utilization (NVML's running-process lists), which
+    // then reads 0 for every process (#1210).
+    bool hasPerProcessUtilization = false;
     bool hasEncoderDecoder = false;
     bool supportsMultiGPU = false;
 };
@@ -32,24 +38,42 @@ enum class GPURescan : std::uint8_t
 
 /// Where an adapter sits on the PCI bus. DXGI and NVML enumerate adapters in different orders and
 /// name them differently, so on Windows this is what says which NVML device is which DXGI adapter
-/// (#1091). DXGI reports no PCI domain, so the domain is not part of the match.
+/// (#1091). DXGI reports no PCI domain, so the domain is not part of the match. The function number
+/// tells apart two functions of one multi-function device; it is nullopt where the source could not
+/// say (NVML's busId string unreadable), and samePciLocation() then matches on bus and device alone.
 struct PciLocation
 {
     std::uint32_t bus = 0;
     std::uint32_t device = 0;
+    std::optional<std::uint32_t> function;
     bool operator==(const PciLocation&) const = default;
 };
+
+/// Whether @p a and @p b name the same PCI function: the same bus and device, and the same function
+/// number unless either side doesn't know it. An unknown function is treated as a wildcard rather
+/// than as function 0, so a source that couldn't read it still matches the adapter at its bus and
+/// device; the stricter operator== is for comparing fully read locations.
+[[nodiscard]] constexpr bool samePciLocation(const PciLocation& a, const PciLocation& b) noexcept
+{
+    return a.bus == b.bus && a.device == b.device && (!a.function.has_value() || !b.function.has_value() || *a.function == *b.function);
+}
 
 // Identifies a physical GPU
 struct GPUInfo
 {
-    std::string id;     // Unique identifier (e.g., "GPU0", "GPU1")
+    std::string id;     // Stable identifier, unique among present GPUs (Windows: "PCI_01:00.0_10DE:2684", slot + model, #1317)
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
     std::string name;   // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
-    std::string vendor; // "NVIDIA", "AMD", "Intel", "Unknown"
+    std::string vendor; // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
     std::string driverVersion;
     bool isIntegrated = false;     // Integrated vs discrete
-    std::uint32_t deviceIndex = 0; // Vendor-specific index
+    std::uint32_t deviceIndex = 0; // Vendor-specific index (on Windows, DXGI's display order, not identity)
+    /// Which memory segment the adapter's used/total figures count: true for its shared segment
+    /// (system memory the GPU maps -- a Windows integrated GPU's memory), false for dedicated VRAM
+    /// (every discrete GPU, and an APU's carve-out on Linux, where NVML/ROCm SMI/DRM have no shared
+    /// segment). Set by the probe that reads the figure, so per-process memory is counted against
+    /// the same segment whatever its value -- a 0 shared reading is a reading, not "no segment" (#1164).
+    bool memoryIsShared = false;
     /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
     /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
@@ -64,6 +88,37 @@ struct GPUInfo
     std::optional<PciLocation> pciLocation;
     /// PCI (device ID << 16) | vendor ID -- NVML's pciDeviceId encoding -- or 0 when unknown (#1091).
     std::uint32_t pciDeviceId = 0;
+};
+
+/// The engine classes DRM fdinfo reports busyness for (the kernel's drm-usage-stats.rst): i915 names
+/// them render/copy/video/video-enhance/compute, xe rcs/bcs/vcs/vecs/ccs (#1267).
+enum class GPUEngineClass : std::uint8_t
+{
+    Render,
+    Copy,
+    Video,
+    VideoEnhance,
+    Compute,
+};
+inline constexpr std::size_t GPU_ENGINE_CLASS_COUNT = 5;
+
+/// One engine class's cumulative busyness for one DRM client. `busy` and `total` are in one unit, so
+/// their changes between two samples give the share of the time the client kept the class busy:
+/// i915 reports busy nanoseconds, and the probe stamps `total` with CLOCK_MONOTONIC nanoseconds as
+/// it reads them; xe reports busy GPU-timestamp cycles together with the GPU timestamp itself.
+struct GPUEngineBusyCounter
+{
+    bool available = false;
+    std::uint64_t busy = 0;
+    std::uint64_t total = 0;
+    std::uint32_t capacity = 1; // Engines of the class (drm-engine-capacity-*; the kernel omits it when 1)
+};
+
+/// One DRM client's (one open DRM file's) cumulative engine busyness, from /proc/<pid>/fdinfo (#1267).
+struct GPUEngineClientCounters
+{
+    std::uint64_t clientId = 0; // drm-client-id: one per open DRM file, shared by dup'd and inherited fds
+    std::array<GPUEngineBusyCounter, GPU_ENGINE_CLASS_COUNT> engines{};
 };
 
 // Raw GPU counters (Platform layer provides raw values only)
@@ -86,6 +141,8 @@ struct GPUCounters
     // wake it with sensor queries (#1117): every *Available flag above is then false. Linux reads
     // this from /sys/bus/pci/devices/<address>/power/runtime_status. memoryTotalBytes may still hold
     // the last total read while awake, so the adapter's VRAM size doesn't vanish while it sleeps.
+    // Windows reads the device power state the PnP manager records (#1265); there PDH's utilization
+    // and memory in use, the OS's own figures that never touch the GPU, may still be available.
     bool suspended = false;
 
     // Utilization (instantaneous snapshot, 0-100, provided by hardware/driver)
@@ -111,6 +168,15 @@ struct GPUCounters
     // a counter reset) has no power.
     bool energyAvailable = false;
     std::uint64_t energyMicroJoules = 0;
+
+    // Per-client cumulative engine busyness, for a GPU whose driver reports no utilization of its own
+    // (Intel i915/xe, from each DRM client's fdinfo, #1267). When engineBusyAvailable, Domain derives
+    // utilizationPercent from the clients in both this and the previous sample: per engine class, the
+    // sum of their busy shares over the class's capacity, the busiest class being the GPU's
+    // utilization; no clients means idle. A probe that couldn't see every client (an unreadable /proc,
+    // a walk cut short, every fd directory denied) leaves engineBusyAvailable false. Without a previous sample, utilization is unread.
+    bool engineBusyAvailable = false;
+    std::vector<GPUEngineClientCounters> engineClients;
 
     // Clock speeds (MHz)
     std::uint32_t gpuClockMHz = 0;
@@ -142,8 +208,12 @@ struct ProcessGPUCounters
     std::int32_t pid = 0;
     std::string gpuId; // Which GPU
 
-    // Memory allocated by process (bytes)
-    std::uint64_t gpuMemoryBytes = 0;
+    // Memory allocated by the process on this GPU (bytes), kept apart as the adapter's own figures
+    // are (#1164): dedicated is the GPU's own memory (VRAM; what NVML and ROCm SMI report per
+    // process), shared is system memory the GPU maps for it (Windows' shared segment). Domain
+    // compares each with the adapter's matching figure, so neither is summed into the other here.
+    std::uint64_t gpuMemoryBytes = 0;       // dedicated
+    std::uint64_t gpuSharedMemoryBytes = 0; // shared (0 where the platform has no such segment)
 
     // Utilization attributed to this process (0-100, instantaneous)
     double gpuUtilPercent = 0.0;

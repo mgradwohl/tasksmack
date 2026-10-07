@@ -73,6 +73,30 @@ TEST(ProcessColumnConfigTest, EveryColumnHasAPositiveDefaultWidth)
     }
 }
 
+// ========== Content-fitted width (#1280) ==========
+
+TEST(ProcessColumnConfigTest, ContentFittedWidthFitsTheWidestLabelWithAMargin)
+{
+    const float em = REFERENCE_EM_PX;
+    // A label wider than the default: the column grows to it plus the margin.
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 90.0F, em), 90.0F + (COLUMN_CONTENT_MARGIN_EM * em));
+    // A narrow label leaves the authored default alone.
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 20.0F, em), 85.0F);
+    // Always at least one em of room around the widest label.
+    for (const float widest : {10.0F, 60.0F, 75.0F, 84.0F, 200.0F})
+    {
+        EXPECT_GE(contentFittedWidth(85.0F, widest, em), widest + em) << widest;
+    }
+}
+
+TEST(ProcessColumnConfigTest, ContentFittedWidthFallsBackWhenNotMeasured)
+{
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 0.0F, REFERENCE_EM_PX), 85.0F);
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, std::numeric_limits<float>::quiet_NaN(), REFERENCE_EM_PX), 85.0F);
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 90.0F, 0.0F), 85.0F);
+    EXPECT_FLOAT_EQ(contentFittedWidth(85.0F, 90.0F, std::numeric_limits<float>::infinity()), 85.0F);
+}
+
 // ========== Header Wording (#1203) ==========
 
 // Headers are plain words: no htop-style single letters ("S") or "+" suffixes ("TIME+").
@@ -300,6 +324,133 @@ TEST(ProcessColumnSettingsTest, AllColumnsCanBeShown)
     {
         EXPECT_TRUE(settings.isVisible(col));
     }
+}
+
+// ========== Columns menu (#1209) ==========
+
+TEST(ProcessColumnSettingsTest, ResetRestoresTheDefaultColumns)
+{
+    ProcessColumnSettings settings;
+    EXPECT_TRUE(settings.isDefault());
+
+    settings.requestVisible(ProcessColumn::Command, false);
+    settings.requestVisible(ProcessColumn::Threads, true);
+    EXPECT_FALSE(settings.isDefault());
+
+    settings = ProcessColumnSettings::defaults();
+    EXPECT_TRUE(settings.isDefault());
+    EXPECT_EQ(settings, ProcessColumnSettings{});
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        EXPECT_EQ(settings.isVisible(col), getColumnInfo(col).defaultVisible);
+    }
+}
+
+TEST(ProcessColumnSettingsTest, OnlyAnUnchosenColumnTakesANewDefault)
+{
+    ProcessColumnSettings settings;
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Power));
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::Power));
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Power));
+
+    settings.setVisible(ProcessColumn::Power, true); // The user's (or the config file's) choice
+    EXPECT_TRUE(settings.isChosen(ProcessColumn::Power));
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Power));
+
+    settings.toggleVisible(ProcessColumn::Threads);
+    EXPECT_TRUE(settings.isChosen(ProcessColumn::Threads));
+}
+
+TEST(ProcessColumnSettingsTest, TableStateIsAChoiceOnlyWhenTheUserMadeIt)
+{
+    // #1210: before the table has been drawn with our settings, an enabled column comes from the
+    // ImGui layout ShellLayer restored, not from the user, and must not pin the column as chosen.
+    ProcessColumnSettings settings;
+    settings.setDefaultVisible(ProcessColumn::Power, false); // e.g. no RAPL
+    EXPECT_TRUE(settings.adoptTableVisibility(ProcessColumn::Power, true, /*userChange=*/false));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Power));
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Power)); // Still follows the system's default
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::Power));
+
+    // Once the table shows our settings, a difference is the user's toggle in ImGui's header menu.
+    EXPECT_TRUE(settings.adoptTableVisibility(ProcessColumn::Power, true, /*userChange=*/true));
+    EXPECT_TRUE(settings.isChosen(ProcessColumn::Power));
+    settings.setDefaultVisible(ProcessColumn::Power, false);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Power));
+
+    // No difference: nothing changes, nothing is marked.
+    EXPECT_FALSE(settings.adoptTableVisibility(ProcessColumn::Threads, settings.isVisible(ProcessColumn::Threads), true));
+    EXPECT_FALSE(settings.isChosen(ProcessColumn::Threads));
+}
+
+TEST(ProcessColumnSettingsTest, KeepUnhideableColumnsVisibleShowsPidAndNameWhateverWasAsked)
+{
+    // #1209: a config may say "pid = false", and TableSetColumnEnabled(false) ignores the column's
+    // NoHide flag, so loaded and requested visibility is normalized first.
+    ProcessColumnSettings settings;
+    settings.setVisible(ProcessColumn::PID, false);
+    settings.setVisible(ProcessColumn::Name, false);
+    settings.setVisible(ProcessColumn::User, false);
+    settings.keepUnhideableColumnsVisible();
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::PID));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Name));
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::User)); // A hideable column keeps its choice
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (!getColumnInfo(col).canHide)
+        {
+            EXPECT_TRUE(settings.isVisible(col)) << getColumnInfo(col).configKey;
+        }
+    }
+}
+
+TEST(ProcessColumnSettingsTest, RequestVisibleKeepsUnhideableColumnsShown)
+{
+    ProcessColumnSettings settings;
+    settings.requestVisible(ProcessColumn::PID, false);
+    settings.requestVisible(ProcessColumn::Name, false);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::PID));
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::Name));
+
+    settings.requestVisible(ProcessColumn::User, false);
+    EXPECT_FALSE(settings.isVisible(ProcessColumn::User));
+    settings.requestVisible(ProcessColumn::User, true);
+    EXPECT_TRUE(settings.isVisible(ProcessColumn::User));
+}
+
+// ========== Header alignment (#1209) ==========
+
+TEST(ProcessColumnConfigTest, NumericColumnsAreRightAligned)
+{
+    for (const ProcessColumn col :
+         {ProcessColumn::PID,        ProcessColumn::PPID,       ProcessColumn::CpuPercent, ProcessColumn::MemPercent,
+          ProcessColumn::Resident,   ProcessColumn::Virtual,    ProcessColumn::Shared,     ProcessColumn::PeakResident,
+          ProcessColumn::Priority,   ProcessColumn::Affinity,   ProcessColumn::Threads,    ProcessColumn::Handles,
+          ProcessColumn::GdiObjects, ProcessColumn::CpuTime,    ProcessColumn::StartTime,  ProcessColumn::IoRead,
+          ProcessColumn::IoWrite,    ProcessColumn::PageFaults, ProcessColumn::NetSent,    ProcessColumn::NetReceived,
+          ProcessColumn::Power,      ProcessColumn::GpuPercent, ProcessColumn::GpuMemory})
+    {
+        EXPECT_EQ(columnAlignment(col), ColumnAlign::Right) << getColumnInfo(col).configKey;
+    }
+}
+
+TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
+{
+    for (const ProcessColumn col : {ProcessColumn::Name,
+                                    ProcessColumn::User,
+                                    ProcessColumn::Publisher,
+                                    ProcessColumn::Status,
+                                    ProcessColumn::Type,
+                                    ProcessColumn::GpuEngine,
+                                    ProcessColumn::GpuDevice,
+                                    ProcessColumn::Command})
+    {
+        EXPECT_EQ(columnAlignment(col), ColumnAlign::Left) << getColumnInfo(col).configKey;
+    }
+    EXPECT_EQ(columnAlignment(ProcessColumn::State), ColumnAlign::Center);
 }
 
 } // namespace

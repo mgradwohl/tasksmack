@@ -31,14 +31,14 @@ flowchart TD
     Platform -. path provider only .-> Core
 ```
 
-- Platform probes are stateless readers of OS counters.
+- Platform probes read raw OS counters and never compute deltas or rates. They may keep implementation state that serves those reads: caches of raw readings and the bookkeeping a raw reading needs. On Linux, `LinuxProcessProbe` keeps a UID-to-username cache (one entry per UID seen, never evicted); each process's command line, keyed by PID, start time and comm, re-read within `PROCESS_CMDLINE_CACHE_TTL_MS` and dropped once the process is no longer listed; the socket inode-to-PID map, which `enumerate()` rebuilds every `INODE_PID_CACHE_TTL_MS` from the same `/proc/[pid]/fd` walk that counts FDs; the TCP socket query result, cached for `socket_stats_cache_ttl_ms` (default `SOCKET_STATS_CACHE_TTL_MS_DEFAULT`); and, for socket attribution, when each still-unowned socket was first seen (replaced by every reading).
 - Process enumeration and heavy system metrics (System, Storage, GPU) run asynchronously on a background thread via `BackgroundSampler` (after an initial synchronous baseline read). This decoupled polling ensures UI responsiveness under heavy load.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
 - CPU percentage uses process CPU delta divided by total system CPU delta.
 - Disk I/O and page-fault rates use consecutive sample deltas.
-- Per-process network rates use deltas between consecutive network readings. Where a probe reports raw per-connection byte counters (Linux), `ProcessModel` accumulates each connection's growth into monotonic per-process counters, so a connection closing or being attributed late doesn't make a rate drop or spike.
+- Per-process network rates use deltas between consecutive network readings. Where a probe reports raw per-connection byte counters (Linux), `ProcessModel` accumulates each connection's growth into monotonic per-process counters, so a connection closing doesn't make a rate drop and a connection attributed late never delivers its lifetime bytes as a spike. The growth a connection shows before it is attributed is held and credited to its owner once it is, so that recent growth (at most `UNATTRIBUTED_SOCKET_HOLD_MS` of it; a hold that outlasts the deadline is dropped) can still be concentrated into the interval in which the connection is attributed, and the Linux probe rebuilds its inode-to-PID map early (rate-limited by `INODE_PID_CACHE_EARLY_REBUILD_MS`) when a socket appears unowned after the last rebuild. A connection is credited to its owner by PID and start time when both are known, so a process that reuses a PID gets none of the old owner's traffic. That protection needs the owner's start time: the Linux probe reports it (unless its `stat` read fails), Windows reports none, and a connection whose owner start time is unknown is matched by PID alone.
 - System and interface network rates use consecutive sample deltas.
 - GPU data is merged into process snapshots when the platform can attribute usage.
 
@@ -115,7 +115,7 @@ The default interval is 1 second and can be configured from 100 ms to 5 seconds.
 
 Process state is keyed by PID plus start time so PID reuse creates a fresh baseline. Domain models guard against counter rollback and implausible rates.
 
-A per-process value the probe could not read (on Linux without root: another user's `/proc/[pid]/fd` and `/proc/[pid]/io`, and so its FD count, I/O and network attribution) is flagged unavailable in `ProcessCounters`/`ProcessSnapshot` (`handleCountAvailable`, `ioAvailable`, `networkAvailable`). A rate needs both readings it is taken between. Unavailable values are shown as N/A and as gaps in the charts, and they are left out of the system totals rather than counted as 0.
+A per-process value the probe could not read (on Linux, for another user's process: its FD count without `CAP_DAC_READ_SEARCH`, which lists `/proc/[pid]/fd`; its I/O and network attribution without `CAP_SYS_PTRACE` as well, which `/proc/[pid]/io` and the fd links need -- root has both unless they are dropped) is flagged unavailable in `ProcessCounters`/`ProcessSnapshot` (`handleCountAvailable`, `ioAvailable`, `networkAvailable`). A rate needs both readings it is taken between. Unavailable values are shown as N/A and as gaps in the charts, and they are left out of the system totals rather than counted as 0.
 
 ## Dependency Direction
 
@@ -214,7 +214,7 @@ Capability absence is not an error. A supported platform may still omit metrics 
 | GPU | NVML for NVIDIA, ROCm SMI for AMD, DRM/sysfs for Intel and generic discovery |
 | Process actions | POSIX signals, `setpriority`, affinity APIs |
 
-Per-process I/O may require root or `CAP_DAC_READ_SEARCH`. Per-process network attribution requires Linux 4.2+ Netlink support.
+For other users' processes, per-process I/O and network attribution need `CAP_DAC_READ_SEARCH` plus `CAP_SYS_PTRACE` in the effective set (reading `/proc/[pid]/io` and the `/proc/[pid]/fd/*` links is checked with `PTRACE_MODE_READ_FSCREDS`) — root with its normal capabilities has them, but root alone isn't enough where capabilities are dropped (a container or hardened service); FD counts need only `CAP_DAC_READ_SEARCH` (listing `/proc/[pid]/fd` is a plain permission check). Per-process network attribution requires Linux 4.2+ Netlink support.
 
 ### Windows
 
@@ -227,9 +227,9 @@ Per-process I/O may require root or `CAP_DAC_READ_SEARCH`. Per-process network a
 | GPU | DXGI, NVML, and PDH |
 | Process actions | `TerminateProcess`, priority classes, affinity APIs |
 
-Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Windows does not expose Linux concepts such as load average, CPU steal time, or SIGSTOP/SIGCONT.
+Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Without them no process's network bytes are read, so each process reports them unavailable (N/A) rather than 0; handle counts and I/O bytes come from the bulk snapshot and are read for every process (#1285). Windows does not expose Linux concepts such as load average, CPU steal time, or SIGSTOP/SIGCONT.
 
-Process enumeration takes one bulk `NtQuerySystemInformation(SystemProcessInformation)` snapshot per sample, which supplies CPU times, memory, I/O, handle/thread counts, and image names for every process without opening per-process handles. Slow-changing details (owner, command line, publisher, classification) are refreshed through short-lived process handles on RAM-tuned light/heavy TTLs.
+Process enumeration takes one bulk `NtQuerySystemInformation(SystemProcessInformation)` snapshot per sample, which supplies CPU times, memory, I/O, handle/thread counts, thread states, base priorities, and image names for every process without opening per-process handles. The process state letter is derived from the thread states (R: a thread runs or is ready; T: every thread suspended; S: otherwise; I: the System Idle Process; never Z). Slower-changing details are refreshed through short-lived process handles on RAM-tuned TTLs: status and GDI objects on the light one; owner, command line (`ProcessCommandLineInformation`, else the image path), publisher, affinity, and classification on the heavy one. The priority class is read with the heavy details and again as soon as the snapshot's base priority changes, so a priority change shows on the next sample (#1156).
 
 Only Linux and Windows are implemented. Windows builds target Windows 10 or later.
 
@@ -244,7 +244,7 @@ Custom title-bar behavior is intentionally platform-specific:
 - **Windows:** Client-side drag and resize interactions (`TitleBarLayer`) with resize cursors applied from the app.
 - **Linux (X11/XWayland):** Delegates border resize to window manager via `SDL_HITTEST_RESIZE_*` results.
   - Title-bar drag uses event-consistent coordinates (`window position + event-local mouse`), client-side, same as Windows.
-  - Window maximize/restore uses client-side positioning with `SDL_GetDisplayUsableBounds`.
+  - Window maximize asks the window manager (`SDL_MaximizeWindow`) when it supports EWMH maximize (`_NET_SUPPORTED` lists `_NET_WM_STATE_MAXIMIZED_VERT`/`_HORZ`, read by `Core::X11WindowManager`), so it fills the window manager's work area; `SDL_GetDisplayUsableBounds` is the whole display on a server without `_NET_WORKAREA` (WSLg), which covered the taskbar (#1339). Without EWMH maximize it falls back to client-side positioning with `SDL_GetDisplayUsableBounds`. The decision is `WindowGeometry::chooseBorderlessMaximize()`; Windows always maximizes client-side (#1208).
 - **Linux (native Wayland):** Prefers compositor-managed window interactions.
   - Title-bar drag delegates to the compositor via `SDL_HITTEST_DRAGGABLE` (-> `xdg_toplevel_move()`) rather than client-side `SDL_SetWindowPosition()`, which Wayland doesn't support for absolute positioning (#744). This consumes the button-down event entirely, so double-click-to-maximize does not fire from the title bar on native Wayland -- the maximize button remains available there.
   - Window maximize/restore delegates to compositor via `SDL_MaximizeWindow`/`SDL_RestoreWindow` instead of manual client-side positioning.

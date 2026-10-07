@@ -4,7 +4,12 @@
 // unit-testable without a live ImGui context, following CONTRIBUTING.md's "extract the pure decision
 // logic into a small header" pattern (as ProcessTableFlags.h and ProcessTreeIndent.h do).
 
+#include "App/ProcessColumnConfig.h"
+
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <initializer_list>
 
 namespace App::ProcessTableLayout
 {
@@ -72,6 +77,118 @@ inline constexpr float CLIP_TOLERANCE_PX = 0.5F;
     return textWidthPx > (availWidthPx + CLIP_TOLERANCE_PX);
 }
 
+/// Where a decimal-aligned cell's number and unit go (#1201), in pixels from the cell's left edge.
+struct UnitAlignedCellLayout
+{
+    float numberX = 0.0F;   ///< Left edge of the number ("512.0")
+    float unitX = 0.0F;     ///< Left edge of the unit (" MiB"): the start of the column's unit slot
+    float itemWidth = 0.0F; ///< From the number's left edge to the unit's right edge
+    bool fits = false;      ///< False when the number and the unit slot don't fit: draw the text clipped instead
+};
+
+/// Lays out a cell of a mixed-unit column ("512.0 B", "1.5 KiB", "3.2 MiB") so the decimal points
+/// line up: the unit sits in a slot as wide as the column's widest unit at the cell's right edge,
+/// and the number is right-aligned against that slot. Every number has one decimal digit, and
+/// digits are tabular (UI/TabularDigits.h), so equal-width fractions put every decimal point at the
+/// same x.
+///
+/// @param numberWidthPx    Measured width of the number, "512.0".
+/// @param unitWidthPx      Measured width of this cell's unit, " MiB".
+/// @param unitSlotWidthPx  Width of the widest unit the column can show; a wider unit widens the slot.
+/// @param availWidthPx     Width left in the cell from the cursor to its right edge.
+[[nodiscard]] inline UnitAlignedCellLayout
+layoutUnitAlignedCell(float numberWidthPx, float unitWidthPx, float unitSlotWidthPx, float availWidthPx) noexcept
+{
+    if (!std::isfinite(numberWidthPx) || !std::isfinite(unitWidthPx) || !std::isfinite(unitSlotWidthPx) || !std::isfinite(availWidthPx))
+    {
+        return {};
+    }
+    const float number = std::max(numberWidthPx, 0.0F);
+    const float unit = std::max(unitWidthPx, 0.0F);
+    const float slot = std::max(unitSlotWidthPx, unit);
+    if (isCellTextClipped(number + slot, availWidthPx))
+    {
+        return {};
+    }
+    const float unitX = std::max(availWidthPx - slot, number);
+    return {.numberX = unitX - number, .unitX = unitX, .itemWidth = number + unit, .fits = true};
+}
+
+/// Where a column header's label starts, in pixels from the cell's content start, so the header is
+/// aligned like its column's cells (#1209): a numeric header sits over the right-aligned numbers
+/// rather than centred above them. `rightReservePx` is kept clear at the right edge for the sort
+/// arrow ImGui draws there on the sorted column (sortArrowReserve()). A label wider than the room
+/// starts at the cell's left edge, as a clipped cell does.
+///
+/// @param align           How the column's cells are aligned.
+/// @param availWidthPx    Width from the cell's content start to its right edge.
+/// @param labelWidthPx    Measured width of the header label.
+/// @param rightReservePx  Width to keep free at the right edge.
+[[nodiscard]] inline float headerLabelOffset(ColumnAlign align, float availWidthPx, float labelWidthPx, float rightReservePx) noexcept
+{
+    if (!std::isfinite(availWidthPx) || !std::isfinite(labelWidthPx) || !std::isfinite(rightReservePx))
+    {
+        return 0.0F;
+    }
+    const float room = std::max(0.0F, availWidthPx - std::max(0.0F, rightReservePx));
+    const float slack = std::max(0.0F, room - std::max(0.0F, labelWidthPx));
+    switch (align)
+    {
+    case ColumnAlign::Right:
+        return slack;
+    case ColumnAlign::Center:
+        return std::floor(slack * 0.5F);
+    case ColumnAlign::Left:
+        break;
+    }
+    return 0.0F;
+}
+
+/// Width ImGui's sort arrow takes at a sorted header's right edge, beyond the cell padding the
+/// header's content region already leaves there. ImGui places the arrow fontSize * 0.65 +
+/// FramePadding.x from the cell's outer right edge (TableHeader()); that edge is CellPadding.x past
+/// the content region's.
+[[nodiscard]] inline float sortArrowReserve(float fontSizePx, float framePaddingXPx, float cellPaddingXPx) noexcept
+{
+    constexpr float IMGUI_SORT_ARROW_SCALE = 0.65F;
+    const float arrow = std::trunc((fontSizePx * IMGUI_SORT_ARROW_SCALE) + framePaddingXPx);
+    const float reserve = arrow - cellPaddingXPx;
+    return (std::isfinite(reserve) && reserve > 0.0F) ? reserve : 0.0F;
+}
+
+/// Where the toolbar's status text goes, right before its controls (#1209).
+struct ToolbarStatusLayout
+{
+    float x = 0.0F;       ///< Window-local left edge of the text
+    float width = 0.0F;   ///< Width it may take
+    bool clipped = false; ///< The text is wider: draw it ellipsized, with the full text as its tooltip
+};
+
+/// Lays out the toolbar's status text -- the process count, or for a few seconds a row action's
+/// result -- right-aligned against the controls after it, never wider than `maxWidthPx` nor than
+/// the room left, so the controls never move. A long platform error used to push the Columns button
+/// and the view-mode control off-screen. The text never starts left of `cursorX`.
+///
+/// @param cursorX        Where the text may start at the earliest (after the filter box).
+/// @param rightEdgeX     The row's right edge.
+/// @param controlsWidth  The controls after the text, spacing between them included.
+/// @param spacing        Spacing between the text and the controls.
+/// @param textWidthPx    Measured width of the text.
+/// @param maxWidthPx     Most the text may take: for an action's result, the count text's own width.
+[[nodiscard]] inline ToolbarStatusLayout
+layoutToolbarStatus(float cursorX, float rightEdgeX, float controlsWidth, float spacing, float textWidthPx, float maxWidthPx) noexcept
+{
+    const auto finiteOrZero = [](float value)
+    {
+        return std::isfinite(value) ? std::max(value, 0.0F) : 0.0F;
+    };
+    const float controlsLeft = rightEdgeX - finiteOrZero(controlsWidth) - finiteOrZero(spacing);
+    const float room = std::max(0.0F, controlsLeft - cursorX);
+    const float text = finiteOrZero(textWidthPx);
+    const float width = std::min({text, finiteOrZero(maxWidthPx), room});
+    return {.x = std::max(cursorX, controlsLeft - width), .width = width, .clipped = isCellTextClipped(text, width)};
+}
+
 /// Width of the filter box above the table, in ems: 200px at the reference em (32/3 px), which is
 /// the fixed pixel width it replaces, so the box is unchanged at the reference configuration.
 inline constexpr float FILTER_WIDTH_EM = 18.75F;
@@ -130,6 +247,45 @@ inline constexpr float FILTER_MAX_ROW_FRACTION = 0.5F;
     const float fits = (sideBySide < halfForRest) ? sideBySide : halfForRest;
     const float forHint = atLeastZero(filterForHintPx) * 2.0F;
     return (fits > forHint) ? fits : forHint;
+}
+
+/// Which form of the "Paused (Ctrl)" indicator the toolbar shows while a held Ctrl freezes the pane
+/// (#928).
+enum class PausedLabelForm : std::uint8_t
+{
+    Full,     ///< Icon and text
+    IconOnly, ///< Just the pause icon; its tooltip still explains it
+    Hidden,   ///< No room at all (only below the window's content minimum)
+};
+
+/// Picks the widest indicator that fits the room left on the toolbar row once the filter, clear
+/// button, process count and view toggle are placed (#928). measureToolbarMinimumWidth() reserves
+/// the icon-only form, so at the window's content minimum the icon always fits, and the full label
+/// shows whenever the real count leaves it room -- which it nearly always does, since the minimum
+/// budgets a worst-case count. Reserving only the icon keeps the minimum about one glyph wider
+/// instead of the full label's width.
+///
+/// @param roomPx     Width left for the indicator, the spacing after it included.
+/// @param fullPx     The full label's width, the spacing after it included.
+/// @param iconOnlyPx The icon-only form's width, the spacing after it included.
+[[nodiscard]] inline PausedLabelForm choosePausedLabelForm(float roomPx, float fullPx, float iconOnlyPx) noexcept
+{
+    // Absorbs float rounding where the room is exactly the reserved icon slot.
+    constexpr float FIT_SLOP_PX = 0.5F;
+    if (!std::isfinite(roomPx))
+    {
+        return PausedLabelForm::Hidden;
+    }
+    const float room = roomPx + FIT_SLOP_PX;
+    if (std::isfinite(fullPx) && fullPx <= room)
+    {
+        return PausedLabelForm::Full;
+    }
+    if (std::isfinite(iconOnlyPx) && iconOnlyPx <= room)
+    {
+        return PausedLabelForm::IconOnly;
+    }
+    return PausedLabelForm::Hidden;
 }
 
 } // namespace App::ProcessTableLayout

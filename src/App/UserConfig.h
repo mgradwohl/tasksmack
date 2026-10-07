@@ -9,6 +9,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace App
@@ -44,9 +45,10 @@ struct UserSettings
     int socketStatsCacheTtlMs = Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT;
 
     // Metrics Calculation Parameters
-    // Per-process network rate ceiling (bytes per second), [metrics] max_sane_rate_bps. A rate above
-    // it is taken for a bad reading and shown as 0. Config-file only; applied to the ProcessModel
-    // when the Processes panel attaches (#1123).
+    // Network rate ceiling (bytes per second), [metrics] max_sane_rate_bps. A per-process or
+    // per-interface rate above it is taken for a bad reading and shown as 0 (an interface's is also
+    // a gap in its chart). Config-file only; applied to the ProcessModel when the Processes panel
+    // attaches (#1123) and to the SystemModel when the System panel attaches (#1291).
     double maxSaneRateBps = Domain::Sampling::MAX_SANE_RATE_BPS_DEFAULT;
 
     // UI Behavior Parameters
@@ -110,6 +112,12 @@ class UserConfig
 
     /// Load settings from config file (call on startup)
     void load();
+
+    /// Parses `tomlText` as a config file and reads every setting it holds into `settings`, the same
+    /// way load() reads the file (keys that are absent leave `settings` alone). Returns false, with
+    /// `settings` untouched, if the text is not valid TOML. No file I/O; the seam the config fuzz
+    /// target drives (tests/fuzz/fuzz_user_config.cpp).
+    [[nodiscard]] static auto parseSettings(std::string_view tomlText, UserSettings& settings) -> bool;
 
     /// Save settings to the config file by replacing it with a new file, so a crash mid-write can't
     /// leave it truncated. Only the settings TaskSmack changed since it last read or wrote the file

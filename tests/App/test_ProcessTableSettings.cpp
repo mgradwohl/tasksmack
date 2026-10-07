@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <format>
 #include <string>
 #include <string_view>
 
@@ -318,6 +319,126 @@ TEST(ProcessTableSettingsTest, CarrySortForwardWithNothingToCarryReturnsTheSanit
     EXPECT_EQ(carrySortForward("garbage", SECTION), "");
 }
 
+// ========== withExplicitOrder (#1393) ==========
+
+using ProcessTableSettings::withExplicitOrder;
+
+// The reported layout: what ImGui saves for the Processes table after a session with nothing
+// resized or moved, sorted by CPU % descending. ImGui wrote no order, so the default order is
+// written out for every column, the sorted column included, and the sort is kept.
+TEST(ProcessTableSettingsTest, SortOnlySectionGetsTheDefaultOrderForEveryColumn)
+{
+    const std::string_view saved = "[Table][0xA7EC3B99,32]\n"
+                                   "RefScale=11\n"
+                                   "Column 8  Sort=0^ ID=0x9E4DF042\n";
+    const std::string filled = withExplicitOrder(saved);
+
+    std::string expected = "[Table][0xA7EC3B99,32]\n"
+                           "RefScale=11\n"
+                           "Column 8  Order=8 Sort=0^ ID=0x9E4DF042\n";
+    for (int index = 0; index < 32; ++index)
+    {
+        if (index != 8)
+        {
+            expected += std::format("Column {:<2} Order={}\n", index, index);
+        }
+    }
+    EXPECT_EQ(filled, expected);
+    // And it is a section sanitize() keeps as it is on the next launch.
+    EXPECT_EQ(sanitize(filled), filled);
+}
+
+// A section the user has reordered already carries an order for every column, and it is theirs.
+TEST(ProcessTableSettingsTest, ARealColumnOrderIsLeftAlone)
+{
+    EXPECT_EQ(withExplicitOrder(SECTION), SECTION);
+
+    const std::string_view reordered = "[Table][0x1A2B3C4D,3]\n"
+                                       "RefScale=11\n"
+                                       "Column 0  Width=60 Order=2 ID=0x00000001\n"
+                                       "Column 1  Width=120 Order=0 Sort=0v ID=0x00000002\n"
+                                       "Column 2  Weight=1.0000 Order=1 ID=0x00000003\n";
+    EXPECT_EQ(withExplicitOrder(reordered), reordered);
+}
+
+// A resized table has a line for every column, with its width; they gain an order and keep the rest.
+TEST(ProcessTableSettingsTest, WidthsAndSortSurviveTheFill)
+{
+    const std::string_view resized = "[Table][0x1A2B3C4D,3]\n"
+                                     "RefScale=13\n"
+                                     "Column 0  Width=60 ID=0x00000001\n"
+                                     "Column 1  Width=240 Sort=0^ ID=0x00000002\n"
+                                     "Column 2  Weight=1.0000 ID=0x00000003\n";
+    EXPECT_EQ(withExplicitOrder(resized),
+              "[Table][0x1A2B3C4D,3]\n"
+              "RefScale=13\n"
+              "Column 0  Width=60 Order=0 ID=0x00000001\n"
+              "Column 1  Width=240 Order=1 Sort=0^ ID=0x00000002\n"
+              "Column 2  Weight=1.0000 Order=2 ID=0x00000003\n");
+}
+
+// Hiding a column makes ImGui write every column with "Visible=". Visibility is stripped (it lives in
+// [process_columns]), and the lines that are left get the default order.
+TEST(ProcessTableSettingsTest, AHiddenColumnSectionGetsTheDefaultOrderWithoutVisibility)
+{
+    const std::string_view hidden = "[Table][0x1A2B3C4D,3]\n"
+                                    "Column 0  Visible=1 ID=0x00000001\n"
+                                    "Column 1  Visible=0 Sort=0v ID=0x00000002\n"
+                                    "Column 2  Visible=1 ID=0x00000003\n";
+    EXPECT_EQ(withExplicitOrder(hidden),
+              "[Table][0x1A2B3C4D,3]\n"
+              "Column 0  Order=0 ID=0x00000001\n"
+              "Column 1  Order=1 Sort=0v ID=0x00000002\n"
+              "Column 2  Order=2 ID=0x00000003\n");
+
+    // Hidden and moved: the moved order is kept.
+    const std::string_view hiddenAndMoved = "[Table][0x1A2B3C4D,2]\n"
+                                            "Column 0  Visible=0 Order=1\n"
+                                            "Column 1  Visible=1 Order=0\n";
+    EXPECT_EQ(withExplicitOrder(hiddenAndMoved), "[Table][0x1A2B3C4D,2]\nColumn 0  Order=1\nColumn 1  Order=0\n");
+}
+
+// A layout saved before a column was added has fewer columns than the table. Only its own columns
+// get an order; ImGui places the new one after them.
+TEST(ProcessTableSettingsTest, AnOlderLayoutWithFewerColumnsIsFilledToItsOwnCount)
+{
+    EXPECT_EQ(withExplicitOrder("[Table][0x1A2B3C4D,3]\nColumn 2  Sort=0^\n"),
+              "[Table][0x1A2B3C4D,3]\nColumn 2  Order=2 Sort=0^\nColumn 0  Order=0\nColumn 1  Order=1\n");
+}
+
+// A header-only section (nothing differs from the defaults) is given the default order too, so a
+// sort carried into it later still loads in the right order.
+TEST(ProcessTableSettingsTest, AHeaderOnlySectionGetsTheDefaultOrder)
+{
+    EXPECT_EQ(withExplicitOrder("[Table][0x1A2B3C4D,2]\n"), "[Table][0x1A2B3C4D,2]\nColumn 0  Order=0\nColumn 1  Order=1\n");
+    EXPECT_EQ(withExplicitOrder(carrySortForward("[Table][0x1A2B3C4D,2]\n", "[Table][0x1A2B3C4D,2]\nColumn 1  Sort=0^\n")),
+              "[Table][0x1A2B3C4D,2]\nColumn 1  Order=1 Sort=0^\nColumn 0  Order=0\n");
+}
+
+// A line past the column count is ignored by ImGui; it is not counted as covering a column.
+TEST(ProcessTableSettingsTest, ALinePastTheColumnCountIsNotGivenAnOrder)
+{
+    EXPECT_EQ(withExplicitOrder("[Table][0x1A2B3C4D,1]\nColumn 5  Sort=0^\n"),
+              "[Table][0x1A2B3C4D,1]\nColumn 5  Sort=0^\nColumn 0  Order=0\n");
+}
+
+TEST(ProcessTableSettingsTest, WithExplicitOrderIsIdempotentAndRejectsWhatSanitizeRejects)
+{
+    const std::string once = withExplicitOrder("[Table][0xA7EC3B99,32]\nRefScale=11\nColumn 8  Sort=0^ ID=0x9E4DF042\n");
+    EXPECT_EQ(withExplicitOrder(once), once);
+    EXPECT_EQ(withExplicitOrder(""), "");
+    EXPECT_EQ(withExplicitOrder("garbage"), "");
+    EXPECT_EQ(withExplicitOrder("[Window][Main]\nPos=0,0\n"), "");
+}
+
+// A column count too large to fill within the stored limits is returned unfilled, so the next launch
+// does not reject the whole layout.
+TEST(ProcessTableSettingsTest, ASectionTooLargeToFillIsReturnedUnfilled)
+{
+    const std::string_view huge = "[Table][0x1A2B3C4D,500]\nColumn 0  Sort=0^\n";
+    EXPECT_EQ(withExplicitOrder(huge), huge);
+}
+
 // ========== extractTableSection ==========
 
 TEST(ProcessTableSettingsTest, ExtractsTheNamedTableFromFullIni)
@@ -360,6 +481,41 @@ TEST(ProcessTableSettingsTest, ExtractedSectionHasNoVisibility)
 {
     const std::string ini = "[Table][0x1A2B3C4D,1]\nColumn 0  Width=60 Visible=0 Order=0\n\n";
     EXPECT_EQ(extractTableSection(ini, 0x1A2B3C4DU), "[Table][0x1A2B3C4D,1]\nColumn 0  Width=60 Order=0\n");
+}
+
+// ========== withColumnWidth (#1209) ==========
+
+// Closing in tree view: the Name column's list width is saved in place of tree view's automatic one.
+TEST(ProcessTableSettingsTest, WithColumnWidthReplacesTheColumnsWidth)
+{
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 1, 120),
+              "[Table][0x1A2B3C4D,3]\n"
+              "RefScale=13\n"
+              "Column 0  Width=60 Order=1 ID=0x00000000\n"
+              "Column 1  Width=120 Order=0 Sort=0^\n"
+              "Column 2  Weight=1.0000 Order=2\n");
+}
+
+TEST(ProcessTableSettingsTest, WithColumnWidthAddsALineForAColumnWithout)
+{
+    const std::string_view noNameLine = "[Table][0x1A2B3C4D,3]\n"
+                                        "Column 0  Width=60\n";
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(noNameLine, 1, 120),
+              "[Table][0x1A2B3C4D,3]\n"
+              "Column 0  Width=60\n"
+              "Column 1  Width=120\n");
+    // The result is a section sanitize() keeps as it is.
+    const std::string result = ProcessTableSettings::withColumnWidth(noNameLine, 1, 120);
+    EXPECT_EQ(sanitize(result), result);
+}
+
+TEST(ProcessTableSettingsTest, WithColumnWidthLeavesStretchColumnsAndBadWidthsAlone)
+{
+    // Column 2 is the stretch column: it has a weight, not a width.
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 2, 300), sanitize(SECTION));
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 1, 0), sanitize(SECTION));
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 1, 100000), sanitize(SECTION));
+    EXPECT_TRUE(ProcessTableSettings::withColumnWidth("", 1, 120).empty());
 }
 
 } // namespace

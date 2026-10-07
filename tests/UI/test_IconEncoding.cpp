@@ -89,5 +89,21 @@ TEST(IconEncodingTest, NetworkIconsAreInsideTheBakedRange)
     }
 }
 
+// The Processes table's tree carets and toolbar icons (#1209).
+TEST(IconEncodingTest, ProcessTableIconsAreTheirGlyphsInsideTheBakedRange)
+{
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_CARET_RIGHT), 0xF0DAU);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_CARET_DOWN), 0xF0D7U);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_TABLE_COLUMNS), 0xF0DBU);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_SITEMAP), 0xF0E8U);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_ROTATE_LEFT), 0xF2EAU);
+    for (const char* icon : {ICON_FA_CARET_RIGHT, ICON_FA_CARET_DOWN, ICON_FA_TABLE_COLUMNS, ICON_FA_SITEMAP, ICON_FA_ROTATE_LEFT})
+    {
+        const std::uint32_t codePoint = decodeSingleCodePoint(icon);
+        EXPECT_GE(codePoint, ICON_MIN_FA);
+        EXPECT_LE(codePoint, ICON_MAX_FA);
+    }
+}
+
 } // namespace
 } // namespace UI

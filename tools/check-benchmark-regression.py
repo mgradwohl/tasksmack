@@ -4,23 +4,36 @@ tools/check-benchmark-regression.py — Compare benchmark results against a base
 
 Usage:
     python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
-        --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90]
+        --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90] \
+        [--min-abs-delta-ns 1.0]
 
 Exit codes:
-    0  All matched benchmarks are within threshold, and coverage meets --min-coverage
+    0  No matched benchmark exceeds both the threshold and the floor, and coverage meets --min-coverage
     1  One or more benchmarks regressed beyond the threshold, or coverage is too low
     2  Usage error, invalid input, or no comparable benchmarks at all
 
 The threshold is a percentage: a benchmark that is more than THRESHOLD% slower than the
 baseline is considered a regression. Improvements are always accepted.
 
+--min-abs-delta-ns is an absolute noise floor: a benchmark only counts as a regression when it
+is both more than THRESHOLD% slower AND slower by more than this many nanoseconds. A
+sub-nanosecond microbenchmark (e.g. BM_Numeric_ToDouble_Int at ~0.4ns) moving by 0.2ns is timer
+and runner noise, yet reads as +50%; percentages alone cannot tell that apart from a real
+regression (#1322). Default 1.0ns; pass 0 to gate on the percentage alone.
+
 --min-coverage is the minimum percentage of baseline benchmarks that must be present and
 validly comparable in the current run. A benchmark missing from the current run, or one with
 no usable timing data on either side, counts against coverage rather than being silently
 ignored -- a regression-detection gate that quietly compares less and less over time as
 benchmarks disappear or degrade is not trustworthy. Default 90% tolerates the occasional
-counter-only benchmark that structurally has no timing field (e.g. BM_GPUModel_UtilizationHistory)
-without masking a real, larger coverage loss.
+benchmark with no usable timing without masking a real, larger coverage loss.
+
+A benchmark that skipped itself on purpose (Google Benchmark's SkipWithMessage(), written as
+"skipped": true) on either side is reported as not measured: neither compared nor counted in
+coverage, in the numerator or the denominator. The GPU benchmarks do this on a machine with no
+GPU, such as the CI runner, instead of timing an empty probe (#1420). A benchmark that failed
+(SkipWithError(), "error_occurred": true) on either side still counts against coverage, even if
+the other side skipped on purpose.
 
 The JSON format is Google Benchmark's --benchmark_format=json output.
 """
@@ -64,6 +77,23 @@ def load_benchmarks(path: Path) -> dict[str, dict]:
         if name:
             result[name] = bm
     return result
+
+
+def skip_message(bm: dict) -> str | None:
+    """The message of a benchmark that skipped itself on purpose (SkipWithMessage()), else None.
+
+    Google Benchmark writes "skipped": true and "skip_message" for an intentional skip, and
+    "error_occurred": true for SkipWithError(); an error is a failed measurement, not a skip.
+    """
+    if bm.get("skipped") is True and bm.get("error_occurred") is not True:
+        message = bm.get("skip_message")
+        return message if isinstance(message, str) and message else "skipped"
+    return None
+
+
+def errored(bm: dict) -> bool:
+    """True for a benchmark whose measurement failed (SkipWithError(): "error_occurred": true)."""
+    return bm.get("error_occurred") is True
 
 
 def common_timing_field(base_bm: dict, cur_bm: dict) -> str | None:
@@ -144,6 +174,15 @@ def main() -> int:
             "comparable in the current run (default: 90)"
         ),
     )
+    parser.add_argument(
+        "--min-abs-delta-ns",
+        type=finite_percentage(min_value=0.0),
+        default=1.0,
+        help=(
+            "Absolute noise floor in nanoseconds: a slowdown of this much or less is never a "
+            "regression, whatever its percentage (default: 1.0; 0 disables)"
+        ),
+    )
     args = parser.parse_args()
 
     if not args.baseline.exists():
@@ -169,22 +208,46 @@ def main() -> int:
 
     print(f"Comparing {len(current)} current benchmark(s) against {len(baseline)} baseline(s).")
     print(f"Regression threshold: {args.threshold:.1f}%")
+    print(f"Absolute noise floor: {args.min_abs_delta_ns:.2f}ns")
     print(f"Minimum required coverage: {args.min_coverage:.1f}%")
     print()
+
+    # Skipped on purpose (e.g. a GPU benchmark on a machine with no GPU, #1420): there is nothing
+    # to compare, and it is not a coverage loss either. Classified first, over every benchmark on
+    # either side: a baseline record that skipped is not measured whether or not the current run
+    # has it at all (otherwise it would land in missing_from_current and count against coverage),
+    # and a skipped benchmark only the current run has is reported here too, not as new.
+    # A failed measurement (SkipWithError(), "error_occurred": true) on either side takes
+    # precedence: it is never classified as an intentional skip, so it still counts against
+    # coverage -- a baseline skip must not hide a current-run error, nor the reverse.
+    not_measured: list[tuple[str, str]] = []
+    for name in sorted(set(baseline) | set(current)):
+        if (name in baseline and errored(baseline[name])) or (name in current and errored(current[name])):
+            continue
+        base_skip = skip_message(baseline[name]) if name in baseline else None
+        cur_skip = skip_message(current[name]) if name in current else None
+        if cur_skip is not None:
+            not_measured.append((name, f"skipped in current run: {cur_skip}"))
+        elif base_skip is not None:
+            not_measured.append((name, f"skipped in baseline run: {base_skip}"))
+    skipped_names = {name for name, _ in not_measured}
+    # Only baseline benchmarks are in the coverage denominator, so only they are taken out of it.
+    skipped_baseline = len(skipped_names & set(baseline))
 
     # A benchmark present in the baseline but absent from the current run is a real coverage
     # gap, not something to silently ignore -- it means this run tells us nothing about
     # whether that benchmark regressed (see #871: "removing a required baseline benchmark
     # returned success").
-    missing_from_current = sorted(set(baseline) - set(current))
-    new_in_current = sorted(set(current) - set(baseline))
+    missing_from_current = sorted(set(baseline) - set(current) - skipped_names)
+    new_in_current = sorted(set(current) - set(baseline) - skipped_names)
 
     regressions: list[tuple[str, float, str, float, str, float]] = []
     improvements: list[tuple[str, float, str, float, str, float]] = []
+    below_floor: list[tuple[str, float, str, float, str, float]] = []
     invalid: list[tuple[str, str]] = []
     compared = 0
 
-    for name in sorted(set(baseline) & set(current)):
+    for name in sorted((set(baseline) & set(current)) - skipped_names):
         base_bm = baseline[name]
         cur_bm = current[name]
 
@@ -234,8 +297,14 @@ def main() -> int:
         compared += 1
         pct_change = ((cur_time_normalized - base_time_normalized) / base_time_normalized) * 100.0
 
+        abs_delta_ns = cur_time_normalized - base_time_normalized
+
         if pct_change > args.threshold:
-            regressions.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
+            row = (name, base_time, base_unit, cur_time, cur_unit, pct_change)
+            if abs_delta_ns > args.min_abs_delta_ns:
+                regressions.append(row)
+            else:
+                below_floor.append(row)
         elif pct_change < -5.0:
             improvements.append((name, base_time, base_unit, cur_time, cur_unit, pct_change))
 
@@ -245,6 +314,13 @@ def main() -> int:
               "but not measured this run:")
         for name in missing_from_current:
             print(f"   {name}")
+        print()
+
+    if not_measured:
+        print(f"Not measured ({len(not_measured)}) -- skipped by the benchmark itself, "
+              "excluded from comparison and coverage:")
+        for name, reason in not_measured:
+            print(f"   {name}: {reason}")
         print()
 
     if invalid:
@@ -270,6 +346,14 @@ def main() -> int:
             print(f"   {name}: {base:.1f}{base_unit} -> {cur:.1f}{cur_unit}  ({pct:+.1f}%)")
         print()
 
+    # ── Report over-threshold changes inside the absolute noise floor ─────────
+    if below_floor:
+        print(f"Over {args.threshold:.1f}% but within the {args.min_abs_delta_ns:.2f}ns noise floor "
+              f"({len(below_floor)}, not regressions):")
+        for name, base, base_unit, cur, cur_unit, pct in sorted(below_floor, key=lambda x: -x[5]):
+            print(f"   {name}: {base:.2f}{base_unit} -> {cur:.2f}{cur_unit}  ({pct:+.1f}%)")
+        print()
+
     # ── Report regressions ────────────────────────────────────────────────────
     if regressions:
         print(f"Regressions ({len(regressions)}) - exceeded {args.threshold:.1f}% threshold:")
@@ -280,17 +364,22 @@ def main() -> int:
         return 1
 
     # ── Coverage gate ─────────────────────────────────────────────────────────
-    coverage_pct = (compared / len(baseline)) * 100.0
+    # Benchmarks skipped on purpose are out of the denominator as well as the numerator.
+    measurable = len(baseline) - skipped_baseline
+    coverage_pct = (compared / measurable) * 100.0
     if coverage_pct < args.min_coverage:
         print(
             f"FAILED: coverage {coverage_pct:.1f}% is below the required "
             f"{args.min_coverage:.1f}% ({len(missing_from_current)} missing, "
-            f"{len(invalid)} invalid/unusable, out of {len(baseline)} baseline benchmark(s))."
+            f"{len(invalid)} invalid/unusable, out of {measurable} measurable baseline benchmark(s); "
+            f"{skipped_baseline} skipped on purpose)."
         )
         return 1
 
-    print(f"All {compared} matched benchmark(s) within {args.threshold:.1f}% threshold; "
-          f"coverage {coverage_pct:.1f}%.")
+    floor_note = f" ({len(below_floor)} over {args.threshold:.1f}% only within the noise floor)" if below_floor else ""
+    skip_note = f" ({skipped_baseline} skipped on purpose, not counted)" if skipped_baseline else ""
+    print(f"No benchmark exceeded both the {args.threshold:.1f}% threshold and the {args.min_abs_delta_ns:.2f}ns "
+          f"floor: {compared} compared{floor_note}; coverage {coverage_pct:.1f}%{skip_note}.")
     return 0
 
 

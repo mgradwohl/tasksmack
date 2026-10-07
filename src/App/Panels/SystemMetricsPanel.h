@@ -4,6 +4,7 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetInterfaceUtils.h"
+#include "App/Panels/NetworkSection.h"
 #include "App/Panels/StorageSection.h"
 #include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
@@ -15,16 +16,19 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Theme.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -58,11 +62,13 @@ class SystemMetricsPanel : public Panel
     /// Request an immediate refresh.
     void requestRefresh();
 
-    /// Inject process model for aggregated system histories (non-owning, read-only: ProcessesPanel
-    /// owns it and sets its history length, #1078).
-    void setProcessModel(Domain::ProcessModel* model)
+    /// Inject process model for aggregated system histories (read-only: ProcessesPanel owns it and
+    /// sets its history length, #1078). Held as a weak_ptr, so once ProcessesPanel releases the
+    /// model (its onDetach) this panel sees no model rather than a dangling one (#1176). Cleared on
+    /// this panel's own detach.
+    void setProcessModel(std::weak_ptr<Domain::ProcessModel> model)
     {
-        m_ProcessModel = model;
+        m_ProcessModel = std::move(model);
     }
 
     /// Render the panel (with ImGui window wrapper).
@@ -75,7 +81,22 @@ class SystemMetricsPanel : public Panel
 
     /// Width of the Overview's NowBar column, including the cell padding that separates it from the
     /// plot, at the current font and style. For the window's content minimum (#1207); needs a frame.
-    [[nodiscard]] static float overviewNowBarColumnWidth();
+    [[nodiscard]] float overviewNowBarColumnWidth() const;
+
+    /// The most any of this panel's chart tabs spent around and above its first chart, plot aside,
+    /// counting only measurements taken at this window width and font size
+    /// (UI::Widgets::currentFirstPlotNonPlotHeight()): the minimum window height keeps room for it
+    /// (#1370 review). 0 when no tab has a current measurement.
+    [[nodiscard]] float firstChartNonPlotHeight(float windowWidth, float fontSize) const noexcept
+    {
+        return std::max({UI::Widgets::currentFirstPlotNonPlotHeight(m_OverviewFill.firstPlot, windowWidth, fontSize),
+                         UI::Widgets::currentFirstPlotNonPlotHeight(m_GpuFill.firstPlot, windowWidth, fontSize),
+                         UI::Widgets::currentFirstPlotNonPlotHeight(m_NetworkFill.firstPlot, windowWidth, fontSize)});
+    }
+
+    /// NowBar columns every Overview chart reserves: the most bars any of them has, which depends on
+    /// whether the platform reports I/O Wait (a fourth CPU bar).
+    [[nodiscard]] std::size_t overviewNowBarColumns() const;
 
     /// Get the hostname (for tab/window title).
     [[nodiscard]] const std::string& hostname() const
@@ -99,7 +120,9 @@ class SystemMetricsPanel : public Panel
     std::shared_ptr<Domain::SystemModel> m_Model;
     std::shared_ptr<Domain::StorageModel> m_StorageModel;
     std::shared_ptr<Domain::GPUModel> m_GPUModel;
-    Domain::ProcessModel* m_ProcessModel = nullptr; // non-owning
+    // Owned by ProcessesPanel; locked where used, so its lifetime never depends on panel detach
+    // order (#1176).
+    std::weak_ptr<Domain::ProcessModel> m_ProcessModel;
     std::shared_ptr<const Domain::SystemPublication> m_SystemPublication;
     std::shared_ptr<const Domain::StoragePublication> m_StoragePublication;
     std::shared_ptr<const Domain::GPUPublication> m_GPUPublication;
@@ -113,22 +136,37 @@ class SystemMetricsPanel : public Panel
     std::vector<double> m_ProcessPageFaultsHistory;
     std::vector<double> m_ProcessThreadCountHistory;
     std::vector<double> m_ProcessHandleCountHistory;
+    // The process probe's capabilities, copied with the process histories (#1254).
+    Platform::ProcessCapabilities m_ProcessCapabilities;
 
     double m_MaxHistorySeconds = Domain::Numeric::toDouble(Domain::Sampling::HISTORY_SECONDS_DEFAULT);
     double m_HistoryScrollSeconds = 0.0;
     double m_CurrentNowSeconds = 0.0;
-    std::vector<double> m_TimestampsCache;
 
     // Render scratch buffers for stacked CPU breakdown chart (reused across frames to avoid per-frame heap allocation)
-    // double, to match the double time axis ImPlot pairs them with (UI::Widgets::buildTimeAxis)
-    std::vector<double> m_CpuStackX;
-    std::vector<double> m_CpuStackY0;
-    std::vector<double> m_CpuStackYUser;
-    std::vector<double> m_CpuStackYSystem;
+    // double, to match the double time axis ImPlot pairs them with (UI::Widgets::fillTimeAxis)
+    UI::Widgets::UserSystemStack m_CpuStack; // The User and System bands, shared with Process Details (#1180)
     std::vector<double> m_CpuStackYIowait;
     // The stacked bands' reduced points (#1022), kept until the next publication (#1139)
     UI::Widgets::ReducedPointsCache m_CpuStackReduction;
     std::vector<double> m_CpuStackYBusy; // Bottom of the I/O Wait band: the busy total, 100 - idle - iowait
+    // The battery charge history as charted, "no reading" (-1) as NaN; rebuilt in place each frame (#1171)
+    std::vector<float> m_BatteryChartHistory;
+
+    // The Overview header's text, rebuilt only when what it shows changes -- the system and GPU
+    // publications or the process count -- rather than formatted every frame (#1171).
+    struct OverviewHeaderText
+    {
+        bool valid = false;
+        std::uint64_t systemVersion = 0;
+        std::uint64_t gpuVersion = 0;
+        std::size_t processCount = 0;
+        bool hasProcessModel = false;
+        std::string uptime;
+        std::string coreInfo;
+        std::string processes;
+        std::string memory;
+    } m_OverviewHeader;
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
@@ -194,9 +232,13 @@ class SystemMetricsPanel : public Panel
     // traffic, which stay listed while down.
     bool m_ShowAllInterfaces = false;
     NetInterfaceUtils::InterfaceNameSet m_InterfacesWithTraffic;
+    // The Network tab's strings and lists, kept until the next publication (#1171)
+    NetworkSection::FrameCache m_NetworkFrameCache;
 
     // GPU smoothed values (uses type from GpuSection)
     std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;
+    // The GPU tab's per-frame storage, kept so drawing it allocates nothing once warmed up (#1171).
+    GpuSection::FrameCache m_GpuFrameCache;
 
     std::vector<double> m_SmoothedPerCore;
 
@@ -207,10 +249,14 @@ class SystemMetricsPanel : public Panel
     int m_LastCoreCount = 0;
     bool m_LayoutDirty = true; // Start dirty to calculate on first frame
 
-    // Cached hostname and snapshot for UI
+    // Cached hostname for UI. The snapshot and timestamps are read from m_SystemPublication (#1180).
     std::string m_Hostname = "System";
-    Domain::SystemSnapshot m_CachedSnapshot;
 
+    /// Holds the model's latest publication, takes a new chart data generation for it and moves
+    /// "now" to its last sample (onAttach() and onUpdate(), #1180).
+    void adoptSystemPublication();
+    /// The held publication's snapshot, or an empty one before the first publication.
+    [[nodiscard]] const Domain::SystemSnapshot& systemSnapshot() const;
     void updateCachedLayout();
     void updateSmoothedCpu(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);
     void updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds);

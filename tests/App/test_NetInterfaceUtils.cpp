@@ -11,11 +11,17 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
 #include "App/Panels/NetInterfaceUtils.h"
+#include "Domain/SystemSnapshot.h"
+#include "UI/Format.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <initializer_list>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::NetInterfaceUtils
@@ -159,6 +165,35 @@ TEST(NetInterfaceUtilsTest, IsVirtualReturnsFalseForRealInterfaces)
     EXPECT_FALSE(isVirtualInterface(wlp2s0));
     EXPECT_FALSE(isVirtualInterface(winEth));
     EXPECT_FALSE(isVirtualInterface(winWifi));
+}
+
+// #1260: where the platform classified the interface, its isVirtual flag decides -- the same flag the
+// network Total uses -- and the name heuristic is only a fallback for interfaces it couldn't classify.
+TEST(NetInterfaceUtilsTest, IsVirtualFollowsThePlatformFlagOverAHardwareLookingName)
+{
+    auto wg = makeInterface("eth-tunnel0");
+    wg.isVirtual = true;
+    wg.isVirtualKnown = true;
+    EXPECT_TRUE(isVirtualInterface(wg));
+    EXPECT_TRUE(isAlwaysHidden(wg));
+}
+
+TEST(NetInterfaceUtilsTest, IsVirtualFollowsThePlatformFlagOverAVirtualLookingName)
+{
+    auto nic = makeInterface("veth0"); // a NIC renamed veth0: the platform found its backing device
+    nic.isVirtual = false;
+    nic.isVirtualKnown = true;
+    EXPECT_FALSE(isVirtualInterface(nic));
+    EXPECT_FALSE(isAlwaysHidden(nic));
+    EXPECT_STREQ(getInterfaceTypeIcon(nic), ICON_FA_ETHERNET);
+    EXPECT_EQ(getSortedFilteredInterfaces({nic}, /*showVirtualInterfaces=*/false).size(), 1U);
+}
+
+TEST(NetInterfaceUtilsTest, IsVirtualFallsBackToTheNameWhenThePlatformCouldNotClassify)
+{
+    auto unclassified = makeInterface("veth0"); // isVirtualKnown false: e.g. no sysfs entry
+    EXPECT_TRUE(isVirtualInterface(unclassified));
+    EXPECT_FALSE(isVirtualInterface(makeInterface("eth0")));
 }
 
 // =============================================================================
@@ -631,6 +666,50 @@ TEST(NetInterfaceUtilsTest, TrafficOnAlwaysHiddenInterfacesIsNotRecorded)
     recordInterfaceTraffic({veth, wifi}, seen);
     EXPECT_FALSE(seen.contains("veth1a2b3c"));
     EXPECT_TRUE(seen.contains("Wi-Fi"));
+}
+
+// #1375: Interface Status shows a measured zero in the column's own format, muted, and a dash
+// only where there is no reading -- the convention #1210 set for the process table.
+TEST(NetInterfaceUtilsTest, AMeasuredZeroRateIsAMutedValueNotADash)
+{
+    const RateCell cell = makeRateCell(0.0, Domain::InterfaceRateStatus::Measured);
+    EXPECT_EQ(cell.tone, RateCellTone::Zero);
+    EXPECT_EQ(cell.text, UI::Format::formatBytesPerSec(0.0));
+    EXPECT_NE(cell.text, UNAVAILABLE_RATE_TEXT);
+    EXPECT_NE(cell.text, "-");
+    EXPECT_EQ(cell.unavailableReason, nullptr);
+}
+
+TEST(NetInterfaceUtilsTest, ANonZeroRateIsAValue)
+{
+    const RateCell cell = makeRateCell(1536.0, Domain::InterfaceRateStatus::Measured);
+    EXPECT_EQ(cell.tone, RateCellTone::Value);
+    EXPECT_EQ(cell.text, UI::Format::formatBytesPerSec(1536.0));
+    EXPECT_EQ(cell.unavailableReason, nullptr);
+}
+
+TEST(NetInterfaceUtilsTest, ARateWithNoReadingIsADashWithItsReason)
+{
+    for (const auto status :
+         {Domain::InterfaceRateStatus::NotYetSampled, Domain::InterfaceRateStatus::CounterReset, Domain::InterfaceRateStatus::AboveCeiling})
+    {
+        // The rate is held at 0 when there is no reading; it is not a measured zero.
+        const RateCell cell = makeRateCell(0.0, status);
+        EXPECT_EQ(cell.tone, RateCellTone::Unavailable);
+        EXPECT_EQ(cell.text, UNAVAILABLE_RATE_TEXT);
+        ASSERT_NE(cell.unavailableReason, nullptr);
+        EXPECT_FALSE(std::string_view(cell.unavailableReason).empty());
+    }
+    EXPECT_EQ(UNAVAILABLE_RATE_TEXT, "\xE2\x80\x94");
+    EXPECT_EQ(rateUnavailableReason(Domain::InterfaceRateStatus::Measured), nullptr);
+}
+
+TEST(NetInterfaceUtilsTest, RateCellToneIsDecidedAtCompileTime)
+{
+    static_assert(rateCellTone(0.0, Domain::InterfaceRateStatus::Measured) == RateCellTone::Zero);
+    static_assert(rateCellTone(1.0, Domain::InterfaceRateStatus::Measured) == RateCellTone::Value);
+    static_assert(rateCellTone(1.0, Domain::InterfaceRateStatus::CounterReset) == RateCellTone::Unavailable);
+    SUCCEED();
 }
 
 } // namespace

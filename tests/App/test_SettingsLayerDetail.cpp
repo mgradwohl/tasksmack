@@ -3,6 +3,7 @@
 /// @see Issue #310
 
 #include "App/SettingsLayerDetail.h"
+#include "Domain/SamplingConfig.h"
 
 #include <gtest/gtest.h>
 
@@ -185,6 +186,42 @@ TEST(SettingsLayerDetailTest, CustomLabelsDescribeOffListValues)
     EXPECT_EQ(customHistoryLabel(1800), "Custom (30 minutes)");
     EXPECT_EQ(customHistoryLabel(60), "Custom (1 minute)");
     EXPECT_EQ(customHistoryLabel(45), "Custom (45 seconds)");
+}
+
+// ========================================
+// Reset to defaults (#1273)
+// ========================================
+
+TEST(SettingsLayerDetailTest, DefaultChoicePicksEachShippedDefault)
+{
+    // Picked, so Save writes the default even when the stored value was already something else.
+    const ComboState font = defaultChoice(FONT_SIZE_OPTIONS, UI::FontSize::Medium, &FontSizeOption::value);
+    EXPECT_TRUE(font.touched);
+    ASSERT_TRUE(pickedOption(font, FONT_SIZE_OPTIONS).has_value());
+    EXPECT_EQ(pickedOption(font, FONT_SIZE_OPTIONS).value().value, UI::FontSize::Medium);
+
+    const ComboState refresh =
+        defaultChoice(REFRESH_RATE_OPTIONS, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS, &RefreshRateOption::valueMs);
+    ASSERT_TRUE(pickedOption(refresh, REFRESH_RATE_OPTIONS).has_value());
+    EXPECT_EQ(pickedOption(refresh, REFRESH_RATE_OPTIONS).value().valueMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+
+    const ComboState history = defaultChoice(HISTORY_OPTIONS, Domain::Sampling::HISTORY_SECONDS_DEFAULT, &HistoryOption::valueSeconds);
+    ASSERT_TRUE(pickedOption(history, HISTORY_OPTIONS).has_value());
+    EXPECT_EQ(pickedOption(history, HISTORY_OPTIONS).value().valueSeconds, Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+}
+
+TEST(SettingsLayerDetailTest, DefaultChoiceForAnOffListValueWritesNothing)
+{
+    const ComboState choice = defaultChoice(REFRESH_RATE_OPTIONS, 750, &RefreshRateOption::valueMs);
+    EXPECT_FALSE(choice.index.has_value());
+    EXPECT_FALSE(choice.touched);
+    EXPECT_FALSE(pickedOption(choice, REFRESH_RATE_OPTIONS).has_value());
+}
+
+TEST(SettingsLayerDetailTest, LargestFontPresetIsNamedLargest)
+{
+    EXPECT_EQ(FONT_SIZE_OPTIONS.back().label, "Largest");
+    EXPECT_EQ(FONT_SIZE_OPTIONS.back().value, UI::FontSize::EvenHuger);
 }
 
 } // namespace

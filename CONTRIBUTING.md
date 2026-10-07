@@ -210,6 +210,8 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-added-large-files**: Prevent large files (>500KB)
 - **check-merge-conflict**: Detect merge conflict markers
 - **shellcheck**: Lint shell scripts
+- **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
+  shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)
 
 ### Bypassing Hooks (Emergency Only)
 
@@ -404,6 +406,12 @@ the untested logic needs OS handles or not:
    `clampNonNegativeQuadPart`). Writing tests against `parsePowerStatus` this way is what caught
    a real bug: `BATTERY_FLAG_UNKNOWN` (0xFF) also has the `BATTERY_FLAG_NO_BATTERY` bit (0x80)
    set, so the original bitmask-first check order made the `Unknown` battery state unreachable.
+   Test a header that reaches no Windows header (directly or through its includes) in
+   `tests/Platform/WindowsMath/test_<Header>.cpp`, listed in `WINDOWS_MATH_TEST_SOURCES`: those
+   files are built on every platform, so Linux CI runs the Windows probes' arithmetic under its
+   sanitizers and coverage as well (#1133). Such a test file must not include `windows.h` or use
+   SDK macros (`NO_ERROR`, `ERROR_*`, `BATTERY_FLAG_*`); use the header's own constants. Tests that
+   need a probe, Windows types or fakes of Windows APIs stay in `tests/Platform/test_Windows*.cpp`.
 2. **Logic that must stay behind real OS handles/dynamically-loaded function pointers (e.g.
    NVML's `nvmlDevice_t`/function table): use a friend test-accessor struct**, declared as a
    single `friend struct FooTestAccessor;` line in the production class and defined only in the
@@ -478,10 +486,19 @@ pwsh tools/clang-tidy.ps1 debug    # Windows
 Note: the build uses precompiled headers (PCH). The clang-tidy helper strips PCH flags from the compile commands to avoid version mismatch issues.
 
 `.clang-tidy` sets `WarningsAsErrors: '*'`, so any clang-tidy finding fails the run, locally and in CI's
-blocking Linux job. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
-this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). The blocking job
-covers what `tools/clang-tidy.sh` analyses, which excludes `src/Platform/Windows/**`; Windows-only code is
-checked only by the advisory Windows job on pushes to `main` until #1233 adds a blocking gate.
+blocking jobs. Fix the finding, or suppress it with a `NOLINT(check-name)` comment that says why. Before
+this, clang-tidy exited 0 on warnings, so the CI job could never fail on one (#1089). CI runs clang-tidy
+twice, both blocking: on Linux over what `tools/clang-tidy.sh` analyses (which excludes
+`src/Platform/Windows/**`), and on Windows over what `tools/clang-tidy.ps1` analyses (everything but
+`src/Platform/Linux/**`, so the Windows platform code and the `_WIN32` branches of shared files) (#1233).
+Run the Windows script before pushing a change to Windows-only code. The Windows script skips one check,
+`clang-analyzer-optin.core.EnumCastOutOfRange`, for an MSVC STL false positive it can't suppress in our code.
+
+Naming is enforced by `readability-identifier-naming` in `.clang-tidy`: `PascalCase` classes, structs,
+enums, enumerators, namespaces and type aliases; `camelCase` functions, methods and parameters;
+`m_PascalCase` private and protected members (`m_CurrentFontSize`, not `m_currentFontSize`); and
+`UPPER_SNAKE_CASE` constants by convention. Public data members of snapshot structs are plain
+`camelCase` with no prefix.
 
 ### Include-What-You-Use (IWYU)
 
@@ -620,19 +637,33 @@ pthread barrier paths, while preserving any caller-provided TSAN flags.
 
 ## Fuzzing (Linux only)
 
-ClusterFuzzLite continuously exercises the allocation-free `/proc` numeric
-parsers with libFuzzer and AddressSanitizer. Pull requests that change the
-parser or fuzzing configuration run a short code-change fuzzing job; `main`
-also produces a baseline build. Separate weekly jobs perform a longer batch
-run and prune the resulting corpus.
+ClusterFuzzLite continuously exercises three parsers with libFuzzer and AddressSanitizer:
 
-To run the current target locally with Clang:
+| Target | Entry point | Seed corpus |
+|--------|-------------|-------------|
+| `fuzz_proc_parsing` | the allocation-free `/proc` numeric parsers (`Platform/Linux/ProcParsing.h`) | none |
+| `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
+| `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
+
+Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
+any fuzzed parser (`ProcParsing.h`, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
+`ThemeLoader.{cpp,h}`, and the types they fill, `Theme.h` and `ProcessColumnConfig.h`), the fuzz build's other inputs
+(`assets/themes/**`, the theme seed corpus, and `tests/Mocks/ThemeStub.cpp`), or the dependency
+pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
+code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
+refresh the baseline build (`cflite_build.yml`). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+`.clusterfuzzlite/build.sh` builds every target (ClusterFuzzLite runs each binary it leaves in
+`$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
+targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
+`cmake/Dependencies.cmake` pins, with the same `cmake/patches/` applied (`.clusterfuzzlite/fetch-deps.sh`).
+
+To build and run the targets locally with Clang, from the repo root:
 
 ```bash
-mkdir -p build/fuzz
-clang++-23 -std=c++23 -Isrc -fsanitize=fuzzer,address \
-  tests/fuzz/fuzz_proc_parsing.cpp -o build/fuzz/fuzz_proc_parsing
-./build/fuzz/fuzz_proc_parsing -max_total_time=60
+CXX=clang++-23 CXXFLAGS="-O1 -g -fsanitize=address,fuzzer-no-link" \
+  LIB_FUZZING_ENGINE=-fsanitize=fuzzer OUT=build/fuzz .clusterfuzzlite/build.sh
+mkdir -p build/fuzz/corpus-config && unzip -o build/fuzz/fuzz_user_config_seed_corpus.zip -d build/fuzz/corpus-config
+./build/fuzz/fuzz_user_config -max_total_time=60 build/fuzz/corpus-config
 ```
 
 ## Benchmarks
@@ -681,6 +712,10 @@ python -m google_benchmark.compare perf-data/linux-baseline.json perf-data/bench
 
 ### CI Benchmark Regression Gate
 
+PR CI (`ci.yml`'s Linux Release job) only *builds* `TaskSmackBenchmarks` -- it never runs it -- so a
+change that breaks the benchmark build fails the PR (#1348). Timing runs and the regression gate below
+live only in `heavy-checks.yml`.
+
 `heavy-checks.yml`'s `benchmark-regression` job runs on every push to `main`, gating against
 `perf-data/linux-ci-baseline.json` via `tools/check-benchmark-regression.py` (40% threshold,
 comparing medians of `tools/bench.sh`'s 10 repetitions per benchmark) -- a failure here **fails
@@ -689,6 +724,14 @@ enforces a `--min-coverage` floor (default 90%): a benchmark missing from the cu
 with no usable timing data on either side, counts against coverage instead of being silently
 ignored (see #871 -- this closed three concrete false-pass paths: a missing baseline benchmark,
 a non-finite/`NaN` timing, and comparing two different timing fields for the same benchmark).
+A slowdown also has to exceed an absolute noise floor, `--min-abs-delta-ns` (default 1.0ns), to
+count: a sub-nanosecond microbenchmark such as `BM_Numeric_ToDouble_Int` moving 0.4ns -> 0.6ns
+reads as +50% but is timer noise (#1322). Pass `--min-abs-delta-ns 0` to gate on percentage alone.
+A benchmark that skips itself on purpose (`state.SkipWithMessage(...)`, `"skipped": true` in the
+JSON) on either side is reported as *not measured* and left out of coverage entirely, numerator and
+denominator; a `SkipWithError` (`"error_occurred": true`) on either side still counts against it, even if the other side skipped. The
+`BM_GPUProbe_*`/`BM_GPUModel_*` benchmarks skip this way when the real probe finds no GPU, as on the
+hosted runner, instead of timing an empty probe's early return (#1420).
 
 This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one
 was recorded on a local developer machine (10 cores @ 3.7 GHz) for local `tools/bench.sh`
@@ -748,6 +791,7 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_ProcessModel_*` | Process enumeration and snapshot computation |
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
+| `BM_ProcessProbe_EnumerateSynthetic*` | `LinuxProcessProbe::enumerate()` over a synthetic 5,000-process /proc (Linux only), so runs compare like for like: steady state, and a pass that also rebuilds the socket inode-to-PID map from its fd walk (`...Rebuild`) |
 | `BM_SystemModel_*` | System metric sampling and history accessor performance |
 | `BM_SystemModel_MemoryGrowth` | Memory growth over repeated `refresh()` calls exercising the full probe read, delta computation, and history append path |
 | `BM_SystemProbe_Sample` | Raw OS system probe API performance |
@@ -755,10 +799,13 @@ deliberate, reviewed performance change that the gate should treat as the new no
 | `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
 | `BM_StorageModel_*` | Storage probe/model sampling, history accessor, and per-disk snapshot performance |
 | `BM_StorageModel_MemoryGrowth` | Memory growth over repeated `sample()` cycles |
-| `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance |
+| `BM_GPUProbe_*`, `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance (skipped on a machine with no GPU, #1420; the mock-probe `BM_GPUModel_History_Publish`/`BM_GPUModel_Concurrent_PublicationWait` below always run) |
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
+| `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
+| `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
+| `BM_SystemModel_Concurrent_PublicationWait/*`, `BM_GPUModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread, with optional extra reader threads: the exclusive lock's hold time before #868, a pointer swap since (#1422, #868) |
 
 ### Memory Tracking
 
@@ -790,11 +837,36 @@ write artifacts under `perf-data/` and emit `KEY=value` lines at exit for script
 ### Linux — CPU profiling (perf)
 
 Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
-Default preset is `profile` for app mode and `benchmark` for bench mode.
+Default preset is `profile` for app mode and `benchmark` for bench mode. Every run prints, and
+writes to its log, the preset, build directory, build type, compiler and `CMAKE_CXX_FLAGS*` entries
+it profiled. Those cache entries miss `add_compile_options()`/`target_compile_options()` flags such as
+a `TASKSMACK_MARCH` `-march`, `-stdlib=libc++` and the release hardening flags. So each run also
+prints the real compile flags of one of the profiled binary's `src/` files (`src/main.cpp` for the
+app), read from the build's `compile_commands.json` with `python3`, and logs that file's full
+compile command. Every preset exports `compile_commands.json`. If the file or `python3` is missing,
+the run says so and logs the cache entries alone.
+
+App mode profiles steady state, not startup (#1371). It launches TaskSmack, waits for it to log
+`Entering main loop` (up to 30 s) plus a warm-up (`--warmup`, default 5 s), and only then attaches
+`perf record -p`. It records until you close TaskSmack, or for `--duration` seconds and then closes
+it. Ctrl+C also stops the capture and closes TaskSmack. `--include-startup` keeps the old behavior:
+TaskSmack runs under perf from launch. The run fails if TaskSmack exits before recording starts,
+exits before `--duration` elapses, or exits with a non-zero code. When the script closes TaskSmack
+itself (after `--duration` or Ctrl+C), it sends SIGTERM, and TaskSmack quitting cleanly with code 0
+passes. Needing the SIGKILL fallback after 10 s, or any other exit code, fails the run. In every app
+capture, `--include-startup` included, TaskSmack's own stdout and stderr go to
+`perf-data/perf-app-<timestamp>-app.log`. The `profile` preset keeps frame pointers for better stacks;
+pass `--preset release` to profile the shipped build's code generation.
 
 ```bash
-# App trace — exercise the app, then close it
+# App trace — steady state after a 5 s warm-up; exercise the app, then close it
 ./tools/profile-perf.sh app
+
+# Unattended app trace — 10 s warm-up, record 30 s, then close automatically
+./tools/profile-perf.sh app --warmup 10 --duration 30
+
+# Include startup (fonts, themes, first enumeration) in the profile
+./tools/profile-perf.sh app --include-startup
 
 # Benchmark trace — targeted hot-path capture
 ./tools/profile-perf.sh bench
@@ -879,8 +951,15 @@ scripts build before prompting for elevation. For resize diagnosis, use the `res
 procedure below.
 
 ```powershell
-# App trace — exercise the app, then close it (defaults to win-optimized)
+# App trace — exercise the app, then close it (defaults to win-release, the preset releases ship)
 pwsh tools/profile-etw.ps1 app
+
+# Longer warm-up before recording, or record startup deliberately
+pwsh tools/profile-etw.ps1 app -DurationSeconds 45 -WarmupSeconds 15
+pwsh tools/profile-etw.ps1 app -DurationSeconds 20 -IncludeStartup
+
+# Dry run of the launch/warm-up/crash checks, with no WPR session and no UAC prompt
+pwsh tools/profile-etw.ps1 app -DurationSeconds 10 -SkipTrace
 
 # Benchmark trace
 pwsh tools/profile-etw.ps1 bench
@@ -916,8 +995,19 @@ Notes:
 - ETW recording requires elevation. By default `profile-etw.ps1` elevates only a separate WPR collector, not the target, and validates all output artifacts before returning; `-ElevatedTarget` is the explicit opt-in that runs the target elevated too. From an elevated terminal the script refuses unless `-ElevatedTarget` is passed, since the target would inherit the elevation.
 - Captures use unique WPR instance names and never cancel an existing recording. If
   another recorder prevents startup, leave it alone and coordinate with its owner.
-- Prefer `win-optimized` for real-world timing; use `win-profile` when you need function-level symbol attribution.
-- Function decoding against `win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
+- App mode defaults to `win-release`, the preset `.github/workflows/release.yml` builds and ships, so
+  the profile measures the binary users run. The preset and the compile flags its build tree was
+  configured with (from its `CMakeCache.txt`) are logged at the start and recorded in the manifest.
+  Use `win-profile` when you need function-level symbol attribution; `-Preset win-optimized`
+  (LTO, `-march=x86-64-v3`) profiles that opt-in build, which is not what ships.
+- App mode excludes startup: it launches the app, waits for its main window plus `-WarmupSeconds`
+  (default 5), and only then starts the trace (prompting for UAC at that point). With
+  `-DurationSeconds` the trace is stopped before the script closes the app. `-IncludeStartup`
+  starts the trace before the launch instead.
+- A crashed run fails (#1186): the app exiting during warm-up, exiting before a `-DurationSeconds`
+  window ends, or being closed with a nonzero exit code stops the trace, writes the manifest (with
+  the exit code and reason), exits nonzero and prints no `TRACE=` line.
+- Function decoding against `win-release`/`win-optimized` binaries may be limited (no debug info); `analyze-etw.ps1` degrades gracefully with an explanatory message.
 - `analyze-etw.ps1` judges every trace before you rely on it (#873) and prints, and writes to
   `<trace>-analysis.json`, a **Valid / Degraded / Invalid** verdict with reasons:
   - **Lost events and buffers**, as a count and a share of all events. More than 1% lost, or
@@ -1141,6 +1231,7 @@ average can hide and a single max spike can overstate:
 ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
   frames=94 resizeFrames=0
   frame avg/p95/p99/max=4.421/6.912/7.340/7.580 ms       ← update+render+post+swap (the 16.6ms/60fps figure)
+  loopIntervals=94 loop avg/p95/p99/max=50.120/51.034/52.880/53.410 ms ← frame end to frame end (cadence)
   drain avg/p95/p99/max=0.031/0.084/0.121/0.121 ms      ← SDL event drain
   update avg/p95/p99/max=0.014/0.031/0.045/0.052 ms     ← domain model refresh (all layers)
   render avg/p95/p99/max=0.842/1.203/1.410/1.502 ms     ← ImGui layout + draw call generation
@@ -1150,6 +1241,7 @@ ResizePerf[idle-progress]: batches=94 events=6 resizeEvents=0 maxBatchEvents=2
 ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatchEvents=4
   frames=109 resizeFrames=109
   frame avg/p95/p99/max=4.447/17.462/19.960/22.443 ms
+  loopIntervals=109 loop avg/p95/p99/max=16.702/17.910/20.330/23.020 ms
   drain avg/p95/p99/max=0.140/1.802/2.101/2.278 ms
   update avg/p95/p99/max=0.018/0.940/1.220/1.453 ms
   render avg/p95/p99/max=0.572/6.310/7.980/8.798 ms
@@ -1161,6 +1253,13 @@ ResizePerf[interaction-progress]: batches=109 events=48 resizeEvents=36 maxBatch
 always 1:1 with a rendered frame, so it's reported separately) — this is what #843's success
 criterion "p99 frame time ≤ 16.6ms (60fps)" actually refers to: individual phase percentiles can
 each look fine on their own while their sum still misses the frame budget.
+
+`loop` is the deliver-to-deliver interval: wall time from one presented frame's end (after swap)
+to the next one's, so it includes the pacing wait, the event drain and any skipped render in
+between. A render skipped for a drain overrun (`skippedFrames=`) is not an interval of its own; its
+time stays in the interval that spans it. `frame` says how long the work took; `loop` says how
+evenly frames reached the screen (at idle it should sit near the 50 ms idle period, or the
+animation period while a chart moves).
 
 `frames=`/`batches=` count only the current interval (5s idle / 0.5s interaction), but the
 p95/p99 figures are computed over a rolling window of up to 200 samples that persists across
@@ -1225,6 +1324,126 @@ TASKSMACK_LOG_LEVEL=debug ./build/optimized/bin/TaskSmack
 `TASKSMACK_LOG_LEVEL` accepts any spdlog level name: `trace`, `debug`, `info`, `warn`,
 `error`, `critical`, `off`. When both env vars are set, `TASKSMACK_LOG_LEVEL` takes
 precedence.
+
+### Measuring idle CPU and frame time
+
+Idle cost is TaskSmack's first performance priority (#843): a task manager that sits open all day
+must not be the thing using the CPU. `tools/measure-idle.sh` (Linux) turns one idle scenario into a
+comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1`, waits for the
+main loop and a warm-up (as `tools/profile-perf.sh app` does), samples per-thread CPU, closes the app
+with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table plus one
+machine-readable `RESULT` line.
+
+```bash
+# Default: profile preset (built first), 15 s warm-up (45 s for a "minimized" label), 30 s sample
+./tools/measure-idle.sh --label overview
+
+# Existing debug build; switch tabs before the warm-up with any command (it gets TASKSMACK_PID).
+# The click position is the tab's screen position, which depends on your window size and place.
+./tools/measure-idle.sh --preset debug --skip-build --label processes \
+    --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
+
+./tools/measure-idle.sh --help
+```
+
+Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
+otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
+are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
+`ts-sampler-sys` (system/storage/GPU). On Linux the UI thread keeps the process name (`TaskSmack`;
+its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
+`pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.
+Names come from `Platform/ThreadName.h`; give any new worker thread one there (15 bytes at most).
+
+**Metrics:**
+
+| Metric | Definition | Source |
+|---|---|---|
+| Thread CPU% | Average CPU time of one thread over the sample window; 100% = one logical CPU busy | pidstat / `/proc` |
+| Total CPU% | The whole process over the window, including threads that started or exited in it | pidstat / `/proc/<pid>/stat` |
+| fps | Presented frames per second: loop intervals ÷ their summed duration | `ResizePerf[...]` `loop` |
+| Frame p95/p99/max | update+render+post+swap per presented frame (the 16.6 ms budget figure) | `ResizePerf[...]` `frame` |
+| Loop p95/p99 | Deliver-to-deliver interval, frame end to frame end, skipped renders included | `ResizePerf[...]` `loop` |
+
+The frame figures come from the `ResizePerf` summaries TaskSmack logs on its own schedule (every 5 s
+at idle), so they cannot cover exactly the CPU sample. The script uses the summaries logged while it
+sampled CPU and prints the span they actually cover (from the summary before the first one to the
+last one) next to the CPU sample's start and end. The `RESULT` line carries both as `cpuStart`/`cpuEnd`
+and `traceStart`/`traceEnd`/`traceSpan`. The two spans differ by up to one summary interval at each
+end. The p95/p99 figures are the worst of those summaries (each is nearest-rank over a rolling window
+of up to 200 samples); max is the largest per-interval max among them.
+
+The warm-up keeps startup and tab-switch frames out of that 200-sample rolling window before
+sampling starts. The default is 15 s, enough at idle frame rates (20–60 fps). A minimized window
+presents only about 5 fps (`MINIMIZED_FRAME_SLEEP_MS = 200`), so it needs about 45 s to refill the
+window; with fewer than 100 samples, nearest-rank p99 also just equals the max. The script uses 45 s
+by default when `--label` contains `minimized`, and `--warmup` overrides either default.
+
+**Scenario matrix:** run each for 30 s at the default 1 s refresh, window left alone, after a
+warm-up on that tab:
+
+| Scenario | What it exercises |
+|---|---|
+| Overview | System charts: CPU, memory, battery, threads/faults |
+| Processes | The process table and process enumeration |
+| CPU Cores | One chart per logical CPU |
+| Minimized (optional) | The hidden-window pacing path; should be close to the sampler threads alone. Use `--label minimized` (45 s warm-up) and minimize the window in `--setup-cmd` |
+
+Compare like with like: the same machine, preset, window size and refresh interval, and the same
+scenario. Run each scenario more than once; one run on a shared desktop is noisy.
+
+**WSL:** by maintainer decision, numbers measured under WSL (WSLg) are **CPU-only evidence**. CPU%
+of TaskSmack's own threads is meaningful there, but WSLg usually renders through Mesa's `llvmpipe`
+software rasterizer, whose threads (`llvmpipe-N`) then dominate the total and make frame and loop
+times reflect the CPU rasterizer and the shared desktop, not a GPU driver and compositor. Quote
+fps/frame/loop figures only from native Linux or Windows; on WSL quote CPU% (and say so).
+
+#### Synthetic large-UI scenario (captures at the limits)
+
+The scenarios above measure whatever machine you happen to be on. To measure the UI at its limits --
+thousands of processes, many cores, disks and interfaces, and every chart holding the longest history
+(30 minutes at 100 ms, 18k samples per series) from the first frame -- run TaskSmack against a
+synthetic machine instead (#1413). Set `TASKSMACK_SYNTHETIC`, or pass `--synthetic` to the script:
+
+```bash
+# Overview at the limits: 5000 processes, every history chart full from the first frame
+./tools/measure-idle.sh --preset profile --label synthetic-overview --synthetic processes=5000,history=full
+
+# The process table at 2000 processes (switch tabs with --setup-cmd as above)
+./tools/measure-idle.sh --skip-build --label synthetic-processes --synthetic processes=2000 \
+    --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
+
+# Or run the app directly
+TASKSMACK_SYNTHETIC=processes=2000,cores=64,history=full ./build/debug/bin/TaskSmack
+```
+
+`TASKSMACK_SYNTHETIC` takes comma-separated `key=value` settings (a bare `1` takes every default):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `processes` | 2000 | Processes, in a realistic tree (kernel threads, daemons, a desktop session, a browser, an editor with language servers, containers, terminals with builds) with plausible, slowly varying CPU, memory, I/O and network; build jobs and some browser tabs come and go |
+| `cores` | 16 | Logical CPUs (one CPU Cores chart each) |
+| `disks` | 4 | Disks |
+| `interfaces` | 4 | Network interfaces (two physical, the rest virtual) |
+| `seed` | 1413 | Generator seed: the same seed gives the same machine on every platform |
+| `history` | `full` | History preloaded at startup: `full` (`HISTORY_SECONDS_MAX` at `REFRESH_INTERVAL_MIN_MS`), `none`, or a number of seconds |
+| `refresh` | the configured one | Refresh interval (ms) to start at |
+
+What it changes, and what it doesn't:
+
+- It is opt-in and read once at startup. Unset (or `0`/`off`), TaskSmack builds exactly the probes it
+  always does; the only difference is one `getenv` at startup.
+- The App composition root builds the models on `Platform::Synthetic` probes (`src/Platform/Synthetic/`)
+  instead of the real ones. Every counter is a closed-form function of time, so the live probes and the
+  preload agree and successive samples give consistent deltas.
+- The history preload fills SystemModel, StorageModel and ProcessModel's system histories through their
+  series APIs (one publish for the whole window). Process Details' per-process history still starts when
+  you select a process.
+- The history window and refresh overrides apply to the run only; `config.toml` is not changed (the
+  Settings dialog still shows the configured values).
+- There is no synthetic GPU or battery: those sections show their empty states. Every process action
+  (end, kill, suspend, priority) is refused, since synthetic PIDs may be real ones.
+- A warning is logged at startup (`TASKSMACK_SYNTHETIC is set: showing a synthetic machine...`), and the
+  host name reads `tasksmack-synthetic`.
 
 ## Profile-Guided Optimization (PGO)
 
@@ -1417,7 +1636,7 @@ Clang-tidy configuration is curated for signal/noise; see `.clang-tidy` for the 
 
 ## Adding Dependencies
 
-Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, and always use `SYSTEM` to suppress third-party warnings:
+Use CMake’s `FetchContent` for dependencies. Declare new dependencies in `cmake/Dependencies.cmake`, always use `SYSTEM` to suppress third-party warnings, and always pass a per-preset `BINARY_DIR` (see "Shared FetchContent cache" below):
 
 ```cmake
 FetchContent_Declare(
@@ -1425,6 +1644,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/example/mylib.git
     GIT_TAG v1.0.0
     SYSTEM
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/mylib-build"
 )
 FetchContent_MakeAvailable(mylib)
 
@@ -1434,6 +1654,12 @@ target_link_libraries(TaskSmack PRIVATE mylib)
 ### Shared FetchContent cache
 
 The shared FetchContent cache is **enabled by default** to reuse downloads across presets, reducing build times and bandwidth usage. The cache is stored at `.cache/fetchcontent/` in the project root.
+
+Only the downloads are shared: `.cache/fetchcontent/` holds each dependency's `<dep>-src` and
+`<dep>-subbuild`, while its `<dep>-build` tree lives in the preset's own `build/<preset>/_deps/`, so
+a sanitizer, coverage or LTO preset never reuses objects another preset compiled with different
+flags (#1308). Configuring fails if any added directory builds outside the preset's build tree --
+that is the check that a new `FetchContent_Declare()` without `BINARY_DIR` trips.
 
 To disable the cache:
 
@@ -1449,22 +1675,22 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, Release builds on schedule/dispatch, checks markdown links, runs `clang-tidy` (blocking) on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
-- **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests. Called by other workflows.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, a Linux Release build on the same events plus the weekly schedule (Windows Release runs on push/schedule/dispatch only), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
-- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly).
+- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) had already completed on the PR's head commit, and it runs on the push of the merge itself, so merge only after `Analyze C++` has passed or the newest commit counts as unscanned (#1405).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
-- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase (pushes to main, manual dispatch).
+- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase on Linux and on Windows, both blocking (pushes to main, manual dispatch).
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule).
 
 ### Release & Operations
@@ -1474,6 +1700,11 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
 PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
+
+Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` never cancel
+each other. `ci.yml`, `sanitizers.yml`, `static-analysis.yml` and `heavy-checks.yml` give each `main` commit its
+own concurrency group, so back-to-back merges each get a complete run and a regression is blamed on the commit
+that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
@@ -1532,8 +1763,8 @@ check. Like Dependabot, Renovate only opens PRs; the same CI gate applies before
 `tools/check-prereqs.sh`): three tiers, all now automated by `renovate.json5` except where noted
 below. See #798 for the full repo-wide audit and rationale behind this split.
 
-- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`
-  -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
+- *Tier 1 -- auto-PR'd, no gate*: the pre-commit hook tools (`pre-commit-hooks`, `shellcheck-py`,
+  `actionlint-py` -- `rev:` pins in `.pre-commit-config.yaml`) via Renovate's native `pre-commit` manager, no
   custom regex needed. The `clang-format` mirror (same file, same manager) is the one exception:
   its formatting behavior tracks the same LLVM major as the compiler toolchain, so its *major*
   bumps are gated exactly like the rest of the LLVM-major process below (a `packageRules` entry

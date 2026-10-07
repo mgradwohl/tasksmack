@@ -2,6 +2,7 @@
 
 #include "App/DialogGeometry.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -175,7 +176,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // === Scheduling ===
         // Priority (human-readable label derived from nice value)
         // Note: configKey remains "nice" for backward compatibility with user config files
-        {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Process priority (High, Above Normal, Normal, Below Normal, Idle)"},
+        {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Process priority: Windows priority class (Realtime, High, Above Normal, Normal, Below Normal, Idle), or the nice value's level elsewhere"},
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads
@@ -211,9 +212,9 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
 
         // === GPU ===
         // GPU Percent
-        {.name="GPU %", .menuName="GPU %", .configKey="gpu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="GPU utilization percentage (aggregated across all GPUs)"},
+        {.name="GPU %", .menuName="GPU %", .configKey="gpu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="GPU utilization on the busiest GPU the process uses (0-100%, as the GPU tab reports it)"},
         // GPU Memory
-        {.name="GPU Mem", .menuName="GPU Memory", .configKey="gpu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="GPU memory allocated (VRAM)"},
+        {.name="GPU Mem", .menuName="GPU Memory", .configKey="gpu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="GPU memory in use, counted as the GPU tab counts it: VRAM on a discrete GPU, shared memory on an integrated one (Windows)"},
         // GPU Engine
         {.name="GPU Engine", .menuName="GPU Engine", .configKey="gpu_engine", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="Active GPU engines (3D, Compute, Video, etc.)"},
         // GPU Device
@@ -226,6 +227,37 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     // clang-format on
 
     return infos[toIndex(col)];
+}
+
+/// How a column's cells are aligned, which its header follows (#1209).
+enum class ColumnAlign : std::uint8_t
+{
+    Left,
+    Center,
+    Right,
+};
+
+/// The alignment of a column's cells: numbers, sizes, rates, times and counts right, the one-letter
+/// State code centred, free text left. ProcessesPanel::renderProcessRow() draws each column this way,
+/// and the header is aligned to match, so a numeric header sits over its numbers (#1209).
+[[nodiscard]] constexpr auto columnAlignment(ProcessColumn col) -> ColumnAlign
+{
+    switch (col)
+    {
+    case ProcessColumn::Name:
+    case ProcessColumn::User:
+    case ProcessColumn::Publisher:
+    case ProcessColumn::Status:
+    case ProcessColumn::Type:
+    case ProcessColumn::GpuEngine:
+    case ProcessColumn::GpuDevice:
+    case ProcessColumn::Command:
+        return ColumnAlign::Left;
+    case ProcessColumn::State:
+        return ColumnAlign::Center;
+    default:
+        return ColumnAlign::Right;
+    }
 }
 
 /// What a column's header tooltip adds to its description about what the platform leaves out, or
@@ -267,10 +299,34 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
     return info.defaultWidth * (emPx / REFERENCE_EM_PX);
 }
 
+/// Room a column's widest value is given beyond its own text, in ems: half an em clear of the
+/// column's edge on each side (#1280). ImGui's CellPadding is added outside a column's width, but it
+/// is only a few pixels, and a label filling the rest reads as touching the column border.
+inline constexpr float COLUMN_CONTENT_MARGIN_EM = 1.0F;
+
+/// Default width of a column whose values are a fixed, known set of labels (Priority's): the scaled
+/// authored width, or the widest label plus COLUMN_CONTENT_MARGIN_EM if that is wider, so the
+/// longest label ("Above Normal", "Below Normal") fits in whatever font is active (#1280).
+/// @param scaledDefault    scaledDefaultWidth() for the column.
+/// @param widestContentPx  The widest label's width in the current font (0 if not measured yet).
+/// @param emPx             One em, i.e. ImGui::GetFontSize().
+[[nodiscard]] inline auto contentFittedWidth(float scaledDefault, float widestContentPx, float emPx) noexcept -> float
+{
+    if (!std::isfinite(emPx) || emPx <= 0.0F || !std::isfinite(widestContentPx) || widestContentPx <= 0.0F)
+    {
+        return scaledDefault;
+    }
+    return std::max(scaledDefault, widestContentPx + (COLUMN_CONTENT_MARGIN_EM * emPx));
+}
+
 /// Column visibility settings for persistence
 struct ProcessColumnSettings
 {
     std::array<bool, processColumnCount()> visible{};
+    /// Columns whose visibility was chosen -- by the user, or loaded from the config file -- rather
+    /// than left at a default. Only the others follow the system's capabilities (#1210, see
+    /// ProcessColumnAvailability::applyCapabilityDefaults()).
+    std::array<bool, processColumnCount()> chosen{};
 
     ProcessColumnSettings()
     {
@@ -286,16 +342,90 @@ struct ProcessColumnSettings
         return visible[toIndex(col)];
     }
 
+    /// Shows or hides `col` as chosen (by the user or the config file), marking it chosen.
     void setVisible(ProcessColumn col, bool vis)
     {
         visible[toIndex(col)] = vis;
+        chosen[toIndex(col)] = true;
     }
 
     void toggleVisible(ProcessColumn col)
     {
-        const std::size_t idx = toIndex(col);
-        visible[idx] = !visible[idx];
+        setVisible(col, !isVisible(col));
     }
+
+    /// Takes `col`'s visibility from the table (ImGui's state) when it differs, and returns whether it
+    /// did. Only `userChange` -- a toggle in ImGui's header menu -- counts as a choice; state ImGui
+    /// produced itself, such as a column layout it restored, is taken without marking the column
+    /// chosen, so it keeps following this system's defaults (#1210).
+    bool adoptTableVisibility(ProcessColumn col, bool enabled, bool userChange)
+    {
+        if (isVisible(col) == enabled)
+        {
+            return false;
+        }
+        if (userChange)
+        {
+            setVisible(col, enabled);
+        }
+        else
+        {
+            visible[toIndex(col)] = enabled;
+        }
+        return true;
+    }
+
+    /// Whether `col`'s visibility was chosen rather than left at a default.
+    [[nodiscard]] bool isChosen(ProcessColumn col) const
+    {
+        return chosen[toIndex(col)];
+    }
+
+    /// Sets the default visibility of a column whose visibility was not chosen; one that was is left alone.
+    void setDefaultVisible(ProcessColumn col, bool vis)
+    {
+        if (!isChosen(col))
+        {
+            visible[toIndex(col)] = vis;
+        }
+    }
+
+    /// Shows or hides `col` as the Columns menu asks (#1209); a column that cannot be hidden (PID,
+    /// Name) stays shown.
+    void requestVisible(ProcessColumn col, bool vis)
+    {
+        setVisible(col, vis || !getColumnInfo(col).canHide);
+    }
+
+    /// Shows every column that cannot be hidden (PID, Name: getColumnInfo().canHide), whatever was
+    /// asked for (#1209). A config file may say "pid = false", and the table's
+    /// TableSetColumnEnabled(false) ignores ImGui's NoHide flag, so loaded and requested visibility
+    /// is passed through this before it reaches the table.
+    void keepUnhideableColumnsVisible()
+    {
+        for (const auto col : allProcessColumns())
+        {
+            if (!getColumnInfo(col).canHide)
+            {
+                visible[toIndex(col)] = true;
+            }
+        }
+    }
+
+    /// The default column set regardless of what the system can fill; see
+    /// ProcessColumnAvailability::defaultColumns() for what "Reset columns" restores (#1209, #1210).
+    [[nodiscard]] static ProcessColumnSettings defaults()
+    {
+        return {};
+    }
+
+    /// Whether every column is shown or hidden as it is by default.
+    [[nodiscard]] bool isDefault() const
+    {
+        return visible == defaults().visible;
+    }
+
+    friend bool operator==(const ProcessColumnSettings&, const ProcessColumnSettings&) = default;
 };
 
 } // namespace App

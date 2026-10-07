@@ -207,5 +207,15 @@ TEST(ProcessActionHelpersTest, DispatchThenFormatEndToEnd)
     EXPECT_EQ(message.text, "Could not suspend PID 321: Operation not permitted");
 }
 
+// Only the actions that end the process get the danger style (#1273).
+TEST(ProcessActionHelpersTest, OnlyTerminateAndKillAreDestructive)
+{
+    EXPECT_TRUE(isDestructiveAction(ProcessAction::Terminate));
+    EXPECT_TRUE(isDestructiveAction(ProcessAction::Kill));
+    EXPECT_FALSE(isDestructiveAction(ProcessAction::Stop));
+    EXPECT_FALSE(isDestructiveAction(ProcessAction::Resume));
+    EXPECT_FALSE(isDestructiveAction(ProcessAction::None));
+}
+
 } // namespace
 } // namespace App::Detail

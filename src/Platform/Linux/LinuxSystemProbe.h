@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -29,6 +30,10 @@ class LinuxSystemProbe : public ISystemProbe
     /// /sys/class/net), where interfaces are classified as hardware or virtual (#1106).
     LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot);
 
+    /// Testability constructor that also takes the CPU sysfs root (normally /sys/devices/system/cpu),
+    /// where the CPU frequency is read (#1183).
+    LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot, std::filesystem::path cpuSysfsRoot);
+
     ~LinuxSystemProbe() override = default;
 
     // Non-copyable, non-movable (contains mutex)
@@ -46,7 +51,7 @@ class LinuxSystemProbe : public ISystemProbe
     static void readMemoryCounters(SystemCounters& counters, const std::filesystem::path& procRoot);
     static void readUptime(SystemCounters& counters, const std::filesystem::path& procRoot);
     static void readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot);
-    static void readCpuFreq(SystemCounters& counters);
+    static void readCpuFreq(SystemCounters& counters, const std::filesystem::path& cpuSysfsRoot);
 
     /// Read network-related counters (bytes, packets, etc.) from /proc/net/dev.
     /// Unlike the other read* helpers, this method is non-static because it
@@ -65,13 +70,15 @@ class LinuxSystemProbe : public ISystemProbe
     /// True when the interface has no backing device (no <sysClassNetRoot>/<iface>/device; it lives
     /// under /sys/devices/virtual/net): loopback, bridges, veth pairs, VLANs, bonds, tun/tap,
     /// WireGuard. Their traffic also crosses a hardware interface, so the Total leaves them out (#1106).
-    [[nodiscard]] static bool isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
+    /// nullopt when the interface isn't in sysfs at all (not mounted, or it vanished): it can't be
+    /// classified, and is counted as hardware (#1260).
+    [[nodiscard]] static std::optional<bool> isVirtualInterface(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
 
-    /// Read interface operational state from sysfs (up/down/unknown).
-    [[nodiscard]] static bool readInterfaceOperState(const std::string& ifaceName);
+    /// Read interface operational state from <sysClassNetRoot>/<iface>/operstate (up/down/unknown).
+    [[nodiscard]] static bool readInterfaceOperState(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
 
-    /// Read link speed directly from sysfs (uncached).
-    [[nodiscard]] static uint64_t readInterfaceLinkSpeedFromSysfs(const std::string& ifaceName);
+    /// Read link speed directly from <sysClassNetRoot>/<iface>/speed (uncached).
+    [[nodiscard]] static uint64_t readInterfaceLinkSpeedFromSysfs(const std::filesystem::path& sysClassNetRoot, std::string_view ifaceName);
 
     /// Remove cache entries for interfaces that no longer exist.
     /// @param currentInterfaces Vector of interface names seen in current enumeration
@@ -79,6 +86,7 @@ class LinuxSystemProbe : public ISystemProbe
 
     std::filesystem::path m_ProcRoot;
     std::filesystem::path m_SysClassNetRoot;
+    std::filesystem::path m_CpuSysfsRoot;
     long m_TicksPerSecond;
     std::size_t m_NumCores;
 
@@ -100,6 +108,19 @@ class LinuxSystemProbe : public ISystemProbe
     };
     std::mutex m_InterfaceCacheMutex;
     std::unordered_map<std::string, InterfaceCacheEntry> m_InterfaceCache;
+
+    // Virtual/hardware classification per interface (#1335): isVirtualInterface() costs two sysfs
+    // lookups per interface, and an interface's class can't change while it exists. Valid for the
+    // interface set in m_ClassifiedInterfaces (the /proc/net/dev names, in order); any change to the
+    // set re-classifies every interface, so a name that is removed and re-added -- possibly as a
+    // different kind of interface -- is looked up again. Interfaces that couldn't be classified
+    // (nullopt, #1260) aren't cached and are retried on every read. Guarded by m_InterfaceCacheMutex.
+    std::vector<std::string> m_ClassifiedInterfaces;
+    std::unordered_map<std::string, bool> m_InterfaceIsVirtual;
+
+    /// Classify each of `names` as virtual or hardware (nullopt: can't tell), from the cache where
+    /// the interface set is unchanged. Returns whether the set changed since the last call.
+    bool classifyInterfaces(const std::vector<std::string>& names, std::vector<std::optional<bool>>& isVirtual);
 };
 
 } // namespace Platform

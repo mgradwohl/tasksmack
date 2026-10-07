@@ -5,12 +5,20 @@
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
+#include <ios>
+#include <memory>
 #include <random>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -359,6 +367,48 @@ TEST_F(UserConfigLoadSaveTest, LoadHandlesTomlParseError)
     EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
 }
 
+// Malformed config.toml inputs the fuzzers found that crashed inside toml++ instead of throwing
+// toml::parse_error: a debug assert (abort) and, with NDEBUG, __builtin_assume/__builtin_unreachable
+// (UB). load() must log the parse failure and keep the defaults, in debug and release alike.
+TEST_F(UserConfigLoadSaveTest, LoadLogsParseFailureAndKeepsDefaultsForTomlppCrashInputs)
+{
+    struct MalformedToml
+    {
+        const char* name;
+        std::string_view content;
+    };
+    const std::array<MalformedToml, 6> inputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"}, // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},   // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},  // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},      // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"}, // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"}, // #1389
+    }};
+
+    for (const auto& input : inputs)
+    {
+        SCOPED_TRACE(input.name);
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath); // fresh defaults, isLoaded cleared
+        {
+            std::ofstream f(m_ConfigPath, std::ios::binary | std::ios::trunc);
+            f << input.content;
+        }
+
+        std::ostringstream log;
+        const auto previousLogger = spdlog::default_logger();
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("malformed-config-test", std::make_shared<spdlog::sinks::ostream_sink_st>(log)));
+        UserConfig::get().load();
+        spdlog::set_default_logger(previousLogger);
+
+        EXPECT_NE(log.str().find("Failed to parse config file"), std::string::npos) << input.name << ": " << log.str();
+        const UserSettings defaults;
+        EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, defaults.refreshIntervalMs) << input.name;
+        EXPECT_EQ(UserConfig::get().settings().themeId, defaults.themeId) << input.name;
+    }
+}
+
 TEST_F(UserConfigLoadSaveTest, LoadParsesAllFontSizes)
 {
     const std::vector<std::pair<std::string, UI::FontSize>> cases = {
@@ -428,8 +478,14 @@ name = true
     EXPECT_EQ(settings.chartTauMsMin, Domain::Sampling::CHART_TAU_MS_MIN_BOUND);
     EXPECT_EQ(settings.chartTauMsMax, Domain::Sampling::CHART_TAU_MS_MAX_MAX);
     EXPECT_FALSE(settings.showPrivilegeNotice);
-    EXPECT_FALSE(settings.processColumns.isVisible(ProcessColumn::PID));
+    // "pid = false" is not honoured: PID cannot be hidden, and the table would be told to hide it (#1209).
+    EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::PID));
     EXPECT_TRUE(settings.processColumns.isVisible(ProcessColumn::Name));
+    // A saved column is the user's choice, which this system's defaults must not override (#1210);
+    // one the file does not name is left at its default.
+    EXPECT_TRUE(settings.processColumns.isChosen(ProcessColumn::PID));
+    EXPECT_TRUE(settings.processColumns.isChosen(ProcessColumn::Name));
+    EXPECT_FALSE(settings.processColumns.isChosen(ProcessColumn::Power));
 }
 
 TEST_F(UserConfigLoadSaveTest, LoadIgnoresValuesWithWrongTypes)
@@ -512,6 +568,60 @@ TEST_F(UserConfigLoadSaveTest, SaveUsesMediumForUnknownFontSize)
     const auto fontSize = savedConfig["font"]["size"].value<std::string>();
     ASSERT_TRUE(fontSize.has_value());
     EXPECT_EQ(*fontSize, "medium");
+}
+
+// ========== parseSettings (the string seam the config fuzz target drives) ==========
+
+TEST(UserConfigParseSettingsTest, ReadsSettingsFromText)
+{
+    UserSettings settings;
+    const bool parsed = UserConfig::parseSettings(R"(
+[sampling]
+interval_ms = 250
+
+[theme]
+id = "tokyo-night"
+
+[font]
+size = "large"
+
+[window]
+maximized = true
+)",
+                                                  settings);
+
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(settings.refreshIntervalMs, 250);
+    EXPECT_EQ(settings.themeId, "tokyo-night");
+    EXPECT_EQ(settings.fontSize, UI::FontSize::Large);
+    EXPECT_TRUE(settings.windowMaximized);
+}
+
+TEST(UserConfigParseSettingsTest, AbsentKeysKeepTheirValues)
+{
+    UserSettings settings;
+    settings.themeId = "nord";
+
+    ASSERT_TRUE(UserConfig::parseSettings("[sampling]\ninterval_ms = 500\n", settings));
+    EXPECT_EQ(settings.refreshIntervalMs, 500);
+    EXPECT_EQ(settings.themeId, "nord");
+}
+
+TEST(UserConfigParseSettingsTest, OutOfRangeValuesAreClampedAsOnLoad)
+{
+    UserSettings settings;
+    ASSERT_TRUE(UserConfig::parseSettings("[sampling]\ninterval_ms = 1\n", settings));
+    EXPECT_EQ(settings.refreshIntervalMs, Domain::Sampling::clampRefreshInterval(1));
+}
+
+TEST(UserConfigParseSettingsTest, InvalidTomlReturnsFalseAndLeavesSettingsAlone)
+{
+    UserSettings settings;
+    settings.themeId = "nord";
+
+    // A duplicate key is a parse error.
+    EXPECT_FALSE(UserConfig::parseSettings("[theme]\nid = \"dracula\"\nid = \"mocha\"\n", settings));
+    EXPECT_EQ(settings.themeId, "nord");
 }
 
 } // namespace

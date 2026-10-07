@@ -8,9 +8,12 @@ on:
     - cron: '0 4 * * 1'
   workflow_dispatch:
 
+# Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
+# complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
+# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
 concurrency:
-  group: heavy-checks-${{ github.ref }}
-  cancel-in-progress: true
+  group: heavy-checks-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   LLVM_VERSION: '23'
@@ -356,7 +359,7 @@ jobs:
         id: sanitizer-test
         run: |
           set +e
-          ctest --preset ${{ matrix.preset }} -j $(nproc) --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
+          ctest --preset ${{ matrix.preset }} -j "$(nproc)" --output-on-failure --timeout 120 2>&1 | tee sanitizer-logs/${{ matrix.preset }}.log
           ctest_exit=${PIPESTATUS[0]}
           set -e
           echo "test_result=${ctest_exit}" >> "$GITHUB_OUTPUT"

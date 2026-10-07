@@ -73,24 +73,24 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 The process table is the primary view. It lists all running processes with these columns:
 
-- **State** — what the process is doing (Running, Sleeping, and so on)
+- **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown. The column shows the state's one-letter code, as `ps` and `top` do: **R** Running, **S** Sleeping, **D** Disk Sleep (waiting on I/O), **Z** Zombie, **T** Stopped, **t** Tracing, **X** Dead, **I** Idle, **?** Unknown. Process Details spells the state out, in the same colour.
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
-- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes
-- **CPU Time** — cumulative CPU time
+- **Memory / Virtual / Shared / Peak Mem** — resident, virtual, shared, and peak resident memory sizes. Peak Mem is the larger of the OS's high-water mark (Linux: `VmHWM`; Windows: peak working set) and the highest peak TaskSmack has seen for the process, so it can reach back before TaskSmack started. On Linux `VmHWM` resets when a process runs a new program (`exec`); TaskSmack keeps the higher peak it saw before the reset, but a peak from before an `exec` that happened before monitoring began is lost.
+- **CPU Time** — cumulative CPU time, as a duration ("45s", "2m 05s", "1h 02m")
 - **PPID** — parent process ID
 - **Priority** — scheduling priority (from the nice value)
 - **Threads** — thread count per process
-- **Page Faults** — cumulative page faults
-- **Command** — full command line
+- **Page Faults** — cumulative page faults. Windows keeps this count in 32 bits, so on a long-lived process it can wrap back to a small number; the page-fault rate counts through the wrap.
+- **Command** — full command line. On Windows, a process whose command line can't be read (System, Registry, isolated processes such as LsaIso.exe) shows its executable's path, or its name in brackets.
 - **I/O rates** — read and write bytes per second
 - **Network rates** — sent and received bytes per second when attribution is available
 - **GPU %, GPU Mem, GPU Engine, GPU** — utilization, memory, engines, and which GPU, when the active backend supports per-process data
-- **Affinity** — allowed CPU cores
+- **Affinity** — the logical processors the process may run on, numbered from 0 as the operating system numbers them: ranges of three or more as `4-7`, others by number, e.g. `0-3,70`. On Linux these are the online processors the process may run on, 64 and above included (an offline processor is left out even when the process is allowed it; if the list of online processors can't be read, or a processor goes offline mid-sample so none of the allowed ones is online, the process's full allowed list is shown instead); on Windows it shows the process's primary processor group only.
 
 Column visibility is toggled via the column header context menu and persisted across sessions.
 
-A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, without root, the FD count, I/O rates and network rates of other users' processes. Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
+A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ); on Windows, without administrator rights, every process's network rates (handle counts and I/O rates are read for every process). Process Details shows the same values as N/A, with a gap in their charts, and the system totals leave them out. Sorting puts N/A below every reading.
 
 **Sorting** is available on any column with a single click. Click again to reverse order.
 
@@ -98,23 +98,35 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Tree view** shows the parent–child process hierarchy when enabled.
 
+**Hold Ctrl to freeze** the table, as in Windows Task Manager. With the pointer over the process table (or after clicking in it), hold **Ctrl** and the rows stop updating and stop re-sorting, so the process you are aiming at stays under the pointer while you click it. A **Paused (Ctrl)** label appears beside the process count (just a pause icon when the window is too narrow for the words; hover it for the explanation), and releasing Ctrl resumes live updates at once. The freeze applies only to what the table shows: sampling carries on underneath, so charts and Process Details have no gaps, and the values shown while frozen are the last ones adopted, not live readings. Selecting a process, opening Process Details and process actions all work while frozen; an action on a process that has exited in the meantime fails just as it would without the freeze. Ctrl does not freeze while you are typing in the filter box, while TaskSmack's window is not focused, or when it is part of a shortcut such as Ctrl+= or Ctrl+Shift+M.
+
 Process rows are color-coded by state (running, sleeping, stopped, zombie).
+
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Hold **Ctrl** (over the process table) | Freeze the process table while held |
+| **Ctrl+=** / **Ctrl+-** (or **Ctrl+keypad +** / **Ctrl+keypad -**) | Increase / decrease the font size |
+| **Ctrl+Shift+M** | Toggle the Render Metrics overlay |
 
 ### System Metrics
 
 The System Metrics panel displays real-time and historical charts for:
 
-- **CPU utilisation** — system-wide and per-core breakdowns
+- **CPU utilisation** — system-wide and per-core breakdowns. The CPU Cores tab has a chart for each CPU reported since TaskSmack started, so a CPU that never comes online (reserved hot-add capacity, a CPU offline since boot) gets none, and one that goes offline keeps its chart, with a gap while it's offline.
 - **Memory** — used and cached RAM displayed as percentage history, with current availability derived from the latest system snapshot
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
 - **Network** — aggregate and per-interface throughput, totals, status, and link speed
-- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. On Linux, a GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and is not sampled until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. Detecting GPUs at startup can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
+- **GPU** — device utilization, memory, temperature, power, clocks, and engine data when available. Each GPU shows only the sensors it reports, so an integrated GPU beside a discrete one doesn't get the discrete GPU's power or fan charts. A GPU that has gone to sleep to save power (common for the discrete GPU on hybrid laptops) is labelled **(Sleeping)** and its sensors are not read until it wakes, so TaskSmack's periodic updates don't keep it awake; its readings show N/A meanwhile. (On Windows its utilization and memory in use still show, since Windows reports them without waking the GPU.) On Windows an NVIDIA GPU that is awake but had no activity in the last update is not asked for its sensors either, so they don't stop it going to sleep: its temperature, power, clock and fan readings hold their last values, refreshed at least once a minute, until it is busy again. On Linux, detecting an NVIDIA GPU at startup doesn't wake it either: until it first wakes it is listed under the model name its driver reports (or "NVIDIA GPU"), and TaskSmack asks NVML about it only once it is awake. On Windows, on WSL, in a container that hides the PCI devices, or with an NVIDIA driver too old to look a GPU up by PCI address, startup detection can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own. The Overview header's **VRAM** figure counts discrete GPUs only, since an integrated GPU's memory is system RAM
 - **Battery** — charge, power flow, remaining time, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
 
 All charts retain a bounded scrolling history window. Depending on the metric, TaskSmack uses fixed-capacity ring buffers or time-trimmed history containers so memory usage stays bounded regardless of how long the app runs.
+
+A chart with several series has a value strip on its heading line as its key: a swatch and the current value of each series. (Grid cells such as the CPU core charts show their one value in the cell instead.) A series drawn against the chart's right-hand axis has **→** after its value ("Page Faults: 3.2K/s →"), in the colour of that axis's labels; its chart tooltip rows read the same way.
 
 ### Network Monitoring
 
@@ -128,9 +140,11 @@ The System Overview and process views provide three levels of visibility:
 
 An interface selector lets you focus on a specific adapter. The Total leaves out virtual interfaces (on Linux, bridges such as `docker0`, `veth` pairs, VPN tunnels such as `wg0` or `tun0`, VLANs; on Windows, adapters Windows doesn't report as hardware, such as VPN adapters, WSL `vEthernet`, and WAN Miniports), because their traffic also crosses a hardware interface and counting both doubled it. They remain in the selector, marked "virtual, not in Total". If there is no hardware interface at all, as inside a container, every interface counts.
 
+The Interface Status table's Sent and Received columns show the rate over the last refresh, not the smoothed rate beside the chart. A measured zero reads "0.0 B/s", muted. A muted "—" means there is no reading for that refresh, and hovering over it says why: the interface hasn't been sampled twice yet (just after starting, or a newly added interface), its byte counter went backwards (a driver reset), or it jumped by more than `max_sane_rate_bps`.
+
 Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform. A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy.
 
-Linux per-process attribution uses Netlink and requires Linux 4.2 or later. Windows per-process attribution uses TCP EStats and requires administrator privileges to enable collection. System-wide and interface metrics remain available when process attribution is unavailable.
+Linux per-process attribution uses Netlink and requires Linux 4.2 or later. Windows per-process attribution uses TCP EStats and requires administrator privileges to enable collection. If Windows denies TCP EStats even to TaskSmack running as administrator (a policy or a driver can), the per-process network columns are hidden and a network icon in the status bar says so; running elevated can't bring them back on that system. System-wide and interface metrics remain available when process attribution is unavailable.
 
 ### Battery / Power Monitoring
 
@@ -156,16 +170,30 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 **Intel GPUs on Linux** (i915 and xe drivers) report what the kernel exposes for each card:
 
 - **Clock:** i915's `gt_cur_freq_mhz`, or xe's `tile0/gt0/freq0/cur_freq`.
-- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Temperature is read from hwmon's first channel (`temp1_input`); xe cards report their package temperature as `temp2_input` instead, so they may show no temperature until [#1314](https://github.com/mgradwohl/tasksmack/issues/1314) is fixed. Power is worked out from hwmon's energy counter, so it appears from the second sample on.
+- **Temperature and power:** from the card's hwmon, which only discrete cards (Arc) have. Temperature is the package sensor: the hwmon channel labelled `pkg` (xe: `temp2_input`), or else the lowest-numbered temperature input (i915: `temp1_input`). Power is worked out from hwmon's energy counter, so it appears from the second sample on.
 - **VRAM:** comes from the DRM memory-region query on the card's render node (`/dev/dri/renderD*`), made only while the card is awake. The capacity is remembered after the first answer, and also tells a discrete card from an integrated one. Used VRAM appears only when the kernel reports it (i915 needs `CAP_PERFMON` for that); when it does, the query is repeated each sample to keep the figure current, otherwise it isn't made again.
-- **Not read:** utilisation.
+- **Utilisation:** worked out from the engine busy time the kernel reports for each program that has the card open (`/proc/<pid>/fdinfo`, Linux 5.19+ for i915). The busiest engine class (render, copy, video, video enhance or compute) is shown, so it appears from the second sample on. TaskSmack looks for programs using the card on the first refresh after every 10 seconds, and a newly found program counts from the refresh after that (its busy time needs two readings), so a program that has just started can take up to 10 seconds plus two refreshes to be counted. Without root, TaskSmack can only see your own programs, so GPU work by other users' programs (or a display server running as root) isn't counted. On a kernel that doesn't report engine busy time (i915 before Linux 5.19) while any program you can see has the card open, or where TaskSmack can't look into `/proc` at all (a sandbox that hides it, or denies every program's open files), utilisation shows N/A rather than 0%.
 - **Sleeping cards:** a card in runtime suspend isn't queried, so watching it doesn't wake it.
 
-**Per-process GPU utilisation** sums utilisation across all GPUs, so a process working across two GPUs can legitimately show GPU% > 100 %.
+**AMD GPUs on Linux** (ROCm SMI): an APU's integrated GPU is recognised from the graphics-core version amdgpu publishes in sysfs (`ip_discovery`), or from its PCI device ID on kernels without it, so it is labelled integrated and its shared memory isn't counted as VRAM. An APU generation newer than TaskSmack's list still shows as discrete.
+
+**Per-process GPU figures** are counted the way the GPU tab counts each GPU. GPU% is the process's utilisation of the busiest GPU it uses (0–100 %). GPU memory counts dedicated memory on a discrete GPU and, on Windows, shared memory on an integrated one, added up across GPUs. Process Details also lists dedicated and shared memory separately when the process has shared memory, which only Windows reports.
 
 The UI shows only the metrics exposed by the available backend. If no backend discovers a usable GPU, GPU sections are hidden.
 
-On Linux, TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset or reload, is re-detected once it is back. A GPU that stays in the list keeps its chart history; one that is removed disappears from the GPU tab. On Windows the GPU list is still fixed at startup.
+TaskSmack checks for GPU changes every 10 seconds without waking a sleeping GPU: a GPU that is hot-plugged (an eGPU) appears, and one that is removed, or lost after a driver reset, reload or update, is re-detected once it is back. A GPU that stays in the list keeps its chart history, whatever is added or removed around it, and a newly added GPU doesn't take over a GPU that is still present; one that is removed disappears from the GPU tab. On Windows a GPU is known by where it sits on the PCI bus and by its model rather than by its place in the list, so the same card coming back after a driver reset is still the same GPU. That also means an identical card swapped into the same slot continues the old card's history, as if it had reconnected; a different model, or a card in a different slot, starts its own. On Windows, a change to the NVIDIA GPUs restarts NVIDIA's monitoring library (NVML), which can wake a sleeping NVIDIA GPU once, as starting TaskSmack can.
+
+### Numbers and units
+
+TaskSmack writes a quantity the same way wherever it appears: in a table cell, in the value strip beside a chart, in a chart tooltip and on a chart axis.
+
+Digits are all the same width, so a value that changes every second does not shift the text around it, and in the process table's size, rate and power columns the decimal points line up whatever the unit ("512.0 B" above "3.2 MiB").
+
+- **Sizes and rates** use binary units with their IEC names: B, KiB, MiB, GiB and TiB (1 KiB = 1,024 bytes), with one decimal, such as "512.0 MiB" or "1.5 GiB/s".
+- **Link speed** is the exception: a network interface's link speed is in bits with decimal prefixes, as network adapters, switches and the OS describe it: "100 Mbit/s", "1 Gbit/s", "2.5 Gbit/s", "10 Gbit/s". Hovering over it shows the most it can carry in the units of the Sent and Received rates ("Up to 1.2 GiB/s" for a 10 Gbit/s link). An unknown link speed shows "-" in the Interface Status table and "Link: Unknown" beside the interface selector.
+- **Percentages** are whole numbers from 10% up and keep one decimal below it ("4.2%"). Per-process CPU and memory percentages always keep one decimal, as the process table shows them.
+- **Power** has one decimal in W, mW or µW ("45.0 W"). **Temperature** is in whole degrees, rounded ("65°C").
+- **Durations** (CPU Time, uptime) use the two largest units: "45s", "2m 05s", "1h 02m", "3d 04h". The charts' time axis counts back from **now** ("5m", "4m", … "now"), and a chart tooltip gives the hovered sample's age.
 
 ### Process Actions
 
@@ -179,7 +207,7 @@ Right-click any process row to access actions:
 | Resume (SIGCONT) | ✅ | ❌ |
 | Change priority (nice) | ✅ | ✅ (mapped) |
 
-Destructive actions require confirmation.
+Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
 
 ### Themes and Configuration
 
@@ -208,8 +236,8 @@ The following table summarises capabilities that differ between Windows and Linu
 | CPU utilisation (total + per-core) | ✅ | ✅ |
 | Memory metrics | ✅ | ✅ |
 | System uptime | ✅ | ✅ |
-| Process I/O counters | ✅ (requires root / `CAP_DAC_READ_SEARCH`) | ✅ (no elevated privileges needed) |
-| Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink) | ✅ (TCP EStats; administrator required) |
+| Process I/O counters | ✅ (other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (no elevated privileges needed) |
+| Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (TCP EStats; administrator required) |
 | Thread count per process | ✅ | ✅ |
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |
 | Process terminate / kill | ✅ | ✅ |
@@ -238,11 +266,21 @@ TaskSmack persists settings in several places:
 
 ### Window size and position
 
-TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized, so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.)
+TaskSmack reopens at the size and position it had when it was closed, and maximized if it was maximized. Closing it while maximized keeps the size and position it had before it was maximized -- whether it was maximized with the title-bar button or by the window manager or compositor (a keyboard shortcut, a window menu, snapping) -- so Restore returns there on the next launch. (Native Wayland does not let apps position their windows, so there only the size and maximized state are restored.) On X11 and XWayland, the title-bar Maximize button asks the window manager to maximize the window when it supports that, so the window fills the same area as the window manager's own maximize and stops at the taskbar or panel.
 
 If the saved position is no longer on any connected display (a monitor was unplugged, say), TaskSmack opens centered on the primary display instead, and a saved size larger than the display is shrunk to fit it.
 
-Dialogs (Settings, About and the privilege notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Apply buttons stay visible; Escape also cancels it.
+### Settings dialog
+
+The Settings dialog (the gear icon) has three sections:
+
+- **Appearance:** Theme and Font size (Small to Largest).
+- **Performance:** Update interval (how often values are sampled) and History length (how much the charts keep).
+- **Advanced:** buttons that open `config.toml` and the user themes folder, and **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked.
+
+**Save** writes your changes to `config.toml` and closes the dialog; **Cancel** (or Escape) closes it without changing anything. **Reset to defaults** sets every control in the dialog back to its default, and Save keeps them.
+
+Dialogs (Settings, About and the limited-data notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Save buttons stay visible.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
 
@@ -252,14 +290,14 @@ These settings aren't in the Settings dialog. Edit them in `config.toml` while T
 
 | Key | Default | Range | Effect |
 |-----|---------|-------|--------|
-| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A per-process network rate above this is taken for a bad reading and shown as 0. Raise it for links faster than 100 Gbps. |
+| `[metrics] max_sane_rate_bps` | 12500000000 (100 Gbps) | 1e9–1e11 bytes/s | A network rate above this is taken for a bad reading (such as a counter reset). An interface's rate is shown as 0 and is a gap in the system network chart (and in the all-interfaces total). A process's rate is shown as 0 and recorded as 0 in its charts and in the all-processes network totals, not as a gap. Raise it for links faster than 100 Gbps. Disk rates have their own fixed ceiling of 1 TB/s. |
 | `[ui] chart_smooth_factor` | 0.5 | 0.0–0.95 | How slowly live values and the bars beside the charts follow each new sample, as a fraction of the refresh interval. Lower follows changes faster; 0 barely eases. |
 | `[ui] chart_tau_ms_min` | 20 | 5–100 ms | The shortest easing time, used at fast refresh intervals. |
 | `[ui] chart_tau_ms_max` | 400 | 100–2000 ms | The longest easing time, used at slow refresh intervals. |
 | `[ui] chart_anti_aliasing` | true | true/false | Smooth chart line edges. Turn it off to save CPU/GPU time on integrated graphics. |
 | `[sampling] socket_stats_cache_ttl_ms` | 500 | 0–5000 ms | Linux only. How long per-process network readings are cached. |
 
-Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. Integrated and discrete GPUs are told apart by vendor (Windows) or PCI bus (Linux), not by a VRAM threshold. TaskSmack has no threshold-coloured progress bars.
+Older versions also wrote `[metrics] min_time_for_rate_seconds`, `[metrics] integrated_gpu_vram_threshold_mb`, `[ui] progress_color_low_threshold` and `[ui] progress_color_high_threshold`. None of them ever had an effect, and TaskSmack now removes them from `config.toml` the next time it saves. Network rates are measured over each interval, so no start-up delay is needed. The old configurable VRAM threshold is unused. On Windows, integrated and discrete GPUs are told apart by the driver's own report (DXCore); only where DXCore can't answer does TaskSmack guess from the vendor and the adapter's dedicated memory (an Intel GPU with under 512 MiB or an AMD GPU with under 1 GiB counts as integrated, a Qualcomm GPU always does, an NVIDIA GPU never does). On Linux they are told apart by PCI bus and, for AMD, graphics-core version. TaskSmack has no threshold-coloured progress bars.
 
 ### Running TaskSmack twice
 

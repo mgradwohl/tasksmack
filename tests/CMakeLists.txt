@@ -6,6 +6,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/google/googletest.git
     GIT_TAG 063de7e9578f82b369302001269680b4b1553359  # v1.18.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from gtest
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/googletest-build"  # per-preset build tree (#1308)
 )
 
 # For Windows: Prevent overriding the parent project's compiler/linker settings
@@ -46,15 +47,28 @@ if(WIN32)
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw-resize.ps1)
         add_test(NAME EtwCaptureScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw.ps1)
+        # Runs real stub apps through the app-capture lifecycle (#1186), about 30 s; keep it clear
+        # of the 60 s --timeout the CI ctest steps pass under parallel load.
+        set_tests_properties(EtwCaptureScript PROPERTIES TIMEOUT 180)
         add_test(NAME EtwAnalysisScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
+    else()
+        # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
+        message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript and "
+                        "EtwAnalysisScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
 endif()
+
+# tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
+# already required (GLAD generation, cmake/Dependencies.cmake).
+add_test(NAME BenchmarkRegressionGateScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES
     test_main.cpp
+    Benchmarks/test_AllocationCounter.cpp
     Core/test_Application.cpp
     Core/test_EnvUtils.cpp
     Core/test_ApplicationEvents.cpp
@@ -74,18 +88,23 @@ set(COMMON_TEST_SOURCES
     Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
+    Domain/test_ProcessState.cpp
     Domain/test_SystemModel.cpp
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
+    Domain/test_HistorySeries.cpp
     UI/test_ChartWidgets.cpp
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
+    UI/test_FillPlotLayout.cpp
+    UI/test_ChartGeometryBudget.cpp
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
     UI/test_RateAxis.cpp
+    UI/test_InlineText.cpp
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp
@@ -103,6 +122,7 @@ set(COMMON_TEST_SOURCES
     UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
     UI/test_FontFileCache.cpp
+    UI/test_TabularDigits.cpp
     App/test_ProcessColumnConfig.cpp
     App/test_ProcessSortUtils.cpp
     App/test_AdaptiveIntervalUtils.cpp
@@ -111,14 +131,26 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessTableFlags.cpp
     App/test_ProcessTableLayout.cpp
     App/test_ProcessTableSettings.cpp
+    App/test_ProcessTableSettingsRoundTrip.cpp
     App/test_ProcessDetailsLayout.cpp
     App/test_GpuClockReference.cpp
+    App/test_GpuSeriesScale.cpp
     App/test_GpuSectionEmptyState.cpp
     App/test_GpuSectionDrawList.cpp
     App/test_ProcessRowFormat.cpp
+    App/test_ProcessColumnAvailability.cpp
+    App/test_ProcessStateColor.cpp
+    App/test_ProcessTypeColor.cpp
+    App/test_ProcessCellWidths.cpp
+    App/test_ProcessFilterCache.cpp
+    App/test_ProcessDisplayFreeze.cpp
+    App/test_CpuCoreGridIds.cpp
+    App/test_CpuSummaryText.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
+    Platform/test_CpuAffinity.cpp
+    Platform/test_ThreadName.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
@@ -134,11 +166,29 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessGpuHelpers.cpp
     App/test_ProcessResourceHelpers.cpp
     App/test_ProcessHistoryHelpers.cpp
+    App/test_ProcessDetailsHistory.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
+    App/test_ElevationNoticeText.cpp
+    App/test_FontSizeChange.cpp
+    App/test_SyntheticScenario.cpp
+    Platform/test_SyntheticWorkload.cpp
 )
+# The Windows probes' pure *Math.h helpers include no Windows header, so their tests are built on
+# every platform: Linux CI runs them under its sanitizers and coverage too (#1133). Tests that need
+# a probe, Windows types or fakes of Windows APIs stay in WINDOWS_PLATFORM_TEST_SOURCES.
+set(WINDOWS_MATH_TEST_SOURCES
+    Platform/WindowsMath/test_DXGIGPUProbeMath.cpp
+    Platform/WindowsMath/test_WindowsDiskProbeMath.cpp
+    Platform/WindowsMath/test_WindowsGPUProbeMath.cpp
+    Platform/WindowsMath/test_WindowsPathProviderMath.cpp
+    Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
+    Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
+    Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
+)
+list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ProcessProbeContract.cpp
     Platform/test_SystemProbeContract.cpp
@@ -155,6 +205,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbe.cpp
+    Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WinString.cpp
 )
@@ -252,15 +303,21 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/X11WindowManager.cpp
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
+    # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
+    ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/AssetPath.cpp
@@ -269,6 +326,11 @@ add_executable(TaskSmackTests
     # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
+    # Marker glyphs for the value strip and series, drawn by test_FillPlotLayout.cpp and
+    # test_ChartGeometryBudget.cpp under a live ImGui context
+    ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
+    # Measures font files with FreeType (linked below), no ImGui context needed (#1201)
+    ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
     ${CMAKE_CURRENT_SOURCE_DIR}/Mocks/ThemeStub.cpp
     ${PLATFORM_SRC_UNDER_TEST}
@@ -290,6 +352,7 @@ endif()
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
+    ${CMAKE_SOURCE_DIR}/benchmarks  # For AllocationCounter.h (std-only; no Google Benchmark dependency)
     ${CMAKE_BINARY_DIR}/generated  # For generated version.h
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
@@ -306,6 +369,12 @@ target_link_libraries(TaskSmackTests PRIVATE
     tomlplusplus::tomlplusplus
     SDL3::SDL3
     glad_gl_core_33
+    Freetype::Freetype  # For TabularDigits.cpp
+    # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed);
+    # test_ProcessTableSettingsRoundTrip.cpp runs headless ImGui frames to load saved table layouts.
+    imgui_lib
+    # test_ChartGeometryBudget.cpp renders the real ImPlot charts headless to count their geometry (#1421).
+    implot_lib
 )
 tasksmack_apply_linux_toolchain(TaskSmackTests)
 
@@ -372,6 +441,7 @@ if(WIN32)
         userenv
         dxgi
         gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
     )
 endif()

@@ -1,5 +1,6 @@
 #include "ROCmGPUProbe.h"
 
+#include "AmdApu.h"
 #include "PciDisplayDevices.h"
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
@@ -153,6 +154,9 @@ struct ROCmGPUProbe::Impl
     std::vector<std::uint64_t> lastMemoryTotalBytes;
     // Each device's name, read at load, so a repeat enumerateGPUs() needn't ask again.
     std::vector<std::string> names;
+    // Whether each device is an APU's integrated GPU (#1266), decided at load from amdgpu's sysfs
+    // (AmdApu::isAmdApu, shared with DRMGPUProbe), parallel to devices.
+    std::vector<bool> integrated;
     // Which sensors each device reports, found by the first enumerateGPUs() that sees it awake
     // (#1112). Unset while it has only been seen asleep: it isn't woken to find out (#1117), and
     // rescanGPUs() asks for a re-enumeration once it is awake (#1289).
@@ -378,6 +382,25 @@ bool ROCmGPUProbe::Impl::startROCmSMI()
             (rsmi_dev_name_get(i, nameBuf, sizeof(nameBuf)) == RSMI_STATUS_SUCCESS) ? std::string(nameBuf) : "AMD GPU " + std::to_string(i);
     }
     sensors.assign(deviceCount, std::nullopt);
+    // ROCm SMI has no APU flag, so ask amdgpu (#1266): the graphics core's IP version, the signal its
+    // own AMD_IS_APU flag comes from, or else the PCI device id. Both are cached sysfs attributes
+    // (rsmi_dev_id_get reads the same file), so this never wakes a sleeping GPU (#1117).
+    integrated.assign(deviceCount, false);
+    for (std::uint32_t i = 0; i < deviceCount; ++i)
+    {
+        std::optional<AmdApu::GcIpVersion> gcVersion;
+        std::optional<std::uint16_t> pciDeviceId;
+        if (!sysfsPaths[i].empty())
+        {
+            gcVersion = AmdApu::readGcIpVersion(sysfsPaths[i]);
+            pciDeviceId = AmdApu::readPciDeviceId(sysfsPaths[i]);
+        }
+        if (std::uint16_t id = 0; !pciDeviceId.has_value() && rsmi_dev_id_get(i, &id) == RSMI_STATUS_SUCCESS && id != 0)
+        {
+            pciDeviceId = id;
+        }
+        integrated[i] = AmdApu::isAmdApu(gcVersion, pciDeviceId);
+    }
 
     initialized = true;
     reinitNeeded = false;
@@ -413,6 +436,7 @@ void ROCmGPUProbe::Impl::restartROCmSMI()
     lastMemoryTotalBytes.clear();
     names.clear();
     sensors.clear();
+    integrated.clear();
     // Retried at the next full rescan if it fails while an amdgpu-bound GPU is present (a driver
     // mid-reload).
     reinitNeeded = !loadROCmSMI() && loadFailureIsRetryable();
@@ -442,6 +466,7 @@ void ROCmGPUProbe::Impl::unloadROCmSMI()
     lastMemoryTotalBytes.clear();
     names.clear();
     sensors.clear();
+    integrated.clear();
 }
 
 std::string ROCmGPUProbe::Impl::getROCmError(rsmi_status_t result) const
@@ -499,8 +524,8 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         GPUInfo info{};
         info.deviceIndex = deviceIdx;
         info.vendor = "AMD";
-        info.isIntegrated = false;            // ROCm typically monitors discrete AMD GPUs
-        info.name = m_Impl->names[deviceIdx]; // Read at load ("AMD GPU N" if ROCm SMI has none)
+        info.isIntegrated = m_Impl->integrated[deviceIdx]; // An APU's GPU, decided at load (#1266)
+        info.name = m_Impl->names[deviceIdx];              // Read at load ("AMD GPU N" if ROCm SMI has none)
 
         // The id resolved once at load (uniqueId → pciId → "amd_N", #1162); readGPUCounters() uses
         // the same cached value, so GPUInfo::id and GPUCounters::gpuId always match.
@@ -794,8 +819,9 @@ GPUCapabilities ROCmGPUProbe::capabilities() const
     caps.hasPCIeMetrics = false;       // Not directly available via ROCm SMI
     caps.hasEngineUtilization = false; // Not available
     caps.hasPerProcessMetrics = false; // Major limitation: no per-process data
-    caps.hasEncoderDecoder = false;    // Not available via ROCm SMI
-    caps.supportsMultiGPU = true;      // Multiple AMD GPUs supported
+    caps.hasPerProcessUtilization = false;
+    caps.hasEncoderDecoder = false; // Not available via ROCm SMI
+    caps.supportsMultiGPU = true;   // Multiple AMD GPUs supported
 
     return caps;
 }

@@ -30,6 +30,38 @@ include(FetchContent)
 # Keep source-based dependencies deterministic: we rely on <dep>_SOURCE_DIR values below.
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 
+# Every FetchContent_Declare() below passes BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build".
+#
+# FETCHCONTENT_BASE_DIR above points at a cache shared by every preset, and by default
+# FetchContent puts <dep>-src, <dep>-subbuild AND <dep>-build under it. Sharing -src (the
+# download) and -subbuild (its download stamps) is the point of the cache, but sharing -build
+# meant every preset compiled SDL3, FreeType, googletest, ... into the same object directory,
+# so Ninja in one preset could treat objects compiled with another preset's flags (sanitizers,
+# coverage, LTO, -O level) as up to date (#1308). Pinning BINARY_DIR to this build tree keeps
+# the download shared while every preset builds its own objects. The calls stay literal
+# FetchContent_Declare() (no wrapper) because osv-scanner.yml's Syft cmake cataloger and
+# Renovate's regex managers read them from the source text.
+set(TASKSMACK_DEPS_BINARY_DIR "${CMAKE_BINARY_DIR}/_deps")
+
+# Configure-time guard for #1308: every directory added to the build (including every
+# FetchContent dependency, however it was declared) must have its binary dir inside this
+# preset's build tree, never in the shared FetchContent cache.
+function(_tasksmack_check_dependency_binary_dirs dir)
+    get_property(_subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    foreach(_subdir IN LISTS _subdirs)
+        get_property(_bin DIRECTORY "${_subdir}" PROPERTY BINARY_DIR)
+        cmake_path(IS_PREFIX CMAKE_BINARY_DIR "${_bin}" NORMALIZE _inside_build)
+        if(NOT _inside_build)
+            message(FATAL_ERROR
+                "Directory '${_subdir}' builds into '${_bin}', outside this build tree "
+                "'${CMAKE_BINARY_DIR}'. Dependency build trees must be per-preset (#1308): "
+                "pass BINARY_DIR \"\${TASKSMACK_DEPS_BINARY_DIR}/<dep>-build\" to its FetchContent_Declare().")
+        endif()
+        _tasksmack_check_dependency_binary_dirs("${_subdir}")
+    endforeach()
+endfunction()
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _tasksmack_check_dependency_binary_dirs "${CMAKE_SOURCE_DIR}")
+
 # CMP0072: FindOpenGL prefers the legacy GL library unless told otherwise, which
 # emits a policy warning on Linux. Prefer GLVND explicitly (the modern dispatch
 # library) before find_package(OpenGL).
@@ -44,6 +76,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG 79524ddd08a4ec981b7fea76afd08ee05f83755d  # v1.17.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from spdlog
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/spdlog-build"  # per-preset build tree (#1308)
 )
 
 FetchContent_MakeAvailable(spdlog)
@@ -63,11 +96,31 @@ if(TARGET spdlog)
 endif()
 
 # toml++ for configuration files
+#
+# Pinned to an untagged master commit (2026-07-21, 50 commits past v3.4.0) rather than v3.4.0:
+# v3.4.0 hits a TOML_ASSERT_ASSUME in parse_key() on '[' then a newline (#1387, fixed upstream in
+# e4bcc15) and TOML_UNREACHABLE in is_non_ascii_horizontal_whitespace() on U+FB26..U+FEFE (#1389,
+# fixed upstream in 1e8829b). Both are UB in release builds. Move back to a release tag once one
+# includes them (v3.5.0+).
+#
+# The patch fixes #1388 ('m=[}' hits a TOML_ASSERT_ASSUME in parse_value()), which is not fixed
+# upstream yet. ApplyPatch.cmake skips it when already applied, since the source tree under
+# FETCHCONTENT_BASE_DIR is shared by every preset. Re-check the patch whenever GIT_TAG moves, and
+# give an edited patch a new file name: FetchContent only re-runs the patch step when this
+# declaration changes, and CI's FetchContent cache is keyed on this file, not on the patch.
+# The fuzz build (.clusterfuzzlite/fetch-deps.sh, #1390) reads the GIT_TAG on the line after
+# GIT_REPOSITORY, so keep them adjacent. Renovate only tracks this pin while its comment reads
+# "# vX.Y.Z" (see .github/renovate.json5), so it leaves this untagged pin alone.
+find_package(Git REQUIRED)
 FetchContent_Declare(
     tomlplusplus
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
-    GIT_TAG 30172438cee64926dc41fdd9c11fb3ba5b2ba9de  # v3.4.0 - pinned to SHA for supply chain security
+    GIT_TAG 1e8829b793b66ad17011732a146b8077d379b011  # master after v3.4.0 - pinned to SHA for supply chain security
+    PATCH_COMMAND "${CMAKE_COMMAND}" "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+                  "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/tomlplusplus-parse-value-terminator.patch"
+                  -P "${CMAKE_CURRENT_LIST_DIR}/patches/ApplyPatch.cmake"
     SYSTEM  # Treat as system headers to suppress warnings
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/tomlplusplus-build"  # per-preset build tree (#1308)
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
@@ -79,6 +132,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/nothings/stb.git
     GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20  # Pinned to specific commit for supply-chain security
     SYSTEM  # Treat as system headers to suppress third-party warning noise, matching every other dependency here
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/stb-build"  # per-preset build tree (#1308)
 )
 FetchContent_MakeAvailable(stb)
 
@@ -88,6 +142,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
     GIT_TAG fa2c02bb6e21974a89ea9824bc53c9932abe5f9c  # release-3.4.16 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from SDL3
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/sdl3-build"  # per-preset build tree (#1308)
 )
 
 # Configure SDL3 build options (disable unnecessary components)
@@ -146,6 +201,7 @@ FetchContent_Declare(
     glad
     GIT_REPOSITORY https://github.com/Dav1dde/glad.git
     GIT_TAG 73db193f853e2ee079bf3ca8a64aa2eaf6459043  # v2.0.8 - pinned to SHA for supply chain security
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/glad-build"  # per-preset build tree (#1308)
 )
 FetchContent_MakeAvailable(glad)
 add_subdirectory("${glad_SOURCE_DIR}/cmake" "${glad_BINARY_DIR}/glad_cmake")
@@ -167,6 +223,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/freetype/freetype.git
     GIT_TAG 0a0221a1347e2f1e07c395263540026e9a0aa7c7  # VER-2-14-3 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from FreeType
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/freetype-build"  # per-preset build tree (#1308)
 )
 
 # Configure FreeType build options (disable optional dependencies)
@@ -195,6 +252,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG b48d1afbe8ee8b238e2961dc363a949dd7304e23  # v1.92.9b-docking - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImGui
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/imgui-build"  # per-preset build tree (#1308)
 )
 FetchContent_MakeAvailable(imgui)
 
@@ -229,6 +287,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/epezent/implot.git
     GIT_TAG 524f9fcd48d76c13fdf94c5ffbba8787a1ff7e39  # v1.0 - pinned to SHA for supply chain security
     SYSTEM  # Treat as system headers to suppress warnings from ImPlot
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/implot-build"  # per-preset build tree (#1308)
 )
 FetchContent_MakeAvailable(implot)
 

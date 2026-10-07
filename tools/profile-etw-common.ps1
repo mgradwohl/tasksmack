@@ -220,3 +220,191 @@ function Wait-CollectorMarker {
         Start-Sleep -Milliseconds 250
     }
 }
+
+function Get-PresetBuildFlags {
+    # The compile flags a preset's build tree was configured with, read from its CMakeCache.txt,
+    # so a capture records which binary it measured (#1186): the preset name alone does not say
+    # (win-release and win-optimized are both "Release", with very different flags).
+    param([Parameter(Mandatory = $true)][string]$BuildDirectory)
+    $cachePath = Join-Path $BuildDirectory 'CMakeCache.txt'
+    $flags = [ordered]@{
+        BuildType      = $null
+        CxxFlags       = $null
+        CxxConfigFlags = $null
+        Ipo            = $null
+        Source         = $cachePath
+    }
+    if (-not (Test-Path -LiteralPath $cachePath)) {
+        $flags.Source = "no CMakeCache.txt at $cachePath"
+        return $flags
+    }
+    $cache = @{}
+    foreach ($line in Get-Content -LiteralPath $cachePath) {
+        if ($line -match '^(?<name>[A-Za-z0-9_]+)(:[A-Za-z]+)?=(?<value>.*)$') { $cache[$Matches.name] = $Matches.value }
+    }
+    $flags.BuildType = $cache['CMAKE_BUILD_TYPE']
+    $flags.CxxFlags = $cache['CMAKE_CXX_FLAGS']
+    if ($flags.BuildType) { $flags.CxxConfigFlags = $cache["CMAKE_CXX_FLAGS_$($flags.BuildType.ToUpperInvariant())"] }
+    # A preset can cache CMAKE_INTERPROCEDURAL_OPTIMIZATION itself; otherwise CompilerOptions.cmake sets
+    # it as a plain variable from the TASKSMACK_ENABLE_IPO option (ON by default), which is cached --
+    # so a normal win-release cache has LTO on with no CMAKE_INTERPROCEDURAL_OPTIMIZATION entry (#1372 review).
+    $flags.Ipo = if ($cache.ContainsKey('CMAKE_INTERPROCEDURAL_OPTIMIZATION')) { $cache['CMAKE_INTERPROCEDURAL_OPTIMIZATION'] }
+    elseif ($cache.ContainsKey('TASKSMACK_ENABLE_IPO')) { "$($cache['TASKSMACK_ENABLE_IPO']) (TASKSMACK_ENABLE_IPO, where the compiler supports it)" }
+    else { 'unknown' }
+    return $flags
+}
+
+function Format-PresetBuildFlags {
+    # One line naming the preset and the flags it builds with, logged at the start of a capture.
+    param([Parameter(Mandatory = $true)][string]$Preset, [Parameter(Mandatory = $true)]$Flags)
+    if (-not $Flags.BuildType) { return "Preset: $Preset (compile flags unknown: $($Flags.Source))" }
+    $cxx = "$($Flags.CxxFlags) $($Flags.CxxConfigFlags)".Trim()
+    return "Preset: $Preset (CMAKE_BUILD_TYPE=$($Flags.BuildType); CXX flags: '$cxx'; IPO/LTO: $($Flags.Ipo))"
+}
+
+function Wait-AppMainWindow {
+    # True once the process has a main (visible top-level) window; false if it exits first or no
+    # window appears within the timeout.
+    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process, [int]$TimeoutSeconds)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while (-not $Process.HasExited) {
+        $Process.Refresh()
+        if ($Process.MainWindowHandle -ne [IntPtr]::Zero) { return $true }
+        if ((Get-Date) -ge $deadline) { return $false }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
+}
+
+function Invoke-AppCapture {
+    # The app-mode lifecycle (#1186). Launches the app and lets it warm up -- its main window
+    # exists, then -WarmupSeconds more -- before the trace starts, so font, theme and
+    # first-enumeration costs are not in the profile (-IncludeStartup records them deliberately).
+    # With -DurationSeconds the trace is stopped before the script closes the app, so the forced
+    # shutdown is not in it either.
+    #
+    # A run that does not cover what was asked fails: the app exiting during warm-up or while the
+    # trace starts; exiting before a fixed -DurationSeconds window ends, whatever its exit code
+    # (it was supposed to be still running); or, interactively, being closed with a nonzero exit
+    # code. The failure is returned in .Failure rather than thrown, so the caller can still write
+    # the manifest before failing the capture.
+    #
+    # StartTrace/StopTrace start and stop the recording (WPR directly, or the elevated collector).
+    # StopTrace runs exactly once if StartTrace returned, also when an error is thrown, and as soon
+    # as the app exits early, so a crash does not leave the recording running.
+    param(
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][scriptblock]$StartTrace,
+        [Parameter(Mandatory = $true)][scriptblock]$StopTrace,
+        [int]$DurationSeconds = 0,
+        [int]$WarmupSeconds = 5,
+        [switch]$IncludeStartup,
+        [int]$MainWindowTimeoutSeconds = 60,
+        [int]$InteractiveTimeoutSeconds = 14400,
+        [ValidateSet('Normal', 'Hidden')][string]$WindowStyle = 'Normal'
+    )
+    $result = [ordered]@{
+        Binary         = $BinaryPath
+        Pid            = $null
+        IntegrityLevel = 'Unknown'
+        ExitCode       = $null
+        EndReason      = $null
+        Failure        = $null
+        IncludeStartup = [bool]$IncludeStartup
+        WarmupSeconds  = if ($IncludeStartup) { 0 } else { $WarmupSeconds }
+        MainWindowSeen = $null
+        StartUtc       = (Get-Date).ToUniversalTime().ToString('o')
+        TraceStartUtc  = $null
+        TraceStopUtc   = $null
+        EndUtc         = $null
+    }
+    $proc = $null
+    $traceRunning = $false
+    $completed = $false
+    # Dot-sourced (. $stopTraceNow), so it updates $traceRunning in this scope.
+    $stopTraceNow = {
+        if ($traceRunning) {
+            $traceRunning = $false
+            & $StopTrace | Out-Host
+            $result.TraceStopUtc = (Get-Date).ToUniversalTime().ToString('o')
+        }
+    }
+    $startTraceNow = {
+        & $StartTrace | Out-Host
+        $traceRunning = $true
+        $result.TraceStartUtc = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    try {
+        if ($IncludeStartup) { . $startTraceNow }
+        $proc = Start-Process -FilePath $BinaryPath -PassThru -WindowStyle $WindowStyle
+        $null = $proc.Handle # keep a handle so ExitCode is available after exit
+        $result.Pid = $proc.Id
+        $result.IntegrityLevel = Get-ProcessIntegrityLevel -ProcessId $proc.Id
+        Write-Host "Launched app PID: $($proc.Id) (integrity: $($result.IntegrityLevel))"
+
+        if (-not $IncludeStartup) {
+            Write-Host "Warm-up: waiting for the main window (up to $MainWindowTimeoutSeconds s), then $WarmupSeconds s more, before recording starts (-IncludeStartup records startup too)."
+            $result.MainWindowSeen = Wait-AppMainWindow -Process $proc -TimeoutSeconds $MainWindowTimeoutSeconds
+            if (-not $proc.HasExited -and -not $result.MainWindowSeen) {
+                Write-Warning "No main window appeared within $MainWindowTimeoutSeconds s; starting the trace after the warm-up anyway."
+            }
+            if (-not $proc.HasExited -and $WarmupSeconds -gt 0) { $null = $proc.WaitForExit($WarmupSeconds * 1000) }
+            if ($proc.HasExited) {
+                $result.EndReason = 'exited during warm-up, before the trace started'
+                $result.Failure = "The app exited during warm-up (exit code $($proc.ExitCode)) before recording started, so nothing was captured. It most likely crashed at startup."
+            }
+            else {
+                . $startTraceNow
+                if ($proc.HasExited) {
+                    $result.EndReason = 'exited while the trace was starting'
+                    $result.Failure = "The app exited (exit code $($proc.ExitCode)) while the trace was starting, so the trace does not cover a running app. It most likely crashed."
+                }
+            }
+        }
+
+        if (-not $result.Failure) {
+            if ($DurationSeconds -gt 0) {
+                Write-Host "Recording for $DurationSeconds second(s), then closing the app automatically."
+                $windowStart = Get-Date
+                if ($proc.WaitForExit($DurationSeconds * 1000)) {
+                    $elapsed = [int]((Get-Date) - $windowStart).TotalSeconds
+                    $result.EndReason = 'exited during the -DurationSeconds capture window'
+                    $result.Failure = "The app exited (exit code $($proc.ExitCode)) after $elapsed s of the $DurationSeconds s capture window, so the trace does not cover the requested window. It most likely crashed."
+                }
+                else {
+                    # The expected path: the app is still running. Stop recording first, so the
+                    # forced shutdown is not in the trace, then close it.
+                    . $stopTraceNow
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                    # Stop-Process returns before the process is gone; wait, so its status is final.
+                    if ($proc.WaitForExit(30000)) {
+                        $result.EndReason = 'closed by the script after -DurationSeconds (the exit code is from that forced stop)'
+                    }
+                }
+            }
+            else {
+                Write-Host 'Exercise the application, then close it to finish the trace.'
+                if ($proc.WaitForExit($InteractiveTimeoutSeconds * 1000)) {
+                    $result.EndReason = 'exited'
+                    if ($proc.ExitCode -ne 0) {
+                        $result.Failure = "The app exited with code $($proc.ExitCode) (0x$('{0:X8}' -f $proc.ExitCode)), not 0, so the capture ends in a crash or error exit rather than a normal close."
+                    }
+                }
+            }
+        }
+        $completed = $true
+    }
+    finally {
+        . $stopTraceNow
+        # On an error (e.g. the trace could not be started), do not leave behind an app this run
+        # launched: nothing is recording it.
+        if (-not $completed -and $null -ne $proc -and -not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            $null = $proc.WaitForExit(30000)
+        }
+    }
+    if ($proc.HasExited) { $result.ExitCode = $proc.ExitCode }
+    elseif (-not $result.EndReason) { $result.EndReason = Get-UnfinishedTargetReason -DurationSeconds $DurationSeconds }
+    $result.EndUtc = (Get-Date).ToUniversalTime().ToString('o')
+    return $result
+}

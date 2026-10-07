@@ -1,5 +1,6 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/CpuAffinity.h"
 #include "UI/Format.h"
 
 #include <gtest/gtest.h>
@@ -16,8 +17,12 @@ namespace
 {
 
 using Domain::ProcessSnapshot;
+using ProcessRowFormat::alignedBytesCell;
+using ProcessRowFormat::alignedBytesPerSecCell;
 using ProcessRowFormat::AlignedCellText;
+using ProcessRowFormat::alignedPowerCell;
 using ProcessRowFormat::buildRowFormatCache;
+using ProcessRowFormat::CellTone;
 using ProcessRowFormat::formatAlignedBytesPerSecString;
 using ProcessRowFormat::formatAlignedBytesString;
 using ProcessRowFormat::formatAlignedPercentString;
@@ -53,7 +58,7 @@ using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
     snap.threadCount = 7;
     snap.handleCount = 42;
     snap.pageFaults = 123;
-    snap.cpuAffinityMask = 0x3;
+    snap.cpuAffinity = Platform::CpuAffinity::fromMask(0x3);
     snap.gdiObjectCount = 9;
     return snap;
 }
@@ -124,16 +129,16 @@ class ScopedCommaDecimalLocale
 };
 
 // #1202: the table's aligned cells and the shared value formatters (tooltips, Process Details, chart
-// axes) print the same decimal separator in a comma-decimal locale, not "1.5 MB" beside "1,5 MB".
+// axes) print the same decimal separator in a comma-decimal locale, not "1.5 MiB" beside "1,5 MiB".
 TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatters)
 {
     const ScopedCommaDecimalLocale commaLocale;
     const double bytes = 1.5 * 1024.0 * 1024.0;
 
-    EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MB");
-    EXPECT_EQ(UI::Format::formatBytes(bytes), "1,5 MB");
-    EXPECT_EQ(formatAlignedBytesPerSecString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MB/s");
-    EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), "1,5 MB/s");
+    EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB");
+    EXPECT_EQ(UI::Format::formatBytes(bytes), "1,5 MiB");
+    EXPECT_EQ(formatAlignedBytesPerSecString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB/s");
+    EXPECT_EQ(UI::Format::formatBytesPerSec(bytes), "1,5 MiB/s");
 
     EXPECT_EQ(formatAlignedPercentString(0.6), "0,6%");
     EXPECT_EQ(UI::Format::formatPercent(0.6), "0,6%");
@@ -146,7 +151,7 @@ TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatt
 
     // The allocating slow path agrees with the per-cell fast path.
     const auto slow = UI::Format::splitBytesForAlignment(bytes, UI::Format::BYTE_UNIT_MB);
-    EXPECT_EQ(slow.wholePart + slow.decimalPart + slow.unitPart, "1,5 MB");
+    EXPECT_EQ(slow.wholePart + slow.decimalPart + slow.unitPart, "1,5 MiB");
 
     for (int hundredths = 0; hundredths <= 10'000; hundredths += 5)
     {
@@ -160,14 +165,14 @@ TEST(ProcessRowFormatTest, FormatAlignedBytesStringUsesGivenUnit)
     const auto formatted =
         formatAlignedBytesString(static_cast<double>(1024ULL * 1024 * 1024), UI::Format::unitForTotalBytes(1024ULL * 1024 * 1024));
 
-    EXPECT_EQ(formatted, "1.0 GB");
+    EXPECT_EQ(formatted, "1.0 GiB");
 }
 
 TEST(ProcessRowFormatTest, FormatAlignedBytesPerSecStringUsesGivenUnit)
 {
     const auto formatted = formatAlignedBytesPerSecString(1024.0 * 1024.0, UI::Format::unitForBytesPerSecond(1024.0 * 1024.0));
 
-    EXPECT_EQ(formatted, "1.0 MB/s");
+    EXPECT_EQ(formatted, "1.0 MiB/s");
 }
 
 TEST(ProcessRowFormatTest, FormatAlignedPowerStringConcatenatesPartsInOrder)
@@ -185,82 +190,324 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
 
     EXPECT_EQ(fmt.ppid.text, UI::Format::formatId(4));
     EXPECT_EQ(fmt.startTime.text, UI::Format::formatEpochDateTimeShort(1'700'000'000));
-    EXPECT_EQ(fmt.cpuTime.text, UI::Format::formatCpuTimeCompact(12.5));
+    EXPECT_EQ(fmt.cpuTime.text, UI::Format::formatDuration(12.5));
     EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
     EXPECT_EQ(fmt.memPercent.text, "10.0%");
-    EXPECT_EQ(fmt.virtualMem.text, "1.0 GB");
-    EXPECT_EQ(fmt.resident.text, "512.0 MB");
-    EXPECT_EQ(fmt.peakRss.text, "768.0 MB");
-    EXPECT_EQ(fmt.shared.text, "64.0 MB");
-    EXPECT_EQ(fmt.ioRead.text, "1.0 MB/s");
-    EXPECT_EQ(fmt.ioWrite.text, "2.0 MB/s");
+    EXPECT_EQ(fmt.virtualMem.text, "1.0 GiB");
+    EXPECT_EQ(fmt.resident.text, "512.0 MiB");
+    EXPECT_EQ(fmt.peakRss.text, "768.0 MiB");
+    EXPECT_EQ(fmt.shared.text, "64.0 MiB");
+    EXPECT_EQ(fmt.ioRead.text, "1.0 MiB/s");
+    EXPECT_EQ(fmt.ioWrite.text, "2.0 MiB/s");
     EXPECT_EQ(fmt.netSent.text, "512.0 B/s");
-    EXPECT_EQ(fmt.netRecv.text, "4.0 KB/s");
+    EXPECT_EQ(fmt.netRecv.text, "4.0 KiB/s");
     EXPECT_EQ(fmt.power.text, "5.5 W");
     EXPECT_EQ(fmt.gpuPercent.text, "15.0%");
-    EXPECT_EQ(fmt.gpuMemory.text, "256.0 MB");
+    EXPECT_EQ(fmt.gpuMemory.text, "256.0 MiB");
     EXPECT_EQ(fmt.gpuEngines, "3D, Compute");
     EXPECT_EQ(fmt.threads.text, UI::Format::formatIntLocalized(7));
     EXPECT_EQ(fmt.handles.text, UI::Format::formatIntLocalized(42));
     EXPECT_EQ(fmt.pageFaults.text, UI::Format::formatIntLocalized(std::uint64_t{123}));
-    EXPECT_EQ(fmt.affinity.text, UI::Format::formatCpuAffinityMask(0x3));
+    EXPECT_EQ(fmt.affinity.text, "0,1");
     EXPECT_EQ(fmt.gdiObjects.text, UI::Format::formatIntLocalized(9));
 }
 
-TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillReadAsDash)
+/// Asserts `cell` is the unavailable dash, muted, with `reason` as its tooltip.
+void expectUnavailable(const AlignedCellText& cell, const char* reason)
+{
+    EXPECT_EQ(cell.text, UNAVAILABLE_CELL_TEXT);
+    EXPECT_EQ(cell.tone, CellTone::Unavailable);
+    EXPECT_STREQ(cell.unavailableReason, reason);
+    EXPECT_FALSE(cell.hasUnit());
+}
+
+/// Asserts `cell` is a measured zero: muted, no unavailable reason, and not the unavailable dash.
+void expectMeasuredZero(const AlignedCellText& cell)
+{
+    EXPECT_EQ(cell.tone, CellTone::Zero);
+    EXPECT_EQ(cell.unavailableReason, nullptr);
+    EXPECT_NE(cell.text, UNAVAILABLE_CELL_TEXT);
+}
+
+TEST(ProcessRowFormatTest, UnavailableCellTextIsAnEmDash)
+{
+    // One glyph for "not available" everywhere in the table (#1210), and not the "-" that used to mean
+    // a zero as well.
+    EXPECT_EQ(UNAVAILABLE_CELL_TEXT, "\xE2\x80\x94");
+    EXPECT_NE(UNAVAILABLE_CELL_TEXT, "-");
+    EXPECT_NE(UNAVAILABLE_CELL_TEXT, "N/A");
+}
+
+TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillAreUnavailable)
 {
     // Windows measures neither power (#1028) nor shared memory (#1035): those cells must say "no
     // data", not a measured-looking value, even when a snapshot carries one.
+    ProcessRowFormat::RowFormatOptions unsupported;
+    unsupported.hasPowerUsage = false;
+    unsupported.hasSharedMemory = false;
     const RowFormatCache filled = buildRowFormatCache(makeSnapshot());
-    const RowFormatCache unfilled = buildRowFormatCache(makeSnapshot(), {.hasPowerUsage = false, .hasSharedMemory = false});
+    const RowFormatCache unfilled = buildRowFormatCache(makeSnapshot(), unsupported);
 
     EXPECT_EQ(filled.power.text, "5.5 W");
-    EXPECT_EQ(filled.shared.text, "64.0 MB");
-    EXPECT_EQ(unfilled.power.text, "-");
-    EXPECT_EQ(unfilled.shared.text, "-");
+    EXPECT_EQ(filled.power.tone, CellTone::Value);
+    EXPECT_EQ(filled.shared.text, "64.0 MiB");
+    expectUnavailable(unfilled.power, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    expectUnavailable(unfilled.shared, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
 
+    ProcessRowFormat::RowFormatOptions noPower;
+    noPower.hasPowerUsage = false;
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    const RowFormatCache& entry = getOrBuildRowFormatCache(cache, makeSnapshot(), 1, 1, {.hasPowerUsage = false, .hasSharedMemory = true});
-    EXPECT_EQ(entry.power.text, "-");
-    EXPECT_EQ(entry.shared.text, "64.0 MB");
+    const RowFormatCache& entry = getOrBuildRowFormatCache(cache, makeSnapshot(), 1, 1, noPower);
+    expectUnavailable(entry.power, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_EQ(entry.shared.text, "64.0 MiB");
 }
 
-TEST(ProcessRowFormatTest, BuildRowFormatCacheUsesDashForZeroRateAndOptionalFields)
+TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapability)
 {
-    ProcessSnapshot snap; // Every rate/optional field left at its default (zero / nullopt).
+    ProcessRowFormat::RowFormatOptions none;
+    none.hasPowerUsage = false;
+    none.hasSharedMemory = false;
+    none.hasIoCounters = false;
+    none.hasNetworkCounters = false;
+    none.hasThreadCount = false;
+    none.hasHandleCount = false;
+    none.hasPageFaults = false;
+    none.hasCpuAffinity = false;
+    none.hasGdiObjects = false;
+
+    const RowFormatCache fmt = buildRowFormatCache(makeSnapshot(), none);
+
+    for (const AlignedCellText* cell : {&fmt.power,
+                                        &fmt.shared,
+                                        &fmt.ioRead,
+                                        &fmt.ioWrite,
+                                        &fmt.netSent,
+                                        &fmt.netRecv,
+                                        &fmt.threads,
+                                        &fmt.handles,
+                                        &fmt.pageFaults,
+                                        &fmt.affinity,
+                                        &fmt.gdiObjects})
+    {
+        expectUnavailable(*cell, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    }
+    // Columns every probe fills keep their values.
+    EXPECT_EQ(fmt.resident.text, "512.0 MiB");
+    EXPECT_EQ(fmt.cpuPercent.text, "25.0%");
+}
+
+TEST(ProcessRowFormatTest, MeasuredZerosKeepTheirNumberAndAreMarkedZero)
+{
+    // #1210: a measured zero used to print "-" in the I/O, network and GPU columns, the same as a value
+    // that could not be read. It now keeps the column's own format, marked so it is drawn muted.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.cpuPercent = 0.0;
+    snap.ioReadBytesPerSec = 0.0;
+    snap.ioWriteBytesPerSec = 0.0;
+    snap.netSentBytesPerSec = 0.0;
+    snap.netReceivedBytesPerSec = 0.0;
+    snap.gpuUtilPercent = 0.0;
+    snap.gpuMemoryBytes = 0;
+    snap.powerWatts = 0.0;
+    snap.handleCount = 0;
+    snap.pageFaults = 0;
+    snap.gdiObjectCount = 0;
+    snap.gpuEngines.clear();
 
     const RowFormatCache fmt = buildRowFormatCache(snap);
 
-    EXPECT_EQ(fmt.ioRead.text, "-");
-    EXPECT_EQ(fmt.ioWrite.text, "-");
-    EXPECT_EQ(fmt.netSent.text, "-");
-    EXPECT_EQ(fmt.netRecv.text, "-");
-    EXPECT_EQ(fmt.gpuPercent.text, "-");
-    EXPECT_EQ(fmt.gpuMemory.text, "-");
-    EXPECT_EQ(fmt.threads.text, "-");
-    EXPECT_EQ(fmt.handles.text, "-");
-    EXPECT_EQ(fmt.pageFaults.text, "-");
-    EXPECT_EQ(fmt.gdiObjects.text, "-"); // gdiObjectCount is std::nullopt
-    EXPECT_EQ(fmt.gpuEngines, "-");      // gpuEngines is empty
+    EXPECT_EQ(fmt.cpuPercent.text, "0.0%");
+    expectMeasuredZero(fmt.cpuPercent);
+    for (const AlignedCellText* rate : {&fmt.ioRead, &fmt.ioWrite, &fmt.netSent, &fmt.netRecv})
+    {
+        expectMeasuredZero(*rate);
+        ASSERT_TRUE(rate->hasUnit()); // Decimal-aligned with the column's other rates
+        EXPECT_EQ(rate->number(), "0.0");
+        EXPECT_EQ(rate->unit(), " B/s");
+    }
+    EXPECT_EQ(fmt.gpuPercent.text, "0.0%");
+    expectMeasuredZero(fmt.gpuPercent);
+    EXPECT_EQ(fmt.gpuMemory.number(), "0.0");
+    expectMeasuredZero(fmt.gpuMemory);
+    EXPECT_EQ(fmt.power.number(), "0.0");
+    expectMeasuredZero(fmt.power);
+    EXPECT_EQ(fmt.handles.text, "0");
+    expectMeasuredZero(fmt.handles);
+    EXPECT_EQ(fmt.pageFaults.text, "0");
+    expectMeasuredZero(fmt.pageFaults);
+    EXPECT_EQ(fmt.gdiObjects.text, "0");
+    expectMeasuredZero(fmt.gdiObjects);
+    EXPECT_TRUE(fmt.gpuEngines.empty()); // No engine in use: blank, not a dash
 }
 
-TEST(ProcessRowFormatTest, UnreadableValuesShowNotAvailableRatherThanADash)
+TEST(ProcessRowFormatTest, NonZeroValuesAreNotMarked)
+{
+    const RowFormatCache fmt = buildRowFormatCache(makeSnapshot());
+    for (const AlignedCellText* cell : {&fmt.cpuPercent,
+                                        &fmt.resident,
+                                        &fmt.ioRead,
+                                        &fmt.netSent,
+                                        &fmt.power,
+                                        &fmt.gpuPercent,
+                                        &fmt.gpuMemory,
+                                        &fmt.threads,
+                                        &fmt.handles,
+                                        &fmt.pageFaults,
+                                        &fmt.gdiObjects})
+    {
+        EXPECT_EQ(cell->tone, CellTone::Value);
+        EXPECT_EQ(cell->unavailableReason, nullptr);
+    }
+}
+
+TEST(ProcessRowFormatTest, ValuesThatRoundToZeroReadAsZero)
+{
+    EXPECT_TRUE(ProcessRowFormat::readsAsZeroAtOneDecimal(0.0));
+    EXPECT_TRUE(ProcessRowFormat::readsAsZeroAtOneDecimal(0.049));
+    EXPECT_TRUE(ProcessRowFormat::readsAsZeroAtOneDecimal(-1.0));
+    EXPECT_FALSE(ProcessRowFormat::readsAsZeroAtOneDecimal(0.05)); // Prints "0.1"
+    EXPECT_FALSE(ProcessRowFormat::readsAsZeroAtOneDecimal(12.0));
+
+    // A sliver of CPU that prints "0.0%" is shown as the zero it reads as.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.cpuPercent = 0.01;
+    snap.powerWatts = 2.0e-6; // 2.0 µW: small, but not zero
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    EXPECT_EQ(fmt.cpuPercent.tone, CellTone::Zero);
+    EXPECT_EQ(fmt.power.tone, CellTone::Value);
+}
+
+TEST(ProcessRowFormatTest, UnreadableValuesAreUnavailableRatherThanZero)
 {
     // #1110: without root, another user's FD count, I/O and network rates can't be read. They showed
-    // "-", the same as a process that really had none; now they read "N/A".
+    // "-", the same as a process that really had none; now they show the unavailable dash, with why.
     ProcessSnapshot snap = makeSnapshot();
     snap.handleCountAvailable = false;
     snap.ioAvailable = false;
     snap.networkAvailable = false;
+    snap.threadCount = 0;                       // Every running process has a thread: 0 is one that was not read
+    snap.cpuAffinity = Platform::CpuAffinity{}; // Not read (ProcessSnapshot::cpuAffinity)
+    snap.startTimeEpoch = 0;
+    snap.gdiObjectCount.reset(); // The process could not be opened
 
     const RowFormatCache fmt = buildRowFormatCache(snap);
 
-    EXPECT_EQ(fmt.handles.text, UNAVAILABLE_CELL_TEXT);
-    EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
-    EXPECT_EQ(fmt.ioWrite.text, UNAVAILABLE_CELL_TEXT);
-    EXPECT_EQ(fmt.netSent.text, UNAVAILABLE_CELL_TEXT);
-    EXPECT_EQ(fmt.netRecv.text, UNAVAILABLE_CELL_TEXT);
-    EXPECT_NE(UNAVAILABLE_CELL_TEXT, "-");
+    for (const AlignedCellText* cell : {&fmt.handles,
+                                        &fmt.ioRead,
+                                        &fmt.ioWrite,
+                                        &fmt.netSent,
+                                        &fmt.netRecv,
+                                        &fmt.threads,
+                                        &fmt.affinity,
+                                        &fmt.startTime,
+                                        &fmt.gdiObjects})
+    {
+        expectUnavailable(*cell, ProcessRowFormat::UNREADABLE_CELL_REASON);
+    }
+}
+
+TEST(ProcessRowFormatTest, UnsupportedTakesPrecedenceOverUnreadable)
+{
+    // A column the system cannot fill says so, whatever one process's flags say.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.ioAvailable = false;
+    ProcessRowFormat::RowFormatOptions noIo;
+    noIo.hasIoCounters = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap, noIo);
+    expectUnavailable(fmt.ioRead, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+}
+
+TEST(ProcessRowFormatTest, GpuCellsAreUnavailableWithoutPerProcessGpuMetrics)
+{
+    // #1210: without per-process GPU metrics every process carries 0; that must not read as measured.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    snap.gpuMemoryBytes = 0;
+    ProcessRowFormat::RowFormatOptions noGpu;
+    noGpu.hasPerProcessGpu = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap, noGpu);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    expectUnavailable(fmt.gpuMemory, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+
+    // With them, a 0 is a measured zero.
+    const RowFormatCache measured = buildRowFormatCache(snap);
+    expectMeasuredZero(measured.gpuPercent);
+    expectMeasuredZero(measured.gpuMemory);
+}
+
+TEST(ProcessRowFormatTest, AFailedGpuReadIsUnreadableNotUnsupported)
+{
+    // #1210: a supported probe whose read failed for this generation: the GPU cells say the read
+    // failed, not "not available on this system", and never show the placeholder zeros.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    snap.gpuMemoryBytes = 0;
+    ProcessRowFormat::RowFormatOptions failed;
+    failed.gpuReadFailed = true;
+    const RowFormatCache fmt = buildRowFormatCache(snap, failed);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+    expectUnavailable(fmt.gpuMemory, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+    EXPECT_TRUE(fmt.gpuSupported);
+    EXPECT_TRUE(fmt.gpuReadFailed);
+
+    // Unsupported wins: a failed read on a system without the data is still "not available".
+    failed.hasPerProcessGpu = false;
+    const RowFormatCache unsupported = buildRowFormatCache(snap, failed);
+    expectUnavailable(unsupported.gpuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_FALSE(unsupported.gpuReadFailed);
+}
+
+TEST(ProcessRowFormatTest, GpuFieldsNotReadYetAreUnavailableNotMeasuredZeros)
+{
+    // #1210: a process that started while GPU merges are throttled has never had its GPU read.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    snap.gpuMemoryBytes = 0;
+    snap.gpuFieldsRead = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+    expectUnavailable(fmt.gpuMemory, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+    EXPECT_STREQ(fmt.gpuUnreadReason, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+
+    // Read: a measured zero.
+    snap.gpuFieldsRead = true;
+    const RowFormatCache read = buildRowFormatCache(snap);
+    expectMeasuredZero(read.gpuMemory);
+    EXPECT_EQ(read.gpuUnreadReason, nullptr);
+}
+
+TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
+{
+    // #1210: Linux NVML gives each process's GPU memory but not its utilization; GPU % read 0.0%.
+    ProcessSnapshot snap = makeSnapshot();
+    snap.gpuUtilPercent = 0.0;
+    ProcessRowFormat::RowFormatOptions memoryOnly;
+    memoryOnly.hasPerProcessGpuUtilization = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap, memoryOnly);
+    expectUnavailable(fmt.gpuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_EQ(fmt.gpuMemory.text, "256.0 MiB"); // Memory is still a reading
+    EXPECT_EQ(fmt.gpuMemory.tone, CellTone::Value);
+}
+
+TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
+{
+    // The per-column cell renderers (#1382) draw Status, Publisher, Type and the GPU text columns
+    // from the entry alone, so it carries whether this system can fill them (#1210).
+    const RowFormatCache all = buildRowFormatCache(makeSnapshot());
+    EXPECT_TRUE(all.statusSupported);
+    EXPECT_TRUE(all.publisherSupported);
+    EXPECT_TRUE(all.processTypeSupported);
+    EXPECT_TRUE(all.gpuSupported);
+
+    ProcessRowFormat::RowFormatOptions linuxLike;
+    linuxLike.hasPublisher = false;
+    linuxLike.hasProcessType = false;
+    linuxLike.hasPerProcessGpu = false;
+    const RowFormatCache some = buildRowFormatCache(makeSnapshot(), linuxLike);
+    EXPECT_TRUE(some.statusSupported);
+    EXPECT_FALSE(some.publisherSupported);
+    EXPECT_FALSE(some.processTypeSupported);
+    EXPECT_FALSE(some.gpuSupported);
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)
@@ -424,6 +671,50 @@ TEST(ProcessRowFormatTest, FreeTextWidthsAreMeasuredAgainForANewGenerationOrFont
     {
         EXPECT_FLOAT_EQ(width->width, ProcessRowFormat::LazyTextWidth::UNMEASURED_WIDTH);
     }
+}
+
+// ========== Decimal-aligned cells (#1201) ==========
+
+TEST(ProcessRowFormatTest, ByteCellsMarkWhereTheUnitStarts)
+{
+    const AlignedCellText cell = alignedBytesCell(512.0 * 1024.0 * 1024.0, UI::Format::BYTE_UNIT_MB);
+    EXPECT_EQ(cell.text, "512.0 MiB");
+    ASSERT_TRUE(cell.hasUnit());
+    EXPECT_EQ(cell.number(), "512.0");
+    EXPECT_EQ(cell.unit(), " MiB");
+    EXPECT_FLOAT_EQ(cell.numberWidth, AlignedCellText::UNMEASURED_WIDTH);
+
+    const AlignedCellText rate = alignedBytesPerSecCell(1536.0, UI::Format::BYTE_UNIT_KB);
+    EXPECT_EQ(rate.number(), "1.5");
+    EXPECT_EQ(rate.unit(), " KiB/s");
+}
+
+TEST(ProcessRowFormatTest, PowerCellsSplitNumberFromUnit)
+{
+    const AlignedCellText watts = alignedPowerCell(1.25);
+    EXPECT_EQ(watts.number(), "1.3"); // Halves round away from zero, as everywhere else
+    EXPECT_EQ(watts.unit(), " W");
+    const AlignedCellText milliwatts = alignedPowerCell(0.35);
+    EXPECT_EQ(milliwatts.number(), "350.0");
+    EXPECT_EQ(milliwatts.unit(), " mW");
+}
+
+TEST(ProcessRowFormatTest, CellsWithoutAUnitAreNotUnitAligned)
+{
+    const AlignedCellText dash = makeAlignedCellText("-");
+    EXPECT_FALSE(dash.hasUnit());
+    EXPECT_EQ(dash.number(), "-");
+    EXPECT_TRUE(dash.unit().empty());
+
+    // The row builder keeps the split for real values and leaves the unavailable dash plain.
+    ProcessSnapshot snap;
+    snap.memoryBytes = 3ULL * 1024 * 1024;
+    snap.ioAvailable = false;
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    EXPECT_TRUE(fmt.resident.hasUnit());
+    EXPECT_EQ(fmt.resident.unit(), " MiB");
+    EXPECT_FALSE(fmt.ioRead.hasUnit());
+    EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
 }
 
 } // namespace

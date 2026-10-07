@@ -78,6 +78,22 @@ TEST(ProcessResourceHelpersTest, MissingReadingMakesTheValueUnavailableAndTheNex
     EXPECT_DOUBLE_EQ(gdi.value, 40.0); // starts fresh
 }
 
+TEST(ProcessResourceHelpersTest, GpuReadingAfterSupportIsGainedStartsFreshNotFromPlaceholderZeros)
+{
+    // #1210: while the GPU probe supplies no per-process utilization, samples are not readings (their
+    // placeholder 0 is never fed in). The first real reading once support arrives is shown as-is
+    // rather than easing up from those zeros.
+    SmoothedOptionalReading gpuUtil;
+    for (int i = 0; i < 3; ++i)
+    {
+        gpuUtil = smoothOptionalReading(gpuUtil, std::nullopt, 0.5, true);
+        EXPECT_FALSE(gpuUtil.available);
+    }
+    gpuUtil = smoothOptionalReading(gpuUtil, 60.0, 0.5, true);
+    EXPECT_TRUE(gpuUtil.available);
+    EXPECT_DOUBLE_EQ(gpuUtil.value, 60.0);
+}
+
 TEST(ProcessResourceHelpersTest, OptionalReadingIsNeverNegative)
 {
     EXPECT_DOUBLE_EQ(smoothOptionalReading({}, -5.0, 0.5, false).value, 0.0);

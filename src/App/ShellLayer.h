@@ -7,6 +7,7 @@
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "TabLabel.h"
 
 #include <SDL3/SDL_video.h>
 
@@ -49,7 +50,7 @@ class ShellLayer : public Core::Layer
     void renderTabBar();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();
-    void applyContentMinimumWidth(float widthPx);
+    void applyContentMinimumSize(float widthPx, float heightPx);
 
     // Panels
     ProcessesPanel m_ProcessesPanel;
@@ -68,10 +69,6 @@ class ShellLayer : public Core::Layer
     std::int32_t m_WatchedPid = -1;
     std::vector<Domain::ProcessSample> m_PendingSamples;
 
-    // Cached privilege status: populated in onAttach() from ProcessModel capabilities.
-    // Used by renderStatusBar() to show a persistent lock indicator.
-    bool m_HasReducedPrivileges = false;
-
     // Deferred startup settings: the first onUpdate() raises RefreshRateChangedEvent and
     // HistoryDurationChangedEvent with the loaded config, so panels get their starting values the
     // same way they get later changes (#1079).
@@ -87,21 +84,24 @@ class ShellLayer : public Core::Layer
     // Display the minimum was last capped to the usable bounds of; re-applied on a move to another
     // display (#1207).
     SDL_DisplayID m_MinimumSizeDisplayId = 0;
-    // Width the panels need (#1207): handed to the title bar, or with native decorations part of the
-    // minimum applied here. Whole pixels, so it is re-applied only when it really changes.
+    // Size the panels need (#1207, #1278): handed to the title bar, or with native decorations part
+    // of the minimum applied here. Whole pixels, so it is re-applied only when it really changes.
     int m_ContentMinimumWidthPx = 0;
+    int m_ContentMinimumHeightPx = 0;
     TitleBarLayer* m_TitleBar = nullptr;
 
     // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M.
     bool m_ShowRenderMetrics = false;
 
+    // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
+    bool m_ShowDetailsTabRequested = false;
+
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().
     // Both carry a fixed "###" ID suffix (TabLabel.h), so a new name never changes which tab ImGui
     // thinks is selected (#1140).
-    std::string m_CachedSystemTabLabel;  // ICON + hostname: rebuilt in onAttach()
-    std::string m_CachedDetailsTabLabel; // ICON + process name: rebuilt when the name changes
-    std::string m_CachedLabelText;       // The panel's label text m_CachedDetailsTabLabel was built from
+    std::string m_CachedSystemTabLabel;      // ICON + hostname: rebuilt in onAttach()
+    TabLabel::CachedLabel m_DetailsTabLabel; // ICON + process name: rebuilt when the name changes
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;

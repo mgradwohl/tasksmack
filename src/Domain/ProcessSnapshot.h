@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
+#include "PriorityConfig.h"
+
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -20,6 +23,9 @@ struct ProcessSnapshot
     std::int32_t nice = 0;        // Nice value
     std::int32_t threadCount = 0; // Optional (0 if not supported)
     std::int32_t handleCount = 0; // Handle count (Windows) / FD count (Linux)
+    // The platform's priority class (Windows), which names the priority where nice can't (Realtime
+    // and High share a nice bucket, #1280); None on Linux. See Priority::getProcessPriorityLabel().
+    Priority::PriorityClass priorityClass = Priority::PriorityClass::None;
 
     double cpuPercent = 0.0;     // Computed from deltas
     double memoryPercent = 0.0;  // RSS as % of total system memory
@@ -44,18 +50,31 @@ struct ProcessSnapshot
     std::uint64_t peakMemoryBytes = 0; // Peak RSS (from OS on Windows, tracked on Linux)
     std::uint64_t sharedBytes = 0;     // Shared memory
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
-    std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
+    Platform::CpuAffinity cpuAffinity; // Logical processors it may run on (empty = not available)
 
-    // GPU usage (per-process, aggregated across all GPUs)
-    double gpuUtilPercent = 0.0;      // Total GPU % across all GPUs process uses
-    std::uint64_t gpuMemoryBytes = 0; // Total VRAM allocated across all GPUs
-    double gpuEncoderUtil = 0.0;      // Aggregate encoder utilization
-    double gpuDecoderUtil = 0.0;      // Aggregate decoder utilization
+    // GPU usage (per-process, across the GPUs it uses), on the same terms as the adapter figures on
+    // the GPU tab (#1164). Utilization is that of the busiest GPU it uses, 0-100, as an adapter's is
+    // (not a sum, which could pass 100%). "GPU memory" counts on each GPU the memory the GPU tab
+    // reports as used for it -- shared (system) memory on an integrated GPU where the platform
+    // reports it (Windows), otherwise dedicated memory -- summed across GPUs, so it never exceeds
+    // what the adapters show in use. The
+    // dedicated and shared amounts are also kept apart.
+    double gpuUtilPercent = 0.0;               // Busiest GPU's utilization by this process, 0-100
+    std::uint64_t gpuMemoryBytes = 0;          // As each GPU's "used" figure counts it, summed across GPUs
+    std::uint64_t gpuDedicatedMemoryBytes = 0; // Dedicated (VRAM) across all GPUs
+    std::uint64_t gpuSharedMemoryBytes = 0;    // Shared (system memory mapped by the GPU) across all GPUs
+    double gpuEncoderUtil = 0.0;               // Busiest GPU's encoder utilization
+    double gpuDecoderUtil = 0.0;               // Busiest GPU's decoder utilization
 
     // GDI object count (optional, Windows-only via GetGuiResources).
     // std::nullopt means the probe could not open the process with the required rights.
     // A stored value of 0 means the process is accessible but owns no GDI objects.
     std::optional<std::int32_t> gdiObjectCount;
+
+    // Whether this snapshot's GPU fields were read by a per-process GPU merge (#1210). False for a
+    // process that started between merges while they are throttled: its GPU fields are defaults,
+    // never read, and must not be shown as measured zeros.
+    bool gpuFieldsRead = true;
 
     // Whether a value was read for this process (#1110). False: the probe could not read it --
     // typically for lack of rights, e.g. another user's process without root on Linux -- and the
@@ -84,12 +103,14 @@ struct ProcessSnapshot
     // Per-GPU breakdown (for tooltip/details view)
     struct PerGPUUsage
     {
-        std::string gpuId;                // GPU identifier
-        std::string gpuName;              // e.g., "NVIDIA RTX 4090"
-        bool isIntegrated = false;        // Integrated vs discrete
-        double utilPercent = 0.0;         // GPU % on this specific GPU
-        std::uint64_t memoryBytes = 0;    // VRAM allocated on this GPU
-        std::vector<std::string> engines; // Active engines on this GPU
+        std::string gpuId;                      // GPU identifier
+        std::string gpuName;                    // e.g., "NVIDIA RTX 4090"
+        bool isIntegrated = false;              // Integrated vs discrete
+        double utilPercent = 0.0;               // GPU % on this specific GPU, 0-100
+        std::uint64_t memoryBytes = 0;          // As this GPU's "used" figure counts it (#1164)
+        std::uint64_t dedicatedMemoryBytes = 0; // VRAM allocated on this GPU
+        std::uint64_t sharedMemoryBytes = 0;    // System memory this GPU maps for the process
+        std::vector<std::string> engines;       // Active engines on this GPU
     };
     std::vector<PerGPUUsage> perGpuUsage; // Breakdown for multi-GPU processes
 };
@@ -106,6 +127,20 @@ struct ProcessSample
     /// When that generation was sampled, as std::chrono::steady_clock seconds since its epoch -- the
     /// timebase of ProcessModel::historyTimestamps() -- not when a reader happened to see it.
     double sampleTimeSeconds = 0.0;
+    /// Whether the probe could supply per-process I/O and network counters at all when that generation
+    /// was published (Platform::ProcessCapabilities::hasIoCounters / hasNetworkCounters, as published
+    /// with it). A probe can withdraw one between generations (#1254), so a reader judges each sample by
+    /// its own generation's state, not the latest: a reading taken while it was supported stays one.
+    bool ioCountersSupported = true;
+    bool networkCountersSupported = true;
+    /// Likewise for the GPU probe when that generation was produced (#1210): whether it supplied
+    /// per-process GPU data at all, and per-process utilization among it. The GPU model can gain or
+    /// lose either on re-enumeration, on its own sampler, so each sample carries its own.
+    bool gpuPerProcessSupported = true;
+    bool gpuUtilizationSupported = true;
+    /// The GPU probe supported per-process data, but reading it failed for that generation: its GPU
+    /// fields are a gap, not a measurement (#1210).
+    bool gpuReadFailed = false;
 };
 
 } // namespace Domain

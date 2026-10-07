@@ -151,7 +151,7 @@ jobs:
         run: cmake --build --preset release
 
       - name: Test
-        run: ctest --preset release -j $(nproc) --output-on-failure --timeout 60
+        run: ctest --preset release -j "$(nproc)" --output-on-failure --timeout 60
 
       - name: Package
         run: |

@@ -1,0 +1,21 @@
+# Colour forms the built-in themes (assets/themes/*.toml, also seeded) don't use: [r, g, b, a]
+# arrays, short arrays, wrong types, malformed hex, and a nested table where a colour belongs.
+[meta]
+name = 42
+
+[accents]
+colors = [[0.1, 0.2, 0.3, 1.0], [1, 0, 0], "#00FF00", [0.5], true, "#GG0000", "#12345", "#123456789"]
+
+[progress]
+low = [0.0, 1.0, 0.0]
+medium = [0.0, 1.0, 0.0, 0.5, 9.0]
+high = { r = 1.0 }
+
+[semantic]
+text_muted = "#"
+text_error = ""
+text_warning = "#FFFFFFZZ"
+text_info = [nan, inf, -inf, 1.0]
+
+[charts.gpu]
+utilization = "#80808080"

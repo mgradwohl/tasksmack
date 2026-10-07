@@ -652,7 +652,127 @@ TEST(LinuxSystemProbeTest, NetworkTotalCountsHardwareInterfacesOnly)
     {
         const bool expectVirtual = iface.name == "wg0" || iface.name == "docker0" || iface.name == "veth1a2b";
         EXPECT_EQ(iface.isVirtual, expectVirtual) << iface.name;
+        EXPECT_TRUE(iface.isVirtualKnown) << iface.name << ": in sysfs, so classified (#1260)";
     }
+}
+
+TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsIsUnclassified)
+{
+    // #1260: with no sysfs entry the probe can't tell, so the flag isn't authoritative: it counts as
+    // hardware for the Total and the UI falls back to the interface's name.
+    ScopedTempDir proc("ts_test_sys_net_unclassified");
+    ScopedTempDir sys("ts_test_sys_class_net_unclassified");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700) << netDevLine("veth9", 300, 30);
+    addSysfsInterface(sys.path, "eth0", true);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 2U);
+    const auto& veth = counters.networkInterfaces[1];
+    EXPECT_EQ(veth.name, "veth9");
+    EXPECT_FALSE(veth.isVirtual);
+    EXPECT_FALSE(veth.isVirtualKnown);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+}
+
+TEST(LinuxSystemProbeTest, ADanglingDeviceLinkStillMeansHardware)
+{
+    // #1260: the `device` link itself decides, not whether its target resolves.
+    ScopedTempDir proc("ts_test_sys_net_dangling");
+    ScopedTempDir sys("ts_test_sys_class_net_dangling");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+    std::filesystem::create_directories(sys.path / "eth0");
+    std::filesystem::create_directory_symlink(sys.path / "devices" / "gone", sys.path / "eth0" / "device");
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+}
+
+TEST(LinuxSystemProbeTest, AnUnreadableInterfaceDirectoryIsUnclassified)
+{
+    // #1260: a permission error looking up `device` is "can't tell", not "virtual".
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root bypasses directory permissions";
+    }
+    ScopedTempDir proc("ts_test_sys_net_unreadable");
+    ScopedTempDir sys("ts_test_sys_class_net_unreadable");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+    addSysfsInterface(sys.path, "eth0", true);
+    std::filesystem::permissions(sys.path / "eth0", std::filesystem::perms::none);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    std::filesystem::permissions(sys.path / "eth0", std::filesystem::perms::owner_all); // let cleanup remove it
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtualKnown);
+}
+
+TEST(LinuxSystemProbeTest, InterfaceClassificationIsCachedUntilTheInterfaceSetChanges)
+{
+    // #1335: classifying an interface costs two sysfs lookups per read, but its class can't change
+    // while it exists. It is looked up again only when the interface set changes.
+    ScopedTempDir proc("ts_test_sys_net_class_cache");
+    ScopedTempDir sys("ts_test_sys_class_net_class_cache");
+    std::filesystem::create_directories(proc.path / "net");
+    const auto writeNetDev = [&proc](bool withWg)
+    {
+        std::ofstream netDev(proc.path / "net" / "dev");
+        netDev << NET_DEV_HEADER << netDevLine("eth0", 5000, 700);
+        if (withWg)
+        {
+            netDev << netDevLine("wg0", 4000, 600);
+        }
+    };
+    writeNetDev(false);
+    addSysfsInterface(sys.path, "eth0", true);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual);
+
+    // A changed sysfs entry for the same interface set isn't looked up again.
+    std::filesystem::remove(sys.path / "eth0" / "device");
+    counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtual) << "cached while the interface set is unchanged";
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+
+    // A new interface changes the set: every interface is classified again.
+    addSysfsInterface(sys.path, "wg0", false);
+    writeNetDev(true);
+    counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 2U);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtual) << "eth0 re-classified with the new set";
+    EXPECT_TRUE(counters.networkInterfaces[1].isVirtual);
+}
+
+TEST(LinuxSystemProbeTest, AnUnclassifiedInterfaceIsRetriedOnTheNextRead)
+{
+    // #1260/#1335: "can't tell" isn't cached; an interface whose sysfs entry appears later is classified.
+    ScopedTempDir proc("ts_test_sys_net_class_retry");
+    ScopedTempDir sys("ts_test_sys_class_net_class_retry");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("veth9", 300, 30);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_FALSE(counters.networkInterfaces[0].isVirtualKnown);
+
+    addSysfsInterface(sys.path, "veth9", false);
+    counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtualKnown);
+    EXPECT_TRUE(counters.networkInterfaces[0].isVirtual);
 }
 
 TEST(LinuxSystemProbeTest, NetworkTotalCountsEveryInterfaceWhenNoneIsHardware)
@@ -670,6 +790,50 @@ TEST(LinuxSystemProbeTest, NetworkTotalCountsEveryInterfaceWhenNoneIsHardware)
     EXPECT_EQ(counters.netTxBytes, 700U);
     ASSERT_EQ(counters.networkInterfaces.size(), 1U);
     EXPECT_TRUE(counters.networkInterfaces[0].isVirtual);
+}
+
+TEST(LinuxSystemProbeTest, OperStateAndLinkSpeedAreReadFromTheInjectedSysClassNetRoot)
+{
+    // #1183: operstate and speed come from the same injected root as the interface's class, not
+    // from the host's /sys/class/net.
+    ScopedTempDir proc("ts_test_sys_net_operstate");
+    ScopedTempDir sys("ts_test_sys_class_net_operstate");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << netDevLine("tsup0", 5000, 700) << netDevLine("tsdown0", 300, 30);
+    addSysfsInterface(sys.path, "tsup0", true);
+    addSysfsInterface(sys.path, "tsdown0", true);
+    std::ofstream(sys.path / "tsup0" / "operstate") << "up\n";
+    std::ofstream(sys.path / "tsup0" / "speed") << "2500\n";
+    std::ofstream(sys.path / "tsdown0" / "operstate") << "down\n";
+    std::ofstream(sys.path / "tsdown0" / "speed") << "-1\n";
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 2U);
+    EXPECT_EQ(counters.networkInterfaces[0].name, "tsup0");
+    EXPECT_TRUE(counters.networkInterfaces[0].isUp);
+    EXPECT_EQ(counters.networkInterfaces[0].linkSpeedMbps, 2500U);
+    EXPECT_EQ(counters.networkInterfaces[1].name, "tsdown0");
+    EXPECT_FALSE(counters.networkInterfaces[1].isUp);
+    EXPECT_EQ(counters.networkInterfaces[1].linkSpeedMbps, 0U);
+}
+
+TEST(LinuxSystemProbeTest, CpuFrequencyIsReadFromTheInjectedCpuSysfsRoot)
+{
+    // #1183: cpu0's current frequency (kHz), scaling_cur_freq first, cpuinfo_cur_freq as the fallback.
+    ScopedTempDir proc("ts_test_sys_cpufreq_proc");
+    ScopedTempDir scaling("ts_test_sys_cpufreq_scaling");
+    ScopedTempDir fallback("ts_test_sys_cpufreq_fallback");
+    ScopedTempDir none("ts_test_sys_cpufreq_none");
+    std::filesystem::create_directories(scaling.path / "cpu0" / "cpufreq");
+    std::ofstream(scaling.path / "cpu0" / "cpufreq" / "scaling_cur_freq") << "2400000\n";
+    std::ofstream(scaling.path / "cpu0" / "cpufreq" / "cpuinfo_cur_freq") << "1800000\n";
+    std::filesystem::create_directories(fallback.path / "cpu0" / "cpufreq");
+    std::ofstream(fallback.path / "cpu0" / "cpufreq" / "cpuinfo_cur_freq") << "1800000\n";
+
+    EXPECT_EQ(LinuxSystemProbe(proc.path, proc.path, scaling.path).read().cpuFreqMHz, 2400U);
+    EXPECT_EQ(LinuxSystemProbe(proc.path, proc.path, fallback.path).read().cpuFreqMHz, 1800U);
+    EXPECT_EQ(LinuxSystemProbe(proc.path, proc.path, none.path).read().cpuFreqMHz, 0U);
 }
 
 TEST(LinuxSystemProbeTest, MissingMeminfoReturnsZeroMemory)

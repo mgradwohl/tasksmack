@@ -9,12 +9,15 @@
 #include "FontSizeChange.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/ProcessTypes.h"
 #include "ShellMetrics.h"
+#include "SyntheticScenario.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
 #include "UI/DpiScale.h"
 #include "UI/Format.h"
+#include "UI/HistoryPlotHeight.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
@@ -32,6 +35,7 @@
 #include <format>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace App
@@ -43,13 +47,23 @@ namespace
 // "###" suffix like the other main tabs (see TabLabel.h, #1140).
 constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
 static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
+
+// The visible text follows the process's name, but the tab's ImGui ID does not: it comes from the
+// fixed "###" suffix (see TabLabel.h). Hashed from the visible text, the ID changed whenever the name
+// did -- an exec keeps the PID, so the selection survives it -- and ImGui, no longer finding the
+// selected tab, switched to another one (#1140). A "#" in the name is shown as is (#1244).
+[[nodiscard]] std::string makeDetailsTabLabel(std::string_view labelText)
+{
+    return TabLabel::make(ICON_FA_CIRCLE_INFO, labelText, TabLabel::PROCESS_DETAILS_TAB_ID);
+}
 } // namespace
 
 ShellLayer::ShellLayer()
     : Layer("ShellLayer"),
-      m_Tabs({{.panel = m_SystemMetricsPanel, .eventName = "SystemOverview", .label = [this] { return m_CachedSystemTabLabel.c_str(); }},
-              {.panel = m_ProcessesPanel, .eventName = "Processes", .label = [] { return PROCESSES_TAB_LABEL; }},
-              {.panel = m_ProcessDetailsPanel, .eventName = "ProcessDetails", .label = [this] { return m_CachedDetailsTabLabel.c_str(); }}})
+      m_Tabs(
+          {{.panel = m_SystemMetricsPanel, .eventName = "SystemOverview", .label = [this] { return m_CachedSystemTabLabel.c_str(); }},
+           {.panel = m_ProcessesPanel, .eventName = "Processes", .label = [] { return PROCESSES_TAB_LABEL; }},
+           {.panel = m_ProcessDetailsPanel, .eventName = "ProcessDetails", .label = [this] { return m_DetailsTabLabel.label().c_str(); }}})
 {}
 
 void ShellLayer::onAttach()
@@ -75,7 +89,7 @@ void ShellLayer::onAttach()
     ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
 
     // Share the process model with panels that render system-level aggregates
-    if (auto* processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
+    if (const auto processModel = m_ProcessesPanel.processModel(); processModel != nullptr)
     {
         m_SystemMetricsPanel.setProcessModel(processModel);
 
@@ -83,6 +97,8 @@ void ShellLayer::onAttach()
         if (auto gpuModel = m_SystemMetricsPanel.gpuModel(); gpuModel != nullptr)
         {
             processModel->setGPUModel(gpuModel);
+            // Its probe also decides whether the GPU columns can be filled at all (#1210).
+            m_ProcessesPanel.setGpuModel(gpuModel);
         }
     }
 
@@ -91,21 +107,19 @@ void ShellLayer::onAttach()
     // Build stable tab labels. Hostname doesn't change for the process lifetime,
     // so the system tab label is built once here.
     m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, m_SystemMetricsPanel.hostname(), TabLabel::SYSTEM_TAB_ID);
-    m_CachedDetailsTabLabel = TabLabel::make(ICON_FA_CIRCLE_INFO, "Select a process", TabLabel::PROCESS_DETAILS_TAB_ID);
-    m_CachedLabelText.clear();
+    m_DetailsTabLabel.get(m_ProcessDetailsPanel.tabLabel(), makeDetailsTabLabel);
 
-    // Cache privilege status and trigger the startup notice if needed.
-    // Elevation state is constant for process lifetime; cache once at startup.
+    // Trigger the startup notice if needed. The status bar's lock icon reads the live value instead
+    // (#1254); the notice itself is a one-off at startup.
     // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
     // m_PendingPrivilegeNotice is dispatched in the first onUpdate() call, after all layers are stacked.
-    m_HasReducedPrivileges = m_ProcessesPanel.hasReducedPrivileges();
-    if (m_HasReducedPrivileges && UserConfig::get().settings().showPrivilegeNotice)
+    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice)
     {
         m_PendingPrivilegeNotice = true;
     }
 
-    // The details pane draws only the series the process probe can fill (#1028, #1035). The
-    // capabilities are fixed for the probe's lifetime, so once is enough.
+    // The details pane draws only the series the process probe can fill (#1028, #1035). Refreshed
+    // every update too, since a probe can withdraw a capability after the first sample (#1254).
     m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
 }
 
@@ -119,10 +133,11 @@ void ShellLayer::applyBaseMinimumWindowSize()
         // Held inside the display's usable bounds, so a large font on a small display cannot leave
         // a window that does not fit on-screen (#1207).
         const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
-        const WindowMinimumSize baseMinimum =
-            capMinimumToUsable(computeMinimumWindowSize(m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx)),
-                               usableWidth,
-                               usableHeight);
+        const WindowMinimumSize baseMinimum = capMinimumToUsable(
+            computeMinimumWindowSize(
+                m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx), static_cast<float>(m_ContentMinimumHeightPx)),
+            usableWidth,
+            usableHeight);
         if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
         {
             spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
@@ -130,19 +145,26 @@ void ShellLayer::applyBaseMinimumWindowSize()
     }
 }
 
-void ShellLayer::applyContentMinimumWidth(float widthPx)
+void ShellLayer::applyContentMinimumSize(float widthPx, float heightPx)
 {
     // With the custom title bar, it owns the minimum: hand it over, it re-derives the minimum every
     // frame and calls SDL only on a change. Otherwise apply it here when the whole-pixel width moves.
     if (m_TitleBar != nullptr)
     {
-        m_TitleBar->setContentMinimumWidth(widthPx);
+        m_TitleBar->setContentMinimumSize(widthPx, heightPx);
         return;
     }
-    const auto wholePx = static_cast<int>(std::ceil(std::clamp(widthPx, 0.0F, static_cast<float>(Core::WINDOW_MAX_DIMENSION))));
-    if (wholePx != m_ContentMinimumWidthPx)
+    const auto toWholePx = [](const float px)
     {
-        m_ContentMinimumWidthPx = wholePx;
+        // NaN fails both comparisons in std::clamp and would pass straight through: treat it as unknown.
+        return std::isfinite(px) ? static_cast<int>(std::ceil(std::clamp(px, 0.0F, static_cast<float>(Core::WINDOW_MAX_DIMENSION)))) : 0;
+    };
+    const int wholeWidth = toWholePx(widthPx);
+    const int wholeHeight = toWholePx(heightPx);
+    if (wholeWidth != m_ContentMinimumWidthPx || wholeHeight != m_ContentMinimumHeightPx)
+    {
+        m_ContentMinimumWidthPx = wholeWidth;
+        m_ContentMinimumHeightPx = wholeHeight;
         applyBaseMinimumWindowSize();
     }
 }
@@ -195,6 +217,16 @@ void ShellLayer::onDetach()
 
 void ShellLayer::onEvent(Core::Event& event)
 {
+    // A request to see a process's details, from the Processes table's row menu (#1209): the
+    // selection itself travels as the ProcessSelectedEvent raised before it.
+    Core::EventDispatcher dispatcher(event);
+    dispatcher.dispatch<Core::ShowProcessDetailsEvent>(
+        [this](Core::ShowProcessDetailsEvent& /*e*/)
+        {
+            m_ShowDetailsTabRequested = true;
+            return false;
+        });
+
     // Forward events to all panels; each handles the settings events it needs itself
     m_Tabs.onEvent(event);
 }
@@ -219,9 +251,13 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_PendingStartupSettings = false;
         const auto& settings = UserConfig::get().settings();
-        Core::RefreshRateChangedEvent refreshEvent(settings.refreshIntervalMs, /*initial=*/true);
+        // The synthetic scenario (#1413) may start at its own window and interval, for this run only.
+        const Synthetic::Scenario* scenario = Synthetic::activeScenario();
+        Core::RefreshRateChangedEvent refreshEvent(Synthetic::startupRefreshIntervalMs(scenario, settings.refreshIntervalMs),
+                                                   /*initial=*/true);
         Core::Application::get().raiseEvent(refreshEvent);
-        Core::HistoryDurationChangedEvent historyEvent(settings.maxHistorySeconds, /*initial=*/true);
+        Core::HistoryDurationChangedEvent historyEvent(Synthetic::startupHistorySeconds(scenario, settings.maxHistorySeconds),
+                                                       /*initial=*/true);
         Core::Application::get().raiseEvent(historyEvent);
     }
 
@@ -250,6 +286,12 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // Update panels
     m_Tabs.onUpdate(deltaTime);
+
+    // The details pane follows the capabilities published with the latest generation (#1254): a
+    // plain copy of what ProcessesPanel fetched with its snapshots, so no lock is taken here.
+    m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
+    // Per-process GPU support reaches the details pane with each sample, as of the generation it
+    // came from (Domain::ProcessSample, #1210), not from here.
 
     // Hand Process Details the selected process's new samples: one per generation the sampler
     // published since its last frame, each with its own sample time (#1098). The model keeps them for
@@ -299,21 +341,16 @@ void ShellLayer::onUpdate(float deltaTime)
     // label also changes when nothing about the selection does -- most simply when the selected
     // process's first snapshot arrives a frame after the selection, which used to leave the tab
     // titled "Select a process" for as long as that process stayed selected.
-    if (const std::string& labelText = m_ProcessDetailsPanel.tabLabel(); labelText != m_CachedLabelText)
-    {
-        m_CachedLabelText = labelText;
-        // The visible text follows the process's name, but the tab's ImGui ID does not: it comes from
-        // the fixed "###" suffix (see TabLabel.h). Hashed from the visible text, the ID changed
-        // whenever the name did -- an exec keeps the PID, so the selection survives it -- and ImGui,
-        // no longer finding the selected tab, switched to another one (#1140).
-        m_CachedDetailsTabLabel = TabLabel::make(ICON_FA_CIRCLE_INFO, labelText, TabLabel::PROCESS_DETAILS_TAB_ID);
-    }
+    //
+    // The cache builds the new label before it records the text it was built from, so a throw while
+    // building leaves the old label and text together and the next frame tries again.
+    m_DetailsTabLabel.get(m_ProcessDetailsPanel.tabLabel(), makeDetailsTabLabel);
 
     // Handle keyboard shortcuts for font size
     const ImGuiIO& io = ImGui::GetIO();
     if (io.KeyCtrl && !io.KeyShift && !io.KeyAlt)
     {
-        // Theme steps to the next preset; changeFontSize() then saves it and raises the event (#1076).
+        // Theme steps to the next preset; changeFontSize() then saves it (#1076).
         auto& theme = UI::Theme::get();
         const bool grow = ImGui::IsKeyPressed(ImGuiKey_Equal) || ImGui::IsKeyPressed(ImGuiKey_KeypadAdd);
         const bool shrink = ImGui::IsKeyPressed(ImGuiKey_Minus) || ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract);
@@ -379,20 +416,14 @@ void ShellLayer::onRender()
         ImGui::PopStyleVar(3);
 
         renderTabBar();
+        // This window has no padding, so the cursor now sits exactly the main tab strip's height down.
+        const float mainTabsHeight = ImGui::GetCursorPosY();
 
         // Render content area with padding. Authored at the reference configuration and scaled
         // like the style it overrides, so the gutter keeps its proportion to the text (#971).
         const float styleScale = UI::Theme::get().styleScale();
         const float contentPaddingH = ShellMetrics::CONTENT_PADDING_H * styleScale;
         const float contentPaddingV = ShellMetrics::CONTENT_PADDING_V * styleScale;
-
-        // The window may not be narrower than the panels' content: the Processes toolbar row, or the
-        // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Measured with the body
-        // font, here, where the panels will draw with it; a few text measurements a frame.
-        applyContentMinimumWidth(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
-                                                            SystemMetricsPanel::overviewNowBarColumnWidth(),
-                                                            ImGui::GetFontSize(),
-                                                            (contentPaddingH * 2.0F) + ImGui::GetStyle().ScrollbarSize));
 
         // Add padding by using a child window with border that provides internal padding
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(contentPaddingH, contentPaddingV));
@@ -405,6 +436,42 @@ void ShellLayer::onRender()
         }
         ImGui::EndChild();
         ImGui::PopStyleVar();
+
+        // The window may not be narrower than the panels' content: the Processes toolbar row, or the
+        // Overview's NowBar column beside MIN_PLOT_WIDTH_EM of plot (#1207). Nor shorter than the
+        // title bar, the tab strips, one chart at its minimum height and the status bar (#1278).
+        // Measured with the body font, after the panels have drawn with it -- so the tab on show has
+        // measured its first chart at this frame's width (#1370 review); a few text measurements a frame.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float fontSize = ImGui::GetFontSize();
+        const float plotMinHeight = std::floor(UI::Widgets::historyPlotMinHeight(fontSize, UI::chartEmPx()));
+        // The tallest tab's lead-in and first chart, at its floor (UI/HistoryPlotHeight.h): estimated
+        // from the style -- the tab bodies draw with the theme's FramePadding (TabContentScope), which
+        // is what is pushed here, outside the tab bars -- or as the tabs last measured it, which also
+        // counts a value strip wrapped onto extra rows at this width. Only measurements taken at this
+        // window width and font size count: a hidden tab's goes stale when either changes (#1370 review).
+        const float firstChartBudget = computeFirstChartBudget(computeTallestFirstChartBlock({
+                                                                   .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
+                                                                   .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
+                                                                   .itemSpacingYPx = style.ItemSpacing.y,
+                                                                   .cellPaddingYPx = style.CellPadding.y,
+                                                                   .plotMinHeightPx = plotMinHeight,
+                                                               }),
+                                                               m_SystemMetricsPanel.firstChartNonPlotHeight(viewport->Size.x, fontSize),
+                                                               plotMinHeight);
+        applyContentMinimumSize(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
+                                                           m_SystemMetricsPanel.overviewNowBarColumnWidth(),
+                                                           fontSize,
+                                                           (contentPaddingH * 2.0F) + style.ScrollbarSize),
+                                computeContentMinimumHeight({
+                                    .titleBarPx = titleBarHeight,
+                                    .mainTabsPx = mainTabsHeight,
+                                    // As the panels draw them: a tab bar at SUB_TAB_PADDING_Y, then the item spacing below it.
+                                    .subTabsPx = fontSize + (ShellMetrics::SUB_TAB_PADDING_Y * styleScale * 2.0F) + style.ItemSpacing.y,
+                                    .chartPx = firstChartBudget,
+                                    .statusBarPx = statusBarHeight,
+                                    .chromePx = contentPaddingV * 2.0F,
+                                }));
     }
     else
     {
@@ -445,13 +512,19 @@ void ShellLayer::renderTabBar()
         std::size_t index = 0;
         for (const auto& tab : m_Tabs.tabs())
         {
-            if (ImGui::BeginTabItem(tab.label(), nullptr, ImGuiTabItemFlags_NoCloseWithMiddleMouseButton))
+            ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
+            if (m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails")
+            {
+                tabFlags |= ImGuiTabItemFlags_SetSelected;
+            }
+            if (ImGui::BeginTabItem(tab.label(), nullptr, tabFlags))
             {
                 m_Tabs.select(index);
                 ImGui::EndTabItem();
             }
             ++index;
         }
+        m_ShowDetailsTabRequested = false;
 
         ImGui::EndTabBar();
 
@@ -501,12 +574,28 @@ void ShellLayer::renderStatusBar() const
     if (ImGui::Begin("##StatusBar", nullptr, windowFlags))
     {
         // Show a persistent lock icon when running without elevated privileges
-        if (m_HasReducedPrivileges)
+        // Live, not a startup copy: a probe can withdraw a capability after the first sample (#1254).
+        // ProcessesPanel keeps it with its cached snapshot generation, so reading it takes no lock.
+        const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities();
+        if (capabilities.hasReducedPrivileges)
         {
             ImGui::TextColored(theme.scheme().textWarning, ICON_FA_LOCK);
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Limited data: running without elevated privileges");
+                ImGui::SetTooltip("Limited data: some details of other users' processes are unavailable");
+            }
+            ImGui::SameLine();
+        }
+        // Per-process network counters denied although TaskSmack already has the rights they need
+        // (#1358): the network columns are gone, and running as Administrator would not bring them
+        // back, so this is not the lock icon's "limited data" notice.
+        if (capabilities.networkCountersBlocked)
+        {
+            ImGui::TextColored(theme.scheme().textWarning, ICON_FA_NETWORK_WIRED);
+            if (ImGui::IsItemHovered())
+            {
+                ImGui::SetTooltip("Per-process network counters are blocked on this system "
+                                  "(TCP EStats access denied even when elevated)");
             }
             ImGui::SameLine();
         }

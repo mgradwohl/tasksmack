@@ -1,11 +1,13 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/TabLabel.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
+#include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "UI/ChartWidgets.h"
@@ -34,7 +36,8 @@ class ProcessDetailsPanel : public Panel
     /// Construct with an injected IProcessActions implementation instead of the real
     /// platform one. Intended for tests (a mock IProcessActions) - production code should
     /// use the default constructor, which is the composition-root call to
-    /// Platform::makeProcessActions().
+    /// Platform::makeProcessActions() (or, under TASKSMACK_SYNTHETIC, the synthetic scenario's
+    /// refusing actions: App/SyntheticScenario.h).
     explicit ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions);
 
     ~ProcessDetailsPanel() override = default;
@@ -109,7 +112,7 @@ class ProcessDetailsPanel : public Panel
     /// member enum.
     using ProcessAction = Detail::ProcessAction;
 
-    static void renderBasicInfo(const Domain::ProcessSnapshot& proc);
+    void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill);
     void renderMemoryUsageSection(UI::Widgets::FillPlotLayout& fill);
@@ -119,7 +122,7 @@ class ProcessDetailsPanel : public Panel
     void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
-    static void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc);
+    void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const;
     void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
     void renderActions();
     void renderActionResultFeedback();
@@ -130,7 +133,6 @@ class ProcessDetailsPanel : public Panel
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
     void renderActionButtons();
     void renderPrioritySection();
-    void trimHistory(double nowSeconds);
 
     // Priority slider helper methods (extracted for testability and clarity)
     struct PrioritySliderContext;
@@ -141,8 +143,12 @@ class ProcessDetailsPanel : public Panel
     static void drawPriorityScaleLabels(const PrioritySliderContext& ctx);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
-    /// @p gapBefore (see Detail::takeSamples()).
-    void recordHistoryPoint(const Domain::ProcessSnapshot& snapshot, double sampleTimeSeconds, bool gapBefore);
+    /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
+    /// are readings, by the sample's own generation (Detail::rateReadings()); the others are gaps.
+    void recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
+                            double sampleTimeSeconds,
+                            bool gapBefore,
+                            Detail::SampleRateReadings rateReadings);
     /// The displayed snapshot, or an empty one before the first: for code that draws it unconditionally.
     [[nodiscard]] const Domain::ProcessSnapshot& cachedSnapshot() const;
 
@@ -152,27 +158,9 @@ class ProcessDetailsPanel : public Panel
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 
-    // History buffers (trimmed by time window). Vectors, not deques: the charts plot the newest
-    // samples in place through spans, where a deque had to be copied out every frame (#1018).
-    // Trimming erases from the front, once per sample, not per frame.
-    std::vector<double> m_CpuHistory;       // CPU% total history (avoid narrowing)
-    std::vector<double> m_CpuUserHistory;   // CPU% user history (avoid narrowing)
-    std::vector<double> m_CpuSystemHistory; // CPU% system history (avoid narrowing)
-    std::vector<double> m_MemoryHistory;    // Used memory (RSS) bytes (#1195)
-    std::vector<double> m_SharedHistory;    // Shared memory bytes, best effort (#1195)
-    std::vector<double> m_VirtualHistory;   // Virtual memory bytes (#992)
-    std::vector<double> m_ThreadHistory;    // Thread count history
-    std::vector<double> m_HandleHistory;    // Handle/FD count history
-    std::vector<double> m_PageFaultHistory; // Page faults per second history
-    std::vector<double> m_IoReadHistory;    // Disk read rate (bytes/sec)
-    std::vector<double> m_IoWriteHistory;   // Disk write rate (bytes/sec)
-    std::vector<double> m_NetSentHistory;   // Network send rate (bytes/sec)
-    std::vector<double> m_NetRecvHistory;   // Network receive rate (bytes/sec)
-    std::vector<double> m_PowerHistory;     // Power usage history (watts)
-    std::vector<double> m_GpuUtilHistory;   // GPU utilization % history
-    std::vector<double> m_GpuMemHistory;    // GPU memory bytes history
-    std::vector<double> m_GdiHistory;       // GDI object count history (Windows-only)
-    std::vector<double> m_Timestamps;
+    // The time axis and every per-process series, appended, trimmed to m_MaxHistorySeconds and cleared
+    // together, so no series can fall out of step with the axis (#1179).
+    Detail::ProcessDetailsHistory m_History;
     // Taken (UI::Widgets::nextChartDataGeneration()) whenever the histories above change -- a sample
     // recorded or trimmed, or the selection reset -- so the charts keep their reduced points until
     // then instead of reducing every history every frame (HistoryChartConfig::dataGeneration, #1139).
@@ -186,18 +174,38 @@ class ProcessDetailsPanel : public Panel
 
     // Render scratch buffers for stacked CPU chart (reused across frames to avoid per-frame heap allocation):
     // only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them each frame.
-    std::vector<double> m_CpuPlotX; // CPU chart points as drawn, held to now (#1016)
+    // The User and System bands, their x axis held to now (#1016), shared with the Overview (#1180);
+    // the User line is the User band's top.
+    UI::Widgets::UserSystemStack m_CpuStack;
     std::vector<double> m_CpuPlotTotal;
-    std::vector<double> m_CpuPlotUser;
     std::vector<double> m_CpuPlotSystem;
-    std::vector<double> m_CpuStackY0;
-    std::vector<double> m_CpuStackYUser;
-    std::vector<double> m_CpuStackYSystem;
     UI::Widgets::ReducedPointsCache m_CpuPlotReduction; // The CPU chart's reduced points (#1022), kept per m_HistoryGeneration (#1139)
 
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied
     // every frame (#1172); null before the first sample.
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
+    // Which of m_CachedSnapshot's I/O and network rates are readings, by its own generation (#1210).
+    Detail::SampleRateReadings m_CachedRateReadings;
+
+    // render()'s window title, rebuilt only when the selected process's name changes rather than
+    // every frame (#1326).
+    TabLabel::CachedLabel m_WindowLabel;
+
+    // The Overview's Identity/Runtime values formatted from one snapshot, kept until a different one
+    // is shown, so the block is not reformatted every frame (#1171). keepAlive holds that snapshot,
+    // so a later one cannot be allocated at the same address and pass for it.
+    struct BasicInfoText
+    {
+        const Domain::ProcessSnapshot* key = nullptr;
+        std::shared_ptr<const Domain::ProcessSnapshot> keepAlive;
+        std::string pid;
+        std::string parentPid;
+        std::string started;
+        std::string threads;
+        std::string handles;
+        std::string cpuTime;
+        std::string priority;
+    } m_BasicInfoText;
     // Per-tab state for the shared chart-height rule (#959)
     UI::Widgets::PlotFillState m_OverviewFill;
     UI::Widgets::PlotFillState m_NetworkFill;
@@ -210,6 +218,9 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
+    // The GPU tab's "No GPU usage" explanation, naming the history window (#1210). Empty until built,
+    // and cleared when the window changes so the next frame rebuilds it.
+    std::string m_NoGpuUsageDetail;
 
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;
@@ -239,6 +250,10 @@ class ProcessDetailsPanel : public Panel
         double powerWatts = 0.0;
         double gpuUtilPercent = 0.0;
         double gpuMemoryBytes = 0.0;
+        // Whether the latest sample's generation had these from the GPU probe (#1210): one it did not
+        // leaves the value where it was and shows N/A, like the I/O and network readings above.
+        bool gpuUtilAvailable = false;
+        bool gpuMemoryAvailable = false;
         // Whether the latest sample had these readings (#1110): an unread one leaves its value where it
         // was and shows N/A, as its line shows a gap, like the GDI count below.
         bool handleCountAvailable = false;

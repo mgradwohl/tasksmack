@@ -71,6 +71,30 @@ inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 // is acceptable for network attribution since the mapping drifts slowly.
 inline constexpr int INODE_PID_CACHE_TTL_MS = 3000;
 
+// Earliest rebuild of the inode-to-PID map (milliseconds) - Linux only
+// A socket that shows up with no owner after the map was built may have been opened since; the
+// probe then rebuilds the map ahead of its TTL so the new connection is attributed in the reading
+// it first appears in (#1259), but no more often than this, so a burst of short-lived connections
+// (or other users' connections, which never resolve) can't turn the /proc scan into a per-refresh one.
+inline constexpr int INODE_PID_CACHE_EARLY_REBUILD_MS = 1000;
+
+// How long a connection seen with no owner holds its growth for the owner it gets (milliseconds)
+// SocketTrafficAccumulator credits the bytes an unattributed connection moves to the process it is
+// attributed to later (#1259). An attributable connection gets its owner at the next map rebuild:
+// within one map TTL plus one refresh of its first sighting. One still unattributed after that
+// belongs to a process we can't read; it stops holding, so if it is ever attributed it can't land
+// hours of traffic in one interval.
+inline constexpr int UNATTRIBUTED_SOCKET_HOLD_MS = INODE_PID_CACHE_TTL_MS + REFRESH_INTERVAL_MAX_MS;
+
+// Longest a process's cached command line is reused (milliseconds) - Linux only
+// A command line is set at exec, so LinuxProcessProbe reads /proc/[pid]/cmdline once per process
+// (pid + start time, and the comm exec sets) instead of every sample (#1425). A process may still
+// rewrite its argv (a process title: postgres, sshd, browsers), so each entry is re-read after at
+// most this long -- the same staleness bound as network attribution's inode map. Entries expire
+// spread over the second half of it, so the processes cached on one sample aren't all re-read on
+// the same later one.
+inline constexpr int PROCESS_CMDLINE_CACHE_TTL_MS = 3000;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------
@@ -102,14 +126,23 @@ inline constexpr int SOCKET_STATS_CACHE_TTL_MS_MAX = 5000; // Cap at max refresh
 // These control how metrics are computed from raw counter data.
 // They affect data freshness, responsiveness, and sanity checking.
 
-// Per-process network rate ceiling (bytes per second)
+// Network rate ceiling (bytes per second)
 // A per-process network rate above this is treated as a bad reading (e.g. on Windows, a connection
-// first attributed with traffic from before it was seen) and shown as 0 (ProcessModel). Default is
-// 100 Gbps (12.5 billion bytes/sec).
+// first attributed with traffic from before it was seen) and shown as 0 (ProcessModel); a
+// per-interface rate above it is a counter glitch, shown as 0 and charted as a gap (SystemModel,
+// #1291). Default is 100 Gbps (12.5 billion bytes/sec).
 // Configurable via [metrics] max_sane_rate_bps in config.toml (read at startup, #1123).
 inline constexpr double MAX_SANE_RATE_BPS_DEFAULT = 12'500'000'000.0; // 100 Gbps in bytes/sec
 inline constexpr double MAX_SANE_RATE_BPS_MIN = 1'000'000'000.0;      // 8 Gbps (minimum reasonable)
 inline constexpr double MAX_SANE_RATE_BPS_MAX = 100'000'000'000.0;    // 800 Gbps (upper bound)
+
+// Per-disk I/O rate ceiling (bytes per second) - fixed, not configurable
+// A disk read or write rate above this is a counter glitch (a reinitialised or re-registered
+// device counter), not I/O: the sample has no rates and its history records a gap (StorageModel,
+// #1291). Not max_sane_rate_bps: its 100 Gbps (12.5 GB/s) default is below what a single PCIe 5.0
+// NVMe drive reads, so a network-sized ceiling would drop real samples. 1 TB/s is far beyond any
+// block device while still catching a counter that jumps by a disk's lifetime bytes.
+inline constexpr double MAX_SANE_DISK_RATE_BPS = 1'000'000'000'000.0;
 
 // -----------------------------------------------------------------------------
 // UI Behavior Parameters (User-Configurable via TOML)
@@ -147,8 +180,18 @@ template<typename T> [[nodiscard]] constexpr T clampRefreshInterval(T value) noe
     return std::clamp(value, static_cast<T>(REFRESH_INTERVAL_MIN_MS), static_cast<T>(REFRESH_INTERVAL_MAX_MS));
 }
 
+/// NaN maps to HISTORY_SECONDS_MIN, as in historyCapacityForSeconds(), so a model's window and its ring
+/// capacity agree; std::clamp would pass NaN through (#1325).
 template<typename T> [[nodiscard]] constexpr T clampHistorySeconds(T value) noexcept
 {
+    if constexpr (std::is_floating_point_v<T>)
+    {
+        // +inf → MAX; NaN and -inf → MIN.
+        if (!std::isfinite(value))
+        {
+            return (std::isinf(value) && (value > T{0})) ? static_cast<T>(HISTORY_SECONDS_MAX) : static_cast<T>(HISTORY_SECONDS_MIN);
+        }
+    }
     return std::clamp(value, static_cast<T>(HISTORY_SECONDS_MIN), static_cast<T>(HISTORY_SECONDS_MAX));
 }
 

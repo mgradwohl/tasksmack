@@ -4,6 +4,9 @@
 // snapshot computation. GPUModel aggregates per-GPU counters, computes
 // derived metrics (memory%, power%), and maintains history for charting.
 // Memory tracking is included to catch allocation regressions.
+//
+// They use the real platform probe. When that probe enumerates no GPU (as on the GPU-less CI runner),
+// every one of them skips (skipWithoutGpu()) rather than timing the probe's early return (#1420).
 
 #include "Domain/GPUModel.h"
 #include "MemoryTracker.h"
@@ -19,9 +22,28 @@
 namespace
 {
 
+// Skips @p state, and returns true, when the real GPU probe finds no GPU. Each benchmark here would
+// otherwise time an empty probe's early return -- 1-110 ns of nothing -- and hand it to the
+// regression gate as if it measured GPU sampling (#1420). check-benchmark-regression.py reports a
+// skipped benchmark as not measured, outside its coverage figure.
+bool skipWithoutGpu(benchmark::State& state)
+{
+    static const bool k_HasGpu = !Platform::makeGPUProbe()->enumerateGPUs().empty();
+    if (!k_HasGpu)
+    {
+        state.SkipWithMessage("No GPUs available");
+    }
+    return !k_HasGpu;
+}
+
 // Benchmark raw GPU probe enumeration (discovers GPUs and their static info)
 static void BM_GPUProbe_Enumerate(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
 
     for (auto _ : state)
@@ -43,6 +65,11 @@ BENCHMARK(BM_GPUProbe_Enumerate);
 // to merge per-adapter PDH utilization data.
 static void BM_GPUProbe_ReadCounters(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
 
     // Must enumerate before reading counters so the DXGI→LUID map is ready
@@ -71,6 +98,11 @@ BENCHMARK(BM_GPUProbe_ReadCounters);
 // memory% and power% computation, and history append.
 static void BM_GPUModel_Refresh(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
     Domain::GPUModel model(std::move(probe));
 
@@ -97,6 +129,11 @@ BENCHMARK(BM_GPUModel_Refresh);
 // Should be fast (shared_mutex read lock + copy of a small vector).
 static void BM_GPUModel_Snapshots(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
     Domain::GPUModel model(std::move(probe));
     model.refresh();
@@ -114,6 +151,11 @@ BENCHMARK(BM_GPUModel_Snapshots);
 // Called once per frame for the GPU section header in the UI.
 static void BM_GPUModel_GpuInfo(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
     Domain::GPUModel model(std::move(probe));
 
@@ -129,6 +171,11 @@ BENCHMARK(BM_GPUModel_GpuInfo);
 // Benchmark historyTimestamps() – used to align chart X axes
 static void BM_GPUModel_HistoryTimestamps(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
     Domain::GPUModel model(std::move(probe));
 
@@ -150,6 +197,11 @@ BENCHMARK(BM_GPUModel_HistoryTimestamps);
 // per-GPU ring buffer. Called per-GPU per-frame for chart rendering.
 static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
     Domain::GPUModel model(std::move(probe));
 
@@ -158,7 +210,7 @@ static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
         model.refresh();
     }
 
-    // Get a GPU ID to query (skip if no GPUs available)
+    // A GPU ID to query (the probe found a GPU, so the model lists it, but guard anyway)
     auto info = model.gpuInfo();
     if (info.empty())
     {
@@ -181,6 +233,11 @@ BENCHMARK(BM_GPUModel_UtilizationHistory);
 // to enrich process snapshots with GPU data.
 static void BM_GPUModel_ProcessGpuCounters(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
     Domain::GPUModel model(std::move(probe));
     model.refresh();
@@ -208,6 +265,11 @@ BENCHMARK(BM_GPUModel_ProcessGpuCounters);
 // visible in benchmark output.
 static void BM_GPUModel_MemoryGrowth(benchmark::State& state)
 {
+    if (skipWithoutGpu(state))
+    {
+        return;
+    }
+
     auto probe = Platform::makeGPUProbe();
     Domain::GPUModel model(std::move(probe));
 

@@ -195,6 +195,208 @@ template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_
     }
 }
 
+/// Builds a ColorScheme from a parsed theme document. A missing or malformed colour becomes
+/// errorColor() (or its documented fallback) rather than failing the whole theme.
+auto schemeFromTable(const toml::table& tbl) -> ColorScheme
+{
+    ColorScheme scheme{};
+
+    // Meta
+    if (const auto* meta = tbl["meta"].as_table())
+    {
+        scheme.name = (*meta)["name"].value_or(std::string{"Unknown"});
+    }
+
+    // Accents
+    loadColorArray(tbl, "accents.colors", scheme.accents);
+
+    // Progress colors
+    scheme.progressLow = getColor(tbl, "progress.low");
+    scheme.progressMedium = getColor(tbl, "progress.medium");
+    scheme.progressHigh = getColor(tbl, "progress.high");
+
+    // Semantic colors
+    scheme.textMuted = getColor(tbl, "semantic.text_muted");
+    scheme.textError = getColor(tbl, "semantic.text_error");
+    scheme.textWarning = getColor(tbl, "semantic.text_warning");
+    scheme.textSuccess = getColor(tbl, "semantic.text_success");
+    scheme.textInfo = getColor(tbl, "semantic.text_info");
+    scheme.textPrimary = getColor(tbl, "semantic.text_primary", scheme.textInfo);
+    scheme.textDisabled = getColor(tbl, "semantic.text_disabled", scheme.textMuted);
+
+    // Status colors
+    scheme.statusRunning = getColor(tbl, "status.running");
+    scheme.statusSleeping = getColor(tbl, "status.sleeping");
+    scheme.statusDiskSleep = getColor(tbl, "status.disk_sleep");
+    scheme.statusZombie = getColor(tbl, "status.zombie");
+    scheme.statusStopped = getColor(tbl, "status.stopped");
+    scheme.statusIdle = getColor(tbl, "status.idle");
+
+    // Chart colors
+    scheme.chartCpu = getColor(tbl, "charts.cpu");
+    scheme.chartMemory = getColor(tbl, "charts.memory");
+    scheme.chartIo = getColor(tbl, "charts.io");
+    scheme.chartIoWrite = getColor(tbl, "charts.io_write", scheme.chartMemory);
+
+    // Network chart colors; fall back to chartCpu/chartMemory for backward compat.
+    // chartMemory is a required field guaranteed to be loaded by this point, so
+    // it is a safer fallback than accents[2] which could be black in malformed themes.
+    scheme.chartNetTx = getColor(tbl, "charts.net_tx", scheme.chartCpu);
+    scheme.chartNetRx = getColor(tbl, "charts.net_rx", scheme.chartMemory);
+
+    // Chart fill colors: fall back to the line color at ~0.35 alpha (matching plotLineWithFill's
+    // implicit fill behavior) so themes that omit fill keys get a translucent fill, not an opaque one.
+    scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", withAlpha(scheme.chartCpu, (scheme.chartCpu.w * 0.35F)));
+    scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", withAlpha(scheme.chartMemory, (scheme.chartMemory.w * 0.35F)));
+    scheme.chartIoFill = getColor(tbl, "charts.io_fill", withAlpha(scheme.chartIo, (scheme.chartIo.w * 0.35F)));
+    scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", withAlpha(scheme.chartIoWrite, (scheme.chartIoWrite.w * 0.35F)));
+    scheme.chartNetTxFill = getColor(tbl, "charts.net_tx_fill", withAlpha(scheme.chartNetTx, (scheme.chartNetTx.w * 0.35F)));
+    scheme.chartNetRxFill = getColor(tbl, "charts.net_rx_fill", withAlpha(scheme.chartNetRx, (scheme.chartNetRx.w * 0.35F)));
+
+    // CPU breakdown
+    scheme.cpuUser = getColor(tbl, "cpu_breakdown.user");
+    scheme.cpuSystem = getColor(tbl, "cpu_breakdown.system");
+    scheme.cpuIowait = getColor(tbl, "cpu_breakdown.iowait");
+    scheme.cpuIdle = getColor(tbl, "cpu_breakdown.idle");
+
+    // CPU breakdown fill colors (with fallback to line colors for backward compatibility)
+    scheme.cpuUserFill = getColor(tbl, "cpu_breakdown.user_fill", scheme.cpuUser);
+    scheme.cpuSystemFill = getColor(tbl, "cpu_breakdown.system_fill", scheme.cpuSystem);
+    scheme.cpuIowaitFill = getColor(tbl, "cpu_breakdown.iowait_fill", scheme.cpuIowait);
+    scheme.cpuIdleFill = getColor(tbl, "cpu_breakdown.idle_fill", scheme.cpuIdle);
+
+    // GPU chart colors
+    scheme.gpuUtilization = getColor(tbl, "charts.gpu.utilization");
+    // Fill fallbacks translucent like the chart fills above, not the opaque line colour.
+    scheme.gpuUtilizationFill =
+        getColor(tbl, "charts.gpu.utilization_fill", withAlpha(scheme.gpuUtilization, (scheme.gpuUtilization.w * 0.35F)));
+    scheme.gpuMemory = getColor(tbl, "charts.gpu.memory");
+    scheme.gpuMemoryFill = getColor(tbl, "charts.gpu.memory_fill", withAlpha(scheme.gpuMemory, (scheme.gpuMemory.w * 0.35F)));
+    scheme.gpuTemperature = getColor(tbl, "charts.gpu.temperature");
+    scheme.gpuPower = getColor(tbl, "charts.gpu.power");
+    scheme.gpuEncoder = getColor(tbl, "charts.gpu.encoder");
+    scheme.gpuDecoder = getColor(tbl, "charts.gpu.decoder");
+    scheme.gpuClock = getColor(tbl, "charts.gpu.clock");
+    scheme.gpuClockFill = getColor(tbl, "charts.gpu.clock_fill", withAlpha(scheme.gpuClock, (scheme.gpuClock.w * 0.35F)));
+    scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
+
+    // Chart overlays
+    scheme.chartPeakLine = getColor(tbl, "charts.peak_line", scheme.textWarning);
+
+    // Success buttons (e.g., Apply, Resume)
+    scheme.successButton = getColor(tbl, "buttons.success.normal");
+    scheme.successButtonHovered = getColor(tbl, "buttons.success.hovered");
+    scheme.successButtonActive = getColor(tbl, "buttons.success.active");
+
+    // Danger buttons (Terminate, Kill); default to the same reds as the close button, a step
+    // darker at rest, so a theme without the section still sets them apart (#1273)
+    scheme.dangerButton = getColor(tbl, "buttons.danger.normal", ImVec4(0.64F, 0.08F, 0.08F, 1.0F));
+    scheme.dangerButtonHovered = getColor(tbl, "buttons.danger.hovered", ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
+    scheme.dangerButtonActive = getColor(tbl, "buttons.danger.active", ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
+
+    // Close button (title bar ×); defaults to conventional dark-red hover/active
+    scheme.closeButtonHovered = getColor(tbl, "buttons.close.hovered", ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
+    scheme.closeButtonActive = getColor(tbl, "buttons.close.active", ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
+
+    // Priority slider gradient endpoints; defaults match legacy hardcoded values
+    scheme.priorityHighColor = getColor(tbl, "priority.high", ImVec4(1.0F, 0.3F, 0.2F, 1.0F));
+    scheme.priorityNormalColor = getColor(tbl, "priority.normal", ImVec4(0.5F, 0.8F, 0.2F, 1.0F));
+    scheme.priorityLowColor = getColor(tbl, "priority.low", ImVec4(0.4F, 0.4F, 0.8F, 1.0F));
+    // Badge text: white on dark themes, near-black on light; defaults to white for safety
+    scheme.priorityBadgeTextColor = getColor(tbl, "priority.badge_text_color", ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
+
+    // Window colors
+    scheme.windowBg = getColor(tbl, "ui.window.background");
+    scheme.childBg = getColor(tbl, "ui.window.child_background");
+    scheme.popupBg = getColor(tbl, "ui.window.popup_background");
+    scheme.border = getColor(tbl, "ui.window.border");
+    scheme.borderShadow = getColor(tbl, "ui.window.border_shadow", scheme.border);
+
+    // Frame colors
+    scheme.frameBg = getColor(tbl, "ui.frame.background");
+    scheme.frameBgHovered = getColor(tbl, "ui.frame.background_hovered");
+    scheme.frameBgActive = getColor(tbl, "ui.frame.background_active");
+
+    // Title bar colors
+    scheme.titleBg = getColor(tbl, "ui.title.background");
+    scheme.titleBgActive = getColor(tbl, "ui.title.background_active");
+    scheme.titleBgCollapsed = getColor(tbl, "ui.title.background_collapsed");
+
+    // Bar colors
+    scheme.menuBarBg = getColor(tbl, "ui.bars.menu");
+    scheme.statusBarBg = getColor(tbl, "ui.bars.status");
+
+    // Scrollbar colors
+    scheme.scrollbarBg = getColor(tbl, "ui.scrollbar.background");
+    scheme.scrollbarGrab = getColor(tbl, "ui.scrollbar.grab");
+    scheme.scrollbarGrabHovered = getColor(tbl, "ui.scrollbar.grab_hovered");
+    scheme.scrollbarGrabActive = getColor(tbl, "ui.scrollbar.grab_active");
+
+    // Control colors
+    scheme.checkMark = getColor(tbl, "ui.controls.check_mark");
+    scheme.sliderGrab = getColor(tbl, "ui.controls.slider_grab");
+    scheme.sliderGrabActive = getColor(tbl, "ui.controls.slider_grab_active");
+
+    // Button colors
+    scheme.button = getColor(tbl, "ui.button.normal");
+    scheme.buttonHovered = getColor(tbl, "ui.button.hovered");
+    scheme.buttonActive = getColor(tbl, "ui.button.active");
+
+    // Header colors
+    scheme.header = getColor(tbl, "ui.header.normal");
+    scheme.headerHovered = getColor(tbl, "ui.header.hovered");
+    scheme.headerActive = getColor(tbl, "ui.header.active");
+
+    // Separator colors
+    scheme.separator = getColor(tbl, "ui.separator.normal");
+    scheme.separatorHovered = getColor(tbl, "ui.separator.hovered");
+    scheme.separatorActive = getColor(tbl, "ui.separator.active");
+
+    // Resize grip colors
+    scheme.resizeGrip = getColor(tbl, "ui.resize_grip.normal");
+    scheme.resizeGripHovered = getColor(tbl, "ui.resize_grip.hovered");
+    scheme.resizeGripActive = getColor(tbl, "ui.resize_grip.active");
+
+    // Tab colors
+    scheme.tab = getColor(tbl, "ui.tab.normal");
+    scheme.tabHovered = getColor(tbl, "ui.tab.hovered");
+    scheme.tabSelected = getColor(tbl, "ui.tab.active");
+    scheme.tabSelectedOverline = getColor(tbl, "ui.tab.active_overline");
+    scheme.tabDimmed = getColor(tbl, "ui.tab.unfocused");
+    scheme.tabDimmedSelected = getColor(tbl, "ui.tab.unfocused_active");
+    scheme.tabDimmedSelectedOverline = getColor(tbl, "ui.tab.unfocused_active_overline");
+
+    // Docking colors
+    scheme.dockingPreview = getColor(tbl, "ui.docking.preview");
+    scheme.dockingEmptyBg = getColor(tbl, "ui.docking.empty_background");
+
+    // Plot colors
+    // Grid lines were the window border, which nearly vanished on the plot (1.01:1 on Tokyo Night).
+    // Themes without their own grid colour keep that behaviour (#1191).
+    scheme.plotGrid = getColor(tbl, "ui.plot.grid", scheme.border);
+    scheme.plotLines = getColor(tbl, "ui.plot.lines");
+    scheme.plotLinesHovered = getColor(tbl, "ui.plot.lines_hovered");
+    scheme.plotHistogram = getColor(tbl, "ui.plot.histogram");
+    scheme.plotHistogramHovered = getColor(tbl, "ui.plot.histogram_hovered");
+
+    // Table colors
+    scheme.tableHeaderBg = getColor(tbl, "ui.table.header_background");
+    scheme.tableBorderStrong = getColor(tbl, "ui.table.border_strong");
+    scheme.tableBorderLight = getColor(tbl, "ui.table.border_light");
+    scheme.tableRowBg = getColor(tbl, "ui.table.row_background");
+    scheme.tableRowBgAlt = getColor(tbl, "ui.table.row_background_alt");
+
+    // Misc UI colors
+    scheme.textSelectedBg = getColor(tbl, "ui.misc.text_selected_background");
+    scheme.dragDropTarget = getColor(tbl, "ui.misc.drag_drop_target");
+    scheme.navHighlight = getColor(tbl, "ui.misc.nav_highlight");
+    scheme.navWindowingHighlight = getColor(tbl, "ui.misc.nav_windowing_highlight");
+    scheme.navWindowingDimBg = getColor(tbl, "ui.misc.nav_windowing_dim_background");
+    scheme.modalWindowDimBg = getColor(tbl, "ui.misc.modal_window_dim_background");
+
+    return scheme;
+}
+
 } // namespace
 
 auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std::vector<ThemeInfo>
@@ -273,196 +475,7 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
 {
     try
     {
-        auto tbl = toml::parse_file(path.string());
-        ColorScheme scheme{};
-
-        // Meta
-        if (const auto* meta = tbl["meta"].as_table())
-        {
-            scheme.name = (*meta)["name"].value_or(std::string{"Unknown"});
-        }
-
-        // Accents
-        loadColorArray(tbl, "accents.colors", scheme.accents);
-
-        // Progress colors
-        scheme.progressLow = getColor(tbl, "progress.low");
-        scheme.progressMedium = getColor(tbl, "progress.medium");
-        scheme.progressHigh = getColor(tbl, "progress.high");
-
-        // Semantic colors
-        scheme.textMuted = getColor(tbl, "semantic.text_muted");
-        scheme.textError = getColor(tbl, "semantic.text_error");
-        scheme.textWarning = getColor(tbl, "semantic.text_warning");
-        scheme.textSuccess = getColor(tbl, "semantic.text_success");
-        scheme.textInfo = getColor(tbl, "semantic.text_info");
-        scheme.textPrimary = getColor(tbl, "semantic.text_primary", scheme.textInfo);
-        scheme.textDisabled = getColor(tbl, "semantic.text_disabled", scheme.textMuted);
-
-        // Status colors
-        scheme.statusRunning = getColor(tbl, "status.running");
-        scheme.statusSleeping = getColor(tbl, "status.sleeping");
-        scheme.statusDiskSleep = getColor(tbl, "status.disk_sleep");
-        scheme.statusZombie = getColor(tbl, "status.zombie");
-        scheme.statusStopped = getColor(tbl, "status.stopped");
-        scheme.statusIdle = getColor(tbl, "status.idle");
-
-        // Chart colors
-        scheme.chartCpu = getColor(tbl, "charts.cpu");
-        scheme.chartMemory = getColor(tbl, "charts.memory");
-        scheme.chartIo = getColor(tbl, "charts.io");
-        scheme.chartIoWrite = getColor(tbl, "charts.io_write", scheme.chartMemory);
-
-        // Network chart colors; fall back to chartCpu/chartMemory for backward compat.
-        // chartMemory is a required field guaranteed to be loaded by this point, so
-        // it is a safer fallback than accents[2] which could be black in malformed themes.
-        scheme.chartNetTx = getColor(tbl, "charts.net_tx", scheme.chartCpu);
-        scheme.chartNetRx = getColor(tbl, "charts.net_rx", scheme.chartMemory);
-
-        // Chart fill colors: fall back to the line color at ~0.35 alpha (matching plotLineWithFill's
-        // implicit fill behavior) so themes that omit fill keys get a translucent fill, not an opaque one.
-        scheme.chartCpuFill = getColor(tbl, "charts.cpu_fill", withAlpha(scheme.chartCpu, (scheme.chartCpu.w * 0.35F)));
-        scheme.chartMemoryFill = getColor(tbl, "charts.memory_fill", withAlpha(scheme.chartMemory, (scheme.chartMemory.w * 0.35F)));
-        scheme.chartIoFill = getColor(tbl, "charts.io_fill", withAlpha(scheme.chartIo, (scheme.chartIo.w * 0.35F)));
-        scheme.chartIoWriteFill = getColor(tbl, "charts.io_write_fill", withAlpha(scheme.chartIoWrite, (scheme.chartIoWrite.w * 0.35F)));
-        scheme.chartNetTxFill = getColor(tbl, "charts.net_tx_fill", withAlpha(scheme.chartNetTx, (scheme.chartNetTx.w * 0.35F)));
-        scheme.chartNetRxFill = getColor(tbl, "charts.net_rx_fill", withAlpha(scheme.chartNetRx, (scheme.chartNetRx.w * 0.35F)));
-
-        // CPU breakdown
-        scheme.cpuUser = getColor(tbl, "cpu_breakdown.user");
-        scheme.cpuSystem = getColor(tbl, "cpu_breakdown.system");
-        scheme.cpuIowait = getColor(tbl, "cpu_breakdown.iowait");
-        scheme.cpuIdle = getColor(tbl, "cpu_breakdown.idle");
-
-        // CPU breakdown fill colors (with fallback to line colors for backward compatibility)
-        scheme.cpuUserFill = getColor(tbl, "cpu_breakdown.user_fill", scheme.cpuUser);
-        scheme.cpuSystemFill = getColor(tbl, "cpu_breakdown.system_fill", scheme.cpuSystem);
-        scheme.cpuIowaitFill = getColor(tbl, "cpu_breakdown.iowait_fill", scheme.cpuIowait);
-        scheme.cpuIdleFill = getColor(tbl, "cpu_breakdown.idle_fill", scheme.cpuIdle);
-
-        // GPU chart colors
-        scheme.gpuUtilization = getColor(tbl, "charts.gpu.utilization");
-        // Fill fallbacks translucent like the chart fills above, not the opaque line colour.
-        scheme.gpuUtilizationFill =
-            getColor(tbl, "charts.gpu.utilization_fill", withAlpha(scheme.gpuUtilization, (scheme.gpuUtilization.w * 0.35F)));
-        scheme.gpuMemory = getColor(tbl, "charts.gpu.memory");
-        scheme.gpuMemoryFill = getColor(tbl, "charts.gpu.memory_fill", withAlpha(scheme.gpuMemory, (scheme.gpuMemory.w * 0.35F)));
-        scheme.gpuTemperature = getColor(tbl, "charts.gpu.temperature");
-        scheme.gpuPower = getColor(tbl, "charts.gpu.power");
-        scheme.gpuEncoder = getColor(tbl, "charts.gpu.encoder");
-        scheme.gpuDecoder = getColor(tbl, "charts.gpu.decoder");
-        scheme.gpuClock = getColor(tbl, "charts.gpu.clock");
-        scheme.gpuClockFill = getColor(tbl, "charts.gpu.clock_fill", withAlpha(scheme.gpuClock, (scheme.gpuClock.w * 0.35F)));
-        scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
-
-        // Chart overlays
-        scheme.chartPeakLine = getColor(tbl, "charts.peak_line", scheme.textWarning);
-
-        // Success buttons (e.g., Apply, Resume)
-        scheme.successButton = getColor(tbl, "buttons.success.normal");
-        scheme.successButtonHovered = getColor(tbl, "buttons.success.hovered");
-        scheme.successButtonActive = getColor(tbl, "buttons.success.active");
-
-        // Close button (title bar ×); defaults to conventional dark-red hover/active
-        scheme.closeButtonHovered = getColor(tbl, "buttons.close.hovered", ImVec4(0.8F, 0.1F, 0.1F, 1.0F));
-        scheme.closeButtonActive = getColor(tbl, "buttons.close.active", ImVec4(0.9F, 0.2F, 0.2F, 1.0F));
-
-        // Priority slider gradient endpoints; defaults match legacy hardcoded values
-        scheme.priorityHighColor = getColor(tbl, "priority.high", ImVec4(1.0F, 0.3F, 0.2F, 1.0F));
-        scheme.priorityNormalColor = getColor(tbl, "priority.normal", ImVec4(0.5F, 0.8F, 0.2F, 1.0F));
-        scheme.priorityLowColor = getColor(tbl, "priority.low", ImVec4(0.4F, 0.4F, 0.8F, 1.0F));
-        // Badge text: white on dark themes, near-black on light; defaults to white for safety
-        scheme.priorityBadgeTextColor = getColor(tbl, "priority.badge_text_color", ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
-
-        // Window colors
-        scheme.windowBg = getColor(tbl, "ui.window.background");
-        scheme.childBg = getColor(tbl, "ui.window.child_background");
-        scheme.popupBg = getColor(tbl, "ui.window.popup_background");
-        scheme.border = getColor(tbl, "ui.window.border");
-        scheme.borderShadow = getColor(tbl, "ui.window.border_shadow", scheme.border);
-
-        // Frame colors
-        scheme.frameBg = getColor(tbl, "ui.frame.background");
-        scheme.frameBgHovered = getColor(tbl, "ui.frame.background_hovered");
-        scheme.frameBgActive = getColor(tbl, "ui.frame.background_active");
-
-        // Title bar colors
-        scheme.titleBg = getColor(tbl, "ui.title.background");
-        scheme.titleBgActive = getColor(tbl, "ui.title.background_active");
-        scheme.titleBgCollapsed = getColor(tbl, "ui.title.background_collapsed");
-
-        // Bar colors
-        scheme.menuBarBg = getColor(tbl, "ui.bars.menu");
-        scheme.statusBarBg = getColor(tbl, "ui.bars.status");
-
-        // Scrollbar colors
-        scheme.scrollbarBg = getColor(tbl, "ui.scrollbar.background");
-        scheme.scrollbarGrab = getColor(tbl, "ui.scrollbar.grab");
-        scheme.scrollbarGrabHovered = getColor(tbl, "ui.scrollbar.grab_hovered");
-        scheme.scrollbarGrabActive = getColor(tbl, "ui.scrollbar.grab_active");
-
-        // Control colors
-        scheme.checkMark = getColor(tbl, "ui.controls.check_mark");
-        scheme.sliderGrab = getColor(tbl, "ui.controls.slider_grab");
-        scheme.sliderGrabActive = getColor(tbl, "ui.controls.slider_grab_active");
-
-        // Button colors
-        scheme.button = getColor(tbl, "ui.button.normal");
-        scheme.buttonHovered = getColor(tbl, "ui.button.hovered");
-        scheme.buttonActive = getColor(tbl, "ui.button.active");
-
-        // Header colors
-        scheme.header = getColor(tbl, "ui.header.normal");
-        scheme.headerHovered = getColor(tbl, "ui.header.hovered");
-        scheme.headerActive = getColor(tbl, "ui.header.active");
-
-        // Separator colors
-        scheme.separator = getColor(tbl, "ui.separator.normal");
-        scheme.separatorHovered = getColor(tbl, "ui.separator.hovered");
-        scheme.separatorActive = getColor(tbl, "ui.separator.active");
-
-        // Resize grip colors
-        scheme.resizeGrip = getColor(tbl, "ui.resize_grip.normal");
-        scheme.resizeGripHovered = getColor(tbl, "ui.resize_grip.hovered");
-        scheme.resizeGripActive = getColor(tbl, "ui.resize_grip.active");
-
-        // Tab colors
-        scheme.tab = getColor(tbl, "ui.tab.normal");
-        scheme.tabHovered = getColor(tbl, "ui.tab.hovered");
-        scheme.tabSelected = getColor(tbl, "ui.tab.active");
-        scheme.tabSelectedOverline = getColor(tbl, "ui.tab.active_overline");
-        scheme.tabDimmed = getColor(tbl, "ui.tab.unfocused");
-        scheme.tabDimmedSelected = getColor(tbl, "ui.tab.unfocused_active");
-        scheme.tabDimmedSelectedOverline = getColor(tbl, "ui.tab.unfocused_active_overline");
-
-        // Docking colors
-        scheme.dockingPreview = getColor(tbl, "ui.docking.preview");
-        scheme.dockingEmptyBg = getColor(tbl, "ui.docking.empty_background");
-
-        // Plot colors
-        // Grid lines were the window border, which nearly vanished on the plot (1.01:1 on Tokyo Night).
-        // Themes without their own grid colour keep that behaviour (#1191).
-        scheme.plotGrid = getColor(tbl, "ui.plot.grid", scheme.border);
-        scheme.plotLines = getColor(tbl, "ui.plot.lines");
-        scheme.plotLinesHovered = getColor(tbl, "ui.plot.lines_hovered");
-        scheme.plotHistogram = getColor(tbl, "ui.plot.histogram");
-        scheme.plotHistogramHovered = getColor(tbl, "ui.plot.histogram_hovered");
-
-        // Table colors
-        scheme.tableHeaderBg = getColor(tbl, "ui.table.header_background");
-        scheme.tableBorderStrong = getColor(tbl, "ui.table.border_strong");
-        scheme.tableBorderLight = getColor(tbl, "ui.table.border_light");
-        scheme.tableRowBg = getColor(tbl, "ui.table.row_background");
-        scheme.tableRowBgAlt = getColor(tbl, "ui.table.row_background_alt");
-
-        // Misc UI colors
-        scheme.textSelectedBg = getColor(tbl, "ui.misc.text_selected_background");
-        scheme.dragDropTarget = getColor(tbl, "ui.misc.drag_drop_target");
-        scheme.navHighlight = getColor(tbl, "ui.misc.nav_highlight");
-        scheme.navWindowingHighlight = getColor(tbl, "ui.misc.nav_windowing_highlight");
-        scheme.navWindowingDimBg = getColor(tbl, "ui.misc.nav_windowing_dim_background");
-        scheme.modalWindowDimBg = getColor(tbl, "ui.misc.modal_window_dim_background");
-
+        ColorScheme scheme = schemeFromTable(toml::parse_file(path.string()));
         spdlog::info("Loaded theme: {} from {}", scheme.name, path.string());
         return scheme;
     }
@@ -474,6 +487,24 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
     catch (const std::exception& ex)
     {
         spdlog::error("Failed to load theme {}: {}", path.string(), ex.what());
+        return std::nullopt;
+    }
+}
+
+auto ThemeLoader::loadThemeFromString(std::string_view tomlText, std::string_view sourceName) -> std::optional<ColorScheme>
+{
+    try
+    {
+        return schemeFromTable(toml::parse(tomlText, sourceName));
+    }
+    catch (const toml::parse_error& err)
+    {
+        spdlog::error("Failed to parse theme {}: {}", sourceName, err.description());
+        return std::nullopt;
+    }
+    catch (const std::exception& ex)
+    {
+        spdlog::error("Failed to load theme {}: {}", sourceName, ex.what());
         return std::nullopt;
     }
 }

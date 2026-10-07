@@ -2,9 +2,9 @@
 /// @brief Unit and smoke tests for Platform::DXGIGPUProbe
 ///
 /// The vendor-ID/LUID-format/integrated-GPU decision logic is pure (no COM adapter
-/// required) and is unit tested directly via DXGIGPUProbeMath.h. Enumeration/counter
-/// tests below are integration smoke tests against whatever adapters are actually
-/// present on the machine running CI.
+/// required) and is unit tested on every platform in WindowsMath/test_DXGIGPUProbeMath.cpp.
+/// The tests here need Windows: D3DKMT fakes, DisplayDevicePower, and integration smoke
+/// tests against whatever adapters are actually present on the machine running CI.
 
 #ifdef _WIN32
 
@@ -12,22 +12,20 @@
 #include "Platform/Windows/DXGIAdapterLocation.h"
 #include "Platform/Windows/DXGIGPUProbe.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
+#include "Platform/Windows/DisplayDevicePower.h"
 
 #include <gtest/gtest.h>
 
-#include <cstdint>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace Platform
 {
 namespace
 {
-
-// =============================================================================
-// vendorIdToName: pure lookup, no hardware required.
-// =============================================================================
 
 // =============================================================================
 // adapterPciLocation: the D3DKMT address query, against fake kernel-mode calls (#1091)
@@ -41,6 +39,7 @@ struct FakeD3DKMT
     NTSTATUS queryStatus = 0;
     UINT bus = 0;
     UINT device = 0;
+    UINT function = 0;
     UINT adapterTypeValue = 0; // D3DKMT_ADAPTERTYPE::Value answered to KMTQAITYPE_ADAPTERTYPE (#1251)
     D3DKMT_HANDLE handle = 0x40;
     LUID openedLuid{};
@@ -80,7 +79,7 @@ NTSTATUS APIENTRY fakeQueryAdapterInfo(const D3DKMT_QUERYADAPTERINFO* query)
         auto* address = static_cast<D3DKMT_ADAPTERADDRESS*>(query->pPrivateDriverData);
         address->BusNumber = fake.bus;
         address->DeviceNumber = fake.device;
-        address->FunctionNumber = 0;
+        address->FunctionNumber = fake.function;
     }
     if (fake.queryStatus == 0 && query->Type == KMTQAITYPE_ADAPTERTYPE && query->PrivateDriverDataSize == sizeof(D3DKMT_ADAPTERTYPE))
     {
@@ -113,16 +112,17 @@ class AdapterPciLocationTest : public ::testing::Test
     }
 };
 
-TEST_F(AdapterPciLocationTest, ReturnsTheBusAndDeviceTheAdapterReports)
+TEST_F(AdapterPciLocationTest, ReturnsTheBusDeviceAndFunctionTheAdapterReports)
 {
     fakeD3DKMT().bus = 0x41;
     fakeD3DKMT().device = 0x03;
+    fakeD3DKMT().function = 0x01;
     const LUID luid{.LowPart = 0x1234, .HighPart = 0x5};
 
     const auto location = adapterPciLocation(luid, FAKE_D3DKMT);
 
     ASSERT_TRUE(location.has_value());
-    EXPECT_EQ(location.value_or(PciLocation{}), (PciLocation{.bus = 0x41, .device = 0x03}));
+    EXPECT_EQ(location.value_or(PciLocation{}), (PciLocation{.bus = 0x41, .device = 0x03, .function = 0x01}));
     // It opened the adapter the LUID names, asked that adapter for its address, and closed it.
     EXPECT_EQ(fakeD3DKMT().openedLuid.LowPart, 0x1234U);
     EXPECT_EQ(fakeD3DKMT().openedLuid.HighPart, 0x5);
@@ -144,7 +144,7 @@ TEST_F(AdapterPciLocationTest, DistinctAdaptersGetDistinctLocations)
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
     EXPECT_NE(first.value_or(PciLocation{}), second.value_or(PciLocation{}));
-    EXPECT_EQ(second.value_or(PciLocation{}), (PciLocation{.bus = 0x02, .device = 0x01}));
+    EXPECT_EQ(second.value_or(PciLocation{}), (PciLocation{.bus = 0x02, .device = 0x01, .function = 0}));
 }
 
 TEST_F(AdapterPciLocationTest, NoLocationWhenTheAdapterCannotBeOpened)
@@ -241,115 +241,72 @@ TEST_F(AdapterPciLocationTest, AnAdapterThatCannotBeOpenedHasNoKindAndIsKept)
     EXPECT_TRUE(listedByFake(LUID{}));
 }
 
-TEST(ShouldListAdapterTest, SoftwareFlagIsNeverListed)
-{
-    EXPECT_FALSE(shouldListAdapter(true, std::nullopt));
-    EXPECT_FALSE(shouldListAdapter(true, AdapterTypeBits{}));
-}
-
-TEST(ShouldListAdapterTest, IndirectDisplayAndSoftwareDevicesAreNotListed)
-{
-    EXPECT_FALSE(shouldListAdapter(false, AdapterTypeBits{.softwareDevice = false, .indirectDisplayDevice = true}));
-    EXPECT_FALSE(shouldListAdapter(false, AdapterTypeBits{.softwareDevice = true, .indirectDisplayDevice = false}));
-}
-
-TEST(ShouldListAdapterTest, AHardwareAdapterOrAnUnknownTypeIsListed)
-{
-    EXPECT_TRUE(shouldListAdapter(false, AdapterTypeBits{}));
-    EXPECT_TRUE(shouldListAdapter(false, std::nullopt));
-}
-
-TEST(AdapterMemoryTotalBytesTest, IntegratedUsesSharedSystemMemoryDiscreteUsesDedicated)
-{
-    // A fixed figure from the adapter description, not the moving per-process budget (#1029).
-    constexpr std::uint64_t DEDICATED = 128ULL * 1024 * 1024;
-    constexpr std::uint64_t SHARED = 16ULL * 1024 * 1024 * 1024;
-    EXPECT_EQ(adapterMemoryTotalBytes(true, DEDICATED, SHARED), SHARED);
-    EXPECT_EQ(adapterMemoryTotalBytes(false, DEDICATED, SHARED), DEDICATED);
-}
-
-TEST(MakeDXGIAdapterCountersTest, UtilizationAndMemoryInUseStartUnread)
-{
-    // DXGI reads neither: with PDH warming up or unavailable, its placeholder 0% and 0 B published
-    // as real samples (#1245). NVML or PDH marks them available when it has a reading.
-    const auto counter = makeDXGIAdapterCounters("GPU0", 16ULL << 30U);
-
-    EXPECT_EQ(counter.gpuId, "GPU0");
-    EXPECT_EQ(counter.memoryTotalBytes, 16ULL << 30U);
-    EXPECT_FALSE(counter.utilizationAvailable);
-    EXPECT_FALSE(counter.memoryAvailable);
-}
-
-TEST(VendorIdToNameTest, KnownVendorIdsMapCorrectly)
-{
-    EXPECT_EQ(vendorIdToName(0x10DE), "NVIDIA");
-    EXPECT_EQ(vendorIdToName(0x1002), "AMD");
-    EXPECT_EQ(vendorIdToName(0x1022), "AMD");
-    EXPECT_EQ(vendorIdToName(0x8086), "Intel");
-    EXPECT_EQ(vendorIdToName(0x8087), "Intel");
-}
-
-TEST(VendorIdToNameTest, UnknownVendorIdMapsToUnknown)
-{
-    EXPECT_EQ(vendorIdToName(0x1234), "Unknown");
-    EXPECT_EQ(vendorIdToName(0), "Unknown");
-}
-
 // =============================================================================
-// luidToPdhFormat: pure formatting, no hardware required.
+// DisplayDevicePower: whether a GPU is asleep, from the PnP manager, never from the GPU (#1265).
 // =============================================================================
 
-TEST(LuidToPdhFormatTest, FormatsHighAndLowPartsAsHex)
+TEST(DisplayDevicePowerTest, D1ToD3AreAsleepD0AndUnspecifiedAreAwake)
 {
-    EXPECT_EQ(luidToPdhFormat(0, 0xD3A0), "GPU_0x00000000_0x0000D3A0");
-    EXPECT_EQ(luidToPdhFormat(0xFFFFFFFF, 1), "GPU_0xFFFFFFFF_0x00000001");
+    EXPECT_FALSE(isAsleepDevicePowerState(PowerDeviceUnspecified));
+    EXPECT_FALSE(isAsleepDevicePowerState(PowerDeviceD0));
+    EXPECT_TRUE(isAsleepDevicePowerState(PowerDeviceD1));
+    EXPECT_TRUE(isAsleepDevicePowerState(PowerDeviceD2));
+    EXPECT_TRUE(isAsleepDevicePowerState(PowerDeviceD3));
+    EXPECT_FALSE(isAsleepDevicePowerState(PowerDeviceMaximum));
 }
 
-// =============================================================================
-// isIntegratedGPUFromDesc: pure vendor/VRAM-threshold decision logic, no hardware
-// or COM adapter mocking required.
-// =============================================================================
-
-TEST(IsIntegratedGPUFromDescTest, SoftwareAdapterIsNeverIntegrated)
+TEST(DisplayDevicePowerTest, PciAddressCarriesTheDeviceInItsHighWordAndTheFunctionInItsLow)
 {
-    constexpr uint32_t SOFTWARE_FLAG = 2;
-    // Even an Intel vendor ID with tiny VRAM should report false for a software adapter.
-    EXPECT_FALSE(isIntegratedGPUFromDesc(0x8086, SOFTWARE_FLAG, 0));
+    // DEVPKEY_Device_Address for PCI is (device << 16) | function.
+    EXPECT_EQ(pciLocationFromDevNode(0x01, 0x00000000), (PciLocation{.bus = 0x01, .device = 0x00, .function = 0}));
+    EXPECT_EQ(pciLocationFromDevNode(0x00, 0x00020000), (PciLocation{.bus = 0x00, .device = 0x02, .function = 0}));
+    EXPECT_EQ(pciLocationFromDevNode(0x41, 0x001F0003), (PciLocation{.bus = 0x41, .device = 0x1F, .function = 3}));
 }
 
-TEST(IsIntegratedGPUFromDescTest, IntelBelowThresholdIsIntegrated)
+// The devnode for a location: the exact function where it is known; where it isn't (NVML's busId
+// unreadable), only a function unique at the bus and device, since on a multi-function device the
+// first match could be another function, whose power state isn't this adapter's.
+TEST(DisplayDevicePowerTest, AnUnknownFunctionMatchesOnlyAUniqueDevNode)
 {
-    constexpr uint64_t belowThreshold = (512ULL * 1024 * 1024) - 1;
-    EXPECT_TRUE(isIntegratedGPUFromDesc(0x8086, 0, belowThreshold));
+    const std::vector<PciLocation> multiFunction = {PciLocation{.bus = 0x00, .device = 0x02, .function = 0},
+                                                    PciLocation{.bus = 0x01, .device = 0x00, .function = 0},
+                                                    PciLocation{.bus = 0x01, .device = 0x00, .function = 1}};
+    EXPECT_EQ(matchingDevNode(multiFunction, PciLocation{.bus = 0x01, .device = 0x00, .function = 1}), std::optional<std::size_t>{2});
+    EXPECT_EQ(matchingDevNode(multiFunction, PciLocation{.bus = 0x01, .device = 0x00, .function = 0}), std::optional<std::size_t>{1});
+    EXPECT_FALSE(matchingDevNode(multiFunction, PciLocation{.bus = 0x01, .device = 0x00, .function = std::nullopt}).has_value())
+        << "Two functions fit: unknown, so the GPU counts as awake";
+    EXPECT_EQ(matchingDevNode(multiFunction, PciLocation{.bus = 0x00, .device = 0x02, .function = std::nullopt}),
+              std::optional<std::size_t>{0})
+        << "One function fits";
+    EXPECT_FALSE(matchingDevNode(multiFunction, PciLocation{.bus = 0x41, .device = 0x00, .function = std::nullopt}).has_value());
 }
 
-TEST(IsIntegratedGPUFromDescTest, IntelAtOrAboveThresholdIsDiscrete)
+TEST(DisplayDevicePowerTest, AnUnknownLocationIsAwake)
 {
-    constexpr uint64_t atThreshold = 512ULL * 1024 * 1024;
-    EXPECT_FALSE(isIntegratedGPUFromDesc(0x8086, 0, atThreshold));
+    // Bus 0x100 and device 0x20 are outside PCI's 8-bit bus and 5-bit device ranges, so no devnode
+    // can ever report them, whatever hardware runs the test: unknown counts as awake, so a GPU is
+    // never left unmonitored by mistake.
+    constexpr PciLocation IMPOSSIBLE{.bus = 0x100, .device = 0x20, .function = std::nullopt};
+    DisplayDevicePower power;
+    EXPECT_FALSE(power.isAsleep(IMPOSSIBLE));
+    EXPECT_FALSE(power.isAsleep(IMPOSSIBLE)); // Cached miss
 }
 
-TEST(IsIntegratedGPUFromDescTest, AmdBelowThresholdIsIntegrated)
+TEST(DisplayDevicePowerTest, QueryingRealAdaptersDoesNotFail)
 {
-    constexpr uint64_t belowThreshold = (1024ULL * 1024 * 1024) - 1;
-    EXPECT_TRUE(isIntegratedGPUFromDesc(0x1002, 0, belowThreshold));
-}
-
-TEST(IsIntegratedGPUFromDescTest, AmdAtOrAboveThresholdIsDiscrete)
-{
-    constexpr uint64_t atThreshold = 1024ULL * 1024 * 1024;
-    EXPECT_FALSE(isIntegratedGPUFromDesc(0x1002, 0, atThreshold));
-}
-
-TEST(IsIntegratedGPUFromDescTest, NvidiaIsNeverIntegrated)
-{
-    EXPECT_FALSE(isIntegratedGPUFromDesc(0x10DE, 0, 0));
-    EXPECT_FALSE(isIntegratedGPUFromDesc(0x10DE, 0, 0xFFFFFFFFFFFFFFFFULL));
-}
-
-TEST(IsIntegratedGPUFromDescTest, UnknownVendorIsNeverIntegrated)
-{
-    EXPECT_FALSE(isIntegratedGPUFromDesc(0x1234, 0, 0));
+    // Smoke test on real hardware: an adapter that DXGI lists and that reports a PCI location
+    // answers without throwing. (Whether it is asleep depends on the machine, so only the call is
+    // checked.)
+    DXGIGPUProbe probe;
+    DisplayDevicePower power;
+    for (const auto& gpu : probe.enumerateGPUs())
+    {
+        if (gpu.pciLocation.has_value())
+        {
+            [[maybe_unused]] const bool asleep = power.isAsleep(*gpu.pciLocation);
+        }
+    }
+    SUCCEED();
 }
 
 // =============================================================================

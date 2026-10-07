@@ -12,7 +12,7 @@ This is the canonical inventory of user-visible and engineering features current
 | Column configuration | Header context menu controls visibility; settings persist in `config.toml` |
 | Stable process identity | PID and process start time prevent counter reuse when an operating system recycles a PID |
 | Process actions | Terminate, force terminate, and priority changes on Linux and Windows; stop/resume on Linux |
-| Disk I/O rates | Per-process read/write rates; Linux access may require root or `CAP_DAC_READ_SEARCH` |
+| Disk I/O rates | Per-process read/write rates; Linux access to other users' processes needs `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` in the effective set (root with its normal capabilities has them; root alone isn't enough where capabilities are dropped) |
 | Network rates | Lifetime-average per-process sent/received rates; Linux uses Netlink, Windows uses TCP EStats when running as administrator |
 | GPU attribution | Per-process utilization, memory, device, and engine data when supported by the active GPU backend |
 
@@ -59,7 +59,7 @@ This is the canonical inventory of user-visible and engineering features current
 
 | Item | Current behavior |
 |------|------------------|
-| Build system | CMake 3.29+, Ninja, C++23, Clang/LLVM 22, Linux libc++, Windows MSVC STL |
+| Build system | CMake 3.29+, Ninja, C++23, Clang/LLVM 23, Linux libc++, Windows MSVC STL |
 | Workflow presets | One-command development, coverage, sanitizer, and benchmark workflows |
 | Automated setup | `tools/setup-dev.sh` and `tools/setup-dev.ps1` |
 | Background polling | Centralized `BackgroundSampler` utilizing `ISamplable` for asynchronous model updates to avoid blocking the render thread |

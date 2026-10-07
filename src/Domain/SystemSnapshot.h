@@ -1,11 +1,22 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace Domain
 {
+
+/// Whether an interface's rate is a reading -- 0 included -- and, when it is not, why (#1375). An
+/// unmeasured rate is held at 0 in InterfaceSnapshot, so this is what tells the two apart.
+enum class InterfaceRateStatus : std::uint8_t
+{
+    Measured,      ///< A reading over the last interval, 0 included.
+    NotYetSampled, ///< No earlier sample of this interface far enough back to take a rate from.
+    CounterReset,  ///< The byte counter went backwards (driver reset, wrap or re-registration).
+    AboveCeiling,  ///< Above [metrics] max_sane_rate_bps: a counter glitch, not traffic (#1291).
+};
 
 /// CPU usage percentages (computed from counter deltas).
 struct CpuUsage
@@ -57,6 +68,11 @@ struct SystemSnapshot
     // come online with no previous sample to diff against -- holds NaN in every field, a gap
     // rather than a fake 0% or another core's load (#1229).
     std::vector<CpuUsage> cpuPerCore;
+    // Every core id the probe has reported this session, ascending. cpuPerCore is sized by the
+    // highest id, so it also has slots for ids never reported -- a Windows group's reserved hot-add
+    // capacity, a Linux cpuN never online -- and the CPU Cores grid shows only these (#1262). An id
+    // stays listed after its CPU goes offline, so that CPU keeps its chart and shows a gap (#1229).
+    std::vector<std::size_t> seenCoreIds;
 
     // Memory (bytes)
     std::uint64_t memoryTotalBytes = 0;
@@ -95,13 +111,17 @@ struct SystemSnapshot
     /// Per-interface network rates (computed from counter deltas).
     struct InterfaceSnapshot
     {
-        std::string name;           // System name: "eth0", "Ethernet"
-        std::string displayName;    // Friendly name for UI
-        double rxBytesPerSec = 0.0; // Receive rate
-        double txBytesPerSec = 0.0; // Transmit rate
-        bool isUp = false;          // Interface operational status
-        uint64_t linkSpeedMbps = 0; // Link speed (0 if unknown)
-        bool isVirtual = false;     // Software interface left out of the Total (see Platform InterfaceCounters)
+        std::string name;            // System name: "eth0", "Ethernet"
+        std::string displayName;     // Friendly name for UI
+        double rxBytesPerSec = 0.0;  // Receive rate
+        double txBytesPerSec = 0.0;  // Transmit rate
+        bool isUp = false;           // Interface operational status
+        uint64_t linkSpeedMbps = 0;  // Link speed (0 if unknown)
+        bool isVirtual = false;      // Software interface left out of the Total (see Platform InterfaceCounters)
+        bool isVirtualKnown = false; // The platform classified it, so isVirtual is authoritative (#1260)
+        // Whether rxBytesPerSec / txBytesPerSec are readings or held at 0 for a reason (#1375)
+        InterfaceRateStatus rxRateStatus = InterfaceRateStatus::Measured;
+        InterfaceRateStatus txRateStatus = InterfaceRateStatus::Measured;
     };
     std::vector<InterfaceSnapshot> networkInterfaces;
 

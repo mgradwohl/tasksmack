@@ -16,6 +16,13 @@
 //   - above the maximum the extra height shows nothing more -- the data has no more detail to give --
 //     and the space is better left to the other sections on the tab.
 //
+// On a fill tab the maximum gives way to the space the charts share: the system GPU tab with one
+// GPU and only its core chart left well over half of a maximized window blank below that one chart
+// (#1278), and stopping part-way (a three-quarter share) still left a visible empty band. Fill tabs
+// therefore fill their region, as the Overview always has; a tall chart with a flat line reads as
+// "idle", as in Task Manager, while empty space reads as unfinished. The maximum still bounds
+// layouts that don't fill (the per-disk grid's cells, StorageSection).
+//
 // The pure arithmetic lives here so it is unit-testable without a live ImGui context, following
 // CONTRIBUTING.md's "extract the pure decision logic into a small header" pattern.
 
@@ -35,23 +42,28 @@ namespace UI::Widgets
 /// big presets and push a tab that used to fit into scrolling.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
 
-/// Shortest a stacked history chart may be in ems of its own axis and legend text, when that text is
+/// Shortest a stacked history chart may be in ems of its own axis text, when that text is
 /// the body size (Small and Medium; see UI::chartFontSize()): 11.25 is the proportion the Medium preset had when its chart
-/// text was 8px in a 90px chart, which keeps a four-entry legend (Memory: Used, Cached, Swap, Peak
-/// Used) and six Y-axis labels inside the plot. Moving chart text up to the body size at Medium
-/// (#1194) without this would have clipped that legend.
+/// text was 8px in a 90px chart, which kept six Y-axis labels (and, while charts had one, a legend row)
+/// inside the plot. Moving chart text up to the body size at Medium (#1194) without this would have
+/// clipped them.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_CHART_EM = 11.25F;
 
 /// Tallest a stacked history chart may grow, in ems: 360px at the Medium preset, twice the 180px
-/// these charts used to be fixed at.
+/// these charts used to be fixed at. Yields to HISTORY_PLOT_MIN_FILL_SHARE on a tab with few charts.
 inline constexpr float HISTORY_PLOT_MAX_HEIGHT_EM = 33.75F;
+
+/// Share of the height available to the charts that they take together on a fill tab, even when
+/// that makes each taller than HISTORY_PLOT_MAX_HEIGHT_EM (#1278): all of it. A three-quarter share
+/// was tried first and left an empty band under a single chart that looked unfinished.
+inline constexpr float HISTORY_PLOT_MIN_FILL_SHARE = 1.0F;
 
 /// Height kept back from the fill so the charts never sum to a hair more than the space they were
 /// measured against, which would summon a scrollbar the layout was specifically sized to avoid.
 inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 
 /// @param emPx       One em of body text, i.e. ImGui::GetFontSize().
-/// @param chartEmPx  One em of the chart's axis and legend text (UI::chartEmPx()); a value
+/// @param chartEmPx  One em of the chart's axis text (UI::chartEmPx()); a value
 ///                   that is not positive and finite means "the same as emPx".
 [[nodiscard]] inline float historyPlotMinHeight(float emPx, float chartEmPx = 0.0F) noexcept
 {
@@ -79,14 +91,14 @@ inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
 /// @param plotCount          Number of charts sharing the region.
 /// @param chartEmPx          One em of chart text; see historyPlotMinHeight().
 /// @return The plot height in whole pixels, within [historyPlotMinHeight, historyPlotMaxHeight]
-///         rounded down. With nothing
+///         rounded down -- except that the maximum yields to HISTORY_PLOT_MIN_FILL_SHARE of each
+///         chart's share of the region when that is taller (few charts, tall region). With nothing
 ///         measured yet (plotCount == 0, or an unusable height) it is the minimum, so the first
 ///         frame under-fills rather than overflowing and the next frame corrects it.
 [[nodiscard]] inline float
 computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx, std::size_t plotCount, float chartEmPx = 0.0F) noexcept
 {
     const float minHeight = std::min(historyPlotMinHeight(emPx, chartEmPx), historyPlotMaxHeight(emPx));
-    const float maxHeight = historyPlotMaxHeight(emPx);
 
     if (plotCount == 0 || !std::isfinite(availableHeightPx) || availableHeightPx <= 0.0F || !std::isfinite(nonPlotHeightPx))
     {
@@ -95,6 +107,10 @@ computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx
 
     const float forPlots = availableHeightPx - std::max(nonPlotHeightPx, 0.0F) - HISTORY_PLOT_FILL_MARGIN_PX;
     const float each = forPlots / static_cast<float>(plotCount);
+    // The maximum, unless keeping to it would leave more than (1 - HISTORY_PLOT_MIN_FILL_SHARE) of
+    // the region empty: then the share wins (#1278). Continuous in the region and the chart count,
+    // so a resize or a chart appearing never makes the height jump.
+    const float maxHeight = std::max(historyPlotMaxHeight(emPx), HISTORY_PLOT_MIN_FILL_SHARE * each);
 
     // Whole pixels only. ImGui lays items out on whole pixels, so a fractional plot height is
     // rounded differently from one chart to the next, and the caller -- which measures the non-plot
@@ -103,6 +119,42 @@ computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx
     // cycled 233.94 -> 234.69 -> 234.44 -> 234.19 every four frames and the charts visibly
     // shimmered. With whole-pixel heights the layout is exact and the measurement is stable.
     return std::floor(std::clamp(each, minHeight, maxHeight));
+}
+
+/// computeFillPlotHeight() for a region that `plotCount` charts share with content drawn after
+/// them that takes the rest (the per-disk grid on Network and I/O), counted as `reservedShares`
+/// shares of the height but never less than `reservedMinHeightPx`.
+///
+/// One share was not always enough: with the charts filling the region (#1278), eight disks in an
+/// 800x1400 region at Medium need four grid rows, about 708px with their heading, but one share
+/// left them 601px, so the tab scrolled (#1370 review). The reserve is the grid's real minimum
+/// (UI::Widgets::computeChartGridMinimumHeight()), and the charts share what is left.
+///
+/// @param reservedShares      Shares of the height for the content after the charts; 0 for none,
+///                            which makes this computeFillPlotHeight().
+/// @param reservedMinHeightPx Least height that content needs; not positive and finite means none.
+[[nodiscard]] inline float computeFillPlotHeightWithReserve(float emPx,
+                                                            float availableHeightPx,
+                                                            float nonPlotHeightPx,
+                                                            std::size_t plotCount,
+                                                            std::size_t reservedShares,
+                                                            float reservedMinHeightPx,
+                                                            float chartEmPx = 0.0F) noexcept
+{
+    if (plotCount == 0 || reservedShares == 0 || !std::isfinite(availableHeightPx) || availableHeightPx <= 0.0F ||
+        !std::isfinite(nonPlotHeightPx))
+    {
+        // Nothing to reserve from, or nothing measured: the plain rule (the minimum, in the latter cases).
+        return computeFillPlotHeight(emPx, availableHeightPx, nonPlotHeightPx, plotCount, chartEmPx);
+    }
+
+    const float forPlots = availableHeightPx - std::max(nonPlotHeightPx, 0.0F) - HISTORY_PLOT_FILL_MARGIN_PX;
+    const auto shares = static_cast<float>(plotCount + reservedShares);
+    const float shareReserve = std::max(forPlots, 0.0F) * static_cast<float>(reservedShares) / shares;
+    const float minReserve = (std::isfinite(reservedMinHeightPx) && reservedMinHeightPx > 0.0F) ? reservedMinHeightPx : 0.0F;
+    // The reserved content is taken out of the region first; the charts share what is left. When
+    // its share already covers its minimum this is exactly the old division by plotCount + shares.
+    return computeFillPlotHeight(emPx, availableHeightPx - std::max(shareReserve, minReserve), nonPlotHeightPx, plotCount, chartEmPx);
 }
 
 } // namespace UI::Widgets

@@ -6,7 +6,9 @@
 #include "Numeric.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
+#include "PriorityConfig.h"
 #include "ProcessSnapshot.h"
+#include "ProcessState.h"
 #include "SamplingConfig.h"
 #include "SingleLineText.h"
 
@@ -25,6 +27,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -79,6 +82,30 @@ struct NetworkInterval
                                        : NetworkInterval{};
 }
 
+// The platform's priority class, as Domain names it (#1280). Spelled out rather than cast, so the
+// two enums can't drift apart unnoticed.
+[[nodiscard]] constexpr auto toPriorityClass(Platform::PriorityClass priorityClass) noexcept -> Priority::PriorityClass
+{
+    switch (priorityClass)
+    {
+    case Platform::PriorityClass::Idle:
+        return Priority::PriorityClass::Idle;
+    case Platform::PriorityClass::BelowNormal:
+        return Priority::PriorityClass::BelowNormal;
+    case Platform::PriorityClass::Normal:
+        return Priority::PriorityClass::Normal;
+    case Platform::PriorityClass::AboveNormal:
+        return Priority::PriorityClass::AboveNormal;
+    case Platform::PriorityClass::High:
+        return Priority::PriorityClass::High;
+    case Platform::PriorityClass::Realtime:
+        return Priority::PriorityClass::Realtime;
+    case Platform::PriorityClass::None:
+    default:
+        return Priority::PriorityClass::None;
+    }
+}
+
 } // namespace
 
 ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFunction now)
@@ -93,6 +120,7 @@ ProcessModel::ProcessModel(std::unique_ptr<Platform::IProcessProbe> probe, NowFu
     if (m_Probe)
     {
         m_Capabilities = m_Probe->capabilities();
+        m_PublishedCapabilities = m_Capabilities;
         m_TicksPerSecond = m_Probe->ticksPerSecond();
         m_SystemTotalMemory = m_Probe->systemTotalMemory();
         spdlog::info("ProcessModel initialized with probe capabilities: hasIoCounters={}, hasThreadCount={}, "
@@ -127,6 +155,7 @@ void ProcessModel::refresh()
     // between samples) can never apply an older sample after a newer one (#1093).
     std::scoped_lock const samplingLock(m_SamplingMutex);
 
+    const bool hadNetworkCounters = m_Probe->capabilities().hasNetworkCounters;
     auto currentCounters = m_Probe->enumerate();
     const std::uint64_t currentTotalCpuTime = m_Probe->totalCpuTime();
 
@@ -134,6 +163,28 @@ void ProcessModel::refresh()
     // being attributed late doesn't make a process's counter drop or jump (#1099). Probes that report
     // per-process network counters themselves return no reading, and theirs are used as-is.
     m_NetTraffic.apply(m_Probe->readSocketTraffic(), currentCounters);
+
+    // The probe may turn its per-process network counters off during that read: on Windows the first
+    // real EStats sample can prove them unusable (#1161). The counters enumerate() returned were
+    // marked with the availability it had before, so without this the sample would publish a held or
+    // zero rate as a reading for one interval, instead of unavailable (#1285).
+    // Capabilities are re-read every sample, after that read, and published with this generation:
+    // one withdrawn now reaches the UI rather than the startup set staying in force (#1254).
+    if (Platform::ProcessCapabilities capabilities = m_Probe->capabilities(); capabilities != m_Capabilities)
+    {
+        spdlog::info("ProcessModel: probe capabilities changed (networkCounters={}, reducedPrivileges={}, networkCountersBlocked={})",
+                     capabilities.hasNetworkCounters,
+                     capabilities.hasReducedPrivileges,
+                     capabilities.networkCountersBlocked);
+        m_Capabilities = capabilities;
+    }
+    if (hadNetworkCounters && !m_Capabilities.hasNetworkCounters)
+    {
+        for (auto& counters : currentCounters)
+        {
+            counters.networkCountersAvailable = false;
+        }
+    }
 
     // Per-process power from a package energy counter: share each interval's energy by each
     // process's CPU time in that interval. Probes that report per-process energy themselves
@@ -159,6 +210,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     {
         double gpuUtilPercent = 0.0;
         std::uint64_t gpuMemoryBytes = 0;
+        std::uint64_t gpuDedicatedMemoryBytes = 0;
+        std::uint64_t gpuSharedMemoryBytes = 0;
         double gpuEncoderUtil = 0.0;
         double gpuDecoderUtil = 0.0;
         std::vector<std::string> gpuEngines;
@@ -170,7 +223,12 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
     std::vector<ProcessSnapshot> newSnapshots;
     std::unordered_map<std::uint64_t, CachedGpuSnapshotFields> cachedGpuByUniqueKey;
+    // Identities whose GPU fields the previous generation had read (zeros included), so a throttled
+    // generation can tell a process it has GPU data for from one that started since the last GPU
+    // merge, whose fields were never read (#1210).
+    std::unordered_set<std::uint64_t> gpuReadUniqueKeys;
     std::shared_ptr<GPUModel> gpuModel;
+    GpuSupport previousGpuSupport;
     bool shouldMergeGpuData = false;
     std::size_t reserveSize = 0;
 
@@ -180,6 +238,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     {
         std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
         gpuModel = m_GPUModel;
+        // The support the previous generation's GPU fields were read under, for a generation that
+        // reuses them rather than reading again (the throttled path below, #1210).
+        previousGpuSupport = m_PublishedGpuSupport;
         // m_Snapshots is immutable once published, so grabbing the shared_ptr here is an O(1)
         // refcount bump -- the loop below (previously run while still holding this lock) can
         // run against the local copy after the lock is released, instead of holding readers of
@@ -191,10 +252,16 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     if (interactionActive)
     {
         cachedGpuByUniqueKey.reserve(previousSnapshots->size());
+        gpuReadUniqueKeys.reserve(previousSnapshots->size());
         for (const auto& previousSnapshot : *previousSnapshots)
         {
-            if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) && previousSnapshot.gpuDevices.empty() &&
-                previousSnapshot.perGpuUsage.empty())
+            if (previousSnapshot.gpuFieldsRead)
+            {
+                gpuReadUniqueKeys.insert(previousSnapshot.uniqueKey);
+            }
+            if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuDedicatedMemoryBytes == 0) &&
+                (previousSnapshot.gpuSharedMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) &&
+                previousSnapshot.gpuDevices.empty() && previousSnapshot.perGpuUsage.empty())
             {
                 continue;
             }
@@ -202,6 +269,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
                                          CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
                                                                  .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
+                                                                 .gpuDedicatedMemoryBytes = previousSnapshot.gpuDedicatedMemoryBytes,
+                                                                 .gpuSharedMemoryBytes = previousSnapshot.gpuSharedMemoryBytes,
                                                                  .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
                                                                  .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
                                                                  .gpuEngines = previousSnapshot.gpuEngines,
@@ -284,15 +353,24 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // --- peak RSS ---
         if (m_Capabilities.hasPeakRss && current.peakRssBytes > 0)
         {
-            state.peakRss = current.peakRssBytes;
+            // The OS peak can go down for the same process: Linux resets VmHWM on exec while the PID
+            // and start time stay the same. Keep the highest peak seen (#1351 review).
+            const std::uint64_t observed = std::max(current.peakRssBytes, current.rssBytes);
+            state.peakRss = inserted ? observed : std::max(state.peakRss, observed);
         }
         else
         {
             state.peakRss = inserted ? current.rssBytes : std::max(state.peakRss, current.rssBytes);
         }
 
-        auto snapshot =
-            computeSnapshot(current, previous, totalCpuDelta, m_SystemTotalMemory, m_TicksPerSecond, elapsedSeconds, timeDeltaUs);
+        auto snapshot = computeSnapshot(current,
+                                        previous,
+                                        totalCpuDelta,
+                                        m_SystemTotalMemory,
+                                        m_TicksPerSecond,
+                                        elapsedSeconds,
+                                        timeDeltaUs,
+                                        m_Capabilities.pageFaultCountBits);
         snapshot.peakMemoryBytes = state.peakRss;
 
         // Network rates are the byte delta over the last interval (#1036). They were (bytes now -
@@ -302,11 +380,11 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         //    probe may cache its query across refreshes, and a delta over the refresh interval
         //    would then read 0 for the cached refreshes and several intervals' bytes for the next.
         //  - While the probe returns the same cached read, the last rate is held, not zeroed.
-        //  - From a probe that reports per-connection readings (Linux) the counters are monotonic:
-        //    refresh() accumulates each connection's own growth (SocketTrafficAccumulator), so a
-        //    connection closing or being attributed late no longer makes them drop or jump (#1099).
-        //    Windows still reports the sum over the process's *live* connections, which drops when
-        //    one closes: counterRate reports 0 for that interval rather than a wrapped or negative rate.
+        //  - Both platforms report per-connection readings, so the counters are monotonic: refresh()
+        //    accumulates each connection's own growth (SocketTrafficAccumulator), so a connection
+        //    closing or being attributed late no longer makes them drop or jump (#1099, Windows #1256).
+        //    Should a counter still drop, counterRate reports 0 for that interval rather than a
+        //    wrapped or negative rate.
         //  - A rate above the sanity ceiling ([metrics] max_sane_rate_bps, 100 Gbps by default,
         //    #1123) -- e.g. a connection appearing with traffic from before it was first
         //    attributed, on Windows -- is dropped to 0 too.
@@ -373,16 +451,28 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
     }
 
+    // What the GPU probe supplied per process for this generation (#1210), published with it so a
+    // reader judges each sample by its own generation's support rather than the latest -- the GPU
+    // model can gain or lose it on re-enumeration, on its own sampler. Taken from the same GPUModel
+    // operation as the counters (readProcessGPUData()), so the stamp always matches the data. No GPU
+    // model means no per-process GPU data.
+    GpuSupport gpuSupport;
+
     // GPU aggregation can be expensive (PDH queries/string work). Keep it outside
     // the ProcessModel write lock so UI readers are not blocked during resize.
     if (shouldMergeGpuData && (gpuModel != nullptr))
     {
-        mergeGPUDataContained(newSnapshots, gpuModel);
+        gpuSupport = mergeGPUDataContained(newSnapshots, gpuModel);
     }
-    else if (!cachedGpuByUniqueKey.empty())
+    else if (gpuModel != nullptr)
     {
+        // The previous generation's GPU fields, carried over, with the support they were read under.
+        gpuSupport = previousGpuSupport;
         for (auto& snapshot : newSnapshots)
         {
+            // A process the last GPU merge did not see has GPU fields that were never read: not
+            // measured zeros (#1210).
+            snapshot.gpuFieldsRead = gpuReadUniqueKeys.contains(snapshot.uniqueKey);
             const auto it = cachedGpuByUniqueKey.find(snapshot.uniqueKey);
             if (it == cachedGpuByUniqueKey.end())
             {
@@ -391,6 +481,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             const CachedGpuSnapshotFields& cached = it->second;
             snapshot.gpuUtilPercent = cached.gpuUtilPercent;
             snapshot.gpuMemoryBytes = cached.gpuMemoryBytes;
+            snapshot.gpuDedicatedMemoryBytes = cached.gpuDedicatedMemoryBytes;
+            snapshot.gpuSharedMemoryBytes = cached.gpuSharedMemoryBytes;
             snapshot.gpuEncoderUtil = cached.gpuEncoderUtil;
             snapshot.gpuDecoderUtil = cached.gpuDecoderUtil;
             snapshot.gpuEngines = cached.gpuEngines;
@@ -450,6 +542,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // once per refresh -- not per UI frame, #1172). Checked again under the lock below, in case the
     // watch changed in between.
     const std::int32_t watchedPid = m_WatchedPid.load(std::memory_order_acquire);
+    // MSVC STL false positive: the analyzer loses track of make_shared's control block (shared_ptr's
+    // _Rep) returned by copyProcess() and reports a leak; ownership is a plain shared_ptr.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(*newSnapshotsPublication, watchedPid) : nullptr;
 
     // Holds the outgoing generation so its destruction (freeing however many hundred
@@ -476,6 +571,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
         m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
         ++m_SnapshotVersion;
+        ++m_SystemHistoryVersion;
+        m_PublishedCapabilities = m_Capabilities;
+        m_PublishedGpuSupport = gpuSupport;
         m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
 
         // Every generation published while a process is watched gets a sample, the process absent
@@ -487,11 +585,18 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                 // watchProcess() ran between the copy above and this lock: rare, so copy again here.
                 watchedSnapshot = copyProcess(*m_Snapshots, pidNow);
             }
-            displacedSample = pushWatchedSampleLocked(ProcessSample{
-                .snapshot = std::move(watchedSnapshot), .version = m_SnapshotVersion, .sampleTimeSeconds = sampleTimeSeconds});
+            displacedSample = pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(watchedSnapshot),
+                                                                    .version = m_SnapshotVersion,
+                                                                    .sampleTimeSeconds = sampleTimeSeconds,
+                                                                    .ioCountersSupported = m_PublishedCapabilities.hasIoCounters,
+                                                                    .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters,
+                                                                    .gpuPerProcessSupported = gpuSupport.perProcess,
+                                                                    .gpuUtilizationSupported = gpuSupport.utilization,
+                                                                    .gpuReadFailed = gpuSupport.readFailed});
         }
 
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
+        m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
         if (shouldMergeGpuData)
         {
             m_LastGpuMergeTime = m_Now();
@@ -570,6 +675,8 @@ void ProcessModel::watchProcess(std::int32_t pid)
     std::shared_ptr<const std::vector<ProcessSnapshot>> current;
     std::uint64_t currentVersion = 0;
     double currentSampleTime = 0.0;
+    Platform::ProcessCapabilities currentCapabilities;
+    GpuSupport currentGpuSupport;
     {
         std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
         m_WatchedPid.store(watched, std::memory_order_release);
@@ -579,6 +686,8 @@ void ProcessModel::watchProcess(std::int32_t pid)
         current = m_Snapshots;
         currentVersion = m_SnapshotVersion;
         currentSampleTime = m_SnapshotSampleTimeSeconds;
+        currentCapabilities = m_PublishedCapabilities;
+        currentGpuSupport = m_PublishedGpuSupport;
     }
     if (watched == 0 || currentVersion == 0)
     {
@@ -587,12 +696,19 @@ void ProcessModel::watchProcess(std::int32_t pid)
 
     // The process as the current generation lists it, copied outside the lock. A publish landing
     // in between has already recorded a newer sample, which supersedes this one.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) - MSVC STL false positive, see computeSnapshotsLocked()
     auto seed = copyProcess(*current, watched);
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     if (m_WatchedPid.load(std::memory_order_relaxed) == watched && m_WatchedSampleCount == 0)
     {
-        static_cast<void>(pushWatchedSampleLocked(
-            ProcessSample{.snapshot = std::move(seed), .version = currentVersion, .sampleTimeSeconds = currentSampleTime}));
+        static_cast<void>(pushWatchedSampleLocked(ProcessSample{.snapshot = std::move(seed),
+                                                                .version = currentVersion,
+                                                                .sampleTimeSeconds = currentSampleTime,
+                                                                .ioCountersSupported = currentCapabilities.hasIoCounters,
+                                                                .networkCountersSupported = currentCapabilities.hasNetworkCounters,
+                                                                .gpuPerProcessSupported = currentGpuSupport.perProcess,
+                                                                .gpuUtilizationSupported = currentGpuSupport.utilization,
+                                                                .gpuReadFailed = currentGpuSupport.readFailed}));
     }
 }
 
@@ -625,29 +741,32 @@ std::uint64_t ProcessModel::snapshotVersion() const
 
 bool ProcessModel::tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const
 {
-    if (m_PublishedSnapshotVersion.load(std::memory_order_acquire) == lastSeenVersion)
+    if (m_PublishedSystemHistoryVersion.load(std::memory_order_acquire) == lastSeenVersion)
     {
         return false;
     }
 
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    if (m_SnapshotVersion == lastSeenVersion)
+    if (m_SystemHistoryVersion == lastSeenVersion)
     {
         return false;
     }
 
-    outHistories.version = m_SnapshotVersion;
+    outHistories.version = m_SystemHistoryVersion;
     outHistories.timestamps = HistoryUtils::toVector(m_Timestamps);
     outHistories.power = HistoryUtils::toVector(m_SystemPowerHistory);
     outHistories.pageFaults = HistoryUtils::toVector(m_SystemPageFaultsHistory);
     outHistories.threadCount = HistoryUtils::toVector(m_SystemThreadCountHistory);
     outHistories.handleCount = HistoryUtils::toVector(m_SystemHandleCountHistory);
+    outHistories.capabilities = m_PublishedCapabilities;
     return true;
 }
 
 bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                            std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
-                                           std::uint64_t& outVersion) const
+                                           std::uint64_t& outVersion,
+                                           Platform::ProcessCapabilities* outCapabilities,
+                                           GpuSupport* outGpuSupport) const
 {
     // Fast path: avoid the shared lock on the common case where no new snapshot exists.
     // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
@@ -674,6 +793,14 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         }
         newSnapshots = m_Snapshots; // refcount bump only -- newSnapshots is a fresh local, nothing to destroy
         newVersion = m_SnapshotVersion;
+        if (outCapabilities != nullptr)
+        {
+            *outCapabilities = m_PublishedCapabilities;
+        }
+        if (outGpuSupport != nullptr)
+        {
+            *outGpuSupport = m_PublishedGpuSupport;
+        }
     }
 
     // The caller's previous generation, if this assignment drops its last reference, is
@@ -725,12 +852,49 @@ std::vector<double> ProcessModel::historyTimestamps() const
     return HistoryUtils::toVector(m_Timestamps);
 }
 
+void ProcessModel::appendSystemHistory(const SystemHistorySource& next)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    ProcessSystemHistorySample sample;
+    bool appended = false;
+    while (next(sample))
+    {
+        if (!m_Timestamps.empty() && sample.timeSeconds <= m_Timestamps.latest())
+        {
+            continue;
+        }
+        m_Timestamps.push(sample.timeSeconds);
+        m_SystemNetSentHistory.push(sample.netSentBytesPerSec);
+        m_SystemNetRecvHistory.push(sample.netReceivedBytesPerSec);
+        m_SystemPageFaultsHistory.push(sample.pageFaultsPerSec);
+        m_SystemThreadCountHistory.push(sample.threadCount);
+        m_SystemHandleCountHistory.push(sample.handleCount);
+        m_SystemPowerHistory.push(sample.powerWatts);
+        appended = true;
+    }
+    if (appended)
+    {
+        trimHistory();
+        ++m_SystemHistoryVersion;
+        m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
+    }
+}
+
 void ProcessModel::setMaxHistorySeconds(double seconds)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = std::max(0.0, seconds);
+    // The same guardrail as the other models, so every chart covers the same window (#1145).
+    m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
     applyHistoryCapacity();
     trimHistory();
+    // The trimmed histories are a new generation of them: without this, tryCopySystemHistoriesIfNewer()
+    // kept handing out the old window's data until the next sample (#1145). The snapshot version is
+    // left alone -- the process list did not change, and every snapshot generation has a watched sample.
+    if (m_SystemHistoryVersion != 0)
+    {
+        ++m_SystemHistoryVersion;
+        m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
+    }
 }
 
 void ProcessModel::setMaxSaneNetworkRate(double bytesPerSecond) noexcept
@@ -744,9 +908,10 @@ std::size_t ProcessModel::processCount() const
     return m_Snapshots->size();
 }
 
-const Platform::ProcessCapabilities& ProcessModel::capabilities() const
+Platform::ProcessCapabilities ProcessModel::capabilities() const
 {
-    return m_Capabilities;
+    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    return m_PublishedCapabilities;
 }
 
 void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
@@ -760,15 +925,23 @@ void ProcessModel::setInteractionActive(const bool active) noexcept
     m_InteractionActive.store(active, std::memory_order_release);
 }
 
-void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel)
+void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel, GpuSupport& outSupport)
 {
     if (gpuModel == nullptr)
     {
+        outSupport = {};
         return;
     }
 
-    // Query per-process GPU counters from GPUModel
-    auto gpuCounters = gpuModel->readProcessGPUCounters();
+    // Query per-process GPU counters from GPUModel, with the support they were read under (#1210)
+    GPUModel::ProcessGPUReading reading = gpuModel->readProcessGPUData();
+    outSupport = {.perProcess = reading.perProcessSupported, .utilization = reading.utilizationSupported, .readFailed = false};
+    if (reading.failure)
+    {
+        // After outSupport is set: a failed read keeps the support it ran under (#1210).
+        std::rethrow_exception(reading.failure);
+    }
+    auto gpuCounters = std::move(reading.counters);
     if (gpuCounters.empty())
     {
         return;
@@ -785,13 +958,14 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
     {
         std::string name;
         bool isIntegrated = false;
+        bool memoryIsShared = false;
     };
     std::unordered_map<std::string, GpuIdentity> gpuIdToIdentity;
     auto gpuSnaps = gpuModel->snapshots();
     for (const auto& gpuSnap : gpuSnaps)
     {
         // Map both ID formats to the same adapter
-        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated};
+        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated, .memoryIsShared = gpuSnap.memoryIsShared};
         gpuIdToIdentity[gpuSnap.gpuId] = identity;
         if (!gpuSnap.luidId.empty())
         {
@@ -801,12 +975,20 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
 
     // Build a lookup map: PID -> GPU counters (aggregated across GPUs)
     // A process may use multiple GPUs, so we aggregate
+    // One rule with the adapter figures beside them on the GPU tab (#1164): utilization is the
+    // busiest GPU's (an adapter's is 0-100; a sum passed 100% while Process Details clamped it), and
+    // memory counts, per GPU, the segment that GPU's "used" figure counts, as the platform says
+    // (GPUSnapshot::memoryIsShared: shared on a Windows integrated GPU, dedicated elsewhere) -- never
+    // inferred from the reading, so a 0 shared reading stays a shared 0 -- and a process never shows
+    // more than its adapters use. The dedicated and shared amounts are kept apart as well.
     struct AggregatedGPU
     {
-        double totalUtilPercent = 0.0;
+        double maxUtilPercent = 0.0;
         std::uint64_t totalMemoryBytes = 0;
-        double totalEncoderUtil = 0.0;
-        double totalDecoderUtil = 0.0;
+        std::uint64_t totalDedicatedMemoryBytes = 0;
+        std::uint64_t totalSharedMemoryBytes = 0;
+        double maxEncoderUtil = 0.0;
+        double maxDecoderUtil = 0.0;
         std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
         std::vector<std::string> allEngines;
         std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
@@ -820,10 +1002,12 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         // Look up friendly name for this GPU
         std::string gpuName = gc.gpuId; // Default to ID if name not found
         bool isIntegrated = false;      // Unknown adapter: keep the default rather than guess
+        bool memoryIsShared = false;
         if (const auto identityIt = gpuIdToIdentity.find(gc.gpuId); identityIt != gpuIdToIdentity.end())
         {
             gpuName = identityIt->second.name;
             isIntegrated = identityIt->second.isIntegrated;
+            memoryIsShared = identityIt->second.memoryIsShared;
         }
 
         // Add per-GPU breakdown
@@ -831,16 +1015,24 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         perGpu.gpuId = gc.gpuId;
         perGpu.gpuName = gpuName; // Store friendly name
         perGpu.isIntegrated = isIntegrated;
-        perGpu.memoryBytes = gc.gpuMemoryBytes;
-        perGpu.utilPercent = gc.gpuUtilPercent;
+        perGpu.dedicatedMemoryBytes = gc.gpuMemoryBytes;
+        perGpu.sharedMemoryBytes = gc.gpuSharedMemoryBytes;
+        // Where the platform has no shared segment (Linux: NVML, ROCm SMI) the adapter's used figure
+        // is its dedicated memory -- an APU's carve-out included -- so that is what counts. The
+        // choice follows the adapter's segment, not the value: shared usage crossing 0 on a Windows
+        // iGPU doesn't switch "GPU memory" to dedicated and back.
+        perGpu.memoryBytes = memoryIsShared ? gc.gpuSharedMemoryBytes : gc.gpuMemoryBytes;
+        perGpu.utilPercent = Numeric::clampPercent(gc.gpuUtilPercent);
         perGpu.engines = gc.activeEngines;
-        agg.perGpuBreakdown.push_back(std::move(perGpu));
 
-        // Aggregate totals
-        agg.totalUtilPercent += gc.gpuUtilPercent;
-        agg.totalMemoryBytes += gc.gpuMemoryBytes;
-        agg.totalEncoderUtil += gc.encoderUtilPercent;
-        agg.totalDecoderUtil += gc.decoderUtilPercent;
+        // Aggregate across GPUs
+        agg.maxUtilPercent = std::max(agg.maxUtilPercent, perGpu.utilPercent);
+        agg.totalMemoryBytes += perGpu.memoryBytes;
+        agg.totalDedicatedMemoryBytes += gc.gpuMemoryBytes;
+        agg.totalSharedMemoryBytes += gc.gpuSharedMemoryBytes;
+        agg.maxEncoderUtil = std::max(agg.maxEncoderUtil, Numeric::clampPercent(gc.encoderUtilPercent));
+        agg.maxDecoderUtil = std::max(agg.maxDecoderUtil, Numeric::clampPercent(gc.decoderUtilPercent));
+        agg.perGpuBreakdown.push_back(std::move(perGpu));
 
         // Collect unique GPU names (not IDs)
         if (std::ranges::find(agg.gpuNames, gpuName) == agg.gpuNames.end())
@@ -867,12 +1059,12 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
         {
             ++mergedCount;
             const auto& agg = it->second;
-            // Multi-GPU utilization is summed (can exceed 100% if process uses multiple GPUs).
-            // This is intentional: 150% means full utilization of 1.5 GPUs worth of compute.
-            snapshot.gpuUtilPercent = agg.totalUtilPercent;
+            snapshot.gpuUtilPercent = agg.maxUtilPercent;
             snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
-            snapshot.gpuEncoderUtil = agg.totalEncoderUtil;
-            snapshot.gpuDecoderUtil = agg.totalDecoderUtil;
+            snapshot.gpuDedicatedMemoryBytes = agg.totalDedicatedMemoryBytes;
+            snapshot.gpuSharedMemoryBytes = agg.totalSharedMemoryBytes;
+            snapshot.gpuEncoderUtil = agg.maxEncoderUtil;
+            snapshot.gpuDecoderUtil = agg.maxDecoderUtil;
             snapshot.gpuEngines = agg.allEngines;
             snapshot.perGpuUsage = agg.perGpuBreakdown;
 
@@ -904,20 +1096,29 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
     spdlog::debug("ProcessModel::mergeGPUData: merged GPU data for {} processes", mergedCount);
 }
 
-void ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel)
+ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots,
+                                                             const std::shared_ptr<GPUModel>& gpuModel)
 {
     // Uncontained, a throw here (bad_alloc, a DRM parse error, a PDH wrapper) escaped refresh()
     // after the per-process state had already advanced, so a probe that threw every time stopped
     // the process list from ever updating again (#1142). The processes are published regardless,
     // without GPU fields for this refresh.
+    // The probe's support as the GPU model has it now, used only if mergeGPUData() throws before it
+    // has the reading (bad_alloc, say). A throwing probe read is not such a case: readProcessGPUData()
+    // returns it together with the support taken under the probe lock, and mergeGPUData() sets
+    // that before rethrowing it (#1210).
+    GpuSupport support{.perProcess = !gpuModel->perProcessMetricsKnownUnsupported(),
+                       .utilization = !gpuModel->perProcessMetricsKnownUnsupported() && !gpuModel->perProcessUtilizationKnownUnsupported(),
+                       .readFailed = false};
     try
     {
-        mergeGPUData(snapshots, gpuModel);
+        mergeGPUData(snapshots, gpuModel, support);
         if (m_GpuMergeFailing)
         {
             spdlog::info("ProcessModel: per-process GPU data is being merged again");
             m_GpuMergeFailing = false;
         }
+        return support;
     }
     catch (const std::exception& ex)
     {
@@ -931,6 +1132,8 @@ void ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots
         {
             snapshot.gpuUtilPercent = 0.0;
             snapshot.gpuMemoryBytes = 0;
+            snapshot.gpuDedicatedMemoryBytes = 0;
+            snapshot.gpuSharedMemoryBytes = 0;
             snapshot.gpuEncoderUtil = 0.0;
             snapshot.gpuDecoderUtil = 0.0;
             snapshot.gpuEngines.clear();
@@ -938,6 +1141,11 @@ void ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots
             snapshot.gpuDevices.clear();
         }
     }
+    // No GPU fields this generation. A failed read is not a lack of support: the generation keeps the
+    // probe's support and is marked as a failed read, so its GPU cells read as unreadable and its
+    // history as a gap -- not as measured zeros, nor as "not available on this system" (#1210).
+    support.readFailed = support.perProcess;
+    return support;
 }
 
 ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,
@@ -946,7 +1154,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
                                               std::uint64_t systemTotalMemory,
                                               long ticksPerSecond,
                                               double elapsedSeconds,
-                                              std::uint64_t timeDeltaUs)
+                                              std::uint64_t timeDeltaUs,
+                                              unsigned pageFaultCountBits)
 {
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
@@ -973,8 +1182,9 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     // count would read as the process's whole lifetime of I/O in one interval.
     snapshot.ioAvailable = current.ioCountersAvailable && (previous == nullptr || previous->ioCountersAvailable);
     snapshot.nice = current.nice;
+    snapshot.priorityClass = toPriorityClass(current.priorityClass);
     snapshot.pageFaults = current.pageFaultCount;
-    snapshot.cpuAffinityMask = current.cpuAffinityMask;
+    snapshot.cpuAffinity = current.cpuAffinity;
     snapshot.startTimeEpoch = current.startTimeEpoch;
     snapshot.startTimeTicks = current.startTimeTicks;
     snapshot.uniqueKey = makeUniqueKey(current.pid, current.startTimeTicks);
@@ -1023,7 +1233,10 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
             snapshot.ioReadBytesPerSec = Numeric::counterRate(current.readBytes, previous->readBytes, elapsedSeconds);
             snapshot.ioWriteBytesPerSec = Numeric::counterRate(current.writeBytes, previous->writeBytes, elapsedSeconds);
         }
-        snapshot.pageFaultsPerSec = Numeric::counterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds);
+        // The page-fault count wraps at 2^pageFaultCountBits (32 on Windows): a wrap is one interval's
+        // faults, not 0 (#1184).
+        snapshot.pageFaultsPerSec =
+            Numeric::wrappingCounterRate(current.pageFaultCount, previous->pageFaultCount, elapsedSeconds, pageFaultCountBits);
         // Network rates are computed in computeSnapshotsLocked(), which has the per-process state they
         // need (networkInterval, held rates).
     }
@@ -1086,27 +1299,7 @@ void ProcessModel::applyHistoryCapacity()
 
 std::string ProcessModel::translateState(char rawState)
 {
-    switch (rawState)
-    {
-    case 'R':
-        return "Running";
-    case 'S':
-        return "Sleeping";
-    case 'D':
-        return "Disk Sleep";
-    case 'Z':
-        return "Zombie";
-    case 'T':
-        return "Stopped";
-    case 't':
-        return "Tracing";
-    case 'X':
-        return "Dead";
-    case 'I':
-        return "Idle";
-    default:
-        return "Unknown";
-    }
+    return std::string(processStateName(rawState));
 }
 
 } // namespace Domain

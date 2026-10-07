@@ -3,148 +3,190 @@
 // These benchmarks measure the performance of formatting functions used
 // extensively in the UI for displaying values. These are called every frame
 // for every visible row in tables.
+//
+// Inputs are drawn from pools generated before the timed loop starts. Drawing
+// them from an mt19937 + distribution inside the loop timed the RNG along with
+// the formatter (#877).
 
 #include "UI/Format.h"
 
 #include <benchmark/benchmark.h>
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <random>
 #include <vector>
 
 namespace
 {
 
+// Pool size is a power of two so the index wraps with a cheap mask.
+constexpr std::size_t kPoolSize = 1024;
+constexpr std::size_t kPoolMask = kPoolSize - 1;
+
+/// Fill a pool of kPoolSize values from `dist`, seeded identically to the old
+/// in-loop generators.
+template<typename Engine, typename Distribution>
+auto makePool(Distribution dist) -> std::array<typename Distribution::result_type, kPoolSize>
+{
+    Engine rng(42);
+    std::array<typename Distribution::result_type, kPoolSize> pool{};
+    for (auto& value : pool)
+    {
+        value = dist(rng);
+    }
+    return pool;
+}
+
 // Benchmark formatBytes() - called for memory columns
 static void BM_Format_FormatBytes(benchmark::State& state)
 {
-    std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 40)); // Up to 1TB
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, (1ULL << 40))); // Up to 1TB
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto bytes = dist(rng);
-        auto result = UI::Format::formatBytes(static_cast<double>(bytes));
+        auto result = UI::Format::formatBytes(static_cast<double>(pool[idx & kPoolMask]));
         benchmark::DoNotOptimize(result.data());
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_FormatBytes);
 
 // Benchmark formatBytesPerSec() - called for I/O rate columns
 static void BM_Format_FormatBytesPerSec(benchmark::State& state)
 {
-    std::mt19937_64 rng(42);
-    std::uniform_real_distribution<double> dist(0.0, 1e9); // Up to 1GB/s
+    const auto pool = makePool<std::mt19937_64>(std::uniform_real_distribution<double>(0.0, 1e9)); // Up to 1GB/s
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto rate = dist(rng);
-        auto result = UI::Format::formatBytesPerSec(rate);
+        auto result = UI::Format::formatBytesPerSec(pool[idx & kPoolMask]);
         benchmark::DoNotOptimize(result.data());
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_FormatBytesPerSec);
 
 // Benchmark percentCompact() - called for CPU% column
 static void BM_Format_PercentCompact(benchmark::State& state)
 {
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> dist(0.0, 100.0);
+    const auto pool = makePool<std::mt19937>(std::uniform_real_distribution<double>(0.0, 100.0));
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto percent = dist(rng);
-        auto result = UI::Format::percentCompact(percent);
+        auto result = UI::Format::percentCompact(pool[idx & kPoolMask]);
         benchmark::DoNotOptimize(result.data());
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_PercentCompact);
 
-// Benchmark formatCpuTimeCompact() - called for TIME+ column
+// Benchmark formatDuration() - called for the CPU Time column (the benchmark
+// keeps its old name so it still matches its entry in
+// perf-data/linux-ci-baseline.json; formatCpuTimeCompact() became
+// formatDuration() in #1341)
 static void BM_Format_FormatCpuTimeCompact(benchmark::State& state)
 {
-    std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(0, 86400ULL * 100); // Up to 100 days in seconds
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, 86400ULL * 100)); // Up to 100 days in seconds
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto seconds = dist(rng);
-        auto result = UI::Format::formatCpuTimeCompact(static_cast<double>(seconds));
+        auto result = UI::Format::formatDuration(static_cast<double>(pool[idx & kPoolMask]));
         benchmark::DoNotOptimize(result.data());
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_FormatCpuTimeCompact);
 
 // Benchmark formatIntLocalized() - called for PID, thread count columns
 static void BM_Format_FormatIntLocalized(benchmark::State& state)
 {
-    std::mt19937 rng(42);
-    std::uniform_int_distribution<int64_t> dist(0, 1000000);
+    const auto pool = makePool<std::mt19937>(std::uniform_int_distribution<int64_t>(0, 1000000));
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto value = dist(rng);
-        auto result = UI::Format::formatIntLocalized(value);
+        auto result = UI::Format::formatIntLocalized(pool[idx & kPoolMask]);
         benchmark::DoNotOptimize(result.data());
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_FormatIntLocalized);
 
 // Benchmark splitBytesForAlignment() - called for aligned byte display
 static void BM_Format_SplitBytesForAlignment(benchmark::State& state)
 {
-    std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 40));
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, (1ULL << 40)));
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto bytes = static_cast<double>(dist(rng));
+        const auto bytes = static_cast<double>(pool[idx & kPoolMask]);
         const auto unit = UI::Format::chooseByteUnit(bytes);
         auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
         benchmark::DoNotOptimize(parts.wholePart.data());
         benchmark::DoNotOptimize(parts.decimalPart.data());
         benchmark::DoNotOptimize(parts.unitPart.data());
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_SplitBytesForAlignment);
 
 // Benchmark chooseByteUnit() - called to determine unit for byte values
 static void BM_Format_ChooseByteUnit(benchmark::State& state)
 {
-    std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(0, (1ULL << 50));
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, (1ULL << 50)));
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto bytes = static_cast<double>(dist(rng));
-        auto unit = UI::Format::chooseByteUnit(bytes);
+        auto unit = UI::Format::chooseByteUnit(static_cast<double>(pool[idx & kPoolMask]));
         benchmark::DoNotOptimize(unit);
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_ChooseByteUnit);
 
 // Benchmark formatOrDash() with non-zero values
 static void BM_Format_FormatOrDash_WithValue(benchmark::State& state)
 {
-    std::mt19937_64 rng(42);
-    std::uniform_int_distribution<uint64_t> dist(1, (1ULL << 30));
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(1, (1ULL << 30)));
 
+    std::size_t idx = 0;
     for (auto _ : state)
     {
-        const auto value = dist(rng);
-        auto result = UI::Format::formatOrDash(value, UI::Format::formatBytes);
+        auto result = UI::Format::formatOrDash(pool[idx & kPoolMask], UI::Format::formatBytes);
         benchmark::DoNotOptimize(result.data());
+        ++idx;
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_FormatOrDash_WithValue);
 
 // Benchmark formatOrDash() with zero values (fast path)
 static void BM_Format_FormatOrDash_WithZero(benchmark::State& state)
 {
+    // Laundered every iteration so the zero check is a runtime test rather than a
+    // compile-time-known branch.
+    std::uint64_t zero = 0;
     for (auto _ : state)
     {
-        auto result = UI::Format::formatOrDash(0ULL, UI::Format::formatBytes);
+        benchmark::DoNotOptimize(zero);
+        auto result = UI::Format::formatOrDash(zero, UI::Format::formatBytes);
         benchmark::DoNotOptimize(result.data());
     }
+    state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Format_FormatOrDash_WithZero);
 
@@ -154,20 +196,32 @@ BENCHMARK(BM_Format_FormatOrDash_WithZero);
 // reflect the actual render hot path.  See BM_Format_FullProcessRow_FastPath below.
 static void BM_Format_FullProcessRow(benchmark::State& state)
 {
-    // Simulate typical process values
-    const std::int64_t pid = 12345;
-    const double cpuPercent = 25.3;
-    const double memPercent = 12.7;
-    const uint64_t rssBytes = ((1024ULL * 1024) * 512);    // 512MB
-    const uint64_t virtBytes = ((1024ULL * 1024) * 2048);  // 2GB
-    const uint64_t sharedBytes = ((1024ULL * 1024) * 128); // 128MB
-    const uint64_t cpuTimeSeconds = 3661;                  // 1h 1m 1s
-    const std::int32_t threadCount = 24;
-    const double ioReadRate = ((1024.0 * 1024) * 50);  // 50MB/s
-    const double ioWriteRate = ((1024.0 * 1024) * 10); // 10MB/s
+    // Simulate typical process values. Non-const and laundered through DoNotOptimize every iteration so
+    // the formatters see runtime values instead of constants they could partially fold (#877).
+    std::int64_t pid = 12345;
+    double cpuPercent = 25.3;
+    double memPercent = 12.7;
+    uint64_t rssBytes = ((1024ULL * 1024) * 512);    // 512MB
+    uint64_t virtBytes = ((1024ULL * 1024) * 2048);  // 2GB
+    uint64_t sharedBytes = ((1024ULL * 1024) * 128); // 128MB
+    uint64_t cpuTimeSeconds = 3661;                  // 1h 1m 1s
+    std::int32_t threadCount = 24;
+    double ioReadRate = ((1024.0 * 1024) * 50);  // 50MB/s
+    double ioWriteRate = ((1024.0 * 1024) * 10); // 10MB/s
 
     for (auto _ : state)
     {
+        benchmark::DoNotOptimize(pid);
+        benchmark::DoNotOptimize(cpuPercent);
+        benchmark::DoNotOptimize(memPercent);
+        benchmark::DoNotOptimize(rssBytes);
+        benchmark::DoNotOptimize(virtBytes);
+        benchmark::DoNotOptimize(sharedBytes);
+        benchmark::DoNotOptimize(cpuTimeSeconds);
+        benchmark::DoNotOptimize(threadCount);
+        benchmark::DoNotOptimize(ioReadRate);
+        benchmark::DoNotOptimize(ioWriteRate);
+
         // Format all columns as done in ProcessesPanel
         auto pidStr = UI::Format::formatId(pid);
         auto cpuStr = UI::Format::percentCompact(cpuPercent);
@@ -175,7 +229,7 @@ static void BM_Format_FullProcessRow(benchmark::State& state)
         auto rssStr = UI::Format::formatBytes(static_cast<double>(rssBytes));
         auto virtStr = UI::Format::formatBytes(static_cast<double>(virtBytes));
         auto shrStr = UI::Format::formatBytes(static_cast<double>(sharedBytes));
-        auto timeStr = UI::Format::formatCpuTimeCompact(static_cast<double>(cpuTimeSeconds));
+        auto timeStr = UI::Format::formatDuration(static_cast<double>(cpuTimeSeconds));
         auto threadsStr = UI::Format::formatIntLocalized(threadCount);
         auto ioReadStr = UI::Format::formatBytesPerSec(ioReadRate);
         auto ioWriteStr = UI::Format::formatBytesPerSec(ioWriteRate);
@@ -262,9 +316,10 @@ static void BM_Format_ProcessTable_FastPath(benchmark::State& state)
         for (size_t i = 0; i < processCount; ++i)
         {
             // Mirrors ProcessesPanel::renderProcessColumns() exactly:
-            const auto cpuParts = UI::Format::splitPercentForAlignment(cpuValues[i]);
+            // Non-const so DoNotOptimize(decimalDigit) binds the read-write overload, not the deprecated const-ref one.
+            auto cpuParts = UI::Format::splitPercentForAlignment(cpuValues[i]);
             const auto memUnit = UI::Format::unitForTotalBytes(memValues[i]);
-            const auto memParts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(memValues[i]), memUnit);
+            auto memParts = UI::Format::splitBytesForAlignmentFast(static_cast<double>(memValues[i]), memUnit);
 
             benchmark::DoNotOptimize(cpuParts.wholePart.data());
             benchmark::DoNotOptimize(cpuParts.decimalDigit);
@@ -282,16 +337,26 @@ BENCHMARK(BM_Format_ProcessTable_FastPath)->Arg(20)->Arg(50)->Arg(100)->Arg(500)
 // This is the fast-path counterpart to BM_Format_FullProcessRow.
 static void BM_Format_FullProcessRow_FastPath(benchmark::State& state)
 {
-    const double cpuPercent = 25.3;
-    const double memPercent = 12.7;
-    const uint64_t rssBytes = ((1024ULL * 1024) * 512);    // 512 MB
-    const uint64_t virtBytes = ((1024ULL * 1024) * 2048);  // 2 GB
-    const uint64_t sharedBytes = ((1024ULL * 1024) * 128); // 128 MB
-    const double ioReadRate = ((1024.0 * 1024) * 50);      // 50 MB/s
-    const double ioWriteRate = ((1024.0 * 1024) * 10);     // 10 MB/s
+    // Non-const and laundered every iteration: with compile-time-known inputs the inlined fast-path
+    // splitters could be constant-folded, timing little more than the stores (#877).
+    double cpuPercent = 25.3;
+    double memPercent = 12.7;
+    uint64_t rssBytes = ((1024ULL * 1024) * 512);    // 512 MB
+    uint64_t virtBytes = ((1024ULL * 1024) * 2048);  // 2 GB
+    uint64_t sharedBytes = ((1024ULL * 1024) * 128); // 128 MB
+    double ioReadRate = ((1024.0 * 1024) * 50);      // 50 MB/s
+    double ioWriteRate = ((1024.0 * 1024) * 10);     // 10 MB/s
 
     for (auto _ : state)
     {
+        benchmark::DoNotOptimize(cpuPercent);
+        benchmark::DoNotOptimize(memPercent);
+        benchmark::DoNotOptimize(rssBytes);
+        benchmark::DoNotOptimize(virtBytes);
+        benchmark::DoNotOptimize(sharedBytes);
+        benchmark::DoNotOptimize(ioReadRate);
+        benchmark::DoNotOptimize(ioWriteRate);
+
         // Mirrors the fast-path branches in renderProcessColumns():
         const auto cpuParts = UI::Format::splitPercentForAlignment(cpuPercent);
         const auto memParts = UI::Format::splitPercentForAlignment(memPercent);

@@ -366,7 +366,7 @@
             "binaryDir": "${sourceDir}/build/win-pgo-use",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\"",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         }
@@ -622,7 +622,6 @@
                 "outputOnFailure": true
             },
             "execution": {
-                "jobs": 0,
                 "timeout": 120
             }
         },
@@ -633,7 +632,6 @@
                 "outputOnFailure": true
             },
             "execution": {
-                "jobs": 0,
                 "timeout": 60
             }
         },
@@ -644,7 +642,6 @@
                 "outputOnFailure": true
             },
             "execution": {
-                "jobs": 0,
                 "timeout": 60
             }
         }

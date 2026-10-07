@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -7,6 +9,20 @@
 
 namespace Platform
 {
+
+/// The OS's own priority class for a process, on a platform that schedules by class (Windows,
+/// GetPriorityClass()), lowest first. None: the platform has no classes (Linux; nice is the
+/// priority) or the class could not be read. A raw OS value, not a label: Domain names it (#1280).
+enum class PriorityClass : std::uint8_t
+{
+    None,
+    Idle,
+    BelowNormal,
+    Normal,
+    AboveNormal,
+    High,
+    Realtime,
+};
 
 /// Raw counters from OS - no computed values.
 /// Probes populate this; domain computes deltas and rates.
@@ -20,6 +36,9 @@ struct ProcessCounters
     char state = '?';      // Raw state character from OS (e.g., 'R', 'S', 'Z')
     std::string status;    // Process status (e.g., "Suspended", "Efficiency Mode")
     std::int32_t nice = 0; // Nice value (-20 to 19 on Linux)
+    // Windows: the class nice stands for, which nice alone can't name (Realtime and High both sit
+    // below HIGH_THRESHOLD, #1280). None on Linux, or when the class was not read.
+    PriorityClass priorityClass = PriorityClass::None;
 
     std::uint64_t startTimeTicks = 0; // For PID reuse detection (raw platform ticks)
     std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
@@ -30,7 +49,8 @@ struct ProcessCounters
 
     // Memory (bytes)
     std::uint64_t rssBytes = 0;
-    std::uint64_t peakRssBytes = 0; // Peak working set (OS-provided on Windows, computed on Linux)
+    std::uint64_t peakRssBytes = 0; // OS-reported peak resident size, 0 = unknown (Linux: VmHWM, which resets on
+                                    // exec; Windows: PeakWorkingSetSize). Domain keeps the highest peak it observed.
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
 
@@ -38,9 +58,9 @@ struct ProcessCounters
     std::uint64_t readBytes = 0;
     std::uint64_t writeBytes = 0;
     std::int32_t threadCount = 0;
-    std::int32_t handleCount = 0;      // Open handles (Windows) or file descriptors (Linux)
-    std::uint64_t pageFaultCount = 0;  // Total page faults (minor + major on Linux)
-    std::uint64_t cpuAffinityMask = 0; // Bitmask of allowed CPU cores (0 = not available)
+    std::int32_t handleCount = 0;     // Open handles (Windows) or file descriptors (Linux)
+    std::uint64_t pageFaultCount = 0; // Total page faults (minor + major on Linux)
+    CpuAffinity cpuAffinity;          // Logical processors it may run on (empty = not available)
 
     // Network counters (cumulative bytes). A probe that reports per-connection readings instead
     // (IProcessProbe::readSocketTraffic()) leaves these 0; Domain fills them from the readings.
@@ -69,14 +89,17 @@ struct ProcessCounters
     std::optional<std::int32_t> gdiObjectCount;
 
     // Whether the probe could read these for this process (#1110). A probe sets one false when the
-    // read failed -- typically for lack of rights: without root, Linux cannot read another user's
-    // /proc/[pid]/fd or /proc/[pid]/io -- and the value beside it is then a placeholder 0, not a
-    // measurement. The defaults suit a probe that reads every process it lists; a field the probe
-    // never fills at all is reported by ProcessCapabilities instead.
+    // read failed -- typically for lack of rights, and the value beside it is then a placeholder 0, not a measurement. On Linux, for
+    // another user's process: listing /proc/[pid]/fd (handleCount) needs CAP_DAC_READ_SEARCH; /proc/[pid]/io (I/O) and reading the
+    // fd links that network attribution uses also need CAP_SYS_PTRACE (root has both unless they are dropped). Windows (#1285) reads
+    // handles and I/O for every process from its bulk snapshot, and network bytes for every process or, without per-process network
+    // counters (not elevated), for none. The defaults suit a probe that reads every process it lists; a field the probe never fills
+    // at all is reported by ProcessCapabilities instead.
     bool handleCountAvailable = true;     // handleCount
     bool ioCountersAvailable = true;      // readBytes / writeBytes
     bool networkCountersAvailable = true; // netSentBytes / netReceivedBytes: the process's connections
-                                          // could be attributed to it (Linux: from its /proc/[pid]/fd)
+                                          // could be attributed to it (Linux: from its /proc/[pid]/fd;
+                                          // Windows: per-process network counters are on)
 };
 
 /// One connection's cumulative byte counters as the OS reports them, and the process it belongs to.
@@ -84,6 +107,11 @@ struct SocketTrafficSample
 {
     std::uint64_t key = 0; // Stable identity of the connection for its lifetime: the socket inode on Linux
     std::int32_t pid = 0;  // Owning process; 0 = not attributed (yet)
+    // The owning process's start time, in the same raw ticks as ProcessCounters::startTimeTicks, so a
+    // process that reused `pid` isn't credited with this connection's bytes (#1336). 0 = unknown: the
+    // connection is then matched to a process by PID alone. Linux reads it from /proc/[pid]/stat when
+    // building the inode-to-PID map; Windows reports 0 (its TCP tables give only the owning PID).
+    std::uint64_t ownerStartTimeTicks = 0;
     std::uint64_t bytesReceived = 0;
     std::uint64_t bytesSent = 0;
     // False for a connection present in the OS table whose counters couldn't be read this time
@@ -128,13 +156,28 @@ struct ProcessCapabilities
     bool hasPublisher = false;          // Whether publisher/vendor string is available (Windows PE version info)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
-    bool hasReducedPrivileges = false;  // True when elevation would restore currently unavailable data.
-                                        // Linux: non-root (geteuid() != 0); FD counts (/proc/[pid]/fd) and I/O
-                                        //        stats for processes owned by other users are unavailable.
+    bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data (not
+                                        // necessarily curable by elevation: sudo can't restore capabilities a
+                                        // container or service dropped).
+                                        // Linux: the effective set (CapEff), for root too, lacks CAP_SYS_PTRACE
+                                        //        or has neither CAP_DAC_READ_SEARCH nor CAP_DAC_OVERRIDE; when
+                                        //        it can't be read, not root. FD counts, I/O and network for other
+                                        //        users' processes are then (partly) unavailable (ProcPrivileges.h).
                                         // Windows: non-admin AND EStats was specifically denied (ERROR_ACCESS_DENIED).
                                         //          Remains false when EStats is simply unsupported, because
                                         //          running as Administrator would not restore those counters.
-    bool hasSharedMemory = false;       // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
+    // True when per-process network counters were denied although the process already has the
+    // privileges they need, so elevating would not help. Windows: elevated, yet TCP EStats access
+    // denied (a policy or a driver, #1358). Never true together with hasNetworkCounters or
+    // hasReducedPrivileges. Linux: always false (its gaps are hasReducedPrivileges).
+    bool networkCountersBlocked = false;
+    bool hasSharedMemory = false; // Whether ProcessCounters::sharedBytes is filled (Linux: statm; not on Windows)
+    // How many bits ProcessCounters::pageFaultCount is kept in by the OS before it wraps to 0 (#1184).
+    // Linux: 64 (minflt + majflt, unsigned long). Windows: 32 (SYSTEM_PROCESS_INFORMATION's ULONG
+    // PageFaultCount, which a long-lived process can pass). Domain takes deltas modulo 2^bits.
+    std::uint8_t pageFaultCountBits = 64;
+
+    friend bool operator==(const ProcessCapabilities&, const ProcessCapabilities&) = default;
 };
 
 } // namespace Platform

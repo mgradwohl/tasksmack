@@ -4,6 +4,7 @@
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
+#include "Core/X11WindowManager.h"
 
 #include <SDL3/SDL.h>
 #include <glad/gl.h>
@@ -51,6 +52,23 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
     // OpenGL returns a byte pointer (GLubyte*); treat it as a C-string for logging only.
     const auto* chars = reinterpret_cast<const char*>(bytes); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     return {chars};
+}
+
+/// Whether {a Windows key, the Down arrow} are held right now: the shell's Win+Down (#1279). Never
+/// both off Windows, where Win+Down is not a shell gesture.
+[[nodiscard]] auto shellRestoreKeysHeld() noexcept -> std::pair<bool, bool>
+{
+#ifdef _WIN32
+    const auto isKeyHeld = [](int virtualKey)
+    {
+        // GetAsyncKeyState's most significant bit: the key is down right now.
+        constexpr unsigned KEY_DOWN_BIT = 0x8000U;
+        return (static_cast<unsigned>(static_cast<unsigned short>(GetAsyncKeyState(virtualKey))) & KEY_DOWN_BIT) != 0U;
+    };
+    return {isKeyHeld(VK_LWIN) || isKeyHeld(VK_RWIN), isKeyHeld(VK_DOWN)};
+#else
+    return {false, false};
+#endif
 }
 } // namespace
 
@@ -138,6 +156,128 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
     }
 
     return {hIconSmall, hIconBig};
+}
+
+// Window properties on the borderless window's HWND: the Window its subclass procedure reports a shell
+// minimize to, and the window procedure SDL installed, which it passes every message on to (#1279).
+constexpr const wchar_t* WINDOW_PROP = L"TaskSmack.Core.Window";
+constexpr const wchar_t* SDL_WINDOW_PROC_PROP = L"TaskSmack.Core.SdlWindowProc";
+// WM_SYSCOMMAND's low four bits are used internally by Windows; mask them off before comparing.
+constexpr WPARAM SYSCOMMAND_MASK = 0xFFF0U;
+
+[[nodiscard]] HWND nativeWindowHandle(SDL_Window* window)
+{
+    // SDL returns HWND as void* per its property API contract
+    return static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+}
+
+// The borderless window's subclass procedure (#1279). The shell asks the window to minimize with
+// WM_SYSCOMMAND SC_MINIMIZE; when that is Win+Down on a client-side maximized window,
+// Window::restoreForShellMinimize() restores it instead and the minimize is dropped. Everything else
+// goes to SDL's procedure unchanged.
+LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == WM_SYSCOMMAND && (wParam & SYSCOMMAND_MASK) == SC_MINIMIZE)
+    {
+        if (auto* window = static_cast<Window*>(GetPropW(hwnd, WINDOW_PROP)); window != nullptr)
+        {
+            bool restored = false;
+            try
+            {
+                restored = window->restoreForShellMinimize();
+            }
+            catch (...)
+            {
+                // No exception may cross back into the OS; let the minimize through instead.
+                restored = false;
+            }
+            if (restored)
+            {
+                return 0;
+            }
+        }
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the window procedure is stored as an opaque window property
+    const auto sdlWindowProc = reinterpret_cast<WNDPROC>(GetPropW(hwnd, SDL_WINDOW_PROC_PROP));
+    if (sdlWindowProc == nullptr)
+    {
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+    return CallWindowProcW(sdlWindowProc, hwnd, message, wParam, lParam);
+}
+
+// Replace the window procedure, checked as the Win32 documentation prescribes: SetWindowLongPtr()
+// returns 0 both on failure and when the previous value was 0, so the last error tells them apart.
+[[nodiscard]] bool replaceWindowProc(HWND hwnd, LONG_PTR windowProc)
+{
+    SetLastError(0);
+    const LONG_PTR previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, windowProc);
+    return !WindowGeometry::windowLongPtrSetFailed(previous, GetLastError());
+}
+
+// Put shellCommandWindowProc() in front of SDL's window procedure. SDL only replaces the procedure of
+// a window it did not create, so the subclass stays in place until unhookShellCommands().
+void hookShellCommands(SDL_Window* sdlWindow, Window* window)
+{
+    HWND hwnd = nativeWindowHandle(sdlWindow);
+    if (hwnd == nullptr)
+    {
+        spdlog::warn("Failed to get Win32 window handle; Win+Down will minimize the maximized window (#1279)");
+        return;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) - GWLP_WNDPROC holds the window procedure as LONG_PTR
+    auto* const sdlWindowProc = reinterpret_cast<void*>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
+    // Both properties are in place before the procedure is, so it never runs without them.
+    if (sdlWindowProc == nullptr || SetPropW(hwnd, SDL_WINDOW_PROC_PROP, sdlWindowProc) == 0 || SetPropW(hwnd, WINDOW_PROP, window) == 0)
+    {
+        spdlog::warn("Failed to subclass the window; Win+Down will minimize the maximized window (#1279)");
+        RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
+        RemovePropW(hwnd, WINDOW_PROP);
+        return;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
+    if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(&shellCommandWindowProc)))
+    {
+        // SDL's procedure is still in place and nothing reads the properties; don't leave them behind.
+        spdlog::warn("Failed to subclass the window (error {}); Win+Down will minimize the maximized window (#1279)", GetLastError());
+        RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
+        RemovePropW(hwnd, WINDOW_PROP);
+    }
+}
+
+// Undo hookShellCommands() before SDL destroys the window.
+void unhookShellCommands(SDL_Window* sdlWindow)
+{
+    HWND hwnd = nativeWindowHandle(sdlWindow);
+    if (hwnd == nullptr)
+    {
+        return;
+    }
+    // The Window is going away: stop reporting to it, whatever happens below.
+    RemovePropW(hwnd, WINDOW_PROP);
+    HANDLE sdlWindowProc = GetPropW(hwnd, SDL_WINDOW_PROC_PROP);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - GWLP_WNDPROC holds the window procedure as LONG_PTR
+    if (sdlWindowProc == nullptr || GetWindowLongPtrW(hwnd, GWLP_WNDPROC) != reinterpret_cast<LONG_PTR>(&shellCommandWindowProc))
+    {
+        // Not hooked, or something subclassed the window after us and still calls our procedure,
+        // which keeps forwarding to SDL's.
+        return;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
+    if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(sdlWindowProc)))
+    {
+        // Our procedure is still installed and still receives every message SDL_DestroyWindow()
+        // sends, so keep the property it forwards them to SDL's procedure through.
+        const DWORD error = GetLastError();
+        try
+        {
+            spdlog::warn("Failed to restore SDL's window procedure (error {}); it stays reached through the subclass", error);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) -- intentional: called from ~Window(), which must not throw
+        {}
+        return;
+    }
+    RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
 }
 } // namespace
 #endif
@@ -233,12 +373,23 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
     const auto [iconSmall, iconBig] = setWindowIconFromResource(m_Handle);
     m_IconSmall = iconSmall;
     m_IconBig = iconBig;
+
+    // The custom title bar's maximize is client-side, which the shell does not know about: catch its
+    // Win+Down minimize so it restores the window like a native maximized one (#1279).
+    if (m_Spec.Borderless)
+    {
+        hookShellCommands(m_Handle, this);
+    }
 #endif
 }
 
 Window::~Window()
 {
 #ifdef _WIN32
+    if (m_Handle != nullptr)
+    {
+        unhookShellCommands(m_Handle);
+    }
     if (m_IconSmall != nullptr)
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
@@ -402,20 +553,42 @@ auto Window::getSizeInPixels() const noexcept -> std::pair<int, int>
 
 auto Window::getNormalGeometry() const -> std::optional<WindowGeometry::Rect>
 {
-    const auto [x, y] = getPosition();
-    const auto [width, height] = getSize();
-    const WindowGeometry::Rect current{.x = x, .y = y, .width = width, .height = height};
-    std::optional<WindowGeometry::Rect> restoreRect;
-    if (m_HasRestoreRect)
-    {
-        restoreRect = WindowGeometry::Rect{.x = m_RestoreX, .y = m_RestoreY, .width = m_RestoreWidth, .height = m_RestoreHeight};
-    }
-    return WindowGeometry::selectNormalGeometry(isMaximized(), current, restoreRect);
+    return WindowGeometry::selectNormalGeometry(isMaximized(), liveRect(), m_Geometry.restoreTarget());
 }
 
 auto Window::getNormalGeometryScale() const -> float
 {
-    return WindowGeometry::selectNormalGeometryScale(isMaximized(), m_HasRestoreRect, m_RestoreScale, getUnitScale());
+    return WindowGeometry::selectNormalGeometryScale(
+        isMaximized(), m_Geometry.restoreTarget().has_value(), m_Geometry.restoreScale(), getUnitScale());
+}
+
+auto Window::liveRect() const -> WindowGeometry::Rect
+{
+    const auto [x, y] = getPosition();
+    const auto [width, height] = getSize();
+    return WindowGeometry::Rect{.x = x, .y = y, .width = width, .height = height};
+}
+
+bool Window::isNormalNow() const
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    // SDL_WINDOW_MAXIMIZED as well as isMaximized(): on a client-side backend isMaximized() reads only
+    // the tracker, which has not yet heard of a window-manager maximize while its resize events are
+    // being drained.
+    constexpr SDL_WindowFlags NOT_NORMAL = SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED | SDL_WINDOW_FULLSCREEN;
+    return !isMaximized() && (SDL_GetWindowFlags(m_Handle) & NOT_NORMAL) == 0;
+}
+
+void Window::handleGeometryChanged()
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+    m_Geometry.observe(liveRect(), getUnitScale(), isNormalNow());
 }
 
 void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale)
@@ -533,6 +706,10 @@ void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, boo
         setPosition(fitted.x, fitted.y);
     }
 
+    // The normal geometry a later maximize from outside the app restores to, until the window is
+    // moved or resized (#1250).
+    handleGeometryChanged();
+
     if (maximized)
     {
         // On asynchronous windowing systems (X11) a move or resize is only a request until the
@@ -577,9 +754,10 @@ bool Window::isMaximized() const
         return false;
     }
 
-    // For borderless windows, X11/XWayland/Windows fake maximize by resizing to the usable
-    // display bounds, so SDL_WINDOW_MAXIMIZED never gets set there and our tracked state is
-    // the only source of truth. Native Wayland is different: maximize()/restore() delegate to
+    // For borderless windows, Windows (and X11/XWayland without EWMH maximize, #1339) fake maximize
+    // by resizing to the usable display bounds, so SDL_WINDOW_MAXIMIZED never gets set there and our
+    // tracked state is the only source of truth; on X11 the tracker also knows a window-manager
+    // maximize (System, #1250). Native Wayland is different: maximize()/restore() delegate to
     // the compositor via SDL_MaximizeWindow()/SDL_RestoreWindow(), so SDL_WINDOW_MAXIMIZED is a
     // real, live signal there -- querying it instead of the cached bool keeps this correct when
     // the compositor changes maximize state outside the app (tiling shortcut, etc.), which the
@@ -590,7 +768,7 @@ bool Window::isMaximized() const
         {
             return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0;
         }
-        return m_IsMaximizedBorderless;
+        return m_Geometry.isMaximized();
     }
 
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0;
@@ -603,26 +781,52 @@ void Window::maximize()
         return;
     }
 
-    // For borderless windows, use backend-gated behavior.
-    // On native Wayland, prefer compositor maximize (avoids client-side geometry issues).
-    // On X11, XWayland, and Windows, use manual client-side positioning for compatibility.
+    // The rectangle being left, taken before anything moves the window. It becomes the restore
+    // target only when the window is normal right now: a second maximize() must not replace the
+    // normal rectangle with the maximized one (NormalGeometryTracker::maximizing()). isNormalNow()
+    // also reads SDL's live flags: on a client-side backend isMaximized() reads only the tracker,
+    // which hasn't yet heard of a window-manager maximize whose event is still queued, and the live
+    // rectangle would then be the maximized one.
+    const WindowGeometry::Rect live = liveRect();
+    const float liveScale = getUnitScale();
+    const bool normalNow = isNormalNow();
+
+    // For borderless windows, use backend-gated behavior (WindowGeometry::chooseBorderlessMaximize()).
+    // On native Wayland, and on X11/XWayland under a window manager with EWMH maximize, the
+    // compositor or window manager sizes the window to its own work area (#1339). Otherwise (Windows,
+    // an X11 window manager without it) use manual client-side positioning.
     if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
     {
-        if (!VideoBackend::supportsClientSideMaximize())
+        const bool clientSideBackend = VideoBackend::supportsClientSideMaximize();
+        const bool x11Backend = VideoBackend::isX11() || VideoBackend::isXWaylandFallback();
+        // Only asked on X11/XWayland: one X server round trip, once per maximize.
+        const bool ewmhMaximize = clientSideBackend && x11Backend && X11WindowManager::supportsEwmhMaximize(m_Handle);
+        if (WindowGeometry::chooseBorderlessMaximize(clientSideBackend, x11Backend, ewmhMaximize) ==
+            WindowGeometry::BorderlessMaximize::WindowManager)
         {
-            // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
-            // This avoids the unreliability of client-side usable-bounds queries on Wayland.
-            spdlog::debug("Window::maximize: Native Wayland detected; using compositor-managed maximize");
-            rememberRestoreRect();
-            SDL_MaximizeWindow(m_Handle);
-            m_IsMaximizedBorderless = true;
-            return;
+            if (!clientSideBackend)
+            {
+                // Native Wayland: use compositor-managed maximize via SDL_MaximizeWindow
+                // This avoids the unreliability of client-side usable-bounds queries on Wayland.
+                spdlog::debug("Window::maximize: Native Wayland detected; using compositor-managed maximize");
+                SDL_MaximizeWindow(m_Handle);
+                m_Geometry.maximizing(live, liveScale, normalNow, WindowGeometry::MaximizeState::System);
+                return;
+            }
+            // X11/XWayland: the window manager's work area, not SDL_GetDisplayUsableBounds(), which is
+            // the whole display on a server without _NET_WORKAREA (WSLg). Tracked as a System
+            // maximize like one from the window manager's own shortcut (#1250): restore() returns to
+            // the rectangle recorded here, and a window-manager restore ends it.
+            if (SDL_MaximizeWindow(m_Handle))
+            {
+                spdlog::debug("Window::maximize: X11 window manager supports EWMH maximize; letting it size the window");
+                m_Geometry.maximizing(live, liveScale, normalNow, WindowGeometry::MaximizeState::System);
+                return;
+            }
+            spdlog::warn("Window::maximize: SDL_MaximizeWindow failed ({}); maximizing client-side", SDL_GetError());
         }
 
-        // X11, XWayland, Windows: use client-side maximize with manual positioning
-        // Only save restore dimensions if not already maximized
-        // This prevents saving maximized dimensions as the restore target
-        rememberRestoreRect();
+        // Windows, or X11 without EWMH maximize: client-side maximize with manual positioning
 
         const SDL_DisplayID displayID = SDL_GetDisplayForWindow(m_Handle);
         if (displayID != 0)
@@ -634,7 +838,7 @@ void Window::maximize()
                 SDL_SetWindowPosition(m_Handle, usableBounds.x, usableBounds.y);
                 // Size window to fill the usable area
                 SDL_SetWindowSize(m_Handle, usableBounds.w, usableBounds.h);
-                m_IsMaximizedBorderless = true;
+                m_Geometry.maximizing(live, liveScale, normalNow, WindowGeometry::MaximizeState::ClientSide);
                 return;
             }
             // If SDL_GetDisplayUsableBounds fails, fall through to SDL_MaximizeWindow
@@ -642,22 +846,21 @@ void Window::maximize()
         }
     }
 
-    // Fall back to SDL's built-in maximize for non-borderless windows or on error
-    rememberRestoreRect();
-    if (SDL_MaximizeWindow(m_Handle) && (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_BORDERLESS) != 0)
+    // Fall back to SDL's built-in maximize for non-borderless windows or on error. Tracked as a
+    // System maximize: for a borderless window on a client-side-maximize backend that got here (the
+    // display bounds were unavailable) isMaximized() reads only the tracker, which must therefore
+    // know, or getNormalGeometry() would save this maximized rectangle as the normal one (#1121).
+    if (SDL_MaximizeWindow(m_Handle))
     {
-        // A borderless window on a client-side-maximize backend that got here (the display bounds
-        // were unavailable): isMaximized() reads only the tracked flag there, so set it, or
-        // getNormalGeometry() would save this maximized rectangle as the normal one (#1121).
-        m_IsMaximizedBorderless = true;
+        m_Geometry.maximizing(live, liveScale, normalNow, WindowGeometry::MaximizeState::System);
     }
 }
 
-void Window::adoptSystemMaximize()
+bool Window::adoptSystemMaximize()
 {
     if (m_Handle == nullptr)
     {
-        return;
+        return false;
     }
 
     // Read the live flags, not the event: a queued MAXIMIZED can be handled after a later OS restore
@@ -672,7 +875,7 @@ void Window::adoptSystemMaximize()
     const bool usableBoundsKnown = displayID != 0 && SDL_GetDisplayUsableBounds(displayID, &usableBounds);
     if (!WindowGeometry::shouldAdoptSystemMaximize(borderless, clientSideBackend, usableBoundsKnown, stillMaximized, minimized))
     {
-        return;
+        return false;
     }
 
     // Undo the OS maximize first, so the window is back at its normal rectangle: that is what
@@ -684,22 +887,53 @@ void Window::adoptSystemMaximize()
     SDL_RestoreWindow(m_Handle);
     SDL_SyncWindow(m_Handle);
     maximize();
+    return true;
 }
 
-void Window::rememberRestoreRect()
+void Window::handleSystemMaximized(bool adopt)
 {
-    // Only record the rectangle when not already maximized: a second maximize() must not replace
-    // the normal rectangle with the maximized one.
-    if (isMaximized())
+    if (m_Handle == nullptr || (adopt && adoptSystemMaximize()))
     {
         return;
     }
-    SDL_GetWindowPosition(m_Handle, &m_RestoreX, &m_RestoreY);
-    SDL_GetWindowSize(m_Handle, &m_RestoreWidth, &m_RestoreHeight);
-    m_HasRestoreRect = m_RestoreWidth > 0 && m_RestoreHeight > 0;
-    // The scale this rectangle is in, so a later save tags it correctly even if the maximized window
-    // has since moved to another display or the scale changed (#1168).
-    m_RestoreScale = getUnitScale();
+    // Not replaced by a client-side maximize (Linux, where the window manager or compositor sizes the
+    // window itself; a framed window; or adoption not possible): keep the OS maximize as it is, but
+    // know about it, so isMaximized() reports it and getNormalGeometry() returns the last normal
+    // geometry rather than the maximized one (#1250). The live flags, not the event, decide.
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(m_Handle);
+    m_Geometry.systemMaximized((flags & SDL_WINDOW_MAXIMIZED) != 0, (flags & SDL_WINDOW_MINIMIZED) != 0);
+}
+
+void Window::handleSystemRestored()
+{
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(m_Handle);
+    m_Geometry.systemRestored((flags & SDL_WINDOW_MAXIMIZED) != 0, (flags & SDL_WINDOW_MINIMIZED) != 0);
+}
+
+bool Window::restoreForShellMinimize()
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+    const auto [winKeyDown, downKeyDown] = m_ShellRestoreKeysReader != nullptr ? m_ShellRestoreKeysReader() : shellRestoreKeysHeld();
+    if (!WindowGeometry::shellMinimizeRestores(m_Geometry.state(), winKeyDown, downKeyDown))
+    {
+        return false;
+    }
+    spdlog::debug("Window::restoreForShellMinimize: Win+Down on the client-side maximized window; restoring it (#1279)");
+    if (isMinimized())
+    {
+        // The minimize happened without passing through WM_SYSCOMMAND: bring the window back first,
+        // still maximized client-side, then restore it to its normal rectangle.
+        SDL_RestoreWindow(m_Handle);
+    }
+    restore();
+    return true;
 }
 
 void Window::restore()
@@ -730,30 +964,29 @@ void Window::restore()
             spdlog::debug("Window::restore: Native Wayland detected; using compositor-managed restore");
             SDL_RestoreWindow(m_Handle);
             syncRestore();
-            m_IsMaximizedBorderless = false;
-            m_HasRestoreRect = false;
+            m_Geometry.restored();
             return;
         }
 
         // X11, XWayland, Windows: restore to manually-saved position and size
-        if (m_IsMaximizedBorderless && m_RestoreWidth > 0 && m_RestoreHeight > 0)
+        if (const std::optional<WindowGeometry::Rect> target = m_Geometry.restoreTarget(); m_Geometry.isMaximized() && target.has_value())
         {
             if ((SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_MAXIMIZED) != 0)
             {
-                SDL_RestoreWindow(m_Handle); // Maximized through the SDL fallback in maximize()
+                // Maximized through the SDL fallback in maximize(), or by the window manager (#1250)
+                SDL_RestoreWindow(m_Handle);
             }
-            SDL_SetWindowPosition(m_Handle, m_RestoreX, m_RestoreY);
-            SDL_SetWindowSize(m_Handle, m_RestoreWidth, m_RestoreHeight);
+            SDL_SetWindowPosition(m_Handle, target->x, target->y);
+            SDL_SetWindowSize(m_Handle, target->width, target->height);
             syncRestore();
-            m_IsMaximizedBorderless = false;
-            m_HasRestoreRect = false;
+            m_Geometry.restored();
             return;
         }
     }
 
     SDL_RestoreWindow(m_Handle);
     syncRestore();
-    m_HasRestoreRect = false;
+    m_Geometry.restored();
 }
 
 void Window::minimize() const

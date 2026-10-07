@@ -166,6 +166,11 @@ void Theme::loadDefaultFallbackTheme()
     fallback.closeButtonHovered = ImVec4(0.8F, 0.1F, 0.1F, 1.0F);
     fallback.closeButtonActive = ImVec4(0.9F, 0.2F, 0.2F, 1.0F);
 
+    // Danger button colors (Terminate, Kill)
+    fallback.dangerButton = ImVec4(0.64F, 0.08F, 0.08F, 1.0F);
+    fallback.dangerButtonHovered = ImVec4(0.8F, 0.1F, 0.1F, 1.0F);
+    fallback.dangerButtonActive = ImVec4(0.9F, 0.2F, 0.2F, 1.0F);
+
     // Success button colors (Apply, Resume, etc.)
     fallback.successButton = ImVec4(0.20F, 0.60F, 0.20F, 1.0F);
     fallback.successButtonHovered = ImVec4(0.25F, 0.70F, 0.25F, 1.0F);
@@ -463,7 +468,7 @@ void Theme::applyImGuiStyle() const
     style.TabBorderSize = 0.0F;
 
     style.WindowPadding = ImVec2(8.0F * scale, 8.0F * scale);
-    style.FramePadding = ImVec2(4.0F * scale, 3.0F * scale);
+    style.FramePadding = ImVec2(FRAME_PADDING_X * scale, FRAME_PADDING_Y * scale);
     style.ItemSpacing = ImVec2(8.0F * scale, 4.0F * scale);
     style.ItemInnerSpacing = ImVec2(4.0F * scale, 4.0F * scale);
     // Authored here rather than left at ImGui's default, which is this same ImVec2(4, 2) -- so the

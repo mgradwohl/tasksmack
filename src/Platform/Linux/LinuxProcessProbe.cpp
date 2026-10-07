@@ -6,6 +6,7 @@
 
 #include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
 #include "UserNameLookup.h"
@@ -15,7 +16,10 @@
 #endif
 
 #include "Platform/ProcessTypes.h"
+#include "PosixGuards.h"
+#include "ProcFdScan.h"
 #include "ProcParsing.h"
+#include "ProcPrivileges.h"
 #include "ProcessName.h"
 
 #include <spdlog/spdlog.h>
@@ -29,7 +33,6 @@
 #include <concepts>
 #include <cstdint>
 #include <cstdio>
-#include <exception>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -43,9 +46,9 @@
 #include <utility>
 #include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <pwd.h>
-#include <sched.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -91,11 +94,67 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64PositiveOr(T value, 
     return static_cast<uint64_t>(value);
 }
 
-using ProcParsing::FdGuard;
+using Posix::FdGuard;
 using ProcParsing::parseNum;
 using ProcParsing::readProcFile;
+using ProcParsing::readProcFileAt;
 using ProcParsing::readProcFileFull;
-using ProcParsing::skipSpaces;
+using ProcParsing::readProcFileOnceAt;
+
+/// The longest command line kept in the command-line cache (#1425); a longer one (a JVM's classpath
+/// can run to hundreds of KiB) is read every sample, as before. Together with the one-entry-per-live-
+/// process eviction this bounds the cache's memory, beyond what the published snapshot already holds.
+constexpr std::size_t MAX_CACHED_CMDLINE_BYTES = std::size_t{64} * 1024;
+
+/// How long a command line read now is reused: half the TTL, plus a share of the other half that
+/// varies by PID (a multiplicative hash, so consecutive PIDs spread out). The processes first cached
+/// on one sample -- every one of them, on the first -- then expire over several later samples
+/// instead of all being re-read on the same one. Never longer than the TTL.
+[[nodiscard]] std::chrono::milliseconds cmdlineCacheLifetime(std::int32_t pid, std::chrono::milliseconds ttl) noexcept
+{
+    constexpr std::uint32_t MULTIPLICATIVE_HASH = 2654435761U; // Knuth: 2^32 / golden ratio
+    const auto half = ttl / 2;
+    if (half.count() <= 0)
+    {
+        return ttl;
+    }
+    const std::uint64_t hash = static_cast<std::uint32_t>(static_cast<std::uint32_t>(pid) * MULTIPLICATIVE_HASH); // wraps mod 2^32
+    const std::uint64_t share = hash % (static_cast<std::uint64_t>(half.count()) + 1);
+    return (ttl - half) + std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(share)};
+}
+
+/// Read a whole /proc file of up to maxBytes, for the rare one that overflows a caller's stack buffer.
+/// Each try re-reads from the start into a buffer twice the last one's size, so the text comes from a
+/// single read. `path` is resolved as readProcFileAt() does (under `dirFd`, or AT_FDCWD for an
+/// ordinary path). Returns the bytes read -- a file longer than maxBytes comes back cut off at
+/// maxBytes -- or an empty vector on failure.
+[[nodiscard]] std::vector<char> readProcFileBounded(int dirFd, const char* path, std::size_t initialSize, std::size_t maxBytes)
+{
+    std::vector<char> buf;
+    for (std::size_t size = std::min(initialSize, maxBytes);; size = std::min(size * 2, maxBytes))
+    {
+        buf.resize(size);
+        const std::size_t len = readProcFileAt(dirFd, path, buf.data(), buf.size());
+        if (len < size || size == maxBytes)
+        {
+            buf.resize(len);
+            return buf;
+        }
+    }
+}
+
+/// Whether text has a line starting with prefix that ends in a newline (not cut off by a short read).
+[[nodiscard]] bool hasCompleteLine(std::string_view text, std::string_view prefix) noexcept
+{
+    for (std::size_t pos = text.find(prefix); pos != std::string_view::npos; pos = text.find(prefix, pos + 1))
+    {
+        if (pos == 0 || text[pos - 1] == '\n')
+        {
+            return text.find('\n', pos) != std::string_view::npos;
+        }
+    }
+    return false;
+}
 
 /// Cache UID to username mappings to avoid repeated getpwuid calls
 std::unordered_map<uid_t, std::string>& getUsernameCache()
@@ -139,12 +198,31 @@ LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot)
 {}
 
 LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot)
+    : LinuxProcessProbe(std::move(procRoot), std::move(powercapRoot), std::filesystem::path("/sys/fs/cgroup"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot, std::filesystem::path powercapRoot, std::filesystem::path cgroupRoot)
+    : LinuxProcessProbe(
+          std::move(procRoot), std::move(powercapRoot), std::move(cgroupRoot), std::filesystem::path("/sys/devices/system/cpu"))
+{}
+
+LinuxProcessProbe::LinuxProcessProbe(std::filesystem::path procRoot,
+                                     std::filesystem::path powercapRoot,
+                                     std::filesystem::path cgroupRoot,
+                                     std::filesystem::path cpuSysfsRoot)
     : m_ProcRoot(std::move(procRoot)),
       m_PowercapRoot(std::move(powercapRoot)),
+      m_CgroupRoot(std::move(cgroupRoot)),
+      m_CpuSysfsRoot(std::move(cpuSysfsRoot)),
       m_TicksPerSecond(sysconf(_SC_CLK_TCK)),
       m_PageSize(toU64PositiveOr(sysconf(_SC_PAGESIZE), 4096ULL)),
-      m_BootTimeEpoch(readBootTime(m_ProcRoot))
+      m_BootTimeEpoch(readBootTime(m_ProcRoot)),
+      m_CmdlineCacheTtl(Domain::Sampling::PROCESS_CMDLINE_CACHE_TTL_MS)
 {
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    m_InodeMapEarlyRebuildInterval = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_EARLY_REBUILD_MS};
+    m_InodeMapTtl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
+#endif
     if (m_TicksPerSecond <= 0)
     {
         // /proc process times are typically reported in user-space clock ticks (USER_HZ),
@@ -225,41 +303,83 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     // Reserving a fixed constant (e.g. 500) wastes memory on light systems
     // and still reallocates on busy ones. Let the allocator manage growth.
 
-    const std::filesystem::path& procPath = m_ProcRoot;
-    std::error_code errorCode;
+    const auto now = std::chrono::steady_clock::now();
 
-    for (const auto& entry : std::filesystem::directory_iterator(procPath, errorCode))
+    // Once per sample: Cpus_allowed_list is the task's raw mask, which still names CPUs that are
+    // possible but offline; the sched_getaffinity() it replaced ANDed it with the active CPUs (#1384).
+    const std::optional<CpuAffinity> onlineCpus = readOnlineCpus(m_CpuSysfsRoot);
+
+    // This pass's command lines (#1425): the entries of processes it sees move from `previousCmdlines`
+    // to `seenCmdlines`, which replaces the cache at the end; the rest (exited processes) are dropped.
+    CmdlineCache previousCmdlines;
     {
-        if (!entry.is_directory())
+        const std::scoped_lock lock(m_CmdlineCacheMutex);
+        previousCmdlines = std::exchange(m_CmdlineCache, {});
+    }
+    CmdlineCache seenCmdlines;
+    seenCmdlines.reserve(previousCmdlines.size());
+
+    // Freeze states by /proc/[pid]/cgroup contents, for this pass only (see getProcessStatus()).
+    FrozenByCgroup frozenByCgroup;
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    // Whether this pass also rebuilds the socket inode-to-PID map (#1426): due every m_InodeMapTtl, it
+    // is built from the same /proc/[pid]/fd walk that counts the FDs, instead of readSocketTraffic()
+    // walking every fd directory a second time.
+    const bool rebuildInodeMap = m_HasNetworkCounters && claimInodeMapRebuild(m_InodeMapTtl).second;
+#else
+    constexpr bool rebuildInodeMap = false;
+#endif
+
+    // Every read of a process goes through one handle on its /proc/[pid] directory: one path lookup per
+    // file rather than a walk from the root, and all of a process's fields come from that process even
+    // if it exits and its PID is reused mid-pass (as the inode-to-PID map's reads already did, #1336).
+    const Posix::DirGuard procDir(::opendir(m_ProcRoot.c_str()));
+    const int procDirFd = (procDir.get() != nullptr) ? ::dirfd(procDir.get()) : -1;
+    int iterationError = (procDir.get() != nullptr) ? 0 : errno;
+    while (procDir.get() != nullptr)
+    {
+        errno = 0;
+        // NOLINTNEXTLINE(concurrency-mt-unsafe) - readdir is safe here: one DIR* per call
+        const dirent* entry = ::readdir(procDir.get());
+        if (entry == nullptr)
+        {
+            iterationError = errno; // 0 at the end of the listing
+            break;
+        }
+
+        // Only directories named by a number (a process ID)
+        const std::string_view filename(static_cast<const char*>(entry->d_name));
+        int32_t pid = 0;
+        const auto result = std::from_chars(filename.data(), filename.data() + filename.size(), pid);
+        if (result.ec != std::errc{} || result.ptr != filename.data() + filename.size() || pid <= 0)
         {
             continue;
         }
-
-        const auto& filename = entry.path().filename().string();
-        int32_t pid = 0;
-
-        // Check if directory name is a number (process ID)
-        auto result = std::from_chars(filename.data(), filename.data() + filename.size(), pid);
-        if (result.ec != std::errc{} || pid <= 0)
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        const FdGuard pidDirFd(::openat(procDirFd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (pidDirFd.get() == -1)
         {
-            continue;
+            continue; // Exited since the listing (or not a directory)
         }
 
         ProcessCounters counters{};
-        if (!parseProcessStat(pid, counters))
+        if (!parseProcessStat(pidDirFd.get(), pid, counters))
         {
-            spdlog::debug("Failed to parse {}", (procPath / std::to_string(pid) / "stat").string());
+            spdlog::debug("Failed to parse {}", (m_ProcRoot / filename / "stat").string());
             continue;
         }
 
-        parseProcessStatm(pid, counters);
-        parseProcessStatus(pid, counters, m_ProcRoot);
-        parseProcessCmdline(pid, counters, m_ProcRoot);
-        // CPU affinity is always safe to query; failures zero the mask
-        parseProcessAffinity(pid, counters);
+        parseProcessStatm(pidDirFd.get(), counters);
+        parseProcessStatus(pidDirFd.get(), pid, counters, onlineCpus); // Owner, peak RSS (after statm) and CPU affinity
+        readProcessCommand(pidDirFd.get(), counters, previousCmdlines, seenCmdlines, now);
 
-        // Count open file descriptors (may fail for some processes due to permissions)
-        countProcessFds(pid, counters, m_ProcRoot);
+        // Count open file descriptors (may fail for some processes due to permissions). A pass that
+        // rebuilds the inode-to-PID map counts them in the same walk, after the CPU total (below).
+        if (!rebuildInodeMap)
+        {
+            countProcessFds(pidDirFd.get(), counters, /*readEveryLink=*/false, [](std::uint64_t /*inode*/) {});
+        }
 
         // Only attempt I/O counters if we know they're readable
         // Use std::call_once for thread-safe lazy initialization; relaxed ordering is sufficient
@@ -267,25 +387,40 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
                        [this]() { m_IoCountersAvailable.store(checkIoCountersAvailability(m_ProcRoot), std::memory_order_relaxed); });
         if (m_IoCountersAvailable.load(std::memory_order_relaxed))
         {
-            parseProcessIo(pid, counters, m_ProcRoot);
+            parseProcessIo(pidDirFd.get(), counters);
         }
         else
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        counters.status = getProcessStatus(pid, m_ProcRoot); // Get cgroup freezer status
+        counters.status = getProcessStatus(pidDirFd.get(), m_CgroupRoot, frozenByCgroup); // Get cgroup freezer status
         processes.push_back(std::move(counters));
     }
 
-    if (errorCode)
+    if (iterationError != 0)
     {
-        spdlog::warn("Error iterating {}: {}", procPath.string(), errorCode.message());
+        spdlog::warn("Error iterating {}: {}", m_ProcRoot.string(), std::system_category().message(iterationError));
+    }
+
+    {
+        const std::scoped_lock lock(m_CmdlineCacheMutex);
+        m_CmdlineCache = std::move(seenCmdlines);
     }
 
     // The system total that the processes' CPU deltas are divided by, taken now -- right after
     // their stat reads, so nothing that runs before totalCpuTime() is called can skew its interval
     // from theirs (#1119).
     m_TotalCpuTimeAtEnumerate.store(readTotalCpuTime(), std::memory_order_relaxed);
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+    if (rebuildInodeMap)
+    {
+        // The FD counts and the inode-to-PID map from one walk of every /proc/[pid]/fd (#1426). After
+        // the CPU total, not inside the stat pass: reading every link makes the walk longer, and on the
+        // rebuild samples only that would stretch the interval the total is read over (#1119).
+        rebuildInodeMapWithFdCounts(procDirFd, processes);
+    }
+#endif
 
     if (m_EnumerateTailHook)
     {
@@ -307,26 +442,32 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
     const bool hasNetworkCounters = false;
 #endif
 
-    // Reduced privileges: FD counts (/proc/[pid]/fd) and I/O counters (/proc/[pid]/io)
-    // for processes owned by other users are unavailable unless running as root.
-    const bool reducedPrivileges = (geteuid() != 0);
+    // Reduced privileges: FD counts (/proc/[pid]/fd), I/O counters (/proc/[pid]/io) and network
+    // attribution for processes owned by other users need CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE in
+    // the effective set -- root with its normal capabilities has them, but root alone isn't enough
+    // where capabilities are dropped (docs/guide/faq.md's setcap line).
+    const std::vector<char> selfStatus = readProcFileFull((m_ProcRoot / "self" / "status").c_str());
+    const bool reducedPrivileges = ProcPrivileges::hasReducedPrivileges(
+        geteuid() == 0,
+        ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())));
 
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
-                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (own processes only when non-root)
+                               .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (others' need CAP_DAC_READ_SEARCH)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,       // From /proc/[pid]/status Uid field
-                               .hasCommand = true,    // From /proc/[pid]/cmdline
-                               .hasNice = true,       // From /proc/[pid]/stat
-                               .hasPageFaults = true, // From /proc/[pid]/stat (minflt + majflt)
-                               .hasPeakRss = false,
-                               .hasCpuAffinity = true,                    // From sched_getaffinity
+                               .hasUser = true,                           // From /proc/[pid]/status Uid field
+                               .hasCommand = true,                        // From /proc/[pid]/cmdline
+                               .hasNice = true,                           // From /proc/[pid]/stat
+                               .hasPageFaults = true,                     // From /proc/[pid]/stat (minflt + majflt)
+                               .hasPeakRss = true,                        // From /proc/[pid]/status VmHWM (kernel threads have none)
+                               .hasCpuAffinity = true,                    // From status Cpus_allowed_list
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
-                               .hasReducedPrivileges = reducedPrivileges, // Non-root: incomplete FD/IO data
+                               .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
+                               .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
 }
 
@@ -347,119 +488,44 @@ long LinuxProcessProbe::ticksPerSecond() const
     return m_TicksPerSecond;
 }
 
-bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters) const
+bool LinuxProcessProbe::parseProcessStat(int pidDirFd, int32_t pid, ProcessCounters& counters) const
 {
     // Format: /proc/[pid]/stat — single line
     // Fields: pid (comm) state ppid pgrp session tty_nr tpgid flags
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    const std::string statPath = (m_ProcRoot / std::to_string(pid) / "stat").string();
-
     // 1 KiB is ample: comm is kernel-capped at 15 chars, and the remaining
     // ~22 numeric fields are at most ~462 bytes total.
     std::array<char, 1024> buf{};
-    const std::size_t len = readProcFile(statPath.c_str(), buf.data(), buf.size());
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
     if (len == 0)
     {
         return false;
     }
 
-    const char* const beg = buf.data();
-    const char* const end = buf.data() + len;
-
-    // Process name is in parentheses; find first '(' and last ')' to handle
-    // names that themselves contain parentheses (e.g. "process (name)").
-    const char* nameStart = beg;
-    while (nameStart < end && *nameStart != '(')
-    {
-        ++nameStart;
-    }
-    if (nameStart >= end)
-    {
-        return false;
-    }
-
-    const char* nameEnd = end - 1;
-    while (nameEnd > nameStart && *nameEnd != ')')
-    {
-        --nameEnd;
-    }
-    if (nameEnd <= nameStart)
+    // One parser for the format (#1183): the start time read here is the one the identity check
+    // before a process action (#973) and socket attribution (#1336) read.
+    const auto fields = ProcParsing::parseStatFields(std::string_view(buf.data(), len));
+    if (!fields.has_value())
     {
         return false;
     }
 
     counters.pid = pid;
-    counters.name = std::string(nameStart + 1, static_cast<std::size_t>(nameEnd - nameStart - 1));
-
-    // Fields follow the closing ')': ") state ppid pgrp ..."
-    const char* q = nameEnd + 1;
-    if (q < end && *q == ' ')
-    {
-        ++q;
-    }
-
-    char stateChar = '?';
-    int32_t parentPid = 0;
-    int32_t pgrp = 0;
-    int32_t session = 0;
-    int32_t ttyNr = 0;
-    int32_t tpgid = 0;
-    uint32_t flags = 0;
-    uint64_t minflt = 0;
-    uint64_t cminflt = 0;
-    uint64_t majflt = 0;
-    uint64_t cmajflt = 0;
-    uint64_t utime = 0;
-    uint64_t stime = 0;
-    int64_t cutime = 0;
-    int64_t cstime = 0;
-    int64_t priority = 0;
-    int64_t nice = 0;
-    int64_t numThreads = 0;
-    int64_t itrealvalue = 0;
-    uint64_t starttime = 0;
-    uint64_t vsize = 0;
-    int64_t rss = 0;
-
-    // State is a single character; skip leading whitespace then read it.
-    q = skipSpaces(q, end);
-    if (q >= end)
-    {
-        return false;
-    }
-    stateChar = *q++;
-
-    // clang-format off
-    if (!parseNum(q, end, parentPid)  || !parseNum(q, end, pgrp)        ||
-        !parseNum(q, end, session)    || !parseNum(q, end, ttyNr)       ||
-        !parseNum(q, end, tpgid)      || !parseNum(q, end, flags)       ||
-        !parseNum(q, end, minflt)     || !parseNum(q, end, cminflt)     ||
-        !parseNum(q, end, majflt)     || !parseNum(q, end, cmajflt)     ||
-        !parseNum(q, end, utime)      || !parseNum(q, end, stime)       ||
-        !parseNum(q, end, cutime)     || !parseNum(q, end, cstime)      ||
-        !parseNum(q, end, priority)   || !parseNum(q, end, nice)        ||
-        !parseNum(q, end, numThreads) || !parseNum(q, end, itrealvalue) ||
-        !parseNum(q, end, starttime)  || !parseNum(q, end, vsize)       ||
-        !parseNum(q, end, rss))
-    // clang-format on
-    {
-        return false;
-    }
-
-    counters.state = stateChar;
-    counters.parentPid = parentPid;
-    counters.userTime = utime;
-    counters.systemTime = stime;
-    counters.threadCount = clampToI32((numThreads > 0) ? numThreads : 1);
-    counters.startTimeTicks = starttime;
+    counters.name = std::string(fields->comm);
+    counters.state = fields->state;
+    counters.parentPid = fields->parentPid;
+    counters.userTime = fields->userTime;
+    counters.systemTime = fields->systemTime;
+    counters.threadCount = clampToI32((fields->numThreads > 0) ? fields->numThreads : 1);
+    counters.startTimeTicks = fields->startTime;
 
     // Convert start time from jiffies since boot to Unix epoch seconds
     // startTimeTicks is in clock ticks (jiffies), m_BootTimeEpoch is Unix epoch seconds
     if (m_BootTimeEpoch > 0 && m_TicksPerSecond > 0)
     {
-        const auto secondsSinceBoot = starttime / static_cast<uint64_t>(m_TicksPerSecond);
+        const auto secondsSinceBoot = fields->startTime / static_cast<uint64_t>(m_TicksPerSecond);
         constexpr auto maxEpoch = std::numeric_limits<uint64_t>::max();
 
         // Overflow protection: ensure addition won't wrap
@@ -474,22 +540,21 @@ bool LinuxProcessProbe::parseProcessStat(int32_t pid, ProcessCounters& counters)
         }
     }
 
-    counters.virtualBytes = vsize;
-    counters.rssBytes = toU64PositiveOr(rss, 0ULL) * m_PageSize;
-    counters.nice = clampToI32(nice);
-    counters.pageFaultCount = minflt + majflt; // Total page faults (minor + major)
+    counters.virtualBytes = fields->virtualBytes;
+    counters.rssBytes = toU64PositiveOr(fields->rssPages, 0ULL) * m_PageSize;
+    counters.nice = clampToI32(fields->nice);
+    counters.pageFaultCount = fields->minorFaults + fields->majorFaults; // Total page faults (minor + major)
 
     return true;
 }
 
-void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters) const
+void LinuxProcessProbe::parseProcessStatm(int pidDirFd, ProcessCounters& counters) const
 {
     // Format: /proc/[pid]/statm
     // Fields: size resident shared text lib data dt (all in pages)
 
-    const std::string statmPath = (m_ProcRoot / std::to_string(pid) / "statm").string();
     std::array<char, 128> buf{};
-    const std::size_t len = readProcFile(statmPath.c_str(), buf.data(), buf.size());
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "statm", buf.data(), buf.size());
     if (len == 0)
     {
         return;
@@ -508,86 +573,230 @@ void LinuxProcessProbe::parseProcessStatm(int32_t pid, ProcessCounters& counters
     }
 }
 
-void LinuxProcessProbe::parseProcessStatus(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+std::optional<CpuAffinity> LinuxProcessProbe::readOnlineCpus(const std::filesystem::path& cpuSysfsRoot)
 {
-    // Read /proc/[pid]/status for UID (owner) information
-    // Format is key:value pairs, one per line
-    // We need: Uid: <real> <effective> <saved> <filesystem>
-
-    const std::string statusPath = (procRoot / std::to_string(pid) / "status").string();
-    constexpr std::size_t BUF_SIZE = 2048;
+    // <cpuSysfsRoot>/online is a kernel CPU list ("0-7", "0-3,6-7"), a few bytes on any real machine.
+    // A list that fills the buffer may be cut off, so it is then read whole instead (bounded).
+    const std::string onlinePath = (cpuSysfsRoot / "online").string();
+    constexpr std::size_t BUF_SIZE = 256;
     std::array<char, BUF_SIZE> buf{};
-    const std::size_t len = readProcFile(statusPath.c_str(), buf.data(), BUF_SIZE);
+    const std::size_t len = readProcFile(onlinePath.c_str(), buf.data(), BUF_SIZE);
+    if (len == 0)
+    {
+        return std::nullopt;
+    }
+    if (len < BUF_SIZE)
+    {
+        return CpuAffinity::fromCpuList(std::string_view(buf.data(), len));
+    }
+    constexpr std::size_t MAX_ONLINE_SIZE = std::size_t{1} << 20U; // 1 MiB, far above any real list
+    const std::vector<char> full = readProcFileBounded(AT_FDCWD, onlinePath.c_str(), 4 * BUF_SIZE, MAX_ONLINE_SIZE);
+    if (full.empty() || full.size() == MAX_ONLINE_SIZE)
+    {
+        return std::nullopt; // Unreadable now, or possibly cut off
+    }
+    return CpuAffinity::fromCpuList(std::string_view(full.data(), full.size()));
+}
+
+void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
+                                           int32_t pid,
+                                           ProcessCounters& counters,
+                                           const std::optional<CpuAffinity>& onlineCpus)
+{
+    // Read /proc/[pid]/status, key:value pairs one per line, for:
+    //   Uid:               <real> <effective> <saved> <filesystem>  -- the owner
+    //   VmHWM:             <n> kB                                    -- peak resident set size (#1184)
+    //   Cpus_allowed_list: <kernel CPU list, e.g. 0-3,64-127>        -- the CPU affinity
+    // A kernel thread has no Vm* lines at all. The affinity used to come from sched_getaffinity(),
+    // packed into a 64-bit mask that dropped every CPU from 64 up (#1247). The list here has no width
+    // limit, is already in the file this reads, and follows procRoot (sched_getaffinity() asked the
+    // real kernel about a test's fake pid). It is the task's raw mask, though, which keeps CPUs that
+    // are possible but offline (a VM's hot-add slots, SMT turned off); sched_getaffinity() ANDed it
+    // with the active CPUs, and this ANDs it with the online list (#1384).
+
+    // A status file is about 1.5 KiB. Big enough for the usual file, Cpus_allowed's hex mask on a
+    // many-CPU kernel included, without allocating.
+    constexpr std::size_t BUF_SIZE = 8192;
+    std::array<char, BUF_SIZE> buf{};
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "status", buf.data(), BUF_SIZE);
     if (len == 0)
     {
         return;
     }
-    if (len == BUF_SIZE)
+    constexpr std::string_view UID_PREFIX = "Uid:";
+    constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
+    constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
+    constexpr std::uint64_t BYTES_PER_KIB = 1024;
+
+    std::string_view text(buf.data(), len);
+    std::vector<char> fullStatus;
+    // A file that filled the buffer was cut off there. Uid: comes first, so the read is only redone
+    // when a VmHWM: or Cpus_allowed_list: line did not make it in whole (a kernel thread's missing
+    // VmHWM: counts too, but its file -- no Vm* lines -- only fills the buffer with a long CPU list).
+    if (len == BUF_SIZE && (!hasCompleteLine(text, VM_HWM_PREFIX) || !hasCompleteLine(text, CPUS_ALLOWED_LIST_PREFIX)))
     {
-        // readProcFile() truncates silently at BUF_SIZE. "Uid:" is well inside this on
-        // every kernel this project has seen, but if a future kernel adds/grows earlier
-        // fields (Groups:, Seccomp_filters:, ...) enough to push it past the buffer, this
-        // makes that regression diagnosable instead of a silently-empty counters.user.
-        spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid: may have been missed", pid, BUF_SIZE);
+        // readProcFile() truncates silently at BUF_SIZE: a long Groups: line can push VmHWM past it,
+        // and a sparse Cpus_allowed_list (0,2,...,8190 is about 20 KiB) runs past it too. Read the
+        // whole file once instead, bounded well above any real status file; if that fails (the
+        // process just exited), fall back to the prefix. Either way a VmHWM: or Cpus_allowed_list:
+        // line cut off by the end of what was read is ignored below rather than read in part.
+        constexpr std::size_t MAX_STATUS_SIZE = std::size_t{1} << 20U; // 1 MiB
+        fullStatus = readProcFileBounded(pidDirFd, "status", 4 * BUF_SIZE, MAX_STATUS_SIZE);
+        if (!fullStatus.empty())
+        {
+            text = std::string_view(fullStatus.data(), fullStatus.size());
+        }
+        else
+        {
+            spdlog::debug("LinuxProcessProbe: /proc/{}/status truncated at {} bytes; Uid:/VmHWM:/Cpus_allowed_list: may have been missed",
+                          pid,
+                          BUF_SIZE);
+        }
     }
 
-    const char* p = buf.data();
-    const char* const end = buf.data() + len;
-    while (p < end)
+    bool haveUid = false;
+    bool havePeakRss = false;
+    bool haveAffinity = false;
+    const char* p = text.data();
+    const char* const end = text.data() + text.size();
+    while (p < end && !(haveUid && havePeakRss && haveAffinity))
     {
         const char* lineEnd = p;
         while (lineEnd < end && *lineEnd != '\n')
         {
             ++lineEnd;
         }
+        const std::string_view line(p, static_cast<std::size_t>(lineEnd - p));
 
-        // Look for "Uid:" line
-        constexpr std::string_view UID_PREFIX = "Uid:";
-        if (static_cast<std::size_t>(lineEnd - p) > UID_PREFIX.size() && std::string_view(p, UID_PREFIX.size()) == UID_PREFIX)
+        if (!haveUid && line.size() > UID_PREFIX.size() && line.starts_with(UID_PREFIX))
         {
+            haveUid = true;
             // Skip "Uid:" and whitespace, parse first UID with from_chars (no alloc)
-            const char* ptr = p + UID_PREFIX.size();
-            while (ptr < lineEnd && (*ptr == ' ' || *ptr == '\t'))
-            {
-                ++ptr;
-            }
+            const char* ptr = ProcParsing::skipSpaces(p + UID_PREFIX.size(), lineEnd);
             uid_t realUid = 0;
             if (std::from_chars(ptr, lineEnd, realUid).ec == std::errc{})
             {
                 counters.user = getUsername(realUid);
             }
-            break;
+        }
+        else if (!havePeakRss && line.starts_with(VM_HWM_PREFIX))
+        {
+            havePeakRss = true;
+            // Only a whole line (newline-terminated): a line cut off by the read could hold a
+            // truncated number.
+            const char* ptr = p + VM_HWM_PREFIX.size();
+            std::uint64_t peakKib = 0;
+            if (lineEnd < end && parseNum(ptr, lineEnd, peakKib) && peakKib <= (std::numeric_limits<std::uint64_t>::max() / BYTES_PER_KIB))
+            {
+                // Never below the resident size statm gave a moment ago: the kernel's RSS counters
+                // are batched per CPU, so the two reads can disagree by a little.
+                counters.peakRssBytes = std::max(peakKib * BYTES_PER_KIB, counters.rssBytes);
+            }
+        }
+        else if (!haveAffinity && line.starts_with(CPUS_ALLOWED_LIST_PREFIX))
+        {
+            haveAffinity = true;
+            // Only a whole line: one the buffer cut off could read "0-12" for "0-127".
+            if (lineEnd < end)
+            {
+                const std::string_view list = line.substr(CPUS_ALLOWED_LIST_PREFIX.size());
+                if (auto affinity = CpuAffinity::fromCpuList(list))
+                {
+                    if (onlineCpus.has_value())
+                    {
+                        affinity->intersectWith(*onlineCpus);
+                        if (affinity->empty())
+                        {
+                            // None of its CPUs online (a hotplug racing this sample): keep the raw
+                            // list rather than report the affinity as unreadable. Rare, so re-parse
+                            // instead of copying every process's list up front.
+                            affinity = CpuAffinity::fromCpuList(list);
+                        }
+                    }
+                    counters.cpuAffinity = std::move(affinity).value_or(CpuAffinity{});
+                }
+            }
         }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
     }
 }
 
-void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+void LinuxProcessProbe::readProcessCommand(
+    int pidDirFd, ProcessCounters& counters, CmdlineCache& previous, CmdlineCache& seen, std::chrono::steady_clock::time_point now) const
 {
-    // Format: /proc/[pid]/cmdline
-    // Arguments are separated by NUL bytes
-
     // A zombie has no command line left, and /proc/<pid>/cmdline may also be unreadable for another
     // user's process even though stat showed state Z. Either way it must not get the kernel-thread
-    // label: mark it <defunct>, as ps does (#1155).
+    // label: mark it <defunct>, as ps does (#1155). Checked before the cache, so a process cached
+    // while alive is still labelled once it dies; its entry is dropped.
     if (counters.state == 'Z')
     {
         counters.command = counters.name + " <defunct>";
         return;
     }
 
-    const std::string cmdlinePath = (procRoot / std::to_string(pid) / "cmdline").string();
+    // The command line read on an earlier sample, if it is this process's (same start time: not a
+    // later process that reused the PID; same comm: not replaced by an exec) and still fresh (#1425).
+    auto node = previous.extract(counters.pid);
+    if (!node.empty())
+    {
+        const CmdlineCacheEntry& cached = node.mapped();
+        if (cached.startTimeTicks == counters.startTimeTicks && cached.comm == counters.name && now < cached.expiresAt)
+        {
+            if (!cached.name.empty())
+            {
+                counters.name = cached.name;
+            }
+            counters.command = cached.command;
+            seen.insert(std::move(node));
+            return;
+        }
+    }
+
+    const std::optional<std::vector<char>> rawCmdline = readCmdline(pidDirFd);
+    if (!rawCmdline.has_value())
+    {
+        // Cannot read the file: leave command unchanged rather than incorrectly labelling a non-kernel
+        // process as a kernel thread, and cache nothing, so the next sample tries again.
+        return;
+    }
+
+    std::string comm = counters.name;
+    applyCmdline(counters, *rawCmdline);
+    if (rawCmdline->size() > MAX_CACHED_CMDLINE_BYTES)
+    {
+        return; // Too long to keep: read every sample, as before the cache
+    }
+
+    std::string resolvedName = (counters.name != comm) ? counters.name : std::string{};
+    CmdlineCacheEntry entry{.startTimeTicks = counters.startTimeTicks,
+                            .comm = std::move(comm),
+                            .name = std::move(resolvedName),
+                            .command = counters.command,
+                            .expiresAt = now + cmdlineCacheLifetime(counters.pid, m_CmdlineCacheTtl)};
+    if (!node.empty())
+    {
+        node.mapped() = std::move(entry); // Reuse the stale entry's node: no allocation
+        seen.insert(std::move(node));
+    }
+    else
+    {
+        seen.insert_or_assign(counters.pid, std::move(entry));
+    }
+}
+
+std::optional<std::vector<char>> LinuxProcessProbe::readCmdline(int pidDirFd)
+{
+    // Format: /proc/[pid]/cmdline
+    // Arguments are separated by NUL bytes
 
     // Open once: distinguishes "unreadable" (permission denied, hidepid) from
     // "readable but empty" (kernel threads), avoiding a second open() call.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
-    const int fd = ::open(cmdlinePath.c_str(), O_RDONLY | O_CLOEXEC);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX openat() is variadic
+    const int fd = ::openat(pidDirFd, "cmdline", O_RDONLY | O_CLOEXEC);
     if (fd == -1)
     {
-        // Cannot read the file — leave command unchanged rather than
-        // incorrectly labelling a non-kernel process as a kernel thread.
-        return;
+        return std::nullopt;
     }
 
     const FdGuard guard{fd}; // ensures fd is closed on all paths, including exception paths
@@ -597,7 +806,6 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     std::vector<char> buf;
     buf.reserve(4096);
     std::array<char, 4096> chunk{};
-    bool readError = false;
     for (;;)
     {
         const auto n = ::read(fd, chunk.data(), chunk.size());
@@ -611,22 +819,20 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
             {
                 continue; // interrupted by signal — retry
             }
-            readError = true;
-            break; // I/O error
+            // Treat a read error the same as open() failure: leave command unchanged
+            // rather than incorrectly labelling the process as a kernel thread.
+            return std::nullopt;
         }
         buf.insert(buf.end(), chunk.data(), chunk.data() + static_cast<std::size_t>(n));
     }
+    return buf;
+}
 
-    if (readError)
+void LinuxProcessProbe::applyCmdline(ProcessCounters& counters, const std::vector<char>& rawCmdline)
+{
+    if (rawCmdline.empty())
     {
-        // Treat a read error the same as open() failure: leave command unchanged
-        // rather than incorrectly labelling the process as a kernel thread.
-        return;
-    }
-
-    if (buf.empty())
-    {
-        // File opened and fully read but empty: a kernel thread (zombies were handled above).
+        // File opened and fully read but empty: a kernel thread (zombies are handled before this).
         counters.command = "[" + counters.name + "]";
         return;
     }
@@ -634,14 +840,15 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     // The kernel caps the name in /proc/[pid]/stat at 15 characters. Where it has been cut, the
     // full name is usually recoverable from the arguments, which are still NUL-separated at this
     // point -- so this costs no extra read. See ProcessName.h for when the result is trusted (#951).
-    if (const std::string_view fullName = ProcessName::resolveFullName(counters.name, std::string_view(buf.data(), buf.size()));
+    if (const std::string_view fullName =
+            ProcessName::resolveFullName(counters.name, std::string_view(rawCmdline.data(), rawCmdline.size()));
         fullName.size() != counters.name.size())
     {
         counters.name = std::string(fullName);
     }
 
     // Replace NUL argument separators with spaces, then trim trailing space.
-    std::string cmdline(buf.data(), buf.size());
+    std::string cmdline(rawCmdline.data(), rawCmdline.size());
     for (auto& c : cmdline)
     {
         if (c == '\0')
@@ -657,39 +864,7 @@ void LinuxProcessProbe::parseProcessCmdline(int32_t pid, ProcessCounters& counte
     counters.command = std::move(cmdline);
 }
 
-void LinuxProcessProbe::parseProcessAffinity(int32_t pid, ProcessCounters& counters)
-{
-    // Use sched_getaffinity to read CPU affinity mask for the process
-    // This returns which CPU cores the process is allowed to run on
-
-    // NOLINTNEXTLINE(misc-include-cleaner) - cpu_set_t is provided by <sched.h>
-    cpu_set_t cpuSet;
-    CPU_ZERO(&cpuSet);
-
-    // sched_getaffinity returns the affinity for the main thread of the process
-    if (sched_getaffinity(pid, sizeof(cpu_set_t), &cpuSet) == 0)
-    {
-        // Convert cpu_set_t to a bitmask that fits in uint64_t
-        // This limits us to 64 cores, which is reasonable for most systems
-        const int maxCpus = std::min(CPU_SETSIZE, 64);
-        std::uint64_t mask = 0;
-        for (int cpu = 0; cpu < maxCpus; ++cpu)
-        {
-            if (CPU_ISSET(static_cast<size_t>(cpu), &cpuSet) != 0)
-            {
-                mask |= (1ULL << cpu);
-            }
-        }
-        counters.cpuAffinityMask = mask;
-    }
-    else
-    {
-        // If sched_getaffinity fails (e.g., permission denied), set mask to 0
-        counters.cpuAffinityMask = 0;
-    }
-}
-
-void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+void LinuxProcessProbe::parseProcessIo(int pidDirFd, ProcessCounters& counters)
 {
     // Format: /proc/[pid]/io
     // Key-value pairs, one per line:
@@ -701,15 +876,15 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     // write_bytes: <bytes> <- actual I/O to storage layer
     // cancelled_write_bytes: <bytes>
     //
-    // Note: This file requires CAP_DAC_READ_SEARCH capability or running as root,
-    // or being the owner of the process. If we can't read it -- typically another user's
-    // process without root -- the counters are marked unavailable rather than left at a
-    // 0 that reads as "no I/O" (#1110).
+    // Note: for another user's process this file needs CAP_DAC_READ_SEARCH (to open the owner-only
+    // file) plus CAP_SYS_PTRACE (the read checks PTRACE_MODE_READ_FSCREDS) in the effective set --
+    // root with its normal capabilities has them, but root alone isn't enough where capabilities are
+    // dropped. If we can't read it -- typically another user's process without those capabilities --
+    // the counters are marked unavailable rather than left at a 0 that reads as "no I/O" (#1110).
 
-    const std::string ioPath = (procRoot / std::to_string(pid) / "io").string();
     constexpr std::size_t BUF_SIZE = 512;
     std::array<char, BUF_SIZE> buf{};
-    const std::size_t len = readProcFile(ioPath.c_str(), buf.data(), BUF_SIZE);
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "io", buf.data(), BUF_SIZE);
     if (len == 0)
     {
         // Common case: insufficient permissions
@@ -770,45 +945,39 @@ void LinuxProcessProbe::parseProcessIo(int32_t pid, ProcessCounters& counters, c
     counters.ioCountersAvailable = hasRead && hasWrite;
 }
 
-void LinuxProcessProbe::countProcessFds(int32_t pid, ProcessCounters& counters, const std::filesystem::path& procRoot)
+template<typename OnSocket>
+void LinuxProcessProbe::countProcessFds(int pidDirFd, ProcessCounters& counters, bool readEveryLink, OnSocket&& onSocket)
 {
-    // Count entries in /proc/[pid]/fd directory.
-    // Each entry is a symlink to an open file descriptor.
-    // Note: May fail due to permissions (needs same user or root).
-
-    const auto fdPath = procRoot / std::to_string(pid) / "fd";
-
-    int32_t count = 0;
-    try
+    // Count entries in /proc/[pid]/fd: each is a symlink to an open file descriptor. Listing another
+    // user's needs CAP_DAC_READ_SEARCH; reading its links -- which the socket inode-to-PID map does --
+    // also needs CAP_SYS_PTRACE. See ProcFdScan.h.
+    const ProcFdScan::FdScan scan = ProcFdScan::scanFds(pidDirFd, readEveryLink, std::forward<OnSocket>(onSocket));
+    if (!scan.listed)
     {
-        // Don't use error_code variant because errors during iteration
-        // (not just construction) won't be captured in it. Rely on exceptions.
-        for (const auto& entry : std::filesystem::directory_iterator(fdPath))
-        {
-            (void) entry; // We just count entries
-            ++count;
-        }
-        // Only set if we successfully enumerated the directory
-        counters.handleCount = count;
-    }
-    catch (const std::exception& ex)
-    {
-        // Permission errors (another user's process without root) and other exceptional situations:
-        // the count is unknown, not 0 (#1110). The process's connections can't be attributed to it
-        // either -- the socket inode-to-PID map is built from these same fd directories -- so its
-        // network counters are unknown too, not "no traffic".
+        // Permission errors (another user's process, without CAP_DAC_READ_SEARCH), a process that
+        // exited, a listing cut short: the count is unknown, not 0 (#1110). The process's connections
+        // can't be attributed to it either -- the socket inode-to-PID map is built from these same fd
+        // directories -- so its network counters are unknown too, not "no traffic".
         counters.handleCount = 0;
         counters.handleCountAvailable = false;
         counters.networkCountersAvailable = false;
-        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {} at {}: {}", pid, fdPath.string(), ex.what());
+        spdlog::debug("LinuxProcessProbe: failed to enumerate FDs for pid {}", counters.pid);
+        return;
+    }
+    counters.handleCount = scan.count;
+    if (scan.linkAccess == ProcFdScan::LinkAccess::Denied)
+    {
+        // Listed, but its links can't be read (#1328): none of its connections can be attributed to
+        // it, so its network counters are unknown, not "no traffic".
+        counters.networkCountersAvailable = false;
     }
 }
 
 bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path& procRoot)
 {
     // Check if procRoot/self/io is readable to determine I/O counter availability.
-    // This file requires CAP_DAC_READ_SEARCH capability or root privileges,
-    // or being the owner of the target process.
+    // Our own io file is always readable unless procfs is restricted; another user's needs
+    // CAP_DAC_READ_SEARCH plus CAP_SYS_PTRACE (root with its normal capabilities; see parseProcessIo()).
     const std::string selfIoPath = (procRoot / "self" / "io").string();
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — POSIX open() is variadic
     const int fd = ::open(selfIoPath.c_str(), O_RDONLY | O_CLOEXEC);
@@ -820,22 +989,35 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
     return true;
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int32_t pid, const std::filesystem::path& procRoot)
+std::string LinuxProcessProbe::getProcessStatus(int pidDirFd, const std::filesystem::path& cgroupRoot, FrozenByCgroup& frozenByCgroup)
 {
     // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
     // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
     // Read to EOF: a cgroup path can approach PATH_MAX, and a truncated one would point the check
     // at the wrong cgroup.events (#1228 review).
-    const auto cgroupPath = (procRoot / std::to_string(pid) / "cgroup").string();
-    const std::vector<char> cgroupContents = ProcParsing::readProcFileFull(cgroupPath.c_str());
-    if (!cgroupContents.empty() &&
-        CgroupPath::isCgroupFrozen(std::string_view(cgroupContents.data(), cgroupContents.size()), std::filesystem::path("/sys/fs/cgroup")))
+    // The usual file (one v2 line, or a dozen v1 ones) fits on the stack; one that fills it is read
+    // again whole.
+    constexpr std::size_t BUF_SIZE = 1024;
+    std::array<char, BUF_SIZE> buf{};
+    std::vector<char> fullContents;
+    std::string_view cgroups(buf.data(), readProcFileOnceAt(pidDirFd, "cgroup", buf.data(), BUF_SIZE));
+    if (cgroups.size() == BUF_SIZE)
     {
-        return "Suspended";
+        fullContents = ProcParsing::readProcFileFullAt(pidDirFd, "cgroup");
+        cgroups = std::string_view(fullContents.data(), fullContents.size());
     }
-
-    // No special status
-    return {};
+    if (cgroups.empty())
+    {
+        return {};
+    }
+    // Processes in the same cgroups share one freeze-state read per pass: the state is a property of
+    // the cgroup, and the answer for the first of them is the one a read microseconds later gives.
+    auto known = frozenByCgroup.find(cgroups);
+    if (known == frozenByCgroup.end())
+    {
+        known = frozenByCgroup.emplace(std::string(cgroups), CgroupPath::isCgroupFrozen(cgroups, cgroupRoot)).first;
+    }
+    return known->second ? std::string("Suspended") : std::string{}; // No special status unless frozen
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {
@@ -1112,76 +1294,204 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(sampledAt.time_since_epoch()).count());
     if (sockets.empty())
     {
-        return reading; // a complete reading with no sockets: every connection closed
+        // A complete reading with no sockets: every connection closed, so none is unowned any more.
+        // Forget them: a later connection reusing one of their inodes would otherwise inherit its
+        // first-seen time, look older than the map, and not trigger the early rebuild (#1327 review).
+        // A failed reading (returned above) leaves them alone: its sockets are unknown, not closed.
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        m_UnownedSocketsFirstSeen.clear();
+        return reading;
     }
 
     // Attribute each socket to the process holding it (socket inode -> PID, from /proc/[pid]/fd).
     // A socket not in the map (opened since its last rebuild, or held by a process we can't read)
     // is still reported, unattributed, so Domain tracks its counters from now on.
-    const auto inodeToPid = currentInodeToPidMap();
-    reading.sockets.reserve(sockets.size());
-    for (const auto& socket : sockets)
+    // The owner comes with its start time, so Domain can tell it from a process that reused its PID (#1336).
+    const auto ownerOf = [](const InodeToPidMap* inodeToPid, std::uint64_t inode) -> SocketOwner
     {
-        std::int32_t pid = 0;
-        if (inodeToPid)
+        if (inodeToPid != nullptr)
         {
-            if (const auto it = inodeToPid->find(socket.inode); it != inodeToPid->end())
+            if (const auto it = inodeToPid->find(inode); it != inodeToPid->end())
             {
-                pid = it->second;
+                return it->second;
             }
         }
-        reading.sockets.push_back(
-            SocketTrafficSample{.key = socket.inode, .pid = pid, .bytesReceived = socket.bytesReceived, .bytesSent = socket.bytesSent});
+        return {};
+    };
+    auto snapshot = currentInodeToPidMap(std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS});
+
+    bool unownedSinceBuild = false;
+    {
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        // A socket with no owner that wasn't already unowned in a reading taken before the map was
+        // built may have been opened since the build: rebuild early (rate-limited) so a new
+        // connection is attributed in the reading it first appears in, rather than up to a TTL later
+        // with its first bytes, or all of a short one's, never credited (#1259). Sockets held by
+        // processes we can't read stay unowned through the rebuild and so don't trigger another.
+        // The rebuild may land on a cached socket query (same sampledAt): the reading then differs
+        // from the last only in ownership, which Domain still applies (SocketTrafficAccumulator).
+        unownedSinceBuild = std::ranges::any_of(sockets,
+                                                [&](const SocketStats& socket)
+                                                {
+                                                    if (ownerOf(snapshot.map.get(), socket.inode).pid != 0)
+                                                    {
+                                                        return false;
+                                                    }
+                                                    const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
+                                                    const auto firstSeen =
+                                                        (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt;
+                                                    return firstSeen > snapshot.builtAt;
+                                                });
+    }
+    // The early rebuild may scan every /proc/[pid]/fd: do it without holding m_UnownedSocketsMutex.
+    if (unownedSinceBuild)
+    {
+        snapshot = currentInodeToPidMap(m_InodeMapEarlyRebuildInterval);
+    }
+
+    {
+        const std::scoped_lock lock{m_UnownedSocketsMutex};
+        std::unordered_map<std::uint64_t, std::chrono::steady_clock::time_point> unowned;
+        reading.sockets.reserve(sockets.size());
+        for (const auto& socket : sockets)
+        {
+            const SocketOwner owner = ownerOf(snapshot.map.get(), socket.inode);
+            if (owner.pid == 0)
+            {
+                const auto seen = m_UnownedSocketsFirstSeen.find(socket.inode);
+                unowned.insert_or_assign(socket.inode, (seen != m_UnownedSocketsFirstSeen.end()) ? seen->second : sampledAt);
+            }
+            reading.sockets.push_back(SocketTrafficSample{.key = socket.inode,
+                                                          .pid = owner.pid,
+                                                          .ownerStartTimeTicks = owner.startTimeTicks,
+                                                          .bytesReceived = socket.bytesReceived,
+                                                          .bytesSent = socket.bytesSent});
+        }
+        m_UnownedSocketsFirstSeen = std::move(unowned);
     }
     return reading;
 }
 
-std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> LinuxProcessProbe::currentInodeToPidMap() const
+std::pair<LinuxProcessProbe::InodeToPidSnapshot, bool> LinuxProcessProbe::claimInodeMapRebuild(std::chrono::milliseconds maxAge) const
 {
-    // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* every
-    // enumerate(). The rebuild slot is claimed by advancing m_InodeToPidCacheTime under
-    // the initial lock, so only one thread rebuilds per TTL window while all others
-    // continue using the previous shared_ptr snapshot (see #460).
-    std::shared_ptr<const std::unordered_map<std::uint64_t, std::int32_t>> inodeToPidPtr;
-    bool needsRebuild = false;
+    // The rebuild slot is claimed by advancing m_InodeToPidCacheTime under the lock, so only one
+    // thread rebuilds per TTL window while all others continue using the previous shared_ptr
+    // snapshot (see #460).
+    const std::scoped_lock lock{m_InodePidCacheMutex};
+    const auto now = std::chrono::steady_clock::now();
+    // However the map got stale, never scan more often than the early-rebuild interval: an empty
+    // scan backdates m_InodeToPidCacheTime for a quick retry, and that retry must not combine
+    // with an early rebuild into two scans per reading.
+    const bool claimed = (now - m_InodeToPidCacheTime) >= maxAge && (now - m_InodeToPidLastAttempt) >= m_InodeMapEarlyRebuildInterval;
+    if (claimed)
     {
-        const std::scoped_lock lock{m_InodePidCacheMutex};
-        const auto now = std::chrono::steady_clock::now();
-        const auto cacheAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_InodeToPidCacheTime).count();
-        needsRebuild = (cacheAgeMs >= Domain::Sampling::INODE_PID_CACHE_TTL_MS);
-        if (needsRebuild)
-        {
-            // Claim the rebuild slot: advance the timestamp now so any other thread that
-            // checks while we are scanning /proc sees a fresh time and skips rebuilding.
-            m_InodeToPidCacheTime = now;
-        }
-        inodeToPidPtr = m_InodeToPidCache; // snapshot current (possibly stale) pointer
+        // Advance the timestamps now so any other thread that checks while we are scanning /proc sees
+        // a fresh time and skips rebuilding.
+        m_InodeToPidCacheTime = now;
+        m_InodeToPidLastAttempt = now;
     }
-    if (needsRebuild)
+    return {InodeToPidSnapshot{.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt}, claimed}; // current (possibly stale) snapshot
+}
+
+LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::publishInodeToPidMap(InodeToPidMap rebuilt,
+                                                                              std::chrono::steady_clock::time_point scanStart) const
+{
+    // Allocated outside the lock; readers keep using the old snapshot until the swap.
+    auto map = rebuilt.empty() ? nullptr : std::make_shared<const InodeToPidMap>(std::move(rebuilt));
+    const std::scoped_lock lock{m_InodePidCacheMutex};
+    if (map)
     {
-        // Build the map outside the lock; concurrent threads keep using the old snapshot.
-        auto rebuilt = std::make_shared<const std::unordered_map<std::uint64_t, std::int32_t>>(buildInodeToPidMap(m_ProcRoot));
-        {
-            const std::scoped_lock lock{m_InodePidCacheMutex};
-            if (!rebuilt->empty())
-            {
-                m_InodeToPidCache = std::move(rebuilt);
-                m_InodeToPidCacheTime = std::chrono::steady_clock::now();
-                inodeToPidPtr = m_InodeToPidCache;
-            }
-            else
-            {
-                // Preserve the previous snapshot when procfs enumeration transiently
-                // produces no entries; allow a quick retry instead of waiting the full TTL.
-                constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
-                const auto ttl = std::chrono::milliseconds{Domain::Sampling::INODE_PID_CACHE_TTL_MS};
-                const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, ttl);
-                m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (ttl - retryDelay);
-                // inodeToPidPtr already holds the previous (possibly non-empty) snapshot
-            }
-        }
+        m_InodeToPidCache = std::move(map);
+        m_InodeToPidCacheTime = std::chrono::steady_clock::now();
     }
-    return inodeToPidPtr;
+    else
+    {
+        // Preserve the previous snapshot when procfs enumeration transiently
+        // produces no entries; allow a quick retry instead of waiting the full TTL
+        // (still no sooner than m_InodeMapEarlyRebuildInterval after this attempt).
+        constexpr auto EMPTY_REBUILD_RETRY_MS = std::chrono::milliseconds{100};
+        const auto retryDelay = std::min(EMPTY_REBUILD_RETRY_MS, m_InodeMapTtl);
+        m_InodeToPidCacheTime = std::chrono::steady_clock::now() - (m_InodeMapTtl - retryDelay);
+        // The scan still tried to resolve every socket unowned before it: advance builtAt so
+        // those sockets don't count as opened since the build and trigger an early rebuild
+        // every interval (#1259).
+    }
+    m_InodeToPidBuiltAt = scanStart;
+    return {.map = m_InodeToPidCache, .builtAt = m_InodeToPidBuiltAt};
+}
+
+LinuxProcessProbe::InodeToPidSnapshot LinuxProcessProbe::currentInodeToPidMap(std::chrono::milliseconds maxAge) const
+{
+    // Refresh inode-to-PID map on a TTL basis to avoid scanning /proc/[pid]/fd/* for every reading.
+    // Normally enumerate() has just rebuilt it from its own fd walk (#1426), and this only rebuilds
+    // it early (a socket that appeared unowned) or for a reading taken without an enumerate().
+    auto [snapshot, claimed] = claimInodeMapRebuild(maxAge);
+    if (!claimed)
+    {
+        return snapshot;
+    }
+    // Build the map outside the lock; concurrent threads keep using the old snapshot.
+    const auto scanStart = std::chrono::steady_clock::now();
+    if (m_InodeMapScanHook)
+    {
+        m_InodeMapScanHook();
+    }
+    return publishInodeToPidMap(buildInodeToPidMap(m_ProcRoot), scanStart);
+}
+
+void LinuxProcessProbe::rebuildInodeMapWithFdCounts(int procDirFd, std::vector<ProcessCounters>& processes) const
+{
+    const auto scanStart = std::chrono::steady_clock::now();
+    if (m_InodeMapScanHook)
+    {
+        m_InodeMapScanHook();
+    }
+    InodeToPidMap inodeToPid;
+    inodeToPid.reserve(1024); // Pre-allocate for typical system, as buildInodeToPidMap() does
+
+    std::array<char, 16> pidName{}; // A PID's decimal digits and a NUL
+    for (ProcessCounters& counters : processes)
+    {
+        const auto [nameEnd, ec] = std::to_chars(pidName.data(), pidName.data() + pidName.size() - 1, counters.pid);
+        *nameEnd = '\0';
+        // Opened again (one stays open per process only while it is read, well under any fd limit):
+        // the fd links and the owner's start time are read through this one handle, so a process that
+        // exits and has its PID reused since the stat pass can't pair the new process's start time with
+        // the old one's sockets, or the reverse -- buildInodeToPidMap()'s guarantee (#1336).
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        const FdGuard pidDirFd(::openat(procDirFd, pidName.data(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        if (ec != std::errc{} || pidDirFd.get() == -1)
+        {
+            // Exited since the stat pass: its FDs, and so its connections, are unknown.
+            counters.handleCount = 0;
+            counters.handleCountAvailable = false;
+            counters.networkCountersAvailable = false;
+            continue;
+        }
+        // The process behind this handle, which may not be the row's: its PID can have been reused
+        // since the stat pass. Its sockets go into the map under its own start time either way.
+        const std::uint64_t startTimeTicks = readStartTimeTicksAt(pidDirFd.get());
+        ProcessCounters scanned{};
+        scanned.pid = counters.pid;
+        countProcessFds(pidDirFd.get(),
+                        scanned,
+                        /*readEveryLink=*/true,
+                        [&](std::uint64_t inode)
+                        { addSocketOwner(inodeToPid, inode, SocketOwner{.pid = counters.pid, .startTimeTicks = startTimeTicks}); });
+        if (startTimeTicks == 0 || startTimeTicks != counters.startTimeTicks)
+        {
+            // Another process now (or this one exited): the row's process is gone, as above, and the
+            // new one's FDs are not its.
+            counters.handleCount = 0;
+            counters.handleCountAvailable = false;
+            counters.networkCountersAvailable = false;
+            continue;
+        }
+        counters.handleCount = scanned.handleCount;
+        counters.handleCountAvailable = scanned.handleCountAvailable;
+        counters.networkCountersAvailable = counters.networkCountersAvailable && scanned.networkCountersAvailable;
+    }
+    (void) publishInodeToPidMap(std::move(inodeToPid), scanStart);
 }
 #endif // TASKSMACK_HAS_NETLINK_SOCKET_STATS
 

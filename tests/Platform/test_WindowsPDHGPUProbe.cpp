@@ -47,11 +47,25 @@ TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
     PDHGPUProbe probe;
     const auto caps = probe.capabilities();
 
-    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);
+    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization); // Process role (the default)
     EXPECT_FALSE(caps.hasTemperature);
     EXPECT_FALSE(caps.hasPowerMetrics);
     EXPECT_FALSE(caps.hasClockSpeeds);
     EXPECT_FALSE(caps.hasFanSpeed);
+}
+
+// An Adapter-role probe returns no per-process counters, so it must not advertise them; engine
+// utilization (its adapter totals) it does report (#1365 review).
+TEST(WindowsPDHGPUProbeTest, AdapterRoleDoesNotAdvertisePerProcessCounters)
+{
+    const PDHGPUProbe probe(PDHGPUProbe::Role::Adapter);
+    const auto caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasPerProcessMetrics);
+    EXPECT_FALSE(caps.hasPerProcessUtilization);
+    if (probe.isAvailable())
+    {
+        EXPECT_TRUE(caps.hasEngineUtilization);
+    }
 }
 
 TEST(WindowsPDHGPUProbeTest, MoveConstructionAndAssignmentTransferState)
@@ -799,6 +813,25 @@ TEST_F(WindowsPDHGPUProbeInjectedTest, MemoryCounterSkipsFailingCstatusAndMalfor
     ASSERT_EQ(results.size(), 1U);
     EXPECT_EQ(results[0].pid, 802);
     EXPECT_EQ(results[0].gpuMemoryBytes, 4096U);
+}
+
+// #1164: a process's dedicated and shared GPU memory are reported apart, as the adapter's are, so
+// Domain can compare each with the adapter's matching figure instead of a sum that could exceed it.
+TEST_F(WindowsPDHGPUProbeInjectedTest, DedicatedAndSharedMemoryAreKeptApart)
+{
+    auto impl = makeInjectedImpl();
+    m_scenario->items[impl->dedicatedMemoryCounter] = {{.name = L"pid_802_luid_0x0_0x1_phys_0", .largeValue = 4096}};
+    m_scenario->items[impl->sharedMemoryCounter] = {{.name = L"pid_802_luid_0x0_0x1_phys_0", .largeValue = 1000}};
+    m_scenario->items[impl->utilizationCounter] = {
+        {.name = L"pid_802_luid_0x0_0x1_phys_0_eng_0_engtype_3D", .doubleValue = 5.0},
+    };
+
+    PDHGPUProbe probe(std::move(impl));
+    const auto results = probe.readProcessGPUCounters();
+
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_EQ(results[0].gpuMemoryBytes, 4096U);
+    EXPECT_EQ(results[0].gpuSharedMemoryBytes, 1000U);
 }
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, ReadCounterArrayHardFailureIsTreatedAsNoData)

@@ -10,6 +10,15 @@ on:
     - cron: '0 10 * * 0'
   workflow_dispatch:
 
+# A new commit on a PR branch cancels that branch's in-progress analysis, as CI, Static Analysis and
+# Heavy Checks already do (#1331): a full CodeQL analysis is long (see the job's timeout) and stale
+# ones starved the required jobs of runners. Pushes to main, the weekly schedule and manual runs are never cancelled mid-run, so
+# code scanning's baseline for main stays complete; at most one waits behind the running one (GitHub
+# drops an older *queued* run in the same group when a newer one arrives).
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   LLVM_VERSION: '23'
 
@@ -19,7 +28,9 @@ jobs:
   analyze:
     name: Analyze C++
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 45, not 30: full C++ analyses grew past the old 30-minute limit on busy runners, which cancelled
+    # otherwise-clean runs and left PRs without a CodeQL result to gate on.
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read

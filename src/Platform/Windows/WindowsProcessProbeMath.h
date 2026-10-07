@@ -1,8 +1,11 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/ProcessTypes.h"
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +62,130 @@ struct DetailCacheTTLs
     }
     // >= 16 GB: Responsive, but avoid 1Hz+ heavy metadata refresh churn
     return {.light = std::chrono::milliseconds(1000), .heavy = std::chrono::milliseconds(4000)};
+}
+
+/// Scheduler states of a thread (KTHREAD_STATE, SYSTEM_THREAD_INFORMATION::ThreadState) that
+/// deriveProcessState() tells apart, spelled out so this header stays free of <windows.h>.
+inline constexpr std::uint32_t THREAD_STATE_READY = 1;
+inline constexpr std::uint32_t THREAD_STATE_RUNNING = 2;
+inline constexpr std::uint32_t THREAD_STATE_STANDBY = 3;
+inline constexpr std::uint32_t THREAD_STATE_WAITING = 5;
+inline constexpr std::uint32_t THREAD_STATE_TRANSITION = 6; // Ready, but its kernel stack is paged out
+inline constexpr std::uint32_t THREAD_STATE_DEFERRED_READY = 7;
+inline constexpr std::uint32_t THREAD_STATE_GATE_WAIT = 8;
+inline constexpr std::uint32_t THREAD_STATE_WAITING_FOR_PROCESS_IN_SWAP = 9;
+/// Wait reasons (KWAIT_REASON, SYSTEM_THREAD_INFORMATION::WaitReason) of a suspended thread.
+inline constexpr std::uint32_t WAIT_REASON_SUSPENDED = 5;
+inline constexpr std::uint32_t WAIT_REASON_WR_SUSPENDED = 12;
+
+/// Tally of one process's threads from the SystemProcessInformation snapshot, for a Linux-style
+/// state letter (#1156). Windows has no process state of its own; every live process used to read
+/// "R" (from GetExitCodeProcess), and one the probe couldn't open "?".
+struct ProcessThreadTally
+{
+    std::size_t runnable = 0;  // Running, or ready to run (Ready, Standby, DeferredReady, Transition)
+    std::size_t waiting = 0;   // Waiting for anything
+    std::size_t suspended = 0; // Of those, waiting because the thread is suspended
+
+    constexpr void add(std::uint32_t threadState, std::uint32_t waitReason) noexcept
+    {
+        switch (threadState)
+        {
+        case THREAD_STATE_READY:
+        case THREAD_STATE_RUNNING:
+        case THREAD_STATE_STANDBY:
+        case THREAD_STATE_TRANSITION:
+        case THREAD_STATE_DEFERRED_READY:
+            ++runnable;
+            break;
+        case THREAD_STATE_WAITING:
+            ++waiting;
+            if (waitReason == WAIT_REASON_SUSPENDED || waitReason == WAIT_REASON_WR_SUSPENDED)
+            {
+                ++suspended;
+            }
+            break;
+        case THREAD_STATE_GATE_WAIT:
+        case THREAD_STATE_WAITING_FOR_PROCESS_IN_SWAP:
+            ++waiting;
+            break;
+        default:
+            break; // Initialized or Terminated: neither runs nor waits
+        }
+    }
+};
+
+/// The state letter for a process, with the meanings Linux gives them (#1156):
+///  - 'I' Idle: the System Idle Process (PID 0), whose threads run whenever a CPU has nothing to do.
+///  - 'R' Running: at least one thread is running or ready to run.
+///  - 'T' Stopped: every thread is suspended -- a suspended or frozen (UWP) process, or one stopped
+///    in a debugger.
+///  - 'S' Sleeping: every thread is waiting, not all of them suspended.
+///  - '?' Unknown: no thread to judge by. Minimal processes (Secure System, Registry, Memory
+///    Compression) show no threads. So does a process that has exited but is kept by an open
+///    handle, if it is listed: Windows has no reaping, so 'Z' (zombie) is never reported.
+[[nodiscard]] constexpr char deriveProcessState(const ProcessThreadTally& threads, bool isIdleProcess) noexcept
+{
+    if (isIdleProcess)
+    {
+        return 'I';
+    }
+    if (threads.runnable > 0)
+    {
+        return 'R';
+    }
+    if (threads.waiting == 0)
+    {
+        return '?';
+    }
+    return threads.suspended == threads.waiting ? 'T' : 'S';
+}
+
+/// Which TTL-cached details getProcessDetails() refreshes for one process this sample (#1156).
+struct DetailRefreshPlan
+{
+    bool light = false;    // Status, GDI objects
+    bool heavy = false;    // Owner, command line, publisher, affinity, classification
+    bool priority = false; // Priority class (GetPriorityClass)
+
+    [[nodiscard]] constexpr bool any() const noexcept
+    {
+        return light || heavy || priority;
+    }
+};
+
+/// Decide what to refresh for one process (#1156).
+///  - Everything for a process seen for the first time.
+///  - Light and heavy details when their TTLs are due.
+///  - The priority class with the heavy details, and also as soon as the process's base priority in
+///    the snapshot changes. Setting a priority class sets the base priority, so a change (by our
+///    own Set Priority action or anyone else's) shows on the next sample rather than up to a heavy
+///    TTL (4-15 s) later, without reading every process's class every sample. The class stays the
+///    source of the value: a few system processes (csrss.exe, smss.exe) run at a base priority
+///    their Normal class doesn't give.
+[[nodiscard]] constexpr DetailRefreshPlan planDetailRefresh(bool firstSeen, bool lightDue, bool heavyDue, bool basePriorityChanged) noexcept
+{
+    const bool heavy = firstSeen || heavyDue;
+    return DetailRefreshPlan{.light = firstSeen || lightDue, .heavy = heavy, .priority = heavy || basePriorityChanged};
+}
+
+/// Mark which of one process's readings the Windows probe took (#1285, the Windows half of #1110).
+///  - Handle count and I/O bytes come from the SystemProcessInformation snapshot, which the kernel
+///    fills for every process without an access check -- protected and other users' processes
+///    included -- so they are always real readings, never a placeholder 0.
+///  - Network bytes come from TCP EStats, which needs an elevated process (#1161). Each connection
+///    is attributed to its process by the owner-PID TCP table, which needs no access to the process
+///    either, so per-process network counters are read for every process or for none. With them off
+///    (not elevated, EStats unsupported, or disabled after a real sample proved it unusable) no
+///    process's network bytes were read: they are unavailable, not 0 -- as Linux reports I/O when
+///    /proc/[pid]/io can't be read at all.
+/// @param perProcessNetworkCounters Whether TCP EStats per-process counters are on
+///                                  (ProcessCapabilities::hasNetworkCounters).
+inline void markWindowsReadAvailability(ProcessCounters& counters, bool perProcessNetworkCounters) noexcept
+{
+    counters.handleCountAvailable = true;
+    counters.ioCountersAvailable = true;
+    counters.networkCountersAvailable = perProcessNetworkCounters;
 }
 
 /// MIB_TCP_STATE_ESTAB: the only TCP state whose EStats byte counters are worth reading. LISTEN,
@@ -250,6 +377,26 @@ inline constexpr std::size_t MAX_INCONCLUSIVE_ESTATS_SAMPLES = 3;
     return EStatsProbeResult::Undetermined;
 }
 
+/// Why per-process network counters are missing, as ProcessCapabilities reports it (#1358).
+struct NetworkCounterDenial
+{
+    bool reducedPrivileges = false; ///< Not elevated: running as Administrator would restore them.
+    bool blocked = false;           ///< Elevated, yet denied (policy or a driver): elevating would not help.
+};
+
+/// Split an EStats access denial by whether elevation could cure it (#1358). Non-elevated, TCP
+/// EStats is denied for privilege (hasReducedPrivileges, the lock icon). Elevated, a denial -- at
+/// the constructor's probe or on the first real sample (#1161) -- means EStats is blocked on this
+/// system, which deserves its own explanation rather than none at all: hasReducedPrivileges was
+/// false then, so the network columns went away with nothing saying why. A denial is never
+/// reported while the counters are claimed.
+[[nodiscard]] constexpr NetworkCounterDenial
+classifyNetworkCounterDenial(bool isElevated, bool hasNetworkCounters, bool accessDenied) noexcept
+{
+    const bool denied = accessDenied && !hasNetworkCounters;
+    return {.reducedPrivileges = denied && !isElevated, .blocked = denied && isElevated};
+}
+
 /// Address family of a TCP connection (#1256).
 enum class TcpAddressFamily : std::uint8_t
 {
@@ -380,6 +527,223 @@ makeSocketTrafficReading(std::span<const EStatsConnectionRead> reads, bool compl
         return {};
     }
     return SocketTrafficReading{.sockets = buildSocketTrafficSamples(reads), .sampleTimeNs = sampleTimeNs};
+}
+
+// ==========================================================================
+// CPU affinity across processor groups (#1247)
+// ==========================================================================
+
+/// One processor group's layout: how many processors it has room for (GetMaximumProcessorCount,
+/// fixed for the boot session, read once) and which of them are active (PROCESSOR_GROUP_INFO::
+/// ActiveProcessorMask, which hot-add or offlining can change, so re-read on the heavy cadence).
+struct ProcessorGroupLayout
+{
+    std::uint32_t maximumProcessors = 0;
+    std::uint64_t activeMask = 0;
+};
+
+/// How readCpuAffinity() may read a process's affinity, from what processor-topology discovery found.
+enum class AffinityTopology : std::uint8_t
+{
+    SingleGroup, // One group: GetProcessAffinityMask's mask is the whole affinity, bit N = CPU N
+    MultiGroup,  // Several groups, each with a current active mask: the group-aware reads
+    Unknown,     // Discovery failed: the affinity is reported unreadable rather than guessed
+};
+
+/// @param groupCount       GetMaximumProcessorGroupCount (0 if it failed).
+/// @param activeMasksRead  Whether the groups' active masks were read (needed only for several).
+/// A failed discovery is never taken for one group: on a multi-group machine that would map one
+/// group's mask onto CPUs 0-63 -- the partial value #1247 fixes.
+[[nodiscard]] constexpr AffinityTopology affinityTopology(std::size_t groupCount, bool activeMasksRead) noexcept
+{
+    if (groupCount == 1)
+    {
+        return AffinityTopology::SingleGroup;
+    }
+    if (groupCount == 0 || !activeMasksRead)
+    {
+        return AffinityTopology::Unknown;
+    }
+    return AffinityTopology::MultiGroup;
+}
+
+/// Whether this Windows build's threads have, by default, an affinity spanning every processor
+/// group: Windows 11 and Windows Server 2022 (build 20348) on. Such a thread's
+/// GetThreadGroupAffinity reports only its primary group. An unknown build (0) is assumed to.
+[[nodiscard]] constexpr bool threadsMaySpanGroups(std::uint32_t buildNumber) noexcept
+{
+    constexpr std::uint32_t SERVER_2022_BUILD = 20348; // Windows 11 is 22000
+    return buildNumber == 0 || buildNumber >= SERVER_2022_BUILD;
+}
+
+/// An affinity within one processor group: bit N is processor N of `group` (a GROUP_AFFINITY).
+struct GroupAffinityMask
+{
+    std::uint16_t group = 0;
+    std::uint64_t mask = 0;
+};
+
+/// Maps per-group affinity masks to one CpuAffinity numbered as the per-core CPU figures are:
+/// processor N of group G is CPU (sum of groups 0..G-1's maximum processor counts) + N, the coreId
+/// WindowsSystemProbe gives it (processorGroupFirstCoreIds(), #1107). Maximum counts, not active
+/// ones, so a hot-added processor never renumbers a later group's CPUs.
+///
+/// Masks for the same group are combined. A group the layout doesn't have, and bits at or above a
+/// group's maximum count, are dropped: they name no processor. With a single group of 64 or fewer
+/// processors this is CpuAffinity::fromMask(mask) of group 0's mask.
+[[nodiscard]] inline CpuAffinity cpuAffinityFromGroupMasks(std::span<const GroupAffinityMask> masks,
+                                                           std::span<const ProcessorGroupLayout> groups)
+{
+    CpuAffinity affinity;
+    std::size_t firstCpu = 0;
+    for (std::size_t group = 0; group < groups.size(); ++group)
+    {
+        const std::uint32_t size = groups[group].maximumProcessors;
+        const std::uint64_t valid = (size >= CpuAffinity::BITS_PER_WORD) ? ~std::uint64_t{0} : ((std::uint64_t{1} << size) - 1U);
+        std::uint64_t bits = 0;
+        for (const GroupAffinityMask& entry : masks)
+        {
+            if (entry.group == group)
+            {
+                bits |= entry.mask;
+            }
+        }
+        bits &= valid;
+        while (bits != 0)
+        {
+            // One setRange() per run of consecutive processors.
+            const auto low = static_cast<std::size_t>(std::countr_zero(bits));
+            const auto run = static_cast<std::size_t>(std::countr_one(bits >> low));
+            affinity.setRange(firstCpu + low, firstCpu + low + run - 1);
+            bits = (low + run >= CpuAffinity::BITS_PER_WORD) ? 0 : (bits & ~((std::uint64_t{1} << (low + run)) - 1U));
+        }
+        firstCpu += size;
+    }
+    return affinity;
+}
+
+/// A process's per-group masks from the two process-level reads, when they are enough; nullopt
+/// when its threads must be asked (groupMasksFromThreads()).
+/// @param processGroups GetProcessGroupAffinity: the groups the process's threads are assigned to.
+/// @param processMask   GetProcessAffinityMask's process mask. It describes one group only: the
+///                      process's single group, or (Windows 11 / Server 2022+, where a process spans
+///                      every group by default) its primary group -- which no documented call names
+///                      for another process. It is 0 when the process has threads explicitly
+///                      assigned to several groups.
+/// One group: that group's mask is processMask -- except, when threadsMaySpan, a mask equal to the
+/// group's every active processor. A process that spans every group by default (the Windows 11 /
+/// Server 2022+ default) reads exactly like that, as does one deliberately confined to its whole
+/// primary group, and nothing tells the two apart. The default is by far the common case, so it is
+/// read as the span over every group's active processors (#1247). Several groups, with a non-zero
+/// processMask equal to every one of those groups' active masks: the default span over all of
+/// them, unrestricted. Anything else (processMask 0, or several groups with a restricted mask
+/// somewhere) needs the threads.
+/// @param threadsMaySpan threadsMaySpanGroups() for this build. Before it, a process runs in one
+///                       group, so its one group's mask is exact.
+[[nodiscard]] inline std::optional<std::vector<GroupAffinityMask>> groupMasksFromProcess(std::span<const std::uint16_t> processGroups,
+                                                                                         std::uint64_t processMask,
+                                                                                         std::span<const ProcessorGroupLayout> groups,
+                                                                                         bool threadsMaySpan)
+{
+    if (processMask == 0)
+    {
+        return std::nullopt;
+    }
+    if (processGroups.size() == 1)
+    {
+        const std::uint16_t group = processGroups.front();
+        if (threadsMaySpan && groups.size() > 1 && group < groups.size() && groups[group].activeMask == processMask)
+        {
+            std::vector<GroupAffinityMask> span;
+            span.reserve(groups.size());
+            for (std::size_t g = 0; g < groups.size(); ++g)
+            {
+                span.push_back({.group = static_cast<std::uint16_t>(g), .mask = groups[g].activeMask});
+            }
+            return span;
+        }
+        return std::vector<GroupAffinityMask>{{.group = group, .mask = processMask}};
+    }
+    std::vector<GroupAffinityMask> masks;
+    masks.reserve(processGroups.size());
+    for (const std::uint16_t group : processGroups)
+    {
+        if (group >= groups.size() || groups[group].activeMask != processMask)
+        {
+            return std::nullopt;
+        }
+        masks.push_back({.group = group, .mask = processMask});
+    }
+    return masks;
+}
+
+/// What a process's threads' GetThreadGroupAffinity reads found.
+struct ThreadGroupAffinityReads
+{
+    std::vector<GroupAffinityMask> masks; // One per thread read
+    bool complete = false;                // Every thread in the snapshot was opened and read
+};
+
+/// A process's per-group masks from its threads' GetThreadGroupAffinity reads, for when
+/// groupMasksFromProcess() can't tell: the union of the threads' masks. Empty -- unreadable --
+/// whenever that union might not be the affinity, rather than a guess:
+///  - Not every thread was read (one exited, or denied access): the missing one may have been the
+///    only thread in a group, or the only one allowed some processor.
+///  - A listed group no thread reports: on Windows 11 / Server 2022+ a thread that spans every group
+///    by default reports only its primary group, so the absent group may be spanned in full -- or,
+///    the reads having raced a thread's move, restricted. Nothing says which.
+///  - threadsMaySpan, and a thread reports its group's every active processor: that thread may be
+///    bound to that group or may span every group by default; GetThreadGroupAffinity reads the same
+///    for both. Only when the union already covers every active processor do the two agree.
+/// @param threadsMaySpan threadsMaySpanGroups() for this build. Before it, each thread runs in one
+///                       group, so a full mask is that group alone.
+[[nodiscard]] inline std::vector<GroupAffinityMask> groupMasksFromThreads(std::span<const std::uint16_t> processGroups,
+                                                                          const ThreadGroupAffinityReads& threads,
+                                                                          std::span<const ProcessorGroupLayout> groups,
+                                                                          bool threadsMaySpan)
+{
+    if (!threads.complete || threads.masks.empty())
+    {
+        return {};
+    }
+    const auto reportedMask = [&threads](std::size_t group)
+    {
+        std::uint64_t mask = 0;
+        for (const GroupAffinityMask& entry : threads.masks)
+        {
+            if (entry.group == group)
+            {
+                mask |= entry.mask;
+            }
+        }
+        return mask;
+    };
+    for (const std::uint16_t group : processGroups)
+    {
+        if (reportedMask(group) == 0)
+        {
+            return {};
+        }
+    }
+    if (threadsMaySpan)
+    {
+        const bool someThreadFull = std::ranges::any_of(
+            threads.masks,
+            [groups](const GroupAffinityMask& entry)
+            { return entry.group < groups.size() && groups[entry.group].activeMask != 0 && entry.mask == groups[entry.group].activeMask; });
+        if (someThreadFull)
+        {
+            for (std::size_t group = 0; group < groups.size(); ++group)
+            {
+                const std::uint64_t active = groups[group].activeMask;
+                if ((reportedMask(group) & active) != active)
+                {
+                    return {}; // Bound to its group, or spanning them all: can't tell
+                }
+            }
+        }
+    }
+    return threads.masks;
 }
 
 } // namespace Platform
