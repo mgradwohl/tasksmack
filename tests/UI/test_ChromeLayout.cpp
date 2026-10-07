@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 #include <limits>
 #include <string_view>
 
@@ -201,6 +202,13 @@ TEST(ChromeLayoutTest, SettingsFooterStaysOnOneRowWhateverTheScrollbarAtEveryPre
             noScrollbar.availWidth = rowWidth;
             noScrollbar.scrollbarWidth = 0.0F;
             EXPECT_EQ(placeDialogFooter(noScrollbar).leadingOnOwnRow, layout.placement.leadingOnOwnRow);
+
+            // ImGui truncates content sizes to whole pixels (ImTrunc64 of the cursor extent), so a
+            // dialog measured to be exactly as wide as the row is up to a pixel narrower than it.
+            // That alone wrapped Reset in the captured dialog.
+            DialogFooterInput truncated = noScrollbar;
+            truncated.availWidth = std::floor(rowWidth) - 0.001F;
+            EXPECT_FALSE(placeDialogFooter(truncated).leadingOnOwnRow) << bodyPt << "pt x" << displayScale;
         }
     }
 }

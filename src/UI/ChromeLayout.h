@@ -148,7 +148,12 @@ struct DialogFooterPlacement
     // goes must not move the leading button between rows. When it shared the row with the scrollbar
     // showing, the leading button wrapped, the footer grew by a row, the dialog overflowed and kept
     // the scrollbar, and the button never came back (#1200 review).
-    const bool leadingOnOwnRow = (leading > 0.0F) && (wanted > rowWidth + clean(input.scrollbarWidth));
+    // And with a pixel to spare: ImGui truncates content sizes to whole pixels, so a dialog whose
+    // widest row *is* this footer row measures up to a pixel narrower than the row it was sized from
+    // -- which alone wrapped Reset in Settings (#1200 review). Under a pixel short, the buttons give
+    // up the fraction instead.
+    constexpr float WHOLE_PIXEL_TOLERANCE = 1.0F;
+    const bool leadingOnOwnRow = (leading > 0.0F) && (wanted > rowWidth + clean(input.scrollbarWidth) + WHOLE_PIXEL_TOLERANCE);
     const float leadingShare = (leading > 0.0F && !leadingOnOwnRow) ? leadingPart : 0.0F;
     const float actionsAvail = std::max(0.0F, rowWidth - leadingShare);
     const float buttonWidth = std::min(preferred, std::max(0.0F, (actionsAvail - (spacing * (count - 1.0F))) / count));
