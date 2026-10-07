@@ -73,8 +73,9 @@ enum class GpuTabContent : std::uint8_t
 
 /// The GPU tab's "No GPU usage" explanation, for a history window of `historySeconds` (#1210).
 /// hasGpuUsageToShow() looks only at the retained history, so a process that used the GPU before
-/// the window gets this message too: it says "in the last 5m", in formatDuration()'s grammar, rather
-/// than claiming the process never used one. Built when the window changes, not every frame.
+/// the window gets this message too: it says "in its retained history (up to 5m)", in
+/// formatDuration()'s grammar, rather than claiming the process never used one. Built when the
+/// window changes, not every frame.
 [[nodiscard]] inline std::string noGpuUsageDetail(double historySeconds)
 {
     // "Retained history (up to ...)", not "the last ...": histories are cleared when a process is

@@ -17,7 +17,8 @@ using ProcessColumnAvailability::isSupported;
 using ProcessColumnAvailability::rowFormatOptions;
 using ProcessColumnAvailability::unavailableValuesNote;
 
-/// What the Windows probe reports (WindowsProcessProbe::capabilities()), without network counters.
+/// What the Windows probe reports (WindowsProcessProbe::capabilities()) while its network counters
+/// work. Tests that need them withdrawn (#1254, #1358) clear hasNetworkCounters themselves.
 [[nodiscard]] Platform::ProcessCapabilities windowsLikeCapabilities()
 {
     Platform::ProcessCapabilities caps;
