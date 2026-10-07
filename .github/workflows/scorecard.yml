@@ -35,6 +35,9 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
+          # Actions runs bash with -e; turn it off so a transient gh api failure is retried or reported
+          # through the warning paths below instead of failing this never-fail job.
+          set +e
           set -uo pipefail
           # One deadline for the whole wait, PR association included, well inside timeout-minutes above.
           WAIT_BUDGET_MINUTES=45
