@@ -288,7 +288,8 @@ class BenchShTest(unittest.TestCase):
         code, output, _, manifests = self.run_bench("host", 0, extra=(f"--benchmark_context=tsk_ctx_machine={host}",))
         self.assertEqual(code, 0, output)
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-        self.assertIn("--benchmark_context=tsk_ctx_machine=<host>", manifest["benchmark"]["args"])
+        expected = "--benchmark_context=sha256:" + hashlib.sha256(f"tsk_ctx_machine={host}".encode("utf-8")).hexdigest()
+        self.assertIn(expected, manifest["benchmark"]["args"])
         self.assertEqual(find_identity_leaks(manifest, [host, host.split(".")[0]], []), [])
 
     def test_a_multi_config_tree_keeps_the_benchmark_in_bin_config(self):
@@ -315,7 +316,8 @@ class BenchShTest(unittest.TestCase):
 
     def test_a_unicode_checkout_outside_git(self):
         # #1445 review: bench.sh copied into <root>/ch\u00e9ckout/tools; its own checkout maps to
-        # <source> through the UTF-8 cache, and the missing git repository leaves the git fields
+        # nothing in the manifest (a --benchmark_context value naming it is hashed), its UTF-8 flags
+        # hash as UTF-8, and the missing git repository leaves the git fields
         # unknown, not an error.
         checkout = self.root / "ch\u00e9ckout"
         (checkout / "tools").mkdir(parents=True)
@@ -334,10 +336,10 @@ class BenchShTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, output)
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-        # The flags are hashed as UTF-8; the checkout's own path in an argument maps to <source>.
         self.assertEqual(manifest["build"]["cxx_flags_config_sha256"], hashlib.sha256(config_flags.encode("utf-8")).hexdigest())
         self.assertIn(
-            "--benchmark_context=tsk_ctx_profile=<source>/profiles/tasksmack.profdata", manifest["benchmark"]["args"]
+            "--benchmark_context=sha256:" + hashlib.sha256(profile_arg.split("=", 1)[1].encode("utf-8")).hexdigest(),
+            manifest["benchmark"]["args"],
         )
         self.assertIsNone(manifest["git"]["commit"])
         self.assertIsNone(manifest["git"]["dirty"])
@@ -504,8 +506,18 @@ class BenchShTest(unittest.TestCase):
         )
         for probe in FLAG_PROBES:
             self.assertNotIn(probe.lower(), text.lower(), f"flag text {probe!r} is in the manifest")
-        # Paths in the benchmark arguments are scrubbed one argument at a time.
-        self.assertIn("--benchmark_context=tsk_ctx_data=<abs>/input.bin", manifest["benchmark"]["args"])
+        # The benchmark arguments: allowlisted options as written, a --benchmark_context value hashed.
+        data_hash = hashlib.sha256(data_arg.split("=", 1)[1].encode("utf-8")).hexdigest()
+        for expected in (
+            "--benchmark_repetitions=10",
+            "--benchmark_min_time=0.5s",
+            "--benchmark_display_aggregates_only=true",
+            "--benchmark_out_format=json",
+            "--benchmark_filter=BM_X",
+            f"--benchmark_out={results[0].name}",
+            f"--benchmark_context=sha256:{data_hash}",
+        ):
+            self.assertIn(expected, manifest["benchmark"]["args"])
         self.assertTrue(manifest["benchmark"]["raw_repetitions"])
         self.assertFalse(manifest["benchmark"]["report_aggregates_only"])
         args = manifest["benchmark"]["args"]
@@ -534,21 +546,85 @@ def load_bench_manifest():
 class ScrubberTest(unittest.TestCase):
     """tools/bench-manifest.py's flag scrubber and identity pass, without bash."""
 
-    def test_argument_paths_are_scrubbed_one_argument_at_a_time(self):
+    def test_arguments_are_allowlisted_or_hashed(self):
+        # #1445 review: allowlisted options with safe values as written, everything else hashed.
         module = load_bench_manifest()
-        cases = [
-            ("--benchmark_filter=BM_X", "--benchmark_filter=BM_X"),
-            ("--benchmark_min_time=0.5s", "--benchmark_min_time=0.5s"),
-            ("--benchmark_context=x=/home/u/p", "--benchmark_context=x=<abs>/p"),
-            ("--benchmark_context=x=C:\\Users\\u\\p", "--benchmark_context=x=<abs>/p"),
-            ("--benchmark_context=x=//host/share/u/p", "--benchmark_context=x=<abs>/p"),
-            ("--benchmark_context=x=~/p/q", "--benchmark_context=x=<abs>/q"),
-            ("--benchmark_context=x=/home/u/a;/home/u/b", "--benchmark_context=x=<abs>/a;<abs>/b"),
-            ("--benchmark_context=x=foo:C:/Users/u/d", "--benchmark_context=x=foo:<abs>/d"),
-            ("--benchmark_context=x=dir/x/y", "--benchmark_context=x=dir/x/y"),
-            (f"--benchmark_context=src={posix(REPO_ROOT)}/profiles/x", "--benchmark_context=src=<source>/profiles/x"),
+
+        def digest(text: str) -> str:
+            return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+        verbatim = [
+            "--benchmark_repetitions=10",
+            "--benchmark_min_time=0.5s",
+            "--benchmark_min_time=100x",
+            "--benchmark_min_time=2",
+            "--benchmark_min_warmup_time=0.25",
+            "--benchmark_min_warmup_time=1.5e-1s",
+            "--benchmark_display_aggregates_only=true",
+            "--benchmark_report_aggregates_only=FALSE",
+            "--benchmark_report_aggregates_only",
+            "--benchmark_enable_random_interleaving=yes",
+            "--benchmark_counters_tabular=1",
+            "--benchmark_dry_run",
+            "--benchmark_list_tests=t",
+            "--benchmark_time_unit=ms",
+            "--benchmark_format=csv",
+            "--benchmark_out_format=json",
+            "--benchmark_color=auto",
+            "--v=2",
+            "--benchmark_filter=BM_(A|B)$",
+            "--benchmark_filter=",
         ]
-        self.assertEqual(module.hide_argument_paths([given for given, _ in cases], REPO_ROOT), [want for _, want in cases])
+        for argument in verbatim:
+            with self.subTest(argument=argument):
+                self.assertEqual(module.record_argument(argument), argument)
+        hashed = [
+            # A malformed allowlisted value.
+            ("--benchmark_repetitions=10;rm", "--benchmark_repetitions", "10;rm"),
+            ("--benchmark_min_time=/home/u/x", "--benchmark_min_time", "/home/u/x"),
+            ("--benchmark_time_unit=hours", "--benchmark_time_unit", "hours"),
+            ("--Benchmark_Repetitions=10", "--Benchmark_Repetitions", "10"),
+            # --benchmark_context values with quoted, embedded and '=' paths (#1445 review).
+            (
+                '--benchmark_context=src="/srv/private-checkout/tasksmack/profiles/input.bin"',
+                "--benchmark_context",
+                'src="/srv/private-checkout/tasksmack/profiles/input.bin"',
+            ),
+            (
+                "--benchmark_context=note=loaded /srv/private-checkout/tasksmack/profiles/input.bin",
+                "--benchmark_context",
+                "note=loaded /srv/private-checkout/tasksmack/profiles/input.bin",
+            ),
+            ("--benchmark_context=note=/srv/private=run/host/data.bin", "--benchmark_context", "note=/srv/private=run/host/data.bin"),
+            ("--benchmark_perf_counters=CYCLES", "--benchmark_perf_counters", "CYCLES"),
+            ("--some_unknown_flag=/home/u/x", "--some_unknown_flag", "/home/u/x"),
+        ]
+        for argument, name, value in hashed:
+            with self.subTest(argument=argument):
+                self.assertEqual(module.record_argument(argument), f"{name}=sha256:{digest(value)}")
+                self.assertEqual(module.record_argument(argument), module.record_argument(argument))
+        for whole in ("--some_unknown_switch", "/home/u/positional", "-x", "--benchmark_context"):
+            with self.subTest(argument=whole):
+                self.assertEqual(module.record_argument(whole), f"sha256:{digest(whole)}")
+        self.assertEqual(module.record_argument("--benchmark_out=/tmp/x/out/fake-1.json"), "--benchmark_out=fake-1.json")
+        self.assertNotEqual(module.record_argument("--benchmark_context=a=1"), module.record_argument("--benchmark_context=a=2"))
+
+    def test_an_absent_cache_entry_hashes_as_null_an_empty_one_as_empty(self):
+        # #1445 review: unknown flags stay distinguishable from explicitly empty ones.
+        module = load_bench_manifest()
+        self.assertIsNone(module.text_sha256(None))
+        empty = hashlib.sha256(b"").hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, lines, expected in (
+                ("absent", "CMAKE_BUILD_TYPE:STRING=Release\n", None),
+                ("empty", "CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_CXX_FLAGS:STRING=\nCMAKE_CXX_FLAGS_RELEASE:STRING=\n", empty),
+            ):
+                with self.subTest(case=name):
+                    tree = Path(tmp) / name
+                    (tree / "bin").mkdir(parents=True)
+                    (tree / "CMakeCache.txt").write_text(lines, encoding="utf-8")
+                    build = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
+                    self.assertEqual((build["cxx_flags_sha256"], build["cxx_flags_config_sha256"]), (expected, expected))
 
     def test_flags_hash_equally_and_change_with_a_flag(self):
         # #1445: equal flags hash equally across build trees; a changed flag changes the hash.
@@ -584,32 +660,6 @@ class ScrubberTest(unittest.TestCase):
                 self.assertEqual(module.hide_identity(given, prefixes, "build"), expected)
         # A user name under 3 characters is never replaced on its own; a home prefix always is.
         self.assertEqual(module.hide_identity("-DX=ab /home/ab/src", ["/home/ab"], "ab"), "-DX=ab <home>/src")
-
-    def test_a_checkout_spelled_another_way_still_maps_to_source(self):
-        # #1445 CI: GitHub's Windows runners set TEMP to an 8.3 short path (C:\Users\RUNNER~1\...),
-        # so a flag could name the checkout by its short name while the root is the long one; on
-        # POSIX the same happens through a symlink.
-        module = load_bench_manifest()
-        with tempfile.TemporaryDirectory() as tmp:
-            real = Path(tmp) / "a-long-checkout-directory-name"
-            real.mkdir()
-            if os.name == "nt":
-                import ctypes
-
-                buffer = ctypes.create_unicode_buffer(1024)
-                ctypes.windll.kernel32.GetShortPathNameW(str(real), buffer, len(buffer))
-                alias = buffer.value
-                if not alias or alias.lower() == str(real).lower():
-                    self.skipTest("8.3 short names are disabled on this volume")
-            else:
-                link = Path(tmp) / "link"
-                link.symlink_to(real, target_is_directory=True)
-                alias = str(link)
-            arguments = [f"--benchmark_context=src={posix(Path(alias))}/profiles/x.profdata", f"--benchmark_context=inc={alias}/inc"]
-            self.assertEqual(
-                module.hide_argument_paths(arguments, real),
-                ["--benchmark_context=src=<source>/profiles/x.profdata", "--benchmark_context=inc=<source>/inc"],
-            )
 
     def test_identity_pass_leaves_validated_categorical_fields_alone(self):
         # #1445 review: host and user names that coincide with OS and compiler values change only

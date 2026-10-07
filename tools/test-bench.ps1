@@ -394,7 +394,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($recordedArgs -contains '--benchmark_filter=BM_X' -and $recordedArgs -contains '--benchmark_repetitions=10') "Benchmark args: $($recordedArgs -join ' ')"
     Assert-True ($recordedArgs -contains "--benchmark_out=$($ok.Result[0].Name)") 'The output path must be reduced to its file name'
     if ([Environment]::MachineName.Length -ge 3) {
-        Assert-True ($recordedArgs -contains '--benchmark_context=tsk_ctx_machine=<host>') "Host name in args: $($recordedArgs -join ' ')"
+        Assert-True ($recordedArgs -contains "--benchmark_context=sha256:$(Get-ExpectedSha256 "tsk_ctx_machine=$([Environment]::MachineName)")") "Host name in args: $($recordedArgs -join ' ')"
     }
     Assert-True ($manifest.machine.logical_cores -eq [Environment]::ProcessorCount -and $manifest.machine.os_name) 'Machine class'
 
@@ -402,8 +402,10 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     # none of that text, and none of its paths, appears anywhere in the manifest.
     Assert-True ($manifest.build.cxx_flags_sha256 -ceq (Get-ExpectedSha256 $rawFlags) -and $manifest.build.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 $rawConfigFlags)) "Flag hashes: $($manifest.build | ConvertTo-Json -Compress)"
     foreach ($probe in $flagProbes) { Assert-True ($manifestText.IndexOf($probe, [StringComparison]::OrdinalIgnoreCase) -lt 0) "Flag text '$probe' is in the manifest" }
-    # Paths in the benchmark arguments are scrubbed one argument at a time.
-    Assert-True ($recordedArgs -contains '--benchmark_context=tsk_ctx_data=<abs>/input.bin') "Argument paths: $($recordedArgs -join ' ')"
+    # The benchmark arguments: allowlisted options as written, a --benchmark_context value hashed.
+    foreach ($expected in @('--benchmark_repetitions=10', '--benchmark_min_time=0.5s', '--benchmark_display_aggregates_only=true', '--benchmark_out_format=json', '--benchmark_filter=BM_X', "--benchmark_out=$($ok.Result[0].Name)", "--benchmark_context=sha256:$(Get-ExpectedSha256 "tsk_ctx_data=$H\bench data\input.bin")")) {
+        Assert-True ($recordedArgs -ccontains $expected) "Recorded args lack [$expected]: $($recordedArgs -join ' ')"
+    }
 
     # No host name, user name or user-profile path anywhere in the manifest: the user and host
     # names as tokens, the profile, temp and checkout paths as substrings.
@@ -426,14 +428,13 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True (-not (Test-Path -LiteralPath $elsewhere)) "The benchmark ran and wrote '$elsewhere'"
 
     # ── #1445 review: a checkout under a Unicode path, outside git ─────────────────────────────
-    # Its own checkout maps to <source> through the UTF-8 cache, and the missing git repository
-    # leaves the git fields unknown, not an error.
+    # Its UTF-8 flags hash as UTF-8, a --benchmark_context value naming the checkout is recorded
+    # only as its hash, and the missing git repository leaves the git fields unknown, not an error.
     $uni = $outcomes['uni']
     Assert-True ($uni.ExitCode -eq 0 -and $uni.Manifest.Count -eq 1) "Unicode-checkout run failed:`n$($uni.Log)"
     $uniManifest = Get-Content -LiteralPath $uni.Manifest[0].FullName -Raw -Encoding utf8 | ConvertFrom-Json
-    # The flags are hashed as UTF-8; the checkout's own path in an argument maps to <source>.
     Assert-True ($uniManifest.build.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 $uniConfigFlags)) "Unicode checkout flag hash: $($uniManifest.build.cxx_flags_config_sha256)"
-    Assert-True (@($uniManifest.benchmark.args) -contains '--benchmark_context=tsk_ctx_profile=<source>/profiles/tasksmack.profdata') "Unicode checkout args: $(@($uniManifest.benchmark.args) -join ' ')"
+    Assert-True (@($uniManifest.benchmark.args) -ccontains "--benchmark_context=sha256:$(Get-ExpectedSha256 "tsk_ctx_profile=$checkout\profiles\tasksmack.profdata")") "Unicode checkout args: $(@($uniManifest.benchmark.args) -join ' ')"
     Assert-True ($null -eq $uniManifest.git.commit -and $null -eq $uniManifest.git.branch -and $null -eq $uniManifest.git.dirty) "Outside git, the git fields must be unknown: $($uniManifest.git | ConvertTo-Json -Compress)"
 
     # ── Self-review: `& bench.ps1 -- --benchmark_filter=...` from PowerShell, as documented ─────
@@ -585,38 +586,52 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Assert-True ($hiddenBuild.build_type -ceq $case.Expected) "Build type '$($case.BuildType)': $($hiddenBuild.build_type), expected $($case.Expected)"
     }
 
-    # ── #1445 CI: a checkout spelled another way (8.3 short name) still maps to <source> ──────
-    # GitHub's Windows runners set TEMP to an 8.3 short path (C:\Users\RUNNER~1\...).
-    $longCheckout = Join-Path $root 'a-long-checkout-directory-name'
-    New-Item -ItemType Directory -Path $longCheckout | Out-Null
-    $shortCheckout = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($longCheckout).ShortPath
-    if ($shortCheckout -and $shortCheckout -ne $longCheckout) {
-        $repoRoot = $longCheckout
-        $got = Hide-ArgumentPaths @("--benchmark_context=src=$($shortCheckout.Replace('\', '/'))/profiles/x.profdata", "--benchmark_context=inc=$shortCheckout\inc")
-        Assert-True (($got -join ' ') -ceq '--benchmark_context=src=<source>/profiles/x.profdata --benchmark_context=inc=<source>/inc') "Short-name checkout: $($got -join ' ')"
-        $repoRoot = $shortCheckout
-        $got = Hide-ArgumentPaths @("--benchmark_context=inc=$longCheckout\inc")
-        Assert-True (($got -join ' ') -ceq '--benchmark_context=inc=<source>/inc') "Short-name root: $($got -join ' ')"
-        $repoRoot = $repoRootPath
-    }
-
-    # ── #1445: paths in the benchmark arguments, one argument at a time ─────────────────────────
-    $repoRoot = $repoRootPath
-    $argumentCases = @(
-        , @('--benchmark_filter=BM_X', '--benchmark_filter=BM_X')
-        , @('--benchmark_min_time=0.5s', '--benchmark_min_time=0.5s')
-        , @('--benchmark_context=x=/home/u/p', '--benchmark_context=x=<abs>/p')
-        , @('--benchmark_context=x=C:\Users\u\p', '--benchmark_context=x=<abs>/p')
-        , @('--benchmark_context=x=//host/share/u/p', '--benchmark_context=x=<abs>/p')
-        , @('--benchmark_context=x=~/p/q', '--benchmark_context=x=<abs>/q')
-        , @('--benchmark_context=x=/home/u/a;/home/u/b', '--benchmark_context=x=<abs>/a;<abs>/b')
-        , @('--benchmark_context=x=foo:C:/Users/u/d', '--benchmark_context=x=foo:<abs>/d')
-        , @('--benchmark_context=x=dir/x/y', '--benchmark_context=x=dir/x/y')
-        , @("--benchmark_context=src=$repoRootForward/profiles/x", '--benchmark_context=src=<source>/profiles/x')
+    # ── #1445 review: benchmark arguments -- allowlisted options as written, the rest hashed ────
+    $verbatim = @(
+        '--benchmark_repetitions=10', '--benchmark_min_time=0.5s', '--benchmark_min_time=100x', '--benchmark_min_time=2',
+        '--benchmark_min_warmup_time=0.25', '--benchmark_min_warmup_time=1.5e-1s',
+        '--benchmark_display_aggregates_only=true', '--benchmark_report_aggregates_only=FALSE', '--benchmark_report_aggregates_only',
+        '--benchmark_enable_random_interleaving=yes', '--benchmark_counters_tabular=1', '--benchmark_dry_run', '--benchmark_list_tests=t',
+        '--benchmark_time_unit=ms', '--benchmark_format=csv', '--benchmark_out_format=json', '--benchmark_color=auto', '--v=2',
+        '--benchmark_filter=BM_(A|B)$', '--benchmark_filter='
     )
-    $gotArguments = Hide-ArgumentPaths @($argumentCases | ForEach-Object { $_[0] })
-    for ($i = 0; $i -lt $argumentCases.Count; $i++) {
-        Assert-True ($gotArguments[$i] -ceq $argumentCases[$i][1]) "Argument [$($argumentCases[$i][0])] became [$($gotArguments[$i])], expected [$($argumentCases[$i][1])]"
+    foreach ($argument in $verbatim) {
+        Assert-True ((Get-RecordedArgument $argument) -ceq $argument) "Allowlisted [$argument] became [$(Get-RecordedArgument $argument)]"
+    }
+    $hashed = @(
+        # A malformed allowlisted value.
+        , @('--benchmark_repetitions=10;rm', '--benchmark_repetitions', '10;rm')
+        , @('--benchmark_min_time=/home/u/x', '--benchmark_min_time', '/home/u/x')
+        , @('--benchmark_time_unit=hours', '--benchmark_time_unit', 'hours')
+        , @('--Benchmark_Repetitions=10', '--Benchmark_Repetitions', '10')
+        # --benchmark_context values with quoted, embedded and '=' paths (#1445 review).
+        , @('--benchmark_context=src="/srv/private-checkout/tasksmack/profiles/input.bin"', '--benchmark_context', 'src="/srv/private-checkout/tasksmack/profiles/input.bin"')
+        , @('--benchmark_context=note=loaded /srv/private-checkout/tasksmack/profiles/input.bin', '--benchmark_context', 'note=loaded /srv/private-checkout/tasksmack/profiles/input.bin')
+        , @('--benchmark_context=note=/srv/private=run/host/data.bin', '--benchmark_context', 'note=/srv/private=run/host/data.bin')
+        , @('--benchmark_perf_counters=CYCLES', '--benchmark_perf_counters', 'CYCLES')
+        , @('--some_unknown_flag=/home/u/x', '--some_unknown_flag', '/home/u/x')
+    )
+    foreach ($case in $hashed) {
+        $got = Get-RecordedArgument $case[0]
+        Assert-True ($got -ceq "$($case[1])=sha256:$(Get-ExpectedSha256 $case[2])") "[$($case[0])] became [$got]"
+        Assert-True ((Get-RecordedArgument $case[0]) -ceq $got) "[$($case[0])] must hash the same way every time"
+    }
+    foreach ($whole in @('--some_unknown_switch', '/home/u/positional', '-x', '--benchmark_context')) {
+        Assert-True ((Get-RecordedArgument $whole) -ceq "sha256:$(Get-ExpectedSha256 $whole)") "[$whole] became [$(Get-RecordedArgument $whole)]"
+    }
+    Assert-True ((Get-RecordedArgument "--benchmark_out=$root\out\fake-1.json") -ceq '--benchmark_out=fake-1.json') 'The script''s own output file is recorded by name'
+    Assert-True ((Get-RecordedArgument '--benchmark_context=a=1') -cne (Get-RecordedArgument '--benchmark_context=a=2')) 'Different values must hash differently'
+
+    # ── #1445 review: an absent cache entry hashes as null, an empty one as the empty string ───
+    Assert-True ($null -eq (Get-TextSha256 $null)) 'Get-TextSha256 $null must be $null'
+    foreach ($case in @(@{ Name = 'flags-absent'; Lines = @('CMAKE_BUILD_TYPE:STRING=Release'); Expected = $null }, @{ Name = 'flags-empty'; Lines = @('CMAKE_BUILD_TYPE:STRING=Release', 'CMAKE_CXX_FLAGS:STRING=', 'CMAKE_CXX_FLAGS_RELEASE:STRING='); Expected = (Get-ExpectedSha256 '') })) {
+        $tree = Join-Path $root "build\$($case.Name)"
+        New-Item -ItemType Directory -Path (Join-Path $tree 'bin') | Out-Null
+        Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value $case.Lines
+        $benchBin = Join-Path $tree 'bin\TaskSmackBenchmarks.cmd'
+        $build = Get-BuildProvenance
+        Assert-True ($build.cxx_flags_sha256 -ceq $case.Expected -and $build.cxx_flags_config_sha256 -ceq $case.Expected) "$($case.Name): $($build | ConvertTo-Json -Compress)"
+        if ($null -eq $case.Expected) { Assert-True ($null -eq $build.cxx_flags_sha256 -and $null -eq $build.cxx_flags_config_sha256) "$($case.Name) must be null, not a hash" }
     }
 
     # ── #1445 review: the leak check itself, with a controlled user and home ────────────────────

@@ -3,8 +3,9 @@
 
 The field names match tools/bench.ps1's manifest, so one consumer can read both. Only an
 anonymized machine class is recorded (CPU model, logical core count, OS): never the host name,
-user name, other processes or command lines beyond the benchmark's own arguments; paths in the
-arguments are reduced to file names, and the compiler flags are recorded only as SHA-256 hashes.
+user name, other processes or command lines; the benchmark arguments are recorded as written
+only when they are allowlisted options with safe values (hashed otherwise), and the compiler
+flags are recorded only as SHA-256 hashes.
 
 Usage:
     bench-manifest.py --manifest OUT --result RESULT_JSON --binary BIN --preset P \
@@ -59,51 +60,6 @@ def git_provenance(repo_root: Path) -> dict:
         "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
         "dirty": None if status is None else bool(status),
     }
-
-
-# Absolute paths inside the benchmark arguments (#1445 review). The arguments are already a list,
-# so each one is split at '=' (--benchmark_context=src=/home/u/p) and every part that is an
-# absolute path is scrubbed: a drive (C:\ or C:/), a UNC or device path (\\, //, \\?\, \\.\), a
-# POSIX path of two or more segments (/home/u/x) or ~. A path inside the checkout becomes
-# <source>/relative, any other <abs>/<file name>; a ';' list is scrubbed item by item, and a part
-# with a drive, UNC or device path inside it (FOO:C:/x) is scrubbed from there. The compiler flags
-# are not recorded at all, only hashed (build_provenance). Kept in step with Hide-ArgumentPaths in
-# tools/bench.ps1.
-_PATH_HEAD = re.compile(r"""^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))""")
-_EMBEDDED_HEAD = re.compile(r"""[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//""")
-
-
-def hide_argument_paths(arguments: list[str], repo_root: Path) -> list[str]:
-    """The arguments with every absolute path replaced, so no user profile or checkout path is
-    recorded."""
-    root = str(repo_root.resolve()).replace("\\", "/").rstrip("/")
-
-    def scrub(path: str) -> str:
-        normalized = path.replace("\\", "/")
-        # Compared in the root's canonical form (repo_root.resolve() above): realpath expands
-        # Windows 8.3 short names (C:/Users/RUNNER~1/..., as TEMP is on GitHub's Windows runners)
-        # and resolves links, so a checkout reached through another spelling still maps to
-        # <source>. UNC and device paths are left alone (no network lookups). The file name kept
-        # for a path outside the checkout is the one written in the argument.
-        canonical = normalized
-        if os.path.isabs(path) and not normalized.startswith("//"):
-            canonical = os.path.realpath(path).replace("\\", "/")
-        fold = os.name == "nt" or re.match(r"^[A-Za-z]:/", canonical) is not None
-        candidate, base = (canonical.lower(), root.lower()) if fold else (canonical, root)
-        if candidate == base or candidate.startswith(base + "/"):
-            return "<source>" + canonical[len(root) :]
-        return "<abs>/" + PurePath(normalized.rstrip("/")).name
-
-    def operand(value: str) -> str:
-        if ";" in value:
-            return ";".join(operand(item) for item in value.split(";"))
-        if _PATH_HEAD.match(value):
-            return scrub(value)
-        if embedded := _EMBEDDED_HEAD.search(value):
-            return value[: embedded.start()] + scrub(value[embedded.start() :])
-        return value
-
-    return ["=".join(operand(part) for part in argument.split("=")) for argument in arguments]
 
 
 def host_names() -> list[str]:
@@ -360,14 +316,50 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def recorded_args(args: list[str]) -> list[str]:
-    """The benchmark's arguments, with the output path reduced to its file name."""
-    out = []
-    for arg in args:
-        if arg.startswith("--benchmark_out="):
-            arg = "--benchmark_out=" + PurePath(arg.split("=", 1)[1].replace("\\", "/")).name
-        out.append(arg)
-    return out
+# The benchmark arguments (#1445 review). An argument is recorded as written only when it is a
+# Google Benchmark option whose value is safe by construction (ALLOWED_ARGUMENTS: numbers,
+# booleans, enumerations, and the --benchmark_filter regex, which the identity pass still covers);
+# a value that fails its pattern, and every other argument (--benchmark_context=..., unknown ones),
+# is recorded as <name>=sha256:<hex of the value>, or sha256:<hex of the argument> when it has no
+# --name=value form. Runs stay comparable on their arguments without recording paths or other
+# free text. The script's own --benchmark_out keeps its file name (extra ones are refused before
+# launch). The same table as $script:AllowedArguments in tools/bench.ps1.
+_NUMBER = r"[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+_BOOLEAN = r"(?i:true|false|yes|no|on|off|t|f|y|n|1|0)"
+ALLOWED_ARGUMENTS = {
+    "--benchmark_repetitions": r"[0-9]+",
+    "--benchmark_min_time": _NUMBER + r"[sx]?",
+    "--benchmark_min_warmup_time": _NUMBER + r"s?",
+    "--benchmark_display_aggregates_only": _BOOLEAN,
+    "--benchmark_report_aggregates_only": _BOOLEAN,
+    "--benchmark_enable_random_interleaving": _BOOLEAN,
+    "--benchmark_counters_tabular": _BOOLEAN,
+    "--benchmark_dry_run": _BOOLEAN,
+    "--benchmark_list_tests": _BOOLEAN,
+    "--benchmark_time_unit": r"ns|us|ms|s",
+    "--benchmark_format": r"console|json|csv",
+    "--benchmark_out_format": r"console|json|csv",
+    "--benchmark_color": r"(?i:auto|true|false|yes|no|on|off|1|0)",
+    "--v": r"[0-9]+",
+    "--benchmark_filter": r".*",
+}
+
+
+def record_argument(argument: str) -> str:
+    """How one benchmark argument is recorded in the manifest (see ALLOWED_ARGUMENTS)."""
+    if argument.startswith("--benchmark_out="):
+        return "--benchmark_out=" + PurePath(argument.split("=", 1)[1].replace("\\", "/")).name
+    match = re.fullmatch(r"(--[A-Za-z0-9_]+)(?:=(.*))?", argument, re.DOTALL)
+    if match is None:
+        return "sha256:" + text_sha256(argument)
+    name, value = match.group(1), match.group(2)
+    pattern = ALLOWED_ARGUMENTS.get(name)
+    if value is None:
+        # A bare flag: as written for a boolean option (Google Benchmark reads it as true).
+        return argument if pattern == _BOOLEAN else "sha256:" + text_sha256(argument)
+    if pattern is not None and re.fullmatch(f"(?:{pattern})", value, re.DOTALL):
+        return argument
+    return f"{name}=sha256:{text_sha256(value)}"
 
 
 def is_truthy_flag_value(value: str) -> bool:
@@ -441,7 +433,7 @@ def main() -> int:
         "binary": {"name": options.binary.name, "sha256": sha256_of(options.binary)},
         "build": build_provenance(options.binary),
         "benchmark": {
-            "args": hide_argument_paths(recorded_args(bench_args), options.repo_root),
+            "args": [record_argument(argument) for argument in bench_args],
             "raw_repetitions": not aggregates_only,
             "report_aggregates_only": aggregates_only,
         },

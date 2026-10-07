@@ -752,15 +752,24 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
   flags' hashes, read from the build tree's `CMakeCache.txt` -- the nearest one above the binary,
   so a multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type -- the
   compiler id/version from the `CMakeFiles/<version>/` of the cache's own CMake version, or
-  unknown), `benchmark` (the arguments passed, with the output path reduced to its file name and
-  any absolute path in an argument -- `--benchmark_context=src=/home/u/p` -- becoming
-  `<source>/...` inside the checkout and `<abs>/<file name>` elsewhere), `exit_code`, and
+  unknown), `benchmark` (the arguments passed, allowlisted or hashed as below), `exit_code`, and
   `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
   architecture).
+  - The benchmark arguments are recorded as written only when they are Google Benchmark options
+    whose values are safe by construction: numbers (`--benchmark_repetitions`,
+    `--benchmark_min_time`, `--benchmark_min_warmup_time`, `--v`), booleans (the aggregates,
+    random-interleaving, tabular-counters, dry-run and list-tests options, bare or with a value),
+    enumerations (`--benchmark_time_unit`, `--benchmark_format`, `--benchmark_out_format`,
+    `--benchmark_color`) and the `--benchmark_filter` regex. The script's own `--benchmark_out`
+    keeps only its file name. A value that fails its pattern, and every other argument
+    (`--benchmark_context=...`, unknown options), is recorded as `<name>=sha256:<hex>` -- a hash of
+    the raw value -- or `sha256:<hex>` of the whole argument when it has no `--name=value` form. As
+    with the flags, runs stay comparable on their arguments without the manifest recording the
+    paths or other free text in them.
   - The compiler flags are recorded only as `build.cxx_flags_sha256` and
     `build.cxx_flags_config_sha256`: SHA-256 of the exact `CMAKE_CXX_FLAGS` and
     `CMAKE_CXX_FLAGS_<CONFIG>` text in `CMakeCache.txt` (UTF-8, no normalization; `null` when the
-    entry is absent). Two runs can be compared on them -- equal hashes, equal flags -- without the
+    entry is absent, the hash of the empty string when it is present but empty). Two runs can be compared on them -- equal hashes, equal flags -- without the
     manifest carrying the include directories, profile files and prefix maps the flags name,
     which sit under user profiles and checkouts.
   - It records no host name, user name, user-profile path, process list or other command line; a

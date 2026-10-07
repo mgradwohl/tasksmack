@@ -136,88 +136,61 @@ function Get-GitProvenance {
     return $git
 }
 
-# Path heads for Hide-ArgumentPaths: a drive, a UNC or device path, a POSIX path of two or more
-# segments, or ~ (the same as _PATH_HEAD / _EMBEDDED_HEAD in tools/bench-manifest.py).
-$script:PathHead = [regex]'^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))'
-$script:EmbeddedHead = [regex]'[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//'
-
-function ConvertTo-CanonicalPath {
-    # The full path with the existing part spelled canonically, as Python's os.path.realpath does
-    # for bench-manifest.py: 8.3 short names expanded (Windows) and links resolved; the part that
-    # does not exist is kept as written.
-    param([string]$Path)
-    # Plain .NET file APIs, not PowerShell's providers: a drive that does not exist here (D:\ on a
-    # machine without one) is just a path that does not exist.
-    $full = [IO.Path]::GetFullPath($Path)
-    $rootPart = [IO.Path]::GetPathRoot($full)
-    $result = $rootPart
-    $parts = @($full.Substring($rootPart.Length).Split([char[]]@('\', '/')) | Where-Object { $_ })
-    for ($i = 0; $i -lt $parts.Count; $i++) {
-        $next = [IO.Path]::Combine($result, $parts[$i])
-        $item = if ([IO.Directory]::Exists($next)) { [IO.DirectoryInfo]::new($next) } elseif ([IO.File]::Exists($next)) { [IO.FileInfo]::new($next) } else { $null }
-        if (-not $item) {
-            # Nothing further exists: keep the rest as written.
-            return [IO.Path]::Combine([string[]](@($next) + @($parts | Select-Object -Skip ($i + 1))))
-        }
-        if ($item.LinkTarget) {
-            $next = [IO.Path]::GetFullPath($item.LinkTarget, $result)
-        }
-        elseif ($IsWindows -and $parts[$i].Contains('~')) {
-            # The directory listing matches 8.3 short names and returns the long one.
-            $long = @([IO.Directory]::EnumerateFileSystemEntries($result, $parts[$i])) | Select-Object -First 1
-            if ($long) { $next = $long }
-        }
-        $result = $next
-    }
-    return $result
+# The benchmark arguments (#1445 review). An argument is recorded as written only when it is a
+# Google Benchmark option whose value is safe by construction ($script:AllowedArguments: numbers,
+# booleans, enumerations, and the --benchmark_filter regex, which the identity pass still covers);
+# a value that fails its pattern, and every other argument (--benchmark_context=..., unknown ones),
+# is recorded as <name>=sha256:<hex of the value>, or sha256:<hex of the argument> when it has no
+# --name=value form. Runs stay comparable on their arguments without recording paths or other
+# free text. The script's own --benchmark_out keeps its file name (extra ones are refused before
+# launch). The same table as ALLOWED_ARGUMENTS in tools/bench-manifest.py.
+$script:NumberPattern = '[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?'
+$script:BooleanPattern = '(?i:true|false|yes|no|on|off|t|f|y|n|1|0)'
+$script:AllowedArguments = @{
+    '--benchmark_repetitions'                = '[0-9]+'
+    '--benchmark_min_time'                   = $script:NumberPattern + '[sx]?'
+    '--benchmark_min_warmup_time'            = $script:NumberPattern + 's?'
+    '--benchmark_display_aggregates_only'    = $script:BooleanPattern
+    '--benchmark_report_aggregates_only'     = $script:BooleanPattern
+    '--benchmark_enable_random_interleaving' = $script:BooleanPattern
+    '--benchmark_counters_tabular'           = $script:BooleanPattern
+    '--benchmark_dry_run'                    = $script:BooleanPattern
+    '--benchmark_list_tests'                 = $script:BooleanPattern
+    '--benchmark_time_unit'                  = 'ns|us|ms|s'
+    '--benchmark_format'                     = 'console|json|csv'
+    '--benchmark_out_format'                 = 'console|json|csv'
+    '--benchmark_color'                      = '(?i:auto|true|false|yes|no|on|off|1|0)'
+    '--v'                                    = '[0-9]+'
+    '--benchmark_filter'                     = '.*'
 }
 
-function Hide-ArgumentPaths {
-    # The benchmark arguments with every absolute path replaced, so no user profile or checkout
-    # path is recorded (#1445 review). The arguments are already a list, so each one is split at
-    # '=' (--benchmark_context=src=/home/u/p) and every part that is an absolute path is scrubbed:
-    # a drive (C:\ or C:/), a UNC or device path (\\, //, \\?\, \\.\), a POSIX path of two or more
-    # segments (/home/u/x) or ~. A path inside the checkout becomes <source>/relative, any other
-    # <abs>/<file name>; a ';' list is scrubbed item by item, and a part with a drive, UNC or device
-    # path inside it (FOO:C:/x) is scrubbed from there. The compiler flags are not recorded at all,
-    # only hashed (Get-BuildProvenance). Kept in step with hide_argument_paths in
-    # tools/bench-manifest.py.
-    param([string[]]$Arguments)
-    $root = (ConvertTo-CanonicalPath $repoRoot).Replace('\', '/').TrimEnd('/')
-    $scrub = {
-        param([string]$Path)
-        $normalized = $Path.Replace('\', '/')
-        # Compared in the root's canonical form, so a checkout reached through another spelling
-        # (an 8.3 short name such as C:/Users/RUNNER~1/..., as TEMP is on GitHub's Windows runners,
-        # or a link) still maps to <source>. UNC and device paths are left alone (no network
-        # lookups). The file name kept for a path outside the checkout is the one in the argument.
-        $canonical = $normalized
-        if ([IO.Path]::IsPathFullyQualified($Path) -and -not $normalized.StartsWith('//')) {
-            $canonical = (ConvertTo-CanonicalPath $Path).Replace('\', '/')
-        }
-        $fold = $IsWindows -or $canonical -match '^[A-Za-z]:/'
-        $comparison = if ($fold) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-        if ($canonical.Equals($root, $comparison) -or $canonical.StartsWith("$root/", $comparison)) {
-            return '<source>' + $canonical.Substring($root.Length)
-        }
-        return '<abs>/' + ($normalized.TrimEnd('/') -split '/')[-1]
+function Get-RecordedArgument {
+    # How one benchmark argument is recorded in the manifest (see $script:AllowedArguments).
+    param([string]$Argument)
+    if ($Argument.StartsWith('--benchmark_out=', [StringComparison]::Ordinal)) {
+        return '--benchmark_out=' + ($Argument.Substring('--benchmark_out='.Length).Replace('\', '/').TrimEnd('/') -split '/')[-1]
     }
-    $operand = {
-        param([string]$Value)
-        if ($Value.Contains(';')) { return (@($Value.Split(';') | ForEach-Object { & $operand $_ }) -join ';') }
-        if ($script:PathHead.IsMatch($Value)) { return (& $scrub $Value) }
-        $embedded = $script:EmbeddedHead.Match($Value)
-        if ($embedded.Success) { return $Value.Substring(0, $embedded.Index) + (& $scrub $Value.Substring($embedded.Index)) }
-        return $Value
+    $match = [regex]::Match($Argument, '\A(--[A-Za-z0-9_]+)(?:=(.*))?\z', [Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $match.Success) { return 'sha256:' + (Get-TextSha256 $Argument) }
+    $name = $match.Groups[1].Value
+    # Case-sensitive, as Google Benchmark's flag names are (a hashtable key lookup is not).
+    $pattern = if ($script:AllowedArguments.Keys -ccontains $name) { $script:AllowedArguments[$name] } else { $null }
+    if (-not $match.Groups[2].Success) {
+        # A bare flag: as written for a boolean option (Google Benchmark reads it as true).
+        if ($pattern -ceq $script:BooleanPattern) { return $Argument }
+        return 'sha256:' + (Get-TextSha256 $Argument)
     }
-    return , [string[]]@(foreach ($argument in $Arguments) { (@($argument.Split('=') | ForEach-Object { & $operand $_ }) -join '=') })
+    $value = $match.Groups[2].Value
+    if ($null -ne $pattern -and [regex]::IsMatch($value, "\A(?:$pattern)\z", [Text.RegularExpressions.RegexOptions]::Singleline)) { return $Argument }
+    return "$name=sha256:" + (Get-TextSha256 $value)
 }
 
 function Get-TextSha256 {
-    # SHA-256 of a string's UTF-8 bytes, or $null for no value. text_sha256 in tools/bench-manifest.py.
-    param([AllowNull()][string]$Value)
+    # SHA-256 of a string's UTF-8 bytes, or $null for no value (an untyped parameter: a [string]
+    # one would turn $null into ''). text_sha256 in tools/bench-manifest.py.
+    param($Value)
     if ($null -eq $Value) { return $null }
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Value))).ToLowerInvariant()
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([string]$Value))).ToLowerInvariant()
 }
 
 function Get-HostNames {
@@ -458,11 +431,9 @@ function Get-EffectiveReportAggregatesOnly {
 
 function New-BenchManifest {
     # The manifest as it stands before the benchmark starts (exit_code null): see the snapshot
-    # below. The output path is reduced to its file name, so the manifest carries no
-    # user-profile path.
-    $recordedArgs = [string[]]@($benchArgs | ForEach-Object {
-            if ($_ -like '--benchmark_out=*') { "--benchmark_out=$(Split-Path -Leaf $outFile)" } else { $_ }
-        })
+    # below. The arguments are recorded through Get-RecordedArgument (allowlisted options as
+    # written, everything else hashed), so the manifest carries no paths from them.
+    $recordedArgs = [string[]]@($benchArgs | ForEach-Object { Get-RecordedArgument $_ })
     $aggregatesOnly = Get-EffectiveReportAggregatesOnly $benchArgs
     $manifest = [ordered]@{
         schema_version = 1
@@ -478,7 +449,7 @@ function New-BenchManifest {
         }
         build          = Get-BuildProvenance
         benchmark      = [ordered]@{
-            args                   = Hide-ArgumentPaths $recordedArgs
+            args                   = $recordedArgs
             raw_repetitions        = -not $aggregatesOnly
             report_aggregates_only = $aggregatesOnly
         }
