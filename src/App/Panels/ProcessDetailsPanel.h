@@ -7,6 +7,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
+#include "ProcessActionsView.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
@@ -107,11 +108,6 @@ class ProcessDetailsPanel : public Panel
     }
 
   private:
-    /// Action pending confirmation in the "Confirm Action" popup - see
-    /// ProcessDetailsPanel_ActionHelpers.h for why this is a type alias rather than a
-    /// member enum.
-    using ProcessAction = Detail::ProcessAction;
-
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderResourceUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderCpuUsageSection(UI::Widgets::FillPlotLayout& fill);
@@ -125,13 +121,9 @@ class ProcessDetailsPanel : public Panel
     void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const;
     void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
     void renderActions();
-    void renderActionResultFeedback();
-    void renderConfirmDialog();
-    void dispatchConfirmedAction();
     /// The selected process as an action target: its PID and, once a snapshot has confirmed it,
     /// its start time, so a reuse of the PID is refused rather than acted on (#973).
     [[nodiscard]] Platform::ProcessTarget selectedTarget() const;
-    void renderActionButtons();
     void renderPrioritySection();
 
     // Priority slider helper methods (extracted for testability and clarity)
@@ -222,11 +214,9 @@ class ProcessDetailsPanel : public Panel
     // and cleared when the window changes so the next frame rebuilds it.
     std::string m_NoGpuUsageDetail;
 
-    // Confirmation dialog state
-    bool m_ShowConfirmDialog = false;
-    ProcessAction m_ConfirmAction = ProcessAction::None;
-    Detail::ActionResultMessage m_LastActionResult;
-    float m_ActionResultTimer = 0.0F;
+    // The Actions tab's buttons, confirm dialog and result line (#1179). It dispatches through
+    // m_ProcessActions, which the panel keeps owning; the priority control below uses it too.
+    ProcessActionsView m_ActionsView;
 
     // Priority adjustment state
     int32_t m_PriorityNiceValue = 0;
