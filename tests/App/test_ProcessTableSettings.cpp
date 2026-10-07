@@ -483,5 +483,40 @@ TEST(ProcessTableSettingsTest, ExtractedSectionHasNoVisibility)
     EXPECT_EQ(extractTableSection(ini, 0x1A2B3C4DU), "[Table][0x1A2B3C4D,1]\nColumn 0  Width=60 Order=0\n");
 }
 
+// ========== withColumnWidth (#1209) ==========
+
+// Closing in tree view: the Name column's list width is saved in place of tree view's automatic one.
+TEST(ProcessTableSettingsTest, WithColumnWidthReplacesTheColumnsWidth)
+{
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 1, 120),
+              "[Table][0x1A2B3C4D,3]\n"
+              "RefScale=13\n"
+              "Column 0  Width=60 Order=1 ID=0x00000000\n"
+              "Column 1  Width=120 Order=0 Sort=0^\n"
+              "Column 2  Weight=1.0000 Order=2\n");
+}
+
+TEST(ProcessTableSettingsTest, WithColumnWidthAddsALineForAColumnWithout)
+{
+    const std::string_view noNameLine = "[Table][0x1A2B3C4D,3]\n"
+                                        "Column 0  Width=60\n";
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(noNameLine, 1, 120),
+              "[Table][0x1A2B3C4D,3]\n"
+              "Column 0  Width=60\n"
+              "Column 1  Width=120\n");
+    // The result is a section sanitize() keeps as it is.
+    const std::string result = ProcessTableSettings::withColumnWidth(noNameLine, 1, 120);
+    EXPECT_EQ(sanitize(result), result);
+}
+
+TEST(ProcessTableSettingsTest, WithColumnWidthLeavesStretchColumnsAndBadWidthsAlone)
+{
+    // Column 2 is the stretch column: it has a weight, not a width.
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 2, 300), sanitize(SECTION));
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 1, 0), sanitize(SECTION));
+    EXPECT_EQ(ProcessTableSettings::withColumnWidth(SECTION, 1, 100000), sanitize(SECTION));
+    EXPECT_TRUE(ProcessTableSettings::withColumnWidth("", 1, 120).empty());
+}
+
 } // namespace
 } // namespace App

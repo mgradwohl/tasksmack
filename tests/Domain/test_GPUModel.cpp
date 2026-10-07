@@ -99,6 +99,86 @@ TEST(GPUModelTest, CapabilitiesAreExposedFromProbe)
     EXPECT_TRUE(modelCaps.hasPerProcessMetrics);
 }
 
+TEST(GPUModelTest, PerProcessSupportFlagsFollowTheProbesCapabilities)
+{
+    // #1210: what the Processes table reads, once a frame, to tell which GPU columns it can fill.
+    const auto modelWith = [](bool perProcess, bool utilization)
+    {
+        auto probe = std::make_unique<MockGPUProbe>();
+        Platform::GPUCapabilities caps;
+        caps.hasPerProcessMetrics = perProcess;
+        caps.hasPerProcessUtilization = utilization;
+        probe->withCapabilities(caps);
+        return std::make_unique<Domain::GPUModel>(std::move(probe));
+    };
+
+    const auto pdhLike = modelWith(true, true);
+    EXPECT_FALSE(pdhLike->perProcessMetricsKnownUnsupported());
+    EXPECT_FALSE(pdhLike->perProcessUtilizationKnownUnsupported());
+
+    // NVML: per-process memory and engines, no utilization.
+    const auto nvmlLike = modelWith(true, false);
+    EXPECT_FALSE(nvmlLike->perProcessMetricsKnownUnsupported());
+    EXPECT_TRUE(nvmlLike->perProcessUtilizationKnownUnsupported());
+
+    // DRM / ROCm: nothing per process.
+    const auto drmLike = modelWith(false, false);
+    EXPECT_TRUE(drmLike->perProcessMetricsKnownUnsupported());
+    EXPECT_TRUE(drmLike->perProcessUtilizationKnownUnsupported());
+}
+
+TEST(GPUModelTest, ProcessGpuDataComesWithTheSupportItWasReadUnder)
+{
+    // #1210: the counters and the flags from one operation, so a generation is never stamped
+    // supported while the read short-circuited empty, or the reverse.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = false; // NVML-like
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024ULL * 1024);
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+
+    const auto reading = model.readProcessGPUData();
+    EXPECT_TRUE(reading.perProcessSupported);
+    EXPECT_FALSE(reading.utilizationSupported);
+    EXPECT_EQ(reading.counters.size(), 1U);
+
+    // Lost on re-enumeration: no read, and the reading says so.
+    Platform::GPUCapabilities none;
+    rawProbe->withCapabilities(none).withRescanReportingChange();
+    model.refresh();
+    const auto after = model.readProcessGPUData();
+    EXPECT_FALSE(after.perProcessSupported);
+    EXPECT_FALSE(after.utilizationSupported);
+    EXPECT_TRUE(after.counters.empty());
+}
+
+TEST(GPUModelTest, AFailedProcessGpuReadStillReportsTheSupportItRanUnder)
+{
+    // #1210: a throwing read returned no flags, so the caller fell back to flags it had loaded
+    // outside the probe lock, which a rescan could have changed in between. The failure now comes
+    // back with the flags taken under the lock.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024ULL * 1024).withProcessCountersThrowing();
+    Domain::GPUModel model(std::move(probe));
+
+    Domain::GPUModel::ProcessGPUReading reading;
+    ASSERT_NO_THROW(reading = model.readProcessGPUData());
+    EXPECT_TRUE(reading.perProcessSupported);
+    EXPECT_TRUE(reading.utilizationSupported);
+    EXPECT_TRUE(reading.counters.empty());
+    EXPECT_TRUE(reading.failure != nullptr);
+
+    // The counters-only call still throws, as before.
+    EXPECT_ANY_THROW(static_cast<void>(model.readProcessGPUCounters()));
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
 {
     // Regression test for #843 Phase 3b: backends that can never return per-process data

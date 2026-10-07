@@ -122,6 +122,7 @@ set(TASKSMACK_SOURCES
     src/App/UserConfig.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
+    src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/MemorySection.cpp
