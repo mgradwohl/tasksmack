@@ -9,6 +9,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace App
@@ -111,6 +112,12 @@ class UserConfig
 
     /// Load settings from config file (call on startup)
     void load();
+
+    /// Parses `tomlText` as a config file and reads every setting it holds into `settings`, the same
+    /// way load() reads the file (keys that are absent leave `settings` alone). Returns false, with
+    /// `settings` untouched, if the text is not valid TOML. No file I/O; the seam the config fuzz
+    /// target drives (tests/fuzz/fuzz_user_config.cpp).
+    [[nodiscard]] static auto parseSettings(std::string_view tomlText, UserSettings& settings) -> bool;
 
     /// Save settings to the config file by replacing it with a new file, so a crash mid-write can't
     /// leave it truncated. Only the settings TaskSmack changed since it last read or wrote the file

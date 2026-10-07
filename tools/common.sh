@@ -100,3 +100,23 @@ find_python() {
     done
     return 1
 }
+
+# Warn when a clang-format's major version differs from the one CI pins in .pre-commit-config.yaml
+# (mirrors-clang-format `rev:`). Different majors can format the same code differently, so a
+# failure from check-format.sh, or a rewrite by clang-format.sh, may be the toolchain rather than
+# the tree (#916). Never fails; prints to stderr only.
+# Usage: warn_clang_format_version_skew "/usr/bin/clang-format"
+warn_clang_format_version_skew() {
+    local tool_path="$1"
+    local common_dir config pinned local_version
+    common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    config="${common_dir}/../.pre-commit-config.yaml"
+    [[ -f "$config" ]] || return 0
+    pinned="$(grep -A1 'mirrors-clang-format' "$config" | grep -oE 'rev: *v?[0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
+    local_version="$(get_llvm_tool_major_version "$tool_path" || true)"
+    if [[ -n "$pinned" && -n "$local_version" && "$pinned" != "$local_version" ]]; then
+        echo "Warning: $tool_path is clang-format $local_version, but CI pins clang-format $pinned (.pre-commit-config.yaml)." >&2
+        echo "         Results can differ from CI; 'pre-commit run clang-format --all-files' uses the pinned version." >&2
+    fi
+    return 0
+}
