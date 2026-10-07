@@ -123,8 +123,107 @@ readingTime(std::chrono::steady_clock::time_point now, std::size_t readings, std
     return scenario->historySamples() + 1;
 }
 
+/// Applies `seed=<n>`: any 64-bit whole number.
+void parseSeed(std::string_view setting, ScenarioConfig& config, std::vector<std::string>& warnings)
+{
+    if (const auto seed = parseUnsigned(setting))
+    {
+        config.workload.seed = *seed;
+    }
+    else
+    {
+        warnings.push_back(std::format("seed={}: not a whole number; using {}", setting, config.workload.seed));
+    }
+}
+
+/// Applies `history=full|none|<seconds>`; seconds are clamped to SamplingConfig's history range.
+void parseHistory(std::string_view setting, ScenarioConfig& config, std::vector<std::string>& warnings)
+{
+    const std::string mode = lower(setting);
+    if (mode == "full")
+    {
+        config.historySeconds = Sampling::HISTORY_SECONDS_MAX;
+    }
+    else if (mode == "none" || mode == "0")
+    {
+        config.historySeconds = 0;
+    }
+    else if (const auto seconds = parseUnsigned(setting))
+    {
+        const auto requested = static_cast<int>(std::min<std::uint64_t>(*seconds, std::numeric_limits<int>::max()));
+        config.historySeconds = Sampling::clampHistorySeconds(requested);
+        if (std::cmp_not_equal(config.historySeconds, *seconds))
+        {
+            warnings.push_back(std::format("history={}: out of range; using {}", setting, config.historySeconds));
+        }
+    }
+    else
+    {
+        warnings.push_back(std::format("history={}: expected full, none or seconds; using {}", setting, config.historySeconds));
+    }
+}
+
+/// Applies `refresh=<ms>`, clamped to SamplingConfig's refresh range; a bad value leaves it unset.
+void parseRefresh(std::string_view setting, ScenarioConfig& config, std::vector<std::string>& warnings)
+{
+    if (const auto ms = parseUnsigned(setting))
+    {
+        const auto requested = static_cast<int>(std::min<std::uint64_t>(*ms, std::numeric_limits<int>::max()));
+        config.refreshIntervalMs = Sampling::clampRefreshInterval(requested);
+        if (std::cmp_not_equal(*config.refreshIntervalMs, *ms))
+        {
+            warnings.push_back(std::format("refresh={}: out of range; using {}", setting, *config.refreshIntervalMs));
+        }
+    }
+    else
+    {
+        warnings.push_back(std::format("refresh={}: not a whole number of milliseconds; ignored", setting));
+    }
+}
+
+/// Applies one `key=value` setting (key already lower-cased) to @p config; an unknown key, or a bad
+/// value, adds a warning instead.
+void applySetting(const std::string& key, std::string_view setting, ScenarioConfig& config, std::vector<std::string>& warnings)
+{
+    if (key == "processes")
+    {
+        parseCount(
+            key, setting, Platform::Synthetic::MIN_PROCESSES, Platform::Synthetic::MAX_PROCESSES, config.workload.processes, warnings);
+    }
+    else if (key == "cores")
+    {
+        parseCount(key, setting, Platform::Synthetic::MIN_CORES, Platform::Synthetic::MAX_CORES, config.workload.cores, warnings);
+    }
+    else if (key == "disks")
+    {
+        parseCount(key, setting, 0, Platform::Synthetic::MAX_DISKS, config.workload.disks, warnings);
+    }
+    else if (key == "interfaces")
+    {
+        parseCount(key, setting, 0, Platform::Synthetic::MAX_INTERFACES, config.workload.interfaces, warnings);
+    }
+    else if (key == "seed")
+    {
+        parseSeed(setting, config, warnings);
+    }
+    else if (key == "history")
+    {
+        parseHistory(setting, config, warnings);
+    }
+    else if (key == "refresh")
+    {
+        parseRefresh(setting, config, warnings);
+    }
+    else
+    {
+        warnings.push_back(std::format("unknown key '{}'; ignored", key));
+    }
+}
+
 } // namespace
 
+// Tokenises the comma-separated settings; applySetting() handles each key=value, and a bare flag word
+// ("1", "on") only turns the scenario on.
 ParseResult parseScenario(const char* value)
 {
     ParseResult result;
@@ -162,85 +261,7 @@ ParseResult parseScenario(const char* value)
         }
         const std::string key = lower(trim(token.substr(0, equals)));
         const std::string_view setting = trim(token.substr(equals + 1));
-        if (key == "processes")
-        {
-            parseCount(key,
-                       setting,
-                       Platform::Synthetic::MIN_PROCESSES,
-                       Platform::Synthetic::MAX_PROCESSES,
-                       config.workload.processes,
-                       result.warnings);
-        }
-        else if (key == "cores")
-        {
-            parseCount(
-                key, setting, Platform::Synthetic::MIN_CORES, Platform::Synthetic::MAX_CORES, config.workload.cores, result.warnings);
-        }
-        else if (key == "disks")
-        {
-            parseCount(key, setting, 0, Platform::Synthetic::MAX_DISKS, config.workload.disks, result.warnings);
-        }
-        else if (key == "interfaces")
-        {
-            parseCount(key, setting, 0, Platform::Synthetic::MAX_INTERFACES, config.workload.interfaces, result.warnings);
-        }
-        else if (key == "seed")
-        {
-            if (const auto seed = parseUnsigned(setting))
-            {
-                config.workload.seed = *seed;
-            }
-            else
-            {
-                result.warnings.push_back(std::format("seed={}: not a whole number; using {}", setting, config.workload.seed));
-            }
-        }
-        else if (key == "history")
-        {
-            const std::string mode = lower(setting);
-            if (mode == "full")
-            {
-                config.historySeconds = Sampling::HISTORY_SECONDS_MAX;
-            }
-            else if (mode == "none" || mode == "0")
-            {
-                config.historySeconds = 0;
-            }
-            else if (const auto seconds = parseUnsigned(setting))
-            {
-                const auto requested = static_cast<int>(std::min<std::uint64_t>(*seconds, std::numeric_limits<int>::max()));
-                config.historySeconds = Sampling::clampHistorySeconds(requested);
-                if (std::cmp_not_equal(config.historySeconds, *seconds))
-                {
-                    result.warnings.push_back(std::format("history={}: out of range; using {}", setting, config.historySeconds));
-                }
-            }
-            else
-            {
-                result.warnings.push_back(
-                    std::format("history={}: expected full, none or seconds; using {}", setting, config.historySeconds));
-            }
-        }
-        else if (key == "refresh")
-        {
-            if (const auto ms = parseUnsigned(setting))
-            {
-                const auto requested = static_cast<int>(std::min<std::uint64_t>(*ms, std::numeric_limits<int>::max()));
-                config.refreshIntervalMs = Sampling::clampRefreshInterval(requested);
-                if (std::cmp_not_equal(*config.refreshIntervalMs, *ms))
-                {
-                    result.warnings.push_back(std::format("refresh={}: out of range; using {}", setting, *config.refreshIntervalMs));
-                }
-            }
-            else
-            {
-                result.warnings.push_back(std::format("refresh={}: not a whole number of milliseconds; ignored", setting));
-            }
-        }
-        else
-        {
-            result.warnings.push_back(std::format("unknown key '{}'; ignored", key));
-        }
+        applySetting(key, setting, config, result.warnings);
     }
     result.config = config;
     return result;
