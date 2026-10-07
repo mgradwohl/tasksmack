@@ -123,6 +123,7 @@ struct ProcessCapabilities {
 - `ProcessesPanel` performs one synchronous seed read, then transfers its probe to `BackgroundSampler` for periodic process enumeration
 - `SystemMetricsPanel` owns a separate `BackgroundSampler` for System, Storage, and GPU models so system work cannot delay process enumeration
 - System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations. Each builds its generation outside any lock a reader takes and swaps it in through `Domain::PublicationSlot` (a short mutex around a `shared_ptr`), so `publication()` never waits for a history copy (#868); their writers are serialised on a writer mutex so versions commit in order (lock order: writer mutex, then the state mutex, then the slot; GPUModel's probe mutex is never held with its writer mutex)
+- `SystemModel` keeps its history in `Domain::SharedHistoryBuffer` (`src/Domain/SharedHistory.h`): append-only blocks whose slots are written once and never again, so a publication holds `Domain::HistoryView`s of them -- contiguous, immutable, converting to `std::span` -- instead of copies, and a publish is O(series) whatever the history length (#1412). Each sample's history append is a transaction with the strong guarantee: `stageHistoryAppend()` makes every allocation first -- new core slots and new interfaces' Rx/Tx series built and backfilled off to the side, their last-seen entries, `reserve()` on every existing series, vector capacity and hash buckets -- then the `noexcept` `commitHistoryAppend()` splices the staged nodes in and pushes to every series without allocating, and the snapshot is moved in last. A `std::bad_alloc` therefore leaves every series aligned and the model unchanged (a failure in `publish()` after the commit leaves the history one sample ahead of an unchanged publication); `tests/Domain/test_SystemModelAllocationFailure.cpp` fails each allocation of such a sample in turn. Storage/GPU still copy (`HistoryBuffer` + `toVector`) until their slices land
 - `BackgroundSampler` times every samplable and pass (`metrics()`: last/max duration, overruns, backoffs), logs sustained overruns at most every 30 s, and after a pass that overruns its interval waits as long as the pass took (capped at `REFRESH_INTERVAL_MAX_MS`) instead of sampling back to back; the decision is the pure `Domain::nextSampleTime()` (#1416)
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
@@ -254,16 +255,28 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 - Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
 - Define mocks outside anonymous namespace when using `std::make_unique`
-- `TaskSmackTests` does not link real ImGui/ImPlot library object code (headers only, no
-  window/GL context) — a `.cpp` calling real `ImGui::`/`ImPlot::`/`ImGui_Impl*::` functions
-  fails to *link* if added to its source list (e.g. `TitleBarLayer.cpp`, `ProcessesPanel.cpp`,
-  `ProcessDetailsPanel.cpp`, `UILayer.cpp`). Two ways around it, see CONTRIBUTING.md "Testing
-  App/UI code that needs a live ImGui context" for detail:
+- `TaskSmackTests` links the real ImGui and ImPlot libraries (`imgui_lib`, `implot_lib`), so a
+  `.cpp` calling `ImGui::`/`ImPlot::` can be added to its "Source files under test" list and run
+  headless. There is no display or GL context in CI, so anything needing a real SDL window, OpenGL
+  or the `ImGui_Impl*` backends at run time (e.g. `UI/UILayer.cpp`) links but cannot run. Panels and
+  layers (`TitleBarLayer.cpp`, `ShellLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
+  `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs, `UILayer.cpp`) are not in the test binary:
+  `UI/Theme.cpp` is replaced there by `tests/Mocks/ThemeStub.cpp`, so every `Theme` member a file
+  calls must be stubbed, and some create real `Platform` probes. Three ways to cover such code, see
+  CONTRIBUTING.md "Testing App/UI code that needs a live ImGui context" for detail:
   1. Extract the pure decision logic (all inputs as explicit params) into a small header, tested
      directly — `App/TitleBarGeometry.h`, `App/Panels/ProcessDetailsPanel_ActionHelpers.h`,
      `UI/DpiScale.h`/`UI/MonospaceFontPath.h`.
-  2. If the file only uses ImGui *type declarations* (no `ImGui::`/`ImPlot::` calls), it may link
-     fine as-is — `UI/IconLoader.cpp` is linked directly into `TaskSmackTests` for this reason.
+  2. If the file only uses ImGui *type declarations* (no `ImGui::`/`ImPlot::` calls), link it as-is
+     — `UI/IconLoader.cpp` is linked directly into `TaskSmackTests` for this reason.
+  3. Render it headless: `ImGui::CreateContext()` (+ `ImPlot::CreateContext()`), set
+     `io.DisplaySize`, `io.IniFilename = nullptr`,
+     `io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures` and `io.Fonts->AddFontDefault()`,
+     then per frame `NewFrame()` / `Begin()` / code under test / `End()` / `Render()`, and assert on
+     results, ImGui state or `ImGui::GetDrawData()`. Examples:
+     `tests/App/test_ProcessActionConfirmPopup.cpp`, `tests/App/test_ProcessPriorityViewRender.cpp`,
+     `tests/UI/test_ChartGeometryBudget.cpp`. Prefer splitting a panel's drawing into a small view
+     `.cpp` (as `ProcessPriorityView.cpp`) and linking that.
 - `Platform::Windows` probes touch real hardware/OS state most CI runners don't have (battery,
   GPU, NVML). See CONTRIBUTING.md "Testing Windows platform-probe code that touches real
   hardware/OS APIs": extract pure logic into a `*Math.h` header taking primitives instead of

@@ -22,12 +22,14 @@
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
+#include "UI/Widgets.h"
 
 #include <imgui.h>
 #include <implot.h>
@@ -399,14 +401,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Type",
         });
 
-        float maxTextWidth = 0.0F;
-        for (const char* label : labels)
-        {
-            maxTextWidth = std::max(maxTextWidth, ImGui::CalcTextSize(label).x);
-        }
-
-        const ImGuiStyle& style = ImGui::GetStyle();
-        return maxTextWidth + (style.CellPadding.x * 2.0F) + 8.0F;
+        // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
+        // in place of a fixed 8px that stayed 8px at every font size and display density (#1200).
+        return UI::Widgets::measureLabelColumnWidth(labels) + (ImGui::GetStyle().CellPadding.x * 2.0F);
     };
 
     const float labelColWidth = computeLabelColumnWidth();
@@ -567,7 +564,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     // Identity section: Who is this process?
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_ID_CARD "  Identity");
+    (void) UI::Widgets::sectionHeader(ICON_FA_ID_CARD, "Identity");
     ImGui::BeginChild("BasicInfoLeft", ImVec2(leftWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
     renderInfoTable("BasicInfoLeftTable", identityRows.view());
     ImGui::EndChild();
@@ -577,7 +574,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
     // Runtime section: What is this process doing?
     ImGui::BeginGroup();
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_CLOCK "  Runtime");
+    (void) UI::Widgets::sectionHeader(ICON_FA_CLOCK, "Runtime");
     ImGui::BeginChild("BasicInfoRight", ImVec2(rightWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
 
     renderInfoTable("BasicInfoRightTable", runtimeRows.view());

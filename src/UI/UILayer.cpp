@@ -145,6 +145,7 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
     imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 
     auto fontPath = (assetsDir / "fonts" / "Inter-Regular.ttf").string();
+    const auto boldFontPath = (assetsDir / "fonts" / "Inter-Bold.ttf").string();
     auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
     const auto monospaceFontPath = findMonospaceFontPath();
 
@@ -233,6 +234,24 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
             addFontFromFile(fontFiles, iconFontPath, fontSizeLarge, &iconConfig, ICON_RANGES);
         }
 
+        // Bold at the body size, for section headers (#1200): the same size as the text beneath them,
+        // so a header row is exactly as tall as before and the layout around it is unchanged, but a
+        // weight apart from it. One per preset, with the icons merged in for the header's glyph;
+        // nothing else needs a bold face, so no large or monospace bold is loaded. Optional: without
+        // the file Theme::boldFont() hands out the regular font.
+        ImFontConfig boldConfig;
+        boldConfig.Flags = ImFontFlags_NoLoadError;
+        ImFont* fontBold = addFontFromFile(fontFiles, boldFontPath, fontSizeRegular, &boldConfig);
+        if (fontBold != nullptr && hasIconFont)
+        {
+            ImFontConfig iconConfig;
+            iconConfig.Flags |= ImFontFlags_NoLoadError;
+            iconConfig.MergeMode = true;
+            iconConfig.PixelSnapH = true;
+            iconConfig.GlyphMinAdvanceX = fontSizeRegular;
+            addFontFromFile(fontFiles, iconFontPath, fontSizeRegular, &iconConfig, ICON_RANGES);
+        }
+
         ImFont* fontMonospace = nullptr;
         if (!monospaceFontPath.empty())
         {
@@ -255,8 +274,10 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
             fontMonospace = imguiIO.Fonts->AddFontDefault(&monoFallbackConfig);
         }
 
-        // Register with theme for instant switching
+        // Register with theme for instant switching. The bold font after the rest: registerFonts()
+        // resets it.
         theme.registerFonts(size, fontRegular, fontLarge, fontMonospace);
+        theme.registerBoldFont(size, fontBold);
     }
 
     // The title bar's two physical sizes. Both are given in points and converted against the

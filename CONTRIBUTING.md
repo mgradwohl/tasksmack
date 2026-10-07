@@ -345,15 +345,31 @@ Shell tab registration and lifecycle forwarding live in the header-only `App/Pan
 `tests/App/test_PanelTabs.cpp` exercises them with fake panels, including selection, dynamic
 labels, and content-only rendering, without linking ImGui.
 
-`TaskSmackTests` does not link the real ImGui/ImPlot library object code (no `imgui`/`implot`
-library target, no live window or GL context) - only their headers are on the include path. This
-means a `.cpp` file that calls real `ImGui::`/`ImPlot::`/`ImGui_Impl*::` functions (window setup,
-widget rendering, font atlas baking, etc.) cannot be added to `TaskSmackTests`' source list: it
-will fail to *link*, not just to run correctly, with undefined references to those symbols. This
-is why `TitleBarLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`, `SystemMetricsPanel.cpp`,
-and `UILayer.cpp` are not linked into `TaskSmackTests`.
+`TaskSmackTests` links the real Dear ImGui and ImPlot libraries (`imgui_lib` and `implot_lib` in
+`tests/CMakeLists.txt`, built by `cmake/Dependencies.cmake`; `imgui_lib` also carries the SDL3 and
+OpenGL3 backends and FreeType). So a `.cpp` file that calls `ImGui::`/`ImPlot::` functions links
+fine and can be driven headless: ImGui and ImPlot need only a context, a display size and a font
+atlas to lay out widgets and build draw lists. What the test run does *not* have is a display or a
+GL context: CI runs headless, and the `Core` window tests (`tests/Core/test_Window.cpp`) skip when
+SDL video or GL is unavailable. Code that needs a real SDL window, an OpenGL context or the
+`ImGui_Impl*` platform/renderer backends at run time (`UI/UILayer.cpp`, texture uploads, GL calls)
+links but cannot run there.
 
-Two established ways to get real coverage of such a file's logic anyway:
+The production `.cpp` files exercised this way are listed under "Source files under test" in
+`tests/CMakeLists.txt` (for example `App/Panels/ProcessActionConfirm.cpp`,
+`App/Panels/ProcessActionsView.cpp`, `App/Panels/ProcessPriorityView.cpp`, `UI/ChartLegend.cpp`).
+`TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp`,
+`ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
+`SystemMetricsPanel.cpp`, the `*Section.cpp` tabs and `UI/UILayer.cpp` are not in that list. That
+is no longer a link limit on ImGui itself: `UI/Theme.cpp` is replaced in the test binary by
+`tests/Mocks/ThemeStub.cpp`, so a file can only be added once every `Theme` member it calls is
+stubbed; `ProcessesPanel.cpp` and `SystemMetricsPanel.cpp` also create real `Platform` probes
+at construction or attach; and `UILayer.cpp` drives the SDL3/OpenGL3 backends against a live
+window. Prefer moving a panel's drawing into a small view or helper `.cpp` with explicit inputs
+(as `ProcessPriorityView.cpp` and `ProcessActionsView.cpp` were split out of
+`ProcessDetailsPanel.cpp`) and linking that.
+
+Three established ways to get real coverage of such a file's logic:
 
 1. **Extract the pure decision logic into a small header**, taking every input as an explicit
    parameter instead of reading member/global state, and `#include` it back into the original
@@ -366,16 +382,36 @@ Two established ways to get real coverage of such a file's logic anyway:
    (`std::function<bool(const std::filesystem::path&)>` etc.) the same way `UI::selectAssetsDir()`
    (`AssetPath.h`) already does, rather than hard-coding a real filesystem/env call into the
    testable function.
-2. **Link the real file directly, if it turns out not to need the ImGui *library* at all.** Not
-   every file that `#include`s `imgui.h` actually calls into ImGui - some only use its type
-   declarations (e.g. `ImTextureID`, `ImVec2`) for their own return types. `UI/IconLoader.cpp` is
-   linked into `TaskSmackTests` (see `tests/CMakeLists.txt`) for exactly this reason: it only
-   needs `imgui.h` for types, and its OpenGL calls resolve against `glad_gl_core_33`, which *is*
-   already linked. Before reaching for extraction, check whether the file actually calls any
-   `ImGui::`/`ImPlot::` function - if it doesn't, linking it directly gives real coverage of the
-   actual production code instead of a parallel copy.
+2. **Link the real file directly, if it doesn't need a live context at all.** Not every file
+   that `#include`s `imgui.h` actually calls into ImGui - some only use its type declarations
+   (e.g. `ImTextureID`, `ImVec2`) for their own return types. `UI/IconLoader.cpp` is linked into
+   `TaskSmackTests` (see `tests/CMakeLists.txt`) for exactly this reason: it only needs `imgui.h`
+   for types, and its OpenGL calls resolve against `glad_gl_core_33`, which is also linked (they
+   only *succeed* with a GL context, which the tests don't have). Before reaching for extraction,
+   check whether the file actually calls any `ImGui::`/`ImPlot::` function - if it doesn't,
+   linking it directly gives real coverage of the actual production code instead of a parallel
+   copy.
+3. **Render the real code headless.** Add the `.cpp` to the "Source files under test" list in
+   `tests/CMakeLists.txt` and run whole ImGui frames in a fixture:
+   - `SetUp()`: `ImGui::CreateContext()` (plus `ImPlot::CreateContext()` for charts); set
+     `io.IniFilename`/`io.LogFilename` to `nullptr`, `io.DisplaySize` and `io.DeltaTime`; set
+     `io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures` so ImGui builds and owns the font
+     atlas itself with no renderer; then `io.Fonts->AddFontDefault()`.
+   - Each frame: `ImGui::NewFrame()`, a fixed-size `ImGui::Begin(...)` window, call the code under
+     test, `ImGui::End()`, `ImGui::Render()`.
+   - Assert on the outcome: return values and the code's own state, ImGui state such as
+     `ImGui::IsPopupOpen(...)`, or the geometry in `ImGui::GetDrawData()` (vertex/index counts,
+     draw lists).
+   - `TearDown()`: destroy the ImPlot context, then the ImGui one.
 
-Before writing either kind of test, check whether the logic already exists as a shared, tested
+   Examples: `tests/App/test_ProcessActionConfirmPopup.cpp` (modal lifecycle),
+   `tests/App/test_ProcessPriorityViewRender.cpp` (the priority control),
+   `tests/App/test_ProcessTableSettingsRoundTrip.cpp` (table settings loaded across frames),
+   `tests/UI/test_FillPlotLayout.cpp`, and `tests/UI/test_ChartGeometryBudget.cpp` with
+   `benchmarks/ChartGeometryScenes.h` (`HeadlessChartContext`, draw-data geometry counts).
+   Colours come from the stub theme, which `ThemeStub.cpp` makes visible so charts emit geometry.
+
+Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper - `TitleBarLayer.cpp` used to have its own private case-insensitive env-flag parser that
 turned out to be a byte-for-byte duplicate of the already-shared, already-tested
 `Core::isEnvFlagEnabled()` (`Core/EnvUtils.h`); deleting the duplicate and reusing the shared

@@ -103,6 +103,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowEvents.cpp
     Core/test_WindowGeometry.cpp
     Domain/test_History.cpp
+    Domain/test_SharedHistory.cpp
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessEnergyAttribution.cpp
@@ -112,6 +113,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessStatus.cpp
     Domain/test_ProcessState.cpp
     Domain/test_SystemModel.cpp
+    Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
@@ -132,6 +134,8 @@ set(COMMON_TEST_SOURCES
     UI/test_ColorDifference.cpp
     UI/test_StyleScale.cpp
     UI/test_DialogMetrics.cpp
+    UI/test_ChromeLayout.cpp
+    UI/test_ChromeWidgets.cpp
     UI/test_LineLayout.cpp
     UI/test_IconEncoding.cpp
     App/test_DialogGeometry.cpp
@@ -201,6 +205,7 @@ set(COMMON_TEST_SOURCES
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
+    App/test_StatusBarText.cpp
     App/test_FontSizeChange.cpp
     App/test_SyntheticScenario.cpp
     App/test_WindowOverride.cpp

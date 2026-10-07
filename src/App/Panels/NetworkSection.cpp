@@ -2,7 +2,9 @@
 
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
+#include "Domain/SharedHistory.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -266,7 +268,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const std::string& ifaceName = showingInterface ? interfaces[static_cast<size_t>(selectedInterface)].name : NO_INTERFACE;
     const auto ifaceTxIt = ctx.systemPublication->perInterfaceTxHistory.find(ifaceName);
     const auto ifaceRxIt = ctx.systemPublication->perInterfaceRxHistory.find(ifaceName);
-    static const std::vector<float> emptyHistory;
+    static const Domain::HistoryView<float> emptyHistory;
     const auto& ifaceTxHist =
         showingInterface && ifaceTxIt != ctx.systemPublication->perInterfaceTxHistory.end() ? ifaceTxIt->second : emptyHistory;
     const auto& ifaceRxHist =
@@ -527,7 +529,9 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         }
     };
 
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_NETWORK_WIRED "  Network Throughput - %s (%zu samples)", plotTitle, aligned);
+    // What the chart shows -- the total, an interface, or the total because the selected interface
+    // has no history -- stays on the heading, quieter than the title; the sample count is its tooltip.
+    (void) UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network Throughput", plotTitle, aligned);
     if (interfaceHistoryUnavailable)
     {
         // No spacing after it: the value strip below shares this line, right-aligned to the chart.
@@ -590,7 +594,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         ImGui::Separator();
         ImGui::Spacing();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_LIST "  Interface Status");
+        (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Interface Status");
         const std::size_t hiddenCount = cache.hiddenCount;
         if (ctx.showAllInterfaces != nullptr && (hiddenCount > 0 || *ctx.showAllInterfaces))
         {

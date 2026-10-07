@@ -23,6 +23,8 @@
 #include "Platform/ThreadName.h"
 #include "PowerStatusText.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeLayout.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
@@ -50,6 +52,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -238,7 +241,7 @@ void SystemMetricsPanel::adoptSystemPublication()
     // timestamps are read in place (#1180) rather than copied into panel members on every adoption.
     m_SystemPublication = m_Model->publication();
     m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
-    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
+    const std::span<const double> timestamps = m_SystemPublication->timestamps;
     if (!timestamps.empty())
     {
         m_CurrentNowSeconds = timestamps.back();
@@ -676,14 +679,14 @@ void SystemMetricsPanel::renderOverview()
     const auto& cpuSystemHist = m_SystemPublication->cpuSystemHistory;
     const auto& cpuIowaitHist = m_SystemPublication->cpuIowaitHistory;
     const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
-    const std::vector<double>& timestamps = m_SystemPublication->timestamps;
+    const std::span<const double> timestamps = m_SystemPublication->timestamps;
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
     const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, cpuCount).values;
     // CPU history with vertical now bars (total + breakdown)
-    ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_MICROCHIP "  CPU Usage (%zu samples)", cpuCount);
+    (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "CPU Usage", {}, cpuCount);
 
     const auto cpuTimeData = frameTimeAxis(timestamps, cpuCount, nowSeconds);
 
@@ -1061,25 +1064,21 @@ void SystemMetricsPanel::renderOverview()
                 }
             };
 
-            // Chart heading with the sample count; the battery's status is in its value-strip entry.
-            std::string heading;
+            // Chart heading; the battery's status is in its value-strip entry, and the sample count in
+            // the heading's own tooltip below (#1200).
+            const char* headingTitle = "Battery";
             if (!snap.power.hasBattery)
             {
-                heading = std::format(ICON_FA_BOLT "  Power ({} samples)", alignedCount);
+                headingTitle = "Power";
             }
             else if (hasProcessPower)
             {
-                heading = std::format(ICON_FA_BOLT "  Power & Battery ({} samples)", alignedCount);
+                headingTitle = "Power & Battery";
             }
-            else
-            {
-                heading = std::format(ICON_FA_BOLT "  Battery ({} samples)", alignedCount);
-            }
-            ImGui::TextColored(theme.scheme().textPrimary, "%s", heading.c_str());
 
             // The heading's tooltip is shown after the chart: its value strip is placed beside the
             // heading, the item drawn just before it, so nothing else is submitted between the two.
-            const bool headingHovered = ImGui::IsItemHovered();
+            const bool headingHovered = UI::Widgets::sectionHeader(ICON_FA_BOLT, headingTitle);
             renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, overviewNowBarColumns());
             // Tooltip with detailed info
             if (headingHovered)
@@ -1106,6 +1105,9 @@ void SystemMetricsPanel::renderOverview()
                         ImGui::Text("Model: %s", snap.power.model.c_str());
                     }
                 }
+                std::array<char, 64> samplesText{};
+                const std::string_view samples = UI::ChromeLayout::formatSampleCount(samplesText, alignedCount);
+                ImGui::TextUnformatted(samples.data(), samples.data() + samples.size());
                 ImGui::EndTooltip();
             }
             fill.addPlot();
@@ -1160,8 +1162,10 @@ void SystemMetricsPanel::renderOverview()
 
 #ifdef _WIN32
         constexpr const char* handleLabel = "Handles";
+        constexpr const char* resourcesTitle = "Threads, Page Faults & Handles";
 #else
         constexpr const char* handleLabel = "FDs";
+        constexpr const char* resourcesTitle = "Threads, Page Faults & FDs";
 #endif
 
         const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads)),
@@ -1243,8 +1247,7 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        ImGui::TextColored(
-            theme.scheme().textPrimary, ICON_FA_GEARS "  Threads, Page Faults & %s (%zu samples)", handleLabel, alignedCount);
+        (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, resourcesTitle, {}, alignedCount);
         renderHistoryWithNowBars(
             "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, overviewNowBarColumns());
         fill.addPlot();

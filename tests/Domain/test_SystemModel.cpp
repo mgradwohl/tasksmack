@@ -10,6 +10,7 @@
 /// - Per-core CPU tracking
 
 #include "Domain/SamplingConfig.h"
+#include "Domain/SharedHistory.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
 #include "Mocks/MockProbes.h"
@@ -1286,6 +1287,194 @@ TEST(SystemModelTest, ChangingTheHistoryWindowBeforeAnySamplePublishesNothing)
     Domain::SystemModel model(std::make_unique<MockSystemProbe>());
     model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
     EXPECT_EQ(model.publicationVersion(), 0U);
+}
+
+// =============================================================================
+// Shared history (#1412)
+// =============================================================================
+
+namespace
+{
+
+/// Counters for sample @p step of a 4-core, 2-interface system whose every counter advances.
+Platform::SystemCounters sharedHistoryCounters(std::uint64_t step)
+{
+    const auto cpu = [step](std::uint64_t salt)
+    {
+        const std::uint64_t busy = 1 + ((step + salt) % 5);
+        return makeCpuCounters(step * busy, 0, step, step * (10 - busy));
+    };
+    std::vector<Platform::CpuCounters> perCore;
+    for (std::uint64_t core = 0; core < 4; ++core)
+    {
+        perCore.push_back(cpu(core));
+        perCore.back().coreId = static_cast<std::size_t>(core);
+    }
+    return makeSystemCounters(
+        cpu(7),
+        makeMemoryCounters(1024, 512),
+        step,
+        std::move(perCore),
+        0,
+        0,
+        {makeInterfaceCounters("eth0", step * 1000, step * 500), makeInterfaceCounters("wlan0", step * 300, step * 100)});
+}
+
+/// Every series of @p publication, copied out, so a later comparison sees whether any changed.
+struct PublishedValues
+{
+    std::vector<double> timestamps;
+    std::vector<std::vector<float>> series;
+
+    explicit PublishedValues(const Domain::SystemPublication& publication)
+        : timestamps(publication.timestamps.begin(), publication.timestamps.end())
+    {
+        const auto add = [this](const Domain::HistoryView<float>& view)
+        {
+            series.emplace_back(view.begin(), view.end());
+        };
+        for (const auto* view : {&publication.cpuHistory,
+                                 &publication.cpuUserHistory,
+                                 &publication.cpuSystemHistory,
+                                 &publication.cpuIowaitHistory,
+                                 &publication.cpuIdleHistory,
+                                 &publication.memoryHistory,
+                                 &publication.memoryCachedHistory,
+                                 &publication.swapHistory,
+                                 &publication.powerHistory,
+                                 &publication.batteryChargeHistory,
+                                 &publication.netRxHistory,
+                                 &publication.netTxHistory})
+        {
+            add(*view);
+        }
+        for (const auto& core : publication.perCoreHistory)
+        {
+            add(core);
+        }
+        for (const char* name : {"eth0", "wlan0"})
+        {
+            add(publication.perInterfaceRxHistory.at(name));
+            add(publication.perInterfaceTxHistory.at(name));
+        }
+    }
+
+    bool operator==(const PublishedValues&) const = default;
+};
+
+} // namespace
+
+// A publication shares its samples with the model rather than copying them, so it must stay exactly
+// as published while the model appends, trims (by time and by a window change), and moves its
+// samples to new blocks.
+TEST(SystemModelTest, OlderPublicationIsUnchangedByLaterSamplesAndTrims)
+{
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxHistorySeconds(60.0);
+    std::uint64_t step = 0;
+    for (; step < 100; ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+    }
+    const auto old = model.publication();
+    const PublishedValues expected(*old);
+    ASSERT_GT(expected.timestamps.size(), 50U);
+    ASSERT_EQ(old->perCoreHistory.size(), 4U);
+
+    for (; step < 1000; ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+        if (step == 500)
+        {
+            model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+        }
+    }
+    EXPECT_EQ(PublishedValues(*old), expected);
+    // The window, plus the sample kept just before its left edge (#1016).
+    EXPECT_EQ(model.publication()->timestamps.size(), static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MIN) + 2U);
+}
+
+// Consecutive publications share their history (an O(series) publish, not O(history x series)), and
+// every series stays aligned with the timestamps.
+TEST(SystemModelTest, ConsecutivePublicationsShareTheirHistory)
+{
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxHistorySeconds(120.0);
+    std::uint64_t step = 0;
+    for (; step < 300; ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+    }
+
+    constexpr int GENERATIONS = 200;
+    int shared = 0;
+    auto previous = model.publication();
+    for (int i = 0; i < GENERATIONS; ++i, ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), static_cast<double>(step));
+        const auto next = model.publication();
+        const std::size_t samples = next->timestamps.size();
+        ASSERT_EQ(next->cpuHistory.size(), samples);
+        ASSERT_EQ(next->perInterfaceRxHistory.at("eth0").size(), samples);
+        for (const auto& core : next->perCoreHistory)
+        {
+            ASSERT_EQ(core.size(), samples);
+        }
+        if (next->timestamps.sharesStorageWith(previous->timestamps) && next->cpuHistory.sharesStorageWith(previous->cpuHistory) &&
+            next->perCoreHistory[0].sharesStorageWith(previous->perCoreHistory[0]))
+        {
+            ++shared;
+            // The same samples in place: the newer view starts one sample later in the same memory.
+            EXPECT_EQ(next->timestamps.data(), previous->timestamps.data() + 1);
+        }
+        previous = next;
+    }
+    // Only a compaction into a new block -- about once per window's worth of samples -- copies.
+    EXPECT_GE(shared, GENERATIONS - 4);
+}
+
+// A UI-style reader walks every sample of the latest publication while the sampler appends, trims and
+// compacts the shared history underneath it. Under TSan this shows the reader never reads a slot the
+// writer writes: published samples are never written again (#1412).
+TEST(SystemModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
+{
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    model.updateFromCounters(sharedHistoryCounters(0), 0.0);
+    model.updateFromCounters(sharedHistoryCounters(1), 1.0);
+
+    std::atomic<bool> done{false};
+    std::atomic<std::size_t> misaligned{0};
+    std::thread reader(
+        [&]
+        {
+            while (!done.load(std::memory_order_acquire))
+            {
+                const auto publication = model.publication();
+                const PublishedValues values(*publication); // reads every sample of every series
+                for (std::size_t i = 1; i < values.timestamps.size(); ++i)
+                {
+                    if (values.timestamps[i] <= values.timestamps[i - 1])
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                for (const auto& series : values.series)
+                {
+                    if (series.size() != values.timestamps.size())
+                    {
+                        misaligned.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+        });
+    for (std::uint64_t step = 2; step < 2000; ++step)
+    {
+        model.updateFromCounters(sharedHistoryCounters(step), 1.0 + (static_cast<double>(step) * 0.25));
+    }
+    done.store(true, std::memory_order_release);
+    reader.join();
+    EXPECT_EQ(misaligned.load(), 0U);
 }
 
 // =============================================================================

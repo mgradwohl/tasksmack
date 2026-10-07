@@ -6,6 +6,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -14,7 +15,6 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <string_view>
 
 namespace App
@@ -87,9 +87,8 @@ void ElevationNoticeLayer::renderDialog()
         // The height is held to the viewport too, every frame: the auto-fitted height grows with
         // the font and display scale, and without a cap the OK button could fall below the window
         // with this modal blocking everything else. Content that no longer fits scrolls (#1129).
-        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
-                                            ImVec2(UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.x),
-                                                   UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.y)));
+        UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.x),
+                                                         UI::DialogMetrics::computeDialogMaxExtent(sizingViewport->WorkSize.y)));
     }
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
@@ -109,34 +108,26 @@ void ElevationNoticeLayer::renderDialog()
 
         // Wrapped to the window, because the width above is now a real constraint rather than a
         // suggestion: on a narrow window the clamp can leave less content width than the longest
-        // line needs, and unwrapped text is simply clipped. The explicit blank lines in bodyText
-        // still separate the paragraphs; wrapping only reflows within them.
+        // line needs, and unwrapped text is simply clipped. The text has line breaks only between
+        // paragraphs; within one, the wrap decides where lines end (#1200), where a hard-coded break
+        // used to cut a line short beside a wrapped one.
         ImGui::PushTextWrapPos(0.0F);
         ImGui::TextUnformatted(bodyText.data(), bodyText.data() + bodyText.size());
         ImGui::PopTextWrapPos();
 
-        ImGui::Spacing();
-        ImGui::Spacing();
+        UI::Widgets::sectionGap();
 
         // "Don't show again" checkbox
         ImGui::Checkbox("Don't show again", &m_DontShowAgain);
         ImGui::SetItemTooltip("Settings > Advanced > Show limited-data notice turns it back on");
 
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        // Right-align OK button. The floor is 9.375 em, exactly the former fixed 100px at the
-        // reference configuration; the measured-label term only takes over if the label grows wider
-        // than that. A fixed-pixel button is a real interaction cost on a HiDPI display (#937).
-        const float buttonWidth =
-            UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, ImGui::GetFontSize(), ELEVATION_BUTTON_MIN_EM);
-        const float availX = ImGui::GetContentRegionAvail().x;
-        const float offset = std::max(0.0F, availX - buttonWidth);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-
-        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
-        if (ImGui::Button("OK", ImVec2(buttonWidth, 0.0F)))
+        // The footer every dialog shares, OK on the right (#1200). The floor is 9.375 em, exactly the
+        // former fixed 100px at the reference configuration; the measured-label term only takes over
+        // if the label grows wider than that. A fixed-pixel button is a real interaction cost on a
+        // HiDPI display (#937).
+        const UI::Widgets::DialogFooterButton okButton{.label = "OK", .fills = nullptr, .tooltip = nullptr};
+        if (UI::Widgets::dialogFooter(okButton, {}, UI::Widgets::footerButtonWidth({"OK"}, ELEVATION_BUTTON_MIN_EM)) ==
+            UI::Widgets::DialogFooterAction::Primary)
         {
             if (m_DontShowAgain)
             {
@@ -147,7 +138,6 @@ void ElevationNoticeLayer::renderDialog()
             }
             ImGui::CloseCurrentPopup();
         }
-        ImGui::PopStyleColor();
 
         ImGui::PopStyleColor(); // textPrimary
         ImGui::EndPopup();
