@@ -2519,12 +2519,17 @@ TEST(SystemModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
     EXPECT_EQ(result.versionRegressions, 0U);
     EXPECT_EQ(result.versionAheadOfPointer, 0U);
     EXPECT_EQ(result.inconsistentReads, 0U);
-    EXPECT_EQ(model.publicationVersion(), PREFILL_SAMPLES + WRITES);
     ASSERT_FALSE(result.pacingTimedOut) << "the reader stopped keeping up with the writer";
+    EXPECT_EQ(model.publicationVersion(), PREFILL_SAMPLES + result.totalWrites);
     EXPECT_GT(result.reads, WRITES); // the pacing guarantees a read per write, plus the last one
+    // Only reads that land inside a write can show contention; see PublicationLatency.h.
+    ASSERT_TRUE(result.overlapAchieved) << "only " << result.overlappingReads << " reads started during a write after " << result.trials
+                                        << " trials (need " << TestPublication::MIN_OVERLAPPING_READS
+                                        << "): the scheduler never ran the reader alongside the writer, so contention wasn't measured";
     // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
     EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
-                                            << " ms over " << result.reads << " reads";
+                                            << " ms over " << result.reads << " reads, " << result.slowOverlappingReads << " slow of "
+                                            << result.overlappingReads << " overlapping";
 }
 
 TEST(SystemModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
