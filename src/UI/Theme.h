@@ -110,6 +110,30 @@ struct ColorScheme
     ImVec4 gpuClockFill;       // GPU clock speed fill (semi-transparent)
     ImVec4 gpuFan;             // GPU fan speed line
 
+    // Metric roles (#1196): every metric has its own colour field, so no chart borrows another
+    // metric's colour. Each falls back to the field it used to borrow when a theme omits it, so older
+    // themes look as they did; a fill falls back to its line at ~0.35 alpha (or to the borrowed fill).
+    ImVec4 chartCpuTotal;          // CPU Total line over the User/System bands (fallback: charts.cpu)
+    ImVec4 chartCpuTotalFill;      // Its fill (fallback: charts.cpu_fill)
+    ImVec4 chartMemoryCached;      // System Memory: Cached (fallback: charts.cpu)
+    ImVec4 chartMemoryCachedFill;  // (fallback: charts.cpu_fill)
+    ImVec4 chartMemoryShared;      // Process Memory: Shared (fallback: charts.memory_cached)
+    ImVec4 chartMemorySharedFill;  // (fallback: charts.memory_cached_fill)
+    ImVec4 chartMemoryVirtual;     // Process Memory: Virtual (fallback: charts.swap)
+    ImVec4 chartMemoryVirtualFill; // (fallback: charts.swap_fill)
+    ImVec4 chartSwap;              // System Memory: Swap (fallback: charts.io)
+    ImVec4 chartSwapFill;          // (fallback: charts.io_fill)
+    ImVec4 chartPower;             // System and process power draw (fallback: charts.cpu)
+    ImVec4 chartPowerFill;         // (fallback: charts.cpu_fill)
+    ImVec4 chartBattery;           // Battery charge (fallback: charts.memory)
+    ImVec4 chartBatteryFill;       // (fallback: charts.memory_fill)
+    ImVec4 chartThreads;           // Thread count (fallback: charts.cpu)
+    ImVec4 chartThreadsFill;       // (fallback: charts.cpu_fill)
+    ImVec4 chartHandles;           // Handles / FDs (fallback: charts.memory)
+    ImVec4 chartHandlesFill;       // (fallback: charts.memory_fill)
+    ImVec4 chartPageFaults;        // Page faults per second (fallback: accents[3])
+    ImVec4 chartGdi;               // GDI objects, Windows (fallback: accents[4])
+
     // Chart overlay colors
     ImVec4 chartPeakLine; // Peak value reference line (semi-transparent)
 

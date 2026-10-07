@@ -147,8 +147,8 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                            timeData.data(),
                            cachedData.data(),
                            UI::Format::checkedCount(cachedData.size()),
-                           theme.scheme().chartCpu,
-                           theme.scheme().chartCpuFill,
+                           theme.scheme().chartMemoryCached,
+                           theme.scheme().chartMemoryCachedFill,
                            seriesStyle(SeriesRole::Secondary, 0));
             }
 
@@ -158,8 +158,8 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                            timeData.data(),
                            swapData.data(),
                            UI::Format::checkedCount(swapData.size()),
-                           theme.scheme().chartIo,
-                           theme.scheme().chartIoFill,
+                           theme.scheme().chartSwap,
+                           theme.scheme().chartSwapFill,
                            seriesStyle(SeriesRole::Secondary, 1));
             }
 
@@ -190,14 +190,14 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
                     if (*idxVal < cachedData.size())
                     {
                         rows.push_back({.label = CACHED_LABEL,
-                                        .color = theme.scheme().chartCpu,
+                                        .color = theme.scheme().chartMemoryCached,
                                         .value = formatRamPercent(static_cast<double>(cachedData[*idxVal]))});
                     }
                     if (*idxVal < swapData.size())
                     {
                         rows.push_back({
                             .label = SWAP_LABEL,
-                            .color = theme.scheme().chartIo,
+                            .color = theme.scheme().chartSwap,
                             .value = UI::Format::formatPercent(static_cast<double>(swapData[*idxVal])),
                         });
                     }
@@ -249,11 +249,11 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
             addBar(CACHED_LABEL,
                    ctx.smoothedMemory->cachedPercent,
                    ramTooltip(CACHED_LABEL, snap.memoryCachedBytes, snap.memoryCachedPercent),
-                   theme.scheme().chartCpu);
+                   theme.scheme().chartMemoryCached);
         }
         if (!swapData.empty())
         {
-            addBar(SWAP_LABEL, ctx.smoothedMemory->swapPercent, {}, theme.scheme().chartIo);
+            addBar(SWAP_LABEL, ctx.smoothedMemory->swapPercent, {}, theme.scheme().chartSwap);
         }
     }
 

@@ -183,6 +183,30 @@ auto getColor(const toml::table& tbl, std::string_view key, std::optional<ImVec4
     return errorColor();
 }
 
+/// A metric role's line and fill colours (#1196).
+struct RoleColors
+{
+    ImVec4 line;
+    ImVec4 fill;
+};
+
+/// A metric role's line and fill. A theme that sets the line but not the fill gets the line at ~0.35
+/// alpha, like the other chart fills; a theme without the role keeps the colours the role used to
+/// borrow (@p borrowedLine, @p borrowedFill), so older user themes draw as they did.
+auto getRoleColors(const toml::table& tbl,
+                   std::string_view key,
+                   std::string_view fillKey,
+                   const ImVec4& borrowedLine,
+                   const ImVec4& borrowedFill) -> RoleColors
+{
+    if (tbl.at_path(key))
+    {
+        const ImVec4 line = parseColorView(tbl.at_path(key));
+        return {.line = line, .fill = getColor(tbl, fillKey, withAlpha(line, line.w * 0.35F))};
+    }
+    return {.line = borrowedLine, .fill = getColor(tbl, fillKey, borrowedFill)};
+}
+
 /// Load a color array (e.g., accent colors)
 template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors)
 {
@@ -279,6 +303,39 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.gpuClock = getColor(tbl, "charts.gpu.clock");
     scheme.gpuClockFill = getColor(tbl, "charts.gpu.clock_fill", withAlpha(scheme.gpuClock, (scheme.gpuClock.w * 0.35F)));
     scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
+
+    // Metric roles (#1196). Each falls back to the field it borrowed before it had its own, so a
+    // theme that predates them draws exactly as it did. Shared and Virtual fall back through Cached and
+    // Swap, which in turn fall back to what they borrowed.
+    const auto cpuTotal = getRoleColors(tbl, "charts.cpu_total", "charts.cpu_total_fill", scheme.chartCpu, scheme.chartCpuFill);
+    scheme.chartCpuTotal = cpuTotal.line;
+    scheme.chartCpuTotalFill = cpuTotal.fill;
+    const auto cached = getRoleColors(tbl, "charts.memory_cached", "charts.memory_cached_fill", scheme.chartCpu, scheme.chartCpuFill);
+    scheme.chartMemoryCached = cached.line;
+    scheme.chartMemoryCachedFill = cached.fill;
+    const auto shared = getRoleColors(tbl, "charts.memory_shared", "charts.memory_shared_fill", cached.line, cached.fill);
+    scheme.chartMemoryShared = shared.line;
+    scheme.chartMemorySharedFill = shared.fill;
+    const auto swap = getRoleColors(tbl, "charts.swap", "charts.swap_fill", scheme.chartIo, scheme.chartIoFill);
+    scheme.chartSwap = swap.line;
+    scheme.chartSwapFill = swap.fill;
+    const auto virt = getRoleColors(tbl, "charts.memory_virtual", "charts.memory_virtual_fill", swap.line, swap.fill);
+    scheme.chartMemoryVirtual = virt.line;
+    scheme.chartMemoryVirtualFill = virt.fill;
+    const auto power = getRoleColors(tbl, "charts.power", "charts.power_fill", scheme.chartCpu, scheme.chartCpuFill);
+    scheme.chartPower = power.line;
+    scheme.chartPowerFill = power.fill;
+    const auto battery = getRoleColors(tbl, "charts.battery", "charts.battery_fill", scheme.chartMemory, scheme.chartMemoryFill);
+    scheme.chartBattery = battery.line;
+    scheme.chartBatteryFill = battery.fill;
+    const auto threads = getRoleColors(tbl, "charts.threads", "charts.threads_fill", scheme.chartCpu, scheme.chartCpuFill);
+    scheme.chartThreads = threads.line;
+    scheme.chartThreadsFill = threads.fill;
+    const auto handles = getRoleColors(tbl, "charts.handles", "charts.handles_fill", scheme.chartMemory, scheme.chartMemoryFill);
+    scheme.chartHandles = handles.line;
+    scheme.chartHandlesFill = handles.fill;
+    scheme.chartPageFaults = getColor(tbl, "charts.page_faults", scheme.accents[3]);
+    scheme.chartGdi = getColor(tbl, "charts.gdi", scheme.accents[4]);
 
     // Chart overlays
     scheme.chartPeakLine = getColor(tbl, "charts.peak_line", scheme.textWarning);

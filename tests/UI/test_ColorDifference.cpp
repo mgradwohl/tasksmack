@@ -4,6 +4,7 @@
 #include "UI/ColorDifference.h"
 
 #include <gtest/gtest.h>
+#include <imgui.h>
 
 #include <array>
 
@@ -150,6 +151,33 @@ TEST(ColorDifferenceTest, OutOfRangeInputIsClamped)
 {
     const ImVec4 overWhite{2.0F, 2.0F, 2.0F, 1.0F};
     EXPECT_NEAR(deltaE2000(overWhite, rgb(0xFFFFFF)), 0.0, 1e-9);
+}
+
+// OKLab of the sRGB primaries, from Ottosson's reference implementation, as OKLCH (#1196).
+TEST(ColorDifferenceTest, OklchMatchesOttossonReferenceValues)
+{
+    constexpr double TOLERANCE = 1e-3;
+    struct Reference
+    {
+        ImVec4 color;
+        Oklch expected;
+    };
+    const std::array references{
+        Reference{.color = {1.0F, 0.0F, 0.0F, 1.0F}, .expected = {.l = 0.627955, .c = 0.257683, .h = 29.2339}},
+        Reference{.color = {0.0F, 1.0F, 0.0F, 1.0F}, .expected = {.l = 0.866440, .c = 0.294827, .h = 142.4953}},
+        Reference{.color = {0.0F, 0.0F, 1.0F, 1.0F}, .expected = {.l = 0.452014, .c = 0.313214, .h = 264.0520}},
+    };
+    for (const auto& [color, expected] : references)
+    {
+        const Oklch actual = toOklch(color);
+        EXPECT_NEAR(actual.l, expected.l, TOLERANCE);
+        EXPECT_NEAR(actual.c, expected.c, TOLERANCE);
+        EXPECT_NEAR(actual.h, expected.h, 0.05);
+    }
+
+    const Oklch white = toOklch({1.0F, 1.0F, 1.0F, 1.0F});
+    EXPECT_NEAR(white.l, 1.0, TOLERANCE);
+    EXPECT_NEAR(white.c, 0.0, TOLERANCE);
 }
 
 } // namespace
