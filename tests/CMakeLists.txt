@@ -56,6 +56,9 @@ if(WIN32)
         # provenance manifest (#1424).
         add_test(NAME BenchScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
+        # Many stub runs (failure modes, a 4-way race, Unicode paths): about a minute under load, so
+        # keep it clear of the 60 s --timeout the CI ctest steps pass, as EtwCaptureScript does.
+        set_tests_properties(BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
@@ -74,7 +77,7 @@ endif()
 if(TASKSMACK_BASH)
     add_test(NAME BenchShScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_sh.py)
-    set_tests_properties(BenchShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}")
+    set_tests_properties(BenchShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 180)
 endif()
 
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
