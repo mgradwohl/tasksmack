@@ -243,6 +243,17 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
 #endif
 }
 
+/// resourceSeries() for gapPoint()'s history. A GDI series with no reading at all is not drawn
+/// (#1000), so on Windows it has no GDI Objects entry.
+[[nodiscard]] SeriesLabels gapResourceSeries()
+{
+#ifdef _WIN32
+    return {"Threads", "Handles", "Page Faults →"};
+#else
+    return resourceSeries();
+#endif
+}
+
 [[nodiscard]] SeriesLabels cpuSeries()
 {
     return {"Total", "User", "System"};
@@ -394,7 +405,7 @@ TEST_F(ProcessDetailsChartsRenderTest, GapsRenderAndTheirTooltipsShow)
     draw();
     draw();
     ASSERT_EQ(plotsDrawn().size(), 4U);
-    EXPECT_TRUE(hoverPlot(resourceSeries(), draw));
+    EXPECT_TRUE(hoverPlot(gapResourceSeries(), draw));
     EXPECT_TRUE(hoverPlot(cpuSeries(), draw));
     EXPECT_TRUE(hoverPlot(SeriesLabels{"Power"}, draw));
 }
