@@ -177,6 +177,9 @@ TEST(SharedHistoryTest, DiscardBeforeKeepsSharedSeriesAligned)
     SharedHistoryBuffer<float> first(1000);
     SharedHistoryBuffer<float> second(1000);
     Domain::HistoryBuffer<double> ringTimestamps(1000);
+    // An aligned ring for the reference trim: discardBefore() always trims at least one aligned series
+    // in production, and an empty pack would leave its parameter unused (CodeQL cpp/unused-*).
+    Domain::HistoryBuffer<float> ringAligned(1000);
     for (std::size_t i = 0; i < 500; ++i)
     {
         const auto t = static_cast<double>(i);
@@ -184,11 +187,12 @@ TEST(SharedHistoryTest, DiscardBeforeKeepsSharedSeriesAligned)
         first.push(static_cast<float>(i));
         second.push(static_cast<float>(i) * 2.0F);
         ringTimestamps.push(t);
+        ringAligned.push(static_cast<float>(i));
         if (i % 10 == 9)
         {
             const double cutoff = t - 95.5;
             const std::size_t removed = Domain::HistoryUtils::discardBefore(timestamps, cutoff, first, second);
-            EXPECT_EQ(removed, Domain::HistoryUtils::discardBefore(ringTimestamps, cutoff));
+            EXPECT_EQ(removed, Domain::HistoryUtils::discardBefore(ringTimestamps, cutoff, ringAligned));
         }
         ASSERT_EQ(first.size(), timestamps.size());
         ASSERT_EQ(second.size(), timestamps.size());
