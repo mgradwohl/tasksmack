@@ -66,7 +66,7 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
     smoothed.initialized = true;
 }
 
-void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestamps, double nowSeconds, int nowBarColumns)
+void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps, double nowSeconds, int nowBarColumns)
 {
     if (ctx.publication == nullptr)
     {

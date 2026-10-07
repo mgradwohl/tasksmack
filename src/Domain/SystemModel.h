@@ -1,11 +1,11 @@
 #pragma once
 
-#include "History.h"
 #include "ISamplable.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "PublicationSlot.h"
 #include "SamplingConfig.h"
+#include "SharedHistory.h"
 #include "SystemSnapshot.h"
 
 #include <atomic>
@@ -23,26 +23,29 @@
 namespace Domain
 {
 
+/// One immutable generation of the system model's state. The histories are views of the model's
+/// shared history (#1412): a publish shares their samples rather than copying them, so it costs
+/// O(series), not O(history x series). Every series is aligned sample for sample with timestamps.
 struct SystemPublication
 {
     std::uint64_t version = 0;
     SystemSnapshot snapshot;
-    std::vector<double> timestamps;
-    std::vector<float> cpuHistory;
-    std::vector<float> cpuUserHistory;
-    std::vector<float> cpuSystemHistory;
-    std::vector<float> cpuIowaitHistory;
-    std::vector<float> cpuIdleHistory;
-    std::vector<float> memoryHistory;
-    std::vector<float> memoryCachedHistory;
-    std::vector<float> swapHistory;
-    std::vector<float> powerHistory;
-    std::vector<float> batteryChargeHistory;
-    std::vector<float> netRxHistory;
-    std::vector<float> netTxHistory;
-    std::unordered_map<std::string, std::vector<float>> perInterfaceRxHistory;
-    std::unordered_map<std::string, std::vector<float>> perInterfaceTxHistory;
-    std::vector<std::vector<float>> perCoreHistory; // Indexed by core id (Linux cpuN); NaN where a core had no reading (#1229)
+    HistoryView<double> timestamps;
+    HistoryView<float> cpuHistory;
+    HistoryView<float> cpuUserHistory;
+    HistoryView<float> cpuSystemHistory;
+    HistoryView<float> cpuIowaitHistory;
+    HistoryView<float> cpuIdleHistory;
+    HistoryView<float> memoryHistory;
+    HistoryView<float> memoryCachedHistory;
+    HistoryView<float> swapHistory;
+    HistoryView<float> powerHistory;
+    HistoryView<float> batteryChargeHistory;
+    HistoryView<float> netRxHistory;
+    HistoryView<float> netTxHistory;
+    std::unordered_map<std::string, HistoryView<float>> perInterfaceRxHistory;
+    std::unordered_map<std::string, HistoryView<float>> perInterfaceTxHistory;
+    std::vector<HistoryView<float>> perCoreHistory; // Indexed by core id (Linux cpuN); NaN where a core had no reading (#1229)
 };
 
 /// Owns a system probe, caches previous counters, and computes CPU% deltas.
@@ -147,22 +150,23 @@ class SystemModel : public ISamplable
     // Latest computed snapshot
     SystemSnapshot m_Snapshot;
 
-    // History buffers (runtime-capacity ring buffers, trimmed by time window)
-    HistoryBuffer<float> m_CpuHistory;
-    HistoryBuffer<float> m_CpuUserHistory;
-    HistoryBuffer<float> m_CpuSystemHistory;
-    HistoryBuffer<float> m_CpuIowaitHistory;
-    HistoryBuffer<float> m_CpuIdleHistory;
-    HistoryBuffer<float> m_MemoryHistory;
-    HistoryBuffer<float> m_MemoryCachedHistory;
-    HistoryBuffer<float> m_SwapHistory;
-    HistoryBuffer<float> m_PowerHistory;
-    HistoryBuffer<float> m_BatteryChargeHistory;
-    HistoryBuffer<float> m_NetRxHistory;
-    HistoryBuffer<float> m_NetTxHistory;
+    // History buffers (shared append-only series, trimmed by time window): publish() hands out views
+    // of them instead of copies (#1412)
+    SharedHistoryBuffer<float> m_CpuHistory;
+    SharedHistoryBuffer<float> m_CpuUserHistory;
+    SharedHistoryBuffer<float> m_CpuSystemHistory;
+    SharedHistoryBuffer<float> m_CpuIowaitHistory;
+    SharedHistoryBuffer<float> m_CpuIdleHistory;
+    SharedHistoryBuffer<float> m_MemoryHistory;
+    SharedHistoryBuffer<float> m_MemoryCachedHistory;
+    SharedHistoryBuffer<float> m_SwapHistory;
+    SharedHistoryBuffer<float> m_PowerHistory;
+    SharedHistoryBuffer<float> m_BatteryChargeHistory;
+    SharedHistoryBuffer<float> m_NetRxHistory;
+    SharedHistoryBuffer<float> m_NetTxHistory;
     // Per-interface network history (keyed by interface name)
-    std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceRxHistory;
-    std::unordered_map<std::string, HistoryBuffer<float>> m_PerInterfaceTxHistory;
+    std::unordered_map<std::string, SharedHistoryBuffer<float>> m_PerInterfaceRxHistory;
+    std::unordered_map<std::string, SharedHistoryBuffer<float>> m_PerInterfaceTxHistory;
     // Wall-clock time (nowSeconds, same clock as m_Timestamps) each interface name was last
     // seen in a live sample, so a name absent for longer than the configured history window
     // (at which point its buffers hold nothing but NaN padding) can be pruned instead of
@@ -174,9 +178,9 @@ class SystemModel : public ISamplable
     // could retain stale entries far longer than m_MaxHistorySeconds at any slower cadence
     // (e.g. ~10x longer at the default 1s refresh / 5 minute window).
     std::unordered_map<std::string, double> m_InterfaceLastSeenSeconds;
-    HistoryBuffer<double> m_Timestamps;
-    std::vector<HistoryBuffer<float>> m_PerCoreHistory; // Indexed by core id, not probe list position (#1229)
-    std::vector<std::size_t> m_SeenCoreIds;             // Every core id reported this session, ascending (#1262)
+    SharedHistoryBuffer<double> m_Timestamps;
+    std::vector<SharedHistoryBuffer<float>> m_PerCoreHistory; // Indexed by core id, not probe list position (#1229)
+    std::vector<std::size_t> m_SeenCoreIds;                   // Every core id reported this session, ascending (#1262)
 
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
@@ -198,11 +202,45 @@ class SystemModel : public ISamplable
     // previous cycle's CPU/memory/network data.
     void
     updateFromCountersLocked(const Platform::SystemCounters& counters, double nowSeconds, const std::optional<PowerStatus>& powerStatus);
-    void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
+    /// Computes one sample and applies it to the snapshot and history as a transaction: everything
+    /// that can throw (std::bad_alloc) runs before anything is changed, so a throw leaves the model
+    /// exactly as it was -- every series still aligned with m_Timestamps (#1412).
+    void computeSnapshot(const Platform::SystemCounters& counters,
+                         double nowSeconds,
+                         const std::optional<PowerStatus>& powerStatus = std::nullopt);
     /// Build the next generation from the history state under a shared lock, then commit it.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
-    void trimHistory(double nowSeconds);
+    void trimHistory(double nowSeconds) noexcept;
+
+    /// One sample's history append, staged: every allocation it needs is made here, so applying it
+    /// cannot fail part way (#1412).
+    struct PendingHistory
+    {
+        float netRx = 0.0F; // the history values (NaN for a glitched rate, #1291)
+        float netTx = 0.0F;
+        std::vector<float> interfaceRx; // per counters.networkInterfaces entry, likewise
+        std::vector<float> interfaceTx;
+        std::vector<SharedHistoryBuffer<float>> newCores;                  // slots for core ids not yet held, backfilled
+        std::unordered_map<std::string, SharedHistoryBuffer<float>> newRx; // new interfaces, backfilled
+        std::unordered_map<std::string, SharedHistoryBuffer<float>> newTx;
+        std::unordered_map<std::string, double> newLastSeen;
+    };
+    /// Create and backfill the series this sample introduces (new core slots, new interfaces) in
+    /// @p pending, and reserve room for one more sample in every existing series and the slots,
+    /// buckets and map entries the append will use. May throw; changes nothing observable.
+    /// Requires m_Mutex held exclusively.
+    void stageHistoryAppend(PendingHistory& pending,
+                            const Platform::SystemCounters& counters,
+                            const SystemSnapshot& snap,
+                            std::size_t coreSlots,
+                            double nowSeconds);
+    /// Apply a staged append: adopt the staged series and append this sample to every series. Uses
+    /// only what stageHistoryAppend() reserved, so it does not allocate or throw.
+    void commitHistoryAppend(PendingHistory& pending,
+                             const Platform::SystemCounters& counters,
+                             const SystemSnapshot& snap,
+                             double nowSeconds) noexcept;
     void applyHistoryCapacity();
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;

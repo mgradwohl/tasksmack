@@ -6,7 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
-#include <vector>
+#include <span>
 
 namespace App::MemorySection
 {
@@ -55,6 +55,6 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
 /// @param timestamps History timestamps from system model
 /// @param nowSeconds Current time in seconds
 /// @param nowBarColumns Number of columns for now bars layout
-void renderMemorySection(RenderContext& ctx, const std::vector<double>& timestamps, double nowSeconds, int nowBarColumns);
+void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps, double nowSeconds, int nowBarColumns);
 
 } // namespace App::MemorySection

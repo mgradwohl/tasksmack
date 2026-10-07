@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SharedHistory.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -315,6 +317,14 @@ template<typename T> [[nodiscard]] std::vector<T> toVector(const HistoryBuffer<T
     return result;
 }
 
+/// Convert a SharedHistoryBuffer<T> to a vector in chronological order.
+template<typename T> [[nodiscard]] std::vector<T> toVector(const SharedHistoryBuffer<T>& history)
+{
+    std::vector<T> result(history.size());
+    static_cast<void>(history.copyTo(result.data(), result.size()));
+    return result;
+}
+
 /// Whether a trim keeps `anchor`, the newest sample before `cutoff`, given `next`, the oldest sample
 /// at or after it, and `newest`, the newest sample overall.
 ///
@@ -348,9 +358,9 @@ template<typename T> [[nodiscard]] std::vector<T> toVector(const HistoryBuffer<T
 /// Discard the leading entries older than `cutoff` from the timestamp ring and every aligned ring,
 /// in O(1) each -- all but the newest of them when keepTrimAnchor() says to keep it, which needs a
 /// newer sample to remain.
-/// Returns the number of discarded entries.
-template<typename... Buffers>
-[[nodiscard]] std::size_t discardBefore(HistoryBuffer<double>& timestamps, double cutoff, Buffers&... alignedBuffers)
+/// Returns the number of discarded entries. Works on HistoryBuffer and SharedHistoryBuffer alike.
+template<typename TimestampBuffer, typename... Buffers>
+[[nodiscard]] std::size_t discardBefore(TimestampBuffer& timestamps, double cutoff, Buffers&... alignedBuffers)
 {
     std::size_t removeCount = 0;
     while (removeCount < timestamps.size() && timestamps.ref(removeCount) < cutoff)
