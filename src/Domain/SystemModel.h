@@ -202,13 +202,17 @@ class SystemModel : public ISamplable
     // previous cycle's CPU/memory/network data.
     void
     updateFromCountersLocked(const Platform::SystemCounters& counters, double nowSeconds, const std::optional<PowerStatus>& powerStatus);
-    /// Computes one sample and applies it to the snapshot and history as a transaction: everything
-    /// that can throw (std::bad_alloc) runs before anything is changed, so a throw leaves the model
-    /// exactly as it was -- every series still aligned with m_Timestamps (#1412).
+    /// Computes one sample and applies it to the snapshot and history as a transaction with the strong
+    /// guarantee: everything that can throw (std::bad_alloc) runs before anything is changed, so a throw
+    /// here leaves the snapshot and history as they were -- every series still aligned with
+    /// m_Timestamps (#1412). The publish() that follows can still throw while building the
+    /// publication; that leaves the history one sample ahead of an unchanged publication and version,
+    /// which the next successful publish catches up.
     void computeSnapshot(const Platform::SystemCounters& counters,
                          double nowSeconds,
                          const std::optional<PowerStatus>& powerStatus = std::nullopt);
     /// Build the next generation from the history state under a shared lock, then commit it.
+    /// Strong guarantee: a throw while building leaves the publication and its version unchanged.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
     void trimHistory(double nowSeconds) noexcept;
