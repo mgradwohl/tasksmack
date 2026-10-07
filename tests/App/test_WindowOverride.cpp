@@ -13,7 +13,6 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
-#include <ios>
 #include <iterator>
 #include <optional>
 #include <random>
@@ -265,9 +264,13 @@ class WindowOverrideConfigFileTest : public ::testing::Test
         std::filesystem::remove_all(m_TempDir, ec);
     }
 
+    /// The file as text. Text mode, like UserConfig::save() writes it: on Windows that writes "\r\n"
+    /// line ends, and reading in text mode turns them back into "\n" for windowSection(). Only the
+    /// line ends are translated, so comparing the read-back sections still compares every key, value
+    /// and line of them.
     [[nodiscard]] std::string readConfigFile() const
     {
-        std::ifstream file(m_ConfigPath, std::ios::binary);
+        std::ifstream file(m_ConfigPath);
         return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
     }
 
