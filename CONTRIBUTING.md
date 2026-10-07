@@ -1352,7 +1352,7 @@ single-instance lock would stop the new one at its "already running" box); close
     --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
 
 # Baseline / gate: five repetitions, fail if the median app CPU is above the target below
-./tools/measure-idle.sh --skip-build --repeat 5 --fail-above 10
+./tools/measure-idle.sh --skip-build --repeat 5 --fail-above 16
 
 ./tools/measure-idle.sh --help
 ```
@@ -1409,7 +1409,7 @@ software rasterizer, whose threads (`llvmpipe-N`) then dominate the total and ma
 times reflect the CPU rasterizer and the shared desktop, not a GPU driver and compositor. Quote
 fps/frame/loop figures only from native Linux or Windows; on WSL quote CPU% (and say so).
 On WSL that
-means app CPU: total CPU there is mostly `llvmpipe` (about 150–360% of one CPU in the baseline
+means app CPU: total CPU there is mostly `llvmpipe` (about 490–550% of one CPU in the baseline
 below) and says nothing about TaskSmack.
 
 #### Idle-CPU target (Linux/WSL app CPU)
@@ -1418,35 +1418,35 @@ Per maintainer decision D1 (#843: measure first, then set a target), the idle-CP
 
 | Scenario | Target: median app CPU over `--repeat 5` |
 |---|---|
-| Default (this machine, Overview tab, window left alone) | **≤ 10%** of one logical CPU |
-| `--synthetic processes=5000,history=full` | **≤ 15%** of one logical CPU |
+| Default (this machine, Overview tab, window left alone) | **≤ 16%** of one logical CPU |
+| `--synthetic processes=5000,history=full` | **≤ 22%** of one logical CPU |
 
-Both targets are about 1.5× the measured median, rounded up to a round number: 6.52% → 10%, and
-9.59% → 15%. That leaves room for run-to-run noise (the default scenario's repetitions ranged
-5.8–10.2%) and for a quieter machine presenting more frames, while still catching a regression that
-adds a few percent of one core at idle. A median above the target is a regression to explain or fix
-(`--fail-above 10` / `--fail-above 15`). The targets cover **Linux/WSL app CPU only**; Windows
-targets will follow from `tools/measure-idle.ps1` captures. Re-measure and revisit them when the
-renderer, the default scenario or the sampling defaults change.
+Both targets are about 1.5× the measured median on a quiet machine, rounded up: 10.60% → 16%, and
+14.70% → 22%. That leaves room for run-to-run noise (the default scenario's repetitions ranged
+9.1–11.3%) while still catching a regression that adds a few percent of one core at idle. A median
+above the target is a regression to explain or fix (`--fail-above 16` / `--fail-above 22`). The
+targets cover **Linux/WSL app CPU only**; Windows targets will follow from `tools/measure-idle.ps1`
+captures. Re-measure and revisit them when the renderer, the default scenario or the sampling
+defaults change.
 
-Baseline (2026-10-07, commit `f4cf041a`, `profile` preset = RelWithDebInfo, `/proc` sampler,
-15 s warm-up, 30 s samples, 5 repetitions each). Intel Core Ultra 7 255H, 10 logical CPUs, WSL2
-(kernel 6.18), WSLg with Mesa 26 `llvmpipe` (LLVM 21), 59.98 Hz display. Measured with the
-maintainer's config: **250 ms refresh** and a **300 s history** (the synthetic run preloads 1800 s;
-the defaults are 1000 ms and 300 s). A 250 ms refresh is the heavier case.
+Measure on a quiet machine. App CPU rises with presented frames, and other load slows `llvmpipe`
+and so the frame rate. A first baseline taken under load average 20–30 read 6.52% / 9.59% median
+at 12 / 6.6 fps, well below the quiet figures, so a loaded run can pass a target it would fail
+when quiet.
+
+Baseline (2026-10-07, commit `841eda92`, `profile` preset = RelWithDebInfo, `/proc` sampler,
+15 s warm-up, 30 s samples, 5 repetitions each, load average under 1 before the runs). Intel Core
+Ultra 7 255H, 10 logical CPUs, WSL2 (kernel 6.18), WSLg with Mesa 26 `llvmpipe` (LLVM 21), 59.98 Hz
+display. Measured with the maintainer's config: **250 ms refresh** and a **300 s history** (the
+synthetic run preloads 1800 s; the defaults are 1000 ms and 300 s). A 250 ms refresh is the heavier
+case.
 
 | Scenario | App CPU% mean / median / p95 | Total CPU% mean / median / p95 | fps mean / median |
 |---|---|---|---|
-| Default | 7.21 / 6.52 / 10.21 | 258.46 / 222.09 / 366.26 | 13.49 / 11.99 |
-| `processes=5000,history=full` | 9.49 / 9.59 / 10.46 | 162.58 / 163.12 / 164.28 | 6.65 / 6.63 |
+| Default | 10.41 / 10.60 / 11.32 | 530.56 / 536.70 / 545.34 | 23.82 / 23.60 |
+| `processes=5000,history=full` | 15.10 / 14.70 / 16.52 | 515.14 / 526.43 / 538.25 | 21.83 / 21.73 |
 
-p95 over five repetitions is their maximum (nearest rank). In the default scenario the UI thread
-(about 4.5%) and `ts-sampler-proc` (about 1.4%) make up most of app CPU. In the synthetic scenario
-`ts-sampler-proc` enumerating 5000 processes rises to about 4.5%. Other work was running on the
-machine during the baseline (load average 20–30 on 10 logical CPUs), which mostly slows `llvmpipe`
-and so the frame rate. App CPU moves with presented frames (the default scenario's 19.6 fps
-repetition is its 10.2% one), so a quiet machine may read a little higher. The headroom above allows
-for that.
+p95 over five repetitions is their maximum (nearest rank).
 
 #### Synthetic large-UI scenario (captures at the limits)
 
