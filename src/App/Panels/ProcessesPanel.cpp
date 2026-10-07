@@ -902,7 +902,7 @@ void ProcessesPanel::onAttach()
                                            .firstSampleAfterInterval = true,
                                            .threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME)};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
-    m_Sampler->addSamplable(m_ProcessModel);
+    m_Sampler->addSamplable(m_ProcessModel, "processes");
     m_Sampler->start();
 
     // Ensure the initial seed snapshots are loaded into the render cache so the UI

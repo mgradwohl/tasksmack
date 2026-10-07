@@ -4,6 +4,7 @@
 #include "ISamplable.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "PublicationSlot.h"
 #include "SamplingConfig.h"
 #include "SystemSnapshot.h"
 
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -45,7 +47,10 @@ struct SystemPublication
 
 /// Owns a system probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshot() returns the latest computed data.
-/// Thread-safe: can receive updates from background sampler.
+/// Thread-safe: can receive updates from background sampler. Writers (the update paths and
+/// setMaxHistorySeconds()) are serialised on m_WriterMutex; each builds its publication outside
+/// every lock a reader takes and swaps it in through m_Publication, so publication() never waits
+/// for a history copy (#868).
 class SystemModel : public ISamplable
 {
   public:
@@ -132,6 +137,10 @@ class SystemModel : public ISamplable
 
     // Previous counters for delta calculation
     Platform::SystemCounters m_PrevCounters;
+    // Positions of m_PrevCounters' / the current counters' interfaces sorted by name, for O(log n)
+    // name lookups instead of linear scans (#1415). Writer-only scratch, reused across samples.
+    std::vector<std::size_t> m_PrevInterfaceIndex;
+    std::vector<std::size_t> m_InterfaceIndex;
     double m_PrevTimestamp = 0.0;
     bool m_HasPrevious = false;
 
@@ -172,11 +181,15 @@ class SystemModel : public ISamplable
     double m_MaxHistorySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT; // Default 5 minutes
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
 
-    std::shared_ptr<const SystemPublication> m_Publication = std::make_shared<const SystemPublication>();
-    std::uint64_t m_PublicationVersion = 0;
-    std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
+    PublicationSlot<SystemPublication> m_Publication;
+    std::uint64_t m_PublicationVersion = 0; // guarded by m_WriterMutex; the last committed generation
 
-    // Thread safety
+    // Thread safety. m_WriterMutex serialises the writers from the counter processing through the
+    // publication commit, so generations are numbered and committed in order; readers never take
+    // it, and it is taken before m_Mutex, never while holding it. m_Mutex guards the state above for
+    // snapshot() and the per-field accessors: writers mutate it exclusively, and publish() reads it
+    // under a shared lock.
+    std::mutex m_WriterMutex;
     mutable std::shared_mutex m_Mutex;
 
     // Helpers
@@ -186,13 +199,15 @@ class SystemModel : public ISamplable
     void
     updateFromCountersLocked(const Platform::SystemCounters& counters, double nowSeconds, const std::optional<PowerStatus>& powerStatus);
     void computeSnapshot(const Platform::SystemCounters& counters, double nowSeconds);
+    /// Build the next generation from the history state under a shared lock, then commit it.
+    /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
     void trimHistory(double nowSeconds);
     void applyHistoryCapacity();
     [[nodiscard]] static CpuUsage computeCpuUsage(const Platform::CpuCounters& current, const Platform::CpuCounters& previous);
     [[nodiscard]] PowerStatus computePowerStatus(const Platform::PowerCounters& counters) const;
 
-    /// Find a previous interface by name for rate calculation.
+    /// Find a previous interface by name for rate calculation: a binary search of m_PrevInterfaceIndex.
     [[nodiscard]] const Platform::SystemCounters::InterfaceCounters* findPreviousInterface(const std::string& name) const;
 };
 
