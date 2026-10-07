@@ -7,14 +7,18 @@
 #include "Mocks/MockDiskProbe.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/StorageTypes.h"
+#include "PublicationLatency.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <thread>
 
 namespace Domain
@@ -1275,6 +1279,140 @@ TEST(StorageModelTest, TotalRatesAggregatedAcrossMultipleDisks)
     // Both disks had activity, so totals must be positive
     EXPECT_GT(snap.totalReadBytesPerSec, 0.0);
     EXPECT_GT(snap.totalWriteBytesPerSec, 0.0);
+}
+
+// =============================================================================
+// Publication Handoff (#868)
+// =============================================================================
+
+/// Counters for `diskCount` disks named disk0..diskN-1, each advanced by `step` sectors and ops.
+[[nodiscard]] Platform::SystemDiskCounters makeManyDisks(std::size_t diskCount, std::uint64_t step)
+{
+    Platform::SystemDiskCounters counters;
+    counters.disks.reserve(diskCount);
+    for (std::size_t i = 0; i < diskCount; ++i)
+    {
+        Platform::DiskCounters disk;
+        disk.deviceName = "disk" + std::to_string(i);
+        disk.readsCompleted = step;
+        disk.readSectors = step * 8;
+        disk.writesCompleted = step;
+        disk.writeSectors = step * 4;
+        disk.sectorSize = 512;
+        counters.disks.push_back(disk);
+    }
+    return counters;
+}
+
+/// Every series in one generation is aligned to its timestamps.
+[[nodiscard]] bool isAligned(const StoragePublication& publication)
+{
+    const std::size_t n = publication.timestamps.size();
+    return publication.totalReadHistory.size() == n && publication.totalWriteHistory.size() == n &&
+           std::ranges::all_of(publication.perDiskHistory,
+                               [n](const PerDiskHistory& disk)
+                               { return disk.readBytesPerSec.size() == n && disk.writeBytesPerSec.size() == n; });
+}
+
+TEST(StorageModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
+{
+    // #868: sampleAt() copied every history ring into the new publication while holding the lock
+    // publication() needs, so a UI-thread read landing then waited for most of the write -- one slow
+    // read per generation. With the copy outside the lock a read waits for a pointer swap at most.
+    // Enough disks and history that the copy dominates a write; see PublicationLatency.h.
+    constexpr std::size_t DISKS = 256;
+    constexpr std::size_t PREFILL_SAMPLES = 400;
+    constexpr std::size_t WRITES = 40;
+    constexpr auto STEP = std::chrono::milliseconds(Sampling::REFRESH_INTERVAL_MIN_MS);
+
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    auto now = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    std::uint64_t step = 0;
+    for (std::size_t i = 0; i < PREFILL_SAMPLES; ++i)
+    {
+        rawProbe->setNextCounters(makeManyDisks(DISKS, ++step));
+        model.sampleAt(now += STEP);
+    }
+
+    const auto result = TestPublication::measure(
+        WRITES,
+        [&](std::size_t)
+        {
+            rawProbe->setNextCounters(makeManyDisks(DISKS, ++step));
+            model.sampleAt(now += STEP);
+        },
+        [&] { return model.publication(); },
+        [&] { return model.publicationVersion(); },
+        isAligned);
+
+    EXPECT_EQ(result.versionRegressions, 0U);
+    EXPECT_EQ(result.versionAheadOfPointer, 0U);
+    EXPECT_EQ(result.inconsistentReads, 0U);
+    EXPECT_EQ(model.publicationVersion(), PREFILL_SAMPLES + WRITES);
+    EXPECT_GE(result.reads, WRITES);
+    // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
+    EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
+                                            << " ms over " << result.reads << " reads";
+}
+
+TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
+{
+    // The sampler thread (sampleAt) and the UI thread (setMaxHistorySeconds) both publish. They are
+    // serialised, so generations are committed in version order with none lost, and a reader never
+    // sees a regressed or misaligned one (#868).
+    constexpr std::size_t DISKS = 8;
+    constexpr int SAMPLES = 300;
+    constexpr int RESIZES = 300;
+    constexpr auto STEP = std::chrono::milliseconds(Sampling::REFRESH_INTERVAL_MIN_MS);
+
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    rawProbe->setNextCounters(makeManyDisks(DISKS, 1));
+    model.sampleAt(std::chrono::steady_clock::time_point{} + std::chrono::hours(1)); // publish once so resizes republish
+
+    std::atomic<bool> stop{false};
+    std::thread sampler(
+        [&]
+        {
+            auto now = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+            for (int i = 0; i < SAMPLES; ++i)
+            {
+                rawProbe->setNextCounters(makeManyDisks(DISKS, static_cast<std::uint64_t>(i) + 2));
+                model.sampleAt(now += STEP);
+            }
+        });
+    std::thread resizer(
+        [&]
+        {
+            for (int i = 0; i < RESIZES; ++i)
+            {
+                model.setMaxHistorySeconds((i % 2 == 0) ? Sampling::HISTORY_SECONDS_MIN : Sampling::HISTORY_SECONDS_DEFAULT);
+            }
+        });
+    std::thread reader(
+        [&]
+        {
+            std::uint64_t lastSeen = 0;
+            while (!stop.load())
+            {
+                const std::uint64_t announced = model.publicationVersion();
+                const auto publication = model.publication();
+                EXPECT_GE(publication->version, lastSeen);
+                EXPECT_GE(publication->version, announced);
+                EXPECT_TRUE(isAligned(*publication));
+                lastSeen = publication->version;
+            }
+        });
+    sampler.join();
+    resizer.join();
+    stop.store(true);
+    reader.join();
+
+    EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
+    EXPECT_EQ(model.publication()->version, model.publicationVersion());
 }
 
 } // namespace
