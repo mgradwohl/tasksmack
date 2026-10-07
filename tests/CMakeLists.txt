@@ -94,6 +94,7 @@ set(COMMON_TEST_SOURCES
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
     UI/test_FillPlotLayout.cpp
+    UI/test_ChartGeometryBudget.cpp
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
@@ -312,7 +313,8 @@ add_executable(TaskSmackTests
     # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
-    # Marker glyphs for the value strip, drawn by test_FillPlotLayout.cpp under a live ImGui context
+    # Marker glyphs for the value strip and series, drawn by test_FillPlotLayout.cpp and
+    # test_ChartGeometryBudget.cpp under a live ImGui context
     ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
     # Measures font files with FreeType (linked below), no ImGui context needed (#1201)
     ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
@@ -358,6 +360,8 @@ target_link_libraries(TaskSmackTests PRIVATE
     # test_TabLabel.cpp checks labels against ImGui's own ImHashStr() (no ImGui context needed);
     # test_ProcessTableSettingsRoundTrip.cpp runs headless ImGui frames to load saved table layouts.
     imgui_lib
+    # test_ChartGeometryBudget.cpp renders the real ImPlot charts headless to count their geometry (#1421).
+    implot_lib
 )
 tasksmack_apply_linux_toolchain(TaskSmackTests)
 
