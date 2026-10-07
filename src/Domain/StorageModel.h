@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -61,6 +62,17 @@ class StorageModel : public ISamplable
     /// SystemModel's updateFromCounters(counters, nowSeconds) test-injection pattern.
     void sampleAt(std::chrono::steady_clock::time_point now);
 
+    /// Fills in the next sample of a series: its counters and when they were read, returning false
+    /// when there are no more.
+    using CounterSeriesSource = std::function<bool(Platform::SystemDiskCounters& counters, std::chrono::steady_clock::time_point& now)>;
+
+    /// Applies a series of samples, oldest first, as sampleAt() would one at a time with these
+    /// counters in place of the probe's, but with one publish at the end: a history preload (the
+    /// synthetic scenario fills the whole window at startup, #1413), which one publish per sample
+    /// would make O(N^2). A sample not later than the newest one held is skipped, so the history
+    /// stays in time order. Call it from the sampling thread, or before sampling starts.
+    void sampleSeries(const CounterSeriesSource& next);
+
     /// Get the latest snapshot (thread-safe, called from UI thread).
     [[nodiscard]] StorageSnapshot latestSnapshot() const;
 
@@ -100,12 +112,18 @@ class StorageModel : public ISamplable
 
     static DiskSnapshot
     computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state, std::chrono::steady_clock::time_point now);
+    /// One sample from @p counters: the shared body of sampleAt() and sampleSeries(). Publishes it
+    /// when @p publishNow. Requires m_WriterMutex held and m_Mutex not held.
+    void applySample(const Platform::SystemDiskCounters& counters,
+                     const Platform::DiskCapabilities& caps,
+                     std::chrono::steady_clock::time_point now,
+                     bool publishNow);
     void trimHistory(double nowSeconds);
     void applyHistoryCapacity();
 
     std::unique_ptr<Platform::IDiskProbe> m_Probe;
 
-    // Serialises the writers, sampleAt() and setMaxHistorySeconds(), from the counter processing
+    // Serialises the writers, sampleAt(), sampleSeries() and setMaxHistorySeconds(), from the counter processing
     // through the publication commit, so generations are numbered and committed in order. Readers
     // never take it. Taken before m_Mutex, never while holding it.
     std::mutex m_WriterMutex;

@@ -94,6 +94,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
+    Domain/test_HistorySeries.cpp
     UI/test_ChartWidgets.cpp
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
@@ -172,6 +173,8 @@ set(COMMON_TEST_SOURCES
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
     App/test_FontSizeChange.cpp
+    App/test_SyntheticScenario.cpp
+    Platform/test_SyntheticWorkload.cpp
 )
 # The Windows probes' pure *Math.h helpers include no Windows header, so their tests are built on
 # every platform: Linux CI runs them under its sanitizers and coverage too (#1133). Tests that need
@@ -304,6 +307,8 @@ add_executable(TaskSmackTests
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
+    # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
+    ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
@@ -311,6 +316,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/AssetPath.cpp

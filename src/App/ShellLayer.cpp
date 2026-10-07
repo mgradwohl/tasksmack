@@ -10,6 +10,7 @@
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "ShellMetrics.h"
+#include "SyntheticScenario.h"
 #include "TabLabel.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
@@ -249,9 +250,13 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_PendingStartupSettings = false;
         const auto& settings = UserConfig::get().settings();
-        Core::RefreshRateChangedEvent refreshEvent(settings.refreshIntervalMs, /*initial=*/true);
+        // The synthetic scenario (#1413) may start at its own window and interval, for this run only.
+        const Synthetic::Scenario* scenario = Synthetic::activeScenario();
+        Core::RefreshRateChangedEvent refreshEvent(Synthetic::startupRefreshIntervalMs(scenario, settings.refreshIntervalMs),
+                                                   /*initial=*/true);
         Core::Application::get().raiseEvent(refreshEvent);
-        Core::HistoryDurationChangedEvent historyEvent(settings.maxHistorySeconds, /*initial=*/true);
+        Core::HistoryDurationChangedEvent historyEvent(Synthetic::startupHistorySeconds(scenario, settings.maxHistorySeconds),
+                                                       /*initial=*/true);
         Core::Application::get().raiseEvent(historyEvent);
     }
 

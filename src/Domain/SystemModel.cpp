@@ -256,6 +256,41 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, d
     updateFromCountersLocked(counters, nowSeconds, std::nullopt);
 }
 
+void SystemModel::updateFromCounterSeries(const CounterSeriesSource& next)
+{
+    // The whole series is one write (#868): no other writer interleaves, its samples mutate the state
+    // under the exclusive lock, and its single publish is built under a shared lock and committed
+    // through the publication slot after the last of them.
+    const std::scoped_lock writerLock(m_WriterMutex);
+    Platform::SystemCounters counters;
+    double nowSeconds = 0.0;
+    bool applied = false;
+    {
+        const std::unique_lock lock(m_Mutex);
+        while (next(counters, nowSeconds))
+        {
+            // Against the previous reading, not the history: after a lone seed reading the history is
+            // still empty, but a reading at or before it would give a zero or negative interval.
+            if (m_HasPrevious && nowSeconds <= m_PrevTimestamp)
+            {
+                continue;
+            }
+            // As in updateFromCountersLocked(): copy the next baseline before committing anything, then
+            // make counters and their interface index the previous pair by non-throwing swaps (#1415).
+            Platform::SystemCounters nextPrevious = counters;
+            computeSnapshot(counters, nowSeconds);
+            std::swap(m_PrevCounters, nextPrevious);
+            std::swap(m_PrevInterfaceIndex, m_InterfaceIndex);
+            m_HasPrevious = true;
+            applied = true;
+        }
+    }
+    if (applied)
+    {
+        publish();
+    }
+}
+
 void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& counters,
                                            double nowSeconds,
                                            const std::optional<PowerStatus>& powerStatus)

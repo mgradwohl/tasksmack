@@ -73,15 +73,51 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         return;
     }
 
-    // Use absolute time (since epoch) to match SystemModel's timestamp format
-    const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
-
+    // Read first, then ask for capabilities: a read can re-enumerate the disks and change what the
+    // probe reports (Windows), and one expression would leave the order unspecified.
     const Platform::SystemDiskCounters counters = m_Probe->read();
     const Platform::DiskCapabilities caps = m_Probe->capabilities();
 
-    // One writer at a time from here to the commit: m_DiskStates below is writer-owned, and the
+    // One writer at a time from here to the commit: m_DiskStates is writer-owned, and the
     // publication must be numbered and committed in the order the history was updated.
     const std::scoped_lock writerLock(m_WriterMutex);
+    applySample(counters, caps, now, /*publishNow=*/true);
+}
+
+void StorageModel::sampleSeries(const CounterSeriesSource& next)
+{
+    const Platform::DiskCapabilities caps = m_Probe ? m_Probe->capabilities() : Platform::DiskCapabilities{};
+    Platform::SystemDiskCounters counters;
+    std::chrono::steady_clock::time_point now{};
+    bool applied = false;
+    // The whole series is one write: no other writer interleaves, and its single publish below is
+    // numbered and committed after every sample it holds (#868).
+    const std::scoped_lock writerLock(m_WriterMutex);
+    while (next(counters, now))
+    {
+        {
+            const std::shared_lock lock(m_Mutex);
+            if (!m_Timestamps.empty() && std::chrono::duration<double>(now.time_since_epoch()).count() <= m_Timestamps.latest())
+            {
+                continue;
+            }
+        }
+        applySample(counters, caps, now, /*publishNow=*/false);
+        applied = true;
+    }
+    if (applied)
+    {
+        publish(); // builds under a shared lock, then commits through the publication slot
+    }
+}
+
+void StorageModel::applySample(const Platform::SystemDiskCounters& counters,
+                               const Platform::DiskCapabilities& caps,
+                               const std::chrono::steady_clock::time_point now,
+                               const bool publishNow)
+{
+    // Use absolute time (since epoch) to match SystemModel's timestamp format
+    const double nowSeconds = std::chrono::duration<double>(now.time_since_epoch()).count();
 
     StorageSnapshot snapshot;
     snapshot.hasDiskStats = caps.hasDiskStats;
@@ -218,8 +254,11 @@ void StorageModel::sampleAt(const std::chrono::steady_clock::time_point now)
         m_History.push(std::move(snapshot));
         trimHistory(nowSeconds);
     }
-    // Outside the exclusive lock: the history copies take a shared lock only (#868).
-    publish();
+    if (publishNow)
+    {
+        // Outside the exclusive lock: the history copies take a shared lock only (#868).
+        publish();
+    }
 
     spdlog::trace("StorageModel: sampled {} disks, total read: {:.2f} MB/s, write: {:.2f} MB/s",
                   m_LatestSnapshot.disks.size(),

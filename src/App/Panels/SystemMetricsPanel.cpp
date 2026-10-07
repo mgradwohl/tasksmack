@@ -9,6 +9,7 @@
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/ShellMetrics.h"
+#include "App/SyntheticScenario.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -19,7 +20,6 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
-#include "Platform/Factory.h"
 #include "Platform/ThreadName.h"
 #include "PowerStatusText.h"
 #include "UI/ChartWidgets.h"
@@ -174,16 +174,31 @@ void SystemMetricsPanel::onAttach()
     m_HistoryScrollSeconds = 0.0;
     m_ForceRefresh = true;
 
-    m_Model = std::make_shared<Domain::SystemModel>(Platform::makeSystemProbe(), Platform::makePowerProbe());
+    // The synthetic scenario's probes when TASKSMACK_SYNTHETIC selects one (#1413), else the
+    // platform's. A scenario that preloads history starts at its window, which ShellLayer's startup
+    // event then confirms rather than trims.
+    const Synthetic::Scenario* scenario = Synthetic::activeScenario();
+    m_MaxHistorySeconds = static_cast<double>(Synthetic::startupHistorySeconds(scenario, static_cast<int>(m_MaxHistorySeconds)));
+
+    m_Model = std::make_shared<Domain::SystemModel>(Synthetic::makeSystemProbe(scenario), Synthetic::makePowerProbe(scenario));
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1291).
     m_Model->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
-    m_StorageModel = std::make_shared<Domain::StorageModel>(Platform::makeDiskProbe());
+    m_StorageModel = std::make_shared<Domain::StorageModel>(Synthetic::makeDiskProbe(scenario));
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
-    m_GPUModel = std::make_shared<Domain::GPUModel>(Platform::makeGPUProbe());
+    m_GPUModel = std::make_shared<Domain::GPUModel>(Synthetic::makeGPUProbe(scenario));
     m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
+
+    // The synthetic scenario fills the whole window before the seed below continues it; a no-op
+    // without one.
+    if (scenario != nullptr)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        Synthetic::preloadSystemHistory(scenario, *m_Model, now);
+        Synthetic::preloadStorageHistory(scenario, *m_StorageModel, now);
+    }
 
     // Initial refresh to seed histories
     m_Model->refresh();

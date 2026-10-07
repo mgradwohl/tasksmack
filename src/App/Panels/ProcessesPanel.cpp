@@ -18,6 +18,7 @@
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/ProcessColumnConfig.h"
+#include "App/SyntheticScenario.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -29,7 +30,7 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
-#include "Platform/Factory.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ThreadName.h"
@@ -867,7 +868,9 @@ void ProcessesPanel::onAttach()
 
     // Create probe and transfer it to the ProcessModel. The model itself is then
     // passed to BackgroundSampler so enumeration runs off the main thread.
-    auto processProbe = Platform::makeProcessProbe();
+    // The synthetic scenario's probe when TASKSMACK_SYNTHETIC selects one (#1413), else the platform's.
+    const Synthetic::Scenario* scenario = Synthetic::activeScenario();
+    auto processProbe = Synthetic::makeProcessProbe(scenario);
 
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
@@ -875,10 +878,18 @@ void ProcessesPanel::onAttach()
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
 
     // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
-    m_ProcessActions = Platform::makeProcessActions();
+    m_ProcessActions = Synthetic::makeProcessActions(scenario);
     m_ActionCapabilities = m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{};
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
     m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
+
+    // The synthetic scenario starts with its whole history window filled (#1413), before the seed
+    // read below continues it. Nothing happens without a scenario.
+    if (scenario != nullptr)
+    {
+        m_ProcessModel->setMaxHistorySeconds(Synthetic::startupHistorySeconds(scenario, Domain::Sampling::HISTORY_SECONDS_DEFAULT));
+        Synthetic::preloadProcessHistory(scenario, *m_ProcessModel, std::chrono::steady_clock::now());
+    }
 
     // Seed with one synchronous read so the first background callback produces valid CPU
     // deltas instead of all-zero percentages (first call establishes the prev-sample

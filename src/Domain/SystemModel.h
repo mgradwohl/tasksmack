@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -75,6 +76,17 @@ class SystemModel : public ISamplable
     /// Thread-safe.
     void updateFromCounters(const Platform::SystemCounters& counters);
     void updateFromCounters(const Platform::SystemCounters& counters, double nowSeconds);
+
+    /// Fills in the next sample of a series: its counters and time (seconds on the same
+    /// steady_clock-epoch base as updateFromCounters()), returning false when there are no more.
+    using CounterSeriesSource = std::function<bool(Platform::SystemCounters& counters, double& nowSeconds)>;
+
+    /// Applies a series of samples, oldest first, as updateFromCounters() would one at a time, but
+    /// under one lock and with one publish at the end: a history preload (the synthetic scenario
+    /// fills the whole window at startup, #1413), which one publish per sample would make O(N^2). A
+    /// sample not later than the newest one held is skipped, so the history stays in time order.
+    /// @p next runs under the model's lock and must not call back into it. Thread-safe.
+    void updateFromCounterSeries(const CounterSeriesSource& next);
 
     /// Get latest computed snapshot (copy for thread safety).
     [[nodiscard]] SystemSnapshot snapshot() const;
