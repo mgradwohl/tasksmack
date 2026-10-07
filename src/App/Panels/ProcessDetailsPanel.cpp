@@ -13,6 +13,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
+#include "ProcessActionConfirm.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_GpuHelpers.h"
@@ -87,9 +88,6 @@ constexpr size_t PROCESS_NETWORK_IO_NOW_BAR_COLUMNS = 2;
 // GPU: Utilization, and Memory, one bar each.
 constexpr size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
 
-// Floor on the Confirm Action dialog's Yes/No buttons, in ems: 120px at the reference em.
-constexpr float CONFIRM_BUTTON_MIN_EM = 11.25F;
-
 // The newest @p count samples of a history, viewed in place (#1018: this was a per-frame copy).
 [[nodiscard]] auto tailSpan(const std::vector<double>& data, std::size_t count) -> std::span<const double>
 {
@@ -145,12 +143,7 @@ constexpr const char* GPU_MEMORY_LABEL = "Memory";
     return usedPercent / Domain::Numeric::toDouble(snapshot.memoryBytes);
 }
 
-/// The theme's danger fills, for the buttons that end a process (Detail::isDestructiveAction()).
-[[nodiscard]] UI::Widgets::ButtonFills dangerButtonFills()
-{
-    const auto& scheme = UI::Theme::get().scheme();
-    return {.resting = scheme.dangerButton, .hovered = scheme.dangerButtonHovered, .pressed = scheme.dangerButtonActive};
-}
+using App::ProcessActionConfirm::dangerButtonFills;
 
 /// A count history sample as text, or N/A for NaN (an unread value or a gap, #1110 / #1098): std::llround
 /// of NaN is unspecified, so it must not reach formatIntLocalized().
@@ -235,7 +228,9 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
                         [this, &recorded](const Domain::ProcessSample& sample, bool gapBefore)
                         {
                             m_CachedSnapshot = sample.snapshot; // shared, not copied (#1172)
-                            recordHistoryPoint(*sample.snapshot, sample.sampleTimeSeconds, gapBefore);
+                            // Each sample's rates judged by its own generation's probe support (#1210)
+                            m_CachedRateReadings = Detail::rateReadings(sample);
+                            recordHistoryPoint(*sample.snapshot, sample.sampleTimeSeconds, gapBefore, m_CachedRateReadings);
                             recorded = true;
                         });
     if (recorded)
@@ -268,7 +263,10 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     }
 }
 
-void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot, double sampleTimeSeconds, bool gapBefore)
+void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
+                                             double sampleTimeSeconds,
+                                             bool gapBefore,
+                                             Detail::SampleRateReadings rateReadings)
 {
     using Domain::Numeric::toDouble;
 
@@ -304,6 +302,9 @@ void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snap
         }
     }
 
+    const bool ioReading = rateReadings.io;
+    const bool networkReading = rateReadings.network;
+
     // Stored as double to avoid narrowing; converted only at the ImPlot boundary.
     // In the order of `histories` above. A value the probe could not read is NaN,
     // drawn as a gap (#1110).
@@ -323,13 +324,16 @@ void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snap
         toDouble(snapshot.threadCount),
         Detail::readingOrGap(snapshot.handleCountAvailable, toDouble(snapshot.handleCount)),
         snapshot.pageFaultsPerSec,
-        Detail::readingOrGap(snapshot.ioAvailable, snapshot.ioReadBytesPerSec),
-        Detail::readingOrGap(snapshot.ioAvailable, snapshot.ioWriteBytesPerSec),
-        Detail::readingOrGap(snapshot.networkAvailable, snapshot.netSentBytesPerSec),
-        Detail::readingOrGap(snapshot.networkAvailable, snapshot.netReceivedBytesPerSec),
+        // Gaps too where the probe has no such counters at all, not a line of measured-looking zeros (#1210).
+        Detail::readingOrGap(ioReading, snapshot.ioReadBytesPerSec),
+        Detail::readingOrGap(ioReading, snapshot.ioWriteBytesPerSec),
+        Detail::readingOrGap(networkReading, snapshot.netSentBytesPerSec),
+        Detail::readingOrGap(networkReading, snapshot.netReceivedBytesPerSec),
         snapshot.powerWatts,
-        snapshot.gpuUtilPercent,
-        toDouble(snapshot.gpuMemoryBytes),
+        // Gaps where the GPU probe supplied no per-process data, or memory but not utilization (NVML on
+        // Linux), when this sample's generation was produced -- not as of the latest frame (#1210).
+        Detail::readingOrGap(rateReadings.gpuUtilization, snapshot.gpuUtilPercent),
+        Detail::readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.gpuMemoryBytes)),
         // NaN signals "no data" to the plot; ImPlot renders NaN as a gap in the
         // line.
         snapshot.gdiObjectCount.has_value() ? toDouble(*snapshot.gdiObjectCount) : std::numeric_limits<double>::quiet_NaN(),
@@ -456,10 +460,32 @@ void ProcessDetailsPanel::renderContent()
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
                 const auto& proc = cachedSnapshot();
-                if (!Detail::hasGpuUsageToShow(
-                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory))
+                const Detail::GpuTabContent gpuContent = Detail::gpuTabContent(
+                    m_CachedRateReadings.gpuSupported, // A failed read is not "not available on this system" (#1210)
+                    Detail::hasGpuUsageToShow(
+                        proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), m_GpuUtilHistory, m_GpuMemHistory),
+                    Detail::hasAnyReading(m_GpuUtilHistory) || Detail::hasAnyReading(m_GpuMemHistory));
+                if (gpuContent == Detail::GpuTabContent::Unavailable)
                 {
-                    ImGui::TextUnformatted("No GPU usage detected for this process");
+                    // Not "no usage": without per-process metrics none can be seen (#1210).
+                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  Per-process GPU usage is not available",
+                                                  "This system's GPU monitoring does not report GPU usage per process.");
+                }
+                else if (gpuContent == Detail::GpuTabContent::NoReadings)
+                {
+                    // Every retained read failed: nothing is known yet about this process's GPU use (#1210).
+                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU readings yet",
+                                                  "Reading this process's GPU usage has not succeeded yet.");
+                }
+                else if (gpuContent == Detail::GpuTabContent::NoUsage)
+                {
+                    // Only the retained history is looked at, so the text names that window (#1210);
+                    // rebuilt only when the window changes.
+                    if (m_NoGpuUsageDetail.empty())
+                    {
+                        m_NoGpuUsageDetail = Detail::noGpuUsageDetail(m_MaxHistorySeconds);
+                    }
+                    UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage", m_NoGpuUsageDetail.c_str());
                 }
                 else
                 {
@@ -473,28 +499,30 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        // 3. Network and I/O - show if process has network or I/O data
+        // 3. Network and I/O. Always present, like the GPU tab, so the tab set does not change while a
+        // process stays selected; an empty state stands in until there is data (#1210).
+        if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
         {
-            const bool hasNetworkData = (cachedSnapshot().netSentBytesPerSec > 0.0 || cachedSnapshot().netReceivedBytesPerSec > 0.0 ||
-                                         !m_NetSentHistory.empty() || !m_NetRecvHistory.empty());
-            const bool hasIoData = (cachedSnapshot().ioReadBytesPerSec > 0.0 || cachedSnapshot().ioWriteBytesPerSec > 0.0 ||
-                                    !m_IoReadHistory.empty() || !m_IoWriteHistory.empty());
-            if (hasNetworkData || hasIoData)
             {
-                if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
+                const UI::Widgets::TabContentScope content("##NetworkContent");
+                // Readings only: every sample adds a point, a gap where there was no reading, so a
+                // history that is merely non-empty is not data (#1210).
+                if (!Detail::hasNetworkOrIoReadings(m_IoReadHistory, m_IoWriteHistory, m_NetSentHistory, m_NetRecvHistory))
                 {
-                    {
-                        const UI::Widgets::TabContentScope content("##NetworkContent");
-                        UI::Widgets::FillPlotLayout fill(m_NetworkFill);
-                        const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
-                        // Render I/O stats first (at the top)
-                        renderIoStats(fill);
-                        ImGui::Separator();
-                        renderNetworkStats(fill);
-                    }
-                    ImGui::EndTabItem();
+                    UI::Widgets::renderEmptyState(ICON_FA_NETWORK_WIRED "  No network or disk I/O yet",
+                                                  "Disk and network rates for this process appear here once they have been sampled.");
+                }
+                else
+                {
+                    UI::Widgets::FillPlotLayout fill(m_NetworkFill);
+                    const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
+                    // Render I/O stats first (at the top)
+                    renderIoStats(fill);
+                    ImGui::Separator();
+                    renderNetworkStats(fill);
                 }
             }
+            ImGui::EndTabItem();
         }
 
         // 4. Actions (last)
@@ -549,6 +577,7 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
             // charts kept the old window's data and scale until then -- indefinitely for a process
             // that is no longer sampled (#1145).
             m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
+            m_NoGpuUsageDetail.clear(); // It names the window (#1210)
             if (!m_Timestamps.empty())
             {
                 trimHistory(m_Timestamps.back());
@@ -605,6 +634,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_ShowConfirmDialog = false;
     m_LastActionResult = {};
     m_SmoothedUsage = {};
+    m_CachedRateReadings = {};
     m_PeakMemoryBytes = 0.0;
     m_PriorityChanged = false;
     m_PriorityNiceValue = 0;
@@ -658,18 +688,28 @@ void ProcessDetailsPanel::updateSmoothedUsage(const Domain::ProcessSnapshot& sna
                   snapshot.handleCountAvailable,
                   Domain::Numeric::toDouble(snapshot.handleCount));
     m_SmoothedUsage.handleCountAvailable = snapshot.handleCountAvailable;
-    smoothReading(m_SmoothedUsage.ioReadBytesPerSec, m_SmoothedUsage.ioAvailable, snapshot.ioAvailable, snapshot.ioReadBytesPerSec);
-    smoothReading(m_SmoothedUsage.ioWriteBytesPerSec, m_SmoothedUsage.ioAvailable, snapshot.ioAvailable, snapshot.ioWriteBytesPerSec);
-    m_SmoothedUsage.ioAvailable = snapshot.ioAvailable;
-    smoothReading(
-        m_SmoothedUsage.netSentBytesPerSec, m_SmoothedUsage.networkAvailable, snapshot.networkAvailable, snapshot.netSentBytesPerSec);
-    smoothReading(
-        m_SmoothedUsage.netRecvBytesPerSec, m_SmoothedUsage.networkAvailable, snapshot.networkAvailable, snapshot.netReceivedBytesPerSec);
-    m_SmoothedUsage.networkAvailable = snapshot.networkAvailable;
+    // A rate the probe could not supply at all when the shown sample was taken is not a reading
+    // either (#1210); judged with that sample's own generation, as its history point was.
+    const bool ioReading = m_CachedRateReadings.io;
+    const bool networkReading = m_CachedRateReadings.network;
+    smoothReading(m_SmoothedUsage.ioReadBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioReadBytesPerSec);
+    smoothReading(m_SmoothedUsage.ioWriteBytesPerSec, m_SmoothedUsage.ioAvailable, ioReading, snapshot.ioWriteBytesPerSec);
+    m_SmoothedUsage.ioAvailable = ioReading;
+    smoothReading(m_SmoothedUsage.netSentBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netSentBytesPerSec);
+    smoothReading(m_SmoothedUsage.netRecvBytesPerSec, m_SmoothedUsage.networkAvailable, networkReading, snapshot.netReceivedBytesPerSec);
+    m_SmoothedUsage.networkAvailable = networkReading;
     m_SmoothedUsage.powerWatts = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.powerWatts, targetPower, alpha, initialized));
-    m_SmoothedUsage.gpuUtilPercent =
-        UI::Format::clampPercent(initializeOrSmooth(m_SmoothedUsage.gpuUtilPercent, targetGpuUtil, alpha, initialized));
-    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, initializeOrSmooth(m_SmoothedUsage.gpuMemoryBytes, targetGpuMem, alpha, initialized));
+    // GPU utilization and memory the GPU probe did not supply for the shown sample's generation are
+    // not readings either (#1210): not smoothed toward 0, so once support arrives the first real
+    // reading starts afresh rather than easing up from placeholder zeros.
+    const bool gpuUtilSupplied = m_CachedRateReadings.gpuUtilization;
+    const bool gpuMemSupplied = m_CachedRateReadings.gpuPerProcess;
+    smoothReading(m_SmoothedUsage.gpuUtilPercent, m_SmoothedUsage.gpuUtilAvailable, gpuUtilSupplied, targetGpuUtil);
+    m_SmoothedUsage.gpuUtilPercent = UI::Format::clampPercent(m_SmoothedUsage.gpuUtilPercent);
+    m_SmoothedUsage.gpuUtilAvailable = gpuUtilSupplied;
+    smoothReading(m_SmoothedUsage.gpuMemoryBytes, m_SmoothedUsage.gpuMemoryAvailable, gpuMemSupplied, targetGpuMem);
+    m_SmoothedUsage.gpuMemoryBytes = std::max(0.0, m_SmoothedUsage.gpuMemoryBytes);
+    m_SmoothedUsage.gpuMemoryAvailable = gpuMemSupplied;
     // A sample with no GDI reading isn't smoothed toward 0: the NowBar shows N/A for it instead,
     // matching the gap in the line, and the next reading starts afresh (#1148).
     const auto gdi = Detail::smoothOptionalReading(
@@ -1875,7 +1915,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         ImGui::TextUnformatted(LABEL_UTILIZATION);
         ImGui::TableNextColumn();
         const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
-        ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent).c_str());
+        ImGui::TextColored(
+            gpuUtilColor, "%s", Detail::gpuUtilizationText(m_SmoothedUsage.gpuUtilAvailable, m_SmoothedUsage.gpuUtilPercent).c_str());
 
         // GPU Memory
         ImGui::TableNextRow();
@@ -1883,7 +1924,8 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
         ImGui::TextUnformatted(LABEL_MEMORY);
         ImGui::TableNextColumn();
         const ImVec4 gpuMemColor = theme.scheme().gpuMemory;
-        const std::string memStr = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes);
+        const std::string memStr =
+            m_SmoothedUsage.gpuMemoryAvailable ? UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes) : std::string("N/A");
         ImGui::TextColored(gpuMemColor, "%s", memStr.c_str());
 
         // GPU Memory counts what each GPU's "used" figure on the GPU tab counts (#1164). Both kinds are
@@ -1960,7 +2002,7 @@ void ProcessDetailsPanel::renderGpuCurrentMetricsTable(const Domain::ProcessSnap
 // Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
 // proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has; the caller
 // skips it for a single GPU (#1207).
-void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc)
+void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const
 {
     const auto& theme = UI::Theme::get();
 
@@ -2002,7 +2044,8 @@ void ProcessDetailsPanel::renderPerGpuBreakdown(const Domain::ProcessSnapshot& p
                     ImGui::TableNextColumn();
                     ImGui::TextUnformatted(LABEL_UTILIZATION);
                     ImGui::TableNextColumn();
-                    ImGui::TextColored(gpuUtilColor, "%s", UI::Format::percentOneDecimal(gpuUsage.utilPercent).c_str());
+                    ImGui::TextColored(
+                        gpuUtilColor, "%s", Detail::gpuUtilizationText(m_CachedRateReadings.gpuUtilization, gpuUsage.utilPercent).c_str());
 
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
@@ -2130,8 +2173,9 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
         // value, which can still be easing down from a peak that has just left it.
         const double gpuMemAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##GPUMemPlot",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec),
-                                           {m_SmoothedUsage.gpuMemoryBytes}),
+            UI::Widgets::withCurrentValues(
+                UI::Widgets::maxOfSeriesSince(timeData, axisConfig.xMin, gpuMemVec),
+                {UI::Widgets::currentIfAvailable(m_SmoothedUsage.gpuMemoryAvailable, m_SmoothedUsage.gpuMemoryBytes)}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
         auto plotGpuMem = [&]()
         {
@@ -2183,18 +2227,20 @@ void ProcessDetailsPanel::renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fi
 
         // Now bars for current values
         const NowBar gpuUtilBar{
-            .valueText = UI::Format::percentOneDecimal(m_SmoothedUsage.gpuUtilPercent),
+            .valueText = Detail::gpuUtilizationText(m_SmoothedUsage.gpuUtilAvailable, m_SmoothedUsage.gpuUtilPercent),
             .label = GPU_UTIL_LABEL,
             .tooltipText = {},
-            .value01 = UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent),
+            .value01 = m_SmoothedUsage.gpuUtilAvailable ? UI::Format::percent01(m_SmoothedUsage.gpuUtilPercent) : 0.0,
             .color = theme.scheme().gpuUtilization,
         };
 
         const NowBar gpuMemBar{
-            .valueText = UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes),
+            .valueText = m_SmoothedUsage.gpuMemoryAvailable ? UI::Format::formatBytes(m_SmoothedUsage.gpuMemoryBytes) : std::string("N/A"),
             .label = GPU_MEMORY_LABEL,
             .tooltipText = {},
-            .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gpuMemoryBytes, gpuMemAxisUpper),
+            .value01 = m_SmoothedUsage.gpuMemoryAvailable
+                         ? UI::Widgets::normalizeToUnitInterval(m_SmoothedUsage.gpuMemoryBytes, gpuMemAxisUpper)
+                         : 0.0,
             .color = theme.scheme().gpuMemory,
         };
 
@@ -2340,84 +2386,11 @@ void ProcessDetailsPanel::renderActionResultFeedback()
 
 void ProcessDetailsPanel::renderConfirmDialog()
 {
-    // The title names the action and the process, "Kill firefox (PID 1234)?"; "###" keeps the
-    // popup's ID fixed while the visible title changes with them (#1203).
-    constexpr const char* CONFIRM_POPUP_ID = "###ConfirmAction";
-    if (m_ShowConfirmDialog)
+    // The same dialog the Processes table's row menu confirms with (#1209).
+    if (ProcessActionConfirm::render(m_ShowConfirmDialog, m_ConfirmAction, cachedSnapshot().name, m_SelectedPid) ==
+        ProcessActionConfirm::Outcome::Confirmed)
     {
-        ImGui::OpenPopup(CONFIRM_POPUP_ID);
-    }
-    if (!ImGui::IsPopupOpen(CONFIRM_POPUP_ID))
-    {
-        return; // Nothing to draw; skip building the title every frame
-    }
-
-    const std::string popupTitle = Detail::confirmTitle(m_ConfirmAction, cachedSnapshot().name, m_SelectedPid) + CONFIRM_POPUP_ID;
-    if (ImGui::BeginPopupModal(popupTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        // The dialog auto-fits, so it is bounded here: neither the question (which carries the
-        // process name) nor the button row may be wider than the main window can show. See
-        // ProcessDetailsLayout::computeConfirmContentBudget().
-        const ImGuiStyle& confirmStyle = ImGui::GetStyle();
-        const float contentBudget = ProcessDetailsLayout::computeConfirmContentBudget(
-            ImGui::GetMainViewport()->WorkSize.x, UI::DialogMetrics::MAX_VIEWPORT_FRACTION, confirmStyle.WindowPadding.x);
-
-        // States what the action does; the title can be cut short by a long name, so the body
-        // names the process too (#1203).
-        const std::string question = Detail::confirmBody(m_ConfirmAction, cachedSnapshot().name, m_SelectedPid);
-        // Wrapped at the budget, or at the text's own width when that is narrower -- a wrap
-        // position wider than the text would make the auto-fitting dialog as wide as the budget.
-        const float questionWidth = ImGui::CalcTextSize(question.c_str()).x;
-        const float wrapWidth = (contentBudget > 0.0F) ? std::min(questionWidth, contentBudget) : questionWidth;
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
-        ImGui::TextUnformatted(question.c_str());
-        ImGui::PopTextWrapPos();
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        // One width for both, from the font: 11.25 em is the former fixed 120px at the reference
-        // em, so the dialog is unchanged there and the buttons stay a comfortable target for a
-        // destructive confirmation at any font size or display density (#971).
-        //
-        // Held to half the dialog's budget: at Even Huger on a 175% display each button wants
-        // 420px, and the pair would be wider than a minimum-width window.
-        //
-        // The confirm button is named for the action ([Kill][Cancel], not [Yes][No]) so a
-        // destructive confirmation says what it does on the button itself (#1203).
-        const char* confirmLabel = Detail::actionLabel(m_ConfirmAction);
-        const float confirmButtonWidth = ProcessDetailsLayout::computeConfirmButtonWidth(
-            UI::DialogMetrics::computeActionButtonWidth(std::max(ImGui::CalcTextSize(confirmLabel).x, ImGui::CalcTextSize("Cancel").x),
-                                                        ImGui::GetFontSize(),
-                                                        CONFIRM_BUTTON_MIN_EM),
-            contentBudget,
-            confirmStyle.ItemSpacing.x);
-
-        // Ending a process can lose its work, so Terminate and Kill confirm in the danger colour
-        // their buttons in the Actions tab use (#1273).
-        const auto& theme = UI::Theme::get();
-        const bool confirmed = Detail::isDestructiveAction(m_ConfirmAction) ? UI::Widgets::filledButton(confirmLabel,
-                                                                                                        ImVec2(confirmButtonWidth, 0.0F),
-                                                                                                        dangerButtonFills(),
-                                                                                                        theme.scheme().textPrimary,
-                                                                                                        theme.scheme().windowBg)
-                                                                            : ImGui::Button(confirmLabel, ImVec2(confirmButtonWidth, 0.0F));
-        if (confirmed)
-        {
-            dispatchConfirmedAction();
-            m_ShowConfirmDialog = false;
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::SameLine();
-
-        if (ImGui::Button("Cancel", ImVec2(confirmButtonWidth, 0.0F)))
-        {
-            m_ShowConfirmDialog = false;
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
+        dispatchConfirmedAction();
     }
 }
 
