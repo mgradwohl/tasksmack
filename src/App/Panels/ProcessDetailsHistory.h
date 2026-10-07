@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <limits>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 namespace App::Detail
@@ -97,10 +98,27 @@ inline constexpr std::array<double ProcessHistoryPoint::*, PROCESS_SERIES_COUNT>
     &ProcessHistoryPoint::gdiObjects,
 };
 
-// Every series has a field, and every field a series: a missing table entry is a null member pointer,
-// and a field with no series makes the point larger than one double per series.
+// The table maps series to fields one-to-one. A missing entry is a null member pointer; a field
+// listed twice is a duplicate entry; and with no nulls or duplicates, the table names
+// PROCESS_SERIES_COUNT distinct fields, so the size check leaves no field without a series.
 static_assert(std::ranges::none_of(PROCESS_SERIES_FIELDS, [](double ProcessHistoryPoint::* field) { return field == nullptr; }),
               "every ProcessSeries needs its ProcessHistoryPoint field in PROCESS_SERIES_FIELDS");
+static_assert(
+    []
+    {
+        for (std::size_t i = 0; i < PROCESS_SERIES_FIELDS.size(); ++i)
+        {
+            for (std::size_t j = i + 1; j < PROCESS_SERIES_FIELDS.size(); ++j)
+            {
+                if (PROCESS_SERIES_FIELDS[i] == PROCESS_SERIES_FIELDS[j])
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }(),
+    "each ProcessHistoryPoint field may feed only one ProcessSeries in PROCESS_SERIES_FIELDS");
 static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(double),
               "every ProcessHistoryPoint field needs a ProcessSeries");
 
@@ -151,9 +169,22 @@ class ProcessDetailsHistory
     /// longer available, see takeSamples()) and @p timeSeconds is after the newest point, a gap point
     /// goes first, midway between them: NaN in every series, so each chart shows a gap rather than a
     /// line drawn across the missing samples.
+    ///
+    /// Strong exception guarantee: every buffer gets room for the new points before any is pushed, so
+    /// an allocation failure (std::bad_alloc from reserveFor()) leaves every size as it was, and the
+    /// axis and series stay the same length. The push_backs after it cannot throw: they fit in the
+    /// reserved capacity, and copying a double does not throw.
     void append(double timeSeconds, const ProcessHistoryPoint& point, bool gapBefore)
     {
-        if (gapBefore && !m_Timestamps.empty() && timeSeconds > m_Timestamps.back())
+        const bool addGap = gapBefore && !m_Timestamps.empty() && timeSeconds > m_Timestamps.back();
+        const std::size_t newSize = m_Timestamps.size() + (addGap ? 2U : 1U);
+        reserveFor(m_Timestamps, newSize);
+        for (std::vector<double>& series : m_Series)
+        {
+            reserveFor(series, newSize);
+        }
+
+        if (addGap)
         {
             m_Timestamps.push_back((m_Timestamps.back() + timeSeconds) * 0.5);
             for (std::vector<double>& series : m_Series)
@@ -172,7 +203,10 @@ class ProcessDetailsHistory
     /// point before that cutoff, so the charts' lines run off the window's left edge instead of leaving
     /// an empty strip there after every trim (#1016), unless it is across a gap
     /// (Domain::HistoryUtils::trimCountBefore()). Nothing happens when empty.
-    void trimToWindow(double windowSeconds)
+    ///
+    /// Does not throw: erasing from a vector of double allocates nothing and moves doubles, so every
+    /// buffer drops the same count.
+    void trimToWindow(double windowSeconds) noexcept
     {
         if (m_Timestamps.empty())
         {
@@ -231,7 +265,20 @@ class ProcessDetailsHistory
     }
 
   private:
-    static void dropOldest(std::vector<double>& data, std::size_t count)
+    static_assert(std::is_nothrow_copy_constructible_v<double> && std::is_nothrow_move_assignable_v<double>,
+                  "append() and trimToWindow() rely on copying and moving values not throwing");
+
+    /// Makes room for @p size values in @p data, growing geometrically like push_back, so appends stay
+    /// amortized O(1). Only the capacity changes: a throw leaves @p data's size and values as they were.
+    static void reserveFor(std::vector<double>& data, std::size_t size)
+    {
+        if (size > data.capacity())
+        {
+            data.reserve(std::max(size, data.capacity() * 2));
+        }
+    }
+
+    static void dropOldest(std::vector<double>& data, std::size_t count) noexcept
     {
         data.erase(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(std::min(count, data.size())));
     }

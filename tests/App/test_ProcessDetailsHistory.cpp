@@ -17,6 +17,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace App::Detail
@@ -280,6 +281,10 @@ TEST(ProcessDetailsHistoryTest, TrimKeepsGapPointsAlignedInEverySeries)
         EXPECT_DOUBLE_EQ(values[2], 1400.0 + static_cast<double>(i));
     }
 }
+
+// A trim cannot leave the buffers at different lengths partway through (#1442 review): it never throws.
+static_assert(noexcept(std::declval<ProcessDetailsHistory&>().trimToWindow(1.0)));
+static_assert(noexcept(std::declval<ProcessDetailsHistory&>().clear()));
 
 TEST(ProcessDetailsHistoryTest, TrimOfAnEmptyHistoryDoesNothing)
 {
