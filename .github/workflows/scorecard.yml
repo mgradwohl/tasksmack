@@ -11,8 +11,83 @@ on:
 permissions: {}
 
 jobs:
+  # Scorecard's SAST check counts a commit on main as checked only once the PR it came from has a
+  # *completed* `CodeQL` check run (app github-advanced-security, conclusion success or neutral) on its
+  # head. A push-triggered analysis starts seconds after the merge, so a PR merged while its CodeQL run
+  # was still going was scored "29 of 30 commits checked" (#1405), even though that run then passed.
+  # Wait for the merged PR's CodeQL result first. This job only reads, and it never fails: if there is
+  # nothing to wait for or the wait runs out, it says so and the analysis runs anyway.
+  wait-for-sast:
+    name: Wait for the merged PR's CodeQL result
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      checks: read
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Wait for CodeQL on the merged PR's head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          # Find the PR this commit came from; GitHub can take a moment to associate a fresh merge commit.
+          head=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            head=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+              --jq '[.[] | select(.merged_at != null)][0].head.sha // empty' 2>/dev/null)
+            [ -n "$head" ] && break
+            sleep 30
+          done
+          if [ -z "$head" ]; then
+            echo "::notice::$SHA has no merged PR (direct push?); nothing to wait for."
+            exit 0
+          fi
+          echo "Merged PR head: $head"
+
+          # Latest check run with this name on the PR head, as "status conclusion", or empty if none.
+          latest() {
+            gh api --method GET "repos/$REPO/commits/$head/check-runs" -f check_name="$1" -f filter=latest \
+              --jq '.check_runs | sort_by(.started_at) | last | select(. != null) | "\(.status) \(.conclusion)"' 2>/dev/null
+          }
+
+          # The CodeQL job's own timeout is 45 minutes and it started before the merge.
+          deadline=$((SECONDS + 45 * 60))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            codeql=$(latest "CodeQL")
+            analyze=$(latest "Analyze C++")
+            echo "CodeQL: ${codeql:-none}; Analyze C++: ${analyze:-none}"
+            case "$codeql" in
+              "completed success" | "completed neutral")
+                echo "CodeQL result is in; Scorecard will count $SHA as checked."
+                exit 0 ;;
+              completed*)
+                echo "::warning::CodeQL on $head concluded '${codeql#completed }'; Scorecard will count $SHA as unchecked."
+                exit 0 ;;
+            esac
+            # The CodeQL result normally lands a few seconds before the analysis job finishes, but code
+            # scanning can lag behind it. Once the job is done (or never ran on this head) with still no
+            # result after a few more polls, none is coming.
+            case "$analyze" in
+              "" | completed*)
+                grace=$((${grace:-4} - 1))
+                if [ "$grace" -le 0 ]; then
+                  echo "::warning::No CodeQL result on $head (Analyze C++: ${analyze:-did not run}); Scorecard will count $SHA as unchecked."
+                  exit 0
+                fi ;;
+            esac
+            sleep 60
+          done
+          echo "::warning::Gave up waiting for CodeQL on $head; Scorecard may count $SHA as unchecked."
+
   analysis:
     name: Scorecard analysis
+    needs: wait-for-sast
+    # Run after the wait whether it ran, was skipped (schedule, dispatch, branch_protection_rule) or failed.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
       security-events: write
