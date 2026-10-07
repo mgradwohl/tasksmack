@@ -134,6 +134,7 @@ set(TASKSMACK_SOURCES
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
+    src/Platform/ThreadName.cpp
 )
 
 # Platform-specific sources
@@ -196,6 +197,7 @@ set(TASKSMACK_HEADERS
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
+    src/Platform/ThreadName.h
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h

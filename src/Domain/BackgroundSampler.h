@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ISamplable.h"
+#include "Platform/ThreadName.h"
 
 #include <atomic>
 #include <chrono>
@@ -8,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <stop_token>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -23,6 +25,10 @@ struct SamplerConfig
     /// interval before the first background sample. Sampling again straight away gave deltas over a
     /// few ms: 0% CPU and 0 B/s points at every startup (#1102).
     bool firstSampleAfterInterval = false;
+
+    /// OS name of the sampler thread, so per-thread tools (pidstat -t, top -H, perf, WPA) can tell
+    /// the process and system samplers apart. Linux keeps the first 15 bytes.
+    std::string threadName{Platform::SAMPLER_THREAD_NAME};
 };
 
 /// Background sampler that runs sampling on a separate thread.

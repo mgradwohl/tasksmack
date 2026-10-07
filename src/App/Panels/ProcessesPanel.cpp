@@ -32,6 +32,7 @@
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/ThreadName.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -886,7 +887,9 @@ void ProcessesPanel::onAttach()
 
     // Wire sampler: polls the ProcessModel on each interval tick.
     // Seeded synchronously above, so the first background sample waits a full interval (#1102).
-    Domain::SamplerConfig const samplerCfg{.interval = m_AppliedSamplerInterval, .firstSampleAfterInterval = true};
+    Domain::SamplerConfig const samplerCfg{.interval = m_AppliedSamplerInterval,
+                                           .firstSampleAfterInterval = true,
+                                           .threadName = std::string(Platform::PROCESS_SAMPLER_THREAD_NAME)};
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel);
     m_Sampler->start();

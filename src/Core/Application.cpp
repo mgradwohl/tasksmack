@@ -11,6 +11,7 @@
 #include "Core/Window.h"
 #include "Core/WindowEventRouting.h"
 #include "Core/WindowEvents.h"
+#include "Platform/ThreadName.h"
 #include "version.h"
 
 #include <SDL3/SDL.h>
@@ -484,6 +485,9 @@ void Application::detachAllLayers()
 void Application::run()
 {
     m_Running = true;
+    // The UI thread is whichever thread runs the loop. A no-op on Linux, where the main thread's
+    // name is the process name (see Platform::setMainThreadName).
+    Platform::setMainThreadName(Platform::UI_THREAD_NAME);
 
     double lastTime = getTime();
 
@@ -552,6 +556,15 @@ void Application::run()
                          loopTiming.frameMs,
                          loopTiming.otherMs(wallMs));
         }
+    };
+
+    // Deliver-to-deliver loop intervals (#843 measurement kit): renderFrame() stamps each presented
+    // frame's end (recordResizePerfFrameEnd), and the gap from the previous one is the cadence the
+    // user sees, skipped renders included. The previous frame's end is kept in resizeTraceStats, so
+    // the `= {}` resets at idle<->interaction transitions drop the interval that spans both states.
+    const auto recordDeliveredFrame = [&]()
+    {
+        resizeTraceStats.recordDeliveredFrameEnd(resizePerfOperations().previousFrameEnd, SDL_GetPerformanceFrequency());
     };
 
     // The framebuffer size of the last WindowResizedEvent, so an SDL_EVENT_WINDOW_EXPOSED can tell
@@ -844,6 +857,7 @@ void Application::run()
             if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
+                recordDeliveredFrame();
                 loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
             }
             didImmediateResizeRedraw = true;
@@ -914,6 +928,7 @@ void Application::run()
             if (traceResizePerfThisFrame)
             {
                 resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
+                recordDeliveredFrame();
                 loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
             }
         }
