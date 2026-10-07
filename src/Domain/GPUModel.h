@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -156,11 +157,46 @@ class GPUModel : public ISamplable
 
     // Capabilities (re-read along with the GPU info)
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;
+
+    /// True once the probe's capabilities are known and say it has no per-process GPU metrics (DRM-
+    /// or ROCm-only systems, DXGI alone): per-process GPU usage cannot be observed here. False while
+    /// they are unknown. A single atomic load, for per-frame readers (#1210).
+    [[nodiscard]] bool perProcessMetricsKnownUnsupported() const noexcept
+    {
+        return m_PerProcessKnownUnsupported.load(std::memory_order_acquire);
+    }
+
+    /// True once the probe's capabilities are known and say it reports no per-process utilization,
+    /// though it may report per-process memory and engines (NVML's running-process lists): GPU %
+    /// would read 0 for every process (#1210). False while they are unknown. A single atomic load.
+    [[nodiscard]] bool perProcessUtilizationKnownUnsupported() const noexcept
+    {
+        return m_PerProcessUtilizationKnownUnsupported.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
     // Per-process GPU counters (called by ProcessModel to enrich process snapshots)
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
+
+    /// Per-process GPU counters together with the per-process support they were read under (#1210).
+    struct ProcessGPUReading
+    {
+        std::vector<Platform::ProcessGPUCounters> counters;
+        bool perProcessSupported = false;  ///< Not known to lack per-process metrics
+        bool utilizationSupported = false; ///< ...nor per-process utilization among them
+        /// What the probe's read threw, if it did. It is carried here rather than thrown, so the
+        /// caller still learns the support the failed read ran under (#1210); rethrow it with
+        /// std::rethrow_exception() after taking the flags.
+        std::exception_ptr failure;
+    };
+
+    /// readProcessGPUCounters() and the support it was read under, from one operation: the flags are
+    /// read under the probe lock, which a re-enumeration that changes them holds, so the counters
+    /// and the flags always agree. Reading the flags separately could stamp a generation supported
+    /// while the read short-circuited empty, or the reverse (#1210).
+    [[nodiscard]] ProcessGPUReading readProcessGPUData() const;
 
   private:
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
@@ -183,6 +219,8 @@ class GPUModel : public ISamplable
     // returns straight away: reading this flag instead of taking m_Mutex shared for the two
     // fields keeps that early exit to a single atomic load (#1322).
     std::atomic<bool> m_PerProcessKnownUnsupported{false};
+    // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
+    std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
 
     // Current snapshots per GPU
     using SnapshotMap = GPUSnapshotMap;

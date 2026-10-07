@@ -1,6 +1,8 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessColumnAvailability.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessTreeFlatten.h"
@@ -10,6 +12,8 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/ProcessTypes.h"
 
 #include <array>
 #include <chrono>
@@ -25,6 +29,11 @@
 #include <vector>
 
 struct ImFont; // Forward declaration for TextSizeCache
+
+namespace Domain
+{
+class GPUModel;
+} // namespace Domain
 
 namespace App
 {
@@ -54,6 +63,7 @@ struct ProcessCellWidths
     float unitBytes = 0.0F;       // " MiB", " GiB", etc.
     float unitBytesPerSec = 0.0F; // " MiB/s", " GiB/s", etc.
     float unitPower = 0.0F;       // " W", " mW", " µW"
+    float unavailableText = 0.0F; // ProcessRowFormat::UNAVAILABLE_CELL_TEXT, for free-text cells (#1210)
 
     // Widths for PRIORITY_LABELS (Domain::Priority::getProcessPriorityLabel()'s fixed label set), in the
     // same order. That column isn't backed by RowFormatCache (it's a live std::string_view lookup,
@@ -141,6 +151,7 @@ class ProcessesPanel : public Panel
     void setColumnSettings(const ProcessColumnSettings& settings)
     {
         m_ColumnSettings = settings;
+        m_ColumnSettings.keepUnhideableColumnsVisible(); // PID and Name cannot be hidden (#1209)
     }
 
     /// Set the refresh interval (applied by onUpdate cadence checks).
@@ -171,7 +182,7 @@ class ProcessesPanel : public Panel
     [[nodiscard]] bool hasReducedPrivileges() const;
 
     /// Narrowest the toolbar row (filter, clear button, the paused indicator's icon-only form (#928),
-    /// process count, tree-view toggle) can be
+    /// process count or a row action's result, the Columns button and the List | Tree control) can be
     /// without overlapping, at the current font and style, for the window's content minimum (#1207).
     /// Measured with a worst-case process count so it does not change as processes come and go.
     /// Needs a frame.
@@ -181,6 +192,17 @@ class ProcessesPanel : public Panel
     /// generation this panel has fetched: a probe can withdraw a capability after the first sample
     /// (#1254). UI thread; takes no lock once a generation is cached.
     [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
+
+    /// The GPU model whose probe decides whether per-process GPU usage can be observed (#1210). Set
+    /// by ShellLayer, which shares it with the process model; kept weakly.
+    void setGpuModel(const std::shared_ptr<const Domain::GPUModel>& gpuModel);
+
+    /// Whether per-process GPU usage can be observed on this system: a GPU model is set and its probe
+    /// has not been found to lack per-process metrics (ProcessColumnAvailability::perProcessGpuSupported()).
+    [[nodiscard]] bool hasPerProcessGpuMetrics() const;
+
+    /// What per-process GPU data can be observed: metrics at all, and utilization among them (#1210).
+    [[nodiscard]] ProcessColumnAvailability::GpuSupport gpuSupport() const;
 
   private:
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
@@ -211,6 +233,47 @@ class ProcessesPanel : public Panel
 
     // Column visibility
     ProcessColumnSettings m_ColumnSettings;
+    // Visibility asked for in the toolbar's Columns menu (#1209), handed to ImGui inside the table on
+    // the same frame; the menu shows it until then.
+    std::optional<ProcessColumnSettings> m_RequestedColumns;
+    bool m_ResetColumnOrderRequested = false; // "Reset columns" also restores the default order
+    bool m_TableHasDefaultOrder = true;       // As of the last frame, for enabling "Reset columns"
+    // The capabilities the columns' defaults were last applied for: when the probe's change, the
+    // columns whose visibility was not chosen follow them (#1210).
+    Platform::ProcessCapabilities m_ColumnDefaultsCapabilities;
+    ProcessColumnAvailability::GpuSupport m_ColumnDefaultsGpuSupport; // gpuSupport() when they were last applied
+    // gpuSupport(), read once a frame for the GPU columns (#1210)
+    ProcessColumnAvailability::GpuSupport m_GpuSupport;
+    std::weak_ptr<const Domain::GPUModel> m_GpuModel;
+    // Whether the table has been drawn with m_ColumnSettings: from then on, a column ImGui shows or
+    // hides differently is the user's toggle in its header menu; before, it is a restored layout.
+    bool m_TableShowsColumnSettings = false;
+
+    // Tree view gives the Name column room (#1209): adjusted once when the view mode changes. The
+    // width it had before, and the width tree view set (0 when it left it alone), so leaving tree
+    // view can restore a width the user did not change in the meantime.
+    bool m_NameWidthSyncPending = false;
+    float m_NameWidthBeforeTree = 0.0F;
+    float m_NameWidthSetForTree = 0.0F;
+
+    // Process actions from the row menu (#1209), confirmed in the same dialog as Process Details'
+    // Actions tab. Created at attach, like that panel's: this panel is part of the composition root.
+    std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
+    Platform::ProcessActionCapabilities m_ActionCapabilities;
+    struct RowAction
+    {
+        Detail::ProcessAction action = Detail::ProcessAction::None;
+        Platform::ProcessTarget target; // PID and start time: a reused PID is refused (#973)
+        std::string processName;
+    } m_RowAction;
+    bool m_ShowRowActionConfirm = false;
+    Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
+    float m_RowActionResultSeconds = 0.0F;
+    // The process the row menu was opened on, copied on the same right-press that selected it: the
+    // table re-sorts every sample, so by the button's release another row can be under the pointer
+    // and the menu would act on a process other than the highlighted one (#1365).
+    std::optional<Domain::ProcessSnapshot> m_RowMenuTarget;
+    unsigned int m_RowMenuPopupId = 0; // ImGuiID of ROW_MENU_POPUP_ID at the panel's ID stack
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;
@@ -238,6 +301,10 @@ class ProcessesPanel : public Panel
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
     // The probe's capabilities published with m_CachedRenderSnapshots' generation (#1254).
     Platform::ProcessCapabilities m_CachedCapabilities;
+    // The GPU support m_CachedRenderSnapshots' GPU fields were read under (#1210), copied with them:
+    // the cells are formatted by it, not by the GPU model's current state (m_GpuSupport), which can
+    // differ while GPU merges are throttled. Column defaults and headers follow m_GpuSupport.
+    Domain::ProcessModel::GpuSupport m_CachedGpuSupport;
     // Hold Ctrl to freeze the pane (#928): while frozen, adoptNewerSnapshots() keeps the generation
     // above, so the rows, their values and their order stay put. Evaluated once per frame in
     // renderContent(); onUpdate() sees the previous frame's state.
@@ -273,6 +340,9 @@ class ProcessesPanel : public Panel
         // Static label widths
         float treeViewLabelWidth = 0.0F;
         float listViewLabelWidth = 0.0F;
+        float columnsLabelWidth = 0.0F;
+        float caretRightWidth = 0.0F; // Tree expanders (#1209)
+        float caretDownWidth = 0.0F;
 
         // Font pointer and font-atlas generation used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
@@ -332,6 +402,32 @@ class ProcessesPanel : public Panel
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);
+
+    /// The toolbar's Columns menu: a check per column and "Reset columns" (#1209).
+    void renderColumnsMenu();
+
+    /// Hands the Columns menu's requests to ImGui. Inside the table, after its columns are set up and
+    /// before the first row. Returns true when column visibility was changed this frame.
+    bool applyColumnRequests();
+
+    /// Gives the Name column tree view's width, or back the list's, after a view-mode change (#1209).
+    /// Inside the table, after its columns are set up and before the first row.
+    void syncNameWidthForViewMode();
+
+    /// Switches between list and tree view.
+    void setTreeView(bool enabled);
+
+    /// Selects `proc` as a click on its row does, and tells the other panels.
+    void selectProcess(const Domain::ProcessSnapshot& proc);
+
+    /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
+    void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
+
+    /// Asks to run `action` on `proc`, through the confirmation dialog.
+    void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
+
+    /// The confirmation dialog for a row-menu action, and the action once confirmed.
+    void renderRowActionConfirm();
 
     /// Render a single process row
     /// @param proc The process to render.

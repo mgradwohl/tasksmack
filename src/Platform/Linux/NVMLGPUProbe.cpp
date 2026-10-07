@@ -967,6 +967,9 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
         // are populated above) -- report the capability as unavailable, not present-but-zero.
         caps.hasPCIeMetrics = false;
         caps.hasPerProcessMetrics = true;
+        // readProcessGPUCounters() fills each process's memory and engines from the running-process
+        // lists, not its utilization (#1210).
+        caps.hasPerProcessUtilization = false;
         caps.supportsMultiGPU = true;
         caps.hasEngineUtilization = true; // Via activeEngines in ProcessGPUCounters
     }

@@ -2,6 +2,7 @@
 /// @brief Tests for the settings-change events' startup flag (#1102)
 
 #include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 
 #include <gtest/gtest.h>
 
@@ -26,6 +27,25 @@ TEST(ApplicationEventsTest, StartupSettingsAreMarkedInitial)
     EXPECT_EQ(refresh.getIntervalMs(), 250);
     EXPECT_TRUE(history.isInitial());
     EXPECT_EQ(history.getSeconds(), 1800);
+}
+
+// The row menu's Details item asks the shell for the Process Details tab with its own event type,
+// apart from the selection itself (#1209).
+TEST(ApplicationEventsTest, ShowProcessDetailsHasItsOwnEventType)
+{
+    ShowProcessDetailsEvent show;
+    EXPECT_EQ(show.getEventType(), EventType::ShowProcessDetails);
+    EXPECT_NE(ShowProcessDetailsEvent::getStaticType(), ProcessSelectedEvent::getStaticType());
+
+    EventDispatcher dispatcher(show);
+    bool handled = false;
+    EXPECT_TRUE(dispatcher.dispatch<ShowProcessDetailsEvent>(
+        [&handled](ShowProcessDetailsEvent& /*e*/)
+        {
+            handled = true;
+            return false;
+        }));
+    EXPECT_TRUE(handled);
 }
 
 } // namespace

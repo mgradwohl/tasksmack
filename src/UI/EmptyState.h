@@ -60,18 +60,20 @@ inline constexpr float EMPTY_STATE_WRAP_SLACK_PX = 1.0F;
     return std::ceil(line) + EMPTY_STATE_WRAP_SLACK_PX;
 }
 
-/// Draws an empty state centred in the remaining content region: a heading, and beneath it an
-/// optional explanation of why the pane is empty and what to expect.
-///
-/// @param heading  What state this is, e.g. "No process selected". May start with an icon glyph.
-/// @param detail   Why, and what happens next. Null or empty for none.
-inline void renderEmptyState(const char* heading, const char* detail = nullptr)
+/// Height of an empty state drawn as a band within a pane (renderEmptyStateBand()), in ems: room for
+/// the heading and a couple of lines of explanation with space around them.
+inline constexpr float EMPTY_STATE_BAND_EM = 6.0F;
+
+/// Draws an empty state centred in a region `regionHeight` tall starting at the cursor, as wide as
+/// the remaining content region, and returns the height of the heading and explanation block.
+/// renderEmptyState() and renderEmptyStateBand() are the two ways to call it.
+inline float drawEmptyStateIn(const char* heading, const char* detail, float regionHeight)
 {
     const bool hasDetail = (detail != nullptr) && (detail[0] != '\0');
     const auto& scheme = Theme::get().scheme();
 
     const ImVec2 origin = ImGui::GetCursorPos();
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 avail(ImGui::GetContentRegionAvail().x, regionHeight);
     const float emPx = ImGui::GetFontSize();
     const float wrapWidth = emptyStateWrapWidth(emPx, avail.x);
     const float gap = hasDetail ? (EMPTY_STATE_GAP_EM * emPx) : 0.0F;
@@ -102,6 +104,29 @@ inline void renderEmptyState(const char* heading, const char* detail = nullptr)
         ImGui::TextColored(scheme.textMuted, "%s", detail);
         ImGui::PopTextWrapPos();
     }
+    return blockHeight;
+}
+
+/// Draws an empty state centred in the remaining content region: a heading, and beneath it an
+/// optional explanation of why the pane is empty and what to expect.
+///
+/// @param heading  What state this is, e.g. "No process selected". May start with an icon glyph.
+/// @param detail   Why, and what happens next. Null or empty for none.
+inline void renderEmptyState(const char* heading, const char* detail = nullptr)
+{
+    static_cast<void>(drawEmptyStateIn(heading, detail, ImGui::GetContentRegionAvail().y));
+}
+
+/// The same empty state for one section of a pane that has more below it (#1210): centred in a band
+/// EMPTY_STATE_BAND_EM tall, or as tall as its text if that is more, with the cursor left after the
+/// band so the rest of the pane follows it.
+inline void renderEmptyStateBand(const char* heading, const char* detail = nullptr)
+{
+    const ImVec2 origin = ImGui::GetCursorPos();
+    const float bandHeight = EMPTY_STATE_BAND_EM * ImGui::GetFontSize();
+    const float blockHeight = drawEmptyStateIn(heading, detail, bandHeight);
+    ImGui::SetCursorPos(ImVec2(origin.x, origin.y + std::max(bandHeight, blockHeight)));
+    ImGui::Dummy(ImVec2(0.0F, 0.0F)); // Extends the window's content to the band's end
 }
 
 } // namespace UI::Widgets

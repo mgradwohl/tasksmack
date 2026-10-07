@@ -2767,6 +2767,142 @@ TEST(ProcessModelTest, InteractionModeReusesCachedGpuDataBetweenMerges)
 
     EXPECT_EQ(rawGpuProbe->readProcessCountersCallCount(), initialProcessGpuQueryCount + 1);
 }
+// #1210: a generation that reuses the previous one's GPU fields (the throttled interaction path) is
+// stamped with the support those fields were read under, not the GPU model's current flags.
+TEST(ProcessModelTest, CachedGpuDataKeepsTheSupportItWasReadWith)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProcessProbe = processProbe.get();
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    rawProcessProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    auto* rawGpuProbe = gpuProbe.get();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+    gpuModel->refresh();
+    processModel.refresh(); // Merged: supported
+
+    // The GPU model loses per-process utilization; the next generation reuses the cached fields.
+    Platform::GPUCapabilities withoutUtilization = caps;
+    withoutUtilization.hasPerProcessUtilization = false;
+    rawGpuProbe->withCapabilities(withoutUtilization).withRescanReportingChange();
+    gpuModel->refresh();
+    ASSERT_TRUE(gpuModel->perProcessUtilizationKnownUnsupported());
+
+    processModel.setInteractionActive(true);
+    currentTime += std::chrono::milliseconds(500);
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500)});
+    rawProcessProbe->setTotalCpuTime(200000);
+    processModel.refresh(); // Throttled: cached GPU fields, not read again
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
+    EXPECT_TRUE(samples[1].gpuUtilizationSupported); // Read under the earlier support
+    ASSERT_NE(samples[1].snapshot, nullptr);
+    EXPECT_EQ(samples[1].snapshot->gpuMemoryBytes, 512ULL * 1024 * 1024);
+
+    // The Processes table reads the same support with the generation it draws, not the GPU model's
+    // current (lost) utilization.
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support;
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_TRUE(support.utilization);
+}
+
+// #1210: tryCopySnapshotsIfNewer() hands out the GPU support published with the generation.
+TEST(ProcessModelTest, CopiedSnapshotsComeWithTheirGenerationsGpuSupport)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = false; // NVML-like
+    gpuProbe->withCapabilities(caps);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    gpuModel->refresh();
+    processModel.refresh();
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support{.perProcess = false, .utilization = true};
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_FALSE(support.utilization);
+}
+
+// #1210: a process that starts while GPU merges are throttled has GPU fields no merge has read; they
+// must not pass for measured zeros. Processes the last merge did see keep theirs, zeros included.
+TEST(ProcessModelTest, AProcessStartedBetweenThrottledGpuMergesHasUnreadGpuFields)
+{
+    auto currentTime = Domain::ProcessModel::Clock::time_point{};
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProcessProbe = processProbe.get();
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500), makeCounter(150, "idle_process", 'S', 10, 5, 6000)});
+    rawProcessProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+    gpuModel->refresh();
+    processModel.refresh(); // Merged: 100 and 150 read
+
+    processModel.setInteractionActive(true);
+    currentTime += std::chrono::milliseconds(500);
+    rawProcessProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1100, 500),
+                                  makeCounter(150, "idle_process", 'S', 10, 5, 6000),
+                                  makeCounter(200, "new_process", 'R', 10, 5, 7000)});
+    rawProcessProbe->setTotalCpuTime(200000);
+    processModel.refresh(); // Throttled: cached GPU fields, no new read
+
+    const auto snapshots = processModel.snapshots();
+    ASSERT_EQ(snapshots.size(), 3U);
+    for (const auto& snap : snapshots)
+    {
+        if (snap.pid == 200)
+        {
+            EXPECT_FALSE(snap.gpuFieldsRead) << "started since the last GPU merge";
+        }
+        else
+        {
+            EXPECT_TRUE(snap.gpuFieldsRead) << "pid " << snap.pid;
+        }
+    }
+
+    // The next merge reads everyone again.
+    currentTime += std::chrono::seconds(2);
+    processModel.setInteractionActive(false);
+    processModel.refresh();
+    for (const auto& snap : processModel.snapshots())
+    {
+        EXPECT_TRUE(snap.gpuFieldsRead) << "pid " << snap.pid;
+    }
+}
+
 // Edge case: GPU counters with empty list (no GPUs found)
 TEST(ProcessModelTest, MergeGPUDataWithEmptyCounters)
 {
@@ -3366,6 +3502,125 @@ TEST(ProcessModelTest, WatchedSamplesKeepEveryGenerationPublishedBetweenPolls)
     EXPECT_LT(samples[1].sampleTimeSeconds, samples[2].sampleTimeSeconds);
 }
 
+TEST(ProcessModelTest, WatchedSamplesCarryTheirOwnGenerationsCounterSupport)
+{
+    // #1210: when the probe withdraws its network counters between two generations a reader takes in
+    // one batch, the earlier sample must still say they were supported, so its reading is kept.
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasIoCounters = true;
+    caps.hasNetworkCounters = true;
+    rawProbe->setCapabilities(caps);
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.watchProcess(100);
+
+    model.refresh();
+    clock.advance(std::chrono::milliseconds(100));
+    Platform::ProcessCapabilities withdrawn = caps;
+    withdrawn.hasNetworkCounters = false;
+    rawProbe->switchCapabilitiesOnNextSocketRead(withdrawn);
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1100, 0, 5000)});
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_TRUE(samples[0].networkCountersSupported);
+    EXPECT_FALSE(samples[1].networkCountersSupported);
+    EXPECT_TRUE(samples[0].ioCountersSupported);
+    EXPECT_TRUE(samples[1].ioCountersSupported);
+}
+
+TEST(ProcessModelTest, WatchedSamplesCarryTheirOwnGenerationsGpuSupport)
+{
+    // #1210: the GPU model can lose per-process utilization on re-enumeration, on its own sampler.
+    // A reader taking both generations in one batch must see the earlier one as supported, so its
+    // real utilization is kept, and the later one as not.
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    processProbe->setTotalCpuTime(100000);
+    auto* rawProcessProbe = processProbe.get();
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 1024ULL * 1024);
+    auto* rawGpuProbe = gpuProbe.get();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(processProbe), clock.now());
+    model.setGPUModel(gpuModel);
+    model.watchProcess(100);
+
+    gpuModel->refresh();
+    model.refresh();
+
+    // Re-enumeration finds the probe without per-process utilization (NVML only, say).
+    Platform::GPUCapabilities withoutUtilization = caps;
+    withoutUtilization.hasPerProcessUtilization = false;
+    rawGpuProbe->withCapabilities(withoutUtilization).withRescanReportingChange();
+    gpuModel->refresh();
+    ASSERT_TRUE(gpuModel->perProcessUtilizationKnownUnsupported());
+
+    clock.advance(std::chrono::milliseconds(100));
+    rawProcessProbe->setCounters({makeCounter(100, "watched", 'R', 1100, 0, 5000)});
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    EXPECT_TRUE(samples[0].gpuPerProcessSupported);
+    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
+    EXPECT_TRUE(samples[1].gpuPerProcessSupported);
+    EXPECT_FALSE(samples[1].gpuUtilizationSupported);
+}
+
+TEST(ProcessModelTest, WatchedSamplesWithoutAGpuModelHaveNoGpuSupport)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    probe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.watchProcess(100);
+    model.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_FALSE(samples[0].gpuPerProcessSupported);
+    EXPECT_FALSE(samples[0].gpuUtilizationSupported);
+}
+
+TEST(ProcessModelTest, WatchProcessSeedSampleCarriesTheCurrentCounterSupport)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    auto* rawProbe = probe.get();
+    Platform::ProcessCapabilities caps;
+    caps.hasIoCounters = true;
+    caps.hasNetworkCounters = false; // e.g. Windows without EStats
+    rawProbe->setCapabilities(caps);
+    rawProbe->setCounters({makeCounter(100, "watched", 'R', 1000, 0, 5000)});
+    rawProbe->setTotalCpuTime(100000);
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+    model.watchProcess(100); // Seeded from the generation already published
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_TRUE(samples[0].ioCountersSupported);
+    EXPECT_FALSE(samples[0].networkCountersSupported);
+}
+
 TEST(ProcessModelTest, WatchedSamplesSinceCopiesNothingWhenNothingNewWasPublished)
 {
     // #1172: the selected process was looked up and deep-copied twice every
@@ -3489,6 +3744,69 @@ TEST(ProcessModelTest, NoSamplesAreKeptWhileNothingIsWatched)
 // =============================================================================
 // A throwing per-process GPU merge (#1142)
 // =============================================================================
+
+TEST(ProcessModelTest, AFailedGpuReadOnASupportedProbeIsAGapNotALackOfSupport)
+{
+    // #1210: the throw used to publish the generation as unsupported, so the table said "Not
+    // available on this system" though only this generation's read failed. It keeps the probe's
+    // support and is marked as a failed read instead.
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024).withProcessCountersThrowing();
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    gpuModel->refresh();
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+    ASSERT_NO_THROW(processModel.refresh());
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 1U);
+    EXPECT_TRUE(samples[0].gpuPerProcessSupported);
+    EXPECT_TRUE(samples[0].gpuUtilizationSupported);
+    EXPECT_TRUE(samples[0].gpuReadFailed);
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support;
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_TRUE(support.readFailed);
+}
+
+TEST(ProcessModelTest, ASuccessfulGpuReadIsNotMarkedFailed)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "gpu_process", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 512ULL * 1024 * 1024);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    gpuModel->refresh();
+
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh();
+
+    std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> snapshots;
+    std::uint64_t version = 0;
+    Domain::ProcessModel::GpuSupport support;
+    ASSERT_TRUE(processModel.tryCopySnapshotsIfNewer(0, snapshots, version, nullptr, &support));
+    EXPECT_TRUE(support.perProcess);
+    EXPECT_FALSE(support.readFailed);
+}
 
 TEST(ProcessModelTest, ThrowingPerProcessGpuQueryStillPublishesProcesses)
 {

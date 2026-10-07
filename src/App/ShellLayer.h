@@ -93,6 +93,9 @@ class ShellLayer : public Core::Layer
     // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M.
     bool m_ShowRenderMetrics = false;
 
+    // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
+    bool m_ShowDetailsTabRequested = false;
+
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().
     // Both carry a fixed "###" ID suffix (TabLabel.h), so a new name never changes which tab ImGui
