@@ -14,6 +14,7 @@ enum class EventType : uint8_t
     WindowResized,
     // Application events (for UI coordination)
     ProcessSelected,
+    ShowProcessDetails,
     RefreshRateChanged,
     HistoryDurationChanged,
     ActiveTabChanged,

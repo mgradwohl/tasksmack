@@ -1019,6 +1019,16 @@ TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportsPerProcessMetricsWhenEitherFunct
     EXPECT_TRUE(probe.capabilities().hasPerProcessMetrics);
 }
 
+// #1210: the running-process lists give each process's memory, not its utilization, so GPU % per
+// process is not offered from NVML (PDH supplies it on Windows).
+TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportNoPerProcessUtilization)
+{
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    EXPECT_TRUE(probe.capabilities().hasPerProcessMetrics);
+    EXPECT_FALSE(probe.capabilities().hasPerProcessUtilization);
+}
+
 TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportsNoPerProcessMetricsWhenNeitherAvailable)
 {
     NVMLGPUProbe probe;

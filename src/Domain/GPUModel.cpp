@@ -182,6 +182,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         m_Capabilities = m_Probe->capabilities();
         m_CapabilitiesKnown = true;
         m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
+        m_PerProcessUtilizationKnownUnsupported.store(!m_Capabilities.hasPerProcessUtilization, std::memory_order_release);
     }
     catch (const std::exception& e)
     {
@@ -360,6 +361,7 @@ void GPUModel::rescanGPUs(std::chrono::steady_clock::time_point now)
         m_Capabilities = *capabilities;
         m_CapabilitiesKnown = true;
         m_PerProcessKnownUnsupported.store(!m_Capabilities.hasPerProcessMetrics, std::memory_order_release);
+        m_PerProcessUtilizationKnownUnsupported.store(!m_Capabilities.hasPerProcessUtilization, std::memory_order_release);
     }
     if (gpuInfo.has_value())
     {
@@ -585,16 +587,45 @@ std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() con
     // e.g. Linux Intel DRM, which always returns empty here. When discovery failed, fall
     // through to the lock-and-call path unconditionally, matching this method's behavior
     // before this capability check existed.
+    ProcessGPUReading reading = readProcessGPUData();
+    if (reading.failure)
+    {
+        std::rethrow_exception(reading.failure);
+    }
+    return std::move(reading.counters);
+}
+
+GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
+{
     if (!m_Probe)
     {
         return {};
     }
+    // The hot early exit described above: unsupported, and nothing read, from the same load.
     if (m_PerProcessKnownUnsupported.load(std::memory_order_acquire))
     {
         return {};
     }
     const std::scoped_lock probeLock(m_ProbeMutex);
-    return m_Probe->readProcessGPUCounters();
+    // Re-read under the probe lock: rescanGPUs(), which can change the flags, runs holding it, so
+    // these are the flags the read below happens under (#1210).
+    ProcessGPUReading reading;
+    reading.perProcessSupported = !m_PerProcessKnownUnsupported.load(std::memory_order_acquire);
+    if (!reading.perProcessSupported)
+    {
+        return reading;
+    }
+    reading.utilizationSupported = !m_PerProcessUtilizationKnownUnsupported.load(std::memory_order_acquire);
+    try
+    {
+        reading.counters = m_Probe->readProcessGPUCounters();
+    }
+    catch (...)
+    {
+        // Carried to the caller with the flags above, which this failed read ran under (#1210).
+        reading.failure = std::current_exception();
+    }
+    return reading;
 }
 
 GPUSnapshot

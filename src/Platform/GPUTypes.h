@@ -21,6 +21,10 @@ struct GPUCapabilities
     bool hasPCIeMetrics = false;
     bool hasEngineUtilization = false;
     bool hasPerProcessMetrics = false; // Per-process GPU usage
+    // Of those, per-process utilization (ProcessGPUCounters::gpuUtilPercent). Some backends report a
+    // process's GPU memory and engines but not its utilization (NVML's running-process lists), which
+    // then reads 0 for every process (#1210).
+    bool hasPerProcessUtilization = false;
     bool hasEncoderDecoder = false;
     bool supportsMultiGPU = false;
 };

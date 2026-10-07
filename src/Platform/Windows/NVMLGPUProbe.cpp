@@ -858,6 +858,8 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
     // Per-process metrics available if we have the required functions
     caps.hasPerProcessMetrics =
         (m_NVML.DeviceGetComputeRunningProcesses.fn != nullptr || m_NVML.DeviceGetGraphicsRunningProcesses.fn != nullptr);
+    // The running-process lists give each process's memory, not its utilization (#1210).
+    caps.hasPerProcessUtilization = false;
     caps.hasEncoderDecoder = false; // Not implemented yet
     caps.supportsMultiGPU = true;
 

@@ -120,7 +120,7 @@ class ProcessDetailsPanel : public Panel
     void renderPowerUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuUsage(const Domain::ProcessSnapshot& proc, UI::Widgets::FillPlotLayout& fill);
     void renderGpuCurrentMetricsTable(const Domain::ProcessSnapshot& proc) const;
-    static void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc);
+    void renderPerGpuBreakdown(const Domain::ProcessSnapshot& proc) const;
     void renderGpuHistoryGraphs(UI::Widgets::FillPlotLayout& fill);
     void renderActions();
     void renderActionResultFeedback();
@@ -142,8 +142,12 @@ class ProcessDetailsPanel : public Panel
     static void drawPriorityScaleLabels(const PrioritySliderContext& ctx);
     void updateSmoothedUsage(const Domain::ProcessSnapshot& snapshot, float deltaTimeSeconds);
     /// Appends one history point for @p snapshot at @p sampleTimeSeconds, after a gap point when
-    /// @p gapBefore (see Detail::takeSamples()).
-    void recordHistoryPoint(const Domain::ProcessSnapshot& snapshot, double sampleTimeSeconds, bool gapBefore);
+    /// @p gapBefore (see Detail::takeSamples()). @p rateReadings says which of its I/O and network rates
+    /// are readings, by the sample's own generation (Detail::rateReadings()); the others are gaps.
+    void recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
+                            double sampleTimeSeconds,
+                            bool gapBefore,
+                            Detail::SampleRateReadings rateReadings);
     /// The displayed snapshot, or an empty one before the first: for code that draws it unconditionally.
     [[nodiscard]] const Domain::ProcessSnapshot& cachedSnapshot() const;
 
@@ -197,6 +201,8 @@ class ProcessDetailsPanel : public Panel
     // The selected process as last sampled, shared with ProcessModel's sample rather than copied
     // every frame (#1172); null before the first sample.
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
+    // Which of m_CachedSnapshot's I/O and network rates are readings, by its own generation (#1210).
+    Detail::SampleRateReadings m_CachedRateReadings;
 
     // render()'s window title, rebuilt only when the selected process's name changes rather than
     // every frame (#1326).
@@ -229,6 +235,9 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
+    // The GPU tab's "No GPU usage" explanation, naming the history window (#1210). Empty until built,
+    // and cleared when the window changes so the next frame rebuilds it.
+    std::string m_NoGpuUsageDetail;
 
     // Confirmation dialog state
     bool m_ShowConfirmDialog = false;
@@ -258,6 +267,10 @@ class ProcessDetailsPanel : public Panel
         double powerWatts = 0.0;
         double gpuUtilPercent = 0.0;
         double gpuMemoryBytes = 0.0;
+        // Whether the latest sample's generation had these from the GPU probe (#1210): one it did not
+        // leaves the value where it was and shows N/A, like the I/O and network readings above.
+        bool gpuUtilAvailable = false;
+        bool gpuMemoryAvailable = false;
         // Whether the latest sample had these readings (#1110): an unread one leaves its value where it
         // was and shows N/A, as its line shows a gap, like the GDI count below.
         bool handleCountAvailable = false;
