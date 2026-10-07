@@ -8,9 +8,10 @@
 //
 //   FullHistory  -- one sample (append, trim, publish) with N samples retained, N = 300 / 3k / 18k.
 //                   18k is the longest history: 1800 s (HISTORY_SECONDS_MAX) at 100 ms
-//                   (REFRESH_INTERVAL_MIN_MS). publish() copies every series into a new publication.
+//                   (REFRESH_INTERVAL_MIN_MS). Until #1412 publish() copied every series into each publication.
 //   Cardinality  -- the same at a 300-sample history with many cores, interfaces or disks, and one
-//                   ProcessModel refresh with many processes.
+//                   ProcessModel refresh with many processes. CardinalityHistory: 64 cores and 10
+//                   interfaces at 3k and 18k samples.
 //   Concurrent   -- how long a UI-style SystemModel/GPUModel::publication() call waits when it lands on
 //                   a publish in another thread. Before #868 publish() ran under the model's exclusive
 //                   lock, so this was the lock hold a frame could be stuck behind; now it is a swap.
@@ -18,9 +19,8 @@
 //                   mocks, they run on a GPU-less runner too, unlike bench_GPUModel.cpp's (#1420).
 //
 // History is held at N samples by setting the model's window to N sample intervals: trimming then
-// drops one old sample per new one. Building a full window takes N publishes -- O(N^2) copying, about
-// a second at 18k -- so each configuration's model is built once per process and reused by every
-// repetition (cachedFixture()); a further sample leaves it at the same size.
+// drops one old sample per new one. Each configuration's model is built once per process and reused
+// by every repetition (cachedFixture()); a further sample leaves it at the same size.
 
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
@@ -164,16 +164,32 @@ struct SystemFixture
         model = std::make_unique<Domain::SystemModel>(std::move(probe));
         model->setMaxHistorySeconds(windowSecondsFor(samples));
         // One more than the window holds, so the history is full before the first measured sample.
-        for (std::int64_t i = 0; i <= samples; ++i)
-        {
-            sampleOnce();
-        }
+        // Preloaded as one series with one publish (#1413) rather than a publish per sample, which
+        // was O(N^2) to build at 18k samples and many series.
+        const auto last = static_cast<std::uint64_t>(samples);
+        model->updateFromCounterSeries(
+            [this, last](Platform::SystemCounters& counters, double& nowSeconds)
+            {
+                if (step > last)
+                {
+                    return false;
+                }
+                counters = feed.at(step);
+                nowSeconds = sampleSeconds(step);
+                ++step;
+                return true;
+            });
+    }
+
+    [[nodiscard]] static double sampleSeconds(std::uint64_t at) noexcept
+    {
+        return START_SECONDS + (static_cast<double>(at) * SAMPLE_INTERVAL_SECONDS);
     }
 
     /// Append, trim and publish one sample.
     void sampleOnce()
     {
-        model->updateFromCounters(feed.at(step), START_SECONDS + (static_cast<double>(step) * SAMPLE_INTERVAL_SECONDS));
+        model->updateFromCounters(feed.at(step), sampleSeconds(step));
         ++step;
     }
 };
@@ -246,6 +262,61 @@ BENCHMARK(BM_SystemModel_Cardinality_Publish)
     ->Args({8, 100})
     ->Args({8, 500})
     ->Unit(benchmark::kMicrosecond);
+
+// One SystemModel sample at range(0) samples retained with range(1) cores and range(2) interfaces: the
+// cardinality benchmark's many series at the default and longest histories. Before #1412 publish()
+// copied every one of them, so 18k cost about 6x 3k; with shared history the two should match.
+void BM_SystemModel_CardinalityHistory_Publish(benchmark::State& state)
+{
+    SystemFixture& fixture =
+        systemFixture(state.range(0), static_cast<std::size_t>(state.range(1)), static_cast<std::size_t>(state.range(2)));
+    for (auto _ : state)
+    {
+        fixture.sampleOnce();
+    }
+    reportSystemShape(state, *fixture.model);
+}
+BENCHMARK(BM_SystemModel_CardinalityHistory_Publish)
+    ->ArgNames({"samples", "cores", "interfaces"})
+    ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 64, 10})
+    ->Args({FULL_HISTORY_SAMPLES, 64, 10})
+    ->Unit(benchmark::kMicrosecond);
+
+// The UI's read side at full history: take the publication and walk every series once, as the charts'
+// reductions do. Shared history (#1412) must not make this slower than reading a plain vector.
+void BM_SystemModel_FullHistory_ReadSeries(benchmark::State& state)
+{
+    const SystemFixture& fixture = systemFixture(state.range(0), DEFAULT_CORES, DEFAULT_INTERFACES);
+    for (auto _ : state)
+    {
+        const auto publication = fixture.model->publication();
+        double sum = 0.0;
+        for (const double t : publication->timestamps)
+        {
+            sum += t;
+        }
+        const auto add = [&sum](const auto& series)
+        {
+            for (const float value : series)
+            {
+                sum += static_cast<double>(value);
+            }
+        };
+        add(publication->cpuHistory);
+        add(publication->cpuUserHistory);
+        add(publication->cpuSystemHistory);
+        add(publication->memoryHistory);
+        add(publication->netRxHistory);
+        add(publication->netTxHistory);
+        for (const auto& core : publication->perCoreHistory)
+        {
+            add(core);
+        }
+        benchmark::DoNotOptimize(sum);
+    }
+    reportSystemShape(state, *fixture.model);
+}
+BENCHMARK(BM_SystemModel_FullHistory_ReadSeries)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
 
 /// How long the concurrent benchmark's reader lets the writer run before it asks for the publication:
 /// ample for the writer to see its cue and take the model's lock, short against any publish.
