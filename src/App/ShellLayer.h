@@ -11,6 +11,7 @@
 
 #include <SDL3/SDL_video.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -90,8 +91,17 @@ class ShellLayer : public Core::Layer
     int m_ContentMinimumHeightPx = 0;
     TitleBarLayer* m_TitleBar = nullptr;
 
-    // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M.
+    // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M. The
+    // status bar's FPS readout is shown only while it is on (#1200).
     bool m_ShowRenderMetrics = false;
+
+    // The status bar's live text (#1200), rebuilt in onUpdate() only when the count or the interval
+    // it was built from changes. The interval is the refresh rate from RefreshRateChangedEvent.
+    int m_RefreshIntervalMs = 0;
+    std::size_t m_StatusProcessCount = static_cast<std::size_t>(-1);
+    int m_StatusIntervalMs = -1;
+    std::string m_StatusProcessText;
+    std::string m_StatusIntervalText;
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;

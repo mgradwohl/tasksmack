@@ -108,7 +108,7 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 |----------|--------|
 | Hold **Ctrl** (over the process table) | Freeze the process table while held |
 | **Ctrl+=** / **Ctrl+-** (or **Ctrl+keypad +** / **Ctrl+keypad -**) | Increase / decrease the font size |
-| **Ctrl+Shift+M** | Toggle the Render Metrics overlay |
+| **Ctrl+Shift+M** | Toggle the Render Metrics overlay and the status bar's FPS readout |
 
 ### System Metrics
 

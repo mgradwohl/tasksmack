@@ -372,18 +372,6 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
     return {.width = cap(minimum.width, usableWidth), .height = cap(minimum.height, usableHeight)};
 }
 
-/// Whether the status bar's right-aligned FPS readout fits beside what is on its left (#1207).
-/// At narrow widths it was drawn over "Ready" and the status-bar buttons; it is left out instead.
-///
-/// @param leftContentEndX  Where the status bar's left-hand content ends (window-local X).
-/// @param readoutStartX    Where the right-aligned readout would start (window-local X).
-/// @param spacingPx        Gap to keep between them (ImGuiStyle::ItemSpacing.x).
-[[nodiscard]] inline auto computeStatusBarReadoutFits(const float leftContentEndX, const float readoutStartX, const float spacingPx) -> bool
-{
-    const float spacing = (std::isfinite(spacingPx) && spacingPx > 0.0F) ? spacingPx : 0.0F;
-    return std::isfinite(leftContentEndX) && std::isfinite(readoutStartX) && readoutStartX >= leftContentEndX + spacing;
-}
-
 /// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,
 /// minimize, maximize, close). A non-positive width (maxX <= minX) is treated as "not set"
 /// by computeIsPointInBounds below, so a default-constructed ButtonBounds never matches.

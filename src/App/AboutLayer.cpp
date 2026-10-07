@@ -6,6 +6,7 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "UI/AssetPath.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconLoader.h"
 #include "UI/Theme.h"
@@ -114,9 +115,8 @@ void AboutLayer::renderAboutDialog()
     // Never larger than the viewport, re-evaluated every frame so a font change or a shrinking main
     // window cannot push the OK button out of it; content that no longer fits scrolls (#1129).
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0F, 0.0F),
-                                        ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
-                                               UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y)));
+    UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
+                                                     UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y)));
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
     if (ImGui::BeginPopupModal("About TaskSmack", nullptr, flags))
@@ -194,16 +194,13 @@ void AboutLayer::renderAboutDialog()
 
         ImGui::PopStyleColor();
 
-        ImGui::Dummy(ImVec2(0.0F, marginPx));
-
-        // Center the OK button. The floor is 11.25 em, exactly the former fixed 120px at the
-        // reference configuration; the measured-label term only takes over if a translation or a
-        // very large font makes the label wider than that (#935).
-        const float buttonWidth = UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, emPx, ABOUT_BUTTON_MIN_EM);
-        const float availX = ImGui::GetContentRegionAvail().x;
-        const float offset = std::max(0.0F, (availX - buttonWidth) * 0.5F);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-        if (ImGui::Button("OK", ImVec2(buttonWidth, 0.0F)))
+        // The footer every dialog shares, OK on the right (#1200); it was centred here and nowhere
+        // else. The floor is 11.25 em, exactly the former fixed 120px at the reference configuration;
+        // the measured-label term only takes over if a translation or a very large font makes the
+        // label wider than that (#935).
+        const UI::Widgets::DialogFooterButton okButton{.label = "OK", .fills = nullptr, .tooltip = nullptr};
+        if (UI::Widgets::dialogFooter(okButton, {}, UI::Widgets::footerButtonWidth({"OK"}, ABOUT_BUTTON_MIN_EM)) ==
+            UI::Widgets::DialogFooterAction::Primary)
         {
             ImGui::CloseCurrentPopup();
         }

@@ -5,6 +5,7 @@
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
+#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
@@ -332,8 +333,12 @@ void renderStorageSection(RenderContext& ctx)
     if (usesDiskGrid(ctx.publication))
     {
         // ── Multi-disk: one chart cell per disk, grid fills the available panel space ──
-        ImGui::TextColored(
-            theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O by Device (%zu disks, %zu samples)", diskCount, historySize);
+        // The disk count stays on the heading, quieter than the title; the sample count is its tooltip.
+        std::array<char, 32> diskCountText{};
+        const auto diskCountEnd =
+            std::format_to_n(diskCountText.data(), diskCountText.size() - 1, "{} {}", diskCount, (diskCount == 1) ? "disk" : "disks");
+        (void) UI::Widgets::sectionHeader(
+            ICON_FA_HARD_DRIVE, "Disk I/O by Device", std::string_view(diskCountText.data(), diskCountEnd.out), historySize);
 
         const double diskAlpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
         if (ctx.smoothedPerDisk != nullptr)
@@ -548,7 +553,7 @@ void renderStorageSection(RenderContext& ctx)
             }
         };
 
-        ImGui::TextColored(theme.scheme().textPrimary, ICON_FA_HARD_DRIVE "  Disk I/O History (%zu samples)", alignedDisk);
+        (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "Disk I/O History", {}, alignedDisk);
         renderHistoryWithNowBars("SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
         if (ctx.fill != nullptr)
         {
