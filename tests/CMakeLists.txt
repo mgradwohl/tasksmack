@@ -56,9 +56,10 @@ if(WIN32)
         # provenance manifest (#1424).
         add_test(NAME BenchScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
-        # Many stub runs (failure modes, a 4-way race, Unicode paths): about a minute under load, so
-        # keep it clear of the 60 s --timeout the CI ctest steps pass, as EtwCaptureScript does.
-        set_tests_properties(BenchScript PROPERTIES TIMEOUT 180)
+        # The stub benchmark is a Python script when CMake's interpreter is passed in (much cheaper
+        # to start than PowerShell). The test runs in well under 30 s; the 180 s limit only keeps it
+        # clear of the 60 s --timeout the CI ctest steps pass under heavy load, as EtwCaptureScript does.
+        set_tests_properties(BenchScript PROPERTIES TIMEOUT 180 ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "

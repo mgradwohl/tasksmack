@@ -396,7 +396,7 @@ class BenchShTest(unittest.TestCase):
             TASKSMACK_BENCH_OUT_DIR=posix(race),
             STUB_EXIT="0",
             STUB_OUTPUT="full",
-            STUB_SLEEP="1.5",
+            STUB_SLEEP="0.4",
             STUB_HOST=socket.gethostname(),
             PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
         )
