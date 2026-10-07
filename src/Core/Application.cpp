@@ -533,6 +533,11 @@ void Application::run()
     // frame (#1037, #1125).
     double requestedAnimationFps = 0.0;
     double lastFrameStart = getTime();
+    // The event that woke the idle wait, taken off the queue by SDL_WaitEventTimeout(): the next
+    // iteration's drain dispatches it before anything else, and before that iteration renders (#1409).
+    std::optional<SDL_Event> idleWakeEvent;
+    // P3 skips in a row, for the FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS bound (#1410).
+    std::uint32_t consecutiveSkippedRenders = 0;
     std::uint64_t loopStart = 0;
     ResizePerfLoopTiming loopTiming;
     const auto finishTracedLoop = [&](std::uint64_t end)
@@ -583,9 +588,7 @@ void Application::run()
             loopTiming = {};
         }
         // Process SDL events
-        bool hadEvents = false;
         bool needsResizeRedraw = false;
-        std::uint32_t drainedEventCount = 0;
         std::uint32_t resizeEventCount = 0;
         SDL_Event sdlEvent;
         const bool traceResizePerfThisFrame = m_ResizePerfTraceEnabled;
@@ -595,13 +598,19 @@ void Application::run()
         // Always capture drain start: used by P0 budget check and P3 skip-render decision
         // regardless of whether tracing is active.
         const auto eventDrainStart = std::chrono::steady_clock::now();
-        auto lastDrainBatchCheckTime = eventDrainStart;
-        double maxSinglePollBatchMs = 0.0;
-        bool p0FiredThisDrain = false;
-        while (SDL_PollEvent(&sdlEvent))
+        // Handle the next event, false once the queue is empty. The event that woke the previous
+        // iteration's idle wait comes first: SDL_WaitEventTimeout() took it off the queue (#1409).
+        const auto pollAndDispatch = [&]() -> bool
         {
-            hadEvents = true;
-            ++drainedEventCount;
+            if (idleWakeEvent.has_value())
+            {
+                sdlEvent = *idleWakeEvent;
+                idleWakeEvent.reset();
+            }
+            else if (!SDL_PollEvent(&sdlEvent))
+            {
+                return false;
+            }
             // Let layers handle raw SDL events (for ImGui integration and input handling)
             for (const auto& layer : m_LayerStack)
             {
@@ -700,25 +709,16 @@ void Application::run()
                 break;
             }
 
-            // P0: Drain time budget — break if this batch has spent too long in the drain
-            // loop. Check every 4 events to limit steady_clock::now() call overhead.
-            // On Wayland, individual SDL_PollEvent calls can stall on compositor protocol;
-            // breaking here caps the combined per-frame drain stall.
-            if ((drainedEventCount & 3U) == 0U)
-            {
-                const auto drainNow = std::chrono::steady_clock::now();
-                // Track max time for any single 4-event batch to isolate single-call stalls.
-                const double batchMs = std::chrono::duration<double, std::milli>(drainNow - lastDrainBatchCheckTime).count();
-                maxSinglePollBatchMs = std::max(maxSinglePollBatchMs, batchMs);
-                lastDrainBatchCheckTime = drainNow;
-                if (FramePacing::computeShouldBreakEventDrain(std::chrono::duration<double, std::milli>(drainNow - eventDrainStart).count(),
-                                                              DRAIN_BUDGET_MS))
-                {
-                    p0FiredThisDrain = true;
-                    break;
-                }
-            }
-        }
+            return true;
+        };
+        // P0: Drain time budget, checked after every event (#1410). On Wayland, individual
+        // SDL_PollEvent calls can stall on compositor protocol; breaking here caps the combined
+        // per-frame drain stall.
+        const auto drain = FramePacing::drainEventsWithinBudget(
+            pollAndDispatch,
+            [&] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - eventDrainStart).count(); },
+            DRAIN_BUDGET_MS);
+        const bool hadEvents = drain.eventCount > 0;
         // Always capture end time; used for both trace recording and P3 skip-render decision.
         const auto eventDrainEnd = std::chrono::steady_clock::now();
         const double totalDrainMs = std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count();
@@ -792,7 +792,8 @@ void Application::run()
         // ended.
         if (traceResizePerfThisFrame)
         {
-            resizeTraceStats.recordEventBatch(drainedEventCount, resizeEventCount, totalDrainMs, maxSinglePollBatchMs, p0FiredThisDrain);
+            resizeTraceStats.recordEventBatch(
+                drain.eventCount, resizeEventCount, totalDrainMs, drain.maxSingleEventMs, drain.budgetExceeded);
         }
 
         // Deferred from just after the drain (see comment above) so this frame's batch is
@@ -812,8 +813,13 @@ void Application::run()
         // P3: If drain severely exceeded a full-frame budget, skip rendering this
         // frame to avoid compounding the stall with render+swap time. Events are
         // fully processed; the display catches up on the next frame.
-        const bool skipRenderThisFrame =
-            FramePacing::computeSkipRenderThisFrame(totalDrainMs, DRAIN_SKIP_RENDER_MS, m_Window->isMinimized());
+        // Bounded at MAX_CONSECUTIVE_SKIPPED_RENDERS in a row, so a sustained slow drain can't
+        // freeze the display (#1410).
+        const bool skipRenderThisFrame = FramePacing::computeSkipRenderThisFrame(totalDrainMs,
+                                                                                 DRAIN_SKIP_RENDER_MS,
+                                                                                 m_Window->isMinimized(),
+                                                                                 consecutiveSkippedRenders,
+                                                                                 FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS);
         // Counted regardless of interaction state (not just tracingInteraction): an idle drain
         // that overruns the budget also skips rendering, and the idle-progress/shutdown
         // summaries should reflect that instead of always reporting skippedFrames=0 for idle.
@@ -874,7 +880,8 @@ void Application::run()
         //     display stays current during burst gaps between resize/move events.
         //   - Outside the grace period: sleep briefly (~20 fps idle, 5 fps minimized or covered)
         //     to reduce CPU/GPU usage when the display hasn't changed. Any SDL event wakes the
-        //     sleep immediately, keeping interactive frame rate unaffected.
+        //     sleep immediately, keeping interactive frame rate unaffected. The waking event is
+        //     dispatched before the next frame renders (#1409): see idleWakeEvent.
         const double animationFps = FramePacing::computeAnimationRate(requestedAnimationFps, IDLE_FRAME_RATE, MAX_FRAME_RATE);
         const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents, isHidden, MAX_FRAME_RATE);
         if (frameRateCap > 0.0 && !isInteracting)
@@ -904,7 +911,15 @@ void Application::run()
                 const int sleepMs =
                     FramePacing::computeIdleWaitMs(isHidden, IDLE_FRAME_SLEEP_MS, MINIMIZED_FRAME_SLEEP_MS, getTime() - lastFrameStart);
                 const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
-                SDL_WaitEventTimeout(nullptr, sleepMs);
+                // Wait with a real SDL_Event, not nullptr: the event that wakes the loop is taken
+                // off the queue here and handed to the next iteration's drain, which dispatches it
+                // before rendering (#1409). With nullptr the event stayed queued and the frame below
+                // rendered straight after the wake, showing the state from before the input.
+                SDL_Event wakeEvent;
+                if (SDL_WaitEventTimeout(&wakeEvent, sleepMs))
+                {
+                    idleWakeEvent = wakeEvent;
+                }
                 if (traceResizePerfThisFrame)
                 {
                     loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
@@ -912,7 +927,11 @@ void Application::run()
             }
         }
 
-        if (!didImmediateResizeRedraw && !skipRenderThisFrame)
+        // A wake on an event skips this render: the next iteration drains the event first, then
+        // renders, paced as any input-driven frame (#1153) (#1409).
+        const bool renderRegularFrame =
+            FramePacing::computeShouldRenderRegularFrame(idleWakeEvent.has_value(), didImmediateResizeRedraw, skipRenderThisFrame);
+        if (renderRegularFrame)
         {
             lastFrameStart = getTime();
             double updateMs = 0.0;
@@ -953,11 +972,14 @@ void Application::run()
         }
 
         // Read after this iteration's render(s): what they drew decides how the next frame is paced.
-        // A skipped render leaves the previous answer standing.
-        if (didImmediateResizeRedraw || !skipRenderThisFrame)
+        // A skipped render (or a wake that defers it) leaves the previous answer standing.
+        const bool renderedFrame = didImmediateResizeRedraw || renderRegularFrame;
+        if (renderedFrame)
         {
             requestedAnimationFps = AnimationRequest::consume();
         }
+        consecutiveSkippedRenders =
+            FramePacing::nextConsecutiveSkippedRenders(consecutiveSkippedRenders, skipRenderThisFrame, renderedFrame);
 
         wasTracingInteraction = tracingInteraction;
         wasInteracting = isInteracting;
