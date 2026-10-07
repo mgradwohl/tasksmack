@@ -710,7 +710,9 @@ Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`:
 - `<preset>-<timestamp>.manifest.json` -- a provenance sidecar (#1424) with the same field names
   from both scripts: `git` (commit, branch, dirty flag for tracked files; no diff), `binary` (file
   name and SHA-256), `build` (build type, generator, compiler name/id/version, C++ flags and IPO
-  read from the build tree's `CMakeCache.txt`), `benchmark` (the arguments passed, with the output
+  read from the build tree's `CMakeCache.txt`; absolute paths in the flags, such as the PGO
+  presets' `-fprofile-instr-use=` profile, become `<source>/...` inside the checkout and
+  `<abs>/<file name>` elsewhere), `benchmark` (the arguments passed, with the output
   path reduced to its file name), `exit_code`, and `machine`, an anonymized machine class (CPU
   model, logical core count, OS name/version, architecture). It records no host name, user name,
   user-profile path, process list or other command line. `bench.sh` writes it with

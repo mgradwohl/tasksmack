@@ -11,6 +11,8 @@ function Assert-True {
 }
 
 $benchScript = Join-Path $PSScriptRoot 'bench.ps1'
+$repoRootPath = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\')
+$repoRootForward = $repoRootPath.Replace('\', '/')
 $hostExe = (Get-Process -Id $PID).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-tests-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
@@ -24,8 +26,10 @@ try {
         'CMAKE_BUILD_TYPE:STRING=Release'
         'CMAKE_GENERATOR:INTERNAL=Ninja'
         "CMAKE_CXX_COMPILER:FILEPATH=C:\Users\$([Environment]::UserName)\llvm\bin\clang++.exe"
-        'CMAKE_CXX_FLAGS:STRING=-fms-compatibility'
-        'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG'
+        # Absolute paths in flags, as the PGO presets embed ${sourceDir}/profiles/tasksmack.profdata:
+        # quoted with spaces, '=' and space-separated forms, a glued -I, inside and outside the checkout.
+        "CMAKE_CXX_FLAGS:STRING=-fms-compatibility -I`"C:/Users/$([Environment]::UserName)/My Includes/inc`" -fprofile-use C:\Users\$([Environment]::UserName)\pgo\other.profdata /DWIN32"
+        "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$($env:USERPROFILE)\x.profdata"
         'TASKSMACK_ENABLE_IPO:BOOL=ON'
     )
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeFiles\4.0.0\CMakeCXXCompiler.cmake') -Encoding ascii -Value @(
@@ -57,12 +61,21 @@ exit [int]$env:STUB_EXIT
     Set-Content -LiteralPath $stub -Encoding ascii -Value "@`"$hostExe`" -NoProfile -File `"$stubScript`" %*`r`n@exit /b %ERRORLEVEL%"
 
     function Invoke-Bench {
-        param([int]$StubExit, [string]$StubOutput = 'full', [string]$Name)
+        param([int]$StubExit, [string]$StubOutput = 'full', [string]$Name, [switch]$NativeErrorPromotion)
         $outDir = Join-Path $root $Name
         $env:STUB_EXIT = "$StubExit"
         $env:STUB_OUTPUT = $StubOutput
         try {
-            $log = & $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $stub -OutputDirectory $outDir --benchmark_filter=BM_X 2>&1 | Out-String
+            if ($NativeErrorPromotion) {
+                # As from a session or profile that turns native exit codes into errors.
+                $quote = { param([string]$s) "'" + $s.Replace("'", "''") + "'" }
+                $command = '$ErrorActionPreference = ''Stop''; $PSNativeCommandUseErrorActionPreference = $true; ' +
+                "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote $outDir) '--benchmark_filter=BM_X'"
+                $log = & $hostExe -NoProfile -Command $command 2>&1 | Out-String
+            }
+            else {
+                $log = & $hostExe -NoProfile -File $benchScript fake-preset -BenchmarkBinary $stub -OutputDirectory $outDir --benchmark_filter=BM_X 2>&1 | Out-String
+            }
             $code = $LASTEXITCODE
         }
         finally {
@@ -84,6 +97,14 @@ exit [int]$env:STUB_EXIT
     Assert-True ($failedJson.context.host_name -eq 'redacted') 'A failed run''s output must still be redacted'
     Assert-True ($failed.Manifest.Count -eq 1) 'A failed run must still write its manifest'
     Assert-True ((Get-Content -LiteralPath $failed.Manifest[0].FullName -Raw | ConvertFrom-Json).exit_code -eq 3) 'The manifest must record the exit code'
+
+    # With native-command error promotion on in the caller's session, the failure must still go
+    # through the same path (manifest written, partial output redacted), not throw before it.
+    $promoted = Invoke-Bench -StubExit 3 -Name 'promoted' -NativeErrorPromotion
+    Assert-True ($promoted.ExitCode -ne 0) "bench.ps1 reported success with native error promotion on:`n$($promoted.Log)"
+    Assert-True ($promoted.Log -like '*exited with code 3*') "Native error promotion bypassed the exit-code handling:`n$($promoted.Log)"
+    Assert-True ($promoted.Manifest.Count -eq 1) "The manifest must be written with native error promotion on:`n$($promoted.Log)"
+    Assert-True ($promoted.Result.Count -eq 1 -and (Get-Content -LiteralPath $promoted.Result[0].FullName -Raw | ConvertFrom-Json).context.host_name -eq 'redacted') 'The partial output must be redacted with native error promotion on'
 
     # A crash mid-run leaves truncated JSON that cannot be redacted: it is deleted, never kept with
     # the host name in it, and the script still fails with the benchmark's exit code.
@@ -122,7 +143,7 @@ exit [int]$env:STUB_EXIT
     Assert-True ($manifest.binary.name -eq 'TaskSmackBenchmarks.cmd') 'Binary name must be the leaf only'
     Assert-True ($manifest.binary.sha256 -eq (Get-FileHash -LiteralPath $stub -Algorithm SHA256).Hash.ToLowerInvariant()) 'Binary SHA-256'
     Assert-True ($manifest.build.build_type -eq 'Release' -and $manifest.build.compiler -eq 'clang++.exe' -and $manifest.build.compiler_id -eq 'Clang' -and
-        $manifest.build.compiler_version -eq '22.1.8' -and $manifest.build.cxx_flags_config -eq '-O3 -DNDEBUG' -and $manifest.build.ipo -eq 'ON') "Build provenance: $($manifest.build | ConvertTo-Json -Compress)"
+        $manifest.build.compiler_version -eq '22.1.8' -and $manifest.build.ipo -eq 'ON') "Build provenance: $($manifest.build | ConvertTo-Json -Compress)"
     Assert-True ($manifest.benchmark.raw_repetitions -eq $true -and $manifest.benchmark.report_aggregates_only -eq $false) 'Raw repetitions must be kept'
     $recordedArgs = @($manifest.benchmark.args)
     Assert-True ($recordedArgs -notcontains '--benchmark_report_aggregates_only=true') 'Aggregates-only reporting must not be forced on'
@@ -131,7 +152,14 @@ exit [int]$env:STUB_EXIT
     Assert-True ($manifest.machine.logical_cores -eq [Environment]::ProcessorCount -and $manifest.machine.os_name) 'Machine class'
 
     # No host name, user name or user-profile path anywhere in the manifest.
-    foreach ($identity in @([Environment]::MachineName, [Environment]::UserName, $env:COMPUTERNAME, $env:USERNAME, $env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\'))) {
+    # Absolute paths in flags: the checkout's become <source>/..., others <abs>/<file name>.
+    Assert-True ($manifest.build.cxx_flags_config -ceq '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata') "cxx_flags_config: $($manifest.build.cxx_flags_config)"
+    Assert-True ($manifest.build.cxx_flags -ceq '-fms-compatibility -I"<abs>/inc" -fprofile-use <abs>/other.profdata /DWIN32') "cxx_flags: $($manifest.build.cxx_flags)"
+
+    $identities = @([Environment]::MachineName, [Environment]::UserName, $env:COMPUTERNAME, $env:USERNAME, $env:USERPROFILE, [IO.Path]::GetTempPath().TrimEnd('\'),
+        $repoRootPath, $repoRootForward, 'C:/Users', 'C:\Users')
+    if ($env:USERPROFILE) { $identities += $env:USERPROFILE.Replace('\', '/') }
+    foreach ($identity in $identities) {
         if ($identity -and $identity.Length -ge 3) {
             Assert-True ($manifestText.IndexOf($identity, [StringComparison]::OrdinalIgnoreCase) -lt 0) "The manifest contains '$identity'"
         }

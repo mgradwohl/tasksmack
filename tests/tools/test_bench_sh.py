@@ -93,7 +93,12 @@ class BenchShTest(unittest.TestCase):
             "CMAKE_BUILD_TYPE:STRING=Release\n"
             "CMAKE_GENERATOR:INTERNAL=Ninja\n"
             f"CMAKE_CXX_COMPILER:FILEPATH=/home/{getpass.getuser()}/llvm/bin/clang++\n"
-            "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG\n",
+            # Absolute paths in flags, as the PGO presets embed ${sourceDir}/profiles/...: quoted
+            # with spaces, '=' and space-separated forms, a glued -I, inside and outside the checkout.
+            f'CMAKE_CXX_FLAGS:STRING=-fPIC -I"/home/{getpass.getuser()}/My Includes/inc"'
+            f" -fprofile-use {posix(Path.home())}/pgo/other.profdata /DWIN32\n"
+            f'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use="{posix(REPO_ROOT)}/profiles/tasksmack.profdata"'
+            f" -fprofile-use=/home/{getpass.getuser()}/x.profdata\n",
             encoding="utf-8",
         )
         (build_dir / "CMakeFiles" / "4.0.0" / "CMakeCXXCompiler.cmake").write_text(
@@ -178,7 +183,14 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(manifest["build"]["compiler"], "clang++")
         self.assertEqual(manifest["build"]["compiler_id"], "Clang")
         self.assertEqual(manifest["build"]["compiler_version"], "22.1.8")
-        self.assertEqual(manifest["build"]["cxx_flags_config"], "-O3 -DNDEBUG")
+        # Absolute paths in flags: the checkout's become <source>/..., others <abs>/<file name>.
+        self.assertEqual(
+            manifest["build"]["cxx_flags_config"],
+            '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata',
+        )
+        self.assertEqual(
+            manifest["build"]["cxx_flags"], '-fPIC -I"<abs>/inc" -fprofile-use <abs>/other.profdata /DWIN32'
+        )
         self.assertTrue(manifest["benchmark"]["raw_repetitions"])
         self.assertFalse(manifest["benchmark"]["report_aggregates_only"])
         args = manifest["benchmark"]["args"]
@@ -187,7 +199,16 @@ class BenchShTest(unittest.TestCase):
         self.assertIn(f"--benchmark_out={results[0].name}", args)
         self.assertEqual(manifest["machine"]["logical_cores"], os.cpu_count())
 
-        identities = {socket.gethostname(), getpass.getuser(), str(Path.home()), tempfile.gettempdir()}
+        identities = {
+            socket.gethostname(),
+            getpass.getuser(),
+            str(Path.home()),
+            posix(Path.home()),
+            tempfile.gettempdir(),
+            str(REPO_ROOT),
+            posix(REPO_ROOT),
+            "/home/",
+        }
         for identity in identities:
             if identity and len(identity) >= 3:
                 self.assertNotIn(identity.lower(), text.lower(), f"manifest contains {identity!r}")

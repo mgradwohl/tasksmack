@@ -47,7 +47,39 @@ def git_provenance(repo_root: Path) -> dict:
     }
 
 
-def build_provenance(binary: Path) -> dict:
+# An absolute path inside a flag: a drive or UNC path, or a POSIX path of two or more segments
+# (so MSVC-style switches such as /DWIN32 are left alone). It may follow the start, whitespace,
+# '=' or ',', optionally with a one-letter switch glued on (-I/x, -LC:/x). Quoted paths, which can
+# hold spaces, are handled first. Kept in step with Hide-AbsolutePaths in tools/bench.ps1.
+_QUOTED_PATH = re.compile(r"""(["'])((?:[A-Za-z]:[\\/]|\\\\|/)[^"']*)\1""")
+_BARE_PATH = re.compile(
+    r"""(?P<pre>(?:^|[\s=,])(?:-[A-Za-z])?)(?P<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"']*|/[^/\s"']+/[^\s"']*)"""
+)
+
+
+def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
+    """Replace absolute paths in compiler flags so no user profile or checkout path is recorded.
+
+    A path inside the source tree becomes <source>/relative/path (the PGO presets embed
+    ${sourceDir}/profiles/tasksmack.profdata); any other absolute path becomes <abs>/<file name>.
+    """
+    if not flags:
+        return flags
+    root = str(repo_root.resolve()).replace("\\", "/").rstrip("/")
+
+    def scrub(path: str) -> str:
+        normalized = path.replace("\\", "/")
+        fold = os.name == "nt" or re.match(r"^[A-Za-z]:/", normalized) is not None
+        candidate, base = (normalized.lower(), root.lower()) if fold else (normalized, root)
+        if candidate == base or candidate.startswith(base + "/"):
+            return "<source>" + normalized[len(root) :]
+        return "<abs>/" + PurePath(normalized.rstrip("/")).name
+
+    flags = _QUOTED_PATH.sub(lambda m: m.group(1) + scrub(m.group(2)) + m.group(1), flags)
+    return _BARE_PATH.sub(lambda m: m.group("pre") + scrub(m.group("path")), flags)
+
+
+def build_provenance(binary: Path, repo_root: Path) -> dict:
     """Read build config from the CMakeCache.txt of the binary's build tree (build/<preset>)."""
     build: dict = {
         "build_type": None,
@@ -73,9 +105,12 @@ def build_provenance(binary: Path) -> dict:
     # Only the compiler's file name: its full path can sit under a user's home directory.
     if cache.get("CMAKE_CXX_COMPILER"):
         build["compiler"] = PurePath(cache["CMAKE_CXX_COMPILER"].replace("\\", "/")).name
-    build["cxx_flags"] = cache.get("CMAKE_CXX_FLAGS")
+    # Flags can embed absolute paths (the PGO presets' -fprofile-instr-use=${sourceDir}/...).
+    build["cxx_flags"] = hide_absolute_paths(cache.get("CMAKE_CXX_FLAGS"), repo_root)
     if build["build_type"]:
-        build["cxx_flags_config"] = cache.get(f"CMAKE_CXX_FLAGS_{build['build_type'].upper()}")
+        build["cxx_flags_config"] = hide_absolute_paths(
+            cache.get(f"CMAKE_CXX_FLAGS_{build['build_type'].upper()}"), repo_root
+        )
     build["ipo"] = cache.get("CMAKE_INTERPROCEDURAL_OPTIMIZATION", cache.get("TASKSMACK_ENABLE_IPO"))
     for compiler_file in sorted((build_dir / "CMakeFiles").glob("*/CMakeCXXCompiler.cmake")):
         text = compiler_file.read_text(encoding="utf-8", errors="replace")
@@ -162,7 +197,7 @@ def main() -> int:
         "exit_code": options.exit_code,
         "git": git_provenance(options.repo_root),
         "binary": {"name": options.binary.name, "sha256": sha256_of(options.binary)},
-        "build": build_provenance(options.binary),
+        "build": build_provenance(options.binary, options.repo_root),
         "benchmark": {
             "args": recorded_args(bench_args),
             "raw_repetitions": "--benchmark_report_aggregates_only=true" not in bench_args,

@@ -31,6 +31,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# Native exit codes are read from $LASTEXITCODE (the benchmark's and git's). A session or profile
+# that enables native-command error promotion would otherwise make a failing benchmark throw before
+# its exit code is captured, skipping the manifest and the redaction of its partial output (#1423).
+$PSNativeCommandUseErrorActionPreference = $false
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
@@ -85,6 +89,32 @@ function Get-GitProvenance {
     return $git
 }
 
+function Hide-AbsolutePaths {
+    # Replace absolute paths in compiler flags so no user profile or checkout path is recorded: a
+    # path inside the source tree becomes <source>/relative/path, any other <abs>/<file name>.
+    # Matches a drive or UNC path, or a POSIX path of two or more segments (so MSVC-style switches
+    # such as /DWIN32 are left alone), after the start, whitespace, '=' or ',', optionally with a
+    # one-letter switch glued on (-I/x, -LC:/x); quoted paths, which can hold spaces, first.
+    # Kept in step with hide_absolute_paths in tools/bench-manifest.py.
+    param([string]$Flags)
+    if (-not $Flags) { return $Flags }
+    $root = ([IO.Path]::GetFullPath($repoRoot)).Replace('\', '/').TrimEnd('/')
+    $scrub = {
+        param([string]$Path)
+        $normalized = $Path.Replace('\', '/')
+        $fold = $IsWindows -or $normalized -match '^[A-Za-z]:/'
+        $comparison = if ($fold) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+        if ($normalized.Equals($root, $comparison) -or $normalized.StartsWith("$root/", $comparison)) {
+            return '<source>' + $normalized.Substring($root.Length)
+        }
+        return '<abs>/' + ($normalized.TrimEnd('/') -split '/')[-1]
+    }
+    $quoted = [regex]'(["''])((?:[A-Za-z]:[\\/]|\\\\|/)[^"'']*)\1'
+    $bare = [regex]'(?<pre>(?:^|[\s=,])(?:-[A-Za-z])?)(?<path>(?:[A-Za-z]:[\\/]|\\\\)[^\s"'']*|/[^/\s"'']+/[^\s"'']*)'
+    $Flags = $quoted.Replace($Flags, { param($m) $m.Groups[1].Value + (& $scrub $m.Groups[2].Value) + $m.Groups[1].Value })
+    return $bare.Replace($Flags, { param($m) $m.Groups['pre'].Value + (& $scrub $m.Groups['path'].Value) })
+}
+
 function Get-BuildProvenance {
     # The build tree is the binary's bin/ parent (build/<preset>); read from its CMakeCache.txt.
     # Only the compiler's file name is kept: its full path can sit under a user profile.
@@ -108,8 +138,9 @@ function Get-BuildProvenance {
     $build.build_type = $cache['CMAKE_BUILD_TYPE']
     $build.generator = $cache['CMAKE_GENERATOR']
     if ($cache['CMAKE_CXX_COMPILER']) { $build.compiler = Split-Path -Leaf $cache['CMAKE_CXX_COMPILER'] }
-    $build.cxx_flags = $cache['CMAKE_CXX_FLAGS']
-    if ($build.build_type) { $build.cxx_flags_config = $cache["CMAKE_CXX_FLAGS_$($build.build_type.ToUpperInvariant())"] }
+    # Flags can embed absolute paths (the PGO presets' -fprofile-instr-use=${sourceDir}/...).
+    $build.cxx_flags = Hide-AbsolutePaths $cache['CMAKE_CXX_FLAGS']
+    if ($build.build_type) { $build.cxx_flags_config = Hide-AbsolutePaths $cache["CMAKE_CXX_FLAGS_$($build.build_type.ToUpperInvariant())"] }
     $build.ipo = if ($cache.ContainsKey('CMAKE_INTERPROCEDURAL_OPTIMIZATION')) { $cache['CMAKE_INTERPROCEDURAL_OPTIMIZATION'] }
     elseif ($cache.ContainsKey('TASKSMACK_ENABLE_IPO')) { $cache['TASKSMACK_ENABLE_IPO'] }
     else { $null }
