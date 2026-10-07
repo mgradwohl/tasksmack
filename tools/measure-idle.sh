@@ -4,6 +4,7 @@
 # Usage:
 #   ./tools/measure-idle.sh [--preset <preset>] [--skip-build] [--warmup <seconds>]
 #                           [--duration <seconds>] [--label <name>] [--setup-cmd <command>]
+#                           [--synthetic <spec>]
 #
 # Launches TaskSmack with TASKSMACK_TRACE_RESIZE_PERF=1, waits for its main loop and a warm-up (as
 # tools/profile-perf.sh app mode does), samples per-thread CPU for --duration seconds, closes it
@@ -38,6 +39,12 @@
 #   --setup-cmd <command> Run this shell command once the main loop is up, before the warm-up:
 #                         e.g. an xdotool/XTest click that switches to the tab being measured. It
 #                         gets TASKSMACK_PID in its environment. Fails the run if it fails.
+#   --synthetic <spec>    Measure the synthetic large-UI scenario instead of this machine: launch
+#                         TaskSmack with TASKSMACK_SYNTHETIC=<spec>, e.g. processes=5000,history=full
+#                         (keys: processes, cores, disks, interfaces, seed, history, refresh; see
+#                         src/App/SyntheticScenario.h). A TASKSMACK_SYNTHETIC already in the
+#                         environment is passed through too; this flag overrides it. The spec is
+#                         printed with the results and in the RESULT line as synthetic=<spec>.
 #   -h, --help            Show this help.
 #
 # CPU sampling uses `pidstat -u -t -p <pid> 1 <duration>` (sysstat) when installed, otherwise the
@@ -54,6 +61,7 @@
 #   ./tools/measure-idle.sh
 #   ./tools/measure-idle.sh --preset debug --skip-build --duration 30 --label overview
 #   ./tools/measure-idle.sh --skip-build --label processes --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
+#   ./tools/measure-idle.sh --preset debug --skip-build --label synthetic-overview --synthetic processes=5000,history=full
 
 set -euo pipefail
 
@@ -78,6 +86,7 @@ WARMUP_SECONDS="" # default chosen from --label below
 DURATION_SECONDS=30
 LABEL="idle"
 SETUP_CMD=""
+SYNTHETIC="${TASKSMACK_SYNTHETIC:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -87,6 +96,7 @@ while [[ $# -gt 0 ]]; do
         --duration)  [[ $# -ge 2 ]] || die "$1 requires a value"; DURATION_SECONDS="$2"; shift 2 ;;
         --label)     [[ $# -ge 2 ]] || die "$1 requires a value"; LABEL="$2";            shift 2 ;;
         --setup-cmd) [[ $# -ge 2 ]] || die "$1 requires a value"; SETUP_CMD="$2";        shift 2 ;;
+        --synthetic) [[ $# -ge 2 ]] || die "$1 requires a value"; SYNTHETIC="$2";        shift 2 ;;
         -h|--help)   usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -108,6 +118,9 @@ DURATION_SECONDS=$((10#${DURATION_SECONDS}))
 [[ "${DURATION_SECONDS}" -gt 0 ]] || die "--duration must be at least 1 second"
 [[ "${LABEL}" =~ ^[A-Za-z0-9._-]+$ ]] || die "--label may only contain letters, digits, '.', '_' and '-'"
 [[ -r /proc/self/stat ]] || die "/proc is required (Linux only)"
+# Letters, digits and = , . _ - only: it goes into the RESULT line as one key=value field.
+[[ -z "${SYNTHETIC}" || "${SYNTHETIC}" =~ ^[A-Za-z0-9=,._-]+$ ]] \
+    || die "--synthetic may only contain letters, digits, '=', ',', '.', '_' and '-' (e.g. processes=5000,history=full)"
 
 if [[ "${SKIP_BUILD}" -eq 0 ]]; then
     validate_build_prereqs || die "Build prerequisites not met."
@@ -169,11 +182,16 @@ check_alive() {
     fi
 }
 
-echo "Measuring preset=${PRESET} label=${LABEL} warmup=${WARMUP_SECONDS}s duration=${DURATION_SECONDS}s"
+echo "Measuring preset=${PRESET} label=${LABEL} warmup=${WARMUP_SECONDS}s duration=${DURATION_SECONDS}s synthetic=${SYNTHETIC:-none}"
 info "Binary:  ${BINARY}"
 info "App log: ${APP_LOG}"
 
-TASKSMACK_TRACE_RESIZE_PERF=1 TASKSMACK_LOG_LEVEL="${TASKSMACK_LOG_LEVEL:-info}" "${BINARY}" > "${APP_LOG}" 2>&1 &
+APP_ENV=(TASKSMACK_TRACE_RESIZE_PERF=1 "TASKSMACK_LOG_LEVEL=${TASKSMACK_LOG_LEVEL:-info}")
+if [[ -n "${SYNTHETIC}" ]]; then
+    APP_ENV+=("TASKSMACK_SYNTHETIC=${SYNTHETIC}")
+fi
+# env execs TaskSmack in place, so $! is TaskSmack's own PID.
+env "${APP_ENV[@]}" "${BINARY}" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
 
 echo "Launched TaskSmack (pid ${APP_PID}). Waiting for its main loop (up to ${MAIN_LOOP_TIMEOUT_SECONDS}s)..."
@@ -352,7 +370,7 @@ TRACE_SPAN_SECONDS="$(awk -v a="${TRACE_START:-0}" -v b="${TRACE_END:-0}" 'BEGIN
 TOTAL_CPU="$(awk '/^TOTAL / { print $2 }' "${CPU_RAW}")"
 
 echo
-echo "TaskSmack idle measurement — label=${LABEL} preset=${PRESET} duration=${DURATION_SECONDS}s sampler=${SAMPLER}"
+echo "TaskSmack idle measurement — label=${LABEL} preset=${PRESET} duration=${DURATION_SECONDS}s sampler=${SAMPLER} synthetic=${SYNTHETIC:-none}"
 if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     echo "NOTE: running under WSL — CPU figures are evidence; frame-time figures are not representative of native Linux."
 fi
@@ -374,4 +392,4 @@ echo "  (The app logs summaries on its own 5 s schedule, so the two spans differ
 echo "   summary interval at each end.)"
 echo
 # One machine-readable line per run, for collecting a scenario matrix.
-echo "RESULT label=${LABEL} preset=${PRESET} duration=${DURATION_SECONDS} sampler=${SAMPLER} totalCpu=${TOTAL_CPU} fps=${FPS} frameP95=${FRAME_P95} frameP99=${FRAME_P99} frameMax=${FRAME_MAX} loopP95=${LOOP_P95} loopP99=${LOOP_P99} cpuStart=${CPU_START} cpuEnd=${CPU_END} traceStart=${TRACE_START:-0} traceEnd=${TRACE_END:-0} traceSpan=${TRACE_SPAN_SECONDS}"
+echo "RESULT label=${LABEL} preset=${PRESET} duration=${DURATION_SECONDS} sampler=${SAMPLER} totalCpu=${TOTAL_CPU} fps=${FPS} frameP95=${FRAME_P95} frameP99=${FRAME_P99} frameMax=${FRAME_MAX} loopP95=${LOOP_P95} loopP99=${LOOP_P99} cpuStart=${CPU_START} cpuEnd=${CPU_END} traceStart=${TRACE_START:-0} traceEnd=${TRACE_END:-0} traceSpan=${TRACE_SPAN_SECONDS} synthetic=${SYNTHETIC:-none}"
