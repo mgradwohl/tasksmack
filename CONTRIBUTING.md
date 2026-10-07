@@ -1397,6 +1397,54 @@ software rasterizer, whose threads (`llvmpipe-N`) then dominate the total and ma
 times reflect the CPU rasterizer and the shared desktop, not a GPU driver and compositor. Quote
 fps/frame/loop figures only from native Linux or Windows; on WSL quote CPU% (and say so).
 
+#### Synthetic large-UI scenario (captures at the limits)
+
+The scenarios above measure whatever machine you happen to be on. To measure the UI at its limits --
+thousands of processes, many cores, disks and interfaces, and every chart holding the longest history
+(30 minutes at 100 ms, 18k samples per series) from the first frame -- run TaskSmack against a
+synthetic machine instead (#1413). Set `TASKSMACK_SYNTHETIC`, or pass `--synthetic` to the script:
+
+```bash
+# Overview at the limits: 5000 processes, every history chart full from the first frame
+./tools/measure-idle.sh --preset profile --label synthetic-overview --synthetic processes=5000,history=full
+
+# The process table at 2000 processes (switch tabs with --setup-cmd as above)
+./tools/measure-idle.sh --skip-build --label synthetic-processes --synthetic processes=2000 \
+    --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
+
+# Or run the app directly
+TASKSMACK_SYNTHETIC=processes=2000,cores=64,history=full ./build/debug/bin/TaskSmack
+```
+
+`TASKSMACK_SYNTHETIC` takes comma-separated `key=value` settings (a bare `1` takes every default):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `processes` | 2000 | Processes, in a realistic tree (kernel threads, daemons, a desktop session, a browser, an editor with language servers, containers, terminals with builds) with plausible, slowly varying CPU, memory, I/O and network; build jobs and some browser tabs come and go |
+| `cores` | 16 | Logical CPUs (one CPU Cores chart each) |
+| `disks` | 4 | Disks |
+| `interfaces` | 4 | Network interfaces (two physical, the rest virtual) |
+| `seed` | 1413 | Generator seed: the same seed gives the same machine on every platform |
+| `history` | `full` | History preloaded at startup: `full` (`HISTORY_SECONDS_MAX` at `REFRESH_INTERVAL_MIN_MS`), `none`, or a number of seconds |
+| `refresh` | the configured one | Refresh interval (ms) to start at |
+
+What it changes, and what it doesn't:
+
+- It is opt-in and read once at startup. Unset (or `0`/`off`), TaskSmack builds exactly the probes it
+  always does; the only difference is one `getenv` at startup.
+- The App composition root builds the models on `Platform::Synthetic` probes (`src/Platform/Synthetic/`)
+  instead of the real ones. Every counter is a closed-form function of time, so the live probes and the
+  preload agree and successive samples give consistent deltas.
+- The history preload fills SystemModel, StorageModel and ProcessModel's system histories through their
+  series APIs (one publish for the whole window). Process Details' per-process history still starts when
+  you select a process.
+- The history window and refresh overrides apply to the run only; `config.toml` is not changed (the
+  Settings dialog still shows the configured values).
+- There is no synthetic GPU or battery: those sections show their empty states. Every process action
+  (end, kill, suspend, priority) is refused, since synthetic PIDs may be real ones.
+- A warning is logged at startup (`TASKSMACK_SYNTHETIC is set: showing a synthetic machine...`), and the
+  host name reads `tasksmack-synthetic`.
+
 ## Profile-Guided Optimization (PGO)
 
 PGO uses real runtime behavior to guide the compiler's optimization decisions — inlining, branch prediction hints, layout — resulting in measurable throughput gains (typically 5–15% on hot paths). TaskSmack uses Clang's instrumentation-based PGO.

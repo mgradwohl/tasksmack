@@ -4,13 +4,13 @@
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/ShellMetrics.h"
+#include "App/SyntheticScenario.h"
 #include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
-#include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessActionConfirm.h"
 #include "ProcessDetailsHistory.h"
@@ -162,7 +162,7 @@ using Detail::PRIORITY_GRADIENT_SEGMENTS;
 using Detail::ProcessSeries;
 
 // Constructor (inside App namespace)
-ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Platform::makeProcessActions())
+ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Synthetic::makeProcessActions(Synthetic::activeScenario()))
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)

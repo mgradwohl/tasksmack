@@ -82,6 +82,35 @@ TEST(GPUModelTest, ConstructWithNullProbeDoesNotCrash)
     EXPECT_TRUE(model.gpuInfo().empty());
 }
 
+TEST(GPUModelTest, NullProbeReportsPerProcessGpuDataKnownUnsupported)
+{
+    // The synthetic scenario (#1413) shares a GPUModel without a probe with ProcessesPanel: it must read
+    // as known-unsupported, or the GPU columns never explain that they aren't supported.
+    Domain::GPUModel model(nullptr);
+    EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
+    EXPECT_TRUE(model.perProcessUtilizationKnownUnsupported());
+    const auto reading = model.readProcessGPUData();
+    EXPECT_FALSE(reading.perProcessSupported);
+    EXPECT_FALSE(reading.utilizationSupported);
+    EXPECT_TRUE(reading.counters.empty());
+    model.refresh();
+    EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
+    EXPECT_TRUE(model.perProcessUtilizationKnownUnsupported());
+}
+
+TEST(GPUModelTest, ProbeWithPerProcessSupportStillReportsSupported)
+{
+    // A real probe keeps reporting what its capabilities say.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    probe->withCapabilities(caps);
+    const Domain::GPUModel model(std::move(probe));
+    EXPECT_FALSE(model.perProcessMetricsKnownUnsupported());
+    EXPECT_FALSE(model.perProcessUtilizationKnownUnsupported());
+}
+
 TEST(GPUModelTest, CapabilitiesAreExposedFromProbe)
 {
     auto probe = std::make_unique<MockGPUProbe>();
