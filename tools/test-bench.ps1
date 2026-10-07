@@ -253,7 +253,7 @@ exit [int]$env:STUB_EXIT
             Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'crashed')) '--benchmark_filter=BM_X'" }
         # #1424: a successful run, with this machine's own host name in the args (#1445 review).
         @{ Name = 'ok'; StubExit = '0'; StubOutput = 'full'
-            Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'ok')) '--benchmark_filter=BM_X' $(& $quote "--benchmark_context=runner=$([Environment]::MachineName)")" }
+            Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'ok')) '--benchmark_filter=BM_X' $(& $quote "--benchmark_context=tsk_ctx_machine=$([Environment]::MachineName)")" }
         # #1445 review: an extra --benchmark_out / --benchmark_out_format is refused before launch.
         # A relative path, run from $root, so a file written anyway would be found.
         @{ Name = 'override-out'; StubExit = '0'; StubOutput = 'full'; Cwd = $root
@@ -354,7 +354,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($failed.Result.Count -eq 1) 'A parseable partial result must be kept (redacted)'
     $failedJson = Get-Content -LiteralPath $failed.Result[0].FullName -Raw | ConvertFrom-Json
     Assert-True ($failedJson.context.host_name -eq 'redacted') 'A failed run''s output must still be redacted'
-    Assert-True ($failed.Manifest.Count -eq 1) 'A failed run must still write its manifest'
+    Assert-True ($failed.Manifest.Count -eq 1) "A failed run must still write its manifest:`n$($failed.Log)"
     Assert-True ((Get-Content -LiteralPath $failed.Manifest[0].FullName -Raw | ConvertFrom-Json).exit_code -eq 3) 'The manifest must record the exit code'
 
     # A crash mid-run leaves truncated JSON that cannot be redacted: it is deleted, never kept with
@@ -408,7 +408,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($recordedArgs -contains '--benchmark_filter=BM_X' -and $recordedArgs -contains '--benchmark_repetitions=10') "Benchmark args: $($recordedArgs -join ' ')"
     Assert-True ($recordedArgs -contains "--benchmark_out=$($ok.Result[0].Name)") 'The output path must be reduced to its file name'
     if ([Environment]::MachineName.Length -ge 3) {
-        Assert-True ($recordedArgs -contains '--benchmark_context=runner=<host>') "Host name in args: $($recordedArgs -join ' ')"
+        Assert-True ($recordedArgs -contains '--benchmark_context=tsk_ctx_machine=<host>') "Host name in args: $($recordedArgs -join ' ')"
     }
     Assert-True ($manifest.machine.logical_cores -eq [Environment]::ProcessorCount -and $manifest.machine.os_name) 'Machine class'
 
@@ -549,6 +549,21 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     }
     $repoRoot = $repoRootPath
 
+    # ── #1445 CI: a checkout spelled another way (8.3 short name) still maps to <source> ──────
+    # GitHub's Windows runners set TEMP to an 8.3 short path (C:\Users\RUNNER~1\...).
+    $longCheckout = Join-Path $root 'a-long-checkout-directory-name'
+    New-Item -ItemType Directory -Path $longCheckout | Out-Null
+    $shortCheckout = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($longCheckout).ShortPath
+    if ($shortCheckout -and $shortCheckout -ne $longCheckout) {
+        $repoRoot = $longCheckout
+        $got = Hide-AbsolutePaths "-fprofile-instr-use=`"$($shortCheckout.Replace('\', '/'))/profiles/x.profdata`" -I$shortCheckout\inc"
+        Assert-True ($got -ceq '-fprofile-instr-use="<source>/profiles/x.profdata" -I<source>/inc') "Short-name checkout: $got"
+        $repoRoot = $shortCheckout
+        $got = Hide-AbsolutePaths "-I$longCheckout\inc"
+        Assert-True ($got -ceq '-I<source>/inc') "Short-name root: $got"
+        $repoRoot = $repoRootPath
+    }
+
     # ── #1445 review: the leak check itself, with a controlled user and home ────────────────────
     # A correctly scrubbed manifest must pass for a user whose name is also a flag word or a JSON
     # key (root: --sysroot=; build: the "build" section), and a real leak must still be found.
@@ -563,9 +578,9 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     }
     # The checker covers an injected host name the same way.
     $hostTokens = @('bench-host-123', 'bench-host-123.example.com')
-    $hostClean = [pscustomobject]@{ benchmark = [pscustomobject]@{ args = @('--benchmark_context=runner=<host>', '--benchmark_filter=BM_bench-host-123x') } }
+    $hostClean = [pscustomobject]@{ benchmark = [pscustomobject]@{ args = @('--benchmark_context=tsk_ctx_machine=<host>', '--benchmark_filter=BM_bench-host-123x') } }
     Assert-True ((Find-IdentityLeaks $hostClean -Tokens $hostTokens -Paths @()).Count -eq 0) 'A redacted host name was reported'
-    foreach ($leaky in @('--benchmark_context=runner=bench-host-123', 'ssh://bench-host-123.example.com/x')) {
+    foreach ($leaky in @('--benchmark_context=tsk_ctx_machine=bench-host-123', 'ssh://bench-host-123.example.com/x')) {
         $dirty = [pscustomobject]@{ benchmark = [pscustomobject]@{ args = @($leaky) } }
         Assert-True ((Find-IdentityLeaks $dirty -Tokens $hostTokens -Paths @()).Count -gt 0) "'$leaky' was not reported as a host-name leak"
     }
@@ -587,8 +602,8 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
 
     # ── #1445 review: host names (short and FQDN) are hidden the same way, injected here ──────
     $hostCases = @(
-        , @('--benchmark_context=runner=bench-host-123', '--benchmark_context=runner=<host>')
-        , @('--benchmark_context=runner=BENCH-HOST-123.example.com', '--benchmark_context=runner=<host>')
+        , @('--benchmark_context=tsk_ctx_machine=bench-host-123', '--benchmark_context=tsk_ctx_machine=<host>')
+        , @('--benchmark_context=tsk_ctx_machine=BENCH-HOST-123.example.com', '--benchmark_context=tsk_ctx_machine=<host>')
         , @('ssh://bench-host-123.example.com/x', 'ssh://<host>/x')
         , @('xbench-host-123y -DHOST_bench-host-123', 'xbench-host-123y -DHOST_bench-host-123')
     )
@@ -596,8 +611,8 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         $got = Hide-Identity $case[0] -Homes @() -User 'someone' -Hosts @('bench-host-123', 'bench-host-123.example.com')
         Assert-True ($got -ceq $case[1]) "Identity pass for host 'bench-host-123': [$($case[0])] became [$got], expected [$($case[1])]"
     }
-    $shortHost = Hide-Identity 'runner=ab' -Homes @() -User 'someone' -Hosts @('ab')
-    Assert-True ($shortHost -ceq 'runner=ab') "A host name under 3 characters is left alone: $shortHost"
+    $shortHost = Hide-Identity 'tsk_ctx_machine=ab' -Homes @() -User 'someone' -Hosts @('ab')
+    Assert-True ($shortHost -ceq 'tsk_ctx_machine=ab') "A host name under 3 characters is left alone: $shortHost"
     # Hide-Identity's default host list holds this machine's own name.
     Assert-True (@(Get-HostNames) -contains [Environment]::MachineName) "Get-HostNames: $(@(Get-HostNames) -join ', ')"
 

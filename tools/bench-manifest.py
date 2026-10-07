@@ -144,10 +144,18 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
 
     def scrub(path: str) -> str:
         normalized = path.replace("\\", "/")
-        fold = os.name == "nt" or re.match(r"^[A-Za-z]:/", normalized) is not None
-        candidate, base = (normalized.lower(), root.lower()) if fold else (normalized, root)
+        # Compared in the root's canonical form (repo_root.resolve() above): realpath expands
+        # Windows 8.3 short names (C:/Users/RUNNER~1/..., as TEMP is on GitHub's Windows runners)
+        # and resolves links, so a checkout reached through another spelling still maps to
+        # <source>. UNC and device paths are left alone (no network lookups). The file name kept
+        # for a path outside the checkout is the one written in the flags.
+        canonical = normalized
+        if os.path.isabs(path) and not normalized.startswith("//"):
+            canonical = os.path.realpath(path).replace("\\", "/")
+        fold = os.name == "nt" or re.match(r"^[A-Za-z]:/", canonical) is not None
+        candidate, base = (canonical.lower(), root.lower()) if fold else (canonical, root)
         if candidate == base or candidate.startswith(base + "/"):
-            return "<source>" + normalized[len(root) :]
+            return "<source>" + canonical[len(root) :]
         return "<abs>/" + PurePath(normalized.rstrip("/")).name
 
     def operand(value: str) -> str:

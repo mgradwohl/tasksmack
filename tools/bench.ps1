@@ -196,19 +196,58 @@ function Split-FlagArguments {
     return , $arguments
 }
 
+function ConvertTo-CanonicalPath {
+    # The full path with the existing part spelled canonically, as Python's os.path.realpath does
+    # for bench-manifest.py: 8.3 short names expanded (Windows) and links resolved; the part that
+    # does not exist is kept as written.
+    param([string]$Path)
+    # Plain .NET file APIs, not PowerShell's providers: a drive that does not exist here (D:\ on a
+    # machine without one) is just a path that does not exist.
+    $full = [IO.Path]::GetFullPath($Path)
+    $rootPart = [IO.Path]::GetPathRoot($full)
+    $result = $rootPart
+    $parts = @($full.Substring($rootPart.Length).Split([char[]]@('\', '/')) | Where-Object { $_ })
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+        $next = [IO.Path]::Combine($result, $parts[$i])
+        $item = if ([IO.Directory]::Exists($next)) { [IO.DirectoryInfo]::new($next) } elseif ([IO.File]::Exists($next)) { [IO.FileInfo]::new($next) } else { $null }
+        if (-not $item) {
+            # Nothing further exists: keep the rest as written.
+            return [IO.Path]::Combine([string[]](@($next) + @($parts | Select-Object -Skip ($i + 1))))
+        }
+        if ($item.LinkTarget) {
+            $next = [IO.Path]::GetFullPath($item.LinkTarget, $result)
+        }
+        elseif ($IsWindows -and $parts[$i].Contains('~')) {
+            # The directory listing matches 8.3 short names and returns the long one.
+            $long = @([IO.Directory]::EnumerateFileSystemEntries($result, $parts[$i])) | Select-Object -First 1
+            if ($long) { $next = $long }
+        }
+        $result = $next
+    }
+    return $result
+}
+
 function Hide-AbsolutePaths {
     # Replace absolute paths in compiler flags so no user profile or checkout path is recorded: a
     # path inside the source tree becomes <source>/relative/path, any other <abs>/<file name>.
     param([string]$Flags)
     if (-not $Flags) { return $Flags }
-    $root = ([IO.Path]::GetFullPath($repoRoot)).Replace('\', '/').TrimEnd('/')
+    $root = (ConvertTo-CanonicalPath $repoRoot).Replace('\', '/').TrimEnd('/')
     $scrub = {
         param([string]$Path)
         $normalized = $Path.Replace('\', '/')
-        $fold = $IsWindows -or $normalized -match '^[A-Za-z]:/'
+        # Compared in the root's canonical form, so a checkout reached through another spelling
+        # (an 8.3 short name such as C:/Users/RUNNER~1/..., as TEMP is on GitHub's Windows runners,
+        # or a link) still maps to <source>. UNC and device paths are left alone (no network
+        # lookups). The file name kept for a path outside the checkout is the one in the flags.
+        $canonical = $normalized
+        if ([IO.Path]::IsPathFullyQualified($Path) -and -not $normalized.StartsWith('//')) {
+            $canonical = (ConvertTo-CanonicalPath $Path).Replace('\', '/')
+        }
+        $fold = $IsWindows -or $canonical -match '^[A-Za-z]:/'
         $comparison = if ($fold) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
-        if ($normalized.Equals($root, $comparison) -or $normalized.StartsWith("$root/", $comparison)) {
-            return '<source>' + $normalized.Substring($root.Length)
+        if ($canonical.Equals($root, $comparison) -or $canonical.StartsWith("$root/", $comparison)) {
+            return '<source>' + $canonical.Substring($root.Length)
         }
         return '<abs>/' + ($normalized.TrimEnd('/') -split '/')[-1]
     }
@@ -574,7 +613,8 @@ if ($benchExit -ne 0) {
             Write-Warning "Deleted unparseable partial benchmark output '$outFile' (it could not be redacted)."
         }
     }
-    throw "Benchmark binary exited with code $benchExit; results in '$outFile' are not usable. Manifest: $manifestFile"
+    $manifestNote = if ($manifestError) { " Writing the manifest failed too: $manifestError" } else { " Manifest: $manifestFile" }
+    throw "Benchmark binary exited with code $benchExit; results in '$outFile' are not usable.$manifestNote"
 }
 
 # Fails closed via ErrorActionPreference=Stop: if redaction cannot run, the script aborts before

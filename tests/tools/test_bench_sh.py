@@ -243,12 +243,17 @@ class BenchShTest(unittest.TestCase):
             STUB_OUTPUT=stub_output,
             STUB_HOST=socket.gethostname(),
             PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+            # Every hop speaks UTF-8 whatever the runner's locale and code page: bash, its argument
+            # conversion for native programs, and the Python helpers it starts.
+            LC_ALL="C.UTF-8",
+            PYTHONUTF8="1",
         )
         result = subprocess.run(
             [BASH, posix(script), *leading, "--benchmark_filter=BM_X", *extra],
             env=env,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
         results = sorted(p for p in out_dir.glob("*.json") if not p.name.endswith(".manifest.json"))
@@ -297,10 +302,10 @@ class BenchShTest(unittest.TestCase):
         host = socket.gethostname()
         if len(host) < 3:
             self.skipTest("host name under 3 characters")
-        code, output, _, manifests = self.run_bench("host", 0, extra=(f"--benchmark_context=runner={host}",))
+        code, output, _, manifests = self.run_bench("host", 0, extra=(f"--benchmark_context=tsk_ctx_machine={host}",))
         self.assertEqual(code, 0, output)
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-        self.assertIn("--benchmark_context=runner=<host>", manifest["benchmark"]["args"])
+        self.assertIn("--benchmark_context=tsk_ctx_machine=<host>", manifest["benchmark"]["args"])
         self.assertEqual(find_identity_leaks(manifest, [host, host.split(".")[0]], []), [])
 
     def test_a_multi_config_tree_keeps_the_benchmark_in_bin_config(self):
@@ -399,6 +404,10 @@ class BenchShTest(unittest.TestCase):
             STUB_SLEEP="0.4",
             STUB_HOST=socket.gethostname(),
             PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+            # Every hop speaks UTF-8 whatever the runner's locale and code page: bash, its argument
+            # conversion for native programs, and the Python helpers it starts.
+            LC_ALL="C.UTF-8",
+            PYTHONUTF8="1",
         )
         racers = [
             subprocess.Popen(
@@ -549,6 +558,32 @@ class ScrubberTest(unittest.TestCase):
         # A user name under 3 characters is never replaced on its own; a home prefix always is.
         self.assertEqual(module.hide_identity("-DX=ab /home/ab/src", ["/home/ab"], "ab"), "-DX=ab <home>/src")
 
+    def test_a_checkout_spelled_another_way_still_maps_to_source(self):
+        # #1445 CI: GitHub's Windows runners set TEMP to an 8.3 short path (C:\Users\RUNNER~1\...),
+        # so a flag could name the checkout by its short name while the root is the long one; on
+        # POSIX the same happens through a symlink.
+        module = load_bench_manifest()
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "a-long-checkout-directory-name"
+            real.mkdir()
+            if os.name == "nt":
+                import ctypes
+
+                buffer = ctypes.create_unicode_buffer(1024)
+                ctypes.windll.kernel32.GetShortPathNameW(str(real), buffer, len(buffer))
+                alias = buffer.value
+                if not alias or alias.lower() == str(real).lower():
+                    self.skipTest("8.3 short names are disabled on this volume")
+            else:
+                link = Path(tmp) / "link"
+                link.symlink_to(real, target_is_directory=True)
+                alias = str(link)
+            flags = f'-fprofile-instr-use="{posix(Path(alias))}/profiles/x.profdata" -I{alias}/inc'
+            self.assertEqual(
+                module.hide_absolute_paths(flags, real),
+                '-fprofile-instr-use="<source>/profiles/x.profdata" -I<source>/inc',
+            )
+
     def test_identity_pass_leaves_validated_categorical_fields_alone(self):
         # #1445 review: host and user names that coincide with OS and compiler values change only
         # the free-form fields.
@@ -605,15 +640,15 @@ class ScrubberTest(unittest.TestCase):
         module = load_bench_manifest()
         hosts = ["bench-host-123", "bench-host-123.example.com"]
         cases = [
-            ("--benchmark_context=runner=bench-host-123", "--benchmark_context=runner=<host>"),
-            ("--benchmark_context=runner=BENCH-HOST-123.example.com", "--benchmark_context=runner=<host>"),
+            ("--benchmark_context=tsk_ctx_machine=bench-host-123", "--benchmark_context=tsk_ctx_machine=<host>"),
+            ("--benchmark_context=tsk_ctx_machine=BENCH-HOST-123.example.com", "--benchmark_context=tsk_ctx_machine=<host>"),
             ("ssh://bench-host-123.example.com/x", "ssh://<host>/x"),
             ("xbench-host-123y -DHOST_bench-host-123", "xbench-host-123y -DHOST_bench-host-123"),
         ]
         for given, expected in cases:
             with self.subTest(given=given):
                 self.assertEqual(module.hide_identity(given, [], "someone", hosts), expected)
-        self.assertEqual(module.hide_identity("runner=ab", [], "someone", ["ab"]), "runner=ab")
+        self.assertEqual(module.hide_identity("tsk_ctx_machine=ab", [], "someone", ["ab"]), "tsk_ctx_machine=ab")
         self.assertIn(socket.gethostname(), module.host_names())
 
 
@@ -641,9 +676,9 @@ class IdentityLeakCheckTest(unittest.TestCase):
 
     def test_the_checker_covers_an_injected_host_name(self):
         hosts = ["bench-host-123", "bench-host-123.example.com"]
-        clean = {"benchmark": {"args": ["--benchmark_context=runner=<host>", "--benchmark_filter=BM_bench-host-123x"]}}
+        clean = {"benchmark": {"args": ["--benchmark_context=tsk_ctx_machine=<host>", "--benchmark_filter=BM_bench-host-123x"]}}
         self.assertEqual(find_identity_leaks(clean, hosts, []), [])
-        for leaky in ("--benchmark_context=runner=bench-host-123", "ssh://bench-host-123.example.com/x"):
+        for leaky in ("--benchmark_context=tsk_ctx_machine=bench-host-123", "ssh://bench-host-123.example.com/x"):
             with self.subTest(leaky=leaky):
                 self.assertNotEqual(find_identity_leaks({"benchmark": {"args": [leaky]}}, hosts, []), [])
 
