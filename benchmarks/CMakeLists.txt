@@ -84,6 +84,7 @@ add_executable(TaskSmackBenchmarks
     bench_UI.cpp
     bench_ChartGeometry.cpp
     bench_ModelLimits.cpp
+    bench_ProcessDetailsHistory.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp

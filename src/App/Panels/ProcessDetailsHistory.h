@@ -159,9 +159,17 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
 /// The selected process's history: a timestamp axis (seconds, oldest first) and one value per
 /// ProcessSeries at each timestamp. Every series always has exactly size() values.
 ///
-/// Vectors, not deques or rings: the charts plot the newest samples in place through spans, where a
-/// deque had to be copied out every frame (#1018). Trimming erases from the front, once per sample,
-/// not per frame.
+/// Vectors, not deques or rings: the charts plot the newest samples in place through spans, and
+/// ImPlot needs each series contiguous, where a deque had to be copied out every frame (#1018).
+///
+/// Trimming is lazy (#1179): trimToWindow() only advances a logical start offset shared by the axis
+/// and every series, and the points before it stay in the buffers, unread, until they are at least as
+/// many as the live points. Only then are they erased, in one pass per buffer. Erasing from the
+/// front on every sample used to shift the whole window of all eighteen buffers once per sample --
+/// about 4 MB/s of memmove at 100 ms over the default 5 minutes, six times that at 30 minutes; now each live point is moved about once per
+/// window's worth of samples, so the cost per sample is amortized O(1) and the buffers hold at most
+/// about twice the window. The reads (timestamps(), series()) return spans that start at the logical
+/// start, so a reader cannot tell a compacted history from one that has not been compacted yet.
 class ProcessDetailsHistory
 {
   public:
@@ -173,10 +181,11 @@ class ProcessDetailsHistory
     /// Strong exception guarantee: every buffer gets room for the new points before any is pushed, so
     /// an allocation failure (std::bad_alloc from reserveFor()) leaves every size as it was, and the
     /// axis and series stay the same length. The push_backs after it cannot throw: they fit in the
-    /// reserved capacity, and copying a double does not throw.
+    /// reserved capacity, and copying a double does not throw. The buffers hold the trimmed prefix too
+    /// (see the class comment), so their capacity settles at about twice the window rather than once.
     void append(double timeSeconds, const ProcessHistoryPoint& point, bool gapBefore)
     {
-        const bool addGap = gapBefore && !m_Timestamps.empty() && timeSeconds > m_Timestamps.back();
+        const bool addGap = gapBefore && !empty() && timeSeconds > m_Timestamps.back();
         const std::size_t newSize = m_Timestamps.size() + (addGap ? 2U : 1U);
         reserveFor(m_Timestamps, newSize);
         for (std::vector<double>& series : m_Series)
@@ -204,26 +213,27 @@ class ProcessDetailsHistory
     /// an empty strip there after every trim (#1016), unless it is across a gap
     /// (Domain::HistoryUtils::trimCountBefore()). Nothing happens when empty.
     ///
-    /// Does not throw: erasing from a vector of double allocates nothing and moves doubles, so every
-    /// buffer drops the same count.
+    /// The dropped points leave the reads at once; their storage is reclaimed lazily (see the class
+    /// comment). Does not throw: advancing the start allocates nothing, and compact() erases from
+    /// vectors of double, which allocates nothing and moves doubles, so every buffer drops the same count.
     void trimToWindow(double windowSeconds) noexcept
     {
-        if (m_Timestamps.empty())
+        if (empty())
         {
             return;
         }
         const double cutoff = m_Timestamps.back() - windowSeconds;
-        const std::size_t removeCount = Domain::HistoryUtils::trimCountBefore(m_Timestamps, cutoff);
+        const std::size_t removeCount = Domain::HistoryUtils::trimCountBefore(timestamps(), cutoff);
         if (removeCount == 0)
         {
             return;
         }
-        // One erase per buffer rather than a pop_front per sample: vector erase from the front shifts
-        // the rest, so it must not run once per dropped sample.
-        dropOldest(m_Timestamps, removeCount);
-        for (std::vector<double>& series : m_Series)
+        m_Start += std::min(removeCount, size());
+        // Compact once the dead prefix is as long as the live points: each compaction then moves at
+        // most as many points as trims dropped since the last one, so the moves cost O(1) per point.
+        if (m_Start >= size())
         {
-            dropOldest(series, removeCount);
+            compact();
         }
     }
 
@@ -235,17 +245,18 @@ class ProcessDetailsHistory
         {
             series.clear();
         }
+        m_Start = 0;
     }
 
     [[nodiscard]] bool empty() const noexcept
     {
-        return m_Timestamps.empty();
+        return size() == 0;
     }
 
     /// The number of points, the same for the axis and every series.
     [[nodiscard]] std::size_t size() const noexcept
     {
-        return m_Timestamps.size();
+        return m_Timestamps.size() - m_Start;
     }
 
     /// The newest point's time. Requires !empty().
@@ -254,14 +265,26 @@ class ProcessDetailsHistory
         return m_Timestamps.back();
     }
 
+    /// The axis from the oldest point kept to the newest, contiguous. Valid until the next append(),
+    /// trimToWindow() or clear().
     [[nodiscard]] std::span<const double> timestamps() const noexcept
     {
-        return m_Timestamps;
+        return std::span<const double>(m_Timestamps).subspan(m_Start);
     }
 
+    /// One series from the oldest point kept to the newest, contiguous and aligned with timestamps().
+    /// Valid until the next append(), trimToWindow() or clear().
     [[nodiscard]] std::span<const double> series(ProcessSeries which) const noexcept
     {
-        return m_Series[static_cast<std::size_t>(which)];
+        return std::span<const double>(m_Series[static_cast<std::size_t>(which)]).subspan(m_Start);
+    }
+
+    /// How many trimmed points are still held in the buffers ahead of the live ones, waiting for the
+    /// next compaction. Never part of a read; exposed so the tests and the benchmark can see when
+    /// storage is reclaimed.
+    [[nodiscard]] std::size_t trimmedPrefixSize() const noexcept
+    {
+        return m_Start;
     }
 
   private:
@@ -278,6 +301,19 @@ class ProcessDetailsHistory
         }
     }
 
+    /// Erases the trimmed prefix from every buffer, one erase each, so the live points start at index
+    /// 0. What the reads return is unchanged (only where it lives), and no capacity is released, so
+    /// the next appends need no allocation either.
+    void compact() noexcept
+    {
+        dropOldest(m_Timestamps, m_Start);
+        for (std::vector<double>& series : m_Series)
+        {
+            dropOldest(series, m_Start);
+        }
+        m_Start = 0;
+    }
+
     static void dropOldest(std::vector<double>& data, std::size_t count) noexcept
     {
         data.erase(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(std::min(count, data.size())));
@@ -285,6 +321,7 @@ class ProcessDetailsHistory
 
     std::vector<double> m_Timestamps;
     std::array<std::vector<double>, PROCESS_SERIES_COUNT> m_Series;
+    std::size_t m_Start = 0; ///< The oldest live point's index in every buffer; the ones before it are trimmed
 };
 
 } // namespace App::Detail
