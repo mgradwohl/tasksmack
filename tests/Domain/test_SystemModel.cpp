@@ -15,6 +15,7 @@
 #include "Mocks/MockProbes.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
+#include "PublicationLatency.h"
 
 #include <gtest/gtest.h>
 
@@ -2423,4 +2424,131 @@ TEST(SystemModelTest, PowerStatus_NotCharging)
     EXPECT_FALSE(power.isFull);
     EXPECT_FALSE(power.isDischarging);
     EXPECT_EQ(power.chargePercent, 80);
+}
+
+// ==========================================================================
+// Publication Handoff (#868)
+// ==========================================================================
+
+namespace
+{
+
+/// Counters with `interfaceCount` interfaces named veth0..vethN-1, each counter advanced by `step`.
+[[nodiscard]] Platform::SystemCounters makeManyInterfaces(std::size_t interfaceCount, std::uint64_t step)
+{
+    std::vector<Platform::SystemCounters::InterfaceCounters> interfaces;
+    interfaces.reserve(interfaceCount);
+    for (std::size_t i = 0; i < interfaceCount; ++i)
+    {
+        interfaces.push_back(makeInterfaceCounters("veth" + std::to_string(i), step * 1000, step * 500));
+    }
+    return makeSystemCounters(
+        makeCpuCounters(step * 100, 0, step * 50, step * 850), makeMemoryCounters(1024, 512), 0, {}, 0, 0, std::move(interfaces));
+}
+
+/// Every series in one generation is aligned to its timestamps.
+[[nodiscard]] bool isAligned(const Domain::SystemPublication& publication)
+{
+    const std::size_t n = publication.timestamps.size();
+    const auto aligned = [n](const auto& entry)
+    {
+        return entry.second.size() == n;
+    };
+    return publication.cpuHistory.size() == n && publication.memoryHistory.size() == n && publication.netRxHistory.size() == n &&
+           publication.perInterfaceRxHistory.size() == publication.perInterfaceTxHistory.size() &&
+           std::ranges::all_of(publication.perInterfaceRxHistory, aligned) &&
+           std::ranges::all_of(publication.perInterfaceTxHistory, aligned);
+}
+
+} // namespace
+
+TEST(SystemModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
+{
+    // #868: the update path copied every history ring into the new publication while holding the
+    // lock publication() needs, so a UI-thread read landing then waited for most of the write -- one
+    // slow read per generation. With the copy outside the lock a read waits for a pointer swap at
+    // most. Enough interfaces and history that the copy dominates a write; see PublicationLatency.h.
+    constexpr std::size_t INTERFACES = 128;
+    constexpr std::size_t PREFILL_SAMPLES = 400;
+    constexpr std::size_t WRITES = 40;
+    constexpr double STEP_SECONDS = static_cast<double>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
+
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    double now = 1000.0;
+    std::uint64_t step = 0;
+    for (std::size_t i = 0; i < PREFILL_SAMPLES; ++i)
+    {
+        model.updateFromCounters(makeManyInterfaces(INTERFACES, ++step), now += STEP_SECONDS);
+    }
+
+    const auto result = TestPublication::measure(
+        WRITES,
+        [&](std::size_t) { model.updateFromCounters(makeManyInterfaces(INTERFACES, ++step), now += STEP_SECONDS); },
+        [&] { return model.publication(); },
+        [&] { return model.publicationVersion(); },
+        isAligned);
+
+    EXPECT_EQ(result.versionRegressions, 0U);
+    EXPECT_EQ(result.versionAheadOfPointer, 0U);
+    EXPECT_EQ(result.inconsistentReads, 0U);
+    EXPECT_EQ(model.publicationVersion(), PREFILL_SAMPLES + WRITES);
+    EXPECT_GE(result.reads, WRITES);
+    // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
+    EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
+                                            << " ms over " << result.reads << " reads";
+}
+
+TEST(SystemModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
+{
+    // The sampler thread (updates) and the UI thread (setMaxHistorySeconds) both publish. They are
+    // serialised, so generations are committed in version order with none lost, and a reader never
+    // sees a regressed or misaligned one (#868).
+    constexpr std::size_t INTERFACES = 4;
+    constexpr int SAMPLES = 300;
+    constexpr int RESIZES = 300;
+    constexpr double STEP_SECONDS = static_cast<double>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
+
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    model.updateFromCounters(makeManyInterfaces(INTERFACES, 1), 1000.0); // publish once so resizes republish
+
+    std::atomic<bool> stop{false};
+    std::thread sampler(
+        [&]
+        {
+            double now = 1000.0;
+            for (int i = 0; i < SAMPLES; ++i)
+            {
+                model.updateFromCounters(makeManyInterfaces(INTERFACES, static_cast<std::uint64_t>(i) + 2), now += STEP_SECONDS);
+            }
+        });
+    std::thread resizer(
+        [&]
+        {
+            for (int i = 0; i < RESIZES; ++i)
+            {
+                model.setMaxHistorySeconds((i % 2 == 0) ? Domain::Sampling::HISTORY_SECONDS_MIN
+                                                        : Domain::Sampling::HISTORY_SECONDS_DEFAULT);
+            }
+        });
+    std::thread reader(
+        [&]
+        {
+            std::uint64_t lastSeen = 0;
+            while (!stop.load())
+            {
+                const std::uint64_t announced = model.publicationVersion();
+                const auto publication = model.publication();
+                EXPECT_GE(publication->version, lastSeen);
+                EXPECT_GE(publication->version, announced);
+                EXPECT_TRUE(isAligned(*publication));
+                lastSeen = publication->version;
+            }
+        });
+    sampler.join();
+    resizer.join();
+    stop.store(true);
+    reader.join();
+
+    EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
+    EXPECT_EQ(model.publication()->version, model.publicationVersion());
 }

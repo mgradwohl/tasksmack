@@ -6,6 +6,7 @@
 #include "Platform/ISystemProbe.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/SystemTypes.h"
+#include "PublicationSlot.h"
 #include "SamplingConfig.h"
 #include "SystemSnapshot.h"
 
@@ -163,13 +164,16 @@ double SystemModel::maxHistorySeconds() const
 
 void SystemModel::setMaxHistorySeconds(double seconds)
 {
-    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
-    applyHistoryCapacity();
-
-    if (!m_Timestamps.empty())
+    const std::scoped_lock writerLock(m_WriterMutex);
     {
-        trimHistory(m_Timestamps.latest());
+        const std::unique_lock lock(m_Mutex);
+        m_MaxHistorySeconds = Domain::Sampling::clampHistorySeconds(seconds);
+        applyHistoryCapacity();
+
+        if (!m_Timestamps.empty())
+        {
+            trimHistory(m_Timestamps.latest());
+        }
     }
     // Republish the trimmed history now rather than at the next sample, which can be several
     // seconds away while sampling is throttled: until then the charts kept the old window's data,
@@ -225,14 +229,18 @@ void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& count
                                            double nowSeconds,
                                            const std::optional<PowerStatus>& powerStatus)
 {
-    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    if (powerStatus.has_value())
+    const std::scoped_lock writerLock(m_WriterMutex);
     {
-        m_Snapshot.power = *powerStatus;
+        const std::unique_lock lock(m_Mutex);
+        if (powerStatus.has_value())
+        {
+            m_Snapshot.power = *powerStatus;
+        }
+        computeSnapshot(counters, nowSeconds);
+        m_PrevCounters = counters;
+        m_HasPrevious = true;
     }
-    computeSnapshot(counters, nowSeconds);
-    m_PrevCounters = counters;
-    m_HasPrevious = true;
+    // Outside the exclusive lock: the history copies take a shared lock only (#868).
     publish();
 }
 
@@ -244,54 +252,58 @@ SystemSnapshot SystemModel::snapshot() const
 
 std::shared_ptr<const SystemPublication> SystemModel::publication() const noexcept
 {
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return m_Publication;
+    return m_Publication.load();
 }
 
 std::uint64_t SystemModel::publicationVersion() const noexcept
 {
-    return m_PublishedPublicationVersion.load(std::memory_order_acquire);
+    return m_Publication.version();
 }
 
 void SystemModel::publish()
 {
+    // Build contents first, commit validity keys last: the version comes from a local candidate and
+    // m_PublicationVersion only advances once the generation is committed, so a throw from the copies
+    // below (std::bad_alloc) leaves the published generation, its version and m_PublicationVersion
+    // consistent. The copies -- up to every history ring at the longest window -- run under a shared
+    // lock: snapshot() and the per-field accessors still read alongside, and publication() doesn't
+    // take m_Mutex at all, so no reader waits for them (#868). Nothing else can write this state
+    // meanwhile; the caller holds m_WriterMutex.
     auto publication = std::make_shared<SystemPublication>();
-    // Assign the version from a local candidate rather than mutating m_PublicationVersion
-    // directly here: the history copies below can throw (std::bad_alloc), and if they do,
-    // committing m_PublicationVersion/m_Publication/m_PublishedPublicationVersion only at
-    // the end (see below) keeps all three mutually consistent instead of silently advancing
-    // the version past what was actually published.
-    publication->version = m_PublicationVersion + 1;
-    publication->snapshot = m_Snapshot;
-    publication->timestamps = HistoryUtils::toVector(m_Timestamps);
-    publication->cpuHistory = HistoryUtils::toVector(m_CpuHistory);
-    publication->cpuUserHistory = HistoryUtils::toVector(m_CpuUserHistory);
-    publication->cpuSystemHistory = HistoryUtils::toVector(m_CpuSystemHistory);
-    publication->cpuIowaitHistory = HistoryUtils::toVector(m_CpuIowaitHistory);
-    publication->cpuIdleHistory = HistoryUtils::toVector(m_CpuIdleHistory);
-    publication->memoryHistory = HistoryUtils::toVector(m_MemoryHistory);
-    publication->memoryCachedHistory = HistoryUtils::toVector(m_MemoryCachedHistory);
-    publication->swapHistory = HistoryUtils::toVector(m_SwapHistory);
-    publication->powerHistory = HistoryUtils::toVector(m_PowerHistory);
-    publication->batteryChargeHistory = HistoryUtils::toVector(m_BatteryChargeHistory);
-    publication->netRxHistory = HistoryUtils::toVector(m_NetRxHistory);
-    publication->netTxHistory = HistoryUtils::toVector(m_NetTxHistory);
-    publication->perCoreHistory.reserve(m_PerCoreHistory.size());
-    for (const auto& history : m_PerCoreHistory)
     {
-        publication->perCoreHistory.push_back(HistoryUtils::toVector(history));
+        const std::shared_lock stateLock(m_Mutex);
+        publication->version = m_PublicationVersion + 1;
+        publication->snapshot = m_Snapshot;
+        publication->timestamps = HistoryUtils::toVector(m_Timestamps);
+        publication->cpuHistory = HistoryUtils::toVector(m_CpuHistory);
+        publication->cpuUserHistory = HistoryUtils::toVector(m_CpuUserHistory);
+        publication->cpuSystemHistory = HistoryUtils::toVector(m_CpuSystemHistory);
+        publication->cpuIowaitHistory = HistoryUtils::toVector(m_CpuIowaitHistory);
+        publication->cpuIdleHistory = HistoryUtils::toVector(m_CpuIdleHistory);
+        publication->memoryHistory = HistoryUtils::toVector(m_MemoryHistory);
+        publication->memoryCachedHistory = HistoryUtils::toVector(m_MemoryCachedHistory);
+        publication->swapHistory = HistoryUtils::toVector(m_SwapHistory);
+        publication->powerHistory = HistoryUtils::toVector(m_PowerHistory);
+        publication->batteryChargeHistory = HistoryUtils::toVector(m_BatteryChargeHistory);
+        publication->netRxHistory = HistoryUtils::toVector(m_NetRxHistory);
+        publication->netTxHistory = HistoryUtils::toVector(m_NetTxHistory);
+        publication->perCoreHistory.reserve(m_PerCoreHistory.size());
+        for (const auto& history : m_PerCoreHistory)
+        {
+            publication->perCoreHistory.push_back(HistoryUtils::toVector(history));
+        }
+        for (const auto& [name, history] : m_PerInterfaceRxHistory)
+        {
+            publication->perInterfaceRxHistory.emplace(name, HistoryUtils::toVector(history));
+        }
+        for (const auto& [name, history] : m_PerInterfaceTxHistory)
+        {
+            publication->perInterfaceTxHistory.emplace(name, HistoryUtils::toVector(history));
+        }
     }
-    for (const auto& [name, history] : m_PerInterfaceRxHistory)
-    {
-        publication->perInterfaceRxHistory.emplace(name, HistoryUtils::toVector(history));
-    }
-    for (const auto& [name, history] : m_PerInterfaceTxHistory)
-    {
-        publication->perInterfaceTxHistory.emplace(name, HistoryUtils::toVector(history));
-    }
-    m_PublicationVersion = publication->version;
-    m_Publication = std::move(publication);
-    m_PublishedPublicationVersion.store(m_PublicationVersion, std::memory_order_release);
+    const std::uint64_t version = publication->version;
+    m_Publication.commit(std::move(publication));
+    m_PublicationVersion = version;
 }
 
 const Platform::SystemCapabilities& SystemModel::capabilities() const
