@@ -296,4 +296,31 @@ computeShouldRenderRegularFrame(bool idleWaitWokeOnEvent, bool didImmediateResiz
     return static_cast<int>(std::ceil(std::max(0.0, periodMs - elapsedMs)));
 }
 
+/// How waitForIdleEvent() ended.
+enum class IdleWaitOutcome : std::uint8_t
+{
+    TimedOut,           // no event: the wait ran to its timeout and the queue was empty after it
+    Woke,               // an event woke the wait
+    PolledAfterTimeout, // the wait timed out, but an event was already queued (#1450)
+};
+
+/// The idle wait (#1409, #1450): wait for an event with @p wait (SDL_WaitEventTimeout), and when it
+/// times out, take one more look with @p poll (SDL_PollEvent). Both take an event off the queue into
+/// @p event; any outcome but TimedOut leaves one there, which the loop treats as a wake: it skips the
+/// render and dispatches the event first in the next drain.
+///
+/// The poll is for a wake that never arrives. An event pushed from another thread wakes the wait
+/// through the display server on X11 and Wayland (SDL_SendWakeupEvent), and under load that can land
+/// after the timeout, with the event already queued. Without the poll that frame rendered without
+/// the event, which was handled one frame later. An empty poll costs about 2 us once per idle frame.
+template<typename Event, typename Wait, typename Poll>
+[[nodiscard]] auto waitForIdleEvent(Event& event, Wait wait, Poll poll) -> IdleWaitOutcome
+{
+    if (wait(event))
+    {
+        return IdleWaitOutcome::Woke;
+    }
+    return poll(event) ? IdleWaitOutcome::PolledAfterTimeout : IdleWaitOutcome::TimedOut;
+}
+
 } // namespace Core::FramePacing

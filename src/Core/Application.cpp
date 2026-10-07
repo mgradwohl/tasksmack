@@ -915,13 +915,20 @@ void Application::run()
                 // off the queue here and handed to the next iteration's drain, which dispatches it
                 // before rendering (#1409). With nullptr the event stayed queued and the frame below
                 // rendered straight after the wake, showing the state from before the input.
+                // A wait that times out polls once more (#1450): a wake from another thread can
+                // reach it late, with the event already queued, and that event is a wake too.
                 SDL_Event wakeEvent;
-                if (SDL_WaitEventTimeout(&wakeEvent, sleepMs))
+                const auto waitOutcome = FramePacing::waitForIdleEvent(
+                    wakeEvent,
+                    [sleepMs](SDL_Event& event) { return SDL_WaitEventTimeout(&event, sleepMs); },
+                    [](SDL_Event& event) { return SDL_PollEvent(&event); });
+                if (waitOutcome != FramePacing::IdleWaitOutcome::TimedOut)
                 {
                     idleWakeEvent = wakeEvent;
                 }
                 ++m_IdleWaitCount;
-                m_LastIdleWaitWoke = idleWakeEvent.has_value();
+                m_LastIdleWaitWoke = waitOutcome == FramePacing::IdleWaitOutcome::Woke;
+                m_LastIdleWaitPolledEvent = waitOutcome == FramePacing::IdleWaitOutcome::PolledAfterTimeout;
                 if (traceResizePerfThisFrame)
                 {
                     loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
