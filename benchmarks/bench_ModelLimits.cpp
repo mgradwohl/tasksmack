@@ -15,7 +15,7 @@
 //   Concurrent   -- how long a UI-style SystemModel/GPUModel::publication() call waits when it lands on
 //                   a publish in another thread. Before #868 publish() ran under the model's exclusive
 //                   lock, so this was the lock hold a frame could be stuck behind; now it is a swap.
-//   GPUModel     -- History_Publish and Concurrent on a mock GPU probe, at a 3k-sample history. Being
+//   GPUModel     -- History_Publish and Concurrent on a mock GPU probe, at 3k- and 18k-sample histories. Being
 //                   mocks, they run on a GPU-less runner too, unlike bench_GPUModel.cpp's (#1420).
 //
 // History is held at N samples by setting the model's window to N sample intervals: trimming then
@@ -625,9 +625,9 @@ void reportGpuShape(benchmark::State& state, const Domain::GPUModel& model)
 }
 
 // One GPUModel sample -- snapshots, history append, trim, publish -- at a range(0)-sample history of 2
-// GPUs. publish() derives 11 series per GPU from the history. Held at the 5-minute window at 100 ms
-// (3000), not the 18k maximum: GPUModel has no batch path, so building an 18k window takes 18k
-// publishes, far longer than the measurement.
+// GPUs. publish() takes a view of each GPU's 11 series, so its cost does not depend on the history's
+// length (#1412): compare the 5-minute window at 100 ms (3000) with the 30-minute one (18000).
+// GPUModel has no batch path, so the fixture builds its window one refresh at a time.
 void BM_GPUModel_History_Publish(benchmark::State& state)
 {
     GPUFixture& fixture = gpuFixture(state.range(0), DEFAULT_GPUS);
@@ -637,7 +637,7 @@ void BM_GPUModel_History_Publish(benchmark::State& state)
     }
     reportGpuShape(state, *fixture.model);
 }
-BENCHMARK(BM_GPUModel_History_Publish)->Arg(DEFAULT_WINDOW_FAST_SAMPLES)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_GPUModel_History_Publish)->Arg(DEFAULT_WINDOW_FAST_SAMPLES)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
 
 // measureConcurrentPublicationWait() on GPUModel at a range(0)-sample history of 2 GPUs, with
 // range(1) extra readers (#868). Compare BM_GPUModel_History_Publish.
@@ -651,6 +651,7 @@ BENCHMARK(BM_GPUModel_Concurrent_PublicationWait)
     ->ArgNames({"samples", "extra_readers"})
     ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 0})
     ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 2})
+    ->Args({FULL_HISTORY_SAMPLES, 0})
     ->Iterations(CONCURRENT_ITERATIONS)
     ->UseManualTime()
     ->Unit(benchmark::kMicrosecond);

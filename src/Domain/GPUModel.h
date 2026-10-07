@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Domain/GPUSnapshot.h"
-#include "Domain/History.h"
+#include "Domain/SharedHistory.h"
 #include "ISamplable.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
@@ -16,7 +16,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <shared_mutex>
 #include <span>
 #include <string>
@@ -28,23 +27,24 @@ namespace Domain
 {
 
 /// One GPU's history as published to the UI: numeric series only, all the same length and aligned
-/// sample-for-sample. Whole GPUSnapshots are not republished: each carries four identity strings,
-/// and with the history sized to the window (up to 18,001 samples at 1800 s / 100 ms) copying them
-/// on every refresh was the bulk of the sampler thread's work. GPUModel::history() still returns
-/// them for a caller that needs one.
+/// sample-for-sample. Each is a view of the model's own shared series, so a publish is O(series),
+/// not a copy of the history (#1412); a view stays as published whatever the model does later, and
+/// converts to std::span for the charts. Whole GPUSnapshots are not kept as history at all: each
+/// carries four identity strings, and with the history sized to the window (up to 18,001 samples at
+/// 1800 s / 100 ms) copying them was the bulk of the sampler thread's work.
 struct GPUPublishedHistory
 {
-    std::vector<double> timestamps;
-    std::vector<std::uint64_t> memoryUsedBytes;
-    std::vector<std::uint64_t> memoryTotalBytes;
-    std::vector<float> utilization;
-    std::vector<float> memoryPercent;
-    std::vector<float> gpuClock;
-    std::vector<float> encoder;
-    std::vector<float> decoder;
-    std::vector<float> temperature;
-    std::vector<float> power;
-    std::vector<float> fanSpeed;
+    HistoryView<double> timestamps;
+    HistoryView<std::uint64_t> memoryUsedBytes; ///< 0 (with memoryTotalBytes 0) where memory was unread (#1111)
+    HistoryView<std::uint64_t> memoryTotalBytes;
+    HistoryView<float> utilization; ///< NaN where unread or the GPU was missing (#1111, #1146); likewise below
+    HistoryView<float> memoryPercent;
+    HistoryView<float> gpuClock;
+    HistoryView<float> encoder;
+    HistoryView<float> decoder;
+    HistoryView<float> temperature;
+    HistoryView<float> power;
+    HistoryView<float> fanSpeed;
 };
 
 struct GPUPublication
@@ -128,14 +128,6 @@ class GPUModel : public ISamplable
 
     // Get current snapshots (thread-safe)
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
-
-    // Get history for specific GPU (returns copy for thread safety)
-    [[nodiscard]] std::vector<GPUSnapshot> history(std::string_view gpuId) const;
-
-    // Get a single historical snapshot by logical index (0 = oldest).
-    // Returns nullopt if gpuId is unknown or index is out of range.
-    // Prefer this over history() when only one sample is needed (avoids copying the full vector).
-    [[nodiscard]] std::optional<GPUSnapshot> snapshotAt(std::string_view gpuId, std::size_t index) const;
 
     // Get flattened history arrays for specific GPU (for chart plotting)
     [[nodiscard]] std::vector<float> utilizationHistory(std::string_view gpuId) const;
@@ -227,18 +219,77 @@ class GPUModel : public ISamplable
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
     std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
 
+    /// One sample of a GPU's history, as its series record it: a field that was not read, or a
+    /// placeholder for a refresh the GPU was missing from, is NaN (#1111, #1146).
+    struct HistorySample
+    {
+        double timestamp = 0.0;
+        std::uint64_t memoryUsedBytes = 0; // 0 with memoryTotalBytes 0: no byte figures (#1111)
+        std::uint64_t memoryTotalBytes = 0;
+        float utilization = 0.0F;
+        float memoryPercent = 0.0F;
+        float gpuClock = 0.0F;
+        float encoder = 0.0F;
+        float decoder = 0.0F;
+        float temperature = 0.0F;
+        float power = 0.0F;
+        float fanSpeed = 0.0F;
+        bool sampled = true; // false for a placeholder
+    };
+    /// What @p sample's history records: the same values the per-field accessors return.
+    [[nodiscard]] static HistorySample historySample(const GPUSnapshot& sample) noexcept;
+    /// The placeholder recorded at @p nowSeconds for a GPU missing from a read (#1146): every reading NaN.
+    [[nodiscard]] static HistorySample placeholderSample(double nowSeconds) noexcept;
+
+    /// One GPU's history: a shared series per published field, all the same length and aligned
+    /// sample-for-sample, so publishing it is a view of each (#1412). Appends are staged: reserve()
+    /// makes every allocation, and the push() that follows cannot fail part way.
+    struct GPUSeries
+    {
+        SharedHistoryBuffer<double> timestamps;
+        SharedHistoryBuffer<std::uint64_t> memoryUsedBytes;
+        SharedHistoryBuffer<std::uint64_t> memoryTotalBytes;
+        SharedHistoryBuffer<float> utilization;
+        SharedHistoryBuffer<float> memoryPercent;
+        SharedHistoryBuffer<float> gpuClock;
+        SharedHistoryBuffer<float> encoder;
+        SharedHistoryBuffer<float> decoder;
+        SharedHistoryBuffer<float> temperature;
+        SharedHistoryBuffer<float> power;
+        SharedHistoryBuffer<float> fanSpeed;
+        // Placeholders at the newest end. The window holds a real sample while this is below size().
+        std::size_t trailingPlaceholders = 0;
+
+        explicit GPUSeries(std::size_t capacity) noexcept;
+        void setCapacity(std::size_t capacity) noexcept;
+        /// Room for @p count more samples in every series. Throws std::bad_alloc with nothing observable changed.
+        void reserve(std::size_t count);
+        /// Append one sample to every series. Doesn't allocate after reserve(1), so doesn't throw then.
+        void push(const HistorySample& sample);
+        void discardFront(std::size_t count) noexcept;
+        [[nodiscard]] std::size_t size() const noexcept
+        {
+            return timestamps.size();
+        }
+        [[nodiscard]] bool hasReading() const noexcept
+        {
+            return trailingPlaceholders < size();
+        }
+        [[nodiscard]] GPUPublishedHistory view() const noexcept;
+    };
+
     // Current snapshots per GPU
     using SnapshotMap = GPUSnapshotMap;
-    using HistoryMap = std::unordered_map<std::string, HistoryBuffer<GPUSnapshot>, TransparentStringHash, TransparentStringEqual>;
+    using HistoryMap = std::unordered_map<std::string, GPUSeries, TransparentStringHash, TransparentStringEqual>;
     using CounterMap = std::unordered_map<std::string, Platform::GPUCounters, TransparentStringHash, TransparentStringEqual>;
 
     SnapshotMap m_Snapshots;
 
-    // History buffers per GPU
+    // History per GPU, from its first sample: a refresh it was missing from has a placeholder (#1146).
     HistoryMap m_Histories;
 
-    // Timestamps for history data
-    std::vector<double> m_HistoryTimestamps;
+    // One timestamp per refresh (the per-GPU series carry their own).
+    SharedHistoryBuffer<double> m_HistoryTimestamps{Sampling::historyCapacityForSeconds(Sampling::HISTORY_SECONDS_DEFAULT)};
 
     // History window; ring capacities are sized from it by applyHistoryCapacity().
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT;
@@ -269,12 +320,8 @@ class GPUModel : public ISamplable
     [[nodiscard]] GPUSnapshot
     computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const;
 
-    // Helper template: extract a field from GPU history and return as float vector
-    template<typename FieldPtr> [[nodiscard]] std::vector<float> getHistoryField(std::string_view gpuId, FieldPtr field) const;
-    // Underlying helper shared with getHistoryField(): a per-sample projection instead of a
-    // plain member pointer, for accessors whose value depends on more than one field.
-    template<typename Projection>
-    [[nodiscard]] std::vector<float> getHistoryFieldByProjection(std::string_view gpuId, Projection project) const;
+    /// A copy of one series of @p gpuId's history; empty for an unknown GPU.
+    template<typename T> [[nodiscard]] std::vector<T> copySeries(std::string_view gpuId, SharedHistoryBuffer<T> GPUSeries::* series) const;
     /// Build the next generation from the history state under a shared lock, then commit it.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
@@ -285,11 +332,27 @@ class GPUModel : public ISamplable
     // capabilities query at the full-rescan rate. Caller holds m_ProbeMutex, not m_Mutex.
     void rescanGPUs(std::chrono::steady_clock::time_point now);
 
-    // Size every history ring for m_MaxHistorySeconds at the fastest refresh cadence (caller holds m_Mutex).
-    void applyHistoryCapacity();
+    /// One refresh's history append, staged: every allocation it needs is made here, so applying it
+    /// cannot fail part way (#1412).
+    struct PendingHistory
+    {
+        HistoryMap newGpus; // GPUs this read reports that have no history yet, with room for the sample
+    };
+    /// Create the series of the GPUs @p snapshots introduces in @p pending, and reserve room for one
+    /// more sample in every series and the hash buckets the new GPUs will use. May throw; changes
+    /// nothing observable. Caller holds m_Mutex exclusively.
+    void stageHistoryAppend(PendingHistory& pending, const SnapshotMap& snapshots);
+    /// Apply a staged append: adopt the new GPUs' series, then append @p snapshots' samples, and a
+    /// placeholder for every GPU with a history that is missing from them (#1146). Uses only what
+    /// stageHistoryAppend() reserved, so it does not allocate or throw. Caller holds m_Mutex exclusively.
+    void commitHistoryAppend(PendingHistory& pending, const SnapshotMap& snapshots, double nowSeconds) noexcept;
+
+    // Size every history series for m_MaxHistorySeconds at the fastest refresh cadence (caller holds m_Mutex).
+    void applyHistoryCapacity() noexcept;
     // Drop samples older than m_MaxHistorySeconds before nowSeconds, except the newest of them while a
-    // newer sample remains, like HistoryUtils::discardBefore (#1016) (caller holds m_Mutex).
-    void trimHistory(double nowSeconds);
+    // newer sample remains, like HistoryUtils::discardBefore (#1016), and forget a GPU whose window
+    // holds only placeholders (caller holds m_Mutex).
+    void trimHistory(double nowSeconds) noexcept;
 };
 
 } // namespace Domain
