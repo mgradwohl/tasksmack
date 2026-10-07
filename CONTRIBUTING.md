@@ -1337,8 +1337,8 @@ each time) and adds the mean, median and p95 of app CPU, total CPU and fps acros
 plus a `SUMMARY` line. Every run also writes JSON (`perf-data/idle-<label>-<timestamp>.json`, or
 `--json <path>`) with each repetition's figures and per-thread rows, the aggregates, and provenance:
 commit and dirty flag, preset and build type, refresh interval and history window (as the app logged
-or loaded them), synthetic spec, GL renderer, display refresh rate, CPU model, logical CPU count,
-MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
+or loaded them), synthetic spec, the window's measured geometry and any `--window` requested, GL
+renderer, display refresh rate, CPU model, logical CPU count, MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
 is above `<pct>`. Another TaskSmack running with the same settings fails the run (the
 single-instance lock would stop the new one at its "already running" box); close it first.
 
@@ -1353,6 +1353,9 @@ single-instance lock would stop the new one at its "already running" box); close
 
 # Baseline / gate: five repetitions, fail if the median app CPU is above the target below
 ./tools/measure-idle.sh --skip-build --repeat 5 --fail-above 16
+
+# A fixed window geometry instead of the saved one (TASKSMACK_WINDOW); the saved one is not changed
+./tools/measure-idle.sh --skip-build --window 1600x900 --repeat 5
 
 ./tools/measure-idle.sh --help
 ```
@@ -1433,7 +1436,24 @@ Measure at the same window geometry. TaskSmack restores its saved size and maxim
 larger window renders more, so the script records the window's size and maximized state in the
 `SUMMARY` line and the JSON (`scenario.window`), and warns when it varied between repetitions.
 Compare a run against these targets only at the geometry they were measured at (maximized,
-3840×2100). Making the script set a fixed geometry itself is #1453.
+3840×2100).
+
+`--window <width>x<height>[,maximized]` makes that geometry independent of what the machine last
+saved (#1453): it launches TaskSmack with `TASKSMACK_WINDOW=<value>`, which opens the window at
+that size (window units, clamped to 200–16384 and to the display), maximized only when the value
+says so, instead of the saved geometry. While the variable is set TaskSmack logs
+`TASKSMACK_WINDOW is set: 1600x900, not maximized; window geometry will not be saved` and does not
+write its `[window]` geometry on exit, so a measurement never changes your saved window; other
+settings save as usual. An invalid value is ignored with a warning (the script rejects one before
+launching). The JSON records the request as `scenario.requestedWindow` (`spec`, `width`, `height`,
+`maximized`, and `applied`: whether every repetition's app log shows the override, which a binary
+built before #1453 would not) next to the measured `scenario.window`.
+
+`--window` is opt-in; without it the saved geometry is used as before. 1600×900, not maximized, is
+the proposed fixed default for gate runs, but the targets above were measured maximized at
+3840×2100 and have not been re-measured at 1600×900, so it is not the default yet: a gate at a
+fixed size needs its own baseline and target first. Until then, on the display the targets were
+measured on, `--window 1600x900,maximized` reproduces their geometry whatever is saved.
 
 Measure on a quiet machine. App CPU rises with presented frames, and other load slows `llvmpipe`
 and so the frame rate. A first baseline taken under load average 20–30 read 6.52% / 9.59% median
