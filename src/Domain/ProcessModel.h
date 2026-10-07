@@ -302,7 +302,9 @@ class ProcessModel : public ISamplable
     static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel, GpuSupport& outSupport);
 
     /// mergeGPUData(), contained: a throwing GPU merge must not stop process publication (#1142).
-    /// On a throw the snapshots are published without GPU fields, as unsupported. Requires
+    /// On a throw the snapshots are published without GPU fields. The returned support keeps the
+    /// per-process support the failed read ran under, with readFailed set when that was supported,
+    /// so the GPU cells read as unreadable rather than as unsupported (#1210). Requires
     /// m_SamplingMutex held.
     GpuSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
 

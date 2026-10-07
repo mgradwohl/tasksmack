@@ -158,6 +158,22 @@ TEST(ProcessColumnAvailabilityTest, CapabilityDefaultsLeaveAChosenColumnAlone)
     EXPECT_TRUE(fresh.isVisible(ProcessColumn::Power));
 }
 
+TEST(ProcessColumnAvailabilityTest, ResetStaysAvailableWhileAColumnIsChosen)
+{
+    // #1210: Power shown then hidden again matches the default visibility, but stays chosen, so a
+    // later gain of power readings would not show it. Reset must stay available to clear that.
+    const Platform::ProcessCapabilities caps = linuxWithoutRaplCapabilities();
+    ProcessColumnSettings settings = ProcessColumnAvailability::defaultColumns(caps);
+    settings.requestVisible(ProcessColumn::Power, true);
+    settings.requestVisible(ProcessColumn::Power, false);
+    EXPECT_EQ(settings.visible, ProcessColumnAvailability::defaultColumns(caps).visible);
+    EXPECT_FALSE(ProcessColumnAvailability::hasDefaultColumns(settings, caps));
+
+    // Reset clears the choice.
+    settings = ProcessColumnAvailability::defaultColumns(caps);
+    EXPECT_TRUE(ProcessColumnAvailability::hasDefaultColumns(settings, caps));
+}
+
 TEST(ProcessColumnAvailabilityTest, WithdrawnCapabilityHidesOnlyUnchosenColumns)
 {
     // #1210: Windows can withdraw its per-process network counters after the first EStats sample.

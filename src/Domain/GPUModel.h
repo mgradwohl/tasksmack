@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -185,6 +186,10 @@ class GPUModel : public ISamplable
         std::vector<Platform::ProcessGPUCounters> counters;
         bool perProcessSupported = false;  ///< Not known to lack per-process metrics
         bool utilizationSupported = false; ///< ...nor per-process utilization among them
+        /// What the probe's read threw, if it did. It is carried here rather than thrown, so the
+        /// caller still learns the support the failed read ran under (#1210); rethrow it with
+        /// std::rethrow_exception() after taking the flags.
+        std::exception_ptr failure;
     };
 
     /// readProcessGPUCounters() and the support it was read under, from one operation: the flags are

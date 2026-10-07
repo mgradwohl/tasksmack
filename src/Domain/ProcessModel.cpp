@@ -907,6 +907,11 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const s
     // Query per-process GPU counters from GPUModel, with the support they were read under (#1210)
     GPUModel::ProcessGPUReading reading = gpuModel->readProcessGPUData();
     outSupport = {.perProcess = reading.perProcessSupported, .utilization = reading.utilizationSupported, .readFailed = false};
+    if (reading.failure)
+    {
+        // After outSupport is set: a failed read keeps the support it ran under (#1210).
+        std::rethrow_exception(reading.failure);
+    }
     auto gpuCounters = std::move(reading.counters);
     if (gpuCounters.empty())
     {
@@ -1069,8 +1074,10 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
     // after the per-process state had already advanced, so a probe that threw every time stopped
     // the process list from ever updating again (#1142). The processes are published regardless,
     // without GPU fields for this refresh.
-    // The probe's support as the GPU model has it now, in case the read itself throws before
-    // returning the support it ran under; mergeGPUData() replaces it with that as soon as it has it.
+    // The probe's support as the GPU model has it now, used only if mergeGPUData() throws before it
+    // has the reading (bad_alloc, say). A throwing probe read is not such a case: readProcessGPUData()
+    // returns it together with the support taken under the probe lock, and mergeGPUData() sets
+    // that before rethrowing it (#1210).
     GpuSupport support{.perProcess = !gpuModel->perProcessMetricsKnownUnsupported(),
                        .utilization = !gpuModel->perProcessMetricsKnownUnsupported() && !gpuModel->perProcessUtilizationKnownUnsupported(),
                        .readFailed = false};

@@ -587,7 +587,12 @@ std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() con
     // e.g. Linux Intel DRM, which always returns empty here. When discovery failed, fall
     // through to the lock-and-call path unconditionally, matching this method's behavior
     // before this capability check existed.
-    return readProcessGPUData().counters;
+    ProcessGPUReading reading = readProcessGPUData();
+    if (reading.failure)
+    {
+        std::rethrow_exception(reading.failure);
+    }
+    return std::move(reading.counters);
 }
 
 GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
@@ -611,7 +616,15 @@ GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
         return reading;
     }
     reading.utilizationSupported = !m_PerProcessUtilizationKnownUnsupported.load(std::memory_order_acquire);
-    reading.counters = m_Probe->readProcessGPUCounters();
+    try
+    {
+        reading.counters = m_Probe->readProcessGPUCounters();
+    }
+    catch (...)
+    {
+        // Carried to the caller with the flags above, which this failed read ran under (#1210).
+        reading.failure = std::current_exception();
+    }
     return reading;
 }
 

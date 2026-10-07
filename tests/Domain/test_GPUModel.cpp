@@ -155,6 +155,30 @@ TEST(GPUModelTest, ProcessGpuDataComesWithTheSupportItWasReadUnder)
     EXPECT_TRUE(after.counters.empty());
 }
 
+TEST(GPUModelTest, AFailedProcessGpuReadStillReportsTheSupportItRanUnder)
+{
+    // #1210: a throwing read returned no flags, so the caller fell back to flags it had loaded
+    // outside the probe lock, which a rescan could have changed in between. The failure now comes
+    // back with the flags taken under the lock.
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    probe->withCapabilities(caps);
+    probe->withProcessGPU(100, "GPU0", 1024ULL * 1024).withProcessCountersThrowing();
+    Domain::GPUModel model(std::move(probe));
+
+    Domain::GPUModel::ProcessGPUReading reading;
+    ASSERT_NO_THROW(reading = model.readProcessGPUData());
+    EXPECT_TRUE(reading.perProcessSupported);
+    EXPECT_TRUE(reading.utilizationSupported);
+    EXPECT_TRUE(reading.counters.empty());
+    EXPECT_TRUE(reading.failure != nullptr);
+
+    // The counters-only call still throws, as before.
+    EXPECT_ANY_THROW(static_cast<void>(model.readProcessGPUCounters()));
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
 {
     // Regression test for #843 Phase 3b: backends that can never return per-process data

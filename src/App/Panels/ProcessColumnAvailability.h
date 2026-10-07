@@ -144,12 +144,14 @@ capabilityDefaultChanges(const ProcessColumnSettings& settings, const Platform::
     return updated;
 }
 
-/// Whether `settings` shows exactly this system's default columns, i.e. "Reset columns" would change
-/// no column's visibility.
+/// Whether `settings` is exactly this system's default columns, i.e. "Reset columns" would change
+/// nothing: no column's visibility, and no column left chosen. A chosen column can match its default
+/// today and still differ later -- Power shown then hidden again stays hidden when the system gains
+/// power readings -- so Reset stays available to clear the choice.
 [[nodiscard]] inline bool
 hasDefaultColumns(const ProcessColumnSettings& settings, const Platform::ProcessCapabilities& caps, GpuSupport gpu = {})
 {
-    return settings.visible == defaultColumns(caps, gpu).visible;
+    return settings == defaultColumns(caps, gpu);
 }
 
 /// What a free-text cell (Status, Publisher) shows.
