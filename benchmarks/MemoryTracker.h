@@ -1,15 +1,18 @@
 // Memory tracking utilities for benchmarks
 //
-// Provides mechanisms to track memory usage during benchmark execution:
-// 1. Peak RSS (Resident Set Size) tracking via /proc/self/status
-// 2. Allocation counting via custom MemoryManager
-// 3. Simple memory delta measurement
+// Two separate kinds of memory signal, reported under separate names:
+// 1. OS-reported process memory (RSS, peak RSS, VM sizes) from /proc/self/status, plus RSS deltas.
+//    These are what the kernel says the whole process occupies; they are NOT evidence of how much
+//    or how often code allocates (see AllocationCounter.h, #879).
+// 2. Allocator telemetry (allocation count, cumulative bytes, peak live bytes) through
+//    TaskSmackMemoryManager and AllocationCounter. Dormant: no allocator hook records into it yet.
 
 #pragma once
 
+#include "AllocationCounter.h"
+
 #include <benchmark/benchmark.h>
 
-#include <atomic>
 #include <charconv>
 #include <cstdint>
 #include <fstream>
@@ -166,82 +169,14 @@ inline void reportMemoryDelta(benchmark::State& state, const MemoryDeltaTracker&
 // Allocation Tracking MemoryManager
 // =============================================================================
 //
-// This provides fine-grained allocation tracking by implementing
-// benchmark::MemoryManager. It requires overriding global new/delete
-// or using a custom allocator, which has overhead.
-//
-// For now, we use the simpler /proc/self/status approach above.
-// The MemoryManager below can be enabled for more detailed tracking.
-
-/// Thread-safe allocation counter
-class AllocationCounter
-{
-  public:
-    static auto instance() -> AllocationCounter&
-    {
-        static AllocationCounter counter;
-        return counter;
-    }
-
-    // Singleton: prevent copying/moving
-    AllocationCounter(const AllocationCounter&) = delete;
-    AllocationCounter& operator=(const AllocationCounter&) = delete;
-    AllocationCounter(AllocationCounter&&) = delete;
-    AllocationCounter& operator=(AllocationCounter&&) = delete;
-
-    void recordAllocation(std::size_t bytes)
-    {
-        m_AllocationCount.fetch_add(1, std::memory_order_relaxed);
-        m_BytesAllocated.fetch_add(bytes, std::memory_order_relaxed);
-    }
-
-    void recordDeallocation(std::size_t bytes)
-    {
-        m_DeallocationCount.fetch_add(1, std::memory_order_relaxed);
-        m_BytesDeallocated.fetch_add(bytes, std::memory_order_relaxed);
-    }
-
-    void reset()
-    {
-        m_AllocationCount.store(0, std::memory_order_relaxed);
-        m_DeallocationCount.store(0, std::memory_order_relaxed);
-        m_BytesAllocated.store(0, std::memory_order_relaxed);
-        m_BytesDeallocated.store(0, std::memory_order_relaxed);
-    }
-
-    [[nodiscard]] auto allocationCount() const -> std::uint64_t
-    {
-        return m_AllocationCount.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] auto deallocationCount() const -> std::uint64_t
-    {
-        return m_DeallocationCount.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] auto bytesAllocated() const -> std::uint64_t
-    {
-        return m_BytesAllocated.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] auto bytesDeallocated() const -> std::uint64_t
-    {
-        return m_BytesDeallocated.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] auto netBytesAllocated() const -> std::int64_t
-    {
-        return static_cast<std::int64_t>(bytesAllocated()) - static_cast<std::int64_t>(bytesDeallocated());
-    }
-
-  private:
-    AllocationCounter() = default;
-
-    std::atomic<std::uint64_t> m_AllocationCount{0};
-    std::atomic<std::uint64_t> m_DeallocationCount{0};
-    std::atomic<std::uint64_t> m_BytesAllocated{0};
-    std::atomic<std::uint64_t> m_BytesDeallocated{0};
-};
+// Reports AllocationCounter's totals through Google Benchmark's MemoryManager
+// interface, which prints them under its own allocation fields -- never mixed
+// with the RSS counters above. Dormant: it is not registered
+// (benchmark::RegisterMemoryManager) and nothing records into
+// AllocationCounter, since that needs global operator new/delete overrides,
+// which add overhead to every timed benchmark.
 
 /// Custom MemoryManager for Google Benchmark
-/// Note: This requires hooking new/delete to be useful.
-/// See bench_main.cpp for optional global new/delete overrides.
 class TaskSmackMemoryManager : public benchmark::MemoryManager
 {
   public:
@@ -253,10 +188,14 @@ class TaskSmackMemoryManager : public benchmark::MemoryManager
 
     void Stop(Result& result) override
     {
-        auto& counter = AllocationCounter::instance();
-        result.num_allocs = static_cast<std::int64_t>(counter.allocationCount());
-        result.max_bytes_used = static_cast<std::int64_t>(counter.bytesAllocated());
-        // Note: net_heap_growth would require tracking live allocations
+        const auto totals = AllocationCounter::instance().snapshot();
+        result.num_allocs = static_cast<std::int64_t>(totals.allocationCount);
+        // Peak *live* bytes, which is what max_bytes_used means. This used to
+        // report the cumulative total allocated, which grows with every allocation
+        // even when each is freed straight away (#879).
+        result.max_bytes_used = totals.peakLiveBytes;
+        result.total_allocated_bytes = static_cast<std::int64_t>(totals.bytesAllocated);
+        result.net_heap_growth = totals.liveBytes;
     }
 };
 

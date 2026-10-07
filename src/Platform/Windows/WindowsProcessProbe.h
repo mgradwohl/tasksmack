@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ProcessTypes.h"
 #include "WindowsProcessProbeMath.h"
 
 #ifndef _WIN32_WINNT
@@ -132,6 +133,8 @@ class WindowsProcessProbe : public IProcessProbe
         CpuAffinity cpuAffinity;       // GetProcessAffinityMask (heavy TTL)
         std::int32_t nice = 0;         // GetPriorityClass → nice value (heavy TTL, or when the base priority changes)
         std::int32_t basePriority = 0; // Snapshot base priority last seen; a change re-reads the class (#1156)
+        // GetPriorityClass, beside nice: Realtime and High share a nice bucket (#1280)
+        PriorityClass priorityClass = PriorityClass::None;
         std::chrono::steady_clock::time_point nextLightRefresh;
         std::chrono::steady_clock::time_point nextHeavyRefresh;
         std::uint64_t generation = 0;

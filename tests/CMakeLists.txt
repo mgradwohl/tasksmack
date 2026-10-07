@@ -64,6 +64,7 @@ add_test(NAME BenchmarkRegressionGateScript
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES
     test_main.cpp
+    Benchmarks/test_AllocationCounter.cpp
     Core/test_Application.cpp
     Core/test_EnvUtils.cpp
     Core/test_ApplicationEvents.cpp
@@ -135,6 +136,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessTypeColor.cpp
     App/test_ProcessCellWidths.cpp
     App/test_ProcessFilterCache.cpp
+    App/test_ProcessDisplayFreeze.cpp
     App/test_CpuCoreGridIds.cpp
     App/test_CpuSummaryText.cpp
     Platform/test_CgroupFreezerPath.cpp
@@ -333,6 +335,7 @@ endif()
 target_include_directories(TaskSmackTests PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}  # For tests/Mocks includes
+    ${CMAKE_SOURCE_DIR}/benchmarks  # For AllocationCounter.h (std-only; no Google Benchmark dependency)
     ${CMAKE_BINARY_DIR}/generated  # For generated version.h
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends

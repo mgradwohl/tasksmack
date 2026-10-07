@@ -1,0 +1,39 @@
+# Keys older TaskSmack versions wrote, values outside every clamp, and wrong types.
+[sampling]
+interval_ms = 1
+history_max_seconds = 9223372036854775807
+socket_stats_cache_ttl_ms = -5
+
+[metrics]
+min_time_for_rate_seconds = 2.0
+integrated_gpu_vram_threshold_mb = 512
+max_sane_rate_bps = inf
+
+[ui]
+progress_color_low_threshold = 50
+progress_color_high_threshold = 80
+chart_smooth_factor = nan
+chart_tau_ms_min = 100000
+chart_tau_ms_max = -1
+chart_anti_aliasing = "yes"
+
+[theme]
+id = "../../etc/passwd"
+
+[font]
+size = "gigantic"
+
+[window]
+width = 0
+height = 99999999
+x = 2147483648
+y = -100001
+scale = 0.0
+maximized = 1
+
+[process_columns]
+pid = false
+not_a_column = true
+
+[process_table]
+layout = ""

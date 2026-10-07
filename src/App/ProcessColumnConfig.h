@@ -2,6 +2,7 @@
 
 #include "App/DialogGeometry.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -175,7 +176,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // === Scheduling ===
         // Priority (human-readable label derived from nice value)
         // Note: configKey remains "nice" for backward compatibility with user config files
-        {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Process priority (High, Above Normal, Normal, Below Normal, Idle)"},
+        {.name="Priority", .menuName="Priority", .configKey="nice", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Process priority: Windows priority class (Realtime, High, Above Normal, Normal, Below Normal, Idle), or the nice value's level elsewhere"},
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads
@@ -265,6 +266,26 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         return info.defaultWidth;
     }
     return info.defaultWidth * (emPx / REFERENCE_EM_PX);
+}
+
+/// Room a column's widest value is given beyond its own text, in ems: half an em clear of the
+/// column's edge on each side (#1280). ImGui's CellPadding is added outside a column's width, but it
+/// is only a few pixels, and a label filling the rest reads as touching the column border.
+inline constexpr float COLUMN_CONTENT_MARGIN_EM = 1.0F;
+
+/// Default width of a column whose values are a fixed, known set of labels (Priority's): the scaled
+/// authored width, or the widest label plus COLUMN_CONTENT_MARGIN_EM if that is wider, so the
+/// longest label ("Above Normal", "Below Normal") fits in whatever font is active (#1280).
+/// @param scaledDefault    scaledDefaultWidth() for the column.
+/// @param widestContentPx  The widest label's width in the current font (0 if not measured yet).
+/// @param emPx             One em, i.e. ImGui::GetFontSize().
+[[nodiscard]] inline auto contentFittedWidth(float scaledDefault, float widestContentPx, float emPx) noexcept -> float
+{
+    if (!std::isfinite(emPx) || emPx <= 0.0F || !std::isfinite(widestContentPx) || widestContentPx <= 0.0F)
+    {
+        return scaledDefault;
+    }
+    return std::max(scaledDefault, widestContentPx + (COLUMN_CONTENT_MARGIN_EM * emPx));
 }
 
 /// Column visibility settings for persistence

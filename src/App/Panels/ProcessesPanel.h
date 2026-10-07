@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
@@ -34,21 +35,14 @@ namespace App
 using ProcessRowFormat::AlignedCellText;
 using ProcessRowFormat::RowFormatCache;
 
-/// Domain::Priority::getPriorityLabel()'s complete fixed set of possible return values, derived
-/// by calling the real function at one representative nice value per threshold bucket instead
-/// of duplicating its label strings here -- a hand-duplicated copy would silently drift (and
-/// make getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain
-/// ever renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
+/// Domain::Priority::getProcessPriorityLabel()'s complete fixed set of possible return values, taken
+/// from Domain rather than duplicated here -- a hand-duplicated copy would silently drift (and make
+/// getPriorityLabelWidth() fall back to a wrong width of 0, misplacing the cell) if Domain ever
+/// renamed a label. Namespace-scope (not nested in ProcessesPanel) for the same reason as
 /// AlignedCellText: both ProcessesPanel::TextSizeCache (header) and the free helper functions in
 /// ProcessesPanel.cpp's anonymous namespace need to see it, and it must be visible wherever
 /// TextSizeCache::priorityLabelWidths is sized.
-inline constexpr std::array<std::string_view, 5> PRIORITY_LABELS = {
-    Domain::Priority::getPriorityLabel(Domain::Priority::MIN_NICE),               // < HIGH_THRESHOLD           -> "High"
-    Domain::Priority::getPriorityLabel(Domain::Priority::HIGH_THRESHOLD),         // < ABOVE_NORMAL_THRESHOLD   -> "Above Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::NORMAL_NICE),            // < BELOW_NORMAL_THRESHOLD   -> "Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::BELOW_NORMAL_THRESHOLD), // < IDLE_THRESHOLD          -> "Below Normal"
-    Domain::Priority::getPriorityLabel(Domain::Priority::MAX_NICE),               // >= IDLE_THRESHOLD          -> "Idle"
-};
+inline constexpr auto PRIORITY_LABELS = Domain::Priority::PROCESS_PRIORITY_LABELS;
 
 /// The font-measured widths the Processes table's per-column cell renderers read (#1382): each
 /// decimal-aligned column's unit slot, the widest unit it can show as its cells print it (#1201),
@@ -61,14 +55,15 @@ struct ProcessCellWidths
     float unitBytesPerSec = 0.0F; // " MiB/s", " GiB/s", etc.
     float unitPower = 0.0F;       // " W", " mW", " µW"
 
-    // Widths for PRIORITY_LABELS (Domain::Priority::getPriorityLabel()'s fixed label set), in the
+    // Widths for PRIORITY_LABELS (Domain::Priority::getProcessPriorityLabel()'s fixed label set), in the
     // same order. That column isn't backed by RowFormatCache (it's a live std::string_view lookup,
     // not a per-row formatted string), so its width can't ride along with RowFormatCache's per-row
     // AlignedCellText widths -- cached here instead, alongside the other small fixed-string widths.
     std::array<float, PRIORITY_LABELS.size()> priorityLabels{};
+    float widestPriorityLabel = 0.0F; // The Priority column's default width fits it (#1280)
 
-    /// The cached width of one of Domain::Priority::getPriorityLabel()'s fixed labels. Returns 0 for
-    /// any other string (getPriorityLabel never returns anything else).
+    /// The cached width of one of Domain::Priority::getProcessPriorityLabel()'s fixed labels. Returns 0
+    /// for any other string (getProcessPriorityLabel never returns anything else).
     [[nodiscard]] float priorityLabelWidth(std::string_view label) const noexcept
     {
         for (std::size_t i = 0; i < PRIORITY_LABELS.size(); ++i)
@@ -78,7 +73,7 @@ struct ProcessCellWidths
                 return priorityLabels[i];
             }
         }
-        return 0.0F; // Unreachable in practice: getPriorityLabel() only returns PRIORITY_LABELS entries.
+        return 0.0F; // Unreachable in practice: getProcessPriorityLabel() only returns PRIORITY_LABELS entries.
     }
 };
 
@@ -175,7 +170,8 @@ class ProcessesPanel : public Panel
     /// include Domain/ProcessModel.h. UI thread; takes no lock once a generation is cached.
     [[nodiscard]] bool hasReducedPrivileges() const;
 
-    /// Narrowest the toolbar row (filter, clear button, process count, tree-view toggle) can be
+    /// Narrowest the toolbar row (filter, clear button, the paused indicator's icon-only form (#928),
+    /// process count, tree-view toggle) can be
     /// without overlapping, at the current font and style, for the window's content minimum (#1207).
     /// Measured with a worst-case process count so it does not change as processes come and go.
     /// Needs a frame.
@@ -242,6 +238,10 @@ class ProcessesPanel : public Panel
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
     // The probe's capabilities published with m_CachedRenderSnapshots' generation (#1254).
     Platform::ProcessCapabilities m_CachedCapabilities;
+    // Hold Ctrl to freeze the pane (#928): while frozen, adoptNewerSnapshots() keeps the generation
+    // above, so the rows, their values and their order stay put. Evaluated once per frame in
+    // renderContent(); onUpdate() sees the previous frame's state.
+    ProcessDisplayFreeze::Tracker m_DisplayFreeze;
 
     // Per-frame filter cache: filtered indices, running count, and summary string are rebuilt
     // only when the snapshot version or search term changes (O(1) skip in 59/60 frames).
@@ -313,8 +313,13 @@ class ProcessesPanel : public Panel
     void ensureTextSizeCacheValid();
 
     /// Adopts the model's latest snapshot generation and its capabilities into the render cache if
-    /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180).
+    /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180). Does
+    /// nothing while the pane is frozen by a held Ctrl (#928), except to load the first generation.
     void adoptNewerSnapshots();
+
+    /// Feeds this frame's keyboard and window state to m_DisplayFreeze (#928). Must be called inside
+    /// the window the pane renders into, since it asks ImGui whether that window is hovered/focused.
+    void updateDisplayFreeze();
 
     /// Get the number of visible columns
     [[nodiscard]] int visibleColumnCount() const;
