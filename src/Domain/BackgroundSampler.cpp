@@ -1,6 +1,7 @@
 #include "BackgroundSampler.h"
 
 #include "Domain/ISamplable.h"
+#include "Platform/ThreadName.h"
 #include "SamplingConfig.h"
 
 #include <spdlog/spdlog.h>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -53,7 +55,8 @@ void logSamplerLoopException(std::string_view message,
 
 BackgroundSampler::BackgroundSampler(SamplerConfig config)
     : m_Config{.interval = std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count())),
-               .firstSampleAfterInterval = config.firstSampleAfterInterval}
+               .firstSampleAfterInterval = config.firstSampleAfterInterval,
+               .threadName = std::move(config.threadName)}
 {
     spdlog::debug("BackgroundSampler: created with {}ms interval", m_Config.interval.count());
 }
@@ -80,7 +83,20 @@ void BackgroundSampler::start()
 
     spdlog::info("BackgroundSampler: starting with {}ms interval", m_Config.interval.count());
     m_Running.store(true);
-    m_SamplerThread = std::jthread([this](const std::stop_token& st) { samplerLoop(st); });
+    std::string threadName;
+    {
+        const std::scoped_lock lock(m_ConfigMutex);
+        threadName = m_Config.threadName;
+    }
+    m_SamplerThread = std::jthread(
+        [this, name = std::move(threadName)](const std::stop_token& st)
+        {
+            if (!Platform::setCurrentThreadName(name))
+            {
+                spdlog::debug("BackgroundSampler: could not name thread '{}'", name);
+            }
+            samplerLoop(st);
+        });
 }
 
 void BackgroundSampler::stop()

@@ -20,6 +20,7 @@
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Platform/Factory.h"
+#include "Platform/ThreadName.h"
 #include "PowerStatusText.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
@@ -194,6 +195,7 @@ void SystemMetricsPanel::onAttach()
     Domain::SamplerConfig samplerCfg;
     samplerCfg.interval = m_RefreshInterval;
     samplerCfg.firstSampleAfterInterval = true; // seeded synchronously above (#1102)
+    samplerCfg.threadName = Platform::SYSTEM_SAMPLER_THREAD_NAME;
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_Model);
     m_Sampler->addSamplable(m_StorageModel);
