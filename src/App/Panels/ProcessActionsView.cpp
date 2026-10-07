@@ -55,12 +55,20 @@ void ProcessActionsView::renderConfirmDialog(Platform::IProcessActions* actions,
     // The same dialog the Processes table's row menu confirms with (#1209). It names, and a confirm
     // acts on, the process captured when the button was pressed; after a selection change it is
     // closed unconfirmed instead, so it can never act on another process.
+    // Every outcome but None ends the confirm: dispatchConfirmed() clears it after acting, and a
+    // cancel or dismissal clears it without acting, so nothing stale is left to replay.
     const bool dismiss = takeDismiss(liveTarget);
-    if (ProcessActionConfirm::render(
-            m_ShowConfirmDialog, m_ConfirmAction, m_ConfirmTarget.processName, m_ConfirmTarget.target.pid, dismiss) ==
-        ProcessActionConfirm::Outcome::Confirmed)
+    switch (ProcessActionConfirm::render(
+        m_ShowConfirmDialog, m_ConfirmAction, m_ConfirmTarget.processName, m_ConfirmTarget.target.pid, dismiss))
     {
+    case ProcessActionConfirm::Outcome::Confirmed:
         dispatchConfirmed(actions);
+        break;
+    case ProcessActionConfirm::Outcome::Cancelled:
+        cancelConfirm();
+        break;
+    case ProcessActionConfirm::Outcome::None:
+        break;
     }
 }
 

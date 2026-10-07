@@ -280,13 +280,13 @@ TEST(ProcessActionsViewTest, SelectionChangeCancelsThePendingConfirm)
     EXPECT_TRUE(view.takeDismiss(TARGET_B));
     EXPECT_FALSE(view.takeDismiss(TARGET_B)); // Consumed
 
-    // A confirm now reaches no platform call at all, for A or B.
+    // A confirm now reaches no platform call at all, for A or B, and shows no result.
     view.dispatchConfirmed(&mock);
     EXPECT_EQ(mock.terminateCount(), 0);
     EXPECT_EQ(mock.killCount(), 0);
     EXPECT_EQ(mock.stopCount(), 0);
     EXPECT_EQ(mock.resumeCount(), 0);
-    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_TRUE(view.lastResult().empty());
 }
 
 TEST(ProcessActionsViewTest, SameTargetKeepsTheDialogOpen)
@@ -340,6 +340,73 @@ TEST(ProcessActionsViewTest, SameProcessTargetComparesPidAndKnownStartTime)
         SCOPED_TRACE(c.name);
         EXPECT_EQ(Detail::isSameProcessTarget(c.captured, c.live), c.same);
     }
+}
+
+// --- Nothing stale after the dialog closes (Copilot review on #1447) --------------------------------
+
+TEST(ProcessActionsViewTest, ConfirmClearsThePendingConfirmAndRunsOnce)
+{
+    for (const ProcessAction action : ALL_ACTIONS)
+    {
+        SCOPED_TRACE(Detail::actionLabel(action));
+        TestMocks::MockProcessActions mock;
+        ProcessActionsView view;
+        view.requestAction(action, TARGET_A, "a");
+        view.dispatchConfirmed(&mock);
+
+        EXPECT_FALSE(view.confirmRequested());
+        EXPECT_EQ(view.pendingAction(), ProcessAction::None);
+        EXPECT_EQ(view.confirmTarget().target.pid, -1);
+        EXPECT_TRUE(view.confirmTarget().processName.empty());
+        const std::string firstResult = view.lastResult().text;
+
+        // A second dispatch has nothing to replay: no platform call, and the result line is kept.
+        view.dispatchConfirmed(&mock);
+        const int calls = mock.terminateCount() + mock.killCount() + mock.stopCount() + mock.resumeCount();
+        EXPECT_EQ(calls, 1);
+        EXPECT_EQ(view.lastResult().text, firstResult);
+    }
+}
+
+TEST(ProcessActionsViewTest, CancelClearsThePendingConfirmAndDispatchesNothing)
+{
+    for (const ProcessAction action : ALL_ACTIONS)
+    {
+        SCOPED_TRACE(Detail::actionLabel(action));
+        TestMocks::MockProcessActions mock;
+        ProcessActionsView view;
+        view.requestAction(action, TARGET_A, "a");
+        view.cancelConfirm();
+
+        EXPECT_FALSE(view.confirmRequested());
+        EXPECT_EQ(view.pendingAction(), ProcessAction::None);
+        EXPECT_EQ(view.confirmTarget().target.pid, -1);
+        EXPECT_TRUE(view.confirmTarget().processName.empty());
+
+        view.dispatchConfirmed(&mock);
+        const int calls = mock.terminateCount() + mock.killCount() + mock.stopCount() + mock.resumeCount();
+        EXPECT_EQ(calls, 0);
+        EXPECT_TRUE(view.lastResult().empty());
+    }
+}
+
+TEST(ProcessActionsViewTest, DispatchWithNothingPendingDoesNothing)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView view;
+    view.dispatchConfirmed(&mock);
+    view.dispatchConfirmed(nullptr);
+    EXPECT_EQ(mock.terminateCount() + mock.killCount() + mock.stopCount() + mock.resumeCount(), 0);
+    EXPECT_TRUE(view.lastResult().empty());
+}
+
+TEST(ProcessActionsViewTest, DismissForAMovedTargetClearsThePendingConfirm)
+{
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Kill, TARGET_A, "a");
+    ASSERT_TRUE(view.takeDismiss(TARGET_B));
+    EXPECT_EQ(view.pendingAction(), ProcessAction::None);
+    EXPECT_EQ(view.confirmTarget().target.pid, -1);
 }
 
 } // namespace

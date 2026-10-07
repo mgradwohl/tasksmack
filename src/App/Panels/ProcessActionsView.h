@@ -126,11 +126,18 @@ class ProcessActionsView
     /// next render() close the dialog if ImGui still has it open, and drop the result line.
     void onSelectionChanged() noexcept
     {
+        cancelConfirm();
+        m_DismissPending = true;
+        m_LastResult = {};
+    }
+
+    /// The dialog closed without acting (Cancel, or dismissed): nothing is pending any more, so
+    /// pendingAction() is None, confirmTarget() has PID -1, and dispatchConfirmed() does nothing.
+    void cancelConfirm() noexcept
+    {
         m_ShowConfirmDialog = false;
         m_ConfirmAction = Detail::ProcessAction::None;
         m_ConfirmTarget = {};
-        m_DismissPending = true;
-        m_LastResult = {};
     }
 
     /// A button was pressed: ask to confirm @p action on @p target, named @p processName.
@@ -150,24 +157,28 @@ class ProcessActionsView
         const bool targetMoved = m_ShowConfirmDialog && !Detail::isSameProcessTarget(m_ConfirmTarget.target, liveTarget);
         if (targetMoved)
         {
-            m_ShowConfirmDialog = false;
-            m_ConfirmAction = Detail::ProcessAction::None;
-            m_ConfirmTarget = {};
+            cancelConfirm();
         }
         return selectionChanged || targetMoved;
     }
 
     /// The confirm dialog's action was pressed: run the pending action on the captured target through
-    /// @p actions (null gives an "unavailable" error rather than a dereference), and show the result.
-    /// With no pending action (ProcessAction::None) nothing reaches the platform.
+    /// @p actions (null gives an "unavailable" error rather than a dereference), show the result, and
+    /// clear the pending confirm, so it runs once. With nothing pending this does nothing at all: no
+    /// platform call, and the result line is left as it is.
     void dispatchConfirmed(Platform::IProcessActions* actions)
     {
+        if (m_ConfirmAction == Detail::ProcessAction::None)
+        {
+            return;
+        }
         const Platform::ProcessTarget& target = m_ConfirmTarget.target;
         const Platform::ProcessActionResult result = (actions != nullptr)
                                                        ? Detail::dispatchProcessAction(*actions, m_ConfirmAction, target)
                                                        : Platform::ProcessActionResult::error("Process actions unavailable");
         m_LastResult = Detail::formatActionResultMessage(m_ConfirmAction, target.pid, result);
         m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
+        cancelConfirm();
     }
 
     /// Whether the confirm dialog is open, or requested to open this frame.
