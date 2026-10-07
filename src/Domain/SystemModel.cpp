@@ -221,6 +221,31 @@ void SystemModel::updateFromCounters(const Platform::SystemCounters& counters, d
     updateFromCountersLocked(counters, nowSeconds, std::nullopt);
 }
 
+void SystemModel::updateFromCounterSeries(const CounterSeriesSource& next)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    Platform::SystemCounters counters;
+    double nowSeconds = 0.0;
+    bool applied = false;
+    while (next(counters, nowSeconds))
+    {
+        // Against the previous reading, not the history: after a lone seed reading the history is
+        // still empty, but a reading at or before it would give a zero or negative interval.
+        if (m_HasPrevious && nowSeconds <= m_PrevTimestamp)
+        {
+            continue;
+        }
+        computeSnapshot(counters, nowSeconds);
+        m_PrevCounters = counters;
+        m_HasPrevious = true;
+        applied = true;
+    }
+    if (applied)
+    {
+        publish();
+    }
+}
+
 void SystemModel::updateFromCountersLocked(const Platform::SystemCounters& counters,
                                            double nowSeconds,
                                            const std::optional<PowerStatus>& powerStatus)
