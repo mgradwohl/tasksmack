@@ -46,6 +46,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -693,9 +694,122 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
     return elevation.TokenIsElevated != 0;
 }
 
+/// Every processor group with its maximum size (GetMaximumProcessorCount), as WindowsSystemProbe
+/// numbers per-core CPUs by (#1247). Fixed for the boot session, so read once; active masks are
+/// left 0 for readActiveProcessorMasks(). Empty if discovery failed (a group count or size of 0):
+/// affinityTopology() then reports Unknown, never one group.
+[[nodiscard]] std::vector<ProcessorGroupLayout> readProcessorGroupMaximums()
+{
+    std::vector<ProcessorGroupLayout> groups(GetMaximumProcessorGroupCount());
+    for (std::size_t group = 0; group < groups.size(); ++group)
+    {
+        groups[group].maximumProcessors = GetMaximumProcessorCount(static_cast<WORD>(group));
+        if (groups[group].maximumProcessors == 0)
+        {
+            spdlog::debug("GetMaximumProcessorCount({}) failed: CPU affinity unreadable", group);
+            return {};
+        }
+    }
+    return groups;
+}
+
+/// Each group's active processors, from GetLogicalProcessorInformationEx(RelationGroup), whose
+/// GroupInfo lists the active groups (a group with none active gets mask 0). Hot-add or offlining
+/// changes them, so they are re-read on the heavy detail cadence (#1247). False, with every mask
+/// cleared, if they can't be read.
+[[nodiscard]] bool readActiveProcessorMasks(std::span<ProcessorGroupLayout> groups)
+{
+    for (ProcessorGroupLayout& group : groups)
+    {
+        group.activeMask = 0;
+    }
+    DWORD bytes = 0;
+    (void) GetLogicalProcessorInformationEx(RelationGroup, nullptr, &bytes);
+    std::vector<std::byte> buffer(bytes);
+    constexpr std::size_t GROUP_OFFSET = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Group);
+    if (bytes < GROUP_OFFSET + sizeof(GROUP_RELATIONSHIP) ||
+        // Safe and necessary: the API writes this variable-size structure into the byte buffer.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        GetLogicalProcessorInformationEx(
+            RelationGroup, reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data()), &bytes) == FALSE)
+    {
+        spdlog::debug("GetLogicalProcessorInformationEx(RelationGroup) failed: multi-group CPU affinity unreadable");
+        return false;
+    }
+    // Copied out rather than indexed in place: GroupInfo is declared as a one-element array.
+    GROUP_RELATIONSHIP relationship{};
+    std::memcpy(&relationship, buffer.data() + GROUP_OFFSET, sizeof(relationship));
+    constexpr std::size_t GROUP_INFO_OFFSET = GROUP_OFFSET + offsetof(GROUP_RELATIONSHIP, GroupInfo);
+    for (std::size_t group = 0; group < relationship.ActiveGroupCount && group < groups.size(); ++group)
+    {
+        const std::size_t at = GROUP_INFO_OFFSET + (group * sizeof(PROCESSOR_GROUP_INFO));
+        if (at + sizeof(PROCESSOR_GROUP_INFO) > bytes)
+        {
+            for (ProcessorGroupLayout& cleared : groups)
+            {
+                cleared.activeMask = 0;
+            }
+            return false;
+        }
+        PROCESSOR_GROUP_INFO info{};
+        std::memcpy(&info, buffer.data() + at, sizeof(info));
+        groups[group].activeMask = static_cast<std::uint64_t>(info.ActiveProcessorMask);
+    }
+    return true;
+}
+
+/// This Windows build number, from RtlGetVersion (GetVersionEx is manifest-dependent); 0 if it
+/// can't be read, which threadsMaySpanGroups() treats as the cautious answer.
+[[nodiscard]] std::uint32_t windowsBuildNumber()
+{
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto rtlGetVersion = (ntdll != nullptr) ? Windows::getProcAddress<RtlGetVersionFn>(ntdll, "RtlGetVersion") : nullptr;
+    OSVERSIONINFOW version{};
+    version.dwOSVersionInfoSize = sizeof(version);
+    if (rtlGetVersion == nullptr || rtlGetVersion(&version) != 0)
+    {
+        return 0;
+    }
+    return version.dwBuildNumber;
+}
+
+/// Each thread's group affinity (GetThreadGroupAffinity), from the process's
+/// SYSTEM_THREAD_INFORMATION records in the snapshot (#1247). Incomplete if any thread has exited,
+/// can't be opened or read, or the records are missing: groupMasksFromThreads() then reports the
+/// affinity unreadable rather than infer the missing threads' groups. A thread ID can be reused as
+/// soon as its thread exits, so an opened thread that now belongs to another process than
+/// `ownerPid` is a missing thread too, not one of this process's (review #1434).
+[[nodiscard]] ThreadGroupAffinityReads readThreadGroupAffinities(std::span<const std::byte> threadRecords, DWORD ownerPid)
+{
+    ThreadGroupAffinityReads reads;
+    reads.complete = threadRecords.size() >= sizeof(SYSTEM_THREAD_INFORMATION);
+    for (std::size_t offset = 0; offset + sizeof(SYSTEM_THREAD_INFORMATION) <= threadRecords.size();
+         offset += sizeof(SYSTEM_THREAD_INFORMATION))
+    {
+        SYSTEM_THREAD_INFORMATION thread{};
+        std::memcpy(&thread, threadRecords.data() + offset, sizeof(thread));
+        // Safe and necessary: the kernel stores thread IDs as HANDLE-sized integers; they fit in 32 bits.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        const auto tid = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(thread.ClientId.UniqueThread));
+        const ScopedHandle hThread(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
+        GROUP_AFFINITY affinity{};
+        if (!hThread.valid() || GetProcessIdOfThread(hThread) != ownerPid || GetThreadGroupAffinity(hThread, &affinity) == FALSE)
+        {
+            reads.complete = false;
+            break; // The affinity is unreadable now; the remaining threads can't change that
+        }
+        reads.masks.push_back({.group = affinity.Group, .mask = static_cast<std::uint64_t>(affinity.Mask)});
+    }
+    return reads;
+}
+
 } // namespace
 
-WindowsProcessProbe::WindowsProcessProbe() : m_IsElevated(isCurrentProcessElevated())
+WindowsProcessProbe::WindowsProcessProbe()
+    : m_IsElevated(isCurrentProcessElevated()),
+      m_ProcessorGroups(readProcessorGroupMaximums()),
+      m_ThreadsMaySpanGroups(threadsMaySpanGroups(windowsBuildNumber()))
 {
     // Stored here rather than in the member-initializer list on purpose: detectNetworkCounters()
     // writes members declared after m_HasNetworkCounters (m_NetworkCountersAccessDenied,
@@ -823,8 +937,10 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         const std::size_t threadsBegin = offset + sizeof(SystemProcessInfo);
         const std::size_t threadsEnd = threadsBegin + (std::size_t{info->numberOfThreads} * sizeof(SYSTEM_THREAD_INFORMATION));
         const std::size_t entryEnd = (info->nextEntryOffset != 0) ? std::min(snapshotBytes, offset + info->nextEntryOffset) : snapshotBytes;
+        std::span<const std::byte> threadRecords;
         if (threadsEnd <= entryEnd)
         {
+            threadRecords = std::span<const std::byte>(m_SnapshotBuffer).subspan(threadsBegin, threadsEnd - threadsBegin);
             ProcessThreadTally threads;
             for (std::size_t threadOffset = threadsBegin; threadOffset < threadsEnd; threadOffset += sizeof(SYSTEM_THREAD_INFORMATION))
             {
@@ -867,7 +983,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 
         // Refresh TTL-cached details (owner, command, publisher, ...) - may fail for protected processes
         // Ignore return value - we still want to include the process even if details fail
-        (void) getProcessDetails(pid, counters, imageName, static_cast<std::int32_t>(info->basePriority));
+        (void) getProcessDetails(pid, counters, imageName, static_cast<std::int32_t>(info->basePriority), threadRecords);
 
         results.push_back(std::move(counters));
 
@@ -892,7 +1008,11 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     return results;
 }
 
-bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& counters, std::wstring_view imageName, std::int32_t basePriority)
+bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
+                                            ProcessCounters& counters,
+                                            std::wstring_view imageName,
+                                            std::int32_t basePriority,
+                                            std::span<const std::byte> threadRecords)
 {
     const auto now = std::chrono::steady_clock::now();
 
@@ -1009,20 +1129,8 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
         // getFilePublisher() has its own path cache; this outer TTL avoids repeated path lookups.
         counters.publisher = getFilePublisher(imagePath);
 
-        // CPU affinity rarely changes — refresh alongside heavy details.
-        DWORD_PTR processAffinityMask = 0;
-        DWORD_PTR systemAffinityMask = 0;
-        if (GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0)
-        {
-            // Safe: DWORD_PTR is pointer-sized (64-bit on x64); uint64_t can hold all values.
-            // Still the primary processor group's mask only, bit N = processor N of that group:
-            // mapping every group to global indices is #1247's Windows half.
-            counters.cpuAffinity = CpuAffinity::fromMask(static_cast<std::uint64_t>(processAffinityMask));
-        }
-        else
-        {
-            counters.cpuAffinity = CpuAffinity{};
-        }
+        // CPU affinity rarely changes — refresh alongside heavy details, and cached with them.
+        counters.cpuAffinity = readCpuAffinity(hProcess, threadRecords);
     }
     fallBackToName();
 
@@ -1075,6 +1183,66 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid, ProcessCounters& count
     return true;
 }
 
+CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<const std::byte> threadRecords)
+{
+    if (m_ProcessorGroups.size() > 1)
+    {
+        // Active processors can change (hot-add, offlining): re-read with the heavy details, once
+        // per heavy TTL for every process due this sample (#1247).
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= m_NextActiveMasksRead)
+        {
+            m_ActiveMasksRead = readActiveProcessorMasks(m_ProcessorGroups);
+            m_NextActiveMasksRead = now + m_HeavyDetailTTL;
+        }
+    }
+
+    DWORD_PTR processAffinityMask = 0;
+    DWORD_PTR systemAffinityMask = 0;
+    const bool maskRead = GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0;
+    // Safe: DWORD_PTR is pointer-sized (64-bit on x64); uint64_t can hold all values.
+    const std::uint64_t processMask = maskRead ? static_cast<std::uint64_t>(processAffinityMask) : 0;
+    switch (affinityTopology(m_ProcessorGroups.size(), m_ActiveMasksRead))
+    {
+    case AffinityTopology::SingleGroup:
+        // One processor group (every machine with 64 or fewer logical processors): bit N is CPU N.
+        return maskRead ? CpuAffinity::fromMask(processMask) : CpuAffinity{};
+    case AffinityTopology::Unknown:
+        return {}; // Topology discovery failed: one group's mask can't be placed
+    case AffinityTopology::MultiGroup:
+        break;
+    }
+
+    // Several groups: the process mask covers one group only, and doesn't say which (#1247).
+    std::vector<std::uint16_t> groups(m_ProcessorGroups.size());
+    auto groupCount = static_cast<USHORT>(groups.size());
+    if (GetProcessGroupAffinity(hProcess, &groupCount, groups.data()) == FALSE)
+    {
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        {
+            return {};
+        }
+        groups.resize(groupCount); // groupCount is now the size required
+        if (GetProcessGroupAffinity(hProcess, &groupCount, groups.data()) == FALSE)
+        {
+            return {};
+        }
+    }
+    groups.resize(std::min<std::size_t>(groupCount, groups.size()));
+
+    if (const auto masks = groupMasksFromProcess(groups, processMask, m_ProcessorGroups, m_ThreadsMaySpanGroups); masks.has_value())
+    {
+        return cpuAffinityFromGroupMasks(*masks, m_ProcessorGroups);
+    }
+    // Only here does it cost a handle per thread, on the heavy cadence, for a process whose
+    // affinity the process-level reads leave open.
+    // GetProcessId() returns 0 on failure; no thread this probe can open belongs to PID 0 (Idle), so
+    // that leaves every thread unmatched and the affinity unreadable.
+    const ThreadGroupAffinityReads threadReads = readThreadGroupAffinities(threadRecords, GetProcessId(hProcess));
+    return cpuAffinityFromGroupMasks(groupMasksFromThreads(groups, threadReads, m_ProcessorGroups, m_ThreadsMaySpanGroups),
+                                     m_ProcessorGroups);
+}
+
 ProcessCapabilities WindowsProcessProbe::capabilities() const
 {
     // The network flags can flip after construction (#1161: the first real sample may prove
@@ -1097,7 +1265,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasNice = true,        // From GetPriorityClass
         .hasPageFaults = true,  // From the SystemProcessInformation snapshot
         .hasPeakRss = true,     // From the SystemProcessInformation snapshot (PeakWorkingSetSize)
-        .hasCpuAffinity = true, // From GetProcessAffinityMask
+        .hasCpuAffinity = true, // From GetProcessAffinityMask, per processor group (#1247)
         // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
         // See GitHub issue for implementation tracking
         .hasNetworkCounters = hasNetworkCounters,
