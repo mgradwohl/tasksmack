@@ -19,7 +19,7 @@ Use check-format.sh to check without modifying files.
 
 Options:
   -v, --verbose     Show per-file progress
-  -c, --changed-only Only format changed C++ files (uses git diff)
+  -c, --changed-only Only format C++ files changed on this branch (vs. its merge-base with main, plus untracked)
   -h, --help        Show this help
 
 Examples:
@@ -64,8 +64,8 @@ source "$SCRIPT_DIR/common.sh"
 warn_clang_format_version_skew "$CLANG_FORMAT"
 
 if [[ "$CHANGED_ONLY" == "true" ]]; then
-    # Get changed files from git
-    mapfile -t CHANGED_FILES < <(git diff --name-only HEAD 2>/dev/null | grep -E '\.(cpp|h)$' || true)
+    # Files this branch changes (committed, staged, unstaged, untracked); see list_changed_files
+    mapfile -t CHANGED_FILES < <(list_changed_files "$PROJECT_ROOT" | grep -E '\.(cpp|h)$' || true)
     if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
         echo "No changed C++ files found."
         exit 0

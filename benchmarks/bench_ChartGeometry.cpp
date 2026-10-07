@@ -55,6 +55,14 @@ void BM_ChartGeometry_PerCoreSparklines(benchmark::State& state)
 }
 BENCHMARK(BM_ChartGeometry_PerCoreSparklines)->Unit(benchmark::kMicrosecond);
 
+// The CPU Cores grid on a 64-thread machine: 64 narrow filled charts (3k samples each), whose point
+// budget follows their plot width (#1411).
+void BM_ChartGeometry_ManyCoreSparklines(benchmark::State& state)
+{
+    runScene(state, ChartGeometry::Scene::ManyCoreSparklines);
+}
+BENCHMARK(BM_ChartGeometry_ManyCoreSparklines)->Unit(benchmark::kMicrosecond);
+
 // The Memory chart: Used (filled), Cached and Swap with markers, a peak line, three now bars (3k samples).
 void BM_ChartGeometry_Memory(benchmark::State& state)
 {

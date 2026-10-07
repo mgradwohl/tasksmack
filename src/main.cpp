@@ -7,6 +7,7 @@
 #include "App/InstanceLock.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
+#include "App/SyntheticScenario.h"
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -199,6 +200,10 @@ auto runApp() -> int
     spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
+
+    // Read TASKSMACK_SYNTHETIC once, now, so the synthetic scenario (#1413) is logged at startup and
+    // every panel sees the same one. Unset, this is the only trace of it.
+    static_cast<void>(App::Synthetic::activeScenario());
 
     if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
     {

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "Domain/SystemSnapshot.h"
+#include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <iterator>
 #include <optional>
@@ -331,6 +333,65 @@ struct InterfaceSelection
         return {.index = std::nullopt, .lost = true};
     }
     return {.index = static_cast<std::size_t>(std::distance(interfaces.begin(), it)), .lost = false};
+}
+
+/// The Interface Status table's text for a rate that is not a reading (#1375): an em dash, as the
+/// process table marks a value it could not read (#1210), never a "-" that reads like a zero.
+inline constexpr std::string_view UNAVAILABLE_RATE_TEXT = "\xE2\x80\x94";
+
+/// How an Interface Status Sent/Received cell is drawn (#1375), the convention #1210 set for the
+/// process table: a reading in the column's colour, a measured zero in its own format but muted, and
+/// UNAVAILABLE_RATE_TEXT, muted, with a tooltip saying why, only where there is no reading.
+enum class RateCellTone : std::uint8_t
+{
+    Value,       ///< A non-zero reading: the direction's chart colour.
+    Zero,        ///< A measured 0: "0.0 B/s", muted.
+    Unavailable, ///< No reading: UNAVAILABLE_RATE_TEXT, muted, with rateUnavailableReason() on hover.
+};
+
+[[nodiscard]] constexpr RateCellTone rateCellTone(double bytesPerSec, Domain::InterfaceRateStatus status) noexcept
+{
+    if (status != Domain::InterfaceRateStatus::Measured)
+    {
+        return RateCellTone::Unavailable;
+    }
+    return (bytesPerSec > 0.0) ? RateCellTone::Value : RateCellTone::Zero;
+}
+
+/// Why a rate is not a reading, for the cell's tooltip; null for a reading.
+[[nodiscard]] constexpr const char* rateUnavailableReason(Domain::InterfaceRateStatus status) noexcept
+{
+    switch (status)
+    {
+    case Domain::InterfaceRateStatus::Measured:
+        return nullptr;
+    case Domain::InterfaceRateStatus::NotYetSampled:
+        return "Not measured yet: a rate needs two samples of this interface";
+    case Domain::InterfaceRateStatus::CounterReset:
+        return "Not measured this sample: the interface's byte counter went backwards (a driver reset or a wrap)";
+    case Domain::InterfaceRateStatus::AboveCeiling:
+        return "Not measured this sample: the counter jumped by more than the sane-rate ceiling "
+               "([metrics] max_sane_rate_bps), a counter glitch rather than traffic";
+    }
+    return nullptr;
+}
+
+/// A Sent/Received cell's text, tone and tooltip, built once per publication (#1171), not per frame.
+struct RateCell
+{
+    std::string text;
+    RateCellTone tone = RateCellTone::Zero;
+    const char* unavailableReason = nullptr; ///< A string literal; null unless tone is Unavailable.
+};
+
+[[nodiscard]] inline RateCell makeRateCell(double bytesPerSec, Domain::InterfaceRateStatus status)
+{
+    const RateCellTone tone = rateCellTone(bytesPerSec, status);
+    if (tone == RateCellTone::Unavailable)
+    {
+        return {.text = std::string(UNAVAILABLE_RATE_TEXT), .tone = tone, .unavailableReason = rateUnavailableReason(status)};
+    }
+    return {.text = UI::Format::formatBytesPerSec(bytesPerSec), .tone = tone, .unavailableReason = nullptr};
 }
 
 } // namespace App::NetInterfaceUtils
