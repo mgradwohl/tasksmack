@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include "Domain/SamplingConfig.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 
@@ -43,13 +44,15 @@ namespace ChartGeometry
 {
 
 /// The fastest refresh interval (SamplingConfig's REFRESH_INTERVAL_MIN_MS), in seconds.
-inline constexpr double SAMPLE_INTERVAL_SECONDS = 0.1;
-/// 30 minutes at 100 ms (HISTORY_SECONDS_MAX / REFRESH_INTERVAL_MIN_MS): the longest history a chart
-/// can show, and what the stacked CPU chart and the long series draw.
-inline constexpr std::size_t FULL_HISTORY_SAMPLES = 18'000;
-/// 5 minutes at 100 ms (HISTORY_SECONDS_DEFAULT at REFRESH_INTERVAL_MIN_MS): the per-core and memory
-/// charts' history.
-inline constexpr std::size_t DEFAULT_WINDOW_SAMPLES = 3'000;
+inline constexpr double SAMPLE_INTERVAL_SECONDS = static_cast<double>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
+/// The longest history a chart can show, HISTORY_SECONDS_MAX at REFRESH_INTERVAL_MIN_MS (30 minutes at
+/// 100 ms): what the stacked CPU chart and the long series draw.
+inline constexpr std::size_t FULL_HISTORY_SAMPLES = static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_MAX) * 1000U /
+                                                    static_cast<std::size_t>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+/// The default history, HISTORY_SECONDS_DEFAULT at REFRESH_INTERVAL_MIN_MS (5 minutes at 100 ms): the
+/// per-core and memory charts' history.
+inline constexpr std::size_t DEFAULT_WINDOW_SAMPLES = static_cast<std::size_t>(Domain::Sampling::HISTORY_SECONDS_DEFAULT) * 1000U /
+                                                      static_cast<std::size_t>(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
 /// Cores in the per-core sparkline grid, and its columns.
 inline constexpr std::size_t CORE_COUNT = 16;
 inline constexpr int CORE_GRID_COLUMNS = 4;

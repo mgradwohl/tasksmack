@@ -21,6 +21,7 @@
 // repetition (cachedFixture()); a further sample leaves it at the same size.
 
 #include "Domain/ProcessModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockDiskProbe.h"
@@ -47,8 +48,25 @@
 namespace
 {
 
+namespace Sampling = Domain::Sampling;
+
 /// The fastest refresh interval (REFRESH_INTERVAL_MIN_MS), the spacing of every synthetic sample.
-constexpr double SAMPLE_INTERVAL_SECONDS = 0.1;
+constexpr double SAMPLE_INTERVAL_SECONDS = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 1000.0;
+
+/// Samples a @p historySeconds window holds at a @p refreshMs cadence.
+[[nodiscard]] constexpr std::int64_t samplesFor(int historySeconds, int refreshMs) noexcept
+{
+    return static_cast<std::int64_t>(historySeconds) * 1000 / refreshMs;
+}
+
+/// The history lengths the benchmarks hold, all from SamplingConfig.h (and so their names, e.g.
+/// .../18000, follow it):
+/// - the default window at the default refresh: 5 minutes at 1 s (300)
+/// - the default window at the fastest refresh: 5 minutes at 100 ms (3000)
+/// - the longest window at the fastest refresh: 30 minutes at 100 ms (18000), the headline figure
+constexpr std::int64_t DEFAULT_HISTORY_SAMPLES = samplesFor(Sampling::HISTORY_SECONDS_DEFAULT, Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+constexpr std::int64_t DEFAULT_WINDOW_FAST_SAMPLES = samplesFor(Sampling::HISTORY_SECONDS_DEFAULT, Sampling::REFRESH_INTERVAL_MIN_MS);
+constexpr std::int64_t FULL_HISTORY_SAMPLES = samplesFor(Sampling::HISTORY_SECONDS_MAX, Sampling::REFRESH_INTERVAL_MIN_MS);
 /// Sample times start here (seconds on the models' steady_clock-epoch time base), clear of zero.
 constexpr double START_SECONDS = 1000.0;
 
@@ -184,7 +202,11 @@ void BM_SystemModel_FullHistory_Publish(benchmark::State& state)
     }
     reportSystemShape(state, *fixture.model);
 }
-BENCHMARK(BM_SystemModel_FullHistory_Publish)->Arg(300)->Arg(3'000)->Arg(18'000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_SystemModel_FullHistory_Publish)
+    ->Arg(DEFAULT_HISTORY_SAMPLES)
+    ->Arg(DEFAULT_WINDOW_FAST_SAMPLES)
+    ->Arg(FULL_HISTORY_SAMPLES)
+    ->Unit(benchmark::kMicrosecond);
 
 // The UI's side at full history, uncontended: SystemModel::publication(), a shared_ptr copy under the
 // shared lock. It must stay O(1) however long the history is.
@@ -198,13 +220,13 @@ void BM_SystemModel_FullHistory_Publication(benchmark::State& state)
     }
     reportSystemShape(state, *fixture.model);
 }
-BENCHMARK(BM_SystemModel_FullHistory_Publication)->Arg(18'000);
+BENCHMARK(BM_SystemModel_FullHistory_Publication)->Arg(FULL_HISTORY_SAMPLES);
 
 // One SystemModel sample at a 300-sample history with range(0) cores and range(1) interfaces: the
 // per-core and per-interface series publish() copies, and the per-interface maps it rebuilds.
 void BM_SystemModel_Cardinality_Publish(benchmark::State& state)
 {
-    constexpr std::int64_t SAMPLES = 300;
+    constexpr std::int64_t SAMPLES = DEFAULT_HISTORY_SAMPLES;
     SystemFixture& fixture = systemFixture(SAMPLES, static_cast<std::size_t>(state.range(0)), static_cast<std::size_t>(state.range(1)));
     for (auto _ : state)
     {
@@ -336,9 +358,9 @@ void BM_SystemModel_Concurrent_PublicationWait(benchmark::State& state)
 }
 BENCHMARK(BM_SystemModel_Concurrent_PublicationWait)
     ->ArgNames({"samples", "extra_readers"})
-    ->Args({3'000, 0})
-    ->Args({18'000, 0})
-    ->Args({18'000, 2})
+    ->Args({DEFAULT_WINDOW_FAST_SAMPLES, 0})
+    ->Args({FULL_HISTORY_SAMPLES, 0})
+    ->Args({FULL_HISTORY_SAMPLES, 2})
     ->UseManualTime()
     ->Unit(benchmark::kMicrosecond);
 
@@ -417,12 +439,12 @@ void BM_StorageModel_FullHistory_Publish(benchmark::State& state)
     }
     reportStorageShape(state, *fixture.model);
 }
-BENCHMARK(BM_StorageModel_FullHistory_Publish)->Arg(18'000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_StorageModel_FullHistory_Publish)->Arg(FULL_HISTORY_SAMPLES)->Unit(benchmark::kMicrosecond);
 
 // One StorageModel sample at a 300-sample history of range(0) disks.
 void BM_StorageModel_Cardinality_Publish(benchmark::State& state)
 {
-    constexpr std::int64_t SAMPLES = 300;
+    constexpr std::int64_t SAMPLES = DEFAULT_HISTORY_SAMPLES;
     StorageFixture& fixture = storageFixture(SAMPLES, static_cast<std::size_t>(state.range(0)));
     for (auto _ : state)
     {

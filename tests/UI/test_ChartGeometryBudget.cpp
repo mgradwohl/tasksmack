@@ -15,6 +15,7 @@
 /// budget.
 
 #include "ChartGeometryScenes.h"
+#include "Domain/SamplingConfig.h"
 
 #include <gtest/gtest.h>
 
@@ -48,6 +49,13 @@ constexpr std::array BUDGETS{
     GeometryBudget{.scene = ChartGeometry::Scene::Memory, .recordedVertices = 6'300, .recordedIndices = 9'200},
     GeometryBudget{.scene = ChartGeometry::Scene::LongSeriesMinMax, .recordedVertices = 3'950, .recordedIndices = 5'300},
 };
+
+// The recorded counts were taken at these scene sizes, which ChartGeometryScenes.h derives from
+// SamplingConfig.h. If a sampling limit changes, the scenes draw a different history: re-record the
+// counts above at the new sizes, then update these.
+static_assert(ChartGeometry::FULL_HISTORY_SAMPLES == 18'000, "scene size changed: re-record the geometry budgets");
+static_assert(ChartGeometry::DEFAULT_WINDOW_SAMPLES == 3'000, "scene size changed: re-record the geometry budgets");
+static_assert(Domain::Sampling::REFRESH_INTERVAL_MIN_MS == 100, "scene cadence changed: re-record the geometry budgets");
 
 static_assert(BUDGETS.size() == ChartGeometry::ALL_SCENES.size(), "every scene needs a budget");
 
