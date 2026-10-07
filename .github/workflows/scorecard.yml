@@ -21,7 +21,9 @@ jobs:
     name: Wait for the merged PR's CodeQL result
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    # The script stops itself after WAIT_BUDGET_MINUTES (one deadline for both loops); the extra 10 minutes
+    # of timeout leave room for a last poll and the API calls, so the runner never times out first.
+    timeout-minutes: 55
     permissions:
       checks: read
       contents: read
@@ -34,12 +36,16 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -uo pipefail
+          # One deadline for the whole wait, PR association included, well inside timeout-minutes above.
+          WAIT_BUDGET_MINUTES=45
+          deadline=$((SECONDS + WAIT_BUDGET_MINUTES * 60))
           # Find the PR this commit came from; GitHub can take a moment to associate a fresh merge commit.
           head=""
           for _ in 1 2 3 4 5 6 7 8 9 10; do
             head=$(gh api "repos/$REPO/commits/$SHA/pulls" \
               --jq '[.[] | select(.merged_at != null)][0].head.sha // empty' 2>/dev/null)
             [ -n "$head" ] && break
+            [ "$((SECONDS + 30))" -lt "$deadline" ] || break
             sleep 30
           done
           if [ -z "$head" ]; then
@@ -54,8 +60,8 @@ jobs:
               --jq '.check_runs | sort_by(.started_at) | last | select(. != null) | "\(.status) \(.conclusion)"' 2>/dev/null
           }
 
-          # The CodeQL job's own timeout is 45 minutes and it started before the merge.
-          deadline=$((SECONDS + 45 * 60))
+          # The CodeQL job's own timeout is 45 minutes and it started before the merge, so the shared
+          # deadline above covers it.
           while [ "$SECONDS" -lt "$deadline" ]; do
             codeql=$(latest "CodeQL")
             analyze=$(latest "Analyze C++")
@@ -79,6 +85,7 @@ jobs:
                   exit 0
                 fi ;;
             esac
+            [ "$((SECONDS + 60))" -lt "$deadline" ] || break
             sleep 60
           done
           echo "::warning::Gave up waiting for CodeQL on $head; Scorecard may count $SHA as unchecked."
