@@ -20,36 +20,47 @@ function Find-IdentityLeaks {
     # Every string value (never an object key) of a decoded manifest that still holds a token
     # (user or host name) standing alone between the identity pass's separators, or contains one
     # of the paths. Tokens under 3 characters are not checked, as the identity pass leaves them.
+    # The fields the writer exempts are skipped exactly as it skips them ($script:IdentityExempt,
+    # build.build_type when it is one of $script:StandardBuildTypes, both loaded from bench.ps1
+    # below); machine.label is checked against the machine fields it is built from instead.
     param($Value, [string[]]$Tokens, [string[]]$Paths)
     $leaks = [System.Collections.Generic.List[string]]::new()
     $separated = '\s/\\"''=:,;'
     $visit = {
-        param($Node)
+        param($Node, [string]$Path)
         if ($null -eq $Node) { return }
+        if ($Path -eq 'machine.label') { return }
+        if ($script:IdentityExempt -contains $Path) { return }
+        if ($Path -eq 'build.build_type' -and $script:StandardBuildTypes -ccontains $Node) { return }
         if ($Node -is [string]) {
             foreach ($token in $Tokens) {
                 if ($token -and $token.Length -ge 3 -and [regex]::IsMatch($Node, "(?<![^$separated])" + [regex]::Escape($token) + "(?![^$separated])", 'IgnoreCase')) {
-                    $leaks.Add("'$token' in [$Node]")
+                    $leaks.Add("'$token' in $Path [$Node]")
                 }
             }
             foreach ($path in $Paths) {
-                if ($path -and $Node.IndexOf($path, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $leaks.Add("'$path' in [$Node]") }
+                if ($path -and $Node.IndexOf($path, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $leaks.Add("'$path' in $Path [$Node]") }
             }
             return
         }
+        $child = { param([string]$Key) if ($Path) { "$Path.$Key" } else { $Key } }
         if ($Node -is [System.Management.Automation.PSCustomObject]) {
-            foreach ($property in $Node.PSObject.Properties) { & $visit $property.Value }
+            foreach ($property in $Node.PSObject.Properties) { & $visit $property.Value (& $child $property.Name) }
+            if ($Node.PSObject.Properties['machine'] -and $Node.machine -and $Node.machine.PSObject.Properties['label']) {
+                $expected = Get-MachineLabel $Node.machine
+                if ($Node.machine.label -cne $expected) { $leaks.Add("machine.label [$($Node.machine.label)] is not built from the machine fields [$expected]") }
+            }
             return
         }
         if ($Node -is [System.Collections.IDictionary]) {
-            foreach ($item in $Node.Values) { & $visit $item }
+            foreach ($key in $Node.Keys) { & $visit $Node[$key] (& $child $key) }
             return
         }
         if ($Node -is [System.Collections.IEnumerable]) {
-            foreach ($item in $Node) { & $visit $item }
+            foreach ($item in $Node) { & $visit $item $Path }
         }
     }
-    & $visit $Value
+    & $visit $Value ''
     return , $leaks
 }
 
@@ -71,67 +82,20 @@ try {
     New-Item -ItemType Directory -Path $binDir, (Join-Path $buildDir 'CMakeFiles\4.0.0'), (Join-Path $buildDir 'CMakeFiles\4.1.0') | Out-Null
     $U = [Environment]::UserName
     $H = $env:USERPROFILE
-    # (input, expected) pairs: every absolute-path form the scrubber handles, each holding the user
-    # name, and the prefix maps quoted every way (#1445 review). The same list as
-    # tests/tools/test_bench_sh.py. -DBUILT_BY=<user name> is no path: the final identity pass
-    # catches it (for a user name of at least 3 characters).
-    $flagForms = @(
-        , @('-fms-compatibility', '-fms-compatibility')
-        , @("-IC:/Users/$U/a/inc", '-I<abs>/inc')
-        , @("-isystemC:\Users\$U\b\inc", '-isystem<abs>/inc')
-        , @("-idirafter\\fileserver\Users\$U\c\inc", '-idirafter<abs>/inc')
-        , @("-iquote//fileserver/Users/$U/d/inc", '-iquote<abs>/inc')
-        , @("-I//bench-host/Users/$U/sdk/include", '-I<abs>/include')
-        , @("-imsvc\\?\C:\Users\$U\e\inc", '-imsvc<abs>/inc')
-        , @("/I\\.\C:\Users\$U\f\inc", '/I<abs>/inc')
-        , @("/I/home/$U/g/inc", '/I<abs>/inc')
-        , @("/IC:\Users\$U\sdk\include", '/I<abs>/include')
-        , @("-L/home/$U/lib", '-L<abs>/lib')
-        , @("-B/Users/$U/bin", '-B<abs>/bin')
-        , @('--sysroot=/root/sysroot', '--sysroot=<abs>/sysroot')
-        , @("-fprofile-use=/home/$U/p.profdata", '-fprofile-use=<abs>/p.profdata')
-        , @("-fprofile-instr-use=C:/Users/$U/q.profdata", '-fprofile-instr-use=<abs>/q.profdata')
-        , @("-fprofile-use /home/$U/r.profdata", '-fprofile-use <abs>/r.profdata')
-        , @("-fprofile-use C:\Users\$U\pgo\other.profdata", '-fprofile-use <abs>/other.profdata')
-        , @("-fdebug-prefix-map=$H\src=/src", '-fdebug-prefix-map=<abs>/src=/src')
-        , @("-ffile-prefix-map=C:/Users/$U/src=//buildhost/Users/$U/out", '-ffile-prefix-map=<abs>/src=<abs>/out')
-        , @("-isystem /opt/$U/include", '-isystem <abs>/include')
-        , @("-I`"C:/Users/$U/My Includes/inc`"", '-I"<abs>/inc"')
-        , @("`"-isystem/home/$U/with space/inc`"", '"-isystem<abs>/inc"')
-        , @('-I~/sdk/include', '-I<abs>/include')
-        , @("-I ~$U/sdk/include", '-I <abs>/include')
-        , @("-fprofile-instr-use=`"$repoRootForward/profiles/tasksmack.profdata`"", '-fprofile-instr-use="<source>/profiles/tasksmack.profdata"')
-        , @('/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3', '/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3')
-        , @("-Wl,-rpath,/home/$U/lib", '-Wl,-rpath,<abs>/lib')
-        , @('-fsanitize-ignorelist=dir/x/y.txt', '-fsanitize-ignorelist=dir/x/y.txt')
-        , @("-ffile-prefix-map=/opt/$U/source=/mapped/source", '-ffile-prefix-map=<abs>/source=<abs>/source')
-        , @("-ffile-prefix-map=`"/opt/$U/source=/mapped/source`"", '-ffile-prefix-map="<abs>/source=<abs>/source"')
-        , @("`"-fdebug-prefix-map=/home/$U/My Src=/build/out dir`"", '"-fdebug-prefix-map=<abs>/My Src=<abs>/out dir"')
-        , @("-fmacro-prefix-map=`"/home/$U/src dir=/out/dir`"", '-fmacro-prefix-map="<abs>/src dir=<abs>/dir"')
-        , @("-fprofile-prefix-map='C:\Users\$U\a b=D:\x\y'", "-fprofile-prefix-map='<abs>/a b=<abs>/y'")
-        , @("-ffile-prefix-map=/home/$U/a=`"/x/new dir`"", '-ffile-prefix-map=<abs>/a="<abs>/new dir"')
-        , @("-DDATA=foo:C:/Users/$U/data", '-DDATA=foo:<abs>/data')
-        , @("/LIBPATH:C:\Users\$U\lib", '/LIBPATH:<abs>/lib')
-        , @('-B/root/bin/x', '-B<abs>/x')
-        , @('-DAPP_NAME=\"TaskSmack\"', '-DAPP_NAME=\"TaskSmack\"')
-        , @("-DDATA_DIR=\`"/home/$U/data\`"", '-DDATA_DIR=\"<abs>/data\"')
-        , @("-I`"C:\Users\$U\inc dir\`"", '-I"<abs>/inc dir"')
-        , @('/Iinclude/common', '/Iinclude/common')
-        , @('/FIinclude/config.h', '/FIinclude/config.h')
-        , @('/LIBPATH:build/lib', '/LIBPATH:build/lib')
-        , @("/I/home/$U/inc", '/I<abs>/inc')
-        , @("/IC:/Users/$U/inc", '/I<abs>/inc')
-        , @("/Users/$U/proj/config.h", '<abs>/config.h')
-        , @("/DDIR=/home/$U/x", '/DDIR=<abs>/x')
-        , @("-DAUTHOR=Jos$([char]0x00E9) -I`"C:/S$([char]0x00F8)urce $([char]0x00DC)/inc`"", "-DAUTHOR=Jos$([char]0x00E9) -I`"<abs>/inc`"")
-        , @("-DBUILT_BY=$U", $(if ($U.Length -ge 3) { '-DBUILT_BY=<user>' } else { "-DBUILT_BY=$U" }))
-    )
+    # Compiler flags holding user-home, profile and checkout paths, quotes and non-ASCII text: the
+    # manifest records only their SHA-256 (#1445), so none of this text may appear in it.
+    $rawFlags = "-fms-compatibility -I`"C:/Users/$U/My Includes/inc`" -isystem/home/$U/sdk/include -fdebug-prefix-map=$H\src=/src -DAPP_NAME=\`"TaskSmack\`" -DAUTHOR=Jos$([char]0x00E9)"
+    $rawConfigFlags = "-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$H\x.profdata"
+    $flagProbes = @('-fms-compatibility', 'My Includes', 'sdk/include', 'prefix-map', 'APP_NAME', 'tasksmack.profdata', 'x.profdata', '-fprofile', "Jos$([char]0x00E9)")
+    function Get-ExpectedSha256([string]$Text) {
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text))).ToLowerInvariant()
+    }
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding utf8 -Value @(
         'CMAKE_BUILD_TYPE:STRING=Release'
         'CMAKE_GENERATOR:INTERNAL=Ninja'
         "CMAKE_CXX_COMPILER:FILEPATH=C:\Users\$U\llvm\bin\clang++.exe"
-        "CMAKE_CXX_FLAGS:STRING=$(@($flagForms | ForEach-Object { $_[0] }) -join ' ')"
-        "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$H\x.profdata"
+        "CMAKE_CXX_FLAGS:STRING=$rawFlags"
+        "CMAKE_CXX_FLAGS_RELEASE:STRING=$rawConfigFlags"
         'TASKSMACK_ENABLE_IPO:BOOL=ON'
         'CMAKE_CACHE_MAJOR_VERSION:INTERNAL=4'
         'CMAKE_CACHE_MINOR_VERSION:INTERNAL=1'
@@ -266,7 +230,7 @@ exit [int]$env:STUB_EXIT
             Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'crashed')) '--benchmark_filter=BM_X'" }
         # #1424: a successful run, with this machine's own host name in the args (#1445 review).
         @{ Name = 'ok'; StubExit = '0'; StubOutput = 'full'
-            Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'ok')) '--benchmark_filter=BM_X' $(& $quote "--benchmark_context=tsk_ctx_machine=$([Environment]::MachineName)")" }
+            Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'ok')) '--benchmark_filter=BM_X' $(& $quote "--benchmark_context=tsk_ctx_machine=$([Environment]::MachineName)") $(& $quote "--benchmark_context=tsk_ctx_data=$H\bench data\input.bin")" }
         # #1445 review: an extra --benchmark_out / --benchmark_out_format is refused before launch.
         # A relative path, run from $root, so a file written anyway would be found.
         @{ Name = 'override-out'; StubExit = '0'; StubOutput = 'full'; Cwd = $root
@@ -275,7 +239,7 @@ exit [int]$env:STUB_EXIT
             Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'override-format')) '--benchmark_filter=BM_X' '--benchmark_out_format=csv'" }
         # #1445 review: bench.ps1 copied into a checkout under a Unicode path, outside git.
         @{ Name = 'uni'; StubExit = '0'; StubOutput = 'full'
-            Command = "& $(& $quote (Join-Path $checkout 'tools\bench.ps1')) fake-preset -BenchmarkBinary $(& $quote (Join-Path $checkout 'build\uni\bin\TaskSmackBenchmarks.cmd')) -OutputDirectory $(& $quote (Join-Path $root 'uni')) '--benchmark_filter=BM_X'" }
+            Command = "& $(& $quote (Join-Path $checkout 'tools\bench.ps1')) fake-preset -BenchmarkBinary $(& $quote (Join-Path $checkout 'build\uni\bin\TaskSmackBenchmarks.cmd')) -OutputDirectory $(& $quote (Join-Path $root 'uni')) '--benchmark_filter=BM_X' $(& $quote "--benchmark_context=tsk_ctx_profile=$checkout\profiles\tasksmack.profdata")" }
         # #1445 review: the binary is rebuilt during the run; the manifest keeps the launched hash.
         @{ Name = 'mutate'; StubExit = '0'; StubOutput = 'full'; StubMutate = $mutatingStub
             Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary $(& $quote $mutatingStub) -OutputDirectory $(& $quote (Join-Path $root 'mutate')) '--benchmark_filter=BM_X'" }
@@ -292,9 +256,10 @@ exit [int]$env:STUB_EXIT
     Copy-Item -LiteralPath $benchScript -Destination (Join-Path $checkout 'tools')
     Copy-Item -LiteralPath $stub -Destination (Join-Path $checkout 'build\uni\bin')
     $checkoutForward = $checkout.Replace('\', '/')
+    $uniConfigFlags = "-O3 -fprofile-instr-use=`"$checkoutForward/profiles/tasksmack.profdata`" -DAUTHOR=Jos$([char]0x00E9)"
     Set-Content -LiteralPath (Join-Path $checkout 'build\uni\CMakeCache.txt') -Encoding utf8 -Value @(
         'CMAKE_BUILD_TYPE:STRING=Release'
-        "CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -fprofile-instr-use=`"$checkoutForward/profiles/tasksmack.profdata`" -DAUTHOR=Jos$([char]0x00E9)"
+        "CMAKE_CXX_FLAGS_RELEASE:STRING=$uniConfigFlags"
     )
     $scenarioFile = Join-Path $root 'scenarios.json'
     $scenarioResults = Join-Path $root 'scenario-results.json'
@@ -406,7 +371,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     foreach ($section in @{
             git       = @('commit', 'branch', 'dirty')
             binary    = @('name', 'sha256')
-            build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags', 'cxx_flags_config', 'ipo')
+            build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags_sha256', 'cxx_flags_config_sha256', 'ipo')
             benchmark = @('args', 'raw_repetitions', 'report_aggregates_only')
             machine   = @('label', 'cpu_model', 'logical_cores', 'os_name', 'os_version', 'arch')
         }.GetEnumerator()) {
@@ -433,15 +398,12 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     }
     Assert-True ($manifest.machine.logical_cores -eq [Environment]::ProcessorCount -and $manifest.machine.os_name) 'Machine class'
 
-    # Absolute paths in flags: the checkout's become <source>/..., others <abs>/<file name>; every
-    # form of $flagForms goes through the manifest writer here.
-    Assert-True ($manifest.build.cxx_flags_config -ceq '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata') "cxx_flags_config: $($manifest.build.cxx_flags_config)"
-    $expectedFlags = @($flagForms | ForEach-Object { $_[1] }) -join ' '
-    if ($manifest.build.cxx_flags -cne $expectedFlags) {
-        $got = $manifest.build.cxx_flags
-        $diff = @($flagForms | Where-Object { -not $got.Contains($_[1]) } | ForEach-Object { "$($_[0]) -> expected $($_[1])" })
-        throw "cxx_flags: $got`nForms not scrubbed as expected:`n$($diff -join "`n")"
-    }
+    # The compiler flags are recorded only as SHA-256 of their exact CMakeCache.txt text (#1445):
+    # none of that text, and none of its paths, appears anywhere in the manifest.
+    Assert-True ($manifest.build.cxx_flags_sha256 -ceq (Get-ExpectedSha256 $rawFlags) -and $manifest.build.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 $rawConfigFlags)) "Flag hashes: $($manifest.build | ConvertTo-Json -Compress)"
+    foreach ($probe in $flagProbes) { Assert-True ($manifestText.IndexOf($probe, [StringComparison]::OrdinalIgnoreCase) -lt 0) "Flag text '$probe' is in the manifest" }
+    # Paths in the benchmark arguments are scrubbed one argument at a time.
+    Assert-True ($recordedArgs -contains '--benchmark_context=tsk_ctx_data=<abs>/input.bin') "Argument paths: $($recordedArgs -join ' ')"
 
     # No host name, user name or user-profile path anywhere in the manifest: the user and host
     # names as tokens, the profile, temp and checkout paths as substrings.
@@ -469,7 +431,9 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $uni = $outcomes['uni']
     Assert-True ($uni.ExitCode -eq 0 -and $uni.Manifest.Count -eq 1) "Unicode-checkout run failed:`n$($uni.Log)"
     $uniManifest = Get-Content -LiteralPath $uni.Manifest[0].FullName -Raw -Encoding utf8 | ConvertFrom-Json
-    Assert-True ($uniManifest.build.cxx_flags_config -ceq "-O3 -fprofile-instr-use=`"<source>/profiles/tasksmack.profdata`" -DAUTHOR=Jos$([char]0x00E9)") "Unicode checkout flags: $($uniManifest.build.cxx_flags_config)"
+    # The flags are hashed as UTF-8; the checkout's own path in an argument maps to <source>.
+    Assert-True ($uniManifest.build.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 $uniConfigFlags)) "Unicode checkout flag hash: $($uniManifest.build.cxx_flags_config_sha256)"
+    Assert-True (@($uniManifest.benchmark.args) -contains '--benchmark_context=tsk_ctx_profile=<source>/profiles/tasksmack.profdata') "Unicode checkout args: $(@($uniManifest.benchmark.args) -join ' ')"
     Assert-True ($null -eq $uniManifest.git.commit -and $null -eq $uniManifest.git.branch -and $null -eq $uniManifest.git.dirty) "Outside git, the git fields must be unknown: $($uniManifest.git | ConvertTo-Json -Compress)"
 
     # ── Self-review: `& bench.ps1 -- --benchmark_filter=...` from PowerShell, as documented ─────
@@ -569,7 +533,19 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $benchBin = Join-Path $multiDir 'bin\RelWithDebInfo\TaskSmackBenchmarks.cmd'
     $multiBuild = Get-BuildProvenance
     Assert-True ($multiBuild.build_type -eq 'RelWithDebInfo' -and $multiBuild.generator -eq 'Ninja Multi-Config' -and
-        $multiBuild.cxx_flags_config -eq '-O2 -g -DNDEBUG' -and $multiBuild.compiler_version -eq '22.1.8') "Multi-config build provenance: $($multiBuild | ConvertTo-Json -Compress)"
+        $multiBuild.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 '-O2 -g -DNDEBUG') -and $multiBuild.compiler_version -eq '22.1.8') "Multi-config build provenance: $($multiBuild | ConvertTo-Json -Compress)"
+
+    # ── #1445: equal flags hash equally across build trees; a changed flag changes the hash ────
+    $benchBin = $stub
+    $original = Get-BuildProvenance
+    foreach ($case in @(@{ Name = 'same-flags'; Flags = $rawFlags; Same = $true }, @{ Name = 'changed-flag'; Flags = $rawFlags.Replace('-fms-compatibility', '-fms-compatibility -fno-rtti'); Same = $false })) {
+        $tree = Join-Path $root "build\$($case.Name)"
+        New-Item -ItemType Directory -Path (Join-Path $tree 'bin') | Out-Null
+        Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value @('CMAKE_BUILD_TYPE:STRING=Release', "CMAKE_CXX_FLAGS:STRING=$($case.Flags)", "CMAKE_CXX_FLAGS_RELEASE:STRING=$rawConfigFlags")
+        $benchBin = Join-Path $tree 'bin\TaskSmackBenchmarks.cmd'
+        $other = Get-BuildProvenance
+        Assert-True (($other.cxx_flags_sha256 -ceq $original.cxx_flags_sha256) -eq $case.Same -and $other.cxx_flags_config_sha256 -ceq $original.cxx_flags_config_sha256) "$($case.Name): $($other.cxx_flags_sha256) vs $($original.cxx_flags_sha256)"
+    }
 
     # ── Self-review: on a non-ASCII branch, the branch name arrives intact ─────────────────────
     # git writes UTF-8 ref names; tests/tools/test_bench_sh.py checks the same for bench.sh.
@@ -616,23 +592,42 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $shortCheckout = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($longCheckout).ShortPath
     if ($shortCheckout -and $shortCheckout -ne $longCheckout) {
         $repoRoot = $longCheckout
-        $got = Hide-AbsolutePaths "-fprofile-instr-use=`"$($shortCheckout.Replace('\', '/'))/profiles/x.profdata`" -I$shortCheckout\inc"
-        Assert-True ($got -ceq '-fprofile-instr-use="<source>/profiles/x.profdata" -I<source>/inc') "Short-name checkout: $got"
+        $got = Hide-ArgumentPaths @("--benchmark_context=src=$($shortCheckout.Replace('\', '/'))/profiles/x.profdata", "--benchmark_context=inc=$shortCheckout\inc")
+        Assert-True (($got -join ' ') -ceq '--benchmark_context=src=<source>/profiles/x.profdata --benchmark_context=inc=<source>/inc') "Short-name checkout: $($got -join ' ')"
         $repoRoot = $shortCheckout
-        $got = Hide-AbsolutePaths "-I$longCheckout\inc"
-        Assert-True ($got -ceq '-I<source>/inc') "Short-name root: $got"
+        $got = Hide-ArgumentPaths @("--benchmark_context=inc=$longCheckout\inc")
+        Assert-True (($got -join ' ') -ceq '--benchmark_context=inc=<source>/inc') "Short-name root: $($got -join ' ')"
         $repoRoot = $repoRootPath
+    }
+
+    # ── #1445: paths in the benchmark arguments, one argument at a time ─────────────────────────
+    $repoRoot = $repoRootPath
+    $argumentCases = @(
+        , @('--benchmark_filter=BM_X', '--benchmark_filter=BM_X')
+        , @('--benchmark_min_time=0.5s', '--benchmark_min_time=0.5s')
+        , @('--benchmark_context=x=/home/u/p', '--benchmark_context=x=<abs>/p')
+        , @('--benchmark_context=x=C:\Users\u\p', '--benchmark_context=x=<abs>/p')
+        , @('--benchmark_context=x=//host/share/u/p', '--benchmark_context=x=<abs>/p')
+        , @('--benchmark_context=x=~/p/q', '--benchmark_context=x=<abs>/q')
+        , @('--benchmark_context=x=/home/u/a;/home/u/b', '--benchmark_context=x=<abs>/a;<abs>/b')
+        , @('--benchmark_context=x=foo:C:/Users/u/d', '--benchmark_context=x=foo:<abs>/d')
+        , @('--benchmark_context=x=dir/x/y', '--benchmark_context=x=dir/x/y')
+        , @("--benchmark_context=src=$repoRootForward/profiles/x", '--benchmark_context=src=<source>/profiles/x')
+    )
+    $gotArguments = Hide-ArgumentPaths @($argumentCases | ForEach-Object { $_[0] })
+    for ($i = 0; $i -lt $argumentCases.Count; $i++) {
+        Assert-True ($gotArguments[$i] -ceq $argumentCases[$i][1]) "Argument [$($argumentCases[$i][0])] became [$($gotArguments[$i])], expected [$($argumentCases[$i][1])]"
     }
 
     # ── #1445 review: the leak check itself, with a controlled user and home ────────────────────
     # A correctly scrubbed manifest must pass for a user whose name is also a flag word or a JSON
     # key (root: --sysroot=; build: the "build" section), and a real leak must still be found.
-    $clean = '{"build": {"build_type": "Release", "cxx_flags": "--sysroot=<abs>/sysroot -DBUILD=1 -DCMAKE_BUILD=on"}, "benchmark": {"args": ["--benchmark_filter=BM_Build"]}}' | ConvertFrom-Json
+    $clean = '{"build": {"build_type": "Release", "compiler": "clang++"}, "benchmark": {"args": ["--sysroot=<abs>/sysroot", "-DBUILD=1", "-DCMAKE_BUILD=on", "--benchmark_filter=BM_Build"]}}' | ConvertFrom-Json
     foreach ($user in @('root', 'build')) {
         $found = Find-IdentityLeaks $clean -Tokens @($user) -Paths @("/home/$user", "C:\Users\$user")
         Assert-True ($found.Count -eq 0) "A clean manifest was reported as leaking for user '${user}': $($found -join '; ')"
         foreach ($leaky in @("-DBUILT_BY=$user", "E:/Users/$user/x", "/home/$user/src")) {
-            $dirty = [pscustomobject]@{ build = [pscustomobject]@{ cxx_flags = "-O2 $leaky" } }
+            $dirty = [pscustomobject]@{ benchmark = [pscustomobject]@{ args = @("-O2 $leaky") } }
             Assert-True ((Find-IdentityLeaks $dirty -Tokens @($user) -Paths @("/home/$user")).Count -gt 0) "'$leaky' was not reported for user '${user}'"
         }
     }
@@ -644,6 +639,27 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         $dirty = [pscustomobject]@{ benchmark = [pscustomobject]@{ args = @($leaky) } }
         Assert-True ((Find-IdentityLeaks $dirty -Tokens $hostTokens -Paths @()).Count -gt 0) "'$leaky' was not reported as a host-name leak"
     }
+
+    # The checker skips exactly the fields the writer exempts, and checks machine.label against
+    # the fields it is built from: a host named after the OS or a user named after a standard
+    # build type is no leak, while the free-form fields are still checked.
+    foreach ($case in @(
+            @{ Os = 'Linux'; Version = '6.1'; Token = 'Linux' }
+            @{ Os = 'Windows'; Version = '10.0.26100.0'; Token = 'Windows' }
+            @{ Os = 'Linux'; Version = '6.1'; Token = 'Release' }
+        )) {
+        $machine = [pscustomobject]@{ label = $null; cpu_model = 'Some CPU'; logical_cores = 8; os_name = $case.Os; os_version = $case.Version; arch = 'X64' }
+        $machine.label = Get-MachineLabel $machine
+        $exempt = [pscustomobject]@{ build = [pscustomobject]@{ build_type = 'Release'; generator = 'Ninja' }; machine = $machine }
+        $found = Find-IdentityLeaks $exempt -Tokens @($case.Token) -Paths @()
+        Assert-True ($found.Count -eq 0) "Exempt fields were reported for '$($case.Token)': $($found -join '; ')"
+        $machine.cpu_model = "$($case.Token) Box"
+        Assert-True ((Find-IdentityLeaks $exempt -Tokens @($case.Token) -Paths @()).Count -gt 0) "A leak in machine.cpu_model was missed for '$($case.Token)'"
+    }
+    $tampered = [pscustomobject]@{ machine = [pscustomobject]@{ label = 'benchhost / 8 logical cores / Linux 6.1'; cpu_model = 'Some CPU'; logical_cores = 8; os_name = 'Linux'; os_version = '6.1'; arch = 'X64' } }
+    Assert-True ((Find-IdentityLeaks $tampered -Tokens @('benchhost') -Paths @()).Count -gt 0) 'A label not built from the machine fields was not reported'
+    $custom = [pscustomobject]@{ build = [pscustomobject]@{ build_type = 'benchuser' } }
+    Assert-True ((Find-IdentityLeaks $custom -Tokens @('benchuser') -Paths @()).Count -gt 0) 'A custom build type named after the user was not reported'
 
     # ── #1445 review: the identity pass leaves a user name that is also a flag word alone ──────
     $identityCases = @(
@@ -683,8 +699,8 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         generator      = 'tools/bench.ps1'
         preset         = 'Linux-preset'
         git            = [ordered]@{ commit = 'a' * 40; branch = 'clang/Linux'; dirty = $false }
-        build          = [ordered]@{ build_type = 'Release'; generator = 'Ninja'; compiler = 'clang'; compiler_id = 'Clang'; compiler_version = '22.1.8'; cxx_flags = '-DHOST=Linux -DBY=clang -DCC=GNU' }
-        benchmark      = [ordered]@{ args = [string[]]@('--benchmark_context=os=Windows'); raw_repetitions = $true }
+        build          = [ordered]@{ build_type = 'Release'; generator = 'Ninja'; compiler = 'clang'; compiler_id = 'Clang'; compiler_version = '22.1.8'; cxx_flags_sha256 = 'a' * 64 }
+        benchmark      = [ordered]@{ args = [string[]]@('--benchmark_context=os=Windows', '-DHOST=Linux', '-DBY=clang', '-DCC=GNU'); raw_repetitions = $true }
         machine        = [ordered]@{ label = 'x'; cpu_model = 'Linux Box CPU'; logical_cores = 8; os_name = 'Linux'; os_version = '6.1'; arch = 'X64' }
     }
     foreach ($os in @('Linux', 'Windows')) {
@@ -694,8 +710,8 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Assert-True ($hidden.git.commit -ceq ('a' * 40) -and $hidden.git.dirty -eq $false -and $hidden.schema_version -eq 1 -and $hidden.benchmark.raw_repetitions -eq $true) 'Schema, commit and boolean fields changed'
         # Free-form fields are still scrubbed.
         Assert-True ($hidden.build.compiler -ceq '<user>' -and $hidden.git.branch -ceq '<user>/' + $(if ($os -eq 'Linux') { '<host>' } else { 'Linux' })) "Free-form fields: compiler=$($hidden.build.compiler) branch=$($hidden.git.branch)"
-        Assert-True ($hidden.build.cxx_flags -ceq "-DHOST=$(if ($os -eq 'Linux') { '<host>' } else { 'Linux' }) -DBY=<user> -DCC=<host>") "cxx_flags: $($hidden.build.cxx_flags)"
-        Assert-True ((@($hidden.benchmark.args) -join ' ') -ceq "--benchmark_context=os=$(if ($os -eq 'Windows') { '<host>' } else { 'Windows' })") "args: $(@($hidden.benchmark.args) -join ' ')"
+        Assert-True ($hidden.build.cxx_flags_sha256 -ceq ('a' * 64)) 'The flag hash changed'
+        Assert-True ((@($hidden.benchmark.args) -join ' ') -ceq "--benchmark_context=os=$(if ($os -eq 'Windows') { '<host>' } else { 'Windows' }) -DHOST=$(if ($os -eq 'Linux') { '<host>' } else { 'Linux' }) -DBY=<user> -DCC=<host>") "args: $(@($hidden.benchmark.args) -join ' ')"
         $expectedCpu = if ($os -eq 'Linux') { '<host> Box CPU' } else { 'Linux Box CPU' }
         Assert-True ($hidden.machine.cpu_model -ceq $expectedCpu -and $hidden.machine.label -ceq "$expectedCpu / 8 logical cores / Linux 6.1") "CPU and label: $($hidden.machine.cpu_model) | $($hidden.machine.label)"
     }

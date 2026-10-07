@@ -136,105 +136,10 @@ function Get-GitProvenance {
     return $git
 }
 
-# Absolute paths inside compiler flags (#1445 review). The flag string is split into arguments
-# and each argument is scrubbed on its own, step for step as hide_absolute_paths in
-# tools/bench-manifest.py does, with the same switch lists:
-#  1. Split like a shell, but with no backslash escapes (Windows paths keep their backslashes):
-#     whitespace separates arguments, and "..." or '...' quotes a span that may hold spaces. Each
-#     argument remembers its first quote character and where that quote opened.
-#  2. Peel the switch: a prefix-map switch (its OLD=NEW value is split at the first '=', as
-#     clang does, and each side scrubbed on its own); a comma-list switch (-Wl, and friends:
-#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); an MSVC
-#     path switch (/I, /FI, /LIBPATH:, ...), always; or a dash joined switch (-I, -isystem, ...)
-#     when what follows it is a path. Otherwise the whole argument is the operand.
-#  3. An operand is a path when it starts with a drive (C:\ or C:/), a UNC or device path (\\,
-#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x) or ~. A path inside the
-#     checkout becomes <source>/relative, any other <abs>/<file name>; a relative operand
-#     (/Iinclude/common's include/common) is kept. A ';' list is scrubbed item by item, and an
-#     operand with a drive, UNC or device path inside it (FOO:C:/x) is scrubbed from there.
-#  4. Re-join with single spaces, putting each argument's quote back before the piece it opened
-#     on (or around the whole argument when that piece no longer exists).
-#
-# A leading-'/' argument is an MSVC option or a POSIX path, decided in this order:
-#  a. It starts with an MSVC path switch ($script:MsvcPathSwitches, case-sensitive): the switch
-#     is peeled and what follows is the operand, kept unless it is itself absolute.
-#     /Iinclude/common stays; /I/home/u/inc becomes /I<abs>/inc.
-#  b. Otherwise it is a POSIX path only with two or more segments. Every other MSVC option
-#     (/DWIN32, /U..., /W4, /O2, /EHsc, /std:c++latest, /Zc:..., /MD) is a single segment and
-#     stays, and an option-looking path such as /Users/u/x (not a path switch: /U takes no path)
-#     is still a path. An option with a path after '=' (/DDIR=/home/u/x) goes through the generic
-#     "opt=" rule first.
-$script:PrefixMapSwitches = @('-ffile-prefix-map=', '-fdebug-prefix-map=', '-fmacro-prefix-map=', '-fprofile-prefix-map=')
-$script:ListSwitches = @('-Wl,', '-Wa,', '-Wp,')
-# Longest first, case-sensitive (/FR is not /Fr).
-$script:MsvcPathSwitches = @('/external:I', '/LIBPATH:', '/FI', '/Fo', '/Fd', '/Fe', '/Fp', '/Fa', '/FR', '/Fr', '/I')
-# Longest first, so -isystem is not read as -I... (case matters: -I is not -i).
-$script:JoinedSwitches = @('-iwithprefixbefore', '-iwithprefix', '-idirafter', '-isysroot', '-iprefix', '-imacros',
-    '-isystem', '-include', '-iquote', '-imsvc', '-I', '-L', '-B', '-F')
+# Path heads for Hide-ArgumentPaths: a drive, a UNC or device path, a POSIX path of two or more
+# segments, or ~ (the same as _PATH_HEAD / _EMBEDDED_HEAD in tools/bench-manifest.py).
 $script:PathHead = [regex]'^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))'
 $script:EmbeddedHead = [regex]'[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//'
-
-function Split-FlagArguments {
-    # Split a flag string into arguments: Text, Quote (first quote char or $null) and QuoteStart
-    # (the offset in Text where that quote opened). Grouping quotes are removed from Text;
-    # everything else is kept verbatim, so the argument can be re-emitted as written. Backslashes
-    # are literal (Windows paths keep them), except before a double quote, where the
-    # CommandLineToArgvW parity rule applies: an odd run escapes the quote, which stays in Text as
-    # written (-DAPP_NAME=\"TaskSmack\"); an even run leaves it a grouping quote. One exception
-    # keeps Windows paths intact: inside a double-quoted group, a backslash and quote right before
-    # whitespace or the end close the group ("C:\dir\"). Kept in step with split_flag_arguments in
-    # tools/bench-manifest.py.
-    param([string]$Flags)
-    $arguments = [System.Collections.Generic.List[object]]::new()
-    $index = 0
-    $length = $Flags.Length
-    while ($index -lt $length) {
-        if ([char]::IsWhiteSpace($Flags[$index])) { $index++; continue }
-        $text = [System.Text.StringBuilder]::new()
-        $quote = $null
-        $quoteStart = 0
-        $openQuote = $null
-        while ($index -lt $length) {
-            $char = $Flags[$index]
-            if ($null -eq $openQuote -and [char]::IsWhiteSpace($char)) { break }
-            if ($char -eq [char]'\') {
-                $end = $index
-                while ($end -lt $length -and $Flags[$end] -eq [char]'\') { $end++ }
-                if ($end -lt $length -and $Flags[$end] -eq [char]'"' -and (($end - $index) % 2) -eq 1) {
-                    $atBoundary = ($end + 1 -ge $length) -or [char]::IsWhiteSpace($Flags[$end + 1])
-                    if ($openQuote -eq '"' -and $atBoundary) {
-                        [void]$text.Append($Flags.Substring($index, $end - $index))
-                        $openQuote = $null
-                    }
-                    else {
-                        [void]$text.Append($Flags.Substring($index, $end - $index + 1))
-                    }
-                    $index = $end + 1
-                }
-                else {
-                    [void]$text.Append($Flags.Substring($index, $end - $index))
-                    $index = $end
-                }
-                continue
-            }
-            if ($null -ne $openQuote) {
-                if ([string]$char -eq $openQuote) { $openQuote = $null } else { [void]$text.Append($char) }
-                $index++
-                continue
-            }
-            if ($char -eq [char]'"' -or $char -eq [char]"'") {
-                if ($null -eq $quote) { $quote = [string]$char; $quoteStart = $text.Length }
-                $openQuote = [string]$char
-            }
-            else {
-                [void]$text.Append($char)
-            }
-            $index++
-        }
-        $arguments.Add([pscustomobject]@{ Text = $text.ToString(); Quote = $quote; QuoteStart = $quoteStart })
-    }
-    return , $arguments
-}
 
 function ConvertTo-CanonicalPath {
     # The full path with the existing part spelled canonically, as Python's os.path.realpath does
@@ -267,11 +172,17 @@ function ConvertTo-CanonicalPath {
     return $result
 }
 
-function Hide-AbsolutePaths {
-    # Replace absolute paths in compiler flags so no user profile or checkout path is recorded: a
-    # path inside the source tree becomes <source>/relative/path, any other <abs>/<file name>.
-    param([string]$Flags)
-    if (-not $Flags) { return $Flags }
+function Hide-ArgumentPaths {
+    # The benchmark arguments with every absolute path replaced, so no user profile or checkout
+    # path is recorded (#1445 review). The arguments are already a list, so each one is split at
+    # '=' (--benchmark_context=src=/home/u/p) and every part that is an absolute path is scrubbed:
+    # a drive (C:\ or C:/), a UNC or device path (\\, //, \\?\, \\.\), a POSIX path of two or more
+    # segments (/home/u/x) or ~. A path inside the checkout becomes <source>/relative, any other
+    # <abs>/<file name>; a ';' list is scrubbed item by item, and a part with a drive, UNC or device
+    # path inside it (FOO:C:/x) is scrubbed from there. The compiler flags are not recorded at all,
+    # only hashed (Get-BuildProvenance). Kept in step with hide_argument_paths in
+    # tools/bench-manifest.py.
+    param([string[]]$Arguments)
     $root = (ConvertTo-CanonicalPath $repoRoot).Replace('\', '/').TrimEnd('/')
     $scrub = {
         param([string]$Path)
@@ -279,7 +190,7 @@ function Hide-AbsolutePaths {
         # Compared in the root's canonical form, so a checkout reached through another spelling
         # (an 8.3 short name such as C:/Users/RUNNER~1/..., as TEMP is on GitHub's Windows runners,
         # or a link) still maps to <source>. UNC and device paths are left alone (no network
-        # lookups). The file name kept for a path outside the checkout is the one in the flags.
+        # lookups). The file name kept for a path outside the checkout is the one in the argument.
         $canonical = $normalized
         if ([IO.Path]::IsPathFullyQualified($Path) -and -not $normalized.StartsWith('//')) {
             $canonical = (ConvertTo-CanonicalPath $Path).Replace('\', '/')
@@ -293,74 +204,20 @@ function Hide-AbsolutePaths {
     }
     $operand = {
         param([string]$Value)
-        # A value wrapped in escaped quotes (-DDATA_DIR=\"/home/u/data\") keeps them around the
-        # scrubbed path.
-        if ($Value.Length -ge 4 -and $Value.StartsWith('\"') -and $Value.EndsWith('\"')) {
-            return '\"' + (& $operand $Value.Substring(2, $Value.Length - 4)) + '\"'
-        }
         if ($Value.Contains(';')) { return (@($Value.Split(';') | ForEach-Object { & $operand $_ }) -join ';') }
         if ($script:PathHead.IsMatch($Value)) { return (& $scrub $Value) }
         $embedded = $script:EmbeddedHead.Match($Value)
         if ($embedded.Success) { return $Value.Substring(0, $embedded.Index) + (& $scrub $Value.Substring($embedded.Index)) }
         return $Value
     }
-    $pieces = {
-        # (offset in the argument, scrubbed text) for each part of the argument.
-        param([string]$Argument)
-        foreach ($switch in $script:PrefixMapSwitches) {
-            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal)) {
-                $value = $Argument.Substring($switch.Length)
-                $equals = $value.IndexOf('=')
-                if ($equals -lt 0) { return , @(, @(0, $switch), @($switch.Length, (& $operand $value))) }
-                $old = $value.Substring(0, $equals)
-                $new = $value.Substring($equals + 1)
-                return , @(@(0, $switch), @($switch.Length, (& $operand $old)), @(($switch.Length + $old.Length), '='), @(($switch.Length + $old.Length + 1), (& $operand $new)))
-            }
-        }
-        foreach ($switch in $script:ListSwitches) {
-            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal)) {
-                $result = [System.Collections.Generic.List[object]]::new()
-                $result.Add(@(0, $switch))
-                $offset = $switch.Length
-                $position = 0
-                foreach ($item in $Argument.Substring($switch.Length).Split(',')) {
-                    if ($position -gt 0) { $result.Add(@($offset, ',')); $offset++ }
-                    $result.Add(@($offset, (& $operand $item)))
-                    $offset += $item.Length
-                    $position++
-                }
-                return , $result.ToArray()
-            }
-        }
-        if (($Argument.StartsWith('-') -or $Argument.StartsWith('/')) -and $Argument.Contains('=')) {
-            $head = $Argument.Substring(0, $Argument.IndexOf('=') + 1)
-            if ($head.Substring(1) -notmatch '[\\/]') {
-                return , @(@(0, $head), @($head.Length, (& $operand $Argument.Substring($head.Length))))
-            }
-        }
-        foreach ($switch in $script:MsvcPathSwitches) {
-            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal) -and $Argument.Length -gt $switch.Length) {
-                return , @(@(0, $switch), @($switch.Length, (& $operand $Argument.Substring($switch.Length))))
-            }
-        }
-        foreach ($switch in $script:JoinedSwitches) {
-            if ($Argument.StartsWith($switch, [StringComparison]::Ordinal) -and $script:PathHead.IsMatch($Argument.Substring($switch.Length))) {
-                return , @(@(0, $switch), @($switch.Length, (& $operand $Argument.Substring($switch.Length))))
-            }
-        }
-        return , @(, @(0, (& $operand $Argument)))
-    }
+    return , [string[]]@(foreach ($argument in $Arguments) { (@($argument.Split('=') | ForEach-Object { & $operand $_ }) -join '=') })
+}
 
-    $joined = foreach ($argument in (Split-FlagArguments $Flags)) {
-        $parts = & $pieces $argument.Text
-        if ($null -eq $argument.Quote) { ($parts | ForEach-Object { $_[1] }) -join ''; continue }
-        $at = 0
-        for ($i = 0; $i -lt $parts.Count; $i++) { if ($parts[$i][0] -eq $argument.QuoteStart) { $at = $i; break } }
-        $before = if ($at -gt 0) { ($parts[0..($at - 1)] | ForEach-Object { $_[1] }) -join '' } else { '' }
-        $after = ($parts[$at..($parts.Count - 1)] | ForEach-Object { $_[1] }) -join ''
-        $before + $argument.Quote + $after + $argument.Quote
-    }
-    return (@($joined) -join ' ')
+function Get-TextSha256 {
+    # SHA-256 of a string's UTF-8 bytes, or $null for no value. text_sha256 in tools/bench-manifest.py.
+    param([AllowNull()][string]$Value)
+    if ($null -eq $Value) { return $null }
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Value))).ToLowerInvariant()
 }
 
 function Get-HostNames {
@@ -466,8 +323,8 @@ function Get-BuildProvenance {
         compiler         = $null
         compiler_id      = $null
         compiler_version = $null
-        cxx_flags        = $null
-        cxx_flags_config = $null
+        cxx_flags_sha256        = $null
+        cxx_flags_config_sha256 = $null
         ipo              = $null
     }
     $tree = Find-BuildTree -Binary $benchBin
@@ -482,8 +339,11 @@ function Get-BuildProvenance {
     $build.generator = $cache['CMAKE_GENERATOR']
     if ($cache['CMAKE_CXX_COMPILER']) { $build.compiler = Split-Path -Leaf $cache['CMAKE_CXX_COMPILER'] }
     # Flags can embed absolute paths (the PGO presets' -fprofile-instr-use=${sourceDir}/...).
-    $build.cxx_flags = Hide-AbsolutePaths $cache['CMAKE_CXX_FLAGS']
-    if ($build.build_type) { $build.cxx_flags_config = Hide-AbsolutePaths $cache["CMAKE_CXX_FLAGS_$($build.build_type.ToUpperInvariant())"] }
+    # The compiler flags are hashed, not recorded: two runs can be compared on them without the
+    # manifest carrying their paths (include directories, the PGO presets' profile, prefix maps).
+    # SHA-256 of the exact CMakeCache.txt value, UTF-8, unnormalized; null when the entry is absent.
+    $build.cxx_flags_sha256 = Get-TextSha256 $cache['CMAKE_CXX_FLAGS']
+    if ($build.build_type) { $build.cxx_flags_config_sha256 = Get-TextSha256 $cache["CMAKE_CXX_FLAGS_$($build.build_type.ToUpperInvariant())"] }
     $build.ipo = if ($cache.ContainsKey('CMAKE_INTERPROCEDURAL_OPTIMIZATION')) { $cache['CMAKE_INTERPROCEDURAL_OPTIMIZATION'] }
     elseif ($cache.ContainsKey('TASKSMACK_ENABLE_IPO')) { $cache['TASKSMACK_ENABLE_IPO'] }
     else { $null }
@@ -534,8 +394,8 @@ function Get-MachineLabel {
 
 # Manifest fields the identity pass leaves alone (#1445 review): validated, categorical values
 # that cannot carry a user or host name but can coincide with one (a host named "Linux", a user
-# named "clang"). Every other string is free-form input and is scrubbed: the compiler file name
-# and flags, the benchmark args, the git branch, the preset and result names, the CPU model.
+# named "clang"), and the flag hashes. Every other string is free-form input and is scrubbed: the
+# compiler file name, the benchmark args, the git branch, the preset and result names, the CPU model.
 # machine.label is rebuilt from the scrubbed CPU model and the exempt fields. Numbers and booleans
 # are never touched. The same list as IDENTITY_EXEMPT in tools/bench-manifest.py.
 # build.build_type is exempt only as one of CMake's standard configurations: a custom
@@ -546,7 +406,7 @@ $script:IdentityExempt = @(
     'schema_version', 'generator', 'created_utc', 'exit_code',
     'git.commit', 'git.dirty',
     'binary.sha256',
-    'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo',
+    'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo', 'build.cxx_flags_sha256', 'build.cxx_flags_config_sha256',
     'benchmark.raw_repetitions', 'benchmark.report_aggregates_only',
     'machine.label', 'machine.logical_cores', 'machine.os_name', 'machine.os_version', 'machine.arch'
 )
@@ -618,7 +478,7 @@ function New-BenchManifest {
         }
         build          = Get-BuildProvenance
         benchmark      = [ordered]@{
-            args                   = $recordedArgs
+            args                   = Hide-ArgumentPaths $recordedArgs
             raw_repetitions        = -not $aggregatesOnly
             report_aggregates_only = $aggregatesOnly
         }

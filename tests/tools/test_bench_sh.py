@@ -68,8 +68,8 @@ SECTION_KEYS = {
         "compiler",
         "compiler_id",
         "compiler_version",
-        "cxx_flags",
-        "cxx_flags_config",
+        "cxx_flags_sha256",
+        "cxx_flags_config_sha256",
         "ipo",
     },
     "benchmark": {"args", "raw_repetitions", "report_aggregates_only"},
@@ -90,86 +90,55 @@ BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash")
 _SEPARATED = r"""\s/\\"'=:,;"""
 
 
-def find_identity_leaks(value, tokens: list[str], paths: list[str]) -> list[str]:
+def find_identity_leaks(value, tokens: list[str], paths: list[str], path: str = "") -> list[str]:
     """Every string value (never an object key) of a decoded manifest that still holds a token
     (user or host name) standing alone between the identity pass's separators, or contains one of
-    the paths. Tokens under 3 characters are not checked, as the identity pass leaves them."""
+    the paths. Tokens under 3 characters are not checked, as the identity pass leaves them.
+
+    The fields the writer exempts are skipped exactly as it skips them (IDENTITY_EXEMPT, and
+    build.build_type when it is one of STANDARD_BUILD_TYPES, from tools/bench-manifest.py);
+    machine.label is checked against the machine fields it is built from instead."""
+    module = load_bench_manifest()
+    if path == "machine.label" or path in module.IDENTITY_EXEMPT:
+        return []
+    if path == "build.build_type" and value in module.STANDARD_BUILD_TYPES:
+        return []
     leaks = []
     if isinstance(value, dict):
-        for item in value.values():
-            leaks += find_identity_leaks(item, tokens, paths)
+        for key, item in value.items():
+            leaks += find_identity_leaks(item, tokens, paths, f"{path}.{key}" if path else key)
+        machine = value.get("machine") if not path else None
+        if isinstance(machine, dict) and "label" in machine and machine["label"] != module.machine_label(machine):
+            leaks.append(f"machine.label {machine['label']!r} is not built from the machine fields")
     elif isinstance(value, list):
         for item in value:
-            leaks += find_identity_leaks(item, tokens, paths)
+            leaks += find_identity_leaks(item, tokens, paths, path)
     elif isinstance(value, str):
         for token in tokens:
             pattern = rf"(?<![^{_SEPARATED}]){re.escape(token)}(?![^{_SEPARATED}])"
             if token and len(token) >= 3 and re.search(pattern, value, re.IGNORECASE):
-                leaks.append(f"{token!r} in {value!r}")
-        leaks += [f"{path!r} in {value!r}" for path in paths if path and path.lower() in value.lower()]
+                leaks.append(f"{token!r} in {path} {value!r}")
+        leaks += [f"{item!r} in {path} {value!r}" for item in paths if item and item.lower() in value.lower()]
     return leaks
 
 
-def flag_forms(user: str, home: str) -> list[tuple[str, str]]:
-    """(input, expected) pairs: every absolute-path form the scrubber handles, each holding the
-    user name, and the prefix maps quoted every way (#1445 review); the same list as
-    tools/test-bench.ps1. -DBUILT_BY=<user name> is no path: the final identity pass catches it
-    (for a user name of at least 3 characters)."""
-    repo = posix(REPO_ROOT)
-    return [
-        ("-fms-compatibility", "-fms-compatibility"),
-        (f"-IC:/Users/{user}/a/inc", "-I<abs>/inc"),
-        (f"-isystemC:\\Users\\{user}\\b\\inc", "-isystem<abs>/inc"),
-        (f"-idirafter\\\\fileserver\\Users\\{user}\\c\\inc", "-idirafter<abs>/inc"),
-        (f"-iquote//fileserver/Users/{user}/d/inc", "-iquote<abs>/inc"),
-        (f"-I//bench-host/Users/{user}/sdk/include", "-I<abs>/include"),
-        (f"-imsvc\\\\?\\C:\\Users\\{user}\\e\\inc", "-imsvc<abs>/inc"),
-        (f"/I\\\\.\\C:\\Users\\{user}\\f\\inc", "/I<abs>/inc"),
-        (f"/I/home/{user}/g/inc", "/I<abs>/inc"),
-        (f"/IC:\\Users\\{user}\\sdk\\include", "/I<abs>/include"),
-        (f"-L/home/{user}/lib", "-L<abs>/lib"),
-        (f"-B/Users/{user}/bin", "-B<abs>/bin"),
-        ("--sysroot=/root/sysroot", "--sysroot=<abs>/sysroot"),
-        (f"-fprofile-use=/home/{user}/p.profdata", "-fprofile-use=<abs>/p.profdata"),
-        (f"-fprofile-instr-use=C:/Users/{user}/q.profdata", "-fprofile-instr-use=<abs>/q.profdata"),
-        (f"-fprofile-use /home/{user}/r.profdata", "-fprofile-use <abs>/r.profdata"),
-        (f"-fprofile-use C:\\Users\\{user}\\pgo\\other.profdata", "-fprofile-use <abs>/other.profdata"),
-        (f"-fdebug-prefix-map={home}/src=/src", "-fdebug-prefix-map=<abs>/src=/src"),
-        (f"-ffile-prefix-map=C:/Users/{user}/src=//buildhost/Users/{user}/out", "-ffile-prefix-map=<abs>/src=<abs>/out"),
-        (f"-isystem /opt/{user}/include", "-isystem <abs>/include"),
-        (f'-I"C:/Users/{user}/My Includes/inc"', '-I"<abs>/inc"'),
-        (f'"-isystem/home/{user}/with space/inc"', '"-isystem<abs>/inc"'),
-        ("-I~/sdk/include", "-I<abs>/include"),
-        (f"-I ~{user}/sdk/include", "-I <abs>/include"),
-        (f'-fprofile-instr-use="{repo}/profiles/tasksmack.profdata"', '-fprofile-instr-use="<source>/profiles/tasksmack.profdata"'),
-        ("/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3", "/DWIN32 /W3 /EHsc -DNAME=value -std=c++23 /std:c++latest -O3"),
-        (f"-Wl,-rpath,/home/{user}/lib", "-Wl,-rpath,<abs>/lib"),
-        ("-fsanitize-ignorelist=dir/x/y.txt", "-fsanitize-ignorelist=dir/x/y.txt"),
-        (f"-ffile-prefix-map=/opt/{user}/source=/mapped/source", "-ffile-prefix-map=<abs>/source=<abs>/source"),
-        (f'-ffile-prefix-map="/opt/{user}/source=/mapped/source"', '-ffile-prefix-map="<abs>/source=<abs>/source"'),
-        (f'"-fdebug-prefix-map=/home/{user}/My Src=/build/out dir"', '"-fdebug-prefix-map=<abs>/My Src=<abs>/out dir"'),
-        (f'-fmacro-prefix-map="/home/{user}/src dir=/out/dir"', '-fmacro-prefix-map="<abs>/src dir=<abs>/dir"'),
-        (f"-fprofile-prefix-map='C:\\Users\\{user}\\a b=D:\\x\\y'", "-fprofile-prefix-map='<abs>/a b=<abs>/y'"),
-        (f'-ffile-prefix-map=/home/{user}/a="/x/new dir"', '-ffile-prefix-map=<abs>/a="<abs>/new dir"'),
-        (f"-DDATA=foo:C:/Users/{user}/data", "-DDATA=foo:<abs>/data"),
-        (f"/LIBPATH:C:\\Users\\{user}\\lib", "/LIBPATH:<abs>/lib"),
-        ("-B/root/bin/x", "-B<abs>/x"),
-        ('-DAPP_NAME=\\"TaskSmack\\"', '-DAPP_NAME=\\"TaskSmack\\"'),
-        (f'-DDATA_DIR=\\"/home/{user}/data\\"', '-DDATA_DIR=\\"<abs>/data\\"'),
-        (f'-I"C:\\Users\\{user}\\inc dir\\"', '-I"<abs>/inc dir"'),
-        ("/Iinclude/common", "/Iinclude/common"),
-        ("/FIinclude/config.h", "/FIinclude/config.h"),
-        ("/LIBPATH:build/lib", "/LIBPATH:build/lib"),
-        (f"/I/home/{user}/inc", "/I<abs>/inc"),
-        (f"/IC:/Users/{user}/inc", "/I<abs>/inc"),
-        (f"/Users/{user}/proj/config.h", "<abs>/config.h"),
-        (f"/DDIR=/home/{user}/x", "/DDIR=<abs>/x"),
-        ('-DAUTHOR=Jos\u00e9 -I"C:/S\u00f8urce \u00dc/inc"', '-DAUTHOR=Jos\u00e9 -I"<abs>/inc"'),
-        (f"-DBUILT_BY={user}", "-DBUILT_BY=<user>" if len(user) >= 3 else f"-DBUILT_BY={user}"),
-    ]
+def raw_flags(user: str, home: str) -> tuple[str, str]:
+    """Compiler flags holding user-home, profile and checkout paths, quotes and non-ASCII text, as
+    (CMAKE_CXX_FLAGS, CMAKE_CXX_FLAGS_RELEASE). The manifest records only their SHA-256 (#1445),
+    so none of this text may appear in it; the same strings as tools/test-bench.ps1."""
+    return (
+        f'-fms-compatibility -I"C:/Users/{user}/My Includes/inc" -isystem/home/{user}/sdk/include'
+        f' -fdebug-prefix-map={home}/src=/src -DAPP_NAME=\\"TaskSmack\\" -DAUTHOR=Jos\u00e9',
+        f'-O3 -DNDEBUG -fprofile-instr-use="{posix(REPO_ROOT)}/profiles/tasksmack.profdata" -fprofile-use={home}/x.profdata',
+    )
 
 
-def write_build_tree(build_dir: Path, cache_version: str, compilers: dict[str, str], flags: str = "") -> None:
+FLAG_PROBES = ("-fms-compatibility", "My Includes", "sdk/include", "prefix-map", "APP_NAME", "tasksmack.profdata", "x.profdata", "-fprofile", "Jos\u00e9")
+
+
+def write_build_tree(
+    build_dir: Path, cache_version: str, compilers: dict[str, str], flags: str = "", config_flags: str = "-O3 -DNDEBUG"
+) -> None:
     """A fake build/<preset> tree: CMakeCache.txt for CMake cache_version, and one
     CMakeFiles/<version>/CMakeCXXCompiler.cmake per entry of compilers (CMake version -> Clang
     version), as a tree reconfigured by several CMake versions keeps."""
@@ -180,8 +149,7 @@ def write_build_tree(build_dir: Path, cache_version: str, compilers: dict[str, s
         "CMAKE_GENERATOR:INTERNAL=Ninja\n"
         f"CMAKE_CXX_COMPILER:FILEPATH=/home/{getpass.getuser()}/llvm/bin/clang++\n"
         f"CMAKE_CXX_FLAGS:STRING={flags}\n"
-        f'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -DNDEBUG -fprofile-instr-use="{posix(REPO_ROOT)}/profiles/tasksmack.profdata"'
-        f" -fprofile-use=/home/{getpass.getuser()}/x.profdata\n"
+        f"CMAKE_CXX_FLAGS_RELEASE:STRING={config_flags}\n"
         f"CMAKE_CACHE_MAJOR_VERSION:INTERNAL={major}\n"
         f"CMAKE_CACHE_MINOR_VERSION:INTERNAL={minor}\n"
         f"CMAKE_CACHE_PATCH_VERSION:INTERNAL={patch}\n",
@@ -208,12 +176,10 @@ class BenchShTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(prefix="tasksmack-bench-\u00fcn\u00efc\u00f8d\u00e9-")
         self.root = Path(self._tmp.name)
         build_dir = self.root / "build" / "fake"
-        self.flag_forms = flag_forms(getpass.getuser(), posix(Path.home()))
+        self.flags, self.config_flags = raw_flags(getpass.getuser(), posix(Path.home()))
         # Configured by two CMake versions, as a reused tree is: only the cache's own names the
         # compiler.
-        write_build_tree(
-            build_dir, "4.1.0", {"4.0.0": "21.1.0", "4.1.0": "22.1.8"}, " ".join(form for form, _ in self.flag_forms)
-        )
+        write_build_tree(build_dir, "4.1.0", {"4.0.0": "21.1.0", "4.1.0": "22.1.8"}, self.flags, self.config_flags)
         self.stub = write_stub(build_dir / "bin" / "TaskSmackBenchmarks")
         # bench.sh calls python3; point it at this interpreter (on Windows, python3 on PATH can be
         # the Microsoft Store alias).
@@ -344,7 +310,7 @@ class BenchShTest(unittest.TestCase):
         build = json.loads(manifests[0].read_text(encoding="utf-8"))["build"]
         self.assertEqual(build["build_type"], "RelWithDebInfo")
         self.assertEqual(build["generator"], "Ninja Multi-Config")
-        self.assertEqual(build["cxx_flags_config"], "-O2 -g -DNDEBUG")
+        self.assertEqual(build["cxx_flags_config_sha256"], hashlib.sha256(b"-O2 -g -DNDEBUG").hexdigest())
         self.assertEqual(build["compiler_version"], "22.1.8")
 
     def test_a_unicode_checkout_outside_git(self):
@@ -357,19 +323,21 @@ class BenchShTest(unittest.TestCase):
             shutil.copy2(REPO_ROOT / "tools" / name, checkout / "tools" / name)
         build_dir = checkout / "build" / "uni"
         (build_dir / "bin").mkdir(parents=True)
+        config_flags = f'-O3 -fprofile-instr-use="{posix(checkout)}/profiles/tasksmack.profdata" -DAUTHOR=Jos\u00e9'
         (build_dir / "CMakeCache.txt").write_text(
-            "CMAKE_BUILD_TYPE:STRING=Release\n"
-            f'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 -fprofile-instr-use="{posix(checkout)}/profiles/tasksmack.profdata"'
-            " -DAUTHOR=Jos\u00e9\n",
-            encoding="utf-8",
+            f"CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_CXX_FLAGS_RELEASE:STRING={config_flags}\n", encoding="utf-8"
         )
         stub = write_stub(build_dir / "bin" / "TaskSmackBenchmarks")
-        code, output, _, manifests = self.run_bench("uni", 0, binary=stub, script=checkout / "tools" / "bench.sh")
+        profile_arg = f"--benchmark_context=tsk_ctx_profile={posix(checkout)}/profiles/tasksmack.profdata"
+        code, output, _, manifests = self.run_bench(
+            "uni", 0, binary=stub, script=checkout / "tools" / "bench.sh", extra=(profile_arg,)
+        )
         self.assertEqual(code, 0, output)
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-        self.assertEqual(
-            manifest["build"]["cxx_flags_config"],
-            '-O3 -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -DAUTHOR=Jos\u00e9',
+        # The flags are hashed as UTF-8; the checkout's own path in an argument maps to <source>.
+        self.assertEqual(manifest["build"]["cxx_flags_config_sha256"], hashlib.sha256(config_flags.encode("utf-8")).hexdigest())
+        self.assertIn(
+            "--benchmark_context=tsk_ctx_profile=<source>/profiles/tasksmack.profdata", manifest["benchmark"]["args"]
         )
         self.assertIsNone(manifest["git"]["commit"])
         self.assertIsNone(manifest["git"]["dirty"])
@@ -494,7 +462,8 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(results, [], output)
 
     def test_manifest_has_provenance_and_no_identity(self):
-        code, output, results, manifests = self.run_bench("ok", 0)
+        data_arg = f"--benchmark_context=tsk_ctx_data={posix(Path.home())}/bench data/input.bin"
+        code, output, results, manifests = self.run_bench("ok", 0, extra=(data_arg,))
         self.assertEqual(code, 0, output)
         self.assertEqual(len(results), 1, output)
         self.assertEqual(len(manifests), 1, output)
@@ -527,12 +496,16 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(manifest["build"]["compiler"], "clang++")
         self.assertEqual(manifest["build"]["compiler_id"], "Clang")
         self.assertEqual(manifest["build"]["compiler_version"], "22.1.8")
-        # Absolute paths in flags: the checkout's become <source>/..., others <abs>/<file name>.
+        # The compiler flags are recorded only as SHA-256 of their exact CMakeCache.txt text (#1445):
+        # none of that text, and none of its paths, appears anywhere in the manifest.
+        self.assertEqual(manifest["build"]["cxx_flags_sha256"], hashlib.sha256(self.flags.encode("utf-8")).hexdigest())
         self.assertEqual(
-            manifest["build"]["cxx_flags_config"],
-            '-O3 -DNDEBUG -fprofile-instr-use="<source>/profiles/tasksmack.profdata" -fprofile-use=<abs>/x.profdata',
+            manifest["build"]["cxx_flags_config_sha256"], hashlib.sha256(self.config_flags.encode("utf-8")).hexdigest()
         )
-        self.assertEqual(manifest["build"]["cxx_flags"], " ".join(expected for _, expected in self.flag_forms))
+        for probe in FLAG_PROBES:
+            self.assertNotIn(probe.lower(), text.lower(), f"flag text {probe!r} is in the manifest")
+        # Paths in the benchmark arguments are scrubbed one argument at a time.
+        self.assertIn("--benchmark_context=tsk_ctx_data=<abs>/input.bin", manifest["benchmark"]["args"])
         self.assertTrue(manifest["benchmark"]["raw_repetitions"])
         self.assertFalse(manifest["benchmark"]["report_aggregates_only"])
         args = manifest["benchmark"]["args"]
@@ -561,13 +534,37 @@ def load_bench_manifest():
 class ScrubberTest(unittest.TestCase):
     """tools/bench-manifest.py's flag scrubber and identity pass, without bash."""
 
-    def test_every_form_is_scrubbed_exactly(self):
+    def test_argument_paths_are_scrubbed_one_argument_at_a_time(self):
         module = load_bench_manifest()
-        for given, expected in flag_forms("exampleuser", "/home/exampleuser"):
-            if given.startswith("-DBUILT_BY="):
-                continue  # the identity pass's job, below
-            with self.subTest(given=given):
-                self.assertEqual(module.hide_absolute_paths(given, REPO_ROOT), expected)
+        cases = [
+            ("--benchmark_filter=BM_X", "--benchmark_filter=BM_X"),
+            ("--benchmark_min_time=0.5s", "--benchmark_min_time=0.5s"),
+            ("--benchmark_context=x=/home/u/p", "--benchmark_context=x=<abs>/p"),
+            ("--benchmark_context=x=C:\\Users\\u\\p", "--benchmark_context=x=<abs>/p"),
+            ("--benchmark_context=x=//host/share/u/p", "--benchmark_context=x=<abs>/p"),
+            ("--benchmark_context=x=~/p/q", "--benchmark_context=x=<abs>/q"),
+            ("--benchmark_context=x=/home/u/a;/home/u/b", "--benchmark_context=x=<abs>/a;<abs>/b"),
+            ("--benchmark_context=x=foo:C:/Users/u/d", "--benchmark_context=x=foo:<abs>/d"),
+            ("--benchmark_context=x=dir/x/y", "--benchmark_context=x=dir/x/y"),
+            (f"--benchmark_context=src={posix(REPO_ROOT)}/profiles/x", "--benchmark_context=src=<source>/profiles/x"),
+        ]
+        self.assertEqual(module.hide_argument_paths([given for given, _ in cases], REPO_ROOT), [want for _, want in cases])
+
+    def test_flags_hash_equally_and_change_with_a_flag(self):
+        # #1445: equal flags hash equally across build trees; a changed flag changes the hash.
+        module = load_bench_manifest()
+        flags, config_flags = raw_flags("exampleuser", "/home/exampleuser")
+        with tempfile.TemporaryDirectory() as tmp:
+            hashes = {}
+            for name, value in (("one", flags), ("same", flags), ("changed", flags + " -fno-rtti")):
+                tree = Path(tmp) / name
+                write_build_tree(tree, "4.1.0", {}, value, config_flags)
+                hashes[name] = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
+        self.assertEqual(hashes["one"]["cxx_flags_sha256"], hashlib.sha256(flags.encode("utf-8")).hexdigest())
+        self.assertEqual(hashes["one"]["cxx_flags_sha256"], hashes["same"]["cxx_flags_sha256"])
+        self.assertNotEqual(hashes["one"]["cxx_flags_sha256"], hashes["changed"]["cxx_flags_sha256"])
+        self.assertEqual(hashes["one"]["cxx_flags_config_sha256"], hashes["changed"]["cxx_flags_config_sha256"])
+        self.assertIsNone(module.text_sha256(None))
 
     def test_identity_pass_leaves_a_flag_word_user_name_alone(self):
         # #1445 review: a user named "build" must not mangle -DBUILD=1 and friends.
@@ -608,10 +605,10 @@ class ScrubberTest(unittest.TestCase):
                 link = Path(tmp) / "link"
                 link.symlink_to(real, target_is_directory=True)
                 alias = str(link)
-            flags = f'-fprofile-instr-use="{posix(Path(alias))}/profiles/x.profdata" -I{alias}/inc'
+            arguments = [f"--benchmark_context=src={posix(Path(alias))}/profiles/x.profdata", f"--benchmark_context=inc={alias}/inc"]
             self.assertEqual(
-                module.hide_absolute_paths(flags, real),
-                '-fprofile-instr-use="<source>/profiles/x.profdata" -I<source>/inc',
+                module.hide_argument_paths(arguments, real),
+                ["--benchmark_context=src=<source>/profiles/x.profdata", "--benchmark_context=inc=<source>/inc"],
             )
 
     def test_identity_pass_leaves_validated_categorical_fields_alone(self):
@@ -629,9 +626,9 @@ class ScrubberTest(unittest.TestCase):
                 "compiler": "clang",
                 "compiler_id": "Clang",
                 "compiler_version": "22.1.8",
-                "cxx_flags": "-DHOST=Linux -DBY=clang -DCC=GNU",
+                "cxx_flags_sha256": "a" * 64,
             },
-            "benchmark": {"args": ["--benchmark_context=os=Windows"], "raw_repetitions": True},
+            "benchmark": {"args": ["--benchmark_context=os=Windows", "-DHOST=Linux -DBY=clang -DCC=GNU"], "raw_repetitions": True},
             "machine": {
                 "label": "x",
                 "cpu_model": "Linux Box CPU",
@@ -659,8 +656,10 @@ class ScrubberTest(unittest.TestCase):
                 # Free-form fields are still scrubbed.
                 self.assertEqual(hidden["build"]["compiler"], "<user>")
                 self.assertEqual(hidden["git"]["branch"], f"<user>/{linux}")
-                self.assertEqual(hidden["build"]["cxx_flags"], f"-DHOST={linux} -DBY=<user> -DCC=<host>")
-                self.assertEqual(hidden["benchmark"]["args"], [f"--benchmark_context=os={windows}"])
+                self.assertEqual(hidden["build"]["cxx_flags_sha256"], "a" * 64)
+                self.assertEqual(
+                    hidden["benchmark"]["args"], [f"--benchmark_context=os={windows}", f"-DHOST={linux} -DBY=<user> -DCC=<host>"]
+                )
                 cpu = f"{linux} Box CPU"
                 self.assertEqual(hidden["machine"]["cpu_model"], cpu)
                 self.assertEqual(hidden["machine"]["label"], f"{cpu} / 8 logical cores / Linux 6.1")
@@ -699,8 +698,8 @@ class IdentityLeakCheckTest(unittest.TestCase):
     """The leak check used on the manifest, with a controlled user and home (#1445 review)."""
 
     CLEAN = {
-        "build": {"build_type": "Release", "cxx_flags": "--sysroot=<abs>/sysroot -DBUILD=1 -DCMAKE_BUILD=on"},
-        "benchmark": {"args": ["--benchmark_filter=BM_Build"]},
+        "build": {"build_type": "Release", "compiler": "clang++"},
+        "benchmark": {"args": ["--sysroot=<abs>/sysroot", "-DBUILD=1", "-DCMAKE_BUILD=on", "--benchmark_filter=BM_Build"]},
     }
 
     def test_a_clean_manifest_passes_for_a_flag_word_user_name(self):
@@ -713,9 +712,26 @@ class IdentityLeakCheckTest(unittest.TestCase):
         for user in ("root", "build"):
             for leaky in (f"-DBUILT_BY={user}", f"E:/Users/{user}/x", f"/home/{user}/src"):
                 with self.subTest(user=user, leaky=leaky):
-                    dirty = {"build": {"cxx_flags": f"-O2 {leaky}"}}
+                    dirty = {"benchmark": {"args": [f"-O2 {leaky}"]}}
                     self.assertNotEqual(find_identity_leaks(dirty, [user], [f"/home/{user}"]), [])
 
+
+    def test_the_checker_skips_exactly_the_exempt_fields(self):
+        # #1445 review: a host named after the OS or a user named after a standard build type is no
+        # leak in the fields the writer exempts; the free-form fields are still checked, and the
+        # label must be the one built from the machine fields.
+        module = load_bench_manifest()
+        for os_name, version, token in (("Linux", "6.1", "Linux"), ("Windows", "10.0.26100", "Windows"), ("Linux", "6.1", "Release")):
+            with self.subTest(token=token):
+                machine = {"cpu_model": "Some CPU", "logical_cores": 8, "os_name": os_name, "os_version": version, "arch": "x86_64"}
+                machine["label"] = module.machine_label(machine)
+                manifest = {"build": {"build_type": "Release", "generator": "Ninja"}, "machine": machine}
+                self.assertEqual(find_identity_leaks(manifest, [token], []), [])
+                machine["cpu_model"] = f"{token} Box"
+                self.assertNotEqual(find_identity_leaks(manifest, [token], []), [])
+        tampered = {"machine": {"label": "benchhost / 8 logical cores / Linux 6.1", "cpu_model": "Some CPU", "logical_cores": 8, "os_name": "Linux", "os_version": "6.1"}}
+        self.assertNotEqual(find_identity_leaks(tampered, ["benchhost"], []), [])
+        self.assertNotEqual(find_identity_leaks({"build": {"build_type": "benchuser"}}, ["benchuser"], []), [])
 
     def test_the_checker_covers_an_injected_host_name(self):
         hosts = ["bench-host-123", "bench-host-123.example.com"]

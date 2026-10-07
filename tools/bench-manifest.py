@@ -3,12 +3,13 @@
 
 The field names match tools/bench.ps1's manifest, so one consumer can read both. Only an
 anonymized machine class is recorded (CPU model, logical core count, OS): never the host name,
-user name, other processes or command lines beyond the benchmark's own arguments, and paths are
-reduced to file names.
+user name, other processes or command lines beyond the benchmark's own arguments; paths in the
+arguments are reduced to file names, and the compiler flags are recorded only as SHA-256 hashes.
 
 Usage:
     bench-manifest.py --manifest OUT --result RESULT_JSON --binary BIN --preset P \
-        --exit-code N --repo-root DIR -- <benchmark args...>
+        --repo-root DIR -- <benchmark args...>          (snapshot before the run, exit_code null)
+    bench-manifest.py --manifest OUT --finalize --exit-code N   (after the run)
 """
 
 from __future__ import annotations
@@ -60,123 +61,21 @@ def git_provenance(repo_root: Path) -> dict:
     }
 
 
-# Absolute paths inside compiler flags (#1445 review). The flag string is split into arguments
-# and each argument is scrubbed on its own; tools/bench.ps1 does the same step for step
-# (Split-FlagArguments / Hide-AbsolutePaths), with the same switch lists.
-#  1. Split like a shell, but with no backslash escapes (Windows paths keep their backslashes):
-#     whitespace separates arguments, and "..." or '...' quotes a span that may hold spaces. Each
-#     argument remembers its first quote character and where that quote opened.
-#  2. Peel the switch: a prefix-map switch (its OLD=NEW value is split at the first '=', as
-#     clang does, and each side scrubbed on its own); a comma-list switch (-Wl, and friends:
-#     each item scrubbed); a generic "-opt=" / "--opt=" (the value after the first '='); an MSVC
-#     path switch (/I, /FI, /LIBPATH:, ...), always; or a dash joined switch (-I, -isystem, ...)
-#     when what follows it is a path. Otherwise the whole argument is the operand.
-#  3. An operand is a path when it starts with a drive (C:\ or C:/), a UNC or device path (\\,
-#     //, \\?\, \\.\), a POSIX path of two or more segments (/home/u/x) or ~. A path inside the
-#     checkout becomes <source>/relative, any other <abs>/<file name>; a relative operand
-#     (/Iinclude/common's include/common) is kept. A ';' list is scrubbed item by item, and an
-#     operand with a drive, UNC or device path inside it (FOO:C:/x) is scrubbed from there.
-#  4. Re-join with single spaces, putting each argument's quote back before the piece it opened
-#     on (or around the whole argument when that piece no longer exists).
-#
-# A leading-'/' argument is an MSVC option or a POSIX path, decided in this order:
-#  a. It starts with an MSVC path switch (_MSVC_PATH_SWITCHES, case-sensitive): the switch is
-#     peeled and what follows is the operand, kept unless it is itself absolute. /Iinclude/common
-#     stays; /I/home/u/inc becomes /I<abs>/inc.
-#  b. Otherwise it is a POSIX path only with two or more segments. Every other MSVC option
-#     (/DWIN32, /U..., /W4, /O2, /EHsc, /std:c++latest, /Zc:..., /MD) is a single segment and
-#     stays, and an option-looking path such as /Users/u/x (not a path switch: /U takes no path)
-#     is still a path. An option with a path after '=' (/DDIR=/home/u/x) goes through the generic
-#     "opt=" rule first.
-_PREFIX_MAP_SWITCHES = ("-ffile-prefix-map=", "-fdebug-prefix-map=", "-fmacro-prefix-map=", "-fprofile-prefix-map=")
-_LIST_SWITCHES = ("-Wl,", "-Wa,", "-Wp,")
-# Longest first, case-sensitive (/FR is not /Fr).
-_MSVC_PATH_SWITCHES = ("/external:I", "/LIBPATH:", "/FI", "/Fo", "/Fd", "/Fe", "/Fp", "/Fa", "/FR", "/Fr", "/I")
-# Longest first, so -isystem is not read as -I... (case matters: -I is not -i).
-_JOINED_SWITCHES = (
-    "-iwithprefixbefore",
-    "-iwithprefix",
-    "-idirafter",
-    "-isysroot",
-    "-iprefix",
-    "-imacros",
-    "-isystem",
-    "-include",
-    "-iquote",
-    "-imsvc",
-    "-I",
-    "-L",
-    "-B",
-    "-F",
-)
+# Absolute paths inside the benchmark arguments (#1445 review). The arguments are already a list,
+# so each one is split at '=' (--benchmark_context=src=/home/u/p) and every part that is an
+# absolute path is scrubbed: a drive (C:\ or C:/), a UNC or device path (\\, //, \\?\, \\.\), a
+# POSIX path of two or more segments (/home/u/x) or ~. A path inside the checkout becomes
+# <source>/relative, any other <abs>/<file name>; a ';' list is scrubbed item by item, and a part
+# with a drive, UNC or device path inside it (FOO:C:/x) is scrubbed from there. The compiler flags
+# are not recorded at all, only hashed (build_provenance). Kept in step with Hide-ArgumentPaths in
+# tools/bench.ps1.
 _PATH_HEAD = re.compile(r"""^(?:[A-Za-z]:[\\/]|\\\\|//|/[^/\\]+/|~[^/\\]*(?:[/\\]|$))""")
 _EMBEDDED_HEAD = re.compile(r"""[A-Za-z]:[\\/](?![\\/])|\\\\|(?<!:)//""")
 
 
-def split_flag_arguments(flags: str) -> list[tuple[str, str | None, int]]:
-    """Split a flag string into (text, first quote char or None, offset it opened at).
-
-    Grouping quotes are removed from the text; everything else is kept verbatim, so the argument
-    can be re-emitted as written. Backslashes are literal (Windows paths keep them), except before
-    a double quote, where the CommandLineToArgvW parity rule applies: an odd run escapes the quote,
-    which stays in the text as written (-DAPP_NAME=\\"TaskSmack\\"); an even run leaves it a
-    grouping quote. One exception keeps Windows paths intact: inside a double-quoted group, a
-    backslash and quote right before whitespace or the end close the group ("C:\\dir\\").
-    Kept in step with Split-FlagArguments in tools/bench.ps1.
-    """
-    arguments = []
-    index, length = 0, len(flags)
-    while index < length:
-        if flags[index].isspace():
-            index += 1
-            continue
-        text, quote, quote_start, open_quote = "", None, 0, None
-        while index < length:
-            char = flags[index]
-            if open_quote is None and char.isspace():
-                break
-            if char == "\\":
-                end = index
-                while end < length and flags[end] == "\\":
-                    end += 1
-                if end < length and flags[end] == '"' and (end - index) % 2 == 1:
-                    after = flags[end + 1] if end + 1 < length else ""
-                    if open_quote == '"' and (after == "" or after.isspace()):
-                        text += flags[index:end]
-                        open_quote = None
-                    else:
-                        text += flags[index : end + 1]
-                    index = end + 1
-                else:
-                    text += flags[index:end]
-                    index = end
-                continue
-            if open_quote is not None:
-                if char == open_quote:
-                    open_quote = None
-                else:
-                    text += char
-                index += 1
-                continue
-            if char in "\"'":
-                if quote is None:
-                    quote, quote_start = char, len(text)
-                open_quote = char
-            else:
-                text += char
-            index += 1
-        arguments.append((text, quote, quote_start))
-    return arguments
-
-
-def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
-    """Replace absolute paths in compiler flags so no user profile or checkout path is recorded.
-
-    A path inside the source tree becomes <source>/relative/path (the PGO presets embed
-    ${sourceDir}/profiles/tasksmack.profdata); any other absolute path becomes <abs>/<file name>.
-    """
-    if not flags:
-        return flags
+def hide_argument_paths(arguments: list[str], repo_root: Path) -> list[str]:
+    """The arguments with every absolute path replaced, so no user profile or checkout path is
+    recorded."""
     root = str(repo_root.resolve()).replace("\\", "/").rstrip("/")
 
     def scrub(path: str) -> str:
@@ -185,7 +84,7 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
         # Windows 8.3 short names (C:/Users/RUNNER~1/..., as TEMP is on GitHub's Windows runners)
         # and resolves links, so a checkout reached through another spelling still maps to
         # <source>. UNC and device paths are left alone (no network lookups). The file name kept
-        # for a path outside the checkout is the one written in the flags.
+        # for a path outside the checkout is the one written in the argument.
         canonical = normalized
         if os.path.isabs(path) and not normalized.startswith("//"):
             canonical = os.path.realpath(path).replace("\\", "/")
@@ -196,10 +95,6 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
         return "<abs>/" + PurePath(normalized.rstrip("/")).name
 
     def operand(value: str) -> str:
-        # A value wrapped in escaped quotes (-DDATA_DIR=\"/home/u/data\") keeps them around the
-        # scrubbed path.
-        if len(value) >= 4 and value.startswith('\\"') and value.endswith('\\"'):
-            return '\\"' + operand(value[2:-2]) + '\\"'
         if ";" in value:
             return ";".join(operand(item) for item in value.split(";"))
         if _PATH_HEAD.match(value):
@@ -208,47 +103,7 @@ def hide_absolute_paths(flags: str | None, repo_root: Path) -> str | None:
             return value[: embedded.start()] + scrub(value[embedded.start() :])
         return value
 
-    def pieces(argument: str) -> list[tuple[int, str]]:
-        """(offset in the argument, scrubbed text) for each part of the argument."""
-        for switch in _PREFIX_MAP_SWITCHES:
-            if argument.startswith(switch):
-                old, separator, new = argument[len(switch) :].partition("=")
-                result = [(0, switch), (len(switch), operand(old))]
-                if separator:
-                    result += [(len(switch) + len(old), "="), (len(switch) + len(old) + 1, operand(new))]
-                return result
-        for switch in _LIST_SWITCHES:
-            if argument.startswith(switch):
-                result, offset = [(0, switch)], len(switch)
-                for position, item in enumerate(argument[len(switch) :].split(",")):
-                    if position:
-                        result.append((offset, ","))
-                        offset += 1
-                    result.append((offset, operand(item)))
-                    offset += len(item)
-                return result
-        if argument[:1] in ("-", "/") and "=" in argument:
-            head = argument[: argument.index("=") + 1]
-            if not re.search(r"[\\/]", head[1:]):
-                return [(0, head), (len(head), operand(argument[len(head) :]))]
-        for switch in _MSVC_PATH_SWITCHES:
-            if argument.startswith(switch) and len(argument) > len(switch):
-                return [(0, switch), (len(switch), operand(argument[len(switch) :]))]
-        for switch in _JOINED_SWITCHES:
-            if argument.startswith(switch) and _PATH_HEAD.match(argument[len(switch) :]):
-                return [(0, switch), (len(switch), operand(argument[len(switch) :]))]
-        return [(0, operand(argument))]
-
-    joined = []
-    for text, quote, quote_start in split_flag_arguments(flags):
-        parts = pieces(text)
-        if quote is None:
-            joined.append("".join(part for _, part in parts))
-            continue
-        starts = [start for start, _ in parts]
-        at = starts.index(quote_start) if quote_start in starts else 0
-        joined.append("".join(part for _, part in parts[:at]) + quote + "".join(part for _, part in parts[at:]) + quote)
-    return " ".join(joined)
+    return ["=".join(operand(part) for part in argument.split("=")) for argument in arguments]
 
 
 def host_names() -> list[str]:
@@ -334,7 +189,7 @@ def find_build_tree(binary: Path, max_levels: int = 4) -> tuple[Path | None, str
     return None, None
 
 
-def build_provenance(binary: Path, repo_root: Path) -> dict:
+def build_provenance(binary: Path) -> dict:
     """Read build config from the CMakeCache.txt of the binary's build tree (build/<preset>)."""
     build: dict = {
         "build_type": None,
@@ -342,8 +197,8 @@ def build_provenance(binary: Path, repo_root: Path) -> dict:
         "compiler": None,
         "compiler_id": None,
         "compiler_version": None,
-        "cxx_flags": None,
-        "cxx_flags_config": None,
+        "cxx_flags_sha256": None,
+        "cxx_flags_config_sha256": None,
         "ipo": None,
     }
     build_dir, config = find_build_tree(binary)
@@ -360,12 +215,12 @@ def build_provenance(binary: Path, repo_root: Path) -> dict:
     # Only the compiler's file name: its full path can sit under a user's home directory.
     if cache.get("CMAKE_CXX_COMPILER"):
         build["compiler"] = PurePath(cache["CMAKE_CXX_COMPILER"].replace("\\", "/")).name
-    # Flags can embed absolute paths (the PGO presets' -fprofile-instr-use=${sourceDir}/...).
-    build["cxx_flags"] = hide_absolute_paths(cache.get("CMAKE_CXX_FLAGS"), repo_root)
+    # The compiler flags are hashed, not recorded: two runs can be compared on them without the
+    # manifest carrying their paths (include directories, the PGO presets' profile, prefix maps).
+    # SHA-256 of the exact CMakeCache.txt value, UTF-8, unnormalized; null when the entry is absent.
+    build["cxx_flags_sha256"] = text_sha256(cache.get("CMAKE_CXX_FLAGS"))
     if build["build_type"]:
-        build["cxx_flags_config"] = hide_absolute_paths(
-            cache.get(f"CMAKE_CXX_FLAGS_{build['build_type'].upper()}"), repo_root
-        )
+        build["cxx_flags_config_sha256"] = text_sha256(cache.get(f"CMAKE_CXX_FLAGS_{build['build_type'].upper()}"))
     build["ipo"] = cache.get("CMAKE_INTERPROCEDURAL_OPTIMIZATION", cache.get("TASKSMACK_ENABLE_IPO"))
     # A reused build tree keeps CMakeFiles/<version>/ from every CMake that configured it: read the
     # one matching the cache's CMake version, and leave the compiler unknown rather than guess.
@@ -441,8 +296,8 @@ def machine_class() -> dict:
 
 # Manifest fields the identity pass leaves alone (#1445 review): validated, categorical values
 # that cannot carry a user or host name but can coincide with one (a host named "Linux", a user
-# named "clang"). Every other string is free-form input and is scrubbed: the compiler file name
-# and flags, the benchmark args, the git branch, the preset and result names, the CPU model.
+# named "clang"), and the flag hashes. Every other string is free-form input and is scrubbed: the
+# compiler file name, the benchmark args, the git branch, the preset and result names, the CPU model.
 # machine.label is rebuilt from the scrubbed CPU model and the exempt fields. Numbers and booleans
 # are never touched. build.build_type is exempt only as one of CMake's standard configurations
 # (STANDARD_BUILD_TYPES): a custom configuration can be named after a user or host. The same
@@ -460,6 +315,8 @@ IDENTITY_EXEMPT = frozenset(
         "build.compiler_id",
         "build.compiler_version",
         "build.ipo",
+        "build.cxx_flags_sha256",
+        "build.cxx_flags_config_sha256",
         "benchmark.raw_repetitions",
         "benchmark.report_aggregates_only",
         "machine.label",
@@ -488,6 +345,11 @@ def hide_manifest_identity(manifest: dict, prefixes: list[str], user: str | None
     if isinstance(result.get("machine"), dict):
         result["machine"]["label"] = machine_label(result["machine"])
     return result
+
+
+def text_sha256(value: str | None) -> str | None:
+    """SHA-256 of a string's UTF-8 bytes, or None for no value. Get-TextSha256 in tools/bench.ps1."""
+    return None if value is None else hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def sha256_of(path: Path) -> str:
@@ -577,9 +439,9 @@ def main() -> int:
         "exit_code": options.exit_code,
         "git": git_provenance(options.repo_root),
         "binary": {"name": options.binary.name, "sha256": sha256_of(options.binary)},
-        "build": build_provenance(options.binary, options.repo_root),
+        "build": build_provenance(options.binary),
         "benchmark": {
-            "args": recorded_args(bench_args),
+            "args": hide_argument_paths(recorded_args(bench_args), options.repo_root),
             "raw_repetitions": not aggregates_only,
             "report_aggregates_only": aggregates_only,
         },
