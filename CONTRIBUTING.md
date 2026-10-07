@@ -1382,8 +1382,8 @@ each time) and adds the mean, median and p95 of app CPU, total CPU and fps acros
 plus a `SUMMARY` line. Every run also writes JSON (`perf-data/idle-<label>-<timestamp>.json`, or
 `--json <path>`) with each repetition's figures and per-thread rows, the aggregates, and provenance:
 commit and dirty flag, preset and build type, refresh interval and history window (as the app logged
-or loaded them), synthetic spec, GL renderer, display refresh rate, CPU model, logical CPU count,
-MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
+or loaded them), synthetic spec, the window's measured geometry and any `--window` requested, GL
+renderer, display refresh rate, CPU model, logical CPU count, MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
 is above `<pct>`. Another TaskSmack running with the same settings fails the run (the
 single-instance lock would stop the new one at its "already running" box); close it first.
 
@@ -1396,8 +1396,11 @@ single-instance lock would stop the new one at its "already running" box); close
 ./tools/measure-idle.sh --preset debug --skip-build --label processes \
     --setup-cmd 'sleep 2; xdotool mousemove <x> <y> click 1'
 
-# Baseline / gate: five repetitions, fail if the median app CPU is above the target below
-./tools/measure-idle.sh --skip-build --repeat 5 --fail-above 16
+# Gate: the fixed 1600x900 window, five repetitions, fail if the median app CPU is above the
+# target below. --window replaces the saved geometry for the run without changing it (#1453).
+./tools/measure-idle.sh --skip-build --window 1600x900 --repeat 5 --fail-above 13
+./tools/measure-idle.sh --skip-build --window 1600x900 --repeat 5 --fail-above 14 \
+    --synthetic processes=5000,history=full
 
 ./tools/measure-idle.sh --help
 ```
@@ -1459,45 +1462,57 @@ below) and says nothing about TaskSmack.
 
 #### Idle-CPU target (Linux/WSL app CPU)
 
-Per maintainer decision D1 (#1408, part of #843: measure first, then set a target), the idle-CPU target is:
+Per maintainer decision D1 (#1408, part of #843: measure first, then set a target), the idle-CPU
+target is, at a fixed **1600×900 window, not maximized** (`--window 1600x900`):
 
 | Scenario | Target: median app CPU over `--repeat 5` |
 |---|---|
-| Default (this machine, Overview tab, window maximized at 3840×2100) | **≤ 16%** of one logical CPU |
-| `--synthetic processes=5000,history=full` | **≤ 22%** of one logical CPU |
+| Default (Overview tab) | **≤ 13%** of one logical CPU (`--fail-above 13`) |
+| `--synthetic processes=5000,history=full` | **≤ 14%** of one logical CPU (`--fail-above 14`) |
 
-Both targets are about 1.5× the measured median on a quiet machine, rounded up: 10.60% → 16%, and
-14.70% → 22%. That leaves room for run-to-run noise (the default scenario's repetitions ranged
-9.1–11.3%) while still catching a regression that adds a few percent of one core at idle. A median
-above the target is a regression to explain or fix (`--fail-above 16` / `--fail-above 22`). The
-targets cover **Linux/WSL app CPU only**; Windows targets will follow from `tools/measure-idle.ps1`
-captures. Re-measure and revisit them when the renderer, the default scenario or the sampling
-defaults change.
+Both targets are about 1.5× the measured median on a quiet machine, rounded up: 8.08% → 13%, and
+9.02% → 14%. That leaves room for run-to-run noise (one default repetition read 15.0% against a
+median of 8.1%; the median over five absorbs a single outlier) while still catching a regression
+that adds a few percent of one core at idle. A median above the target is a regression to explain
+or fix. The targets cover **Linux/WSL app CPU only**; Windows targets will follow from
+`tools/measure-idle.ps1` captures. Re-measure and revisit them when the renderer, the default
+scenario or the sampling defaults change.
 
-Measure at the same window geometry. TaskSmack restores its saved size and maximized state, and a
-larger window renders more, so the script records the window's size and maximized state in the
-`SUMMARY` line and the JSON (`scenario.window`), and warns when it varied between repetitions.
-Compare a run against these targets only at the geometry they were measured at (maximized,
-3840×2100). Making the script set a fixed geometry itself is #1453.
+Measure at the targets' window geometry. TaskSmack restores its saved size and maximized state, and
+a larger window renders more, so a run without `--window` measures whatever the machine last saved
+and is not comparable with the targets. The script records the window's size and maximized state in
+the `SUMMARY` line and the JSON (`scenario.window`), and warns when it varied between repetitions.
+
+`--window <width>x<height>[,maximized]` (#1453) launches TaskSmack with `TASKSMACK_WINDOW=<value>`,
+which opens the window at that size (window units, clamped to 200–16384 and to the display),
+maximized only when the value says so, instead of the saved geometry. While the variable is set
+TaskSmack logs `TASKSMACK_WINDOW is set: 1600x900, not maximized; window geometry will not be saved`
+and does not write its `[window]` geometry on exit, so a measurement never changes your saved
+window; other settings save as usual. An invalid value is ignored with a warning (the script rejects
+one before launching). The JSON records the request as `scenario.requestedWindow` (`spec`, `input`,
+`width`, `height`, `maximized`, and `applied`: whether every repetition's app log shows the
+override, which a binary built before #1453 would not) next to the measured `scenario.window`.
+`--window` stays opt-in for ad-hoc runs; the gate commands above pass it.
 
 Measure on a quiet machine. App CPU rises with presented frames, and other load slows `llvmpipe`
-and so the frame rate. A first baseline taken under load average 20–30 read 6.52% / 9.59% median
-at 12 / 6.6 fps, well below the quiet figures, so a loaded run can pass a target it would fail
-when quiet.
+and so the frame rate. A first baseline taken under load average 20–30 read about 40% lower than
+the same build measured quiet, so a loaded run can pass a target it would fail when quiet.
 
-Baseline (2026-10-07, binary built from `f4cf041a`, measured with the script at `841eda92`, `profile` preset = RelWithDebInfo, `/proc` sampler,
-15 s warm-up, 30 s samples, 5 repetitions each, load average under 1 before the runs). Intel Core
-Ultra 7 255H, 10 logical CPUs, WSL2 (kernel 6.18), WSLg with Mesa 26 `llvmpipe` (LLVM 21), 59.98 Hz
-display. Measured with the maintainer's config: **250 ms refresh** and a **300 s history** (the
-synthetic run preloads 1800 s; the defaults are 1000 ms and 300 s). A 250 ms refresh is the heavier
-case.
+Baseline (2026-10-07, binary built from `43fade9a`, measured with the script at `c49965f1`,
+`profile` preset = RelWithDebInfo, `/proc` sampler, 15 s warm-up, 30 s samples, 5 repetitions each,
+load average under 1.5 before the runs, `--window 1600x900`). Intel Core Ultra 7 255H, 10 logical
+CPUs, WSL2 (kernel 6.18), WSLg with Mesa 26 `llvmpipe` (LLVM 21), 59.98 Hz display. Measured with
+the maintainer's config: **250 ms refresh** and a **300 s history** (the synthetic run preloads
+1800 s; the defaults are 1000 ms and 300 s). A 250 ms refresh is the heavier case.
 
-| Scenario | App CPU% mean / median / p95 | Total CPU% mean / median / p95 | fps mean / median |
+| Scenario (1600×900) | App CPU% mean / median / p95 | Total CPU% mean / median / p95 | fps mean / median |
 |---|---|---|---|
-| Default | 10.41 / 10.60 / 11.32 | 530.56 / 536.70 / 545.34 | 23.82 / 23.60 |
-| `processes=5000,history=full` | 15.10 / 14.70 / 16.52 | 515.14 / 526.43 / 538.25 | 21.83 / 21.73 |
+| Default | 9.85 / 8.08 / 14.97 | 114.94 / 115.94 / 128.12 | 43.67 / 43.27 |
+| `processes=5000,history=full` | 9.06 / 9.02 / 9.33 | 74.46 / 74.41 / 76.79 | 20.87 / 20.80 |
 
-p95 over five repetitions is their maximum (nearest rank).
+p95 over five repetitions is their maximum (nearest rank). For reference, the first quiet baseline
+(binary `f4cf041a`) ran maximized at 3840×2100 and read 10.60% / 14.70% median app CPU at
+24 / 22 fps: a larger window renders more, which is why the targets now name their geometry.
 
 #### Synthetic large-UI scenario (captures at the limits)
 

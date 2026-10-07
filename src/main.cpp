@@ -10,6 +10,7 @@
 #include "App/SyntheticScenario.h"
 #include "App/TitleBarLayer.h"
 #include "App/UserConfig.h"
+#include "App/WindowOverride.h"
 #include "Core/Application.h"
 // NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
 #include "Core/EnvUtils.h"
@@ -205,6 +206,10 @@ auto runApp() -> int
     // every panel sees the same one. Unset, this is the only trace of it.
     static_cast<void>(App::Synthetic::activeScenario());
 
+    // TASKSMACK_WINDOW (#1453), likewise read and logged once: a fixed geometry for measurement runs
+    // that replaces the saved one here and is not saved on exit (ShellLayer::onDetach).
+    const std::optional<App::WindowOverride::Geometry>& windowOverride = App::WindowOverride::active();
+
     if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
     {
         spdlog::warn("Can't take the single-instance lock {}: {}; starting anyway", instanceLockPath.string(), instanceLock.error());
@@ -216,8 +221,10 @@ auto runApp() -> int
     // Create application and transfer ownership to the singleton
     Core::ApplicationSpecification appSpec;
     appSpec.Name = "TaskSmack";
-    appSpec.Width = std::clamp(settings.windowWidth, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
-    appSpec.Height = std::clamp(settings.windowHeight, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    appSpec.Width =
+        std::clamp(windowOverride ? windowOverride->width : settings.windowWidth, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
+    appSpec.Height =
+        std::clamp(windowOverride ? windowOverride->height : settings.windowHeight, Core::WINDOW_MIN_DIMENSION, Core::WINDOW_MAX_DIMENSION);
     appSpec.VSync = true;
     appSpec.ForceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
 
@@ -249,12 +256,22 @@ auto runApp() -> int
         // that is gone no longer opens the borderless window off-screen (#1128), and the normal
         // rectangle is applied before maximizing so it is what Restore returns to (#1121). The size is
         // converted from the scale it was saved at to the scale of the display it opens on (#1168).
-        std::optional<std::pair<int, int>> savedPosition;
-        if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
+        // A TASKSMACK_WINDOW override replaces all of it: its size (already given to the window
+        // above) is kept in window units with no scale conversion, only fitted to the display, at
+        // the position the window was created at, and maximized only if it says so.
+        if (windowOverride)
         {
-            savedPosition = std::pair{*settings.windowPosX, *settings.windowPosY};
+            appRef.getWindow().applySavedGeometry(std::nullopt, windowOverride->maximized, std::nullopt);
         }
-        appRef.getWindow().applySavedGeometry(savedPosition, settings.windowMaximized, settings.windowScale);
+        else
+        {
+            std::optional<std::pair<int, int>> savedPosition;
+            if (settings.windowPosX.has_value() && settings.windowPosY.has_value())
+            {
+                savedPosition = std::pair{*settings.windowPosX, *settings.windowPosY};
+            }
+            appRef.getWindow().applySavedGeometry(savedPosition, settings.windowMaximized, settings.windowScale);
+        }
 
         // Push UI layer (initializes ImGui/ImPlot backends). Must be pushed (and therefore
         // onRender()'d) before ShellLayer: UILayer::onRender() calls ImGui::NewFrame(), which is

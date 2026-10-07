@@ -121,8 +121,10 @@ set(TASKSMACK_SOURCES
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/UserConfig.cpp
+    src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
+    src/App/Panels/ProcessDetailsCharts.cpp
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessPriorityView.cpp
@@ -193,6 +195,7 @@ set(TASKSMACK_HEADERS
     src/UI/RenderMetrics.h
     src/App/ShellLayer.h
     src/App/SyntheticScenario.h
+    src/App/WindowOverride.h
     src/App/Panels/ProcessesPanel.h
     src/Platform/Factory.h
     src/Platform/IDiskProbe.h
