@@ -168,6 +168,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessHistoryHelpers.cpp
     App/test_ProcessDetailsHistory.cpp
     App/test_ProcessActionHelpers.cpp
+    App/test_ProcessActionsView.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
