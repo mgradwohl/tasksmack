@@ -777,8 +777,10 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// Each thread's group affinity (GetThreadGroupAffinity), from the process's
 /// SYSTEM_THREAD_INFORMATION records in the snapshot (#1247). Incomplete if any thread has exited,
 /// can't be opened or read, or the records are missing: groupMasksFromThreads() then reports the
-/// affinity unreadable rather than infer the missing threads' groups.
-[[nodiscard]] ThreadGroupAffinityReads readThreadGroupAffinities(std::span<const std::byte> threadRecords)
+/// affinity unreadable rather than infer the missing threads' groups. A thread ID can be reused as
+/// soon as its thread exits, so an opened thread that now belongs to another process than
+/// `ownerPid` is a missing thread too, not one of this process's (review #1434).
+[[nodiscard]] ThreadGroupAffinityReads readThreadGroupAffinities(std::span<const std::byte> threadRecords, DWORD ownerPid)
 {
     ThreadGroupAffinityReads reads;
     reads.complete = threadRecords.size() >= sizeof(SYSTEM_THREAD_INFORMATION);
@@ -792,7 +794,7 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
         const auto tid = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(thread.ClientId.UniqueThread));
         const ScopedHandle hThread(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
         GROUP_AFFINITY affinity{};
-        if (!hThread.valid() || GetThreadGroupAffinity(hThread, &affinity) == FALSE)
+        if (!hThread.valid() || GetProcessIdOfThread(hThread) != ownerPid || GetThreadGroupAffinity(hThread, &affinity) == FALSE)
         {
             reads.complete = false;
             break; // The affinity is unreadable now; the remaining threads can't change that
@@ -1234,7 +1236,9 @@ CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<cons
     }
     // Only here does it cost a handle per thread, on the heavy cadence, for a process whose
     // affinity the process-level reads leave open.
-    const ThreadGroupAffinityReads threadReads = readThreadGroupAffinities(threadRecords);
+    // GetProcessId() returns 0 on failure; no thread this probe can open belongs to PID 0 (Idle), so
+    // that leaves every thread unmatched and the affinity unreadable.
+    const ThreadGroupAffinityReads threadReads = readThreadGroupAffinities(threadRecords, GetProcessId(hProcess));
     return cpuAffinityFromGroupMasks(groupMasksFromThreads(groups, threadReads, m_ProcessorGroups, m_ThreadsMaySpanGroups),
                                      m_ProcessorGroups);
 }
