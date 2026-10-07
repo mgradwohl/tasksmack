@@ -369,19 +369,72 @@ def cpu_model() -> str | None:
     return platform.processor() or None
 
 
+def machine_label(machine: dict) -> str:
+    """The one-line machine class, built from the other machine fields (Get-MachineLabel in
+    tools/bench.ps1 builds the same string)."""
+    cpu = machine.get("cpu_model") or "unknown CPU"
+    os_version = machine.get("os_version") or ""
+    return f"{cpu} / {machine.get('logical_cores')} logical cores / {machine.get('os_name')} {os_version}".rstrip()
+
+
 def machine_class() -> dict:
-    cpu = cpu_model()
-    cores = os.cpu_count()
-    os_name = platform.system() or "unknown"
-    os_version = platform.release() or None
-    return {
-        "label": f"{cpu or 'unknown CPU'} / {cores} logical cores / {os_name} {os_version or ''}".rstrip(),
-        "cpu_model": cpu,
-        "logical_cores": cores,
-        "os_name": os_name,
-        "os_version": os_version,
+    machine = {
+        "label": None,
+        "cpu_model": cpu_model(),
+        "logical_cores": os.cpu_count(),
+        "os_name": platform.system() or "unknown",
+        "os_version": platform.release() or None,
         "arch": platform.machine() or None,
     }
+    machine["label"] = machine_label(machine)
+    return machine
+
+
+# Manifest fields the identity pass leaves alone (#1445 review): validated, categorical values
+# that cannot carry a user or host name but can coincide with one (a host named "Linux", a user
+# named "clang"). Every other string is free-form input and is scrubbed: the compiler file name
+# and flags, the benchmark args, the git branch, the preset and result names, the CPU model.
+# machine.label is rebuilt from the scrubbed CPU model and the exempt fields. Numbers and booleans
+# are never touched. The same list as $script:IdentityExempt in tools/bench.ps1.
+IDENTITY_EXEMPT = frozenset(
+    {
+        "schema_version",
+        "generator",
+        "created_utc",
+        "exit_code",
+        "git.commit",
+        "git.dirty",
+        "binary.sha256",
+        "build.build_type",
+        "build.generator",
+        "build.compiler_id",
+        "build.compiler_version",
+        "build.ipo",
+        "benchmark.raw_repetitions",
+        "benchmark.report_aggregates_only",
+        "machine.label",
+        "machine.logical_cores",
+        "machine.os_name",
+        "machine.os_version",
+        "machine.arch",
+    }
+)
+
+
+def hide_manifest_identity(manifest: dict, prefixes: list[str], user: str | None, hosts: list[str] | tuple[str, ...] = ()) -> dict:
+    """hide_identity() over the manifest's free-form fields only (see IDENTITY_EXEMPT)."""
+
+    def walk(value, path: str):
+        if isinstance(value, dict):
+            return {key: walk(item, f"{path}.{key}" if path else key) for key, item in value.items()}
+        if path in IDENTITY_EXEMPT:
+            return value
+        return hide_identity(value, prefixes, user, hosts)
+
+    result = walk(manifest, "")
+    if isinstance(result.get("machine"), dict):
+        result["machine"]["label"] = machine_label(result["machine"])
+    return result
 
 
 def sha256_of(path: Path) -> str:
@@ -467,7 +520,7 @@ def main() -> int:
         },
         "machine": machine_class(),
     }
-    manifest = hide_identity(manifest, *identity_strings())
+    manifest = hide_manifest_identity(manifest, *identity_strings())
     options.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return 0
 

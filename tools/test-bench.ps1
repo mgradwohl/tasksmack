@@ -10,6 +10,12 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
+function ConvertTo-RaceCommandLine {
+    # Start-Process takes one command line: quote each argument (none here ends in a backslash).
+    param([string[]]$Arguments)
+    return (@($Arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' ')
+}
+
 function Find-IdentityLeaks {
     # Every string value (never an object key) of a decoded manifest that still holds a token
     # (user or host name) standing alone between the identity pass's separators, or contains one
@@ -154,6 +160,7 @@ $body = [ordered]@{
         [ordered]@{ name = 'BM_X_median'; run_name = 'BM_X'; run_type = 'aggregate'; aggregate_name = 'median'; real_time = 11.0; time_unit = 'ns' }
     )
 } | ConvertTo-Json -Depth 5
+if ($env:STUB_SLEEP_MS) { Start-Sleep -Milliseconds ([int]$env:STUB_SLEEP_MS) }
 if ($env:STUB_OUTPUT -eq 'partial') { $body = $body.Substring(0, 60) }
 if ($env:STUB_OUTPUT -ne 'none') { Set-Content -LiteralPath $out -Value $body -Encoding utf8 }
 exit [int]$env:STUB_EXIT
@@ -260,7 +267,11 @@ exit [int]$env:STUB_EXIT
         Assert-True ((Compare-Object $section.Value $keys) -eq $null) "Manifest $($section.Key) keys: $($keys -join ', ')"
     }
     Assert-True ($manifest.exit_code -eq 0 -and $manifest.preset -eq 'fake-preset' -and $manifest.result_file -eq $ok.Result[0].Name) 'Manifest run fields'
-    Assert-True ($manifest.git.commit -match '^[0-9a-f]{40}$' -and $manifest.git.dirty -is [bool]) "Git provenance: $($manifest.git | ConvertTo-Json -Compress)"
+    # Outside a git checkout (a source archive) or without git, the git fields are all unknown by
+    # design; otherwise all known. Never a mix (#1445 review).
+    $gitKnown = $null -ne $manifest.git.commit
+    Assert-True ($(if ($gitKnown) { $manifest.git.commit -match '^[0-9a-f]{40}$' -and $manifest.git.branch -is [string] -and $manifest.git.dirty -is [bool] }
+        else { $null -eq $manifest.git.branch -and $null -eq $manifest.git.dirty })) "Git provenance must be all known or all unknown: $($manifest.git | ConvertTo-Json -Compress)"
     Assert-True ($manifest.binary.name -eq 'TaskSmackBenchmarks.cmd') 'Binary name must be the leaf only'
     Assert-True ($manifest.binary.sha256 -eq (Get-FileHash -LiteralPath $stub -Algorithm SHA256).Hash.ToLowerInvariant()) 'Binary SHA-256'
     Assert-True ($manifest.build.build_type -eq 'Release' -and $manifest.build.compiler -eq 'clang++.exe' -and $manifest.build.compiler_id -eq 'Clang' -and
@@ -482,6 +493,57 @@ exit [int]$env:STUB_EXIT
     Assert-True ($separator.Result[0].Name -like 'win-benchmark-*.json') "The default preset must be used: $($separator.Result[0].Name)"
     $separatorArgs = @((Get-Content -LiteralPath $separator.Manifest[0].FullName -Raw | ConvertFrom-Json).benchmark.args)
     Assert-True ($separatorArgs -contains '--benchmark_filter=BM_X') "The flag must reach the benchmark: $($separatorArgs -join ' ')"
+
+    # ── #1445 review: concurrent runs claim distinct output names ──────────────────────────────
+    # Four runs started together into one directory; the stub sleeps before writing, so without an
+    # up-front claim they would all pick the same name in the same second.
+    $raceDir = Join-Path $root 'race'
+    $raceVariables = @{ STUB_EXIT = '0'; STUB_OUTPUT = 'full'; STUB_SLEEP_MS = '1500'; TASKSMACK_STUB_PWSH = $hostExe; TASKSMACK_STUB_SCRIPT = $stubScript }
+    $raceSaved = @{}
+    foreach ($name in $raceVariables.Keys) { $raceSaved[$name] = [Environment]::GetEnvironmentVariable($name); [Environment]::SetEnvironmentVariable($name, $raceVariables[$name]) }
+    try {
+        $racers = foreach ($i in 1..4) {
+            Start-Process -FilePath $hostExe -PassThru -WindowStyle Hidden -ArgumentList (
+                ConvertTo-RaceCommandLine @('-NoProfile', '-File', $benchScript, 'fake-preset', '-BenchmarkBinary', $stub, '-OutputDirectory', $raceDir, '--benchmark_filter=BM_X'))
+        }
+        foreach ($racer in $racers) { $racer.WaitForExit() }
+    }
+    finally {
+        foreach ($name in $raceSaved.Keys) { [Environment]::SetEnvironmentVariable($name, $raceSaved[$name]) }
+    }
+    $raceResults = @(Get-ChildItem -LiteralPath $raceDir -Filter '*.json' | Where-Object { $_.Name -notlike '*.manifest.json' })
+    $raceManifests = @(Get-ChildItem -LiteralPath $raceDir -Filter '*.manifest.json')
+    Assert-True ($raceResults.Count -eq 4 -and $raceManifests.Count -eq 4) "Four concurrent runs must leave four results and manifests: $(@($raceResults.Name) + @($raceManifests.Name) -join ', ')"
+    foreach ($manifestFile in $raceManifests) {
+        $claimed = (Get-Content -LiteralPath $manifestFile.FullName -Raw | ConvertFrom-Json).result_file
+        Assert-True ($manifestFile.Name -eq ([IO.Path]::GetFileNameWithoutExtension($claimed) + '.manifest.json') -and (Test-Path -LiteralPath (Join-Path $raceDir $claimed))) "Manifest $($manifestFile.Name) names $claimed"
+    }
+
+    # ── #1445 review: the identity pass leaves validated categorical fields alone ──────────────
+    # Host and user names that coincide with OS and compiler values: only free-form fields change.
+    $manifestIdentity = [regex]::Match((Get-Content -LiteralPath $benchScript -Raw), '(?s)function Get-MachineLabel \{.*?(?=\nfunction Test-BenchmarkTruthy)').Value
+    . ([scriptblock]::Create($manifestIdentity))
+    $sample = [ordered]@{
+        schema_version = 1
+        generator      = 'tools/bench.ps1'
+        preset         = 'Linux-preset'
+        git            = [ordered]@{ commit = 'a' * 40; branch = 'clang/Linux'; dirty = $false }
+        build          = [ordered]@{ build_type = 'Release'; generator = 'Ninja'; compiler = 'clang'; compiler_id = 'Clang'; compiler_version = '22.1.8'; cxx_flags = '-DHOST=Linux -DBY=clang -DCC=GNU' }
+        benchmark      = [ordered]@{ args = [string[]]@('--benchmark_context=os=Windows'); raw_repetitions = $true }
+        machine        = [ordered]@{ label = 'x'; cpu_model = 'Linux Box CPU'; logical_cores = 8; os_name = 'Linux'; os_version = '6.1'; arch = 'X64' }
+    }
+    foreach ($os in @('Linux', 'Windows')) {
+        $hidden = Hide-ManifestIdentity $sample -Homes @() -User 'clang' -Hosts @($os, 'GNU')
+        Assert-True ($hidden.machine.os_name -ceq 'Linux' -and $hidden.machine.os_version -ceq '6.1' -and $hidden.machine.arch -ceq 'X64') "Validated machine fields changed: $($hidden.machine | ConvertTo-Json -Compress)"
+        Assert-True ($hidden.build.compiler_id -ceq 'Clang' -and $hidden.build.compiler_version -ceq '22.1.8' -and $hidden.build.build_type -ceq 'Release' -and $hidden.build.generator -ceq 'Ninja') "Validated build fields changed: $($hidden.build | ConvertTo-Json -Compress)"
+        Assert-True ($hidden.git.commit -ceq ('a' * 40) -and $hidden.git.dirty -eq $false -and $hidden.schema_version -eq 1 -and $hidden.benchmark.raw_repetitions -eq $true) 'Schema, commit and boolean fields changed'
+        # Free-form fields are still scrubbed.
+        Assert-True ($hidden.build.compiler -ceq '<user>' -and $hidden.git.branch -ceq '<user>/' + $(if ($os -eq 'Linux') { '<host>' } else { 'Linux' })) "Free-form fields: compiler=$($hidden.build.compiler) branch=$($hidden.git.branch)"
+        Assert-True ($hidden.build.cxx_flags -ceq "-DHOST=$(if ($os -eq 'Linux') { '<host>' } else { 'Linux' }) -DBY=<user> -DCC=<host>") "cxx_flags: $($hidden.build.cxx_flags)"
+        Assert-True ((@($hidden.benchmark.args) -join ' ') -ceq "--benchmark_context=os=$(if ($os -eq 'Windows') { '<host>' } else { 'Windows' })") "args: $(@($hidden.benchmark.args) -join ' ')"
+        $expectedCpu = if ($os -eq 'Linux') { '<host> Box CPU' } else { 'Linux Box CPU' }
+        Assert-True ($hidden.machine.cpu_model -ceq $expectedCpu -and $hidden.machine.label -ceq "$expectedCpu / 8 logical cores / Linux 6.1") "CPU and label: $($hidden.machine.cpu_model) | $($hidden.machine.label)"
+    }
 
     Write-Host 'bench.ps1 tests passed'
 }

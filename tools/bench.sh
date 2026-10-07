@@ -47,15 +47,6 @@ if [[ $# -gt 0 && "${1}" == "--" ]]; then shift; fi
 
 OUT_DIR="${TASKSMACK_BENCH_OUT_DIR:-${REPO_ROOT}/perf-data}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-# Two runs started in the same second would overwrite each other: the later one gets -2, -3, ...
-STEM="${PRESET}-${TIMESTAMP}"
-SUFFIX=2
-while [[ -e "${OUT_DIR}/${STEM}.json" || -e "${OUT_DIR}/${STEM}.manifest.json" ]]; do
-    STEM="${PRESET}-${TIMESTAMP}-${SUFFIX}"
-    SUFFIX=$((SUFFIX + 1))
-done
-OUT_FILE="${OUT_DIR}/${STEM}.json"
-MANIFEST_FILE="${OUT_DIR}/${STEM}.manifest.json"
 
 BENCH_BIN="${TASKSMACK_BENCH_BIN:-${REPO_ROOT}/build/${PRESET}/bin/TaskSmackBenchmarks}"
 
@@ -77,6 +68,27 @@ for arg in "$@"; do
 done
 
 mkdir -p "${OUT_DIR}"
+
+# Claim the result name before the benchmark starts, atomically (noclobber opens with O_EXCL, so
+# the redirect fails if the file exists), so two runs in the same second -- concurrent ones too --
+# never share a name: the later one gets -2, -3, ... A name whose manifest is left from an earlier
+# run is skipped as well. The manifest name follows the claimed result name. Kept in step with the
+# claim in bench.ps1.
+claim_output() {
+    (set -o noclobber && : >"$1") 2>/dev/null
+}
+STEM="${PRESET}-${TIMESTAMP}"
+SUFFIX=2
+until [[ ! -e "${OUT_DIR}/${STEM}.manifest.json" ]] && claim_output "${OUT_DIR}/${STEM}.json"; do
+    if [[ ! -e "${OUT_DIR}/${STEM}.json" && ! -e "${OUT_DIR}/${STEM}.manifest.json" ]]; then
+        echo "Cannot create '${OUT_DIR}/${STEM}.json'." >&2
+        exit 1
+    fi
+    STEM="${PRESET}-${TIMESTAMP}-${SUFFIX}"
+    SUFFIX=$((SUFFIX + 1))
+done
+OUT_FILE="${OUT_DIR}/${STEM}.json"
+MANIFEST_FILE="${OUT_DIR}/${STEM}.manifest.json"
 
 # ---------- run ---------------------------------------------------------------
 # Flags chosen for statistical consistency:

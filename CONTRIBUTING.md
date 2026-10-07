@@ -701,8 +701,9 @@ deleted too, and the script fails.
 
 ### Benchmark Output
 
-Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/` (a run started in the same
-second as an earlier one appends `-2`, `-3`, ... to the timestamp rather than overwrite it):
+Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`. The result name is claimed
+atomically before the benchmark starts, so a run started in the same second as another --
+concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than overwrite it:
 
 - `<preset>-<timestamp>.json` -- Google Benchmark's JSON with **every repetition** (`run_type:
   "iteration"`) plus the `mean`/`median`/`stddev`/`cv` aggregate rows. The scripts deliberately do
@@ -726,9 +727,13 @@ second as an earlier one appends `-2`, `-3`, ... to the timestamp rather than ov
   passed, with the output path reduced to its file name), `exit_code`, and `machine`, an
   anonymized machine class (CPU model, logical core count, OS name/version, architecture). It
   records no host name, user name, user-profile path, process list or other command line; a
-  final pass replaces any remaining home-directory prefix with `<home>`, and the host name (short
-  and FQDN) and user name (3+ characters, standing alone between separators) with `<host>` and
-  `<user>`. `bench.sh` writes it with
+  final pass over the free-form fields (flags, args, branch, compiler file name, preset and
+  result names, CPU model) replaces any remaining home-directory prefix with `<home>`, and the
+  host name (short and FQDN) and user name (3+ characters, standing alone between separators)
+  with `<host>` and `<user>`. Validated categorical fields (OS name/version, architecture,
+  compiler id/version, build type, generator, schema fields, numbers and booleans) are left
+  alone, so a host named `Linux` or a user named `clang` cannot rewrite them. Outside a git
+  checkout, or without git, the `git` fields are all `null`. `bench.sh` writes it with
   `tools/bench-manifest.py`.
 
 For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s

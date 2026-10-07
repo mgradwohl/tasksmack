@@ -73,13 +73,6 @@ foreach ($arg in $ExtraArgs) {
 
 $outDir = if ($OutputDirectory) { $OutputDirectory } else { Join-Path $repoRoot "perf-data" }
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-# Two runs started in the same second would overwrite each other: the later one gets -2, -3, ...
-$stem = "$Preset-$timestamp"
-for ($suffix = 2; (Test-Path -LiteralPath (Join-Path $outDir "$stem.json")) -or (Test-Path -LiteralPath (Join-Path $outDir "$stem.manifest.json")); $suffix++) {
-    $stem = "$Preset-$timestamp-$suffix"
-}
-$outFile = Join-Path $outDir "$stem.json"
-$manifestFile = Join-Path $outDir "$stem.manifest.json"
 $benchBin = if ($BenchmarkBinary) { $BenchmarkBinary } else { Join-Path $repoRoot "build/$Preset/bin/TaskSmackBenchmarks.exe" }
 
 if (-not (Test-Path -LiteralPath $benchBin)) {
@@ -87,6 +80,27 @@ if (-not (Test-Path -LiteralPath $benchBin)) {
 }
 
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+# .NET file APIs resolve against the process directory, not the PowerShell location.
+$outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outDir)
+
+# Claim the result name before the benchmark starts, atomically (CreateNew fails if the file
+# exists), so two runs in the same second -- concurrent ones too -- never share a name: the later
+# one gets -2, -3, ... A name whose manifest is left from an earlier run is skipped as well. The
+# manifest name follows the claimed result name. Kept in step with claim_output in bench.sh.
+$outFile = $null
+for ($suffix = 1; -not $outFile; $suffix++) {
+    $stem = if ($suffix -eq 1) { "$Preset-$timestamp" } else { "$Preset-$timestamp-$suffix" }
+    if (Test-Path -LiteralPath (Join-Path $outDir "$stem.manifest.json")) { continue }
+    $candidate = Join-Path $outDir "$stem.json"
+    try {
+        [IO.File]::Open($candidate, [IO.FileMode]::CreateNew).Dispose()
+        $outFile = $candidate
+    }
+    catch [System.IO.IOException] {
+        if (-not (Test-Path -LiteralPath $candidate)) { throw }
+    }
+}
+$manifestFile = [IO.Path]::ChangeExtension($outFile, '.manifest.json')
 
 # Every repetition is kept in the JSON file (no --benchmark_report_aggregates_only), so the
 # distribution can be re-analysed; Google Benchmark still appends the aggregate rows, which
@@ -414,14 +428,59 @@ function Get-MachineClass {
     $osVersion = [Environment]::OSVersion.Version.ToString()
     $cores = [Environment]::ProcessorCount
     $arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-    return [ordered]@{
-        label         = "$(if ($cpu) { $cpu } else { 'unknown CPU' }) / $cores logical cores / $osName $osVersion"
+    $machine = [ordered]@{
+        label         = $null
         cpu_model     = $cpu
         logical_cores = $cores
         os_name       = $osName
         os_version    = $osVersion
         arch          = $arch
     }
+    $machine.label = Get-MachineLabel $machine
+    return $machine
+}
+
+function Get-MachineLabel {
+    # The one-line machine class, built from the other machine fields (machine_label in
+    # tools/bench-manifest.py builds the same string).
+    param($Machine)
+    $cpu = if ($Machine.cpu_model) { $Machine.cpu_model } else { 'unknown CPU' }
+    return "$cpu / $($Machine.logical_cores) logical cores / $($Machine.os_name) $($Machine.os_version)".TrimEnd()
+}
+
+# Manifest fields the identity pass leaves alone (#1445 review): validated, categorical values
+# that cannot carry a user or host name but can coincide with one (a host named "Linux", a user
+# named "clang"). Every other string is free-form input and is scrubbed: the compiler file name
+# and flags, the benchmark args, the git branch, the preset and result names, the CPU model.
+# machine.label is rebuilt from the scrubbed CPU model and the exempt fields. Numbers and booleans
+# are never touched. The same list as IDENTITY_EXEMPT in tools/bench-manifest.py.
+$script:IdentityExempt = @(
+    'schema_version', 'generator', 'created_utc', 'exit_code',
+    'git.commit', 'git.dirty',
+    'binary.sha256',
+    'build.build_type', 'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo',
+    'benchmark.raw_repetitions', 'benchmark.report_aggregates_only',
+    'machine.label', 'machine.logical_cores', 'machine.os_name', 'machine.os_version', 'machine.arch'
+)
+
+function Hide-ManifestIdentity {
+    # Hide-Identity over the manifest's free-form fields only (see $script:IdentityExempt).
+    param($Manifest, [string[]]$Homes, [string]$User, [string[]]$Hosts)
+    $identity = @{}
+    foreach ($name in 'Homes', 'User', 'Hosts') { if ($PSBoundParameters.ContainsKey($name)) { $identity[$name] = $PSBoundParameters[$name] } }
+    $walk = {
+        param($Value, [string]$Path)
+        if ($Value -is [System.Collections.IDictionary]) {
+            $copy = [ordered]@{}
+            foreach ($key in $Value.Keys) { $copy[$key] = & $walk $Value[$key] $(if ($Path) { "$Path.$key" } else { $key }) }
+            return $copy
+        }
+        if ($script:IdentityExempt -contains $Path) { return , $Value }
+        return , (Hide-Identity $Value @identity)
+    }
+    $result = & $walk $Manifest ''
+    if ($result.Contains('machine') -and $result.machine -is [System.Collections.IDictionary]) { $result.machine.label = Get-MachineLabel $result.machine }
+    return $result
 }
 
 function Test-BenchmarkTruthy {
@@ -476,7 +535,7 @@ function Write-BenchManifest {
         }
         machine        = Get-MachineClass
     }
-    Hide-Identity $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestFile -Encoding utf8
+    Hide-ManifestIdentity $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestFile -Encoding utf8
 }
 
 function Invoke-ResultRedaction {

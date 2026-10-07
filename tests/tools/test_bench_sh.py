@@ -36,6 +36,7 @@ body='{"context": {"host_name": "'"${STUB_HOST}"'", "executable": "/some/dir/Tas
   {"name": "BM_X", "run_name": "BM_X", "run_type": "iteration", "repetition_index": 1, "real_time": 12.0, "time_unit": "ns"},
   {"name": "BM_X_median", "run_name": "BM_X", "run_type": "aggregate", "aggregate_name": "median", "real_time": 11.0, "time_unit": "ns"}
  ]}'
+if [[ -n "${STUB_SLEEP:-}" ]]; then sleep "${STUB_SLEEP}"; fi
 case "${STUB_OUTPUT}" in
     partial) printf '%s' "${body:0:60}" > "${out}" ;;
     none) ;;
@@ -384,6 +385,40 @@ class BenchShTest(unittest.TestCase):
         self.assertIn("could not be redacted", output)
         self.assertEqual(results, [], output)
 
+    def test_concurrent_runs_claim_distinct_output_names(self):
+        # #1445 review: four runs started together into one directory; the stub sleeps before
+        # writing, so without an up-front claim they would all pick the same name.
+        race = self.root / "race"
+        env = dict(os.environ)
+        env.pop("BENCHMARK_REPORT_AGGREGATES_ONLY", None)
+        env.update(
+            TASKSMACK_BENCH_BIN=posix(self.stub),
+            TASKSMACK_BENCH_OUT_DIR=posix(race),
+            STUB_EXIT="0",
+            STUB_OUTPUT="full",
+            STUB_SLEEP="1.5",
+            STUB_HOST=socket.gethostname(),
+            PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+        )
+        racers = [
+            subprocess.Popen(
+                [BASH, posix(BENCH_SH), "fake", "--", "--benchmark_filter=BM_X"],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for _ in range(4)
+        ]
+        for racer in racers:
+            racer.wait()
+        results = sorted(p for p in race.glob("*.json") if not p.name.endswith(".manifest.json"))
+        manifests = sorted(race.glob("*.manifest.json"))
+        self.assertEqual((len(results), len(manifests)), (4, 4), [p.name for p in race.iterdir()])
+        for manifest in manifests:
+            claimed = json.loads(manifest.read_text(encoding="utf-8"))["result_file"]
+            self.assertEqual(manifest.name, Path(claimed).stem + ".manifest.json")
+            self.assertTrue((race / claimed).is_file(), claimed)
+
     def test_a_run_in_the_same_second_does_not_overwrite_an_earlier_one(self):
         # Results already sit under every name this run could pick in the next 30 seconds.
         collide = self.root / "collide"
@@ -438,7 +473,15 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(manifest["generator"], "tools/bench.sh")
         self.assertEqual(manifest["exit_code"], 0)
         self.assertEqual(manifest["result_file"], results[0].name)
-        self.assertRegex(manifest["git"]["commit"] or "", r"^[0-9a-f]{40}$")
+        # Outside a git checkout (a source archive) or without git, the git fields are all unknown
+        # by design; otherwise all known. Never a mix (#1445 review).
+        git = manifest["git"]
+        if git["commit"] is None:
+            self.assertEqual(git, {"commit": None, "branch": None, "dirty": None})
+        else:
+            self.assertRegex(git["commit"], r"^[0-9a-f]{40}$")
+            self.assertIsInstance(git["branch"], str)
+            self.assertIsInstance(git["dirty"], bool)
         self.assertEqual(manifest["binary"]["name"], "TaskSmackBenchmarks")
         self.assertEqual(manifest["binary"]["sha256"], hashlib.sha256(self.stub.read_bytes()).hexdigest())
         self.assertEqual(manifest["build"]["build_type"], "Release")
@@ -505,6 +548,57 @@ class ScrubberTest(unittest.TestCase):
                 self.assertEqual(module.hide_identity(given, prefixes, "build"), expected)
         # A user name under 3 characters is never replaced on its own; a home prefix always is.
         self.assertEqual(module.hide_identity("-DX=ab /home/ab/src", ["/home/ab"], "ab"), "-DX=ab <home>/src")
+
+    def test_identity_pass_leaves_validated_categorical_fields_alone(self):
+        # #1445 review: host and user names that coincide with OS and compiler values change only
+        # the free-form fields.
+        module = load_bench_manifest()
+        sample = {
+            "schema_version": 1,
+            "generator": "tools/bench.sh",
+            "preset": "Linux-preset",
+            "git": {"commit": "a" * 40, "branch": "clang/Linux", "dirty": False},
+            "build": {
+                "build_type": "Release",
+                "generator": "Ninja",
+                "compiler": "clang",
+                "compiler_id": "Clang",
+                "compiler_version": "22.1.8",
+                "cxx_flags": "-DHOST=Linux -DBY=clang -DCC=GNU",
+            },
+            "benchmark": {"args": ["--benchmark_context=os=Windows"], "raw_repetitions": True},
+            "machine": {
+                "label": "x",
+                "cpu_model": "Linux Box CPU",
+                "logical_cores": 8,
+                "os_name": "Linux",
+                "os_version": "6.1",
+                "arch": "x86_64",
+            },
+        }
+        for os_host in ("Linux", "Windows"):
+            with self.subTest(host=os_host):
+                hidden = module.hide_manifest_identity(sample, [], "clang", [os_host, "GNU"])
+                linux = "<host>" if os_host == "Linux" else "Linux"
+                windows = "<host>" if os_host == "Windows" else "Windows"
+                self.assertEqual(
+                    {k: hidden["machine"][k] for k in ("os_name", "os_version", "arch", "logical_cores")},
+                    {"os_name": "Linux", "os_version": "6.1", "arch": "x86_64", "logical_cores": 8},
+                )
+                for key in ("build_type", "generator", "compiler_id", "compiler_version"):
+                    self.assertEqual(hidden["build"][key], sample["build"][key], key)
+                self.assertEqual(hidden["git"]["commit"], "a" * 40)
+                self.assertIs(hidden["git"]["dirty"], False)
+                self.assertEqual(hidden["schema_version"], 1)
+                self.assertIs(hidden["benchmark"]["raw_repetitions"], True)
+                # Free-form fields are still scrubbed.
+                self.assertEqual(hidden["build"]["compiler"], "<user>")
+                self.assertEqual(hidden["git"]["branch"], f"<user>/{linux}")
+                self.assertEqual(hidden["build"]["cxx_flags"], f"-DHOST={linux} -DBY=<user> -DCC=<host>")
+                self.assertEqual(hidden["benchmark"]["args"], [f"--benchmark_context=os={windows}"])
+                cpu = f"{linux} Box CPU"
+                self.assertEqual(hidden["machine"]["cpu_model"], cpu)
+                self.assertEqual(hidden["machine"]["label"], f"{cpu} / 8 logical cores / Linux 6.1")
 
     def test_identity_pass_hides_injected_host_names(self):
         # #1445 review: the host name (short and FQDN) is hidden like the user name.
