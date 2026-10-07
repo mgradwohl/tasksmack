@@ -5,6 +5,7 @@
 #include "ISamplable.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "PublicationSlot.h"
 #include "SamplingConfig.h"
 
 #include <atomic>
@@ -90,6 +91,10 @@ using GPUSnapshotMap = std::unordered_map<std::string, GPUSnapshot, TransparentS
 [[nodiscard]] std::vector<GPUSnapshot> orderSnapshotsByEnumeration(std::span<const Platform::GPUInfo> gpuInfo,
                                                                    const GPUSnapshotMap& snapshots);
 
+/// Thread-safe: the sampler thread refreshes while the UI thread reads. Writers (refreshAt() and
+/// setMaxHistorySeconds()) are serialised on m_WriterMutex; each builds its publication outside every
+/// lock a reader takes and swaps it in through m_Publication, so publication() never waits for a
+/// history copy (#868).
 class GPUModel : public ISamplable
 {
   public:
@@ -244,11 +249,21 @@ class GPUModel : public ISamplable
     // When the probe last got a GPURescan::Full (construction counts as one).
     std::chrono::steady_clock::time_point m_LastFullRescan;
 
-    // Thread safety
+    // Thread safety. Lock order: m_WriterMutex -> m_Mutex -> the publication slot's mutex, and
+    // m_ProbeMutex -> m_Mutex; m_ProbeMutex and m_WriterMutex are never held together, so a slow probe
+    // read never holds up setMaxHistorySeconds() on the UI thread.
+    //
+    // m_WriterMutex serialises the writers, refreshAt() (from computing the snapshots) and
+    // setMaxHistorySeconds(), through the publication commit, so generations are numbered and
+    // committed in order. Readers never take it, and it is never taken while holding m_Mutex.
+    // m_PrevCounters and m_PrevSampleTime are writer-only state under it.
+    std::mutex m_WriterMutex;
+    // Guards the state above for the per-field accessors: writers mutate it exclusively, and
+    // publish() reads it under a shared lock, so neither publication() nor those accessors wait on
+    // a publication's copy.
     mutable std::shared_mutex m_Mutex;
-    std::shared_ptr<const GPUPublication> m_Publication = std::make_shared<const GPUPublication>();
-    std::uint64_t m_PublicationVersion = 0;
-    std::atomic<std::uint64_t> m_PublishedPublicationVersion{0};
+    PublicationSlot<GPUPublication> m_Publication;
+    std::uint64_t m_PublicationVersion = 0; // guarded by m_WriterMutex; the last committed generation
 
     // Helper: compute snapshot from current/previous counters
     [[nodiscard]] GPUSnapshot
@@ -260,6 +275,8 @@ class GPUModel : public ISamplable
     // plain member pointer, for accessors whose value depends on more than one field.
     template<typename Projection>
     [[nodiscard]] std::vector<float> getHistoryFieldByProjection(std::string_view gpuId, Projection project) const;
+    /// Build the next generation from the history state under a shared lock, then commit it.
+    /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
 
     // Ask the probe whether the GPU set or its GPUInfo changed (a full rescan every
