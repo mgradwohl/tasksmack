@@ -2,109 +2,25 @@
 // including one that introduces a new interface and a new core -- must leave every history series
 // aligned with the timestamps and the published generation unchanged.
 //
-// The failure is real, not simulated: this file replaces the global operator new with one that can be
-// told to throw on the Nth allocation made by the current thread from now. It is disarmed (the
-// default) for every other test in the binary and every other thread, and then only counts down a
-// thread_local, so it changes nothing else.
+// The failure is real, not simulated: AllocationFailureHook makes the Nth allocation the current
+// thread makes from now throw std::bad_alloc.
 
+#include "AllocationFailureHook.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/SystemTypes.h"
 
 #include <gtest/gtest.h>
 
-// Where the replacement is compiled out and the test skipped (TASKSMACK_NO_ALLOCATOR_HOOK names why):
-// - sanitizer builds (ASan, MSan, TSan): their runtimes define the global operator new themselves,
-//   so a replacement would not link;
-// - Windows: the MSVC/clang-cl runtime (debug CRT heap, CRT-internal allocations) does not tolerate a
-//   replaced operator new failing on demand -- the test aborted there with no output (#1454 CI). The
-//   logic under test is platform-independent and runs in the Linux debug and release builds.
-#if defined(__has_feature)
-#if __has_feature(address_sanitizer) || __has_feature(memory_sanitizer) || __has_feature(thread_sanitizer)
-#define TASKSMACK_NO_ALLOCATOR_HOOK "the sanitizer runtime owns operator new"
-#endif
-#endif
-#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK) && (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
-#define TASKSMACK_NO_ALLOCATOR_HOOK "the sanitizer runtime owns operator new"
-#endif
-#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK) && defined(_WIN32)
-#define TASKSMACK_NO_ALLOCATOR_HOOK "the Windows C runtime does not support failing a replaced operator new on demand"
-#endif
-
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <memory>
 #include <new>
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace
-{
-
-/// Allocations by this thread before the one that fails; negative when disarmed.
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - the allocator hook's per-thread switch
-thread_local std::int64_t t_AllocationsBeforeFailure = -1;
-
-/// Makes the @p count-th allocation from now on this thread (0 = the next one) throw std::bad_alloc,
-/// for the guard's lifetime.
-class FailAllocationAfter
-{
-  public:
-    explicit FailAllocationAfter(std::int64_t count) noexcept
-    {
-        t_AllocationsBeforeFailure = count;
-    }
-    ~FailAllocationAfter()
-    {
-        t_AllocationsBeforeFailure = -1;
-    }
-    FailAllocationAfter(const FailAllocationAfter&) = delete;
-    FailAllocationAfter& operator=(const FailAllocationAfter&) = delete;
-    FailAllocationAfter(FailAllocationAfter&&) = delete;
-    FailAllocationAfter& operator=(FailAllocationAfter&&) = delete;
-};
-
-} // namespace
-
-#if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
-// The replacement allocation functions (see the file comment), for the whole test binary. Disarmed,
-// they are a plain malloc/free pair. Only operator new(size_t) and the two unaligned operator deletes
-// are replaced; the standard's default operator new[] and nothrow forms call operator new(size_t),
-// and its default operator delete[] and sized forms call operator delete(void*), so every unaligned
-// form allocates with malloc and frees with free. The aligned forms are not replaced at all, so they
-// keep the library's own matching new/delete pair.
-// NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc)
-void* operator new(std::size_t size)
-{
-    if (t_AllocationsBeforeFailure == 0)
-    {
-        t_AllocationsBeforeFailure = -1; // one failure per arming
-        throw std::bad_alloc();
-    }
-    if (t_AllocationsBeforeFailure > 0)
-    {
-        --t_AllocationsBeforeFailure;
-    }
-    if (void* memory = std::malloc(size == 0 ? 1 : size))
-    {
-        return memory;
-    }
-    throw std::bad_alloc();
-}
-
-void operator delete(void* memory) noexcept
-{
-    std::free(memory);
-}
-
-void operator delete(void* memory, std::size_t /*size*/) noexcept
-{
-    std::free(memory);
-}
-// NOLINTEND(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc)
-#endif
+using TestSupport::FailAllocationAfter;
 
 namespace
 {
