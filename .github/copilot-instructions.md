@@ -122,7 +122,8 @@ struct ProcessCapabilities {
 ### Data Refresh (Current Architecture)
 - `ProcessesPanel` performs one synchronous seed read, then transfers its probe to `BackgroundSampler` for periodic process enumeration
 - `SystemMetricsPanel` owns a separate `BackgroundSampler` for System, Storage, and GPU models so system work cannot delay process enumeration
-- System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations
+- System, Storage, and GPU models atomically publish immutable versioned snapshot-and-history generations. System and Storage build each generation outside any lock a reader takes and swap it in through `Domain::PublicationSlot` (a short mutex around a `shared_ptr`), so `publication()` never waits for a history copy (#868); their writers are serialised on a writer mutex so versions commit in order
+- `BackgroundSampler` times every samplable and pass (`metrics()`: last/max duration, overruns, backoffs), logs sustained overruns at most every 30 s, and after a pass that overruns its interval waits as long as the pass took (capped at `REFRESH_INTERVAL_MAX_MS`) instead of sampling back to back; the decision is the pure `Domain::nextSampleTime()` (#1416)
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
 - Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`; 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
