@@ -200,6 +200,7 @@ set(COMMON_TEST_SOURCES
     App/test_ElevationNoticeText.cpp
     App/test_FontSizeChange.cpp
     App/test_SyntheticScenario.cpp
+    App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
 # The Windows probes' pure *Math.h helpers include no Windows header, so their tests are built on
