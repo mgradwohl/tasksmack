@@ -6,11 +6,13 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -25,6 +27,24 @@ namespace
 {
 
 constexpr auto EXCEPTION_LOG_THROTTLE = std::chrono::seconds(5);
+/// A sustained overrun is logged at most this often, with the count since the last log (#1416).
+constexpr auto OVERRUN_LOG_THROTTLE = std::chrono::seconds(30);
+
+[[nodiscard]] std::chrono::microseconds toMicroseconds(std::chrono::steady_clock::duration duration) noexcept
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(duration);
+}
+
+void recordTiming(SampleTiming& timing, std::chrono::steady_clock::duration duration, std::chrono::milliseconds interval) noexcept
+{
+    timing.lastDuration = toMicroseconds(duration);
+    timing.maxDuration = std::max(timing.maxDuration, timing.lastDuration);
+    ++timing.samples;
+    if (duration > interval)
+    {
+        ++timing.overruns;
+    }
+}
 
 void logSamplerLoopException(std::string_view message,
                              std::chrono::steady_clock::time_point now,
@@ -53,6 +73,22 @@ void logSamplerLoopException(std::string_view message,
 
 } // namespace
 
+std::chrono::steady_clock::time_point nextSampleTime(std::chrono::steady_clock::time_point passStart,
+                                                     std::chrono::steady_clock::duration passDuration,
+                                                     std::chrono::milliseconds interval) noexcept
+{
+    using Duration = std::chrono::steady_clock::duration;
+    if (passDuration <= interval)
+    {
+        return passStart + interval;
+    }
+    // Overran: rest as long as the pass took (so longer than an interval), capped so a stalled probe
+    // can't stop sampling for longer than the slowest supported interval.
+    constexpr Duration MAX_GAP = std::chrono::milliseconds(Sampling::REFRESH_INTERVAL_MAX_MS);
+    const Duration gap = std::min<Duration>(passDuration, MAX_GAP);
+    return passStart + passDuration + gap;
+}
+
 BackgroundSampler::BackgroundSampler(SamplerConfig config)
     : m_Config{.interval = std::chrono::milliseconds(Sampling::clampRefreshInterval(config.interval.count())),
                .firstSampleAfterInterval = config.firstSampleAfterInterval,
@@ -67,10 +103,14 @@ BackgroundSampler::~BackgroundSampler()
     stop();
 }
 
-void BackgroundSampler::addSamplable(std::weak_ptr<ISamplable> samplable)
+void BackgroundSampler::addSamplable(std::weak_ptr<ISamplable> samplable, std::string name)
 {
     std::scoped_lock const lock(m_SamplablesMutex);
-    m_Samplables.push_back(std::move(samplable));
+    if (name.empty())
+    {
+        name = "samplable " + std::to_string(m_Samplables.size());
+    }
+    m_Samplables.push_back({.samplable = std::move(samplable), .name = std::move(name)});
 }
 
 void BackgroundSampler::start()
@@ -82,6 +122,12 @@ void BackgroundSampler::start()
     }
 
     spdlog::info("BackgroundSampler: starting with {}ms interval", m_Config.interval.count());
+    {
+        const std::scoped_lock lock(m_MetricsMutex);
+        m_Metrics = SamplerMetrics{};
+    }
+    m_NextOverrunLogTime = std::chrono::steady_clock::time_point::min();
+    m_OverrunsSinceLog = 0;
     m_Running.store(true);
     std::string threadName;
     {
@@ -116,7 +162,13 @@ void BackgroundSampler::stop()
         m_SamplerThread.join();
     }
 
-    spdlog::debug("BackgroundSampler: stopped");
+    const SamplerMetrics finalMetrics = metrics();
+    spdlog::debug("BackgroundSampler: stopped after {} passes; pass last/max {}/{} us, {} overruns, {} backoffs",
+                  finalMetrics.pass.samples,
+                  finalMetrics.pass.lastDuration.count(),
+                  finalMetrics.pass.maxDuration.count(),
+                  finalMetrics.pass.overruns,
+                  finalMetrics.backoffs);
 }
 
 bool BackgroundSampler::isRunning() const
@@ -154,6 +206,71 @@ void BackgroundSampler::setInterval(std::chrono::milliseconds newInterval)
     m_WakeCondition.notify_all();
 }
 
+SamplerMetrics BackgroundSampler::metrics() const
+{
+    const std::scoped_lock lock(m_MetricsMutex);
+    return m_Metrics;
+}
+
+void BackgroundSampler::recordPass(const std::vector<Entry>& entries,
+                                   const std::vector<std::optional<std::chrono::steady_clock::duration>>& durations,
+                                   std::chrono::steady_clock::duration passDuration,
+                                   std::chrono::milliseconds interval,
+                                   std::chrono::steady_clock::time_point now)
+{
+    const bool overran = passDuration > interval;
+    std::size_t slowest = entries.size();
+    auto slowestDuration = std::chrono::steady_clock::duration::min();
+    {
+        const std::scoped_lock lock(m_MetricsMutex);
+        if (m_Metrics.samplables.size() < entries.size())
+        {
+            m_Metrics.samplables.resize(entries.size());
+        }
+        for (std::size_t i = 0; i < entries.size(); ++i)
+        {
+            SampleTiming& timing = m_Metrics.samplables[i];
+            if (timing.name.empty())
+            {
+                timing.name = entries[i].name;
+            }
+            // No duration: not sampled this pass (expired, threw, or the sampler was stopping).
+            if (const auto& duration = durations[i]; duration.has_value())
+            {
+                recordTiming(timing, *duration, interval);
+                if (*duration > slowestDuration)
+                {
+                    slowest = i;
+                    slowestDuration = *duration;
+                }
+            }
+        }
+        recordTiming(m_Metrics.pass, passDuration, interval);
+        if (overran)
+        {
+            ++m_Metrics.backoffs;
+        }
+    }
+
+    if (!overran)
+    {
+        return;
+    }
+    ++m_OverrunsSinceLog;
+    if (now < m_NextOverrunLogTime)
+    {
+        return;
+    }
+    spdlog::warn("BackgroundSampler: a sampling pass took {} ms against a {} ms interval ({} overruns since the last report); "
+                 "slowest: {}; backing off",
+                 std::chrono::duration_cast<std::chrono::milliseconds>(passDuration).count(),
+                 interval.count(),
+                 m_OverrunsSinceLog,
+                 (slowest < entries.size()) ? entries[slowest].name : std::string("none"));
+    m_OverrunsSinceLog = 0;
+    m_NextOverrunLogTime = now + OVERRUN_LOG_THROTTLE;
+}
+
 void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
 {
     spdlog::debug("BackgroundSampler: thread started");
@@ -170,7 +287,7 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
         auto startTime = std::chrono::steady_clock::now();
         bool hadException = false;
 
-        std::vector<std::weak_ptr<ISamplable>> currentSamplables;
+        std::vector<Entry> currentSamplables;
         if (skipFirstSample)
         {
             // Already seeded by the owner (SamplerConfig::firstSampleAfterInterval): this pass only waits.
@@ -182,7 +299,9 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             currentSamplables = m_Samplables;
         }
 
-        for (const auto& weakSamplable : currentSamplables)
+        // How long each samplable took this pass; empty for one not sampled (#1416).
+        std::vector<std::optional<std::chrono::steady_clock::duration>> durations(currentSamplables.size());
+        for (std::size_t index = 0; index < currentSamplables.size(); ++index)
         {
             if (stopToken.stop_requested())
             {
@@ -192,15 +311,17 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             // Lock the weak_ptr to get a temporary shared_ptr for the duration of this sample()
             // call. If the owner has already destroyed the samplable, lock() returns empty and
             // this entry is skipped rather than dereferencing a dangling pointer.
-            const auto samplable = weakSamplable.lock();
+            const auto samplable = currentSamplables[index].samplable.lock();
             if (!samplable)
             {
                 continue;
             }
 
+            const auto sampleStart = std::chrono::steady_clock::now();
             try
             {
                 samplable->sample();
+                durations[index] = std::chrono::steady_clock::now() - sampleStart;
             }
             catch (const std::exception& ex)
             {
@@ -227,9 +348,16 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             currentInterval = m_Config.interval;
         }
 
-        const auto nextSampleTime = startTime + currentInterval;
+        const auto passEnd = std::chrono::steady_clock::now();
+        const auto passDuration = passEnd - startTime;
+        if (!currentSamplables.empty())
+        {
+            recordPass(currentSamplables, durations, passDuration, currentInterval, passEnd);
+        }
+
+        // The fixed cadence, or a bounded backoff after a pass that overran its interval (#1416).
         std::unique_lock wakeLock(m_WakeMutex);
-        auto deadline = nextSampleTime;
+        auto deadline = nextSampleTime(startTime, passDuration, currentInterval);
         while (!stopToken.stop_requested())
         {
             m_WakeCondition.wait_until(wakeLock, stopToken, deadline, [this] { return m_RefreshRequested || m_IntervalChanged; });
@@ -268,8 +396,9 @@ void BackgroundSampler::samplerLoop(const std::stop_token& stopToken)
             // Rebase on when this sample started, not on now: resetting the wait on every change
             // let repeated changes (the interaction throttle toggling during a drag) postpone
             // sampling indefinitely, and a faster interval took a whole interval to apply (#1118).
-            // A deadline already past samples immediately.
-            deadline = startTime + currentInterval;
+            // A deadline already past samples immediately. An overrunning pass keeps its backoff,
+            // recomputed for the new interval (#1416).
+            deadline = nextSampleTime(startTime, passDuration, currentInterval);
         }
     }
 

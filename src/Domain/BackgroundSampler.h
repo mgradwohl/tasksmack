@@ -6,8 +6,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -31,6 +33,35 @@ struct SamplerConfig
     std::string threadName{Platform::SAMPLER_THREAD_NAME};
 };
 
+/// How long samples take, for one samplable or for a whole sampling pass (#1416).
+struct SampleTiming
+{
+    std::string name;                          ///< The samplable's name (addSamplable()), or "pass" for whole passes
+    std::chrono::microseconds lastDuration{0}; ///< The most recent sample
+    std::chrono::microseconds maxDuration{0};  ///< The slowest sample since start()
+    std::uint64_t samples = 0;                 ///< Samples timed since start()
+    std::uint64_t overruns = 0;                ///< Samples that took longer than the sampling interval
+};
+
+/// A BackgroundSampler's timing since start(): per samplable and per pass (#1416).
+struct SamplerMetrics
+{
+    SampleTiming pass{.name = "pass"};    ///< Every samplable of one pass, back to back
+    std::vector<SampleTiming> samplables; ///< In addSamplable() order
+    std::uint64_t backoffs = 0;           ///< Passes that overran the interval, so the next waited longer (see nextSampleTime())
+};
+
+/// When the pass after one that started at `passStart` and took `passDuration` should start (#1416).
+///
+/// A pass that fits its interval keeps the fixed cadence: passStart + interval. One that overruns
+/// it doesn't start the next straight away (that ran passes back to back, a core busy exactly when
+/// the system was already slow): it waits after finishing for as long as the pass took, so sampling
+/// takes at most about half a core, but never longer than REFRESH_INTERVAL_MAX_MS, so it never
+/// stalls. The fixed cadence resumes with the first pass that fits again.
+[[nodiscard]] std::chrono::steady_clock::time_point nextSampleTime(std::chrono::steady_clock::time_point passStart,
+                                                                   std::chrono::steady_clock::duration passDuration,
+                                                                   std::chrono::milliseconds interval) noexcept;
+
 /// Background sampler that runs sampling on a separate thread.
 class BackgroundSampler
 {
@@ -48,7 +79,8 @@ class BackgroundSampler
     /// so the owner (a Panel) can destroy it at will without any destruction-order dependency
     /// on the sampler. A samplable whose owner has released it is silently skipped on the next
     /// sampling iteration rather than causing a use-after-free.
-    void addSamplable(std::weak_ptr<ISamplable> samplable);
+    /// `name` labels its timing in metrics() and the overrun log ("samplable N" when empty).
+    void addSamplable(std::weak_ptr<ISamplable> samplable, std::string name = {});
 
     /// Start background sampling thread.
     void start();
@@ -68,11 +100,26 @@ class BackgroundSampler
     /// Set sampling interval (takes effect on next iteration).
     void setInterval(std::chrono::milliseconds interval);
 
+    /// Sample durations and overruns since start() (thread-safe copy; #1416).
+    [[nodiscard]] SamplerMetrics metrics() const;
+
   private:
+    struct Entry
+    {
+        std::weak_ptr<ISamplable> samplable;
+        std::string name;
+    };
+
     void samplerLoop(const std::stop_token& stopToken);
+    /// Fold one pass's timings into m_Metrics, and log a sustained overrun (rate-limited).
+    void recordPass(const std::vector<Entry>& entries,
+                    const std::vector<std::optional<std::chrono::steady_clock::duration>>& durations,
+                    std::chrono::steady_clock::duration passDuration,
+                    std::chrono::milliseconds interval,
+                    std::chrono::steady_clock::time_point now);
 
     SamplerConfig m_Config;
-    std::vector<std::weak_ptr<ISamplable>> m_Samplables;
+    std::vector<Entry> m_Samplables;
 
     std::jthread m_SamplerThread;
     std::atomic<bool> m_Running{false};
@@ -83,6 +130,11 @@ class BackgroundSampler
     std::condition_variable_any m_WakeCondition;
     bool m_RefreshRequested = false;
     bool m_IntervalChanged = false;
+
+    mutable std::mutex m_MetricsMutex;
+    SamplerMetrics m_Metrics;                                   // guarded by m_MetricsMutex
+    std::chrono::steady_clock::time_point m_NextOverrunLogTime; // sampler thread only
+    std::uint64_t m_OverrunsSinceLog = 0;                       // sampler thread only
 };
 
 } // namespace Domain

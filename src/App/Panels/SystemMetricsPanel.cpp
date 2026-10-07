@@ -197,11 +197,11 @@ void SystemMetricsPanel::onAttach()
     samplerCfg.firstSampleAfterInterval = true; // seeded synchronously above (#1102)
     samplerCfg.threadName = Platform::SYSTEM_SAMPLER_THREAD_NAME;
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
-    m_Sampler->addSamplable(m_Model);
-    m_Sampler->addSamplable(m_StorageModel);
+    m_Sampler->addSamplable(m_Model, "system");
+    m_Sampler->addSamplable(m_StorageModel, "storage");
     if (m_GPUModel)
     {
-        m_Sampler->addSamplable(m_GPUModel);
+        m_Sampler->addSamplable(m_GPUModel, "gpu");
     }
     m_Sampler->start();
 
