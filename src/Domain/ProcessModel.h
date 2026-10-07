@@ -39,6 +39,19 @@ struct ProcessSystemHistories
     Platform::ProcessCapabilities capabilities;
 };
 
+/// One sample of the aggregated system histories (ProcessSystemHistories), for
+/// ProcessModel::appendSystemHistory().
+struct ProcessSystemHistorySample
+{
+    double timeSeconds = 0.0; ///< steady_clock seconds since its epoch, as the histories' timestamps
+    double netSentBytesPerSec = 0.0;
+    double netReceivedBytesPerSec = 0.0;
+    double pageFaultsPerSec = 0.0;
+    double threadCount = 0.0;
+    double handleCount = 0.0;
+    double powerWatts = 0.0;
+};
+
 /// Owns a process probe, caches previous counters, and computes CPU% deltas.
 /// Call refresh() periodically; snapshots() returns the latest computed data.
 /// Thread-safe: can receive updates from background sampler.
@@ -167,6 +180,17 @@ class ProcessModel : public ISamplable
     /// Sets the history window, clamped to SamplingConfig's range, and trims the system histories to
     /// it at once, advancing their generation (tryCopySystemHistoriesIfNewer()) when it has one (#1145).
     void setMaxHistorySeconds(double seconds);
+
+    /// Fills in the next sample of a series, returning false when there are no more.
+    using SystemHistorySource = std::function<bool(ProcessSystemHistorySample& sample)>;
+
+    /// Appends samples to the aggregated system histories, oldest first, trims them to the window
+    /// and advances their generation once: a history preload (the synthetic scenario fills the whole
+    /// window at startup, #1413). These histories are sums over every process, so preloading them by
+    /// running thousands of processes through refresh() 18k times would take minutes. A sample not
+    /// later than the newest one held is skipped, so the histories stay in time order. @p next runs
+    /// under the model's lock and must not call back into it. Thread-safe.
+    void appendSystemHistory(const SystemHistorySource& next);
 
     /// The per-process network rate ceiling, bytes/s ([metrics] max_sane_rate_bps, #1123). A rate
     /// above it is taken for a bad reading and shown as 0. Clamped to SamplingConfig's range.

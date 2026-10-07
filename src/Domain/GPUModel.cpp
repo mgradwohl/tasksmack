@@ -173,7 +173,13 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
 {
     if (!m_Probe)
     {
-        spdlog::warn("GPUModel: No GPU probe provided");
+        // No probe (the synthetic scenario has no GPU, #1413) is a known answer, not an unknown one:
+        // no per-process GPU data, so the GPU columns explain that they aren't supported
+        // instead of waiting for capabilities that never come.
+        spdlog::warn("GPUModel: No GPU probe provided; no per-process GPU data");
+        m_CapabilitiesKnown = true;
+        m_PerProcessKnownUnsupported.store(true, std::memory_order_release);
+        m_PerProcessUtilizationKnownUnsupported.store(true, std::memory_order_release);
         return;
     }
 
