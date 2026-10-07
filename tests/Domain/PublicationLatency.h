@@ -42,6 +42,46 @@ struct LatencyResult
 /// How long the writer waits for the reader's next read before giving up (see pacingTimedOut).
 inline constexpr std::chrono::seconds PACING_TIMEOUT{10};
 
+/// Paces writer threads on a reader's progress, so reads really happen while publishing is in
+/// progress however the scheduler runs the threads: each writer waits, before each publish, for a
+/// read completed since its previous publish. The reader calls readDone() after every read. Waits are
+/// bounded by PACING_TIMEOUT; a timeout is recorded (timedOut()) and the writer should stop.
+class ReadPacer
+{
+  public:
+    void readDone() noexcept
+    {
+        m_Reads.fetch_add(1, std::memory_order_release);
+    }
+
+    /// Wait for a read newer than `lastSeen` (start at 0: the reader is known to be running), then
+    /// advance `lastSeen` to it. False on timeout.
+    [[nodiscard]] bool awaitReadSince(std::size_t& lastSeen)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + PACING_TIMEOUT;
+        while (m_Reads.load(std::memory_order_acquire) <= lastSeen)
+        {
+            if (m_TimedOut.load(std::memory_order_relaxed) || std::chrono::steady_clock::now() >= deadline)
+            {
+                m_TimedOut.store(true, std::memory_order_relaxed);
+                return false;
+            }
+            std::this_thread::yield();
+        }
+        lastSeen = m_Reads.load(std::memory_order_acquire);
+        return true;
+    }
+
+    [[nodiscard]] bool timedOut() const noexcept
+    {
+        return m_TimedOut.load(std::memory_order_relaxed);
+    }
+
+  private:
+    std::atomic<std::size_t> m_Reads{0};
+    std::atomic<bool> m_TimedOut{false};
+};
+
 /// Runs `writes` calls of write() on a second thread, each one publishing one generation, while this
 /// thread reads. load() is publication(), version() is publicationVersion(), and consistent(pub)
 /// checks one generation's internal invariants (series lengths); only load() is timed. Unless

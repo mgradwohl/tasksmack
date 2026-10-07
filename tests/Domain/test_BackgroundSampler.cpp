@@ -20,6 +20,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -965,11 +967,17 @@ TEST(BackgroundSamplerTest, MetricsStartOverOnRestart)
     const auto samplable = std::make_shared<MockSamplable>();
     sampler.addSamplable(samplable);
     sampler.start();
-    samplable->waitForSamples(1);
-    ASSERT_TRUE(waitFor([&] { return sampler.metrics().pass.samples >= 1; }));
+    samplable->waitForSamples(2);
     sampler.stop();
+    const int firstRunSamples = samplable->getSampleCount();
+    ASSERT_EQ(sampler.metrics().samplables.at(0).samples, static_cast<std::uint64_t>(firstRunSamples));
 
+    // After stop() the sampler thread has joined, so the callback count and the metrics are final and
+    // comparable without racing the sampler: the restarted run's metrics count only its own samples.
     sampler.start();
-    EXPECT_LE(sampler.metrics().pass.samples, 1U); // reset at start(); the first new pass may already have run
+    samplable->waitForSamples(firstRunSamples + 1);
     sampler.stop();
+    const int secondRunSamples = samplable->getSampleCount() - firstRunSamples;
+    ASSERT_GE(secondRunSamples, 1);
+    EXPECT_EQ(sampler.metrics().samplables.at(0).samples, static_cast<std::uint64_t>(secondRunSamples));
 }

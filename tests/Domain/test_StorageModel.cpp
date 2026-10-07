@@ -1362,7 +1362,8 @@ TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
 {
     // The sampler thread (sampleAt) and the UI thread (setMaxHistorySeconds) both publish. They are
     // serialised, so generations are committed in version order with none lost, and a reader never
-    // sees a regressed or misaligned one (#868).
+    // sees a regressed or misaligned one (#868). Both writers are paced on the reader (ReadPacer), so
+    // reads really interleave with the publishing however the threads are scheduled.
     constexpr std::size_t DISKS = 8;
     constexpr int SAMPLES = 300;
     constexpr int RESIZES = 300;
@@ -1374,24 +1375,31 @@ TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
     rawProbe->setNextCounters(makeManyDisks(DISKS, 1));
     model.sampleAt(std::chrono::steady_clock::time_point{} + std::chrono::hours(1)); // publish once so resizes republish
 
+    TestPublication::ReadPacer pacer;
+    std::atomic<int> writersRunning{2};
+    std::atomic<std::size_t> readsWhilePublishing{0};
     std::atomic<bool> stop{false};
     std::thread sampler(
         [&]
         {
+            std::size_t lastRead = 0;
             auto now = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
-            for (int i = 0; i < SAMPLES; ++i)
+            for (int i = 0; i < SAMPLES && pacer.awaitReadSince(lastRead); ++i)
             {
                 rawProbe->setNextCounters(makeManyDisks(DISKS, static_cast<std::uint64_t>(i) + 2));
                 model.sampleAt(now += STEP);
             }
+            writersRunning.fetch_sub(1);
         });
     std::thread resizer(
         [&]
         {
-            for (int i = 0; i < RESIZES; ++i)
+            std::size_t lastRead = 0;
+            for (int i = 0; i < RESIZES && pacer.awaitReadSince(lastRead); ++i)
             {
                 model.setMaxHistorySeconds((i % 2 == 0) ? Sampling::HISTORY_SECONDS_MIN : Sampling::HISTORY_SECONDS_DEFAULT);
             }
+            writersRunning.fetch_sub(1);
         });
     std::thread reader(
         [&]
@@ -1405,12 +1413,21 @@ TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
                 EXPECT_GE(publication->version, announced);
                 EXPECT_TRUE(isAligned(*publication));
                 lastSeen = publication->version;
+                if (writersRunning.load() > 0)
+                {
+                    readsWhilePublishing.fetch_add(1);
+                }
+                pacer.readDone();
             }
         });
     sampler.join();
     resizer.join();
     stop.store(true);
     reader.join();
+
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped keeping up with the writers";
+    // Every sample and every resize waited for a fresh read, made while that writer was still running.
+    EXPECT_GE(readsWhilePublishing.load(), static_cast<std::size_t>(std::max(SAMPLES, RESIZES)));
 
     EXPECT_EQ(model.publicationVersion(), static_cast<std::uint64_t>(1 + SAMPLES + RESIZES));
     EXPECT_EQ(model.publication()->version, model.publicationVersion());
