@@ -508,13 +508,14 @@ TEST(ProcessDetailsHistoryTest, ClearEmptiesTheAxisAndEverySeries)
 TEST(ProcessDetailsHistoryTest, AReusedPidStartsAFreshHistory)
 {
     // The panel resets on any selection snapshotIsSelectedProcess() calls a different process: a
-    // different key under the same PID is a reused PID, so its history must not continue the old one's.
+    // different start time under the same PID is a reused PID, so its history must not continue the
+    // old one's.
     constexpr std::int32_t pid = 42;
-    constexpr std::uint64_t oldKey = 1;
-    constexpr std::uint64_t newKey = 2;
+    constexpr std::uint64_t oldStart = 1;
+    constexpr std::uint64_t newStart = 2;
 
     ProcessDetailsHistory history = everySecond(0, 9);
-    ASSERT_FALSE(ProcessDetailsLayout::snapshotIsSelectedProcess(pid, oldKey, pid, newKey));
+    ASSERT_FALSE(ProcessDetailsLayout::snapshotIsSelectedProcess(pid, oldStart, pid, newStart));
     history.clear();
 
     // The new process's first sample is the first point, with no gap from the old history.
@@ -526,27 +527,29 @@ TEST(ProcessDetailsHistoryTest, AReusedPidStartsAFreshHistory)
 
 TEST(ProcessDetailsHistoryTest, ReselectingTheSameProcessKeepsItsHistory)
 {
-    // An unknown key on either side is not a different process: re-selecting what is shown keeps it.
+    // The same PID and start time is the same process: re-selecting what is shown keeps it.
     constexpr std::int32_t pid = 42;
-    EXPECT_TRUE(ProcessDetailsLayout::snapshotIsSelectedProcess(pid, 1, pid, 0));
-    EXPECT_TRUE(ProcessDetailsLayout::snapshotIsSelectedProcess(pid, 0, pid, 1));
     EXPECT_TRUE(ProcessDetailsLayout::snapshotIsSelectedProcess(pid, 1, pid, 1));
 }
 
 TEST(ProcessDetailsHistoryTest, SamplesOfAProcessThatReusedThePidAreNotAppended)
 {
     // Between a PID's reuse and the reselection, samples of the new process are not the selected one's.
+    // The new process's uniqueKey is forced to collide with the selected one's (#1503): only the start
+    // time tells them apart, and it must.
     constexpr std::int32_t pid = 42;
-    std::uint64_t selectedKey = 1;
+    constexpr std::uint64_t selectedStart = 1;
+    constexpr std::uint64_t collidingKey = 0xC011;
     SampleIntake intake;
     ProcessDetailsHistory history;
 
-    const auto sample = [](std::uint64_t version, double time, std::uint64_t key)
+    const auto sample = [](std::uint64_t version, double time, std::uint64_t startTicks)
     {
         Domain::ProcessSnapshot snapshot;
         snapshot.pid = pid;
-        snapshot.uniqueKey = key;
-        snapshot.cpuPercent = static_cast<double>(key);
+        snapshot.startTimeTicks = startTicks;
+        snapshot.uniqueKey = collidingKey;
+        snapshot.cpuPercent = static_cast<double>(startTicks);
         return Domain::ProcessSample{.snapshot = std::make_shared<const Domain::ProcessSnapshot>(snapshot),
                                      .version = version,
                                      .sampleTimeSeconds = time,
@@ -559,7 +562,7 @@ TEST(ProcessDetailsHistoryTest, SamplesOfAProcessThatReusedThePidAreNotAppended)
     const std::vector<Domain::ProcessSample> samples{sample(1, 1.0, 1), sample(2, 2.0, 2), sample(3, 3.0, 2)};
     takeSamples(samples,
                 pid,
-                selectedKey,
+                selectedStart,
                 intake,
                 [&history](const Domain::ProcessSample& s, bool gapBefore)
                 { history.append(s.sampleTimeSeconds, historyPointFrom(*s.snapshot, rateReadings(s)), gapBefore); });

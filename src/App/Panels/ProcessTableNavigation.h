@@ -113,9 +113,11 @@ struct NavModifiers
     return std::max<std::size_t>(1, visibleRows - 1);
 }
 
-/// The position of @p key in @p visibleKeys (the uniqueKeys of the visible rows, in order), or none
-/// when that process is not visible: unselected, filtered out, or under a collapsed parent.
-[[nodiscard]] constexpr std::optional<std::size_t> indexOfKey(std::span<const std::uint64_t> visibleKeys, std::uint64_t key) noexcept
+/// The position of @p key in @p visibleKeys (the identities of the visible rows, in order -- see
+/// ProcessSelection::Identity), or none when that process is not visible: unselected, filtered out,
+/// or under a collapsed parent.
+template<typename Key>
+[[nodiscard]] constexpr std::optional<std::size_t> indexOfKey(std::span<const Key> visibleKeys, const Key& key) noexcept
 {
     const auto it = std::ranges::find(visibleKeys, key);
     if (it == visibleKeys.end())
