@@ -7,6 +7,7 @@
 #include "Platform/IGPUProbe.h"
 #include "PublicationSlot.h"
 #include "SamplingConfig.h"
+#include "SharedHistory.h"
 
 #include <spdlog/spdlog.h>
 
@@ -127,6 +128,111 @@ void carryBusyHighWater(Platform::GPUCounters& current, const Platform::GPUCount
 
 } // namespace
 
+GPUModel::HistorySample GPUModel::historySample(const GPUSnapshot& sample) noexcept
+{
+    return HistorySample{
+        .timestamp = sample.captureTimeSec,
+        // An unread memory sample keeps no bytes: a 0 total is the "no byte figures" marker, so the
+        // tooltip shows N/A rather than a placeholder "0 / <total>" (#1111).
+        .memoryUsedBytes = sample.memoryAvailable ? sample.memoryUsedBytes : 0,
+        .memoryTotalBytes = sample.memoryAvailable ? sample.memoryTotalBytes : 0,
+        .utilization = readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable),
+        .memoryPercent = readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable),
+        .gpuClock = gpuClockOrNaN(sample),
+        .encoder = sampleOrNaN(sample, sample.encoderUtilPercent),
+        .decoder = sampleOrNaN(sample, sample.decoderUtilPercent),
+        .temperature = readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable),
+        .power = readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable),
+        .fanSpeed = fanSpeedOrNaN(sample),
+        .sampled = sample.sampled,
+    };
+}
+
+GPUModel::HistorySample GPUModel::placeholderSample(double nowSeconds) noexcept
+{
+    // A default snapshot marked unsampled, so a placeholder records exactly what one did before #1412.
+    GPUSnapshot gap;
+    gap.captureTimeSec = nowSeconds;
+    gap.sampled = false;
+    return historySample(gap);
+}
+
+GPUModel::GPUSeries::GPUSeries(std::size_t capacity) noexcept
+{
+    setCapacity(capacity);
+}
+
+void GPUModel::GPUSeries::setCapacity(std::size_t capacity) noexcept
+{
+    timestamps.setCapacity(capacity);
+    memoryUsedBytes.setCapacity(capacity);
+    memoryTotalBytes.setCapacity(capacity);
+    for (auto* series : {&utilization, &memoryPercent, &gpuClock, &encoder, &decoder, &temperature, &power, &fanSpeed})
+    {
+        series->setCapacity(capacity);
+    }
+    trailingPlaceholders = std::min(trailingPlaceholders, size());
+}
+
+void GPUModel::GPUSeries::reserve(std::size_t count)
+{
+    // Each reserve either makes room or throws having changed nothing; room made in some series before
+    // another throws is unobservable (the same samples, perhaps in a new block).
+    timestamps.reserve(count);
+    memoryUsedBytes.reserve(count);
+    memoryTotalBytes.reserve(count);
+    for (auto* series : {&utilization, &memoryPercent, &gpuClock, &encoder, &decoder, &temperature, &power, &fanSpeed})
+    {
+        series->reserve(count);
+    }
+}
+
+void GPUModel::GPUSeries::push(const HistorySample& sample)
+{
+    timestamps.push(sample.timestamp);
+    memoryUsedBytes.push(sample.memoryUsedBytes);
+    memoryTotalBytes.push(sample.memoryTotalBytes);
+    utilization.push(sample.utilization);
+    memoryPercent.push(sample.memoryPercent);
+    gpuClock.push(sample.gpuClock);
+    encoder.push(sample.encoder);
+    decoder.push(sample.decoder);
+    temperature.push(sample.temperature);
+    power.push(sample.power);
+    fanSpeed.push(sample.fanSpeed);
+    // A full series drops its oldest sample to take this one, so the count can't pass size().
+    trailingPlaceholders = sample.sampled ? 0 : std::min(trailingPlaceholders + 1, size());
+}
+
+void GPUModel::GPUSeries::discardFront(std::size_t count) noexcept
+{
+    timestamps.discardFront(count);
+    memoryUsedBytes.discardFront(count);
+    memoryTotalBytes.discardFront(count);
+    for (auto* series : {&utilization, &memoryPercent, &gpuClock, &encoder, &decoder, &temperature, &power, &fanSpeed})
+    {
+        series->discardFront(count);
+    }
+    trailingPlaceholders = std::min(trailingPlaceholders, size());
+}
+
+GPUPublishedHistory GPUModel::GPUSeries::view() const noexcept
+{
+    return GPUPublishedHistory{
+        .timestamps = timestamps.view(),
+        .memoryUsedBytes = memoryUsedBytes.view(),
+        .memoryTotalBytes = memoryTotalBytes.view(),
+        .utilization = utilization.view(),
+        .memoryPercent = memoryPercent.view(),
+        .gpuClock = gpuClock.view(),
+        .encoder = encoder.view(),
+        .decoder = decoder.view(),
+        .temperature = temperature.view(),
+        .power = power.view(),
+        .fanSpeed = fanSpeed.view(),
+    };
+}
+
 std::vector<GPUSnapshot> orderSnapshotsByEnumeration(std::span<const Platform::GPUInfo> gpuInfo, const GPUSnapshotMap& snapshots)
 {
     const auto enumerated = [gpuInfo](std::string_view gpuId)
@@ -206,7 +312,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         // Initialize history buffers for each GPU
         for (const auto& info : m_GPUInfo)
         {
-            m_Histories.emplace(info.id, HistoryBuffer<GPUSnapshot>{Sampling::historyCapacityForSeconds(m_MaxHistorySeconds)});
+            m_Histories.try_emplace(info.id, Sampling::historyCapacityForSeconds(m_MaxHistorySeconds));
         }
     }
     catch (const std::exception& e)
@@ -229,13 +335,29 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
 
     try
     {
-        // Read current counters
+        // Read current counters: the system's, then the per-process ones, in one locked section.
+        // This sampler is the only one that runs the probe (#1417): the process sampler merges the
+        // per-process publication made here, never waiting on the probe or its lock.
         std::vector<Platform::GPUCounters> currentCounters;
+        std::exception_ptr systemReadFailure;
         {
             const std::scoped_lock probeLock(m_ProbeMutex);
             // Before the read, so a rebuilt device list and the GPU info describing it arrive together.
             rescanGPUs(now);
-            currentCounters = m_Probe->readGPUCounters();
+            try
+            {
+                currentCounters = m_Probe->readGPUCounters();
+            }
+            catch (...)
+            {
+                // Rethrown below, after the per-process read: one failing read doesn't stop the other.
+                systemReadFailure = std::current_exception();
+            }
+            publishProcessGPUData(now);
+        }
+        if (systemReadFailure)
+        {
+            std::rethrow_exception(systemReadFailure);
         }
         const auto currentTime = now;
 
@@ -265,39 +387,26 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
             newSnapshots[current.gpuId] = snapshot;
         }
 
-        // Update stored state under lock
+        // Stamp each sample with this refresh's time, so a GPU's own timestamps stay aligned with its
+        // history entries. A local still: nothing observable has changed yet.
+        const double nowSec = std::chrono::duration<double>(currentTime.time_since_epoch()).count();
+        for (auto& [gpuId, snapshot] : newSnapshots)
+        {
+            snapshot.captureTimeSec = nowSec;
+        }
+
+        // Update stored state under lock, as a transaction (#1412): everything that allocates is
+        // staged first, so a std::bad_alloc leaves every series as it was, and still aligned; the
+        // commit, the snapshots' move and the trim cannot throw.
         {
             const std::unique_lock lock(m_Mutex);
+            PendingHistory pending;
+            stageHistoryAppend(pending, newSnapshots);
+            commitHistoryAppend(pending, newSnapshots, nowSec);
             m_Snapshots = std::move(newSnapshots);
-
-            // Record timestamp for this sample
-            const double nowSec = std::chrono::duration<double>(currentTime.time_since_epoch()).count();
-            m_HistoryTimestamps.push_back(nowSec);
-
-            // Push to history under lock protection — stamp capture time first so that
-            // per-GPU timestamps stay aligned with each GPU's own history entries.
-            for (auto& [gpuId, snapshot] : m_Snapshots)
-            {
-                snapshot.captureTimeSec = nowSec;
-                auto histIt = m_Histories.try_emplace(gpuId, Sampling::historyCapacityForSeconds(m_MaxHistorySeconds)).first;
-                histIt->second.push(snapshot);
-            }
-            // A known GPU missing from this read gets a placeholder, so its history has a gap here
-            // rather than a line drawn straight across the absence (#1146).
-            for (auto& [gpuId, history] : m_Histories)
-            {
-                if (!m_Snapshots.contains(gpuId))
-                {
-                    GPUSnapshot gap;
-                    gap.gpuId = gpuId;
-                    gap.captureTimeSec = nowSec;
-                    gap.sampled = false;
-                    history.push(gap);
-                }
-            }
             trimHistory(nowSec);
         }
-        // Outside the exclusive lock: the history copies take a shared lock only (#868).
+        // Outside the exclusive lock: building the publication takes a shared lock only (#868).
         publish();
 
         // Writer-only state (m_WriterMutex) that no reader touches, so no m_Mutex. Still after
@@ -393,6 +502,52 @@ void GPUModel::rescanGPUs(std::chrono::steady_clock::time_point now)
     }
 }
 
+void GPUModel::stageHistoryAppend(PendingHistory& pending, const SnapshotMap& snapshots)
+{
+    // A GPU new to this read gets its series off to the side, with room for this sample. Its history
+    // starts here, with no backfill: each GPU's series carry their own timestamps (#1146).
+    const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
+    for (const auto& [gpuId, snapshot] : snapshots)
+    {
+        if (!m_Histories.contains(gpuId))
+        {
+            pending.newGpus.try_emplace(gpuId, capacity).first->second.reserve(1);
+        }
+    }
+    // Buckets for the staged GPUs, so moving their nodes in below cannot rehash.
+    m_Histories.reserve(m_Histories.size() + pending.newGpus.size());
+
+    // Room for this sample in every existing series, including those of a GPU missing from this read,
+    // which gets a placeholder.
+    m_HistoryTimestamps.reserve(1);
+    for (auto& [gpuId, series] : m_Histories)
+    {
+        series.reserve(1);
+    }
+}
+
+// The calls below that could allocate in general (push, node insert) cannot here: each uses room
+// stageHistoryAppend() reserved, which the checker can't see.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+void GPUModel::commitHistoryAppend(PendingHistory& pending, const SnapshotMap& snapshots, double nowSeconds) noexcept
+{
+    // Adopt the staged series: map nodes spliced in without allocating, into buckets already reserved.
+    while (!pending.newGpus.empty())
+    {
+        m_Histories.insert(pending.newGpus.extract(pending.newGpus.begin()));
+    }
+
+    m_HistoryTimestamps.push(nowSeconds);
+    // A known GPU missing from this read gets a placeholder, so its history has a gap here rather
+    // than a line drawn straight across the absence (#1146).
+    const HistorySample placeholder = placeholderSample(nowSeconds);
+    for (auto& [gpuId, series] : m_Histories)
+    {
+        const auto snapshot = snapshots.find(gpuId);
+        series.push((snapshot != snapshots.end()) ? historySample(snapshot->second) : placeholder);
+    }
+}
+
 void GPUModel::setMaxHistorySeconds(double seconds)
 {
     const std::scoped_lock writerLock(m_WriterMutex);
@@ -402,7 +557,7 @@ void GPUModel::setMaxHistorySeconds(double seconds)
         applyHistoryCapacity();
         if (!m_HistoryTimestamps.empty())
         {
-            trimHistory(m_HistoryTimestamps.back());
+            trimHistory(m_HistoryTimestamps.latest());
         }
     }
     // Republish the trimmed history now rather than at the next sample (#1145); see
@@ -419,67 +574,40 @@ double GPUModel::maxHistorySeconds() const
     return m_MaxHistorySeconds;
 }
 
-void GPUModel::applyHistoryCapacity()
+void GPUModel::applyHistoryCapacity() noexcept
 {
     // Sized for the window at the fastest supported refresh cadence; trimHistory() governs
     // actual retention, as in SystemModel and StorageModel.
     const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
-    for (auto& [gpuId, history] : m_Histories)
+    m_HistoryTimestamps.setCapacity(capacity);
+    for (auto& [gpuId, series] : m_Histories)
     {
-        history.setCapacity(capacity);
+        series.setCapacity(capacity);
     }
 }
 
-void GPUModel::trimHistory(double nowSeconds)
+void GPUModel::trimHistory(double nowSeconds) noexcept
 {
-    const double cutoff = nowSeconds - m_MaxHistorySeconds;
     // Like HistoryUtils::discardBefore, keep the newest sample before the cutoff, so the charts'
-    // lines run off the window's left edge instead of leaving a strip there (#1016).
-    // Only while a newer sample remains: an anchor with nothing after it would be drawn connected to
-    // the next sample across the gap.
-    auto keepFrom = std::ranges::lower_bound(m_HistoryTimestamps, cutoff);
-    if (keepFrom != m_HistoryTimestamps.begin() && keepFrom != m_HistoryTimestamps.end() &&
-        HistoryUtils::keepTrimAnchor(*(keepFrom - 1), *keepFrom, cutoff, m_HistoryTimestamps.back()))
-    {
-        --keepFrom;
-    }
-    m_HistoryTimestamps.erase(m_HistoryTimestamps.begin(), keepFrom);
+    // lines run off the window's left edge instead of leaving a strip there (#1016). Only while a
+    // newer sample remains: an anchor with nothing after it would be drawn connected to the next
+    // sample across the gap. trimCountBefore() applies that rule; discardFront() is O(1).
+    const double cutoff = nowSeconds - m_MaxHistorySeconds;
+    m_HistoryTimestamps.discardFront(HistoryUtils::trimCountBefore(m_HistoryTimestamps.view(), cutoff));
 
-    // Each GPU has its own timestamps: a refresh it was missing from has a gap entry, but its
+    // Each GPU has its own timestamps: a refresh it was missing from has a placeholder, but its
     // history starts when it was first seen and is pruned on its own, so it needn't line up with
-    // the global timestamps. Trim each ring by its own capture times rather than one shared count.
-    for (auto& [gpuId, history] : m_Histories)
+    // the global timestamps. Trim each GPU by its own timestamps rather than one shared count. A GPU
+    // absent for the whole window has no sample after the cutoff, so all of its samples go, rather
+    // than keep one that would later be joined to its next sample across the absence.
+    for (auto& [gpuId, series] : m_Histories)
     {
-        std::size_t staleCount = 0;
-        while (staleCount < history.size() && history.ref(staleCount).captureTimeSec < cutoff)
-        {
-            ++staleCount;
-        }
-        // A GPU absent for the whole window has no sample after the cutoff: drop them all, rather than
-        // keep one that would later be joined to its next sample across the absence.
-        const bool keepAnchor = staleCount > 0 && staleCount < history.size() &&
-                                HistoryUtils::keepTrimAnchor(history.ref(staleCount - 1).captureTimeSec,
-                                                             history.ref(staleCount).captureTimeSec,
-                                                             cutoff,
-                                                             history.ref(history.size() - 1).captureTimeSec);
-        history.discardFront(keepAnchor ? staleCount - 1 : staleCount);
+        series.discardFront(HistoryUtils::trimCountBefore(series.timestamps.view(), cutoff));
     }
 
     // A GPU whose window holds nothing but placeholders has been gone for the whole window: forget it,
     // rather than record a placeholder for it on every sample forever.
-    std::erase_if(m_Histories,
-                  [](const auto& entry)
-                  {
-                      const auto& history = entry.second;
-                      for (std::size_t index = 0; index < history.size(); ++index)
-                      {
-                          if (history.ref(index).sampled)
-                          {
-                              return false;
-                          }
-                      }
-                      return true;
-                  });
+    std::erase_if(m_Histories, [](const auto& entry) { return !entry.second.hasReading(); });
 }
 
 std::shared_ptr<const GPUPublication> GPUModel::publication() const noexcept
@@ -497,7 +625,7 @@ void GPUModel::publish()
     // Build contents first, commit validity keys last: the version comes from a local candidate and
     // m_PublicationVersion only advances once the generation is committed, so a throw from the copies
     // below (std::bad_alloc) leaves the published generation, its version and m_PublicationVersion
-    // consistent. The copies run under a shared lock: the per-field accessors still read alongside,
+    // consistent. The build runs under a shared lock: the per-field accessors still read alongside,
     // and publication() doesn't take m_Mutex at all, so no reader waits for them (#868). The caller
     // holds m_WriterMutex, so no other writer changes the histories meanwhile; rescanGPUs() can still
     // replace the GPU info, but only under the exclusive m_Mutex, so this copy sees all of one list.
@@ -509,38 +637,11 @@ void GPUModel::publish()
         publication->gpuInfoKnown = m_GPUInfoKnown;
         publication->capabilities = m_Capabilities;
         publication->snapshots = orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
-        for (const auto& [gpuId, history] : m_Histories)
+        // A view of each series, sharing the model's samples: O(series), whatever the history length (#1412).
+        publication->histories.reserve(m_Histories.size());
+        for (const auto& [gpuId, series] : m_Histories)
         {
-            auto& publishedHistory = publication->histories[gpuId];
-            publishedHistory.timestamps.reserve(history.size());
-            publishedHistory.memoryUsedBytes.reserve(history.size());
-            publishedHistory.memoryTotalBytes.reserve(history.size());
-            publishedHistory.utilization.reserve(history.size());
-            publishedHistory.memoryPercent.reserve(history.size());
-            publishedHistory.gpuClock.reserve(history.size());
-            publishedHistory.encoder.reserve(history.size());
-            publishedHistory.decoder.reserve(history.size());
-            publishedHistory.temperature.reserve(history.size());
-            publishedHistory.power.reserve(history.size());
-            publishedHistory.fanSpeed.reserve(history.size());
-            for (std::size_t index = 0; index < history.size(); ++index)
-            {
-                // ref(), not operator[]: a reference, so no GPUSnapshot (and its strings) is copied.
-                const auto& sample = history.ref(index);
-                publishedHistory.timestamps.push_back(sample.captureTimeSec);
-                // An unread memory sample keeps no bytes: a 0 total is the "no byte figures" marker, so
-                // the tooltip shows N/A rather than a placeholder "0 / <total>" (#1111).
-                publishedHistory.memoryUsedBytes.push_back(sample.memoryAvailable ? sample.memoryUsedBytes : 0);
-                publishedHistory.memoryTotalBytes.push_back(sample.memoryAvailable ? sample.memoryTotalBytes : 0);
-                publishedHistory.utilization.push_back(readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable));
-                publishedHistory.memoryPercent.push_back(readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable));
-                publishedHistory.gpuClock.push_back(gpuClockOrNaN(sample));
-                publishedHistory.encoder.push_back(sampleOrNaN(sample, sample.encoderUtilPercent));
-                publishedHistory.decoder.push_back(sampleOrNaN(sample, sample.decoderUtilPercent));
-                publishedHistory.temperature.push_back(readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable));
-                publishedHistory.power.push_back(readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable));
-                publishedHistory.fanSpeed.push_back(fanSpeedOrNaN(sample));
-            }
+            publication->histories.emplace(gpuId, series.view());
         }
     }
     const std::uint64_t version = publication->version;
@@ -552,35 +653,6 @@ std::vector<GPUSnapshot> GPUModel::snapshots() const
 {
     const std::shared_lock lock(m_Mutex);
     return orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
-}
-
-std::vector<GPUSnapshot> GPUModel::history(std::string_view gpuId) const
-{
-    const std::shared_lock lock(m_Mutex);
-    auto it = m_Histories.find(gpuId);
-    if (it == m_Histories.end())
-    {
-        return {};
-    }
-
-    // Copy history data to vector for thread-safe return
-    std::vector<GPUSnapshot> result;
-    result.reserve(it->second.size());
-    result.resize(it->second.size());
-    const std::size_t copied = it->second.copyTo(result.data(), result.size());
-    result.resize(copied);
-    return result;
-}
-
-std::optional<GPUSnapshot> GPUModel::snapshotAt(std::string_view gpuId, std::size_t index) const
-{
-    const std::shared_lock lock(m_Mutex);
-    auto it = m_Histories.find(gpuId);
-    if (it == m_Histories.end() || index >= it->second.size())
-    {
-        return std::nullopt;
-    }
-    return it->second[index];
 }
 
 std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
@@ -629,7 +701,12 @@ GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
         return {};
     }
     const std::scoped_lock probeLock(m_ProbeMutex);
-    // Re-read under the probe lock: rescanGPUs(), which can change the flags, runs holding it, so
+    return readProcessGPUDataLocked();
+}
+
+GPUModel::ProcessGPUReading GPUModel::readProcessGPUDataLocked() const
+{
+    // Read under the probe lock: rescanGPUs(), which can change the flags, runs holding it, so
     // these are the flags the read below happens under (#1210).
     ProcessGPUReading reading;
     reading.perProcessSupported = !m_PerProcessKnownUnsupported.load(std::memory_order_acquire);
@@ -648,6 +725,62 @@ GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
         reading.failure = std::current_exception();
     }
     return reading;
+}
+
+void GPUModel::publishProcessGPUData(std::chrono::steady_clock::time_point now)
+{
+    ProcessGPUReading reading = readProcessGPUDataLocked();
+    if (reading.failure && !m_ProcessReadFailing)
+    {
+        // Once per streak; the publication below carries the failure to ProcessModel (#1142, #1210).
+        try
+        {
+            std::rethrow_exception(reading.failure);
+        }
+        catch (const std::exception& e)
+        {
+            spdlog::warn("GPUModel: reading per-process GPU data failed; publishing a gap: {}", e.what());
+        }
+        catch (...)
+        {
+            spdlog::warn("GPUModel: reading per-process GPU data failed; publishing a gap");
+        }
+    }
+    else if (!reading.failure && m_ProcessReadFailing)
+    {
+        spdlog::info("GPUModel: per-process GPU data is being read again");
+    }
+    m_ProcessReadFailing = static_cast<bool>(reading.failure);
+
+    try
+    {
+        auto publication = std::make_shared<ProcessGPUPublication>();
+        publication->version = m_ProcessPublicationVersion + 1;
+        publication->captureTime = now;
+        publication->perProcessSupported = reading.perProcessSupported;
+        publication->utilizationSupported = reading.utilizationSupported;
+        publication->readFailed = reading.perProcessSupported && static_cast<bool>(reading.failure);
+        publication->counters = std::move(reading.counters);
+        // After construction m_GPUInfo is written only by rescanGPUs(), under m_ProbeMutex, which is
+        // held here: it needs no m_Mutex.
+        publication->adapters.reserve(m_GPUInfo.size());
+        for (const auto& info : m_GPUInfo)
+        {
+            publication->adapters.push_back(GPUAdapterIdentity{.id = info.id,
+                                                               .luidId = info.luidId,
+                                                               .name = info.name,
+                                                               .isIntegrated = info.isIntegrated,
+                                                               .memoryIsShared = info.memoryIsShared});
+        }
+        const std::uint64_t version = publication->version;
+        m_ProcessPublication.commit(std::move(publication));
+        m_ProcessPublicationVersion = version;
+    }
+    catch (const std::exception& e)
+    {
+        // The previous publication stays; it ages until ProcessModel treats it as stale.
+        spdlog::error("GPUModel: publishing per-process GPU data failed: {}", e.what());
+    }
 }
 
 GPUSnapshot
@@ -751,112 +884,68 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     return snapshot;
 }
 
-// Template helper for extracting history fields - reduces code duplication
-template<typename FieldPtr> std::vector<float> GPUModel::getHistoryField(std::string_view gpuId, FieldPtr field) const
-{
-    // A prior attempt to resolve a static-analyzer false positive here (an explicit `-> float`
-    // trailing return type) did not fully satisfy it: the dependent `sample.*field` expression in
-    // a single-expression lambda body was still flagged as a possible missing return. Splitting
-    // the cast into its own statement before the return removes the remaining ambiguity.
-    return getHistoryFieldByProjection(gpuId,
-                                       [field](const GPUSnapshot& sample) -> float
-                                       {
-                                           const float value = sampleOrNaN(sample, sample.*field);
-                                           return value;
-                                       });
-}
-
-// Underlying lock/find/reserve/loop shared by getHistoryField() (a plain member pointer, for
-// the common single-field case) and any accessor - like fanSpeedHistory() below - whose float
-// value depends on more than one field (e.g. substituting NaN when fanSpeedAvailable is false)
-// and so can't be expressed as `sample.*field`.
-template<typename Projection> std::vector<float> GPUModel::getHistoryFieldByProjection(std::string_view gpuId, Projection project) const
+template<typename T> std::vector<T> GPUModel::copySeries(std::string_view gpuId, SharedHistoryBuffer<T> GPUSeries::* series) const
 {
     const std::shared_lock lock(m_Mutex);
-    auto it = m_Histories.find(gpuId);
+    const auto it = m_Histories.find(gpuId);
     if (it == m_Histories.end())
     {
         return {};
     }
-
-    std::vector<float> result;
-    result.reserve(it->second.size());
-    for (size_t i = 0; i < it->second.size(); ++i)
-    {
-        result.push_back(project(it->second[i]));
-    }
-    return result;
+    return HistoryUtils::toVector(it->second.*series);
 }
 
+// The same values the publication carries: NaN where a reading failed or the GPU was missing.
 std::vector<float> GPUModel::utilizationHistory(std::string_view gpuId) const
 {
-    return getHistoryFieldByProjection(
-        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable); });
+    return copySeries(gpuId, &GPUSeries::utilization);
 }
 
 std::vector<float> GPUModel::memoryPercentHistory(std::string_view gpuId) const
 {
-    return getHistoryFieldByProjection(
-        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable); });
+    return copySeries(gpuId, &GPUSeries::memoryPercent);
 }
 
 std::vector<float> GPUModel::gpuClockHistory(std::string_view gpuId) const
 {
-    return getHistoryFieldByProjection(gpuId, gpuClockOrNaN);
+    return copySeries(gpuId, &GPUSeries::gpuClock);
 }
 
 std::vector<float> GPUModel::encoderHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::encoderUtilPercent);
+    return copySeries(gpuId, &GPUSeries::encoder);
 }
 
 std::vector<float> GPUModel::decoderHistory(std::string_view gpuId) const
 {
-    return getHistoryField(gpuId, &GPUSnapshot::decoderUtilPercent);
+    return copySeries(gpuId, &GPUSeries::decoder);
 }
 
 std::vector<float> GPUModel::temperatureHistory(std::string_view gpuId) const
 {
-    return getHistoryFieldByProjection(
-        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable); });
+    return copySeries(gpuId, &GPUSeries::temperature);
 }
 
 std::vector<float> GPUModel::powerHistory(std::string_view gpuId) const
 {
-    return getHistoryFieldByProjection(
-        gpuId, [](const GPUSnapshot& sample) { return readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable); });
+    return copySeries(gpuId, &GPUSeries::power);
 }
 
 std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
 {
-    // Not a plain getHistoryField() like the other accessors: a sample where the fan couldn't
-    // be read (fanSpeedAvailable == false) must come back as NaN, not its default 0.0F, or a
-    // caller of this accessor sees the same misleading flat "0%" that publish()'s
-    // GPUPublication::histories path was fixed to avoid.
-    return getHistoryFieldByProjection(gpuId, fanSpeedOrNaN);
+    // NaN, not 0.0F, where the fan couldn't be read, so a caller doesn't see a misleading flat "0%".
+    return copySeries(gpuId, &GPUSeries::fanSpeed);
 }
 
 std::vector<double> GPUModel::historyTimestamps() const
 {
     const std::shared_lock lock(m_Mutex);
-    return m_HistoryTimestamps;
+    return HistoryUtils::toVector(m_HistoryTimestamps);
 }
 
 std::vector<double> GPUModel::historyTimestamps(std::string_view gpuId) const
 {
-    const std::shared_lock lock(m_Mutex);
-    auto it = m_Histories.find(gpuId);
-    if (it == m_Histories.end())
-    {
-        return {};
-    }
-    std::vector<double> result;
-    result.reserve(it->second.size());
-    for (std::size_t i = 0; i < it->second.size(); ++i)
-    {
-        result.push_back(it->second.ref(i).captureTimeSec);
-    }
-    return result;
+    return copySeries(gpuId, &GPUSeries::timestamps);
 }
 
 } // namespace Domain

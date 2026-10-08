@@ -8,12 +8,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -226,6 +229,28 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Makes readGPUCounters() (the system read) throw on every call.
+    MockGPUProbe& withCountersThrowing()
+    {
+        m_ThrowOnReadCounters = true;
+        return *this;
+    }
+
+    /// Makes every readProcessGPUCounters() call take at least @p delay, simulating a slow driver
+    /// query (#1417). Set before the probe is shared with another thread.
+    MockGPUProbe& withProcessReadDelay(std::chrono::milliseconds delay)
+    {
+        m_ProcessReadDelay = delay;
+        return *this;
+    }
+
+    /// The threads readProcessGPUCounters() has been called on (#1417).
+    [[nodiscard]] std::set<std::thread::id> processReadThreads() const
+    {
+        const std::scoped_lock lock(m_ThreadMutex);
+        return m_ProcessReadThreads;
+    }
+
     // IGPUProbe interface implementation
     [[nodiscard]] std::vector<Platform::GPUInfo> enumerateGPUs() override
     {
@@ -240,6 +265,10 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::vector<Platform::GPUCounters> readGPUCounters() override
     {
         ++m_ReadCountersCount;
+        if (m_ThrowOnReadCounters)
+        {
+            throw std::runtime_error("MockGPUProbe: simulated readGPUCounters() failure");
+        }
         if (m_BlockReadCounters.load(std::memory_order_acquire))
         {
             m_EnteredBlockedReadCounters.store(true, std::memory_order_release);
@@ -252,6 +281,14 @@ class MockGPUProbe : public Platform::IGPUProbe
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() override
     {
         ++m_ReadProcessCountersCount;
+        {
+            const std::scoped_lock lock(m_ThreadMutex);
+            m_ProcessReadThreads.insert(std::this_thread::get_id());
+        }
+        if (m_ProcessReadDelay.count() > 0)
+        {
+            std::this_thread::sleep_for(m_ProcessReadDelay);
+        }
         if (m_ThrowOnReadProcessCounters)
         {
             throw std::runtime_error("MockGPUProbe: simulated readProcessGPUCounters() failure");
@@ -358,6 +395,10 @@ class MockGPUProbe : public Platform::IGPUProbe
     std::uint32_t m_QuickRescanCount = 0;
     std::uint32_t m_FullRescanCount = 0;
     bool m_ThrowOnReadProcessCounters = false;
+    bool m_ThrowOnReadCounters = false;
+    std::chrono::milliseconds m_ProcessReadDelay{0};
+    mutable std::mutex m_ThreadMutex;
+    std::set<std::thread::id> m_ProcessReadThreads; // guarded by m_ThreadMutex
 
     std::atomic<std::uint32_t> m_EnumerateCount{0};
     std::atomic<std::uint32_t> m_ReadCountersCount{0};

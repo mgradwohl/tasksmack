@@ -12,6 +12,7 @@
 
 #include "Domain/GPUModel.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SharedHistory.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Platform/GPUTypes.h"
 #include "PublicationLatency.h"
@@ -20,11 +21,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -208,6 +211,126 @@ TEST(GPUModelTest, AFailedProcessGpuReadStillReportsTheSupportItRanUnder)
 
     // The counters-only call still throws, as before.
     EXPECT_ANY_THROW(static_cast<void>(model.readProcessGPUCounters()));
+}
+
+// =============================================================================
+// Per-process GPU publication (#1417): the GPU sampler is the single owner of GPU acquisition
+// =============================================================================
+
+namespace
+{
+
+/// A probe with GPU0 ("Test GPU", also known by a LUID id) and pid 100 using it, per-process supported.
+std::unique_ptr<MockGPUProbe> makePerProcessProbe()
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    probe->withCapabilities(caps);
+    probe->withSharedMemoryGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 1024ULL * 1024);
+    return probe;
+}
+
+} // namespace
+
+TEST(GPUModelTest, NothingIsPublishedPerProcessBeforeTheFirstRefresh)
+{
+    const Domain::GPUModel model(makePerProcessProbe());
+    const auto publication = model.processGPUPublication();
+    ASSERT_NE(publication, nullptr);
+    EXPECT_EQ(publication->version, 0U);
+    EXPECT_EQ(model.processGPUPublicationVersion(), 0U);
+    EXPECT_TRUE(publication->counters.empty());
+}
+
+TEST(GPUModelTest, RefreshPublishesPerProcessCountersWithTheirCaptureTime)
+{
+    const auto start = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    auto probe = makePerProcessProbe();
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+
+    model.refreshAt(start);
+    auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_EQ(model.processGPUPublicationVersion(), 1U);
+    EXPECT_EQ(publication->captureTime, start);
+    EXPECT_TRUE(publication->perProcessSupported);
+    EXPECT_TRUE(publication->utilizationSupported);
+    EXPECT_FALSE(publication->readFailed);
+    ASSERT_EQ(publication->counters.size(), 1U);
+    EXPECT_EQ(publication->counters[0].pid, 100);
+    ASSERT_EQ(publication->adapters.size(), 1U);
+    EXPECT_EQ(publication->adapters[0].id, "GPU0");
+    EXPECT_EQ(publication->adapters[0].name, "Test GPU");
+    EXPECT_TRUE(publication->adapters[0].isIntegrated);
+    EXPECT_TRUE(publication->adapters[0].memoryIsShared);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U) << "one per-process read per refresh";
+
+    // Each refresh publishes a newer generation; one already handed out stays as it was.
+    rawProbe->withProcessGPU(200, "GPU0", 2048);
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto next = model.processGPUPublication();
+    EXPECT_EQ(next->version, 2U);
+    EXPECT_EQ(next->captureTime, start + std::chrono::seconds(1));
+    EXPECT_EQ(next->counters.size(), 2U);
+    EXPECT_EQ(publication->counters.size(), 1U);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 2U);
+}
+
+TEST(GPUModelTest, UnsupportedPerProcessDataIsPublishedWithoutReadingTheProbe)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Intel DRM").withProcessGPU(100, "GPU0", 1024); // Capabilities: none per process
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+
+    model.refresh();
+    const auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_FALSE(publication->perProcessSupported);
+    EXPECT_FALSE(publication->readFailed);
+    EXPECT_TRUE(publication->counters.empty());
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0U);
+}
+
+TEST(GPUModelTest, AFailingPerProcessReadIsPublishedAsAFailedReadAndTheSystemStillUpdates)
+{
+    auto probe = makePerProcessProbe();
+    probe->withProcessCountersThrowing();
+    Domain::GPUModel model(std::move(probe));
+
+    ASSERT_NO_THROW(model.refresh());
+    const auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_TRUE(publication->perProcessSupported);
+    EXPECT_TRUE(publication->readFailed);
+    EXPECT_TRUE(publication->counters.empty());
+    EXPECT_EQ(model.publicationVersion(), 1U) << "the system GPU data is published regardless";
+    EXPECT_EQ(model.snapshots().size(), 1U);
+}
+
+TEST(GPUModelTest, AFailingSystemReadStillPublishesThePerProcessCounters)
+{
+    auto probe = makePerProcessProbe();
+    probe->withCountersThrowing();
+    Domain::GPUModel model(std::move(probe));
+
+    ASSERT_NO_THROW(model.refresh());
+    EXPECT_EQ(model.publicationVersion(), 0U) << "no system reading, nothing published for it";
+    const auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_FALSE(publication->readFailed);
+    EXPECT_EQ(publication->counters.size(), 1U);
+}
+
+TEST(GPUModelTest, NoProbePublishesNothingPerProcess)
+{
+    Domain::GPUModel model(nullptr);
+    model.refresh();
+    EXPECT_EQ(model.processGPUPublicationVersion(), 0U);
+    EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
 }
 
 TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
@@ -1044,15 +1167,15 @@ TEST(GPUModelTest, HistoryMaintainedPerGPU)
     model.refresh();
 
     // Check history for each GPU
-    auto hist0 = model.history("GPU0");
-    auto hist1 = model.history("GPU1");
+    auto hist0 = model.utilizationHistory("GPU0");
+    auto hist1 = model.utilizationHistory("GPU1");
 
     EXPECT_EQ(hist0.size(), 2);
     EXPECT_EQ(hist1.size(), 2);
 
     // Verify latest values (last element in vector)
-    EXPECT_DOUBLE_EQ(hist0.back().utilizationPercent, 60.0);
-    EXPECT_DOUBLE_EQ(hist1.back().utilizationPercent, 80.0);
+    EXPECT_FLOAT_EQ(hist0.back(), 60.0F);
+    EXPECT_FLOAT_EQ(hist1.back(), 80.0F);
 }
 
 // =============================================================================
@@ -1142,8 +1265,8 @@ TEST(GPUModelTest, HistoryForNonexistentGPUReturnsEmpty)
     Domain::GPUModel model(std::move(probe));
     model.refresh();
 
-    auto hist = model.history("NonexistentGPU");
-    EXPECT_EQ(hist.size(), 0);
+    EXPECT_TRUE(model.historyTimestamps("NonexistentGPU").empty());
+    EXPECT_FALSE(model.publication()->histories.contains("NonexistentGPU"));
 }
 
 // =============================================================================
@@ -1544,10 +1667,11 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsAreMonotonicallyIncreasing)
     }
 }
 
-TEST(GPUModelTest, PerGpuHistoryTimestampsIndexAlignedWithSnapshotAt)
+TEST(GPUModelTest, PerGpuHistoryTimestampsIndexAlignedWithThePublishedHistory)
 {
-    // Verify that historyTimestamps("GPU0")[i] matches snapshotAt("GPU0", i).captureTimeSec.
-    // This is the alignment property that GpuSection relies on for tooltip timestamps.
+    // historyTimestamps("GPU0") is the published history's timestamps, sample for sample, and each
+    // published series has one entry per timestamp. This is the alignment GpuSection relies on for
+    // tooltip timestamps.
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 0.0);
@@ -1563,11 +1687,13 @@ TEST(GPUModelTest, PerGpuHistoryTimestampsIndexAlignedWithSnapshotAt)
 
     const auto timestamps = model.historyTimestamps("GPU0");
     ASSERT_EQ(static_cast<int>(timestamps.size()), kSamples);
+    const auto& published = model.publication()->histories.at("GPU0");
+    ASSERT_EQ(published.timestamps.size(), timestamps.size());
+    ASSERT_EQ(published.utilization.size(), timestamps.size());
     for (std::size_t i = 0; i < timestamps.size(); ++i)
     {
-        const auto snap = model.snapshotAt("GPU0", i);
-        ASSERT_TRUE(snap.has_value());
-        EXPECT_DOUBLE_EQ(timestamps[i], snap->captureTimeSec);
+        EXPECT_DOUBLE_EQ(timestamps[i], published.timestamps[i]);
+        EXPECT_FLOAT_EQ(published.utilization[i], static_cast<float>(i) * 10.0F);
     }
 }
 
@@ -1982,10 +2108,10 @@ TEST(GPUModelTest, ReadProcessGPUCountersCallCountTracked)
 }
 
 // =============================================================================
-// snapshotAt Tests
+// History by index
 // =============================================================================
 
-TEST(GPUModelTest, SnapshotAtReturnsNulloptForUnknownGPU)
+TEST(GPUModelTest, HistoryOfAnUnknownGpuIsEmpty)
 {
     auto probe = std::make_unique<MockGPUProbe>();
     probe->withGPU("GPU0", "Test GPU", "TestVendor");
@@ -1993,22 +2119,11 @@ TEST(GPUModelTest, SnapshotAtReturnsNulloptForUnknownGPU)
     Domain::GPUModel model(std::move(probe));
     model.refresh();
 
-    EXPECT_FALSE(model.snapshotAt("GPU_UNKNOWN", 0).has_value());
+    EXPECT_TRUE(model.utilizationHistory("GPU_UNKNOWN").empty());
+    EXPECT_TRUE(model.historyTimestamps("GPU_UNKNOWN").empty());
 }
 
-TEST(GPUModelTest, SnapshotAtReturnsNulloptForOutOfRangeIndex)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    probe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 42.0);
-
-    Domain::GPUModel model(std::move(probe));
-    model.refresh(); // 1 sample
-
-    EXPECT_FALSE(model.snapshotAt("GPU0", 1).has_value()); // index 1 is out of range
-    EXPECT_FALSE(model.snapshotAt("GPU0", 999).has_value());
-}
-
-TEST(GPUModelTest, SnapshotAtReturnsNulloptWhenNoRefresh)
+TEST(GPUModelTest, HistoryIsEmptyBeforeAnyRefresh)
 {
     auto probe = std::make_unique<MockGPUProbe>();
     probe->withGPU("GPU0", "Test GPU", "TestVendor");
@@ -2016,10 +2131,12 @@ TEST(GPUModelTest, SnapshotAtReturnsNulloptWhenNoRefresh)
     Domain::GPUModel model(std::move(probe));
     // No refresh called
 
-    EXPECT_FALSE(model.snapshotAt("GPU0", 0).has_value());
+    EXPECT_TRUE(model.utilizationHistory("GPU0").empty());
+    EXPECT_TRUE(model.historyTimestamps().empty());
+    EXPECT_EQ(model.publicationVersion(), 0U);
 }
 
-TEST(GPUModelTest, SnapshotAtReturnsCorrectSampleByIndex)
+TEST(GPUModelTest, HistoryHoldsEachSampleInOrder)
 {
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
@@ -2034,49 +2151,17 @@ TEST(GPUModelTest, SnapshotAtReturnsCorrectSampleByIndex)
     rawProbe->withUtilization("GPU0", 30.0);
     model.refresh(); // index 2: util=30
 
-    auto s0 = model.snapshotAt("GPU0", 0);
-    auto s1 = model.snapshotAt("GPU0", 1);
-    auto s2 = model.snapshotAt("GPU0", 2);
-
-    ASSERT_TRUE(s0.has_value());
-    ASSERT_TRUE(s1.has_value());
-    ASSERT_TRUE(s2.has_value());
-
-    EXPECT_DOUBLE_EQ(s0->utilizationPercent, 10.0);
-    EXPECT_DOUBLE_EQ(s1->utilizationPercent, 20.0);
-    EXPECT_DOUBLE_EQ(s2->utilizationPercent, 30.0);
+    const auto utilization = model.utilizationHistory("GPU0");
+    ASSERT_EQ(utilization.size(), 3U);
+    EXPECT_FLOAT_EQ(utilization[0], 10.0F);
+    EXPECT_FLOAT_EQ(utilization[1], 20.0F);
+    EXPECT_FLOAT_EQ(utilization[2], 30.0F);
 }
 
-TEST(GPUModelTest, SnapshotAtReturnsValueMatchingHistoryByIndex)
+TEST(GPUModelTest, HistoryKeepsTheNewestSamplesOnceItsCapacityIsExceeded)
 {
-    // Verify snapshotAt returns the same value as history() at the same logical index.
-    auto probe = std::make_unique<MockGPUProbe>();
-    auto* rawProbe = probe.get();
-    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withUtilization("GPU0", 50.0);
-
-    Domain::GPUModel model(std::move(probe));
-    for (int i = 0; i < 5; ++i)
-    {
-        rawProbe->withUtilization("GPU0", static_cast<double>(i) * 10.0);
-        model.refresh();
-    }
-
-    auto fullHistory = model.history("GPU0");
-    ASSERT_EQ(fullHistory.size(), 5);
-
-    for (std::size_t i = 0; i < 5; ++i)
-    {
-        auto snap = model.snapshotAt("GPU0", i);
-        ASSERT_TRUE(snap.has_value());
-        EXPECT_DOUBLE_EQ(snap->utilizationPercent, fullHistory[i].utilizationPercent);
-    }
-}
-
-TEST(GPUModelTest, SnapshotAtWrapsAroundAfterCapacityExceeded)
-{
-    // Push more samples than the ring's capacity to verify the ring-buffer
-    // wraparound: index 0 should return the oldest *retained* sample, not the
-    // original first sample, and the last index should return the newest sample.
+    // Push more samples than the series' capacity: the oldest retained sample comes first and the
+    // newest last.
     auto probe = std::make_unique<MockGPUProbe>();
     auto* rawProbe = probe.get();
     rawProbe->withGPU("GPU0", "Test GPU", "TestVendor");
@@ -2093,23 +2178,11 @@ TEST(GPUModelTest, SnapshotAtWrapsAroundAfterCapacityExceeded)
     }
 
     // History should be capped at the capacity, not overCapacity.
-    auto fullHistory = model.history("GPU0");
-    ASSERT_EQ(fullHistory.size(), capacity);
-
-    // Index 0 is the oldest retained sample (value = overCapacity - capacity).
-    const auto expectedOldestUtil = static_cast<double>(overCapacity - capacity);
-    auto s0 = model.snapshotAt("GPU0", 0);
-    ASSERT_TRUE(s0.has_value());
-    EXPECT_DOUBLE_EQ(s0->utilizationPercent, expectedOldestUtil);
-
-    // Last index is the newest sample (value = overCapacity - 1).
-    const auto expectedNewestUtil = static_cast<double>(overCapacity - 1);
-    auto sLast = model.snapshotAt("GPU0", capacity - 1);
-    ASSERT_TRUE(sLast.has_value());
-    EXPECT_DOUBLE_EQ(sLast->utilizationPercent, expectedNewestUtil);
-
-    // One past the last index is out of range.
-    EXPECT_FALSE(model.snapshotAt("GPU0", capacity).has_value());
+    const auto utilization = model.utilizationHistory("GPU0");
+    ASSERT_EQ(utilization.size(), capacity);
+    EXPECT_EQ(model.historyTimestamps("GPU0").size(), capacity);
+    EXPECT_FLOAT_EQ(utilization.front(), static_cast<float>(overCapacity - capacity));
+    EXPECT_FLOAT_EQ(utilization.back(), static_cast<float>(overCapacity - 1));
 }
 
 // ========== History window (#993) ==========
@@ -2774,6 +2847,251 @@ TEST(GPUModelTest, SetMaxHistorySecondsDoesNotWaitForASlowProbeRead)
     blockedRefresh.join();
     future.wait();
     EXPECT_EQ(model.publicationVersion(), versionBefore + 2);
+}
+
+// =============================================================================
+// Shared history (#1412)
+// =============================================================================
+
+/// Every series of one GPU's published history is as long as its timestamps.
+[[nodiscard]] bool seriesAligned(const Domain::GPUPublishedHistory& history)
+{
+    const std::size_t samples = history.timestamps.size();
+    return history.memoryUsedBytes.size() == samples && history.memoryTotalBytes.size() == samples &&
+           history.utilization.size() == samples && history.memoryPercent.size() == samples && history.gpuClock.size() == samples &&
+           history.encoder.size() == samples && history.decoder.size() == samples && history.temperature.size() == samples &&
+           history.power.size() == samples && history.fanSpeed.size() == samples;
+}
+
+/// Every sample of every series of @p publication, copied out by bit pattern (NaN gaps compare equal to
+/// themselves), keyed "<gpu>/<series>", so a later comparison sees whether any changed.
+[[nodiscard]] std::map<std::string, std::vector<std::uint64_t>> publishedValues(const Domain::GPUPublication& publication)
+{
+    std::map<std::string, std::vector<std::uint64_t>> values;
+    for (const auto& [gpuId, history] : publication.histories)
+    {
+        auto& timestamps = values[gpuId + "/timestamps"];
+        for (const double timestamp : history.timestamps)
+        {
+            timestamps.push_back(std::bit_cast<std::uint64_t>(timestamp));
+        }
+        values[gpuId + "/memoryUsedBytes"].assign(history.memoryUsedBytes.begin(), history.memoryUsedBytes.end());
+        values[gpuId + "/memoryTotalBytes"].assign(history.memoryTotalBytes.begin(), history.memoryTotalBytes.end());
+        const std::vector<std::pair<std::string, const Domain::HistoryView<float>*>> floatSeries{
+            {"utilization", &history.utilization},
+            {"memoryPercent", &history.memoryPercent},
+            {"gpuClock", &history.gpuClock},
+            {"encoder", &history.encoder},
+            {"decoder", &history.decoder},
+            {"temperature", &history.temperature},
+            {"power", &history.power},
+            {"fanSpeed", &history.fanSpeed},
+        };
+        for (const auto& [name, series] : floatSeries)
+        {
+            std::string key = gpuId;
+            key += '/';
+            key += name;
+            auto& out = values[key];
+            for (const float value : *series)
+            {
+                out.push_back(std::bit_cast<std::uint32_t>(value));
+            }
+        }
+    }
+    return values;
+}
+
+/// A probe and model sampled once a simulated second (refreshAt()), whose GPUs come and go on rescans.
+struct SteppedGpuModel
+{
+    MockGPUProbe* probe = nullptr; // owned by model
+    std::unique_ptr<Domain::GPUModel> model;
+    std::chrono::steady_clock::time_point start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
+    int step = 0;
+
+    SteppedGpuModel()
+    {
+        auto owned = std::make_unique<MockGPUProbe>();
+        owned->withGPU("GPU0", "GPU Zero").withGPU("GPU1", "GPU One");
+        probe = owned.get();
+        model = std::make_unique<Domain::GPUModel>(std::move(owned));
+    }
+
+    /// One refresh @p secondsPerStep after the last, with every GPU's utilization changed.
+    void sample(double secondsPerStep = 1.0)
+    {
+        for (const char* gpuId : {"GPU0", "GPU1", "GPU2"})
+        {
+            probe->withUtilization(gpuId, static_cast<double>((step * 7) % 100));
+        }
+        const auto offset = std::chrono::duration<double>(static_cast<double>(step) * secondsPerStep);
+        model->refreshAt(start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(offset));
+        ++step;
+    }
+};
+
+// A publication shares its samples with the model rather than copying them, so it must stay exactly as
+// published while the model appends, trims (by time and by a window change), moves its samples to new blocks,
+// and gains and loses GPUs on rescans.
+TEST(GPUModelTest, OlderPublicationIsUnchangedByLaterSamplesRescansAndTrims)
+{
+    SteppedGpuModel stepped;
+    stepped.model->setMaxHistorySeconds(60.0);
+    while (stepped.step < 100)
+    {
+        stepped.sample();
+    }
+    const auto old = stepped.model->publication();
+    const auto expected = publishedValues(*old);
+    ASSERT_EQ(old->histories.size(), 2U);
+    ASSERT_GT(old->histories.at("GPU0").timestamps.size(), 50U);
+
+    while (stepped.step < 1000)
+    {
+        if (stepped.step == 300)
+        {
+            stepped.probe->withGPU("GPU2", "GPU Two").withRescanReportingChange();
+        }
+        if (stepped.step == 400)
+        {
+            stepped.probe->withoutGPU("GPU1").withRescanReportingChange();
+        }
+        if (stepped.step == 500)
+        {
+            stepped.model->setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+        }
+        stepped.sample();
+        const auto latest = stepped.model->publication();
+        ASSERT_TRUE(std::ranges::all_of(latest->histories, [](const auto& entry) { return seriesAligned(entry.second); }))
+            << "step " << stepped.step;
+    }
+    EXPECT_EQ(publishedValues(*old), expected);
+
+    const auto latest = stepped.model->publication();
+    EXPECT_TRUE(latest->histories.contains("GPU0"));
+    EXPECT_TRUE(latest->histories.contains("GPU2"));
+    EXPECT_FALSE(latest->histories.contains("GPU1")); // gone for longer than the window: forgotten
+}
+
+// Consecutive publications share their history (an O(series) publish, not O(history x series)), and every
+// series stays aligned with its GPU's timestamps.
+TEST(GPUModelTest, ConsecutivePublicationsShareTheirHistory)
+{
+    SteppedGpuModel stepped;
+    stepped.model->setMaxHistorySeconds(120.0);
+    while (stepped.step < 300)
+    {
+        stepped.sample();
+    }
+
+    constexpr int GENERATIONS = 200;
+    int shared = 0;
+    auto previous = stepped.model->publication();
+    for (int i = 0; i < GENERATIONS; ++i)
+    {
+        stepped.sample();
+        const auto next = stepped.model->publication();
+        ASSERT_EQ(next->histories.size(), 2U);
+        const auto& gpu0 = next->histories.at("GPU0");
+        const auto& gpu1 = next->histories.at("GPU1");
+        ASSERT_TRUE(seriesAligned(gpu0));
+        ASSERT_TRUE(seriesAligned(gpu1));
+        const auto& before0 = previous->histories.at("GPU0");
+        const auto& before1 = previous->histories.at("GPU1");
+        if (gpu0.timestamps.sharesStorageWith(before0.timestamps) && gpu0.utilization.sharesStorageWith(before0.utilization) &&
+            gpu1.fanSpeed.sharesStorageWith(before1.fanSpeed))
+        {
+            ++shared;
+            // The same samples in place: the newer view starts one sample later in the same memory.
+            EXPECT_EQ(gpu0.timestamps.data(), before0.timestamps.data() + 1);
+            EXPECT_EQ(gpu0.utilization.data(), before0.utilization.data() + 1);
+        }
+        previous = next;
+    }
+    // Only a compaction into a new block -- about once per window's worth of samples -- copies.
+    EXPECT_GE(shared, GENERATIONS - 4);
+}
+
+// A UI-style reader walks every sample of the latest publication while the sampler appends, trims, compacts,
+// and adds and drops GPUs underneath it. Under TSan this shows the reader never reads a slot the writer
+// writes: published samples are never written again (#1412). The sampler is paced on the reader
+// (TestPublication::ReadPacer): it starts only once the reader has completed a traversal, and waits for a
+// new one every PACE_EVERY samples, so the reads really overlap the sampling however the threads are scheduled.
+TEST(GPUModelTest, ReadingPublishedHistoryWhileSamplingIsRaceFree)
+{
+    constexpr int SAMPLES = 2000;
+    constexpr int PACE_EVERY = 10;
+    SteppedGpuModel stepped;
+    stepped.model->setMaxHistorySeconds(Domain::Sampling::HISTORY_SECONDS_MIN);
+    stepped.sample(0.25);
+
+    TestPublication::ReadPacer pacer;
+    std::atomic<bool> done{false};
+    std::atomic<std::size_t> misaligned{0};
+    std::thread reader(
+        [&]
+        {
+            while (!done.load(std::memory_order_acquire))
+            {
+                const auto publication = stepped.model->publication();
+                const auto values = publishedValues(*publication); // reads every sample of every series
+                for (const auto& [gpuId, history] : publication->histories)
+                {
+                    const auto& timestamps = values.at(gpuId + "/timestamps");
+                    for (const auto& [key, series] : values)
+                    {
+                        if (key.starts_with(gpuId + "/") && series.size() != timestamps.size())
+                        {
+                            misaligned.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                    for (std::size_t i = 1; i < history.timestamps.size(); ++i)
+                    {
+                        if (history.timestamps[i] <= history.timestamps[i - 1])
+                        {
+                            misaligned.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                }
+                pacer.readDone(); // one full traversal of a publication
+            }
+        });
+
+    // Start sampling only once the reader is running, then count the traversals made while sampling.
+    std::size_t readsSeen = 0;
+    const bool readerStarted = pacer.awaitReadSince(readsSeen);
+    const std::size_t readsBeforeSampling = readsSeen;
+    int paced = 0;
+    for (int i = 0; readerStarted && i < SAMPLES; ++i)
+    {
+        if (i % PACE_EVERY == 0)
+        {
+            if (!pacer.awaitReadSince(readsSeen))
+            {
+                break;
+            }
+            ++paced;
+        }
+        // GPU2 comes and goes: present for 100 samples of every 300, so it is added, gapped and forgotten.
+        if (i % 300 == 100)
+        {
+            stepped.probe->withGPU("GPU2", "GPU Two").withRescanReportingChange();
+        }
+        if (i % 300 == 200)
+        {
+            stepped.probe->withoutGPU("GPU2").withRescanReportingChange();
+        }
+        stepped.sample(0.25);
+    }
+    done.store(true, std::memory_order_release);
+    reader.join();
+    ASSERT_TRUE(readerStarted) << "the reader never completed a traversal";
+    ASSERT_FALSE(pacer.timedOut()) << "the reader stopped making progress while sampling";
+    // Every paced wait saw a traversal completed after the previous one, while sampling was under way.
+    EXPECT_EQ(paced, SAMPLES / PACE_EVERY);
+    EXPECT_GE(readsSeen - readsBeforeSampling, static_cast<std::size_t>(SAMPLES / PACE_EVERY));
+    EXPECT_EQ(misaligned.load(), 0U);
 }
 
 } // namespace

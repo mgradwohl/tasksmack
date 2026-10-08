@@ -109,6 +109,16 @@ inline constexpr int PROCESS_CMDLINE_CACHE_TTL_MS = 3000;
 // library when something changed, so this costs a directory scan per interval.
 inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
 
+// Oldest per-process GPU publication ProcessModel still merges (#1417). The GPU sampler reads the
+// per-process GPU counters and publishes them; the process sampler, on its own cadence, merges the
+// newest publication. Normally that is at most one system-sampler interval old (capped at
+// REFRESH_INTERVAL_MAX_MS, also while its tab is hidden), and a sampler pass that overruns waits at
+// most another REFRESH_INTERVAL_MAX_MS before the next (BackgroundSampler's nextSampleTime()), so
+// three of the slowest interval cover a healthy sampler with room to spare. Older than this, the GPU
+// sampler has stalled (a hung driver read, say): the process generation shows its GPU fields as a
+// failed read rather than present long-gone figures as current.
+inline constexpr int PROCESS_GPU_DATA_MAX_AGE_MS = 3 * REFRESH_INTERVAL_MAX_MS;
+
 // Socket stats cache TTL (milliseconds) - Linux only
 // Controls how long per-process network stats (via Netlink INET_DIAG) are cached.
 // This is an optimization cache: if multiple calls happen within the TTL, the

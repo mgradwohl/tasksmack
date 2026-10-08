@@ -56,7 +56,7 @@ struct SampleRateReadings
         return {};
     }
     // A generation whose GPU read failed has no GPU readings, but keeps the probe's support.
-    // Nor does a process the last GPU read did not see, while those reads are throttled.
+    // Nor does a process started since the GPU sampler's last read (#1417).
     const bool gpuRead = sample.gpuPerProcessSupported && !sample.gpuReadFailed && sample.snapshot->gpuFieldsRead;
     return {.io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
             .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable),

@@ -840,15 +840,11 @@ ProcessesPanel::~ProcessesPanel()
     // Order doesn't matter for safety here: BackgroundSampler observes m_ProcessModel via a
     // weak_ptr, so it's never left holding a dangling pointer regardless of which is destroyed
     // first. Stopping the sampler first is still done so no sample() call races the rest of this
-    // destructor's cleanup (setInteractionActive below).
+    // destructor's cleanup.
     if (m_Sampler)
     {
         m_Sampler->stop();
         m_Sampler.reset();
-    }
-    if (m_ProcessModel)
-    {
-        m_ProcessModel->setInteractionActive(false);
     }
     this->m_InteractionHoldSeconds = 0.0F;
     m_ProcessModel.reset();
@@ -1025,8 +1021,9 @@ void ProcessesPanel::onUpdate(float deltaTime)
         this->m_InteractionHoldSeconds = std::max(0.0F, this->m_InteractionHoldSeconds - clampedDeltaTime);
     }
 
+    // Only the sampling interval is throttled during interaction: the GPU merge is a read of the GPU
+    // sampler's publication now, cheap enough not to need its own throttle (#1417).
     const bool throttleForInteraction = interactionRedrawActive || (this->m_InteractionHoldSeconds > 0.0F);
-    m_ProcessModel->setInteractionActive(throttleForInteraction);
     const auto desiredInterval =
         AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(m_RefreshInterval, m_ProcessDataShown, throttleForInteraction);
     if (desiredInterval != m_AppliedSamplerInterval)
