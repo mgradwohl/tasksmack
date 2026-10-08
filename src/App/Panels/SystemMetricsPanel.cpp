@@ -393,19 +393,6 @@ void SystemMetricsPanel::onUpdate(float deltaTime)
     }
 }
 
-void SystemMetricsPanel::render(bool* open)
-{
-    if (!ImGui::Begin(m_Hostname.c_str(), open))
-    {
-        ImGui::End();
-        return;
-    }
-
-    renderContent();
-
-    ImGui::End();
-}
-
 void SystemMetricsPanel::renderContent()
 {
     if (!m_Model)

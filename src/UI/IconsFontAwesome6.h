@@ -36,6 +36,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 // Status & Info Icons
 // ============================================================================
+#define ICON_FA_CHECK "\xef\x80\x8c"                // U+f00c - Check mark (apply)
 #define ICON_FA_CIRCLE_CHECK "\xef\x81\x98"         // U+f058 - Check in circle
 #define ICON_FA_CIRCLE_EXCLAMATION "\xef\x81\xaa"   // U+f06a - Exclamation in circle
 #define ICON_FA_CIRCLE_INFO "\xef\x81\x9a"          // U+f05a - Info in circle
@@ -113,6 +114,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 #define ICON_FA_FILE "\xef\x85\x9b"        // U+f15b - File
 #define ICON_FA_FILE_PEN "\xef\x8c\x9c"    // U+f31c - File with pen (edit)
+#define ICON_FA_FLOPPY_DISK "\xef\x83\x87" // U+f0c7 - Floppy disk (save)
 #define ICON_FA_FOLDER "\xef\x81\xbb"      // U+f07b - Folder
 #define ICON_FA_FOLDER_OPEN "\xef\x81\xbc" // U+f07c - Open folder
 

@@ -71,8 +71,6 @@ class SystemMetricsPanel : public Panel
         m_ProcessModel = std::move(model);
     }
 
-    /// Render the panel (with ImGui window wrapper).
-    void render(bool* open) override;
     /// Handle application events (history/refresh changes)
     void onEvent(Core::Event& event) override;
 
