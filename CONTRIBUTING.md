@@ -2210,8 +2210,8 @@ ccache with no dev-box pin written down anywhere -- a value can't be tracked for
 isn't recorded somewhere. All three now pin an explicit version: CMake and Ninja match what the
 `windows-2025` GitHub Actions runner image itself ships (confirmed directly against
 `actions/runner-images`' `Windows2025-Readme.md`, for dev/CI parity); ccache has no CI-side
-winget equivalent to mirror (CI installs it via Chocolatey instead, pinned separately per Tier 1
-above), so it pins the latest version winget actually has available.
+winget equivalent to mirror (CI gets it from `hendrikmuhs/ccache-action`'s own pinned,
+checksum-verified release binary), so it pins the latest version winget actually has available.
 
 **`check-prereqs.sh`'s `MIN_*` floors** (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`,
 `MIN_CCACHE_VERSION`, `MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`): these remain **not** automated,
