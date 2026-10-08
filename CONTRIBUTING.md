@@ -407,6 +407,8 @@ Three established ways to get real coverage of such a file's logic:
    Examples: `tests/App/test_ProcessActionConfirmPopup.cpp` (modal lifecycle),
    `tests/App/test_ProcessPriorityViewRender.cpp` (the priority control),
    `tests/App/test_ProcessTableSettingsRoundTrip.cpp` (table settings loaded across frames),
+   `tests/App/test_KeyboardInputRender.cpp` (keys injected with `io.AddKeyEvent()` through
+   `App/KeyboardInput.cpp`, the keyboard shortcuts' ImGui adapter, with keyboard navigation on),
    `tests/UI/test_FillPlotLayout.cpp`, and `tests/UI/test_ChartGeometryBudget.cpp` with
    `benchmarks/ChartGeometryScenes.h` (`HeadlessChartContext`, draw-data geometry counts).
    Colours come from the stub theme, which `ThemeStub.cpp` makes visible so charts emit geometry.
