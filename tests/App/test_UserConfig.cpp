@@ -449,8 +449,11 @@ TEST_F(UserConfigLoadSaveTest, LoadClampsInsaneWindowPosition)
 TEST_F(UserConfigLoadSaveTest, LoadClampsSettingsAndAppliesConfiguredColumns)
 {
     {
+        // config_version 2: every listed column is a choice, even one at its default (#1376).
         std::ofstream file(m_ConfigPath);
-        file << R"([sampling]
+        file << R"(config_version = 2
+
+[sampling]
 interval_ms = 999999
 history_max_seconds = -1
 

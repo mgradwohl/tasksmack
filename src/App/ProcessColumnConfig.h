@@ -381,6 +381,18 @@ struct ProcessColumnSettings
         return chosen[toIndex(col)];
     }
 
+    /// Whether `col` saved as `vis` in a config written before the sparse [process_columns] format
+    /// (UserConfig's CONFIG_FORMAT_VERSION, #1376) was the user's choice. Those configs listed every
+    /// column, chosen or not, so only a value other than the column's default can be told apart as a
+    /// choice; one equal to it is taken for a column the user never touched. The default compared
+    /// against is getColumnInfo()'s, as those configs were written with, not this system's
+    /// capability-aware one (ProcessColumnAvailability::defaultColumns()). A column the user had
+    /// deliberately set back to its default is indistinguishable, and follows the defaults again.
+    [[nodiscard]] static bool isLegacyChoice(ProcessColumn col, bool vis)
+    {
+        return vis != getColumnInfo(col).defaultVisible;
+    }
+
     /// Sets the default visibility of a column whose visibility was not chosen; one that was is left alone.
     void setDefaultVisible(ProcessColumn col, bool vis)
     {
