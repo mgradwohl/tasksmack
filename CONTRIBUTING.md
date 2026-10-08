@@ -764,7 +764,10 @@ manifest's `preset`, so no file name or manifest field carries it:
   console shows aggregates alone. `tools/check-benchmark-regression.py` compares the `median`
   rows. `context.host_name` is redacted and `context.executable` reduced to its file name.
 - `<preset>-<timestamp>.manifest.json` -- a provenance sidecar (#1424) with the same field names
-  from both scripts: `git` (commit, branch, dirty flag for tracked files; no diff), `binary` (file
+  from both scripts: `git` (commit, branch -- a user or host name in it, standing alone between
+  separators that include the branch's own `-`, `.`, `_` and `/`, becomes `<user>` / `<host>`,
+  so `feature/benchuser-fix` is recorded as `feature/<user>-fix` -- and dirty flag for tracked
+  files; no diff), `binary` (file
   name and SHA-256), `build` (build type, generator, compiler name/id/version, IPO and the C++
   flags' hashes, read from the build tree's `CMakeCache.txt` -- the nearest one above the binary,
   so a multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type -- the

@@ -31,7 +31,9 @@ from collections.abc import Mapping
 from pathlib import Path, PurePath
 
 
-def git_provenance(repo_root: Path) -> dict:
+def git_provenance(repo_root: Path, user: str | None = None, hosts: list[str] | tuple[str, ...] = ()) -> dict:
+    """The checkout's commit, branch and dirty flag; a user or host name in the branch is hidden
+    (hide_name_identity)."""
     def git(*args: str) -> str | None:
         try:
             result = subprocess.run(
@@ -56,9 +58,10 @@ def git_provenance(repo_root: Path) -> dict:
         return unknown
     # Tracked changes only: untracked scratch files do not change what was built.
     status = git("status", "--porcelain", "--untracked-files=no")
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
     return {
         "commit": commit,
-        "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+        "branch": None if branch is None else hide_name_identity(branch, user, hosts),
         "dirty": None if status is None else bool(status),
     }
 
@@ -118,24 +121,27 @@ def _hide_token(value: str, token: str | None, replacement: str, separated: str 
     return re.sub(pattern, replacement, value, flags=re.IGNORECASE)
 
 
-# A preset name's own separators ('-', '.', '_') also bound a user or host name in it: the preset
-# names the result and manifest files, and win-<user> must not stay win-benchuser.
-_PRESET_SEPARATED = _SEPARATED + r"._\-"
+# A name's own separators ('-', '.', '_', and '/' already in _SEPARATED) also bound a user or host
+# name in a preset or a git branch: win-benchuser and feature/benchuser-fix must not keep it. Only
+# these two names get the wider boundaries; the general identity pass keeps _SEPARATED, so an
+# allowlisted --benchmark_filter value or x86_64 is never rewritten for a user named x86.
+_NAME_SEPARATED = _SEPARATED + r"._\-"
 
 
-def preset_component(preset: str, user: str | None, hosts: list[str] | tuple[str, ...] = ()) -> str:
-    """The preset as the manifest's preset field and the output file names carry it (#1445
-    review): each host name and the user name (3+ characters) standing alone between separators,
-    a preset's '-', '.' and '_' included, becomes <host> / <user>, so a preset named after the
-    user or the machine reaches neither a file name nor the manifest. Kept in step with
-    Get-PresetComponent in tools/bench.ps1."""
+def hide_name_identity(name: str, user: str | None, hosts: list[str] | tuple[str, ...] = ()) -> str:
+    """A preset or git branch name with each host name (FQDN before short name) and the user name
+    (3+ characters, any case) standing alone between _NAME_SEPARATED replaced by <host> / <user>
+    (#1445 review): the preset names the output files and is recorded, and the branch is
+    recorded, so neither may carry the user or the machine. Kept in step with Hide-NameIdentity in
+    tools/bench.ps1."""
     for host in sorted(hosts, key=len, reverse=True):
-        preset = _hide_token(preset, host, "<host>", _PRESET_SEPARATED)
-    return _hide_token(preset, user, "<user>", _PRESET_SEPARATED)
+        name = _hide_token(name, host, "<host>", _NAME_SEPARATED)
+    return _hide_token(name, user, "<user>", _NAME_SEPARATED)
 
 
 def preset_file_stem(component: str) -> str:
-    """preset_component() for a file name: the placeholders without their angle brackets."""
+    """hide_name_identity() of a preset, for a file name: the placeholders without their angle
+    brackets."""
     return component.replace("<", "").replace(">", "")
 
 
@@ -496,7 +502,7 @@ def report_aggregates_only(args: list[str], environ: Mapping[str, str]) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--manifest", type=Path)
-    # bench.sh names its output files from this (preset_component), before anything is written.
+    # bench.sh names its output files from this (hide_name_identity), before anything is written.
     parser.add_argument("--preset-stem")
     parser.add_argument("--result", type=Path)
     parser.add_argument("--binary", type=Path)
@@ -513,7 +519,7 @@ def main() -> int:
     if options.preset_stem is not None:
         _, user, hosts = identity_strings()
         # No newline: on Windows it would reach bash's command substitution as "\r\n".
-        sys.stdout.write(preset_file_stem(preset_component(options.preset_stem, user, hosts)))
+        sys.stdout.write(preset_file_stem(hide_name_identity(options.preset_stem, user, hosts)))
         return 0
     if options.manifest is None:
         parser.error("--manifest is required")
@@ -535,10 +541,10 @@ def main() -> int:
         "schema_version": 1,
         "generator": options.generator,
         "created_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "preset": preset_component(options.preset, user, hosts),
+        "preset": hide_name_identity(options.preset, user, hosts),
         "result_file": options.result.name,
         "exit_code": options.exit_code,
-        "git": git_provenance(options.repo_root),
+        "git": git_provenance(options.repo_root, user, hosts),
         "binary": {"name": options.binary.name, "sha256": sha256_of(options.binary)},
         "build": build_provenance(options.binary),
         "benchmark": {

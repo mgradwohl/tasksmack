@@ -608,6 +608,20 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         $repoRoot = $checkout
         $branchGit = Get-GitProvenance
         Assert-True ($branchGit.branch -ceq $branchName -and $branchGit.commit -match '^[0-9a-f]{40}$' -and $branchGit.dirty -eq $false) "Unicode branch: $($branchGit | ConvertTo-Json -Compress)"
+        # #1445 review: a user or host name in the branch is hidden between the branch's own '-',
+        # '.', '_' and '/' too. The same cases as test_bench_sh.py.
+        foreach ($case in @(
+                , @('benchuser-fix', '<user>-fix')
+                , @('feature/benchuser', 'feature/<user>')
+                , @('BenchUser_wip', '<user>_wip')
+                , @('bench-host-123.example.com-test', '<host>-test')
+                , @('ci/bench-host-123/nightly', 'ci/<host>/nightly')
+                , @('benchusers-x', 'benchusers-x')
+            )) {
+            & git -C $checkout checkout -q -b $case[0] 2>&1 | Out-Null
+            $caseGit = Get-GitProvenance -User 'benchuser' -Hosts @('bench-host-123', 'bench-host-123.example.com')
+            Assert-True ($caseGit.branch -ceq $case[1]) "Branch [$($case[0])] recorded as [$($caseGit.branch)], expected [$($case[1])]"
+        }
     }
     $repoRoot = $repoRootPath
 
@@ -856,10 +870,10 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
             , @('x86_64-RelWithDebInfo', 'x86_64-RelWithDebInfo')
             , @('win-benchmark', 'win-benchmark')
         )) {
-        $got = Get-PresetComponent $case[0] -User 'benchuser' -Hosts $presetHosts
+        $got = Hide-NameIdentity $case[0] -User 'benchuser' -Hosts $presetHosts
         Assert-True ($got -ceq $case[1]) "Preset [$($case[0])] became [$got], expected [$($case[1])]"
     }
-    Assert-True ((Get-PresetComponent 'ab-release' -User 'ab' -Hosts @()) -ceq 'ab-release') 'A user name under 3 characters is left alone in a preset'
+    Assert-True ((Hide-NameIdentity 'ab-release' -User 'ab' -Hosts @()) -ceq 'ab-release') 'A user name under 3 characters is left alone in a preset'
 
     # ── #1445 review: the identity pass leaves validated categorical fields alone ──────────────
     # Host and user names that coincide with OS and compiler values: only free-form fields change.

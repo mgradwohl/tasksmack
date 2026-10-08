@@ -81,7 +81,7 @@ mkdir -p "${OUT_DIR}"
 
 # The preset part of the output file names (#1445 review): a user or host name in the preset
 # becomes "user" / "host", so neither the files nor the manifest's result_file and --benchmark_out
-# carry it (tools/bench-manifest.py preset_component). python3 is required anyway (see below).
+# carry it (tools/bench-manifest.py hide_name_identity). python3 is required anyway (see below).
 PRESET_STEM="$(python3 "${SCRIPT_DIR}/bench-manifest.py" --preset-stem "${PRESET}")"
 
 # Claim the result name before the benchmark starts, atomically (noclobber opens with O_EXCL, so

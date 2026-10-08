@@ -792,10 +792,32 @@ class ScrubberTest(unittest.TestCase):
             ("win-benchmark", "win-benchmark"),
         ):
             with self.subTest(preset=preset):
-                self.assertEqual(module.preset_component(preset, "benchuser", hosts), expected)
+                self.assertEqual(module.hide_name_identity(preset, "benchuser", hosts), expected)
         # A user name under 3 characters is never replaced on its own.
-        self.assertEqual(module.preset_component("ab-release", "ab", []), "ab-release")
+        self.assertEqual(module.hide_name_identity("ab-release", "ab", []), "ab-release")
         self.assertEqual(module.preset_file_stem("win-<user>-<host>"), "win-user-host")
+
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_a_user_or_host_name_in_the_branch_is_hidden(self):
+        # #1445 review: a user or host name in the branch is hidden between the branch's own '-',
+        # '.', '_' and '/' too. The same cases as tools/test-bench.ps1.
+        module = load_bench_manifest()
+        hosts = ["bench-host-123", "bench-host-123.example.com"]
+        with tempfile.TemporaryDirectory() as tmp:
+            git = ["git", "-C", tmp, "-c", "user.name=bench-test", "-c", "user.email=bench-test@example.invalid"]
+            subprocess.run([*git, "init", "-q"], check=True, capture_output=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], check=True, capture_output=True)
+            for branch, expected in (
+                ("benchuser-fix", "<user>-fix"),
+                ("feature/benchuser", "feature/<user>"),
+                ("BenchUser_wip", "<user>_wip"),
+                ("bench-host-123.example.com-test", "<host>-test"),
+                ("ci/bench-host-123/nightly", "ci/<host>/nightly"),
+                ("benchusers-x", "benchusers-x"),
+            ):
+                with self.subTest(branch=branch):
+                    subprocess.run([*git, "checkout", "-q", "-b", branch], check=True, capture_output=True)
+                    self.assertEqual(module.git_provenance(Path(tmp), "benchuser", hosts)["branch"], expected)
 
     def test_an_absent_cache_entry_hashes_as_null_an_empty_one_as_empty(self):
         # #1445 review: unknown flags stay distinguishable from explicitly empty ones.

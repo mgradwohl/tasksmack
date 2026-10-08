@@ -91,6 +91,9 @@ New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outDir)
 
 function Get-GitProvenance {
+    # The checkout's commit, branch and dirty flag; a user or host name in the branch is hidden
+    # (Hide-NameIdentity).
+    param([string]$User = [Environment]::UserName, [string[]]$Hosts = (Get-HostNames))
     $git = [ordered]@{ commit = $null; branch = $null; dirty = $null }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $git }
     # Before PowerShell 7.2, a native command's stderr becomes error records even when redirected
@@ -107,7 +110,7 @@ function Get-GitProvenance {
     if ($LASTEXITCODE -ne 0) { return $git }
     $git.commit = "$commit".Trim()
     $branch = & git -C $repoRoot rev-parse --abbrev-ref HEAD 2>$null
-    if ($LASTEXITCODE -eq 0) { $git.branch = "$branch".Trim() }
+    if ($LASTEXITCODE -eq 0) { $git.branch = Hide-NameIdentity "$branch".Trim() -User $User -Hosts $Hosts }
     # Tracked changes only: untracked scratch files do not change what was built.
     $status = & git -C $repoRoot status --porcelain --untracked-files=no 2>$null
     if ($LASTEXITCODE -eq 0) { $git.dirty = [bool]("$status".Trim()) }
@@ -191,21 +194,23 @@ function Get-HostNames {
     return [string[]]@($names | Sort-Object Length -Descending)
 }
 
-function Get-PresetComponent {
-    # The preset as the manifest's preset field and the output file names carry it (#1445
-    # review): each host name and the user name (3+ characters) standing alone between
-    # separators, a preset's '-', '.' and '_' included, becomes <host> / <user>, so a preset named
-    # after the user or the machine reaches neither a file name nor the manifest. Kept in step
-    # with preset_component in tools/bench-manifest.py.
-    param([string]$Preset, [string]$User = [Environment]::UserName, [string[]]$Hosts = (Get-HostNames))
+function Hide-NameIdentity {
+    # A preset or git branch name with each host name (FQDN before short name) and the user name
+    # (3+ characters, any case) standing alone between separators -- a name's own '-', '.', '_'
+    # and '/' included -- replaced by <host> / <user> (#1445 review): the preset names the output
+    # files and is recorded, and the branch is recorded, so neither may carry the user or the
+    # machine. Only these two names get the wider boundaries; Hide-Identity keeps its own, so an
+    # allowlisted --benchmark_filter value or x86_64 is never rewritten for a user named x86. Kept
+    # in step with hide_name_identity in tools/bench-manifest.py.
+    param([string]$Name, [string]$User = [Environment]::UserName, [string[]]$Hosts = (Get-HostNames))
     $separated = '\s/\\"''=:,;._\-'
     $tokens = @(@($Hosts | Where-Object { $_ } | Sort-Object Length -Descending | ForEach-Object { , @($_, '<host>') }) + , @($User, '<user>'))
     foreach ($pair in $tokens) {
         if ($pair[0] -and $pair[0].Length -ge 3) {
-            $Preset = [regex]::Replace($Preset, "(?<![^$separated])" + [regex]::Escape($pair[0]) + "(?![^$separated])", $pair[1], 'IgnoreCase')
+            $Name = [regex]::Replace($Name, "(?<![^$separated])" + [regex]::Escape($pair[0]) + "(?![^$separated])", $pair[1], 'IgnoreCase')
         }
     }
-    return $Preset
+    return $Name
 }
 
 function Hide-Identity {
@@ -545,9 +550,9 @@ function Invoke-ResultRedaction {
 }
 
 # The preset as the file names and the manifest carry it (#1445 review): a user or host name in
-# it becomes <user> / <host> (Get-PresetComponent), and "user" / "host" in the file names, so
+# it becomes <user> / <host> (Hide-NameIdentity), and "user" / "host" in the file names, so
 # neither the files nor the manifest's result_file and --benchmark_out carry it.
-$presetComponent = Get-PresetComponent $Preset
+$presetComponent = Hide-NameIdentity $Preset
 $presetStem = $presetComponent.Replace('<', '').Replace('>', '')
 
 # Claim the result name before the benchmark starts, atomically (CreateNew fails if the file
