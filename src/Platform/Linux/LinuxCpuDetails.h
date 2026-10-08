@@ -7,7 +7,8 @@
 // - cache totals from the online CPUs' cpuN/cache/index* (each shared instance counted once), and
 //   per-processor efficiency classes from their cpuN/cpu_capacity;
 // - the base clock: the highest base_frequency across cpufreq/policy* and the cpuN/cpufreq links.
-// LinuxSystemProbe reads them when it is built and again when the set of CPUs in /proc/stat changes.
+// LinuxSystemProbe reads them when it is built and again when the set of CPUs in /proc/stat changes,
+// committing a re-read only when the online CPUs it describes are that sample's (commitIfConsistent()).
 //
 // Only standard-library file access, no POSIX headers: the parsing and the fixture tests build and
 // run on every platform.

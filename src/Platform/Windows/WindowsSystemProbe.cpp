@@ -381,7 +381,7 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr
 
     // The CPU Details facts (#809), read again only when the set of active processors changes
     // (refreshCpuDetailsIfProcessorsChanged())
-    m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds, m_CpuDetailsProcessorIds);
+    m_CpuDetails.details = readCpuDetails(m_GroupFirstCoreIds, m_CpuDetails.ids);
 
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
@@ -627,16 +627,18 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
     counters.cpuCoreCount = m_NumCores;
-    counters.cpuDetails = m_CpuDetails;
+    counters.cpuDetails = m_CpuDetails.details;
 }
 
 void WindowsSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::span<const CpuCounters> perCore)
 {
-    if (CpuTopology::adoptProcessorSet(m_CpuDetailsProcessorIds, perCore | std::views::transform(&CpuCounters::coreId)))
+    const auto sampledIds = perCore | std::views::transform(&CpuCounters::coreId);
+    if (CpuTopology::cpuDetailsNeedRead(m_CpuDetails, sampledIds))
     {
         // Rare: only after the set of active processors changes (a hot-add), never every sample
-        std::vector<std::size_t> unused;
-        m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds, unused);
+        std::vector<std::size_t> describedIds;
+        CpuDetails fresh = readCpuDetails(m_GroupFirstCoreIds, describedIds);
+        (void) CpuTopology::commitIfConsistent(sampledIds, std::move(describedIds), std::move(fresh), m_CpuDetails);
     }
     // cpuCoreCount and the fallback per-core buffer follow the processors actually sampled, so
     // cpuPerCore.size() keeps matching cpuCoreCount after a hot-add. A failed read (none) keeps both.

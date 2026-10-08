@@ -95,17 +95,22 @@ class LinuxSystemProbe : public ISystemProbe
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
-    // Topology, caches and base clock from /proc/cpuinfo and the CPU sysfs root (#809), read again
-    // when the set of CPUs in /proc/stat changes (a CPU brought online or offline). Both guarded by
-    // m_CpuDetailsMutex: read() may run on several threads.
+    // Topology, caches and base clock from /proc/cpuinfo and the CPU sysfs root (#809), with the CPU
+    // numbers they describe; re-read when the set of CPUs in /proc/stat changes (a CPU brought
+    // online or offline). m_LastCoreCount is the last non-empty /proc/stat CPU count, published as
+    // cpuCoreCount when a sample's per-core read fails. Both guarded by m_CpuDetailsMutex: read()
+    // may run on several threads.
     std::mutex m_CpuDetailsMutex;
-    CpuDetails m_CpuDetails;
-    std::vector<std::size_t> m_CpuDetailsProcessorIds; // The CPU numbers m_CpuDetails describes, ascending
+    CpuTopology::CachedCpuDetails m_CpuDetails;
+    std::size_t m_LastCoreCount = 0;
 
-    /// Re-read m_CpuDetails when this sample's /proc/stat CPUs (counters.cpuPerCore's core ids) differ
-    /// from the set they were read for (CpuTopology::adoptProcessorSet()), and copy them into
-    /// `counters` in the same critical section, so a concurrent read() cannot pair this sample's
-    /// per-core counters with details read for another set of CPUs.
+    /// Publish this sample's CPU details and core count (#809), in one critical section, so a
+    /// concurrent read() cannot pair this sample's per-core counters with details or a count from
+    /// another set of CPUs. When /proc/stat's CPUs (counters.cpuPerCore's core ids) differ from the
+    /// ones the details describe, the details are re-read and committed only if the re-read
+    /// describes exactly this sample's CPUs (CpuTopology::commitIfConsistent()); otherwise the
+    /// previous details are published and the next sample retries. cpuCoreCount is this sample's
+    /// per-core count, or m_LastCoreCount when the per-core read failed.
     void readCpuDetails(SystemCounters& counters);
 
     // Optimization cache for network interface properties.

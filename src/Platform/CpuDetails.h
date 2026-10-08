@@ -4,7 +4,8 @@
 // on Windows, virtualization status. Every field is optional, so a value the platform or hardware
 // cannot supply is shown as unavailable (or hidden) rather than as a fake 0. They are cached facts:
 // each system probe reads them when it is built and again only when the set of active processors it
-// samples changes (hotplug, hot-add, a CPU taken offline) -- see cpuDetailsNeedRefresh().
+// samples changes (hotplug, hot-add, a CPU taken offline), committing a re-read only when it
+// describes the processors of that sample -- see cpuDetailsNeedRead() and commitIfConsistent().
 //
 // The topology, cache and refresh logic below is pure (no OS headers), so it is unit-tested on every
 // platform; the Linux and Windows probes only gather the raw records it works on.
@@ -15,6 +16,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -136,36 +138,72 @@ inline void summarizeCores(std::span<const CoreRecord> cores, CpuDetails& detail
     }
 }
 
-/// Whether the cached CPU details should be read again (#809): `readFor` is the set of logical
-/// processor ids they were read for, `sampled` this sample's (both ascending). Any difference --
-/// a processor brought online, taken offline or hot-added, even one swapped for another at the same
-/// count (cpu0,cpu1 -> cpu0,cpu2) -- changes the topology. An empty set on either side is "not
-/// known" -- a failed per-core read, or details with no set yet -- and asks for no re-read, so a
-/// failing source is never re-read every sample.
-template<std::ranges::input_range SampledIds>
-[[nodiscard]] bool cpuDetailsNeedRefresh(std::span<const std::size_t> readFor, const SampledIds& sampled)
+/// A probe's cached CPU details (#809): what it publishes, the logical processor ids they describe,
+/// and any re-read that has not yet matched its sample.
+struct CachedCpuDetails
 {
-    return !readFor.empty() && !std::ranges::empty(sampled) && !std::ranges::equal(readFor, sampled);
-}
+    CpuDetails details;
+    std::vector<std::size_t> ids;        ///< The processor ids `details` describe, ascending; empty = not known
+    std::vector<std::size_t> pendingIds; ///< The sampled set the last inconsistent re-reads were for
+    unsigned pendingAttempts = 0;        ///< How many re-reads in a row failed to match `pendingIds`
+};
 
-/// Take this sample's processor ids as the set the details describe from now on (#809): returns
-/// whether the details must be re-read (cpuDetailsNeedRefresh()), and replaces `readFor` with
-/// `sampled` whenever the two differ and `sampled` is known. Called every sample; it allocates only
-/// when the set changes.
+/// Inconsistent re-reads tried for one sampled set before giving up until the set changes again: a
+/// re-read races the per-core read it is checked against (a CPU going on- or offline between the
+/// two), so a mismatch is retried on the next samples, but a source that never agrees with the
+/// per-core read (no processor numbers in /proc/cpuinfo, say) is not re-read every sample forever.
+inline constexpr unsigned MAX_INCONSISTENT_CPU_DETAIL_READS = 3;
+
+/// Whether a probe should re-read its CPU details for this sample (#809): `sampled` are the ids of
+/// the processors the per-core read just sampled (ascending). Any difference from the ids the
+/// details describe -- a processor brought online, taken offline or hot-added, even one swapped for
+/// another at the same count -- asks for a re-read, unless that set has already failed
+/// MAX_INCONSISTENT_CPU_DETAIL_READS re-reads. An empty sample (a failed per-core read) never does.
 template<std::ranges::input_range SampledIds>
-[[nodiscard]] bool adoptProcessorSet(std::vector<std::size_t>& readFor, const SampledIds& sampled)
+[[nodiscard]] bool cpuDetailsNeedRead(const CachedCpuDetails& cache, const SampledIds& sampled)
 {
-    if (std::ranges::empty(sampled) || std::ranges::equal(readFor, sampled))
+    if (std::ranges::empty(sampled) || std::ranges::equal(cache.ids, sampled))
     {
         return false;
     }
-    const bool reread = cpuDetailsNeedRefresh(readFor, sampled);
-    readFor.clear();
-    for (const std::size_t id : sampled)
+    return !(std::ranges::equal(cache.pendingIds, sampled) && cache.pendingAttempts >= MAX_INCONSISTENT_CPU_DETAIL_READS);
+}
+
+/// Commit freshly read details and the ids they describe, together, only when those ids equal this
+/// sample's (#809): then the details, the per-core counters and the core count published with them
+/// describe the same processors. On a mismatch -- the OS's processor set changed between the two
+/// reads -- the cache keeps its previous details and ids, and the attempt is counted for
+/// cpuDetailsNeedRead(), so the next sample retries. An empty sample commits nothing. Returns
+/// whether it committed.
+template<std::ranges::input_range SampledIds>
+bool commitIfConsistent(const SampledIds& sampled, std::vector<std::size_t> describedIds, CpuDetails fresh, CachedCpuDetails& cache)
+{
+    if (std::ranges::empty(sampled))
     {
-        readFor.push_back(id);
+        return false;
     }
-    return reread;
+    if (std::ranges::equal(describedIds, sampled))
+    {
+        cache.details = std::move(fresh);
+        cache.ids = std::move(describedIds);
+        cache.pendingIds.clear();
+        cache.pendingAttempts = 0;
+        return true;
+    }
+    if (std::ranges::equal(cache.pendingIds, sampled))
+    {
+        ++cache.pendingAttempts;
+    }
+    else
+    {
+        cache.pendingIds.clear();
+        for (const std::size_t id : sampled)
+        {
+            cache.pendingIds.push_back(id);
+        }
+        cache.pendingAttempts = 1;
+    }
+    return false;
 }
 
 /// Record logical processor `coreId`'s efficiency class, growing `classes` as needed (#809).

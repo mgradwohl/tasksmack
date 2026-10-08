@@ -136,7 +136,8 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
 
     // The details describe the CPUs /proc/cpuinfo lists now, so a CPU that goes online or offline
     // before the first read() is a change from this set, not the baseline (#809).
-    m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &m_CpuDetailsProcessorIds);
+    m_CpuDetails.details = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &m_CpuDetails.ids);
+    m_LastCoreCount = m_NumCores;
 
     spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
 }
@@ -382,18 +383,25 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
 {
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
-    counters.cpuCoreCount = m_NumCores;
 }
 
 void LinuxSystemProbe::readCpuDetails(SystemCounters& counters)
 {
+    const auto sampledIds = counters.cpuPerCore | std::views::transform(&CpuCounters::coreId);
     const std::scoped_lock lock(m_CpuDetailsMutex);
-    if (CpuTopology::adoptProcessorSet(m_CpuDetailsProcessorIds, counters.cpuPerCore | std::views::transform(&CpuCounters::coreId)))
+    if (CpuTopology::cpuDetailsNeedRead(m_CpuDetails, sampledIds))
     {
         // Rare: only when the set of online CPUs changes, never every sample
-        m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
+        std::vector<std::size_t> describedIds;
+        CpuDetails fresh = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &describedIds);
+        (void) CpuTopology::commitIfConsistent(sampledIds, std::move(describedIds), std::move(fresh), m_CpuDetails);
     }
-    counters.cpuDetails = m_CpuDetails;
+    if (!counters.cpuPerCore.empty())
+    {
+        m_LastCoreCount = counters.cpuPerCore.size();
+    }
+    counters.cpuCoreCount = m_LastCoreCount;
+    counters.cpuDetails = m_CpuDetails.details;
 }
 
 void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)
