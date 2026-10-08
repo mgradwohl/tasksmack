@@ -1,10 +1,11 @@
 #pragma once
 
 // Platform-neutral handling of NVML's running-process entry points
-// (nvmlDevice{Compute,Graphics}RunningProcesses{,_v2,_v3}), shared by the Linux and Windows NVML
-// probes (#1092, #1313): which symbol to load and the size of the entries it writes, the sized
-// query, and combining the compute and graphics lists into one entry per process. Pure logic over
-// injected functions, so it is unit-tested without a driver.
+// (nvmlDevice{Compute,Graphics}RunningProcesses{,_v2,_v3}) (#1092, #1313): which symbol to load
+// and the size of the entries it writes, the sized query, and combining the compute and graphics
+// lists into one entry per process. Pure logic over injected functions, so it is unit-tested
+// without a driver. Used by the Linux NVML probe; the Windows one takes per-process data from PDH
+// and no longer reads NVML's lists (#1480).
 
 #include "Platform/NVMLTypes.h"
 

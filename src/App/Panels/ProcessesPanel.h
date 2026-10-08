@@ -265,16 +265,17 @@ class ProcessesPanel : public Panel
 
     // The primary process: last clicked or moved to, shown by Process Details.
     std::int32_t m_SelectedPid = -1;
-    std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity: a PID can be reused
-    // Every selected row, by uniqueKey (#804): the rows drawn highlighted, and what a batch action is
-    // for. A plain click or keyboard move makes it the primary alone.
+    // With m_SelectedPid, the primary process's exact identity: a PID can be reused, and the uniqueKey
+    // hash could collide (#1503).
+    std::uint64_t m_SelectedStartTicks = 0;
+    // Every selected row, by PID and start time (#804, #1503): the rows drawn highlighted, and what a
+    // batch action is for. A plain click or keyboard move makes it the primary alone.
     ProcessSelection::Selection m_Selection;
     // A row click, applied after the rows are drawn (#804): a Shift+click's range needs the visible
     // order, which must not be rebuilt while the tree rows are iterated.
     struct PendingClick
     {
-        std::int32_t pid = 0;
-        std::uint64_t key = 0;
+        ProcessSelection::Identity id;
         ProcessSelection::ClickKind kind = ProcessSelection::ClickKind::Replace;
     };
     std::optional<PendingClick> m_PendingClick;
@@ -500,8 +501,14 @@ class ProcessesPanel : public Panel
                             std::vector<std::size_t>& visible,
                             std::vector<ProcessTableNavigation::TreeRowShape>* shapes);
 
-    /// The uniqueKeys of the visible rows, in drawn order.
-    [[nodiscard]] std::vector<std::uint64_t> visibleKeys(const std::vector<Domain::ProcessSnapshot>& snapshots);
+    /// The identities (PID and start time) of the visible rows, in drawn order.
+    [[nodiscard]] std::vector<ProcessSelection::Identity> visibleIdentities(const std::vector<Domain::ProcessSnapshot>& snapshots);
+
+    /// The primary process's identity (m_SelectedPid, m_SelectedStartTicks).
+    [[nodiscard]] ProcessSelection::Identity primaryIdentity() const noexcept
+    {
+        return {.pid = m_SelectedPid, .startTimeTicks = m_SelectedStartTicks};
+    }
 
     /// Applies this frame's row click (m_PendingClick) to the selection, after the rows are drawn.
     void applyPendingClick(const std::vector<Domain::ProcessSnapshot>& snapshots);
@@ -509,7 +516,7 @@ class ProcessesPanel : public Panel
     /// Makes `proc` the primary process -- what Process Details shows -- and tells the other panels.
     /// Leaves the multi-selection alone.
     void selectProcess(const Domain::ProcessSnapshot& proc);
-    void selectProcess(std::int32_t pid, std::uint64_t uniqueKey);
+    void selectProcess(const ProcessSelection::Identity& id);
 
     /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
     void renderRowContextMenu(const Domain::ProcessSnapshot& proc);

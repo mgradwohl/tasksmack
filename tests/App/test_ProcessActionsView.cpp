@@ -556,6 +556,15 @@ class NoTraceActions : public Platform::IProcessActions
     {
         return Platform::ProcessActionResult::ok();
     }
+    [[nodiscard]] Platform::ProcessActionResult
+    setIoPriority(const Platform::ProcessTarget& /*target*/, Platform::IoPriorityClass /*ioClass*/, std::int32_t /*level*/) override
+    {
+        return Platform::ProcessActionResult::ok();
+    }
+    [[nodiscard]] Platform::IoPriorityReadResult getIoPriority(const Platform::ProcessTarget& /*target*/) override
+    {
+        return Platform::IoPriority{};
+    }
 };
 
 TEST(ProcessActionsViewTest, TheInterfaceDefaultReportsTracingUnsupported)

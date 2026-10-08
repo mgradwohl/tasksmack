@@ -6,6 +6,7 @@
 /// tests safe and non-destructive.
 
 #include "Platform/IProcessActions.h"
+#include "Platform/Linux/IoPriority.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/SyscallTrace.h"
@@ -35,6 +36,7 @@
 #include <signal.h>
 #include <sys/poll.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -73,6 +75,7 @@ class SleepingChild
             int readyFd = ready[1];
             for (int i = 0; i < extraThreads; ++i)
             {
+                // NOLINTNEXTLINE(misc-include-cleaner) - pthread_t is provided by <pthread.h>
                 pthread_t thread{};
                 pthread_create(
                     &thread,
@@ -191,20 +194,21 @@ class SleepingChild
 
 TEST(LinuxProcessActionsTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ LinuxProcessActions actions; });
+    EXPECT_NO_THROW({ const LinuxProcessActions actions; });
 }
 
 TEST(LinuxProcessActionsTest, CapabilitiesReportedCorrectly)
 {
-    LinuxProcessActions actions;
+    const LinuxProcessActions actions;
     auto caps = actions.actionCapabilities();
 
     // Linux should support all standard process actions
     EXPECT_TRUE(caps.canTerminate);
     EXPECT_TRUE(caps.canKill);
     EXPECT_TRUE(caps.canStop);
-    EXPECT_TRUE(caps.canContinue);    // resume is called canContinue in the interface
-    EXPECT_TRUE(caps.canSetPriority); // setpriority() is available on Linux
+    EXPECT_TRUE(caps.canContinue);      // resume is called canContinue in the interface
+    EXPECT_TRUE(caps.canSetPriority);   // setpriority() is available on Linux
+    EXPECT_TRUE(caps.canSetIoPriority); // ioprio_set() too (#803)
 }
 
 // =============================================================================
@@ -216,7 +220,7 @@ TEST(LinuxProcessActionsTest, TerminateNonExistentProcess)
     LinuxProcessActions actions;
 
     // PID 99999 is very unlikely to exist
-    int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = 99999;
     const auto result = actions.terminate({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
@@ -229,7 +233,7 @@ TEST(LinuxProcessActionsTest, KillNonExistentProcess)
     LinuxProcessActions actions;
 
     // PID 99999 is very unlikely to exist
-    int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = 99999;
     const auto result = actions.kill({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
@@ -242,7 +246,7 @@ TEST(LinuxProcessActionsTest, StopNonExistentProcess)
     LinuxProcessActions actions;
 
     // PID 99999 is very unlikely to exist
-    int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = 99999;
     const auto result = actions.stop({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
@@ -255,7 +259,7 @@ TEST(LinuxProcessActionsTest, ResumeNonExistentProcess)
     LinuxProcessActions actions;
 
     // PID 99999 is very unlikely to exist
-    int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = 99999;
     const auto result = actions.resume({.pid = nonExistentPid, .startTimeTicks = 1});
 
     // Should fail
@@ -326,7 +330,7 @@ TEST(LinuxProcessActionsTest, SetPriorityNonExistentProcess)
     LinuxProcessActions actions;
 
     // PID 99999 is very unlikely to exist
-    int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = 99999;
     const auto result = actions.setPriority({.pid = nonExistentPid, .startTimeTicks = 1}, 0);
 
     // Should fail
@@ -502,6 +506,172 @@ TEST(LinuxProcessActionsTest, SetPriorityChangesEveryThread)
     {
         EXPECT_EQ(getpriority(PRIO_PROCESS, tid), raised) << "thread " << tid;
     }
+}
+
+// =============================================================================
+// I/O priority (#803), against real child processes. Lowering a process of this user to the Idle
+// class or to a lower best-effort level needs no privilege.
+// =============================================================================
+
+constexpr IoPriority IDLE_PRIORITY{.ioClass = IoPriorityClass::Idle, .level = 0};
+
+/// The thread's I/O priority straight from ioprio_get(2), or nullopt if it can't be read.
+std::optional<IoPriority> rawIoPriority(id_t tid)
+{
+    const auto value = static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, static_cast<pid_t>(tid)));
+    return IoPrio::decode(value);
+}
+
+TEST(LinuxProcessActionsTest, SetIoPriorityToIdleChangesEveryThreadOfAChild)
+{
+    // As nice, I/O priority is per thread: ioprio_set(IOPRIO_WHO_PROCESS, pid) alone reaches only the
+    // main thread, so every thread must be set.
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
+    const ProcessTarget target = child.target();
+    const std::vector<id_t> tids = listThreads(target.pid);
+    ASSERT_GE(tids.size(), 3U);
+
+    LinuxProcessActions actions;
+    const auto result = actions.setIoPriority(target, IoPriorityClass::Idle, 0);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    for (const id_t tid : tids)
+    {
+        EXPECT_EQ(rawIoPriority(tid), std::optional<IoPriority>{IDLE_PRIORITY}) << "thread " << tid;
+    }
+
+    const IoPriorityReadResult current = actions.getIoPriority(target);
+    ASSERT_TRUE(current.has_value()) << current.error();
+    EXPECT_EQ(current->ioClass, IoPriorityClass::Idle);
+}
+
+TEST(LinuxProcessActionsTest, GetIoPriorityReadsAnotherUsersLiveProcess)
+{
+    // PID 1 belongs to root. Reading its I/O priority needs no privilege, so a non-root test run must
+    // not take the EPERM that signal 0 gets from it for "exited" (#803 review).
+    if (geteuid() == 0)
+    {
+        GTEST_SKIP() << "running as root: PID 1 is not another user's process";
+    }
+    std::ifstream stat("/proc/1/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const std::uint64_t startTicks = ProcParsing::parseStatStartTime(line).value_or(0);
+    if (startTicks == 0)
+    {
+        GTEST_SKIP() << "PID 1's start time is not readable here (hidepid)";
+    }
+
+    LinuxProcessActions actions;
+    const IoPriorityReadResult current = actions.getIoPriority({.pid = 1, .startTimeTicks = startTicks});
+    ASSERT_TRUE(current.has_value()) << current.error();
+}
+
+TEST(LinuxProcessActionsTest, SetIoPriorityBestEffortLevelIsReadBack)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+
+    LinuxProcessActions actions;
+    const auto result = actions.setIoPriority(child.target(), IoPriorityClass::BestEffort, 7);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    const IoPriorityReadResult current = actions.getIoPriority(child.target());
+    ASSERT_TRUE(current.has_value()) << current.error();
+    EXPECT_EQ(*current, (IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 7}));
+}
+
+TEST(LinuxProcessActionsTest, SetIoPriorityDefaultRestoresTheNiceDerivedClass)
+{
+    // "Default" is IOPRIO_CLASS_NONE with level 0, which ioprio_set(2) accepts (only a non-zero
+    // level with NONE is EINVAL) and which hands the process back to nice-derived I/O priority, as
+    // `ionice -c 0` does (#803 review).
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+
+    LinuxProcessActions actions;
+    ASSERT_TRUE(actions.setIoPriority(child.target(), IoPriorityClass::Idle, 0).success);
+    const auto result = actions.setIoPriority(child.target(), IoPriorityClass::None, 0);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    const IoPriorityReadResult current = actions.getIoPriority(child.target());
+    ASSERT_TRUE(current.has_value()) << current.error();
+    EXPECT_EQ(current->ioClass, IoPriorityClass::None);
+}
+
+TEST(LinuxProcessActionsTest, SetIoPriorityReachesTheProcessOnlyWhenTheStartTimeMatches)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    const ProcessTarget target = child.target();
+    ASSERT_NE(target.startTimeTicks, 0ULL);
+    const std::optional<IoPriority> before = rawIoPriority(static_cast<id_t>(target.pid));
+    ASSERT_TRUE(before.has_value());
+    if (before == std::optional<IoPriority>{IDLE_PRIORITY})
+    {
+        GTEST_SKIP() << "the test runner already runs at the Idle I/O class";
+    }
+
+    LinuxProcessActions actions;
+    ProcessTarget reused = target;
+    reused.startTimeTicks += 1;
+    const auto refused = actions.setIoPriority(reused, IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(refused.success);
+    EXPECT_NE(refused.errorMessage.find("different process"), std::string::npos) << refused.errorMessage;
+    EXPECT_EQ(rawIoPriority(static_cast<id_t>(target.pid)), before);
+
+    const auto unknown = actions.setIoPriority({.pid = target.pid, .startTimeTicks = 0}, IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(unknown.success);
+    EXPECT_NE(unknown.errorMessage.find("Cannot confirm the identity"), std::string::npos) << unknown.errorMessage;
+    EXPECT_EQ(rawIoPriority(static_cast<id_t>(target.pid)), before);
+
+    const auto applied = actions.setIoPriority(target, IoPriorityClass::Idle, 0);
+    EXPECT_TRUE(applied.success) << applied.errorMessage;
+    EXPECT_EQ(rawIoPriority(static_cast<id_t>(target.pid)), std::optional<IoPriority>{IDLE_PRIORITY});
+}
+
+TEST(LinuxProcessActionsTest, GetIoPriorityRefusesAnotherOrUnknownIdentity)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+
+    LinuxProcessActions actions;
+    const IoPriorityReadResult mismatched = actions.getIoPriority(reused);
+    ASSERT_FALSE(mismatched.has_value());
+    EXPECT_NE(mismatched.error().find("different process"), std::string::npos) << mismatched.error();
+
+    const IoPriorityReadResult unknown = actions.getIoPriority({.pid = child.target().pid, .startTimeTicks = 0});
+    EXPECT_FALSE(unknown.has_value());
+    EXPECT_FALSE(actions.getIoPriority({.pid = -1, .startTimeTicks = 1}).has_value());
+}
+
+TEST(LinuxProcessActionsTest, SetIoPriorityOfAMissingOrInvalidProcessFails)
+{
+    LinuxProcessActions actions;
+    const auto missing = actions.setIoPriority({.pid = 99999, .startTimeTicks = 1}, IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(missing.success);
+    EXPECT_FALSE(missing.errorMessage.empty());
+
+    const auto invalid = actions.setIoPriority({.pid = 0, .startTimeTicks = 1}, IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(invalid.success);
+    EXPECT_EQ(invalid.errorMessage, "Invalid PID");
+}
+
+TEST(LinuxProcessActionsTest, SetIoPriorityRealtimeWithoutPrivilegeSaysWhy)
+{
+    // Realtime needs CAP_SYS_NICE or CAP_SYS_ADMIN. Unprivileged, the refusal
+    // names the capability rather than blaming another user; privileged, it simply succeeds.
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+
+    LinuxProcessActions actions;
+    const auto result = actions.setIoPriority(child.target(), IoPriorityClass::Realtime, 4);
+    if (result.success)
+    {
+        GTEST_SKIP() << "running with the privilege to set the Realtime I/O class";
+    }
+    EXPECT_NE(result.errorMessage.find("CAP_SYS_NICE"), std::string::npos) << result.errorMessage;
+    EXPECT_EQ(result.errorMessage.find("another user"), std::string::npos) << result.errorMessage;
 }
 
 TEST(LinuxProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)

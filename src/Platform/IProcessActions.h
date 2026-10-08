@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <string>
 #include <utility>
@@ -37,6 +38,10 @@ struct ProcessTarget
 {
     std::int32_t pid = 0;
     std::uint64_t startTimeTicks = 0; ///< 0 means unknown; an action on an unknown identity is refused.
+
+    /// The same process: the same PID and the same start time. The Processes table's selection is
+    /// keyed on this exact identity, never on a hash of it (#1503).
+    [[nodiscard]] friend constexpr bool operator==(const ProcessTarget&, const ProcessTarget&) noexcept = default;
 };
 
 /// Whether the process found at a target's PID is the process the target names.
@@ -62,6 +67,27 @@ struct ProcessTarget
     return ProcessActionResult::ok();
 }
 
+/// A Linux I/O scheduling class (ioprio_set(2)), with the kernel's own numbering (IOPRIO_CLASS_*).
+enum class IoPriorityClass : std::uint8_t
+{
+    None = 0,       ///< Never set: the kernel derives a best-effort level from the nice value.
+    Realtime = 1,   ///< Served before every other class; setting it needs CAP_SYS_NICE (or CAP_SYS_ADMIN).
+    BestEffort = 2, ///< The normal class, with levels 0 (highest) to 7 (lowest).
+    Idle = 3,       ///< Served only when no other process wants the disk.
+};
+
+/// A process's I/O priority: its class, and its level within Realtime or BestEffort (0 is highest,
+/// 7 lowest). The level means nothing for None and Idle, and is 0 there.
+struct IoPriority
+{
+    IoPriorityClass ioClass = IoPriorityClass::None;
+    std::int32_t level = 0;
+
+    [[nodiscard]] constexpr bool operator==(const IoPriority&) const noexcept = default;
+};
+
+/// The I/O priority read for a process, or the message saying why it could not be read.
+using IoPriorityReadResult = std::expected<IoPriority, std::string>;
 /// Whether IProcessActions::launchSyscallTrace() can open a system call tracer on this machine (#182).
 enum class SyscallTraceAvailability : std::uint8_t
 {
@@ -92,11 +118,12 @@ enum class SyscallTraceAvailability : std::uint8_t
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
-    bool canTerminate = false;   // SIGTERM
-    bool canKill = false;        // SIGKILL
-    bool canStop = false;        // SIGSTOP
-    bool canContinue = false;    // SIGCONT
-    bool canSetPriority = false; // setpriority/SetPriorityClass
+    bool canTerminate = false;     // SIGTERM
+    bool canKill = false;          // SIGKILL
+    bool canStop = false;          // SIGSTOP
+    bool canContinue = false;      // SIGCONT
+    bool canSetPriority = false;   // setpriority/SetPriorityClass
+    bool canSetIoPriority = false; // ioprio_set (Linux only)
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
 };
@@ -136,6 +163,17 @@ class IProcessActions
     /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows)
     [[nodiscard]] virtual ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) = 0;
 
+    /// Set the process's I/O priority (ioprio_set on Linux, for every thread). Refused where
+    /// actionCapabilities().canSetIoPriority is false.
+    /// @param target  Process to change
+    /// @param ioClass Scheduling class
+    /// @param level   Level within Realtime or BestEffort (0 highest to 7 lowest); ignored otherwise
+    [[nodiscard]] virtual ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) = 0;
+
+    /// Read the process's current I/O priority (ioprio_get on Linux), on demand for one process: it
+    /// is not part of the sampled counters. Refused, as the actions are, unless the process at the
+    /// target's PID is the target.
+    [[nodiscard]] virtual IoPriorityReadResult getIoPriority(const ProcessTarget& target) = 0;
     /// Open a terminal window running a system call tracer (strace) attached to the target (#182).
     ///
     /// Returns once the terminal has been started, never waiting for it or the tracer to finish; the

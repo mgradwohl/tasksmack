@@ -38,8 +38,13 @@ namespace
 
 using TestSupport::ScopedTempDir;
 
-// NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
-constexpr int NO_HANG = WNOHANG;
+/// waitpid(@p pid) without blocking: -1 with errno ECHILD when there is no such child of ours.
+[[nodiscard]] pid_t waitNoHang(pid_t pid)
+{
+    int status = 0;
+    // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
+    return ::waitpid(pid, &status, WNOHANG);
+}
 
 /// Reads @p path whole, or nullopt if it does not exist (yet).
 [[nodiscard]] std::optional<std::string> readFile(const std::filesystem::path& path)
@@ -144,13 +149,12 @@ TEST(DetachedSpawnTest, RunsTheProgramWithExactlyTheArgvGivenAndLeavesNoZombie)
     const std::string pidText = readFile(dir.path / "pid.txt").value_or("");
     pid_t programPid = 0;
     ASSERT_EQ(std::from_chars(pidText.data(), pidText.data() + pidText.size(), programPid).ec, std::errc{});
-    int status = 0;
     errno = 0;
-    EXPECT_EQ(::waitpid(programPid, &status, NO_HANG), -1);
+    EXPECT_EQ(waitNoHang(programPid), -1);
     EXPECT_EQ(errno, ECHILD);
     // Nor is the intermediate child left behind: there is no child of ours to reap at all.
     errno = 0;
-    EXPECT_EQ(::waitpid(-1, &status, NO_HANG), -1);
+    EXPECT_EQ(waitNoHang(-1), -1);
     EXPECT_EQ(errno, ECHILD);
 }
 
@@ -162,9 +166,8 @@ TEST(DetachedSpawnTest, ReportsAProgramThatDoesNotExist)
     ASSERT_FALSE(result.has_value());
     EXPECT_EQ(result.error().stage, SpawnFailure::Stage::Exec);
     EXPECT_EQ(result.error().error, ENOENT);
-    int status = 0;
     errno = 0;
-    EXPECT_EQ(::waitpid(-1, &status, NO_HANG), -1);
+    EXPECT_EQ(waitNoHang(-1), -1);
     EXPECT_EQ(errno, ECHILD);
 }
 

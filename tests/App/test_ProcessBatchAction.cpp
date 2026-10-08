@@ -5,6 +5,7 @@
 
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessSelection.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
@@ -16,7 +17,6 @@
 #include <format>
 #include <set>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -87,12 +87,20 @@ std::vector<BatchTarget> numberedTargets(std::size_t count)
 
 // ========== Resolving the selection ==========
 
-TEST(ProcessBatchActionTest, ResolvesSelectedKeysToTargetsWithTheirStartTimes)
+/// resolveTargets() over @p snaps for the selection @p selected, as ProcessesPanel asks it: an O(1)
+/// lookup of each snapshot's exact identity.
+std::vector<BatchTarget> resolveSelected(const std::vector<Domain::ProcessSnapshot>& snaps, const ProcessSelection::IdentitySet& selected)
+{
+    return resolveTargets(snaps, [&](const Platform::ProcessTarget& id) { return selected.contains(id); });
+}
+
+TEST(ProcessBatchActionTest, ResolvesSelectedProcessesToTargetsWithTheirStartTimes)
 {
     const std::vector<Domain::ProcessSnapshot> snaps{
         snapshot(10, 1000, 501, "a"), snapshot(11, 1100, 502, "b"), snapshot(12, 1200, 503, "c")};
-    const std::unordered_set<std::uint64_t> selected{503, 501, 999}; // 999 has exited
-    const std::vector<BatchTarget> targets = resolveTargets(snaps, [&](std::uint64_t key) { return selected.contains(key); });
+    const ProcessSelection::IdentitySet selected{
+        {.pid = 12, .startTimeTicks = 1200}, {.pid = 10, .startTimeTicks = 1000}, {.pid = 99, .startTimeTicks = 9900}}; // 99 has exited
+    const std::vector<BatchTarget> targets = resolveSelected(snaps, selected);
     ASSERT_EQ(targets.size(), 2U);
     EXPECT_EQ(targets[0].target.pid, 10);
     EXPECT_EQ(targets[0].target.startTimeTicks, 1000U);
@@ -103,22 +111,35 @@ TEST(ProcessBatchActionTest, ResolvesSelectedKeysToTargetsWithTheirStartTimes)
 
 TEST(ProcessBatchActionTest, AReusedPidIsNotResolvedFromTheOldSelection)
 {
-    // PID 10 was selected as key 501; it exited and a new process got PID 10 (key 777).
+    // PID 10 was selected with start time 1000; it exited and a new process got PID 10.
     const std::vector<Domain::ProcessSnapshot> snaps{snapshot(10, 9999, 777, "newcomer")};
-    const std::unordered_set<std::uint64_t> selected{501};
-    EXPECT_TRUE(resolveTargets(snaps, [&](std::uint64_t key) { return selected.contains(key); }).empty());
+    const ProcessSelection::IdentitySet selected{{.pid = 10, .startTimeTicks = 1000}};
+    EXPECT_TRUE(resolveSelected(snaps, selected).empty());
 }
 
-TEST(ProcessBatchActionTest, AKeySharedByTwoLiveProcessesResolvesNeither)
+// Forced uniqueKey collisions (#1503): the hash is never what is matched, so a colliding process is
+// never resolved in place of, or alongside, the selected one.
+
+TEST(ProcessBatchActionTest, ACollidingLiveProcessIsNotResolvedButTheSelectedOneIs)
 {
-    // A uniqueKey hash collision: two different live processes carry the selected key. Neither is
-    // acted on, so the batch cannot reach a process the user did not select.
+    // Two different live processes share key 501; only PID 10 was selected. It alone is acted on.
     const std::vector<Domain::ProcessSnapshot> snaps{
         snapshot(10, 1000, 501, "selected"), snapshot(20, 2000, 501, "collides"), snapshot(30, 3000, 503, "other")};
-    const std::unordered_set<std::uint64_t> selected{501, 503};
-    const std::vector<BatchTarget> targets = resolveTargets(snaps, [&](std::uint64_t key) { return selected.contains(key); });
-    ASSERT_EQ(targets.size(), 1U);
-    EXPECT_EQ(targets[0].target.pid, 30);
+    const ProcessSelection::IdentitySet selected{{.pid = 10, .startTimeTicks = 1000}, {.pid = 30, .startTimeTicks = 3000}};
+    const std::vector<BatchTarget> targets = resolveSelected(snaps, selected);
+    ASSERT_EQ(targets.size(), 2U);
+    EXPECT_EQ(targets[0].target.pid, 10);
+    EXPECT_EQ(targets[0].target.startTimeTicks, 1000U);
+    EXPECT_EQ(targets[1].target.pid, 30);
+}
+
+TEST(ProcessBatchActionTest, ACollidingProcessThatAppearsAfterTheSelectedOneExitsIsNotResolved)
+{
+    // PID 10 (key 501) was selected and has exited; later processes carry the same key 501 -- one
+    // under another PID, one under PID 10 itself (a reused PID whose hash also collides).
+    const std::vector<Domain::ProcessSnapshot> snaps{snapshot(20, 2000, 501, "newcomer"), snapshot(10, 5000, 501, "reused")};
+    const ProcessSelection::IdentitySet selected{{.pid = 10, .startTimeTicks = 1000}};
+    EXPECT_TRUE(resolveSelected(snaps, selected).empty());
 }
 
 // ========== Confirmation text ==========

@@ -2,7 +2,7 @@
 
 #include "DisplayDevicePower.h"
 #include "Platform/GPUTypes.h"
-#include "Platform/NVMLRunningProcesses.h"
+#include "Platform/NVMLEngineUtilization.h"
 #include "Platform/NVMLTypes.h"
 
 #include <spdlog/spdlog.h>
@@ -24,7 +24,6 @@
 #include <array>
 #include <cstdint>
 #include <format>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -117,8 +116,8 @@ bool NVMLGPUProbe::loadNVML()
     LOAD_NVML_FUNC(DeviceGetVbiosVersion)
     LOAD_NVML_FUNC(DeviceGetFanSpeed)
 
-    // Per-process functions (optional - may not be available in older NVML versions)
-    // Use a separate macro that doesn't fail on missing functions
+    // Optional functions (may not be available in older NVML versions): a separate macro that
+    // doesn't fail on a missing one
 #define LOAD_NVML_FUNC_OPTIONAL(name)                                                                                                      \
     m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvml" #name));               \
     if (m_NVML.name == nullptr)                                                                                                            \
@@ -127,16 +126,9 @@ bool NVMLGPUProbe::loadNVML()
     }
 
     LOAD_NVML_FUNC_OPTIONAL(DeviceGetPcieThroughput)
-    // The running-process entry points come in three variants writing two entry layouts; take the
-    // newest exported and remember its entry size (#1313, as Linux does since #1092).
-    const auto resolve = [module = static_cast<HMODULE>(m_NVMLHandle)](const std::string& name)
-    {
-        // GetProcAddress returns FARPROC; the chooser deals in plain addresses, cast back at load.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        return reinterpret_cast<void*>(GetProcAddress(module, name.c_str()));
-    };
-    m_NVML.DeviceGetComputeRunningProcesses = loadRunningProcessesQuery("nvmlDeviceGetComputeRunningProcesses", resolve);
-    m_NVML.DeviceGetGraphicsRunningProcesses = loadRunningProcessesQuery("nvmlDeviceGetGraphicsRunningProcesses", resolve);
+    // The video engines' utilization (#1485): without them the probe reports no encoder/decoder.
+    LOAD_NVML_FUNC_OPTIONAL(DeviceGetEncoderUtilization)
+    LOAD_NVML_FUNC_OPTIONAL(DeviceGetDecoderUtilization)
     // nvml.h maps nvmlDeviceGetPciInfo to the _v3 export; older drivers have only _v2 (same struct).
     m_NVML.DeviceGetPciInfo =
         reinterpret_cast<decltype(m_NVML.DeviceGetPciInfo)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlDeviceGetPciInfo_v3"));
@@ -151,22 +143,6 @@ bool NVMLGPUProbe::loadNVML()
 
     spdlog::debug("NVMLGPUProbe: Successfully loaded nvml.dll");
     return true;
-}
-
-NVMLGPUProbe::RunningProcessesQuery NVMLGPUProbe::loadRunningProcessesQuery(std::string_view baseName,
-                                                                            const std::function<void*(const std::string&)>& resolve)
-{
-    const auto symbol = NVMLRunningProcesses::chooseRunningProcessesSymbol(baseName, resolve);
-    if (symbol.address == nullptr)
-    {
-        spdlog::debug("NVMLGPUProbe: {} not available (optional)", baseName);
-        return {};
-    }
-    spdlog::debug("NVMLGPUProbe: using {} ({}-byte entries)", symbol.name, symbol.entrySize);
-    // The address came from GetProcAddress (or a test's fake export table); the cast to the known
-    // NVML signature is required.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    return {.fn = reinterpret_cast<RunningProcessesFn>(symbol.address), .entrySize = symbol.entrySize};
 }
 
 void NVMLGPUProbe::unloadNVML()
@@ -326,7 +302,6 @@ void NVMLGPUProbe::shutdownNVML()
     m_LastMemoryTotals.clear();
     m_DeviceDetails.clear();
     m_LastCounters.clear();
-    m_LastProcessCounters.clear();
 
     if (m_Initialized && m_NVML.Shutdown != nullptr)
     {
@@ -468,6 +443,18 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
                 sensors.hasPowerMetrics = succeeded(m_NVML.DeviceGetPowerUsage(device, &probeValue));
                 sensors.hasClockSpeeds = succeeded(m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue));
                 sensors.hasFanSpeed = succeeded(m_NVML.DeviceGetFanSpeed(device, &probeValue));
+                // One capability covers both video engines; a GPU with only one (an NVDEC-only card)
+                // has it, and the engine it lacks reads as unavailable each sample. Only "not
+                // supported" (or the query missing) means no engine: a transient failure such as a
+                // timeout doesn't hide the series for the session (#1111, #1112, #1485).
+                const auto engineSupported = [device, &succeeded](NVMLEngineUtilization::EngineUtilizationFn query)
+                {
+                    const auto reading = NVMLEngineUtilization::readEngineUtilization(query, device);
+                    static_cast<void>(succeeded(reading.result));
+                    return NVMLEngineUtilization::engineUtilizationSupported(reading.result);
+                };
+                sensors.hasEncoderDecoder =
+                    engineSupported(m_NVML.DeviceGetEncoderUtilization) || engineSupported(m_NVML.DeviceGetDecoderUtilization);
                 if (reset)
                 {
                     spdlog::debug("NVMLGPUProbe: NVIDIA GPU {} ({}) was lost while probing its sensors; probing again after NVML restarts",
@@ -606,6 +593,8 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.powerAvailable = false;
             counter.gpuClockAvailable = false;
             counter.memoryAvailable = false;
+            counter.encoderAvailable = false;
+            counter.decoderAvailable = false;
             if (const auto total = m_LastMemoryTotals.find(index); total != m_LastMemoryTotals.end())
             {
                 counter.memoryTotalBytes = total->second;
@@ -705,6 +694,18 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.fanSpeedMaxRaw = 100;
         }
 
+        // Video encoder/decoder utilization (#1485): NVML's percentage, averaged over its own
+        // sampling period. A missing query or a failed read is unavailable, not a real 0%.
+        const auto readEngine = [this, device](NVMLEngineUtilization::EngineUtilizationFn query, double& percent, bool& available)
+        {
+            const auto reading = NVMLEngineUtilization::readEngineUtilization(query, device);
+            static_cast<void>(noteResult(reading.result));
+            available = reading.result == NVML_SUCCESS;
+            percent = static_cast<double>(reading.percent);
+        };
+        readEngine(m_NVML.DeviceGetEncoderUtilization, counter.encoderUtilPercent, counter.encoderAvailable);
+        readEngine(m_NVML.DeviceGetDecoderUtilization, counter.decoderUtilPercent, counter.decoderAvailable);
+
         m_LastCounters.insert_or_assign(index, counter);
         counters.push_back(std::move(counter));
     }
@@ -714,111 +715,9 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
 
 std::vector<ProcessGPUCounters> NVMLGPUProbe::readProcessGPUCounters()
 {
-    std::vector<ProcessGPUCounters> allCounters;
-
-    if (!m_Initialized)
-    {
-        return allCounters;
-    }
-
-    // Check if per-process functions are available
-    const auto& computeQuery = m_NVML.DeviceGetComputeRunningProcesses;
-    const auto& graphicsQuery = m_NVML.DeviceGetGraphicsRunningProcesses;
-    if (computeQuery.fn == nullptr && graphicsQuery.fn == nullptr)
-    {
-        spdlog::debug("NVMLGPUProbe: Per-process GPU functions not available");
-        return allCounters;
-    }
-
-    // One list from one entry point, parsed by the entry size of the variant loaded (#1313). The
-    // shared query caps the count at MAX_PLAUSIBLE_PROCESS_COUNT, so a buggy/corrupted driver
-    // reporting an implausible count cannot force a huge allocation; that is logged here.
-    const auto runningProcesses = [this](const RunningProcessesQuery& query, nvmlDevice_t device, uint32_t index, std::string_view what)
-    {
-        if (query.fn == nullptr)
-        {
-            return std::vector<NVMLRunningProcesses::RunningProcess>{};
-        }
-        nvmlReturn_t lastResult = NVML_SUCCESS;
-        auto processes = NVMLRunningProcesses::queryRunningProcesses(
-            [&](unsigned int* count, void* buffer)
-            {
-                lastResult = query.fn(device, count, static_cast<nvmlProcessInfoEntries*>(buffer));
-                if (buffer == nullptr && *count > NVMLRunningProcesses::MAX_PLAUSIBLE_PROCESS_COUNT)
-                {
-                    spdlog::warn("NVMLGPUProbe: {} reported implausible count {} on GPU {}, skipping", what, *count, index);
-                }
-                return lastResult;
-            },
-            query.entrySize);
-        // A lost GPU or uninitialised NVML here restarts NVML at the next full rescan, as a counter
-        // read's does (#1294).
-        static_cast<void>(noteResult(lastResult));
-        if (lastResult != NVML_SUCCESS && lastResult != NVML_ERROR_INSUFFICIENT_SIZE && lastResult != NVML_ERROR_NOT_SUPPORTED)
-        {
-            spdlog::debug("NVMLGPUProbe: {} returned {}", what, static_cast<unsigned int>(lastResult));
-        }
-        else if (!processes.empty())
-        {
-            spdlog::debug("NVMLGPUProbe: Found {} {} entries on GPU {}", processes.size(), what, index);
-        }
-        return processes;
-    };
-
-    for (const auto& [index, device] : m_DeviceHandles)
-    {
-        if (isDeviceAsleep(index))
-        {
-            continue; // Not queried while asleep, which could wake it (#1265)
-        }
-        // Nor while idle by PDH: its last list stands (#1265).
-        if (isDeviceIdle(index))
-        {
-            if (const auto last = m_LastProcessCounters.find(index); last != m_LastProcessCounters.end())
-            {
-                allCounters.insert(allCounters.end(), last->second.begin(), last->second.end());
-                continue;
-            }
-        }
-
-        // The id of the DXGI adapter this device is (see setProcessGpuIds()), or the device's own,
-        // recorded with its handle at enumeration. Not "GPU{index}": NVML's numbering is not DXGI's,
-        // so that named another adapter (#1317). Nothing is asked of the device to name it here.
-        const auto knownId = m_DeviceIds.find(index);
-        std::string gpuId = knownId != m_DeviceIds.end() ? knownId->second : std::format("{}{}", INDEX_ID_PREFIX, index);
-        if (const auto adapterId = m_ProcessGpuIds.find(gpuId); adapterId != m_ProcessGpuIds.end())
-        {
-            gpuId = adapterId->second;
-        }
-
-        // Compute processes (CUDA, OpenCL) and graphics processes (DirectX, OpenGL, Vulkan), one
-        // row per process: the larger figure where both lists report one allocation, MIG instances
-        // summed. Memory NVML can't report counts as 0.
-        const auto compute = runningProcesses(computeQuery, device, index, "DeviceGetComputeRunningProcesses");
-        const auto graphics = runningProcesses(graphicsQuery, device, index, "DeviceGetGraphicsRunningProcesses");
-        std::vector<ProcessGPUCounters> deviceCounters;
-        for (const auto& usage : NVMLRunningProcesses::combineRunningProcesses(compute, graphics))
-        {
-            ProcessGPUCounters counter;
-            counter.pid = static_cast<std::int32_t>(usage.pid);
-            counter.gpuId = gpuId;
-            counter.gpuMemoryBytes = usage.memoryBytes;
-            if (usage.compute)
-            {
-                counter.activeEngines.emplace_back("Compute");
-            }
-            if (usage.graphics)
-            {
-                counter.activeEngines.emplace_back("3D");
-            }
-            deviceCounters.push_back(std::move(counter));
-        }
-        allCounters.insert(allCounters.end(), deviceCounters.begin(), deviceCounters.end());
-        m_LastProcessCounters.insert_or_assign(index, std::move(deviceCounters));
-    }
-
-    spdlog::debug("NVMLGPUProbe: Found {} processes using GPU", allCounters.size());
-    return allCounters;
+    // Windows takes per-process GPU data from PDH (WindowsGPUProbe::readProcessGPUCounters()), the
+    // source Task Manager uses for every vendor, so NVML's running-process lists are not read (#1480).
+    return {};
 }
 
 GPUCapabilities NVMLGPUProbe::capabilities() const
@@ -836,12 +735,12 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
     caps.hasClockSpeeds = true;
     caps.hasFanSpeed = true;
     caps.hasEngineUtilization = true;
-    // Per-process metrics available if we have the required functions
-    caps.hasPerProcessMetrics =
-        (m_NVML.DeviceGetComputeRunningProcesses.fn != nullptr || m_NVML.DeviceGetGraphicsRunningProcesses.fn != nullptr);
-    // The running-process lists give each process's memory, not its utilization (#1210).
+    // Per-process GPU data is PDH's on Windows; this probe reads none (#1480).
+    caps.hasPerProcessMetrics = false;
     caps.hasPerProcessUtilization = false;
-    caps.hasEncoderDecoder = false; // Not implemented yet
+    // When the library has either video-engine query; each device's own answer is in its
+    // sensorCapabilities (#1485).
+    caps.hasEncoderDecoder = m_NVML.DeviceGetEncoderUtilization != nullptr || m_NVML.DeviceGetDecoderUtilization != nullptr;
     caps.supportsMultiGPU = true;
 
     return caps;

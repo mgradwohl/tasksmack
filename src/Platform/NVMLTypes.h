@@ -109,7 +109,7 @@ struct nvmlUtilization_t
 /// (#1092, #1313), parsed by size in NVMLRunningProcesses.h. The library declares the parameter as
 /// a pointer to that struct; any object pointer has the same ABI, so callers that size the entries
 /// at run time pass their byte buffer through this one incomplete type. Every definition of these
-/// entry points that a probe may call (the test mock and Windows fake included) must declare its
+/// entry points that a probe may call (the test mock included) must declare its
 /// third parameter as nvmlProcessInfoEntries*, so the call matches the callee's declared type
 /// (UBSan -fsanitize=function checks it).
 struct nvmlProcessInfoEntries;

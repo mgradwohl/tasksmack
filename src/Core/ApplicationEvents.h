@@ -9,11 +9,13 @@ namespace Core
 {
 
 /// Process selection event - emitted when user selects a process in the process list
-/// Used to coordinate between ProcessesPanel and ProcessDetailsPanel without tight coupling
+/// Used to coordinate between ProcessesPanel and ProcessDetailsPanel without tight coupling.
+/// The process is named by its exact identity, PID and start time (#1503): a PID can be reused, and
+/// the uniqueKey hash of the two could collide, so neither alone tells the selected process apart.
 class ProcessSelectedEvent : public Event
 {
   public:
-    explicit ProcessSelectedEvent(std::int32_t pid, uint64_t uniqueKey = 0) : m_Pid(pid), m_UniqueKey(uniqueKey)
+    explicit ProcessSelectedEvent(std::int32_t pid, std::uint64_t startTimeTicks) : m_Pid(pid), m_StartTimeTicks(startTimeTicks)
     {}
 
     [[nodiscard]] auto getPid() const -> std::int32_t
@@ -21,21 +23,22 @@ class ProcessSelectedEvent : public Event
         return m_Pid;
     }
 
-    [[nodiscard]] auto getUniqueKey() const -> uint64_t
+    /// The process's raw start time, as Domain::ProcessSnapshot::startTimeTicks reports it.
+    [[nodiscard]] auto getStartTimeTicks() const -> std::uint64_t
     {
-        return m_UniqueKey;
+        return m_StartTimeTicks;
     }
 
     [[nodiscard]] auto toString() const -> std::string override
     {
-        return std::format("ProcessSelectedEvent: pid={}, key={}", m_Pid, m_UniqueKey);
+        return std::format("ProcessSelectedEvent: pid={}, startTimeTicks={}", m_Pid, m_StartTimeTicks);
     }
 
     EVENT_CLASS_TYPE(ProcessSelected)
 
   private:
     std::int32_t m_Pid;
-    uint64_t m_UniqueKey;
+    std::uint64_t m_StartTimeTicks;
 };
 
 /// Show-process-details request - emitted when the user asks to see a process's details from
