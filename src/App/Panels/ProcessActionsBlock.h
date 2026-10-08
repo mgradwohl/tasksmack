@@ -1,13 +1,15 @@
 #pragma once
 
 // The Overview's Actions block (#1493): the process-control buttons (ProcessActionsView) and the
-// priority control (ProcessPriorityView), under one "Actions" header beside the Identity and Runtime
-// blocks, where they had a tab of their own before. This only places the two views; their behaviour
-// -- the confirm dialog, the disabled states, the result and error lines, Apply -- is theirs.
+// priority rows (ProcessPriorityView) under one "Actions" header beside the Identity and Runtime
+// blocks, where they had a tab of their own before. One compact, left-aligned stack: the buttons on
+// one row at their labels' width, then "Priority [class] [Apply]" (and on Linux the I/O priority row),
+// then the result line. This only places the two views; their behaviour -- the confirm dialog, the
+// disabled states, the result and error lines, Apply -- is theirs.
 //
-// Where the block goes is ProcessDetailsLayout::computeActionsBlockLayout()'s decision, from the
-// widths measure() reports; render() draws it there. Neither creates a probe: the IProcessActions
-// stays owned by ProcessDetailsPanel and is passed in each frame.
+// Where the block goes is ProcessDetailsLayout::computeActionsBlockLayout()'s decision, from the width
+// measure() reports; render() draws it there. Neither creates a probe: the IProcessActions stays owned
+// by ProcessDetailsPanel and is passed in each frame.
 
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
@@ -33,19 +35,18 @@ namespace ProcessActionsBlock
            capabilities.canSetPriority || capabilities.canSetIoPriority;
 }
 
-/// Whether ProcessPriorityView draws anything: the CPU priority control, or the I/O priority one (#803).
-[[nodiscard]] constexpr bool hasPriorityControls(const Platform::ProcessActionCapabilities& capabilities) noexcept
-{
-    return capabilities.canSetPriority || capabilities.canSetIoPriority;
-}
-
-/// What the block's parts need across, in pixels, at the current font (needs an ImGui frame).
+/// What the block's rows need across, in pixels, at the current font (needs an ImGui frame).
 struct Widths
 {
-    float controls = 0.0F;  ///< The 2x2 button grid, at the buttons' unclipped width.
-    float priority = 0.0F;  ///< The priority control; 0 when hasPriorityControls() is false.
-    float columnGap = 0.0F; ///< Between the two parts when they are side by side.
-    float padding = 0.0F;   ///< The block's own horizontal padding, both sides together.
+    float buttons = 0.0F;  ///< The process-control buttons' row.
+    float priority = 0.0F; ///< The widest priority row; 0 when the platform can set neither priority.
+    float padding = 0.0F;  ///< The block's own horizontal padding, both sides together.
+
+    /// The block's width: its widest row, padded.
+    [[nodiscard]] float content() const noexcept
+    {
+        return (buttons > priority ? buttons : priority) + padding;
+    }
 };
 
 /// Measures the widths computeActionsBlockLayout() lays the block out from.
@@ -64,16 +65,14 @@ struct Context
 };
 
 /// Draws the block at the cursor: the "Actions" header, then a child @p layout.width wide holding the
-/// buttons and the priority control, side by side (the buttons @p widths.controls across) or stacked,
-/// as @p layout says. Beside the Identity and Runtime blocks (layout.besideInfo) the child is
-/// @p rowChildHeight tall, the height of theirs, and scrolls should its content ever be taller; wrapped
-/// below them it takes the height its content needs. Text in the block (the result and error lines)
-/// wraps at its edge rather than being clipped.
+/// button row, the priority row(s) and the result line, one under the other. Beside the Identity and
+/// Runtime blocks (layout.besideInfo) the child is @p rowChildHeight tall, the height of theirs, and
+/// scrolls should its content ever be taller; wrapped below them it takes the height its content
+/// needs. Text in the block (the result and error lines) wraps at its edge rather than being clipped.
 ///
-/// The buttons only: the confirm dialog is not drawn here, since the child, and all in it, is skipped
-/// while scrolled out of view. The caller submits it every frame with
-/// ProcessActionsView::renderConfirmation().
-void render(const Context& context, const Widths& widths, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight);
+/// The confirm dialog is not drawn here, since the child, and all in it, is skipped while scrolled out
+/// of view. The caller submits it every frame with ProcessActionsView::renderConfirmation().
+void render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight);
 
 } // namespace ProcessActionsBlock
 

@@ -3,6 +3,8 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessActionsView.h"
 #include "ProcessDetailsLayout.h"
+#include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "ProcessIoPriorityView.h"
 #include "ProcessPriorityView.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -11,51 +13,73 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <string>
 
 namespace App::ProcessActionsBlock
 {
 
+namespace
+{
+
+/// An Apply button as ProcessPriorityView and ProcessIoPriorityView size theirs: the label, held to
+/// their em floor.
+[[nodiscard]] float applyButtonWidth(const char* label)
+{
+    return UI::DialogMetrics::computeActionButtonWidth(
+        ImGui::CalcTextSize(label).x, ImGui::GetFontSize(), Detail::PRIORITY_APPLY_BUTTON_MIN_EM);
+}
+
+/// The priority rows ProcessPriorityView draws for @p capabilities: label, controls, Apply and, on
+/// Windows, the current class after it.
+[[nodiscard]] float priorityRowsWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    const float emPx = ImGui::GetFontSize();
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    float width = 0.0F;
+    if (capabilities.canSetPriority)
+    {
+#ifdef _WIN32
+        // Priority [class combo] [Apply] current: <class>, the class at its longest.
+        float widestCurrent = 0.0F;
+        for (const Detail::WindowsPriorityClass priorityClass : Detail::SETTABLE_WINDOWS_PRIORITY_CLASSES)
+        {
+            const std::string current = "current: " + std::string(Detail::windowsPriorityClassName(priorityClass));
+            widestCurrent = std::max(widestCurrent, ImGui::CalcTextSize(current.c_str()).x);
+        }
+        width = ImGui::CalcTextSize("Priority").x + spacing + (Detail::PRIORITY_CLASS_COMBO_WIDTH_EM * emPx) + spacing +
+                applyButtonWidth(ICON_FA_CHECK "  Apply") + spacing + widestCurrent;
+#else
+        // The gradient slider row, which fits itself to the width it is given.
+        width = ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx;
+#endif
+    }
+    if (capabilities.canSetIoPriority)
+    {
+        // I/O priority [class combo] [level] [Apply], at the controls' authored widths.
+        width = std::max(width,
+                         ImGui::CalcTextSize("I/O priority").x + spacing + Detail::ioControlsWidth(emPx, spacing, true, 1.0F) + spacing +
+                             applyButtonWidth("Apply"));
+    }
+    return width;
+}
+
+} // namespace
+
 Widths measure(const Platform::ProcessActionCapabilities& capabilities)
 {
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float emPx = ImGui::GetFontSize();
-
-    // The button grid as ProcessActionsView::renderButtons() sizes it with room to spare: two columns
-    // of the widest label's button and the gutter, with the table's one CellPadding.x a side between them.
-    float widestLabel = 0.0F;
-    for (const Detail::ActionButtonSpec& button : Detail::ACTION_BUTTONS)
-    {
-        widestLabel = std::max(widestLabel, ImGui::CalcTextSize(button.label).x);
-    }
-    const float buttonWidth =
-        UI::DialogMetrics::computeActionButtonWidth(widestLabel, emPx, ProcessDetailsLayout::ACTION_BUTTON_MIN_WIDTH_EM);
-    const float gutter = ProcessDetailsLayout::ACTION_BUTTON_GUTTER_EM * emPx;
-    const float controls = (ProcessDetailsLayout::ACTION_BUTTON_COLUMNS * (buttonWidth + gutter + style.CellPadding.x));
-
     return Widths{
-        .controls = controls,
-        .priority = hasPriorityControls(capabilities) ? ProcessDetailsLayout::ACTIONS_PRIORITY_COLUMN_WIDTH_EM * emPx : 0.0F,
-        // An unbordered table pads each side of the gap between its columns by CellPadding.x.
-        .columnGap = style.CellPadding.x * 2.0F,
-        .padding = style.WindowPadding.x * 2.0F,
+        .buttons = ProcessActionsView::buttonsRowWidth(capabilities),
+        .priority = priorityRowsWidth(capabilities),
+        .padding = ImGui::GetStyle().WindowPadding.x * 2.0F,
     };
 }
 
-void render(const Context& context, const Widths& widths, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight)
+void render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight)
 {
     if (context.actionsView == nullptr || context.priorityView == nullptr || context.processName == nullptr)
     {
         return;
     }
-
-    const auto renderControls = [&context]
-    {
-        context.actionsView->renderControls(context.capabilities, *context.processName, context.target);
-    };
-    const auto renderPriority = [&context]
-    {
-        context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
-    };
 
     ImGui::BeginGroup();
     (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Actions");
@@ -68,24 +92,9 @@ void render(const Context& context, const Widths& widths, const ProcessDetailsLa
     {
         // The result and error lines wrap at the block's edge instead of running out of it.
         ImGui::PushTextWrapPos(0.0F);
-        if (layout.columnsSideBySide && hasPriorityControls(context.capabilities) &&
-            ImGui::BeginTable("ProcessActionsBlockColumns", 2, ImGuiTableFlags_SizingFixedFit))
-        {
-            // The buttons at the width measure() gave them; the priority control takes the rest.
-            ImGui::TableSetupColumn("Controls", ImGuiTableColumnFlags_WidthFixed, widths.controls);
-            ImGui::TableSetupColumn("Priority", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            renderControls();
-            ImGui::TableNextColumn();
-            renderPriority();
-            ImGui::EndTable();
-        }
-        else
-        {
-            renderControls();
-            renderPriority();
-        }
+        context.actionsView->renderControls(context.capabilities, *context.processName, context.target);
+        context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
+        context.actionsView->renderResultLine();
         ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();

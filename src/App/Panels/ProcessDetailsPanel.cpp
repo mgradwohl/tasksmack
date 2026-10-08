@@ -608,21 +608,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ImGui::EndGroup();
 
     // Actions section: What can be done to this process? The buttons, confirm dialog and result line
-    // are ProcessActionsView's, the priority control ProcessPriorityView's (#1179); both act through
-    // m_ProcessActions, which the panel owns. A third block on this row when the pane leaves room for
-    // it, no taller than the other two so the charts keep their height; otherwise wrapped below them
-    // (#1493).
+    // are ProcessActionsView's, the priority rows ProcessPriorityView's (#1179); both act through
+    // m_ProcessActions, which the panel owns. A third block on this row, as wide as its content, when
+    // the pane leaves room for it, no taller than the other two so the charts keep their height;
+    // otherwise wrapped below them (#1493).
     if (ProcessActionsBlock::hasAnyAction(m_ActionCapabilities))
     {
         const ProcessActionsBlock::Widths actionWidths = ProcessActionsBlock::measure(m_ActionCapabilities);
-        const ProcessDetailsLayout::ActionsBlockLayout actionsLayout =
-            ProcessDetailsLayout::computeActionsBlockLayout(contentWidth,
-                                                            leftWidth + spacing + rightWidth,
-                                                            spacing,
-                                                            actionWidths.controls,
-                                                            actionWidths.priority,
-                                                            actionWidths.columnGap,
-                                                            actionWidths.padding);
+        const ProcessDetailsLayout::ActionsBlockLayout actionsLayout = ProcessDetailsLayout::computeActionsBlockLayout(
+            contentWidth, leftWidth + spacing + rightWidth, spacing, actionWidths.content());
         if (actionsLayout.besideInfo)
         {
             ImGui::SameLine();
@@ -636,7 +630,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .target = selectedTarget(),
             .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
         };
-        ProcessActionsBlock::render(actions, actionWidths, actionsLayout, std::max(leftHeight, rightHeight));
+        ProcessActionsBlock::render(actions, actionsLayout, std::max(leftHeight, rightHeight));
     }
 }
 

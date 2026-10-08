@@ -228,12 +228,7 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
         return;
     }
 
-    ImGui::Spacing();
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::Spacing();
-
+    // Rows of the Overview's Actions block (#1493), under its header: no separator or header of its own.
     if (capabilities.canSetPriority)
     {
         renderNiceControl(actions, currentNice, target);
@@ -256,13 +251,19 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     syncToProcess(currentNice);
 
 #ifdef _WIN32
-    const float controlRightEdge = renderClassCombo(currentNice.value_or(0), target);
+    // One line (#1493): Priority [class] [Apply] current: <class>.
+    const std::int32_t shownNice = currentNice.value_or(0);
+    (void) renderClassCombo(shownNice, target);
+    ImGui::SameLine();
+    renderApplyButton(actions, currentNice, target, 0.0F);
+    const std::string currentDetail =
+        "current: " + std::string(Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(shownNice)));
+    (void) UI::Widgets::trailingNote(currentDetail);
 #else
     const float controlRightEdge = renderSlider(currentNice.value_or(0), target);
-#endif
-
     ImGui::Spacing();
     renderApplyButton(actions, currentNice, target, controlRightEdge);
+#endif
 
     // Display persistent error message if priority change failed
     if (!m_Error.empty())
@@ -282,10 +283,10 @@ float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Plat
     const auto& theme = UI::Theme::get();
     const float emPx = ImGui::GetFontSize();
     const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
-    // The current class stays on the header, quieter than the title (#1200).
-    const std::string currentDetail = "current: " + currentClassName;
-    (void) UI::Widgets::sectionHeader(ICON_FA_GAUGE_HIGH, "Priority", currentDetail);
-    ImGui::Spacing();
+    // A row label, level with the combo, rather than a header: the Actions block's row (#1493).
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Priority");
+    ImGui::SameLine();
 
     const Detail::WindowsPriorityClass selectedClass = Detail::windowsPriorityClassFromNice(m_NiceValue);
     const std::string selectedClassName{Detail::windowsPriorityClassName(selectedClass)};
@@ -310,9 +311,10 @@ float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Plat
     }
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("Windows priority class: higher classes get CPU time first.\n"
+        ImGui::SetTooltip("Windows priority class (current: %s): higher classes get CPU time first.\n"
                           "Realtime cannot be set here.\n\n"
-                          "Note: Changing another user's or an elevated process typically requires administrator privileges");
+                          "Note: Changing another user's or an elevated process typically requires administrator privileges",
+                          currentClassName.c_str());
     }
     if (selectedClass == Detail::WindowsPriorityClass::Realtime)
     {
@@ -327,10 +329,12 @@ float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform
     const auto& theme = UI::Theme::get();
     const float emPx = ImGui::GetFontSize();
 
-    // The current nice value stays on the header, quieter than the title (#1200).
+    // A row label and the current nice value, quieter, rather than a header: the Actions block's
+    // row (#1493).
     const std::string currentDetail = "current nice: " + std::to_string(currentNice);
-    (void) UI::Widgets::sectionHeader(ICON_FA_GAUGE_HIGH, "Priority", currentDetail);
-    ImGui::Spacing();
+    ImGui::TextUnformatted("Priority");
+    ImGui::SameLine();
+    ImGui::TextColored(theme.scheme().textMuted, "%s", currentDetail.c_str());
 
     auto* drawList = ImGui::GetWindowDrawList();
     const ImGuiStyle& style = ImGui::GetStyle();

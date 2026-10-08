@@ -78,72 +78,43 @@ TEST(ProcessDetailsLayoutTest, SurvivesDegenerateInput)
     }
 }
 
-// ========== Process-control button width (#949) ==========
+// ========== Process-control buttons (#949, #1493) ==========
 
-using ProcessDetailsLayout::ACTION_BUTTON_MIN_WIDTH_EM;
+using ProcessDetailsLayout::computeActionButtonRowWidth;
 using ProcessDetailsLayout::computeActionButtonWidth;
 
-// The floor reproduces the old fixed 180px at the reference em, so the buttons are unchanged at
-// the Medium preset on an unscaled display.
-TEST(ProcessDetailsLayoutTest, ActionButtonIsUnchangedAtReferenceEm)
+// The #1493 look: each button as wide as the widest label shown, padded, not a 180px floor or half the
+// block -- so Terminate and Kill sit side by side at their natural width.
+TEST(ProcessDetailsLayoutTest, ActionButtonIsItsWidestLabelPadded)
 {
-    // A label of ~90px (" Terminate" with its icon at Medium) is well under the floor.
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1256.0F, 16.0F), 180.0F);
-    EXPECT_FLOAT_EQ(ACTION_BUTTON_MIN_WIDTH_EM * REFERENCE_EM_PX, 180.0F);
-}
-
-// The #949 defect: 180px at every font. The width now tracks the em.
-TEST(ProcessDetailsLayoutTest, ActionButtonScalesWithTheFont)
-{
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(180.0F, REFERENCE_EM_PX * 2.0F, 2800.0F, 32.0F), 360.0F);
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(68.0F, 8.0F, 2800.0F, 12.0F), 135.0F);
-}
-
-// A label wider than the floor allows (a longer translation, say) widens all four buttons rather
-// than being clipped.
-TEST(ProcessDetailsLayoutTest, ActionButtonGrowsForAWideLabel)
-{
-    // 200px label + 1 em padding each side at a 10px em = 220px, above the 168.75px floor.
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(200.0F, 10.0F, 2800.0F, 16.0F), 220.0F);
-}
-
-// The content area does not scroll horizontally, so both columns must fit the pane: at Even Huger
-// in a 330px window the second column (Kill, Resume) was clipped out of reach.
-TEST(ProcessDetailsLayoutTest, ActionButtonsBothFitANarrowPane)
-{
-    const float pane = 306.0F;
-    const float overhead = 32.0F;
-    const float width = computeActionButtonWidth(180.0F, REFERENCE_EM_PX * 2.0F, pane, overhead);
-
-    EXPECT_LE(2.0F * (width + overhead), pane);
-    EXPECT_FLOAT_EQ(width, 121.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(70.0F, 8.0F), 86.0F);
+    // It tracks the font through the label and the padding.
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(140.0F, 16.0F), 172.0F);
 }
 
 TEST(ProcessDetailsLayoutTest, ActionButtonWidthIsWholePixels)
 {
-    const float width = computeActionButtonWidth(90.0F, 13.37F, 501.5F, 17.25F);
-    EXPECT_FLOAT_EQ(width, std::floor(width));
+    const float width = computeActionButtonWidth(90.37F, 4.5F);
+    EXPECT_FLOAT_EQ(width, std::ceil(width));
+    EXPECT_GE(width, 90.37F + 9.0F);
 }
 
-TEST(ProcessDetailsLayoutTest, ActionButtonNeverCollapsesToNothing)
+TEST(ProcessDetailsLayoutTest, ActionButtonRowIsTheButtonsAndTheGapsBetweenThem)
 {
-    EXPECT_GE(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 10.0F, 16.0F), 1.0F);
-    EXPECT_GE(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1.0F, 500.0F), 1.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonRowWidth(86.0F, 2, 8.0F), 180.0F); // Terminate and Kill (Windows)
+    EXPECT_FLOAT_EQ(computeActionButtonRowWidth(86.0F, 4, 8.0F), 368.0F); // and Suspend and Resume (Linux)
+    EXPECT_FLOAT_EQ(computeActionButtonRowWidth(86.0F, 1, 8.0F), 86.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonRowWidth(86.0F, 0, 8.0F), 0.0F); // No action: no row
 }
 
-TEST(ProcessDetailsLayoutTest, ActionButtonSurvivesDegenerateInput)
+TEST(ProcessDetailsLayoutTest, ActionButtonsSurviveDegenerateInput)
 {
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float inf = std::numeric_limits<float>::infinity();
-
-    // Unusable pane width: uncapped.
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 0.0F, 16.0F), 180.0F);
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, nan, 16.0F), 180.0F);
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, inf, 16.0F), 180.0F);
-
-    // Unusable overhead: treated as none.
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1256.0F, nan), 180.0F);
-    EXPECT_FLOAT_EQ(computeActionButtonWidth(90.0F, REFERENCE_EM_PX, 1256.0F, -8.0F), 180.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(nan, 8.0F), 16.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(70.0F, -1.0F), 70.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonWidth(inf, inf), 0.0F);
+    EXPECT_FLOAT_EQ(computeActionButtonRowWidth(nan, 2, nan), 0.0F);
 }
 
 // ========== Selected-process identity (#927) ==========
@@ -260,64 +231,44 @@ TEST(ProcessDetailsLayoutTest, ConfirmSizingSurvivesDegenerateInput)
     EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 20.0F, 28.0F), 0.0F); // budget smaller than the spacing
     EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 800.0F, nan), 400.0F);
 }
-// The Overview's Actions block (#1493). Widths as at the reference em: two buttons of 384px with their
-// gutters, a 277px priority column, an 8px gap and 16px of padding make a 685px block.
-constexpr float ACTIONS_CONTROLS = 384.0F;
-constexpr float ACTIONS_PRIORITY = 277.0F;
-constexpr float ACTIONS_GAP = 8.0F;
-constexpr float ACTIONS_PADDING = 16.0F;
-constexpr float ACTIONS_SIDE_BY_SIDE = ACTIONS_CONTROLS + ACTIONS_GAP + ACTIONS_PRIORITY + ACTIONS_PADDING; // 685
+// The Overview's Actions block (#1493): one stack of rows, as wide as its widest row. The Windows
+// block at the reference em: Priority [class] [Apply] current: Below Normal is about 430px, padded 16.
+constexpr float ACTIONS_CONTENT = 446.0F;
 constexpr float INFO_ROW = 776.0F; // Identity and Runtime at their 384px cap, 8px apart
 constexpr float SPACING = 8.0F;
 
-[[nodiscard]] ProcessDetailsLayout::ActionsBlockLayout actionsLayoutIn(float paneWidth, float priority = ACTIONS_PRIORITY)
+[[nodiscard]] ProcessDetailsLayout::ActionsBlockLayout actionsLayoutIn(float paneWidth, float content = ACTIONS_CONTENT)
 {
-    return ProcessDetailsLayout::computeActionsBlockLayout(
-        paneWidth, INFO_ROW, SPACING, ACTIONS_CONTROLS, priority, ACTIONS_GAP, ACTIONS_PADDING);
+    return ProcessDetailsLayout::computeActionsBlockLayout(paneWidth, INFO_ROW, SPACING, content);
 }
 
-// The issue's window: a wide pane leaves room to the right of Identity and Runtime, and the block takes it.
-TEST(ProcessDetailsLayoutTest, ActionsBlockSitsBesideIdentityAndRuntimeWhenThereIsRoom)
+// The issue's window: a wide pane leaves room to the right of Identity and Runtime, and the block takes
+// its content's width there -- not a share of the pane.
+TEST(ProcessDetailsLayoutTest, ActionsBlockSitsBesideIdentityAndRuntimeAtItsContentWidth)
 {
     const auto layout = actionsLayoutIn(1900.0F);
     EXPECT_TRUE(layout.besideInfo);
-    EXPECT_TRUE(layout.columnsSideBySide);
-    EXPECT_FLOAT_EQ(layout.width, ACTIONS_SIDE_BY_SIDE);
+    EXPECT_FLOAT_EQ(layout.width, ACTIONS_CONTENT);
+    EXPECT_FLOAT_EQ(actionsLayoutIn(4000.0F).width, ACTIONS_CONTENT); // More room changes nothing
 }
 
-// Exactly enough room still counts as room; a pixel less wraps it.
+// Exactly enough room still counts as room; a pixel less wraps it, still at its content width.
 TEST(ProcessDetailsLayoutTest, ActionsBlockWrapsAtTheFirstPixelItWouldNotFit)
 {
-    const float exact = INFO_ROW + SPACING + ACTIONS_SIDE_BY_SIDE;
+    const float exact = INFO_ROW + SPACING + ACTIONS_CONTENT;
     EXPECT_TRUE(actionsLayoutIn(exact).besideInfo);
     const auto wrapped = actionsLayoutIn(exact - 1.0F);
     EXPECT_FALSE(wrapped.besideInfo);
-    EXPECT_TRUE(wrapped.columnsSideBySide); // Still room for its parts side by side on a row of its own
-    EXPECT_FLOAT_EQ(wrapped.width, ACTIONS_SIDE_BY_SIDE);
+    EXPECT_FLOAT_EQ(wrapped.width, ACTIONS_CONTENT);
 }
 
-// A pane too narrow even for the side-by-side block stacks the priority control under the buttons and
-// holds the block to the pane, so no part of it is clipped off to the right.
-TEST(ProcessDetailsLayoutTest, ActionsBlockStacksAndFitsTheNarrowestPane)
+// Wrapped in a pane narrower than its content, the block is held to the pane, so nothing in it runs
+// out of reach to the right (the button row wraps inside it).
+TEST(ProcessDetailsLayoutTest, ActionsBlockIsHeldToANarrowPane)
 {
-    const auto stacked = actionsLayoutIn(500.0F);
-    EXPECT_FALSE(stacked.besideInfo);
-    EXPECT_FALSE(stacked.columnsSideBySide);
-    EXPECT_FLOAT_EQ(stacked.width, ACTIONS_CONTROLS + ACTIONS_PADDING); // The wider part, padded
-
-    const auto tiny = actionsLayoutIn(300.0F);
-    EXPECT_FALSE(tiny.columnsSideBySide);
-    EXPECT_FLOAT_EQ(tiny.width, 300.0F);
-}
-
-// Without the priority control (no capability) there is no column gap either, and the buttons alone
-// fit beside the row sooner.
-TEST(ProcessDetailsLayoutTest, ActionsBlockWithoutPriorityIsJustTheButtons)
-{
-    const float buttonsOnly = ACTIONS_CONTROLS + ACTIONS_PADDING;
-    const auto layout = actionsLayoutIn(INFO_ROW + SPACING + buttonsOnly, 0.0F);
-    EXPECT_TRUE(layout.besideInfo);
-    EXPECT_FLOAT_EQ(layout.width, buttonsOnly);
+    const auto layout = actionsLayoutIn(300.0F);
+    EXPECT_FALSE(layout.besideInfo);
+    EXPECT_FLOAT_EQ(layout.width, 300.0F);
 }
 
 // An unknown pane width (no frame yet) is unconstrained, like the helpers above; negative or non-finite
@@ -326,17 +277,11 @@ TEST(ProcessDetailsLayoutTest, ActionsBlockSurvivesDegenerateInput)
 {
     const auto unknown = actionsLayoutIn(std::numeric_limits<float>::quiet_NaN());
     EXPECT_TRUE(unknown.besideInfo);
-    EXPECT_TRUE(unknown.columnsSideBySide);
-    EXPECT_FLOAT_EQ(unknown.width, ACTIONS_SIDE_BY_SIDE);
+    EXPECT_FLOAT_EQ(unknown.width, ACTIONS_CONTENT);
     EXPECT_TRUE(actionsLayoutIn(0.0F).besideInfo);
 
-    const auto garbage = ProcessDetailsLayout::computeActionsBlockLayout(1000.0F,
-                                                                         std::numeric_limits<float>::infinity(),
-                                                                         -5.0F,
-                                                                         std::numeric_limits<float>::quiet_NaN(),
-                                                                         -1.0F,
-                                                                         std::numeric_limits<float>::quiet_NaN(),
-                                                                         -1.0F);
+    const auto garbage = ProcessDetailsLayout::computeActionsBlockLayout(
+        1000.0F, std::numeric_limits<float>::infinity(), -5.0F, std::numeric_limits<float>::quiet_NaN());
     EXPECT_FALSE(std::isnan(garbage.width));
     EXPECT_FLOAT_EQ(garbage.width, 0.0F);
 }

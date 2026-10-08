@@ -1,7 +1,8 @@
 /// @file test_ProcessActionsBlockRender.cpp
-/// @brief The Overview's Actions block (#1493), headless: beside Identity and Runtime it is exactly as
-/// tall as their row, wrapped below them it is as tall as its content, side by side it is shorter than
-/// stacked, and the shared confirm dialog still opens from it, acting on nothing until confirmed.
+/// @brief The Overview's Actions block (#1493), headless: one compact stack as wide as its widest row
+/// -- the buttons at their labels' width, then the priority row(s) -- exactly as tall as the
+/// Identity/Runtime row beside it and as tall as its content wrapped below it, held to a narrow pane,
+/// and the shared confirm dialog still opens for it, acting on nothing until confirmed.
 
 #include "App/Panels/ProcessActionsBlock.h"
 #include "App/Panels/ProcessActionsView.h"
@@ -15,6 +16,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // The block's child window, for its size, and the open modal
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -124,19 +126,14 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
         const auto body = [&]
         {
             const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(capabilities);
-            layout = ProcessDetailsLayout::computeActionsBlockLayout(paneWidth,
-                                                                     infoRowWidth,
-                                                                     ImGui::GetStyle().ItemSpacing.x,
-                                                                     widths.controls,
-                                                                     widths.priority,
-                                                                     widths.columnGap,
-                                                                     widths.padding);
+            layout =
+                ProcessDetailsLayout::computeActionsBlockLayout(paneWidth, infoRowWidth, ImGui::GetStyle().ItemSpacing.x, widths.content());
             const float height = rowChildHeight(infoRows);
             if (childHeight != nullptr)
             {
                 *childHeight = height;
             }
-            ProcessActionsBlock::render(h.context(capabilities), widths, layout, height);
+            ProcessActionsBlock::render(h.context(capabilities), layout, height);
         };
         (void) runFrame(body);
         (void) runFrame(body);
@@ -147,69 +144,73 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
     ImGuiContext* m_Context = nullptr;
 };
 
-TEST_F(ProcessActionsBlockRenderTest, MeasureLeavesNoPriorityColumnWithoutTheCapability)
+TEST_F(ProcessActionsBlockRenderTest, TheButtonsAreAsWideAsTheirLabelsNotAShareOfTheBlock)
 {
-    float withPriority = 0.0F;
+    // The maintainer's #1511 review: Terminate and Kill were stretched to half the block each. They are
+    // now equal at the wider label's natural width, side by side with the normal spacing.
+    float buttons = 0.0F;
+    float expected = 0.0F;
     float withoutPriority = 0.0F;
     float withIoPriorityOnly = 0.0F;
-    float controls = 0.0F;
-    float emPx = 0.0F;
     (void) runFrame(
         [&]
         {
-            emPx = ImGui::GetFontSize();
-            withPriority = ProcessActionsBlock::measure(ALL_ACTIONS).priority;
+            buttons = ProcessActionsBlock::measure(NO_PRIORITY).buttons;
+            const float widest = std::max(ImGui::CalcTextSize(Detail::ACTION_BUTTONS.at(0).label).x,
+                                          ImGui::CalcTextSize(Detail::ACTION_BUTTONS.at(1).label).x);
+            expected = ProcessDetailsLayout::computeActionButtonRowWidth(
+                ProcessDetailsLayout::computeActionButtonWidth(widest, ImGui::GetStyle().FramePadding.x),
+                2,
+                ImGui::GetStyle().ItemSpacing.x);
             withoutPriority = ProcessActionsBlock::measure(NO_PRIORITY).priority;
             Platform::ProcessActionCapabilities ioOnly = NO_PRIORITY;
             ioOnly.canSetIoPriority = true;
             withIoPriorityOnly = ProcessActionsBlock::measure(ioOnly).priority;
-            controls = ProcessActionsBlock::measure(ALL_ACTIONS).controls;
         });
-    EXPECT_FLOAT_EQ(withPriority, ProcessDetailsLayout::ACTIONS_PRIORITY_COLUMN_WIDTH_EM * emPx);
+    EXPECT_FLOAT_EQ(buttons, expected);
     EXPECT_FLOAT_EQ(withoutPriority, 0.0F);
-    // ProcessPriorityView also draws the I/O priority control on its own (#803), so it gets the column.
-    EXPECT_FLOAT_EQ(withIoPriorityOnly, withPriority);
-    // Two buttons at least their em floor each.
-    EXPECT_GE(controls, 2.0F * ProcessDetailsLayout::ACTION_BUTTON_MIN_WIDTH_EM * emPx);
+    // ProcessPriorityView also draws the I/O priority row on its own (#803), so it is measured.
+    EXPECT_GT(withIoPriorityOnly, 0.0F);
 }
 
-TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheBlockIsExactlyTheRowsHeight)
+TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheBlockIsTheRowsHeightAndItsContentsWidth)
 {
     Harness h;
     float childHeight = 0.0F;
-    const auto layout = renderBlock(h, ALL_ACTIONS, 1600.0F, 600.0F, 6.0F, &childHeight);
+    const auto layout = renderBlock(h, ALL_ACTIONS, 1900.0F, 776.0F, 6.0F, &childHeight);
     ASSERT_TRUE(layout.besideInfo);
-    ASSERT_TRUE(layout.columnsSideBySide);
 
     const ImGuiWindow* block = blockWindow();
     ASSERT_NE(block, nullptr);
     EXPECT_FLOAT_EQ(block->Size.y, childHeight);
     EXPECT_NEAR(block->Size.x, layout.width, 1.0F); // ImGui rounds a window's size to whole pixels
+    // Nothing in it is wider than the block allows: no stretched buttons, no row running out of it.
+    EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
 }
 
 #ifdef _WIN32
-TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockFitsTheRowWithoutScrolling)
+TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockIsTwoRowsAndFitsTheRowWithoutScrolling)
 {
-    // Windows' actions -- Terminate, Kill and the priority-class combo -- side by side fit in the
-    // Identity/Runtime row, so the block shows whole beside it. The row is six rows tall on Windows:
-    // Runtime always has its Type row there. (Linux's priority slider, with its value badge, is taller
-    // and may scroll.)
+    // Windows' actions: [Terminate] [Kill], then Priority [class] [Apply] -- two framed rows, no
+    // separator or header of the priority control's own -- well inside the six-row Identity/Runtime
+    // row (Runtime always has its Type row on Windows).
     constexpr Platform::ProcessActionCapabilities WINDOWS_ACTIONS{
         .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = true};
     Harness h;
-    (void) renderBlock(h, WINDOWS_ACTIONS, 1600.0F, 600.0F, 6.0F);
+    (void) renderBlock(h, WINDOWS_ACTIONS, 1900.0F, 776.0F, 6.0F);
 
     const ImGuiWindow* block = blockWindow();
     ASSERT_NE(block, nullptr);
     EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
+    EXPECT_LE(block->ContentSize.y, (2.0F * ImGui::GetFrameHeightWithSpacing()) + 1.0F);
 }
 #endif
 
 TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheBlockTakesItsContentHeight)
 {
     Harness h;
-    // A pane too narrow for a third block beside a 600px row, but wide enough for its parts side by side.
-    const auto layout = renderBlock(h, ALL_ACTIONS, 1000.0F, 600.0F, 0.0F);
+    // A pane too narrow for a third block beside a 776px row.
+    const auto layout = renderBlock(h, ALL_ACTIONS, 1000.0F, 776.0F, 0.0F);
     ASSERT_FALSE(layout.besideInfo);
 
     const ImGuiWindow* block = blockWindow();
@@ -217,27 +218,22 @@ TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheBlockTakesItsContentH
     // Not the empty row's height it was handed: as tall as its content, with nothing to scroll.
     EXPECT_GT(block->Size.y, rowChildHeight(0.0F));
     EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
+    // Still its content's width, left-aligned, not the pane's.
+    EXPECT_LT(block->Size.x, 1000.0F);
 }
 
-TEST_F(ProcessActionsBlockRenderTest, SideBySideIsShorterThanStacked)
+TEST_F(ProcessActionsBlockRenderTest, InANarrowPaneTheBlockIsHeldToItAndTheButtonsWrap)
 {
-    // The reason the block can sit beside Identity and Runtime at all: its two parts side by side
-    // need less height than one above the other.
-    Harness wide;
-    const auto sideBySide = renderBlock(wide, ALL_ACTIONS, 1000.0F, 600.0F, 0.0F);
-    ASSERT_TRUE(sideBySide.columnsSideBySide);
+    Harness h;
+    const auto layout = renderBlock(h, NO_PRIORITY, 120.0F, 776.0F, 0.0F);
+    ASSERT_FALSE(layout.besideInfo);
+
     const ImGuiWindow* block = blockWindow();
     ASSERT_NE(block, nullptr);
-    const float sideBySideHeight = block->ContentSize.y;
-
-    Harness narrow;
-    const auto stacked = renderBlock(narrow, ALL_ACTIONS, 420.0F, 600.0F, 0.0F);
-    ASSERT_FALSE(stacked.columnsSideBySide);
-    block = blockWindow();
-    ASSERT_NE(block, nullptr);
-    EXPECT_GT(block->ContentSize.y, sideBySideHeight);
-    // Held to the pane, so nothing in it is out of reach to the right.
-    EXPECT_LE(block->Size.x, 420.0F);
+    EXPECT_LE(block->Size.x, 120.0F);
+    // Kill went to a row of its own rather than being clipped off the right edge.
+    EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
+    EXPECT_GT(block->ContentSize.y, ImGui::GetFrameHeightWithSpacing());
 }
 
 TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndActsOnNothingYet)
@@ -249,9 +245,9 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndAc
     const auto body = [&]
     {
         const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(ALL_ACTIONS);
-        const auto layout = ProcessDetailsLayout::computeActionsBlockLayout(
-            1600.0F, 600.0F, ImGui::GetStyle().ItemSpacing.x, widths.controls, widths.priority, widths.columnGap, widths.padding);
-        ProcessActionsBlock::render(h.context(ALL_ACTIONS), widths, layout, rowChildHeight(6.0F));
+        const auto layout =
+            ProcessDetailsLayout::computeActionsBlockLayout(1600.0F, 600.0F, ImGui::GetStyle().ItemSpacing.x, widths.content());
+        ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
         // As ProcessDetailsPanel does: the dialog from panel scope, every frame.
         h.actionsView.renderConfirmation(&h.mock, TARGET);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
@@ -286,9 +282,9 @@ TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheBlockIsScroll
         ImGui::BeginChild("##OverviewContent", ImVec2(1000.0F, 100.0F));
         ImGui::Dummy(ImVec2(10.0F, 2000.0F));
         const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(ALL_ACTIONS);
-        const auto layout = ProcessDetailsLayout::computeActionsBlockLayout(
-            1000.0F, 0.0F, ImGui::GetStyle().ItemSpacing.x, widths.controls, widths.priority, widths.columnGap, widths.padding);
-        ProcessActionsBlock::render(h.context(ALL_ACTIONS), widths, layout, rowChildHeight(6.0F));
+        const auto layout =
+            ProcessDetailsLayout::computeActionsBlockLayout(1000.0F, 0.0F, ImGui::GetStyle().ItemSpacing.x, widths.content());
+        ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
         const ImGuiWindow* block = blockWindow();
         blockSkipped = block == nullptr || block->SkipItems;
         ImGui::EndChild();

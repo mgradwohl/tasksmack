@@ -105,7 +105,6 @@ TEST(ProcessActionsViewTest, ButtonsAreInGridOrderWithTheirLabels)
         EXPECT_TRUE(std::string_view(button.label).ends_with(Detail::actionLabel(button.action)));
         EXPECT_FALSE(std::string_view(button.tooltip).empty());
     }
-    EXPECT_EQ(Detail::ACTION_BUTTON_GRID_COLUMNS, 2U);
 }
 
 // --- Confirm request ---------------------------------------------------------------------------------
