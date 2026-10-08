@@ -1633,12 +1633,18 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
     good.gpuClockMHz = 1500;
     good.memoryUsedBytes = 2ULL * 1024 * 1024 * 1024;
     good.memoryTotalBytes = 8ULL * 1024 * 1024 * 1024;
+    good.encoderUtilPercent = 30.0;
+    good.decoderUtilPercent = 12.0;
     rawProbe->withGPUCounters("GPU0", good);
 
     Domain::GPUModel model(std::move(probe));
     model.refresh();
 
     Platform::GPUCounters failed = good;
+    failed.encoderAvailable = false; // #1477
+    failed.decoderAvailable = false;
+    failed.encoderUtilPercent = 0.0;
+    failed.decoderUtilPercent = 0.0;
     failed.utilizationAvailable = false;
     failed.temperatureAvailable = false;
     failed.powerAvailable = false;
@@ -1657,7 +1663,9 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
                                publishedHistory(model, "GPU0").temperature,
                                publishedHistory(model, "GPU0").power,
                                publishedHistory(model, "GPU0").gpuClock,
-                               publishedHistory(model, "GPU0").memoryPercent})
+                               publishedHistory(model, "GPU0").memoryPercent,
+                               publishedHistory(model, "GPU0").encoder,
+                               publishedHistory(model, "GPU0").decoder})
     {
         ASSERT_EQ(series.size(), 2U);
         EXPECT_FALSE(std::isnan(series[0]));
@@ -1683,6 +1691,8 @@ TEST(GPUModelTest, FailedSensorReadsPublishGapsNotZeros)
     EXPECT_FALSE(snaps[0].utilizationAvailable);
     EXPECT_FALSE(snaps[0].temperatureAvailable);
     EXPECT_FALSE(snaps[0].memoryAvailable);
+    EXPECT_FALSE(snaps[0].encoderAvailable);
+    EXPECT_FALSE(snaps[0].decoderAvailable);
 }
 
 TEST(GPUModelTest, ZeroGpuClockIsAGapLikeItsNowBar)

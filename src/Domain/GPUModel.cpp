@@ -139,8 +139,8 @@ GPUModel::HistorySample GPUModel::historySample(const GPUSnapshot& sample) noexc
         .utilization = readingOrNaN(sample, sample.utilizationPercent, sample.utilizationAvailable),
         .memoryPercent = readingOrNaN(sample, sample.memoryUsedPercent, sample.memoryAvailable),
         .gpuClock = gpuClockOrNaN(sample),
-        .encoder = sampleOrNaN(sample, sample.encoderUtilPercent),
-        .decoder = sampleOrNaN(sample, sample.decoderUtilPercent),
+        .encoder = readingOrNaN(sample, sample.encoderUtilPercent, sample.encoderAvailable),
+        .decoder = readingOrNaN(sample, sample.decoderUtilPercent, sample.decoderAvailable),
         .temperature = readingOrNaN(sample, sample.temperatureC, sample.temperatureAvailable),
         .power = readingOrNaN(sample, sample.powerDrawWatts, sample.powerAvailable),
         .fanSpeed = fanSpeedOrNaN(sample),
@@ -805,6 +805,8 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.powerAvailable = current.powerAvailable;
     snapshot.gpuClockAvailable = current.gpuClockAvailable;
     snapshot.memoryAvailable = current.memoryAvailable;
+    snapshot.encoderAvailable = current.encoderAvailable;
+    snapshot.decoderAvailable = current.decoderAvailable;
     snapshot.suspended = current.suspended;
     snapshot.utilizationPercent = current.utilizationPercent;
     snapshot.memoryUsedBytes = current.memoryUsedBytes;
