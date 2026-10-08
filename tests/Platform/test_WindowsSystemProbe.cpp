@@ -14,6 +14,16 @@
 #include <cstdint>
 #include <thread>
 
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// clang-format on
+
 namespace Platform
 {
 namespace
@@ -41,6 +51,33 @@ TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasSwap);
     EXPECT_TRUE(caps.hasUptime);
     EXPECT_FALSE(caps.hasLoadAvg);
+}
+
+TEST(WindowsSystemProbeTest, CpuClockIsTheBaseClockScaledByProcessorPerformance)
+{
+    // The current clock (#1184): the registry's base ~MHz scaled by "% Processor Performance", so it
+    // stays within the range turbo and power saving can take it, and never reads 0 once the base is known.
+    DWORD baseMHz = 0;
+    DWORD dataSize = sizeof(baseMHz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &baseMHz,
+                     &dataSize) != ERROR_SUCCESS ||
+        baseMHz == 0)
+    {
+        GTEST_SKIP() << "no ~MHz base clock in the registry";
+    }
+
+    WindowsSystemProbe probe;
+    EXPECT_TRUE(probe.capabilities().hasCpuFreq);
+    (void) probe.read();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    const auto counters = probe.read();
+    EXPECT_GT(counters.cpuFreqMHz, 0U);
+    EXPECT_LE(counters.cpuFreqMHz, std::uint64_t{baseMHz} * 10U);
 }
 
 TEST(WindowsSystemProbeTest, TicksPerSecondMatchesFileTime)

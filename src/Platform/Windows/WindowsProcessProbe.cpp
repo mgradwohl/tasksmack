@@ -919,9 +919,17 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         counters.startTimeTicks = static_cast<std::uint64_t>(info->createTime.QuadPart);
         counters.startTimeEpoch = ticksToUnixEpoch(counters.startTimeTicks);
 
-        counters.rssBytes = info->workingSetSize;
-        counters.peakRssBytes = info->peakWorkingSetSize;
-        counters.virtualBytes = info->virtualSize;
+        // Memory is the private working set and Virtual the commit size, as Task Manager shows them (#1184)
+        const WindowsProcessMemory memory = windowsProcessMemory({
+            .workingSetPrivateSize = info->workingSetPrivateSize.QuadPart,
+            .workingSetSize = info->workingSetSize,
+            .peakWorkingSetSize = info->peakWorkingSetSize,
+            .virtualSize = info->virtualSize,
+            .pagefileUsage = info->pagefileUsage,
+        });
+        counters.rssBytes = memory.rssBytes;
+        counters.peakRssBytes = memory.peakRssBytes;
+        counters.virtualBytes = memory.virtualBytes;
         counters.pageFaultCount = Domain::Numeric::narrowOr<std::uint64_t>(info->pageFaultCount, std::uint64_t{0});
 
         // Safe and necessary: cumulative transfer counts are non-negative; LARGE_INTEGER is signed.
@@ -1266,9 +1274,11 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasPageFaults = true,  // From the SystemProcessInformation snapshot
         .hasPeakRss = true,     // From the SystemProcessInformation snapshot (PeakWorkingSetSize)
         .hasCpuAffinity = true, // From GetProcessAffinityMask, per processor group (#1247)
-        // Network counters: Requires ETW (Event Tracing for Windows) or GetPerTcpConnectionEStats
-        // See GitHub issue for implementation tracking
+        // Network counters: TCP EStats (GetPerTcpConnectionEStats), which needs Administrator
         .hasNetworkCounters = hasNetworkCounters,
+        // TCP only: Windows has no user-mode per-process UDP byte counters; only a kernel ETW
+        // session could attribute UDP, and that is deferred (#1258).
+        .hasUdpNetworkCounters = false,
         // Not measured on Windows. A fabricated figure (a fixed 1 J per sample shared out by CPU
         // time) used to stand in for it, which read ~2 W regardless of load and depended only on
         // the refresh rate (#1028). Real per-process energy needs the EMI energy meters or ETW.

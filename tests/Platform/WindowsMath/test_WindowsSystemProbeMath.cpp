@@ -1,6 +1,6 @@
 /// @file test_WindowsSystemProbeMath.cpp
 /// @brief Unit tests for WindowsSystemProbeMath.h's pure page-file, CPU-time and network-total math,
-/// and its network-interface classification (#1284)
+/// its network-interface classification (#1284) and the current CPU clock (#1184)
 ///
 /// WindowsSystemProbeMath.h includes no Windows header, so these tests build and run on every
 /// platform, including Linux CI's sanitizer and coverage jobs (#1133). Tests that need the real
@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <span>
 #include <vector>
@@ -461,6 +462,50 @@ TEST(WindowsSystemProbeMathTest, TotalOfNoInterfacesIsZero)
     const auto totals = sumCountedInterfaces({});
     EXPECT_EQ(totals.rxBytes, 0U);
     EXPECT_EQ(totals.txBytes, 0U);
+}
+
+// =============================================================================
+// currentCpuFrequencyMHz: the current clock, as Task Manager's "Speed" (#1184)
+// =============================================================================
+
+TEST(CurrentCpuFrequencyTest, ScalesTheBaseClockByProcessorPerformance)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(3000, 50.0), 1500U);  // Power saving
+    EXPECT_EQ(currentCpuFrequencyMHz(3000, 100.0), 3000U); // At base
+}
+
+TEST(CurrentCpuFrequencyTest, TurboReadsAboveTheBaseClock)
+{
+    // A 2 GHz part boosting to 5.5 GHz reads 275 %; the old registry-only figure stayed at 2000.
+    EXPECT_EQ(currentCpuFrequencyMHz(2000, 275.0), 5500U);
+}
+
+TEST(CurrentCpuFrequencyTest, RoundsToTheNearestMHz)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(2995, 112.34), 3365U); // 3364.583
+    EXPECT_EQ(currentCpuFrequencyMHz(1000, 0.04), 0U);      // 0.4 MHz
+}
+
+TEST(CurrentCpuFrequencyTest, NoReadingYetGivesTheBaseClock)
+{
+    // PDH needs two collections for a rate; until then (or without PDH) the base clock stands in.
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, std::nullopt), 3600U);
+}
+
+TEST(CurrentCpuFrequencyTest, UnusableReadingsGiveTheBaseClock)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, 0.0), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, -5.0), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, std::numeric_limits<double>::quiet_NaN()), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, std::numeric_limits<double>::infinity()), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(3600, MAX_PROCESSOR_PERFORMANCE_PERCENT + 1.0), 3600U);
+    EXPECT_EQ(currentCpuFrequencyMHz(1000, MAX_PROCESSOR_PERFORMANCE_PERCENT), 10000U);
+}
+
+TEST(CurrentCpuFrequencyTest, UnknownBaseClockStaysUnknown)
+{
+    EXPECT_EQ(currentCpuFrequencyMHz(0, 150.0), 0U);
+    EXPECT_EQ(currentCpuFrequencyMHz(0, std::nullopt), 0U);
 }
 
 } // namespace Platform

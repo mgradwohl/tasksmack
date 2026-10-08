@@ -48,9 +48,14 @@ struct ProcessCounters
     std::uint64_t systemTime = 0;
 
     // Memory (bytes)
+    // The Memory column (#1184). Linux: VmRSS, the resident set, shared pages included. Windows: the
+    // private working set, Task Manager's default "Memory (private working set)".
     std::uint64_t rssBytes = 0;
     std::uint64_t peakRssBytes = 0; // OS-reported peak resident size, 0 = unknown (Linux: VmHWM, which resets on
                                     // exec; Windows: PeakWorkingSetSize). Domain keeps the highest peak it observed.
+    // The Virtual column (#1184). Linux: VmSize, the whole address space. Windows: the commit size
+    // (PrivateUsage), as Task Manager shows it; its VirtualSize counts reservations, terabytes for
+    // any process using Control Flow Guard.
     std::uint64_t virtualBytes = 0;
     std::uint64_t sharedBytes = 0; // Shared memory (from statm on Linux)
 
@@ -150,7 +155,8 @@ struct ProcessCapabilities
     bool hasNetworkCounters = false;    // Whether per-process network counters are available
     bool hasUdpNetworkCounters = false; // Whether those counters include UDP (QUIC/HTTP3, WebRTC, games, DNS).
                                         // False: TCP only (#1101). Linux: the kernel's sock_diag reports byte
-                                        // counts for TCP sockets only. Windows: TCP EStats only, for now.
+                                        // counts for TCP sockets only. Windows: TCP EStats only; it has
+                                        // no user-mode per-process UDP byte counters (#1258).
     bool hasPowerUsage = false;         // Whether power consumption metrics are available
     bool hasStatus = false;             // Whether process status (Suspended, Efficiency Mode) is available
     bool hasPublisher = false;          // Whether publisher/vendor string is available (Windows PE version info)

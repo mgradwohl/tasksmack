@@ -23,6 +23,8 @@
 #include <winternl.h>
 #include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
 #include <cfgmgr32.h>    // CM_Locate_DevNodeW: whether an adapter's device is present (#1284)
+#include <pdh.h>         // PDH types only: pdh.dll is loaded at run time (ProcessorPerformanceCounter)
+#include <pdhmsg.h>      // PDH_CSTATUS_VALID_DATA, PDH_CSTATUS_NEW_DATA
 // clang-format on
 
 #undef max
@@ -198,9 +200,139 @@ template<typename Query>
     return processorGroupFirstCoreIds(maximums);
 }
 
+/// The base clock in MHz from the registry's ~MHz; 0 if it can't be read.
+[[nodiscard]] std::uint64_t readBaseCpuMHz()
+{
+    DWORD mhz = 0;
+    DWORD dataSize = sizeof(mhz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &mhz,
+                     &dataSize) != ERROR_SUCCESS)
+    {
+        return 0;
+    }
+    return toU64NonNegative(mhz);
+}
+
 } // namespace
 
-WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(logicalProcessorCount()), m_GroupFirstCoreIds(groupFirstCoreIds())
+/// PDH's "\Processor Information(_Total)\% Processor Performance": the processors' average speed as a
+/// percentage of the base clock, over the time since the previous read, as Task Manager's "Speed" uses
+/// it (#1184). pdh.dll is loaded at run time, as PDHGPUProbe loads it, so the probe still works where
+/// it is missing.
+class ProcessorPerformanceCounter
+{
+  public:
+    /// The counter, or null when pdh.dll, its exports, or the counter itself are unavailable.
+    [[nodiscard]] static std::unique_ptr<ProcessorPerformanceCounter> open()
+    {
+        auto counter = std::unique_ptr<ProcessorPerformanceCounter>(new ProcessorPerformanceCounter());
+        if (!counter->initialize())
+        {
+            return nullptr;
+        }
+        return counter;
+    }
+
+    ProcessorPerformanceCounter(const ProcessorPerformanceCounter&) = delete;
+    ProcessorPerformanceCounter& operator=(const ProcessorPerformanceCounter&) = delete;
+    ProcessorPerformanceCounter(ProcessorPerformanceCounter&&) = delete;
+    ProcessorPerformanceCounter& operator=(ProcessorPerformanceCounter&&) = delete;
+
+    ~ProcessorPerformanceCounter()
+    {
+        if (m_Query != nullptr && m_CloseQuery != nullptr)
+        {
+            m_CloseQuery(m_Query);
+        }
+        if (m_Module != nullptr)
+        {
+            FreeLibrary(m_Module);
+        }
+    }
+
+    /// The percentage since the previous read; nullopt on the first read (a rate needs two) or a failed one.
+    [[nodiscard]] std::optional<double> read()
+    {
+        if (m_CollectQueryData(m_Query) != ERROR_SUCCESS)
+        {
+            return std::nullopt;
+        }
+        PDH_FMT_COUNTERVALUE value{};
+        DWORD type = 0;
+        // NOCAP100: turbo takes the reading past 100
+        const PDH_STATUS status = m_GetFormattedCounterValue(m_Counter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, &type, &value);
+        if (status != ERROR_SUCCESS || (value.CStatus != PDH_CSTATUS_VALID_DATA && value.CStatus != PDH_CSTATUS_NEW_DATA))
+        {
+            return std::nullopt;
+        }
+        // PDH_FMT_DOUBLE asked for the double member of PDH_FMT_COUNTERVALUE's union
+        return value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
+    }
+
+  private:
+    using OpenQueryFn = PDH_STATUS(WINAPI*)(LPCWSTR, DWORD_PTR, PDH_HQUERY*);
+    using AddEnglishCounterFn = PDH_STATUS(WINAPI*)(PDH_HQUERY, LPCWSTR, DWORD_PTR, PDH_HCOUNTER*);
+    using CollectQueryDataFn = PDH_STATUS(WINAPI*)(PDH_HQUERY);
+    using GetFormattedCounterValueFn = PDH_STATUS(WINAPI*)(PDH_HCOUNTER, DWORD, LPDWORD, PPDH_FMT_COUNTERVALUE);
+    using CloseQueryFn = PDH_STATUS(WINAPI*)(PDH_HQUERY);
+
+    ProcessorPerformanceCounter() = default;
+
+    [[nodiscard]] bool initialize()
+    {
+        m_Module = LoadLibraryExW(L"pdh.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (m_Module == nullptr)
+        {
+            spdlog::debug("WindowsSystemProbe: pdh.dll unavailable; reporting the base CPU clock");
+            return false;
+        }
+        const auto openQuery = Windows::getProcAddress<OpenQueryFn>(m_Module, "PdhOpenQueryW");
+        const auto addEnglishCounter = Windows::getProcAddress<AddEnglishCounterFn>(m_Module, "PdhAddEnglishCounterW");
+        m_CollectQueryData = Windows::getProcAddress<CollectQueryDataFn>(m_Module, "PdhCollectQueryData");
+        m_GetFormattedCounterValue = Windows::getProcAddress<GetFormattedCounterValueFn>(m_Module, "PdhGetFormattedCounterValue");
+        m_CloseQuery = Windows::getProcAddress<CloseQueryFn>(m_Module, "PdhCloseQuery");
+        if (openQuery == nullptr || addEnglishCounter == nullptr || m_CollectQueryData == nullptr ||
+            m_GetFormattedCounterValue == nullptr || m_CloseQuery == nullptr)
+        {
+            spdlog::debug("WindowsSystemProbe: pdh.dll lacks an export; reporting the base CPU clock");
+            return false;
+        }
+        if (openQuery(nullptr, 0, &m_Query) != ERROR_SUCCESS)
+        {
+            m_Query = nullptr;
+            spdlog::debug("WindowsSystemProbe: PdhOpenQuery failed; reporting the base CPU clock");
+            return false;
+        }
+        if (addEnglishCounter(m_Query, LR"(\Processor Information(_Total)\% Processor Performance)", 0, &m_Counter) != ERROR_SUCCESS)
+        {
+            spdlog::debug("WindowsSystemProbe: no % Processor Performance counter; reporting the base CPU clock");
+            return false;
+        }
+        // The first collection only primes the rate
+        m_CollectQueryData(m_Query);
+        return true;
+    }
+
+    HMODULE m_Module = nullptr;
+    PDH_HQUERY m_Query = nullptr;
+    PDH_HCOUNTER m_Counter = nullptr;
+    CollectQueryDataFn m_CollectQueryData = nullptr;
+    GetFormattedCounterValueFn m_GetFormattedCounterValue = nullptr;
+    CloseQueryFn m_CloseQuery = nullptr;
+};
+
+WindowsSystemProbe::~WindowsSystemProbe() = default;
+
+WindowsSystemProbe::WindowsSystemProbe()
+    : m_NumCores(logicalProcessorCount()),
+      m_GroupFirstCoreIds(groupFirstCoreIds()),
+      m_BaseCpuMHz(readBaseCpuMHz()),
+      m_ProcessorPerformance(ProcessorPerformanceCounter::open())
 {
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
@@ -497,22 +629,11 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
 
 void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)
 {
-    // Read CPU frequency from registry (in MHz)
-    // This is the base frequency; current frequency requires more complex APIs
-    {
-        DWORD mhz = 0;
-        DWORD dataSize = sizeof(mhz);
-        if (RegGetValueW(HKEY_LOCAL_MACHINE,
-                         LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
-                         L"~MHz",
-                         RRF_RT_REG_DWORD,
-                         nullptr,
-                         &mhz,
-                         &dataSize) == ERROR_SUCCESS)
-        {
-            counters.cpuFreqMHz = toU64NonNegative(mhz);
-        }
-    }
+    // The current clock, as Linux reports it under the same hasCpuFreq: the base clock scaled by
+    // "% Processor Performance" (#1184). The base clock alone until PDH has a rate, or without PDH.
+    const std::optional<double> performancePercent =
+        (m_ProcessorPerformance != nullptr) ? m_ProcessorPerformance->read() : std::optional<double>{};
+    counters.cpuFreqMHz = currentCpuFrequencyMHz(m_BaseCpuMHz, performancePercent);
     // Load average is not available on Windows (leave at 0)
 }
 
@@ -526,7 +647,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasIoWait = false,         // Windows doesn't expose iowait
         .hasSteal = false,          // Windows doesn't expose steal time
         .hasLoadAvg = false,        // Windows doesn't have load average
-        .hasCpuFreq = true,         // From registry ~MHz
+        .hasCpuFreq = true,         // Current clock: ~MHz x % Processor Performance (#1184)
         .hasNetworkCounters = true, // Via GetIfTable2 (64-bit counters, Unicode names)
     };
 }
