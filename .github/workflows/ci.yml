@@ -251,6 +251,8 @@ jobs:
             echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
           fi
           python3 -I tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform linux > tidy-files.txt
+          # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
+          sed -i 's/\r$//' tidy-files.txt
           if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
             echo "mode=all" >> "$GITHUB_OUTPUT"
           elif [[ ! -s tidy-files.txt ]]; then
@@ -351,6 +353,8 @@ jobs:
             echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
           fi
           python -I tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform windows > tidy-files.txt
+          # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
+          sed -i 's/\r$//' tidy-files.txt
           if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
             echo "mode=all" >> "$GITHUB_OUTPUT"
           elif [[ ! -s tidy-files.txt ]]; then
@@ -403,9 +407,10 @@ jobs:
         run: |
           if ('${{ steps.select.outputs.mode }}' -eq 'list') {
             $files = @(Get-Content tidy-files.txt | Where-Object { $_ })
-            & ./tools/clang-tidy.ps1 debug -Files $files 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+            # *>&1, not 2>&1: the script prints findings with Write-Host (information stream).
+            & ./tools/clang-tidy.ps1 debug -Files $files *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
           } else {
-            & ./tools/clang-tidy.ps1 debug 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+            & ./tools/clang-tidy.ps1 debug *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
           }
           exit $LASTEXITCODE
 

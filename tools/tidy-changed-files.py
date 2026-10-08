@@ -13,6 +13,8 @@ A full run is required when anything that changes how *every* file is analyzed c
 clang-tidy config, the tidy scripts, CMake files/presets (compile flags), this script, ci.yml, or
 when a header was deleted or renamed. Otherwise the result is every changed .cpp under src/, plus
 every src/ .cpp that includes a changed src/ header directly or through other src/ headers.
+Configure-time templates count as the header they generate: a changed src/**/X.h.in dirties X.h,
+and the embedded fallback theme (assets/themes/arctic-fire.toml) dirties FallbackTheme.h.
 Includes are matched by file name, so the include set can only be too large, never too small.
 """
 
@@ -35,6 +37,8 @@ FULL_RUN_PATTERNS = (
     re.compile(r"^\.github/workflows/ci\.yml$"),
 )
 HEADER_SUFFIXES = (".h", ".hpp", ".inl")
+# Non-header inputs that CMakeLists.txt turns into generated headers (configure_file).
+GENERATED_HEADER_INPUTS = {"assets/themes/arctic-fire.toml": "FallbackTheme.h"}
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]', re.MULTILINE)
 
 
@@ -48,6 +52,8 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD", help="commit with the change (default: HEAD)")
     parser.add_argument("--platform", required=True, choices=("linux", "windows"))
     args = parser.parse_args()
+    # The workflow compares the first line with "ALL"; never emit CRLF, even on Windows.
+    sys.stdout.reconfigure(newline="\n")
 
     other_platform = "src/Platform/Windows/" if args.platform == "linux" else "src/Platform/Linux/"
 
@@ -75,6 +81,8 @@ def main() -> int:
 
     # Names of changed src/ headers, then grow the set through headers that include them.
     dirty_names = {PurePosixPath(p).name for p in changed if p.startswith("src/") and p.endswith(HEADER_SUFFIXES)}
+    dirty_names |= {PurePosixPath(p).name[: -len(".in")] for p in changed if p.startswith("src/") and p.endswith(".h.in")}
+    dirty_names |= {GENERATED_HEADER_INPUTS[p] for p in changed if p in GENERATED_HEADER_INPUTS}
     if dirty_names:
         includes: dict[str, set[str]] = {}
         for path in src_files:
