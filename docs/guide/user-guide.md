@@ -1,6 +1,6 @@
 # User Guide
 
-TaskSmack is a cross-platform system monitor and task manager built with modern C++23, Dear ImGui, OpenGL, and SDL3. It delivers an immediate-mode UI with real-time process and system metrics, designed for developers and power users who want accurate, low-overhead monitoring on both Windows and Linux.
+TaskSmack is a system monitor and task manager for Linux and Windows, built with modern C++23, Dear ImGui, OpenGL, and SDL3. It delivers an immediate-mode UI with real-time process and system metrics, designed for developers and power users who want accurate, low-overhead monitoring.
 
 ---
 
@@ -9,7 +9,7 @@ TaskSmack is a cross-platform system monitor and task manager built with modern 
 - Linux
 - Windows 10 or later
 
-macOS and other operating systems are not currently supported.
+TaskSmack runs on Linux and Windows only; macOS and other operating systems are not supported.
 
 ---
 
