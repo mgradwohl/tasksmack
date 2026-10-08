@@ -1,6 +1,8 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/CpuDetailsBlock.h"
+#include "App/Panels/CpuDetailsText.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetInterfaceUtils.h"
@@ -149,20 +151,20 @@ class SystemMetricsPanel : public Panel
     // The battery charge history as charted, "no reading" (-1) as NaN; rebuilt in place each frame (#1171)
     std::vector<float> m_BatteryChartHistory;
 
-    // The Overview header's text, rebuilt only when what it shows changes -- the system and GPU
-    // publications or the process count -- rather than formatted every frame (#1171).
-    struct OverviewHeaderText
+    // The CPU Details block's rows (#809), rebuilt only when what they show changes -- the system and
+    // GPU publications, the process count or the process histories -- not every frame (#1171).
+    struct CpuDetailsCache
     {
         bool valid = false;
         std::uint64_t systemVersion = 0;
         std::uint64_t gpuVersion = 0;
+        std::uint64_t processHistoryVersion = 0;
         std::size_t processCount = 0;
         bool hasProcessModel = false;
-        std::string uptime;
-        std::string coreInfo;
-        std::string processes;
-        std::string memory;
-    } m_OverviewHeader;
+        std::uint64_t generation = 0; // Bumped on every rebuild, for CpuDetailsBlock's measurements
+        std::vector<CpuDetailsText::Row> rows;
+    } m_CpuDetails;
+    CpuDetailsBlock::MeasuredRows m_CpuDetailsMeasured; // The rows' widths, kept between frames
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;

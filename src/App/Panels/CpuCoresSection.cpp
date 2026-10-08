@@ -84,8 +84,8 @@ void renderCpuCoresSection(RenderContext& ctx)
     auto& theme = UI::Theme::get();
 
     // CPU model header
-    // The same summary as the Overview header (Detail::cpuCoreSummary(), #1180), formatted when its
-    // inputs change rather than every frame (#1171). UI thread only.
+    // Detail::cpuCoreSummary() (#1180; the Overview lists these facts in its CPU Details block, #809),
+    // formatted when its inputs change rather than every frame (#1171). UI thread only.
     static Detail::CpuCoreSummaryCache coreSummary;
     const std::string& coreInfo = coreSummary.get(snap.coreCount, snap.cpuFreqMHz);
     ImGui::TextUnformatted(snap.cpuModel.c_str());
