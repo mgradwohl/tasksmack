@@ -1,8 +1,10 @@
 #include "ProcessesPanel.h"
 
+#include "App/KeyboardInput.h"
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessActionConfirm.h"
+#include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
@@ -13,6 +15,7 @@
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTableFlags.h"
 #include "App/Panels/ProcessTableLayout.h"
+#include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
@@ -1107,6 +1110,9 @@ void ProcessesPanel::render(bool* open)
 
 void ProcessesPanel::renderContent()
 {
+    // An F9 asked for on a frame the table is not drawn is dropped, never kept for a later one (#170).
+    const bool killRequested = m_KillShortcut.take();
+
     if (!m_ProcessModel)
     {
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process list unavailable",
@@ -1125,6 +1131,16 @@ void ProcessesPanel::renderContent()
 
     // Decide the Ctrl freeze before adopting, so a frozen frame keeps the generation it shows (#928).
     updateDisplayFreeze();
+
+    // Keyboard navigation (#160), read here in the panel's window: while it is hovered or focused and
+    // nothing is typed or open, the navigation keys are taken from ImGui's own keyboard navigation and
+    // move the selection instead. Applied inside the table, once the visible order is known.
+    auto navCommand = ProcessTableNavigation::NavCommand::None;
+    if (KeyboardInput::tableNavigationArmed())
+    {
+        KeyboardInput::claimNavigationKeys(ImGui::GetID("##ProcessTableKeys"), m_TreeViewEnabled);
+        navCommand = KeyboardInput::pollNavigationCommand(m_TreeViewEnabled);
+    }
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
     // ProcessModel updates at 1Hz but render runs at 60fps; skip 59/60 redundant deep copies.
@@ -1364,13 +1380,13 @@ void ProcessesPanel::renderContent()
     {
         setTreeView(false);
     }
-    ImGui::SetItemTooltip("List view: every process, sortable by any column");
+    ImGui::SetItemTooltip("List view (F5): every process, sortable by any column");
     ImGui::SameLine(0.0F, 0.0F);
     if (viewModeSegment(TREE_VIEW_LABEL, m_TreeViewEnabled, treeSegmentWidth))
     {
         setTreeView(true);
     }
-    ImGui::SetItemTooltip("Tree view: processes under their parents");
+    ImGui::SetItemTooltip("Tree view (F5): processes under their parents");
 
     // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209)
     renderRowActionConfirm();
@@ -1612,6 +1628,9 @@ void ProcessesPanel::renderContent()
             }
         } // End of sorting (disabled in tree view mode)
 
+        // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
+        applyKeyboardInput(currentSnapshots, navCommand, killRequested);
+
         // Render process rows - tree view or flat list
         if (m_TreeViewEnabled)
         {
@@ -1624,6 +1643,10 @@ void ProcessesPanel::renderContent()
             // ImGuiListClipper only renders visible rows, skipping off-screen rows
             ImGuiListClipper clipper;
             clipper.Begin(static_cast<int>(m_CachedSortedIndices.size()));
+            if (m_ScrollSelectedIntoView && m_ScrollTargetRow < m_CachedSortedIndices.size())
+            {
+                clipper.IncludeItemByIndex(static_cast<int>(m_ScrollTargetRow)); // Drawn, so it can be scrolled to
+            }
             while (clipper.Step())
             {
                 for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
@@ -1639,6 +1662,7 @@ void ProcessesPanel::renderContent()
                 }
             }
         }
+        m_ScrollSelectedIntoView = false; // Done by the selected row if it was drawn; never carried over
 
         // Sync column visibility from ImGui back to our settings
         // This captures changes made via the right-click context menu. Not on a frame the Columns
@@ -1851,6 +1875,12 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     {
         selectProcess(proc);
     }
+    // A keyboard move selected this row (#160): bring it into view below the frozen header.
+    if (isSelected && m_ScrollSelectedIntoView)
+    {
+        KeyboardInput::scrollLastItemIntoView();
+        m_ScrollSelectedIntoView = false;
+    }
     // A right-press selects the row and opens its menu for that same process, in the same
     // frame. ImGui's context-item popup opens on the release instead, by which time the
     // table may have re-sorted and put another process under the pointer (#1365).
@@ -1975,6 +2005,10 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
 
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(rows.size()));
+    if (m_ScrollSelectedIntoView && m_ScrollTargetRow < rows.size())
+    {
+        clipper.IncludeItemByIndex(static_cast<int>(m_ScrollTargetRow)); // Drawn, so it can be scrolled to
+    }
     while (clipper.Step())
     {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
@@ -2118,6 +2152,122 @@ void ProcessesPanel::setTreeView(bool enabled)
     }
 }
 
+void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                        ProcessTableNavigation::NavCommand command,
+                                        bool killRequested)
+{
+    namespace Nav = ProcessTableNavigation;
+    if (command == Nav::NavCommand::None && !killRequested)
+    {
+        return; // The common frame: no key, so the visible order is not even looked at
+    }
+
+    // The visible rows in drawn order, as indices into snapshots: the sorted list, or the flattened
+    // tree (from the same cache renderTreeView() draws, so this costs no rebuild).
+    std::vector<std::size_t> visible;
+    std::vector<Nav::TreeRowShape> shapes;
+    if (m_TreeViewEnabled)
+    {
+        const auto& rows = m_TreeRowsCache.rows(
+            {
+                .snapshotVersion = m_CachedSnapshotVersion,
+                .filterGeneration = m_FilterGeneration,
+                .collapseGeneration = m_CollapseGeneration,
+            },
+            snapshots,
+            m_CachedFilteredIndices,
+            m_CollapsedKeys);
+        visible.reserve(rows.size());
+        shapes.reserve(rows.size());
+        for (const ProcessTreeFlatten::ProcessTreeRow& row : rows)
+        {
+            visible.push_back(row.procIdx);
+            shapes.push_back({.depth = row.depth, .hasChildren = row.hasChildren, .isExpanded = row.isExpanded});
+        }
+    }
+    else
+    {
+        visible = m_CachedSortedIndices;
+    }
+    // The indices fit the adopted generation; checked anyway, as the row loops do (#1394). A dropped
+    // index would misalign the tree shapes, so Left/Right are then left to do nothing.
+    std::erase_if(visible, [&snapshots](std::size_t idx) { return idx >= snapshots.size(); });
+    if (visible.size() != shapes.size())
+    {
+        shapes.clear();
+    }
+
+    std::vector<std::uint64_t> keys;
+    keys.reserve(visible.size());
+    for (const std::size_t idx : visible)
+    {
+        keys.push_back(snapshots[idx].uniqueKey);
+    }
+    const std::optional<std::size_t> current = (m_SelectedPid == -1) ? std::nullopt : Nav::indexOfKey(keys, m_SelectedUniqueKey);
+
+    // F9: the row menu's Kill, confirmed in its dialog for the target captured here. Only for a
+    // selected row the user can see, only when the platform can kill, and never over a row action
+    // already requested or open: a menu action's dialog opens on the next frame, before ImGui knows
+    // of it, so the popup stack alone would let F9 replace its action and target (#170).
+    if (killRequested && current.has_value())
+    {
+        const Domain::ProcessSnapshot& proc = snapshots[visible[*current]];
+        const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.action != Detail::ProcessAction::None;
+        if (Detail::killShortcutAllowed(
+                m_ActionCapabilities, Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, rowActionPending))
+        {
+            requestRowAction(Detail::ProcessAction::Kill, proc);
+        }
+    }
+    // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
+    // leaves the table exactly as it was.
+    if (command == Nav::NavCommand::None)
+    {
+        return;
+    }
+
+    const auto selectRow = [&](std::size_t row)
+    {
+        if (row != current)
+        {
+            selectProcess(snapshots[visible[row]]);
+        }
+        m_ScrollSelectedIntoView = true;
+        m_ScrollTargetRow = row;
+    };
+
+    if (command == Nav::NavCommand::Left || command == Nav::NavCommand::Right)
+    {
+        // With no visible selection this selects the first row, like every other move.
+        const Nav::TreeStep step = Nav::treeStepFrom(shapes, current, command);
+        switch (step.kind)
+        {
+        case Nav::TreeStepKind::Collapse:
+            m_CollapsedKeys.insert(keys[step.index]);
+            ++m_CollapseGeneration; // renderTreeView() rebuilds the rows from it this frame (#1138)
+            break;
+        case Nav::TreeStepKind::Expand:
+            m_CollapsedKeys.erase(keys[step.index]);
+            ++m_CollapseGeneration;
+            break;
+        case Nav::TreeStepKind::Select:
+            selectRow(step.index);
+            break;
+        case Nav::TreeStepKind::None:
+            break;
+        }
+        return;
+    }
+
+    // A row is a line of text plus the cell padding above and below it.
+    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+    const std::size_t page = Nav::pageStep(KeyboardInput::tableScrollViewHeight(), rowHeight);
+    if (const std::optional<std::size_t> next = Nav::stepSelection(current, command, visible.size(), page); next.has_value())
+    {
+        selectRow(*next);
+    }
+}
+
 void ProcessesPanel::selectProcess(const Domain::ProcessSnapshot& proc)
 {
     m_SelectedPid = proc.pid;
@@ -2182,7 +2332,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         {
             requestRowAction(Detail::ProcessAction::Terminate, proc);
         }
-        if (can.canKill && ImGui::MenuItem(ICON_FA_SKULL " Kill..."))
+        if (can.canKill && ImGui::MenuItem(ICON_FA_SKULL " Kill...", "F9"))
         {
             requestRowAction(Detail::ProcessAction::Kill, proc);
         }
@@ -2201,8 +2351,14 @@ void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain
 
 void ProcessesPanel::renderRowActionConfirm()
 {
-    if (ProcessActionConfirm::render(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.processName, m_RowAction.target.pid) !=
-        ProcessActionConfirm::Outcome::Confirmed)
+    const ProcessActionConfirm::Outcome outcome =
+        ProcessActionConfirm::render(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.processName, m_RowAction.target.pid);
+    if (outcome == ProcessActionConfirm::Outcome::Cancelled)
+    {
+        m_RowAction = {}; // Nothing is pending any more: F9 may ask again (#170)
+        return;
+    }
+    if (outcome != ProcessActionConfirm::Outcome::Confirmed)
     {
         return;
     }
@@ -2211,6 +2367,7 @@ void ProcessesPanel::renderRowActionConfirm()
                          : Platform::ProcessActionResult::error("Process actions unavailable");
     m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, m_RowAction.target.pid, result);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    m_RowAction = {}; // Acted on once; nothing is pending any more
     if (result.success)
     {
         requestRefresh(); // Show the process suspended, resumed or gone without waiting for the next sample

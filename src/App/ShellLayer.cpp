@@ -7,6 +7,8 @@
 #include "Core/WindowConstants.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
+#include "KeyboardInput.h"
+#include "KeyboardShortcuts.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/ProcessTypes.h"
@@ -406,6 +408,11 @@ void ShellLayer::onRender()
     // being pushed (and therefore rendered) before ShellLayer -- see main.cpp's pushLayer order.
     UI::RenderMetrics::get().beginFrame(ImGui::GetFrameCount());
 
+    // The function keys, read once. F1, F2 and F10 act now; F5 and F9 depend on the tab on show, so
+    // they wait for the tab bar to take this frame's tab click (#170).
+    const KeyboardShortcuts::ShortcutAction shortcut = KeyboardInput::pollFunctionKeys();
+    handleGlobalShortcut(shortcut);
+
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
     // Get dynamic title bar height (matches tab bars). Zero when native OS decorations are in
@@ -438,6 +445,9 @@ void ShellLayer::onRender()
         ImGui::PopStyleVar(3);
 
         renderTabBar();
+        // After the tab bar, before the tabs draw: F5 and F9 go to the tab drawn this frame, and its
+        // render takes the request in this same frame.
+        handleTabShortcut(shortcut);
         // This window has no padding, so the cursor now sits exactly the main tab strip's height down.
         const float mainTabsHeight = ImGui::GetCursorPosY();
 
@@ -504,6 +514,67 @@ void ShellLayer::onRender()
     renderStatusBar();
 
     UI::RenderMetrics::get().renderOverlay(&m_ShowRenderMetrics);
+
+    // A shortcut request no render took this frame is dropped, never kept for a later one (#170).
+    m_ProcessesPanel.expireFrameRequests();
+    m_ProcessDetailsPanel.expireFrameRequests();
+}
+
+void ShellLayer::handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action)
+{
+    // KeyboardInput::pollFunctionKeys() already returns None while a text field has the keyboard, a
+    // popup or modal (Settings, About, a confirm, a menu) is open, or a modifier is held.
+    using KeyboardShortcuts::ShortcutAction;
+    switch (action)
+    {
+    case ShortcutAction::ShowAbout:
+    {
+        // There is no separate help: the About dialog lists the keyboard shortcuts.
+        Core::OpenAboutEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case ShortcutAction::OpenSettings:
+    {
+        Core::OpenSettingsEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case ShortcutAction::ToggleTreeView:
+    case ShortcutAction::KillSelected:
+        break; // Tab-sensitive: handleTabShortcut(), after the tab bar
+    case ShortcutAction::Quit:
+        // The title bar Close button's path: a close request, vetoable, and onDetach() saves settings.
+        Core::Application::get().getWindow().requestClose();
+        break;
+    case ShortcutAction::None:
+        break;
+    }
+}
+
+void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
+{
+    // F5 only where the table is on screen (a hidden view change would be a surprise later); F9 to the
+    // panel showing the selection, which opens its own confirm dialog -- neither kills without the
+    // dialog's own Kill button. The request is taken by that panel's render this frame.
+    switch (KeyboardShortcuts::tabShortcutTarget(action, m_Tabs.activeTab().eventName))
+    {
+    case KeyboardShortcuts::ShortcutTarget::Processes:
+        if (action == KeyboardShortcuts::ShortcutAction::ToggleTreeView)
+        {
+            m_ProcessesPanel.toggleTreeView();
+        }
+        else
+        {
+            m_ProcessesPanel.requestKillSelected();
+        }
+        break;
+    case KeyboardShortcuts::ShortcutTarget::ProcessDetails:
+        m_ProcessDetailsPanel.requestKillSelected();
+        break;
+    case KeyboardShortcuts::ShortcutTarget::None:
+        break;
+    }
 }
 
 void ShellLayer::renderTabBar()
@@ -717,7 +788,7 @@ void ShellLayer::renderStatusBar() const
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Settings");
+                ImGui::SetTooltip("Settings (F2)");
             }
             ImGui::SameLine();
             if (ImGui::SmallButton(STATUS_HELP_LABEL))
@@ -727,7 +798,7 @@ void ShellLayer::renderStatusBar() const
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("About TaskSmack");
+                ImGui::SetTooltip("About TaskSmack and keyboard shortcuts (F1)");
             }
         }
 

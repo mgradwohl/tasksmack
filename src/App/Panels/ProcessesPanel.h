@@ -1,10 +1,12 @@
 #pragma once
 
+#include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/BackgroundSampler.h"
@@ -212,6 +214,33 @@ class ProcessesPanel : public Panel
     /// What per-process GPU data can be observed: metrics at all, and utilization among them (#1210).
     [[nodiscard]] ProcessColumnAvailability::GpuSupport gpuSupport() const;
 
+    /// Whether the table shows the process tree rather than the flat list.
+    [[nodiscard]] bool treeViewEnabled() const noexcept
+    {
+        return m_TreeViewEnabled;
+    }
+
+    /// Switches between list and tree view, as the toolbar's List | Tree control does (F5, #170).
+    void toggleTreeView()
+    {
+        setTreeView(!m_TreeViewEnabled);
+    }
+
+    /// F9 (#170): on this frame's render, ask to kill the selected process through the same confirm
+    /// dialog as the row menu's Kill, its target captured then. Nothing happens when no process is
+    /// selected, the selection is not a visible row, or the platform cannot kill. Never kills directly.
+    /// Lives for this frame only: expireFrameRequests() drops it if the table was not drawn.
+    void requestKillSelected() noexcept
+    {
+        m_KillShortcut.request();
+    }
+
+    /// End of frame: drop a shortcut request this frame's render did not take (#170).
+    void expireFrameRequests() noexcept
+    {
+        m_KillShortcut.expire();
+    }
+
   private:
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
@@ -282,6 +311,12 @@ class ProcessesPanel : public Panel
     // and the menu would act on a process other than the highlighted one (#1365).
     std::optional<Domain::ProcessSnapshot> m_RowMenuTarget;
     unsigned int m_RowMenuPopupId = 0; // ImGuiID of ROW_MENU_POPUP_ID at the panel's ID stack
+
+    // Keyboard navigation (#160) and F9 (#170). A move scrolls the newly selected row into view on the
+    // frame it is drawn; the clipper is told to draw that row even when it is off-screen.
+    KeyboardShortcuts::FrameRequest m_KillShortcut;
+    bool m_ScrollSelectedIntoView = false;
+    std::size_t m_ScrollTargetRow = 0; // Index of the selected row in the visible order
 
     // Search/filter state - using std::string for dynamic sizing
     std::string m_SearchBuffer;
@@ -424,6 +459,13 @@ class ProcessesPanel : public Panel
 
     /// Switches between list and tree view.
     void setTreeView(bool enabled);
+
+    /// Applies this frame's navigation key and a pending F9 to the visible rows (#160, #170): moves the
+    /// selection, collapses or expands in tree view, or opens the Kill confirm for the selected row.
+    /// Inside the table, after sorting and before the rows are drawn.
+    void applyKeyboardInput(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                            ProcessTableNavigation::NavCommand command,
+                            bool killRequested);
 
     /// Selects `proc` as a click on its row does, and tells the other panels.
     void selectProcess(const Domain::ProcessSnapshot& proc);
