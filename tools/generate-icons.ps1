@@ -1,10 +1,19 @@
 # Generate ICO file from SVG using Inkscape and Python/Pillow
+#
+# Sources (#1508):
+#   - assets/icons/tasksmack.svg        master art, rendered for every size not in $SmallSizes
+#   - assets/icons/tasksmack-small.svg  simplified art (fewer burst points, thicker outline, two bars),
+#                                       rendered for $SmallSizes (16 and 24 px) where the master's
+#                                       detail turns to mush
+# The .ico is assembled from those per-size PNGs, so its 16/24 px frames use the small art too.
+#
 # Requirements:
 #   - Inkscape (for SVG to PNG conversion)
 #   - Python 3 with Pillow for ICO creation, hash-pinned in requirements-icons.txt
 
 param(
     [string]$SvgPath = "$PSScriptRoot/../assets/icons/tasksmack.svg",
+    [string]$SmallSvgPath = "$PSScriptRoot/../assets/icons/tasksmack-small.svg",
     [string]$OutputDir = "$PSScriptRoot/../assets/icons"
 )
 
@@ -14,6 +23,7 @@ $ErrorActionPreference = "Stop"
 
 # Resolve paths
 $SvgPath = Resolve-Path $SvgPath -ErrorAction Stop
+$SmallSvgPath = Resolve-Path $SmallSvgPath -ErrorAction Stop
 $OutputDir = Resolve-Path $OutputDir -ErrorAction Stop
 
 Write-Host "Generating icons from: $SvgPath"
@@ -50,16 +60,18 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-# Sizes for icons
+# Sizes for icons; $SmallSizes render from $SmallSvgPath instead of $SvgPath
 $sizes = @(16, 24, 32, 48, 64, 128, 256)
+$SmallSizes = @(16, 24)
 
 # Generate PNGs at each size
 Write-Host ""
 Write-Host "Generating PNG files..."
 foreach ($size in $sizes) {
     $pngFile = Join-Path $OutputDir "tasksmack-$size.png"
-    Write-Host "  ${size}x${size}..."
-    & $inkscape --export-type=png --export-filename="$pngFile" -w $size -h $size "$SvgPath" 2>$null
+    $sourceSvg = if ($SmallSizes -contains $size) { $SmallSvgPath } else { $SvgPath }
+    Write-Host "  ${size}x${size} from $(Split-Path -Leaf $sourceSvg)..."
+    & $inkscape --export-type=png --export-filename="$pngFile" -w $size -h $size "$sourceSvg" 2>$null
 }
 
 # Generate ICO file using Python/Pillow
@@ -70,14 +82,9 @@ from PIL import Image
 import os
 
 icon_dir = r'$OutputDir'
-source = Image.open(os.path.join(icon_dir, 'tasksmack-256.png')).convert('RGBA')
-
-imgs = []
-for size in [256, 128, 64, 48, 32, 24, 16]:
-    if size == 256:
-        imgs.append(source.copy())
-    else:
-        imgs.append(source.resize((size, size), Image.Resampling.LANCZOS))
+# One frame per rendered PNG (not a downscale of the 256 px one), so the small art reaches the .ico.
+imgs = [Image.open(os.path.join(icon_dir, f'tasksmack-{size}.png')).convert('RGBA')
+        for size in [256, 128, 64, 48, 32, 24, 16]]
 
 ico_path = os.path.join(icon_dir, 'tasksmack.ico')
 imgs[0].save(ico_path, format='ICO', append_images=imgs[1:])
