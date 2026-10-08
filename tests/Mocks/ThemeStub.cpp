@@ -11,6 +11,7 @@
 // applyPendingStyleChanges() call ImGui/ImPlot runtime APIs that require an active
 // rendering context.  The stubs here satisfy the linker without a context.
 
+#include "ColorSchemeFields.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -114,6 +115,37 @@ namespace
     s.cpuIowaitFill = fill(s.cpuIowait);
     s.cpuIdleFill = fill(s.cpuIdle);
     s.chartPeakLine = ImVec4(0.90F, 0.90F, 0.90F, 0.50F);
+    // The metric roles (#1196), each in its own colour as a theme draws them.
+    s.chartCpuTotal = s.chartCpu;
+    s.chartMemoryCached = line(0.70F, 0.95F, 0.75F);
+    s.chartMemoryShared = s.chartMemoryCached;
+    s.chartSwap = line(0.70F, 0.55F, 0.95F);
+    s.chartMemoryVirtual = s.chartSwap;
+    s.chartPower = line(0.95F, 0.90F, 0.40F);
+    s.chartBattery = line(0.35F, 0.80F, 0.75F);
+    s.chartThreads = line(0.95F, 0.50F, 0.75F);
+    s.chartHandles = line(0.70F, 0.72F, 0.75F);
+    s.chartPageFaults = line(0.65F, 0.68F, 0.98F);
+    s.chartGdi = line(0.40F, 0.80F, 0.60F);
+    s.chartMemoryCachedFill = fill(s.chartMemoryCached);
+    s.chartMemorySharedFill = fill(s.chartMemoryShared);
+    s.chartSwapFill = fill(s.chartSwap);
+    s.chartMemoryVirtualFill = fill(s.chartMemoryVirtual);
+    s.chartPowerFill = fill(s.chartPower);
+    s.chartBatteryFill = fill(s.chartBattery);
+    s.chartThreadsFill = fill(s.chartThreads);
+    s.chartHandlesFill = fill(s.chartHandles);
+    s.gpuPower = s.chartPower;
+    // Anything still unset -- chrome, GPU series, accents, a role added later -- is drawn in a visible
+    // grey rather than not at all; test_ThemeHeader.cpp holds every field to a non-zero alpha.
+    TestColorScheme::forEachColor(s,
+                                  [](ImVec4& c)
+                                  {
+                                      if (c.w <= 0.0F)
+                                      {
+                                          c = ImVec4(0.55F, 0.55F, 0.58F, 1.0F);
+                                      }
+                                  });
     return s;
 }
 

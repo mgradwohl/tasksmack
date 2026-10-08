@@ -27,6 +27,9 @@ namespace
 
 using Detail::PRIORITY_APPLY_BUTTON_MIN_EM;
 
+// The Apply button's label, named once so its width is measured from what is drawn (icon included).
+constexpr const char* APPLY_LABEL = ICON_FA_CHECK "  Apply";
+
 #ifndef _WIN32
 using Detail::getNiceColor;
 using Detail::getNiceFromPosition;
@@ -434,7 +437,7 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
     // Capped to the panel for the same reason the track is: the content area does not scroll
     // horizontally, so a button wider than the space available would be clipped.
     const float applyButtonWidth =
-        std::min(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM),
+        std::min(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM),
                  std::max(ImGui::GetContentRegionAvail().x, 1.0F));
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, controlRightEdge - applyButtonWidth));
 
@@ -445,7 +448,7 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
     }
     // As for the Settings dialog's Apply: the label is drawn in whichever of the theme's text
     // colour and window background reads better on the fill showing in the current state (#969).
-    if (UI::Widgets::filledButton("Apply",
+    if (UI::Widgets::filledButton(APPLY_LABEL,
                                   ImVec2(applyButtonWidth, 0.0F),
                                   {
                                       .resting = theme.scheme().successButton,

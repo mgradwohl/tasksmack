@@ -96,6 +96,17 @@ configure_file(
     @ONLY
 )
 
+# The built-in fallback theme is Arctic Fire's file, embedded at configure time so the two never
+# drift (#1196). Re-run configure whenever the theme file changes.
+set(TASKSMACK_FALLBACK_THEME_FILE ${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/arctic-fire.toml)
+file(READ ${TASKSMACK_FALLBACK_THEME_FILE} TASKSMACK_FALLBACK_THEME_TOML)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${TASKSMACK_FALLBACK_THEME_FILE})
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/UI/FallbackTheme.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/FallbackTheme.h
+    @ONLY
+)
+
 set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp

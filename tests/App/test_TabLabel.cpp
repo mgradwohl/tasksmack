@@ -99,18 +99,13 @@ constexpr std::initializer_list<std::string_view> TRICKY_NAMES{
 TEST(TabLabelTest, ImGuisHashOfALabelDependsOnlyOnItsStableId)
 {
     // The real check behind #1140 and #1244: whatever the name, ImHashStr() of the label is that of the
-    // plain "###<stableId>" suffix, so the tab and the Process Details window keep their IDs.
+    // plain "###<stableId>" suffix, so the tab keeps its ID.
     const ImGuiID tabId = imguiHash("###ProcessDetailsTab");
-    const ImGuiID windowId = imguiHash("###ProcessDetails");
     for (const std::string_view name : TRICKY_NAMES)
     {
         const std::string tab = TabLabel::make("[i]", name, TabLabel::PROCESS_DETAILS_TAB_ID);
         EXPECT_EQ(imguiHash(tab), tabId) << "name: " << name;
         EXPECT_EQ(imguiHashCString(tab), tabId) << "name: " << name;
-
-        const std::string window = TabLabel::makeProcessDetailsWindowLabel("[i]", name);
-        EXPECT_EQ(imguiHash(window), windowId) << "name: " << name;
-        EXPECT_EQ(imguiHashCString(window), windowId) << "name: " << name;
     }
 }
 
@@ -183,19 +178,6 @@ TEST(TabLabelTest, TextWithoutDoubleOrTrailingHashesIsUnchanged)
     EXPECT_EQ(label, "a#b c#d");
 }
 
-TEST(TabLabelTest, ProcessDetailsWindowLabelShowsTheNameUnderAFixedId)
-{
-    // #1326 / #1244: the window title shows the whole name and keeps the "###ProcessDetails" ID, so
-    // ImGui keeps the window's settings when the selection changes.
-    const std::string named = TabLabel::makeProcessDetailsWindowLabel("[i]", "foo##bar");
-    EXPECT_EQ(shownText(named), "[i]  foo##bar");
-    EXPECT_EQ(TabLabel::idPart(named), "ProcessDetails");
-
-    const std::string unnamed = TabLabel::makeProcessDetailsWindowLabel("[i]", "");
-    EXPECT_EQ(shownText(unnamed), "[i]  Process Details");
-    EXPECT_EQ(TabLabel::idPart(unnamed), "ProcessDetails");
-}
-
 TEST(TabLabelTest, CachedLabelRebuildsOnlyWhenTheTextChanges)
 {
     // #1326: the same text returns the same cached string without calling the builder again.
@@ -204,18 +186,18 @@ TEST(TabLabelTest, CachedLabelRebuildsOnlyWhenTheTextChanges)
     const auto build = [&builds](std::string_view text)
     {
         ++builds;
-        return TabLabel::make("[i]", text, TabLabel::PROCESS_DETAILS_WINDOW_ID);
+        return TabLabel::make("[i]", text, TabLabel::PROCESS_DETAILS_TAB_ID);
     };
 
-    EXPECT_EQ(cache.get("bash", build), TabLabel::make("[i]", "bash", TabLabel::PROCESS_DETAILS_WINDOW_ID));
+    EXPECT_EQ(cache.get("bash", build), TabLabel::make("[i]", "bash", TabLabel::PROCESS_DETAILS_TAB_ID));
     EXPECT_EQ(builds, 1);
 
-    EXPECT_EQ(cache.get("bash", build), TabLabel::make("[i]", "bash", TabLabel::PROCESS_DETAILS_WINDOW_ID));
+    EXPECT_EQ(cache.get("bash", build), TabLabel::make("[i]", "bash", TabLabel::PROCESS_DETAILS_TAB_ID));
     EXPECT_EQ(builds, 1) << "the same text must not rebuild the label";
 
-    EXPECT_EQ(cache.get("sleep", build), TabLabel::make("[i]", "sleep", TabLabel::PROCESS_DETAILS_WINDOW_ID));
+    EXPECT_EQ(cache.get("sleep", build), TabLabel::make("[i]", "sleep", TabLabel::PROCESS_DETAILS_TAB_ID));
     EXPECT_EQ(builds, 2);
-    EXPECT_EQ(cache.label(), TabLabel::make("[i]", "sleep", TabLabel::PROCESS_DETAILS_WINDOW_ID));
+    EXPECT_EQ(cache.label(), TabLabel::make("[i]", "sleep", TabLabel::PROCESS_DETAILS_TAB_ID));
 }
 
 TEST(TabLabelTest, CachedLabelBuildsAnEmptyTextOnFirstUse)
@@ -226,10 +208,10 @@ TEST(TabLabelTest, CachedLabelBuildsAnEmptyTextOnFirstUse)
     const auto build = [&builds](std::string_view text)
     {
         ++builds;
-        return TabLabel::makeProcessDetailsWindowLabel("[i]", text);
+        return TabLabel::make("[i]", text, TabLabel::PROCESS_DETAILS_TAB_ID);
     };
-    EXPECT_EQ(shownText(cache.get("", build)), "[i]  Process Details");
-    EXPECT_EQ(shownText(cache.get("", build)), "[i]  Process Details");
+    EXPECT_EQ(shownText(cache.get("", build)), "[i]  ");
+    EXPECT_EQ(shownText(cache.get("", build)), "[i]  ");
     EXPECT_EQ(builds, 1);
 }
 

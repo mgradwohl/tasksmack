@@ -4,8 +4,10 @@
 #include "UI/ColorDifference.h"
 
 #include <gtest/gtest.h>
+#include <imgui.h>
 
 #include <array>
+#include <cmath>
 
 namespace UI::ColorDifference
 {
@@ -150,6 +152,40 @@ TEST(ColorDifferenceTest, OutOfRangeInputIsClamped)
 {
     const ImVec4 overWhite{2.0F, 2.0F, 2.0F, 1.0F};
     EXPECT_NEAR(deltaE2000(overWhite, rgb(0xFFFFFF)), 0.0, 1e-9);
+}
+
+// OKLab of the sRGB primaries, from Ottosson's reference implementation, as OKLCH (#1196).
+TEST(ColorDifferenceTest, OklchMatchesOttossonReferenceValues)
+{
+    constexpr double TOLERANCE = 1e-3;
+    struct Reference
+    {
+        ImVec4 color;
+        Oklch expected;
+    };
+    const std::array references{
+        Reference{.color = {1.0F, 0.0F, 0.0F, 1.0F}, .expected = {.l = 0.627955, .c = 0.257683, .h = 29.2339}},
+        Reference{.color = {0.0F, 1.0F, 0.0F, 1.0F}, .expected = {.l = 0.866440, .c = 0.294827, .h = 142.4953}},
+        Reference{.color = {0.0F, 0.0F, 1.0F, 1.0F}, .expected = {.l = 0.452014, .c = 0.313214, .h = 264.0520}},
+    };
+    for (const auto& [color, expected] : references)
+    {
+        const Oklch actual = toOklch(color);
+        EXPECT_NEAR(actual.l, expected.l, TOLERANCE);
+        EXPECT_NEAR(actual.c, expected.c, TOLERANCE);
+        EXPECT_NEAR(actual.h, expected.h, 0.05);
+    }
+
+    // Greys are achromatic: chroma and hue exactly 0, not the angle of the matrices' residual (#1472).
+    for (const float v : {0.0F, 0.25F, 0.5F, 1.0F})
+    {
+        const Oklch grey = toOklch({v, v, v, 1.0F});
+        EXPECT_NEAR(grey.l, std::cbrt(toLinear(static_cast<double>(v))), TOLERANCE) << v;
+        EXPECT_DOUBLE_EQ(grey.c, 0.0) << v;
+        EXPECT_DOUBLE_EQ(grey.h, 0.0) << v;
+    }
+    // A barely tinted colour still has a hue.
+    EXPECT_GT(toOklch({0.5F, 0.5F, 0.52F, 1.0F}).c, 0.0);
 }
 
 } // namespace
