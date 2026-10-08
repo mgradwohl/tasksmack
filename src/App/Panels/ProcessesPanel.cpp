@@ -1371,7 +1371,11 @@ void ProcessesPanel::renderContent()
     }
     ImGui::SetItemTooltip("Tree view (F5): processes under their parents");
 
-    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209)
+    // The row menu's batch priority dialog (#1484); a picked value goes on to the confirmation below.
+    renderBatchPriorityDialog();
+
+    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209), or a
+    // batch priority change (#1484)
     renderRowActionConfirm();
 
     // The row menu (#1209), for the process m_RowMenuTarget holds. One popup at panel level rather
@@ -2284,7 +2288,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // of it, so the popup stack alone would let F9 replace its action and target (#170).
     // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
     // the one highlighted row, when it is visible.
-    const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.action != Detail::ProcessAction::None;
+    // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
+    const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -2456,6 +2461,17 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             request(Detail::ProcessAction::Resume);
         }
     }
+    // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
+    // A single process's priority stays in Process Details' Actions tab.
+    if (ProcessBatch::offersBatchPriority(can, batchCount))
+    {
+        ImGui::Separator();
+        const std::string label = std::format("{} Set priority for {} processes...###SetPriority", ICON_FA_GAUGE_HIGH, batchCount);
+        if (ImGui::MenuItem(label.c_str()))
+        {
+            m_BatchPriorityDialog.open(batchCount);
+        }
+    }
     if (can.canTerminate || can.canKill)
     {
         // Ending a process can lose its work: in the danger colour, and confirmed in the dialog's
@@ -2477,6 +2493,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc)
 {
     m_RowAction.action = action;
+    m_RowAction.priorityNice.reset();
     // This row's identity: the platform refuses the action if the PID has since been reused (#973).
     m_RowAction.targets.assign(
         1, ProcessBatch::BatchTarget{.target = {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, .name = proc.name});
@@ -2507,14 +2524,44 @@ void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
         m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid);
     }
     m_RowAction.action = action;
+    m_RowAction.priorityNice.reset();
     m_RowAction.targets = std::move(targets);
     m_ShowRowActionConfirm = true;
 }
 
+void ProcessesPanel::requestSelectionPriority(std::int32_t nice)
+{
+    // As requestSelectionAction(): the selected processes still listed, each by PID and start time, so
+    // one that has exited since the dialog opened is not among them and a reused PID is refused.
+    std::vector<ProcessBatch::BatchTarget> targets = ProcessBatch::resolveTargets(
+        *m_CachedRenderSnapshots, [this](const Platform::ProcessTarget& target) { return m_Selection.contains(target); });
+    if (targets.empty())
+    {
+        return;
+    }
+    m_RowAction.action = Detail::ProcessAction::None;
+    m_RowAction.priorityNice = nice;
+    m_RowAction.title = ProcessBatch::priorityConfirmTitle(targets.size());
+    m_RowAction.question = ProcessBatch::priorityConfirmBody(nice, targets, m_OwnPid);
+    m_RowAction.targets = std::move(targets);
+    m_ShowRowActionConfirm = true;
+}
+
+void ProcessesPanel::renderBatchPriorityDialog()
+{
+    if (const std::optional<std::int32_t> nice = m_BatchPriorityDialog.render(); nice.has_value())
+    {
+        requestSelectionPriority(*nice);
+    }
+}
+
 void ProcessesPanel::renderRowActionConfirm()
 {
+    const bool isPriority = m_RowAction.priorityNice.has_value();
     const ProcessActionConfirm::Outcome outcome =
-        ProcessActionConfirm::renderText(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.title, m_RowAction.question);
+        isPriority ? ProcessActionConfirm::renderLabelled(
+                         m_ShowRowActionConfirm, ProcessBatch::PRIORITY_CONFIRM_LABEL, false, m_RowAction.title, m_RowAction.question)
+                   : ProcessActionConfirm::renderText(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.title, m_RowAction.question);
     if (outcome == ProcessActionConfirm::Outcome::Cancelled)
     {
         m_RowAction = {}; // Nothing is pending any more: F9 may ask again (#170)
@@ -2525,7 +2572,23 @@ void ProcessesPanel::renderRowActionConfirm()
         return;
     }
     bool anySucceeded = false;
-    if (m_RowAction.targets.size() == 1)
+    if (isPriority)
+    {
+        // Every selected process in turn, by identity, TaskSmack itself last; one summary line naming
+        // the priority applied (#1484).
+        const std::int32_t nice = *m_RowAction.priorityNice;
+        if (m_ProcessActions)
+        {
+            const ProcessBatch::BatchResult result = ProcessBatch::runBatchPriority(*m_ProcessActions, m_RowAction.targets, nice, m_OwnPid);
+            m_RowActionResult = ProcessBatch::formatBatchPriorityResultMessage(nice, result);
+            anySucceeded = result.succeeded > 0;
+        }
+        else
+        {
+            m_RowActionResult = {.ok = false, .text = "Process actions unavailable"};
+        }
+    }
+    else if (m_RowAction.targets.size() == 1)
     {
         const Platform::ProcessTarget& target = m_RowAction.targets.front().target;
         const Platform::ProcessActionResult result = m_ProcessActions

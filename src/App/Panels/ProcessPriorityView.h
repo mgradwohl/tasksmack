@@ -33,6 +33,19 @@ namespace Detail
     return Domain::Priority::clampNice(current + delta);
 }
 
+/// What renderPriorityPicker() drew this frame.
+struct PriorityPick
+{
+    std::int32_t nice = 0;  ///< The value picked this frame, or the one shown when nothing was picked
+    float rightEdge = 0.0F; ///< Where the control ends, from the cursor's x, for right-aligning a button under it
+};
+
+/// Draws the priority picker showing @p shown, without a header: the gradient nice slider and its
+/// keyboard shortcuts, or on Windows the priority-class combo (#1204). Shared by Process Details'
+/// control and the Processes table's batch priority dialog (#1484), so both pick a priority the same
+/// way and Windows offers the same settable classes in each.
+[[nodiscard]] PriorityPick renderPriorityPicker(std::int32_t shown);
+
 } // namespace Detail
 
 /// The priority control for the process Process Details shows.

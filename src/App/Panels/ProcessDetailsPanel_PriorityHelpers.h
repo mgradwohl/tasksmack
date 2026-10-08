@@ -140,6 +140,27 @@ struct PrioritySliderMetrics
     return std::clamp(thumbX, lowest, highest);
 }
 
+/// The x range of the badge's down-arrow base: centred under @p tipX, @p arrowHalfBasePx either side,
+/// but held to the badge's flat bottom edge [@p badgeMinX, @p badgeMaxX], so the arrow never hangs off
+/// the badge where it is clamped at a track end (#1533). A badge narrower than the arrow gives the
+/// whole badge width.
+struct BadgeArrowBase
+{
+    float left = 0.0F;
+    float right = 0.0F;
+};
+
+[[nodiscard]] inline auto computeBadgeArrowBase(float tipX, float arrowHalfBasePx, float badgeMinX, float badgeMaxX) noexcept
+    -> BadgeArrowBase
+{
+    if (!(badgeMinX <= badgeMaxX))
+    {
+        return {.left = tipX, .right = tipX};
+    }
+    return {.left = std::clamp(tipX - arrowHalfBasePx, badgeMinX, badgeMaxX),
+            .right = std::clamp(tipX + arrowHalfBasePx, badgeMinX, badgeMaxX)};
+}
+
 /**
  * @brief Interpolate color based on nice value (-20 to 19)
  *
