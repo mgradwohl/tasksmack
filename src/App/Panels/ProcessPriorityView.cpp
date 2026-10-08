@@ -78,13 +78,16 @@ void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx)
     // Badge color based on nice value
     const ImU32 badgeColorU32 = getNiceColor(ctx.niceValue, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
 
-    // Draw badge rectangle with rounded corners
-    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, ctx.metrics.badgeCornerRadius);
+    // Only the top corners are rounded: the arrow hangs from the bottom edge, which must be flat for
+    // the arrow to join it rather than dangle from a curve (#1533).
+    drawList->AddRectFilled(badgeMin, badgeMax, badgeColorU32, ctx.metrics.badgeCornerRadius, ImDrawFlags_RoundCornersTop);
 
-    // Draw arrow pointing down from badge
+    // Arrow pointing down from the badge at the thumb, its base held to the badge's bottom edge so it
+    // never overhangs where the badge is clamped at a track end.
+    const Detail::BadgeArrowBase arrowBase = Detail::computeBadgeArrowBase(badgeX, ctx.metrics.badgeArrowSize, badgeMin.x, badgeMax.x);
     const ImVec2 arrowTip(badgeX, badgeMax.y + ctx.metrics.badgeArrowSize);
-    const ImVec2 arrowLeft(badgeX - ctx.metrics.badgeArrowSize, badgeMax.y);
-    const ImVec2 arrowRight(badgeX + ctx.metrics.badgeArrowSize, badgeMax.y);
+    const ImVec2 arrowLeft(arrowBase.left, badgeMax.y);
+    const ImVec2 arrowRight(arrowBase.right, badgeMax.y);
     drawList->AddTriangleFilled(arrowLeft, arrowRight, arrowTip, badgeColorU32);
 
     // The theme's badge text colour when it reaches 4.5:1 on this badge's fill, else its window
