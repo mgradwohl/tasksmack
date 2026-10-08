@@ -85,6 +85,26 @@ sectionHeader(const char* icon, std::string_view title, std::string_view detail 
     return hovered;
 }
 
+/// Quieter context after the last item, on its line: "current: Normal" after a priority row's Apply
+/// (#1493). Drawn only when it fits before the window's content edge, and drawn rather than submitted,
+/// so the item before it stays the last item and the row's content width is its controls'. A caller
+/// that must always show @p text puts it in a tooltip as well.
+/// @return Whether it was drawn.
+inline bool trailingNote(std::string_view text)
+{
+    const auto& theme = UI::Theme::get();
+    const ImVec2 textSize = ImGui::CalcTextSize(text.data(), text.data() + text.size());
+    const float x = ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x;
+    const ImGuiWindow* window = ImGui::GetCurrentWindowRead();
+    if (x + textSize.x > window->WorkRect.Max.x)
+    {
+        return false;
+    }
+    const float y = ImGui::GetItemRectMin().y + ((ImGui::GetItemRectSize().y - textSize.y) * 0.5F);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(x, y), ImGui::GetColorU32(theme.scheme().textMuted), text.data(), text.data() + text.size());
+    return true;
+}
+
 /// The vertical gap between two sections of a dialog or pane (#1200): ChromeLayout's
 /// SECTION_GAP_ITEM_SPACINGS item spacings, so it scales with the style. Use it where a new section
 /// starts, in place of a run of Spacing() calls.

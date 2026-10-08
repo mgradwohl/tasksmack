@@ -240,7 +240,7 @@ On Linux, the Process Details **Overview** tab also has a collapsible **Connecti
 
 ### Process Actions
 
-Right-click any process row for Terminate, Kill, Stop and Resume. The Actions tab of Process Details has those too, plus the priority controls, which are only there:
+Right-click any process row for Terminate, Kill, Stop and Resume. The **Actions** block of Process Details' **Overview** tab has those too, plus the priority controls; the row menu of a multi-selection can also set one priority for all the selected processes (see below):
 
 | Action | Linux | Windows |
 |--------|-------|---------|
@@ -248,17 +248,21 @@ Right-click any process row for Terminate, Kill, Stop and Resume. The Actions ta
 | Kill (SIGKILL / force) | ✅ | ✅ |
 | Stop (SIGSTOP / suspend) | ✅ | ❌ |
 | Resume (SIGCONT) | ✅ | ❌ |
-| Change priority (nice), Process Details only | ✅ | ✅ (mapped) |
+| Change priority (nice): Process Details, or several selected processes from the row menu | ✅ | ✅ (mapped) |
 | Change I/O priority (ionice class and level), Process Details only | ✅ | ❌ |
-| Trace system calls (strace; Process Details > Actions only) | ✅ (needs `strace` and a terminal emulator) | ❌ |
+| Trace system calls (strace), Process Details only | ✅ (needs `strace` and a terminal emulator) | ❌ |
+
+In Process Details the Actions block sits beside the Identity and Runtime blocks, no taller than they are, so the charts keep their height: a row with the Terminate and Kill buttons (and Suspend and Resume on Linux, followed by **Trace system calls (strace)**, which takes a row of its own when there is no room for it after them), then **Priority** with its control and **Apply** on one line, with the current priority after it (on Linux, then **I/O priority** the same way). A result or error message appears under the last row. When the window is too narrow for three blocks side by side, or the block needs more height than Identity and Runtime have (as the Linux nice slider and I/O priority rows together can), the Actions block moves onto its own row under them, at its full height. **F9** brings the Overview tab forward to show its Kill confirmation.
 
 Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
 
-**Acting on several processes at once.** Right-click any row of a multi-selection (see "Selecting several processes" above) and the menu's actions read **Suspend 5 processes...**, **Terminate 5 processes...** and so on: they act on every selected process (Details and the Copy items still act on the row you right-clicked). Right-clicking a row outside the selection selects just that row, as before. One confirmation covers the whole batch: it says what the action does, lists the processes by name and PID (the first eight, then "and N more"), and always names TaskSmack itself and PID 1 (the init process) when either is among them, whatever the count, so neither can be acted on unnoticed. Each process is then acted on in turn, identified by its PID and start time exactly as a single action is, so one that has exited, or whose PID now belongs to another process, is refused rather than hit by mistake. TaskSmack's own process, if selected, is acted on last. The result is one line in the toolbar -- "Kill sent to 5 processes", or "Kill sent to 3 of 5 processes; 2 failed: ..." quoting the first few errors (when the line is cut short, hover it for the full text) -- rather than a message per process. Changing the priority of several processes at once is not available yet; it is done one process at a time in Process Details.
+**Acting on several processes at once.** Right-click any row of a multi-selection (see "Selecting several processes" above) and the menu's actions read **Suspend 5 processes...**, **Terminate 5 processes...** and so on: they act on every selected process (Details and the Copy items still act on the row you right-clicked). Right-clicking a row outside the selection selects just that row, as before. One confirmation covers the whole batch: it says what the action does, lists the processes by name and PID (the first eight, then "and N more"), and always names TaskSmack itself and PID 1 (the init process) when either is among them, whatever the count, so neither can be acted on unnoticed. Each process is then acted on in turn, identified by its PID and start time exactly as a single action is, so one that has exited, or whose PID now belongs to another process, is refused rather than hit by mistake. TaskSmack's own process, if selected, is acted on last. The result is one line in the toolbar -- "Kill sent to 5 processes", or "Kill sent to 3 of 5 processes; 2 failed: ..." quoting the first few errors (when the line is cut short, hover it for the full text) -- rather than a message per process.
+
+**Changing the priority of several processes at once.** Where the platform can set priority, the menu of a row in a multi-selection also has **Set priority for 5 processes...**. It opens a small dialog with the same control as Process Details: the nice slider on Linux (-20, the highest priority, to 19, the lowest; it starts at 0), the priority-class combo on Windows (Idle, Below Normal, Normal, Above Normal, High). Under the control the dialog says what will be applied -- on Linux the label and the nice value, for example "Below Normal (nice: 10)"; on Windows the class, since Windows maps the value to a priority class. **Continue** goes on to the same batch confirmation as the actions above (the value to be applied, the processes, TaskSmack itself and PID 1 always named); **Set Priority** there sets it on each process in turn, by PID and start time, TaskSmack's own process last. **Cancel** in either dialog changes nothing. The result is one line in the toolbar naming what was applied: "Priority set to Below Normal (nice: 10) for 5 processes", or "... for 3 of 5 processes; 2 failed: ..." quoting the first few errors. On Linux, raising a process's priority (a nice value below 0) usually needs root, so without it expect those processes to refuse; the dialog and the confirmation both warn when the value is below 0. A single process's priority, and the I/O priority (Linux), are still set in the Actions block of Process Details' Overview tab.
 
 #### I/O Priority (Linux)
 
-On Linux, the Actions tab of Process Details has an **I/O Priority** control under the nice slider. Its header shows the process's current setting in `ionice` terms, for example `best-effort 4`, `idle`, or `default (best-effort 4 from nice)`.
+On Linux, the Actions block of Process Details has an **I/O Priority** control under the nice slider. Its header shows the process's current setting in `ionice` terms, for example `best-effort 4`, `idle`, or `default (best-effort 4 from nice)`.
 
 - **Class:**
   - **Default** follows the nice value. The kernel uses best-effort at level (nice + 20) / 5.
@@ -272,7 +276,7 @@ Lowering a process you own (Idle, or a higher best-effort level) needs no privil
 
 #### Tracing system calls (Linux)
 
-The Actions tab of Process Details has a **Trace system calls (strace)** button, as htop's `s` key does: it opens a new terminal window running `strace -f -tt -p <PID>` attached to that process, so you can watch each system call it makes, timestamped, across all its threads. Close the window, or press Ctrl+C in it, to stop tracing; the process carries on running. No confirmation is asked, because tracing only observes (the process pauses for an instant while strace attaches, and runs slower while it is traced).
+The Actions block of Process Details (on the Overview tab) has a **Trace system calls (strace)** button at the end of its button row (on a row of its own when the block is too narrow for it there), as htop's `s` key does: it opens a new terminal window running `strace -f -tt -p <PID>` attached to that process, so you can watch each system call it makes, timestamped, across all its threads. Close the window, or press Ctrl+C in it, to stop tracing; the process carries on running. No confirmation is asked, because tracing only observes (the process pauses for an instant while strace attaches, and runs slower while it is traced).
 
 - TaskSmack looks for `strace` and a terminal once, when it starts, on `PATH` (relative `PATH` entries are ignored). The terminal is the one `$TERMINAL` names -- a single program name or absolute path, with no arguments -- else `x-terminal-emulator`, else the first installed of gnome-terminal, ptyxis, konsole, xfce4-terminal, mate-terminal, kitty, alacritty, foot, wezterm and xterm. If either is missing the button stays visible but greyed out, and its tooltip says what to install; restart TaskSmack after installing it. On Windows the button is not shown at all.
 - The process is checked by PID and start time, like every other action, so one that has exited (or whose PID now belongs to another process) is refused.
@@ -316,7 +320,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |
 | Process terminate / kill | ✅ | ✅ |
 | Process stop / resume (SIGSTOP/SIGCONT) | ✅ | ❌ |
-| Trace system calls (Process Details > Actions) | ✅ (`strace` in a terminal; greyed out with the reason when strace or a terminal is missing; ptrace rules apply: own processes, or root / `CAP_SYS_PTRACE`, and Yama's `ptrace_scope`) | ❌ (button hidden) |
+| Trace system calls (Process Details) | ✅ (`strace` in a terminal; greyed out with the reason when strace or a terminal is missing; ptrace rules apply: own processes, or root / `CAP_SYS_PTRACE`, and Yama's `ptrace_scope`) | ❌ (button hidden) |
 | I/O wait time (`iowait`) | ✅ (shown as its own band; counted as idle, not busy, so CPU % matches Windows) | ❌ (Windows concept does not exist) |
 | Steal time (`steal`) | ✅ | ❌ |
 | Load average (1/5/15 min) | ✅ | ❌ |

@@ -66,8 +66,8 @@ bool openIfRequested(bool showRequested)
     return ImGui::IsPopupOpen(CONFIRM_POPUP_ID);
 }
 
-/// Draws the open modal with @p title and @p question.
-Outcome renderOpen(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question)
+/// Draws the open modal with @p title and @p question, confirmed by a button labelled @p confirmLabel.
+Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructive, std::string_view title, std::string_view question)
 {
     Outcome outcome = Outcome::None;
     std::string popupTitle(title);
@@ -128,15 +128,14 @@ Outcome renderOpen(bool& showRequested, Detail::ProcessAction action, std::strin
         // The confirm button is named for the action ([Cancel][Kill], not [No][Yes]) so a
         // destructive confirmation says what it does on the button itself (#1203). It is the primary
         // action, so it sits on the right in the footer every dialog shares (#1200).
-        const char* confirmLabel = Detail::actionLabel(action);
         const float confirmButtonWidth = ProcessDetailsLayout::computeConfirmButtonWidth(
             UI::Widgets::footerButtonWidth({confirmLabel, "Cancel"}, CONFIRM_BUTTON_MIN_EM), contentBudget, confirmStyle.ItemSpacing.x);
 
         // Ending a process can lose its work, so Terminate and Kill confirm in the danger colour
-        // their buttons in the Actions tab use (#1273).
+        // their buttons in the Actions block use (#1273).
         const UI::Widgets::ButtonFills dangerFills = dangerButtonFills();
         const UI::Widgets::DialogFooterButton confirmButton{
-            .label = confirmLabel, .fills = Detail::isDestructiveAction(action) ? &dangerFills : nullptr, .tooltip = nullptr};
+            .label = confirmLabel, .fills = destructive ? &dangerFills : nullptr, .tooltip = nullptr};
         const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel", .fills = nullptr, .tooltip = nullptr};
         switch (UI::Widgets::dialogFooter(confirmButton, cancelButton, confirmButtonWidth, {}, contentBudget))
         {
@@ -172,10 +171,20 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
     {
         return Outcome::None; // Nothing to draw; skip building the title every frame
     }
-    return renderOpen(showRequested, action, Detail::confirmTitle(action, processName, pid), Detail::confirmBody(action, processName, pid));
+    return renderOpen(showRequested,
+                      Detail::actionLabel(action),
+                      Detail::isDestructiveAction(action),
+                      Detail::confirmTitle(action, processName, pid),
+                      Detail::confirmBody(action, processName, pid));
 }
 
 Outcome renderText(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question, bool dismiss)
+{
+    return renderLabelled(showRequested, Detail::actionLabel(action), Detail::isDestructiveAction(action), title, question, dismiss);
+}
+
+Outcome renderLabelled(
+    bool& showRequested, const char* confirmLabel, bool destructive, std::string_view title, std::string_view question, bool dismiss)
 {
     if (dismiss)
     {
@@ -185,7 +194,7 @@ Outcome renderText(bool& showRequested, Detail::ProcessAction action, std::strin
     {
         return Outcome::None;
     }
-    return renderOpen(showRequested, action, title, question);
+    return renderOpen(showRequested, confirmLabel, destructive, title, question);
 }
 
 } // namespace App::ProcessActionConfirm

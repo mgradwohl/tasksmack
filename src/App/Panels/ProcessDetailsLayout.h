@@ -4,10 +4,9 @@
 // live ImGui context, following CONTRIBUTING.md's "extract the pure decision logic into a small
 // header" pattern (as ProcessTableLayout.h and ProcessTreeIndent.h do).
 
-#include "UI/DialogMetrics.h"
-
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace App::ProcessDetailsLayout
@@ -44,47 +43,102 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
     return std::min(wanted, availableWidthPx);
 }
 
-/// Floor on the width of the process-control buttons (Terminate, Kill, Suspend, Resume), in ems:
-/// 180px at the reference em, the fixed width they had before (#949).
-inline constexpr float ACTION_BUTTON_MIN_WIDTH_EM = 16.875F;
-
-/// Gap between the two columns of process-control buttons, in ems: 8px at the reference em.
-inline constexpr float ACTION_BUTTON_GUTTER_EM = 0.75F;
-
-/// The process-control buttons are laid out two to a row.
-inline constexpr float ACTION_BUTTON_COLUMNS = 2.0F;
-
-/// Width shared by all four process-control buttons.
+/// Width of each process-control button (Terminate, Kill, Suspend, Resume): the widest label among
+/// those shown, with the frame padding on both sides, so the buttons are equal and as narrow as their
+/// labels allow (#1493). They were a 180px em floor apiece (#949), then stretched to half the Actions
+/// block, which left wide empty buttons beside Identity and Runtime.
 ///
-/// They were a fixed 180px, so they ignored the Font Size setting and the display's density: 22.5 em
-/// at Small and 8.4 em at Even Huger, and half the width of the priority slider beneath them once
-/// that began to scale (#938). The width is now the widest label with the dialogs' padding, never
-/// below the em floor that reproduces 180px at the reference font, so the four stay equal and keep
-/// their proportions.
-///
-/// It is also capped to the pane. The content area does not scroll horizontally, so a second column
-/// that does not fit is clipped and its buttons cannot be reached -- Kill and Resume, on a narrow
-/// window at a large font.
-///
-/// @param widestLabelPx       Widest of the four button labels, i.e. ImGui::CalcTextSize(label).x.
-/// @param emPx                One em, i.e. ImGui::GetFontSize().
-/// @param availableWidthPx    Width of the pane the two columns must fit in.
-/// @param columnOverheadPx    Width each column takes beyond its button: the gutter, plus that
-///                            column's share of the table's spacing between columns.
-/// @return Width in pixels. At least one pixel, so a degenerate pane cannot produce a zero-sized
-///         button; never wider than half the pane allows when that is a usable size.
-[[nodiscard]] inline float
-computeActionButtonWidth(float widestLabelPx, float emPx, float availableWidthPx, float columnOverheadPx) noexcept
+/// @param widestLabelPx    Widest label among the buttons shown, i.e. ImGui::CalcTextSize(label).x.
+/// @param framePaddingXPx  ImGuiStyle::FramePadding.x.
+[[nodiscard]] inline float computeActionButtonWidth(float widestLabelPx, float framePaddingXPx) noexcept
 {
-    const float wanted = UI::DialogMetrics::computeActionButtonWidth(widestLabelPx, emPx, ACTION_BUTTON_MIN_WIDTH_EM);
-    if (!std::isfinite(availableWidthPx) || availableWidthPx <= 0.0F)
+    const auto nonNegative = [](float value) noexcept
     {
-        return wanted;
-    }
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    return std::ceil(nonNegative(widestLabelPx) + (2.0F * nonNegative(framePaddingXPx)));
+}
 
-    const float overhead = (std::isfinite(columnOverheadPx) && columnOverheadPx > 0.0F) ? columnOverheadPx : 0.0F;
-    const float perColumn = (availableWidthPx / ACTION_BUTTON_COLUMNS) - overhead;
-    return std::max(1.0F, std::floor(std::min(wanted, perColumn)));
+/// Width of @p count buttons @p buttonWidthPx wide on one row, @p spacingPx apart.
+[[nodiscard]] inline float computeActionButtonRowWidth(float buttonWidthPx, std::size_t count, float spacingPx) noexcept
+{
+    if (count == 0)
+    {
+        return 0.0F;
+    }
+    const auto nonNegative = [](float value) noexcept
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const auto buttons = static_cast<float>(count);
+    return (buttons * nonNegative(buttonWidthPx)) + ((buttons - 1.0F) * nonNegative(spacingPx));
+}
+
+/// Width the Actions block's buttons need: the process-control row @p actionRowPx, or the "Trace
+/// system calls (strace)" button @p traceButtonPx (0 where it is hidden) when that is wider (#182). The
+/// trace button follows the row when the block has room for both and starts a row of its own when it
+/// does not, so the block never needs the two side by side.
+[[nodiscard]] inline float computeActionButtonsWidth(float actionRowPx, float traceButtonPx) noexcept
+{
+    const auto nonNegative = [](float value) noexcept
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    return std::max(nonNegative(actionRowPx), nonNegative(traceButtonPx));
+}
+
+/// Width of the Linux nice-slider row in the Overview's Actions block, in ems: "High", a usable
+/// gradient track and "Low", which the slider fits to the width it is given (#1493).
+inline constexpr float PRIORITY_SLIDER_ROW_WIDTH_EM = 28.0F;
+
+/// Where the Overview's Actions block goes (#1493).
+struct ActionsBlockLayout
+{
+    /// A third block on the Identity/Runtime row; otherwise it wraps onto its own row below them.
+    bool besideInfo = true;
+    /// The block's width in pixels, padding included.
+    float width = 0.0F;
+};
+
+/// Lays out the Overview's Actions block: one left-aligned stack of rows -- the process-control
+/// buttons, then the priority row(s) -- as wide as its widest row. It goes beside Identity and
+/// Runtime when it fits in what their row leaves, both across and down: beside them it may be no
+/// taller than they are, so the charts keep their height, and a block that would have to scroll there
+/// (Linux's nice slider with the I/O priority row) wraps below them instead, shown whole. Wrapped, it
+/// is held to the pane.
+///
+/// @param paneWidthPx      Width of the pane the row is laid out in.
+/// @param infoRowWidthPx   Width Identity and Runtime take, with the gap between them.
+/// @param spacingPx        Gap between two blocks on the row (ImGuiStyle::ItemSpacing.x).
+/// @param contentWidthPx   Width the block's widest row needs, with the block's padding.
+/// @param contentHeightPx  Height the block's rows need, with its padding, as last drawn; 0 when not
+///                         known yet, which does not keep it off the row.
+/// @param rowHeightPx      Height of the Identity/Runtime children; 0 when not known.
+/// @return Beside the row at its content width when the pane width is unknown.
+[[nodiscard]] inline ActionsBlockLayout computeActionsBlockLayout(float paneWidthPx,
+                                                                  float infoRowWidthPx,
+                                                                  float spacingPx,
+                                                                  float contentWidthPx,
+                                                                  float contentHeightPx = 0.0F,
+                                                                  float rowHeightPx = 0.0F) noexcept
+{
+    const auto nonNegative = [](float value) noexcept
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float content = nonNegative(contentWidthPx);
+    if (!std::isfinite(paneWidthPx) || paneWidthPx <= 0.0F)
+    {
+        return {.besideInfo = true, .width = content};
+    }
+    const float contentHeight = nonNegative(contentHeightPx);
+    const float rowHeight = nonNegative(rowHeightPx);
+    const bool fitsDown = contentHeight == 0.0F || rowHeight == 0.0F || contentHeight <= rowHeight;
+    if (fitsDown && nonNegative(infoRowWidthPx) + nonNegative(spacingPx) + content <= paneWidthPx)
+    {
+        return {.besideInfo = true, .width = content};
+    }
+    return {.besideInfo = false, .width = std::min(content, paneWidthPx)};
 }
 
 /// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).

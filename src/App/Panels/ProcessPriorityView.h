@@ -1,8 +1,9 @@
 #pragma once
 
-// Process Details' priority control, under the Actions tab's buttons (#1179, slice 4): the nice-value
-// slider on Linux, the priority-class combo on Windows (#1204), the Apply button, and the error line
-// under it; and under those, on Linux, the I/O priority control (#803, ProcessIoPriorityView).
+// Process Details' priority control, under the buttons of the Overview's Actions block (#1179, slice 4;
+// #1493): the nice-value slider on Linux, the priority-class combo on Windows (#1204), the Apply
+// button, and the error line under it; and under those, on Linux, the I/O priority control (#803,
+// ProcessIoPriorityView).
 //
 // The view owns only its UI state. The IProcessActions it applies through stays owned by the panel (the
 // composition root's Platform::makeProcessActions() result) and is passed in each frame, with the
@@ -32,6 +33,19 @@ namespace Detail
 {
     return Domain::Priority::clampNice(current + delta);
 }
+
+/// What renderPriorityPicker() drew this frame.
+struct PriorityPick
+{
+    std::int32_t nice = 0;  ///< The value picked this frame, or the one shown when nothing was picked
+    float rightEdge = 0.0F; ///< Where the control ends, from the cursor's x, for right-aligning a button under it
+};
+
+/// Draws the priority picker showing @p shown, without a header: the gradient nice slider and its
+/// keyboard shortcuts, or on Windows the priority-class combo (#1204). Shared by Process Details'
+/// control and the Processes table's batch priority dialog (#1484), so both pick a priority the same
+/// way and Windows offers the same settable classes in each.
+[[nodiscard]] PriorityPick renderPriorityPicker(std::int32_t shown);
 
 } // namespace Detail
 

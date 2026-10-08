@@ -1,6 +1,6 @@
 #pragma once
 
-// The process-action confirmation dialog, shared by Process Details' Actions tab and the Processes
+// The process-action confirmation dialog, shared by Process Details' Actions block and the Processes
 // table's row menu (#1209), so a Terminate or Kill asks the same question, with the same buttons in
 // the same colours, wherever it starts.
 
@@ -39,5 +39,15 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
 /// the action is requested rather than every frame the dialog is up.
 Outcome
 renderText(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question, bool dismiss = false);
+
+/// The same modal for a change that is not one of the ProcessActions, its confirm button labelled
+/// @p confirmLabel (in the danger fill when @p destructive): the Processes table's batch priority
+/// change (#1484), "[Cancel][Set Priority]".
+Outcome renderLabelled(bool& showRequested,
+                       const char* confirmLabel,
+                       bool destructive,
+                       std::string_view title,
+                       std::string_view question,
+                       bool dismiss = false);
 
 } // namespace App::ProcessActionConfirm

@@ -72,9 +72,11 @@ class ProcessActionConfirmPopupTest : public ::testing::Test
         return open;
     }
 
-    /// Draws the Actions tab with @p capabilities, then clicks where its last item -- the trace button
+    /// Draws the Actions block's controls with @p capabilities, then clicks where its last item -- the trace button
     /// (#182), when drawn -- was. Returns how many times the mock was asked to trace.
-    static int clickTraceButton(const Platform::ProcessActionCapabilities& capabilities, const Platform::ProcessTarget& target)
+    static int clickTraceButton(const Platform::ProcessActionCapabilities& capabilities,
+                                const Platform::ProcessTarget& target,
+                                float* drawnWidth = nullptr)
     {
         TestMocks::MockProcessActions mock;
         ProcessActionsView view;
@@ -86,7 +88,22 @@ class ProcessActionConfirmPopupTest : public ::testing::Test
             const ImVec2 max = ImGui::GetItemRectMax();
             center = ImVec2((min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F);
         };
-        static_cast<void>(runFrame(draw));
+        float naturalWidth = 0.0F;
+        static_cast<void>(runFrame(
+            [&]
+            {
+                draw();
+                if (drawnWidth != nullptr)
+                {
+                    *drawnWidth = ImGui::GetItemRectSize().x;
+                }
+                naturalWidth = ProcessActionsView::syscallTraceButtonWidth(capabilities);
+            }));
+        if (drawnWidth != nullptr)
+        {
+            // Report it relative to the label's natural width: 1 means not stretched.
+            *drawnWidth = naturalWidth > 0.0F ? *drawnWidth / naturalWidth : 0.0F;
+        }
         ImGuiIO& io = ImGui::GetIO();
         io.AddMousePosEvent(center.x, center.y);
         static_cast<void>(runFrame(draw));
@@ -226,7 +243,7 @@ TEST_F(ProcessActionConfirmPopupTest, AModalLeftUndrawnDoesNotReturnForTheNextPr
     // A exits with the modal up: the pane is replaced, so the view is not drawn. ImGui itself closes
     // a modal that is not submitted (its next frame refocuses the window under it, which closes the
     // popups over that window), so this passes with or without the view's dismissal; it pins that the
-    // stale modal cannot come back when B is selected and the Actions tab drawn again.
+    // stale modal cannot come back when B is selected and the Actions block drawn again.
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
     view.requestAction(ProcessAction::Terminate, TARGET_A, "a");
@@ -268,7 +285,10 @@ TEST_F(ProcessActionConfirmPopupTest, AvailableTraceButtonLaunchesOnClickWithout
 {
     Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
     caps.syscallTrace = Platform::SyscallTraceAvailability::Available;
-    EXPECT_EQ(clickTraceButton(caps, TARGET_A), 1);
+    float widthRatio = 0.0F;
+    EXPECT_EQ(clickTraceButton(caps, TARGET_A, &widthRatio), 1);
+    // Drawn at its own label's width after the row, not stretched to the other buttons' or the pane's.
+    EXPECT_NEAR(widthRatio, 1.0F, 0.01F);
 }
 
 TEST_F(ProcessActionConfirmPopupTest, DisabledTraceButtonDoesNothingWhenClicked)

@@ -45,13 +45,19 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
 
     // Its own ID scope: the nice control above has an "Apply" button too.
     ImGui::PushID("io_priority");
-    ImGui::Spacing();
-    ImGui::Spacing();
 
     const std::string currentDetail =
         m_Current.has_value() ? "current: " + Detail::describeIoPriority(*m_Current, currentNice) : std::string("current: unknown");
-    (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "I/O Priority", currentDetail);
-    ImGui::Spacing();
+    // A row label, level with the controls, rather than a header: the Actions block's one-line
+    // "I/O priority [class] [level] [Apply]" row (#1493). The current value follows Apply when it fits,
+    // and is on the label's tooltip always.
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("I/O priority");
+    if (ImGui::IsItemHovered())
+    {
+        ImGui::SetTooltip("%s", currentDetail.c_str());
+    }
+    ImGui::SameLine();
 
     // Apply on the same row, after the controls, so the section stays one line tall -- unless the panel
     // is too narrow: it does not scroll horizontally, so the row shrinks, then wraps, rather than clip.
@@ -96,6 +102,10 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
         ImGui::SetTooltip("%s", waiting ? "Waiting for process details" : "Apply the selected I/O priority to the process");
+    }
+    if (!layout.applyOnNewLine)
+    {
+        (void) UI::Widgets::trailingNote(currentDetail);
     }
 
     // Wrapped at the content edge: the privilege and identity messages are long, and the panel does
