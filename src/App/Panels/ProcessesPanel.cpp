@@ -1082,32 +1082,6 @@ void ProcessesPanel::updateDisplayFreeze()
     }
 }
 
-int ProcessesPanel::visibleColumnCount() const
-{
-    int count = 0;
-    for (const ProcessColumn col : allProcessColumns())
-    {
-        if (m_ColumnSettings.isVisible(col))
-        {
-            ++count;
-        }
-    }
-    return count;
-}
-
-void ProcessesPanel::render(bool* open)
-{
-    if (!ImGui::Begin(ICON_FA_LIST " Processes", open))
-    {
-        ImGui::End();
-        return;
-    }
-
-    renderContent();
-
-    ImGui::End();
-}
-
 void ProcessesPanel::renderContent()
 {
     // An F9 asked for on a frame the table is not drawn is dropped, never kept for a later one (#170).
