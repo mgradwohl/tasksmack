@@ -7,10 +7,18 @@ on:
     # Weekly on Mondays at 04:00 UTC
     - cron: '0 4 * * 1'
   workflow_dispatch:
+    inputs:
+      scope:
+        description: >-
+          What to run. 'all' runs every job (the default, as before). 'benchmark' runs only
+          benchmark-regression, which is all a performance PR's merge gate needs.
+        type: choice
+        options: [all, benchmark]
+        default: all
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
 # complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
+# ref (a manual run off another branch) still cancels the run it supersedes.
 concurrency:
   group: heavy-checks-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -18,37 +26,17 @@ concurrency:
 env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.7'
-  LINUX_COVERAGE_THRESHOLD: '80'
-  WINDOWS_COVERAGE_THRESHOLD: '60'
+  # Warn-only floors for LINE coverage (see the "Check coverage threshold" steps, #1543): the
+  # honest baseline on 2026-10-08 (Linux 68.9%, Windows 63.8% of lines) minus about 3 points,
+  # so the warning means a real drop. codecov.yml's `auto` target is the per-change ratchet.
+  LINUX_COVERAGE_THRESHOLD: '66'
+  WINDOWS_COVERAGE_THRESHOLD: '61'
 
 permissions: {}
 
 jobs:
-  validate-environment:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-          install-clang-tidy: 'true'
-          install-clangd: 'true'
-          install-clang-format: 'true'
-          install-coverage-tools: 'true'
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Validate prerequisites
-        run: ./tools/check-prereqs.sh
-
   coverage:
-    needs: [validate-environment]
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -56,14 +44,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # clang-tidy, clangd and clang-format aren't needed for coverage; they are installed so the
+      # step below can run the developer prerequisite check (tools/check-prereqs.sh) against a fresh
+      # Ubuntu image, which used to take a whole serial validate-environment job in front of every
+      # Heavy Checks and Sanitizers run.
       - name: Setup LLVM
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
           install-coverage-tools: 'true'
+          install-clang-tidy: 'true'
+          install-clangd: 'true'
+          install-clang-format: 'true'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
+
+      - name: Validate prerequisites
+        run: ./tools/check-prereqs.sh
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
@@ -117,42 +115,34 @@ jobs:
             echo "Coverage output file not found" >> $GITHUB_STEP_SUMMARY
           fi
 
+      # Line coverage, the number Codecov and the docs use, summed from coverage/coverage.lcov (LH/LF).
+      # The TOTAL row of `llvm-cov report` is not parsed by position: its last column is branch
+      # coverage, which this step used to report as "coverage" (#1543). Warn-only; codecov.yml's
+      # `auto` target is the real ratchet, this floor just flags a large drop in the job summary.
       - name: Check coverage threshold
         if: always()
+        env:
+          THRESHOLD: ${{ env.LINUX_COVERAGE_THRESHOLD }}
         run: |
-          if [ -f coverage-output.txt ]; then
-            total_line="$(grep "^TOTAL" coverage-output.txt | tail -n 1 || true)"
-            THRESHOLD="${{ env.LINUX_COVERAGE_THRESHOLD }}"
-            if [ -n "$total_line" ]; then
-              COVERAGE="$(printf '%s\n' "$total_line" | awk '{print $NF}' | sed 's/%//')"
-              if [[ "$COVERAGE" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-                echo "📊 Current coverage: ${COVERAGE}%"
-                echo "🎯 Minimum threshold: ${THRESHOLD}%"
-
-                if awk "BEGIN {exit !($COVERAGE < $THRESHOLD)}"; then
-                  echo "⚠️  WARNING: Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
-                  echo "This is a warning only - build will continue"
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "⚠️ **Coverage Warning:** Current coverage (${COVERAGE}%) is below the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
-                else
-                  echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
-                  echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "✅ **Coverage Status:** Current coverage (${COVERAGE}%) meets the ${THRESHOLD}% threshold" >> $GITHUB_STEP_SUMMARY
-                fi
-              else
-                echo "⚠️ TOTAL coverage value is present but unparsable - cannot check threshold"
-                echo "" >> $GITHUB_STEP_SUMMARY
-                echo "⚠️ **Coverage Warning:** TOTAL coverage value from \`coverage-output.txt\` was not numeric; threshold check skipped." >> $GITHUB_STEP_SUMMARY
-              fi
-            else
-              echo "⚠️ Coverage TOTAL line missing - cannot check threshold"
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "⚠️ **Coverage Warning:** No TOTAL line found in \`coverage-output.txt\`; threshold check skipped." >> $GITHUB_STEP_SUMMARY
-            fi
+          lcov=coverage/coverage.lcov
+          if [[ ! -s "$lcov" ]]; then
+            echo "::warning title=Coverage::$lcov not found or empty; threshold check skipped."
+            printf '\n⚠️ **Coverage Warning:** `%s` not found; threshold check skipped.\n' "$lcov" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          read -r hit found < <(awk -F: '/^LH:/{h+=$2} /^LF:/{f+=$2} END{print h+0, f+0}' "$lcov")
+          if [[ "$found" -eq 0 ]]; then
+            echo "::warning title=Coverage::$lcov has no line records (LF total 0); threshold check skipped."
+            exit 0
+          fi
+          COVERAGE="$(awk -v h="$hit" -v f="$found" 'BEGIN{printf "%.2f", 100*h/f}')"
+          echo "📊 Line coverage: ${COVERAGE}% (${hit}/${found} lines)"
+          echo "🎯 Warning floor: ${THRESHOLD}%"
+          if awk -v c="$COVERAGE" -v t="$THRESHOLD" 'BEGIN{exit !(c < t)}'; then
+            echo "::warning title=Coverage::Line coverage ${COVERAGE}% is below the ${THRESHOLD}% floor"
+            printf '\n⚠️ **Coverage Warning:** line coverage %s%% is below the %s%% floor\n' "$COVERAGE" "$THRESHOLD" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "❌ Coverage output file not found - cannot check threshold"
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **Coverage Check Failed:** Could not find coverage output file" >> $GITHUB_STEP_SUMMARY
+            printf '\n✅ **Coverage Status:** line coverage %s%% (%s/%s lines) meets the %s%% floor\n' "$COVERAGE" "$hit" "$found" "$THRESHOLD" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload coverage report
@@ -174,7 +164,7 @@ jobs:
           fail_ci_if_error: false
 
   win-coverage:
-    needs: [validate-environment]
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
     runs-on: windows-2025
     timeout-minutes: 35
     permissions:
@@ -250,43 +240,35 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Coverage output file not found"
           }
 
+      # Same rule as the Linux job: line coverage from coverage/coverage.lcov, warn-only (#1543).
       - name: Check coverage threshold
         if: always()
         shell: pwsh
         run: |
-          # Keep this aligned with codecov.yml windows target.
           [double]$threshold = [double]$env:WINDOWS_COVERAGE_THRESHOLD
-          if (Test-Path "coverage-output.txt") {
-            $totalLine = Get-Content "coverage-output.txt" | Where-Object { $_ -match '^TOTAL' } | Select-Object -Last 1
-            if ($null -ne $totalLine -and $totalLine.Trim().Length -gt 0) {
-              $coverageToken = ($totalLine -split '\s+')[-1].TrimEnd('%')
-              [double]$coverage = 0
-              if ([double]::TryParse($coverageToken, [ref]$coverage)) {
-                Write-Host "📊 Current Windows coverage: $coverage%"
-                Write-Host "🎯 Minimum threshold: $threshold%"
-                if ($coverage -lt $threshold) {
-                  Write-Host "⚠️ WARNING: Coverage $coverage% is below threshold $threshold%"
-                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "⚠️ **Windows Coverage Warning:** Current coverage (${coverage}%) is below the ${threshold}% threshold"
-                } else {
-                  Write-Host "✅ Coverage $coverage% meets threshold $threshold%"
-                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "✅ **Windows Coverage Status:** Current coverage (${coverage}%) meets the ${threshold}% threshold"
-                }
-              } else {
-                Write-Host "⚠️ TOTAL coverage value is present but unparsable - cannot check threshold"
-                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "⚠️ **Windows Coverage Warning:** TOTAL coverage value from \`coverage-output.txt\` was not numeric; threshold check skipped."
-              }
-            } else {
-              Write-Host "⚠️ Coverage TOTAL line missing - cannot check threshold"
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "⚠️ **Windows Coverage Warning:** No TOTAL line found in \`coverage-output.txt\`; threshold check skipped."
-            }
+          $lcov = 'coverage/coverage.lcov'
+          if (-not (Test-Path $lcov) -or (Get-Item $lcov).Length -eq 0) {
+            Write-Host "::warning title=Windows coverage::$lcov not found or empty; threshold check skipped."
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "`n⚠️ **Windows Coverage Warning:** ``$lcov`` not found; threshold check skipped."
+            exit 0
+          }
+          [long]$hit = 0; [long]$found = 0
+          foreach ($line in [System.IO.File]::ReadLines((Resolve-Path $lcov))) {
+            if ($line.StartsWith('LH:')) { $hit += [long]$line.Substring(3) }
+            elseif ($line.StartsWith('LF:')) { $found += [long]$line.Substring(3) }
+          }
+          if ($found -eq 0) {
+            Write-Host "::warning title=Windows coverage::$lcov has no line records (LF total 0); threshold check skipped."
+            exit 0
+          }
+          $coverage = [math]::Round(100.0 * $hit / $found, 2)
+          Write-Host "📊 Windows line coverage: $coverage% ($hit/$found lines)"
+          Write-Host "🎯 Warning floor: $threshold%"
+          if ($coverage -lt $threshold) {
+            Write-Host "::warning title=Windows coverage::Line coverage $coverage% is below the $threshold% floor"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "`n⚠️ **Windows Coverage Warning:** line coverage $coverage% is below the $threshold% floor"
           } else {
-            Write-Host "❌ Coverage output file not found - cannot check threshold"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "❌ **Windows Coverage Check Failed:** Could not find coverage output file"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "`n✅ **Windows Coverage Status:** line coverage $coverage% ($hit/$found lines) meets the $threshold% floor"
           }
 
       - name: Upload coverage report
@@ -308,9 +290,10 @@ jobs:
           fail_ci_if_error: false
 
   sanitizers:
-    needs: [validate-environment]
     # Skip main-branch pushes (handled by standalone sanitizers.yml) to avoid duplicate sanitizer runs.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.scope != 'benchmark')
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:
@@ -505,7 +488,6 @@ jobs:
           exit 1
 
   benchmark-regression:
-    needs: [validate-environment]
     runs-on: ubuntu-24.04
     # 20 minutes was not enough: a live run timed out mid-suite with TaskSmackBenchmarks still
     # executing after ~14 minutes of the ~73-benchmark, 10-repetitions-each suite alone (on top

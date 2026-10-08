@@ -2002,7 +2002,7 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, a Linux Release build on the same events plus the weekly schedule (Windows Release runs on push/schedule/dispatch only), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, weekly, and via manual dispatch. It detects docs-only pull requests to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR, a Linux Release build on the same events plus the weekly schedule (Windows Release runs on push/schedule/dispatch only), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/schedule/dispatch (skipped on docs-only PRs, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `CI Success` gate job used for branch protection; when a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
@@ -2010,7 +2010,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
-- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) had already completed on the PR's head commit, and it runs on the push of the merge itself, so merge only after `Analyze C++` has passed or the newest commit counts as unscanned (#1405).
+- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
@@ -2018,7 +2018,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
 - **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase on Linux and on Windows, both blocking (pushes to main, manual dispatch).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule).
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule, manual dispatch). The coverage jobs report **line** coverage from `coverage/coverage.lcov` and warn (never fail) when it drops below a floor set a few points under the current baseline; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
 - **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases on `v*.*.*` tags.
@@ -2026,12 +2026,13 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
-PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
+PR optimization: docs-only pull requests skip compile/test and `clang-tidy` jobs in `ci.yml` to keep feedback fast.
 
 Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` never cancel
 each other. `ci.yml`, `sanitizers.yml`, `static-analysis.yml` and `heavy-checks.yml` give each `main` commit its
 own concurrency group, so back-to-back merges each get a complete run and a regression is blamed on the commit
 that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
+`pre-commit.yml` and `dependency-review.yml` also cancel a PR's superseded run.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies

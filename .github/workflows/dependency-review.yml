@@ -6,7 +6,12 @@ name: Dependency Review
 
 on:
   pull_request:
-    branches: [main, 'dev/**']
+    branches: [main]
+
+# A new push to a PR cancels that PR's superseded review.
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions: {}
 
