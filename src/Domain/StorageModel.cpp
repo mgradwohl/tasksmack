@@ -165,26 +165,25 @@ StorageSnapshot StorageModel::computeSnapshot(const Platform::SystemDiskCounters
     snapshot.hasReadWriteBytes = caps.hasReadWriteBytes;
     snapshot.hasIoTime = caps.hasIoTime;
 
-    // Process each disk. Only the first entry of a device name advances its rate state -- the entry the
-    // history records (see stageHistoryAppend()) -- so the next sample is measured from it. A later
-    // entry with the same name is measured against a scratch copy of that state and leaves it as is.
+    // Process each disk. A device name is one disk: only its first entry in the sample counts. It
+    // advances the rate state (so the next sample is measured from it), is listed in the snapshot, is
+    // what the history records and is all the totals add. A later entry with the same name (a
+    // duplicated /proc/diskstats row, a drive the Windows probe lists twice) is dropped, so the
+    // snapshot, the per-disk history and the totals all count the disk once (#1467).
     snapshot.disks.reserve(counters.disks.size());
     std::unordered_set<std::string> seen;
     seen.reserve(counters.disks.size());
     for (const auto& diskCounters : counters.disks)
     {
         const std::string& deviceName = diskCounters.deviceName;
+        if (!seen.insert(deviceName).second)
+        {
+            continue;
+        }
 
         // Get or create state for this device
         auto& state = diskStates[deviceName];
         state.deviceName = deviceName;
-
-        if (!seen.insert(deviceName).second)
-        {
-            DiskState scratch = state;
-            snapshot.disks.push_back(computeDiskSnapshot(diskCounters, scratch, now));
-            continue;
-        }
 
         const DiskSnapshot diskSnap = computeDiskSnapshot(diskCounters, state, now);
         snapshot.disks.push_back(diskSnap);
@@ -200,7 +199,8 @@ StorageSnapshot StorageModel::computeSnapshot(const Platform::SystemDiskCounters
         state.hasPrev = true;
     }
 
-    // Compute system-wide totals, and whether they are a measurement (see totalRateOrNaN()).
+    // Compute system-wide totals, and whether they are a measurement (see totalRateOrNaN()). Each
+    // device name is in snapshot.disks once, so no disk is added twice.
     bool anyRates = false;
     bool anyRejected = false;
     for (const auto& disk : snapshot.disks)
@@ -233,22 +233,20 @@ void StorageModel::stageHistoryAppend(PendingSample& pending, const StorageSnaps
         return history;
     };
 
-    // Which entries this sample appends: the first of each device name (a repeated name is appended
-    // to once, so its series stays aligned), and which names are present at all. New names get their
-    // series, display slot and last-seen entry staged here.
-    pending.firstOfName.reserve(snapshot.disks.size());
+    // Which names this sample has (computeSnapshot() lists each device name once, so each series is
+    // appended to once and stays aligned). New names get their series, display slot and last-seen
+    // entry staged here.
     pending.present.reserve(snapshot.disks.size());
     for (const auto& disk : snapshot.disks)
     {
-        const bool first = pending.present.insert(disk.deviceName).second;
-        pending.firstOfName.push_back(first ? 1 : 0);
-        if (first && !m_DiskReadHistory.contains(disk.deviceName))
+        pending.present.insert(disk.deviceName);
+        if (!m_DiskReadHistory.contains(disk.deviceName))
         {
             pending.newRead.emplace(disk.deviceName, makeBackfilled());
             pending.newWrite.emplace(disk.deviceName, makeBackfilled());
             pending.newOrder.push_back(disk.deviceName);
         }
-        if (first && !m_DiskLastSeenSeconds.contains(disk.deviceName))
+        if (!m_DiskLastSeenSeconds.contains(disk.deviceName))
         {
             pending.newLastSeen.emplace(disk.deviceName, nowSeconds);
         }
@@ -306,13 +304,8 @@ void StorageModel::commitHistoryAppend(PendingSample& pending, StorageSnapshot&&
     // Per-disk history: this sample's rate for each disk present (a disk without measured rates yet
     // is a gap, not a false 0 B/s, #1102), and a NaN placeholder for each known disk absent from it,
     // so every series stays index-aligned with m_Timestamps. NaN, not 0: nothing was measured (#1015).
-    for (std::size_t i = 0; i < snapshot.disks.size(); ++i)
+    for (const DiskSnapshot& disk : snapshot.disks)
     {
-        const DiskSnapshot& disk = snapshot.disks[i];
-        if (pending.firstOfName[i] == 0)
-        {
-            continue;
-        }
         const auto read = m_DiskReadHistory.find(disk.deviceName);
         const auto write = m_DiskWriteHistory.find(disk.deviceName);
         if (read != m_DiskReadHistory.end() && write != m_DiskWriteHistory.end())
