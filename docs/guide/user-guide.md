@@ -206,6 +206,19 @@ Digits are all the same width, so a value that changes every second does not shi
 - **Power** has one decimal in W, mW or µW ("45.0 W"). **Temperature** is in whole degrees, rounded ("65°C").
 - **Durations** (CPU Time, uptime) use the two largest units: "45s", "2m 05s", "1h 02m", "3d 04h". The charts' time axis counts back from **now** ("5m", "4m", … "now"), and a chart tooltip gives the hovered sample's age.
 
+### Environment variables
+
+On Linux, the Process Details **Overview** tab has a collapsible **Environment** section, closed by default, under the Identity and Runtime blocks. Open it to list the selected process's environment variables in a NAME / VALUE table sorted by name; with more than 20 variables a filter box appears. A value too long for its column shows in a tooltip, up to its first 4 KiB (a longer value is cut there, at a character boundary); the cell itself draws at most the first 512 bytes. TaskSmack reads `/proc/[pid]/environ` only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds. The list is the environment the process started with; a later `setenv()` inside the process does not show.
+
+- **Secret-looking values are masked.** A variable whose name looks like it holds a secret shows `••••••••` instead of its value, with an eye button on its row that reveals that one value; it stays revealed until you select a different process (or press the button again). Masked values are never searched by the filter. The rule matches the name case-insensitively and errs toward masking:
+  - masked if the name contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`, `CREDENTIAL`, `COOKIE`, `PRIVATE`, `APIKEY`, `ACCESSKEY`, `SIGNINGKEY`, `CONNECTIONSTRING`, `CONNSTR`, `DATABASEURL` or `BEARER` anywhere (ignoring `_`, `-` and `.`);
+  - masked if a word of the name (split at `_`, `-`, `.` and other non-alphanumerics) is `KEY`, `KEYS`, `PASS`, `PWD`, `PIN`, `AUTH`, `SESSION`, `CERT`, `CERTS`, `DSN`, `SALT`, `OTP`, `JWT` or `SID`, ends in `KEY`/`KEYS`, starts with `AUTH` (but not `AUTHOR`/`AUTHORS`), or starts or ends with `PASS`, `SESSION` or `CERT`;
+  - never masked: `PWD`, `OLDPWD`, `XDG_SESSION_TYPE`, `XDG_SESSION_CLASS`, `XDG_SESSION_DESKTOP`, `XDG_SESSION_ID`, `XDG_SESSION_PATH`, `DESKTOP_SESSION`, `DBUS_SESSION_BUS_ADDRESS`, `SESSION_MANAGER`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`. Words, not substrings, keep names such as `KEYBOARD` or `XKB_DEFAULT_KEYMAP` plain.
+- **Another user's process** shows "Not readable (permission denied)": the kernel lets only the process's own user, or root / `CAP_SYS_PTRACE`, read it. A process that has exited shows "Process exited". Until TaskSmack has confirmed which process holds the PID (its start time), the section shows "Not available yet" and reads nothing; it tries again at the next 3-second refresh.
+- Control characters and invalid UTF-8 in names and values are shown escaped (`\n`, `\xFF`).
+- TaskSmack never writes environment values to its log.
+- **Windows:** not available (reading another process's environment there needs its memory); the section is hidden.
+
 ### Process Actions
 
 Right-click any process row to access actions:
@@ -273,6 +286,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Steal time (`steal`) | ✅ | ❌ |
 | Load average (1/5/15 min) | ✅ | ❌ |
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ❌ |
+| Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |

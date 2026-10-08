@@ -8,6 +8,7 @@
 
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/PowerTypes.h"
@@ -820,5 +821,53 @@ inline Platform::SystemCapabilities makeFullSystemCapabilities()
     caps.hasNetworkCounters = true;
     return caps;
 }
+
+// =============================================================================
+// Mock Process Environment Reader
+// =============================================================================
+
+/// Mock IProcessEnvironmentReader (#179): returns a configured result and records each read's
+/// target and how many reads there were, so a test can check the on-demand cadence.
+class MockProcessEnvironmentReader : public Platform::IProcessEnvironmentReader
+{
+  public:
+    void setHasEnvironment(bool hasEnvironment)
+    {
+        m_HasEnvironment = hasEnvironment;
+    }
+
+    void setResult(Platform::EnvironmentReadResult result)
+    {
+        m_Result = std::move(result);
+    }
+
+    [[nodiscard]] bool hasEnvironment() const override
+    {
+        return m_HasEnvironment;
+    }
+
+    [[nodiscard]] Platform::EnvironmentReadResult readEnvironment(const Platform::ProcessTarget& target) override
+    {
+        ++m_ReadCount;
+        m_LastTarget = target;
+        return m_Result;
+    }
+
+    [[nodiscard]] int readCount() const
+    {
+        return m_ReadCount;
+    }
+
+    [[nodiscard]] const Platform::ProcessTarget& lastTarget() const
+    {
+        return m_LastTarget;
+    }
+
+  private:
+    bool m_HasEnvironment = true;
+    Platform::EnvironmentReadResult m_Result{.status = Platform::EnvironmentReadStatus::Ok, .variables = {}};
+    int m_ReadCount = 0;
+    Platform::ProcessTarget m_LastTarget{};
+};
 
 } // namespace TestMocks
