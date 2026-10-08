@@ -153,6 +153,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/NetworkSection.cpp
     src/App/Panels/StorageSection.cpp
     src/App/Panels/GpuSection.cpp
+    src/App/Panels/ServicesPanel.cpp
+    src/App/Panels/ServicesView.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp

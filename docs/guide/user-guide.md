@@ -238,6 +238,17 @@ On Linux, the Process Details **Overview** tab also has a collapsible **Connecti
 - **Another user's process** shows "Not permitted (another user's process)": listing a process's socket descriptors needs the same rights as debugging it (its own user, or root / `CAP_SYS_PTRACE`). A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet". A process with no TCP or UDP sockets shows "No TCP or UDP sockets". If a socket table cannot be read, the section shows "Could not be read" with the reason rather than a partial list.
 - **Windows:** not available yet (tracked in #1489); the section is hidden.
 
+### Services
+
+The **Services** tab lists the system's services, read-only (starting, stopping and changing the start type are planned, #800):
+
+- **Columns:** **Name** (the service's short name), **Display name**, **State** (Running in the running colour, Starting/Stopping/Resuming/Pausing in the amber pending colour, Paused, Stopped muted), **Start type** (Automatic, Automatic (delayed), Manual, Disabled), **PID** (blank when the service isn't running) and **Account** (the account it logs on as).
+- Hover a row for its description, its command line, its svchost group (for services that share an `svchost.exe`) and whether it runs in its own process or a shared one.
+- Click a column header to sort by it; click again to reverse. Type in the filter box to show only services whose name or display name contains the text (case doesn't matter).
+- The list is read only while the tab is shown, when you open it and then every 2 seconds, in the background. A service's configuration (start type, command line, account, description) is re-read every 30 seconds.
+- **Windows:** read from the Service Control Manager without administrator rights. A service whose configuration Windows won't show to your account leaves those columns blank. If the Service Control Manager itself can't be opened, the tab says so (for example "Access to the Service Control Manager was denied") instead of showing an empty list. If a later read fails, the last list read stays on screen under an "Out of date: <reason>" line until a read succeeds again; if no read has ever succeeded, the tab shows "Couldn't read the services" with the reason.
+- **Linux:** not available yet ("Services aren't available on this platform yet"); systemd support is planned.
+
 ### Process Actions
 
 Right-click any process row for Terminate, Kill, Stop and Resume. The **Actions** block of Process Details' **Overview** tab has those too, plus the priority controls; the row menu of a multi-selection can also set one priority for all the selected processes (see below):
@@ -327,6 +338,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ❌ |
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
+| Services tab (read-only) | ❌ (planned: systemd) | ✅ (Service Control Manager; no administrator needed) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |

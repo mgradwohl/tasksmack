@@ -56,6 +56,8 @@ namespace
 constexpr const char* PROCESSES_TAB_TEXT = "Processes";
 constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
 static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
+constexpr const char* SERVICES_TAB_TEXT = "Services";                                // #800
+constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab"; // #800
 
 // The status bar's Settings/About buttons (native decorations only), named once: their widths are
 // measured before they are drawn, so the text beside them can make room (#1200).
@@ -85,7 +87,11 @@ ShellLayer::ShellLayer()
               {.panel = m_ProcessDetailsPanel,
                .eventName = "ProcessDetails",
                .label = [this] { return m_DetailsTabLabel.label().c_str(); },
-               .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); }}})
+               .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); }},
+              {.panel = m_ServicesPanel,
+               .eventName = "Services",
+               .label = [] { return SERVICES_TAB_LABEL; },
+               .text = [] { return std::string_view(SERVICES_TAB_TEXT); }}})
 {}
 
 void ShellLayer::onAttach()
