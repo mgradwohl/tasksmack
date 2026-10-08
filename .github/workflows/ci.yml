@@ -553,7 +553,7 @@ jobs:
   # Blocking ASan+UBSan run on PRs (#1406). It used to be advisory (`|| true` plus
   # continue-on-error), so a PR could merge with a sanitizer finding and only the push-to-main run
   # in sanitizers.yml failed -- after the fact, where nothing gated on it (#1541). It is now one of
-  # CI Success's needs, and sanitizers.yml no longer repeats it on every push (weekly in
+  # CI Success's needs, and sanitizers.yml no longer repeats it on every push (nightly in
   # heavy-checks.yml and on manual dispatch instead).
   asan-ubsan:
     name: ASan+UBSan
@@ -616,7 +616,9 @@ jobs:
             echo "❌ **Status:** tests failed under ASan+UBSan (ctest exit $ctest_exit)" >> "$GITHUB_STEP_SUMMARY"
             {
               echo '```'
-              grep -E "runtime error:|ERROR: AddressSanitizer|SUMMARY:|\*\*\*Failed|\(Failed\)" asan-ubsan-output.txt | head -30
+              # Diagnostic only: under pipefail, head closing early (SIGPIPE, 141) or no match (1)
+              # must not end the step before it reports ctest's own exit status.
+              grep -E "runtime error:|ERROR: AddressSanitizer|SUMMARY:|\*\*\*Failed|\(Failed\)" asan-ubsan-output.txt | head -30 || true
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             grep -m 10 -E "runtime error:|ERROR: AddressSanitizer" asan-ubsan-output.txt | while IFS= read -r finding; do
