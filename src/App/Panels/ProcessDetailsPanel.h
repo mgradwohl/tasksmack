@@ -119,7 +119,7 @@ class ProcessDetailsPanel : public Panel
 
     /// F9 (#170): on this frame's render, opens the Actions block's Kill confirm for the process shown,
     /// through ProcessActionsView::requestKillShortcut() (target captured then, never a direct kill),
-    /// and brings the Overview tab, which holds that block (#1493), forward so the dialog is drawn. Does nothing while this pane is not
+    /// and brings the Overview tab, which holds that block (#1493), forward. Does nothing while this pane is not
     /// showing a running process, or when the platform cannot kill. Lives for this frame only:
     /// expireFrameRequests() drops it if the tabs were not drawn.
     void requestKillSelected() noexcept
@@ -209,7 +209,7 @@ class ProcessDetailsPanel : public Panel
     // owning.
     ProcessActionsView m_ActionsView;
     KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
-    bool m_SelectOverviewTab = false;               // F9 asked for the Kill confirm: show the Overview, whose Actions block draws it
+    bool m_SelectOverviewTab = false;               // F9 asked for the Kill confirm: show the Overview, which holds the Actions block
     ProcessPriorityView m_PriorityView;
 
     // The Overview's Environment section (#179). The reader is created by the composition root (the

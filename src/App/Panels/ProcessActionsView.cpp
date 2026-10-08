@@ -21,10 +21,17 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
                                 const std::string& processName,
                                 const Platform::ProcessTarget& target)
 {
+    renderConfirmation(actions, target);
+    renderControls(capabilities, processName, target);
+}
+
+void ProcessActionsView::renderControls(const Platform::ProcessActionCapabilities& capabilities,
+                                        const std::string& processName,
+                                        const Platform::ProcessTarget& target)
+{
     // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
     // block's header and beside the Identity block that names the process (#1493).
     renderResultFeedback();
-    renderConfirmDialog(actions, target);
     renderButtons(capabilities, processName, target);
 }
 

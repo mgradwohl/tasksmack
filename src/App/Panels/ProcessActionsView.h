@@ -112,13 +112,31 @@ class ProcessActionsView
     };
 
     /// Draws the result line, the confirm dialog while it is open, and the buttons @p capabilities
-    /// allow. The caller draws the header and names the process (the Overview's Actions block, #1493). A button captures @p target and @p
-    /// processName for its confirm; a confirmed action is dispatched to @p actions (which may be null: the result then says actions are
-    /// unavailable) for that captured target.
+    /// allow: renderControls() and renderConfirmation() together, for a caller that draws both in one
+    /// place. A button captures @p target and @p processName for its confirm; a confirmed action is
+    /// dispatched to @p actions (which may be null: the result then says actions are unavailable) for
+    /// that captured target.
     void render(Platform::IProcessActions* actions,
                 const Platform::ProcessActionCapabilities& capabilities,
                 const std::string& processName,
                 const Platform::ProcessTarget& target);
+
+    /// Draws the result line and the buttons @p capabilities allow, without the confirm dialog. The
+    /// caller draws the header and names the process (the Overview's Actions block, #1493), and must
+    /// call renderConfirmation() every frame from a scope that always runs.
+    void renderControls(const Platform::ProcessActionCapabilities& capabilities,
+                        const std::string& processName,
+                        const Platform::ProcessTarget& target);
+
+    /// Submits the confirm dialog while a confirm is pending, and closes it unconfirmed after a
+    /// selection change or when @p liveTarget is no longer the captured process; a confirmed action is
+    /// dispatched to @p actions. Kept apart from the buttons so it runs even when they are not drawn:
+    /// ProcessDetailsPanel calls it at panel scope, since the Actions block's child is skipped while it
+    /// is scrolled out of view, and F9 must still open its Kill confirm then (#1493).
+    void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
+    {
+        renderConfirmDialog(actions, liveTarget);
+    }
 
     /// Advances the result line's timeout by @p deltaSeconds, clearing the line once it runs out.
     void tick(float deltaSeconds) noexcept

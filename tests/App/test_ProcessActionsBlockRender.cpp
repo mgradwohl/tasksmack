@@ -252,6 +252,8 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndAc
         const auto layout = ProcessDetailsLayout::computeActionsBlockLayout(
             1600.0F, 600.0F, ImGui::GetStyle().ItemSpacing.x, widths.controls, widths.priority, widths.columnGap, widths.padding);
         ProcessActionsBlock::render(h.context(ALL_ACTIONS), widths, layout, rowChildHeight(6.0F));
+        // As ProcessDetailsPanel does: the dialog from panel scope, every frame.
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
         {
             modalName = modal->Name;
@@ -266,6 +268,44 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndAc
     // A selection change still closes it unconfirmed.
     h.actionsView.onSelectionChanged();
     EXPECT_FALSE(runFrame(body));
+    EXPECT_EQ(h.mock.killCount(), 0);
+}
+
+TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheBlockIsScrolledOutOfView)
+{
+    // The Overview scrolled so the Actions block is out of view: ImGui skips the block's child, and
+    // everything in it. The confirm dialog is submitted from outside it, so F9's Kill confirm still
+    // opens (Copilot review on #1511) instead of staying pending with no dialog and refusing every
+    // later F9.
+    Harness h;
+    bool blockSkipped = false;
+    std::string modalName;
+    const auto body = [&]
+    {
+        // A short scrolling Overview with the block far below its visible part.
+        ImGui::BeginChild("##OverviewContent", ImVec2(1000.0F, 100.0F));
+        ImGui::Dummy(ImVec2(10.0F, 2000.0F));
+        const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(ALL_ACTIONS);
+        const auto layout = ProcessDetailsLayout::computeActionsBlockLayout(
+            1000.0F, 0.0F, ImGui::GetStyle().ItemSpacing.x, widths.controls, widths.priority, widths.columnGap, widths.padding);
+        ProcessActionsBlock::render(h.context(ALL_ACTIONS), widths, layout, rowChildHeight(6.0F));
+        const ImGuiWindow* block = blockWindow();
+        blockSkipped = block == nullptr || block->SkipItems;
+        ImGui::EndChild();
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
+        {
+            modalName = modal->Name;
+        }
+    };
+    (void) runFrame(body); // Lays the Overview out, so the next frames know the block is clipped
+    ASSERT_FALSE(runFrame(body));
+
+    ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name)); // F9
+    EXPECT_TRUE(runFrame(body));
+    EXPECT_TRUE(runFrame(body));
+    EXPECT_TRUE(blockSkipped) << "the block was drawn, so this does not test the scrolled-out case";
+    EXPECT_TRUE(modalName.starts_with("Kill")) << modalName;
     EXPECT_EQ(h.mock.killCount(), 0);
 }
 

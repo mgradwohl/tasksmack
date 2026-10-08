@@ -69,6 +69,10 @@ struct Context
 /// @p rowChildHeight tall, the height of theirs, and scrolls should its content ever be taller; wrapped
 /// below them it takes the height its content needs. Text in the block (the result and error lines)
 /// wraps at its edge rather than being clipped.
+///
+/// The buttons only: the confirm dialog is not drawn here, since the child, and all in it, is skipped
+/// while scrolled out of view. The caller submits it every frame with
+/// ProcessActionsView::renderConfirmation().
 void render(const Context& context, const Widths& widths, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight);
 
 } // namespace ProcessActionsBlock

@@ -50,7 +50,7 @@ void render(const Context& context, const Widths& widths, const ProcessDetailsLa
 
     const auto renderControls = [&context]
     {
-        context.actionsView->render(context.actions, context.capabilities, *context.processName, context.target);
+        context.actionsView->renderControls(context.capabilities, *context.processName, context.target);
     };
     const auto renderPriority = [&context]
     {

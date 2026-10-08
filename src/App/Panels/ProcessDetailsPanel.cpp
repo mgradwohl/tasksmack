@@ -238,7 +238,7 @@ void ProcessDetailsPanel::renderContent()
     }
 
     // F9: the Actions block's Kill confirm for the process shown, its target captured now; the
-    // Overview, which holds the block (#1493), is brought forward below so the dialog is drawn.
+    // Overview, which holds the block (#1493), is brought forward below.
     if (killRequested && m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
     {
         m_SelectOverviewTab = true;
@@ -253,7 +253,7 @@ void ProcessDetailsPanel::renderContent()
     if (ImGui::BeginTabBar("DetailsTabs", ImGuiTabBarFlags_DrawSelectedOverline))
     {
         // 1. Overview, with the Actions block beside Identity and Runtime (#1493). Brought forward by
-        // F9, whose confirm dialog that block draws (#170).
+        // F9, so its Kill confirm shows over the block it belongs to (#170).
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
         const ImGuiTabItemFlags overviewFlags = std::exchange(m_SelectOverviewTab, false) ? ImGuiTabItemFlags_SetSelected : 0;
         if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview", nullptr, overviewFlags))
@@ -307,6 +307,11 @@ void ProcessDetailsPanel::renderContent()
     }
 
     ImGui::PopStyleVar(); // FramePadding
+
+    // The Actions block's confirm dialog, submitted here every frame rather than from the block: the
+    // block's child is skipped while the Overview is scrolled so that it is out of view, which left
+    // an F9 Kill confirm pending with no dialog, refusing further F9 presses (#1493).
+    m_ActionsView.renderConfirmation(m_ProcessActions.get(), selectedTarget());
 }
 
 void ProcessDetailsPanel::onEvent(Core::Event& event)
