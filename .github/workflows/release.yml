@@ -130,8 +130,14 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
           key: linux-release-package-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Main-only saving, as in every other workflow (#1406): a cache saved by a tag run can only
+          # be restored by that same tag, so tag runs only restore.
+          save: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Record toolchain versions
         # Documents the exact release environment for cross-run investigation.
@@ -284,6 +290,9 @@ jobs:
           install: binary
           key: windows-release-package-llvm${{ env.LLVM_SEMVER_VERSION }}
           max-size: 500M
+          # Main-only saving, as in every other workflow (#1406): a cache saved by a tag run can only
+          # be restored by that same tag, so tag runs only restore.
+          save: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Record toolchain versions
         # Documents the exact release environment for cross-run investigation.
