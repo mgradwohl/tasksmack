@@ -110,7 +110,16 @@ template<typename SnapshotRange, typename SelectedPredicate>
         {
             std::format_to(std::back_inserter(body), "\n    {} (PID {})", t.name, t.target.pid);
             ++listed;
-            (t.target.pid == INIT_PID ? init : self) = &t;
+            // Independent: TaskSmack can itself be PID 1 (the init of a PID namespace), and then
+            // both warnings apply (#804 review).
+            if (t.target.pid == INIT_PID)
+            {
+                init = &t;
+            }
+            if (ownPid > 0 && t.target.pid == ownPid)
+            {
+                self = &t;
+            }
         }
     }
     for (const BatchTarget& t : targets)

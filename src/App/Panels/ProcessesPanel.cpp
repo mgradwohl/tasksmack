@@ -2230,6 +2230,17 @@ void ProcessesPanel::applyPendingClick(const std::vector<Domain::ProcessSnapshot
     {
         selectProcess(click.pid, click.key);
     }
+    else if (m_Selection.size() == 1 && !m_Selection.contains(m_SelectedUniqueKey))
+    {
+        // Ctrl+click removed the primary row and left one: that row is the selection now, so it
+        // becomes the primary too, or F9 (which acts on the primary) would refuse (#804 review).
+        const std::uint64_t remaining = *m_Selection.keys().begin();
+        const auto it = std::ranges::find(snapshots, remaining, &Domain::ProcessSnapshot::uniqueKey);
+        if (it != snapshots.end())
+        {
+            selectProcess(it->pid, remaining);
+        }
+    }
 }
 
 void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapshot>& snapshots,

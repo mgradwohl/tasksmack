@@ -157,6 +157,16 @@ TEST(ProcessBatchActionTest, BodyAlwaysNamesTaskSmackItselfAndPidOne)
     EXPECT_LT(body.find("systemd (PID 1)"), body.find("proc0 (PID 100)"));
 }
 
+TEST(ProcessBatchActionTest, TaskSmackAsPidOneGetsBothWarnings)
+{
+    // TaskSmack as the init of a PID namespace: it is PID 1 and itself, so both lines are shown.
+    std::vector<BatchTarget> targets = numberedTargets(2);
+    targets.push_back(target(INIT_PID, "TaskSmack"));
+    const std::string body = confirmBody(ProcessAction::Kill, targets, INIT_PID);
+    EXPECT_TRUE(body.contains("This includes TaskSmack itself (PID 1)"));
+    EXPECT_TRUE(body.contains("This includes PID 1 (TaskSmack), the system's init process."));
+}
+
 TEST(ProcessBatchActionTest, NoWarningsWithoutNotableTargetsOrWithAnUnknownOwnPid)
 {
     const std::vector<BatchTarget> plain{target(10, "a"), target(11, "b")};
