@@ -203,6 +203,8 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessActionConfirmPopup.cpp
     App/test_ProcessPriorityView.cpp
     App/test_ProcessPriorityViewRender.cpp
+    App/test_ProcessIoPriorityView.cpp
+    App/test_ProcessIoPriorityViewRender.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
@@ -262,6 +264,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
+    Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessStatus.cpp
     Platform/test_LinuxDiskProbe.cpp
     Platform/test_LinuxPathProvider.cpp
@@ -351,10 +354,11 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
     # The process-action confirm modal, the Actions tab, the priority control and the chart tabs, run
     # headless (test_ProcessActionConfirmPopup.cpp, test_ProcessPriorityViewRender.cpp,
-    # test_ProcessDetailsChartsRender.cpp)
+    # test_ProcessIoPriorityViewRender.cpp, test_ProcessDetailsChartsRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIoPriorityView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsCharts.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp

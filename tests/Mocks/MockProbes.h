@@ -457,7 +457,8 @@ class MockPowerProbe : public Platform::IPowerProbe
 
 /// Mock implementation of IProcessActions for testing.
 /// Allows controlled injection of per-method results/capabilities and tracks the pid
-/// (and, for setPriority, nice value) each method was last called with, plus a call count.
+/// (and, for setPriority, nice value; for setIoPriority, class and level) each method was last called
+/// with, plus a call count. getIoPriority() returns whatever setIoPriorityReadResult() gave it.
 class MockProcessActions : public Platform::IProcessActions
 {
   public:
@@ -489,6 +490,17 @@ class MockProcessActions : public Platform::IProcessActions
     void setPriorityResult(Platform::ProcessActionResult result)
     {
         m_SetPriorityResult = std::move(result);
+    }
+
+    void setIoPriorityResult(Platform::ProcessActionResult result)
+    {
+        m_SetIoPriorityResult = std::move(result);
+    }
+
+    /// What getIoPriority() returns: a value, or an error message.
+    void setIoPriorityReadResult(Platform::IoPriorityReadResult result)
+    {
+        m_IoPriorityReadResult = std::move(result);
     }
 
     [[nodiscard]] Platform::ProcessActionCapabilities actionCapabilities() const override
@@ -535,6 +547,22 @@ class MockProcessActions : public Platform::IProcessActions
         m_LastSetPriorityNice = nice;
         ++m_SetPriorityCount;
         return m_SetPriorityResult;
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult
+    setIoPriority(const Platform::ProcessTarget& target, Platform::IoPriorityClass ioClass, int32_t level) override
+    {
+        m_LastTarget = target;
+        m_LastSetIoPriority = {.ioClass = ioClass, .level = level};
+        ++m_SetIoPriorityCount;
+        return m_SetIoPriorityResult;
+    }
+
+    [[nodiscard]] Platform::IoPriorityReadResult getIoPriority(const Platform::ProcessTarget& target) override
+    {
+        m_LastIoPriorityReadTarget = target;
+        ++m_GetIoPriorityCount;
+        return m_IoPriorityReadResult;
     }
 
     [[nodiscard]] int32_t lastTerminatePid() const
@@ -587,6 +615,24 @@ class MockProcessActions : public Platform::IProcessActions
     {
         return m_SetPriorityCount;
     }
+    [[nodiscard]] int setIoPriorityCount() const
+    {
+        return m_SetIoPriorityCount;
+    }
+    /// Class and level setIoPriority() was last called with.
+    [[nodiscard]] Platform::IoPriority lastSetIoPriority() const
+    {
+        return m_LastSetIoPriority;
+    }
+    [[nodiscard]] int getIoPriorityCount() const
+    {
+        return m_GetIoPriorityCount;
+    }
+    /// Target getIoPriority() was last called with (reads are not actions, so not in lastTarget()).
+    [[nodiscard]] Platform::ProcessTarget lastIoPriorityReadTarget() const
+    {
+        return m_LastIoPriorityReadTarget;
+    }
 
   private:
     Platform::ProcessActionCapabilities m_Capabilities;
@@ -595,6 +641,8 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::ProcessActionResult m_StopResult = Platform::ProcessActionResult::ok();
     Platform::ProcessActionResult m_ResumeResult = Platform::ProcessActionResult::ok();
     Platform::ProcessActionResult m_SetPriorityResult = Platform::ProcessActionResult::ok();
+    Platform::ProcessActionResult m_SetIoPriorityResult = Platform::ProcessActionResult::ok();
+    Platform::IoPriorityReadResult m_IoPriorityReadResult = Platform::IoPriority{};
 
     int32_t m_LastTerminatePid = 0;
     int32_t m_LastKillPid = 0;
@@ -609,6 +657,10 @@ class MockProcessActions : public Platform::IProcessActions
     int m_StopCount = 0;
     int m_ResumeCount = 0;
     int m_SetPriorityCount = 0;
+    int m_SetIoPriorityCount = 0;
+    int m_GetIoPriorityCount = 0;
+    Platform::IoPriority m_LastSetIoPriority;
+    Platform::ProcessTarget m_LastIoPriorityReadTarget;
 };
 
 // =============================================================================

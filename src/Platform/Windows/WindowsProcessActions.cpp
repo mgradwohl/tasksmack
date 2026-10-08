@@ -16,6 +16,7 @@
 // clang-format on
 
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <memory>
 #include <string>
@@ -131,11 +132,12 @@ BOOL CALLBACK postCloseToProcessWindow(HWND window, LPARAM param)
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
     return ProcessActionCapabilities{
-        .canTerminate = true,   // WM_CLOSE to the process's windows: a request it may answer (#1094)
-        .canKill = true,        // TerminateProcess
-        .canStop = false,       // Windows doesn't have SIGSTOP equivalent
-        .canContinue = false,   // Windows doesn't have SIGCONT equivalent
-        .canSetPriority = true, // SetPriorityClass
+        .canTerminate = true,      // WM_CLOSE to the process's windows: a request it may answer (#1094)
+        .canKill = true,           // TerminateProcess
+        .canStop = false,          // Windows doesn't have SIGSTOP equivalent
+        .canContinue = false,      // Windows doesn't have SIGCONT equivalent
+        .canSetPriority = true,    // SetPriorityClass
+        .canSetIoPriority = false, // No ionice equivalent (#803)
     };
 }
 
@@ -261,4 +263,15 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
 }
 
 // NOLINTEND(misc-include-cleaner)
+ProcessActionResult
+WindowsProcessActions::setIoPriority(const ProcessTarget& target, [[maybe_unused]] IoPriorityClass ioClass, [[maybe_unused]] int32_t level)
+{
+    return ProcessActionResult::error(std::format("I/O priority is not supported on Windows; nothing sent to process {}", target.pid));
+}
+
+IoPriorityReadResult WindowsProcessActions::getIoPriority(const ProcessTarget& target)
+{
+    return std::unexpected(std::format("I/O priority is not supported on Windows (process {})", target.pid));
+}
+
 } // namespace Platform

@@ -212,26 +212,42 @@ void drawPriorityScaleLabels(const PrioritySliderContext& ctx)
 } // namespace
 
 // Renders the process-priority section: the current priority, the platform's control (the gradient
-// slider, or the Windows priority-class combo), the Apply button and the error line. No-op if the
-// process actions don't support setting priority.
+// slider, or the Windows priority-class combo), the Apply button and the error line; then, where the
+// platform can set it (Linux), the I/O priority control (#803). No-op if the process actions support
+// neither.
 void ProcessPriorityView::render(Platform::IProcessActions* actions,
                                  const Platform::ProcessActionCapabilities& capabilities,
                                  std::optional<std::int32_t> currentNice,
                                  const Platform::ProcessTarget& target)
 {
-    if (!capabilities.canSetPriority)
+    if (!capabilities.canSetPriority && !capabilities.canSetIoPriority)
     {
         return;
     }
-
-    // An edit made for another process is never shown for, or applied to, this one.
-    (void) dropEditIfTargetMoved(target);
 
     ImGui::Spacing();
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
     ImGui::Spacing();
+
+    if (capabilities.canSetPriority)
+    {
+        renderNiceControl(actions, currentNice, target);
+    }
+    // The I/O priority (#803) under the nice control, with its own edit and Apply; Linux only.
+    if (capabilities.canSetIoPriority)
+    {
+        m_IoPriorityView.render(actions, currentNice, target);
+    }
+}
+
+void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
+                                            std::optional<std::int32_t> currentNice,
+                                            const Platform::ProcessTarget& target)
+{
+    // An edit made for another process is never shown for, or applied to, this one.
+    (void) dropEditIfTargetMoved(target);
 
     // Initialize the control from the current process nice value if not changed
     syncToProcess(currentNice);

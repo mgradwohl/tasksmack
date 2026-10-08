@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/IProcessActions.h"
+
 #include <cerrno>
 #include <cstdint>
 #include <format>
@@ -30,6 +32,33 @@ namespace Platform
     case EACCES:
         return std::format(
             "Permission denied: raising priority (nice {} for process {}) needs root or CAP_SYS_NICE. Run TaskSmack as root.", nice, pid);
+    default:
+        return std::system_category().message(err);
+    }
+}
+
+/// The message shown when ioprio_set(2) fails with @p err for process @p pid, asked for class
+/// @p ioClass (#803). Free of platform calls so the mapping is unit-testable, as priorityErrorMessage().
+///
+/// ioprio_set(2) gives EPERM for both causes it has: the Realtime class without CAP_SYS_ADMIN (or, on
+/// newer kernels, CAP_SYS_NICE), and a process of another user without CAP_SYS_NICE. A Realtime request
+/// is told the first, since that check comes first in the kernel; anything else the second.
+[[nodiscard]] inline std::string ioPriorityErrorMessage(int err, IoPriorityClass ioClass, std::int32_t pid)
+{
+    switch (err)
+    {
+    case EPERM:
+        if (ioClass == IoPriorityClass::Realtime)
+        {
+            return std::format("Permission denied: the Realtime I/O class needs root (CAP_SYS_ADMIN). Run TaskSmack as root to set it "
+                               "for process {}.",
+                               pid);
+        }
+        return std::format("Permission denied: process {} belongs to another user. Run TaskSmack as root to change its I/O priority.", pid);
+    case ESRCH:
+        return "Process not found - may have already exited";
+    case EINVAL:
+        return std::format("Invalid I/O priority class or level for process {}", pid);
     default:
         return std::system_category().message(err);
     }

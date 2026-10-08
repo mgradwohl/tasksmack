@@ -16,7 +16,6 @@
 #include "Platform/SystemTypes.h"
 #include "SyntheticWorkload.h"
 
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -77,6 +76,8 @@ class SyntheticProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult stop(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, std::int32_t nice) override;
+    [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, std::int32_t level) override;
+    [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
 };
 
 } // namespace Platform::Synthetic

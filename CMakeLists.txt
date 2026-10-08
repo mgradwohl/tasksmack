@@ -129,6 +129,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessPriorityView.cpp
+    src/App/Panels/ProcessIoPriorityView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/MemorySection.cpp
