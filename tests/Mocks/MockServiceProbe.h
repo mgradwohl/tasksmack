@@ -16,7 +16,10 @@ namespace Mocks
 class MockServiceProbe : public Platform::IServiceProbe
 {
   public:
-    explicit MockServiceProbe(Platform::ServiceCapabilities capabilities = {.canEnumerate = true}) : m_Capabilities(capabilities)
+    MockServiceProbe() : m_Capabilities(enumerable())
+    {}
+
+    explicit MockServiceProbe(Platform::ServiceCapabilities capabilities) : m_Capabilities(std::move(capabilities))
     {}
 
     [[nodiscard]] Platform::ServiceCapabilities capabilities() const override
@@ -29,9 +32,9 @@ class MockServiceProbe : public Platform::IServiceProbe
         ++m_EnumerateCount;
         if (!m_FailureReason.empty())
         {
-            return {.failureReason = m_FailureReason};
+            return Platform::ServiceEnumeration::failed(m_FailureReason);
         }
-        return {.ok = true, .failureReason = {}, .services = m_Services};
+        return Platform::ServiceEnumeration::succeeded(m_Services);
     }
 
     /// The next enumerations succeed with these services.
@@ -53,6 +56,14 @@ class MockServiceProbe : public Platform::IServiceProbe
     }
 
   private:
+    /// A probe that can list services (every other capability left false).
+    [[nodiscard]] static Platform::ServiceCapabilities enumerable()
+    {
+        Platform::ServiceCapabilities capabilities;
+        capabilities.canEnumerate = true;
+        return capabilities;
+    }
+
     Platform::ServiceCapabilities m_Capabilities;
     std::vector<Platform::ServiceInfo> m_Services;
     std::string m_FailureReason;

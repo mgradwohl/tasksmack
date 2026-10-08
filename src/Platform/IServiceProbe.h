@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -64,7 +65,7 @@ struct ServiceCapabilities
     bool hasGroup = false;
     /// Why canEnumerate is false, for the UI to show (e.g. the service manager denied access), so
     /// an unreadable list is told apart from one with no services. Empty when canEnumerate is true.
-    std::string unavailableReason{};
+    std::string unavailableReason;
 };
 
 /// The outcome of one IServiceProbe::enumerate(): the services, or why they could not be read. A
@@ -73,8 +74,18 @@ struct ServiceCapabilities
 struct ServiceEnumeration
 {
     bool ok = false;
-    std::string failureReason{};         ///< Why the read failed, for the UI. Empty when ok.
-    std::vector<ServiceInfo> services{}; ///< Empty unless ok.
+    std::string failureReason;         ///< Why the read failed, for the UI. Empty when ok.
+    std::vector<ServiceInfo> services; ///< Empty unless ok.
+
+    [[nodiscard]] static ServiceEnumeration succeeded(std::vector<ServiceInfo> services)
+    {
+        return {.ok = true, .failureReason = {}, .services = std::move(services)};
+    }
+
+    [[nodiscard]] static ServiceEnumeration failed(std::string reason)
+    {
+        return {.ok = false, .failureReason = std::move(reason), .services = {}};
+    }
 };
 
 /// Reads the system's services (read-only; #800 phase 1). Called from one thread at a time.
@@ -102,12 +113,14 @@ class UnsupportedServiceProbe final : public IServiceProbe
   public:
     [[nodiscard]] ServiceCapabilities capabilities() const override
     {
-        return {.unavailableReason = std::string(UNSUPPORTED_REASON)};
+        ServiceCapabilities capabilities;
+        capabilities.unavailableReason = UNSUPPORTED_REASON;
+        return capabilities;
     }
 
     [[nodiscard]] ServiceEnumeration enumerate() override
     {
-        return {.failureReason = std::string(UNSUPPORTED_REASON)};
+        return ServiceEnumeration::failed(std::string(UNSUPPORTED_REASON));
     }
 
   private:

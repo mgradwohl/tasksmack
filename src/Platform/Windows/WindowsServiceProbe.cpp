@@ -146,14 +146,14 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
 {
     if (m_Impl->scmOpenError != ERROR_SUCCESS)
     {
-        return {.failureReason = capabilities().unavailableReason};
+        return ServiceEnumeration::failed(capabilities().unavailableReason);
     }
     if (!m_Impl->scm)
     {
         m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));
         if (!m_Impl->scm)
         {
-            return {.failureReason = Windows::ServiceMath::scmFailureReason(GetLastError(), "be opened")};
+            return ServiceEnumeration::failed(Windows::ServiceMath::scmFailureReason(GetLastError(), "be opened"));
         }
     }
 
@@ -182,7 +182,7 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
             spdlog::debug("WindowsServiceProbe: EnumServicesStatusExW failed (error {})", error);
             // A failed handle (e.g. the SCM restarted) is reopened on the next call.
             m_Impl->scm.reset();
-            return {.failureReason = Windows::ServiceMath::scmFailureReason(error, "list the services")};
+            return ServiceEnumeration::failed(Windows::ServiceMath::scmFailureReason(error, "list the services"));
         }
 
         for (const auto& entry : std::span(buffer.data(), count))
@@ -220,7 +220,7 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
 
     // Services that were deleted no longer need their configuration.
     std::erase_if(m_Impl->configs, [&seen](const auto& entry) { return !seen.contains(entry.first); });
-    return {.ok = true, .failureReason = {}, .services = std::move(services)};
+    return ServiceEnumeration::succeeded(std::move(services));
 }
 
 } // namespace Platform
