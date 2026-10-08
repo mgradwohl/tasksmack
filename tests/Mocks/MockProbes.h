@@ -590,6 +590,23 @@ class MockProcessActions : public Platform::IProcessActions
         return m_SetPriorityCount;
     }
 
+    void setSyscallTraceResult(Platform::ProcessActionResult result)
+    {
+        m_SyscallTraceResult = std::move(result);
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult launchSyscallTrace(const Platform::ProcessTarget& target) override
+    {
+        m_LastTarget = target;
+        ++m_SyscallTraceCount;
+        return m_SyscallTraceResult;
+    }
+
+    [[nodiscard]] int syscallTraceCount() const
+    {
+        return m_SyscallTraceCount;
+    }
+
   private:
     Platform::ProcessActionCapabilities m_Capabilities;
     Platform::ProcessActionResult m_TerminateResult = Platform::ProcessActionResult::ok();
@@ -611,6 +628,8 @@ class MockProcessActions : public Platform::IProcessActions
     int m_StopCount = 0;
     int m_ResumeCount = 0;
     int m_SetPriorityCount = 0;
+    int m_SyscallTraceCount = 0;
+    Platform::ProcessActionResult m_SyscallTraceResult = Platform::ProcessActionResult::ok();
 };
 
 // =============================================================================

@@ -62,6 +62,33 @@ struct ProcessTarget
     return ProcessActionResult::ok();
 }
 
+/// Whether IProcessActions::launchSyscallTrace() can open a system call tracer on this machine (#182).
+enum class SyscallTraceAvailability : std::uint8_t
+{
+    Unsupported, ///< The platform has no such action (Windows): the UI hides it.
+    Available,   ///< A tracer and a terminal to show it in were found.
+    NoTracer,    ///< The platform supports it, but no tracer (strace) was found on PATH.
+    NoTerminal,  ///< The platform supports it, but no terminal emulator was found to run it in.
+};
+
+/// Why the trace action cannot run, for the tooltip of its disabled button; empty when it can.
+[[nodiscard]] constexpr const char* syscallTraceUnavailableReason(SyscallTraceAvailability availability) noexcept
+{
+    switch (availability)
+    {
+    case SyscallTraceAvailability::Unsupported:
+        return "Tracing system calls is not supported on this platform";
+    case SyscallTraceAvailability::NoTracer:
+        return "strace is not installed (or not on PATH). Install it (e.g. sudo apt install strace) and restart TaskSmack.";
+    case SyscallTraceAvailability::NoTerminal:
+        return "No terminal emulator was found to run strace in. Set $TERMINAL, or install x-terminal-emulator, gnome-terminal, "
+               "konsole or xterm, and restart TaskSmack.";
+    case SyscallTraceAvailability::Available:
+        break;
+    }
+    return "";
+}
+
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
@@ -70,6 +97,8 @@ struct ProcessActionCapabilities
     bool canStop = false;        // SIGSTOP
     bool canContinue = false;    // SIGCONT
     bool canSetPriority = false; // setpriority/SetPriorityClass
+    /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
+    SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
 };
 
 /// Interface for platform-specific process actions.
@@ -106,6 +135,18 @@ class IProcessActions
     /// @param target Process to change
     /// @param nice Nice value (-20 to 19 on Unix, mapped to priority class on Windows)
     [[nodiscard]] virtual ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) = 0;
+
+    /// Open a terminal window running a system call tracer (strace) attached to the target (#182).
+    ///
+    /// Returns once the terminal has been started, never waiting for it or the tracer to finish; the
+    /// trace itself is shown and ended in that window. Like every action it refuses a target whose
+    /// identity cannot be confirmed. Only Linux implements it: the default reports it unsupported, as
+    /// actionCapabilities().syscallTrace does (SyscallTraceAvailability::Unsupported).
+    [[nodiscard]] virtual ProcessActionResult launchSyscallTrace(const ProcessTarget& target)
+    {
+        static_cast<void>(target);
+        return ProcessActionResult::error(syscallTraceUnavailableReason(SyscallTraceAvailability::Unsupported));
+    }
 };
 
 } // namespace Platform

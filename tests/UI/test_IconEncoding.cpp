@@ -78,6 +78,14 @@ TEST(IconEncodingTest, IconsUsedByCodePointMatchTheirMacros)
     EXPECT_EQ(decodeSingleCodePoint(ICON_FA_HOUSE), 0xF015U);
 }
 
+// The Actions tab's "Trace system calls (strace)" button (#182).
+TEST(IconEncodingTest, TerminalIsTheTerminalGlyphInsideTheBakedRange)
+{
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_TERMINAL), 0xF120U);
+    EXPECT_GE(decodeSingleCodePoint(ICON_FA_TERMINAL), ICON_MIN_FA);
+    EXPECT_LE(decodeSingleCodePoint(ICON_FA_TERMINAL), ICON_MAX_FA);
+}
+
 // Every icon must fall in the range the font atlas is asked to bake, or it renders as "?".
 TEST(IconEncodingTest, NetworkIconsAreInsideTheBakedRange)
 {

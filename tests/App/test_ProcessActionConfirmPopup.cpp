@@ -72,6 +72,32 @@ class ProcessActionConfirmPopupTest : public ::testing::Test
         return open;
     }
 
+    /// Draws the Actions tab with @p capabilities, then clicks where its last item -- the trace button
+    /// (#182), when drawn -- was. Returns how many times the mock was asked to trace.
+    static int clickTraceButton(const Platform::ProcessActionCapabilities& capabilities, const Platform::ProcessTarget& target)
+    {
+        TestMocks::MockProcessActions mock;
+        ProcessActionsView view;
+        ImVec2 center(-1.0F, -1.0F);
+        const auto draw = [&]
+        {
+            view.render(&mock, capabilities, "a", target);
+            const ImVec2 min = ImGui::GetItemRectMin();
+            const ImVec2 max = ImGui::GetItemRectMax();
+            center = ImVec2((min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F);
+        };
+        static_cast<void>(runFrame(draw));
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(center.x, center.y);
+        static_cast<void>(runFrame(draw));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(runFrame(draw));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        static_cast<void>(runFrame(draw));
+        static_cast<void>(runFrame(draw));
+        return mock.syscallTraceCount();
+    }
+
   private:
     ImGuiContext* m_Context = nullptr;
 };
@@ -234,6 +260,29 @@ TEST_F(ProcessActionConfirmPopupTest, ViewKeepsTheModalOpenForTheSameTarget)
     EXPECT_TRUE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "a", TARGET_A); }));
     EXPECT_TRUE(view.confirmRequested());
     EXPECT_EQ(mock.stopCount(), 0);
+}
+
+// --- Trace system calls (#182) ---------------------------------------------------------------------
+
+TEST_F(ProcessActionConfirmPopupTest, AvailableTraceButtonLaunchesOnClickWithoutAConfirm)
+{
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.syscallTrace = Platform::SyscallTraceAvailability::Available;
+    EXPECT_EQ(clickTraceButton(caps, TARGET_A), 1);
+}
+
+TEST_F(ProcessActionConfirmPopupTest, DisabledTraceButtonDoesNothingWhenClicked)
+{
+    for (const auto availability : {Platform::SyscallTraceAvailability::NoTracer, Platform::SyscallTraceAvailability::NoTerminal})
+    {
+        SCOPED_TRACE(static_cast<int>(availability));
+        Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+        caps.syscallTrace = availability;
+        EXPECT_EQ(clickTraceButton(caps, TARGET_A), 0);
+    }
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.syscallTrace = Platform::SyscallTraceAvailability::Available;
+    EXPECT_EQ(clickTraceButton(caps, {.pid = 0, .startTimeTicks = 0}), 0);
 }
 
 } // namespace

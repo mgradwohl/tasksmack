@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -445,6 +446,125 @@ TEST(ProcessActionsViewTest, DismissForAMovedTargetClearsThePendingConfirm)
     ASSERT_TRUE(view.takeDismiss(TARGET_B));
     EXPECT_EQ(view.pendingAction(), ProcessAction::None);
     EXPECT_EQ(view.confirmTarget().target.pid, -1);
+}
+
+// --- Trace system calls (#182) ---------------------------------------------------------------------
+
+/// Capabilities with only the trace availability set.
+constexpr Platform::ProcessActionCapabilities traceCapability(Platform::SyscallTraceAvailability availability)
+{
+    return {.syscallTrace = availability};
+}
+
+TEST(ProcessActionsViewTest, TraceButtonIsHiddenWhereThePlatformHasNoTracer)
+{
+    // Windows, and the synthetic scenario: the default capabilities say Unsupported.
+    EXPECT_EQ(Detail::syscallTraceButton(Platform::ProcessActionCapabilities{}, TARGET_A).state, Detail::SyscallTraceButtonState::Hidden);
+    EXPECT_EQ(Detail::syscallTraceButton(traceCapability(Platform::SyscallTraceAvailability::Unsupported), TARGET_A).state,
+              Detail::SyscallTraceButtonState::Hidden);
+}
+
+TEST(ProcessActionsViewTest, TraceButtonIsDisabledWithTheReasonWhenAToolIsMissing)
+{
+    for (const auto availability : {Platform::SyscallTraceAvailability::NoTracer, Platform::SyscallTraceAvailability::NoTerminal})
+    {
+        SCOPED_TRACE(static_cast<int>(availability));
+        const Detail::SyscallTraceButton button = Detail::syscallTraceButton(traceCapability(availability), TARGET_A);
+        EXPECT_EQ(button.state, Detail::SyscallTraceButtonState::Disabled);
+        EXPECT_STREQ(button.tooltip, Platform::syscallTraceUnavailableReason(availability));
+        EXPECT_FALSE(std::string_view(button.tooltip).empty());
+    }
+    EXPECT_NE(std::string_view(Platform::syscallTraceUnavailableReason(Platform::SyscallTraceAvailability::NoTracer)).find("strace"),
+              std::string_view::npos);
+    EXPECT_NE(std::string_view(Platform::syscallTraceUnavailableReason(Platform::SyscallTraceAvailability::NoTerminal)).find("TERMINAL"),
+              std::string_view::npos);
+}
+
+TEST(ProcessActionsViewTest, TraceButtonIsEnabledOnlyWithATarget)
+{
+    const auto caps = traceCapability(Platform::SyscallTraceAvailability::Available);
+    const Detail::SyscallTraceButton enabled = Detail::syscallTraceButton(caps, TARGET_A);
+    EXPECT_EQ(enabled.state, Detail::SyscallTraceButtonState::Enabled);
+    EXPECT_FALSE(std::string_view(enabled.tooltip).empty());
+    EXPECT_EQ(Detail::syscallTraceButton(caps, {.pid = 0, .startTimeTicks = 0}).state, Detail::SyscallTraceButtonState::Disabled);
+    EXPECT_EQ(Detail::syscallTraceButton(caps, {.pid = -1, .startTimeTicks = 0}).state, Detail::SyscallTraceButtonState::Disabled);
+    EXPECT_TRUE(std::string_view(Detail::SYSCALL_TRACE_LABEL).ends_with("Trace system calls (strace)"));
+}
+
+TEST(ProcessActionsViewTest, TraceLaunchesOnTheTargetAndShowsTheResult)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView view;
+    view.launchSyscallTrace(&mock, TARGET_A);
+    EXPECT_EQ(mock.syscallTraceCount(), 1);
+    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
+    EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
+    EXPECT_TRUE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Opened strace for PID 1001 in a new terminal");
+    // No confirm is involved, and no other action is sent.
+    EXPECT_FALSE(view.confirmPending());
+    EXPECT_EQ(mock.terminateCount() + mock.killCount() + mock.stopCount() + mock.resumeCount(), 0);
+}
+
+TEST(ProcessActionsViewTest, TraceFailureShowsThePlatformMessage)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setSyscallTraceResult(Platform::ProcessActionResult::error("ptrace is limited (/proc/sys/kernel/yama/ptrace_scope is 1)"));
+    ProcessActionsView view;
+    view.launchSyscallTrace(&mock, TARGET_B);
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not trace PID 2002: ptrace is limited (/proc/sys/kernel/yama/ptrace_scope is 1)");
+
+    // The result line times out like any other.
+    view.tick(Detail::ACTION_RESULT_SECONDS + 0.1F);
+    EXPECT_TRUE(view.lastResult().empty());
+}
+
+TEST(ProcessActionsViewTest, TraceWithoutActionsReportsUnavailable)
+{
+    ProcessActionsView view;
+    view.launchSyscallTrace(nullptr, TARGET_A);
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not trace PID 1001: Process actions unavailable");
+}
+
+/// An IProcessActions that does not override launchSyscallTrace(), as Windows' and the synthetic one.
+class NoTraceActions : public Platform::IProcessActions
+{
+  public:
+    [[nodiscard]] Platform::ProcessActionCapabilities actionCapabilities() const override
+    {
+        return {};
+    }
+    [[nodiscard]] Platform::ProcessActionResult terminate(const Platform::ProcessTarget& /*target*/) override
+    {
+        return Platform::ProcessActionResult::ok();
+    }
+    [[nodiscard]] Platform::ProcessActionResult kill(const Platform::ProcessTarget& /*target*/) override
+    {
+        return Platform::ProcessActionResult::ok();
+    }
+    [[nodiscard]] Platform::ProcessActionResult stop(const Platform::ProcessTarget& /*target*/) override
+    {
+        return Platform::ProcessActionResult::ok();
+    }
+    [[nodiscard]] Platform::ProcessActionResult resume(const Platform::ProcessTarget& /*target*/) override
+    {
+        return Platform::ProcessActionResult::ok();
+    }
+    [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& /*target*/, std::int32_t /*nice*/) override
+    {
+        return Platform::ProcessActionResult::ok();
+    }
+};
+
+TEST(ProcessActionsViewTest, TheInterfaceDefaultReportsTracingUnsupported)
+{
+    NoTraceActions actions;
+    EXPECT_EQ(actions.actionCapabilities().syscallTrace, Platform::SyscallTraceAvailability::Unsupported);
+    const Platform::ProcessActionResult result = actions.launchSyscallTrace(TARGET_A);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, Platform::syscallTraceUnavailableReason(Platform::SyscallTraceAvailability::Unsupported));
 }
 
 } // namespace

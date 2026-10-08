@@ -164,6 +164,7 @@ set(TASKSMACK_SOURCES
 set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
+    src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp

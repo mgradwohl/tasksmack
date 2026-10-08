@@ -12,6 +12,7 @@ This is the canonical inventory of user-visible and engineering features current
 | Column configuration | Header context menu controls visibility; settings persist in `config.toml` |
 | Stable process identity | PID and process start time prevent counter reuse when an operating system recycles a PID |
 | Process actions | Terminate, force terminate, and priority changes on Linux and Windows; stop/resume on Linux |
+| System call tracing | Linux only: Process Details > Actions opens a terminal running `strace -f -tt -p <PID>` (htop-style), started detached with no shell; disabled with the reason when strace or a terminal is missing, and refused with an explanation when ptrace (another user's process, Yama `ptrace_scope`) would not allow the attach |
 | Multi-select and batch actions | Ctrl/Shift+click and Ctrl+A select several processes by identity; Suspend, Resume, Terminate and Kill act on all of them behind one confirmation, with one summary result |
 | Disk I/O rates | Per-process read/write rates; Linux access to other users' processes needs `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` in the effective set (root with its normal capabilities has them; root alone isn't enough where capabilities are dropped) |
 | Network rates | Lifetime-average per-process sent/received rates; Linux uses Netlink, Windows uses TCP EStats when running as administrator |

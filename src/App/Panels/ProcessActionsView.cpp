@@ -33,6 +33,41 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
     renderResultFeedback();
     renderConfirmDialog(actions, target);
     renderButtons(capabilities, processName, target);
+    renderSyscallTraceButton(actions, capabilities, target);
+}
+
+void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* actions,
+                                                  const Platform::ProcessActionCapabilities& capabilities,
+                                                  const Platform::ProcessTarget& target)
+{
+    // Its state comes from capabilities found once, when the platform's actions were made: nothing is
+    // looked up on PATH per frame.
+    const Detail::SyscallTraceButton button = Detail::syscallTraceButton(capabilities, target);
+    if (button.state == Detail::SyscallTraceButtonState::Hidden)
+    {
+        return;
+    }
+
+    ImGui::Spacing();
+    const bool disabled = button.state == Detail::SyscallTraceButtonState::Disabled;
+    ImGui::BeginDisabled(disabled);
+    const bool pressed = ImGui::Button(Detail::SYSCALL_TRACE_LABEL);
+    ImGui::EndDisabled();
+    if (pressed && !disabled)
+    {
+        launchSyscallTrace(actions, target);
+    }
+    // A disabled button still explains itself on hover.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    {
+        constexpr float TOOLTIP_WIDTH_EM = 30.0F;
+        ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * TOOLTIP_WIDTH_EM, 0.0F));
+        if (ImGui::BeginTooltip())
+        {
+            ImGui::TextWrapped("%s", button.tooltip);
+            ImGui::EndTooltip();
+        }
+    }
 }
 
 void ProcessActionsView::renderResultFeedback() const

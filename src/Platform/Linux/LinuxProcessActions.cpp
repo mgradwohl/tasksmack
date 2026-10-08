@@ -1,23 +1,29 @@
 #include "LinuxProcessActions.h"
 
+#include "DetachedSpawn.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "PosixGuards.h"
 #include "PriorityErrorMessage.h"
 #include "ProcParsing.h"
+#include "ProcPrivileges.h"
+#include "SyscallTrace.h"
 #include "ThreadPriority.h"
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -28,8 +34,10 @@
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill() function, csignal does not
 #include <signal.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 namespace Platform
@@ -150,14 +158,30 @@ struct PidfdOpen
 
 } // namespace
 
+LinuxProcessActions::LinuxProcessActions() : m_TraceTools(discoverSyscallTraceTools())
+{}
+
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools) : m_TraceTools(std::move(traceTools))
+{}
+
 ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
 {
+    SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Available;
+    if (m_TraceTools.tracerPath.empty())
+    {
+        syscallTrace = SyscallTraceAvailability::NoTracer;
+    }
+    else if (!m_TraceTools.terminal.has_value())
+    {
+        syscallTrace = SyscallTraceAvailability::NoTerminal;
+    }
     return {
         .canTerminate = true,
         .canKill = true,
         .canStop = true,
         .canContinue = true,
         .canSetPriority = true,
+        .syscallTrace = syscallTrace,
     };
 }
 
@@ -356,6 +380,164 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
 
     spdlog::warn("Failed to set priority for PID {}: {}", target.pid, errorMsg);
     return ProcessActionResult::error(errorMsg);
+}
+
+namespace
+{
+
+/// Whether @p path is a regular file this process may execute.
+[[nodiscard]] bool isExecutableFile(const std::string& path)
+{
+    struct stat info{};
+    return ::stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) && ::access(path.c_str(), X_OK) == 0;
+}
+
+/// The value of environment variable @p name, or empty when unset.
+[[nodiscard]] std::string_view environmentValue(const char* name)
+{
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read once at construction, on the thread that builds the panels
+    const char* const value = std::getenv(name);
+    return value != nullptr ? std::string_view(value) : std::string_view{};
+}
+
+/// Up to 4 KiB of a small /proc or /sys file, or nullopt when it can't be read.
+[[nodiscard]] std::optional<std::string> readSmallFile(const std::string& path)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
+    const FdGuard fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC));
+    if (fd.get() < 0)
+    {
+        return std::nullopt;
+    }
+    std::array<char, 4096> buf{};
+    const auto len = ::read(fd.get(), buf.data(), buf.size());
+    if (len < 0)
+    {
+        return std::nullopt;
+    }
+    return std::string(buf.data(), static_cast<std::size_t>(len));
+}
+
+/// Whether strace, as exec'd from TaskSmack, will hold CAP_SYS_PTRACE: TaskSmack runs as root with the
+/// capability in its effective set (root keeps it across exec), or strace carries it as a file
+/// capability.
+[[nodiscard]] bool tracerIsPrivileged(const std::string& tracerPath)
+{
+    if (::geteuid() == 0)
+    {
+        const std::optional<std::string> status = readSmallFile("/proc/self/status");
+        const std::optional<std::uint64_t> capEff = status ? ProcPrivileges::parseCapEff(*status) : std::nullopt;
+        if (!capEff.has_value() || ((*capEff >> ProcPrivileges::CAP_SYS_PTRACE_BIT) & 1U) != 0)
+        {
+            return true;
+        }
+    }
+    std::array<std::uint8_t, 64> xattr{};
+    const auto len = ::getxattr(tracerPath.c_str(), "security.capability", xattr.data(), xattr.size());
+    return len > 0 && SyscallTrace::fileCapsGrantSysPtrace(std::span<const std::uint8_t>(xattr.data(), static_cast<std::size_t>(len)));
+}
+
+/// What ptrace(2) will check when strace attaches to @p pid, read from /proc.
+[[nodiscard]] SyscallTrace::PtraceContext ptraceContextFor(std::int32_t pid, const std::string& tracerPath)
+{
+    SyscallTrace::PtraceContext context;
+    if (const std::optional<std::string> scope = readSmallFile("/proc/sys/kernel/yama/ptrace_scope"))
+    {
+        context.ptraceScope = SyscallTrace::parsePtraceScope(*scope);
+    }
+    context.privileged = tracerIsPrivileged(tracerPath);
+
+    // ptrace requires the target's real, effective and saved IDs all to be the tracer's. A process
+    // that is not dumpable (it changed credentials, or asked not to be) cannot be attached to either;
+    // the kernel shows that by making root the owner of its /proc directory.
+    const std::string procDir = "/proc/" + std::to_string(pid);
+    const std::optional<std::string> status = readSmallFile(procDir + "/status");
+    const auto uids = status ? SyscallTrace::parseStatusIds(*status, "Uid:") : std::nullopt;
+    const auto gids = status ? SyscallTrace::parseStatusIds(*status, "Gid:") : std::nullopt;
+    struct stat dirInfo{};
+    const bool ownsProcDir = ::stat(procDir.c_str(), &dirInfo) == 0 && dirInfo.st_uid == ::geteuid();
+    const auto allEqual = [](const std::optional<std::array<std::uint32_t, 3>>& ids, std::uint32_t expected)
+    {
+        return ids.has_value() && std::ranges::all_of(*ids, [expected](std::uint32_t id) { return id == expected; });
+    };
+    context.sameCredentials = ownsProcDir && allEqual(uids, ::geteuid()) && allEqual(gids, ::getegid());
+    return context;
+}
+
+} // namespace
+
+SyscallTrace::Tools LinuxProcessActions::discoverSyscallTraceTools()
+{
+    const std::string_view pathEnv = environmentValue("PATH");
+    const auto find = [pathEnv](std::string_view name)
+    {
+        return SyscallTrace::findExecutable(name, pathEnv, isExecutableFile);
+    };
+    SyscallTrace::Tools tools;
+    tools.tracerPath = find("strace").value_or(std::string{});
+    tools.terminal = SyscallTrace::selectTerminal(environmentValue("TERMINAL"), find);
+    spdlog::debug("System call tracing: strace {}, terminal {}",
+                  tools.tracerPath.empty() ? std::string("not found") : tools.tracerPath,
+                  tools.terminal ? tools.terminal->path : std::string("not found"));
+    return tools;
+}
+
+ProcessActionResult LinuxProcessActions::launchSyscallTrace(const ProcessTarget& target)
+{
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    const SyscallTraceAvailability availability = actionCapabilities().syscallTrace;
+    if (availability != SyscallTraceAvailability::Available || !m_TraceTools.terminal.has_value())
+    {
+        return ProcessActionResult::error(syscallTraceUnavailableReason(availability));
+    }
+    const SyscallTrace::Terminal& terminal = *m_TraceTools.terminal;
+
+    // The same identity check as every other action: the pidfd is opened first, then the start time
+    // compared, so the process checked is the one holding the PID now. strace then attaches by PID a
+    // moment later -- it has no pidfd form -- so a target that exits in that instant and whose PID is
+    // reused at once could still be the one traced; tracing only observes, and strace names the
+    // process it attached to.
+    const PidfdOpen opened = openPidfd(target.pid);
+    if (opened.fd < 0)
+    {
+        spdlog::warn("Not tracing PID {}: {}", target.pid, opened.refusal);
+        return ProcessActionResult::error(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+    ProcessActionResult identity = verifyIdentity(target);
+    if (!identity.success)
+    {
+        spdlog::warn("Not tracing PID {}: {}", target.pid, identity.errorMessage);
+        return identity;
+    }
+
+    if (const std::optional<std::string> refusal =
+            SyscallTrace::ptraceRefusal(target.pid, ptraceContextFor(target.pid, m_TraceTools.tracerPath)))
+    {
+        spdlog::info("Not tracing PID {}: {}", target.pid, *refusal);
+        return ProcessActionResult::error(*refusal);
+    }
+    // Found at construction; make sure it has not been removed since, or the terminal would open and
+    // close again at once.
+    if (!isExecutableFile(m_TraceTools.tracerPath))
+    {
+        return ProcessActionResult::error(std::format("{} is no longer there or not executable", m_TraceTools.tracerPath));
+    }
+
+    const std::vector<std::string> command = SyscallTrace::tracerCommand(m_TraceTools.tracerPath, target.pid);
+    const std::vector<std::string> argv = SyscallTrace::buildTerminalArgv(terminal, command);
+    const auto spawned = DetachedSpawn::spawnDetached(argv);
+    if (!spawned.has_value())
+    {
+        std::string message = DetachedSpawn::spawnFailureMessage(spawned.error(), terminal.path);
+        spdlog::warn("Failed to open strace for PID {}: {}", target.pid, message);
+        return ProcessActionResult::error(std::move(message));
+    }
+    spdlog::info("Opened {} running strace on PID {}", terminal.path, target.pid);
+    return ProcessActionResult::ok();
 }
 
 ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target, int signal, std::string_view signalName)

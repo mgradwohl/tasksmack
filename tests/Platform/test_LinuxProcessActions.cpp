@@ -8,20 +8,25 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/ProcParsing.h"
+#include "Platform/Linux/SyscallTrace.h"
+#include "ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <pthread.h>
@@ -509,6 +514,118 @@ TEST(LinuxProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)
 
     EXPECT_TRUE(result.success) << result.errorMessage;
     EXPECT_TRUE(child.exitsSoon());
+}
+
+// --- Trace system calls (#182) ---------------------------------------------------------------------
+// strace is never run: the "terminal" is a script that records its argv, and the "tracer" path only
+// has to exist and be executable.
+
+/// Writes an executable /bin/sh script to @p path.
+void writeScript(const std::filesystem::path& path, const std::string& body)
+{
+    {
+        std::ofstream out(path);
+        out << "#!/bin/sh\n" << body;
+    }
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all);
+}
+
+/// Tools whose terminal records its argv to @p dir/argv.txt and whose tracer is a no-op script.
+[[nodiscard]] SyscallTrace::Tools fakeTraceTools(const std::filesystem::path& dir)
+{
+    const std::filesystem::path terminal = dir / "fake-terminal";
+    writeScript(
+        terminal,
+        std::format("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}/argv.tmp'\nmv '{0}/argv.tmp' '{0}/argv.txt'\n", dir.string()));
+    const std::filesystem::path tracer = dir / "fake-strace";
+    writeScript(tracer, "exit 0\n");
+    return {.tracerPath = tracer.string(),
+            .terminal = SyscallTrace::Terminal{.path = terminal.string(), .syntax = SyscallTrace::TerminalSyntax::DashE}};
+}
+
+TEST(LinuxProcessActionsTest, SyscallTraceAvailabilityFollowsTheToolsFound)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_trace_caps");
+    const SyscallTrace::Tools tools = fakeTraceTools(dir.path);
+    EXPECT_EQ(LinuxProcessActions(tools).actionCapabilities().syscallTrace, SyscallTraceAvailability::Available);
+    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = {}, .terminal = tools.terminal}).actionCapabilities().syscallTrace,
+              SyscallTraceAvailability::NoTracer);
+    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = tools.tracerPath, .terminal = std::nullopt})
+                  .actionCapabilities()
+                  .syscallTrace,
+              SyscallTraceAvailability::NoTerminal);
+}
+
+TEST(LinuxProcessActionsTest, SyscallTraceIsRefusedWithTheReasonWhenToolsAreMissing)
+{
+    LinuxProcessActions actions(SyscallTrace::Tools{});
+    const auto result = actions.launchSyscallTrace(ownTarget());
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, syscallTraceUnavailableReason(SyscallTraceAvailability::NoTracer));
+}
+
+TEST(LinuxProcessActionsTest, SyscallTraceRefusesAnInvalidOrUnconfirmedTarget)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_trace_refuse");
+    LinuxProcessActions actions(fakeTraceTools(dir.path));
+
+    EXPECT_EQ(actions.launchSyscallTrace({.pid = 0, .startTimeTicks = 1}).errorMessage, "Invalid PID");
+    EXPECT_EQ(actions.launchSyscallTrace({.pid = -5, .startTimeTicks = 1}).errorMessage, "Invalid PID");
+
+    ProcessTarget unknown = ownTarget();
+    unknown.startTimeTicks = 0;
+    EXPECT_FALSE(actions.launchSyscallTrace(unknown).success);
+
+    ProcessTarget reused = ownTarget();
+    reused.startTimeTicks += 1;
+    const auto result = actions.launchSyscallTrace(reused);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
+
+    // None of those opened a terminal.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+}
+
+TEST(LinuxProcessActionsTest, SyscallTraceOpensTheTerminalWithStraceOrExplainsPtrace)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_trace_launch");
+    const SyscallTrace::Tools tools = fakeTraceTools(dir.path);
+    LinuxProcessActions actions(tools);
+    const ProcessTarget self = ownTarget();
+    const auto result = actions.launchSyscallTrace(self);
+
+    std::ifstream scopeFile("/proc/sys/kernel/yama/ptrace_scope");
+    int scope = 0;
+    scopeFile >> scope;
+    if (geteuid() != 0 && (scope == 1 || scope == 2))
+    {
+        // Yama would refuse strace's attach, so no terminal is opened and the message says why.
+        EXPECT_FALSE(result.success);
+        EXPECT_NE(result.errorMessage.find("/proc/sys/kernel/yama/ptrace_scope"), std::string::npos) << result.errorMessage;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+        return;
+    }
+    if (scope == 3)
+    {
+        EXPECT_FALSE(result.success);
+        return;
+    }
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!std::filesystem::exists(dir.path / "argv.txt") && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::ifstream recorded(dir.path / "argv.txt");
+    std::vector<std::string> args;
+    for (std::string line; std::getline(recorded, line);)
+    {
+        args.push_back(line);
+    }
+    EXPECT_EQ(args, (std::vector<std::string>{"-e", tools.tracerPath, "-f", "-tt", "-p", std::to_string(self.pid)}));
 }
 
 } // namespace
