@@ -271,6 +271,21 @@ TEST(ProcessDetailsLayoutTest, ActionsBlockIsHeldToANarrowPane)
     EXPECT_FLOAT_EQ(layout.width, 300.0F);
 }
 
+// Beside the row the block may be no taller than Identity/Runtime, so the charts keep their height; one
+// that would have to scroll there (Linux's slider and I/O priority rows) wraps below, shown whole. An
+// unknown height (before the first draw) does not keep it off the row.
+TEST(ProcessDetailsLayoutTest, ActionsBlockTallerThanTheRowWrapsBelowIt)
+{
+    constexpr float ROW = 136.0F;
+    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, 64.0F, ROW).besideInfo);
+    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, ROW, ROW).besideInfo);
+    const auto tall = ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, ROW + 1.0F, ROW);
+    EXPECT_FALSE(tall.besideInfo);
+    EXPECT_FLOAT_EQ(tall.width, ACTIONS_CONTENT);
+    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, 0.0F, ROW).besideInfo);
+    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, 500.0F, 0.0F).besideInfo);
+}
+
 // An unknown pane width (no frame yet) is unconstrained, like the helpers above; negative or non-finite
 // measurements count as zero rather than producing a NaN width.
 TEST(ProcessDetailsLayoutTest, ActionsBlockSurvivesDegenerateInput)

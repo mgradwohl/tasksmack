@@ -74,11 +74,11 @@ Widths measure(const Platform::ProcessActionCapabilities& capabilities)
     };
 }
 
-void render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight)
+float render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight)
 {
     if (context.actionsView == nullptr || context.priorityView == nullptr || context.processName == nullptr)
     {
-        return;
+        return 0.0F;
     }
 
     ImGui::BeginGroup();
@@ -88,6 +88,7 @@ void render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayo
     const ImGuiChildFlags childFlags =
         ImGuiChildFlags_AlwaysUseWindowPadding | (layout.besideInfo ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY);
     const float childHeight = layout.besideInfo ? std::max(rowChildHeight, 1.0F) : 0.0F;
+    float neededHeight = 0.0F;
     if (ImGui::BeginChild("ProcessActionsBlock", ImVec2(layout.width, childHeight), childFlags, ImGuiWindowFlags_None))
     {
         // The result and error lines wrap at the block's edge instead of running out of it.
@@ -96,9 +97,13 @@ void render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayo
         context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
         context.actionsView->renderResultLine();
         ImGui::PopTextWrapPos();
+        // The last row's bottom (the cursor is an item spacing below it) and the bottom padding.
+        const ImGuiStyle& style = ImGui::GetStyle();
+        neededHeight = ImGui::GetCursorPosY() - style.ItemSpacing.y + style.WindowPadding.y;
     }
     ImGui::EndChild();
     ImGui::EndGroup();
+    return neededHeight;
 }
 
 } // namespace App::ProcessActionsBlock

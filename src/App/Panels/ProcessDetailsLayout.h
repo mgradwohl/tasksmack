@@ -89,15 +89,25 @@ struct ActionsBlockLayout
 
 /// Lays out the Overview's Actions block: one left-aligned stack of rows -- the process-control
 /// buttons, then the priority row(s) -- as wide as its widest row. It goes beside Identity and
-/// Runtime when it fits in what their row leaves, and otherwise wraps below them, held to the pane.
+/// Runtime when it fits in what their row leaves, both across and down: beside them it may be no
+/// taller than they are, so the charts keep their height, and a block that would have to scroll there
+/// (Linux's nice slider with the I/O priority row) wraps below them instead, shown whole. Wrapped, it
+/// is held to the pane.
 ///
 /// @param paneWidthPx      Width of the pane the row is laid out in.
 /// @param infoRowWidthPx   Width Identity and Runtime take, with the gap between them.
 /// @param spacingPx        Gap between two blocks on the row (ImGuiStyle::ItemSpacing.x).
 /// @param contentWidthPx   Width the block's widest row needs, with the block's padding.
+/// @param contentHeightPx  Height the block's rows need, with its padding, as last drawn; 0 when not
+///                         known yet, which does not keep it off the row.
+/// @param rowHeightPx      Height of the Identity/Runtime children; 0 when not known.
 /// @return Beside the row at its content width when the pane width is unknown.
-[[nodiscard]] inline ActionsBlockLayout
-computeActionsBlockLayout(float paneWidthPx, float infoRowWidthPx, float spacingPx, float contentWidthPx) noexcept
+[[nodiscard]] inline ActionsBlockLayout computeActionsBlockLayout(float paneWidthPx,
+                                                                  float infoRowWidthPx,
+                                                                  float spacingPx,
+                                                                  float contentWidthPx,
+                                                                  float contentHeightPx = 0.0F,
+                                                                  float rowHeightPx = 0.0F) noexcept
 {
     const auto nonNegative = [](float value) noexcept
     {
@@ -108,7 +118,10 @@ computeActionsBlockLayout(float paneWidthPx, float infoRowWidthPx, float spacing
     {
         return {.besideInfo = true, .width = content};
     }
-    if (nonNegative(infoRowWidthPx) + nonNegative(spacingPx) + content <= paneWidthPx)
+    const float contentHeight = nonNegative(contentHeightPx);
+    const float rowHeight = nonNegative(rowHeightPx);
+    const bool fitsDown = contentHeight == 0.0F || rowHeight == 0.0F || contentHeight <= rowHeight;
+    if (fitsDown && nonNegative(infoRowWidthPx) + nonNegative(spacingPx) + content <= paneWidthPx)
     {
         return {.besideInfo = true, .width = content};
     }

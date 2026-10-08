@@ -133,12 +133,15 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
             {
                 *childHeight = height;
             }
-            ProcessActionsBlock::render(h.context(capabilities), layout, height);
+            lastNeededHeight = ProcessActionsBlock::render(h.context(capabilities), layout, height);
         };
         (void) runFrame(body);
         (void) runFrame(body);
         return layout;
     }
+
+    /// What the last renderBlock() frame's render() reported the block needs down.
+    static inline float lastNeededHeight = 0.0F;
 
   private:
     ImGuiContext* m_Context = nullptr;
@@ -185,7 +188,7 @@ TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheBlockIsTheRowsHeightAndItsC
     EXPECT_FLOAT_EQ(block->Size.y, childHeight);
     EXPECT_NEAR(block->Size.x, layout.width, 1.0F); // ImGui rounds a window's size to whole pixels
     // Nothing in it is wider than the block allows: no stretched buttons, no row running out of it.
-    EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
+    EXPECT_LE(block->ContentSize.x, layout.width - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
 }
 
 #ifdef _WIN32
@@ -203,6 +206,8 @@ TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockIsTwoRowsAndFitsTheRowWit
     ASSERT_NE(block, nullptr);
     EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
     EXPECT_LE(block->ContentSize.y, (2.0F * ImGui::GetFrameHeightWithSpacing()) + 1.0F);
+    // So the panel keeps it beside the row (computeActionsBlockLayout()'s height test).
+    EXPECT_LE(lastNeededHeight, rowChildHeight(6.0F));
 }
 #endif
 
@@ -218,6 +223,8 @@ TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheBlockTakesItsContentH
     // Not the empty row's height it was handed: as tall as its content, with nothing to scroll.
     EXPECT_GT(block->Size.y, rowChildHeight(0.0F));
     EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
+    // And render() reports that height, for the next frame's placement.
+    EXPECT_NEAR(lastNeededHeight, block->Size.y, 1.0F);
     // Still its content's width, left-aligned, not the pane's.
     EXPECT_LT(block->Size.x, 1000.0F);
 }
@@ -247,7 +254,7 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndAc
         const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(ALL_ACTIONS);
         const auto layout =
             ProcessDetailsLayout::computeActionsBlockLayout(1600.0F, 600.0F, ImGui::GetStyle().ItemSpacing.x, widths.content());
-        ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
+        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
         // As ProcessDetailsPanel does: the dialog from panel scope, every frame.
         h.actionsView.renderConfirmation(&h.mock, TARGET);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
@@ -284,7 +291,7 @@ TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheBlockIsScroll
         const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(ALL_ACTIONS);
         const auto layout =
             ProcessDetailsLayout::computeActionsBlockLayout(1000.0F, 0.0F, ImGui::GetStyle().ItemSpacing.x, widths.content());
-        ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
+        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
         const ImGuiWindow* block = blockWindow();
         blockSkipped = block == nullptr || block->SkipItems;
         ImGui::EndChild();

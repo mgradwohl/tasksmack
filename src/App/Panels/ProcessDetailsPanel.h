@@ -211,6 +211,9 @@ class ProcessDetailsPanel : public Panel
     KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
     bool m_SelectOverviewTab = false;               // F9 asked for the Kill confirm: show the Overview, which holds the Actions block
     ProcessPriorityView m_PriorityView;
+    // The Actions block's content height as last drawn (0 until it has been): beside Identity and
+    // Runtime only while it fits their height (ProcessDetailsLayout::computeActionsBlockLayout()).
+    float m_ActionsBlockHeight = 0.0F;
 
     // The Overview's Environment section (#179). The reader is created by the composition root (the
     // default constructor) and called only from updateWithSamples(), through the view, while the

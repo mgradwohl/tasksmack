@@ -615,8 +615,13 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (ProcessActionsBlock::hasAnyAction(m_ActionCapabilities))
     {
         const ProcessActionsBlock::Widths actionWidths = ProcessActionsBlock::measure(m_ActionCapabilities);
-        const ProcessDetailsLayout::ActionsBlockLayout actionsLayout = ProcessDetailsLayout::computeActionsBlockLayout(
-            contentWidth, leftWidth + spacing + rightWidth, spacing, actionWidths.content());
+        const ProcessDetailsLayout::ActionsBlockLayout actionsLayout =
+            ProcessDetailsLayout::computeActionsBlockLayout(contentWidth,
+                                                            leftWidth + spacing + rightWidth,
+                                                            spacing,
+                                                            actionWidths.content(),
+                                                            m_ActionsBlockHeight,
+                                                            std::max(leftHeight, rightHeight));
         if (actionsLayout.besideInfo)
         {
             ImGui::SameLine();
@@ -630,7 +635,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .target = selectedTarget(),
             .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
         };
-        ProcessActionsBlock::render(actions, actionsLayout, std::max(leftHeight, rightHeight));
+        // Kept for the next frame's placement: a block taller than the row wraps below it.
+        if (const float needed = ProcessActionsBlock::render(actions, actionsLayout, std::max(leftHeight, rightHeight)); needed > 0.0F)
+        {
+            m_ActionsBlockHeight = needed;
+        }
     }
 }
 
