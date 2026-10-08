@@ -17,16 +17,13 @@ class TestPanel final : public Panel
     explicit TestPanel(std::string name = "TestPanel") : Panel(std::move(name))
     {}
 
-    void render(bool* /*open*/) override
-    {}
-
     void renderContent() override
     {}
 };
 
 TEST(PanelTest, NameAndDefaultVisibility)
 {
-    TestPanel panel("PanelName");
+    const TestPanel panel("PanelName");
     EXPECT_EQ(panel.name(), "PanelName");
     EXPECT_TRUE(panel.isVisible());
 }
@@ -55,12 +52,6 @@ TEST(PanelTest, DefaultLifecycleMethodsAreNoOps)
     panel.onDetach();
 
     EXPECT_FALSE(event.isHandled());
-}
-
-TEST(PanelTest, RenderCanBeInvokedWithNullOpenFlag)
-{
-    TestPanel panel;
-    EXPECT_NO_THROW(panel.render(nullptr));
 }
 
 } // namespace

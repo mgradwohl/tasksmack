@@ -111,10 +111,6 @@ class ProcessesPanel : public Panel
     /// Update logic (no longer needed for refresh, kept for interface compatibility).
     void onUpdate(float deltaTime) override;
 
-    /// Render the panel (with ImGui window wrapper).
-    /// @param open Pointer to visibility flag (for window close button).
-    void render(bool* open) override;
-
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent() override;
     /// Handle application events (theme/font changes)
@@ -433,9 +429,6 @@ class ProcessesPanel : public Panel
     /// Feeds this frame's keyboard and window state to m_DisplayFreeze (#928). Must be called inside
     /// the window the pane renders into, since it asks ImGui whether that window is hovered/focused.
     void updateDisplayFreeze();
-
-    /// Get the number of visible columns
-    [[nodiscard]] int visibleColumnCount() const;
 
     /// Render process rows in tree view mode. Takes the filtered/expanded tree in render order
     /// from m_TreeRowsCache, which flattens it (ProcessTreeFlatten::buildProcessTreeRows(), a pure,

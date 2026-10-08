@@ -5,7 +5,6 @@
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
-#include "App/TabLabel.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/Numeric.h"
@@ -171,26 +170,6 @@ ProcessChartContext ProcessDetailsPanel::chartContext() const
         .hasSharedMemory = m_ProcessCapabilities.hasSharedMemory,
         .hasPowerUsage = m_ProcessCapabilities.hasPowerUsage,
     };
-}
-
-void ProcessDetailsPanel::render(bool* open)
-{
-    // Keyed on the name shown (empty for none): the label is rebuilt only when it changes (#1326), and
-    // shows all of the name, "#"s included, under the fixed ID "###ProcessDetails" (#1244).
-    const std::string_view processName =
-        (m_HasSnapshot && (m_SelectedPid != -1)) ? std::string_view{cachedSnapshot().name} : std::string_view{};
-    const std::string& windowLabel = m_WindowLabel.get(
-        processName, [](std::string_view name) { return TabLabel::makeProcessDetailsWindowLabel(ICON_FA_CIRCLE_INFO, name); });
-
-    if (!ImGui::Begin(windowLabel.c_str(), open))
-    {
-        ImGui::End();
-        return;
-    }
-
-    renderContent();
-
-    ImGui::End();
 }
 
 const std::string& ProcessDetailsPanel::tabLabel() const

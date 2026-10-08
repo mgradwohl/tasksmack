@@ -2,7 +2,6 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
-#include "App/TabLabel.h"
 #include "Core/Event.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
@@ -74,10 +73,6 @@ class ProcessDetailsPanel : public Panel
     {
         return m_HasSnapshot ? m_CachedSnapshot.get() : nullptr;
     }
-
-    /// Render the panel (with ImGui window wrapper).
-    /// @param open Pointer to visibility flag (for window close button).
-    void render(bool* open) override;
 
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent() override;
@@ -173,10 +168,6 @@ class ProcessDetailsPanel : public Panel
     std::shared_ptr<const Domain::ProcessSnapshot> m_CachedSnapshot;
     // Which of m_CachedSnapshot's I/O and network rates are readings, by its own generation (#1210).
     Detail::SampleRateReadings m_CachedRateReadings;
-
-    // render()'s window title, rebuilt only when the selected process's name changes rather than
-    // every frame (#1326).
-    TabLabel::CachedLabel m_WindowLabel;
 
     // The Overview's Identity/Runtime values formatted from one snapshot, kept until a different one
     // is shown, so the block is not reformatted every frame (#1171). keepAlive holds that snapshot,
