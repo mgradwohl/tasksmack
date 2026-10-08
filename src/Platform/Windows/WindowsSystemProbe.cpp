@@ -28,6 +28,7 @@
 #undef max
 #undef min
 
+#include "CpuBaseClock.h"
 #include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
 #include "WindowsNtQuery.h"
@@ -148,8 +149,9 @@ template<typename Query>
     return processorGroupFirstCoreIds(maximums);
 }
 
-/// The base clock in MHz from the registry's ~MHz; 0 if it can't be read.
-[[nodiscard]] std::uint64_t readBaseCpuMHz()
+/// The registry's ~MHz; 0 if it can't be read. Not the rated base on hybrid parts (#1530): only the
+/// fallback when CallNtPowerInformation has no MaxMhz.
+[[nodiscard]] std::uint64_t readRegistryCpuMHz()
 {
     DWORD mhz = 0;
     DWORD dataSize = sizeof(mhz);
@@ -164,6 +166,12 @@ template<typename Query>
         return 0;
     }
     return toU64NonNegative(mhz);
+}
+
+/// The nominal base clock "% Processor Performance" scales (#1530): powrprof's rated MaxMhz, else ~MHz.
+[[nodiscard]] std::uint64_t readBaseCpuMHz()
+{
+    return readNominalCpuBaseMHz(&CallNtPowerInformation, readRegistryCpuMHz());
 }
 
 } // namespace
@@ -492,7 +500,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasIoWait = false,         // Windows doesn't expose iowait
         .hasSteal = false,          // Windows doesn't expose steal time
         .hasLoadAvg = false,        // Windows doesn't have load average
-        .hasCpuFreq = true,         // Current clock: ~MHz x % Processor Performance (#1184)
+        .hasCpuFreq = true,         // Current clock: rated base x % Processor Performance (#1184, #1530)
         .hasNetworkCounters = true, // Via GetIfTable2 (64-bit counters, Unicode names)
     };
 }

@@ -25,7 +25,8 @@ class WindowsSystemProbe : public ISystemProbe
     WindowsSystemProbe();
     /// The probe with its current-clock inputs supplied (#1184): the base clock in MHz (0 = unknown) and
     /// the "% Processor Performance" counter (null = none, and the base clock is reported). The default
-    /// constructor reads the registry's ~MHz and opens pdh.dll's counter; tests inject fakes here.
+    /// constructor reads the rated base (readNominalCpuBaseMHz in CpuBaseClock.h: CallNtPowerInformation's
+    /// MaxMhz, else the registry's ~MHz; #1530) and opens pdh.dll's counter; tests inject fakes here.
     WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance);
     ~WindowsSystemProbe() override;
 
@@ -39,6 +40,12 @@ class WindowsSystemProbe : public ISystemProbe
     [[nodiscard]] SystemCounters read() override;
     [[nodiscard]] SystemCapabilities capabilities() const override;
     [[nodiscard]] long ticksPerSecond() const override;
+
+    /// The nominal base clock in MHz the current clock is scaled from (#1530); 0 = unknown.
+    [[nodiscard]] std::uint64_t baseCpuMHz() const noexcept
+    {
+        return m_BaseCpuMHz;
+    }
 
   private:
     void readCpuCounters(SystemCounters& counters) const;
@@ -74,7 +81,7 @@ class WindowsSystemProbe : public ISystemProbe
         std::chrono::steady_clock::time_point retryAt;
     };
     std::unordered_map<std::uint64_t, AdapterDeviceInstanceId> m_AdapterDeviceInstanceIds;
-    // The base clock (the registry's ~MHz), read once: it is fixed for the boot session
+    // The nominal base clock (nominalCpuBaseMHz), read once: it is fixed for the boot session
     std::uint64_t m_BaseCpuMHz{0};
     // PDH's "% Processor Performance", which scales the base clock to the current one (#1184); null
     // when PDH is unavailable, and the base clock is reported instead. Sampler thread only.
