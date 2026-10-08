@@ -2144,7 +2144,9 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     the dashboard before a stable LLVM 23 actually exists.
 
     Every update to this group -- not just major bumps -- requires dashboard approval, unlike
-    the rest of this tier. Both CI (`choco install llvm`) and the dev-box script
+    the rest of this tier. Both CI (`choco install llvm`; Windows jobs restore the installed tree from
+    an Actions cache keyed on the exact version and saved only by `main`, so the first `main` runs
+    after a bump fall back to Chocolatey) and the dev-box script
     (`winget install LLVM.LLVM`) resolve the pinned Windows version through Chocolatey/WinGet,
     and #752 already recorded a concrete real-world case of that feed lagging upstream
     (upstream had `22.1.8` while Chocolatey only had `22.1.7`) -- an auto-PR'd Windows *patch*
