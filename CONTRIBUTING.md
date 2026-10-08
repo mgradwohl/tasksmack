@@ -339,6 +339,11 @@ argument. Every action takes a `Platform::ProcessTarget` (PID plus the probe's r
 not a bare PID, and real implementations refuse the action unless the process at that PID has that
 start time (#973); `lastTarget()` returns the whole target the most recent action received.
 
+For `Platform::IProcessEnvironmentReader` (the on-demand environment read behind Process Details'
+Environment section, #179), use `TestMocks::MockProcessEnvironmentReader`: `setResult(...)` and
+`setHasEnvironment(...)` configure it, and `readCount()`/`lastTarget()` let a test check the read
+cadence and the target.
+
 ### Testing App/UI code that needs a live ImGui context
 
 Shell tab registration and lifecycle forwarding live in the header-only `App/PanelTabs.h`.
@@ -357,7 +362,8 @@ links but cannot run there.
 
 The production `.cpp` files exercised this way are listed under "Source files under test" in
 `tests/CMakeLists.txt` (for example `App/Panels/ProcessActionConfirm.cpp`,
-`App/Panels/ProcessActionsView.cpp`, `App/Panels/ProcessPriorityView.cpp`, `UI/ChartLegend.cpp`).
+`App/Panels/ProcessActionsView.cpp`, `App/Panels/ProcessPriorityView.cpp`,
+`App/Panels/ProcessEnvironmentView.cpp`, `UI/ChartLegend.cpp`).
 `TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp`,
 `ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
 `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs and `UI/UILayer.cpp` are not in that list. That
@@ -402,6 +408,9 @@ Three established ways to get real coverage of such a file's logic:
    - Assert on the outcome: return values and the code's own state, ImGui state such as
      `ImGui::IsPopupOpen(...)`, or the geometry in `ImGui::GetDrawData()` (vertex/index counts,
      draw lists).
+     To assert on the text drawn, call `ImGui::LogToBuffer()` before the code under test, read
+     `GImGui->LogBuffer` (`imgui_internal.h`) after it, then `ImGui::LogFinish()`: logging captures
+     every string rendered and lifts clipping (`tests/App/test_ProcessEnvironmentViewRender.cpp`).
    - `TearDown()`: destroy the ImPlot context, then the ImGui one.
 
    Examples: `tests/App/test_ProcessActionConfirmPopup.cpp` (modal lifecycle),

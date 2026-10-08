@@ -53,6 +53,7 @@ This is the canonical inventory of user-visible and engineering features current
 | AMD GPU | ROCm SMI | DXGI/PDH capability-dependent data |
 | Intel/generic GPU | DRM/sysfs | DXGI/PDH |
 | Stop/resume | `SIGSTOP` / `SIGCONT` | Not supported |
+| Process environment variables | `/proc/[pid]/environ`, on demand for the selected process; secret-looking values masked until revealed | Not supported |
 | Minimum supported OS | Supported Linux distributions with required runtime libraries | Windows 10 |
 
 ## Engineering Infrastructure

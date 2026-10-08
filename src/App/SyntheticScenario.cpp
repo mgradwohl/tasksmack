@@ -10,6 +10,7 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/StorageTypes.h"
@@ -334,6 +335,15 @@ std::unique_ptr<Platform::IProcessActions> makeProcessActions(const Scenario* sc
         return std::make_unique<Platform::Synthetic::SyntheticProcessActions>();
     }
     return Platform::makeProcessActions();
+}
+
+std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessEnvironmentReader>();
+    }
+    return Platform::makeProcessEnvironmentReader();
 }
 
 std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario)

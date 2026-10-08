@@ -5,6 +5,7 @@
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 
@@ -18,6 +19,10 @@ namespace Platform
 
 /// Creates the platform-appropriate IProcessActions implementation.
 [[nodiscard]] std::unique_ptr<IProcessActions> makeProcessActions();
+
+/// Creates the platform-appropriate IProcessEnvironmentReader implementation (#179). Windows returns
+/// an UnsupportedProcessEnvironmentReader (hasEnvironment() false).
+[[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader();
 
 /// Creates the platform-appropriate ISystemProbe implementation.
 [[nodiscard]] std::unique_ptr<ISystemProbe> makeSystemProbe();
