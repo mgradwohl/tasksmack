@@ -195,46 +195,41 @@ buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_vi
     return rows;
 }
 
-StartupViewContent
-renderStartupView(const Domain::StartupPublication* publication, const Platform::StartupCapabilities& capabilities, StartupViewState& state)
+namespace
 {
-    if (!capabilities.canEnumerate)
-    {
-        // The probe's reason, built once (it is fixed when the probe is made), as the Services tab does.
-        if (state.unavailableHeading.empty())
-        {
-            state.unavailableHeading =
-                std::string(ICON_FA_POWER_OFF "  ") +
-                (capabilities.unavailableReason.empty() ? std::string("Startup apps aren't available") : capabilities.unavailableReason);
-        }
-        UI::Widgets::renderEmptyState(state.unavailableHeading.c_str(),
-                                      "TaskSmack can list startup apps on Windows. Support for XDG autostart on Linux is planned.");
-        return StartupViewContent::Unsupported;
-    }
-    if (publication == nullptr || publication->version == 0)
-    {
-        UI::Widgets::renderEmptyState(ICON_FA_POWER_OFF "  Reading startup apps...");
-        return StartupViewContent::Loading;
-    }
 
-    const auto& scheme = UI::Theme::get().scheme();
+/// The empty state when the platform has no startup list: the probe's reason as the heading, built
+/// once (it is fixed when the probe is made), as the Services tab does.
+void renderUnsupported(const Platform::StartupCapabilities& capabilities, StartupViewState& state)
+{
+    if (state.unavailableHeading.empty())
+    {
+        state.unavailableHeading =
+            std::string(ICON_FA_POWER_OFF "  ") +
+            (capabilities.unavailableReason.empty() ? std::string("Startup apps aren't available") : capabilities.unavailableReason);
+    }
+    UI::Widgets::renderEmptyState(state.unavailableHeading.c_str(),
+                                  "TaskSmack can list startup apps on Windows. Support for XDG autostart on Linux is planned.");
+}
+
+/// The filter box and the "N of M startup apps" count beside it. The rows are brought up to date with
+/// the filter before the count is drawn, so the count matches the table below.
+void renderFilterBar(const Domain::StartupPublication& publication, StartupViewState& state, const UI::ColorScheme& scheme)
+{
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
     ImGui::InputTextWithHint("##StartupFilter", FILTER_HINT, &state.filter);
     ImGui::PopStyleColor();
-    rebuildRowsIfStale(*publication, state);
+    rebuildRowsIfStale(publication, state);
     ImGui::SameLine();
-    ImGui::TextColored(scheme.textMuted, "%zu of %zu startup apps", state.rows.size(), publication->entries.size());
+    ImGui::TextColored(scheme.textMuted, "%zu of %zu startup apps", state.rows.size(), publication.entries.size());
+}
 
-    constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
-                                            ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
-                                            ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
-                                            ImGuiTableFlags_SizingFixedFit;
-    if (!ImGui::BeginTable("##StartupTable", 6, TABLE_FLAGS))
-    {
-        return StartupViewContent::Table;
-    }
+/// The table's columns, in StartupColumn order, each tagged with its StartupColumn as the user ID the
+/// sort specs report; the header row is frozen while scrolling.
+void setupStartupColumns()
+{
     const float em = ImGui::GetFontSize();
     ImGui::TableSetupScrollFreeze(1, 1);
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort, em * 14.0F, static_cast<ImGuiID>(StartupColumn::Name));
@@ -244,19 +239,94 @@ renderStartupView(const Domain::StartupPublication* publication, const Platform:
     ImGui::TableSetupColumn("Location", ImGuiTableColumnFlags_None, em * 12.0F, static_cast<ImGuiID>(StartupColumn::Location));
     ImGui::TableSetupColumn("Command", ImGuiTableColumnFlags_None, em * 30.0F, static_cast<ImGuiID>(StartupColumn::Command));
     ImGui::TableHeadersRow();
+}
 
-    if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs(); specs != nullptr && specs->SpecsDirty)
+/// Takes a header click into the view state; the rows are rebuilt from it afterwards.
+void applySortSpecs(StartupViewState& state)
+{
+    ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs();
+    if (specs == nullptr || !specs->SpecsDirty)
     {
-        if (specs->SpecsCount > 0)
-        {
-            state.sortColumn = static_cast<StartupColumn>(specs->Specs[0].ColumnUserID);
-            state.ascending = specs->Specs[0].SortDirection != ImGuiSortDirection_Descending;
-        }
-        specs->SpecsDirty = false;
+        return;
     }
+    if (specs->SpecsCount > 0)
+    {
+        state.sortColumn = static_cast<StartupColumn>(specs->Specs[0].ColumnUserID);
+        state.ascending = specs->Specs[0].SortDirection != ImGuiSortDirection_Descending;
+    }
+    specs->SpecsDirty = false;
+}
 
-    rebuildRowsIfStale(*publication, state);
+/// The Name cell: a row-wide selectable, in the warning colour when the program is missing, with the
+/// entry's tooltip (straight away for a missing program, after the usual delay otherwise).
+void renderNameCell(const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme)
+{
+    if (missing)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
+    }
+    ImGui::Selectable(entry.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+    if (missing)
+    {
+        ImGui::PopStyleColor();
+    }
+    if (ImGui::IsItemHovered(missing ? ImGuiHoveredFlags_None : ImGuiHoveredFlags_DelayNormal))
+    {
+        renderStartupTooltip(entry);
+    }
+}
 
+/// The Command cell: in the warning colour when its program is missing; an unresolved shortcut shows
+/// its own path, muted, since it has no command.
+void renderCommandCell(const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme)
+{
+    if (missing)
+    {
+        ImGui::TextColored(scheme.textWarning, "%s", entry.command.c_str());
+    }
+    else if (entry.command.empty() && !entry.sourcePath.empty())
+    {
+        ImGui::TextColored(scheme.textMuted, "%s (target unresolved)", entry.sourcePath.c_str());
+    }
+    else
+    {
+        ImGui::TextUnformatted(entry.command.c_str());
+    }
+}
+
+/// One table row. `enabledLabel` is the cached Enabled text (built once per sample); it is drawn only
+/// where the platform reports an enabled state.
+void renderStartupRow(const Platform::StartupEntry& entry,
+                      const std::string& enabledLabel,
+                      const Platform::StartupCapabilities& capabilities,
+                      const UI::ColorScheme& scheme)
+{
+    const bool missing = entry.target == Platform::StartupTargetState::Missing;
+    ImGui::TableNextColumn();
+    renderNameCell(entry, missing, scheme);
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(entry.publisher.c_str());
+    ImGui::TableNextColumn();
+    if (capabilities.hasEnabledState)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, entry.enabled ? scheme.textPrimary : scheme.textMuted);
+        ImGui::TextUnformatted(enabledLabel.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::TableNextColumn();
+    renderText(startupScopeLabel(entry.scope));
+    ImGui::TableNextColumn();
+    renderText(startupLocationLabel(entry.location));
+    ImGui::TableNextColumn();
+    renderCommandCell(entry, missing, scheme);
+}
+
+/// The visible rows only (ImGuiListClipper), in the order state.rows holds.
+void renderStartupRows(const Domain::StartupPublication& publication,
+                       const Platform::StartupCapabilities& capabilities,
+                       const StartupViewState& state,
+                       const UI::ColorScheme& scheme)
+{
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(state.rows.size()));
     while (clipper.Step())
@@ -264,57 +334,46 @@ renderStartupView(const Domain::StartupPublication* publication, const Platform:
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
         {
             const std::size_t index = state.rows[static_cast<std::size_t>(row)];
-            const auto& entry = publication->entries[index];
-            const bool missing = entry.target == Platform::StartupTargetState::Missing;
             ImGui::TableNextRow();
             ImGui::PushID(row);
-
-            ImGui::TableNextColumn();
-            if (missing)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
-            }
-            ImGui::Selectable(entry.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
-            if (missing)
-            {
-                ImGui::PopStyleColor();
-            }
-            if (ImGui::IsItemHovered(missing ? ImGuiHoveredFlags_None : ImGuiHoveredFlags_DelayNormal))
-            {
-                renderStartupTooltip(entry);
-            }
-            ImGui::TableNextColumn();
-            ImGui::TextUnformatted(entry.publisher.c_str());
-            ImGui::TableNextColumn();
-            if (capabilities.hasEnabledState)
-            {
-                ImGui::PushStyleColor(ImGuiCol_Text, entry.enabled ? scheme.textPrimary : scheme.textMuted);
-                ImGui::TextUnformatted(state.enabledLabels[index].c_str());
-                ImGui::PopStyleColor();
-            }
-            ImGui::TableNextColumn();
-            renderText(startupScopeLabel(entry.scope));
-            ImGui::TableNextColumn();
-            renderText(startupLocationLabel(entry.location));
-            ImGui::TableNextColumn();
-            if (missing)
-            {
-                ImGui::TextColored(scheme.textWarning, "%s", entry.command.c_str());
-            }
-            else if (entry.command.empty() && !entry.sourcePath.empty())
-            {
-                ImGui::TextColored(scheme.textMuted, "%s (target unresolved)", entry.sourcePath.c_str());
-            }
-            else
-            {
-                ImGui::TextUnformatted(entry.command.c_str());
-            }
-
+            renderStartupRow(publication.entries[index], state.enabledLabels[index], capabilities, scheme);
             ImGui::PopID();
         }
     }
+}
+
+} // namespace
+
+StartupViewContent
+renderStartupView(const Domain::StartupPublication* publication, const Platform::StartupCapabilities& capabilities, StartupViewState& state)
+{
+    if (!capabilities.canEnumerate)
+    {
+        renderUnsupported(capabilities, state);
+        return StartupViewContent::Unsupported;
+    }
+    if (publication == nullptr || publication->version == 0)
+    {
+        UI::Widgets::renderEmptyState(ICON_FA_POWER_OFF "  Reading startup apps...");
+        return StartupViewContent::Loading;
+    }
+
+    const auto& scheme = UI::Theme::get().scheme();
+    renderFilterBar(*publication, state, scheme);
+
+    constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
+                                            ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
+                                            ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
+                                            ImGuiTableFlags_SizingFixedFit;
+    if (!ImGui::BeginTable("##StartupTable", 6, TABLE_FLAGS))
+    {
+        return StartupViewContent::Table;
+    }
+    setupStartupColumns();
+    applySortSpecs(state);
+    rebuildRowsIfStale(*publication, state); // a header click may have changed the order
+    renderStartupRows(*publication, capabilities, state, scheme);
     ImGui::EndTable();
     return StartupViewContent::Table;
 }
-
 } // namespace App
