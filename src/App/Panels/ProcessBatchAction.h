@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -54,18 +55,39 @@ struct BatchTarget
 /// The selected processes still listed in @p snapshots, as targets, in @p snapshots' order. @p isSelected
 /// is asked with each snapshot's uniqueKey (an O(1) set lookup in ProcessesPanel). A selected process
 /// that has exited is simply not found, so it is never acted on.
+///
+/// uniqueKey is a 64-bit hash of PID and start time, so two live processes could in principle share
+/// one. A key that more than one snapshot carries is ambiguous: neither process is resolved, so a
+/// destructive batch can never reach a process the user did not select (#804 review).
 template<typename SnapshotRange, typename SelectedPredicate>
 [[nodiscard]] std::vector<BatchTarget> resolveTargets(const SnapshotRange& snapshots, SelectedPredicate isSelected)
 {
     std::vector<BatchTarget> targets;
+    std::vector<std::uint64_t> keys; // targets[i]'s uniqueKey
     for (const auto& snapshot : snapshots)
     {
         if (isSelected(snapshot.uniqueKey))
         {
             targets.push_back({.target = {.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks}, .name = snapshot.name});
+            keys.push_back(snapshot.uniqueKey);
         }
     }
-    return targets;
+    std::unordered_map<std::uint64_t, std::size_t> seen;
+    seen.reserve(keys.size());
+    for (const std::uint64_t key : keys)
+    {
+        ++seen[key];
+    }
+    std::vector<BatchTarget> unambiguous;
+    unambiguous.reserve(targets.size());
+    for (std::size_t i = 0; i < targets.size(); ++i)
+    {
+        if (seen[keys[i]] == 1)
+        {
+            unambiguous.push_back(std::move(targets[i]));
+        }
+    }
+    return unambiguous;
 }
 
 /// "Kill 5 processes?"

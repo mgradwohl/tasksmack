@@ -109,6 +109,18 @@ TEST(ProcessBatchActionTest, AReusedPidIsNotResolvedFromTheOldSelection)
     EXPECT_TRUE(resolveTargets(snaps, [&](std::uint64_t key) { return selected.contains(key); }).empty());
 }
 
+TEST(ProcessBatchActionTest, AKeySharedByTwoLiveProcessesResolvesNeither)
+{
+    // A uniqueKey hash collision: two different live processes carry the selected key. Neither is
+    // acted on, so the batch cannot reach a process the user did not select.
+    const std::vector<Domain::ProcessSnapshot> snaps{
+        snapshot(10, 1000, 501, "selected"), snapshot(20, 2000, 501, "collides"), snapshot(30, 3000, 503, "other")};
+    const std::unordered_set<std::uint64_t> selected{501, 503};
+    const std::vector<BatchTarget> targets = resolveTargets(snaps, [&](std::uint64_t key) { return selected.contains(key); });
+    ASSERT_EQ(targets.size(), 1U);
+    EXPECT_EQ(targets[0].target.pid, 30);
+}
+
 // ========== Confirmation text ==========
 
 TEST(ProcessBatchActionTest, TitleCountsTheProcesses)
