@@ -270,6 +270,12 @@ ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const Proce
     inodes.erase(duplicates.begin(), duplicates.end());
     if (inodes.empty())
     {
+        // An empty fd listing may be a process that exited during the scan: confirmed before it is
+        // reported as "no sockets", as every other completion is.
+        if (!stillTarget())
+        {
+            return failure(ConnectionsReadStatus::ProcessExited);
+        }
         return {.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}}; // no sockets: nothing to dump
     }
 

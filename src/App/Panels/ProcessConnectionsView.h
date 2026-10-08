@@ -22,6 +22,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
+#include "Platform/ThreadName.h"
 
 #include <algorithm>
 #include <chrono>
@@ -256,7 +257,15 @@ class ProcessConnectionsView
         m_PendingTarget = target;
         try
         {
-            m_Pending = std::async(std::launch::async, [&reader, target]() { return reader.readConnections(target); });
+            m_Pending = std::async(std::launch::async,
+                                   [&reader, target]()
+                                   {
+                                       // Named so per-thread CPU tools can attribute it (Platform/ThreadName.h). A
+                                       // std::async thread may come from a pool (MSVC) and keep this name afterwards;
+                                       // best effort: an unnamed worker reads the same.
+                                       static_cast<void>(Platform::setCurrentThreadName(Platform::CONNECTIONS_READ_THREAD_NAME));
+                                       return reader.readConnections(target);
+                                   });
         }
         catch (const std::system_error& e)
         {
