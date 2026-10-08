@@ -14,7 +14,9 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <type_traits>
+#include <vector>
 
 namespace TestColorScheme
 {
@@ -38,17 +40,24 @@ static_assert(std::is_trivially_copyable_v<ImVec4> && alignof(ImVec4) == alignof
     return colorBytes(scheme) / sizeof(ImVec4);
 }
 
-/// Calls @p visit(ImVec4&) for every colour of @p scheme, in declaration order.
+/// Calls @p visit(ImVec4&) for every colour of @p scheme, in declaration order. The colours are
+/// copied out whole, visited, and copied back, with no pointer arithmetic over the scheme's bytes.
 template<typename Visit> void forEachColor(UI::ColorScheme& scheme, const Visit& visit)
 {
-    auto* const first = reinterpret_cast<std::byte*>(scheme.accents.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
-    for (std::size_t i = 0; i < colorCount(scheme); ++i)
+    // Addressed from the scheme itself, not accents.data(), so the copies stay inside one object a
+    // compiler can see is large enough (accents alone is only 8 colours).
+    auto* const object = reinterpret_cast<std::byte*>(&scheme); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    const std::ptrdiff_t offset =
+        reinterpret_cast<std::byte*>(scheme.accents.data()) - object; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    std::byte* const colorsBegin = std::next(object, offset);
+    std::vector<ImVec4> colors(colorCount(scheme));
+    const std::size_t bytes = colors.size() * sizeof(ImVec4);
+    std::memcpy(colors.data(), colorsBegin, bytes);
+    for (ImVec4& color : colors)
     {
-        ImVec4 color{};
-        std::memcpy(&color, first + (i * sizeof(ImVec4)), sizeof(ImVec4)); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
         visit(color);
-        std::memcpy(first + (i * sizeof(ImVec4)), &color, sizeof(ImVec4)); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     }
+    std::memcpy(colorsBegin, colors.data(), bytes);
 }
 
 } // namespace TestColorScheme
