@@ -1231,6 +1231,99 @@ PowerShell 7 is available, or `pwsh -File tools\test-profile-etw-resize.ps1`,
 `pwsh -File tools\test-profile-etw.ps1` and `pwsh -File tools\test-analyze-etw.ps1`. The
 capture tests mock WPR and never start a recording; the analysis tests use canned xperf output.
 
+### Windows — Present-interval capture (PresentMon)
+
+TaskSmack's own frame figures -- the Render Metrics overlay (**Ctrl+Shift+M**) and the `ResizePerf`
+`frame`/`loop` lines -- are measured inside the app and end when its buffer swap returns. They
+cannot show whether, or when, a frame reached the screen. [PresentMon](https://github.com/GameTechDev/PresentMon)
+reads the presents Windows itself records (through ETW) and when each one was displayed, so
+judging frame pacing honestly (#843, Phase 0) needs its numbers next to the app's own.
+
+**Getting it.** Download the console build, `PresentMon-<version>-x64.exe`, from the
+[releases page](https://github.com/GameTechDev/PresentMon/releases): a single executable with
+nothing to install (the `.msi` there installs the GUI overlay application instead). The commands
+below use the options of the 2.x console application
+([README-ConsoleApplication.md](https://github.com/GameTechDev/PresentMon/blob/main/README-ConsoleApplication.md)).
+PresentMon runs an ETW session, so it needs an elevated terminal, or an account in the
+**Performance Log Users** group (otherwise it fails with "failed to start trace session (access
+denied)"). Elevating PresentMon does not elevate TaskSmack: PresentMon only observes, so start
+TaskSmack as usual from a normal terminal (an elevated target skews what is measured, #872).
+
+```powershell
+# TaskSmack already running from a normal terminal. Elevated terminal, repository root:
+# one 60 s capture of TaskSmack's presents to a CSV, then exit.
+.\PresentMon-2.6.0-x64.exe --process_name TaskSmack.exe --output_file perf-data\presentmon-idle.csv `
+    --timed 60 --terminate_after_timed --session_name TaskSmackPresentMon
+
+# A leftover session of that name (e.g. after a killed capture): stop it, then exit.
+.\PresentMon-2.6.0-x64.exe --session_name TaskSmackPresentMon --terminate_existing_session
+```
+
+- `--process_name` records only that executable's presents; `--output_file` writes the CSV (by
+  default `PresentMon-<time>.csv` in the current directory); `--timed` stops recording after that
+  many seconds and `--terminate_after_timed` then exits. `--delay <s>` waits before recording.
+- `--session_name` gives the capture its own ETW session name, so it never collides with another
+  PresentMon. As with the WPR captures, never use `--stop_existing_session` on a session that is
+  not yours.
+- **Idle:** leave TaskSmack on the tab being measured and do not touch it for the whole window.
+  **Interactive:** start the capture, then move the pointer over the window, scroll or resize for
+  the whole window. Capture each scenario separately, at the same window size and display, and
+  name the CSV after it.
+- Leave the Render Metrics overlay off for the capture that counts: while it is open TaskSmack
+  draws and measures more. Turn it on only to compare its readout with PresentMon's.
+
+**Columns that matter** (all times in ms; the default 2.x CSV, one row per present):
+
+| Column | Meaning | Compare with |
+|---|---|---|
+| `MsBetweenPresents` | Time from the previous present to this one: the cadence TaskSmack presents at | `ResizePerf` `loop` (deliver-to-deliver); the overlay's FPS as 1000 / mean |
+| `MsBetweenDisplayChange` | How long the previous frame stayed on screen before this one replaced it: the cadence the user sees. `NA` if this frame was never displayed | Should track `MsBetweenPresents`; with vsync it comes in whole display refreshes (16.7 ms at 60 Hz) |
+| `MsUntilDisplayed` | From the present call until the frame was displayed. `NA` means the frame was never displayed (dropped): count these | -- |
+| `MsInPresentAPI` | Time spent inside the present call | `ResizePerf` `swap` |
+| `PresentMode` | How the frame reached the screen (e.g. `Composed: Flip`, `Hardware: Independent Flip`) | Compare only captures with the same mode: it changes latency and pacing |
+| `TimeInSeconds` | Time of the present since recording started (`TimeInQPC`, a raw performance-counter value, with `--qpc_time`) | Lines a stall up with the app log or an ETW trace |
+
+TaskSmack renders with OpenGL, which PresentMon instruments less fully than Direct3D (it typically
+reports such apps' runtime as `Other`), so read the present and display intervals above and treat
+its CPU/GPU busy and latency columns with caution. `--v1_metrics` writes the PresentMon 1.x layout
+instead (lower-case `msBetweenPresents`/`msBetweenDisplayChange`, plus a `Dropped` column).
+
+Percentiles, nearest rank as in the `ResizePerf` lines:
+
+```powershell
+$rows = Import-Csv perf-data\presentmon-idle.csv
+function Get-Percentile([double[]]$Values, [double]$P) {
+    $sorted = $Values | Sort-Object
+    $sorted[[math]::Max(0, [math]::Ceiling($P / 100 * $sorted.Count) - 1)]
+}
+foreach ($column in 'MsBetweenPresents', 'MsBetweenDisplayChange') {
+    $values = @($rows | Where-Object { $_.$column -ne 'NA' } | ForEach-Object { [double]$_.$column })
+    '{0}: n={1} p50={2:N2} p95={3:N2} p99={4:N2} max={5:N2} ms' -f $column, $values.Count,
+        (Get-Percentile $values 50), (Get-Percentile $values 95), (Get-Percentile $values 99),
+        ($values | Measure-Object -Maximum).Maximum
+}
+'Not displayed: {0} of {1} presents' -f @($rows | Where-Object MsUntilDisplayed -eq 'NA').Count, $rows.Count
+```
+
+**Reading them against the app's own metrics.** The overlay's `Frame: <ms> (<fps> FPS)` line is
+ImGui's rolling average over the last 60 frames, and the status bar's FPS readout an average over
+half a second. Over a steady stretch, 1000 / mean `MsBetweenPresents` should agree with them; if it
+does not, the app is not presenting every frame it counts. Expected cadences are those in the FAQ
+and above: near 50 ms at idle (the idle period, or a chart's animation period while it moves), a
+whole number of refreshes near 16.7 ms while interacting on a 60 Hz display, and about 200 ms
+minimized. For tails, set `TASKSMACK_TRACE_RESIZE_PERF=1` during the capture and compare the
+`loop` p95/p99 with `MsBetweenPresents`' p95/p99. A `MsBetweenDisplayChange` tail, or `NA` rows,
+where `MsBetweenPresents` is even means the frames were produced on time but reached the screen
+late or not at all, which no in-app counter can show.
+
+**Relation to the ETW captures.** PresentMon answers *whether* frames reach the screen evenly;
+`tools/profile-etw.ps1` answers *why* they do not. PresentMon is itself an ETW consumer of the
+graphics providers (DXGI, DxgKrnl, DWM) that the `resize` focused profile also records, in a
+session of its own. To find a PresentMon stall in a WPR trace recorded over the same period, add
+`--qpc_time`: the CSV then carries each present's raw performance-counter value, the timebase ETW
+traces and the `ResizePerfAnchor` lines use. Use PresentMon first to find and size a pacing problem
+cheaply, then a WPR capture to attribute it.
+
 ### Compile-Time Profiling (-ftime-trace)
 
 To identify slow headers and compilation bottlenecks, use the `TASKSMACK_ENABLE_TIME_TRACE` CMake option:
