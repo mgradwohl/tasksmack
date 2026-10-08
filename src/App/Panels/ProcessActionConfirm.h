@@ -33,4 +33,11 @@ enum class Outcome : std::uint8_t
 /// clearing the flag alone does not close a modal ImGui already has open.
 Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid, bool dismiss = false);
 
+/// The same modal, same geometry and buttons, with a title and question the caller has already
+/// built: the Processes table's batch actions (#804), whose question lists several processes a line
+/// each (ProcessBatch::confirmBody()), and its single-process actions, whose text is built once when
+/// the action is requested rather than every frame the dialog is up.
+Outcome
+renderText(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question, bool dismiss = false);
+
 } // namespace App::ProcessActionConfirm

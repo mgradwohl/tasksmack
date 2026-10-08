@@ -98,6 +98,8 @@ A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading
 
 **Tree view** shows the parent–child process hierarchy when enabled.
 
+**Selecting several processes.** A click selects one process, and Process Details shows it. **Ctrl+click** adds a process to the selection, or removes it; **Shift+click** selects every row from the last one clicked to this one, in the order the rows are shown (sorted, filtered, and in tree view with collapsed branches skipped), and **Ctrl+Shift+click** adds that range to the selection. **Ctrl+A**, with the pointer over the table (or after clicking in it), selects every row shown. Every selected row is highlighted. Process Details keeps showing the process you clicked last. A process is selected as itself, not by its PID: when a selected process exits it drops out of the selection, and a new process that is later given the same PID is not selected. A keyboard move (arrows, Page Up / Down, Home / End) or a plain click selects just that one row again.
+
 **Hold Ctrl to freeze** the table, as in Windows Task Manager. With the pointer over the process table (or after clicking in it), hold **Ctrl** and the rows stop updating and stop re-sorting, so the process you are aiming at stays under the pointer while you click it. A **Paused (Ctrl)** label appears beside the process count (just a pause icon when the window is too narrow for the words; hover it for the explanation), and releasing Ctrl resumes live updates at once. The freeze applies only to what the table shows: sampling carries on underneath, so charts and Process Details have no gaps, and the values shown while frozen are the last ones adopted, not live readings. Selecting a process, opening Process Details and process actions all work while frozen; an action on a process that has exited in the meantime fails just as it would without the freeze. Ctrl does not freeze while you are typing in the filter box, while TaskSmack's window is not focused, or when it is part of a shortcut such as Ctrl+= or Ctrl+Shift+M.
 
 Process rows are color-coded by state (running, sleeping, stopped, zombie).
@@ -109,17 +111,20 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 | **F1** | About TaskSmack, which lists every keyboard shortcut (there is no separate help page) |
 | **F2** | Settings |
 | **F5** | Processes tab: switch between list and tree view |
-| **F9** | Kill the selected process: opens the usual Kill confirmation, never kills without it (Processes and Process Details tabs) |
+| **F9** | Kill the selected process: opens the usual Kill confirmation, never kills without it (Processes and Process Details tabs). With several processes selected in the Processes table, asks to kill all of them |
 | **F10** | Quit, the same as the window's Close button (settings are saved). F10 used to open the title bar's window menu; **Alt+Space** or **Ctrl+Space** still does |
 | **Up** / **Down**, **k** / **j** | Processes table: select the previous / next row |
 | **Page Up** / **Page Down** | Processes table: move one page up / down |
 | **Home** / **End**, **g** / **G** | Processes table: select the first / last row |
 | **Left** / **Right** (tree view) | Collapse the selected process, or if it is already collapsed (or has no children) go to its parent / expand it, or if it is already expanded go to its first child |
+| **Ctrl+click** | Processes table: add a row to the selection, or remove it |
+| **Shift+click** / **Ctrl+Shift+click** | Processes table: select the rows from the last one clicked to this one / add them to the selection |
+| **Ctrl+A** (over the process table) | Select every row shown |
 | Hold **Ctrl** (over the process table) | Freeze the process table while held |
 | **Ctrl+=** / **Ctrl+-** (or **Ctrl+keypad +** / **Ctrl+keypad -**) | Increase / decrease the font size |
 | **Ctrl+Shift+M** | Toggle the Render Metrics overlay and the status bar's FPS readout |
 
-The table's keys work while the pointer is over the process table or after clicking in it. They move the selection through the rows in the order they are shown -- sorted, filtered, and in tree view with collapsed branches skipped -- and scroll the selected row into view; with no row selected (or the selected one filtered out or collapsed away), the first key selects the first row (**End** / **G**: the last). While the table has them, the arrow keys no longer move ImGui's own keyboard focus around it; **Tab** still does. The function keys (F1, F2, F5, F9, F10) and the process table's navigation keys do nothing while you are typing in the filter box or while a dialog or menu is open, and the function keys also do nothing with Ctrl, Shift, Alt or Super held. The older chords -- Ctrl+= / Ctrl+-, Ctrl+Shift+M and the window menu's Alt+Space / Ctrl+Space -- are not held back this way. **F9** acts only on a process you can see selected, and only on platforms that can kill; the confirmation names the process it was pressed for.
+The table's keys work while the pointer is over the process table or after clicking in it. They move the selection through the rows in the order they are shown -- sorted, filtered, and in tree view with collapsed branches skipped -- and scroll the selected row into view; with no row selected (or the selected one filtered out or collapsed away), the first key selects the first row (**End** / **G**: the last). While the table has them, the arrow keys no longer move ImGui's own keyboard focus around it; **Tab** still does. The function keys (F1, F2, F5, F9, F10) and the process table's navigation keys do nothing while you are typing in the filter box or while a dialog or menu is open, and the function keys also do nothing with Ctrl, Shift, Alt or Super held. The older chords -- Ctrl+= / Ctrl+-, Ctrl+Shift+M and the window menu's Alt+Space / Ctrl+Space -- are not held back this way. **F9** acts only on a process you can see selected, and only on platforms that can kill; the confirmation names the process it was pressed for. With several processes selected, F9 asks to kill all of them, in one confirmation that lists them. Ctrl+A, like the navigation keys, does nothing while you are typing in the filter box (where it selects the typed text) or while a dialog or menu is open.
 
 ### System Metrics
 
@@ -233,6 +238,8 @@ Right-click any process row for Terminate, Kill, Stop and Resume. The Actions ta
 | Change I/O priority (ionice class and level), Process Details only | ✅ | ❌ |
 
 Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
+
+**Acting on several processes at once.** Right-click any row of a multi-selection (see "Selecting several processes" above) and the menu's actions read **Suspend 5 processes...**, **Terminate 5 processes...** and so on: they act on every selected process (Details and the Copy items still act on the row you right-clicked). Right-clicking a row outside the selection selects just that row, as before. One confirmation covers the whole batch: it says what the action does, lists the processes by name and PID (the first eight, then "and N more"), and always names TaskSmack itself and PID 1 (the init process) when either is among them, whatever the count, so neither can be acted on unnoticed. Each process is then acted on in turn, identified by its PID and start time exactly as a single action is, so one that has exited, or whose PID now belongs to another process, is refused rather than hit by mistake. TaskSmack's own process, if selected, is acted on last. The result is one line in the toolbar -- "Kill sent to 5 processes", or "Kill sent to 3 of 5 processes; 2 failed: ..." quoting the first few errors (when the line is cut short, hover it for the full text) -- rather than a message per process. Changing the priority of several processes at once is not available yet; it is done one process at a time in Process Details.
 
 #### I/O Priority (Linux)
 

@@ -2,10 +2,12 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
@@ -116,11 +118,19 @@ class ProcessesPanel : public Panel
     /// Handle application events (theme/font changes)
     void onEvent(Core::Event& event) override;
 
-    /// Get the currently selected process PID.
+    /// The primary selected process's PID: the row last clicked or moved to, which Process Details
+    /// shows. With several rows selected (#804) it is one of them; selectionCount() counts them all.
     /// @return Selected PID, or -1 if none selected.
     [[nodiscard]] std::int32_t selectedPid() const
     {
         return m_SelectedPid;
+    }
+
+    /// How many processes are selected in the table (#804): 0, 1, or more after a Ctrl/Shift+click or
+    /// Ctrl+A. Selected processes that exit drop out.
+    [[nodiscard]] std::size_t selectionCount() const noexcept
+    {
+        return m_Selection.size();
     }
 
     /// Get the process count.
@@ -224,7 +234,8 @@ class ProcessesPanel : public Panel
 
     /// F9 (#170): on this frame's render, ask to kill the selected process through the same confirm
     /// dialog as the row menu's Kill, its target captured then. Nothing happens when no process is
-    /// selected, the selection is not a visible row, or the platform cannot kill. Never kills directly.
+    /// selected, the selection is not a visible row, or the platform cannot kill. With several rows
+    /// selected (#804) it asks to kill all of them, in the batch confirm. Never kills directly.
     /// Lives for this frame only: expireFrameRequests() drops it if the table was not drawn.
     void requestKillSelected() noexcept
     {
@@ -252,8 +263,24 @@ class ProcessesPanel : public Panel
     // Empty until tree view is first entered.
     std::string m_SortBackupLayout;
 
+    // The primary process: last clicked or moved to, shown by Process Details.
     std::int32_t m_SelectedPid = -1;
     std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity: a PID can be reused
+    // Every selected row, by uniqueKey (#804): the rows drawn highlighted, and what a batch action is
+    // for. A plain click or keyboard move makes it the primary alone.
+    ProcessSelection::Selection m_Selection;
+    // A row click, applied after the rows are drawn (#804): a Shift+click's range needs the visible
+    // order, which must not be rebuilt while the tree rows are iterated.
+    struct PendingClick
+    {
+        std::int32_t pid = 0;
+        std::uint64_t key = 0;
+        ProcessSelection::ClickKind kind = ProcessSelection::ClickKind::Replace;
+    };
+    std::optional<PendingClick> m_PendingClick;
+    // TaskSmack's own PID (Platform::currentProcessId(), at attach): a batch naming it says so and
+    // acts on it last (#804).
+    std::int32_t m_OwnPid = 0;
 
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     std::chrono::milliseconds m_AppliedSamplerInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
@@ -293,11 +320,15 @@ class ProcessesPanel : public Panel
     // Actions tab. Created at attach, like that panel's: this panel is part of the composition root.
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
+    // The action awaiting confirmation: one target from a row (or F9), several from the selection
+    // (#804). Each target is a PID and start time, so a reused PID is refused (#973). The dialog's
+    // text is built once, here, when the action is requested.
     struct RowAction
     {
         Detail::ProcessAction action = Detail::ProcessAction::None;
-        Platform::ProcessTarget target; // PID and start time: a reused PID is refused (#973)
-        std::string processName;
+        std::vector<ProcessBatch::BatchTarget> targets;
+        std::string title;
+        std::string question;
     } m_RowAction;
     bool m_ShowRowActionConfirm = false;
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
@@ -456,18 +487,39 @@ class ProcessesPanel : public Panel
     /// Applies this frame's navigation key and a pending F9 to the visible rows (#160, #170): moves the
     /// selection, collapses or expands in tree view, or opens the Kill confirm for the selected row.
     /// Inside the table, after sorting and before the rows are drawn.
+    /// Ctrl+A (#804) selects every visible row.
     void applyKeyboardInput(const std::vector<Domain::ProcessSnapshot>& snapshots,
                             ProcessTableNavigation::NavCommand command,
-                            bool killRequested);
+                            bool killRequested,
+                            bool selectAllRequested);
 
-    /// Selects `proc` as a click on its row does, and tells the other panels.
+    /// The visible rows in drawn order, as indices into `snapshots`: the sorted list, or the flattened
+    /// tree. With `shapes`, also each tree row's shape (left empty in list view, or if any index had to
+    /// be dropped). Not while the tree rows are being iterated: it can rebuild them.
+    void collectVisibleRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                            std::vector<std::size_t>& visible,
+                            std::vector<ProcessTableNavigation::TreeRowShape>* shapes);
+
+    /// The uniqueKeys of the visible rows, in drawn order.
+    [[nodiscard]] std::vector<std::uint64_t> visibleKeys(const std::vector<Domain::ProcessSnapshot>& snapshots);
+
+    /// Applies this frame's row click (m_PendingClick) to the selection, after the rows are drawn.
+    void applyPendingClick(const std::vector<Domain::ProcessSnapshot>& snapshots);
+
+    /// Makes `proc` the primary process -- what Process Details shows -- and tells the other panels.
+    /// Leaves the multi-selection alone.
     void selectProcess(const Domain::ProcessSnapshot& proc);
+    void selectProcess(std::int32_t pid, std::uint64_t uniqueKey);
 
     /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
     void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
 
     /// Asks to run `action` on `proc`, through the confirmation dialog.
     void requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc);
+
+    /// Asks to run `action` on every selected process still listed, through the batch confirmation
+    /// (#804). One process left: the single-process dialog. None: nothing happens.
+    void requestSelectionAction(Detail::ProcessAction action);
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
     void renderRowActionConfirm();

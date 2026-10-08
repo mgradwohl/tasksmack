@@ -36,6 +36,11 @@ void claimNavigationKeys(unsigned int ownerId, bool treeView);
 /// tree view.
 [[nodiscard]] ProcessTableNavigation::NavCommand pollNavigationCommand(bool treeView);
 
+/// Whether Ctrl+A was pressed this frame, with no other modifier: the Processes table's "select every
+/// row shown" (#804). Does not repeat. Call only while tableNavigationArmed(), so it never takes Ctrl+A
+/// from the filter box, where it selects the typed text.
+[[nodiscard]] bool pollSelectAll();
+
 /// The height of the current table's scrolling area below its frozen header, for
 /// ProcessTableNavigation::pageStep(). Call inside the table; 0 outside one.
 [[nodiscard]] float tableScrollViewHeight();

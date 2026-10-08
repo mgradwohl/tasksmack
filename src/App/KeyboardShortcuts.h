@@ -33,7 +33,7 @@ enum class ShortcutAction : std::uint8_t
     ShowAbout,      ///< F1: the About dialog, which lists these shortcuts (there is no separate help)
     OpenSettings,   ///< F2: the Settings dialog
     ToggleTreeView, ///< F5: Processes list <-> tree (Processes tab only)
-    KillSelected,   ///< F9: the Kill confirm dialog for the selected process; never kills directly
+    KillSelected,   ///< F9: the Kill confirm dialog for the selected process(es); never kills directly
     Quit,           ///< F10: the window's normal close request, so settings are saved
 };
 
@@ -55,7 +55,7 @@ inline constexpr std::array<FunctionKeyBinding, 5> FUNCTION_KEY_BINDINGS{{
     {.key = FunctionKey::F9,
      .action = ShortcutAction::KillSelected,
      .keyLabel = "F9",
-     .description = "Kill the selected process (asks first)"},
+     .description = "Kill the selected process(es) (asks first)"},
     {.key = FunctionKey::F10, .action = ShortcutAction::Quit, .keyLabel = "F10", .description = "Quit"},
 }};
 
@@ -118,16 +118,19 @@ struct ShortcutHelpEntry
 
 /// Every keyboard shortcut, for the About dialog: the function keys above, then the Processes table's
 /// navigation (ProcessTableNavigation.h) and the chords that predate them.
-inline constexpr std::array<ShortcutHelpEntry, 13> SHORTCUT_HELP{{
+inline constexpr std::array<ShortcutHelpEntry, 16> SHORTCUT_HELP{{
     {.keys = "F1", .description = "About and keyboard shortcuts"},
     {.keys = "F2", .description = "Settings"},
     {.keys = "F5", .description = "Processes: list / tree view"},
-    {.keys = "F9", .description = "Kill the selected process (asks first)"},
+    {.keys = "F9", .description = "Kill the selected process(es) (asks first)"},
     {.keys = "F10", .description = "Quit"},
     {.keys = "Up / Down, k / j", .description = "Processes: previous / next row"},
     {.keys = "Page Up / Page Down", .description = "Processes: one page up / down"},
     {.keys = "Home / End, g / G", .description = "Processes: first / last row"},
     {.keys = "Left / Right", .description = "Tree view: collapse / expand, then parent / first child"},
+    {.keys = "Ctrl + click", .description = "Processes: add a row to, or remove it from, the selection"},
+    {.keys = "Shift + click", .description = "Processes: select the rows from the last one clicked (Ctrl + Shift adds them)"},
+    {.keys = "Ctrl + A", .description = "Processes: select every row shown"},
     {.keys = "Hold Ctrl", .description = "Processes: pause updates while held"},
     {.keys = "Ctrl + = / Ctrl + -, Ctrl + keypad + / -", .description = "Larger / smaller text"},
     {.keys = "Ctrl + Shift + M", .description = "Render metrics overlay"},

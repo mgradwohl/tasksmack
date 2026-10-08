@@ -5,12 +5,14 @@
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
+#include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTableFlags.h"
@@ -34,6 +36,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ThreadName.h"
@@ -879,6 +882,7 @@ void ProcessesPanel::onAttach()
     // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
     m_ProcessActions = Synthetic::makeProcessActions(scenario);
     m_ActionCapabilities = m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+    m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
     m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
@@ -1060,6 +1064,9 @@ void ProcessesPanel::adoptNewerSnapshots()
             m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport))
     {
         m_CachedSnapshotVersion = newVersion;
+        // Selected processes that have exited drop out of the selection (#804): once per generation,
+        // one O(1) lookup per process. The primary process stays, so Process Details can show it exited.
+        (void) m_Selection.retainPresent(*m_CachedRenderSnapshots);
     }
 }
 
@@ -1110,10 +1117,12 @@ void ProcessesPanel::renderContent()
     // nothing is typed or open, the navigation keys are taken from ImGui's own keyboard navigation and
     // move the selection instead. Applied inside the table, once the visible order is known.
     auto navCommand = ProcessTableNavigation::NavCommand::None;
+    bool selectAllRequested = false;
     if (KeyboardInput::tableNavigationArmed())
     {
         KeyboardInput::claimNavigationKeys(ImGui::GetID("##ProcessTableKeys"), m_TreeViewEnabled);
         navCommand = KeyboardInput::pollNavigationCommand(m_TreeViewEnabled);
+        selectAllRequested = KeyboardInput::pollSelectAll(); // Ctrl+A (#804)
     }
 
     // Get thread-safe copy of snapshots — only when data has actually changed (version-cached).
@@ -1604,7 +1613,7 @@ void ProcessesPanel::renderContent()
         } // End of sorting (disabled in tree view mode)
 
         // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
-        applyKeyboardInput(currentSnapshots, navCommand, killRequested);
+        applyKeyboardInput(currentSnapshots, navCommand, killRequested, selectAllRequested);
 
         // Render process rows - tree view or flat list
         if (m_TreeViewEnabled)
@@ -1638,6 +1647,9 @@ void ProcessesPanel::renderContent()
             }
         }
         m_ScrollSelectedIntoView = false; // Done by the selected row if it was drawn; never carried over
+        // A row clicked this frame (#804): applied now the rows are drawn, so a Shift+click's range can
+        // read the visible order without rebuilding the tree rows under the loop above.
+        applyPendingClick(currentSnapshots);
 
         // Sync column visibility from ImGui back to our settings
         // This captures changes made via the right-click context menu. Not on a frame the Columns
@@ -1812,8 +1824,9 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     // -- see the comment below and #906.
 
     // By identity, not PID alone: after the selected process exits, a new process
-    // given its PID is a different row and must not inherit the highlight.
-    const bool isSelected = ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, proc.pid, proc.uniqueKey);
+    // given its PID is a different row and must not inherit the highlight. Every
+    // selected row is highlighted (#804), an O(1) lookup.
+    const bool isSelected = m_Selection.contains(proc.uniqueKey);
 
     // The tree indent and expand/collapse button live in the Name column, not
     // here. This column is a fixed 60px, so indenting it pushed the PID text past
@@ -1848,19 +1861,28 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     }
     if (clicked)
     {
-        selectProcess(proc);
+        // Plain, Ctrl or Shift click (#804), applied once the rows are drawn (applyPendingClick()).
+        const ImGuiIO& io = ImGui::GetIO();
+        m_PendingClick =
+            PendingClick{.pid = proc.pid, .key = proc.uniqueKey, .kind = ProcessSelection::clickKindFor(io.KeyCtrl, io.KeyShift)};
     }
     // A keyboard move selected this row (#160): bring it into view below the frozen header.
-    if (isSelected && m_ScrollSelectedIntoView)
+    if (m_ScrollSelectedIntoView &&
+        ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, proc.pid, proc.uniqueKey))
     {
         KeyboardInput::scrollLastItemIntoView();
         m_ScrollSelectedIntoView = false;
     }
     // A right-press selects the row and opens its menu for that same process, in the same
     // frame. ImGui's context-item popup opens on the release instead, by which time the
-    // table may have re-sorted and put another process under the pointer (#1365).
+    // table may have re-sorted and put another process under the pointer (#1365). On a row
+    // of a multi-selection the selection is kept, so the menu can act on all of it (#804).
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
     {
+        if (!isSelected || m_Selection.size() < 2)
+        {
+            m_Selection.selectOnly(proc.uniqueKey);
+        }
         selectProcess(proc);
         m_RowMenuTarget = proc;
         ImGui::OpenPopup(m_RowMenuPopupId);
@@ -2127,20 +2149,17 @@ void ProcessesPanel::setTreeView(bool enabled)
     }
 }
 
-void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                        ProcessTableNavigation::NavCommand command,
-                                        bool killRequested)
+void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                        std::vector<std::size_t>& visible,
+                                        std::vector<ProcessTableNavigation::TreeRowShape>* shapes)
 {
-    namespace Nav = ProcessTableNavigation;
-    if (command == Nav::NavCommand::None && !killRequested)
+    // The sorted list, or the flattened tree (from the same cache renderTreeView() draws, so this costs
+    // no rebuild).
+    visible.clear();
+    if (shapes != nullptr)
     {
-        return; // The common frame: no key, so the visible order is not even looked at
+        shapes->clear();
     }
-
-    // The visible rows in drawn order, as indices into snapshots: the sorted list, or the flattened
-    // tree (from the same cache renderTreeView() draws, so this costs no rebuild).
-    std::vector<std::size_t> visible;
-    std::vector<Nav::TreeRowShape> shapes;
     if (m_TreeViewEnabled)
     {
         const auto& rows = m_TreeRowsCache.rows(
@@ -2153,11 +2172,17 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             m_CachedFilteredIndices,
             m_CollapsedKeys);
         visible.reserve(rows.size());
-        shapes.reserve(rows.size());
+        if (shapes != nullptr)
+        {
+            shapes->reserve(rows.size());
+        }
         for (const ProcessTreeFlatten::ProcessTreeRow& row : rows)
         {
             visible.push_back(row.procIdx);
-            shapes.push_back({.depth = row.depth, .hasChildren = row.hasChildren, .isExpanded = row.isExpanded});
+            if (shapes != nullptr)
+            {
+                shapes->push_back({.depth = row.depth, .hasChildren = row.hasChildren, .isExpanded = row.isExpanded});
+            }
         }
     }
     else
@@ -2167,10 +2192,73 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // The indices fit the adopted generation; checked anyway, as the row loops do (#1394). A dropped
     // index would misalign the tree shapes, so Left/Right are then left to do nothing.
     std::erase_if(visible, [&snapshots](std::size_t idx) { return idx >= snapshots.size(); });
-    if (visible.size() != shapes.size())
+    if (shapes != nullptr && visible.size() != shapes->size())
     {
-        shapes.clear();
+        shapes->clear();
     }
+}
+
+std::vector<std::uint64_t> ProcessesPanel::visibleKeys(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    std::vector<std::size_t> visible;
+    collectVisibleRows(snapshots, visible, nullptr);
+    std::vector<std::uint64_t> keys;
+    keys.reserve(visible.size());
+    for (const std::size_t idx : visible)
+    {
+        keys.push_back(snapshots[idx].uniqueKey);
+    }
+    return keys;
+}
+
+void ProcessesPanel::applyPendingClick(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    if (!m_PendingClick.has_value())
+    {
+        return;
+    }
+    const PendingClick click = *m_PendingClick;
+    m_PendingClick.reset();
+
+    using ProcessSelection::ClickKind;
+    const bool isRange = (click.kind == ClickKind::Range || click.kind == ClickKind::AddRange);
+    // Only a range reads the visible order: an O(rows) pass on a Shift+click, never on a plain one.
+    const std::vector<std::uint64_t> keys = isRange ? visibleKeys(snapshots) : std::vector<std::uint64_t>{};
+    m_Selection.click(click.kind, click.key, keys);
+    // The clicked row becomes the primary process, unless a Ctrl+click just removed it from the
+    // selection: Process Details then keeps showing what it showed.
+    if (m_Selection.contains(click.key))
+    {
+        selectProcess(click.pid, click.key);
+    }
+    else if (m_Selection.size() == 1 && !m_Selection.contains(m_SelectedUniqueKey))
+    {
+        // Ctrl+click removed the primary row and left one: that row is the selection now, so it
+        // becomes the primary too, or F9 (which acts on the primary) would refuse (#804 review).
+        const std::uint64_t remaining = *m_Selection.keys().begin();
+        const auto it = std::ranges::find(snapshots, remaining, &Domain::ProcessSnapshot::uniqueKey);
+        if (it != snapshots.end())
+        {
+            selectProcess(it->pid, remaining);
+        }
+    }
+}
+
+void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapshot>& snapshots,
+                                        ProcessTableNavigation::NavCommand command,
+                                        bool killRequested,
+                                        bool selectAllRequested)
+{
+    namespace Nav = ProcessTableNavigation;
+    if (command == Nav::NavCommand::None && !killRequested && !selectAllRequested)
+    {
+        return; // The common frame: no key, so the visible order is not even looked at
+    }
+
+    // The visible rows in drawn order, as indices into snapshots.
+    std::vector<std::size_t> visible;
+    std::vector<Nav::TreeRowShape> shapes;
+    collectVisibleRows(snapshots, visible, &shapes);
 
     std::vector<std::uint64_t> keys;
     keys.reserve(visible.size());
@@ -2178,20 +2266,52 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     {
         keys.push_back(snapshots[idx].uniqueKey);
     }
+
+    // Ctrl+A (#804): every row shown -- filtered, and in tree view without collapsed branches.
+    if (selectAllRequested)
+    {
+        m_Selection.selectAll(keys);
+    }
+
     const std::optional<std::size_t> current = (m_SelectedPid == -1) ? std::nullopt : Nav::indexOfKey(keys, m_SelectedUniqueKey);
 
     // F9: the row menu's Kill, confirmed in its dialog for the target captured here. Only for a
     // selected row the user can see, only when the platform can kill, and never over a row action
     // already requested or open: a menu action's dialog opens on the next frame, before ImGui knows
     // of it, so the popup stack alone would let F9 replace its action and target (#170).
-    if (killRequested && current.has_value())
+    // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
+    // the one highlighted row, when it is visible.
+    const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.action != Detail::ProcessAction::None;
+    if (killRequested && m_Selection.size() > 1)
     {
-        const Domain::ProcessSnapshot& proc = snapshots[visible[*current]];
-        const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.action != Detail::ProcessAction::None;
-        if (Detail::killShortcutAllowed(
-                m_ActionCapabilities, Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, rowActionPending))
+        // Only while at least one selected row is visible: with every selected row filtered out, F9
+        // must not open a kill for rows the user cannot see (#804 review).
+        if (Detail::isActionAvailable(m_ActionCapabilities, Detail::ProcessAction::Kill) && !rowActionPending &&
+            m_Selection.anyVisible(keys))
         {
-            requestRowAction(Detail::ProcessAction::Kill, proc);
+            requestSelectionAction(Detail::ProcessAction::Kill);
+        }
+    }
+    else if (killRequested && m_Selection.size() == 1)
+    {
+        // The one highlighted row, found by its key rather than taken to be the primary: an exited
+        // primary is kept while the selection moves on, and Ctrl+A over a filter can select one row
+        // without making it primary, yet F9 must act on what is highlighted (#804 review).
+        // Exactly one visible row must carry the key: uniqueKey is a hash, and with two rows sharing it
+        // F9 cannot know which one is highlighted, so it does nothing rather than guess (#804 review).
+        const std::uint64_t selectedKey = *m_Selection.keys().begin();
+        const std::optional<std::size_t> row = (m_Selection.isActionable(selectedKey) && std::ranges::count(keys, selectedKey) == 1)
+                                                 ? Nav::indexOfKey(keys, selectedKey)
+                                                 : std::nullopt;
+        if (row.has_value())
+        {
+            const Domain::ProcessSnapshot& proc = snapshots[visible[*row]];
+            if (Detail::killShortcutAllowed(m_ActionCapabilities,
+                                            Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                            rowActionPending))
+            {
+                requestRowAction(Detail::ProcessAction::Kill, proc);
+            }
         }
     }
     // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
@@ -2203,6 +2323,9 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
 
     const auto selectRow = [&](std::size_t row)
     {
+        // A move selects that row alone, also out of a multi-selection (#804), and anchors a later
+        // Shift+click there.
+        m_Selection.selectOnly(keys[row]);
         if (row != current)
         {
             selectProcess(snapshots[visible[row]]);
@@ -2245,17 +2368,30 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
 
 void ProcessesPanel::selectProcess(const Domain::ProcessSnapshot& proc)
 {
-    m_SelectedPid = proc.pid;
-    m_SelectedUniqueKey = proc.uniqueKey;
+    selectProcess(proc.pid, proc.uniqueKey);
+}
+
+void ProcessesPanel::selectProcess(std::int32_t pid, std::uint64_t uniqueKey)
+{
+    m_SelectedPid = pid;
+    m_SelectedUniqueKey = uniqueKey;
 
     // Emit process selection event for other panels to react
-    Core::ProcessSelectedEvent event(proc.pid, proc.uniqueKey);
+    Core::ProcessSelectedEvent event(pid, uniqueKey);
     Core::Application::get().raiseEvent(event);
 }
 
 void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 {
+    // Opened on a row of a multi-selection (#804): its actions are for every selected process; Details
+    // and Copy stay with the row it was opened on.
+    const std::size_t batchCount = (m_Selection.size() > 1 && m_Selection.contains(proc.uniqueKey)) ? m_Selection.size() : 0;
+
     // Only while the menu is open, so formatting here costs nothing on an ordinary frame.
+    if (batchCount > 0)
+    {
+        ImGui::TextDisabled("%zu processes selected", batchCount);
+    }
     ImGui::TextDisabled("%s (PID %d)", proc.name.c_str(), proc.pid);
     ImGui::Separator();
 
@@ -2283,18 +2419,40 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         ImGui::SetClipboardText(proc.command.c_str());
     }
 
+    // "Kill..." for one process, "Kill 5 processes..." for a selection; the "###" part keeps the item's
+    // ID the same whichever it says.
+    const auto actionItem = [batchCount](Detail::ProcessAction action, const char* icon, const char* shortcut)
+    {
+        const std::string label =
+            (batchCount > 0)
+                ? std::format("{} {} {} processes...###{}", icon, Detail::actionLabel(action), batchCount, Detail::actionLabel(action))
+                : std::format("{} {}...###{}", icon, Detail::actionLabel(action), Detail::actionLabel(action));
+        return ImGui::MenuItem(label.c_str(), shortcut);
+    };
+    const auto request = [this, &proc, batchCount](Detail::ProcessAction action)
+    {
+        if (batchCount > 0)
+        {
+            requestSelectionAction(action);
+        }
+        else
+        {
+            requestRowAction(action, proc);
+        }
+    };
+
     // Only what this platform can do (ProcessActionCapabilities), as in the Actions tab.
     const Platform::ProcessActionCapabilities& can = m_ActionCapabilities;
     if (can.canStop || can.canContinue)
     {
         ImGui::Separator();
-        if (can.canStop && ImGui::MenuItem(ICON_FA_PAUSE " Suspend..."))
+        if (can.canStop && actionItem(Detail::ProcessAction::Stop, ICON_FA_PAUSE, nullptr))
         {
-            requestRowAction(Detail::ProcessAction::Stop, proc);
+            request(Detail::ProcessAction::Stop);
         }
-        if (can.canContinue && ImGui::MenuItem(ICON_FA_PLAY " Resume..."))
+        if (can.canContinue && actionItem(Detail::ProcessAction::Resume, ICON_FA_PLAY, nullptr))
         {
-            requestRowAction(Detail::ProcessAction::Resume, proc);
+            request(Detail::ProcessAction::Resume);
         }
     }
     if (can.canTerminate || can.canKill)
@@ -2303,13 +2461,13 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         // danger-coloured button, as in the Actions tab (#1273).
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textError);
-        if (can.canTerminate && ImGui::MenuItem(ICON_FA_XMARK " Terminate..."))
+        if (can.canTerminate && actionItem(Detail::ProcessAction::Terminate, ICON_FA_XMARK, nullptr))
         {
-            requestRowAction(Detail::ProcessAction::Terminate, proc);
+            request(Detail::ProcessAction::Terminate);
         }
-        if (can.canKill && ImGui::MenuItem(ICON_FA_SKULL " Kill...", "F9"))
+        if (can.canKill && actionItem(Detail::ProcessAction::Kill, ICON_FA_SKULL, "F9"))
         {
-            requestRowAction(Detail::ProcessAction::Kill, proc);
+            request(Detail::ProcessAction::Kill);
         }
         ImGui::PopStyleColor();
     }
@@ -2319,33 +2477,80 @@ void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain
 {
     m_RowAction.action = action;
     // This row's identity: the platform refuses the action if the PID has since been reused (#973).
-    m_RowAction.target = Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
-    m_RowAction.processName = proc.name;
+    m_RowAction.targets.assign(
+        1, ProcessBatch::BatchTarget{.target = {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, .name = proc.name});
+    m_RowAction.title = Detail::confirmTitle(action, proc.name, proc.pid);
+    m_RowAction.question = Detail::confirmBody(action, proc.name, proc.pid);
+    m_ShowRowActionConfirm = true;
+}
+
+void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
+{
+    // The selected processes still listed, each by PID and start time (#973): one that has exited since
+    // it was selected is not among them, and one whose PID is reused is refused by the platform.
+    std::vector<ProcessBatch::BatchTarget> targets =
+        ProcessBatch::resolveTargets(*m_CachedRenderSnapshots, [this](std::uint64_t key) { return m_Selection.isActionable(key); });
+    if (targets.empty())
+    {
+        return;
+    }
+    if (targets.size() == 1)
+    {
+        const ProcessBatch::BatchTarget& only = targets.front();
+        m_RowAction.title = Detail::confirmTitle(action, only.name, only.target.pid);
+        m_RowAction.question = Detail::confirmBody(action, only.name, only.target.pid);
+    }
+    else
+    {
+        m_RowAction.title = ProcessBatch::confirmTitle(action, targets.size());
+        m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid);
+    }
+    m_RowAction.action = action;
+    m_RowAction.targets = std::move(targets);
     m_ShowRowActionConfirm = true;
 }
 
 void ProcessesPanel::renderRowActionConfirm()
 {
     const ProcessActionConfirm::Outcome outcome =
-        ProcessActionConfirm::render(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.processName, m_RowAction.target.pid);
+        ProcessActionConfirm::renderText(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.title, m_RowAction.question);
     if (outcome == ProcessActionConfirm::Outcome::Cancelled)
     {
         m_RowAction = {}; // Nothing is pending any more: F9 may ask again (#170)
         return;
     }
-    if (outcome != ProcessActionConfirm::Outcome::Confirmed)
+    if (outcome != ProcessActionConfirm::Outcome::Confirmed || m_RowAction.targets.empty())
     {
         return;
     }
-    const Platform::ProcessActionResult result =
-        m_ProcessActions ? Detail::dispatchProcessAction(*m_ProcessActions, m_RowAction.action, m_RowAction.target)
-                         : Platform::ProcessActionResult::error("Process actions unavailable");
-    m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, m_RowAction.target.pid, result);
+    bool anySucceeded = false;
+    if (m_RowAction.targets.size() == 1)
+    {
+        const Platform::ProcessTarget& target = m_RowAction.targets.front().target;
+        const Platform::ProcessActionResult result = m_ProcessActions
+                                                       ? Detail::dispatchProcessAction(*m_ProcessActions, m_RowAction.action, target)
+                                                       : Platform::ProcessActionResult::error("Process actions unavailable");
+        m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, target.pid, result);
+        anySucceeded = result.success;
+    }
+    else if (m_ProcessActions)
+    {
+        // Every selected process in turn, each checked by the platform as a single action is, then one
+        // summary line rather than a message per process (#804).
+        const ProcessBatch::BatchResult result =
+            ProcessBatch::runBatchAction(*m_ProcessActions, m_RowAction.action, m_RowAction.targets, m_OwnPid);
+        m_RowActionResult = ProcessBatch::formatBatchResultMessage(m_RowAction.action, result);
+        anySucceeded = result.succeeded > 0;
+    }
+    else
+    {
+        m_RowActionResult = {.ok = false, .text = "Process actions unavailable"};
+    }
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     m_RowAction = {}; // Acted on once; nothing is pending any more
-    if (result.success)
+    if (anySucceeded)
     {
-        requestRefresh(); // Show the process suspended, resumed or gone without waiting for the next sample
+        requestRefresh(); // Show the processes suspended, resumed or gone without waiting for the next sample
     }
 }
 
