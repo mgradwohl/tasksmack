@@ -410,7 +410,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     }
     Assert-True ($manifest.machine.logical_cores -eq [Environment]::ProcessorCount -and $manifest.machine.os_name) 'Machine class'
 
-    # The compiler flags are recorded only as SHA-256 of their exact CMakeCache.txt text (#1445):
+    # The compiler flags are recorded only as SHA-256 of their CMakeCache.txt values (#1445):
     # none of that text, and none of its paths, appears anywhere in the manifest.
     Assert-True ($manifest.build.cxx_flags_sha256 -ceq (Get-ExpectedSha256 $rawFlags) -and $manifest.build.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 $rawConfigFlags)) "Flag hashes: $($manifest.build | ConvertTo-Json -Compress)"
     foreach ($probe in $flagProbes) { Assert-True ($manifestText.IndexOf($probe, [StringComparison]::OrdinalIgnoreCase) -lt 0) "Flag text '$probe' is in the manifest" }
@@ -641,6 +641,49 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     }
     Assert-True ((Get-RecordedArgument "--benchmark_out=$root\out\fake-1.json") -ceq '--benchmark_out=fake-1.json') 'The script''s own output file is recorded by name'
     Assert-True ((Get-RecordedArgument '--benchmark_context=a=1') -cne (Get-RecordedArgument '--benchmark_context=a=2')) 'Different values must hash differently'
+
+    # ── #1445 review: cache entries are read as CMake reads them ─────────────────────────────────
+    # CMake writes KEY:TYPE=VALUE with any character but ':' in an unquoted key (a custom build
+    # type's CMAKE_CXX_FLAGS_ASAN-UBSAN), quotes a key holding ':', and puts a value with trailing
+    # whitespace in single quotes (cmState::ParseCacheEntry). The same cases as test_bench_sh.py.
+    $cacheFile = Join-Path $root 'parse-CMakeCache.txt'
+    [IO.File]::WriteAllText($cacheFile, (@(
+                '# This is the CMakeCache file.'
+                '//Help text: not=an entry'
+                'CMAKE_CXX_FLAGS_ASAN-UBSAN:STRING=-O2 -fsanitize=address'
+                'CMAKE_CXX_FLAGS_REL.WITH+INFO:STRING=-O1'
+                '"KEY:WITH=SPECIALS":STRING=colon'
+                '"QUOTED_UNTYPED"=q'
+                'UNTYPED=u'
+                "  INDENTED:BOOL=ON`r"
+                "TRAILING:STRING='-O3 '"
+                "PADDED:STRING=-O2 `t`r"
+                'LEADING:STRING= -O3'
+                'EMPTY:STRING='
+                'lower_case:STRING=lower'
+                'not an entry'
+            ) -join "`n") + "`n")
+    $parsed = Read-CMakeCache -Path $cacheFile
+    $expectedCache = [ordered]@{
+        'CMAKE_CXX_FLAGS_ASAN-UBSAN' = '-O2 -fsanitize=address'; 'CMAKE_CXX_FLAGS_REL.WITH+INFO' = '-O1'; 'KEY:WITH=SPECIALS' = 'colon'
+        'QUOTED_UNTYPED' = 'q'; 'UNTYPED' = 'u'; 'INDENTED' = 'ON'; 'TRAILING' = '-O3 '; 'PADDED' = '-O2'; 'LEADING' = ' -O3'; 'EMPTY' = ''; 'lower_case' = 'lower'
+    }
+    Assert-True ($parsed.Count -eq $expectedCache.Count) "Parsed $($parsed.Count) entries, expected $($expectedCache.Count): $(@($parsed.Keys) -join ', ')"
+    foreach ($key in $expectedCache.Keys) {
+        Assert-True ($parsed.ContainsKey($key) -and $parsed[$key] -ceq $expectedCache[$key]) "[$key] read as [$($parsed[$key])], expected [$($expectedCache[$key])]"
+    }
+    Assert-True (-not $parsed.ContainsKey('LOWER_CASE')) 'Cache keys are case-sensitive'
+    Assert-True ((ConvertTo-CMakeUpper 'asan-ubsan.rel+info') -ceq 'ASAN-UBSAN.REL+INFO') 'The <CONFIG> suffix is upper-cased as CMake does'
+    # The configuration's flags are found and hashed for a hyphenated, dotted or plus-signed custom
+    # build type.
+    foreach ($case in @(@{ Name = 'ASan-UBSan'; Flags = '-O2 -fsanitize=address' }, @{ Name = 'Rel.With+Info'; Flags = '-O1' })) {
+        $tree = Join-Path $root "build\type-$($case.Name)"
+        New-Item -ItemType Directory -Path (Join-Path $tree 'bin') | Out-Null
+        Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value @("CMAKE_BUILD_TYPE:STRING=$($case.Name)", "CMAKE_CXX_FLAGS_$($case.Name.ToUpperInvariant()):STRING=$($case.Flags)")
+        $benchBin = Join-Path $tree 'bin\TaskSmackBenchmarks.cmd'
+        $build = Get-BuildProvenance
+        Assert-True ($build.build_type -ceq $case.Name -and $build.cxx_flags_config_sha256 -ceq (Get-ExpectedSha256 $case.Flags)) "$($case.Name): $($build | ConvertTo-Json -Compress)"
+    }
 
     # ── #1445 review: an absent cache entry hashes as null, an empty one as the empty string ───
     Assert-True ($null -eq (Get-TextSha256 $null)) 'Get-TextSha256 $null must be $null'

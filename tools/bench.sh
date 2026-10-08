@@ -28,9 +28,12 @@
 #   ./tools/bench.sh benchmark -- --benchmark_filter=ProcessModel
 
 set -euo pipefail
+# An inherited CDPATH would make the `cd`s below search it, and print where they went, inside the
+# command substitutions that resolve paths (#1445 review).
+unset CDPATH
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------- defaults ---------------------------------------------------------
 PRESET="${1:-benchmark}"
@@ -61,7 +64,7 @@ fi
 # One absolute path for the check above, the manifest's hash and build lookup, and the launch: a
 # relative TASKSMACK_BENCH_BIN (a bare name included) means the file relative to the current
 # directory, as the check reads it -- never a same-named program found on PATH (#1445 review).
-BENCH_BIN="$(cd "$(dirname "${BENCH_BIN}")" && pwd)/$(basename "${BENCH_BIN}")"
+BENCH_BIN="$(cd -- "$(dirname -- "${BENCH_BIN}")" && pwd)/$(basename -- "${BENCH_BIN}")"
 
 # The script owns the output file: Google Benchmark takes the last --benchmark_out(_format), so an
 # extra one would write somewhere the redaction and the manifest never look.

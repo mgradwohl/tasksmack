@@ -268,6 +268,49 @@ function Get-CMakeCompilerFile {
     return $null
 }
 
+# CMakeCache.txt entries as CMake itself reads them (cmState::ParseCacheEntry): "KEY":TYPE=VALUE,
+# then KEY:TYPE=VALUE, then the untyped "KEY"=VALUE and KEY=VALUE. CMake quotes a key holding ':',
+# and any other character -- '-', '.', '+' of a custom build type's CMAKE_CXX_FLAGS_<CONFIG> -- is
+# part of an unquoted key. Trailing spaces, tabs and carriage returns are dropped, and a value in
+# single quotes (how CMake writes one with trailing whitespace) loses them. Kept in step with
+# CACHE_ENTRY_PATTERNS / parse_cmake_cache in tools/bench-manifest.py.
+$script:CacheValuePattern = '(.*[^\r\t ]|[\r\t ]*)[\r\t ]*$'
+$script:CacheEntryPatterns = @(
+    ('^"([^"]*)":[^=]*=' + $script:CacheValuePattern)
+    ('^([^=:]*):[^=]*=' + $script:CacheValuePattern)
+    ('^"([^"]*)"=' + $script:CacheValuePattern)
+    ('^([^=]*)=' + $script:CacheValuePattern)
+)
+
+function Read-CMakeCache {
+    # The entries of a CMakeCache.txt, keyed case-sensitively (CMake's keys are); a later entry
+    # wins, as in CMake.
+    param([string]$Path)
+    $cache = [hashtable]::new([StringComparer]::Ordinal)
+    foreach ($raw in [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8).Split("`n")) {
+        # One trailing carriage return is part of the line ending (cmSystemTools::GetLineFromStream).
+        $line = $(if ($raw.EndsWith("`r")) { $raw.Substring(0, $raw.Length - 1) } else { $raw }).TrimStart(' ', "`t")
+        # Blank lines, '#' comments and '//' help text are not entries (cmCacheManager::LoadCache).
+        if (-not $line -or $line.StartsWith('#') -or $line.StartsWith('//')) { continue }
+        foreach ($pattern in $script:CacheEntryPatterns) {
+            $match = [regex]::Match($line, $pattern)
+            if ($match.Success) {
+                $value = $match.Groups[2].Value
+                if ($value.Length -ge 2 -and $value[0] -eq "'" -and $value[-1] -eq "'") { $value = $value.Substring(1, $value.Length - 2) }
+                $cache[$match.Groups[1].Value] = $value
+                break
+            }
+        }
+    }
+    return $cache
+}
+
+function ConvertTo-CMakeUpper {
+    # CMake's cmSystemTools::UpperCase: ASCII letters only, as the <CONFIG> suffix is built.
+    param([string]$Value)
+    return [regex]::Replace($Value, '[a-z]', { param($m) [string][char]([int][char]$m.Value - 32) })
+}
+
 function Find-BuildTree {
     # The binary's build tree and multi-config configuration: the nearest ancestor holding
     # CMakeCache.txt, at most $MaxLevels directories up -- build/<preset>/bin/ for a single-config
@@ -329,10 +372,7 @@ function Get-BuildProvenance {
     $tree = Find-BuildTree -Binary $benchBin
     if ($null -eq $tree) { return $build }
     $buildDir = $tree.Directory
-    $cache = @{}
-    foreach ($line in Get-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding utf8) {
-        if ($line -match '^(?<name>[A-Za-z0-9_]+)(:[A-Za-z]+)?=(?<value>.*)$') { $cache[$Matches.name] = $Matches.value }
-    }
+    $cache = Read-CMakeCache -Path (Join-Path $buildDir 'CMakeCache.txt')
     # A multi-config tree has no CMAKE_BUILD_TYPE: the binary's bin/<Config>/ names it.
     $build.build_type = if ($tree.Config) { $tree.Config } elseif ($cache['CMAKE_BUILD_TYPE']) { $cache['CMAKE_BUILD_TYPE'] } else { $null }
     $build.generator = $cache['CMAKE_GENERATOR']
@@ -340,9 +380,10 @@ function Get-BuildProvenance {
     # Flags can embed absolute paths (the PGO presets' -fprofile-instr-use=${sourceDir}/...).
     # The compiler flags are hashed, not recorded: two runs can be compared on them without the
     # manifest carrying their paths (include directories, the PGO presets' profile, prefix maps).
-    # SHA-256 of the exact CMakeCache.txt value, UTF-8, unnormalized; null when the entry is absent.
+    # SHA-256 of the value as CMake reads it from CMakeCache.txt, UTF-8, otherwise unnormalized; null
+    # when the entry is absent. The configuration's entry is named the way CMake names it.
     $build.cxx_flags_sha256 = Get-TextSha256 $cache['CMAKE_CXX_FLAGS']
-    if ($build.build_type) { $build.cxx_flags_config_sha256 = Get-TextSha256 $cache["CMAKE_CXX_FLAGS_$($build.build_type.ToUpperInvariant())"] }
+    if ($build.build_type) { $build.cxx_flags_config_sha256 = Get-TextSha256 $cache["CMAKE_CXX_FLAGS_$(ConvertTo-CMakeUpper $build.build_type)"] }
     # Without build information (an older tree), interprocedural optimization from the cache, and
     # which entry said so ($script:IpoSources).
     if ($null -eq $build.ipo_source) {

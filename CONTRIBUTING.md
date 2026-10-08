@@ -776,9 +776,11 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
     with the flags, runs stay comparable on their arguments without the manifest recording the
     paths or other free text in them.
   - The compiler flags are recorded only as `build.cxx_flags_sha256` and
-    `build.cxx_flags_config_sha256`: SHA-256 of the exact `CMAKE_CXX_FLAGS` and
-    `CMAKE_CXX_FLAGS_<CONFIG>` text in `CMakeCache.txt` (UTF-8, no normalization; `null` when the
-    entry is absent, the hash of the empty string when it is present but empty). Two runs can be compared on them -- equal hashes, equal flags -- without the
+    `build.cxx_flags_config_sha256`: SHA-256 of the `CMAKE_CXX_FLAGS` and
+    `CMAKE_CXX_FLAGS_<CONFIG>` values as CMake reads them from `CMakeCache.txt` (UTF-8, no other
+    normalization; `<CONFIG>` is the build type upper-cased as CMake does, so a custom type such as
+    `ASan-UBSan` is found; `null` when the entry is absent, the hash of the empty string when it is
+    present but empty). Two runs can be compared on them -- equal hashes, equal flags -- without the
     manifest carrying the include directories, profile files and prefix maps the flags name,
     which sit under user profiles and checkouts.
   - It records no host name, user name, user-profile path, process list or other command line; a

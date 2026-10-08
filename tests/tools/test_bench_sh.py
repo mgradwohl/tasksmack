@@ -206,6 +206,7 @@ class BenchShTest(unittest.TestCase):
         leading: tuple[str, ...] = ("fake", "--"),
         cwd: Path | None = None,
         path_first: Path | None = None,
+        cdpath: Path | None = None,
     ):
         out_dir = self.root / name
         env = dict(os.environ)
@@ -225,6 +226,11 @@ class BenchShTest(unittest.TestCase):
             LC_ALL="C.UTF-8",
             PYTHONUTF8="1",
         )
+        if cdpath is not None:
+            # CDPATH is ':'-separated and not converted by Git Bash, so a drive-letter path is given
+            # in its /c/... form.
+            value = posix(cdpath)
+            env["CDPATH"] = f"/{value[0].lower()}{value[2:]}" if re.match(r"[A-Za-z]:/", value) else value
         result = subprocess.run(
             [BASH, posix(script), *leading, "--benchmark_filter=BM_X", *extra],
             env=env,
@@ -294,6 +300,20 @@ class BenchShTest(unittest.TestCase):
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         self.assertEqual(manifest["binary"]["sha256"], hashlib.sha256(self.stub.read_bytes()).hexdigest())
         self.assertEqual(manifest["exit_code"], 0)
+
+    def test_an_inherited_cdpath_does_not_change_the_binary(self):
+        # #1445 review: with CDPATH set, `cd bin` would go to the CDPATH entry's bin/ and print it,
+        # so the resolved binary path would be wrong (and two lines long).
+        decoy_root = self.root / "cdpath"
+        (decoy_root / "bin").mkdir(parents=True)
+        code, output, results, manifests = self.run_bench(
+            "cdpath", 0, binary="bin/TaskSmackBenchmarks", cwd=self.stub.parent.parent, cdpath=decoy_root
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(results), 1, output)
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual(manifest["binary"]["sha256"], hashlib.sha256(self.stub.read_bytes()).hexdigest())
+        self.assertEqual(manifest["build"]["compiler_version"], "22.1.8")
 
     def test_a_compiler_directory_not_matching_the_cache_is_not_guessed(self):
         # #1445 review: the cache is CMake 4.2.0 and only a 4.0.0 directory exists.
@@ -668,6 +688,59 @@ class ScrubberTest(unittest.TestCase):
                         (binary_dir / "TaskSmackBenchmarks.buildinfo.json").write_text(buildinfo, encoding="utf-8")
                     build = module.build_provenance(binary_dir / "TaskSmackBenchmarks")
                     self.assertEqual((build["build_type"], build["ipo"], build["ipo_source"]), (build_type, ipo, source))
+
+    def test_cache_entries_are_read_as_cmake_reads_them(self):
+        # #1445 review: CMake writes KEY:TYPE=VALUE with any character but ':' in an unquoted key
+        # (a custom build type's CMAKE_CXX_FLAGS_ASAN-UBSAN), quotes a key holding ':', and puts a
+        # value with trailing whitespace in single quotes (cmState::ParseCacheEntry).
+        module = load_bench_manifest()
+        cache = module.parse_cmake_cache(
+            "# This is the CMakeCache file.\n"
+            "//Help text: not=an entry\n"
+            "CMAKE_CXX_FLAGS_ASAN-UBSAN:STRING=-O2 -fsanitize=address\n"
+            "CMAKE_CXX_FLAGS_REL.WITH+INFO:STRING=-O1\n"
+            '"KEY:WITH=SPECIALS":STRING=colon\n'
+            '"QUOTED_UNTYPED"=q\n'
+            "UNTYPED=u\n"
+            "  INDENTED:BOOL=ON\r\n"
+            "TRAILING:STRING='-O3 '\n"
+            "PADDED:STRING=-O2 \t\r\n"
+            "LEADING:STRING= -O3\n"
+            "EMPTY:STRING=\n"
+            "lower_case:STRING=lower\n"
+            "not an entry\n"
+        )
+        self.assertEqual(
+            cache,
+            {
+                "CMAKE_CXX_FLAGS_ASAN-UBSAN": "-O2 -fsanitize=address",
+                "CMAKE_CXX_FLAGS_REL.WITH+INFO": "-O1",
+                "KEY:WITH=SPECIALS": "colon",
+                "QUOTED_UNTYPED": "q",
+                "UNTYPED": "u",
+                "INDENTED": "ON",
+                "TRAILING": "-O3 ",
+                "PADDED": "-O2",
+                "LEADING": " -O3",
+                "EMPTY": "",
+                "lower_case": "lower",
+            },
+        )
+        self.assertEqual(module.cmake_upper("asan-ubsan.rel+info"), "ASAN-UBSAN.REL+INFO")
+        # The configuration's flags are found and hashed for a hyphenated, dotted or plus-signed
+        # custom build type.
+        with tempfile.TemporaryDirectory() as tmp:
+            for build_type, flags in (("ASan-UBSan", "-O2 -fsanitize=address"), ("Rel.With+Info", "-O1")):
+                with self.subTest(build_type=build_type):
+                    tree = Path(tmp) / build_type
+                    (tree / "bin").mkdir(parents=True)
+                    (tree / "CMakeCache.txt").write_text(
+                        f"CMAKE_BUILD_TYPE:STRING={build_type}\nCMAKE_CXX_FLAGS_{build_type.upper()}:STRING={flags}\n",
+                        encoding="utf-8",
+                    )
+                    build = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
+                    self.assertEqual(build["build_type"], build_type)
+                    self.assertEqual(build["cxx_flags_config_sha256"], hashlib.sha256(flags.encode("utf-8")).hexdigest())
 
     def test_an_absent_cache_entry_hashes_as_null_an_empty_one_as_empty(self):
         # #1445 review: unknown flags stay distinguishable from explicitly empty ones.

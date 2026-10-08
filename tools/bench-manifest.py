@@ -144,6 +144,45 @@ def buildinfo_ipo(binary: Path) -> str | None:
     return ipo if ipo in ("ON", "OFF") else None
 
 
+# CMakeCache.txt entries as CMake itself reads them (cmState::ParseCacheEntry): "KEY":TYPE=VALUE,
+# then KEY:TYPE=VALUE, then the untyped "KEY"=VALUE and KEY=VALUE. CMake quotes a key holding ':',
+# and any other character -- '-', '.', '+' of a custom build type's CMAKE_CXX_FLAGS_<CONFIG> -- is
+# part of an unquoted key. Trailing spaces, tabs and carriage returns are dropped, and a value in
+# single quotes (how CMake writes one with trailing whitespace) loses them. Kept in step with
+# Read-CMakeCache in tools/bench.ps1.
+_CACHE_VALUE = r"(.*[^\r\t ]|[\r\t ]*)[\r\t ]*$"
+CACHE_ENTRY_PATTERNS = (
+    re.compile(r'^"([^"]*)":[^=]*=' + _CACHE_VALUE),
+    re.compile(r"^([^=:]*):[^=]*=" + _CACHE_VALUE),
+    re.compile(r'^"([^"]*)"=' + _CACHE_VALUE),
+    re.compile(r"^([^=]*)=" + _CACHE_VALUE),
+)
+
+
+def parse_cmake_cache(text: str) -> dict[str, str]:
+    """The entries of a CMakeCache.txt, keyed case-sensitively; a later entry wins, as in CMake."""
+    cache: dict[str, str] = {}
+    for line in text.split("\n"):
+        # One trailing carriage return is part of the line ending (cmSystemTools::GetLineFromStream).
+        line = line.removesuffix("\r").lstrip(" \t")
+        # Blank lines, '#' comments and '//' help text are not entries (cmCacheManager::LoadCache).
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        for pattern in CACHE_ENTRY_PATTERNS:
+            if match := pattern.match(line):
+                key, value = match.group(1), match.group(2)
+                if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+                    value = value[1:-1]
+                cache[key] = value
+                break
+    return cache
+
+
+def cmake_upper(value: str) -> str:
+    """CMake's cmSystemTools::UpperCase: ASCII letters only, as the <CONFIG> suffix is built."""
+    return "".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c in value)
+
+
 def find_build_tree(binary: Path, max_levels: int = 4) -> tuple[Path | None, str | None]:
     """The binary's build tree and multi-config configuration.
 
@@ -183,11 +222,7 @@ def build_provenance(binary: Path) -> dict:
     build_dir, config = find_build_tree(binary)
     if build_dir is None:
         return build
-    cache: dict[str, str] = {}
-    for line in (build_dir / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace").splitlines():
-        match = re.match(r"^([A-Za-z0-9_]+)(?::[A-Za-z]+)?=(.*)$", line)
-        if match:
-            cache[match.group(1)] = match.group(2)
+    cache = parse_cmake_cache((build_dir / "CMakeCache.txt").read_bytes().decode("utf-8", errors="replace"))
     # A multi-config tree has no CMAKE_BUILD_TYPE: the binary's bin/<Config>/ names it.
     build["build_type"] = config or cache.get("CMAKE_BUILD_TYPE") or None
     build["generator"] = cache.get("CMAKE_GENERATOR")
@@ -196,10 +231,11 @@ def build_provenance(binary: Path) -> dict:
         build["compiler"] = PurePath(cache["CMAKE_CXX_COMPILER"].replace("\\", "/")).name
     # The compiler flags are hashed, not recorded: two runs can be compared on them without the
     # manifest carrying their paths (include directories, the PGO presets' profile, prefix maps).
-    # SHA-256 of the exact CMakeCache.txt value, UTF-8, unnormalized; null when the entry is absent.
+    # SHA-256 of the value as CMake reads it from CMakeCache.txt, UTF-8, otherwise unnormalized; null
+    # when the entry is absent. The configuration's entry is named the way CMake names it.
     build["cxx_flags_sha256"] = text_sha256(cache.get("CMAKE_CXX_FLAGS"))
     if build["build_type"]:
-        build["cxx_flags_config_sha256"] = text_sha256(cache.get(f"CMAKE_CXX_FLAGS_{build['build_type'].upper()}"))
+        build["cxx_flags_config_sha256"] = text_sha256(cache.get(f"CMAKE_CXX_FLAGS_{cmake_upper(build['build_type'])}"))
     # Without build information (an older tree), interprocedural optimization from the cache, and
     # which entry said so (IPO_SOURCES).
     if build["ipo_source"] is None:
