@@ -1,8 +1,8 @@
 #pragma once
 
-// Process Details' Actions tab: the Terminate / Kill / Suspend / Resume buttons, the confirm dialog
-// and its dispatch, and the result line under them (#1179, slice 3). The priority control below the
-// buttons stays in ProcessDetailsPanel for now.
+// Process Details' process-control buttons: Terminate / Kill / Suspend / Resume, the confirm dialog
+// and its dispatch, and the result line above them (#1179, slice 3). Drawn in the Overview's Actions
+// block (ProcessActionsBlock, #1493), beside the priority control (ProcessPriorityView).
 //
 // The view owns only its UI state. The IProcessActions it dispatches to stays owned by the panel (the
 // composition root's Platform::makeProcessActions() result) and is passed in each frame, with the
@@ -16,7 +16,6 @@
 #include "UI/IconsFontAwesome6.h"
 
 #include <array>
-#include <cstddef>
 #include <string>
 #include <utility>
 
@@ -60,7 +59,7 @@ namespace Detail
 /// Whether F9 may ask to confirm Kill on @p target (#170): the platform can kill, there is a target
 /// (PID > 0), and no confirm is pending (@p confirmPending: requested, open, or holding a captured action
 /// and target), so the shortcut never replaces an action already being confirmed. Shared by the Actions
-/// tab and the Processes table's row-menu confirm.
+/// block and the Processes table's row-menu confirm.
 [[nodiscard]] constexpr bool killShortcutAllowed(const Platform::ProcessActionCapabilities& capabilities,
                                                  const Platform::ProcessTarget& target,
                                                  bool confirmPending) noexcept
@@ -68,7 +67,7 @@ namespace Detail
     return isActionAvailable(capabilities, ProcessAction::Kill) && target.pid > 0 && !confirmPending;
 }
 
-/// One button of the Actions tab's 2x2 grid. The label is also the button's ImGui ID.
+/// One button of the Actions block's button row. The label is also the button's ImGui ID.
 struct ActionButtonSpec
 {
     ProcessAction action = ProcessAction::None;
@@ -76,7 +75,7 @@ struct ActionButtonSpec
     const char* tooltip = "";
 };
 
-/// The Actions tab's buttons in grid order, row by row: Terminate and Kill, then Suspend and Resume.
+/// The Actions block's buttons in row order: Terminate and Kill, then Suspend and Resume.
 /// Terminate and Kill are drawn in the danger colour (isDestructiveAction(), #1273).
 /// "Suspend", not "Pause": the same word as the confirm dialog and the result line (#1203).
 inline constexpr std::array<ActionButtonSpec, 4> ACTION_BUTTONS{{
@@ -88,15 +87,12 @@ inline constexpr std::array<ActionButtonSpec, 4> ACTION_BUTTONS{{
     {.action = ProcessAction::Resume, .label = ICON_FA_PLAY " Resume", .tooltip = "Resume a suspended process"},
 }};
 
-/// Buttons per grid row.
-inline constexpr std::size_t ACTION_BUTTON_GRID_COLUMNS = 2;
-
 /// How long a result line stays up after an action is dispatched, in seconds.
 inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
 
 } // namespace Detail
 
-/// The Actions tab's buttons, confirm dialog and result line for the process Process Details shows.
+/// The Actions block's buttons, confirm dialog and result line for the process Process Details shows.
 ///
 /// The process a confirm asks about is captured when its button is pressed: the dialog names that
 /// process and the confirm acts only on it, never on whatever is selected by then. A selection
@@ -111,14 +107,43 @@ class ProcessActionsView
         std::string processName;
     };
 
-    /// Draws the tab: the process's name and PID, the result line, the confirm dialog while it is
-    /// open, and the buttons @p capabilities allow. A button captures @p target and @p processName for
-    /// its confirm; a confirmed action is dispatched to @p actions (which may be null: the result then
-    /// says actions are unavailable) for that captured target.
+    /// Draws the result line, the confirm dialog while it is open, and the buttons @p capabilities
+    /// allow: renderControls() and renderConfirmation() together, for a caller that draws both in one
+    /// place. A button captures @p target and @p processName for its confirm; a confirmed action is
+    /// dispatched to @p actions (which may be null: the result then says actions are unavailable) for
+    /// that captured target.
     void render(Platform::IProcessActions* actions,
                 const Platform::ProcessActionCapabilities& capabilities,
                 const std::string& processName,
                 const Platform::ProcessTarget& target);
+
+    /// Draws the buttons @p capabilities allow, on one row at their labels' width, without the
+    /// result line or the confirm dialog. The caller draws the header and names the process (the
+    /// Overview's Actions block, #1493), draws renderResultLine() under its last row, and calls
+    /// renderConfirmation() every frame from a scope that always runs.
+    void renderControls(const Platform::ProcessActionCapabilities& capabilities,
+                        const std::string& processName,
+                        const Platform::ProcessTarget& target);
+
+    /// Draws the last action's result line, when there is one.
+    void renderResultLine() const
+    {
+        renderResultFeedback();
+    }
+
+    /// Width of the row renderControls() draws for @p capabilities, at the current font (needs an
+    /// ImGui frame); 0 when the platform can run none of the actions.
+    [[nodiscard]] static float buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities);
+
+    /// Submits the confirm dialog while a confirm is pending, and closes it unconfirmed after a
+    /// selection change or when @p liveTarget is no longer the captured process; a confirmed action is
+    /// dispatched to @p actions. Kept apart from the buttons so it runs even when they are not drawn:
+    /// ProcessDetailsPanel calls it at panel scope, since the Actions block's child is skipped while it
+    /// is scrolled out of view, and F9 must still open its Kill confirm then (#1493).
+    void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
+    {
+        renderConfirmDialog(actions, liveTarget);
+    }
 
     /// Advances the result line's timeout by @p deltaSeconds, clearing the line once it runs out.
     void tick(float deltaSeconds) noexcept

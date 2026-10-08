@@ -13,6 +13,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
 #include "ProcessDetailsCharts.h"
@@ -219,8 +220,8 @@ void ProcessDetailsPanel::renderContent()
 
     if (m_ProcessExited)
     {
-        // Replaces the whole pane, Actions tab included: nothing here may act on a PID that no
-        // longer belongs to this process.
+        // Replaces the whole pane, the Overview's Actions block included: nothing here may act on a
+        // PID that no longer belongs to this process.
         const std::string detail = std::format(
             "{} (PID {}) is no longer running. Select another process in the Processes tab.", cachedSnapshot().name, m_SelectedPid);
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process exited", detail.c_str());
@@ -236,11 +237,11 @@ void ProcessDetailsPanel::renderContent()
         return;
     }
 
-    // F9: the Actions tab's Kill confirm for the process shown, its target captured now; the tab is
-    // brought forward below so the dialog is drawn.
+    // F9: the Actions block's Kill confirm for the process shown, its target captured now; the
+    // Overview, which holds the block (#1493), is brought forward below.
     if (killRequested && m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
     {
-        m_SelectActionsTab = true;
+        m_SelectOverviewTab = true;
     }
 
     // Tabs for different info sections
@@ -251,14 +252,16 @@ void ProcessDetailsPanel::renderContent()
 
     if (ImGui::BeginTabBar("DetailsTabs", ImGuiTabBarFlags_DrawSelectedOverline))
     {
-        // 1. Overview
+        // 1. Overview, with the Actions block beside Identity and Runtime (#1493). Brought forward by
+        // F9, so its Kill confirm shows over the block it belongs to (#170).
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
-        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview"))
+        const ImGuiTabItemFlags overviewFlags = std::exchange(m_SelectOverviewTab, false) ? ImGuiTabItemFlags_SetSelected : 0;
+        if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview", nullptr, overviewFlags))
         {
             {
                 const UI::Widgets::TabContentScope content("##OverviewContent");
-                // The charts on this tab share its height (#959). The Identity/Runtime block above
-                // them is inside the scope, so it is counted as non-plot height.
+                // The charts on this tab share its height (#959). The Identity/Runtime/Actions row
+                // above them is inside the scope, so it is counted as non-plot height.
                 UI::Widgets::FillPlotLayout fill(m_OverviewFill);
                 // Its charts share their plot edges, with or without a right-hand axis (#1206).
                 const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
@@ -300,21 +303,15 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        // 4. Actions (last). Brought forward by F9, whose confirm dialog it draws (#170).
-        const ImGuiTabItemFlags actionsFlags = std::exchange(m_SelectActionsTab, false) ? ImGuiTabItemFlags_SetSelected : 0;
-        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions", nullptr, actionsFlags))
-        {
-            {
-                const UI::Widgets::TabContentScope content("##ActionsContent");
-                renderActions();
-            }
-            ImGui::EndTabItem();
-        }
-
         ImGui::EndTabBar();
     }
 
     ImGui::PopStyleVar(); // FramePadding
+
+    // The Actions block's confirm dialog, submitted here every frame rather than from the block: the
+    // block's child is skipped while the Overview is scrolled so that it is out of view, which left
+    // an F9 Kill confirm pending with no dialog, refusing further F9 presses (#1493).
+    m_ActionsView.renderConfirmation(m_ProcessActions.get(), selectedTarget());
 }
 
 void ProcessDetailsPanel::onEvent(Core::Event& event)
@@ -605,16 +602,41 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     renderInfoTable("BasicInfoRightTable", runtimeRows.view());
     ImGui::EndChild();
     ImGui::EndGroup();
-}
 
-void ProcessDetailsPanel::renderActions()
-{
-    // The buttons, confirm dialog and result line are ProcessActionsView's, and the priority control
-    // under them ProcessPriorityView's (#1179). Both act through m_ProcessActions, which the panel owns.
-    const Platform::ProcessTarget target = selectedTarget();
-    m_ActionsView.render(m_ProcessActions.get(), m_ActionCapabilities, cachedSnapshot().name, target);
-    const std::optional<std::int32_t> currentNice = m_HasSnapshot ? std::optional<std::int32_t>{cachedSnapshot().nice} : std::nullopt;
-    m_PriorityView.render(m_ProcessActions.get(), m_ActionCapabilities, currentNice, target);
+    // Actions section: What can be done to this process? The buttons, confirm dialog and result line
+    // are ProcessActionsView's, the priority rows ProcessPriorityView's (#1179); both act through
+    // m_ProcessActions, which the panel owns. A third block on this row, as wide as its content, when
+    // the pane leaves room for it, no taller than the other two so the charts keep their height;
+    // otherwise wrapped below them (#1493).
+    if (ProcessActionsBlock::hasAnyAction(m_ActionCapabilities))
+    {
+        const ProcessActionsBlock::Widths actionWidths = ProcessActionsBlock::measure(m_ActionCapabilities);
+        const ProcessDetailsLayout::ActionsBlockLayout actionsLayout =
+            ProcessDetailsLayout::computeActionsBlockLayout(contentWidth,
+                                                            leftWidth + spacing + rightWidth,
+                                                            spacing,
+                                                            actionWidths.content(),
+                                                            m_ActionsBlockHeight,
+                                                            std::max(leftHeight, rightHeight));
+        if (actionsLayout.besideInfo)
+        {
+            ImGui::SameLine();
+        }
+        const ProcessActionsBlock::Context actions{
+            .actionsView = &m_ActionsView,
+            .priorityView = &m_PriorityView,
+            .actions = m_ProcessActions.get(),
+            .capabilities = m_ActionCapabilities,
+            .processName = &proc.name,
+            .target = selectedTarget(),
+            .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
+        };
+        // Kept for the next frame's placement: a block taller than the row wraps below it.
+        if (const float needed = ProcessActionsBlock::render(actions, actionsLayout, std::max(leftHeight, rightHeight)); needed > 0.0F)
+        {
+            m_ActionsBlockHeight = needed;
+        }
+    }
 }
 
 Platform::ProcessTarget ProcessDetailsPanel::selectedTarget() const

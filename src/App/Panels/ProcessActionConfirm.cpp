@@ -132,7 +132,7 @@ Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructi
             UI::Widgets::footerButtonWidth({confirmLabel, "Cancel"}, CONFIRM_BUTTON_MIN_EM), contentBudget, confirmStyle.ItemSpacing.x);
 
         // Ending a process can lose its work, so Terminate and Kill confirm in the danger colour
-        // their buttons in the Actions tab use (#1273).
+        // their buttons in the Actions block use (#1273).
         const UI::Widgets::ButtonFills dangerFills = dangerButtonFills();
         const UI::Widgets::DialogFooterButton confirmButton{
             .label = confirmLabel, .fills = destructive ? &dangerFills : nullptr, .tooltip = nullptr};
