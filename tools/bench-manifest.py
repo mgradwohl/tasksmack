@@ -173,14 +173,28 @@ BUILDINFO_NAME = "TaskSmackBenchmarks.buildinfo.json"
 IPO_SOURCES = ("CMAKE_INTERPROCEDURAL_OPTIMIZATION", "TASKSMACK_ENABLE_IPO")
 
 
-def buildinfo_ipo(binary: Path) -> str | None:
-    """The "ipo" (ON or OFF) of the build information next to the binary; None without one."""
+def read_buildinfo(binary: Path) -> dict:
+    """The build information next to the binary, as far as it is usable: "ipo" (ON or OFF), and
+    "cxx_flags" -- the (cxx_flags_sha256, cxx_flags_config_sha256) pair, each a SHA-256 hex string
+    or None (no such cache entry) -- when both keys are there and well-formed. Empty without a
+    file. Kept in step with Read-BuildInfo in tools/bench.ps1."""
     try:
         info = json.loads((Path(os.path.abspath(binary)).parent / BUILDINFO_NAME).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
-        return None
-    ipo = info.get("ipo") if isinstance(info, dict) else None
-    return ipo if ipo in ("ON", "OFF") else None
+        return {}
+    if not isinstance(info, dict):
+        return {}
+    usable = {}
+    if info.get("ipo") in ("ON", "OFF"):
+        usable["ipo"] = info["ipo"]
+
+    def is_hash(value) -> bool:
+        return value is None or (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None)
+
+    keys = ("cxx_flags_sha256", "cxx_flags_config_sha256")
+    if all(key in info and is_hash(info[key]) for key in keys):
+        usable["cxx_flags"] = tuple(info[key] for key in keys)
+    return usable
 
 
 # CMakeCache.txt entries as CMake itself reads them (cmState::ParseCacheEntry): "KEY":TYPE=VALUE,
@@ -253,11 +267,18 @@ def build_provenance(binary: Path) -> dict:
         "compiler_version": None,
         "cxx_flags_sha256": None,
         "cxx_flags_config_sha256": None,
+        "cxx_flags_source": None,
         "ipo": None,
         "ipo_source": None,
     }
-    if (ipo := buildinfo_ipo(binary)) is not None:
-        build["ipo"], build["ipo_source"] = ipo, "buildinfo"
+    buildinfo = read_buildinfo(binary)
+    if "ipo" in buildinfo:
+        build["ipo"], build["ipo_source"] = buildinfo["ipo"], "buildinfo"
+    # The flag hashes the binary was linked with, from the build information (#1445 review): the
+    # cache can have been reconfigured since.
+    if "cxx_flags" in buildinfo:
+        build["cxx_flags_sha256"], build["cxx_flags_config_sha256"] = buildinfo["cxx_flags"]
+        build["cxx_flags_source"] = "buildinfo"
     build_dir, config = find_build_tree(binary)
     if build_dir is None:
         return build
@@ -271,10 +292,13 @@ def build_provenance(binary: Path) -> dict:
     # The compiler flags are hashed, not recorded: two runs can be compared on them without the
     # manifest carrying their paths (include directories, the PGO presets' profile, prefix maps).
     # SHA-256 of the value as CMake reads it from CMakeCache.txt, UTF-8, otherwise unnormalized; null
-    # when the entry is absent. The configuration's entry is named the way CMake names it.
-    build["cxx_flags_sha256"] = text_sha256(cache.get("CMAKE_CXX_FLAGS"))
-    if build["build_type"]:
-        build["cxx_flags_config_sha256"] = text_sha256(cache.get(f"CMAKE_CXX_FLAGS_{cmake_upper(build['build_type'])}"))
+    # when the entry is absent. The configuration's entry is named the way CMake names it. Only for a
+    # tree without build information (older trees); benchmarks/CMakeLists.txt hashes the same way.
+    if build["cxx_flags_source"] is None:
+        build["cxx_flags_sha256"] = text_sha256(cache.get("CMAKE_CXX_FLAGS"))
+        if build["build_type"]:
+            build["cxx_flags_config_sha256"] = text_sha256(cache.get(f"CMAKE_CXX_FLAGS_{cmake_upper(build['build_type'])}"))
+        build["cxx_flags_source"] = "cache"
     # Without build information (an older tree), interprocedural optimization from the cache, and
     # which entry said so (IPO_SOURCES).
     if build["ipo_source"] is None:
@@ -379,6 +403,7 @@ IDENTITY_EXEMPT = frozenset(
         "build.ipo_source",
         "build.cxx_flags_sha256",
         "build.cxx_flags_config_sha256",
+        "build.cxx_flags_source",
         "benchmark.raw_repetitions",
         "benchmark.report_aggregates_only",
         "machine.label",

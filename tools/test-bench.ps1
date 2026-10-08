@@ -401,7 +401,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     foreach ($section in @{
             git       = @('commit', 'branch', 'dirty')
             binary    = @('name', 'sha256')
-            build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags_sha256', 'cxx_flags_config_sha256', 'ipo', 'ipo_source')
+            build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags_sha256', 'cxx_flags_config_sha256', 'cxx_flags_source', 'ipo', 'ipo_source')
             benchmark = @('args', 'raw_repetitions', 'report_aggregates_only')
             machine   = @('label', 'cpu_model', 'logical_cores', 'os_name', 'os_version', 'arch')
         }.GetEnumerator()) {
@@ -762,6 +762,31 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         $build = Get-BuildProvenance
         Assert-True ($build.cxx_flags_sha256 -ceq $case.Expected -and $build.cxx_flags_config_sha256 -ceq $case.Expected) "$($case.Name): $($build | ConvertTo-Json -Compress)"
         if ($null -eq $case.Expected) { Assert-True ($null -eq $build.cxx_flags_sha256 -and $null -eq $build.cxx_flags_config_sha256) "$($case.Name) must be null, not a hash" }
+    }
+
+    # ── #1445 review: the flag hashes are what the binary was linked with ─────────────────────────
+    # Reconfiguring CMAKE_CXX_FLAGS_<CONFIG> without a rebuild changes the cache, not the binary;
+    # the build information beside the binary carries the hashes it was built with and is
+    # preferred. Older trees, or unusable build information, fall back to the cache. The same cases
+    # as test_bench_sh.py.
+    $linked = Get-ExpectedSha256 '-O2 linked'
+    $linkedConfig = Get-ExpectedSha256 '-O3 linked'
+    $fromCache = @((Get-ExpectedSha256 '-O2 reconfigured'), (Get-ExpectedSha256 '-O3 reconfigured'))
+    foreach ($case in @(
+            @{ Name = 'flags-linked'; BuildInfo = (@{ ipo = 'ON'; cxx_flags_sha256 = $linked; cxx_flags_config_sha256 = $linkedConfig } | ConvertTo-Json); Expected = @($linked, $linkedConfig); Source = 'buildinfo' }
+            @{ Name = 'flags-linked-absent-entry'; BuildInfo = '{"cxx_flags_sha256": null, "cxx_flags_config_sha256": "' + $linkedConfig + '"}'; Expected = @($null, $linkedConfig); Source = 'buildinfo' }
+            @{ Name = 'flags-no-buildinfo'; BuildInfo = $null; Expected = $fromCache; Source = 'cache' }
+            @{ Name = 'flags-ipo-only-buildinfo'; BuildInfo = '{"ipo": "ON"}'; Expected = $fromCache; Source = 'cache' }
+            @{ Name = 'flags-malformed-hash'; BuildInfo = '{"cxx_flags_sha256": "ABC", "cxx_flags_config_sha256": "' + $linkedConfig + '"}'; Expected = $fromCache; Source = 'cache' }
+        )) {
+        $tree = Join-Path $root "build\$($case.Name)"
+        New-Item -ItemType Directory -Path (Join-Path $tree 'bin') | Out-Null
+        Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value @('CMAKE_BUILD_TYPE:STRING=Release', 'CMAKE_CXX_FLAGS:STRING=-O2 reconfigured', 'CMAKE_CXX_FLAGS_RELEASE:STRING=-O3 reconfigured')
+        if ($null -ne $case.BuildInfo) { [IO.File]::WriteAllText((Join-Path $tree 'bin\TaskSmackBenchmarks.buildinfo.json'), $case.BuildInfo) }
+        $benchBin = Join-Path $tree 'bin\TaskSmackBenchmarks.cmd'
+        $build = Get-BuildProvenance
+        Assert-True ($build.cxx_flags_sha256 -ceq $case.Expected[0] -and $build.cxx_flags_config_sha256 -ceq $case.Expected[1] -and $build.cxx_flags_source -ceq $case.Source) "$($case.Name): $($build | ConvertTo-Json -Compress)"
+        if ($null -eq $case.Expected[0]) { Assert-True ($null -eq $build.cxx_flags_sha256) "$($case.Name): an absent entry must stay null" }
     }
 
     # ── #1445 review: IPO is what the benchmark target is built with, not the cached variable ──

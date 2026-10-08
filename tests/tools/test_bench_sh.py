@@ -70,6 +70,7 @@ SECTION_KEYS = {
         "compiler_version",
         "cxx_flags_sha256",
         "cxx_flags_config_sha256",
+        "cxx_flags_source",
         "ipo",
         "ipo_source",
     },
@@ -705,6 +706,32 @@ class ScrubberTest(unittest.TestCase):
                 self.assertEqual(module.record_argument(whole), f"sha256:{digest(whole)}")
         self.assertEqual(module.record_argument("--benchmark_out=/tmp/x/out/fake-1.json"), "--benchmark_out=fake-1.json")
         self.assertNotEqual(module.record_argument("--benchmark_context=a=1"), module.record_argument("--benchmark_context=a=2"))
+
+    def test_flag_hashes_are_what_the_benchmark_binary_was_linked_with(self):
+        # #1445 review: reconfiguring CMAKE_CXX_FLAGS_<CONFIG> without a rebuild changes the cache,
+        # not the binary; the build information beside the binary (copied when it links) carries
+        # the hashes it was built with and is preferred. Older trees, or unusable build information,
+        # fall back to the cache. The same cases as tools/test-bench.ps1.
+        module = load_bench_manifest()
+        linked, linked_config = hashlib.sha256(b"-O2 linked").hexdigest(), hashlib.sha256(b"-O3 linked").hexdigest()
+        cache_text = "CMAKE_BUILD_TYPE:STRING=Release\nCMAKE_CXX_FLAGS:STRING=-O2 reconfigured\nCMAKE_CXX_FLAGS_RELEASE:STRING=-O3 reconfigured\n"
+        from_cache = (hashlib.sha256(b"-O2 reconfigured").hexdigest(), hashlib.sha256(b"-O3 reconfigured").hexdigest())
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, buildinfo, expected, source in (
+                ("linked", {"ipo": "ON", "cxx_flags_sha256": linked, "cxx_flags_config_sha256": linked_config}, (linked, linked_config), "buildinfo"),
+                ("linked-absent-entry", {"cxx_flags_sha256": None, "cxx_flags_config_sha256": linked_config}, (None, linked_config), "buildinfo"),
+                ("no-buildinfo", None, from_cache, "cache"),
+                ("ipo-only-buildinfo", {"ipo": "ON"}, from_cache, "cache"),
+                ("malformed-hash", {"cxx_flags_sha256": "ABC", "cxx_flags_config_sha256": linked_config}, from_cache, "cache"),
+            ):
+                with self.subTest(case=name):
+                    tree = Path(tmp) / name
+                    (tree / "bin").mkdir(parents=True)
+                    (tree / "CMakeCache.txt").write_text(cache_text, encoding="utf-8")
+                    if buildinfo is not None:
+                        (tree / "bin" / "TaskSmackBenchmarks.buildinfo.json").write_text(json.dumps(buildinfo), encoding="utf-8")
+                    build = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
+                    self.assertEqual((build["cxx_flags_sha256"], build["cxx_flags_config_sha256"], build["cxx_flags_source"]), (*expected, source))
 
     def test_ipo_is_what_the_benchmark_target_is_built_with(self):
         # #1445 review: CompilerOptions.cmake turns IPO on through a normal variable, so the cached

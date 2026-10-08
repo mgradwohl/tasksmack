@@ -799,7 +799,11 @@ manifest's `preset`, so no file name or manifest field carries it:
     `CMAKE_CXX_FLAGS_<CONFIG>` values as CMake reads them from `CMakeCache.txt` (UTF-8, no other
     normalization; `<CONFIG>` is the build type upper-cased as CMake does, so a custom type such as
     `ASan-UBSan` is found; `null` when the entry is absent, the hash of the empty string when it is
-    present but empty). Two runs can be compared on them -- equal hashes, equal flags -- without the
+    present but empty). `benchmarks/CMakeLists.txt` computes the same hashes at configure time
+    into the build information copied next to the binary when it links, and the writers prefer
+    those (`build.cxx_flags_source` `buildinfo`), so flags reconfigured without a rebuild are not
+    reported for the old binary; a tree without them is read from the cache (`cache`). Two runs
+    can be compared on them -- equal hashes, equal flags -- without the
     manifest carrying the include directories, profile files and prefix maps the flags name,
     which sit under user profiles and checkouts.
   - It records no host name, user name, user-profile path, process list or other command line; a

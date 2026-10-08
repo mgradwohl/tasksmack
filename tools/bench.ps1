@@ -346,16 +346,24 @@ function Find-BuildTree {
 $script:BuildInfoName = 'TaskSmackBenchmarks.buildinfo.json'
 $script:IpoSources = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION', 'TASKSMACK_ENABLE_IPO')
 
-function Get-BuildInfoIpo {
-    # The "ipo" (ON or OFF) of the build information next to the binary; $null without one. Kept in
-    # step with buildinfo_ipo in tools/bench-manifest.py.
+function Read-BuildInfo {
+    # The build information next to the binary, as far as it is usable: Ipo (ON or OFF), and
+    # CxxFlags -- the (cxx_flags_sha256, cxx_flags_config_sha256) pair, each a SHA-256 hex string or
+    # $null (no such cache entry) -- when both keys are there and well-formed. Empty without a file.
+    # Kept in step with read_buildinfo in tools/bench-manifest.py.
     param([string]$Binary)
+    $usable = @{}
     $path = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($Binary))) $script:BuildInfoName
-    try { $info = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
-    if ($info -isnot [pscustomobject] -or $null -eq $info.PSObject.Properties['ipo']) { return $null }
-    $ipo = $info.ipo
-    if ($ipo -is [string] -and ($ipo -ceq 'ON' -or $ipo -ceq 'OFF')) { return $ipo }
-    return $null
+    try { $info = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop } catch { return $usable }
+    if ($info -isnot [pscustomobject]) { return $usable }
+    if ($null -ne $info.PSObject.Properties['ipo'] -and $info.ipo -is [string] -and ($info.ipo -ceq 'ON' -or $info.ipo -ceq 'OFF')) { $usable.Ipo = $info.ipo }
+    $keys = @('cxx_flags_sha256', 'cxx_flags_config_sha256')
+    $wellFormed = @($keys | Where-Object {
+            $property = $info.PSObject.Properties[$_]
+            $null -ne $property -and ($null -eq $property.Value -or ($property.Value -is [string] -and $property.Value -cmatch '\A[0-9a-f]{64}\z'))
+        })
+    if ($wellFormed.Count -eq $keys.Count) { $usable.CxxFlags = @($info.cxx_flags_sha256, $info.cxx_flags_config_sha256) }
+    return $usable
 }
 
 function Get-BuildProvenance {
@@ -369,11 +377,19 @@ function Get-BuildProvenance {
         compiler_version = $null
         cxx_flags_sha256        = $null
         cxx_flags_config_sha256 = $null
+        cxx_flags_source        = $null
         ipo              = $null
         ipo_source       = $null
     }
-    $ipo = Get-BuildInfoIpo -Binary $benchBin
-    if ($null -ne $ipo) { $build.ipo = $ipo; $build.ipo_source = 'buildinfo' }
+    $buildInfo = Read-BuildInfo -Binary $benchBin
+    if ($buildInfo.ContainsKey('Ipo')) { $build.ipo = $buildInfo.Ipo; $build.ipo_source = 'buildinfo' }
+    # The flag hashes the binary was linked with, from the build information (#1445 review): the
+    # cache can have been reconfigured since.
+    if ($buildInfo.ContainsKey('CxxFlags')) {
+        $build.cxx_flags_sha256 = $buildInfo.CxxFlags[0]
+        $build.cxx_flags_config_sha256 = $buildInfo.CxxFlags[1]
+        $build.cxx_flags_source = 'buildinfo'
+    }
     $tree = Find-BuildTree -Binary $benchBin
     if ($null -eq $tree) { return $build }
     $buildDir = $tree.Directory
@@ -386,9 +402,13 @@ function Get-BuildProvenance {
     # The compiler flags are hashed, not recorded: two runs can be compared on them without the
     # manifest carrying their paths (include directories, the PGO presets' profile, prefix maps).
     # SHA-256 of the value as CMake reads it from CMakeCache.txt, UTF-8, otherwise unnormalized; null
-    # when the entry is absent. The configuration's entry is named the way CMake names it.
-    $build.cxx_flags_sha256 = Get-TextSha256 $cache['CMAKE_CXX_FLAGS']
-    if ($build.build_type) { $build.cxx_flags_config_sha256 = Get-TextSha256 $cache["CMAKE_CXX_FLAGS_$(ConvertTo-CMakeUpper $build.build_type)"] }
+    # when the entry is absent. The configuration's entry is named the way CMake names it. Only for a
+    # tree without build information (older trees); benchmarks/CMakeLists.txt hashes the same way.
+    if ($null -eq $build.cxx_flags_source) {
+        $build.cxx_flags_sha256 = Get-TextSha256 $cache['CMAKE_CXX_FLAGS']
+        if ($build.build_type) { $build.cxx_flags_config_sha256 = Get-TextSha256 $cache["CMAKE_CXX_FLAGS_$(ConvertTo-CMakeUpper $build.build_type)"] }
+        $build.cxx_flags_source = 'cache'
+    }
     # Without build information (an older tree), interprocedural optimization from the cache, and
     # which entry said so ($script:IpoSources).
     if ($null -eq $build.ipo_source) {
@@ -455,7 +475,7 @@ $script:IdentityExempt = @(
     'schema_version', 'generator', 'created_utc', 'exit_code',
     'git.commit', 'git.dirty',
     'binary.sha256',
-    'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo', 'build.ipo_source', 'build.cxx_flags_sha256', 'build.cxx_flags_config_sha256',
+    'build.generator', 'build.compiler_id', 'build.compiler_version', 'build.ipo', 'build.ipo_source', 'build.cxx_flags_sha256', 'build.cxx_flags_config_sha256', 'build.cxx_flags_source',
     'benchmark.raw_repetitions', 'benchmark.report_aggregates_only',
     'machine.label', 'machine.logical_cores', 'machine.os_name', 'machine.os_version', 'machine.arch'
 )
