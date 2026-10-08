@@ -2222,6 +2222,12 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             requestRowAction(Detail::ProcessAction::Kill, proc);
         }
     }
+    // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
+    // leaves the table exactly as it was.
+    if (command == Nav::NavCommand::None)
+    {
+        return;
+    }
 
     const auto selectRow = [&](std::size_t row)
     {
