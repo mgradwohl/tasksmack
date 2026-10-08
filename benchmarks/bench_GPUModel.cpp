@@ -229,8 +229,8 @@ static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
 }
 BENCHMARK(BM_GPUModel_UtilizationHistory);
 
-// Benchmark readProcessGPUCounters() – per-process GPU usage, called by ProcessModel
-// to enrich process snapshots with GPU data.
+// Benchmark readProcessGPUCounters() – the per-process GPU read that each refresh() now makes on
+// the GPU sampler and publishes for ProcessModel to merge (#1417).
 static void BM_GPUModel_ProcessGpuCounters(benchmark::State& state)
 {
     if (skipWithoutGpu(state))
