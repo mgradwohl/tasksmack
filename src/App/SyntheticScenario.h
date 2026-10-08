@@ -27,6 +27,7 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/Synthetic/SyntheticWorkload.h"
@@ -100,6 +101,9 @@ class Scenario
 
 [[nodiscard]] std::unique_ptr<Platform::IProcessProbe> makeProcessProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IProcessActions> makeProcessActions(const Scenario* scenario);
+/// With a scenario, a reader that reports no environment support: synthetic PIDs are not real
+/// processes, and some may be the PIDs of real ones whose environment must not be shown for them.
+[[nodiscard]] std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReader(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IPowerProbe> makePowerProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IDiskProbe> makeDiskProbe(const Scenario* scenario);

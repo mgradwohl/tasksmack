@@ -1,0 +1,342 @@
+/// @file test_ProcessEnvironmentView.cpp
+/// @brief The Environment section's state, without ImGui (#179): it reads only while drawn open, once
+/// on opening and then at PROCESS_ENVIRONMENT_REFRESH_MS, through the injected reader for the given
+/// target; it sorts and masks what it reads; each read status is kept for the status line; reveals
+/// last until the selection changes; and the filter never searches a masked value.
+
+#include "App/Panels/ProcessEnvironmentView.h"
+#include "Domain/SamplingConfig.h"
+#include "Mocks/MockProbes.h"
+#include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
+
+#include <gtest/gtest.h>
+
+#include <array>
+#include <cstddef>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace App
+{
+namespace
+{
+
+constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS) / 1000.0F;
+
+[[nodiscard]] Platform::EnvironmentReadResult okResult(std::vector<Platform::EnvironmentVariable> variables)
+{
+    return {.status = Platform::EnvironmentReadStatus::Ok, .variables = std::move(variables)};
+}
+
+/// One frame as the panel runs it: update (reads if due), then render drew the section open or not.
+bool frame(ProcessEnvironmentView& view, TestMocks::MockProcessEnvironmentReader& reader, float deltaSeconds, bool drawnOpen)
+{
+    const bool read = view.update(&reader, TARGET, deltaSeconds);
+    if (drawnOpen)
+    {
+        view.markDrawnOpen();
+    }
+    return read;
+}
+
+// ========== Read cadence ==========
+
+TEST(ProcessEnvironmentViewTest, NeverReadsWhileTheSectionIsClosed)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    for (int i = 0; i < 10; ++i)
+    {
+        EXPECT_FALSE(frame(view, reader, REFRESH_SECONDS, false));
+    }
+    EXPECT_EQ(reader.readCount(), 0);
+    EXPECT_FALSE(view.hasRead());
+}
+
+TEST(ProcessEnvironmentViewTest, ReadsOnOpeningThenAtTheRefreshCadence)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    reader.setResult(okResult({{.name = "FOO", .value = "bar"}}));
+
+    // Frame 1 draws it open; the read happens in the next frame's update, for the target given.
+    EXPECT_FALSE(frame(view, reader, 0.016F, true));
+    EXPECT_TRUE(frame(view, reader, 0.016F, true));
+    EXPECT_EQ(reader.readCount(), 1);
+    EXPECT_EQ(reader.lastTarget().pid, TARGET.pid);
+    EXPECT_EQ(reader.lastTarget().startTimeTicks, TARGET.startTimeTicks);
+    EXPECT_TRUE(view.hasRead());
+
+    // Many frames within the interval: no further read.
+    float elapsed = 0.0F;
+    while (elapsed + 0.1F < REFRESH_SECONDS)
+    {
+        EXPECT_FALSE(frame(view, reader, 0.1F, true));
+        elapsed += 0.1F;
+    }
+    EXPECT_EQ(reader.readCount(), 1);
+
+    // Past it: one more.
+    EXPECT_TRUE(frame(view, reader, 0.2F, true));
+    EXPECT_EQ(reader.readCount(), 2);
+}
+
+TEST(ProcessEnvironmentViewTest, StopsReadingWhenClosedAndReadsAgainWhenReopenedLater)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    ASSERT_EQ(reader.readCount(), 1);
+
+    // Closed (the first update still sees last frame's open section, well within the interval) ...
+    EXPECT_FALSE(frame(view, reader, 0.016F, false));
+    // ... for longer than the interval: nothing read meanwhile ...
+    for (int i = 0; i < 5; ++i)
+    {
+        static_cast<void>(frame(view, reader, REFRESH_SECONDS, false));
+    }
+    EXPECT_EQ(reader.readCount(), 1);
+
+    // ... and the stale data is refreshed as soon as it is shown again.
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    EXPECT_TRUE(frame(view, reader, 0.016F, true));
+    EXPECT_EQ(reader.readCount(), 2);
+}
+
+TEST(ProcessEnvironmentViewTest, SelectionChangeReadsAfreshWithoutWaitingForTheInterval)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    static_cast<void>(frame(view, reader, 0.016F, true));
+    ASSERT_EQ(reader.readCount(), 1);
+
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.hasRead());
+    view.markDrawnOpen();
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.016F));
+    EXPECT_EQ(reader.readCount(), 2);
+}
+
+TEST(ProcessEnvironmentViewTest, SelectionChangeForgetsThePreviousProcesssOpenFrame)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    static_cast<void>(frame(view, reader, 0.016F, true)); // the previous process's section drawn open
+    ASSERT_EQ(reader.readCount(), 0);
+
+    // The selection changes before update() consumes that frame: the new process's section has not
+    // been drawn open yet, so nothing may be read for it.
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.update(&reader, TARGET, 0.016F));
+    EXPECT_EQ(reader.readCount(), 0);
+}
+
+TEST(ProcessEnvironmentViewTest, NoReaderOrNoSupportMeansNoRead)
+{
+    ProcessEnvironmentView view;
+    view.markDrawnOpen();
+    EXPECT_FALSE(view.update(nullptr, TARGET, 1.0F));
+
+    TestMocks::MockProcessEnvironmentReader reader;
+    reader.setHasEnvironment(false);
+    view.markDrawnOpen();
+    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F));
+    EXPECT_EQ(reader.readCount(), 0);
+}
+
+// ========== Results ==========
+
+TEST(ProcessEnvironmentViewTest, SortsByNameAndFlagsSecrets)
+{
+    ProcessEnvironmentView view;
+    view.applyResult(okResult({
+        {.name = "ZED", .value = "z"},
+        {.name = "MY_API_TOKEN", .value = "supersecret"},
+        {.name = "FOO", .value = "bar"},
+        {.name = "PWD", .value = "/home/me"},
+    }));
+    ASSERT_EQ(view.rows().size(), 4U);
+    EXPECT_EQ(view.rows()[0].name, "FOO");
+    EXPECT_EQ(view.rows()[1].name, "MY_API_TOKEN");
+    EXPECT_EQ(view.rows()[2].name, "PWD");
+    EXPECT_EQ(view.rows()[3].name, "ZED");
+    EXPECT_FALSE(view.rows()[0].secret);
+    EXPECT_TRUE(view.rows()[1].secret);
+    EXPECT_FALSE(view.rows()[2].secret);
+    EXPECT_TRUE(view.isMasked(view.rows()[1]));
+    EXPECT_FALSE(view.isMasked(view.rows()[0]));
+}
+
+TEST(ProcessEnvironmentViewTest, KeepsEachReadStatusForItsStatusLine)
+{
+    struct Case
+    {
+        Platform::EnvironmentReadStatus status;
+        std::string_view text;
+    };
+    constexpr std::array<Case, 5> CASES{{
+        {.status = Platform::EnvironmentReadStatus::PermissionDenied, .text = "Not readable (permission denied)"},
+        {.status = Platform::EnvironmentReadStatus::ProcessExited, .text = "Process exited"},
+        {.status = Platform::EnvironmentReadStatus::Unsupported, .text = "Not available on this platform"},
+        {.status = Platform::EnvironmentReadStatus::IdentityUnknown, .text = "Not available yet"},
+        {.status = Platform::EnvironmentReadStatus::Failed, .text = "Could not be read"},
+    }};
+    for (const Case& c : CASES)
+    {
+        SCOPED_TRACE(std::string(c.text));
+        ProcessEnvironmentView view;
+        TestMocks::MockProcessEnvironmentReader reader;
+        reader.setResult({.status = c.status, .variables = {}});
+        view.markDrawnOpen();
+        ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+        EXPECT_TRUE(view.hasRead());
+        EXPECT_EQ(view.status(), c.status);
+        EXPECT_TRUE(view.rows().empty());
+        EXPECT_EQ(Detail::environmentStatusText(view.status()), c.text);
+    }
+    EXPECT_TRUE(Detail::environmentStatusText(Platform::EnvironmentReadStatus::Ok).empty());
+}
+
+// ========== Reveal ==========
+
+TEST(ProcessEnvironmentViewTest, RevealLastsAcrossReReadsAndEndsOnSelectionChange)
+{
+    ProcessEnvironmentView view;
+    const auto result = okResult({{.name = "MY_API_TOKEN", .value = "supersecret"}, {.name = "DB_PASSWORD", .value = "hunter2"}});
+    view.applyResult(result);
+    // Sorted: DB_PASSWORD, MY_API_TOKEN
+    ASSERT_EQ(view.rows()[1].name, "MY_API_TOKEN");
+
+    view.toggleReveal(view.rows()[1]);
+    EXPECT_TRUE(view.isRevealed(view.rows()[1]));
+    EXPECT_FALSE(view.isRevealed(view.rows()[0])); // one row only
+    EXPECT_FALSE(view.isMasked(view.rows()[1]));
+    EXPECT_TRUE(view.isMasked(view.rows()[0]));
+
+    view.applyResult(result); // the periodic re-read
+    EXPECT_TRUE(view.isRevealed(view.rows()[1]));
+
+    view.toggleReveal(view.rows()[1]); // pressed again: hidden again
+    EXPECT_FALSE(view.isRevealed(view.rows()[1]));
+    view.toggleReveal(view.rows()[1]);
+
+    view.onSelectionChanged();
+    EXPECT_TRUE(view.rows().empty());
+    view.applyResult(result); // the next process happens to have the same variable
+    EXPECT_FALSE(view.isRevealed(view.rows()[1]));
+}
+
+TEST(ProcessEnvironmentViewTest, RevealingOneDuplicateNameLeavesTheOtherMaskedAndUnsearchable)
+{
+    // execve() allows duplicate names and /proc/[pid]/environ keeps both entries.
+    ProcessEnvironmentView view;
+    const auto result = okResult({{.name = "TOKEN", .value = "first-secret"}, {.name = "TOKEN", .value = "second-secret"}});
+    view.applyResult(result);
+    ASSERT_EQ(view.rows().size(), 2U);
+    EXPECT_EQ(view.rows()[0].value, "first-secret"); // read order kept within a name
+    EXPECT_EQ(view.rows()[0].occurrence, 0U);
+    EXPECT_EQ(view.rows()[1].occurrence, 1U);
+    ASSERT_TRUE(view.isMasked(view.rows()[0]));
+    ASSERT_TRUE(view.isMasked(view.rows()[1]));
+
+    view.toggleReveal(view.rows()[0]);
+    EXPECT_FALSE(view.isMasked(view.rows()[0]));
+    EXPECT_TRUE(view.isMasked(view.rows()[1]));
+
+    view.setFilter("first-secret");
+    EXPECT_EQ(view.filteredRows().size(), 1U);
+    view.setFilter("second-secret");
+    EXPECT_TRUE(view.filteredRows().empty());
+
+    view.applyResult(result); // a re-read keeps the same row revealed, and only it
+    EXPECT_FALSE(view.isMasked(view.rows()[0]));
+    EXPECT_TRUE(view.isMasked(view.rows()[1]));
+}
+
+TEST(ProcessEnvironmentViewTest, FilterBoxStaysWhileAFilterIsSetEvenWhenARereadShrinksTheList)
+{
+    const auto variablesOf = [](int count)
+    {
+        std::vector<Platform::EnvironmentVariable> variables;
+        variables.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i)
+        {
+            variables.push_back({.name = "VAR_" + std::to_string(100 + i), .value = "v"});
+        }
+        return variables;
+    };
+
+    ProcessEnvironmentView view;
+    view.applyResult(okResult(variablesOf(10)));
+    EXPECT_FALSE(view.showsFilterBox()); // 20 or fewer and no filter: no box
+
+    view.applyResult(okResult(variablesOf(25)));
+    ASSERT_TRUE(view.showsFilterBox());
+    view.setFilter("nothing-matches");
+    EXPECT_TRUE(view.filteredRows().empty());
+
+    // A re-read with 10 rows: the filter still applies, so its box must still be there to clear it.
+    view.applyResult(okResult(variablesOf(10)));
+    EXPECT_TRUE(view.filteredRows().empty());
+    EXPECT_TRUE(view.showsFilterBox());
+    view.setFilter("");
+    EXPECT_EQ(view.filteredRows().size(), 10U);
+    EXPECT_FALSE(view.showsFilterBox()); // cleared: back to the row-count rule
+
+    // A selection change clears the filter.
+    view.applyResult(okResult(variablesOf(25)));
+    view.setFilter("VAR_1");
+    view.onSelectionChanged();
+    view.applyResult(okResult(variablesOf(10)));
+    EXPECT_FALSE(view.showsFilterBox());
+    EXPECT_EQ(view.filteredRows().size(), 10U);
+}
+
+// ========== Cell tooltip ==========
+
+TEST(ProcessEnvironmentViewTest, CellNeedsATooltipWhenCutOrWiderThanTheSpaceLeft)
+{
+    EXPECT_FALSE(Detail::environmentCellNeedsTooltip(10, 10, 90.0F, 100.0F));
+    EXPECT_TRUE(Detail::environmentCellNeedsTooltip(10, 10, 101.0F, 100.0F));  // clipped
+    EXPECT_TRUE(Detail::environmentCellNeedsTooltip(512, 600, 50.0F, 100.0F)); // cut short
+    EXPECT_FALSE(Detail::environmentCellNeedsTooltip(0, 0, 0.0F, 100.0F));
+}
+
+// ========== Filter ==========
+
+TEST(ProcessEnvironmentViewTest, FilterMatchesNamesAndPlainValuesButNeverMaskedValues)
+{
+    ProcessEnvironmentView view;
+    view.applyResult(okResult({
+        {.name = "FOO", .value = "bar"},
+        {.name = "MY_API_TOKEN", .value = "supersecret"},
+        {.name = "EDITOR", .value = "vim"},
+    }));
+    EXPECT_EQ(view.filteredRows().size(), 3U);
+
+    view.setFilter("foo"); // by name, ignoring case
+    ASSERT_EQ(view.filteredRows().size(), 1U);
+    EXPECT_EQ(view.rows()[view.filteredRows()[0]].name, "FOO");
+
+    view.setFilter("VIM"); // by a plain value
+    ASSERT_EQ(view.filteredRows().size(), 1U);
+    EXPECT_EQ(view.rows()[view.filteredRows()[0]].name, "EDITOR");
+
+    view.setFilter("supersecret"); // a masked value is not searched: no probing a secret by guessing
+    EXPECT_TRUE(view.filteredRows().empty());
+
+    view.toggleReveal(view.rows()[2]); // once revealed, it is (sorted: EDITOR, FOO, MY_API_TOKEN)
+    EXPECT_EQ(view.filteredRows().size(), 1U);
+
+    view.setFilter("token"); // the name of a masked row always matches
+    EXPECT_EQ(view.filteredRows().size(), 1U);
+}
+
+} // namespace
+} // namespace App
