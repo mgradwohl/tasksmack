@@ -1,5 +1,8 @@
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "App/Panels/GpuSection.h"
+#include "Domain/GPUModel.h"
+#include "Domain/GPUSnapshot.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/LinuxGPUProbe.h"
@@ -8,8 +11,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <optional>
 
 namespace Platform
 {
@@ -57,7 +63,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
     {
         GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
     }
-    LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
+    const LinuxGPUProbe probe("/sys/class/drm", TestSupport::ISOLATED_PCI_ROOT);
 
     const auto caps = probe.capabilities();
     EXPECT_TRUE(caps.hasTemperature);
@@ -67,7 +73,53 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
     EXPECT_TRUE(caps.hasEngineUtilization);
     EXPECT_TRUE(caps.hasPerProcessMetrics);
     EXPECT_TRUE(caps.supportsMultiGPU);
-    EXPECT_FALSE(caps.hasEncoderDecoder);
+    EXPECT_TRUE(caps.hasEncoderDecoder); // NVML's, ORed in (#1477)
+}
+
+// #1477: NVML's encoder/decoder utilization reaches the GPU tab -- the composite probe's
+// capabilities, the adapter's own sensor set, GPUModel's snapshot and history -- for the GPU with
+// video engines, and the one without (NVML_ERROR_NOT_SUPPORTED) gets no series at all.
+TEST(LinuxGPUProbeTest, NvmlEncoderDecoderUtilizationReachesTheGpuTab)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock GPU libraries not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    Domain::GPUModel model(std::make_unique<LinuxGPUProbe>("/nonexistent/tasksmack/drm", TestSupport::ISOLATED_PCI_ROOT));
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    ASSERT_TRUE(publication->capabilities.hasEncoderDecoder);
+
+    const auto sensorsOf = [&publication](const char* gpuId) -> std::optional<GPUCapabilities>
+    {
+        const auto info = std::ranges::find_if(publication->gpuInfo, [gpuId](const GPUInfo& gpu) { return gpu.id == gpuId; });
+        return info == publication->gpuInfo.end() ? std::nullopt : info->sensorCapabilities;
+    };
+    EXPECT_TRUE(App::GpuSection::capabilitiesForGpu(publication->capabilities, sensorsOf("mock-nvml-uuid-0")).hasEncoderDecoder);
+    EXPECT_FALSE(App::GpuSection::capabilitiesForGpu(publication->capabilities, sensorsOf("nvidia-1")).hasEncoderDecoder);
+
+    const auto snapshot =
+        std::ranges::find_if(publication->snapshots, [](const Domain::GPUSnapshot& snap) { return snap.gpuId == "mock-nvml-uuid-0"; });
+    ASSERT_NE(snapshot, publication->snapshots.end());
+    EXPECT_TRUE(snapshot->encoderAvailable);
+    EXPECT_DOUBLE_EQ(snapshot->encoderUtilPercent, 30.0);
+    EXPECT_TRUE(snapshot->decoderAvailable);
+    EXPECT_DOUBLE_EQ(snapshot->decoderUtilPercent, 12.0);
+
+    const auto& history = publication->histories.at("mock-nvml-uuid-0");
+    ASSERT_FALSE(history.encoder.empty());
+    EXPECT_FLOAT_EQ(history.encoder.back(), 30.0F);
+    ASSERT_FALSE(history.decoder.empty());
+    EXPECT_FLOAT_EQ(history.decoder.back(), 12.0F);
+
+    // The GPU without video engines records gaps, not a line at 0%.
+    const auto& noEngines = publication->histories.at("nvidia-1");
+    ASSERT_FALSE(noEngines.encoder.empty());
+    EXPECT_TRUE(std::isnan(noEngines.encoder.back()));
+    EXPECT_TRUE(std::isnan(noEngines.decoder.back()));
 }
 
 TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)

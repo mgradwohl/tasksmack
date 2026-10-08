@@ -126,6 +126,9 @@ struct NVMLGPUProbe::Impl
     // Optional: a device asleep when NVML starts is deferred only when both exist (#1270).
     nvmlReturn_t (*nvmlDeviceGetHandleByPciBusId_v2)(const char*, nvmlDevice_t*) = nullptr;
     nvmlReturn_t (*nvmlDeviceGetIndex)(nvmlDevice_t, unsigned int*) = nullptr;
+    // Optional: the video engines' utilization (#1477). Without them the encoder/decoder series isn't drawn.
+    NVMLGPUProbeMath::EngineUtilizationFn nvmlDeviceGetEncoderUtilization = nullptr;
+    NVMLGPUProbeMath::EngineUtilizationFn nvmlDeviceGetDecoderUtilization = nullptr;
     const char* (*nvmlErrorString)(nvmlReturn_t) = nullptr;
 
     /// Whether the device is runtime-suspended now, so must not be queried (#1117).
@@ -277,6 +280,9 @@ bool NVMLGPUProbe::Impl::loadSymbols()
     // once (#1270).
     LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetHandleByPciBusId_v2);
     LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetIndex);
+    // Without these the probe reports no encoder/decoder utilization (#1477).
+    LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetEncoderUtilization);
+    LOAD_NVML_FUNC_OPTIONAL(nvmlDeviceGetDecoderUtilization);
     // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - dlsym returns void* by POSIX definition
     nvmlDeviceGetPciInfo = reinterpret_cast<decltype(nvmlDeviceGetPciInfo)>(dlsym(nvmlHandle, "nvmlDeviceGetPciInfo_v3"));
     if (nvmlDeviceGetPciInfo == nullptr)
@@ -712,6 +718,13 @@ std::vector<GPUInfo> NVMLGPUProbe::enumerateGPUs()
             sensors.hasPowerMetrics = supported(m_Impl->nvmlDeviceGetPowerUsage(device, &probeValue));
             sensors.hasClockSpeeds = supported(m_Impl->nvmlDeviceGetClockInfo(device, NVML_CLOCK_GRAPHICS, &probeValue));
             sensors.hasFanSpeed = supported(m_Impl->nvmlDeviceGetFanSpeed(device, &probeValue));
+            // One capability covers both video engines; a GPU with only one (an NVDEC-only data-centre
+            // card) has it, and the engine it lacks reads as unavailable each sample (#1477).
+            sensors.hasEncoderDecoder =
+                NVMLGPUProbeMath::engineUtilizationSupported(
+                    NVMLGPUProbeMath::readEngineUtilization(m_Impl->nvmlDeviceGetEncoderUtilization, device).result) ||
+                NVMLGPUProbeMath::engineUtilizationSupported(
+                    NVMLGPUProbeMath::readEngineUtilization(m_Impl->nvmlDeviceGetDecoderUtilization, device).result);
             dev.sensors = sensors;
         }
         info.sensorCapabilities = dev.sensors;
@@ -751,6 +764,8 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.powerAvailable = false;
             counter.gpuClockAvailable = false;
             counter.memoryAvailable = false;
+            counter.encoderAvailable = false;
+            counter.decoderAvailable = false;
             counter.memoryTotalBytes = dev.lastMemoryTotalBytes;
             counters.push_back(std::move(counter));
             continue;
@@ -835,6 +850,18 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.fanSpeedRaw = fanSpeed;
             counter.fanSpeedMaxRaw = 100;
         }
+
+        // Video encoder/decoder utilization (#1477): NVML's percentage, averaged over its own
+        // sampling period. A missing query or a failed read is unavailable, not a real 0%.
+        const auto readEngine = [this, device](NVMLGPUProbeMath::EngineUtilizationFn query, double& percent, bool& available)
+        {
+            const auto reading = NVMLGPUProbeMath::readEngineUtilization(query, device);
+            m_Impl->noteResult(reading.result);
+            available = reading.result == NVML_SUCCESS;
+            percent = static_cast<double>(reading.percent);
+        };
+        readEngine(m_Impl->nvmlDeviceGetEncoderUtilization, counter.encoderUtilPercent, counter.encoderAvailable);
+        readEngine(m_Impl->nvmlDeviceGetDecoderUtilization, counter.decoderUtilPercent, counter.decoderAvailable);
 
         counters.push_back(std::move(counter));
     }
@@ -950,6 +977,9 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
         caps.hasPerProcessUtilization = false;
         caps.supportsMultiGPU = true;
         caps.hasEngineUtilization = true; // Via activeEngines in ProcessGPUCounters
+        // When the library has either video-engine query; each device's own answer is in its
+        // sensorCapabilities (#1477).
+        caps.hasEncoderDecoder = m_Impl->nvmlDeviceGetEncoderUtilization != nullptr || m_Impl->nvmlDeviceGetDecoderUtilization != nullptr;
     }
 
     return caps;
