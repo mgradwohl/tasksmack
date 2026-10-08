@@ -210,6 +210,9 @@ set(COMMON_TEST_SOURCES
     App/test_ElevationNoticeText.cpp
     App/test_StatusBarText.cpp
     App/test_FontSizeChange.cpp
+    App/test_KeyboardShortcuts.cpp
+    App/test_ProcessTableNavigation.cpp
+    App/test_KeyboardInputRender.cpp
     App/test_SyntheticScenario.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
@@ -354,6 +357,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsCharts.cpp
+    # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp

@@ -132,7 +132,15 @@ void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities
         }
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip("%s", button.tooltip);
+            // Kill also has a key (#170)
+            if (button.action == Detail::ProcessAction::Kill)
+            {
+                ImGui::SetTooltip("%s (F9)", button.tooltip);
+            }
+            else
+            {
+                ImGui::SetTooltip("%s", button.tooltip);
+            }
         }
     }
 

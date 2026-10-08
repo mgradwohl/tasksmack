@@ -373,13 +373,8 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
             spdlog::info("Alt+Space detected (Alt pressed with Space), opening system menu");
             m_ShowSystemMenu = true;
         }
-        // Case 3: F10 - standard menu activation key (works on all platforms)
-        else if (keyEvent.key == SDLK_F10 && !altPressed && !ctrlPressed)
-        {
-            spdlog::info("F10 detected, opening system menu");
-            m_ShowSystemMenu = true;
-        }
-        // Case 4: Ctrl+Space - alternative shortcut
+        // F10 no longer opens this menu: it is the htop-style Quit key (ShellLayer, #170).
+        // Case 3: Ctrl+Space - alternative shortcut
         else if (keyEvent.key == SDLK_SPACE && ctrlPressed && !altPressed)
         {
             spdlog::info("Ctrl+Space detected, opening system menu");
@@ -1298,11 +1293,11 @@ void TitleBarLayer::renderTitleBar()
     // The "?" opens the About box, so its tooltip says so rather than promising help (#1200).
     if (settingsHovered)
     {
-        ImGui::SetTooltip("Settings");
+        ImGui::SetTooltip("Settings (F2)");
     }
     else if (helpHovered)
     {
-        ImGui::SetTooltip("About TaskSmack");
+        ImGui::SetTooltip("About TaskSmack and keyboard shortcuts (F1)");
     }
     ImGui::PopStyleColor(3); // Button colors
     ImGui::PopStyleVar(2);   // Frame padding, item spacing
