@@ -6,10 +6,11 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Nightly at 06:00 UTC: the full clang-tidy runs (PRs only check what they touch), Linux and
-    # Windows release builds (no longer run on every push to main, #1406).
-    - cron: '0 6 * * *'
-    # Weekly on Sundays at 09:00 UTC: additionally the unity build.
+    # Nightly at 06:00 UTC, Monday to Saturday: the full clang-tidy runs (PRs only check what they
+    # touch), Linux and Windows release builds (no longer run on every push to main, #1406).
+    - cron: '0 6 * * 1-6'
+    # Sundays at 09:00 UTC: the same full run plus the unity build. Sunday is left out of the
+    # nightly cron above, which would otherwise run the full checks twice that day.
     - cron: '0 9 * * 0'
   workflow_dispatch:
 
