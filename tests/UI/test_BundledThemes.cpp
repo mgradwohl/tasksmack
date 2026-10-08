@@ -277,9 +277,6 @@ TEST(BundledThemesTest, EverySeriesIsVisibleOnThePlotAndTheNowBarTrack)
             {"charts.handles", scheme->chartHandles},
             {"charts.page_faults", scheme->chartPageFaults},
             {"charts.gdi", scheme->chartGdi},
-            {"progress.low", scheme->progressLow},
-            {"progress.medium", scheme->progressMedium},
-            {"progress.high", scheme->progressHigh},
         };
         for (std::size_t i = 0; i < scheme->accents.size(); ++i)
         {
@@ -481,7 +478,7 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
             },
         };
 
-        // Status messages and usage bars are not drawn as series on one chart, so #1197 asks only that
+        // Status messages are not drawn as series on one chart, so #1197 asks only that
         // they survive red/green colour vision deficiency: warning and success must not read as one colour.
         const std::vector<std::pair<const char*, std::vector<Series>>> cvdOnlySets{
             {
@@ -491,14 +488,6 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
                     {"semantic.text_warning", scheme->textWarning},
                     {"semantic.text_success", scheme->textSuccess},
                     {"semantic.text_info", scheme->textInfo},
-                },
-            },
-            {
-                "progress",
-                {
-                    {"progress.low", scheme->progressLow},
-                    {"progress.medium", scheme->progressMedium},
-                    {"progress.high", scheme->progressHigh},
                 },
             },
         };
@@ -563,11 +552,10 @@ struct HueRange
 };
 
 // The families (#1196), in hue order: red < orange < amber < yellow < green < teal/cyan < blue < violet
-// < magenta. Brown/olive is a dull orange-to-yellow; the load ramp's amber step is a little wider.
+// < magenta. Brown/olive is a dull orange-to-yellow.
 constexpr HueRange RED{.lo = 0.0, .hi = 45.0};
 constexpr HueRange ORANGE{.lo = 38.0, .hi = 68.0};
 constexpr HueRange AMBER{.lo = 62.0, .hi = 92.0};
-constexpr HueRange RAMP_AMBER{.lo = 45.0, .hi = 100.0};
 constexpr HueRange BROWN_OLIVE{.lo = 68.0, .hi = 118.0};
 constexpr HueRange YELLOW{.lo = 88.0, .hi = 118.0};
 constexpr HueRange GREEN{.lo = 120.0, .hi = 175.0};
@@ -575,10 +563,10 @@ constexpr HueRange CYAN_TEAL{.lo = 175.0, .hi = 228.0};
 constexpr HueRange BLUE{.lo = 215.0, .hi = 275.0};
 constexpr HueRange VIOLET{.lo = 280.0, .hi = 320.0};
 constexpr HueRange MAGENTA{.lo = 318.0, .hi = 360.0};
-// Status text and the load ramp: warning runs orange to Cyberpunk's neon yellow (light themes darken it
-// towards brown), success and the ramp's first step green to Gruvbox's and Solarized's yellow-green.
+// Status text: warning runs orange to Cyberpunk's neon yellow (light themes darken it towards brown),
+// success green to Gruvbox's and Solarized's yellow-green.
 // Wider than the series families: their job is only to read as caution and as fine (Monochrome's were
-// all green). The ramp's order is checked on its own.
+// all green). Their order is checked on its own.
 constexpr HueRange WARNING{.lo = 40.0, .hi = 110.0};
 constexpr HueRange SUCCESS{.lo = 105.0, .hi = 175.0};
 // No data series is drawn in red: hue 12..36 with chroma >= 0.06. Below 12 is pink, above 36 orange.
@@ -755,33 +743,34 @@ TEST(ThemePaletteTest, PowerIsOneColourOnEveryScreen)
     }
 }
 
-// Load bars run green -> amber -> red, and the error colour stays the most alarming: not the palest
-// (Monochrome's error was its palest green), and far from warning and success.
-TEST(ThemePaletteTest, LoadRampRunsGreenAmberRedAndErrorReadsAsSevere)
+// Severity reads green -> amber -> red in every theme: success green, warning amber, error red, in
+// that hue order, and the error colour stays the most alarming -- not the palest (Monochrome's error
+// was its palest green, its warning another green) and far from warning and success. (#1196 asked the
+// same of the load bars' progress.* ramp; #1185 has since removed those colours.)
+TEST(ThemePaletteTest, SeverityRunsGreenAmberRedAndErrorReadsAsSevere)
 {
     for (const LoadedTheme& theme : loadedThemes())
     {
         const std::string& name = theme.name;
         const ColorScheme& s = theme.scheme;
-        const ColorDifference::Oklch low = ColorDifference::toOklch(s.progressLow);
-        const ColorDifference::Oklch medium = ColorDifference::toOklch(s.progressMedium);
-        const ColorDifference::Oklch high = ColorDifference::toOklch(s.progressHigh);
         const ColorDifference::Oklch error = ColorDifference::toOklch(s.textError);
-        const std::array<std::tuple<std::string_view, ColorDifference::Oklch, HueRange>, 6> steps{{
-            {"progress.low", low, SUCCESS},
-            {"progress.medium", medium, RAMP_AMBER},
-            {"progress.high", high, RED},
+        const ColorDifference::Oklch warning = ColorDifference::toOklch(s.textWarning);
+        const ColorDifference::Oklch success = ColorDifference::toOklch(s.textSuccess);
+        const std::array<std::tuple<std::string_view, ColorDifference::Oklch, HueRange>, 3> steps{{
             {"semantic.text_error", error, RED},
-            {"semantic.text_warning", ColorDifference::toOklch(s.textWarning), WARNING},
-            {"semantic.text_success", ColorDifference::toOklch(s.textSuccess), SUCCESS},
+            {"semantic.text_warning", warning, WARNING},
+            {"semantic.text_success", success, SUCCESS},
         }};
-        for (const auto& [key, c, range] : steps)
+        for (const auto& step : steps)
         {
+            const std::string_view key = std::get<0>(step);
+            const ColorDifference::Oklch& c = std::get<1>(step);
+            const HueRange range = std::get<2>(step);
             EXPECT_GE(c.c, FAMILY_MIN_CHROMA) << name << ": " << key << " is grey";
             EXPECT_TRUE(inHueRange(c.h, range)) << name << ": " << key << " hue " << c.h << " is outside " << range.lo << ".." << range.hi;
         }
-        EXPECT_LT(high.h, medium.h) << name << ": the ramp is not ordered red < amber";
-        EXPECT_LT(medium.h, low.h) << name << ": the ramp is not ordered amber < green";
+        EXPECT_LT(error.h, warning.h) << name << ": severity is not ordered red < amber";
+        EXPECT_LT(warning.h, success.h) << name << ": severity is not ordered amber < green";
 
         EXPECT_GE(ColorDifference::deltaE2000(s.textError, s.textWarning), ERROR_VS_WARNING_MIN_DE) << name;
         EXPECT_GE(ColorDifference::deltaE2000(s.textError, s.textSuccess), SEVERITY_MIN_DE) << name;
@@ -789,14 +778,8 @@ TEST(ThemePaletteTest, LoadRampRunsGreenAmberRedAndErrorReadsAsSevere)
 
         // The palest colour is the least saturated and the lightest at once, as Monochrome's glow-green
         // error was. Either alone is fine: Dracula's error is light to stay readable on its light plot.
-        const auto isPalest = [](const ColorDifference::Oklch& c, const ColorDifference::Oklch& b, const ColorDifference::Oklch& d)
-        {
-            return c.c < std::min(b.c, d.c) && c.l > std::max(b.l, d.l);
-        };
-        const ColorDifference::Oklch warning = ColorDifference::toOklch(s.textWarning);
-        const ColorDifference::Oklch success = ColorDifference::toOklch(s.textSuccess);
-        EXPECT_FALSE(isPalest(error, warning, success)) << name << ": text_error is the palest status colour";
-        EXPECT_FALSE(isPalest(high, medium, low)) << name << ": progress.high is the palest step of the ramp";
+        const bool errorIsPalest = error.c < std::min(warning.c, success.c) && error.l > std::max(warning.l, success.l);
+        EXPECT_FALSE(errorIsPalest) << name << ": text_error is the palest status colour";
     }
 }
 
@@ -902,7 +885,7 @@ TEST(ThemePaletteTest, FallbackThemeIsArcticFire)
     }
     EXPECT_TRUE(sameRgb(fallback->windowBg, arcticFire->windowBg));
     EXPECT_TRUE(sameRgb(fallback->textError, arcticFire->textError));
-    EXPECT_TRUE(sameRgb(fallback->progressHigh, arcticFire->progressHigh));
+    EXPECT_TRUE(sameRgb(fallback->textSuccess, arcticFire->textSuccess));
 }
 } // namespace
 } // namespace UI

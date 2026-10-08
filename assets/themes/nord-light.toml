@@ -23,11 +23,6 @@ colors = [
     "#8B7200",  # Dark gold
 ]
 
-[progress]
-low = "#4A7D18"       # 0-50%   - Lime (healthy)
-medium = "#9F7E4B"    # 50-80%  - Sand (caution)
-high = "#C16370"      # 80-100% - Rose (critical)
-
 [semantic]
 text_primary = "#2E3440"
 text_disabled = "#4C566A"

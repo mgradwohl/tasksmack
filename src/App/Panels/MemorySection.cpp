@@ -75,7 +75,7 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
 
     const auto& theme = UI::Theme::get();
     const auto& snap = ctx.publication->snapshot;
-    const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+    const auto axisConfig = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
     // Get history data
     const auto& memHist = ctx.publication->memoryHistory;

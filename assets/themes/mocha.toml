@@ -23,11 +23,6 @@ colors = [
     "#74C7EC",  # Sapphire
 ]
 
-[progress]
-low = "#B8E9B3"       # 0-50%   - Green (healthy)
-medium = "#FAB387"    # 50-80%  - Peach (caution)
-high = "#F38BA8"      # 80-100% - Red/Pink (critical)
-
 [semantic]
 text_primary = "#CDD6F4"
 text_disabled = "#6C7086"

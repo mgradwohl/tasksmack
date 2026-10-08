@@ -28,7 +28,6 @@ struct RenderContext
     // so the chart keeps its reduced points until it changes (HistoryChartConfig::dataGeneration, #1139).
     std::uint64_t chartDataGeneration = 0;
     double maxHistorySeconds = 60.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
     std::chrono::milliseconds refreshInterval{1000};
 

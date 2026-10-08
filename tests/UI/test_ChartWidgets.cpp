@@ -1937,37 +1937,11 @@ TEST(ChartWidgetsTest, NormalizeToUnitIntervalClampsBelowZero)
 
 // ========== Time-axis helpers ==========
 
-TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsOffset)
+TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigIsTheWindowEndingAtNow)
 {
-    const std::vector<double> timestamps{10.0, 20.0, 30.0, 40.0};
-    const auto cfg = makeTimeAxisConfig(timestamps, 5.0, 100.0);
+    const auto cfg = makeTimeAxisConfig(12.0);
 
-    EXPECT_DOUBLE_EQ(cfg.span, 30.0);
-    EXPECT_DOUBLE_EQ(cfg.maxOffset, 25.0);
-    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 25.0);
-    EXPECT_DOUBLE_EQ(cfg.xMin, -30.0);
-    EXPECT_DOUBLE_EQ(cfg.xMax, -25.0);
-}
-
-TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigWithEmptyTimestampsUsesDefaultWindow)
-{
-    const std::vector<double> timestamps{};
-    const auto cfg = makeTimeAxisConfig(timestamps, 12.0, 4.0);
-
-    EXPECT_DOUBLE_EQ(cfg.span, 0.0);
-    EXPECT_DOUBLE_EQ(cfg.maxOffset, 0.0);
-    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 0.0);
     EXPECT_DOUBLE_EQ(cfg.xMin, -12.0);
-    EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
-}
-
-TEST(ChartWidgetsTimeAxisTest, MakeTimeAxisConfigClampsNegativeOffsetToZero)
-{
-    const std::vector<double> timestamps{5.0, 15.0};
-    const auto cfg = makeTimeAxisConfig(timestamps, 6.0, -3.0);
-
-    EXPECT_DOUBLE_EQ(cfg.clampedOffset, 0.0);
-    EXPECT_DOUBLE_EQ(cfg.xMin, -6.0);
     EXPECT_DOUBLE_EQ(cfg.xMax, 0.0);
 }
 

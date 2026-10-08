@@ -84,9 +84,9 @@ static void BM_StorageModel_LatestSnapshot(benchmark::State& state)
 }
 BENCHMARK(BM_StorageModel_LatestSnapshot);
 
-// Benchmark historyTimestamps() – returns the shared timestamp axis used by
-// all chart series. Called once per frame by StorageSection before reading
-// any per-disk or aggregate series.
+// Benchmark reading the shared timestamp axis used by all chart series from the latest publication,
+// as StorageSection does each frame before reading any per-disk or aggregate series. The history
+// reads here used to time per-series copy accessors that only tests called, removed in #1185.
 static void BM_StorageModel_HistoryTimestamps(benchmark::State& state)
 {
     auto probe = Platform::makeDiskProbe();
@@ -100,15 +100,16 @@ static void BM_StorageModel_HistoryTimestamps(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto ts = model.historyTimestamps();
+        const auto publication = model.publication();
+        const auto& ts = publication->timestamps;
         benchmark::DoNotOptimize(ts.data());
         benchmark::DoNotOptimize(ts.size());
     }
 }
 BENCHMARK(BM_StorageModel_HistoryTimestamps);
 
-// Benchmark totalReadHistory() and totalWriteHistory()
-// Used by SystemMetricsPanel to render aggregate I/O charts
+// Benchmark reading the aggregate read/write series from the latest publication,
+// used to render the aggregate I/O charts
 static void BM_StorageModel_TotalRateHistory(benchmark::State& state)
 {
     auto probe = Platform::makeDiskProbe();
@@ -121,16 +122,16 @@ static void BM_StorageModel_TotalRateHistory(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto readHist = model.totalReadHistory();
-        auto writeHist = model.totalWriteHistory();
+        const auto publication = model.publication();
+        const auto& readHist = publication->totalReadHistory;
+        const auto& writeHist = publication->totalWriteHistory;
         benchmark::DoNotOptimize(readHist.data());
         benchmark::DoNotOptimize(writeHist.data());
     }
 }
 BENCHMARK(BM_StorageModel_TotalRateHistory);
 
-// Benchmark perDiskHistory() – most expensive history accessor:
-// returns a vector<PerDiskHistory>, one entry per disk device
+// Benchmark reading the per-disk series from the latest publication: one entry per disk device
 static void BM_StorageModel_PerDiskHistory(benchmark::State& state)
 {
     auto probe = Platform::makeDiskProbe();
@@ -143,7 +144,8 @@ static void BM_StorageModel_PerDiskHistory(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto hist = model.perDiskHistory();
+        const auto publication = model.publication();
+        const auto& hist = publication->perDiskHistory;
         benchmark::DoNotOptimize(hist.data());
         benchmark::DoNotOptimize(hist.size());
     }
@@ -190,11 +192,10 @@ static void BM_StorageModel_MemoryGrowth(benchmark::State& state)
 }
 BENCHMARK(BM_StorageModel_MemoryGrowth)->Iterations(500);
 
-// Benchmark the combined copy overhead of all four StorageSection history accessors
-// called on every render frame: historyTimestamps(), totalReadHistory(),
-// totalWriteHistory(), and perDiskHistory(). History depth is controlled by
-// varying the number of pre-seeded samples (trimming is disabled so the full
-// depth is retained).
+// Benchmark the combined cost of the history reads StorageSection makes on every render frame: the
+// latest publication's timestamps, total read and write series and per-disk series. They are views
+// of the shared history (#1412), so the cost should not grow with depth. History depth is controlled
+// by varying the number of pre-seeded samples (trimming is disabled so the full depth is retained).
 static void BM_StorageModel_HistoryCopyOverhead(benchmark::State& state)
 {
     const auto sampleCount = static_cast<int>(state.range(0));
@@ -214,10 +215,11 @@ static void BM_StorageModel_HistoryCopyOverhead(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto ts = model.historyTimestamps();
-        auto readHist = model.totalReadHistory();
-        auto writeHist = model.totalWriteHistory();
-        auto perDisk = model.perDiskHistory();
+        const auto publication = model.publication();
+        const auto& ts = publication->timestamps;
+        const auto& readHist = publication->totalReadHistory;
+        const auto& writeHist = publication->totalWriteHistory;
+        const auto& perDisk = publication->perDiskHistory;
         benchmark::DoNotOptimize(ts.data());
         benchmark::DoNotOptimize(readHist.data());
         benchmark::DoNotOptimize(writeHist.data());
@@ -225,8 +227,7 @@ static void BM_StorageModel_HistoryCopyOverhead(benchmark::State& state)
     }
 
     // Report actual history depth
-    auto ts = model.historyTimestamps();
-    state.counters["history_size"] = benchmark::Counter(static_cast<double>(ts.size()));
+    state.counters["history_size"] = benchmark::Counter(static_cast<double>(model.publication()->timestamps.size()));
     state.counters["sample_count"] = benchmark::Counter(static_cast<double>(sampleCount));
 }
 // 10, 60, 300 samples mirrors realistic history depths at 1 s / 1 min / 5 min of uptime

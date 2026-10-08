@@ -146,7 +146,6 @@ TEST(WindowsNVMLGPUProbeTest, CapabilitiesMatchAvailability)
         EXPECT_FALSE(caps.hasPowerMetrics);
         EXPECT_FALSE(caps.hasClockSpeeds);
         EXPECT_FALSE(caps.hasFanSpeed);
-        EXPECT_FALSE(caps.hasPCIeMetrics);
         EXPECT_FALSE(caps.hasPerProcessMetrics);
         EXPECT_FALSE(caps.supportsMultiGPU);
     }
@@ -156,9 +155,6 @@ TEST(WindowsNVMLGPUProbeTest, CapabilitiesMatchAvailability)
         EXPECT_TRUE(caps.hasPowerMetrics);
         EXPECT_TRUE(caps.hasClockSpeeds);
         EXPECT_TRUE(caps.hasFanSpeed);
-        // NVML only exposes PCIe throughput as rates, not the cumulative counters
-        // GPUTypes.h expects, so this probe deliberately reports the capability as false.
-        EXPECT_FALSE(caps.hasPCIeMetrics);
         EXPECT_TRUE(caps.supportsMultiGPU);
     }
 }
@@ -743,7 +739,6 @@ TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersPopulatesAllFieldsOnSuccess)
     d.powerMilliwatts = 220000;
     d.powerLimitMilliwatts = 320000;
     d.gpuClockMhz = 1980;
-    d.memClockMhz = 9500;
     d.utilizationGpu = 55;
     d.fanPercent = 60;
 
@@ -760,7 +755,6 @@ TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersPopulatesAllFieldsOnSuccess)
     EXPECT_DOUBLE_EQ(c.powerDrawWatts, 220.0);
     EXPECT_DOUBLE_EQ(c.powerLimitWatts, 320.0);
     EXPECT_EQ(c.gpuClockMHz, 1980U);
-    EXPECT_EQ(c.memoryClockMHz, 9500U);
     EXPECT_DOUBLE_EQ(c.utilizationPercent, 55.0);
     EXPECT_EQ(c.fanSpeedRaw, 60U);
     EXPECT_EQ(c.fanSpeedMaxRaw, 100U);

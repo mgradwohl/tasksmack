@@ -33,7 +33,6 @@ struct RenderContext
 
     // History configuration
     double maxHistorySeconds = 300.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
 
     // Refresh interval for smoothing alpha calculation

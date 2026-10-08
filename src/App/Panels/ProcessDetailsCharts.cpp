@@ -113,7 +113,7 @@ struct ChartTimeAxis
     axis.alignedCount = history.size();
     axis.nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
     const auto timestamps = tailSpan(history.timestamps(), axis.alignedCount);
-    axis.axisConfig = makeTimeAxisConfig(timestamps, maxHistorySeconds, 0.0);
+    axis.axisConfig = makeTimeAxisConfig(maxHistorySeconds);
     axis.timeData = frameTimeAxis(timestamps, axis.alignedCount, axis.nowSeconds);
     return axis;
 }
@@ -584,7 +584,7 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
 
         if (const auto idx = hoveredSampleIndex(axis.timeData, alignedCount))
         {
-            // Total in its line's colour, not progressColor, which matched nothing on the chart.
+            // Total in its line's colour, not a usage-threshold colour, which matched nothing on the chart.
             const std::array rows{
                 UI::Widgets::TooltipRow{
                     .label = CPU_TOTAL_LABEL, .color = theme.scheme().chartCpuTotal, .value = UI::Format::percentOneDecimal(cpuData[*idx])},

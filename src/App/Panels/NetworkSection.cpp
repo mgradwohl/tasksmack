@@ -78,7 +78,6 @@ void renderDiskIOSection(RenderContext& ctx)
         .publication = ctx.storagePublication,
         .chartDataGeneration = ctx.chartDataGeneration,
         .maxHistorySeconds = ctx.maxHistorySeconds,
-        .historyScrollSeconds = ctx.historyScrollSeconds,
         .lastDeltaSeconds = ctx.lastDeltaSeconds,
         .refreshInterval = ctx.refreshInterval,
         .smoothedReadBytesPerSec = ctx.smoothedDiskReadBytesPerSec,
@@ -275,8 +274,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         showingInterface && ifaceRxIt != ctx.systemPublication->perInterfaceRxHistory.end() ? ifaceRxIt->second : emptyHistory;
 
     // Always use default axis config even with no data
-    const auto axis = aligned > 0 ? makeTimeAxisConfig(netTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
-                                  : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+    const auto axis = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
     // Views into the published history, not per-frame copies of it (#1018).
     std::span<const double> netTimes;

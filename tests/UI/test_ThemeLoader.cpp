@@ -46,11 +46,6 @@ constexpr const char* k_FullThemeTomlBody = R"(
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
 
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
-
 [semantic]
 text_primary = "#FFFFFF"
 text_disabled = "#808080"
@@ -782,11 +777,6 @@ description = "A complete theme"
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
 
-[progress]
-low = "#00FF00"
-medium = "#FFFF00"
-high = "#FF0000"
-
 [semantic]
 text_primary = "#FFFFFF"
 text_disabled = "#808080"
@@ -924,11 +914,6 @@ modal_window_dim_background = "#0000004D"
     // Check that semantic text_primary was parsed correctly
     expectColorNear(theme->textPrimary, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
 
-    // Check progress colors
-    expectColorNear(theme->progressLow, ImVec4(0.0F, 1.0F, 0.0F, 1.0F));    // #00FF00
-    expectColorNear(theme->progressMedium, ImVec4(1.0F, 1.0F, 0.0F, 1.0F)); // #FFFF00
-    expectColorNear(theme->progressHigh, ImVec4(1.0F, 0.0F, 0.0F, 1.0F));   // #FF0000
-
     // Check I/O chart colors (read vs write must be distinct)
     // #E74856 = (231/255, 72/255, 86/255, 1.0)
     expectColorNear(theme->chartIo, ImVec4(0xE7 / 255.0F, 0x48 / 255.0F, 0x56 / 255.0F, 1.0F));
@@ -966,11 +951,6 @@ name = "Array Colors"
 
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#10893E"
-medium = "#FFB900"
-high = "#E74856"
 
 [semantic]
 text_primary = "#FFFFFF"
@@ -1122,14 +1102,14 @@ TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingMetaSection_NameIsEmpty)
     // No [meta] section → name stays default-constructed (empty)
     EXPECT_TRUE(theme->name.empty());
     // Colors should still parse correctly from the rest of the file
-    expectColorNear(theme->progressLow, ImVec4(0.0F, 1.0F, 0.0F, 1.0F));
+    expectColorNear(theme->textPrimary, ImVec4(1.0F, 1.0F, 1.0F, 1.0F)); // #FFFFFF
 }
 
 // ========== Missing Required Color Keys Tests ==========
 
 TEST_F(ThemeLoaderDiscoveryTest, LoadTheme_MissingRequiredColors_FallsBackToErrorColor)
 {
-    // A TOML file with [meta] and [charts] but missing required progress/semantic/status/etc.
+    // A TOML file with [meta] and [charts] but missing required semantic/status/etc.
     // Missing required keys (those without explicit C++ fallbacks) → errorColor (magenta).
     createThemeFile("sparse-theme.toml", R"(
 [meta]
@@ -1157,9 +1137,9 @@ idle = "#808080"
 
     // Required colors that are absent without a default should be errorColor (magenta)
     const ImVec4 magenta{1.0F, 0.0F, 1.0F, 1.0F};
-    expectColorNear(theme->progressLow, magenta);
-    expectColorNear(theme->progressMedium, magenta);
-    expectColorNear(theme->progressHigh, magenta);
+    expectColorNear(theme->textError, magenta);
+    expectColorNear(theme->textWarning, magenta);
+    expectColorNear(theme->textSuccess, magenta);
 
     // Optional colors with explicit C++ defaults should NOT be magenta
     // io_write falls back to chartMemory (#10893E = 16/255, 137/255, 62/255)
@@ -1179,15 +1159,10 @@ name = "Invalid Color Theme"
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
 
-[progress]
-low = "not-a-color"
-medium = "#FFFF00"
-high = "#FF0000"
-
 [semantic]
 text_primary = "#FFFFFF"
 text_disabled = "#808080"
-text_muted = "#CCCCCC"
+text_muted = "not-a-color"
 text_error = "#FF0000"
 text_warning = "#FFA500"
 text_success = "#00FF00"
@@ -1319,11 +1294,11 @@ modal_window_dim_background = "#0000004D"
     EXPECT_EQ(theme->name, "Invalid Color Theme");
 
     // The invalid color "not-a-color" should produce magenta error color
-    expectColorNear(theme->progressLow, ImVec4(1.0F, 0.0F, 1.0F, 1.0F));
+    expectColorNear(theme->textMuted, ImVec4(1.0F, 0.0F, 1.0F, 1.0F));
 
     // Valid entries should parse correctly
-    expectColorNear(theme->progressMedium, ImVec4(1.0F, 1.0F, 0.0F, 1.0F)); // #FFFF00
-    expectColorNear(theme->progressHigh, ImVec4(1.0F, 0.0F, 0.0F, 1.0F));   // #FF0000
+    expectColorNear(theme->textPrimary, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));                             // #FFFFFF
+    expectColorNear(theme->textDisabled, ImVec4(0x80 / 255.0F, 0x80 / 255.0F, 0x80 / 255.0F, 1.0F)); // #808080
 }
 
 // ========== Duplicate Theme Names Tests ==========
@@ -1408,11 +1383,6 @@ name = "No IO Write"
 
 [accents]
 colors = ["#0078D4", "#E74856", "#10893E", "#8E8CD8", "#F7630C", "#00B7C3", "#FFB900", "#E3008C"]
-
-[progress]
-low = "#10893E"
-medium = "#FFB900"
-high = "#E74856"
 
 [semantic]
 text_primary = "#FFFFFF"

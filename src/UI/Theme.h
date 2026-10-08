@@ -45,11 +45,6 @@ struct ColorScheme
     // Accent colors for line charts, legends, etc. (8 colors)
     std::array<ImVec4, 8> accents{};
 
-    // Progress bar colors (low, medium, high)
-    ImVec4 progressLow;    // 0-50%
-    ImVec4 progressMedium; // 50-80%
-    ImVec4 progressHigh;   // 80-100%
-
     // Semantic UI colors
     ImVec4 textPrimary;  // Primary text color
     ImVec4 textDisabled; // Disabled text color
@@ -348,9 +343,6 @@ class Theme
 
     /// Get theme name
     [[nodiscard]] auto themeName(std::size_t index) const -> std::string_view;
-
-    /// Get progress bar color based on percent
-    [[nodiscard]] auto progressColor(double percent) const -> ImVec4;
 
     /// Get accent color by index (wraps around)
     [[nodiscard]] auto accentColor(std::size_t index) const -> ImVec4;

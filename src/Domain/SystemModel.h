@@ -39,7 +39,6 @@ struct SystemPublication
     HistoryView<float> memoryHistory;
     HistoryView<float> memoryCachedHistory;
     HistoryView<float> swapHistory;
-    HistoryView<float> powerHistory;
     HistoryView<float> batteryChargeHistory;
     HistoryView<float> netRxHistory;
     HistoryView<float> netTxHistory;
@@ -113,25 +112,6 @@ class SystemModel : public ISamplable
     /// Thread-safe; takes effect from the next sample.
     void setMaxSaneNetworkRate(double bytesPerSecond) noexcept;
 
-    // History access (read-only copies)
-
-    [[nodiscard]] std::vector<float> cpuHistory() const;
-    [[nodiscard]] std::vector<float> cpuUserHistory() const;
-    [[nodiscard]] std::vector<float> cpuSystemHistory() const;
-    [[nodiscard]] std::vector<float> cpuIowaitHistory() const;
-    [[nodiscard]] std::vector<float> cpuIdleHistory() const;
-    [[nodiscard]] std::vector<float> memoryHistory() const;
-    [[nodiscard]] std::vector<float> swapHistory() const;
-    [[nodiscard]] std::vector<float> memoryCachedHistory() const;
-    [[nodiscard]] std::vector<float> powerHistory() const;
-    [[nodiscard]] std::vector<float> batteryChargeHistory() const;
-    [[nodiscard]] std::vector<float> netRxHistory() const;
-    [[nodiscard]] std::vector<float> netTxHistory() const;
-    [[nodiscard]] std::vector<float> netRxHistoryForInterface(const std::string& interfaceName) const;
-    [[nodiscard]] std::vector<float> netTxHistoryForInterface(const std::string& interfaceName) const;
-    [[nodiscard]] std::vector<std::vector<float>> perCoreHistory() const;
-    [[nodiscard]] std::vector<double> timestamps() const;
-
   private:
     std::unique_ptr<Platform::ISystemProbe> m_Probe;
     std::unique_ptr<Platform::IPowerProbe> m_PowerProbe;
@@ -160,7 +140,6 @@ class SystemModel : public ISamplable
     SharedHistoryBuffer<float> m_MemoryHistory;
     SharedHistoryBuffer<float> m_MemoryCachedHistory;
     SharedHistoryBuffer<float> m_SwapHistory;
-    SharedHistoryBuffer<float> m_PowerHistory;
     SharedHistoryBuffer<float> m_BatteryChargeHistory;
     SharedHistoryBuffer<float> m_NetRxHistory;
     SharedHistoryBuffer<float> m_NetTxHistory;
@@ -191,7 +170,7 @@ class SystemModel : public ISamplable
     // Thread safety. m_WriterMutex serialises the writers from the counter processing through the
     // publication commit, so generations are numbered and committed in order; readers never take
     // it, and it is taken before m_Mutex, never while holding it. m_Mutex guards the state above for
-    // snapshot() and the per-field accessors: writers mutate it exclusively, and publish() reads it
+    // snapshot() and maxHistorySeconds(): writers mutate it exclusively, and publish() reads it
     // under a shared lock.
     std::mutex m_WriterMutex;
     mutable std::shared_mutex m_Mutex;

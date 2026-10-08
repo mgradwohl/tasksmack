@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <span>
 #include <string>
@@ -165,24 +166,6 @@ class GPUModel : public ISamplable
     // Get current snapshots (thread-safe)
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
-    // Get flattened history arrays for specific GPU (for chart plotting)
-    [[nodiscard]] std::vector<float> utilizationHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> memoryPercentHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> gpuClockHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> encoderHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> decoderHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> temperatureHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> powerHistory(std::string_view gpuId) const;
-    [[nodiscard]] std::vector<float> fanSpeedHistory(std::string_view gpuId) const;
-
-    // Get global timestamps for all GPU history samples (one per refresh call)
-    [[nodiscard]] std::vector<double> historyTimestamps() const;
-
-    // Get per-GPU timestamps: one per refresh since the GPU was first seen, including refreshes it
-    // was missing from, whose history entries are NaN gaps (#1146). Length matches the per-GPU
-    // history vectors (utilizationHistory, etc.).
-    [[nodiscard]] std::vector<double> historyTimestamps(std::string_view gpuId) const;
-
     // GPU info: enumerated at construction, and again whenever the probe's rescanGPUs() reports a
     // change (a GPU added, removed or lost, or a sleeping adapter's sensors now discoverable) (#1116,
     // #1289). Each refresh's publication carries the current list.
@@ -291,7 +274,7 @@ class GPUModel : public ISamplable
         float fanSpeed = 0.0F;
         bool sampled = true; // false for a placeholder
     };
-    /// What @p sample's history records: the same values the per-field accessors return.
+    /// What @p sample's history records: the same values the publication carries.
     [[nodiscard]] static HistorySample historySample(const GPUSnapshot& sample) noexcept;
     /// The placeholder recorded at @p nowSeconds for a GPU missing from a read (#1146): every reading NaN.
     [[nodiscard]] static HistorySample placeholderSample(double nowSeconds) noexcept;
@@ -343,8 +326,9 @@ class GPUModel : public ISamplable
     // History per GPU, from its first sample: a refresh it was missing from has a placeholder (#1146).
     HistoryMap m_Histories;
 
-    // One timestamp per refresh (the per-GPU series carry their own).
-    SharedHistoryBuffer<double> m_HistoryTimestamps{Sampling::historyCapacityForSeconds(Sampling::HISTORY_SECONDS_DEFAULT)};
+    // When the newest refresh that appended to the history ran (the per-GPU series carry their own
+    // timestamps): setMaxHistorySeconds() trims to the window ending there. Empty before the first.
+    std::optional<double> m_LatestRefreshSeconds;
 
     // History window; ring capacities are sized from it by applyHistoryCapacity().
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT;
@@ -364,9 +348,9 @@ class GPUModel : public ISamplable
     // committed in order. Readers never take it, and it is never taken while holding m_Mutex.
     // m_PrevCounters and m_PrevSampleTime are writer-only state under it.
     std::mutex m_WriterMutex;
-    // Guards the state above for the per-field accessors: writers mutate it exclusively, and
-    // publish() reads it under a shared lock, so neither publication() nor those accessors wait on
-    // a publication's copy.
+    // Guards the state above for the snapshot and GPU-info accessors: writers mutate it exclusively,
+    // and publish() reads it under a shared lock, so neither publication() nor those accessors wait
+    // on a publication's copy.
     mutable std::shared_mutex m_Mutex;
     PublicationSlot<GPUPublication> m_Publication;
     std::uint64_t m_PublicationVersion = 0; // guarded by m_WriterMutex; the last committed generation
@@ -375,8 +359,6 @@ class GPUModel : public ISamplable
     [[nodiscard]] GPUSnapshot
     computeSnapshot(const Platform::GPUCounters& current, const Platform::GPUCounters* previous, double timeDeltaSeconds) const;
 
-    /// A copy of one series of @p gpuId's history; empty for an unknown GPU.
-    template<typename T> [[nodiscard]] std::vector<T> copySeries(std::string_view gpuId, SharedHistoryBuffer<T> GPUSeries::* series) const;
     /// Build the next generation from the history state under a shared lock, then commit it.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();

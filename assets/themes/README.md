@@ -56,15 +56,6 @@ colors = [
 ]
 ```
 
-### `[progress]` - Progress Bar Colors
-
-```toml
-[progress]
-low = "#00E676"       # 0-50% (healthy)
-medium = "#FFB300"    # 50-80% (caution)
-high = "#E53935"      # 80-100% (critical)
-```
-
 ### `[semantic]` - Text Colors
 
 ```toml
@@ -141,7 +132,7 @@ theme and on every screen, and a unit test holds them to it:
 - Disk read orange, disk write brown/olive (duller than read).
 - Network send amber, receive cyan/teal.
 - GPU utilisation magenta; power yellow, the same colour on every screen.
-- Load bars (`[progress]`) run green, amber, red.
+- Severity reads green, amber, red: `text_success`, `text_warning` and `text_error` keep those hues, in that order.
 - The status colours (`text_error`, `text_warning`, `text_success`, `status.running`) are kept for
   state and messages: no data series uses them, or a colour within CIEDE2000 10 of them.
 

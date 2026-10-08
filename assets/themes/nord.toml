@@ -23,11 +23,6 @@ colors = [
     "#6D90BC",  # Nord Frost 4 (deep blue)
 ]
 
-[progress]
-low = "#A3BE8C"       # 0-50%   - Aurora Green (healthy)
-medium = "#F1CF88"    # 50-80%  - Aurora Yellow (caution)
-high = "#D2727A"      # 80-100% - Aurora Red (critical)
-
 [semantic]
 text_primary = "#ECEFF4"
 text_disabled = "#D8DEE9"
