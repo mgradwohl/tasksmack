@@ -207,6 +207,7 @@ class BenchShTest(unittest.TestCase):
         cwd: Path | None = None,
         path_first: Path | None = None,
         cdpath: Path | None = None,
+        env_extra: dict[str, str] | None = None,
     ):
         out_dir = self.root / name
         env = dict(os.environ)
@@ -226,6 +227,7 @@ class BenchShTest(unittest.TestCase):
             LC_ALL="C.UTF-8",
             PYTHONUTF8="1",
         )
+        env.update(env_extra or {})
         if cdpath is not None:
             # CDPATH is ':'-separated and not converted by Git Bash, so a drive-letter path is given
             # in its /c/... form.
@@ -330,34 +332,51 @@ class BenchShTest(unittest.TestCase):
         # #1445 review: '-' is no identity-token boundary, so a preset named after the user or the
         # machine survived as <preset>-<timestamp>.json in the file names, the manifest's
         # result_file and --benchmark_out. The names are built from the scrubbed preset instead.
+        # The file names are checked for the names as plain substrings; the manifest with the
+        # field-aware find_identity_leaks(), which skips the fields the writer keeps on purpose
+        # (#1445 review): a user named Release keeps the Release build type, a host named Linux
+        # the OS name. The "release" case runs as a user named Release (getpass reads USER and
+        # LOGNAME first) to prove it.
         user = getpass.getuser()
-        host = socket.gethostname().split(".")[0]
-        identities = [name for name in (user, host, socket.gethostname()) if len(name) >= 3]
-
-        def strings(value):
-            if isinstance(value, dict):
-                for item in value.values():
-                    yield from strings(item)
-            elif isinstance(value, list):
-                for item in value:
-                    yield from strings(item)
-            elif isinstance(value, str):
-                yield value
-
-        for kind, preset in (("user", user), ("host", host)):
+        hosts = [socket.gethostname(), socket.gethostname().split(".")[0]]
+        as_release = {name: "Release" for name in ("LOGNAME", "USER", "LNAME", "USERNAME")}
+        for kind, preset, identities, env_extra in (
+            ("user", user, [user], None),
+            ("host", hosts[1], hosts, None),
+            ("user", "Release", ["Release"], as_release),
+        ):
+            identities = [name for name in identities if len(name) >= 3]
             if len(preset) < 3 or preset.lower() in ("user", "host"):
                 continue
-            with self.subTest(kind=kind):
-                code, output, results, manifests = self.run_bench(f"preset-{kind}", 0, leading=(preset, "--"))
+            with self.subTest(preset=preset):
+                code, output, results, manifests = self.run_bench(
+                    f"preset-{preset}", 0, leading=(preset, "--"), env_extra=env_extra
+                )
                 self.assertEqual(code, 0, output)
                 self.assertEqual((len(results), len(manifests)), (1, 1), output)
                 manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
                 self.assertEqual(manifest["preset"], f"<{kind}>")
                 self.assertEqual(manifest["result_file"], results[0].name)
                 self.assertTrue(results[0].name.startswith(f"{kind}-"), results[0].name)
-                for text in [results[0].name, manifests[0].name, *strings(manifest)]:
+                for name in (results[0].name, manifests[0].name):
                     for identity in identities:
-                        self.assertNotIn(identity.lower(), text.lower(), f"{identity!r} in {text!r}")
+                        self.assertNotIn(identity.lower(), name.lower(), f"{identity!r} in the file name {name!r}")
+                self.assertEqual(find_identity_leaks(manifest, identities, []), [])
+                if preset == "Release":
+                    self.assertEqual(manifest["build"]["build_type"], "Release")
+
+    def test_a_non_ascii_preset_with_a_non_utf8_python_stdout(self):
+        # #1445 review: with a CP1252 stdout, writing the preset part of the file names as text
+        # raised UnicodeEncodeError, and bench.sh stopped under set -e before the benchmark ran.
+        preset = "benchmark-\u65e5\u672c\u8a9e"
+        code, output, results, manifests = self.run_bench(
+            "cp1252", 0, leading=(preset, "--"), env_extra={"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual((len(results), len(manifests)), (1, 1), output)
+        self.assertTrue(results[0].name.startswith(preset + "-"), results[0].name)
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual((manifest["preset"], manifest["result_file"]), (preset, results[0].name))
 
     def test_this_machines_host_name_in_the_args_does_not_survive(self):
         host = socket.gethostname()

@@ -487,6 +487,9 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($relativeBuild.build_type -eq 'Release' -and $relativeBuild.compiler_version -eq '22.1.8') "A relative binary must find its build tree: $($relativeBuild | ConvertTo-Json -Compress)"
 
     # ── #1445 review: a preset named after the user or the machine reaches no name ─────────────
+    # The file names are checked for the names as plain substrings; the manifest with the
+    # field-aware Find-IdentityLeaks, which skips the fields the writer keeps on purpose (#1445
+    # review): a user named Release keeps the Release build type, a host named Windows the OS name.
     $identities = @([Environment]::UserName, [Environment]::MachineName, [Environment]::MachineName.Split('.')[0]) | Where-Object { $_.Length -ge 3 }
     function Get-JsonStrings($Node) {
         if ($Node -is [string]) { $Node }
@@ -498,11 +501,18 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Assert-True ($run.ExitCode -eq 0 -and $run.Result.Count -eq 1 -and $run.Manifest.Count -eq 1) "Preset-$kind run failed:`n$($run.Log)"
         $presetManifest = Get-Content -LiteralPath $run.Manifest[0].FullName -Raw | ConvertFrom-Json
         Assert-True ($presetManifest.preset -ceq "<$kind>" -and $presetManifest.result_file -ceq $run.Result[0].Name -and $run.Result[0].Name.StartsWith("$kind-", [StringComparison]::Ordinal)) "Preset named after the ${kind}: preset=$($presetManifest.preset) result_file=$($presetManifest.result_file) file=$($run.Result[0].Name)"
-        foreach ($text in @($run.Result[0].Name, $run.Manifest[0].Name) + @(Get-JsonStrings $presetManifest)) {
+        foreach ($name in @($run.Result[0].Name, $run.Manifest[0].Name)) {
             foreach ($identity in $identities) {
-                Assert-True ($text.IndexOf($identity, [StringComparison]::OrdinalIgnoreCase) -lt 0) "'$identity' in '$text' (preset named after the $kind)"
+                Assert-True ($name.IndexOf($identity, [StringComparison]::OrdinalIgnoreCase) -lt 0) "'$identity' in the file name '$name' (preset named after the $kind)"
             }
         }
+        $presetLeaks = Find-IdentityLeaks $presetManifest -Tokens $identities -Paths @()
+        Assert-True ($presetLeaks.Count -eq 0) "Preset named after the ${kind}: $($presetLeaks -join '; ')"
+        # A user named Release, a host named Windows: the field-aware check passes on the fields
+        # the writer keeps on purpose, which a plain scan of every string would flag.
+        $kept = Find-IdentityLeaks $presetManifest -Tokens @('Release', 'Windows') -Paths @()
+        Assert-True ($kept.Count -eq 0) "Kept categorical fields reported as leaks: $($kept -join '; ')"
+        Assert-True (@(Get-JsonStrings $presetManifest) -ccontains 'Release') 'The fixture keeps a Release build type, so the case above means something'
     }
 
     # ── #1445 review: a bare -BenchmarkBinary is the file in the location, not one on PATH ─────

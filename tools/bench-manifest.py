@@ -518,8 +518,12 @@ def main() -> int:
     options = parser.parse_args()
     if options.preset_stem is not None:
         _, user, hosts = identity_strings()
-        # No newline: on Windows it would reach bash's command substitution as "\r\n".
-        sys.stdout.write(preset_file_stem(hide_name_identity(options.preset_stem, user, hosts)))
+        # UTF-8 bytes whatever stdout's encoding (a CP1252 console would raise on a non-ASCII
+        # preset, and bench.sh captures this under set -e), and no newline: on Windows it would
+        # reach bash's command substitution as "\r\n". The only output bench.sh captures.
+        sys.stdout.flush()
+        sys.stdout.buffer.write(preset_file_stem(hide_name_identity(options.preset_stem, user, hosts)).encode("utf-8"))
+        sys.stdout.buffer.flush()
         return 0
     if options.manifest is None:
         parser.error("--manifest is required")
