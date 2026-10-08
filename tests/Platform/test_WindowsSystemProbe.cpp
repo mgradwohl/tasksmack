@@ -6,6 +6,7 @@
 
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
 
 #include <gtest/gtest.h>
@@ -158,20 +159,20 @@ namespace
 /// A system DLL this process has not loaded, loaded now so its release can be observed (it is unloaded
 /// again exactly when its only reference is freed); empty if every candidate is already loaded. The
 /// fakes never call into it: it only stands in for pdh.dll's module, which the test process may hold.
-[[nodiscard]] std::pair<const wchar_t*, UniqueModule> loadUnusedSystemDll()
+[[nodiscard]] std::pair<const wchar_t*, Windows::UniqueModule> loadUnusedSystemDll()
 {
     for (const wchar_t* name : {L"wtsapi32.dll", L"msimg32.dll", L"dciman32.dll", L"mprapi.dll", L"pdh.dll"})
     {
         if (GetModuleHandleW(name) == nullptr)
         {
-            UniqueModule module(LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
+            Windows::UniqueModule module(LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
             if (module != nullptr)
             {
                 return {name, std::move(module)};
             }
         }
     }
-    return {nullptr, UniqueModule{}};
+    return {nullptr, Windows::UniqueModule{}};
 }
 } // namespace
 

@@ -747,13 +747,94 @@ pwsh tools/bench.ps1 win-benchmark
 Both scripts exit non-zero when the benchmark binary fails or crashes (#1423). A partial result
 file is still redacted (or deleted when it is too truncated to parse), so it never keeps the host
 name, but it is not reported as usable; output that cannot be redacted after a successful exit is
-deleted too, and the script fails. The scripts own the output file, so an extra `--benchmark_out`
-or `--benchmark_out_format` is refused. For the script tests (`tools/test-bench.ps1`,
-`tests/tools/test_bench_sh.py`), `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and
-`bench.sh`'s `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` point them at a stub binary and a
-scratch directory.
+deleted too, and the script fails.
 
 ### Benchmark Output
+
+Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`. The result name is claimed
+atomically before the benchmark starts, so a run started in the same second as another --
+concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than overwrite it. A
+user or host name in the preset (standing alone between separators, the preset's own `-`, `.`
+and `_` included) becomes `user` / `host` in both file names, and `<user>` / `<host>` in the
+manifest's `preset`, so no file name or manifest field carries it:
+
+- `<preset>-<timestamp>.json` -- Google Benchmark's JSON with **every repetition** (`run_type:
+  "iteration"`) plus the `mean`/`median`/`stddev`/`cv` aggregate rows. The scripts deliberately do
+  not pass `--benchmark_report_aggregates_only`, so distributions can be re-analysed; only the
+  console shows aggregates alone. `tools/check-benchmark-regression.py` compares the `median`
+  rows. `context.host_name` is redacted and `context.executable` reduced to its file name.
+- `<preset>-<timestamp>.manifest.json` -- a provenance sidecar (#1424) with the same field names
+  from both scripts: `git` (commit, branch -- a user or host name in it, standing alone between
+  separators that include the branch's own `-`, `.`, `_` and `/`, becomes `<user>` / `<host>`,
+  so `feature/benchuser-fix` is recorded as `feature/<user>-fix` -- and dirty flag for tracked
+  files; no diff), `binary` (file
+  name and SHA-256), `build` (build type, generator, compiler name/id/version, IPO and the C++
+  flags' hashes, read from the build tree's `CMakeCache.txt` -- the nearest one above the binary,
+  so a multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type; the
+  build type is the `config` of the build information described below when it has one, so a tree
+  reconfigured from Release to Debug without a rebuild still reports its Release binary -- the
+  compiler id/version from the `CMakeFiles/<version>/` of the cache's own CMake version, or
+  unknown; `ipo` is what that configuration of the `TaskSmackBenchmarks` target is built with,
+  read from the `TaskSmackBenchmarks.buildinfo.json` that `benchmarks/CMakeLists.txt` generates
+  for each configuration and copies next to the binary whenever it links, so it always describes
+  that binary (`ipo_source` `buildinfo`) -- the cached
+  `CMAKE_INTERPROCEDURAL_OPTIMIZATION` can say `OFF` while `TASKSMACK_ENABLE_IPO` turns IPO on,
+  and a multi-config generator can set it per configuration -- with the cached
+  `CMAKE_INTERPROCEDURAL_OPTIMIZATION` and then `TASKSMACK_ENABLE_IPO` as fallbacks for older
+  build trees, `ipo_source` naming the entry used), `benchmark` (the arguments passed,
+  allowlisted or hashed as below), `exit_code`, and
+  `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
+  architecture).
+  - The benchmark arguments are recorded as written only when they are Google Benchmark options
+    whose values are safe by construction: numbers (`--benchmark_repetitions`,
+    `--benchmark_min_time`, `--benchmark_min_warmup_time`, `--v`), booleans (the aggregates,
+    random-interleaving, tabular-counters, dry-run and list-tests options, bare or with a value),
+    enumerations (`--benchmark_time_unit`, `--benchmark_format`, `--benchmark_out_format`,
+    `--benchmark_color`) and the `--benchmark_filter` regex. The script's own `--benchmark_out`
+    keeps only its file name. A value that fails its pattern, and every other argument
+    (`--benchmark_context=...`, unknown options), is recorded as `<name>=sha256:<hex>` -- a hash of
+    the raw value -- or `sha256:<hex>` of the whole argument when it has no `--name=value` form. As
+    with the flags, runs stay comparable on their arguments without the manifest recording the
+    paths or other free text in them.
+  - The compiler flags are recorded only as `build.cxx_flags_sha256` and
+    `build.cxx_flags_config_sha256`: SHA-256 of the `CMAKE_CXX_FLAGS` and
+    `CMAKE_CXX_FLAGS_<CONFIG>` values as CMake reads them from `CMakeCache.txt` (UTF-8, no other
+    normalization; `<CONFIG>` is the build type upper-cased as CMake does, so a custom type such as
+    `ASan-UBSan` is found; `null` when the entry is absent, the hash of the empty string when it is
+    present but empty). `benchmarks/CMakeLists.txt` computes the same hashes at configure time
+    into the build information copied next to the binary when it links, and the writers prefer
+    those (`build.cxx_flags_source` `buildinfo`), so flags reconfigured without a rebuild are not
+    reported for the old binary; a tree without them is read from the cache (`cache`). Two runs
+    can be compared on them -- equal hashes, equal flags -- without the
+    manifest carrying the include directories, profile files and prefix maps the flags name,
+    which sit under user profiles and checkouts.
+  - It records no host name, user name, user-profile path, process list or other command line; a
+    final pass over the free-form fields (args, branch, compiler file name, preset and
+    result names, CPU model) replaces any remaining home-directory prefix with `<home>` --
+    whatever its length, so a home of `/ab` too; never a root or a bare drive -- and the
+    host name (short and FQDN) and user name (3+ characters, standing alone between separators)
+    with `<host>` and `<user>`. Validated categorical fields (OS name/version, architecture,
+    compiler id/version, generator, the flag hashes, a standard build type -- Debug, Release, RelWithDebInfo,
+    MinSizeRel --, schema fields, numbers and booleans) are left alone, so a host named `Linux` or
+    a user named `clang` cannot rewrite them; a custom build type is scrubbed, its own `-`, `.`
+    and `_` bounding a name too (`ASan-benchuser` becomes `ASan-<user>`). The OS version is
+    still checked for a user or host name between its own `-`, `.` and `_`, as a Linux kernel
+    built with `CONFIG_LOCALVERSION` reports one (`6.8.0-benchhost` becomes `6.8.0-<host>`, in
+    `machine.label` too). Outside a git
+    checkout, inside another repository's tree (a source archive unpacked in a checkout), or
+    without git, the `git` fields are all `null`. The manifest is written before the benchmark
+    starts (`exit_code` `null`) and only the exit code is added afterwards, so the git state, build
+    configuration and binary hash describe what was launched. `bench.sh` writes it with
+    `tools/bench-manifest.py`.
+
+For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s
+`TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables point the scripts at a
+stub binary and a scratch directory (`tools/test-bench.ps1`, `tests/tools/test_bench_sh.py`).
+A relative binary path, a bare name included, is relative to the current directory (the
+PowerShell location for `bench.ps1`) and is never looked up on `PATH`: the file that is checked
+and hashed is the one that runs. They are also the only way to move the output: an extra `--benchmark_out` or
+`--benchmark_out_format` argument is refused before the benchmark starts, because the redaction
+and the manifest only look at the file the script chose.
 
 By default, benchmarks output to console. You can also:
 

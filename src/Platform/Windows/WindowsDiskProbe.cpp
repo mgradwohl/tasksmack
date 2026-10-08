@@ -26,6 +26,7 @@
 
 #include "WinString.h"
 #include "WindowsDiskProbeMath.h"
+#include "WindowsHandles.h"
 
 #include <cstdint>
 #include <ratio>
@@ -40,54 +41,17 @@ namespace Platform
 // Pimpl struct containing Windows-specific types
 struct WindowsDiskProbe::Impl
 {
-    struct DiskHandle
+    /// One physical disk opened for IOCTL_DISK_PERFORMANCE. The UniqueHandle closes it on stack
+    /// unwind (e.g. if name conversion or vector growth throws mid-enumeration) as well as on normal
+    /// teardown, so a failure partway through enumerating disks can't leak this handle or any earlier
+    /// ones already stored in Impl::disks.
+    struct OpenDisk
     {
-        std::string instanceName;             // e.g. "0 C:" - kept for stable UI display
-        HANDLE handle = INVALID_HANDLE_VALUE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - Win32 handle type
-
-        DiskHandle() = default;
-        explicit DiskHandle(HANDLE h) : handle(h)
-        {}
-
-        DiskHandle(const DiskHandle&) = delete;
-        DiskHandle& operator=(const DiskHandle&) = delete;
-
-        DiskHandle(DiskHandle&& other) noexcept
-            : instanceName(std::move(other.instanceName)), handle(std::exchange(other.handle, INVALID_HANDLE_VALUE))
-        {}
-
-        DiskHandle& operator=(DiskHandle&& other) noexcept
-        {
-            if (this != &other)
-            {
-                close();
-                instanceName = std::move(other.instanceName);
-                handle = std::exchange(other.handle, INVALID_HANDLE_VALUE);
-            }
-            return *this;
-        }
-
-        // RAII ownership: closes the handle on stack unwind (e.g. if name conversion or
-        // vector growth throws mid-construction) as well as on normal teardown, so a
-        // failure partway through enumerating disks can't leak this handle or any earlier
-        // ones already stored in Impl::disks.
-        ~DiskHandle()
-        {
-            close();
-        }
-
-      private:
-        void close()
-        {
-            if (handle != INVALID_HANDLE_VALUE)
-            {
-                CloseHandle(handle);
-                handle = INVALID_HANDLE_VALUE;
-            }
-        }
+        std::string instanceName; // e.g. "0 C:" - kept for stable UI display
+        Windows::UniqueHandle handle;
     };
 
-    std::vector<DiskHandle> disks;
+    std::vector<OpenDisk> disks;
 
     // read() runs on the sampler thread and swaps `disks` when it re-enumerates (#1159), while
     // capabilities() can be called from any thread, so it reads this flag rather than `disks`.
@@ -110,18 +74,19 @@ namespace
 {
 
 /// Opens \\.\PhysicalDriveN with query-only access (no admin rights required) and
-/// verifies IOCTL_DISK_PERFORMANCE is usable on it. Returns INVALID_HANDLE_VALUE on
-/// any failure, closing the handle first if it was opened but the probe query failed.
+/// verifies IOCTL_DISK_PERFORMANCE is usable on it. Returns an empty handle on any
+/// failure, closing the handle first if it was opened but the probe query failed.
 /// Disks are re-enumerated periodically, so a drive that cannot be opened warns on its
 /// first failure and logs at debug level until it next succeeds (#1159).
-[[nodiscard]] HANDLE openPhysicalDriveForPerfQuery(int driveIndex, FailureLogLimiter& failures)
+[[nodiscard]] Windows::UniqueHandle openPhysicalDriveForPerfQuery(int driveIndex, FailureLogLimiter& failures)
 {
     const std::wstring devicePath = L"\\\\.\\PhysicalDrive" + std::to_wstring(driveIndex);
-    // Converted before the drive is opened: wideToUtf8 allocates and can throw, and nothing that
-    // can throw may run while the raw handle below is not yet owned by a DiskHandle.
+    // The UTF-8 path, for the failure logs below.
     const std::string path = WinString::wideToUtf8(devicePath);
-    HANDLE handle = CreateFileW(devicePath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
+    // CreateFileW fails with INVALID_HANDLE_VALUE, which UniqueHandle treats as empty.
+    Windows::UniqueHandle handle(
+        CreateFileW(devicePath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
+    if (!handle)
     {
         // Capture GetLastError() before any other call can overwrite it - argument evaluation
         // order is unspecified, so inlining GetLastError() as a call argument risks logging the
@@ -129,20 +94,20 @@ namespace
         const DWORD lastError = GetLastError();
         const auto level = failures.recordFailure(path) ? spdlog::level::warn : spdlog::level::debug;
         spdlog::log(level, "WindowsDiskProbe: CreateFileW failed for {}, GetLastError={}", path, lastError);
-        return INVALID_HANDLE_VALUE;
+        return {};
     }
 
     DISK_PERFORMANCE perf{};
     DWORD bytesReturned = 0;
-    if (DeviceIoControl(handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
+    if (DeviceIoControl(handle.get(), IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
     {
-        // Capture the error and close the handle before the heap-allocating log calls below, so
-        // an allocation failure there can't skip CloseHandle and leak the handle.
+        // Capture the error, then close the handle before logging: the drive isn't usable, so
+        // there is no reason to keep it open while the log call runs.
         const DWORD lastError = GetLastError();
-        CloseHandle(handle);
+        handle.reset();
         const auto level = failures.recordFailure(path) ? spdlog::level::warn : spdlog::level::debug;
         spdlog::log(level, "WindowsDiskProbe: IOCTL_DISK_PERFORMANCE probe failed for {}, GetLastError={}", path, lastError);
-        return INVALID_HANDLE_VALUE;
+        return {};
     }
 
     failures.recordSuccess(path); // Erasing from the set does not allocate, so cannot throw
@@ -157,7 +122,7 @@ namespace
 void WindowsDiskProbe::Impl::enumerate()
 {
     lastEnumeration = std::chrono::steady_clock::now();
-    std::vector<DiskHandle> found;
+    std::vector<OpenDisk> found;
     bool enumerated = false;
 
     // PDH is used only to enumerate PhysicalDisk instance names (which encode the
@@ -218,15 +183,12 @@ void WindowsDiskProbe::Impl::enumerate()
 
                 if (const auto driveIndex = parsePhysicalDriveIndex(instanceName))
                 {
-                    HANDLE handle = openPhysicalDriveForPerfQuery(*driveIndex, openFailures);
-                    if (handle != INVALID_HANDLE_VALUE)
+                    // The handle is owned from the moment it is opened, so the name conversion or
+                    // push_back below throwing closes it on unwind instead of leaking it.
+                    Windows::UniqueHandle handle = openPhysicalDriveForPerfQuery(*driveIndex, openFailures);
+                    if (handle)
                     {
-                        // DiskHandle takes RAII ownership of the handle immediately, before
-                        // the name conversion or push_back below run, so either one throwing
-                        // closes the handle automatically on unwind instead of leaking it.
-                        DiskHandle diskHandle(handle);
-                        diskHandle.instanceName = WinString::wideToUtf8(instanceName);
-                        found.push_back(std::move(diskHandle));
+                        found.push_back(OpenDisk{.instanceName = WinString::wideToUtf8(instanceName), .handle = std::move(handle)});
                     }
                 }
                 else
@@ -262,7 +224,7 @@ void WindowsDiskProbe::Impl::enumerate()
     // instance name starts afresh instead of counting the time it was away as busy (#1108).
     std::erase_if(busyClocks,
                   [this](const auto& entry)
-                  { return std::ranges::none_of(disks, [&](const DiskHandle& disk) { return disk.instanceName == entry.first; }); });
+                  { return std::ranges::none_of(disks, [&](const OpenDisk& disk) { return disk.instanceName == entry.first; }); });
 }
 
 WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
@@ -271,8 +233,8 @@ WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
     spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->disks.size());
 }
 
-// Impl::DiskHandle owns its HANDLE via RAII (closes on destruction), so destroying
-// m_Impl -- and with it the vector<DiskHandle> -- is the single teardown point; no
+// Impl::OpenDisk owns its HANDLE via RAII (closes on destruction), so destroying
+// m_Impl -- and with it the vector<OpenDisk> -- is the single teardown point; no
 // manual CloseHandle loop here, which would otherwise double-close each handle.
 WindowsDiskProbe::~WindowsDiskProbe() = default;
 
@@ -351,7 +313,7 @@ SystemDiskCounters WindowsDiskProbe::readCounters()
         DISK_PERFORMANCE perf{};
         DWORD bytesReturned = 0;
         const BOOL queried =
-            DeviceIoControl(diskHandle.handle, IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr);
+            DeviceIoControl(diskHandle.handle.get(), IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr);
         const DWORD queryError = (queried == 0) ? GetLastError() : ERROR_SUCCESS; // Before any other call
         // This disk's busy-time clock (#1108), taken next to its own IdleTime sample: monotonic, in
         // DISK_PERFORMANCE's 100 ns units. One timestamp for the whole loop let an earlier disk's
