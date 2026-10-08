@@ -164,6 +164,32 @@ struct ModuleDeleter
 /// LoadLibrary's only failure value is null, which unique_ptr never passes to its deleter.
 using UniqueModule = std::unique_ptr<std::remove_pointer_t<HMODULE>, ModuleDeleter>;
 
+/// Closes registry keys RegOpenKeyExW opened, with RegCloseKey (#801). Failure leaves the out-
+/// parameter untouched, so null is "no key"; the predefined roots (HKEY_CURRENT_USER, ...) are never
+/// owned.
+struct RegistryKeyTraits
+{
+    using Type = HKEY;
+
+    [[nodiscard]] static Type invalid() noexcept
+    {
+        return nullptr;
+    }
+
+    [[nodiscard]] static bool isValid(Type key) noexcept
+    {
+        return key != nullptr;
+    }
+
+    static void close(Type key) noexcept
+    {
+        RegCloseKey(key);
+    }
+};
+
+/// An owned, opened registry key.
+using UniqueRegistryKey = UniqueResource<RegistryKeyTraits>;
+
 static_assert(std::is_nothrow_move_constructible_v<UniqueHandle> && std::is_nothrow_move_assignable_v<UniqueHandle>);
 static_assert(std::is_nothrow_move_constructible_v<UniqueModule> && std::is_nothrow_move_assignable_v<UniqueModule>);
 

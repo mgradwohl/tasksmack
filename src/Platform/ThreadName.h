@@ -22,6 +22,8 @@ inline constexpr std::string_view SAMPLER_THREAD_NAME = "ts-sampler";
 inline constexpr std::string_view PROCESS_SAMPLER_THREAD_NAME = "ts-sampler-proc";
 inline constexpr std::string_view SYSTEM_SAMPLER_THREAD_NAME = "ts-sampler-sys";
 inline constexpr std::string_view SERVICE_SAMPLER_THREAD_NAME = "ts-sampler-svc";
+/// The Startup tab's sampler (#801), running only while the tab is shown.
+inline constexpr std::string_view STARTUP_SAMPLER_THREAD_NAME = "ts-sampler-auto";
 /// The worker that runs one Process Details Connections read at a time (#799).
 inline constexpr std::string_view CONNECTIONS_READ_THREAD_NAME = "ts-conn-read";
 

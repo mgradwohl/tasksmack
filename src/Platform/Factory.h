@@ -9,6 +9,7 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -29,6 +30,10 @@ namespace Platform
 /// Creates the platform-appropriate IProcessConnectionsReader implementation (#799). Windows returns
 /// an UnsupportedProcessConnectionsReader (hasConnections() false) until #1489.
 [[nodiscard]] std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader();
+
+/// Creates the platform-appropriate IStartupProbe implementation (#801). Linux returns an
+/// UnsupportedStartupProbe (capabilities().canEnumerate false) until XDG autostart support lands.
+[[nodiscard]] std::unique_ptr<IStartupProbe> makeStartupProbe();
 
 /// Creates the platform-appropriate ISystemProbe implementation.
 [[nodiscard]] std::unique_ptr<ISystemProbe> makeSystemProbe();
