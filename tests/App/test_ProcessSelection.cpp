@@ -175,6 +175,20 @@ TEST(ProcessSelectionTest, SelectAllTakesEveryVisibleRow)
     EXPECT_FALSE(empty.anchor().has_value());
 }
 
+TEST(ProcessSelectionTest, AnExitIsSeenEvenWhenTwoLiveRowsShareASelectedKey)
+{
+    // 101 and 102 selected; 102 exits while two live rows carry key 101 (a hash collision). Counting
+    // rows would see 2 == 2 and keep 102; counting distinct keys drops it.
+    Selection sel;
+    sel.click(ClickKind::Replace, 101, ROWS);
+    sel.click(ClickKind::Toggle, 102, ROWS);
+    const std::array<FakeSnapshot, 3> live{FakeSnapshot{.uniqueKey = 101}, FakeSnapshot{.uniqueKey = 101}, FakeSnapshot{.uniqueKey = 103}};
+    EXPECT_TRUE(sel.retainPresent(live));
+    EXPECT_EQ(sel.size(), 1U);
+    EXPECT_TRUE(sel.contains(101));
+    EXPECT_FALSE(sel.contains(102));
+}
+
 TEST(ProcessSelectionTest, ExitedProcessesDropOut)
 {
     Selection sel;

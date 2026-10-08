@@ -179,7 +179,7 @@ class Selection
 
     /// Drop the selected processes that are no longer listed. @p snapshots is any range of objects with
     /// a `uniqueKey` (Domain::ProcessSnapshot): the current generation. One O(1) lookup per listed
-    /// process; the set is rebuilt only when something did drop out. The anchor is left alone: a
+    /// process, into a set of the distinct keys still present. The anchor is left alone: a
     /// Shift+click from an anchor that is no longer visible selects as a plain click. Returns whether
     /// anything was dropped.
     template<typename SnapshotRange> bool retainPresent(const SnapshotRange& snapshots)
@@ -188,26 +188,21 @@ class Selection
         {
             return false;
         }
-        std::size_t present = 0;
-        for (const auto& snapshot : snapshots)
-        {
-            if (m_Keys.contains(snapshot.uniqueKey))
-            {
-                ++present;
-            }
-        }
-        if (present == m_Keys.size())
-        {
-            return false;
-        }
+        // Distinct selected keys still present, not matching rows: uniqueKey is a hash, so two live
+        // snapshots could share one, and counting rows could then hide another key's exit (#804
+        // review). Runs once per new snapshot and allocates only while something is selected.
         std::unordered_set<std::uint64_t> kept;
-        kept.reserve(present);
+        kept.reserve(m_Keys.size());
         for (const auto& snapshot : snapshots)
         {
             if (m_Keys.contains(snapshot.uniqueKey))
             {
                 kept.insert(snapshot.uniqueKey);
             }
+        }
+        if (kept.size() == m_Keys.size())
+        {
+            return false;
         }
         m_Keys = std::move(kept);
         return true;
