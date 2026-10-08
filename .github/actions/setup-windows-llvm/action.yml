@@ -113,10 +113,11 @@ runs:
       id: llvm-stage
       # Caching is an optimisation: a failed copy must not fail the build.
       continue-on-error: true
+      # TEMPORARY head_ref clause: exercise the hit path on this PR; reverted before merge.
       if: >-
         steps.llvm-cache.outputs.cache-hit != 'true' &&
         ((github.ref == 'refs/heads/main' && github.event_name != 'pull_request') ||
-         github.head_ref == 'ci-1406-llvm-cache') # TEMPORARY: exercise the hit path on this PR; reverted before merge
+         github.head_ref == 'ci-1406-llvm-cache')
       shell: pwsh
       run: |
         robocopy 'C:\Program Files\LLVM' 'C:\llvm-cache\LLVM' /E /COPY:DAT /DCOPY:DAT /R:2 /W:5 /NFL /NDL /NP
