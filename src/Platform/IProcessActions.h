@@ -37,6 +37,10 @@ struct ProcessTarget
 {
     std::int32_t pid = 0;
     std::uint64_t startTimeTicks = 0; ///< 0 means unknown; an action on an unknown identity is refused.
+
+    /// The same process: the same PID and the same start time. The Processes table's selection is
+    /// keyed on this exact identity, never on a hash of it (#1503).
+    [[nodiscard]] friend constexpr bool operator==(const ProcessTarget&, const ProcessTarget&) noexcept = default;
 };
 
 /// Whether the process found at a target's PID is the process the target names.

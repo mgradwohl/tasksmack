@@ -95,9 +95,9 @@ class ProcessDetailsPanel : public Panel
     void onEvent(Core::Event& event) override;
 
     /// Set the process to display.
-    /// @param uniqueKey Identity of the process (hash of PID and start time), or 0 if not known.
-    ///        With it, a later process that reuses the PID is not mistaken for the selected one.
-    void setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey = 0);
+    /// @param startTimeTicks The process's raw start time (Domain::ProcessSnapshot::startTimeTicks).
+    ///        With it, a later process that reuses the PID is not mistaken for the selected one (#1503).
+    void setSelectedPid(std::int32_t pid, std::uint64_t startTimeTicks);
 
     /// What the process probe can report, so series it never fills are not drawn (#1028, #1035).
     /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
@@ -153,8 +153,8 @@ class ProcessDetailsPanel : public Panel
     [[nodiscard]] const Domain::ProcessSnapshot& cachedSnapshot() const;
 
     std::int32_t m_SelectedPid = -1;
-    std::uint64_t m_SelectedUniqueKey = 0; // 0 = not known; adopted from the first snapshot
-    Detail::SampleIntake m_SampleIntake;   // Where history recording is in the watched process's samples (#1098)
+    std::uint64_t m_SelectedStartTicks = 0; // With m_SelectedPid, the selected process's exact identity (#1503)
+    Detail::SampleIntake m_SampleIntake;    // Where history recording is in the watched process's samples (#1098)
     float m_LastDeltaSeconds = 0.0F;
     bool m_IsActiveTab = false;
 

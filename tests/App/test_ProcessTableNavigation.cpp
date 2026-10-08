@@ -86,10 +86,10 @@ TEST(ProcessTableNavigationTest, PageStepKeepsOneRowOfContext)
 TEST(ProcessTableNavigationTest, FindsTheSelectionInTheVisibleOrder)
 {
     const std::vector<std::uint64_t> keys{30, 10, 20};
-    EXPECT_EQ(indexOfKey(keys, 30), std::optional<std::size_t>{0});
-    EXPECT_EQ(indexOfKey(keys, 20), std::optional<std::size_t>{2});
-    EXPECT_EQ(indexOfKey(keys, 99), std::nullopt); // Filtered out or collapsed away
-    EXPECT_EQ(indexOfKey({}, 10), std::nullopt);
+    EXPECT_EQ(indexOfKey<std::uint64_t>(keys, 30), std::optional<std::size_t>{0});
+    EXPECT_EQ(indexOfKey<std::uint64_t>(keys, 20), std::optional<std::size_t>{2});
+    EXPECT_EQ(indexOfKey<std::uint64_t>(keys, 99), std::nullopt); // Filtered out or collapsed away
+    EXPECT_EQ(indexOfKey<std::uint64_t>({}, 10), std::nullopt);
 }
 
 TEST(ProcessTableNavigationTest, StepsAndClamps)
