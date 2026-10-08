@@ -13,7 +13,10 @@
 #include <imgui.h>
 
 #include <algorithm>
-#include <string>
+
+#ifdef _WIN32
+#include <string> // The current class's text, measured for the Windows Priority row
+#endif
 
 namespace App::ProcessActionsBlock
 {

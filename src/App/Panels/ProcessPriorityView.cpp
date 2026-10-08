@@ -2,13 +2,14 @@
 
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
-#include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include "UI/ChromeWidgets.h" // trailingNote() for the current class after Apply; the nice slider row has none
+#else
 #include "Domain/PriorityConfig.h" // NORMAL_NICE for the nice slider's 0 key; the Windows class combo has no slider
 #endif
 
