@@ -120,6 +120,17 @@ TEST(WindowsStartupProbeMathTest, ExecutableKeepsEnvironmentVariablesForTheProbe
     EXPECT_EQ(executableFromCommandLine(R"("%LOCALAPPDATA%\App\app.exe" -x)"), R"(%LOCALAPPDATA%\App\app.exe)");
 }
 
+TEST(WindowsStartupProbeMathTest, TabsSeparateArgumentsLikeSpaces)
+{
+    // Windows command lines separate arguments with spaces or tabs.
+    EXPECT_EQ(executableFromCommandLine("C:\\App\\app.exe\t--minimized"), R"(C:\App\app.exe)");
+    EXPECT_EQ(executableFromCommandLine("\"C:\\Program Files\\App\\app.exe\"\t--minimized"), R"(C:\Program Files\App\app.exe)");
+    EXPECT_EQ(executableFromCommandLine("\t \"C:\\App\\app.exe\""), R"(C:\App\app.exe)");
+    EXPECT_EQ(executableFromCommandLine("C:\\Program Files\\App\\app.exe\t/background"), R"(C:\Program Files\App\app.exe)");
+    EXPECT_EQ(executableFromCommandLine("rundll32\tshell32.dll,Control_RunDLL"), "rundll32");
+    EXPECT_EQ(executableFromCommandLine("\t\t"), "");
+}
+
 TEST(WindowsStartupProbeMathTest, EmptyCommandLineHasNoExecutable)
 {
     EXPECT_EQ(executableFromCommandLine(""), "");
