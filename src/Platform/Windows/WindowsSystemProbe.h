@@ -23,6 +23,10 @@ class WindowsSystemProbe : public ISystemProbe
 {
   public:
     WindowsSystemProbe();
+    /// The probe with its current-clock inputs supplied (#1184): the base clock in MHz (0 = unknown) and
+    /// the "% Processor Performance" counter (null = none, and the base clock is reported). The default
+    /// constructor reads the registry's ~MHz and opens pdh.dll's counter; tests inject fakes here.
+    WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance);
     ~WindowsSystemProbe() override;
 
     WindowsSystemProbe(const WindowsSystemProbe&) = delete;

@@ -48,12 +48,13 @@ struct ProcessCounters
     std::uint64_t systemTime = 0;
 
     // Memory (bytes)
-    // The Memory column (#1184). Linux: VmRSS, the resident set, shared pages included. Windows: the
+    // The Memory column (#1184). Linux: the resident field of /proc/[pid]/statm (pages x page size;
+    // /proc/[pid]/stat's rss if statm can't be read), the resident set, shared pages included. Windows: the
     // private working set, Task Manager's default "Memory (private working set)".
     std::uint64_t rssBytes = 0;
     std::uint64_t peakRssBytes = 0; // OS-reported peak resident size, 0 = unknown (Linux: VmHWM, which resets on
                                     // exec; Windows: PeakWorkingSetSize). Domain keeps the highest peak it observed.
-    // The Virtual column (#1184). Linux: VmSize, the whole address space. Windows: the commit size
+    // The Virtual column (#1184). Linux: vsize from /proc/[pid]/stat, the whole address space. Windows: the commit size
     // (PrivateUsage), as Task Manager shows it; its VirtualSize counts reservations, terabytes for
     // any process using Control Flow Guard.
     std::uint64_t virtualBytes = 0;

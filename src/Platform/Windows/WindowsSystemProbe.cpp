@@ -23,13 +23,12 @@
 #include <winternl.h>
 #include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
 #include <cfgmgr32.h>    // CM_Locate_DevNodeW: whether an adapter's device is present (#1284)
-#include <pdh.h>         // PDH types only: pdh.dll is loaded at run time (ProcessorPerformanceCounter)
-#include <pdhmsg.h>      // PDH_CSTATUS_VALID_DATA, PDH_CSTATUS_NEW_DATA
 // clang-format on
 
 #undef max
 #undef min
 
+#include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
 #include "WindowsProcAddress.h"
 #include "WindowsSystemProbeMath.h"
@@ -220,119 +219,16 @@ template<typename Query>
 
 } // namespace
 
-/// PDH's "\Processor Information(_Total)\% Processor Performance": the processors' average speed as a
-/// percentage of the base clock, over the time since the previous read, as Task Manager's "Speed" uses
-/// it (#1184). pdh.dll is loaded at run time, as PDHGPUProbe loads it, so the probe still works where
-/// it is missing.
-class ProcessorPerformanceCounter
-{
-  public:
-    /// The counter, or null when pdh.dll, its exports, or the counter itself are unavailable.
-    [[nodiscard]] static std::unique_ptr<ProcessorPerformanceCounter> open()
-    {
-        auto counter = std::unique_ptr<ProcessorPerformanceCounter>(new ProcessorPerformanceCounter());
-        if (!counter->initialize())
-        {
-            return nullptr;
-        }
-        return counter;
-    }
-
-    ProcessorPerformanceCounter(const ProcessorPerformanceCounter&) = delete;
-    ProcessorPerformanceCounter& operator=(const ProcessorPerformanceCounter&) = delete;
-    ProcessorPerformanceCounter(ProcessorPerformanceCounter&&) = delete;
-    ProcessorPerformanceCounter& operator=(ProcessorPerformanceCounter&&) = delete;
-
-    ~ProcessorPerformanceCounter()
-    {
-        if (m_Query != nullptr && m_CloseQuery != nullptr)
-        {
-            m_CloseQuery(m_Query);
-        }
-        if (m_Module != nullptr)
-        {
-            FreeLibrary(m_Module);
-        }
-    }
-
-    /// The percentage since the previous read; nullopt on the first read (a rate needs two) or a failed one.
-    [[nodiscard]] std::optional<double> read()
-    {
-        if (m_CollectQueryData(m_Query) != ERROR_SUCCESS)
-        {
-            return std::nullopt;
-        }
-        PDH_FMT_COUNTERVALUE value{};
-        DWORD type = 0;
-        // NOCAP100: turbo takes the reading past 100
-        const PDH_STATUS status = m_GetFormattedCounterValue(m_Counter, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, &type, &value);
-        if (status != ERROR_SUCCESS || (value.CStatus != PDH_CSTATUS_VALID_DATA && value.CStatus != PDH_CSTATUS_NEW_DATA))
-        {
-            return std::nullopt;
-        }
-        // PDH_FMT_DOUBLE asked for the double member of PDH_FMT_COUNTERVALUE's union
-        return value.doubleValue; // NOLINT(cppcoreguidelines-pro-type-union-access)
-    }
-
-  private:
-    using OpenQueryFn = PDH_STATUS(WINAPI*)(LPCWSTR, DWORD_PTR, PDH_HQUERY*);
-    using AddEnglishCounterFn = PDH_STATUS(WINAPI*)(PDH_HQUERY, LPCWSTR, DWORD_PTR, PDH_HCOUNTER*);
-    using CollectQueryDataFn = PDH_STATUS(WINAPI*)(PDH_HQUERY);
-    using GetFormattedCounterValueFn = PDH_STATUS(WINAPI*)(PDH_HCOUNTER, DWORD, LPDWORD, PPDH_FMT_COUNTERVALUE);
-    using CloseQueryFn = PDH_STATUS(WINAPI*)(PDH_HQUERY);
-
-    ProcessorPerformanceCounter() = default;
-
-    [[nodiscard]] bool initialize()
-    {
-        m_Module = LoadLibraryExW(L"pdh.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (m_Module == nullptr)
-        {
-            spdlog::debug("WindowsSystemProbe: pdh.dll unavailable; reporting the base CPU clock");
-            return false;
-        }
-        const auto openQuery = Windows::getProcAddress<OpenQueryFn>(m_Module, "PdhOpenQueryW");
-        const auto addEnglishCounter = Windows::getProcAddress<AddEnglishCounterFn>(m_Module, "PdhAddEnglishCounterW");
-        m_CollectQueryData = Windows::getProcAddress<CollectQueryDataFn>(m_Module, "PdhCollectQueryData");
-        m_GetFormattedCounterValue = Windows::getProcAddress<GetFormattedCounterValueFn>(m_Module, "PdhGetFormattedCounterValue");
-        m_CloseQuery = Windows::getProcAddress<CloseQueryFn>(m_Module, "PdhCloseQuery");
-        if (openQuery == nullptr || addEnglishCounter == nullptr || m_CollectQueryData == nullptr ||
-            m_GetFormattedCounterValue == nullptr || m_CloseQuery == nullptr)
-        {
-            spdlog::debug("WindowsSystemProbe: pdh.dll lacks an export; reporting the base CPU clock");
-            return false;
-        }
-        if (openQuery(nullptr, 0, &m_Query) != ERROR_SUCCESS)
-        {
-            m_Query = nullptr;
-            spdlog::debug("WindowsSystemProbe: PdhOpenQuery failed; reporting the base CPU clock");
-            return false;
-        }
-        if (addEnglishCounter(m_Query, LR"(\Processor Information(_Total)\% Processor Performance)", 0, &m_Counter) != ERROR_SUCCESS)
-        {
-            spdlog::debug("WindowsSystemProbe: no % Processor Performance counter; reporting the base CPU clock");
-            return false;
-        }
-        // The first collection only primes the rate
-        m_CollectQueryData(m_Query);
-        return true;
-    }
-
-    HMODULE m_Module = nullptr;
-    PDH_HQUERY m_Query = nullptr;
-    PDH_HCOUNTER m_Counter = nullptr;
-    CollectQueryDataFn m_CollectQueryData = nullptr;
-    GetFormattedCounterValueFn m_GetFormattedCounterValue = nullptr;
-    CloseQueryFn m_CloseQuery = nullptr;
-};
-
 WindowsSystemProbe::~WindowsSystemProbe() = default;
 
-WindowsSystemProbe::WindowsSystemProbe()
+WindowsSystemProbe::WindowsSystemProbe() : WindowsSystemProbe(readBaseCpuMHz(), ProcessorPerformanceCounter::open())
+{}
+
+WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance)
     : m_NumCores(logicalProcessorCount()),
       m_GroupFirstCoreIds(groupFirstCoreIds()),
-      m_BaseCpuMHz(readBaseCpuMHz()),
-      m_ProcessorPerformance(ProcessorPerformanceCounter::open())
+      m_BaseCpuMHz(baseCpuMHz),
+      m_ProcessorPerformance(std::move(processorPerformance))
 {
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};

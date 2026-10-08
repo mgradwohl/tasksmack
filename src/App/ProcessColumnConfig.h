@@ -165,9 +165,9 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // MEM%
         {.name="Mem %", .menuName="Mem %", .configKey="mem_percent", .defaultWidth=55.0F, .defaultVisible=true, .canHide=true, .description="Memory usage as percentage of total RAM"},
         // RES
-        {.name="Memory", .menuName="Memory (Resident)", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Physical RAM in use: the private working set on Windows (as Task Manager's Memory column), the resident set size (VmRSS, shared pages included) on Linux"},
+        {.name="Memory", .menuName="Memory (Resident)", .configKey="resident", .defaultWidth=80.0F, .defaultVisible=true, .canHide=true, .description="Physical RAM in use: the private working set on Windows (as Task Manager's Memory column), the resident set size (the resident field of /proc/[pid]/statm, shared pages included) on Linux"},
         // VIRT
-        {.name="Virtual", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory: the commit size on Windows (memory committed for the process, as Task Manager's Commit size), the whole address space (VmSize) on Linux"},
+        {.name="Virtual", .menuName="Virtual Memory", .configKey="virtual", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Virtual memory: the commit size on Windows (memory committed for the process, as Task Manager's Commit size), the whole address space (vsize from /proc/[pid]/stat) on Linux"},
         // SHR
         {.name="Shared", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
         // PEAK RES
