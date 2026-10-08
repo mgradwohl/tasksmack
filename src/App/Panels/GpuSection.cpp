@@ -405,7 +405,7 @@ void renderGpuSection(RenderContext& ctx)
         // consistent with the data being plotted. A refresh the GPU was missing from has a (gap)
         // entry of its own, but the GPU's history can still start later than the global one (a GPU
         // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
-        const auto axisConfig = makeTimeAxisConfig(perGpuTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+        const auto axisConfig = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
         // Only the clocks the window shows set the scale: not the trim anchor left of it, nor older
         // samples when scrolled back (#1324). The NowBar's smoothed clock counts too, so the bar never

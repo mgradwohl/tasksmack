@@ -14,11 +14,9 @@ namespace Platform
 struct GPUCapabilities
 {
     bool hasTemperature = false;
-    bool hasHotspotTemp = false;
     bool hasPowerMetrics = false;
     bool hasClockSpeeds = false;
     bool hasFanSpeed = false;
-    bool hasPCIeMetrics = false;
     bool hasEngineUtilization = false;
     bool hasPerProcessMetrics = false; // Per-process GPU usage
     // Of those, per-process utilization (ProcessGPUCounters::gpuUtilPercent). Some backends report a
@@ -155,7 +153,6 @@ struct GPUCounters
 
     // Temperature (°C)
     std::int32_t temperatureC = 0;
-    std::int32_t hotspotTempC = -1; // -1 if not available
 
     // Power (watts)
     double powerDrawWatts = 0.0;
@@ -163,7 +160,7 @@ struct GPUCounters
 
     // Cumulative energy (µJ), for a GPU whose driver reports an energy counter rather than power
     // (Intel i915/xe hwmon energy1_input, #1269). When energyAvailable, Domain derives powerDrawWatts
-    // from the counter's change since the previous sample, as it does for the PCIe byte counters;
+    // from the counter's change since the previous sample;
     // a sample without a readable previous counter (the first, or after a failed read, a suspend or
     // a counter reset) has no power.
     bool energyAvailable = false;
@@ -180,24 +177,18 @@ struct GPUCounters
 
     // Clock speeds (MHz)
     std::uint32_t gpuClockMHz = 0;
-    std::uint32_t memoryClockMHz = 0;
 
     // Fan speed, raw (0 if not available) plus the device-reported max needed to normalize it.
     // Vendors report fan speed in different native units (NVML: already 0-100%; ROCm: a value
     // relative to RSMI_MAX_FAN_SPEED, not RPM despite older code here having assumed so -- see
     // #734), so Platform stores both raw numbers unconverted and Domain computes the
-    // percentage (GPUSnapshot::fanSpeedPercent), consistent with how memoryUsedPercent and
-    // powerUtilPercent are derived from raw counter pairs. NVML probes set fanSpeedMaxRaw to
+    // percentage (GPUSnapshot::fanSpeedPercent), consistent with how memoryUsedPercent is
+    // derived from a raw counter pair. NVML probes set fanSpeedMaxRaw to
     // 100 since their raw reading already is a percentage.
     std::uint32_t fanSpeedRaw = 0;
     std::uint32_t fanSpeedMaxRaw = 0;
 
-    // PCIe throughput (cumulative bytes)
-    std::uint64_t pcieTxBytes = 0;
-    std::uint64_t pcieRxBytes = 0;
-
     // Engine utilization (0-100, instantaneous)
-    double computeUtilPercent = 0.0;
     double encoderUtilPercent = 0.0;
     double decoderUtilPercent = 0.0;
 };

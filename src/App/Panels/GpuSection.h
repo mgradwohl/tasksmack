@@ -106,11 +106,9 @@ capabilitiesForGpu(Platform::GPUCapabilities caps, const std::optional<Platform:
     if (adapterSensors.has_value())
     {
         caps.hasTemperature = caps.hasTemperature && adapterSensors->hasTemperature;
-        caps.hasHotspotTemp = caps.hasHotspotTemp && adapterSensors->hasHotspotTemp;
         caps.hasPowerMetrics = caps.hasPowerMetrics && adapterSensors->hasPowerMetrics;
         caps.hasClockSpeeds = caps.hasClockSpeeds && adapterSensors->hasClockSpeeds;
         caps.hasFanSpeed = caps.hasFanSpeed && adapterSensors->hasFanSpeed;
-        caps.hasPCIeMetrics = caps.hasPCIeMetrics && adapterSensors->hasPCIeMetrics;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder && adapterSensors->hasEncoderDecoder;
     }
     return caps;
@@ -379,7 +377,6 @@ struct RenderContext
 
     // History configuration
     double maxHistorySeconds = 300.0;
-    double historyScrollSeconds = 0.0;
     float lastDeltaSeconds = 0.0F;
 
     // Refresh interval for smoothing alpha calculation

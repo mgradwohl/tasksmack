@@ -57,16 +57,13 @@ struct GPUSnapshot
 
     // Temperature
     std::int32_t temperatureC = 0;
-    std::int32_t hotspotTempC = -1;
 
     // Power
     double powerDrawWatts = 0.0;
     double powerLimitWatts = 0.0;
-    double powerUtilPercent = 0.0; // Computed by Domain
 
     // Clock speeds
     std::uint32_t gpuClockMHz = 0;
-    std::uint32_t memoryClockMHz = 0;
 
     // Fan
     std::uint32_t fanSpeedPercent = 0; // Computed by Domain from fanSpeedRaw/fanSpeedMaxRaw
@@ -77,12 +74,7 @@ struct GPUSnapshot
     // on the capability, to avoid showing a misleading "0%" for an unavailable sample.
     bool fanSpeedAvailable = false;
 
-    // PCIe bandwidth (rates computed from deltas)
-    double pcieTxBytesPerSec = 0.0;
-    double pcieRxBytesPerSec = 0.0;
-
     // Engine utilization
-    double computeUtilPercent = 0.0;
     double encoderUtilPercent = 0.0;
     double decoderUtilPercent = 0.0;
 };

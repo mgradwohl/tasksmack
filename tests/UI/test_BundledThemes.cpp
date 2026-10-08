@@ -261,9 +261,6 @@ TEST(BundledThemesTest, EverySeriesIsVisibleOnThePlotAndTheNowBarTrack)
             {"charts.gpu.decoder", scheme->gpuDecoder},
             {"charts.gpu.clock", scheme->gpuClock},
             {"charts.gpu.fan", scheme->gpuFan},
-            {"progress.low", scheme->progressLow},
-            {"progress.medium", scheme->progressMedium},
-            {"progress.high", scheme->progressHigh},
         };
         for (std::size_t i = 0; i < scheme->accents.size(); ++i)
         {
@@ -448,7 +445,7 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
             },
         };
 
-        // Status messages and usage bars are not drawn as series on one chart, so #1197 asks only that
+        // Status messages are not drawn as series on one chart, so #1197 asks only that
         // they survive red/green colour vision deficiency: warning and success must not read as one colour.
         const std::vector<std::pair<const char*, std::vector<Series>>> cvdOnlySets{
             {
@@ -458,14 +455,6 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
                     {"semantic.text_warning", scheme->textWarning},
                     {"semantic.text_success", scheme->textSuccess},
                     {"semantic.text_info", scheme->textInfo},
-                },
-            },
-            {
-                "progress",
-                {
-                    {"progress.low", scheme->progressLow},
-                    {"progress.medium", scheme->progressMedium},
-                    {"progress.high", scheme->progressHigh},
                 },
             },
         };

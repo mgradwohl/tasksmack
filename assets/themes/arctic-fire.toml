@@ -28,15 +28,6 @@ colors = [
 ]
 
 # =============================================================================
-# PROGRESS BAR COLORS
-# Colors for progress bars based on percentage thresholds
-# =============================================================================
-[progress]
-low = "#00E676"       # 0-50%   - Emerald (healthy)
-medium = "#FFB300"    # 50-80%  - Amber (caution)
-high = "#E53935"      # 80-100% - Crimson (critical)
-
-# =============================================================================
 # SEMANTIC TEXT COLORS
 # Colors for different types of text/messages
 # =============================================================================
@@ -114,8 +105,8 @@ iowait_fill = "#FFB30059"    # Amber with 35% alpha - iowait fill
 idle_fill = "#80808033"      # Gray with 20% alpha - idle fill
 
 [priority]
-high   = "#E53935"     # Crimson (matches progress.high)
-normal = "#00E676"     # Emerald (matches progress.low)
+high   = "#E53935"     # Crimson
+normal = "#00E676"     # Emerald
 low    = "#42A5F5"     # Blue (matches charts.cpu)
 badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 

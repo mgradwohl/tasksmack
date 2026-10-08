@@ -659,24 +659,6 @@ TEST(GPUModelTest, SuspendedGpuIsMarkedInTheSnapshot)
     EXPECT_TRUE(std::isnan(utilization[0]));
 }
 
-TEST(GPUModelTest, PowerUtilizationPercentIsComputed)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    auto counters = makeGPUCounters("GPU0");
-    counters.powerDrawWatts = 150.0;
-    counters.powerLimitWatts = 300.0;
-    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
-
-    Domain::GPUModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // 150W / 300W = 50%
-    EXPECT_DOUBLE_EQ(snaps[0].powerUtilPercent, 50.0);
-}
-
 TEST(GPUModelTest, FanSpeedPercentIsComputedFromRawAndMax)
 {
     // Mirrors a ROCm-style probe: a raw sensor reading normalized against a device-reported
@@ -700,7 +682,7 @@ TEST(GPUModelTest, FanSpeedPercentIsComputedFromRawAndMax)
 
 TEST(GPUModelTest, FanSpeedPercentIsNotClampedWhenRawExceedsMax)
 {
-    // Left unclamped, matching memoryUsedPercent/powerUtilPercent: a raw reading above the
+    // Left unclamped, matching memoryUsedPercent: a raw reading above the
     // device's reported max (sensor drift, transient overspeed) is itself useful signal, not
     // something Domain should silently cap.
     auto probe = std::make_unique<MockGPUProbe>();
@@ -786,96 +768,6 @@ TEST(GPUModelTest, FanSpeedHistoryMarksUnavailableSamplesAsNaN)
     EXPECT_FLOAT_EQ(availableFanHistory[0], 66.0F);
 }
 
-// =============================================================================
-// PCIe Bandwidth Rate Tests
-// =============================================================================
-
-TEST(GPUModelTest, FirstRefreshShowsZeroPCIeRates)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    auto counters = makeGPUCounters("GPU0");
-    counters.pcieTxBytes = 1000;
-    counters.pcieRxBytes = 2000;
-    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
-
-    Domain::GPUModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // No previous data, rates should be zero
-    EXPECT_DOUBLE_EQ(snaps[0].pcieTxBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snaps[0].pcieRxBytesPerSec, 0.0);
-}
-
-TEST(GPUModelTest, SubsequentRefreshComputesPCIeRates)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    auto* rawProbe = probe.get();
-    auto counters1 = makeGPUCounters("GPU0");
-    counters1.pcieTxBytes = 1000;
-    counters1.pcieRxBytes = 2000;
-    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters1);
-
-    Domain::GPUModel model(std::move(probe));
-    model.refresh();
-
-    // Sleep for a known duration
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Update counters with deltas
-    auto counters2 = makeGPUCounters("GPU0");
-    counters2.pcieTxBytes = 2000; // +1000 bytes
-    counters2.pcieRxBytes = 4000; // +2000 bytes
-    rawProbe->withGPUCounters("GPU0", counters2);
-
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // Rates should be positive (exact values depend on timing)
-    EXPECT_GT(snaps[0].pcieTxBytesPerSec, 0.0);
-    EXPECT_GT(snaps[0].pcieRxBytesPerSec, 0.0);
-
-    // Both rates use the same measured interval, so their ratio is deterministic
-    // even when a loaded CI runner delays the second refresh.
-    EXPECT_NEAR(snaps[0].pcieRxBytesPerSec, snaps[0].pcieTxBytesPerSec * 2.0, snaps[0].pcieTxBytesPerSec * 0.001);
-}
-
-TEST(GPUModelTest, PCIeCounterRollbackHandled)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    auto* rawProbe = probe.get();
-    auto counters1 = makeGPUCounters("GPU0");
-    counters1.pcieTxBytes = 1000;
-    rawProbe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters1);
-
-    Domain::GPUModel model(std::move(probe));
-    model.refresh();
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // Counter went backward (e.g., GPU reset)
-    auto counters2 = makeGPUCounters("GPU0");
-    counters2.pcieTxBytes = 500;
-    rawProbe->withGPUCounters("GPU0", counters2);
-
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // Rate should be zero when counter decreases
-    EXPECT_DOUBLE_EQ(snaps[0].pcieTxBytesPerSec, 0.0);
-}
-
-// =============================================================================
-// Power from an energy counter (#1269)
-// =============================================================================
-
-// Intel i915/xe report a cumulative energy counter, not power: Domain derives watts from its change.
 TEST(GPUModelTest, PowerIsDerivedFromTheEnergyCounter)
 {
     auto probe = std::make_unique<MockGPUProbe>();
@@ -1237,24 +1129,6 @@ TEST(GPUModelTest, ZeroMemoryTotalDoesNotCrash)
 
     // Should not divide by zero
     EXPECT_DOUBLE_EQ(snaps[0].memoryUsedPercent, 0.0);
-}
-
-TEST(GPUModelTest, ZeroPowerLimitDoesNotCrash)
-{
-    auto probe = std::make_unique<MockGPUProbe>();
-    auto counters = makeGPUCounters("GPU0");
-    counters.powerDrawWatts = 100.0;
-    counters.powerLimitWatts = 0.0;
-    probe->withGPU("GPU0", "Test GPU", "TestVendor").withGPUCounters("GPU0", counters);
-
-    Domain::GPUModel model(std::move(probe));
-    model.refresh();
-
-    auto snaps = model.snapshots();
-    ASSERT_EQ(snaps.size(), 1);
-
-    // Should not divide by zero
-    EXPECT_DOUBLE_EQ(snaps[0].powerUtilPercent, 0.0);
 }
 
 TEST(GPUModelTest, HistoryForNonexistentGPUReturnsEmpty)
