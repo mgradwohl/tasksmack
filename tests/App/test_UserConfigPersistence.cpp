@@ -911,6 +911,37 @@ TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeRoundTripThroughTheTheme)
     theme.setFontSize(originalSize);
 }
 
+TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeSurviveSaveLoadApply)
+{
+    // #1187 regression: the whole shutdown -> startup path a user's theme takes. ShellLayer captures
+    // the live Theme and saves on shutdown, then loads and applies on the next start. Each step is
+    // covered alone elsewhere; this checks the file in between carries what the Theme held.
+    auto& theme = UI::Theme::get();
+    const std::string originalId = theme.currentThemeId();
+    const UI::FontSize originalSize = theme.currentFontSize();
+
+    auto& config = UserConfig::get();
+    theme.setThemeById("dracula");
+    theme.setFontSize(UI::FontSize::Large);
+    config.captureFromApplication();
+    config.save();
+
+    // Simulate a fresh start: neither the Theme nor the in-memory settings remember the session.
+    theme.setThemeById("arctic-fire");
+    theme.setFontSize(UI::FontSize::Small);
+    config.settings().themeId = "arctic-fire";
+    config.settings().fontSize = UI::FontSize::Small;
+
+    config.load();
+    config.applyToApplication();
+    EXPECT_EQ(theme.currentThemeId(), "dracula");
+    EXPECT_EQ(theme.currentFontSize(), UI::FontSize::Large);
+
+    // The Theme singleton is process-wide; the chart tests in this binary scale by its font size.
+    theme.setThemeById(originalId);
+    theme.setFontSize(originalSize);
+}
+
 // ========== Load/Save: Font Size Round-Trips ==========
 
 TEST_F(UserConfigSaveLoadFixture, FontSizeSmallRoundTrip)

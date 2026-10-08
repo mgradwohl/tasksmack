@@ -1,8 +1,8 @@
 # TaskSmack - Copilot Instructions
 
-Cross-platform system monitor (C++23 / Clang/LLVM 22 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
+Linux and Windows system monitor (macOS is not supported) (C++23 / Clang/LLVM 22 / OpenGL / ImGui). Strict layered architecture with App panels as the composition root.
 
-> **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../completed-features.md) (implemented features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
+> **Related Docs:** [README.md](../README.md) (project overview), [docs/guide/user-guide.md](../docs/guide/user-guide.md) (user behavior), [CONTRIBUTING.md](../CONTRIBUTING.md) (build/test/tools), [tasksmack.md](../tasksmack.md) (architecture), [completed-features.md](../docs/dev/completed-features.md) (implemented features), [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md) (best practices for working with Copilot)
 
 ## Documentation Map (Source of Truth)
 
@@ -17,7 +17,7 @@ TaskSmack intentionally keeps docs scoped to avoid duplication and drift:
     - If you change build/test/tooling, update this file.
 - **Architecture + engineering direction (canonical):** [tasksmack.md](../tasksmack.md)
     - Layer contracts, sampling, capability behavior, platform strategy, and roadmap.
-- **Implemented features list (canonical):** [completed-features.md](../completed-features.md)
+- **Implemented features list (canonical):** [completed-features.md](../docs/dev/completed-features.md)
     - User-visible and engineering features already implemented.
 - **Agent guidance:** [copilot-instructions.md](copilot-instructions.md) and [copilot-coding-agent-tips.md](copilot-coding-agent-tips.md)
     - Primarily for agents, but still useful to contributors.
