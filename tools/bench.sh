@@ -13,7 +13,9 @@
 # "Benchmark Output").
 #
 # Environment overrides (used by the script tests):
-#   TASKSMACK_BENCH_BIN      benchmark binary (default build/<preset>/bin/TaskSmackBenchmarks)
+#   TASKSMACK_BENCH_BIN      benchmark binary (default build/<preset>/bin/TaskSmackBenchmarks); a
+#                            relative path or bare name is relative to the current directory and
+#                            is never looked up on PATH
 #   TASKSMACK_BENCH_OUT_DIR  output directory (default perf-data/)
 #
 # Exits non-zero if the benchmark binary fails or crashes; any partial output is still redacted
@@ -56,6 +58,10 @@ if [[ ! -f "${BENCH_BIN}" ]]; then
     echo "Build first:  cmake --build --preset ${PRESET}"
     exit 1
 fi
+# One absolute path for the check above, the manifest's hash and build lookup, and the launch: a
+# relative TASKSMACK_BENCH_BIN (a bare name included) means the file relative to the current
+# directory, as the check reads it -- never a same-named program found on PATH (#1445 review).
+BENCH_BIN="$(cd "$(dirname "${BENCH_BIN}")" && pwd)/$(basename "${BENCH_BIN}")"
 
 # The script owns the output file: Google Benchmark takes the last --benchmark_out(_format), so an
 # extra one would write somewhere the redaction and the manifest never look.

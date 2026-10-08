@@ -16,7 +16,9 @@
 # args, anonymized machine class; see CONTRIBUTING.md "Benchmark Output").
 #
 # -BenchmarkBinary overrides build/<preset>/bin/TaskSmackBenchmarks.exe (the script tests point
-# it at a stub). -OutputDirectory overrides perf-data/.
+# it at a stub); a relative path or bare name is relative to the PowerShell location, resolved
+# once to an absolute path for the check, the hash, the manifest and the launch, and never looked
+# up on PATH. -OutputDirectory overrides perf-data/.
 #
 # Exits non-zero if the benchmark binary fails or crashes; any partial output is still redacted
 # (or deleted when it cannot be) and the manifest records the exit code.
@@ -287,13 +289,26 @@ function Find-BuildTree {
     return $null
 }
 
-# Where the build's interprocedural optimization is read from, best first. benchmarks/CMakeLists.txt
-# caches TASKSMACK_BENCHMARKS_IPO from the TaskSmackBenchmarks target's own
-# INTERPROCEDURAL_OPTIMIZATION property -- what the binary was really built with, including the IPO
-# that cmake/CompilerOptions.cmake turns on through a normal variable the cache does not show.
-# Older build trees fall back to the cached CMAKE_INTERPROCEDURAL_OPTIMIZATION, then the
-# TASKSMACK_ENABLE_IPO option. The same order as IPO_SOURCES in tools/bench-manifest.py.
-$script:IpoSources = @('TASKSMACK_BENCHMARKS_IPO', 'CMAKE_INTERPROCEDURAL_OPTIMIZATION', 'TASKSMACK_ENABLE_IPO')
+# The build information benchmarks/CMakeLists.txt writes next to the binary for each configuration
+# (file(GENERATE)): the IPO that configuration of the TaskSmackBenchmarks target really builds with,
+# including the IPO cmake/CompilerOptions.cmake turns on through a normal variable the cache does
+# not show, and per configuration under multi-config generators. Read first (ipo_source
+# "buildinfo"). Older build trees, without it, fall back to these CMakeCache.txt entries, best
+# first. The same as BUILDINFO_NAME / IPO_SOURCES in tools/bench-manifest.py.
+$script:BuildInfoName = 'TaskSmackBenchmarks.buildinfo.json'
+$script:IpoSources = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION', 'TASKSMACK_ENABLE_IPO')
+
+function Get-BuildInfoIpo {
+    # The "ipo" (ON or OFF) of the build information next to the binary; $null without one. Kept in
+    # step with buildinfo_ipo in tools/bench-manifest.py.
+    param([string]$Binary)
+    $path = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($Binary))) $script:BuildInfoName
+    try { $info = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop } catch { return $null }
+    if ($info -isnot [pscustomobject] -or $null -eq $info.PSObject.Properties['ipo']) { return $null }
+    $ipo = $info.ipo
+    if ($ipo -is [string] -and ($ipo -ceq 'ON' -or $ipo -ceq 'OFF')) { return $ipo }
+    return $null
+}
 
 function Get-BuildProvenance {
     # The build tree is found by Find-BuildTree (build/<preset>); read from its CMakeCache.txt.
@@ -309,6 +324,8 @@ function Get-BuildProvenance {
         ipo              = $null
         ipo_source       = $null
     }
+    $ipo = Get-BuildInfoIpo -Binary $benchBin
+    if ($null -ne $ipo) { $build.ipo = $ipo; $build.ipo_source = 'buildinfo' }
     $tree = Find-BuildTree -Binary $benchBin
     if ($null -eq $tree) { return $build }
     $buildDir = $tree.Directory
@@ -326,9 +343,12 @@ function Get-BuildProvenance {
     # SHA-256 of the exact CMakeCache.txt value, UTF-8, unnormalized; null when the entry is absent.
     $build.cxx_flags_sha256 = Get-TextSha256 $cache['CMAKE_CXX_FLAGS']
     if ($build.build_type) { $build.cxx_flags_config_sha256 = Get-TextSha256 $cache["CMAKE_CXX_FLAGS_$($build.build_type.ToUpperInvariant())"] }
-    # Interprocedural optimization, and which cache entry said so ($script:IpoSources).
-    foreach ($key in $script:IpoSources) {
-        if ($cache.ContainsKey($key)) { $build.ipo = $cache[$key]; $build.ipo_source = $key; break }
+    # Without build information (an older tree), interprocedural optimization from the cache, and
+    # which entry said so ($script:IpoSources).
+    if ($null -eq $build.ipo_source) {
+        foreach ($key in $script:IpoSources) {
+            if ($cache.ContainsKey($key)) { $build.ipo = $cache[$key]; $build.ipo_source = $key; break }
+        }
     }
     $compilerFile = Get-CMakeCompilerFile -BuildDirectory $buildDir -Cache $cache
     if ($compilerFile) {

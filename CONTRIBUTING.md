@@ -752,11 +752,13 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
   flags' hashes, read from the build tree's `CMakeCache.txt` -- the nearest one above the binary,
   so a multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type -- the
   compiler id/version from the `CMakeFiles/<version>/` of the cache's own CMake version, or
-  unknown; `ipo` is what the `TaskSmackBenchmarks` target is built with, which
-  `benchmarks/CMakeLists.txt` caches as `TASKSMACK_BENCHMARKS_IPO` -- the cached
-  `CMAKE_INTERPROCEDURAL_OPTIMIZATION` can say `OFF` while `TASKSMACK_ENABLE_IPO` turns IPO on --
-  with `CMAKE_INTERPROCEDURAL_OPTIMIZATION` and then `TASKSMACK_ENABLE_IPO` as fallbacks for older
-  build trees, and `ipo_source` naming the entry used), `benchmark` (the arguments passed,
+  unknown; `ipo` is what that configuration of the `TaskSmackBenchmarks` target is built with,
+  read from the `TaskSmackBenchmarks.buildinfo.json` that `benchmarks/CMakeLists.txt` generates
+  next to the binary for each configuration (`ipo_source` `buildinfo`) -- the cached
+  `CMAKE_INTERPROCEDURAL_OPTIMIZATION` can say `OFF` while `TASKSMACK_ENABLE_IPO` turns IPO on,
+  and a multi-config generator can set it per configuration -- with the cached
+  `CMAKE_INTERPROCEDURAL_OPTIMIZATION` and then `TASKSMACK_ENABLE_IPO` as fallbacks for older
+  build trees, `ipo_source` naming the entry used), `benchmark` (the arguments passed,
   allowlisted or hashed as below), `exit_code`, and
   `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
   architecture).
@@ -794,7 +796,9 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
 For the script tests, `bench.ps1 -BenchmarkBinary <path> -OutputDirectory <dir>` and `bench.sh`'s
 `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables point the scripts at a
 stub binary and a scratch directory (`tools/test-bench.ps1`, `tests/tools/test_bench_sh.py`).
-They are also the only way to move the output: an extra `--benchmark_out` or
+A relative binary path, a bare name included, is relative to the current directory (the
+PowerShell location for `bench.ps1`) and is never looked up on `PATH`: the file that is checked
+and hashed is the one that runs. They are also the only way to move the output: an extra `--benchmark_out` or
 `--benchmark_out_format` argument is refused before the benchmark starts, because the redaction
 and the manifest only look at the file the script chose.
 

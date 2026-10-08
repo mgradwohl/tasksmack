@@ -224,6 +224,12 @@ exit [int]$env:STUB_EXIT
     $mutatingStub = Join-Path $mutateDir 'TaskSmackBenchmarks.cmd'
     Copy-Item -LiteralPath $stub -Destination $mutatingStub
     $launchedHash = (Get-FileHash -LiteralPath $mutatingStub -Algorithm SHA256).Hash.ToLowerInvariant()
+    # A decoy with the stub's name, put first on PATH by the 'bare-name' scenario: it leaves a marker
+    # and fails.
+    $decoyDir = Join-Path $root 'decoy'
+    $decoyMarker = Join-Path $root 'decoy-ran'
+    New-Item -ItemType Directory -Path $decoyDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $decoyDir 'TaskSmackBenchmarks.cmd') -Encoding ascii -Value @('@echo off', "type nul > `"$decoyMarker`"", 'exit /b 7')
     $scenarios = @(
         # #1445 review: a crash mid-run, from a session with native-command error promotion on.
         @{ Name = 'crashed'; StubExit = '5'; StubOutput = 'partial'; Promote = $true
@@ -247,6 +253,10 @@ exit [int]$env:STUB_EXIT
         # where the host started) still finds its build tree.
         @{ Name = 'relative'; StubExit = '0'; StubOutput = 'full'; Cwd = $root
             Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary 'build\fake-preset\bin\TaskSmackBenchmarks.cmd' -OutputDirectory $(& $quote (Join-Path $root 'relative')) '--benchmark_filter=BM_X'" }
+        # #1445 review: a bare -BenchmarkBinary name is the file in the PowerShell location, the one
+        # checked and hashed -- not a same-named decoy earlier on PATH.
+        @{ Name = 'bare-name'; StubExit = '0'; StubOutput = 'full'; Cwd = (Split-Path -Parent $stub); PathFirst = $decoyDir
+            Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary 'TaskSmackBenchmarks.cmd' -OutputDirectory $(& $quote (Join-Path $root 'bare-name')) '--benchmark_filter=BM_X'" }
         # Self-review: `& bench.ps1 -- --benchmark_filter=...` with no preset, as documented; the
         # stub exits 0 with output that cannot be redacted.
         @{ Name = 'separator'; StubExit = '0'; StubOutput = 'partial'
@@ -274,11 +284,13 @@ $outcomes = foreach ($scenario in (Get-Content -LiteralPath $Scenarios -Raw | Co
     $env:STUB_MUTATE = if ($scenario.PSObject.Properties['StubMutate']) { $scenario.StubMutate } else { $null }
     $PSNativeCommandUseErrorActionPreference = [bool]($scenario.PSObject.Properties['Promote'] -and $scenario.Promote)
     $here = Get-Location
+    $path = $env:PATH
     if ($scenario.PSObject.Properties['Cwd']) { Set-Location -LiteralPath $scenario.Cwd }
+    if ($scenario.PSObject.Properties['PathFirst']) { $env:PATH = $scenario.PathFirst + [IO.Path]::PathSeparator + $path }
     $threw = $false
     try { $log = & ([scriptblock]::Create($scenario.Command)) *>&1 | Out-String }
     catch { $threw = $true; $log = "$($_ | Out-String)" }
-    finally { Set-Location $here }
+    finally { Set-Location $here; $env:PATH = $path }
     [pscustomobject]@{ Name = $scenario.Name; Threw = $threw; Log = $log }
 }
 $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encoding utf8
@@ -462,6 +474,14 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     $relativeBuild = (Get-Content -LiteralPath $relative.Manifest[0].FullName -Raw | ConvertFrom-Json).build
     Assert-True ($relativeBuild.build_type -eq 'Release' -and $relativeBuild.compiler_version -eq '22.1.8') "A relative binary must find its build tree: $($relativeBuild | ConvertTo-Json -Compress)"
 
+    # ── #1445 review: a bare -BenchmarkBinary is the file in the location, not one on PATH ─────
+    $bare = $outcomes['bare-name']
+    Assert-True (-not (Test-Path -LiteralPath $decoyMarker)) "The decoy on PATH was launched:`n$($bare.Log)"
+    Assert-True ($bare.ExitCode -eq 0 -and $bare.Result.Count -eq 1 -and $bare.Manifest.Count -eq 1) "Bare-name run failed:`n$($bare.Log)"
+    $bareManifest = Get-Content -LiteralPath $bare.Manifest[0].FullName -Raw | ConvertFrom-Json
+    $stubHash = (Get-FileHash -LiteralPath $stub -Algorithm SHA256).Hash.ToLowerInvariant()
+    Assert-True ($bareManifest.binary.sha256 -eq $stubHash -and $bareManifest.exit_code -eq 0) "The manifest must hash the binary that ran: $($bareManifest.binary.sha256) vs $stubHash"
+
     # ── #1445 review: concurrent runs claim distinct output names, never an earlier one's ─────
     foreach ($entry in @($processes | Where-Object { $_.Name -like 'racer *' })) {
         Assert-True ($entry.Process.ExitCode -eq 0) "$($entry.Name) exited $($entry.Process.ExitCode); a successful run must exit 0"
@@ -635,18 +655,38 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     }
 
     # ── #1445 review: IPO is what the benchmark target is built with, not the cached variable ──
+    # CompilerOptions.cmake turns IPO on through a normal variable, so the cached
+    # CMAKE_INTERPROCEDURAL_OPTIMIZATION can say OFF, and a multi-config generator can set IPO per
+    # configuration. benchmarks/CMakeLists.txt writes each configuration's effective IPO to
+    # TaskSmackBenchmarks.buildinfo.json next to its binary; it wins over the cache. Trees without it
+    # keep the old fallbacks. The same cases as tests/tools/test_bench_sh.py.
+    $conflicting = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF', 'TASKSMACK_ENABLE_IPO:BOOL=ON')
+    $oldIpo = 'CMAKE_INTERPROCEDURAL_OPTIMIZATION'
     foreach ($case in @(
-            @{ Name = 'ipo-effective'; Lines = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF', 'TASKSMACK_ENABLE_IPO:BOOL=ON', 'TASKSMACK_BENCHMARKS_IPO:INTERNAL=ON'); Ipo = 'ON'; Source = 'TASKSMACK_BENCHMARKS_IPO' }
-            @{ Name = 'ipo-old-cache'; Lines = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF', 'TASKSMACK_ENABLE_IPO:BOOL=ON'); Ipo = 'OFF'; Source = 'CMAKE_INTERPROCEDURAL_OPTIMIZATION' }
-            @{ Name = 'ipo-option-only'; Lines = @('TASKSMACK_ENABLE_IPO:BOOL=ON'); Ipo = 'ON'; Source = 'TASKSMACK_ENABLE_IPO' }
-            @{ Name = 'ipo-unknown'; Lines = @(); Ipo = $null; Source = $null }
+            @{ Name = 'ipo-single'; Cache = $conflicting; Bin = 'bin'; BuildInfo = '{"config": "Release", "ipo": "ON"}'; BuildType = 'Release'; Ipo = 'ON'; Source = 'buildinfo' }
+            # Multi-config: no CMAKE_BUILD_TYPE; each bin/<Config>/ has its own build information,
+            # each disagreeing with the generic cache value.
+            @{ Name = 'ipo-multi-on'; Cache = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=ON'); Bin = 'bin\Debug'; BuildInfo = '{"config": "Debug", "ipo": "OFF"}'; BuildType = 'Debug'; Ipo = 'OFF'; Source = 'buildinfo' }
+            @{ Name = 'ipo-multi-off'; Cache = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF'); Bin = 'bin\Release'; BuildInfo = '{"config": "Release", "ipo": "ON"}'; BuildType = 'Release'; Ipo = 'ON'; Source = 'buildinfo' }
+            @{ Name = 'ipo-no-cache'; Cache = $null; Bin = 'bin'; BuildInfo = '{"config": "Release", "ipo": "ON"}'; BuildType = $null; Ipo = 'ON'; Source = 'buildinfo' }
+            # Unusable build information falls back to the cache.
+            @{ Name = 'ipo-bad-value'; Cache = $conflicting; Bin = 'bin'; BuildInfo = '{"ipo": "on"}'; BuildType = 'Release'; Ipo = 'OFF'; Source = $oldIpo }
+            @{ Name = 'ipo-bad-json'; Cache = $conflicting; Bin = 'bin'; BuildInfo = '{"ipo": '; BuildType = 'Release'; Ipo = 'OFF'; Source = $oldIpo }
+            @{ Name = 'ipo-old-cache'; Cache = $conflicting; Bin = 'bin'; BuildInfo = $null; BuildType = 'Release'; Ipo = 'OFF'; Source = $oldIpo }
+            @{ Name = 'ipo-option-only'; Cache = @('TASKSMACK_ENABLE_IPO:BOOL=ON'); Bin = 'bin'; BuildInfo = $null; BuildType = 'Release'; Ipo = 'ON'; Source = 'TASKSMACK_ENABLE_IPO' }
+            @{ Name = 'ipo-unknown'; Cache = @(); Bin = 'bin'; BuildInfo = $null; BuildType = 'Release'; Ipo = $null; Source = $null }
         )) {
         $tree = Join-Path $root "build\$($case.Name)"
-        New-Item -ItemType Directory -Path (Join-Path $tree 'bin') | Out-Null
-        Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value (@('CMAKE_BUILD_TYPE:STRING=Release') + $case.Lines)
-        $benchBin = Join-Path $tree 'bin\TaskSmackBenchmarks.cmd'
+        $binaryDir = Join-Path $tree $case.Bin
+        New-Item -ItemType Directory -Path $binaryDir | Out-Null
+        if ($null -ne $case.Cache) {
+            $single = if ($case.Bin -eq 'bin') { @('CMAKE_BUILD_TYPE:STRING=Release') } else { @() }
+            Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value (@($single) + @($case.Cache))
+        }
+        if ($null -ne $case.BuildInfo) { [IO.File]::WriteAllText((Join-Path $binaryDir 'TaskSmackBenchmarks.buildinfo.json'), $case.BuildInfo) }
+        $benchBin = Join-Path $binaryDir 'TaskSmackBenchmarks.cmd'
         $build = Get-BuildProvenance
-        Assert-True ($build.ipo -ceq $case.Ipo -and $build.ipo_source -ceq $case.Source) "$($case.Name): ipo=$($build.ipo) source=$($build.ipo_source)"
+        Assert-True ($build.build_type -ceq $case.BuildType -and $build.ipo -ceq $case.Ipo -and $build.ipo_source -ceq $case.Source) "$($case.Name): build_type=$($build.build_type) ipo=$($build.ipo) source=$($build.ipo_source)"
     }
 
     # ── #1445 review: the leak check itself, with a controlled user and home ────────────────────

@@ -200,22 +200,26 @@ class BenchShTest(unittest.TestCase):
         stub_exit: int,
         stub_output: str = "full",
         extra: tuple[str, ...] = (),
-        binary: Path | None = None,
+        binary: Path | str | None = None,
         script: Path = BENCH_SH,
         mutate: bool = False,
         leading: tuple[str, ...] = ("fake", "--"),
+        cwd: Path | None = None,
+        path_first: Path | None = None,
     ):
         out_dir = self.root / name
         env = dict(os.environ)
         env.pop("BENCHMARK_REPORT_AGGREGATES_ONLY", None)
         env.update(
-            TASKSMACK_BENCH_BIN=posix(binary or self.stub),
+            TASKSMACK_BENCH_BIN=binary if isinstance(binary, str) else posix(binary or self.stub),
             TASKSMACK_BENCH_OUT_DIR=posix(out_dir),
             STUB_EXIT=str(stub_exit),
             STUB_OUTPUT=stub_output,
             STUB_HOST=socket.gethostname(),
             STUB_MUTATE="1" if mutate else "",
-            PATH=str(self.shim_dir) + os.pathsep + os.environ.get("PATH", ""),
+            PATH=os.pathsep.join(
+                [*([str(path_first)] if path_first else []), str(self.shim_dir), os.environ.get("PATH", "")]
+            ),
             # Every hop speaks UTF-8 whatever the runner's locale and code page: bash, its argument
             # conversion for native programs, and the Python helpers it starts.
             LC_ALL="C.UTF-8",
@@ -224,6 +228,7 @@ class BenchShTest(unittest.TestCase):
         result = subprocess.run(
             [BASH, posix(script), *leading, "--benchmark_filter=BM_X", *extra],
             env=env,
+            cwd=cwd,
             capture_output=True,
             encoding="utf-8",
             errors="replace",
@@ -269,6 +274,25 @@ class BenchShTest(unittest.TestCase):
         self.assertNotEqual(hashlib.sha256(self.stub.read_bytes()).hexdigest(), launched, "the stub did not change")
         manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
         self.assertEqual(manifest["binary"]["sha256"], launched)
+        self.assertEqual(manifest["exit_code"], 0)
+
+    def test_a_bare_binary_name_is_the_file_in_the_current_directory_not_one_on_path(self):
+        # #1445 review: TASKSMACK_BENCH_BIN=TaskSmackBenchmarks is checked and hashed as the file in
+        # the current directory, so that file is what runs -- not a same-named program on PATH.
+        decoy_dir = self.root / "decoy"
+        decoy_dir.mkdir()
+        ran = self.root / "decoy-ran"
+        decoy = decoy_dir / "TaskSmackBenchmarks"
+        decoy.write_text(f'#!/bin/sh\n: > "{posix(ran)}"\nexit 7\n', encoding="utf-8", newline="\n")
+        decoy.chmod(decoy.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        code, output, results, manifests = self.run_bench(
+            "bare-name", 0, binary="TaskSmackBenchmarks", cwd=self.stub.parent, path_first=decoy_dir
+        )
+        self.assertEqual(code, 0, output)
+        self.assertFalse(ran.exists(), "the decoy on PATH was launched")
+        self.assertEqual(len(results), 1, output)
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        self.assertEqual(manifest["binary"]["sha256"], hashlib.sha256(self.stub.read_bytes()).hexdigest())
         self.assertEqual(manifest["exit_code"], 0)
 
     def test_a_compiler_directory_not_matching_the_cache_is_not_guessed(self):
@@ -612,32 +636,38 @@ class ScrubberTest(unittest.TestCase):
 
     def test_ipo_is_what_the_benchmark_target_is_built_with(self):
         # #1445 review: CompilerOptions.cmake turns IPO on through a normal variable, so the cached
-        # CMAKE_INTERPROCEDURAL_OPTIMIZATION can say OFF; benchmarks/CMakeLists.txt caches the
-        # target's own setting as TASKSMACK_BENCHMARKS_IPO. Older trees keep the old fallbacks.
+        # CMAKE_INTERPROCEDURAL_OPTIMIZATION can say OFF, and a multi-config generator can set IPO per
+        # configuration. benchmarks/CMakeLists.txt writes each configuration's effective IPO to
+        # TaskSmackBenchmarks.buildinfo.json next to its binary; it wins over the cache. Trees
+        # without it keep the old fallbacks.
         module = load_bench_manifest()
+        conflicting = "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF\nTASKSMACK_ENABLE_IPO:BOOL=ON\n"
         with tempfile.TemporaryDirectory() as tmp:
-            for name, lines, ipo, source in (
-                (
-                    "effective",
-                    "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF\nTASKSMACK_ENABLE_IPO:BOOL=ON\nTASKSMACK_BENCHMARKS_IPO:INTERNAL=ON\n",
-                    "ON",
-                    "TASKSMACK_BENCHMARKS_IPO",
-                ),
-                (
-                    "old-cache",
-                    "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF\nTASKSMACK_ENABLE_IPO:BOOL=ON\n",
-                    "OFF",
-                    "CMAKE_INTERPROCEDURAL_OPTIMIZATION",
-                ),
-                ("option-only", "TASKSMACK_ENABLE_IPO:BOOL=ON\n", "ON", "TASKSMACK_ENABLE_IPO"),
-                ("unknown", "", None, None),
+            for name, cache, bin_dir, buildinfo, build_type, ipo, source in (
+                ("single", conflicting, "bin", '{"config": "Release", "ipo": "ON"}', "Release", "ON", "buildinfo"),
+                # Multi-config: no CMAKE_BUILD_TYPE; each bin/<Config>/ has its own build information,
+                # each disagreeing with the generic cache value.
+                ("multi-on", "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=ON\n", "bin/Debug", '{"config": "Debug", "ipo": "OFF"}', "Debug", "OFF", "buildinfo"),
+                ("multi-off", "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF\n", "bin/Release", '{"config": "Release", "ipo": "ON"}', "Release", "ON", "buildinfo"),
+                ("no-cache", None, "bin", '{"config": "Release", "ipo": "ON"}', None, "ON", "buildinfo"),
+                # Unusable build information falls back to the cache.
+                ("bad-value", conflicting, "bin", '{"ipo": "on"}', "Release", "OFF", "CMAKE_INTERPROCEDURAL_OPTIMIZATION"),
+                ("bad-json", conflicting, "bin", '{"ipo": ', "Release", "OFF", "CMAKE_INTERPROCEDURAL_OPTIMIZATION"),
+                ("old-cache", conflicting, "bin", None, "Release", "OFF", "CMAKE_INTERPROCEDURAL_OPTIMIZATION"),
+                ("option-only", "TASKSMACK_ENABLE_IPO:BOOL=ON\n", "bin", None, "Release", "ON", "TASKSMACK_ENABLE_IPO"),
+                ("unknown", "", "bin", None, "Release", None, None),
             ):
                 with self.subTest(case=name):
                     tree = Path(tmp) / name
-                    (tree / "bin").mkdir(parents=True)
-                    (tree / "CMakeCache.txt").write_text("CMAKE_BUILD_TYPE:STRING=Release\n" + lines, encoding="utf-8")
-                    build = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
-                    self.assertEqual((build["ipo"], build["ipo_source"]), (ipo, source))
+                    binary_dir = tree / bin_dir
+                    binary_dir.mkdir(parents=True)
+                    if cache is not None:
+                        single = "CMAKE_BUILD_TYPE:STRING=Release\n" if bin_dir == "bin" else ""
+                        (tree / "CMakeCache.txt").write_text(single + cache, encoding="utf-8")
+                    if buildinfo is not None:
+                        (binary_dir / "TaskSmackBenchmarks.buildinfo.json").write_text(buildinfo, encoding="utf-8")
+                    build = module.build_provenance(binary_dir / "TaskSmackBenchmarks")
+                    self.assertEqual((build["build_type"], build["ipo"], build["ipo_source"]), (build_type, ipo, source))
 
     def test_an_absent_cache_entry_hashes_as_null_an_empty_one_as_empty(self):
         # #1445 review: unknown flags stay distinguishable from explicitly empty ones.
