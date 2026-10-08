@@ -85,7 +85,8 @@ struct SystemCounters
     double loadAvg5 = 0.0;
     double loadAvg15 = 0.0;
 
-    // CPU frequency in MHz (current, may vary per-core)
+    // The current CPU clock in MHz (#1184). Linux: cpu0's cpufreq reading. Windows: the base clock (~MHz)
+    // scaled by "% Processor Performance", the processors' average, as Task Manager's "Speed".
     uint64_t cpuFreqMHz = 0;
 
     // Network counters (cumulative bytes across the interfaces counted in the Total; see

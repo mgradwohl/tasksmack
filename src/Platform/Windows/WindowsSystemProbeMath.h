@@ -6,6 +6,7 @@
 #include "Platform/SystemTypes.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -334,6 +335,33 @@ struct NetworkTotals
         }
     }
     return totals;
+}
+
+/// Highest "% Processor Performance" taken as a reading. Turbo runs a CPU above its base clock, so
+/// readings over 100 are normal (a 2 GHz part boosting to 5.5 GHz reads 275); anything past this is
+/// a garbage counter value, not a clock.
+inline constexpr double MAX_PROCESSOR_PERFORMANCE_PERCENT = 1000.0;
+
+/// The CPU's current clock in MHz, derived as Task Manager derives its "Speed" (#1184): the base clock
+/// (the registry's ~MHz) scaled by PDH's "\Processor Information(_Total)\% Processor Performance",
+/// the processors' average speed as a percentage of base. The registry's ~MHz on its own is the base
+/// clock, which is not what Linux's cpufreq reports (the current clock) under the same hasCpuFreq.
+/// @param baseMHz                     The ~MHz value under HARDWARE\DESCRIPTION\System\CentralProcessor\0; 0 = unknown.
+/// @param processorPerformancePercent The PDH reading, or nullopt when there is none yet (PDH needs two
+///                                    samples for a rate) or the counter is unavailable.
+/// @return The current clock; the base clock when there is no usable reading; 0 when the base is unknown.
+[[nodiscard]] inline std::uint64_t currentCpuFrequencyMHz(std::uint64_t baseMHz, std::optional<double> processorPerformancePercent) noexcept
+{
+    if (baseMHz == 0 || !processorPerformancePercent.has_value())
+    {
+        return baseMHz;
+    }
+    const double percent = *processorPerformancePercent;
+    if (!std::isfinite(percent) || percent <= 0.0 || percent > MAX_PROCESSOR_PERFORMANCE_PERCENT)
+    {
+        return baseMHz;
+    }
+    return static_cast<std::uint64_t>(std::llround((static_cast<double>(baseMHz) * percent) / 100.0));
 }
 
 } // namespace Platform
