@@ -52,12 +52,13 @@ if(WIN32)
         set_tests_properties(EtwCaptureScript PROPERTIES TIMEOUT 180)
         add_test(NAME EtwAnalysisScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
-        # tools/bench.ps1 against a stub benchmark binary: benchmark failures fail the script (#1423).
+        # tools/bench.ps1 against a stub benchmark binary: exit-code propagation (#1423) and the
+        # provenance manifest (#1424).
         add_test(NAME BenchScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
         # The stub benchmark is a Python script when CMake's interpreter is passed in (much cheaper
-        # to start than PowerShell). The test takes a few seconds; the 180 s limit only keeps it
-        # clear of the 60 s --timeout the CI ctest steps pass under heavy load.
+        # to start than PowerShell). The test runs in well under 30 s; the 180 s limit only keeps it
+        # clear of the 60 s --timeout the CI ctest steps pass under heavy load, as EtwCaptureScript does.
         set_tests_properties(BenchScript PROPERTIES TIMEOUT 180 ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
@@ -66,8 +67,8 @@ if(WIN32)
     endif()
 endif()
 
-# tools/bench.sh against a stub benchmark binary (#1423), wherever bash exists. On Windows only Git
-# for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
+# tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows
+# only Git for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
 if(WIN32)
     find_program(TASKSMACK_BASH NAMES bash
         HINTS "$ENV{ProgramFiles}/Git/bin" "$ENV{ProgramW6432}/Git/bin" NO_DEFAULT_PATH)
@@ -253,6 +254,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsDXGIGPUProbe.cpp
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
+    Platform/test_WindowsHandles.cpp
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
