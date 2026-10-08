@@ -124,6 +124,15 @@ def hide_identity(value, prefixes: list[str], user: str | None, hosts: list[str]
     return _hide_token(value, user, "<user>")
 
 
+# Where the build's interprocedural optimization is read from, best first. benchmarks/CMakeLists.txt
+# caches TASKSMACK_BENCHMARKS_IPO from the TaskSmackBenchmarks target's own
+# INTERPROCEDURAL_OPTIMIZATION property -- what the binary was really built with, including the IPO
+# that cmake/CompilerOptions.cmake turns on through a normal variable the cache does not show.
+# Older build trees fall back to the cached CMAKE_INTERPROCEDURAL_OPTIMIZATION, then the
+# TASKSMACK_ENABLE_IPO option. The same order as $script:IpoSources in tools/bench.ps1.
+IPO_SOURCES = ("TASKSMACK_BENCHMARKS_IPO", "CMAKE_INTERPROCEDURAL_OPTIMIZATION", "TASKSMACK_ENABLE_IPO")
+
+
 def find_build_tree(binary: Path, max_levels: int = 4) -> tuple[Path | None, str | None]:
     """The binary's build tree and multi-config configuration.
 
@@ -156,6 +165,7 @@ def build_provenance(binary: Path) -> dict:
         "cxx_flags_sha256": None,
         "cxx_flags_config_sha256": None,
         "ipo": None,
+        "ipo_source": None,
     }
     build_dir, config = find_build_tree(binary)
     if build_dir is None:
@@ -177,7 +187,11 @@ def build_provenance(binary: Path) -> dict:
     build["cxx_flags_sha256"] = text_sha256(cache.get("CMAKE_CXX_FLAGS"))
     if build["build_type"]:
         build["cxx_flags_config_sha256"] = text_sha256(cache.get(f"CMAKE_CXX_FLAGS_{build['build_type'].upper()}"))
-    build["ipo"] = cache.get("CMAKE_INTERPROCEDURAL_OPTIMIZATION", cache.get("TASKSMACK_ENABLE_IPO"))
+    # Interprocedural optimization, and which cache entry said so (IPO_SOURCES).
+    for key in IPO_SOURCES:
+        if key in cache:
+            build["ipo"], build["ipo_source"] = cache[key], key
+            break
     # A reused build tree keeps CMakeFiles/<version>/ from every CMake that configured it: read the
     # one matching the cache's CMake version, and leave the compiler unknown rather than guess.
     if compiler_file := cmake_compiler_file(build_dir, cache):
@@ -271,6 +285,7 @@ IDENTITY_EXEMPT = frozenset(
         "build.compiler_id",
         "build.compiler_version",
         "build.ipo",
+        "build.ipo_source",
         "build.cxx_flags_sha256",
         "build.cxx_flags_config_sha256",
         "benchmark.raw_repetitions",

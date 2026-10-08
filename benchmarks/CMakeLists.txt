@@ -171,3 +171,26 @@ else()
     )
 endif()
 unset(_is_multi_config)
+
+# The interprocedural optimization this binary is really built with, cached for the benchmark
+# provenance manifests (tools/bench.ps1, tools/bench-manifest.py). The target property is what
+# counts: CMake initializes it from CMAKE_INTERPROCEDURAL_OPTIMIZATION, which
+# cmake/CompilerOptions.cmake sets as a normal variable when TASKSMACK_ENABLE_IPO is on and IPO is
+# supported -- the cached CMAKE_INTERPROCEDURAL_OPTIMIZATION can still say OFF. For a single-config
+# build a configuration-specific INTERPROCEDURAL_OPTIMIZATION_<CONFIG> wins, as it does in the build.
+get_target_property(_benchmarks_ipo TaskSmackBenchmarks INTERPROCEDURAL_OPTIMIZATION)
+if(CMAKE_BUILD_TYPE)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _benchmarks_config)
+    get_target_property(_benchmarks_ipo_config TaskSmackBenchmarks INTERPROCEDURAL_OPTIMIZATION_${_benchmarks_config})
+    if(NOT _benchmarks_ipo_config MATCHES "-NOTFOUND$")
+        set(_benchmarks_ipo "${_benchmarks_ipo_config}")
+    endif()
+endif()
+if(_benchmarks_ipo)
+    set(TASKSMACK_BENCHMARKS_IPO ON CACHE INTERNAL "IPO the TaskSmackBenchmarks target is built with (benchmark manifests)")
+else()
+    set(TASKSMACK_BENCHMARKS_IPO OFF CACHE INTERNAL "IPO the TaskSmackBenchmarks target is built with (benchmark manifests)")
+endif()
+unset(_benchmarks_ipo)
+unset(_benchmarks_ipo_config)
+unset(_benchmarks_config)

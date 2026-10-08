@@ -371,7 +371,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     foreach ($section in @{
             git       = @('commit', 'branch', 'dirty')
             binary    = @('name', 'sha256')
-            build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags_sha256', 'cxx_flags_config_sha256', 'ipo')
+            build     = @('build_type', 'generator', 'compiler', 'compiler_id', 'compiler_version', 'cxx_flags_sha256', 'cxx_flags_config_sha256', 'ipo', 'ipo_source')
             benchmark = @('args', 'raw_repetitions', 'report_aggregates_only')
             machine   = @('label', 'cpu_model', 'logical_cores', 'os_name', 'os_version', 'arch')
         }.GetEnumerator()) {
@@ -387,7 +387,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($manifest.binary.name -eq 'TaskSmackBenchmarks.cmd') 'Binary name must be the leaf only'
     Assert-True ($manifest.binary.sha256 -eq (Get-FileHash -LiteralPath $stub -Algorithm SHA256).Hash.ToLowerInvariant()) 'Binary SHA-256'
     Assert-True ($manifest.build.build_type -eq 'Release' -and $manifest.build.compiler -eq 'clang++.exe' -and $manifest.build.compiler_id -eq 'Clang' -and
-        $manifest.build.compiler_version -eq '22.1.8' -and $manifest.build.ipo -eq 'ON') "Build provenance: $($manifest.build | ConvertTo-Json -Compress)"
+        $manifest.build.compiler_version -eq '22.1.8' -and $manifest.build.ipo -eq 'ON' -and $manifest.build.ipo_source -eq 'TASKSMACK_ENABLE_IPO') "Build provenance: $($manifest.build | ConvertTo-Json -Compress)"
     Assert-True ($manifest.benchmark.raw_repetitions -eq $true -and $manifest.benchmark.report_aggregates_only -eq $false) 'Raw repetitions must be kept'
     $recordedArgs = @($manifest.benchmark.args)
     Assert-True ($recordedArgs -notcontains '--benchmark_report_aggregates_only=true') 'Aggregates-only reporting must not be forced on'
@@ -632,6 +632,21 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         $build = Get-BuildProvenance
         Assert-True ($build.cxx_flags_sha256 -ceq $case.Expected -and $build.cxx_flags_config_sha256 -ceq $case.Expected) "$($case.Name): $($build | ConvertTo-Json -Compress)"
         if ($null -eq $case.Expected) { Assert-True ($null -eq $build.cxx_flags_sha256 -and $null -eq $build.cxx_flags_config_sha256) "$($case.Name) must be null, not a hash" }
+    }
+
+    # ── #1445 review: IPO is what the benchmark target is built with, not the cached variable ──
+    foreach ($case in @(
+            @{ Name = 'ipo-effective'; Lines = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF', 'TASKSMACK_ENABLE_IPO:BOOL=ON', 'TASKSMACK_BENCHMARKS_IPO:INTERNAL=ON'); Ipo = 'ON'; Source = 'TASKSMACK_BENCHMARKS_IPO' }
+            @{ Name = 'ipo-old-cache'; Lines = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF', 'TASKSMACK_ENABLE_IPO:BOOL=ON'); Ipo = 'OFF'; Source = 'CMAKE_INTERPROCEDURAL_OPTIMIZATION' }
+            @{ Name = 'ipo-option-only'; Lines = @('TASKSMACK_ENABLE_IPO:BOOL=ON'); Ipo = 'ON'; Source = 'TASKSMACK_ENABLE_IPO' }
+            @{ Name = 'ipo-unknown'; Lines = @(); Ipo = $null; Source = $null }
+        )) {
+        $tree = Join-Path $root "build\$($case.Name)"
+        New-Item -ItemType Directory -Path (Join-Path $tree 'bin') | Out-Null
+        Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value (@('CMAKE_BUILD_TYPE:STRING=Release') + $case.Lines)
+        $benchBin = Join-Path $tree 'bin\TaskSmackBenchmarks.cmd'
+        $build = Get-BuildProvenance
+        Assert-True ($build.ipo -ceq $case.Ipo -and $build.ipo_source -ceq $case.Source) "$($case.Name): ipo=$($build.ipo) source=$($build.ipo_source)"
     }
 
     # ── #1445 review: the leak check itself, with a controlled user and home ────────────────────

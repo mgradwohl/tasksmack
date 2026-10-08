@@ -71,6 +71,7 @@ SECTION_KEYS = {
         "cxx_flags_sha256",
         "cxx_flags_config_sha256",
         "ipo",
+        "ipo_source",
     },
     "benchmark": {"args", "raw_repetitions", "report_aggregates_only"},
     "machine": {"label", "cpu_model", "logical_cores", "os_name", "os_version", "arch"},
@@ -608,6 +609,35 @@ class ScrubberTest(unittest.TestCase):
                 self.assertEqual(module.record_argument(whole), f"sha256:{digest(whole)}")
         self.assertEqual(module.record_argument("--benchmark_out=/tmp/x/out/fake-1.json"), "--benchmark_out=fake-1.json")
         self.assertNotEqual(module.record_argument("--benchmark_context=a=1"), module.record_argument("--benchmark_context=a=2"))
+
+    def test_ipo_is_what_the_benchmark_target_is_built_with(self):
+        # #1445 review: CompilerOptions.cmake turns IPO on through a normal variable, so the cached
+        # CMAKE_INTERPROCEDURAL_OPTIMIZATION can say OFF; benchmarks/CMakeLists.txt caches the
+        # target's own setting as TASKSMACK_BENCHMARKS_IPO. Older trees keep the old fallbacks.
+        module = load_bench_manifest()
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, lines, ipo, source in (
+                (
+                    "effective",
+                    "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF\nTASKSMACK_ENABLE_IPO:BOOL=ON\nTASKSMACK_BENCHMARKS_IPO:INTERNAL=ON\n",
+                    "ON",
+                    "TASKSMACK_BENCHMARKS_IPO",
+                ),
+                (
+                    "old-cache",
+                    "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF\nTASKSMACK_ENABLE_IPO:BOOL=ON\n",
+                    "OFF",
+                    "CMAKE_INTERPROCEDURAL_OPTIMIZATION",
+                ),
+                ("option-only", "TASKSMACK_ENABLE_IPO:BOOL=ON\n", "ON", "TASKSMACK_ENABLE_IPO"),
+                ("unknown", "", None, None),
+            ):
+                with self.subTest(case=name):
+                    tree = Path(tmp) / name
+                    (tree / "bin").mkdir(parents=True)
+                    (tree / "CMakeCache.txt").write_text("CMAKE_BUILD_TYPE:STRING=Release\n" + lines, encoding="utf-8")
+                    build = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
+                    self.assertEqual((build["ipo"], build["ipo_source"]), (ipo, source))
 
     def test_an_absent_cache_entry_hashes_as_null_an_empty_one_as_empty(self):
         # #1445 review: unknown flags stay distinguishable from explicitly empty ones.

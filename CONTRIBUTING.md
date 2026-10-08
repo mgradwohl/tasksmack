@@ -752,7 +752,12 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
   flags' hashes, read from the build tree's `CMakeCache.txt` -- the nearest one above the binary,
   so a multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type -- the
   compiler id/version from the `CMakeFiles/<version>/` of the cache's own CMake version, or
-  unknown), `benchmark` (the arguments passed, allowlisted or hashed as below), `exit_code`, and
+  unknown; `ipo` is what the `TaskSmackBenchmarks` target is built with, which
+  `benchmarks/CMakeLists.txt` caches as `TASKSMACK_BENCHMARKS_IPO` -- the cached
+  `CMAKE_INTERPROCEDURAL_OPTIMIZATION` can say `OFF` while `TASKSMACK_ENABLE_IPO` turns IPO on --
+  with `CMAKE_INTERPROCEDURAL_OPTIMIZATION` and then `TASKSMACK_ENABLE_IPO` as fallbacks for older
+  build trees, and `ipo_source` naming the entry used), `benchmark` (the arguments passed,
+  allowlisted or hashed as below), `exit_code`, and
   `machine`, an anonymized machine class (CPU model, logical core count, OS name/version,
   architecture).
   - The benchmark arguments are recorded as written only when they are Google Benchmark options
