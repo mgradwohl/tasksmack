@@ -240,7 +240,7 @@ On Linux, the Process Details **Overview** tab also has a collapsible **Connecti
 
 ### Process Actions
 
-Right-click any process row to access actions:
+Right-click any process row for Terminate, Kill, Stop and Resume. The **Actions** block of Process Details' **Overview** tab has those too, plus the priority controls, which are only there:
 
 | Action | Linux | Windows |
 |--------|-------|---------|
@@ -248,13 +248,28 @@ Right-click any process row to access actions:
 | Kill (SIGKILL / force) | ✅ | ✅ |
 | Stop (SIGSTOP / suspend) | ✅ | ❌ |
 | Resume (SIGCONT) | ✅ | ❌ |
-| Change priority (nice) | ✅ | ✅ (mapped) |
+| Change priority (nice), Process Details only | ✅ | ✅ (mapped) |
+| Change I/O priority (ionice class and level), Process Details only | ✅ | ❌ |
 
-Process Details has the same actions for the process it shows, in the **Actions** block of its **Overview** tab, beside the Identity and Runtime blocks: the Terminate and Kill buttons (and Suspend and Resume on Linux) with the **Priority** control next to them. When the window is too narrow for three blocks side by side, the Actions block moves onto its own row under Identity and Runtime. **F9** brings the Overview tab forward to show its Kill confirmation.
+In Process Details the Actions block sits beside the Identity and Runtime blocks: the Terminate and Kill buttons (and Suspend and Resume on Linux) with the priority controls next to them, in a block no taller than Identity and Runtime, so the charts keep their height (it scrolls if its controls need more). When the window is too narrow for three blocks side by side, the Actions block moves onto its own row under Identity and Runtime, at its full height. **F9** brings the Overview tab forward to show its Kill confirmation.
 
 Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
 
 **Acting on several processes at once.** Right-click any row of a multi-selection (see "Selecting several processes" above) and the menu's actions read **Suspend 5 processes...**, **Terminate 5 processes...** and so on: they act on every selected process (Details and the Copy items still act on the row you right-clicked). Right-clicking a row outside the selection selects just that row, as before. One confirmation covers the whole batch: it says what the action does, lists the processes by name and PID (the first eight, then "and N more"), and always names TaskSmack itself and PID 1 (the init process) when either is among them, whatever the count, so neither can be acted on unnoticed. Each process is then acted on in turn, identified by its PID and start time exactly as a single action is, so one that has exited, or whose PID now belongs to another process, is refused rather than hit by mistake. TaskSmack's own process, if selected, is acted on last. The result is one line in the toolbar -- "Kill sent to 5 processes", or "Kill sent to 3 of 5 processes; 2 failed: ..." quoting the first few errors (when the line is cut short, hover it for the full text) -- rather than a message per process. Changing the priority of several processes at once is not available yet; it is done one process at a time in Process Details.
+
+#### I/O Priority (Linux)
+
+On Linux, the Actions block of Process Details has an **I/O Priority** control under the nice slider. Its header shows the process's current setting in `ionice` terms, for example `best-effort 4`, `idle`, or `default (best-effort 4 from nice)`.
+
+- **Class:**
+  - **Default** follows the nice value. The kernel uses best-effort at level (nice + 20) / 5.
+  - **Best-effort** shares the disk by level.
+  - **Idle** gets the disk only when no other process wants it.
+  - **Realtime** is served before everything else.
+- **Level** (Best-effort and Realtime only): 0 is the highest priority and 7 the lowest.
+- **Apply** sets the class and level on every thread of the process. Like the nice control, it applies only to the process the edit was made for. Selecting another process discards an unapplied edit.
+
+Lowering a process you own (Idle, or a higher best-effort level) needs no privilege. Two changes need `CAP_SYS_NICE` (or root): setting **Realtime**, and changing **another user's process**. Without that privilege the change is refused with an error saying so. Windows has no equivalent, so the control is not shown there.
 
 ### Themes and Configuration
 
@@ -287,6 +302,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (TCP EStats; administrator required) |
 | Thread count per process | ✅ | ✅ |
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |
+| Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |
 | Process terminate / kill | ✅ | ✅ |
 | Process stop / resume (SIGSTOP/SIGCONT) | ✅ | ❌ |
 | I/O wait time (`iowait`) | ✅ (shown as its own band; counted as idle, not busy, so CPU % matches Windows) | ❌ (Windows concept does not exist) |

@@ -26,6 +26,10 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult stop(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult resume(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
+    /// Windows has no ionice equivalent (#803): refused, and canSetIoPriority is false.
+    [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
+    /// Refused, as setIoPriority() is.
+    [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
 
   private:
     /// Helper to terminate a process with given exit code

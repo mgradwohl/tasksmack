@@ -26,18 +26,24 @@ namespace ProcessActionsBlock
 {
 
 /// Whether the block has anything to offer: the platform can run at least one action, or set
-/// priority. Without, it is not drawn at all.
+/// priority or I/O priority. Without, it is not drawn at all.
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
-           capabilities.canSetPriority;
+           capabilities.canSetPriority || capabilities.canSetIoPriority;
+}
+
+/// Whether ProcessPriorityView draws anything: the CPU priority control, or the I/O priority one (#803).
+[[nodiscard]] constexpr bool hasPriorityControls(const Platform::ProcessActionCapabilities& capabilities) noexcept
+{
+    return capabilities.canSetPriority || capabilities.canSetIoPriority;
 }
 
 /// What the block's parts need across, in pixels, at the current font (needs an ImGui frame).
 struct Widths
 {
     float controls = 0.0F;  ///< The 2x2 button grid, at the buttons' unclipped width.
-    float priority = 0.0F;  ///< The priority control; 0 when @p capabilities cannot set priority.
+    float priority = 0.0F;  ///< The priority control; 0 when hasPriorityControls() is false.
     float columnGap = 0.0F; ///< Between the two parts when they are side by side.
     float padding = 0.0F;   ///< The block's own horizontal padding, both sides together.
 };

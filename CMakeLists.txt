@@ -141,6 +141,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessActionsBlock.cpp
     src/App/Panels/ProcessPriorityView.cpp
+    src/App/Panels/ProcessIoPriorityView.cpp
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp
     src/App/Panels/SystemMetricsPanel.cpp

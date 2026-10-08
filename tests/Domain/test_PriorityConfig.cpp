@@ -171,6 +171,40 @@ TEST(PriorityConfigTest, ConstantsRelationship)
 
 // ========== Priority classes (#1280) ==========
 
+TEST(PriorityConfigTest, IoLevelsAreZeroToSeven)
+{
+    EXPECT_EQ(MIN_IO_LEVEL, 0);
+    EXPECT_EQ(MAX_IO_LEVEL, 7);
+    EXPECT_EQ(clampIoLevel(-1), 0);
+    EXPECT_EQ(clampIoLevel(3), 3);
+    EXPECT_EQ(clampIoLevel(8), 7);
+}
+
+TEST(PriorityConfigTest, IoLevelForNiceIsTheKernelDerivation)
+{
+    // (nice + 20) / 5: nice 0 is best-effort 4, the ends are 0 and 7, out-of-range nice is clamped first.
+    struct Case
+    {
+        int32_t nice;
+        int32_t level;
+    };
+    constexpr std::array<Case, 8> CASES{{
+        {.nice = -20, .level = 0},
+        {.nice = -16, .level = 0},
+        {.nice = -15, .level = 1},
+        {.nice = 0, .level = 4},
+        {.nice = 5, .level = 5},
+        {.nice = 19, .level = 7},
+        {.nice = -100, .level = 0},
+        {.nice = 100, .level = 7},
+    }};
+    for (const Case& testCase : CASES)
+    {
+        SCOPED_TRACE(testCase.nice);
+        EXPECT_EQ(ioLevelForNice(testCase.nice), testCase.level);
+    }
+}
+
 TEST(PriorityClassTest, ClassLabelsMatchTheNiceLabelsAndNameRealtime)
 {
     EXPECT_EQ(getPriorityClassLabel(PriorityClass::Idle), getPriorityLabel(MAX_NICE));

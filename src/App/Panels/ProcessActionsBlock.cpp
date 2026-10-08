@@ -34,7 +34,7 @@ Widths measure(const Platform::ProcessActionCapabilities& capabilities)
 
     return Widths{
         .controls = controls,
-        .priority = capabilities.canSetPriority ? ProcessDetailsLayout::ACTIONS_PRIORITY_COLUMN_WIDTH_EM * emPx : 0.0F,
+        .priority = hasPriorityControls(capabilities) ? ProcessDetailsLayout::ACTIONS_PRIORITY_COLUMN_WIDTH_EM * emPx : 0.0F,
         // An unbordered table pads each side of the gap between its columns by CellPadding.x.
         .columnGap = style.CellPadding.x * 2.0F,
         .padding = style.WindowPadding.x * 2.0F,
@@ -68,7 +68,7 @@ void render(const Context& context, const Widths& widths, const ProcessDetailsLa
     {
         // The result and error lines wrap at the block's edge instead of running out of it.
         ImGui::PushTextWrapPos(0.0F);
-        if (layout.columnsSideBySide && context.capabilities.canSetPriority &&
+        if (layout.columnsSideBySide && hasPriorityControls(context.capabilities) &&
             ImGui::BeginTable("ProcessActionsBlockColumns", 2, ImGuiTableFlags_SizingFixedFit))
         {
             // The buttons at the width measure() gave them; the priority control takes the rest.

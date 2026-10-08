@@ -2,7 +2,7 @@
 
 // Process Details' priority control, under the Actions tab's buttons (#1179, slice 4): the nice-value
 // slider on Linux, the priority-class combo on Windows (#1204), the Apply button, and the error line
-// under it.
+// under it; and under those, on Linux, the I/O priority control (#803, ProcessIoPriorityView).
 //
 // The view owns only its UI state. The IProcessActions it applies through stays owned by the panel (the
 // composition root's Platform::makeProcessActions() result) and is passed in each frame, with the
@@ -13,7 +13,8 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
-#include "ProcessActionsView.h"
+#include "PriorityEditTarget.h"
+#include "ProcessIoPriorityView.h"
 
 #include <cstdint>
 #include <optional>
@@ -32,22 +33,6 @@ namespace Detail
     return Domain::Priority::clampNice(current + delta);
 }
 
-/// Whether a priority edit made for @p edited may still be applied to @p live. As
-/// isSameProcessTarget(), except that an edit made before the process's start time was known (0) does
-/// not carry over once @p live knows it: the PID may have been reused before the first snapshot, so
-/// the edit could be for a different process, and the platform's own check of @p live cannot tell.
-/// The user edits again once the identity is known. While both stay unknown the edit is kept but
-/// cannot be applied: every IProcessActions refuses a target whose start time is 0, so
-/// ProcessPriorityView::canApply() is false until the start time is known.
-[[nodiscard]] constexpr bool isSameEditTarget(const Platform::ProcessTarget& edited, const Platform::ProcessTarget& live) noexcept
-{
-    if (edited.startTimeTicks == 0 && live.startTimeTicks != 0)
-    {
-        return false;
-    }
-    return isSameProcessTarget(edited, live);
-}
-
 } // namespace Detail
 
 /// The priority control for the process Process Details shows.
@@ -58,7 +43,8 @@ namespace Detail
 class ProcessPriorityView
 {
   public:
-    /// Draws the control when @p capabilities allow setting priority, and nothing otherwise.
+    /// Draws the control when @p capabilities allow setting priority, and the I/O priority control under
+    /// it when they allow setting that (Linux), and nothing when they allow neither.
     /// @p currentNice is the process's nice value from its latest snapshot, or nullopt before the first
     /// snapshot (the control then shows 0 and Apply stays disabled). Apply also stays disabled while
     /// @p target's start time is unknown (0), which no platform will act on. An edit is made for @p target, and
@@ -68,13 +54,15 @@ class ProcessPriorityView
                 std::optional<std::int32_t> currentNice,
                 const Platform::ProcessTarget& target);
 
-    /// A different process was selected: drop the edit, its target and the error line.
+    /// A different process was selected: drop the edit, its target and the error line, and the I/O
+    /// priority control's.
     void onSelectionChanged() noexcept
     {
         m_NiceValue = Domain::Priority::NORMAL_NICE;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
         m_Error.clear();
+        m_IoPriorityView.onSelectionChanged();
     }
 
     /// While nothing is edited, the control follows the process's own nice value (@p currentNice, when
@@ -195,6 +183,16 @@ class ProcessPriorityView
         return m_Error;
     }
 
+    /// The I/O priority control drawn under the nice control where the platform can set it (#803).
+    [[nodiscard]] ProcessIoPriorityView& ioPriorityView() noexcept
+    {
+        return m_IoPriorityView;
+    }
+    [[nodiscard]] const ProcessIoPriorityView& ioPriorityView() const noexcept
+    {
+        return m_IoPriorityView;
+    }
+
   private:
     static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
 
@@ -205,6 +203,9 @@ class ProcessPriorityView
     /// Draws the nice-value slider; returns where it ends, for right-aligning Apply.
     float renderSlider(std::int32_t currentNice, const Platform::ProcessTarget& target);
 #endif
+    /// Draws the nice control (or the Windows class combo), its Apply button and its error line.
+    void
+    renderNiceControl(Platform::IProcessActions* actions, std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
     void renderApplyButton(Platform::IProcessActions* actions,
                            std::optional<std::int32_t> currentNice,
                            const Platform::ProcessTarget& target,
@@ -214,6 +215,7 @@ class ProcessPriorityView
     bool m_Changed = false;
     Platform::ProcessTarget m_EditTarget = NO_TARGET;
     std::string m_Error; // Persistent error message for priority changes
+    ProcessIoPriorityView m_IoPriorityView;
 };
 
 } // namespace App

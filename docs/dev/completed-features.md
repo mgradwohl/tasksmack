@@ -11,7 +11,7 @@ This is the canonical inventory of user-visible and engineering features current
 | Process details | Overview and capability-driven detail sections for CPU, memory, I/O, network, and GPU data |
 | Column configuration | Header context menu controls visibility; settings persist in `config.toml` |
 | Stable process identity | PID and process start time prevent counter reuse when an operating system recycles a PID |
-| Process actions | Terminate, force terminate, and priority changes on Linux and Windows; stop/resume on Linux |
+| Process actions | Terminate, force terminate, and priority changes on Linux and Windows; stop/resume and I/O priority (ionice class and level) on Linux |
 | Multi-select and batch actions | Ctrl/Shift+click and Ctrl+A select several processes by identity; Suspend, Resume, Terminate and Kill act on all of them behind one confirmation, with one summary result |
 | Disk I/O rates | Per-process read/write rates; Linux access to other users' processes needs `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE` in the effective set (root with its normal capabilities has them; root alone isn't enough where capabilities are dropped) |
 | Network rates | Lifetime-average per-process sent/received rates; Linux uses Netlink, Windows uses TCP EStats when running as administrator |

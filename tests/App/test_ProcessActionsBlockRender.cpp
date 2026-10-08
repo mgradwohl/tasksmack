@@ -151,6 +151,7 @@ TEST_F(ProcessActionsBlockRenderTest, MeasureLeavesNoPriorityColumnWithoutTheCap
 {
     float withPriority = 0.0F;
     float withoutPriority = 0.0F;
+    float withIoPriorityOnly = 0.0F;
     float controls = 0.0F;
     float emPx = 0.0F;
     (void) runFrame(
@@ -159,10 +160,15 @@ TEST_F(ProcessActionsBlockRenderTest, MeasureLeavesNoPriorityColumnWithoutTheCap
             emPx = ImGui::GetFontSize();
             withPriority = ProcessActionsBlock::measure(ALL_ACTIONS).priority;
             withoutPriority = ProcessActionsBlock::measure(NO_PRIORITY).priority;
+            Platform::ProcessActionCapabilities ioOnly = NO_PRIORITY;
+            ioOnly.canSetIoPriority = true;
+            withIoPriorityOnly = ProcessActionsBlock::measure(ioOnly).priority;
             controls = ProcessActionsBlock::measure(ALL_ACTIONS).controls;
         });
     EXPECT_FLOAT_EQ(withPriority, ProcessDetailsLayout::ACTIONS_PRIORITY_COLUMN_WIDTH_EM * emPx);
     EXPECT_FLOAT_EQ(withoutPriority, 0.0F);
+    // ProcessPriorityView also draws the I/O priority control on its own (#803), so it gets the column.
+    EXPECT_FLOAT_EQ(withIoPriorityOnly, withPriority);
     // Two buttons at least their em floor each.
     EXPECT_GE(controls, 2.0F * ProcessDetailsLayout::ACTION_BUTTON_MIN_WIDTH_EM * emPx);
 }
