@@ -176,6 +176,55 @@ TEST(DialogMetricsTest, DialogMaxExtentIsUnboundedForAnUnusableViewport)
     EXPECT_EQ(computeDialogMaxExtent(nan), std::numeric_limits<float>::max());
 }
 
+// ---- A header row that stacks when it doesn't fit (#1490 review) ----
+
+TEST(DialogMetricsTest, SideBySideFitsWhenTheRowHasRoom)
+{
+    EXPECT_TRUE(fitsSideBySide(300.0F, 64.0F, 16.0F, 128.0F));
+    EXPECT_TRUE(fitsSideBySide(208.0F, 64.0F, 16.0F, 128.0F)); // Exactly
+}
+
+TEST(DialogMetricsTest, SideBySideStacksWhenTheRowIsTooNarrow)
+{
+    EXPECT_FALSE(fitsSideBySide(207.0F, 64.0F, 16.0F, 128.0F));
+    EXPECT_FALSE(fitsSideBySide(0.0F, 64.0F, 16.0F, 128.0F));
+}
+
+TEST(DialogMetricsTest, SideBySideIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_TRUE(fitsSideBySide(nan, 64.0F, 16.0F, 128.0F));
+    EXPECT_TRUE(fitsSideBySide(144.0F, 64.0F, -16.0F, nan));
+}
+
+// ---- A compact dialog's own, smaller cap (#1490) ----
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentIsItsOwnFraction)
+{
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, 0.7F), 630.0F);
+    EXPECT_LT(computeCompactDialogMaxExtent(900.0F, 0.7F), computeDialogMaxExtent(900.0F));
+}
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentNeverExceedsTheSharedCap)
+{
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, 1.5F), computeDialogMaxExtent(900.0F));
+}
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentFallsBackToTheSharedCapForAnUnusableFraction)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, 0.0F), computeDialogMaxExtent(900.0F));
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, -0.5F), computeDialogMaxExtent(900.0F));
+    EXPECT_FLOAT_EQ(computeCompactDialogMaxExtent(900.0F, nan), computeDialogMaxExtent(900.0F));
+}
+
+TEST(DialogMetricsTest, CompactDialogMaxExtentIsUnboundedForAnUnusableViewport)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_EQ(computeCompactDialogMaxExtent(0.0F, 0.7F), std::numeric_limits<float>::max());
+    EXPECT_EQ(computeCompactDialogMaxExtent(nan, 0.7F), std::numeric_limits<float>::max());
+}
+
 // The issue's scenario: a 400px-tall window. The dialog may take 360px; with 120px of title bar,
 // padding and button row reserved, the body scrolls past 240px and the buttons stay inside.
 TEST(DialogMetricsTest, ScrollableBodyLeavesRoomForThePinnedRows)

@@ -385,9 +385,10 @@ links but cannot run there.
 The production `.cpp` files exercised this way are listed under "Source files under test" in
 `tests/CMakeLists.txt` (for example `App/Panels/ProcessActionConfirm.cpp`,
 `App/Panels/ProcessActionsView.cpp`, `App/Panels/ProcessPriorityView.cpp`,
-`App/Panels/ProcessEnvironmentView.cpp`, `App/Panels/ProcessConnectionsView.cpp`, `UI/ChartLegend.cpp`).
-`TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp`,
-`ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
+`App/Panels/ProcessEnvironmentView.cpp`, `App/Panels/ProcessConnectionsView.cpp`, `App/AboutDialog.cpp`,
+`UI/ChartLegend.cpp`).
+`TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp` (its dialog
+is `AboutDialog.cpp`, which is), `ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
 `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs and `UI/UILayer.cpp` are not in that list. That
 is no longer a link limit on ImGui itself: `UI/Theme.cpp` is replaced in the test binary by
 `tests/Mocks/ThemeStub.cpp`, so a file can only be added once every `Theme` member it calls is
@@ -441,6 +442,7 @@ Three established ways to get real coverage of such a file's logic:
    Examples: `tests/App/test_ProcessActionConfirmPopup.cpp` (modal lifecycle),
    `tests/App/test_ProcessPriorityViewRender.cpp` (the priority control),
    `tests/App/test_ProcessTableSettingsRoundTrip.cpp` (table settings loaded across frames),
+   `tests/App/test_AboutDialogRender.cpp` (a dialog's size caps and scrolling body),
    `tests/App/test_KeyboardInputRender.cpp` (keys injected with `io.AddKeyEvent()` through
    `App/KeyboardInput.cpp`, the keyboard shortcuts' ImGui adapter, with keyboard navigation on),
    `tests/UI/test_FillPlotLayout.cpp`, and `tests/UI/test_ChartGeometryBudget.cpp` with

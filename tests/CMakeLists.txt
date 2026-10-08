@@ -228,6 +228,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSelection.cpp
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
+    App/test_AboutDialogRender.cpp
     App/test_KeyboardInputRender.cpp
     App/test_SyntheticScenario.cpp
     App/test_WindowOverride.cpp
@@ -390,6 +391,9 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
+    ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
