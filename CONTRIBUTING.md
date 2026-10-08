@@ -385,9 +385,10 @@ links but cannot run there.
 The production `.cpp` files exercised this way are listed under "Source files under test" in
 `tests/CMakeLists.txt` (for example `App/Panels/ProcessActionConfirm.cpp`,
 `App/Panels/ProcessActionsView.cpp`, `App/Panels/ProcessPriorityView.cpp`,
-`App/Panels/ProcessEnvironmentView.cpp`, `App/Panels/ProcessConnectionsView.cpp`, `UI/ChartLegend.cpp`).
-`TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp`,
-`ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
+`App/Panels/ProcessEnvironmentView.cpp`, `App/Panels/ProcessConnectionsView.cpp`, `App/AboutDialog.cpp`,
+`UI/ChartLegend.cpp`).
+`TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp` (its dialog
+is `AboutDialog.cpp`, which is), `ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
 `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs and `UI/UILayer.cpp` are not in that list. That
 is no longer a link limit on ImGui itself: `UI/Theme.cpp` is replaced in the test binary by
 `tests/Mocks/ThemeStub.cpp`, so a file can only be added once every `Theme` member it calls is
@@ -441,6 +442,7 @@ Three established ways to get real coverage of such a file's logic:
    Examples: `tests/App/test_ProcessActionConfirmPopup.cpp` (modal lifecycle),
    `tests/App/test_ProcessPriorityViewRender.cpp` (the priority control),
    `tests/App/test_ProcessTableSettingsRoundTrip.cpp` (table settings loaded across frames),
+   `tests/App/test_AboutDialogRender.cpp` (a dialog's size caps and scrolling body),
    `tests/App/test_KeyboardInputRender.cpp` (keys injected with `io.AddKeyEvent()` through
    `App/KeyboardInput.cpp`, the keyboard shortcuts' ImGui adapter, with keyboard navigation on),
    `tests/UI/test_FillPlotLayout.cpp`, and `tests/UI/test_ChartGeometryBudget.cpp` with
@@ -2002,9 +2004,11 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, weekly, and via manual dispatch. It detects docs-only pull requests to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR, a Linux Release build on the same events plus the weekly schedule (Windows Release runs on push/schedule/dispatch only), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/schedule/dispatch (skipped on docs-only PRs, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `CI Success` gate job used for branch protection; when a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
-- **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch. It detects docs-only pull requests to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR, a Linux Release build on the same events plus the nightly schedule (Windows Release runs nightly and on dispatch only; the unity build weekly), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/schedule/dispatch (skipped on docs-only PRs and on pushes to `main`; the Windows job is also skipped when every change is Linux-only). On a PR it analyzes only the translation units the change can affect -- changed `src/` `.cpp` files plus every `.cpp` that includes a changed `src/` header -- and falls back to every file when `.clang-tidy`, the tidy scripts, CMake files, `ci.yml`, the toolchain setup actions (`setup-llvm`, `setup-windows-llvm`, `setup-python-glad`) or `requirements-glad.*` change (`tools/tidy-changed-files.py`, #1406); the nightly run analyzes every file, runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `CI Success` gate job used for branch protection; when a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
+- **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
+
+CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only the files that declare or patch dependencies (`cmake/Dependencies.cmake`, `cmake/patches/**`, `tests/CMakeLists.txt`, `benchmarks/CMakeLists.txt`). The `clang-tidy` jobs don't use ccache (clang-tidy doesn't compile through it).
 
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
@@ -2017,8 +2021,8 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
-- **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase on Linux and on Windows, both blocking (pushes to main, manual dispatch).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule, manual dispatch). The coverage jobs report **line** coverage from `coverage/coverage.lcov` and warn (never fail) when it drops below a floor set a few points under the current baseline; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
+- **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` and warn (never fail) when it drops below a floor set a few points under the current baseline; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
 - **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases on `v*.*.*` tags.
@@ -2029,7 +2033,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 PR optimization: docs-only pull requests skip compile/test and `clang-tidy` jobs in `ci.yml` to keep feedback fast.
 
 Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` never cancel
-each other. `ci.yml`, `sanitizers.yml`, `static-analysis.yml` and `heavy-checks.yml` give each `main` commit its
+each other. `ci.yml`, `sanitizers.yml` and `heavy-checks.yml` give each `main` commit its
 own concurrency group, so back-to-back merges each get a complete run and a regression is blamed on the commit
 that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
 `pre-commit.yml` and `dependency-review.yml` also cancel a PR's superseded run.
@@ -2140,7 +2144,9 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
     the dashboard before a stable LLVM 23 actually exists.
 
     Every update to this group -- not just major bumps -- requires dashboard approval, unlike
-    the rest of this tier. Both CI (`choco install llvm`) and the dev-box script
+    the rest of this tier. Both CI (`choco install llvm`; Windows jobs restore the installed tree from
+    an Actions cache keyed on the exact version and saved only by `main`, so the first `main` runs
+    after a bump fall back to Chocolatey) and the dev-box script
     (`winget install LLVM.LLVM`) resolve the pinned Windows version through Chocolatey/WinGet,
     and #752 already recorded a concrete real-world case of that feed lagging upstream
     (upstream had `22.1.8` while Chocolatey only had `22.1.7`) -- an auto-PR'd Windows *patch*

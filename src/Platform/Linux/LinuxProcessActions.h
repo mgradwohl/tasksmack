@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IProcessActions.h"
+#include "SyscallTrace.h"
 
 #include <cstdint>
 #include <string_view>
@@ -17,10 +18,17 @@ namespace Platform
 /// checked the same way. Where pidfds are unavailable (kernels
 /// before 5.3, or a seccomp filter that blocks pidfd_open) every action is refused rather than sent
 /// to the bare PID.
+///
+/// launchSyscallTrace() opens a terminal running `strace -p` (#182). strace and the terminal are looked
+/// up once, at construction (discoverSyscallTraceTools()), and actionCapabilities() reports what was
+/// found; installing either later takes effect on the next start.
 class LinuxProcessActions : public IProcessActions
 {
   public:
-    LinuxProcessActions() = default;
+    /// Finds strace and a terminal emulator on PATH (and $TERMINAL) for launchSyscallTrace().
+    LinuxProcessActions();
+    /// Uses @p traceTools instead of searching (tests: a fake terminal that records its argv).
+    explicit LinuxProcessActions(SyscallTrace::Tools traceTools);
     ~LinuxProcessActions() override = default;
 
     LinuxProcessActions(const LinuxProcessActions&) = delete;
@@ -36,9 +44,15 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult setPriority(const ProcessTarget& target, int32_t nice) override;
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult launchSyscallTrace(const ProcessTarget& target) override;
+
+    /// strace and the terminal to run it in, from this process's PATH and $TERMINAL.
+    [[nodiscard]] static SyscallTrace::Tools discoverSyscallTraceTools();
 
   private:
     [[nodiscard]] static ProcessActionResult sendSignal(const ProcessTarget& target, int signal, std::string_view signalName);
+
+    SyscallTrace::Tools m_TraceTools;
 };
 
 } // namespace Platform

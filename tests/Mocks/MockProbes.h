@@ -636,6 +636,23 @@ class MockProcessActions : public Platform::IProcessActions
         return m_LastIoPriorityReadTarget;
     }
 
+    void setSyscallTraceResult(Platform::ProcessActionResult result)
+    {
+        m_SyscallTraceResult = std::move(result);
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult launchSyscallTrace(const Platform::ProcessTarget& target) override
+    {
+        m_LastTarget = target;
+        ++m_SyscallTraceCount;
+        return m_SyscallTraceResult;
+    }
+
+    [[nodiscard]] int syscallTraceCount() const
+    {
+        return m_SyscallTraceCount;
+    }
+
   private:
     Platform::ProcessActionCapabilities m_Capabilities;
     Platform::ProcessActionResult m_TerminateResult = Platform::ProcessActionResult::ok();
@@ -663,6 +680,8 @@ class MockProcessActions : public Platform::IProcessActions
     int m_GetIoPriorityCount = 0;
     Platform::IoPriority m_LastSetIoPriority;
     Platform::ProcessTarget m_LastIoPriorityReadTarget;
+    int m_SyscallTraceCount = 0;
+    Platform::ProcessActionResult m_SyscallTraceResult = Platform::ProcessActionResult::ok();
 };
 
 // =============================================================================

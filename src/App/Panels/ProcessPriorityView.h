@@ -1,8 +1,9 @@
 #pragma once
 
-// Process Details' priority control, under the Actions tab's buttons (#1179, slice 4): the nice-value
-// slider on Linux, the priority-class combo on Windows (#1204), the Apply button, and the error line
-// under it; and under those, on Linux, the I/O priority control (#803, ProcessIoPriorityView).
+// Process Details' priority control, under the buttons of the Overview's Actions block (#1179, slice 4;
+// #1493): the nice-value slider on Linux, the priority-class combo on Windows (#1204), the Apply
+// button, and the error line under it; and under those, on Linux, the I/O priority control (#803,
+// ProcessIoPriorityView).
 //
 // The view owns only its UI state. The IProcessActions it applies through stays owned by the panel (the
 // composition root's Platform::makeProcessActions() result) and is passed in each frame, with the

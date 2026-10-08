@@ -6,7 +6,11 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    # Run weekly on Sundays at 09:00 UTC
+    # Nightly at 06:00 UTC, Monday to Saturday: the full clang-tidy runs (PRs only check what they
+    # touch), Linux and Windows release builds (no longer run on every push to main, #1406).
+    - cron: '0 6 * * 1-6'
+    # Sundays at 09:00 UTC: the same full run plus the unity build. Sunday is left out of the
+    # nightly cron above, which would otherwise run the full checks twice that day.
     - cron: '0 9 * * 0'
   workflow_dispatch:
 
@@ -167,13 +171,12 @@ jobs:
       os: windows-2025
       build_type: debug
 
-  # Windows release (~9 min) runs after merge -- on push to main -- plus the weekly schedule
-  # and manual runs, rather than on every PR, to keep PR runner usage down; Linux release above
-  # covers the PR gate (#1134).
+  # Windows release (~12 min) runs nightly and on manual runs, not on every PR or every push to
+  # main (#1134, #1406); Linux release above covers the PR gate and every push.
   build-windows-release:
     needs: [detect-docs-only]
     if: >-
-      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
@@ -187,7 +190,9 @@ jobs:
   # and unity builds break on file-local name clashes that normal builds never see (#1134).
   build-linux-unity:
     needs: [detect-docs-only]
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0') ||
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       checks: write
@@ -209,9 +214,10 @@ jobs:
 
   static-analysis:
     needs: [detect-docs-only]
-    # Runs on pull_request (the PR gate -- #833) plus schedule/workflow_dispatch, skipping
-    # docs-only PRs. Excludes push to main: static-analysis.yml already runs this identical job
-    # on every push to main.
+    # Runs on pull_request (the PR gate -- #833; changed files only, see "Select files") plus the
+    # nightly schedule and workflow_dispatch (all files), skipping docs-only changes. Never on push
+    # to main: the PR already checked the same merge tree, and the nightly full run catches
+    # anything a file-scoped PR check could miss (#1406).
     if: >-
       (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       (github.event_name != 'push' || github.ref != 'refs/heads/main')
@@ -221,43 +227,69 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR merge commit plus its first parent (the base), for the changed-file diff.
+          fetch-depth: 2
+
+      # On a PR, check only the translation units the change can affect (#1406): changed src/ .cpp
+      # files plus every .cpp that includes a changed src/ header, or everything when the tidy
+      # config, tidy scripts, CMake files or this workflow changed (tools/tidy-changed-files.py).
+      # The nightly schedule and manual runs analyze every file.
+      - name: Select files to analyze
+        id: select
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          python3 -I tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform linux > tidy-files.txt
+          # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
+          sed -i 's/\r$//' tidy-files.txt
+          if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+          elif [[ ! -s tidy-files.txt ]]; then
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "No translation unit affected by this change; clang-tidy skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "mode=list" >> "$GITHUB_OUTPUT"
+            { echo "clang-tidy on $(wc -l < tidy-files.txt) changed/affected file(s):"; echo '```'; cat tidy-files.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Setup LLVM
+        if: steps.select.outputs.mode != 'none'
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
           install-clang-tidy: 'true'
+          # No ccache in the tidy jobs (#1406): clang-tidy doesn't compile through it.
+          install-ccache: 'false'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          key: linux-tidy-llvm${{ env.LLVM_VERSION }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+        if: steps.select.outputs.mode != 'none'
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build GLAD
+        if: steps.select.outputs.mode != 'none'
         run: cmake --build --preset debug --target glad_gl_core_33
 
       - name: Run clang-tidy
+        if: steps.select.outputs.mode != 'none'
         shell: bash
         run: |
-          ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+          files=()
+          if [[ "${{ steps.select.outputs.mode }}" == 'list' ]]; then
+            mapfile -t files < tidy-files.txt
+          fi
+          ./tools/clang-tidy.sh debug "${files[@]}" 2>&1 | tee clang-tidy-output.txt
           test "${PIPESTATUS[0]}" -eq 0
 
       - name: Upload clang-tidy results
@@ -266,12 +298,13 @@ jobs:
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
+          if-no-files-found: ignore
           retention-days: 14
 
   # Blocking clang-tidy for Windows-only code (#1233). The Linux job above can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
-  # without failing anything. Same event rules as static-analysis (push to main is covered by
-  # static-analysis.yml), and also skipped when every change is Linux-only.
+  # without failing anything. Same event rules as static-analysis (PRs check changed files only,
+  # nightly checks everything), and also skipped when every change is Linux-only.
   static-analysis-windows:
     name: Static Analysis (Windows)
     needs: [detect-docs-only]
@@ -287,8 +320,36 @@ jobs:
       LLVM_ROOT: C:\Program Files\LLVM
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR merge commit plus its first parent (the base), for the changed-file diff.
+          fetch-depth: 2
+
+      # On a PR, check only the translation units the change can affect (#1406): changed src/ .cpp
+      # files plus every .cpp that includes a changed src/ header, or everything when the tidy
+      # config, tidy scripts, CMake files or this workflow changed (tools/tidy-changed-files.py).
+      # The nightly schedule and manual runs analyze every file.
+      - name: Select files to analyze
+        id: select
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          python -I tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform windows > tidy-files.txt
+          # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
+          sed -i 's/\r$//' tidy-files.txt
+          if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+          elif [[ ! -s tidy-files.txt ]]; then
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "No translation unit affected by this change; clang-tidy skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "mode=list" >> "$GITHUB_OUTPUT"
+            { echo "clang-tidy on $(wc -l < tidy-files.txt) changed/affected file(s):"; echo '```'; cat tidy-files.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Setup Windows LLVM
+        if: steps.select.outputs.mode != 'none'
         uses: ./.github/actions/setup-windows-llvm
         with:
           llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
@@ -296,38 +357,35 @@ jobs:
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Force the action's pinned, SHA-256-verified ccache binary; 'detect' would pick up
-          # Strawberry Perl's bundled ccache 4.9.1 already on the image PATH (#1406).
-          install: binary
-          key: windows-tidy-llvm${{ env.LLVM_SEMVER_VERSION }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
+        if: steps.select.outputs.mode != 'none'
         shell: pwsh
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+        # No ccache in the tidy jobs (#1406); keep CMake from finding the stale ccache that
+        # Strawberry Perl puts on the image PATH.
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build GLAD
+        if: steps.select.outputs.mode != 'none'
         shell: pwsh
         run: cmake --build --preset win-debug --target glad_gl_core_33
 
       - name: Run clang-tidy (Windows)
+        if: steps.select.outputs.mode != 'none'
         shell: pwsh
         run: |
-          pwsh -File tools/clang-tidy.ps1 debug 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          if ('${{ steps.select.outputs.mode }}' -eq 'list') {
+            $files = @(Get-Content tidy-files.txt | Where-Object { $_ })
+            # *>&1, not 2>&1: the script prints findings with Write-Host (information stream).
+            & ./tools/clang-tidy.ps1 debug -Files $files *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          } else {
+            & ./tools/clang-tidy.ps1 debug *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          }
           exit $LASTEXITCODE
 
       - name: Upload clang-tidy results (Windows)
@@ -336,6 +394,7 @@ jobs:
         with:
           name: clang-tidy-results-windows
           path: clang-tidy-windows-output.txt
+          if-no-files-found: ignore
           retention-days: 14
 
   include-analysis:
@@ -400,19 +459,22 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
           key: linux-iwyu-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure (debug preset)
         run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
@@ -514,19 +576,24 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
-          key: linux-asan-ubsan-advisory-llvm${{ env.LLVM_VERSION }}
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
+          # Same key as sanitizers.yml's asan-ubsan job, so this PR-only job restores the cache
+          # main's runs save (it never saves one itself).
+          key: linux-asan-ubsan-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
         run: cmake --preset asan-ubsan -DPython3_EXECUTABLE="$(which python)"
@@ -612,6 +679,7 @@ jobs:
           LINUX_ONLY:     ${{ needs.detect-docs-only.outputs.linux_only }}
           WINDOWS_ONLY:   ${{ needs.detect-docs-only.outputs.windows_only }}
           EVENT_NAME:     ${{ github.event_name }}
+          SCHEDULE:       ${{ github.event.schedule }}
           REF:            ${{ github.ref }}
           LINUX_RESULT:   ${{ needs.build-linux-debug.result }}
           WINDOWS_RESULT: ${{ needs.build-windows-debug.result }}
@@ -656,16 +724,16 @@ jobs:
             failed=true
           fi
 
-          # Windows release runs on push, schedule and workflow_dispatch only (skipped on PRs by
-          # design).
-          if [[ "$EVENT_NAME" == 'push' || "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+          # Windows release runs on schedule and workflow_dispatch only (skipped on PRs and pushes
+          # by design, #1406).
+          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
             if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
               echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
               failed=true
             fi
           fi
 
-          if [[ "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+          if [[ ("$EVENT_NAME" == 'schedule' && "$SCHEDULE" == '0 9 * * 0') || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
             if [[ "$LINUX_UNITY_RESULT" != 'success' ]]; then
               echo "❌ Linux unity build did not succeed: $LINUX_UNITY_RESULT"
               failed=true

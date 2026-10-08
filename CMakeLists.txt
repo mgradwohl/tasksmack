@@ -123,6 +123,7 @@ set(TASKSMACK_SOURCES
     src/UI/Theme.cpp
     src/UI/ThemeLoader.cpp
     src/UI/IconLoader.cpp
+    src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/InstanceLock.cpp
@@ -157,6 +158,7 @@ set(TASKSMACK_SOURCES
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
+    src/Domain/ServiceModel.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
@@ -168,6 +170,7 @@ set(TASKSMACK_SOURCES
 set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
+    src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
@@ -194,6 +197,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp
     src/Platform/Windows/WindowsStartupProbe.cpp
+    src/Platform/Windows/WindowsServiceProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
@@ -229,6 +233,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
     src/Platform/IStartupProbe.h
+    src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
@@ -247,6 +252,7 @@ set(TASKSMACK_HEADERS
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h
     src/Domain/StartupModel.h
+    src/Domain/ServiceModel.h
 )
 
 # Platform-specific headers
@@ -277,6 +283,8 @@ elseif(WIN32)
         src/Platform/Windows/DXGIGPUProbe.h
         src/Platform/Windows/NVMLGPUProbe.h
         src/Platform/Windows/WindowsStartupProbe.h
+        src/Platform/Windows/WindowsServiceProbe.h
+        src/Platform/Windows/WindowsServiceConfig.h
         src/Platform/Windows/WinString.h
     )
 endif()

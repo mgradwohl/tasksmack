@@ -217,7 +217,7 @@ Capability absence is not an error. A supported platform may still omit metrics 
 | Storage | Linux block-device and filesystem interfaces |
 | Power | `/sys/class/power_supply` |
 | GPU | NVML for NVIDIA, ROCm SMI for AMD, DRM/sysfs for Intel and generic discovery |
-| Process actions | POSIX signals, `setpriority`, `ioprio_set`/`ioprio_get` (read on demand for the selected process), affinity APIs |
+| Process actions | POSIX signals, `setpriority`, `ioprio_set`/`ioprio_get` (read on demand for the selected process), affinity APIs; system call tracing by starting `strace -p` in a terminal emulator (double fork, no shell) |
 
 For other users' processes, per-process I/O and network attribution need `CAP_DAC_READ_SEARCH` plus `CAP_SYS_PTRACE` in the effective set (reading `/proc/[pid]/io` and the `/proc/[pid]/fd/*` links is checked with `PTRACE_MODE_READ_FSCREDS`) — root with its normal capabilities has them, but root alone isn't enough where capabilities are dropped (a container or hardened service); FD counts need only `CAP_DAC_READ_SEARCH` (listing `/proc/[pid]/fd` is a plain permission check). Per-process network attribution requires Linux 4.2+ Netlink support.
 

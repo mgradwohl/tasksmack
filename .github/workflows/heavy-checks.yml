@@ -1,11 +1,27 @@
 name: Heavy Checks
 
 on:
+  # On main only when a merge touches code the benchmarks measure (benchmarks/*.cpp include
+  # Domain, UI, Platform -- e.g. NetlinkSocketStats, LinuxProcessProbe -- and
+  # App/Panels/ProcessDetailsHistory) or this workflow (#1406); a
+  # top-level paths filter is fine here because Heavy Checks is not a required check. Everything
+  # else on main is covered by the nightly run below.
   push:
     branches: [main]
+    paths:
+      - 'src/Domain/**'
+      - 'src/UI/**'
+      - 'src/Platform/**'
+      - 'src/App/Panels/ProcessDetailsHistory.*'
+      - 'benchmarks/**'
+      - 'perf-data/linux-ci-baseline.json'
+      - 'tools/bench.sh'
+      - 'tools/check-benchmark-regression.py'
+      - '.github/workflows/heavy-checks.yml'
   schedule:
-    # Weekly on Mondays at 04:00 UTC
-    - cron: '0 4 * * 1'
+    # Nightly at 04:00 UTC (was weekly): coverage, Windows coverage, benchmarks; the sanitizer
+    # jobs below still run on this schedule too.
+    - cron: '0 4 * * *'
   workflow_dispatch:
     inputs:
       scope:
@@ -66,19 +82,22 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
           key: linux-coverage-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Install xvfb and Mesa GL for a headless display
         run: sudo timeout --kill-after=10s 300s apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0
@@ -190,17 +209,17 @@ jobs:
           install: binary
           key: windows-coverage-llvm${{ env.LLVM_SEMVER_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Generate coverage report
         shell: pwsh
@@ -316,19 +335,22 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
           key: linux-${{ matrix.preset }}-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }} -DPython3_EXECUTABLE="$(which python)"
@@ -512,22 +534,27 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
+          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
+          install: binary
           key: linux-benchmark-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
-        run: cmake --preset benchmark -DPython3_EXECUTABLE="$(which python)"
+        # PCH off so ccache can cache these compiles (PCH TUs are uncacheable, #1406); PCH
+        # doesn't change the generated code, so the timings are unaffected.
+        run: cmake --preset benchmark -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=OFF
 
       - name: Build
         run: cmake --build --preset benchmark

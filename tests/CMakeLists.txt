@@ -123,6 +123,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
     Domain/test_StorageModelAllocationFailure.cpp
+    Domain/test_ServiceModel.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
@@ -135,6 +136,7 @@ set(COMMON_TEST_SOURCES
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
     UI/test_RenderMetrics.cpp
+    UI/test_RenderMetricsOverlay.cpp
     UI/test_RateAxis.cpp
     UI/test_InlineText.cpp
     UI/test_BundledThemes.cpp
@@ -229,8 +231,10 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSelection.cpp
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
+    App/test_AboutDialogRender.cpp
     App/test_KeyboardInputRender.cpp
     App/test_SyntheticScenario.cpp
+    App/test_SystemSectionsRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
@@ -245,6 +249,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
@@ -267,6 +272,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsServiceProbe.cpp
+    Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
     Platform/test_WinString.cpp
 )
@@ -283,6 +290,8 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
+    Platform/test_SyscallTrace.cpp
+    Platform/test_DetachedSpawn.cpp
     Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
@@ -320,6 +329,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
 else()
@@ -330,6 +340,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DetachedSpawn.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
@@ -392,14 +403,25 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsCharts.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
+    # The System Metrics tab's Memory & Swap, CPU Cores, Disk I/O and Network sections and the render-metrics
+    # overlay, run headless (test_SystemSectionsRender.cpp, test_RenderMetricsOverlay.cpp, #1395)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/MemorySection.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuCoresSection.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/StorageSection.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/NetworkSection.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
+    ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp

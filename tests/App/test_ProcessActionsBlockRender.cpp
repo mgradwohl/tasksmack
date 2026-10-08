@@ -312,5 +312,93 @@ TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheBlockIsScroll
     EXPECT_EQ(h.mock.killCount(), 0);
 }
 
+// --- Trace system calls (#182) ---------------------------------------------------------------------
+
+/// The four buttons and the priority row with the trace button in @p availability. (Linux also has the
+/// I/O priority row, which makes the block too tall to sit beside the row; that placement is
+/// computeActionsBlockLayout()'s, tested in test_ProcessDetailsLayout.cpp.)
+constexpr Platform::ProcessActionCapabilities withTrace(Platform::SyscallTraceAvailability availability)
+{
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.syscallTrace = availability;
+    return caps;
+}
+
+TEST_F(ProcessActionsBlockRenderTest, MeasureCountsTheTraceButtonWhereItIsShown)
+{
+    float rowOnly = 0.0F;
+    float traceWidth = 0.0F;
+    float available = 0.0F;
+    float greyedOut = 0.0F;
+    float traceOnlyButtons = 0.0F;
+    (void) runFrame(
+        [&]
+        {
+            rowOnly = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::Unsupported)).buttons;
+            traceWidth = ProcessActionsView::syscallTraceButtonWidth(withTrace(Platform::SyscallTraceAvailability::Available));
+            available = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::Available)).buttons;
+            greyedOut = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::NoTracer)).buttons;
+            // A platform whose only button is the trace one: the block is as wide as that button.
+            Platform::ProcessActionCapabilities traceOnly;
+            traceOnly.syscallTrace = Platform::SyscallTraceAvailability::Available;
+            traceOnlyButtons = ProcessActionsBlock::measure(traceOnly).buttons;
+        });
+    EXPECT_GT(traceWidth, 0.0F);
+    EXPECT_FLOAT_EQ(ProcessActionsView::syscallTraceButtonWidth(withTrace(Platform::SyscallTraceAvailability::Unsupported)), 0.0F);
+    EXPECT_FLOAT_EQ(available, std::max(rowOnly, traceWidth));
+    // Greyed out it is still drawn, so it is still measured.
+    EXPECT_FLOAT_EQ(greyedOut, available);
+    EXPECT_FLOAT_EQ(traceOnlyButtons, traceWidth);
+    EXPECT_TRUE(ProcessActionsBlock::hasAnyAction(
+        Platform::ProcessActionCapabilities{.syscallTrace = Platform::SyscallTraceAvailability::NoTerminal}));
+}
+
+TEST_F(ProcessActionsBlockRenderTest, TheTraceButtonFitsTheBlockWideOrNarrow)
+{
+    // Laid out as ProcessDetailsPanel does it, with the height the block reported last frame, so a
+    // block taller than the six-row Identity/Runtime row goes below it instead of scrolling beside it.
+    constexpr Platform::ProcessActionCapabilities CAPS = withTrace(Platform::SyscallTraceAvailability::Available);
+    for (const float paneWidth : {1900.0F, 1000.0F, 300.0F})
+    {
+        SCOPED_TRACE(paneWidth);
+        Harness h;
+        ProcessDetailsLayout::ActionsBlockLayout layout;
+        float neededHeight = 0.0F;
+        const auto body = [&]
+        {
+            const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(CAPS);
+            const float rowHeight = rowChildHeight(6.0F);
+            layout = ProcessDetailsLayout::computeActionsBlockLayout(
+                paneWidth, 776.0F, ImGui::GetStyle().ItemSpacing.x, widths.content(), neededHeight, rowHeight);
+            neededHeight = ProcessActionsBlock::render(h.context(CAPS), layout, rowHeight);
+        };
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            (void) runFrame(body);
+        }
+        const ImGuiWindow* block = blockWindow();
+        ASSERT_NE(block, nullptr);
+        // Nothing runs out of the block or makes it scroll sideways: the button followed the row or
+        // started its own.
+        EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
+        EXPECT_LE(block->ContentSize.x, layout.width - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
+        EXPECT_EQ(h.mock.syscallTraceCount(), 0); // Drawing it launches nothing
+    }
+}
+
+TEST_F(ProcessActionsBlockRenderTest, TheTraceButtonAddsARowOnlyWhereItIsShown)
+{
+    // Wrapped below the Identity/Runtime row, the block grows by the trace button's row on Linux and
+    // not at all where it is hidden.
+    Harness hidden;
+    (void) renderBlock(hidden, withTrace(Platform::SyscallTraceAvailability::Unsupported), 1000.0F, 776.0F, 0.0F);
+    const float hiddenHeight = lastNeededHeight;
+    Harness shown;
+    (void) renderBlock(shown, withTrace(Platform::SyscallTraceAvailability::Available), 1000.0F, 776.0F, 0.0F);
+    const float shownHeight = lastNeededHeight;
+    EXPECT_GT(shownHeight, hiddenHeight);
+    EXPECT_LE(shownHeight - hiddenHeight, ImGui::GetFrameHeightWithSpacing() + 1.0F);
+}
+
 } // namespace
 } // namespace App
