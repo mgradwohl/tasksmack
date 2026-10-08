@@ -131,7 +131,13 @@ struct PidfdOpen
 [[nodiscard]] int pidfdExited(const FdGuard& pidfd)
 {
     pollfd entry{.fd = pidfd.get(), .events = POLLIN, .revents = 0};
-    const int ready = ::poll(&entry, 1, 0);
+    // A signal can interrupt even a zero-timeout poll(); that says nothing about the process, so it
+    // is retried rather than reported as an unconfirmed identity (#803 review).
+    int ready = ::poll(&entry, 1, 0);
+    while (ready < 0 && errno == EINTR)
+    {
+        ready = ::poll(&entry, 1, 0);
+    }
     if (ready < 0)
     {
         return -1;
