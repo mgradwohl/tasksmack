@@ -774,7 +774,8 @@ manifest's `preset`, so no file name or manifest field carries it:
   compiler id/version from the `CMakeFiles/<version>/` of the cache's own CMake version, or
   unknown; `ipo` is what that configuration of the `TaskSmackBenchmarks` target is built with,
   read from the `TaskSmackBenchmarks.buildinfo.json` that `benchmarks/CMakeLists.txt` generates
-  next to the binary for each configuration (`ipo_source` `buildinfo`) -- the cached
+  for each configuration and copies next to the binary whenever it links, so it always describes
+  that binary (`ipo_source` `buildinfo`) -- the cached
   `CMAKE_INTERPROCEDURAL_OPTIMIZATION` can say `OFF` while `TASKSMACK_ENABLE_IPO` turns IPO on,
   and a multi-config generator can set it per configuration -- with the cached
   `CMAKE_INTERPROCEDURAL_OPTIMIZATION` and then `TASKSMACK_ENABLE_IPO` as fallbacks for older
@@ -809,7 +810,8 @@ manifest's `preset`, so no file name or manifest field carries it:
     with `<host>` and `<user>`. Validated categorical fields (OS name/version, architecture,
     compiler id/version, generator, the flag hashes, a standard build type -- Debug, Release, RelWithDebInfo,
     MinSizeRel --, schema fields, numbers and booleans) are left alone, so a host named `Linux` or
-    a user named `clang` cannot rewrite them; a custom build type is scrubbed. The OS version is
+    a user named `clang` cannot rewrite them; a custom build type is scrubbed, its own `-`, `.`
+    and `_` bounding a name too (`ASan-benchuser` becomes `ASan-<user>`). The OS version is
     still checked for a user or host name between its own `-`, `.` and `_`, as a Linux kernel
     built with `CONFIG_LOCALVERSION` reports one (`6.8.0-benchhost` becomes `6.8.0-<host>`, in
     `machine.label` too). Outside a git

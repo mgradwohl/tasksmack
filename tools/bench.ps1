@@ -465,6 +465,8 @@ function Hide-ManifestIdentity {
     param($Manifest, [string[]]$Homes, [string]$User, [string[]]$Hosts)
     $identity = @{}
     foreach ($name in 'Homes', 'User', 'Hosts') { if ($PSBoundParameters.ContainsKey($name)) { $identity[$name] = $PSBoundParameters[$name] } }
+    $names = @{}
+    foreach ($name in 'User', 'Hosts') { if ($identity.ContainsKey($name)) { $names[$name] = $identity[$name] } }
     $walk = {
         param($Value, [string]$Path)
         if ($Value -is [System.Collections.IDictionary]) {
@@ -473,6 +475,9 @@ function Hide-ManifestIdentity {
             return $copy
         }
         if ($script:IdentityExempt -contains $Path -or ($Path -eq 'build.build_type' -and $script:StandardBuildTypes -ccontains $Value)) { return , $Value }
+        # A custom build type is a name like a preset (ASan-benchuser, Release_benchhost): its own
+        # '-', '.' and '_' bound a user or host name too.
+        if ($Path -eq 'build.build_type' -and $Value -is [string]) { $Value = Hide-NameIdentity $Value @names }
         return , (Hide-Identity $Value @identity)
     }
     $result = & $walk $Manifest ''
@@ -482,8 +487,6 @@ function Hide-ManifestIdentity {
         # '-', '.' and '_', becomes <user> / <host> (Hide-NameIdentity), and the label is rebuilt
         # from the result. The same on Windows, whose version is a build number, for parity.
         if ($result.machine.os_version -is [string]) {
-            $names = @{}
-            foreach ($name in 'User', 'Hosts') { if ($identity.ContainsKey($name)) { $names[$name] = $identity[$name] } }
             $result.machine.os_version = Hide-NameIdentity $result.machine.os_version @names
         }
         $result.machine.label = Get-MachineLabel $result.machine

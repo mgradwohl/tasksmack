@@ -401,6 +401,10 @@ def hide_manifest_identity(manifest: dict, prefixes: list[str], user: str | None
             return {key: walk(item, f"{path}.{key}" if path else key) for key, item in value.items()}
         if path in IDENTITY_EXEMPT or (path == "build.build_type" and value in STANDARD_BUILD_TYPES):
             return value
+        if path == "build.build_type" and isinstance(value, str):
+            # A custom build type is a name like a preset (ASan-benchuser, Release_benchhost): its
+            # own '-', '.' and '_' bound a user or host name too.
+            value = hide_name_identity(value, user, hosts)
         return hide_identity(value, prefixes, user, hosts)
 
     result = walk(manifest, "")

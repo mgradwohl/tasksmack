@@ -180,16 +180,22 @@ exit [int]$env:STUB_EXIT
     function Use-StubEnvironment {
         # Run $Body with the stub's variables set, putting the previous values back afterwards.
         param([hashtable]$Variables, [scriptblock]$Body)
-        $all = @{ TASKSMACK_STUB_HOST = $stubHost; TASKSMACK_STUB_HOST_ARGS = $stubHostArgs; TASKSMACK_STUB_SCRIPT = $stubScript; STUB_SLEEP_MS = $null }
+        # BENCHMARK_REPORT_AGGREGATES_ONLY is cleared: a caller's own setting would change what the
+        # runs report (#1445 review). The saved values are restored afterwards.
+        $all = @{ TASKSMACK_STUB_HOST = $stubHost; TASKSMACK_STUB_HOST_ARGS = $stubHostArgs; TASKSMACK_STUB_SCRIPT = $stubScript; STUB_SLEEP_MS = $null; BENCHMARK_REPORT_AGGREGATES_ONLY = $null }
         foreach ($name in $Variables.Keys) { $all[$name] = $Variables[$name] }
+        # $null removes a variable: PowerShell passes a plain $null to a .NET string parameter as '',
+        # which newer .NET keeps as an empty variable (and Google Benchmark reads an empty
+        # BENCHMARK_REPORT_AGGREGATES_ONLY as true), so [NullString]::Value is passed instead.
+        $set = { param([string]$Name, $Value) [Environment]::SetEnvironmentVariable($Name, $(if ($null -eq $Value) { [NullString]::Value } else { [string]$Value })) }
         $saved = @{}
         foreach ($name in $all.Keys) {
             $saved[$name] = [Environment]::GetEnvironmentVariable($name)
-            [Environment]::SetEnvironmentVariable($name, $all[$name])
+            & $set $name $all[$name]
         }
         try { & $Body }
         finally {
-            foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
+            foreach ($name in $saved.Keys) { & $set $name $saved[$name] }
         }
     }
 
@@ -656,6 +662,12 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
             @{ BuildType = 'benchhost'; User = 'someone'; Hosts = @('benchhost'); Expected = '<host>' }
             @{ BuildType = 'Release'; User = 'Release'; Hosts = @('Release'); Expected = 'Release' }
             @{ BuildType = 'RelWithDebInfo'; User = 'RelWithDebInfo'; Hosts = @(); Expected = 'RelWithDebInfo' }
+            # A compound custom build type: its own '-', '.' and '_' bound the name too.
+            @{ BuildType = 'ASan-benchuser'; User = 'benchuser'; Hosts = @(); Expected = 'ASan-<user>' }
+            @{ BuildType = 'Release_benchhost'; User = 'someone'; Hosts = @('benchhost'); Expected = 'Release_<host>' }
+            @{ BuildType = 'ci.BenchUser'; User = 'benchuser'; Hosts = @(); Expected = 'ci.<user>' }
+            @{ BuildType = 'ASan-benchusers'; User = 'benchuser'; Hosts = @(); Expected = 'ASan-benchusers' }
+            @{ BuildType = 'ASan-UBSan'; User = 'asan'; Hosts = @(); Expected = '<user>-UBSan' }
         )) {
         $hiddenBuild = (Hide-ManifestIdentity ([ordered]@{ build = [ordered]@{ build_type = $case.BuildType } }) -Homes @() -User $case.User -Hosts $case.Hosts).build
         Assert-True ($hiddenBuild.build_type -ceq $case.Expected) "Build type '$($case.BuildType)': $($hiddenBuild.build_type), expected $($case.Expected)"

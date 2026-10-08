@@ -979,6 +979,12 @@ class ScrubberTest(unittest.TestCase):
             ("benchhost", "someone", ["benchhost"], "<host>"),
             ("Release", "Release", ["Release"], "Release"),
             ("RelWithDebInfo", "RelWithDebInfo", [], "RelWithDebInfo"),
+            # A compound custom build type: its own '-', '.' and '_' bound the name too.
+            ("ASan-benchuser", "benchuser", [], "ASan-<user>"),
+            ("Release_benchhost", "someone", ["benchhost"], "Release_<host>"),
+            ("ci.BenchUser", "benchuser", [], "ci.<user>"),
+            ("ASan-benchusers", "benchuser", [], "ASan-benchusers"),
+            ("ASan-UBSan", "asan", [], "<user>-UBSan"),
         ):
             with self.subTest(build_type=build_type):
                 hidden = module.hide_manifest_identity({"build": {"build_type": build_type}}, [], user, hosts)

@@ -183,6 +183,10 @@ unset(_is_multi_config)
 # say OFF). Being a generate-time file, it is per configuration under multi-config generators too.
 # (CMake's last resort, a directory-level INTERPROCEDURAL_OPTIMIZATION property, is not used here.)
 #
+# It is generated into this directory and copied next to the binary only when the target links
+# (POST_BUILD), so it always describes the binary beside it: a reconfigure (IPO ON to OFF) without
+# a rebuild leaves the ON binary with its ON file.
+#
 # A per-configuration value that is set but empty (-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG:BOOL=)
 # still wins in CMake, as false, but a generator expression cannot tell it from an unset one and
 # would fall back to the generic setting. It is made an explicit OFF first: the same as CMake's
@@ -207,10 +211,17 @@ unset(_benchmarks_ipo_value)
 set(_benchmarks_ipo_config "$<TARGET_PROPERTY:TaskSmackBenchmarks,INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>")
 set(_benchmarks_ipo_generic "$<TARGET_PROPERTY:TaskSmackBenchmarks,INTERPROCEDURAL_OPTIMIZATION>")
 set(_benchmarks_ipo "$<IF:$<STREQUAL:${_benchmarks_ipo_config},>,${_benchmarks_ipo_generic},${_benchmarks_ipo_config}>")
+set(_benchmarks_buildinfo "${CMAKE_CURRENT_BINARY_DIR}/buildinfo/$<CONFIG>/TaskSmackBenchmarks.buildinfo.json")
 file(GENERATE
-    OUTPUT "$<TARGET_FILE_DIR:TaskSmackBenchmarks>/TaskSmackBenchmarks.buildinfo.json"
+    OUTPUT "${_benchmarks_buildinfo}"
     CONTENT "{\n  \"schema_version\": 1,\n  \"config\": \"$<CONFIG>\",\n  \"ipo\": \"$<IF:$<BOOL:${_benchmarks_ipo}>,ON,OFF>\"\n}\n"
 )
+add_custom_command(TARGET TaskSmackBenchmarks POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy "${_benchmarks_buildinfo}" "$<TARGET_FILE_DIR:TaskSmackBenchmarks>/TaskSmackBenchmarks.buildinfo.json"
+    COMMENT "Recording the build information of TaskSmackBenchmarks"
+    VERBATIM
+)
+unset(_benchmarks_buildinfo)
 unset(_benchmarks_ipo_config)
 unset(_benchmarks_ipo_generic)
 unset(_benchmarks_ipo)
