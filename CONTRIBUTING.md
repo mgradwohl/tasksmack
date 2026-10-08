@@ -1646,7 +1646,8 @@ single-instance lock would stop the new one at its "already running" box); close
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
 are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
-`ts-sampler-sys` (system/storage/GPU). On Linux the UI thread keeps the process name (`TaskSmack`;
+`ts-sampler-sys` (system/storage/GPU), plus `ts-sampler-svc` (the Services tab's list, created
+the first time that tab is shown). On Linux the UI thread keeps the process name (`TaskSmack`;
 its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
 `pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.
 Names come from `Platform/ThreadName.h`; give any new worker thread one there (15 bytes at most).
