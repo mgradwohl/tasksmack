@@ -1,14 +1,17 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+#include "App/Panels/ProcessColumnAvailability.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "App/UserConfigHelpers.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1400,6 +1403,11 @@ TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEdite
 
     auto document = parsed(path);
     const bool secondWas = document["process_columns"][second].value_or(true);
+    // A saved config lists only chosen columns (#1376), so with none chosen there is no section yet.
+    if (document["process_columns"].as_table() == nullptr)
+    {
+        document.insert_or_assign("process_columns", toml::table{});
+    }
     document["process_columns"].as_table()->insert_or_assign(second, !secondWas);
     {
         std::ofstream out(path, std::ios::trunc);
@@ -1412,6 +1420,230 @@ TEST_F(UserConfigSaveLoadFixture, ToggledColumnDoesNotOverwriteOtherColumnsEdite
     const auto saved = parsed(path);
     EXPECT_EQ(saved["process_columns"][second].value<bool>(), !secondWas);
     EXPECT_EQ(saved["process_columns"][first].value<bool>(), config.settings().processColumns.isVisible(columns[0]));
+}
+
+// ========== Sparse [process_columns] and its migration (#1376) ==========
+
+/// A [process_columns] section as a config written before config_version 2 has it: every column,
+/// each at getColumnInfo()'s default except those named in `changed`, which are flipped.
+[[nodiscard]] std::string legacyFullColumns(const std::vector<ProcessColumn>& changed)
+{
+    std::string text = "[process_columns]\n";
+    for (const auto col : allProcessColumns())
+    {
+        const auto info = getColumnInfo(col);
+        const bool flipped = std::ranges::find(changed, col) != changed.end();
+        text += std::string(info.configKey) + ((info.defaultVisible != flipped) ? " = true\n" : " = false\n");
+    }
+    return text;
+}
+
+/// Capabilities of a system that can fill every column but Power (Linux without RAPL).
+[[nodiscard]] Platform::ProcessCapabilities capabilitiesWithoutPower()
+{
+    Platform::ProcessCapabilities caps;
+    caps.hasIoCounters = true;
+    caps.hasThreadCount = true;
+    caps.hasHandleCount = true;
+    caps.hasUser = true;
+    caps.hasCommand = true;
+    caps.hasNice = true;
+    caps.hasPageFaults = true;
+    caps.hasPeakRss = true;
+    caps.hasCpuAffinity = true;
+    caps.hasNetworkCounters = true;
+    caps.hasPowerUsage = false;
+    return caps;
+}
+
+/// The keys of the file's [process_columns] section, sorted; empty without one.
+[[nodiscard]] std::vector<std::string> savedColumnKeys(const toml::table& document)
+{
+    std::vector<std::string> keys;
+    if (const auto* columns = document["process_columns"].as_table())
+    {
+        for (const auto& [key, value] : *columns)
+        {
+            keys.emplace_back(key.str());
+        }
+    }
+    std::ranges::sort(keys);
+    return keys;
+}
+
+TEST_F(UserConfigSaveLoadFixture, SaveWritesOnlyChosenColumnsAndTheFormatVersion)
+{
+    auto& config = UserConfig::get();
+    config.save();
+    {
+        // Nothing chosen: no column is written, so every one follows the defaults.
+        const auto document = parsed(m_ConfigPath);
+        EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+        EXPECT_EQ(document["process_columns"].as_table(), nullptr);
+    }
+
+    // A column chosen at its default is still a choice, and is written.
+    config.settings().processColumns.setVisible(ProcessColumn::User, false);
+    config.settings().processColumns.setVisible(ProcessColumn::Power, true);
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(savedColumnKeys(document), (std::vector<std::string>{"power", "user"}));
+    EXPECT_EQ(document["process_columns"]["user"].value<bool>(), false);
+    EXPECT_EQ(document["process_columns"]["power"].value<bool>(), true);
+
+    // Round trip: the chosen columns come back chosen, the rest at their defaults, unchosen.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    const auto& columns = config.settings().processColumns;
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::User));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::User));
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::Power));
+    EXPECT_TRUE(columns.isVisible(ProcessColumn::Power));
+    for (const auto col : allProcessColumns())
+    {
+        if (col != ProcessColumn::User && col != ProcessColumn::Power)
+        {
+            EXPECT_FALSE(columns.isChosen(col)) << getColumnInfo(col).configKey;
+            EXPECT_EQ(columns.isVisible(col), getColumnInfo(col).defaultVisible) << getColumnInfo(col).configKey;
+        }
+    }
+}
+
+TEST_F(UserConfigSaveLoadFixture, LegacyFullConfigKeepsOnlyTheColumnsTheUserChanged)
+{
+    // An old config: every column listed, two of them changed from their defaults by the user.
+    ASSERT_TRUE(getColumnInfo(ProcessColumn::User).defaultVisible);
+    ASSERT_FALSE(getColumnInfo(ProcessColumn::Virtual).defaultVisible);
+    writeFile(m_ConfigPath, "[sampling]\ninterval_ms = 750\n\n" + legacyFullColumns({ProcessColumn::User, ProcessColumn::Virtual}));
+
+    auto& config = UserConfig::get();
+    config.load();
+    {
+        const auto& columns = config.settings().processColumns;
+        EXPECT_TRUE(columns.isChosen(ProcessColumn::User));
+        EXPECT_FALSE(columns.isVisible(ProcessColumn::User));
+        EXPECT_TRUE(columns.isChosen(ProcessColumn::Virtual));
+        EXPECT_TRUE(columns.isVisible(ProcessColumn::Virtual));
+        for (const auto col : allProcessColumns())
+        {
+            if (col != ProcessColumn::User && col != ProcessColumn::Virtual)
+            {
+                EXPECT_FALSE(columns.isChosen(col)) << getColumnInfo(col).configKey;
+            }
+        }
+    }
+
+    // The next save rewrites the section in the new format, leaving everything else alone.
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+    EXPECT_EQ(savedColumnKeys(document), (std::vector<std::string>{"user", "virtual"}));
+    EXPECT_EQ(document["process_columns"]["user"].value<bool>(), false);
+    EXPECT_EQ(document["process_columns"]["virtual"].value<bool>(), true);
+    EXPECT_EQ(document["sampling"]["interval_ms"].value<int>(), 750);
+
+    // And reads back with the same choices.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::User));
+    EXPECT_FALSE(config.settings().processColumns.isVisible(ProcessColumn::User));
+    EXPECT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::Virtual));
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::Virtual));
+    EXPECT_FALSE(config.settings().processColumns.isChosen(ProcessColumn::Power));
+}
+
+TEST_F(UserConfigSaveLoadFixture, CapabilityDefaultReachesMigratedLegacyConfig)
+{
+    // The issue's case: an old config lists "power = true" only because Power was shown by default.
+    // On a system without power readings Power must now follow the capability-aware default and be
+    // hidden, rather than stay a column of dashes as if the user had chosen it.
+    ASSERT_TRUE(getColumnInfo(ProcessColumn::Power).defaultVisible);
+    writeFile(m_ConfigPath, legacyFullColumns({ProcessColumn::User}));
+
+    auto& config = UserConfig::get();
+    config.load();
+    ProcessColumnSettings columns = config.settings().processColumns;
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, capabilitiesWithoutPower());
+    EXPECT_FALSE(columns.isChosen(ProcessColumn::Power));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::Power));
+    // The column the user did change is still theirs.
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::User));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::User));
+
+    // Saved and read again, Power still follows the default, which now shows it on a system that has
+    // power readings.
+    config.settings().processColumns = columns;
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"]["power"].node(), nullptr);
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    ProcessColumnSettings withPower = config.settings().processColumns;
+    Platform::ProcessCapabilities caps = capabilitiesWithoutPower();
+    caps.hasPowerUsage = true;
+    ProcessColumnAvailability::applyCapabilityDefaults(withPower, caps);
+    EXPECT_FALSE(withPower.isChosen(ProcessColumn::Power));
+    EXPECT_TRUE(withPower.isVisible(ProcessColumn::Power));
+}
+
+TEST_F(UserConfigSaveLoadFixture, VersionedConfigIsNotMigratedAgain)
+{
+    // In the new format every listed column is a choice, even one equal to its default: the user
+    // showed Power on purpose, and it stays shown on a system that can't fill it.
+    writeFile(m_ConfigPath, "config_version = 2\n\n[process_columns]\npower = true\n");
+
+    auto& config = UserConfig::get();
+    config.load();
+    ProcessColumnSettings columns = config.settings().processColumns;
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::Power));
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, capabilitiesWithoutPower());
+    EXPECT_TRUE(columns.isVisible(ProcessColumn::Power));
+
+    config.settings().themeId = "dracula";
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), CONFIG_FORMAT_VERSION);
+    EXPECT_EQ(document["process_columns"]["power"].value<bool>(), true);
+}
+
+TEST_F(UserConfigSaveLoadFixture, NewerFormatVersionIsKept)
+{
+    writeFile(m_ConfigPath, "config_version = 99\n\n[process_columns]\npower = true\n");
+
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::Power));
+    config.settings().themeId = "dracula";
+    config.save();
+    const auto document = parsed(m_ConfigPath);
+    EXPECT_EQ(document["config_version"].value<std::int64_t>(), 99);
+    EXPECT_EQ(document["process_columns"]["power"].value<bool>(), true);
+}
+
+TEST_F(UserConfigSaveLoadFixture, ResetColumnsRemovesThemFromTheFile)
+{
+    writeFile(m_ConfigPath, "config_version = 2\n\n[process_columns]\nuser = false\n");
+
+    auto& config = UserConfig::get();
+    config.load();
+    ASSERT_TRUE(config.settings().processColumns.isChosen(ProcessColumn::User));
+
+    // "Reset columns" leaves every column unchosen; none is left in the file.
+    config.settings().processColumns = ProcessColumnSettings::defaults();
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"].as_table(), nullptr);
+}
+
+TEST_F(UserConfigSaveLoadFixture, LegacyConfigIsParsedWithTheMigrationRule)
+{
+    // parseSettings() (the fuzz seam) reads the same way load() does.
+    UserSettings settings;
+    ASSERT_TRUE(UserConfig::parseSettings(legacyFullColumns({ProcessColumn::Virtual}), settings));
+    EXPECT_TRUE(settings.processColumns.isChosen(ProcessColumn::Virtual));
+    EXPECT_FALSE(settings.processColumns.isChosen(ProcessColumn::Power));
+
+    UserSettings versioned;
+    ASSERT_TRUE(UserConfig::parseSettings("config_version = 2\n" + legacyFullColumns({ProcessColumn::Virtual}), versioned));
+    EXPECT_TRUE(versioned.processColumns.isChosen(ProcessColumn::Power));
 }
 
 TEST_F(UserConfigSaveLoadFixture, MalformedConfigIsNotReplaced)
