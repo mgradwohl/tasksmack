@@ -180,9 +180,29 @@ unset(_is_multi_config)
 # CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] variables, which cmake/CompilerOptions.cmake sets as
 # a normal variable when TASKSMACK_ENABLE_IPO is on and IPO is supported (so the cache can still
 # say OFF). Being a generate-time file, it is per configuration under multi-config generators too.
-# (CMake's last resort, a directory-level INTERPROCEDURAL_OPTIMIZATION property, is not used here;
-# nor is a per-configuration value set to an empty string, which CMake takes as OFF but a generator
-# expression cannot tell from an unset one.)
+# (CMake's last resort, a directory-level INTERPROCEDURAL_OPTIMIZATION property, is not used here.)
+#
+# A per-configuration value that is set but empty (-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG:BOOL=)
+# still wins in CMake, as false, but a generator expression cannot tell it from an unset one and
+# would fall back to the generic setting. It is made an explicit OFF first: the same as CMake's
+# reading of an empty value, so the build does not change.
+if(CMAKE_CONFIGURATION_TYPES)
+    set(_benchmarks_configs ${CMAKE_CONFIGURATION_TYPES})
+else()
+    set(_benchmarks_configs ${CMAKE_BUILD_TYPE})
+endif()
+foreach(_benchmarks_cfg IN LISTS _benchmarks_configs)
+    string(TOUPPER "${_benchmarks_cfg}" _benchmarks_cfg)
+    get_property(_benchmarks_ipo_set TARGET TaskSmackBenchmarks PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_benchmarks_cfg} SET)
+    get_property(_benchmarks_ipo_value TARGET TaskSmackBenchmarks PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_benchmarks_cfg})
+    if(_benchmarks_ipo_set AND _benchmarks_ipo_value STREQUAL "")
+        set_property(TARGET TaskSmackBenchmarks PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_benchmarks_cfg} OFF)
+    endif()
+endforeach()
+unset(_benchmarks_configs)
+unset(_benchmarks_cfg)
+unset(_benchmarks_ipo_set)
+unset(_benchmarks_ipo_value)
 set(_benchmarks_ipo_config "$<TARGET_PROPERTY:TaskSmackBenchmarks,INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>")
 set(_benchmarks_ipo_generic "$<TARGET_PROPERTY:TaskSmackBenchmarks,INTERPROCEDURAL_OPTIMIZATION>")
 set(_benchmarks_ipo "$<IF:$<STREQUAL:${_benchmarks_ipo_config},>,${_benchmarks_ipo_generic},${_benchmarks_ipo_config}>")
