@@ -7,7 +7,7 @@ on:
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
 # complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
+# ref (a manual run off another branch) still cancels the run it supersedes.
 concurrency:
   group: static-analysis-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
