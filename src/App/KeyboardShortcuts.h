@@ -115,7 +115,7 @@ struct ShortcutHelpEntry
 
 /// Every keyboard shortcut, for the About dialog: the function keys above, then the Processes table's
 /// navigation (ProcessTableNavigation.h) and the chords that predate them.
-inline constexpr std::array<ShortcutHelpEntry, 12> SHORTCUT_HELP{{
+inline constexpr std::array<ShortcutHelpEntry, 13> SHORTCUT_HELP{{
     {.keys = "F1", .description = "About and keyboard shortcuts"},
     {.keys = "F2", .description = "Settings"},
     {.keys = "F5", .description = "Processes: list / tree view"},
@@ -128,6 +128,7 @@ inline constexpr std::array<ShortcutHelpEntry, 12> SHORTCUT_HELP{{
     {.keys = "Hold Ctrl", .description = "Processes: pause updates while held"},
     {.keys = "Ctrl + = / Ctrl + -", .description = "Larger / smaller text"},
     {.keys = "Ctrl + Shift + M", .description = "Render metrics overlay"},
+    {.keys = "Alt + Space / Ctrl + Space", .description = "Window menu"},
 }};
 
 } // namespace App::KeyboardShortcuts
