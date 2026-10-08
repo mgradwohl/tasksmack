@@ -10,7 +10,6 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -72,6 +71,9 @@ namespace Detail
     return length;
 }
 
+/// Upper-case hex digits for "\xNN" escapes.
+inline constexpr std::string_view HEX_DIGITS = "0123456789ABCDEF";
+
 } // namespace Detail
 
 /// @p text made safe to draw on one line: well-formed UTF-8 is kept as it is, while each byte that is
@@ -103,7 +105,11 @@ namespace Detail
             out += "\\r";
             break;
         default:
-            out += std::format("\\x{:02X}", byte); // other controls and invalid bytes
+            // Other controls and invalid bytes: "\xNN" appended directly, not through std::format -- a
+            // binary value of a megabyte would otherwise be a million format calls in one read.
+            out += "\\x";
+            out += Detail::HEX_DIGITS[byte >> 4U];
+            out += Detail::HEX_DIGITS[byte & 0x0FU];
             break;
         }
         text.remove_prefix(1);

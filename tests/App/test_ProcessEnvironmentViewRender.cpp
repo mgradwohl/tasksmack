@@ -15,6 +15,7 @@
 #include <imgui_internal.h>
 
 #include <cfloat>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
@@ -214,6 +215,51 @@ TEST_F(ProcessEnvironmentViewRenderTest, MaskedValueIsNotDrawnUntilRevealedAndRe
     text = renderAndCapture(view, true);
     EXPECT_FALSE(text.contains("supersecret"));
     EXPECT_TRUE(text.contains(Detail::MASKED_ENVIRONMENT_VALUE));
+}
+
+TEST_F(ProcessEnvironmentViewRenderTest, RevealedValueClippedOnlyByItsButtonStillGetsATooltip)
+{
+    // A value a little narrower than the whole VALUE column but wider than what is left of it beside
+    // the reveal button: the column clips it, so it must get a tooltip. Measured against the column's
+    // full width (the old check), it fit and got none.
+    ProcessEnvironmentView view;
+    view.applyResult({.status = Platform::EnvironmentReadStatus::Ok, .variables = {{.name = "API_TOKEN", .value = "x"}}});
+    float columnWidth = 0.0F;
+    runFrame(
+        [&]
+        {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+            view.render(true);
+            const ImGuiTable* table = ImGui::TableFindByID(ImGui::GetID("##EnvironmentTable"));
+            if (table != nullptr)
+            {
+                columnWidth = table->Columns[1].WorkMaxX - table->Columns[1].WorkMinX;
+            }
+        });
+    ASSERT_GT(columnWidth, 0.0F);
+    const float charWidth = ImGui::CalcTextSize("x").x;
+    ASSERT_GT(charWidth, 0.0F);
+    // Short of the column by less than the button takes (a glyph, its frame padding and the spacing)
+    const float shortBy = charWidth * 1.5F;
+    const auto chars = static_cast<std::size_t>((columnWidth - shortBy) / charWidth);
+    view.applyResult(
+        {.status = Platform::EnvironmentReadStatus::Ok, .variables = {{.name = "API_TOKEN", .value = std::string(chars, 'x')}}});
+    ASSERT_TRUE(view.rows()[0].secret);
+    view.toggleReveal(view.rows()[0]);
+
+    // Hover the value, right of the button, long enough for a tooltip, then look for one.
+    const ImVec2 button = firstRevealButtonCentre(view).value_or(ImVec2{});
+    ASSERT_GT(button.x, 0.0F);
+    ImGui::GetIO().AddMousePosEvent(button.x + (ImGui::GetFontSize() * 4.0F), button.y);
+    bool tooltipShown = false;
+    for (int frame = 0; frame < 60 && !tooltipShown; ++frame)
+    {
+        static_cast<void>(renderAndCapture(view, true));
+        const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+        tooltipShown = (tooltip != nullptr) && tooltip->Active;
+    }
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    EXPECT_TRUE(tooltipShown);
 }
 
 TEST_F(ProcessEnvironmentViewRenderTest, FailedReadsDrawTheirStatusInsteadOfAnEmptyTable)

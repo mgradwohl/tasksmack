@@ -49,14 +49,16 @@ constexpr float TOOLTIP_WRAP_EMS = 40.0F;
 void cellText(std::string_view text)
 {
     const std::string_view shown = truncateUtf8(text, MAX_CELL_BYTES);
+    // The width the text really has: what is left of the cell after its padding and anything drawn
+    // before it on the line (a reveal button), taken before the text moves the cursor.
+    const float available = ImGui::GetContentRegionAvail().x;
     ImGui::TextUnformatted(shown.data(), shown.data() + shown.size());
     if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
     {
         return;
     }
-    const bool cut = shown.size() < text.size();
-    const float available = ImGui::GetColumnWidth();
-    if (cut || ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x > available)
+    const float textWidth = ImGui::CalcTextSize(shown.data(), shown.data() + shown.size()).x;
+    if (Detail::environmentCellNeedsTooltip(shown.size(), text.size(), textWidth, available))
     {
         const std::string_view full = truncateUtf8(text, MAX_TOOLTIP_BYTES);
         if (ImGui::BeginTooltip())

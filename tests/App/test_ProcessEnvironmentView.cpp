@@ -245,6 +245,16 @@ TEST(ProcessEnvironmentViewTest, RevealingOneDuplicateNameLeavesTheOtherMaskedAn
     EXPECT_TRUE(view.isMasked(view.rows()[1]));
 }
 
+// ========== Cell tooltip ==========
+
+TEST(ProcessEnvironmentViewTest, CellNeedsATooltipWhenCutOrWiderThanTheSpaceLeft)
+{
+    EXPECT_FALSE(Detail::environmentCellNeedsTooltip(10, 10, 90.0F, 100.0F));
+    EXPECT_TRUE(Detail::environmentCellNeedsTooltip(10, 10, 101.0F, 100.0F));  // clipped
+    EXPECT_TRUE(Detail::environmentCellNeedsTooltip(512, 600, 50.0F, 100.0F)); // cut short
+    EXPECT_FALSE(Detail::environmentCellNeedsTooltip(0, 0, 0.0F, 100.0F));
+}
+
 // ========== Filter ==========
 
 TEST(ProcessEnvironmentViewTest, FilterMatchesNamesAndPlainValuesButNeverMaskedValues)

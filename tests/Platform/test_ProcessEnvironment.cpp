@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -104,6 +105,21 @@ TEST(ProcessEnvironmentParseTest, ControlCharactersAreEscaped)
     EXPECT_EQ(vars[0].name, "BASH_FUNC_f%%");
     EXPECT_EQ(vars[0].value, "() {  echo hi\\n}");
     EXPECT_EQ(vars[1].value, "a\\tb\\r\\x1B[0m");
+}
+
+TEST(ProcessEnvironmentParseTest, LargeBinaryValueIsEscapedWhole)
+{
+    // 1 MiB of 0x01: every byte becomes the four characters "\x01".
+    constexpr std::size_t VALUE_BYTES = std::size_t{1} << 20U;
+    std::string block = "BIN=";
+    block.append(VALUE_BYTES, '\x01');
+    block.push_back('\0');
+    const auto vars = parseEnvironBlock(block);
+    ASSERT_EQ(vars.size(), 1U);
+    EXPECT_EQ(vars[0].name, "BIN");
+    ASSERT_EQ(vars[0].value.size(), VALUE_BYTES * 4U);
+    EXPECT_EQ(vars[0].value.substr(0, 8), R"(\x01\x01)");
+    EXPECT_EQ(vars[0].value.substr(vars[0].value.size() - 4), R"(\x01)");
 }
 
 // ========== escapeForDisplay ==========

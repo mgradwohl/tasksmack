@@ -68,6 +68,15 @@ inline constexpr std::size_t ENVIRONMENT_TABLE_MAX_VISIBLE_ROWS = 12;
     return "Could not be read";
 }
 
+/// Whether a cell's text needs a tooltip to be read whole: it was cut to @p shownBytes of its
+/// @p totalBytes, or its drawn width @p textWidth exceeds the @p availableWidth left in the cell
+/// (after the cell padding and a reveal button), where the column clips it.
+[[nodiscard]] constexpr bool
+environmentCellNeedsTooltip(std::size_t shownBytes, std::size_t totalBytes, float textWidth, float availableWidth) noexcept
+{
+    return shownBytes < totalBytes || textWidth > availableWidth;
+}
+
 /// Whether @p haystack contains @p needle, ignoring ASCII case. An empty needle matches everything.
 [[nodiscard]] inline bool containsIgnoringCase(std::string_view haystack, std::string_view needle) noexcept
 {
