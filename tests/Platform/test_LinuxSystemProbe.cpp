@@ -655,6 +655,29 @@ TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuComesOnline)
     EXPECT_EQ(probe.read().cpuDetails.physicalCores, 4U);
 }
 
+TEST(LinuxSystemProbeTest, CpuDetailsFollowACpuThatComesOnlineBeforeTheFirstRead)
+{
+    // The details read at construction are tied to the CPUs listed then, so a change before the
+    // first read() is caught too (#809 review)
+    ScopedTempDir proc("ts_test_sys_cpudetails_first_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_first_cpu");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(2);
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    writeOnline(4);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 4U);
+}
+
 namespace
 {
 constexpr std::string_view NET_DEV_HEADER = "Inter-|   Receive                                                |  Transmit\n"

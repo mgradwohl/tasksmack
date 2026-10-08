@@ -626,12 +626,16 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
 
 void WindowsSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors)
 {
-    if (CpuTopology::cpuDetailsNeedRefresh(m_CpuDetailsProcessorCount, sampledProcessors))
+    const CpuTopology::ProcessorCountUpdate update = CpuTopology::updateProcessorCount(m_CpuDetailsProcessorCount, sampledProcessors);
+    if (update.rereadDetails)
     {
         // Rare: only after a processor is hot-added, never every sample
         m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds);
-        m_CpuDetailsProcessorCount = sampledProcessors;
     }
+    // cpuCoreCount and the fallback per-core buffer follow the processors actually sampled, so
+    // cpuPerCore.size() keeps matching cpuCoreCount after a hot-add
+    m_CpuDetailsProcessorCount = update.processorCount;
+    m_NumCores = update.processorCount;
 }
 
 void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)

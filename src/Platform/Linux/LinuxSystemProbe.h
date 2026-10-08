@@ -100,7 +100,7 @@ class LinuxSystemProbe : public ISystemProbe
     // by m_CpuDetailsMutex: read() may run on several threads.
     mutable std::mutex m_CpuDetailsMutex;
     CpuDetails m_CpuDetails;
-    std::size_t m_CpuDetailsProcessorCount = 0; // The /proc/stat CPU count m_CpuDetails describes; 0 = none yet
+    std::size_t m_CpuDetailsProcessorCount = 0; // The CPU count m_CpuDetails describes; 0 = unknown
 
     /// Re-read m_CpuDetails when `sampledProcessors` (this sample's /proc/stat CPUs) differs from the
     /// count they were read for (CpuTopology::cpuDetailsNeedRefresh()).

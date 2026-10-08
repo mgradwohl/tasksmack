@@ -90,6 +90,22 @@ TEST(CpuTopologyTest, DetailsAreReadAgainOnlyWhenTheProcessorCountChanges)
     EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(0, 16)); // Not yet tied to a sample
 }
 
+TEST(CpuTopologyTest, TheSampledProcessorCountIsKeptUnlessThereIsNone)
+{
+    // A hot-add: re-read the details, and the probe's count (its cpuCoreCount) moves to the new one
+    constexpr auto hotAdd = CpuTopology::updateProcessorCount(16, 20);
+    EXPECT_TRUE(hotAdd.rereadDetails);
+    EXPECT_EQ(hotAdd.processorCount, 20U);
+    // Unchanged: nothing to re-read
+    constexpr auto same = CpuTopology::updateProcessorCount(16, 16);
+    EXPECT_FALSE(same.rereadDetails);
+    EXPECT_EQ(same.processorCount, 16U);
+    // A failed per-core read (0) keeps the count it had
+    constexpr auto failed = CpuTopology::updateProcessorCount(16, 0);
+    EXPECT_FALSE(failed.rereadDetails);
+    EXPECT_EQ(failed.processorCount, 16U);
+}
+
 TEST(CpuTopologyTest, EfficiencyClassesAreKeptOnlyOnAHybridCpu)
 {
     std::vector<std::uint8_t> classes;

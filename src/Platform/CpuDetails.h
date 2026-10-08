@@ -144,6 +144,21 @@ inline void summarizeCores(std::span<const CoreRecord> cores, CpuDetails& detail
     return readForProcessors > 0 && sampledProcessors > 0 && readForProcessors != sampledProcessors;
 }
 
+/// What a probe does with this sample's processor count (#809).
+struct ProcessorCountUpdate
+{
+    bool rereadDetails = false;     ///< cpuDetailsNeedRefresh(): the topology changed
+    std::size_t processorCount = 0; ///< The count to keep from now on: the sampled one, unless there was none
+};
+
+/// The update for `currentProcessors` (the count the probe holds) and `sampledProcessors` (this
+/// sample's; 0 when the per-core read failed, which keeps the current count).
+[[nodiscard]] constexpr ProcessorCountUpdate updateProcessorCount(std::size_t currentProcessors, std::size_t sampledProcessors) noexcept
+{
+    return {.rereadDetails = cpuDetailsNeedRefresh(currentProcessors, sampledProcessors),
+            .processorCount = (sampledProcessors > 0) ? sampledProcessors : currentProcessors};
+}
+
 /// Record logical processor `coreId`'s efficiency class, growing `classes` as needed (#809).
 inline void setEfficiencyClass(std::vector<std::uint8_t>& classes, std::size_t coreId, std::uint8_t efficiencyClass)
 {

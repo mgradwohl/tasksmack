@@ -59,7 +59,8 @@ class WindowsSystemProbe : public ISystemProbe
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
     /// Re-read m_CpuDetails when the per-core read saw a different number of active processors than
-    /// they were read for (CpuTopology::cpuDetailsNeedRefresh(), #809).
+    /// they were read for (CpuTopology::updateProcessorCount(), #809), and keep m_NumCores (the
+    /// published cpuCoreCount) at the sampled count.
     void refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors);
     void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);

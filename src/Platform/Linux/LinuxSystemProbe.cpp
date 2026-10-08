@@ -134,6 +134,9 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
     }
 
     m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
+    // The details describe the CPUs /proc/cpuinfo listed just now, so a CPU that goes online or
+    // offline before the first read() is a change from this count, not the baseline (#809).
+    m_CpuDetailsProcessorCount = m_CpuDetails.logicalProcessors.value_or(0);
 
     spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
 }
@@ -387,15 +390,13 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
 void LinuxSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors)
 {
     const std::scoped_lock lock(m_CpuDetailsMutex);
-    if (CpuTopology::cpuDetailsNeedRefresh(m_CpuDetailsProcessorCount, sampledProcessors))
+    const CpuTopology::ProcessorCountUpdate update = CpuTopology::updateProcessorCount(m_CpuDetailsProcessorCount, sampledProcessors);
+    if (update.rereadDetails)
     {
         // Rare: only when a CPU goes online or offline, never every sample
         m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
     }
-    if (sampledProcessors > 0)
-    {
-        m_CpuDetailsProcessorCount = sampledProcessors;
-    }
+    m_CpuDetailsProcessorCount = update.processorCount;
 }
 
 void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)
