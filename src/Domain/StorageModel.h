@@ -123,7 +123,6 @@ class StorageModel : public ISamplable
         StorageSnapshot latest;                                               // the next m_LatestSnapshot
         std::unordered_map<std::string, DiskState> diskStates;                // the next m_DiskStates, swapped in
         std::unordered_set<std::string> present;                              // device names in this sample
-        std::vector<char> firstOfName;                                        // per snapshot disk: 1 if the first of its name
         std::unordered_map<std::string, SharedHistoryBuffer<double>> newRead; // new disks, backfilled
         std::unordered_map<std::string, SharedHistoryBuffer<double>> newWrite;
         std::vector<std::string> newOrder; // new disks, in the order they appear
@@ -132,7 +131,8 @@ class StorageModel : public ISamplable
 
     static DiskSnapshot
     computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state, std::chrono::steady_clock::time_point now);
-    /// The snapshot of one sample, advancing the per-disk rate state in @p diskStates.
+    /// The snapshot of one sample, advancing the per-disk rate state in @p diskStates. Lists each device
+    /// name once, from its first entry in @p counters (#1467).
     static StorageSnapshot computeSnapshot(const Platform::SystemDiskCounters& counters,
                                            const Platform::DiskCapabilities& caps,
                                            std::chrono::steady_clock::time_point now,

@@ -1594,7 +1594,8 @@ TEST(StorageModelTest, ConsecutivePublicationsShareTheirHistory)
 
 // A sample that lists one device name twice appends one point to that disk's series -- the first
 // entry's -- so every series stays aligned with the timestamps, and the next sample's rate is measured
-// from that first entry too (#1412).
+// from that first entry too (#1412). The snapshot lists the disk once, from that entry, and the totals
+// add it once (#1467).
 TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
 {
     auto probe = std::make_unique<Mocks::MockDiskProbe>();
@@ -1607,6 +1608,8 @@ TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
         counters.sectorSize = 512;
         counters.readSectors = readSectors;
         counters.writeSectors = writeSectors;
+        counters.readsCompleted = readSectors / 10;
+        counters.writesCompleted = writeSectors / 10;
         return counters;
     };
 
@@ -1639,6 +1642,27 @@ TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
     EXPECT_DOUBLE_EQ(sda.readBytesPerSec[2], 1000.0 * 512.0) << "measured from the first entry's baseline";
     EXPECT_DOUBLE_EQ(sda.writeBytesPerSec[2], 200.0 * 512.0) << "measured from the first entry's baseline";
     EXPECT_DOUBLE_EQ(publication->totalReadHistory[2], 1000.0 * 512.0);
+
+    // The sample with the duplicate: the snapshot lists sda once, with the first entry's rates, and
+    // the totals and total series are that entry's alone, not the sum of both entries (#1467).
+    const auto snapshots = model.history();
+    ASSERT_EQ(snapshots.size(), 3U);
+    const StorageSnapshot& repeated = snapshots[1];
+    ASSERT_EQ(repeated.disks.size(), 1U) << "a repeated device name is listed once";
+    const DiskSnapshot& first = repeated.disks.front();
+    EXPECT_EQ(first.deviceName, "sda");
+    EXPECT_DOUBLE_EQ(first.readBytesPerSec, 1000.0 * 512.0);
+    EXPECT_DOUBLE_EQ(first.writeBytesPerSec, 300.0 * 512.0);
+    EXPECT_DOUBLE_EQ(first.readOpsPerSec, 100.0);
+    EXPECT_DOUBLE_EQ(first.writeOpsPerSec, 30.0);
+    EXPECT_TRUE(repeated.totalsMeasured);
+    EXPECT_DOUBLE_EQ(repeated.totalReadBytesPerSec, first.readBytesPerSec);
+    EXPECT_DOUBLE_EQ(repeated.totalWriteBytesPerSec, first.writeBytesPerSec);
+    EXPECT_DOUBLE_EQ(repeated.totalReadOpsPerSec, first.readOpsPerSec);
+    EXPECT_DOUBLE_EQ(repeated.totalWriteOpsPerSec, first.writeOpsPerSec);
+    EXPECT_DOUBLE_EQ(publication->totalReadHistory[1], sda.readBytesPerSec[1]) << "the total agrees with the per-disk series";
+    EXPECT_DOUBLE_EQ(publication->totalWriteHistory[1], sda.writeBytesPerSec[1]) << "the total agrees with the per-disk series";
+
     // The model's own series agree.
     const auto timestamps = model.historyTimestamps();
     EXPECT_EQ(model.totalReadHistory().size(), timestamps.size());
@@ -1647,6 +1671,42 @@ TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
         EXPECT_EQ(entry.readBytesPerSec.size(), timestamps.size());
         EXPECT_EQ(entry.writeBytesPerSec.size(), timestamps.size());
     }
+}
+
+// A repeated device name whose later entry would be a counter glitch doesn't turn the sample's total
+// into a gap: only the first entry counts, and it was measured (#1467, #1291).
+TEST(StorageModelTest, ARepeatedDeviceNamesGlitchDoesNotRejectTheTotals)
+{
+    auto probe = std::make_unique<Mocks::MockDiskProbe>();
+    auto* rawProbe = probe.get();
+    StorageModel model(std::move(probe));
+    const auto disk = [](std::uint64_t readSectors)
+    {
+        Platform::DiskCounters counters;
+        counters.deviceName = "sda";
+        counters.sectorSize = 512;
+        counters.readSectors = readSectors;
+        return counters;
+    };
+    // Over the ceiling within one second, were it measured: 2x MAX_SANE_DISK_RATE_BPS worth of sectors.
+    constexpr auto JUMP_SECTORS = static_cast<std::uint64_t>(2.0 * Sampling::MAX_SANE_DISK_RATE_BPS / 512.0);
+
+    Platform::SystemDiskCounters counters;
+    counters.disks = {disk(1000)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(0));
+    counters.disks = {disk(2000), disk(JUMP_SECTORS)};
+    rawProbe->setNextCounters(counters);
+    model.sampleAt(sampleTime(1));
+
+    const StorageSnapshot latest = model.latestSnapshot();
+    ASSERT_EQ(latest.disks.size(), 1U);
+    EXPECT_FALSE(latest.disks.front().ratesRejected);
+    EXPECT_TRUE(latest.totalsMeasured);
+    EXPECT_DOUBLE_EQ(latest.totalReadBytesPerSec, 1000.0 * 512.0);
+    const auto totals = model.totalReadHistory();
+    ASSERT_EQ(totals.size(), 2U);
+    EXPECT_DOUBLE_EQ(totals[1], 1000.0 * 512.0) << "a measured total, not a gap";
 }
 
 // A disk that appears once the history is full and trimming is a new series backfilled to the full
