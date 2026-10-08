@@ -444,11 +444,9 @@ GPUCapabilities DXGIGPUProbe::capabilities() const
 
     // DXGI provides basic capabilities
     caps.hasTemperature = false;       // No temperature via DXGI
-    caps.hasHotspotTemp = false;       // No hotspot temp via DXGI
     caps.hasPowerMetrics = false;      // No power metrics via DXGI
     caps.hasClockSpeeds = false;       // No clock speeds via DXGI
     caps.hasFanSpeed = false;          // No fan speed via DXGI
-    caps.hasPCIeMetrics = false;       // No PCIe metrics via DXGI
     caps.hasEngineUtilization = false; // No engine utilization via DXGI
     caps.hasPerProcessMetrics = false; // No per-process metrics via DXGI
     caps.hasPerProcessUtilization = false;

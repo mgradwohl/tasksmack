@@ -311,8 +311,7 @@ void renderStorageSection(RenderContext& ctx)
     const auto& diskTimestamps = ctx.publication->timestamps;
     const size_t historySize = diskTimestamps.size();
 
-    const auto diskAxis = historySize > 0 ? makeTimeAxisConfig(diskTimestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds)
-                                          : makeTimeAxisConfig({}, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+    const auto diskAxis = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
     // Build shared time axis (float, relative)
     std::span<const double> diskTimes;

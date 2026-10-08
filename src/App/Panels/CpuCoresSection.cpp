@@ -105,7 +105,7 @@ void renderCpuCoresSection(RenderContext& ctx)
     // Get timestamps from cache or model
     const auto& timestamps = ctx.publication->timestamps;
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-    const auto axisConfig = makeTimeAxisConfig(timestamps, ctx.maxHistorySeconds, ctx.historyScrollSeconds);
+    const auto axisConfig = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
     // The snapshot knows the cores before there is any per-core history (CPU deltas need a previous
     // sample), so the slots are whichever is larger: every core gets its chart, with the collecting

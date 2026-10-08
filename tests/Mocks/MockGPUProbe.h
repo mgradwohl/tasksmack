@@ -50,16 +50,11 @@ inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
     c.memoryUsedBytes = memoryUsed;
     c.memoryTotalBytes = memoryTotal;
     c.temperatureC = 60;
-    c.hotspotTempC = 65;
     c.powerDrawWatts = 150.0;
     c.powerLimitWatts = 250.0;
     c.gpuClockMHz = 1500;
-    c.memoryClockMHz = 7000;
     c.fanSpeedRaw = 55;
     c.fanSpeedMaxRaw = 100;
-    c.pcieTxBytes = 0;
-    c.pcieRxBytes = 0;
-    c.computeUtilPercent = 0.0;
     c.encoderUtilPercent = 0.0;
     c.decoderUtilPercent = 0.0;
     return c;
