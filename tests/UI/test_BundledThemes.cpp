@@ -592,6 +592,8 @@ struct LoadedTheme
 };
 
 /// Every bundled theme, and the built-in fallback (Arctic Fire's file, embedded at build time).
+/// Callers take each LoadedTheme by name, not as a structured binding: CodeQL did not see the calls made
+/// inside a `[name, scheme]` loop and reported the helpers they used as unused (alerts 3012, 3013).
 auto loadedThemes() -> std::vector<LoadedTheme>
 {
     std::vector<LoadedTheme> themes;
@@ -676,8 +678,10 @@ auto describeHue(const ImVec4& color) -> std::string
 // text_error's red in 13 themes, and Temperature in text_warning's hex in 9.
 TEST(ThemePaletteTest, StatusColoursAreNeverDataSeries)
 {
-    for (const auto& [name, s] : loadedThemes())
+    for (const LoadedTheme& theme : loadedThemes())
     {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
         const std::array status{
             NamedColor{"semantic.text_error", s.textError},
             NamedColor{"semantic.text_warning", s.textWarning},
@@ -694,11 +698,9 @@ TEST(ThemePaletteTest, StatusColoursAreNeverDataSeries)
             }
             // Red itself is kept for alarms, whatever the theme's error shade: CPU System, a GPU Decoder or
             // disk read drawn red reads as a problem (pink and orange are fine).
-            // Evaluated outside the assertion macros, so the calls are visible to CodeQL (alerts 3012/3013).
             const ColorDifference::Oklch c = ColorDifference::toOklch(series);
-            const bool alarmRed = c.c >= RED_BAND_MIN_CHROMA && inHueRange(c.h, RED_BAND);
-            const std::string hue = describeHue(series);
-            EXPECT_FALSE(alarmRed) << name << ": " << seriesKey << " " << hue << " is drawn in alarm red";
+            EXPECT_FALSE(c.c >= RED_BAND_MIN_CHROMA && inHueRange(c.h, RED_BAND))
+                << name << ": " << seriesKey << " " << describeHue(series) << " is drawn in alarm red";
         }
     }
 }
@@ -707,8 +709,10 @@ TEST(ThemePaletteTest, StatusColoursAreNeverDataSeries)
 // orange and write brown/olive, network send amber and receive cyan/teal, GPU magenta, power yellow.
 TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
 {
-    for (const auto& [name, s] : loadedThemes())
+    for (const LoadedTheme& theme : loadedThemes())
     {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
         const std::array<std::tuple<std::string_view, ImVec4, HueRange>, 15> families{{
             {"charts.cpu", s.chartCpu, BLUE},
             {"charts.cpu_total", s.chartCpuTotal, BLUE},
@@ -730,10 +734,8 @@ TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
         {
             const ColorDifference::Oklch c = ColorDifference::toOklch(color);
             EXPECT_GE(c.c, FAMILY_MIN_CHROMA) << name << ": " << key << " is grey";
-            // Evaluated outside the assertion macros, so the calls are visible to CodeQL (alerts 3012/3013).
-            const bool inFamily = inHueRange(c.h, range);
-            const std::string hue = describeHue(color);
-            EXPECT_TRUE(inFamily) << name << ": " << key << " " << hue << " is outside " << range.lo << ".." << range.hi;
+            EXPECT_TRUE(inHueRange(c.h, range))
+                << name << ": " << key << " " << describeHue(color) << " is outside " << range.lo << ".." << range.hi;
         }
         // Read and write can share a warm hue; write is the duller of the two, so it never reads as read.
         EXPECT_LE(ColorDifference::toOklch(s.chartIoWrite).c, ColorDifference::toOklch(s.chartIo).c - WRITE_CHROMA_BELOW_READ)
@@ -745,8 +747,10 @@ TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
 // Power a field of its own.
 TEST(ThemePaletteTest, PowerIsOneColourOnEveryScreen)
 {
-    for (const auto& [name, s] : loadedThemes())
+    for (const LoadedTheme& theme : loadedThemes())
     {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
         EXPECT_TRUE(sameRgb(s.chartPower, s.gpuPower)) << name;
     }
 }
@@ -755,8 +759,10 @@ TEST(ThemePaletteTest, PowerIsOneColourOnEveryScreen)
 // (Monochrome's error was its palest green), and far from warning and success.
 TEST(ThemePaletteTest, LoadRampRunsGreenAmberRedAndErrorReadsAsSevere)
 {
-    for (const auto& [name, s] : loadedThemes())
+    for (const LoadedTheme& theme : loadedThemes())
     {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
         const ColorDifference::Oklch low = ColorDifference::toOklch(s.progressLow);
         const ColorDifference::Oklch medium = ColorDifference::toOklch(s.progressMedium);
         const ColorDifference::Oklch high = ColorDifference::toOklch(s.progressHigh);
@@ -772,8 +778,7 @@ TEST(ThemePaletteTest, LoadRampRunsGreenAmberRedAndErrorReadsAsSevere)
         for (const auto& [key, c, range] : steps)
         {
             EXPECT_GE(c.c, FAMILY_MIN_CHROMA) << name << ": " << key << " is grey";
-            const bool inFamily = inHueRange(c.h, range); // Outside the macro: visible to CodeQL (alert 3013)
-            EXPECT_TRUE(inFamily) << name << ": " << key << " hue " << c.h << " is outside " << range.lo << ".." << range.hi;
+            EXPECT_TRUE(inHueRange(c.h, range)) << name << ": " << key << " hue " << c.h << " is outside " << range.lo << ".." << range.hi;
         }
         EXPECT_LT(high.h, medium.h) << name << ": the ramp is not ordered red < amber";
         EXPECT_LT(medium.h, low.h) << name << ": the ramp is not ordered amber < green";
@@ -799,8 +804,10 @@ TEST(ThemePaletteTest, LoadRampRunsGreenAmberRedAndErrorReadsAsSevere)
 // Battery and Handles. Series on different Overview charts are different metrics, so they look different.
 TEST(ThemePaletteTest, OverviewChartsGiveEachMetricItsOwnColour)
 {
-    for (const auto& [name, s] : loadedThemes())
+    for (const LoadedTheme& theme : loadedThemes())
     {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
         // {chart, key, colour}. Pairs on one chart are SeriesOnTheSameChartAreSeparable's.
         const std::array<std::tuple<std::string_view, std::string_view, ImVec4>, 12> overview{{
             {"CPU", "charts.cpu_total", s.chartCpuTotal},
