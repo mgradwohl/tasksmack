@@ -111,6 +111,8 @@ class ProcessEnvironmentView
 
     /// A row's identity for its reveal state (Row::occurrence).
     using RowKey = std::pair<std::string, std::size_t>;
+    /// A non-owning RowKey, for lookups that must not copy the name (isRevealed() runs every frame).
+    using RowKeyView = std::pair<std::string_view, std::size_t>;
 
     /// Draws the section: a collapsing "Environment" header and, while it is open, the last read's
     /// table or its status line. Draws nothing at all when @p hasEnvironment is false (the platform
@@ -189,15 +191,15 @@ class ProcessEnvironmentView
     /// another entry with the same name stays as it was.
     void toggleReveal(const Row& row)
     {
-        RowKey key{row.name, row.occurrence};
-        const auto it = std::ranges::lower_bound(m_Revealed, key);
-        if (it != m_Revealed.end() && *it == key)
+        const RowKeyView key{row.name, row.occurrence};
+        const auto it = std::ranges::lower_bound(m_Revealed, key, {}, keyView);
+        if (it != m_Revealed.end() && keyView(*it) == key)
         {
             m_Revealed.erase(it);
         }
         else
         {
-            m_Revealed.insert(it, std::move(key));
+            m_Revealed.insert(it, RowKey{row.name, row.occurrence});
         }
         m_FilterDirty = true; // a revealed value becomes searchable
     }
@@ -205,7 +207,15 @@ class ProcessEnvironmentView
     /// Whether @p row's value has been revealed since the selection changed.
     [[nodiscard]] bool isRevealed(const Row& row) const
     {
-        return std::ranges::binary_search(m_Revealed, RowKey{row.name, row.occurrence});
+        // Compared through views: no copy of the name, so no allocation per secret row per frame.
+        return std::ranges::binary_search(m_Revealed, RowKeyView{row.name, row.occurrence}, {}, keyView);
+    }
+
+    /// Whether the filter box is drawn: past ENVIRONMENT_FILTER_MIN_ROWS, or while a filter is set --
+    /// a filter typed at 25 rows must stay visible (and clearable) after a re-read returns 10.
+    [[nodiscard]] bool showsFilterBox() const noexcept
+    {
+        return m_Rows.size() > Detail::ENVIRONMENT_FILTER_MIN_ROWS || !m_Filter.empty();
     }
 
     /// Whether @p row's value is drawn as Detail::MASKED_ENVIRONMENT_VALUE now.
@@ -262,6 +272,12 @@ class ProcessEnvironmentView
     }
 
   private:
+    /// @p key as a RowKeyView: the projection that lets the sorted m_Revealed be searched by views.
+    [[nodiscard]] static RowKeyView keyView(const RowKey& key) noexcept
+    {
+        return {key.first, key.second};
+    }
+
     void renderTable();
 
     bool m_DrawnOpen = false; // render() drew the section open since the last update()

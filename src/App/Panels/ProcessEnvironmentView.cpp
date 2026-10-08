@@ -112,7 +112,7 @@ void ProcessEnvironmentView::render(bool hasEnvironment)
 
 void ProcessEnvironmentView::renderTable()
 {
-    if (m_Rows.size() > Detail::ENVIRONMENT_FILTER_MIN_ROWS)
+    if (showsFilterBox())
     {
         ImGui::SetNextItemWidth(-1.0F);
         ImGui::InputTextWithHint("##EnvironmentFilter", ICON_FA_FILTER "  Filter by name or value", &m_Filter);

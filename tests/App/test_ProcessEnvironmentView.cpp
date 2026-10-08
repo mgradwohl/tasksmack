@@ -245,6 +245,45 @@ TEST(ProcessEnvironmentViewTest, RevealingOneDuplicateNameLeavesTheOtherMaskedAn
     EXPECT_TRUE(view.isMasked(view.rows()[1]));
 }
 
+TEST(ProcessEnvironmentViewTest, FilterBoxStaysWhileAFilterIsSetEvenWhenARereadShrinksTheList)
+{
+    const auto variablesOf = [](int count)
+    {
+        std::vector<Platform::EnvironmentVariable> variables;
+        variables.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i)
+        {
+            variables.push_back({.name = "VAR_" + std::to_string(100 + i), .value = "v"});
+        }
+        return variables;
+    };
+
+    ProcessEnvironmentView view;
+    view.applyResult(okResult(variablesOf(10)));
+    EXPECT_FALSE(view.showsFilterBox()); // 20 or fewer and no filter: no box
+
+    view.applyResult(okResult(variablesOf(25)));
+    ASSERT_TRUE(view.showsFilterBox());
+    view.setFilter("nothing-matches");
+    EXPECT_TRUE(view.filteredRows().empty());
+
+    // A re-read with 10 rows: the filter still applies, so its box must still be there to clear it.
+    view.applyResult(okResult(variablesOf(10)));
+    EXPECT_TRUE(view.filteredRows().empty());
+    EXPECT_TRUE(view.showsFilterBox());
+    view.setFilter("");
+    EXPECT_EQ(view.filteredRows().size(), 10U);
+    EXPECT_FALSE(view.showsFilterBox()); // cleared: back to the row-count rule
+
+    // A selection change clears the filter.
+    view.applyResult(okResult(variablesOf(25)));
+    view.setFilter("VAR_1");
+    view.onSelectionChanged();
+    view.applyResult(okResult(variablesOf(10)));
+    EXPECT_FALSE(view.showsFilterBox());
+    EXPECT_EQ(view.filteredRows().size(), 10U);
+}
+
 // ========== Cell tooltip ==========
 
 TEST(ProcessEnvironmentViewTest, CellNeedsATooltipWhenCutOrWiderThanTheSpaceLeft)
