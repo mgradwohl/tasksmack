@@ -4,8 +4,6 @@
 #include "ProcessActionConfirm.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
-#include "UI/ChromeWidgets.h"
-#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -23,15 +21,17 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
                                 const std::string& processName,
                                 const Platform::ProcessTarget& target)
 {
-    ImGui::Text("%s (PID %d)", processName.c_str(), target.pid);
-    ImGui::Spacing();
+    renderConfirmation(actions, target);
+    renderControls(capabilities, processName, target);
+}
 
-    // Section: Process Control
-    (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Process Control");
-    ImGui::Spacing();
-
-    renderResultFeedback();
-    renderConfirmDialog(actions, target);
+void ProcessActionsView::renderControls(const Platform::ProcessActionCapabilities& capabilities,
+                                        const std::string& processName,
+                                        const Platform::ProcessTarget& target)
+{
+    // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
+    // block's header and beside the Identity block that names the process (#1493). Its result line
+    // goes under the block's last row (renderResultLine()).
     renderButtons(capabilities, processName, target);
 }
 
@@ -71,53 +71,64 @@ void ProcessActionsView::renderConfirmDialog(Platform::IProcessActions* actions,
     }
 }
 
+namespace
+{
+
+/// The buttons' shared width: the widest label among those @p capabilities show, padded (#1493).
+[[nodiscard]] float actionButtonWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    float widestLabel = 0.0F;
+    for (const Detail::ActionButtonSpec& button : Detail::ACTION_BUTTONS)
+    {
+        if (Detail::isActionAvailable(capabilities, button.action))
+        {
+            widestLabel = std::max(widestLabel, ImGui::CalcTextSize(button.label).x);
+        }
+    }
+    return ProcessDetailsLayout::computeActionButtonWidth(widestLabel, ImGui::GetStyle().FramePadding.x);
+}
+
+} // namespace
+
+float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    std::size_t count = 0;
+    for (const Detail::ActionButtonSpec& button : Detail::ACTION_BUTTONS)
+    {
+        count += Detail::isActionAvailable(capabilities, button.action) ? 1U : 0U;
+    }
+    return ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
+}
+
 void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,
                                        const std::string& processName,
                                        const Platform::ProcessTarget& target)
 {
-    // One width for all four, from the widest label and the font, capped to the pane (#949). See
-    // ProcessDetailsLayout::computeActionButtonWidth() for why it is no longer a fixed 180px.
-    const float emPx = ImGui::GetFontSize();
-    const float gutter = ProcessDetailsLayout::ACTION_BUTTON_GUTTER_EM * emPx;
-    float widestLabel = 0.0F;
-    for (const Detail::ActionButtonSpec& button : Detail::ACTION_BUTTONS)
-    {
-        widestLabel = std::max(widestLabel, ImGui::CalcTextSize(button.label).x);
-    }
-    // Per-column overhead is the gutter plus one CellPadding.x, not two. This table has no inner
-    // border, so ImGui does not pad inside each cell: it puts CellPadding.x on each side of the gap
-    // *between* columns. Two columns have one gap, so the table is 2 * (width + gutter) plus
-    // 2 * CellPadding.x in total -- one CellPadding.x per column.
-    const float buttonWidth = ProcessDetailsLayout::computeActionButtonWidth(
-        widestLabel, emPx, ImGui::GetContentRegionAvail().x, gutter + ImGui::GetStyle().CellPadding.x);
-    constexpr float BUTTON_HEIGHT = 0.0F; // Use default height
-    const ImVec2 buttonSize(buttonWidth, BUTTON_HEIGHT);
+    // One row of equal buttons at their labels' width (#1493): Terminate and Kill, then Suspend and
+    // Resume where the platform has them. A button that would not fit on the row starts a new one, so
+    // none is clipped in a narrow pane. An action the platform cannot run has no button.
+    const ImVec2 buttonSize(actionButtonWidth(capabilities), 0.0F);
 
     // Terminate and Kill end the process, so they are drawn in the theme's danger colour, apart from
     // Suspend and Resume, which can be undone (#1273).
     const auto& theme = UI::Theme::get();
 
-    // Use a table for consistent alignment: a 2x2 grid, Terminate and Kill, then Suspend and Resume.
-    if (!ImGui::BeginTable("ActionButtons", 2, ImGuiTableFlags_SizingFixedFit))
+    bool first = true;
+    for (const Detail::ActionButtonSpec& button : Detail::ACTION_BUTTONS)
     {
-        return;
-    }
-    ImGui::TableSetupColumn("Col1", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
-    ImGui::TableSetupColumn("Col2", ImGuiTableColumnFlags_WidthFixed, buttonWidth + gutter);
-
-    for (std::size_t index = 0; index < Detail::ACTION_BUTTONS.size(); ++index)
-    {
-        const Detail::ActionButtonSpec& button = Detail::ACTION_BUTTONS.at(index);
-        if (index % Detail::ACTION_BUTTON_GRID_COLUMNS == 0)
-        {
-            ImGui::TableNextRow();
-        }
-        ImGui::TableNextColumn();
-        // An action the platform cannot run leaves its cell empty.
         if (!Detail::isActionAvailable(capabilities, button.action))
         {
             continue;
         }
+        if (!first)
+        {
+            ImGui::SameLine();
+            if (ImGui::GetContentRegionAvail().x < buttonSize.x)
+            {
+                ImGui::NewLine();
+            }
+        }
+        first = false;
 
         const bool pressed = Detail::isDestructiveAction(button.action)
                                ? UI::Widgets::filledButton(button.label,
@@ -143,8 +154,6 @@ void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities
             }
         }
     }
-
-    ImGui::EndTable();
 }
 
 } // namespace App

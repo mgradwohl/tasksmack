@@ -101,7 +101,7 @@ class KeyboardInputRenderTest : public ::testing::Test
     ImGuiContext* m_Context = nullptr;
 };
 
-/// A view of the Actions tab driven as ShellLayer drives it: F9 asks the view for the Kill confirm.
+/// A view of the Actions block driven as ShellLayer drives it: F9 asks the view for the Kill confirm.
 struct ActionsHarness
 {
     TestMocks::MockProcessActions mock;

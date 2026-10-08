@@ -1,105 +1,26 @@
 name: OpenSSF Scorecard
 
+# Weekly (plus branch-protection changes and manual runs), not on every push to main (#1406).
+# Scorecard's SAST check counts a commit on main as checked only once the PR it came from has a
+# *completed* `CodeQL` check run (app github-advanced-security, conclusion success or neutral) on its
+# head, and it evaluates that when Scorecard runs, not when the PR merged (ossf/scorecard
+# checks/raw/sast.go). A push-triggered run starts seconds after the merge, so a PR merged while its
+# CodeQL run was still going scored "29 of 30 commits checked" (#1405) until the next push, which is
+# why a wait-for-CodeQL job used to sit in front of every push run. A scheduled run looks at the same
+# last 30 commits, normally hours or days after the newest one merged, when every PR's CodeQL result
+# has landed, so the race (and the up-to-55-minute wait) goes away. Only the badge's refresh rate
+# changes: weekly instead of per merge.
 on:
   branch_protection_rule:
   schedule:
     - cron: '30 5 * * 1'
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  # Scorecard's SAST check counts a commit on main as checked only once the PR it came from has a
-  # *completed* `CodeQL` check run (app github-advanced-security, conclusion success or neutral) on its
-  # head. A push-triggered analysis starts seconds after the merge, so a PR merged while its CodeQL run
-  # was still going was scored "29 of 30 commits checked" (#1405), even though that run then passed.
-  # Wait for the merged PR's CodeQL result first. This job only reads, and it never fails: if there is
-  # nothing to wait for or the wait runs out, it says so and the analysis runs anyway.
-  wait-for-sast:
-    name: Wait for the merged PR's CodeQL result
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    # The script stops itself after WAIT_BUDGET_MINUTES (one deadline for both loops); the extra 10 minutes
-    # of timeout leave room for a last poll and the API calls, so the runner never times out first.
-    timeout-minutes: 55
-    permissions:
-      checks: read
-      contents: read
-      pull-requests: read
-    steps:
-      - name: Wait for CodeQL on the merged PR's head
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          # Actions runs bash with -e; turn it off so a transient gh api failure is retried or reported
-          # through the warning paths below instead of failing this never-fail job.
-          set +e
-          set -uo pipefail
-          # One deadline for the whole wait, PR association included, well inside timeout-minutes above.
-          WAIT_BUDGET_MINUTES=45
-          deadline=$((SECONDS + WAIT_BUDGET_MINUTES * 60))
-          # Find the PR this commit came from; GitHub can take a moment to associate a fresh merge commit.
-          head=""
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
-            head=$(gh api "repos/$REPO/commits/$SHA/pulls" \
-              --jq '[.[] | select(.merged_at != null)][0].head.sha // empty' 2>/dev/null)
-            [ -n "$head" ] && break
-            [ "$((SECONDS + 30))" -lt "$deadline" ] || break
-            sleep 30
-          done
-          if [ -z "$head" ]; then
-            echo "::notice::$SHA has no merged PR (direct push?); nothing to wait for."
-            exit 0
-          fi
-          echo "Merged PR head: $head"
-
-          # Latest check run with this name on the PR head, as "status conclusion", or empty if none.
-          latest() {
-            gh api --method GET "repos/$REPO/commits/$head/check-runs" -f check_name="$1" -f filter=latest \
-              --jq '.check_runs | sort_by(.started_at) | last | select(. != null) | "\(.status) \(.conclusion)"' 2>/dev/null
-          }
-
-          # The CodeQL job's own timeout is 45 minutes and it started before the merge, so the shared
-          # deadline above covers it.
-          # Poll, then sleep at most until the deadline, so the last poll lands at the deadline itself.
-          while true; do
-            codeql=$(latest "CodeQL")
-            analyze=$(latest "Analyze C++")
-            echo "CodeQL: ${codeql:-none}; Analyze C++: ${analyze:-none}"
-            case "$codeql" in
-              "completed success" | "completed neutral")
-                echo "CodeQL result is in; Scorecard will count $SHA as checked."
-                exit 0 ;;
-              completed*)
-                echo "::warning::CodeQL on $head concluded '${codeql#completed }'; Scorecard will count $SHA as unchecked."
-                exit 0 ;;
-            esac
-            # The CodeQL result normally lands a few seconds before the analysis job finishes, but code
-            # scanning can lag behind it. Once the job is done (or never ran on this head) with still no
-            # result after a few more polls, none is coming.
-            case "$analyze" in
-              "" | completed*)
-                grace=$((${grace:-4} - 1))
-                if [ "$grace" -le 0 ]; then
-                  echo "::warning::No CodeQL result on $head (Analyze C++: ${analyze:-did not run}); Scorecard will count $SHA as unchecked."
-                  exit 0
-                fi ;;
-            esac
-            remaining=$((deadline - SECONDS))
-            [ "$remaining" -gt 0 ] || break
-            sleep $((remaining < 60 ? remaining : 60))
-          done
-          echo "::warning::Gave up waiting for CodeQL on $head; Scorecard may count $SHA as unchecked."
-
   analysis:
     name: Scorecard analysis
-    needs: wait-for-sast
-    # Run after the wait whether it ran, was skipped (schedule, dispatch, branch_protection_rule) or failed.
-    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     permissions:
       security-events: write

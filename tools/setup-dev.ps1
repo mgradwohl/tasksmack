@@ -19,10 +19,10 @@ param(
     [string]$LlvmVersion = "22.1.7",
     # CMake/Ninja pinned to match what the windows-2025 GitHub Actions runner image ships
     # (confirmed against actions/runner-images' Windows2025-Readme.md), so a fresh dev-box
-    # setup and CI land on the same versions. ccache has no CI-side winget equivalent to
-    # mirror (CI installs it via Chocolatey instead, pinned separately in
-    # .github/actions/setup-windows-llvm/action.yml), so this pins the latest version winget
-    # actually has available.
+    # setup and CI land on the same versions (CI verifies the image's ninja version in
+    # .github/actions/setup-windows-llvm/action.yml). ccache has no CI-side winget equivalent
+    # to mirror (CI gets it from hendrikmuhs/ccache-action's own pinned, checksum-verified
+    # release binary), so this pins the latest version winget actually has available.
     [string]$CMakeVersion = "3.31.6",
     [string]$NinjaVersion = "1.13.2",
     [string]$CcacheVersion = "4.14",
