@@ -1,5 +1,5 @@
 name: 'Setup Windows LLVM'
-description: 'Install LLVM via Chocolatey (with retry), verify the runner image Ninja, and add LLVM to PATH. ccache comes from hendrikmuhs/ccache-action.'
+description: 'Restore LLVM from the Actions cache (Chocolatey install with retry on a miss), verify the runner image Ninja, and add LLVM to PATH. ccache comes from hendrikmuhs/ccache-action.'
 inputs:
   llvm-version:
     description: 'Full LLVM semver version to install (e.g. 22.1.7)'
@@ -33,7 +33,32 @@ runs:
         }
         Write-Host "ninja $actual at $($ninja.Source)"
 
+    # The installed LLVM tree is cached (#1406): a Chocolatey install downloads the 434 MB
+    # installer and runs it for about 70 s on every Windows job, and the community feed is the
+    # flaky part. The tree is restored into a staging directory and swapped in only on an exact
+    # hit, so a miss leaves the runner image untouched and falls back to the Chocolatey install
+    # below. Only runs on main save the entry (the same rule as the ccache and FetchContent
+    # caches), so pull requests read main's copy and never add their own. Bump the -v suffix to
+    # discard a bad entry; a new llvm-version gets a new key automatically.
+    - name: Restore cached LLVM install
+      id: llvm-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: C:\llvm-cache
+        key: windows-llvm-${{ inputs.llvm-version }}-${{ runner.arch }}-v1
+
+    - name: Use cached LLVM install
+      if: steps.llvm-cache.outputs.cache-hit == 'true'
+      shell: pwsh
+      run: |
+        # Replace, don't overlay: the image ships its own LLVM at the same path. Renaming it
+        # aside is instant, and the move stays on C:, so it is a rename too.
+        $dest = 'C:\Program Files\LLVM'
+        if (Test-Path -LiteralPath $dest) { Rename-Item -LiteralPath $dest -NewName 'LLVM.runner-image' }
+        Move-Item -LiteralPath 'C:\llvm-cache\LLVM' -Destination $dest
+
     - name: Install LLVM
+      if: steps.llvm-cache.outputs.cache-hit != 'true'
       shell: pwsh
       env:
         LLVM_VERSION: ${{ inputs.llvm-version }}
@@ -55,9 +80,15 @@ runs:
           exit 1
         }
 
+    - name: Verify LLVM
+      shell: pwsh
+      env:
+        LLVM_VERSION: ${{ inputs.llvm-version }}
+        LLVM_SOURCE: ${{ steps.llvm-cache.outputs.cache-hit == 'true' && 'cache' || 'chocolatey' }}
+      run: |
         $clang = 'C:\Program Files\LLVM\bin\clang.exe'
         if (-not (Test-Path -LiteralPath $clang)) {
-          Write-Host "::error title=LLVM install failed::$clang not found after choco install"
+          Write-Host "::error title=LLVM install failed::$clang not found ($env:LLVM_SOURCE)"
           exit 1
         }
         $versionLine = (& $clang --version | Select-Object -First 1)
@@ -65,8 +96,36 @@ runs:
           Write-Host "::error title=LLVM version mismatch::expected clang $env:LLVM_VERSION, got: $versionLine"
           exit 1
         }
-        Write-Host $versionLine
+        Write-Host "$versionLine (from $env:LLVM_SOURCE)"
+        # ccache's default compiler check compares the compiler's size and mtime, so a cached tree
+        # must keep the installer's timestamps or every Windows ccache entry misses. Logged so the
+        # two install paths can be compared.
+        $item = Get-Item -LiteralPath $clang
+        Write-Host "clang.exe size $($item.Length) mtime $($item.LastWriteTimeUtc.ToString('o'))"
 
         # Make clang/clang-tidy/lld visible to subsequent steps.
         echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         exit 0
+
+    # Save on main only, after a miss (a new llvm-version or an evicted entry). The staged copy
+    # is what the restore step above expects at C:\llvm-cache\LLVM.
+    - name: Stage LLVM install for the cache (main only)
+      id: llvm-stage
+      # Caching is an optimisation: a failed copy must not fail the build.
+      continue-on-error: true
+      if: >-
+        steps.llvm-cache.outputs.cache-hit != 'true' &&
+        github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      shell: pwsh
+      run: |
+        robocopy 'C:\Program Files\LLVM' 'C:\llvm-cache\LLVM' /E /COPY:DAT /DCOPY:DAT /R:2 /W:5 /NFL /NDL /NP
+        # robocopy exit codes below 8 mean success.
+        if ($LASTEXITCODE -ge 8) { exit 1 }
+        exit 0
+
+    - name: Save LLVM install cache (main only)
+      if: steps.llvm-stage.outcome == 'success'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: C:\llvm-cache
+        key: windows-llvm-${{ inputs.llvm-version }}-${{ runner.arch }}-v1
