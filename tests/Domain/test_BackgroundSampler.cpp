@@ -1015,3 +1015,93 @@ TEST(BackgroundSamplerTest, MetricsStartOverOnRestart)
     ASSERT_GE(secondRunSamples, 1);
     EXPECT_EQ(sampler.metrics().samplables.at(0).samples, static_cast<std::uint64_t>(secondRunSamples));
 }
+
+// =============================================================================
+// Non-blocking stop (#801)
+// =============================================================================
+
+namespace
+{
+
+/// A sample that blocks until the test releases it, to hold a sample in flight.
+class GatedSamplable : public Domain::ISamplable
+{
+  public:
+    void sample() override
+    {
+        std::unique_lock lock(m_Mutex);
+        m_InSample = true;
+        ++m_Samples;
+        m_Changed.notify_all();
+        m_Changed.wait(lock, [this] { return m_Released; });
+    }
+
+    [[nodiscard]] bool waitUntilInSample()
+    {
+        std::unique_lock lock(m_Mutex);
+        return m_Changed.wait_for(lock, 2000ms, [this] { return m_InSample; });
+    }
+
+    void release()
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Released = true;
+        }
+        m_Changed.notify_all();
+    }
+
+    [[nodiscard]] int samples() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Samples;
+    }
+
+  private:
+    mutable std::mutex m_Mutex;
+    std::condition_variable m_Changed;
+    bool m_InSample = false;
+    bool m_Released = false;
+    int m_Samples = 0;
+};
+
+} // namespace
+
+TEST(BackgroundSamplerTest, RequestStopReturnsWithoutWaitingForASampleInFlight)
+{
+    const auto samplable = std::make_shared<GatedSamplable>();
+    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms});
+    EXPECT_TRUE(sampler.hasThreadExited()); // not started
+    sampler.addSamplable(samplable);
+    sampler.start();
+    ASSERT_TRUE(samplable->waitUntilInSample());
+    EXPECT_FALSE(sampler.hasThreadExited());
+
+    // Returns while the sample is still blocked: a join here would deadlock the test.
+    sampler.requestStop();
+    EXPECT_FALSE(sampler.hasThreadExited());
+
+    samplable->release();
+    EXPECT_TRUE(waitFor([&sampler] { return sampler.hasThreadExited(); }));
+    EXPECT_EQ(samplable->samples(), 1); // no sample starts after the stop request
+
+    // Still running until stop(), which no longer waits.
+    EXPECT_TRUE(sampler.isRunning());
+    sampler.stop();
+    EXPECT_FALSE(sampler.isRunning());
+}
+
+TEST(BackgroundSamplerTest, RequestStopBeforeStartDoesNothing)
+{
+    const auto samplable = std::make_shared<MockSamplable>();
+    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 100ms});
+    sampler.addSamplable(samplable);
+    sampler.requestStop();
+    EXPECT_TRUE(sampler.hasThreadExited());
+
+    sampler.start();
+    samplable->waitForSamples(1);
+    EXPECT_FALSE(sampler.hasThreadExited());
+    sampler.stop();
+    EXPECT_TRUE(sampler.hasThreadExited());
+}
