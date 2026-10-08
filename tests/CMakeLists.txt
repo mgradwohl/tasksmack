@@ -116,6 +116,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_GPUModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
+    Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp

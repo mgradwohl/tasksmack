@@ -6,6 +6,7 @@
 #include "Platform/IDiskProbe.h"
 #include "PublicationSlot.h"
 #include "SamplingConfig.h"
+#include "SharedHistory.h"
 
 #include <chrono>
 #include <cstdint>
@@ -15,26 +16,31 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Domain
 {
 
-/// Per-device I/O history for charting.
+/// Per-device I/O history for charting: views of the model's shared history (#1412), each one
+/// immutable and convertible to std::span<const double>.
 struct PerDiskHistory
 {
     std::string deviceName;
-    std::vector<double> readBytesPerSec;  ///< Aligned to StorageModel::historyTimestamps()
-    std::vector<double> writeBytesPerSec; ///< Aligned to StorageModel::historyTimestamps()
+    HistoryView<double> readBytesPerSec;  ///< Aligned to the timestamps it was published with
+    HistoryView<double> writeBytesPerSec; ///< Aligned to the timestamps it was published with
 };
 
+/// One immutable generation of the storage model's state. The histories are views of the model's
+/// shared history (#1412): a publish shares their samples rather than copying them, so it costs
+/// O(series), not O(history x series). Every series is aligned sample for sample with timestamps.
 struct StoragePublication
 {
     std::uint64_t version = 0;
     StorageSnapshot snapshot;
-    std::vector<double> timestamps;
-    std::vector<double> totalReadHistory;
-    std::vector<double> totalWriteHistory;
+    HistoryView<double> timestamps;
+    HistoryView<double> totalReadHistory;  ///< NaN where the total was not a measurement (#1102, #1291)
+    HistoryView<double> totalWriteHistory; ///< Likewise
     std::vector<PerDiskHistory> perDiskHistory;
 };
 
@@ -85,9 +91,9 @@ class StorageModel : public ISamplable
     [[nodiscard]] std::vector<double> totalWriteHistory() const;
     [[nodiscard]] std::vector<double> historyTimestamps() const;
 
-    /// Per-device I/O history for charting individual disks.
+    /// Per-device I/O history for charting individual disks, as views of the shared history.
     /// Each entry is strictly aligned to historyTimestamps(): every per-disk
-    /// vector has the same length as historyTimestamps(). Samples where a disk
+    /// series has the same length as historyTimestamps(). Samples where a disk
     /// was absent (disappeared or not yet seen) are NaN: no reading, drawn as a gap.
     [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
     [[nodiscard]] std::shared_ptr<const StoragePublication> publication() const noexcept;
@@ -110,15 +116,49 @@ class StorageModel : public ISamplable
         bool isSeedTransition = false;
     };
 
+    /// One sample's changes, staged: everything it allocates is made here, so applying it cannot
+    /// fail part way (#1412).
+    struct PendingSample
+    {
+        StorageSnapshot latest;                                               // the next m_LatestSnapshot
+        std::unordered_map<std::string, DiskState> diskStates;                // the next m_DiskStates, swapped in
+        std::unordered_set<std::string> present;                              // device names in this sample
+        std::unordered_map<std::string, SharedHistoryBuffer<double>> newRead; // new disks, backfilled
+        std::unordered_map<std::string, SharedHistoryBuffer<double>> newWrite;
+        std::vector<std::string> newOrder; // new disks, in the order they appear
+        std::unordered_map<std::string, double> newLastSeen;
+    };
+
     static DiskSnapshot
     computeDiskSnapshot(const Platform::DiskCounters& current, DiskState& state, std::chrono::steady_clock::time_point now);
+    /// The snapshot of one sample, advancing the per-disk rate state in @p diskStates. Lists each device
+    /// name once, from its first entry in @p counters (#1467).
+    static StorageSnapshot computeSnapshot(const Platform::SystemDiskCounters& counters,
+                                           const Platform::DiskCapabilities& caps,
+                                           std::chrono::steady_clock::time_point now,
+                                           std::unordered_map<std::string, DiskState>& diskStates);
     /// One sample from @p counters: the shared body of sampleAt() and sampleSeries(). Publishes it
     /// when @p publishNow. Requires m_WriterMutex held and m_Mutex not held.
+    /// Exception guarantee (#1412): the history append is a transaction with the strong guarantee --
+    /// a throw (std::bad_alloc) before its commit leaves the history, rate state and snapshot as they
+    /// were, every series aligned. After the commit, publish() can still throw while building the
+    /// publication; that leaves the history one sample ahead of an unchanged publication and version,
+    /// which the next successful publish catches up.
     void applySample(const Platform::SystemDiskCounters& counters,
                      const Platform::DiskCapabilities& caps,
                      std::chrono::steady_clock::time_point now,
                      bool publishNow);
-    void trimHistory(double nowSeconds);
+    /// Create and backfill the series of disks new in @p snapshot in @p pending, and reserve room for
+    /// one more sample in every existing series and the buckets and slots the append will use. May
+    /// throw; changes nothing observable. Requires m_Mutex held exclusively.
+    void stageHistoryAppend(PendingSample& pending, const StorageSnapshot& snapshot, double nowSeconds);
+    /// Apply a staged sample: adopt the staged series and state, append @p snapshot to every series,
+    /// prune long-absent disks and trim. Uses only what stageHistoryAppend() reserved, so it does not
+    /// allocate or throw. Requires m_Mutex held exclusively.
+    void commitHistoryAppend(PendingSample& pending, StorageSnapshot&& snapshot, double nowSeconds) noexcept;
+    /// Forget disks absent for longer than the history window (#777).
+    void pruneAbsentDisks(double nowSeconds) noexcept;
+    void trimHistory(double nowSeconds) noexcept;
     void applyHistoryCapacity();
 
     std::unique_ptr<Platform::IDiskProbe> m_Probe;
@@ -132,8 +172,12 @@ class StorageModel : public ISamplable
     // on a publication's copy.
     mutable std::shared_mutex m_Mutex;
     StorageSnapshot m_LatestSnapshot;
-    HistoryBuffer<StorageSnapshot> m_History;
-    HistoryBuffer<double> m_Timestamps; // Seconds since start
+    HistoryBuffer<StorageSnapshot> m_History; // for history(); not published
+    // The published series: shared append-only buffers that publish() hands out views of instead of
+    // copies (#1412), trimmed by time window in lockstep with m_History.
+    SharedHistoryBuffer<double> m_Timestamps;       // Seconds since start
+    SharedHistoryBuffer<double> m_TotalReadHistory; // totalRateOrNaN() of each sample
+    SharedHistoryBuffer<double> m_TotalWriteHistory;
 
     // Per-device state for delta calculations
     std::unordered_map<std::string, DiskState> m_DiskStates;
@@ -142,8 +186,8 @@ class StorageModel : public ISamplable
     // backfilled with NaN (clamped to ring capacity) and absent disks receive NaN
     // placeholders, so every series stays index-aligned with m_Timestamps and a
     // sample where nothing was measured is a gap, not a false zero (#1015).
-    std::unordered_map<std::string, HistoryBuffer<double>> m_DiskReadHistory;
-    std::unordered_map<std::string, HistoryBuffer<double>> m_DiskWriteHistory;
+    std::unordered_map<std::string, SharedHistoryBuffer<double>> m_DiskReadHistory;
+    std::unordered_map<std::string, SharedHistoryBuffer<double>> m_DiskWriteHistory;
     std::vector<std::string> m_DiskOrder; ///< Insertion-order disk names for consistent display
     // Wall-clock time (nowSeconds, same clock as m_Timestamps) each device name was last seen
     // in a live sample, so a name absent for longer than the configured history window (at
@@ -162,6 +206,7 @@ class StorageModel : public ISamplable
     double m_MaxHistorySeconds = Sampling::HISTORY_SECONDS_DEFAULT; // 5 minutes default
 
     /// Build the next generation from the history state under a shared lock, then commit it.
+    /// Strong guarantee: a throw while building leaves the publication and its version unchanged.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
 };
