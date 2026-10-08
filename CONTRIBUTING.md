@@ -1076,7 +1076,7 @@ Notes:
   built-in `CPU` profile, to avoid the "trace has dropped N events" warning that the built-in
   profile produces on machines with many logical cores under system-wide sampling.
 - The default `-BenchmarkFilter` for `bench` mode covers every probe/model refresh path plus
-  the PDH per-process GPU path and core `History` container operations; pass `.*` to profile
+  the PDH per-process GPU path and core `HistoryBuffer` ring operations (`BM_HistoryBuffer_*`); pass `.*` to profile
   the entire suite instead.
 - `bench` checks the filter first, like `tools/profile-perf.sh` (#874). A filter matching no
   benchmark fails before recording. One matching several warns and lists them: each benchmark
