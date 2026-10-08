@@ -1,6 +1,6 @@
 # Implemented Features
 
-This is the canonical inventory of user-visible and engineering features currently implemented in TaskSmack. Partial capabilities are called out explicitly; planned work belongs in [tasksmack.md](tasksmack.md).
+This is the canonical inventory of user-visible and engineering features currently implemented in TaskSmack. Partial capabilities are called out explicitly; planned work belongs in [tasksmack.md](https://github.com/mgradwohl/tasksmack/blob/main/tasksmack.md).
 
 ## Process Monitoring and Control
 

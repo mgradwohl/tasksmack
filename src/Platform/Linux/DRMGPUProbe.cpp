@@ -1404,11 +1404,9 @@ GPUCapabilities DRMGPUProbe::capabilities() const
     caps.supportsMultiGPU = m_Cards.size() > 1;
 
     // Limited capabilities compared to NVML/ROCm
-    caps.hasHotspotTemp = false;
     // Power from the hwmon energy counter, where a card has one (#1269)
     caps.hasPowerMetrics = std::ranges::any_of(m_Cards, [](const DRMCard& card) { return !card.energyPath.empty(); });
     caps.hasFanSpeed = false;
-    caps.hasPCIeMetrics = false;
     caps.hasEngineUtilization = false;
     caps.hasPerProcessMetrics = false;
     caps.hasPerProcessUtilization = false;

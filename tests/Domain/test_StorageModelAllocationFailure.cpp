@@ -52,20 +52,9 @@ std::chrono::steady_clock::time_point timeAt(std::uint64_t step)
     return std::chrono::steady_clock::time_point{} + std::chrono::hours(1) + std::chrono::seconds(step);
 }
 
-/// Every history series the model holds is as long as its timestamps, and every series of its
-/// publication as long as the publication's timestamps.
+/// Every series of the model's publication is as long as the publication's timestamps.
 void expectAligned(const Domain::StorageModel& model)
 {
-    const std::size_t samples = model.historyTimestamps().size();
-    EXPECT_EQ(model.history().size(), samples);
-    EXPECT_EQ(model.totalReadHistory().size(), samples);
-    EXPECT_EQ(model.totalWriteHistory().size(), samples);
-    for (const auto& disk : model.perDiskHistory())
-    {
-        EXPECT_EQ(disk.readBytesPerSec.size(), samples) << disk.deviceName;
-        EXPECT_EQ(disk.writeBytesPerSec.size(), samples) << disk.deviceName;
-    }
-
     const auto publication = model.publication();
     const std::size_t published = publication->timestamps.size();
     EXPECT_EQ(publication->totalReadHistory.size(), published);
@@ -105,7 +94,7 @@ TEST(StorageModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADiskK
         }
         const auto publicationBefore = model.publication();
         const std::uint64_t versionBefore = model.publicationVersion();
-        const std::size_t samplesBefore = model.historyTimestamps().size();
+        const std::size_t samplesBefore = model.publication()->timestamps.size();
         rawProbe->setNextCounters(countersAt(step, after));
 
         bool threw = false;
@@ -126,21 +115,21 @@ TEST(StorageModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADiskK
         }
         ++failed;
 
-        expectAligned(model);
         EXPECT_EQ(model.publicationVersion(), versionBefore);
         EXPECT_EQ(model.publication(), publicationBefore);
-        // The history either did not move, or (a failure in publish(), after the append) moved by
-        // exactly one sample in every series together.
-        const std::size_t samplesAfter = model.historyTimestamps().size();
-        EXPECT_TRUE(samplesAfter == samplesBefore || samplesAfter == samplesBefore + 1) << samplesAfter;
 
-        // The model carries on: the next sample applies and publishes, with the new disk.
+        // The model carries on: the next sample applies and publishes, with the new disk. Its
+        // publication shows the history the failure left: aligned, and either unmoved by the failed
+        // sample or (a failure in publish(), after the append) moved by exactly one sample in every
+        // series together.
         ++step;
         rawProbe->setNextCounters(countersAt(step, after));
         model.sampleAt(timeAt(step));
         expectAligned(model);
         EXPECT_GT(model.publicationVersion(), versionBefore);
         const auto publication = model.publication();
+        const std::size_t samplesAfter = publication->timestamps.size();
+        EXPECT_TRUE(samplesAfter == samplesBefore + 1 || samplesAfter == samplesBefore + 2) << samplesAfter;
         ASSERT_EQ(publication->perDiskHistory.size(), 2U);
         EXPECT_EQ(publication->perDiskHistory[1].deviceName, "nvme0n1");
         // sda's rate is measured against whichever sample was last applied: one interval's I/O (16

@@ -28,15 +28,6 @@ colors = [
 ]
 
 # =============================================================================
-# PROGRESS BAR COLORS
-# Colors for progress bars based on percentage thresholds
-# =============================================================================
-[progress]
-low = "#2E7D32"       # 0-50%   - Dim green (healthy)
-medium = "#4CAF50"    # 50-80%  - Medium green (caution)
-high = "#B9F6CA"      # 80-100% - Bright glow (critical)
-
-# =============================================================================
 # SEMANTIC TEXT COLORS
 # Colors for different types of text/messages
 # All variations of green

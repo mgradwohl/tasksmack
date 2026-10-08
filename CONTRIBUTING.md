@@ -12,7 +12,7 @@ To avoid duplication and doc drift, these are the canonical docs:
 - [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow (this file)
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): contributor conduct policy and reporting path
 - [tasksmack.md](tasksmack.md): architecture, metrics pipeline, and engineering direction
-- [completed-features.md](completed-features.md): canonical implemented-feature inventory
+- [docs/dev/completed-features.md](docs/dev/completed-features.md): canonical implemented-feature inventory
 - [docs/guide/](docs/guide/): user guide and troubleshooting
 - [docs/dev/](docs/dev/): concise docs-site navigation back to these canonical developer sources
 - [.github/copilot-instructions.md](.github/copilot-instructions.md) and [.github/copilot-coding-agent-tips.md](.github/copilot-coding-agent-tips.md): agent guidance (also useful to contributors)
@@ -369,7 +369,10 @@ The production `.cpp` files exercised this way are listed under "Source files un
 `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs and `UI/UILayer.cpp` are not in that list. That
 is no longer a link limit on ImGui itself: `UI/Theme.cpp` is replaced in the test binary by
 `tests/Mocks/ThemeStub.cpp`, so a file can only be added once every `Theme` member it calls is
-stubbed; `ProcessesPanel.cpp` and `SystemMetricsPanel.cpp` also create real `Platform` probes
+stubbed (the stub is a small fake, not a no-op: `setThemeById()` / `setFontSize()` record what they
+are given and `currentThemeId()` / `currentFontSize()` return it, so `UserConfig`'s
+apply → capture → save → load → apply round trip is tested in `test_UserConfigPersistence.cpp`);
+`ProcessesPanel.cpp` and `SystemMetricsPanel.cpp` also create real `Platform` probes
 at construction or attach; and `UILayer.cpp` drives the SDL3/OpenGL3 backends against a live
 window. Prefer moving a panel's drawing into a small view or helper `.cpp` with explicit inputs
 (as `ProcessPriorityView.cpp` and `ProcessActionsView.cpp` were split out of
@@ -842,8 +845,8 @@ deliberate, reviewed performance change that the gate should treat as the new no
 
 | Benchmark | Description |
 |-----------|-------------|
-| `BM_History_*` | Ring buffer operations (push, access, copyTo) |
-| `BM_History_MemoryFootprint` | Memory usage tracking for history buffers |
+| `BM_HistoryBuffer_*` | `HistoryBuffer` ring operations (push, access, copyTo) |
+| `BM_HistoryBuffer_MemoryFootprint` | Memory usage tracking for history buffers |
 | `BM_ProcessModel_*` | Process enumeration and snapshot computation |
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
@@ -1085,7 +1088,7 @@ Notes:
   built-in `CPU` profile, to avoid the "trace has dropped N events" warning that the built-in
   profile produces on machines with many logical cores under system-wide sampling.
 - The default `-BenchmarkFilter` for `bench` mode covers every probe/model refresh path plus
-  the PDH per-process GPU path and core `History` container operations; pass `.*` to profile
+  the PDH per-process GPU path and core `HistoryBuffer` ring operations (`BM_HistoryBuffer_*`); pass `.*` to profile
   the entire suite instead.
 - `bench` checks the filter first, like `tools/profile-perf.sh` (#874). A filter matching no
   benchmark fails before recording. One matching several warns and lists them: each benchmark

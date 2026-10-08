@@ -204,7 +204,6 @@ TEST(MergeNVMLIntoDXGICountersTest, MergesMappedGPUAndReportsIdAsSourced)
     nvml[0].powerDrawWatts = 150.5;
     nvml[0].powerLimitWatts = 300.0;
     nvml[0].gpuClockMHz = 1800;
-    nvml[0].memoryClockMHz = 9500;
     nvml[0].fanSpeedRaw = 40;
     nvml[0].fanSpeedMaxRaw = 100;
     nvml[0].utilizationPercent = 0.0; // idle is a valid NVML reading, must still be applied
@@ -218,7 +217,6 @@ TEST(MergeNVMLIntoDXGICountersTest, MergesMappedGPUAndReportsIdAsSourced)
     EXPECT_DOUBLE_EQ(dxgi[0].powerDrawWatts, 150.5);
     EXPECT_DOUBLE_EQ(dxgi[0].powerLimitWatts, 300.0);
     EXPECT_EQ(dxgi[0].gpuClockMHz, 1800U);
-    EXPECT_EQ(dxgi[0].memoryClockMHz, 9500U);
     EXPECT_EQ(dxgi[0].fanSpeedRaw, 40U);
     EXPECT_EQ(dxgi[0].fanSpeedMaxRaw, 100U);
     EXPECT_DOUBLE_EQ(dxgi[0].utilizationPercent, 0.0) << "NVML's idle 0% must still overwrite DXGI's stale value";

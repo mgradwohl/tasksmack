@@ -23,11 +23,6 @@ colors = [
     "#C0291F",  # Dark red
 ]
 
-[progress]
-low = "#4A6600"       # 0-50%   - Dark green (healthy)
-medium = "#A67D00"    # 50-80%  - Yellow (caution)
-high = "#C24036"      # 80-100% - Red (critical)
-
 [semantic]
 text_primary = "#2E3E43"
 text_disabled = "#93A1A1"

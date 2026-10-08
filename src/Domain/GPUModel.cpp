@@ -519,7 +519,6 @@ void GPUModel::stageHistoryAppend(PendingHistory& pending, const SnapshotMap& sn
 
     // Room for this sample in every existing series, including those of a GPU missing from this read,
     // which gets a placeholder.
-    m_HistoryTimestamps.reserve(1);
     for (auto& [gpuId, series] : m_Histories)
     {
         series.reserve(1);
@@ -537,7 +536,7 @@ void GPUModel::commitHistoryAppend(PendingHistory& pending, const SnapshotMap& s
         m_Histories.insert(pending.newGpus.extract(pending.newGpus.begin()));
     }
 
-    m_HistoryTimestamps.push(nowSeconds);
+    m_LatestRefreshSeconds = nowSeconds;
     // A known GPU missing from this read gets a placeholder, so its history has a gap here rather
     // than a line drawn straight across the absence (#1146).
     const HistorySample placeholder = placeholderSample(nowSeconds);
@@ -555,9 +554,9 @@ void GPUModel::setMaxHistorySeconds(double seconds)
         const std::unique_lock lock(m_Mutex);
         m_MaxHistorySeconds = Sampling::clampHistorySeconds(seconds);
         applyHistoryCapacity();
-        if (!m_HistoryTimestamps.empty())
+        if (m_LatestRefreshSeconds.has_value())
         {
-            trimHistory(m_HistoryTimestamps.latest());
+            trimHistory(*m_LatestRefreshSeconds);
         }
     }
     // Republish the trimmed history now rather than at the next sample (#1145); see
@@ -579,7 +578,6 @@ void GPUModel::applyHistoryCapacity() noexcept
     // Sized for the window at the fastest supported refresh cadence; trimHistory() governs
     // actual retention, as in SystemModel and StorageModel.
     const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
-    m_HistoryTimestamps.setCapacity(capacity);
     for (auto& [gpuId, series] : m_Histories)
     {
         series.setCapacity(capacity);
@@ -593,11 +591,10 @@ void GPUModel::trimHistory(double nowSeconds) noexcept
     // newer sample remains: an anchor with nothing after it would be drawn connected to the next
     // sample across the gap. trimCountBefore() applies that rule; discardFront() is O(1).
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    m_HistoryTimestamps.discardFront(HistoryUtils::trimCountBefore(m_HistoryTimestamps.view(), cutoff));
 
     // Each GPU has its own timestamps: a refresh it was missing from has a placeholder, but its
     // history starts when it was first seen and is pruned on its own, so it needn't line up with
-    // the global timestamps. Trim each GPU by its own timestamps rather than one shared count. A GPU
+    // another GPU's. Trim each GPU by its own timestamps rather than one shared count. A GPU
     // absent for the whole window has no sample after the cutoff, so all of its samples go, rather
     // than keep one that would later be joined to its next sample across the absence.
     for (auto& [gpuId, series] : m_Histories)
@@ -813,12 +810,9 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.memoryUsedBytes = current.memoryUsedBytes;
     snapshot.memoryTotalBytes = current.memoryTotalBytes;
     snapshot.temperatureC = current.temperatureC;
-    snapshot.hotspotTempC = current.hotspotTempC;
     snapshot.powerDrawWatts = current.powerDrawWatts;
     snapshot.powerLimitWatts = current.powerLimitWatts;
     snapshot.gpuClockMHz = current.gpuClockMHz;
-    snapshot.memoryClockMHz = current.memoryClockMHz;
-    snapshot.computeUtilPercent = current.computeUtilPercent;
     snapshot.encoderUtilPercent = current.encoderUtilPercent;
     snapshot.decoderUtilPercent = current.decoderUtilPercent;
 
@@ -851,15 +845,10 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         snapshot.memoryUsedPercent = (static_cast<double>(current.memoryUsedBytes) / static_cast<double>(current.memoryTotalBytes)) * 100.0;
     }
 
-    if (current.powerLimitWatts > 0.0)
-    {
-        snapshot.powerUtilPercent = (current.powerDrawWatts / current.powerLimitWatts) * 100.0;
-    }
-
     // Fan speed: normalize the vendor-native raw reading against the device's own max here in
-    // Domain, not in the Platform probe, matching memoryUsedPercent/powerUtilPercent above (see
+    // Domain, not in the Platform probe, matching memoryUsedPercent above (see
     // #734 review discussion -- GPUCounters holds unconverted raw values only). Left unclamped
-    // to 100, like memoryUsedPercent/powerUtilPercent above: a raw reading above the device's
+    // to 100, like memoryUsedPercent above: a raw reading above the device's
     // reported max is itself useful signal (sensor drift, transient overspeed), not something to
     // silently cap.
     snapshot.fanSpeedAvailable = current.fanSpeedMaxRaw > 0;
@@ -873,79 +862,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         snapshot.fanSpeedPercent = Numeric::narrowOr<std::uint32_t>(percent, std::numeric_limits<std::uint32_t>::max());
     }
 
-    // Compute rates from deltas (only if we have previous data and valid time delta)
-    if (previous != nullptr && timeDeltaSeconds > 0.0)
-    {
-        // PCIe bandwidth rates
-        snapshot.pcieTxBytesPerSec = Numeric::counterRate(current.pcieTxBytes, previous->pcieTxBytes, timeDeltaSeconds);
-        snapshot.pcieRxBytesPerSec = Numeric::counterRate(current.pcieRxBytes, previous->pcieRxBytes, timeDeltaSeconds);
-    }
-
     return snapshot;
-}
-
-template<typename T> std::vector<T> GPUModel::copySeries(std::string_view gpuId, SharedHistoryBuffer<T> GPUSeries::* series) const
-{
-    const std::shared_lock lock(m_Mutex);
-    const auto it = m_Histories.find(gpuId);
-    if (it == m_Histories.end())
-    {
-        return {};
-    }
-    return HistoryUtils::toVector(it->second.*series);
-}
-
-// The same values the publication carries: NaN where a reading failed or the GPU was missing.
-std::vector<float> GPUModel::utilizationHistory(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::utilization);
-}
-
-std::vector<float> GPUModel::memoryPercentHistory(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::memoryPercent);
-}
-
-std::vector<float> GPUModel::gpuClockHistory(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::gpuClock);
-}
-
-std::vector<float> GPUModel::encoderHistory(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::encoder);
-}
-
-std::vector<float> GPUModel::decoderHistory(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::decoder);
-}
-
-std::vector<float> GPUModel::temperatureHistory(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::temperature);
-}
-
-std::vector<float> GPUModel::powerHistory(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::power);
-}
-
-std::vector<float> GPUModel::fanSpeedHistory(std::string_view gpuId) const
-{
-    // NaN, not 0.0F, where the fan couldn't be read, so a caller doesn't see a misleading flat "0%".
-    return copySeries(gpuId, &GPUSeries::fanSpeed);
-}
-
-std::vector<double> GPUModel::historyTimestamps() const
-{
-    const std::shared_lock lock(m_Mutex);
-    return HistoryUtils::toVector(m_HistoryTimestamps);
-}
-
-std::vector<double> GPUModel::historyTimestamps(std::string_view gpuId) const
-{
-    return copySeries(gpuId, &GPUSeries::timestamps);
 }
 
 } // namespace Domain

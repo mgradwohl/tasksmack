@@ -134,7 +134,6 @@ void SystemModel::applyHistoryCapacity()
     m_MemoryHistory.setCapacity(capacity);
     m_MemoryCachedHistory.setCapacity(capacity);
     m_SwapHistory.setCapacity(capacity);
-    m_PowerHistory.setCapacity(capacity);
     m_BatteryChargeHistory.setCapacity(capacity);
     m_NetRxHistory.setCapacity(capacity);
     m_NetTxHistory.setCapacity(capacity);
@@ -169,7 +168,6 @@ void SystemModel::trimHistory(double nowSeconds) noexcept
                                                                 m_MemoryHistory,
                                                                 m_MemoryCachedHistory,
                                                                 m_SwapHistory,
-                                                                m_PowerHistory,
                                                                 m_BatteryChargeHistory,
                                                                 m_NetRxHistory,
                                                                 m_NetTxHistory);
@@ -249,7 +247,6 @@ void SystemModel::stageHistoryAppend(
                           &m_MemoryHistory,
                           &m_MemoryCachedHistory,
                           &m_SwapHistory,
-                          &m_PowerHistory,
                           &m_BatteryChargeHistory,
                           &m_NetRxHistory,
                           &m_NetTxHistory})
@@ -309,7 +306,6 @@ void SystemModel::commitHistoryAppend(PendingHistory& pending,
     m_MemoryHistory.push(Numeric::clampPercentToFloat(snap.memoryUsedPercent));
     m_MemoryCachedHistory.push(Numeric::clampPercentToFloat(snap.memoryCachedPercent));
     m_SwapHistory.push(Numeric::clampPercentToFloat(snap.swapUsedPercent));
-    m_PowerHistory.push(static_cast<float>(snap.power.powerWatts));
     // Battery charge % if available (0-100 range, -1 as "no data")
     m_BatteryChargeHistory.push(snap.power.hasBattery ? static_cast<float>(snap.power.chargePercent) : -1.0F);
     m_NetRxHistory.push(pending.netRx);
@@ -541,7 +537,7 @@ void SystemModel::publish()
     // (std::bad_alloc from the per-core vector or interface maps) leaves the published generation, its
     // version and m_PublicationVersion consistent. The histories are shared, not copied (#1412): each
     // series is one view of its append-only buffer, so this is O(series) whatever the history length.
-    // It runs under a shared lock: snapshot() and the per-field accessors still read alongside, and
+    // It runs under a shared lock: snapshot() still reads alongside, and
     // publication() doesn't take m_Mutex at all (#868). Nothing else can write this state meanwhile;
     // the caller holds m_WriterMutex.
     auto publication = std::make_shared<SystemPublication>();
@@ -558,7 +554,6 @@ void SystemModel::publish()
         publication->memoryHistory = m_MemoryHistory.view();
         publication->memoryCachedHistory = m_MemoryCachedHistory.view();
         publication->swapHistory = m_SwapHistory.view();
-        publication->powerHistory = m_PowerHistory.view();
         publication->batteryChargeHistory = m_BatteryChargeHistory.view();
         publication->netRxHistory = m_NetRxHistory.view();
         publication->netTxHistory = m_NetTxHistory.view();
@@ -586,120 +581,6 @@ void SystemModel::publish()
 const Platform::SystemCapabilities& SystemModel::capabilities() const
 {
     return m_Capabilities;
-}
-
-std::vector<float> SystemModel::cpuHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuHistory);
-}
-
-std::vector<float> SystemModel::cpuUserHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuUserHistory);
-}
-
-std::vector<float> SystemModel::cpuSystemHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuSystemHistory);
-}
-
-std::vector<float> SystemModel::cpuIowaitHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuIowaitHistory);
-}
-
-std::vector<float> SystemModel::cpuIdleHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_CpuIdleHistory);
-}
-
-std::vector<float> SystemModel::memoryHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_MemoryHistory);
-}
-
-std::vector<float> SystemModel::powerHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_PowerHistory);
-}
-
-std::vector<float> SystemModel::batteryChargeHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_BatteryChargeHistory);
-}
-
-std::vector<float> SystemModel::netRxHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_NetRxHistory);
-}
-
-std::vector<float> SystemModel::netTxHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_NetTxHistory);
-}
-
-std::vector<float> SystemModel::netRxHistoryForInterface(const std::string& interfaceName) const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    const auto it = m_PerInterfaceRxHistory.find(interfaceName);
-    if (it != m_PerInterfaceRxHistory.end())
-    {
-        return HistoryUtils::toVector(it->second);
-    }
-    return {};
-}
-
-std::vector<float> SystemModel::netTxHistoryForInterface(const std::string& interfaceName) const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    const auto it = m_PerInterfaceTxHistory.find(interfaceName);
-    if (it != m_PerInterfaceTxHistory.end())
-    {
-        return HistoryUtils::toVector(it->second);
-    }
-    return {};
-}
-
-std::vector<float> SystemModel::memoryCachedHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_MemoryCachedHistory);
-}
-
-std::vector<float> SystemModel::swapHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SwapHistory);
-}
-
-std::vector<std::vector<float>> SystemModel::perCoreHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    std::vector<std::vector<float>> result;
-    result.reserve(m_PerCoreHistory.size());
-
-    for (const auto& coreHist : m_PerCoreHistory)
-    {
-        result.push_back(HistoryUtils::toVector(coreHist));
-    }
-
-    return result;
-}
-
-std::vector<double> SystemModel::timestamps() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_Timestamps);
 }
 
 void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,

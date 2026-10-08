@@ -826,13 +826,6 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.gpuClockAvailable = false;
         }
 
-        unsigned int memClock = 0;
-        result = m_Impl->nvmlDeviceGetClockInfo(device, NVML_CLOCK_MEM, &memClock);
-        if (result == NVML_SUCCESS)
-        {
-            counter.memoryClockMHz = memClock;
-        }
-
         // Fan speed: nvmlDeviceGetFanSpeed() already returns a 0-100 percentage, so the max is
         // always 100 (see GPUCounters::fanSpeedRaw/fanSpeedMaxRaw; Domain computes the percent).
         unsigned int fanSpeed = 0;
@@ -842,17 +835,6 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.fanSpeedRaw = fanSpeed;
             counter.fanSpeedMaxRaw = 100;
         }
-
-        // PCIe throughput: NVML returns rates (KB/s over a ~20ms sampling window), not
-        // cumulative counters. GPUTypes.h expects cumulative pcieTxBytes/pcieRxBytes, and
-        // GPUModel diffs consecutive samples via Numeric::counterRate() to derive a rate,
-        // which clamps to 0 whenever a fluctuating rate-of-rate sample decreases between
-        // reads - so populating these from nvmlDeviceGetPcieThroughput() would silently
-        // corrupt PCIe throughput reporting rather than just leaving it unavailable. Mirrors
-        // the same decision already made in the Windows NVMLGPUProbe.
-        // Since NVML doesn't provide cumulative counters, we leave these at 0.
-        // Future enhancement: Add rate fields or implement tracking.
-        // For now, Domain layer will compute rates as 0 from cumulative fields.
 
         counters.push_back(std::move(counter));
     }
@@ -962,10 +944,6 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
         caps.hasPowerMetrics = true;
         caps.hasClockSpeeds = true;
         caps.hasFanSpeed = true;
-        // NVML only returns PCIe throughput as rates, not cumulative counters, so
-        // pcieTxBytes/pcieRxBytes are deliberately left at 0 (see the comment where counters
-        // are populated above) -- report the capability as unavailable, not present-but-zero.
-        caps.hasPCIeMetrics = false;
         caps.hasPerProcessMetrics = true;
         // readProcessGPUCounters() fills each process's memory and engines from the running-process
         // lists, not its utilization (#1210).

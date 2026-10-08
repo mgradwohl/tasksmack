@@ -49,10 +49,9 @@ StorageModel::StorageModel(std::unique_ptr<Platform::IDiskProbe> probe) : m_Prob
 void StorageModel::applyHistoryCapacity()
 {
     // Size every ring so the configured time window fits even at the fastest
-    // supported refresh cadence; time-based trimming governs actual retention. Only m_History's
-    // setCapacity() allocates (the shared series resize at their next compaction), so it goes first.
+    // supported refresh cadence; time-based trimming governs actual retention. The shared series
+    // resize at their next compaction.
     const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
-    m_History.setCapacity(capacity);
     m_Timestamps.setCapacity(capacity);
     m_TotalReadHistory.setCapacity(capacity);
     m_TotalWriteHistory.setCapacity(capacity);
@@ -135,13 +134,12 @@ void StorageModel::applySample(const Platform::SystemDiskCounters& counters,
     // m_DiskStates is writer-owned (readers never touch it), so it is copied and updated without a
     // lock and swapped in at the commit.
     pending.diskStates = m_DiskStates;
-    StorageSnapshot snapshot = computeSnapshot(counters, caps, now, pending.diskStates);
-    pending.latest = snapshot; // for latestSnapshot(); the original moves into the history ring
+    pending.latest = computeSnapshot(counters, caps, now, pending.diskStates);
 
     {
         const std::unique_lock lock(m_Mutex);
-        stageHistoryAppend(pending, snapshot, nowSeconds);
-        commitHistoryAppend(pending, std::move(snapshot), nowSeconds);
+        stageHistoryAppend(pending, pending.latest, nowSeconds);
+        commitHistoryAppend(pending, nowSeconds);
     }
     if (publishNow)
     {
@@ -275,8 +273,9 @@ void StorageModel::stageHistoryAppend(PendingSample& pending, const StorageSnaps
 // The calls below that could allocate in general (push, push_back, node insert) cannot here: each
 // uses room stageHistoryAppend() reserved, which the checker can't see.
 // NOLINTNEXTLINE(bugprone-exception-escape)
-void StorageModel::commitHistoryAppend(PendingSample& pending, StorageSnapshot&& snapshot, double nowSeconds) noexcept
+void StorageModel::commitHistoryAppend(PendingSample& pending, double nowSeconds) noexcept
 {
+    const StorageSnapshot& snapshot = pending.latest;
     constexpr double NO_READING = std::numeric_limits<double>::quiet_NaN();
 
     // Adopt the staged series: map nodes spliced in and names moved in, without allocating.
@@ -334,8 +333,7 @@ void StorageModel::commitHistoryAppend(PendingSample& pending, StorageSnapshot&&
     // The rate state and snapshot of this sample, swapped and moved in: nothing here allocates.
     m_DiskStates.swap(pending.diskStates);
     static_assert(std::is_nothrow_move_assignable_v<StorageSnapshot>);
-    m_LatestSnapshot = std::move(pending.latest);
-    m_History.push(std::move(snapshot));
+    m_LatestSnapshot = std::move(pending.latest); // last: `snapshot` refers to it
 
     pruneAbsentDisks(nowSeconds);
     trimHistory(nowSeconds);
@@ -395,7 +393,7 @@ void StorageModel::publish()
     // (std::bad_alloc from the snapshot copy or the per-disk list) leaves the published generation,
     // its version and m_PublicationVersion consistent. The histories are shared, not copied (#1412):
     // each series is one view of its append-only buffer, so this is O(series) whatever the history
-    // length. It runs under a shared lock: the per-field accessors still read alongside, and
+    // length. It runs under a shared lock: latestSnapshot() still reads alongside, and
     // publication() doesn't take m_Mutex at all, so no reader waits for it (#868). Nothing else can
     // write this state meanwhile; the caller holds m_WriterMutex.
     auto publication = std::make_shared<StoragePublication>();
@@ -511,7 +509,7 @@ void StorageModel::trimHistory(double nowSeconds) noexcept
     // m_Timestamps, so a single discard count keeps them aligned. discardFront is O(1): no copies,
     // rebuilds, or allocations.
     const double cutoff = nowSeconds - m_MaxHistorySeconds;
-    const std::size_t removeCount = HistoryUtils::discardBefore(m_Timestamps, cutoff, m_History, m_TotalReadHistory, m_TotalWriteHistory);
+    const std::size_t removeCount = HistoryUtils::discardBefore(m_Timestamps, cutoff, m_TotalReadHistory, m_TotalWriteHistory);
     for (auto& [name, history] : m_DiskReadHistory)
     {
         history.discardFront(removeCount);
@@ -526,55 +524,6 @@ StorageSnapshot StorageModel::latestSnapshot() const
 {
     std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     return m_LatestSnapshot;
-}
-
-std::vector<StorageSnapshot> StorageModel::history() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_History);
-}
-
-std::vector<double> StorageModel::totalReadHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_TotalReadHistory);
-}
-
-std::vector<double> StorageModel::totalWriteHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_TotalWriteHistory);
-}
-
-std::vector<PerDiskHistory> StorageModel::perDiskHistory() const
-{
-    // Views, not copies (#1412): each stays as it is now, whatever the model does next.
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    std::vector<PerDiskHistory> result;
-    result.reserve(m_DiskOrder.size());
-    for (const auto& name : m_DiskOrder)
-    {
-        PerDiskHistory entry;
-        entry.deviceName = name;
-        const auto readIt = m_DiskReadHistory.find(name);
-        const auto writeIt = m_DiskWriteHistory.find(name);
-        if (readIt != m_DiskReadHistory.end())
-        {
-            entry.readBytesPerSec = readIt->second.view();
-        }
-        if (writeIt != m_DiskWriteHistory.end())
-        {
-            entry.writeBytesPerSec = writeIt->second.view();
-        }
-        result.push_back(std::move(entry));
-    }
-    return result;
-}
-
-std::vector<double> StorageModel::historyTimestamps() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_Timestamps);
 }
 
 void StorageModel::setMaxHistorySeconds(double seconds)

@@ -1,6 +1,6 @@
 # TaskSmack Architecture
 
-This document is the canonical description of TaskSmack's architecture and current engineering direction. User-facing behavior belongs in the [User Guide](docs/guide/user-guide.md), shipped features in [completed-features.md](completed-features.md), and developer commands in [CONTRIBUTING.md](CONTRIBUTING.md).
+This document is the canonical description of TaskSmack's architecture and current engineering direction. User-facing behavior belongs in the [User Guide](docs/guide/user-guide.md), shipped features in [completed-features.md](docs/dev/completed-features.md), and developer commands in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Design Goals
 
@@ -299,4 +299,4 @@ The test and benchmark commands are documented only in [CONTRIBUTING.md](CONTRIB
 
 The core monitoring, process-control, GPU, network, storage, power, configuration, and theming paths are implemented. Future work should extend the existing contracts rather than bypass them. Candidate areas include service/startup management, handle and module inspection, a read-only remote API, and a versioned plugin boundary.
 
-Do not treat roadmap items as shipped features; [completed-features.md](completed-features.md) is the canonical implemented-feature list.
+Do not treat roadmap items as shipped features; [completed-features.md](docs/dev/completed-features.md) is the canonical implemented-feature list.

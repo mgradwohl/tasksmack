@@ -62,9 +62,6 @@ void Theme::loadDefaultFallbackTheme()
     const auto transparent = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
 
     fallback.accents = {blue, blue, blue, blue, blue, blue, blue, blue};
-    fallback.progressLow = blue;
-    fallback.progressMedium = gray;
-    fallback.progressHigh = red;
 
     fallback.textPrimary = ImVec4(0.90F, 0.92F, 0.96F, 1.0F);
     fallback.textDisabled = ImVec4(0.65F, 0.68F, 0.72F, 1.0F);
@@ -564,22 +561,6 @@ auto Theme::themeName(std::size_t index) const -> std::string_view
         return "Unknown";
     }
     return m_DiscoveredThemes[index].name;
-}
-
-auto Theme::progressColor(double percent) const -> ImVec4
-{
-    constexpr double LOW_THRESHOLD = 50.0;
-    constexpr double HIGH_THRESHOLD = 80.0;
-
-    if (percent < LOW_THRESHOLD)
-    {
-        return scheme().progressLow;
-    }
-    if (percent < HIGH_THRESHOLD)
-    {
-        return scheme().progressMedium;
-    }
-    return scheme().progressHigh;
 }
 
 auto Theme::accentColor(std::size_t index) const -> ImVec4
