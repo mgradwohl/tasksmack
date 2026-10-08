@@ -1,6 +1,9 @@
 # Helpers for profile-etw.ps1's app and bench modes, dot-sourced by it and by
 # test-profile-etw.ps1. Kept free of WPR calls so they can be tested without an ETW session.
 
+# Read-CMakeCache and ConvertTo-CMakeUpper, shared with bench.ps1 (#1479).
+. (Join-Path $PSScriptRoot 'cmake-cache.ps1')
+
 if (-not ('TaskSmackProfile.TokenInfo' -as [type])) {
     Add-Type -Namespace TaskSmackProfile -Name TokenInfo -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
@@ -238,13 +241,12 @@ function Get-PresetBuildFlags {
         $flags.Source = "no CMakeCache.txt at $cachePath"
         return $flags
     }
-    $cache = @{}
-    foreach ($line in Get-Content -LiteralPath $cachePath) {
-        if ($line -match '^(?<name>[A-Za-z0-9_]+)(:[A-Za-z]+)?=(?<value>.*)$') { $cache[$Matches.name] = $Matches.value }
-    }
+    # Parsed by CMake's own rules, so a custom build type's CMAKE_CXX_FLAGS_ASAN-UBSAN, and quoted
+    # keys, are read too (#1479).
+    $cache = Read-CMakeCache -Path $cachePath
     $flags.BuildType = $cache['CMAKE_BUILD_TYPE']
     $flags.CxxFlags = $cache['CMAKE_CXX_FLAGS']
-    if ($flags.BuildType) { $flags.CxxConfigFlags = $cache["CMAKE_CXX_FLAGS_$($flags.BuildType.ToUpperInvariant())"] }
+    if ($flags.BuildType) { $flags.CxxConfigFlags = $cache["CMAKE_CXX_FLAGS_$(ConvertTo-CMakeUpper $flags.BuildType)"] }
     # A preset can cache CMAKE_INTERPROCEDURAL_OPTIMIZATION itself; otherwise CompilerOptions.cmake sets
     # it as a plain variable from the TASKSMACK_ENABLE_IPO option (ON by default), which is cached --
     # so a normal win-release cache has LTO on with no CMAKE_INTERPROCEDURAL_OPTIMIZATION entry (#1372 review).

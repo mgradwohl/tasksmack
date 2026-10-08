@@ -201,6 +201,8 @@ exit [int]$env:STUB_EXIT
 
     # bench.ps1's functions and switch lists, loaded in-process for the cases that need no process
     # of their own (the end-to-end runs below cover the script's top level and its wiring).
+    # The CMakeCache.txt reader bench.ps1 dot-sources (#1479).
+    . (Join-Path $PSScriptRoot 'cmake-cache.ps1')
     $benchAst = [System.Management.Automation.Language.Parser]::ParseFile($benchScript, [ref]$null, [ref]$null)
     foreach ($statement in $benchAst.EndBlock.Statements) {
         $isFunction = $statement -is [System.Management.Automation.Language.FunctionDefinitionAst]
@@ -281,7 +283,7 @@ exit [int]$env:STUB_EXIT
             Command = "& $(& $quote $benchScript) $(& $quote $name) -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root "preset-$kind")) '--benchmark_filter=BM_X'" }
     }
     New-Item -ItemType Directory -Path (Join-Path $checkout 'tools'), (Join-Path $checkout 'build\uni\bin') | Out-Null
-    Copy-Item -LiteralPath $benchScript -Destination (Join-Path $checkout 'tools')
+    Copy-Item -LiteralPath $benchScript, (Join-Path $PSScriptRoot 'cmake-cache.ps1') -Destination (Join-Path $checkout 'tools')
     Copy-Item -LiteralPath $stub -Destination (Join-Path $checkout 'build\uni\bin')
     $checkoutForward = $checkout.Replace('\', '/')
     $uniConfigFlags = "-O3 -fprofile-instr-use=`"$checkoutForward/profiles/tasksmack.profdata`" -DAUTHOR=Jos$([char]0x00E9)"

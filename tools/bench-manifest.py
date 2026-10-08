@@ -205,7 +205,7 @@ def read_buildinfo(binary: Path) -> dict:
 # and any other character -- '-', '.', '+' of a custom build type's CMAKE_CXX_FLAGS_<CONFIG> -- is
 # part of an unquoted key. Trailing spaces, tabs and carriage returns are dropped, and a value in
 # single quotes (how CMake writes one with trailing whitespace) loses them. Kept in step with
-# Read-CMakeCache in tools/bench.ps1.
+# Read-CMakeCache in tools/cmake-cache.ps1.
 _CACHE_VALUE = r"(.*[^\r\t ]|[\r\t ]*)[\r\t ]*$"
 CACHE_ENTRY_PATTERNS = (
     re.compile(r'^"([^"]*)":[^=]*=' + _CACHE_VALUE),
