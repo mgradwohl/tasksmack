@@ -5,6 +5,7 @@
 /// WindowsMath/test_WindowsSystemProbeMath.cpp.
 
 #include "Platform/SystemTypes.h"
+#include "Platform/Windows/CpuBaseClock.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
@@ -12,13 +13,16 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <memory>
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -283,6 +287,127 @@ TEST(WindowsSystemProbeTest, CpuClockIsTheBaseClockScaledByProcessorPerformance)
     const auto counters = probe.read();
     EXPECT_GT(counters.cpuFreqMHz, 0U);
     EXPECT_LE(counters.cpuFreqMHz, std::uint64_t{baseMHz} * 10U);
+}
+
+namespace
+{
+/// A fake CallNtPowerInformation for the rated-base tests (#1530): what it returns, and what it was asked.
+struct FakePower
+{
+    LONG status = 0;
+    // MaxMhz per processor, repeated to fill the caller's buffer: a P/E/LP-E hybrid's mix by default
+    std::array<ULONG, 3> maxMhzPattern{1500, 700, 2000};
+    POWER_INFORMATION_LEVEL level = SystemPowerPolicyAc;
+    PVOID inputBuffer = &level; // Overwritten with what the caller passed
+    ULONG outputLength = 0;
+    int calls = 0;
+};
+FakePower g_FakePower; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the fake is a plain function pointer
+
+LONG WINAPI fakeCallNtPowerInformation(POWER_INFORMATION_LEVEL level, PVOID input, ULONG /*inputLength*/, PVOID output, ULONG outputLength)
+{
+    ++g_FakePower.calls;
+    g_FakePower.level = level;
+    g_FakePower.inputBuffer = input;
+    g_FakePower.outputLength = outputLength;
+    if (g_FakePower.status != 0)
+    {
+        return g_FakePower.status;
+    }
+    auto* entries = static_cast<ProcessorPowerInformation*>(output);
+    const std::size_t count = outputLength / sizeof(ProcessorPowerInformation);
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        const ULONG mhz = g_FakePower.maxMhzPattern[i % g_FakePower.maxMhzPattern.size()];
+        ProcessorPowerInformation& entry = entries[i];
+        entry.number = static_cast<ULONG>(i);
+        entry.maxMhz = mhz;
+        entry.currentMhz = mhz;
+        entry.mhzLimit = mhz;
+        entry.maxIdleState = 0;
+        entry.currentIdleState = 0;
+    }
+    return 0;
+}
+
+constexpr std::uint64_t FAKE_REGISTRY_MHZ = 3686; // A Core Ultra 7 255H's ~MHz, well above its 2000 MHz rated base
+
+/// Resets the fake CallNtPowerInformation before each test.
+class WindowsSystemProbeBaseClockTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        g_FakePower = FakePower{};
+    }
+};
+} // namespace
+
+TEST_F(WindowsSystemProbeBaseClockTest, HybridProcessorsGiveTheHighestRatedBase)
+{
+    if (GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS) < g_FakePower.maxMhzPattern.size())
+    {
+        GTEST_SKIP() << "too few processors for the whole hybrid pattern to be read";
+    }
+    WindowsSystemProbe probe(readNominalCpuBaseMHz(&fakeCallNtPowerInformation, FAKE_REGISTRY_MHZ), nullptr);
+    EXPECT_EQ(probe.baseCpuMHz(), 2000U);
+    EXPECT_EQ(probe.read().cpuFreqMHz, 2000U) << "with no counter the probe reports the rated base, not ~MHz";
+
+    // Asked for the processor table, with no input and room for whole entries
+    EXPECT_EQ(g_FakePower.level, ProcessorInformation);
+    EXPECT_EQ(g_FakePower.inputBuffer, nullptr);
+    EXPECT_GE(g_FakePower.outputLength, sizeof(ProcessorPowerInformation));
+    EXPECT_EQ(g_FakePower.outputLength % sizeof(ProcessorPowerInformation), 0U);
+}
+
+TEST_F(WindowsSystemProbeBaseClockTest, FailedCallGivesTheRegistryClock)
+{
+    g_FakePower.status = static_cast<LONG>(0xC0000022L); // STATUS_ACCESS_DENIED
+    const WindowsSystemProbe probe(readNominalCpuBaseMHz(&fakeCallNtPowerInformation, FAKE_REGISTRY_MHZ), nullptr);
+    EXPECT_EQ(g_FakePower.calls, 1);
+    EXPECT_EQ(probe.baseCpuMHz(), FAKE_REGISTRY_MHZ);
+}
+
+TEST_F(WindowsSystemProbeBaseClockTest, ZeroRatedBaseGivesTheRegistryClock)
+{
+    g_FakePower.maxMhzPattern = {0, 0, 0};
+    const WindowsSystemProbe probe(readNominalCpuBaseMHz(&fakeCallNtPowerInformation, FAKE_REGISTRY_MHZ), nullptr);
+    EXPECT_EQ(g_FakePower.calls, 1);
+    EXPECT_EQ(probe.baseCpuMHz(), FAKE_REGISTRY_MHZ);
+}
+
+TEST(WindowsSystemProbeTest, BaseClockIsThisMachinesHighestRatedMaxMhz)
+{
+    // The real powrprof on this machine (#1530): the default probe's base is the highest MaxMhz a direct
+    // CallNtPowerInformation reports, not the registry's ~MHz where the two differ (as on hybrid parts).
+    std::vector<ProcessorPowerInformation> info(std::max<DWORD>(GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS), 1));
+    if (CallNtPowerInformation(
+            ProcessorInformation, nullptr, 0, info.data(), static_cast<ULONG>(info.size() * sizeof(ProcessorPowerInformation))) != 0)
+    {
+        GTEST_SKIP() << "CallNtPowerInformation(ProcessorInformation) failed here";
+    }
+    const ULONG highest = std::ranges::max(info, {}, &ProcessorPowerInformation::maxMhz).maxMhz;
+    if (highest == 0)
+    {
+        GTEST_SKIP() << "no rated MaxMhz on this machine";
+    }
+
+    const WindowsSystemProbe probe;
+    EXPECT_EQ(probe.baseCpuMHz(), std::uint64_t{highest});
+
+    DWORD registryMHz = 0;
+    DWORD dataSize = sizeof(registryMHz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &registryMHz,
+                     &dataSize) == ERROR_SUCCESS &&
+        registryMHz != highest)
+    {
+        EXPECT_NE(probe.baseCpuMHz(), std::uint64_t{registryMHz}) << "~MHz is only the fallback";
+    }
 }
 
 TEST(WindowsSystemProbeTest, TicksPerSecondMatchesFileTime)

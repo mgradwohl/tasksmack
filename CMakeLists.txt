@@ -262,6 +262,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/ProcessorPerformanceCounter.h
+        src/Platform/Windows/CpuBaseClock.h
         src/Platform/Windows/WindowsHandles.h
         src/Platform/Windows/WindowsNtQuery.h
         src/Platform/Windows/WindowsDiskProbe.h

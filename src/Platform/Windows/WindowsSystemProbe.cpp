@@ -23,12 +23,12 @@
 #include <winternl.h>
 #include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
 #include <cfgmgr32.h>    // CM_Locate_DevNodeW: whether an adapter's device is present (#1284)
-#include <powerbase.h>   // CallNtPowerInformation: the rated base clock (#1530)
 // clang-format on
 
 #undef max
 #undef min
 
+#include "CpuBaseClock.h"
 #include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
 #include "WindowsNtQuery.h"
@@ -168,44 +168,10 @@ template<typename Query>
     return toU64NonNegative(mhz);
 }
 
-/// Each logical processor's rated base clock (PROCESSOR_POWER_INFORMATION::MaxMhz) from
-/// CallNtPowerInformation(ProcessorInformation) -- no admin, no WMI; empty if the call fails (#1530).
-[[nodiscard]] std::vector<std::uint32_t> readProcessorMaxMHz()
-{
-    // PROCESSOR_POWER_INFORMATION is documented but not declared in the SDK's headers
-    struct ProcessorPowerInformation
-    {
-        ULONG number;
-        ULONG maxMhz;
-        ULONG currentMhz;
-        ULONG mhzLimit;
-        ULONG maxIdleState;
-        ULONG currentIdleState;
-    };
-    // One entry per processor; sized for every group, and entries left unwritten stay 0 (ignored)
-    std::vector<ProcessorPowerInformation> info(std::max<DWORD>(GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS), 1));
-    const NTSTATUS status = CallNtPowerInformation(
-        ProcessorInformation, nullptr, 0, info.data(), static_cast<ULONG>(info.size() * sizeof(ProcessorPowerInformation)));
-    if (status != 0) // STATUS_SUCCESS = 0
-    {
-        spdlog::debug("WindowsSystemProbe: CallNtPowerInformation(ProcessorInformation) failed ({:#x}); using ~MHz as the base clock",
-                      static_cast<std::uint32_t>(status));
-        return {};
-    }
-    std::vector<std::uint32_t> maxMHz;
-    maxMHz.reserve(info.size());
-    for (const ProcessorPowerInformation& processor : info)
-    {
-        maxMHz.push_back(processor.maxMhz);
-    }
-    return maxMHz;
-}
-
-/// The nominal base clock "% Processor Performance" scales: the rated MaxMhz, else ~MHz; 0 if neither.
+/// The nominal base clock "% Processor Performance" scales (#1530): powrprof's rated MaxMhz, else ~MHz.
 [[nodiscard]] std::uint64_t readBaseCpuMHz()
 {
-    const std::vector<std::uint32_t> maxMHz = readProcessorMaxMHz();
-    return nominalCpuBaseMHz(maxMHz, readRegistryCpuMHz());
+    return readNominalCpuBaseMHz(&CallNtPowerInformation, readRegistryCpuMHz());
 }
 
 } // namespace
