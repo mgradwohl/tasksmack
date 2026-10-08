@@ -2110,35 +2110,17 @@ class NowBarList
     return bar.valueText;
 }
 
+/// A history chart's x range, in seconds relative to now.
 struct TimeAxisConfig
 {
     double xMin = 0.0;
     double xMax = 0.0;
-    double span = 0.0;
-    double maxOffset = 0.0;
-    double clampedOffset = 0.0;
 };
 
-inline TimeAxisConfig makeTimeAxisConfig(std::span<const double> timestamps, double maxHistorySeconds, double desiredOffsetSeconds)
+/// The x range of a history chart: the configured window, ending at now.
+[[nodiscard]] constexpr TimeAxisConfig makeTimeAxisConfig(double maxHistorySeconds) noexcept
 {
-    TimeAxisConfig cfg;
-    cfg.xMin = -maxHistorySeconds;
-    cfg.xMax = 0.0;
-
-    if (!timestamps.empty())
-    {
-        const double earliest = timestamps.front();
-        const double latest = timestamps.back();
-        cfg.span = std::max(0.0, latest - earliest);
-    }
-
-    const double visible = maxHistorySeconds;
-    cfg.maxOffset = std::max(0.0, cfg.span - visible);
-    cfg.clampedOffset = std::clamp(desiredOffsetSeconds, 0.0, cfg.maxOffset);
-    cfg.xMin = -visible - cfg.clampedOffset;
-    cfg.xMax = -cfg.clampedOffset;
-
-    return cfg;
+    return TimeAxisConfig{.xMin = -maxHistorySeconds, .xMax = 0.0};
 }
 
 /// Write the time axis for a history chart into @p out: the newest `desiredCount` timestamps as

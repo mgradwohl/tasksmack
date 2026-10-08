@@ -23,7 +23,7 @@ TaskSmack is a C++23 system monitor and task manager for Linux and Windows, buil
 - TOML configuration, 20 bundled themes, user themes, configurable sampling, and bounded history
 - Capability-driven UI that hides unavailable metrics instead of fabricating cross-platform parity
 
-See [Implemented Features](completed-features.md) for the detailed shipped-feature inventory.
+See [Implemented Features](docs/dev/completed-features.md) for the detailed shipped-feature inventory.
 
 ## Supported Platforms
 
@@ -31,7 +31,7 @@ See [Implemented Features](completed-features.md) for the detailed shipped-featu
 |----------|---------|
 | Linux | Supported |
 | Windows 10 or later | Supported |
-| macOS and other operating systems | Not currently supported |
+| macOS and other operating systems | Not supported |
 
 Some metrics require optional drivers, vendor libraries, kernel support, or elevated privileges. The [User Guide](docs/guide/user-guide.md) documents those differences.
 
@@ -55,7 +55,7 @@ Every release asset is signed with Sigstore; see [Verifying a Release](docs/guid
 |----------|-------|
 | [User Guide](docs/guide/user-guide.md) | Installation, usage, platform differences, and configuration |
 | [FAQ](docs/guide/faq.md) | Troubleshooting and capability limitations |
-| [Implemented Features](completed-features.md) | Canonical shipped-feature inventory |
+| [Implemented Features](docs/dev/completed-features.md) | Canonical shipped-feature inventory |
 | [Contributing](CONTRIBUTING.md) | Canonical setup, build, test, tooling, and contribution workflow |
 | [Architecture](tasksmack.md) | Canonical layer boundaries, sampling pipeline, and engineering direction |
 | [Security Policy](SECURITY.md) | Private vulnerability reporting |

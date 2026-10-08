@@ -174,7 +174,6 @@ void SystemMetricsPanel::onAttach()
 {
     // m_RefreshInterval and m_MaxHistorySeconds start at the SamplingConfig defaults; ShellLayer
     // raises the configured values as events on its first update (#1079).
-    m_HistoryScrollSeconds = 0.0;
     m_ForceRefresh = true;
 
     // The synthetic scenario's probes when TASKSMACK_SYNTHETIC selects one (#1413), else the
@@ -241,15 +240,6 @@ void SystemMetricsPanel::adoptSystemPublication()
     // timestamps are read in place (#1180) rather than copied into panel members on every adoption.
     m_SystemPublication = m_Model->publication();
     m_ChartDataGeneration = UI::Widgets::nextChartDataGeneration();
-    const std::span<const double> timestamps = m_SystemPublication->timestamps;
-    if (!timestamps.empty())
-    {
-        m_CurrentNowSeconds = timestamps.back();
-    }
-    else
-    {
-        m_CurrentNowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    }
 }
 
 const Domain::SystemSnapshot& SystemMetricsPanel::systemSnapshot() const
@@ -432,28 +422,10 @@ void SystemMetricsPanel::renderContent()
     }
 
     const auto& theme = UI::Theme::get();
-    if (theme.currentFontSize() != m_LastFontSize)
-    {
-        m_LastFontSize = theme.currentFontSize();
-        m_LayoutDirty = true;
-    }
 
     // A reference, not a copy: m_SystemPublication is only reassigned in onUpdate(), never while
     // rendering, and a copy duplicated every per-core and per-interface vector each frame (#1017).
     const auto& snap = systemSnapshot();
-
-    const int coreCount = snap.coreCount;
-    if (coreCount != m_LastCoreCount)
-    {
-        m_LastCoreCount = coreCount;
-        m_LayoutDirty = true;
-    }
-
-    if (m_LayoutDirty)
-    {
-        updateCachedLayout();
-        m_LayoutDirty = false;
-    }
 
     // Add padding inside tabs for better spacing, scaled like the style it overrides (#971)
     const float tabPaddingScale = theme.styleScale();
@@ -481,7 +453,6 @@ void SystemMetricsPanel::renderContent()
                     .publication = m_SystemPublication.get(),
                     .chartDataGeneration = m_ChartDataGeneration,
                     .maxHistorySeconds = m_MaxHistorySeconds,
-                    .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
                     .smoothedPerCore = &m_SmoothedPerCore,
@@ -504,7 +475,6 @@ void SystemMetricsPanel::renderContent()
                     .publication = m_GPUPublication.get(),
                     .chartDataGeneration = m_ChartDataGeneration,
                     .maxHistorySeconds = m_MaxHistorySeconds,
-                    .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
                     .smoothedGPUs = &m_SmoothedGPUs,
@@ -532,7 +502,6 @@ void SystemMetricsPanel::renderContent()
                     .chartDataGeneration = m_ChartDataGeneration,
                     .hasNetworkCounters = m_Model != nullptr && m_Model->capabilities().hasNetworkCounters,
                     .maxHistorySeconds = m_MaxHistorySeconds,
-                    .historyScrollSeconds = m_HistoryScrollSeconds,
                     .lastDeltaSeconds = m_LastDeltaSeconds,
                     .refreshInterval = m_RefreshInterval,
                     .smoothedDiskReadBytesPerSec = &m_SmoothedSystemIO.readBytesPerSec,
@@ -681,7 +650,7 @@ void SystemMetricsPanel::renderOverview()
     const auto& cpuIdleHist = m_SystemPublication->cpuIdleHistory;
     const std::span<const double> timestamps = m_SystemPublication->timestamps;
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
-    const auto axisConfig = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+    const auto axisConfig = makeTimeAxisConfig(m_MaxHistorySeconds);
 
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
     const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, cpuCount).values;
@@ -874,7 +843,6 @@ void SystemMetricsPanel::renderOverview()
             .publication = m_SystemPublication.get(),
             .chartDataGeneration = m_ChartDataGeneration,
             .maxHistorySeconds = m_MaxHistorySeconds,
-            .historyScrollSeconds = m_HistoryScrollSeconds,
             .lastDeltaSeconds = m_LastDeltaSeconds,
             .refreshInterval = m_RefreshInterval,
             .smoothedMemory = &m_SmoothedMemory,
@@ -925,7 +893,7 @@ void SystemMetricsPanel::renderOverview()
 
             const auto powerTimeData = frameTimeAxis(m_ProcessHistoryTimestamps, powerCount, nowSeconds);
             const auto batteryTimeData = frameTimeAxis(timestamps, batteryCount, nowSeconds);
-            const auto axis = makeTimeAxisConfig(timestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+            const auto axis = makeTimeAxisConfig(m_MaxHistorySeconds);
             // Update smoothed values: the latest *reading*, skipping trailing gaps.
             const float targetPower = powerHist.empty() ? 0.0F : static_cast<float>(powerHist.back()); // updateSmoothedPower takes float
             const auto finiteBattery = batteryHist | std::views::reverse;
@@ -1125,8 +1093,7 @@ void SystemMetricsPanel::renderOverview()
         const size_t alignedCount = std::min({procTimestamps.size(), pageFaultHist.size(), threadHist.size(), handleHist.size()});
 
         // Always use default axis config even with no data
-        const auto axis = alignedCount > 0 ? makeTimeAxisConfig(procTimestamps, m_MaxHistorySeconds, m_HistoryScrollSeconds)
-                                           : makeTimeAxisConfig({}, m_MaxHistorySeconds, m_HistoryScrollSeconds);
+        const auto axis = makeTimeAxisConfig(m_MaxHistorySeconds);
 
         // Views into the panel's history, plotted as doubles -- no per-frame float copies (#1018).
         std::span<const double> timeData;
@@ -1281,30 +1248,6 @@ void SystemMetricsPanel::updateSmoothedCpu(const Domain::SystemSnapshot& snap, f
 void SystemMetricsPanel::updateSmoothedMemory(const Domain::SystemSnapshot& snap, float deltaTimeSeconds)
 {
     MemorySection::updateSmoothedMemory(m_SmoothedMemory, snap, deltaTimeSeconds, m_RefreshInterval);
-}
-
-void SystemMetricsPanel::updateCachedLayout()
-{
-    auto& theme = UI::Theme::get();
-
-    // Overview: width needed for "CPU Usage:" label + spacing
-    m_OverviewLabelWidth = ImGui::CalcTextSize("CPU Usage:").x + ImGui::GetStyle().ItemSpacing.x;
-
-    // Per-core: width needed for max core number (e.g., "31" for 32 cores)
-    if (m_LastCoreCount > 0)
-    {
-        const std::string maxLabel = std::format("{}", m_LastCoreCount - 1);
-        m_PerCoreLabelWidth = ImGui::CalcTextSize(maxLabel.c_str()).x;
-    }
-    else
-    {
-        m_PerCoreLabelWidth = ImGui::CalcTextSize("0").x;
-    }
-
-    spdlog::debug("SystemMetricsPanel: cached layout updated (font={}, overviewWidth={:.1f}, perCoreWidth={:.1f})",
-                  std::to_underlying(theme.currentFontSize()),
-                  m_OverviewLabelWidth,
-                  m_PerCoreLabelWidth);
 }
 
 void SystemMetricsPanel::updateSmoothedPower(float targetWatts, float targetBatteryPercent, float deltaTimeSeconds)

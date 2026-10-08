@@ -333,11 +333,9 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
         auto nvmlCaps = m_NVMLProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || nvmlCaps.hasTemperature;
-        caps.hasHotspotTemp = caps.hasHotspotTemp || nvmlCaps.hasHotspotTemp;
         caps.hasPowerMetrics = caps.hasPowerMetrics || nvmlCaps.hasPowerMetrics;
         caps.hasClockSpeeds = caps.hasClockSpeeds || nvmlCaps.hasClockSpeeds;
         caps.hasFanSpeed = caps.hasFanSpeed || nvmlCaps.hasFanSpeed;
-        caps.hasPCIeMetrics = caps.hasPCIeMetrics || nvmlCaps.hasPCIeMetrics;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || nvmlCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || nvmlCaps.supportsMultiGPU;
     }

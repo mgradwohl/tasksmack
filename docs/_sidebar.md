@@ -7,3 +7,4 @@
   - [Build Reference](dev/build-instructions.md)
   - [Architecture](dev/architecture.md)
   - [Metrics Pipeline](dev/metrics-pipeline.md)
+  - [Implemented Features](dev/completed-features.md)

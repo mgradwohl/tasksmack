@@ -1084,7 +1084,6 @@ TEST_F(DRMGPUProbeUnitTest, SensorCapabilities_FollowTheCardsFiles)
     EXPECT_TRUE(sensors.hasClockSpeeds);
     EXPECT_FALSE(sensors.hasPowerMetrics);
     EXPECT_FALSE(sensors.hasFanSpeed);
-    EXPECT_FALSE(sensors.hasHotspotTemp);
 }
 
 TEST_F(DRMGPUProbeUnitTest, SensorCapabilities_HwmonTemperatureIsReported)

@@ -683,14 +683,6 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.gpuClockAvailable = false; // Unread this sample (timeout, GPU lost, TDR): not a real 0 (#1111)
         }
 
-        // Memory clock (MHz)
-        unsigned int memClock = 0;
-        result = noteResult(m_NVML.DeviceGetClockInfo(device, NVML_CLOCK_MEM, &memClock));
-        if (result == NVML_SUCCESS)
-        {
-            counter.memoryClockMHz = memClock;
-        }
-
         // GPU utilization
         nvmlUtilization_t util{};
         result = noteResult(m_NVML.DeviceGetUtilizationRates(device, &util));
@@ -712,12 +704,6 @@ std::vector<GPUCounters> NVMLGPUProbe::readGPUCounters()
             counter.fanSpeedRaw = fanSpeed;
             counter.fanSpeedMaxRaw = 100;
         }
-
-        // PCIe throughput: NVML returns rates (KB/s), not cumulative counters.
-        // GPUTypes.h expects cumulative pcieTxBytes/pcieRxBytes.
-        // Since NVML doesn't provide cumulative counters, we leave these at 0.
-        // Future enhancement: Add rate fields or implement tracking.
-        // For now, Domain layer will compute rates as 0 from cumulative fields.
 
         m_LastCounters.insert_or_assign(index, counter);
         counters.push_back(std::move(counter));
@@ -846,14 +832,9 @@ GPUCapabilities NVMLGPUProbe::capabilities() const
 
     // NVML provides comprehensive capabilities for NVIDIA GPUs
     caps.hasTemperature = true;
-    caps.hasHotspotTemp = false; // Not exposed via standard NVML APIs
     caps.hasPowerMetrics = true;
     caps.hasClockSpeeds = true;
     caps.hasFanSpeed = true;
-    // NVML only returns PCIe throughput as rates, not cumulative counters, so
-    // pcieTxBytes/pcieRxBytes are deliberately left at 0 (see the comment where counters
-    // are populated above) -- report the capability as unavailable, not present-but-zero.
-    caps.hasPCIeMetrics = false;
     caps.hasEngineUtilization = true;
     // Per-process metrics available if we have the required functions
     caps.hasPerProcessMetrics =

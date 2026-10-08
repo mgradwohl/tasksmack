@@ -168,7 +168,9 @@ static void BM_GPUModel_GpuInfo(benchmark::State& state)
 }
 BENCHMARK(BM_GPUModel_GpuInfo);
 
-// Benchmark historyTimestamps() – used to align chart X axes
+// Benchmark reading a GPU's timestamps from the latest publication – used to align chart X axes.
+// The history reads here used to time per-series copy accessors that only tests called, removed in
+// #1185; the charts read the published views (#1412).
 static void BM_GPUModel_HistoryTimestamps(benchmark::State& state)
 {
     if (skipWithoutGpu(state))
@@ -184,17 +186,28 @@ static void BM_GPUModel_HistoryTimestamps(benchmark::State& state)
         model.refresh();
     }
 
+    // A GPU ID to query (the probe found a GPU, so the model lists it, but guard anyway)
+    auto info = model.gpuInfo();
+    if (info.empty())
+    {
+        state.SkipWithMessage("No GPUs available");
+        return;
+    }
+
+    const std::string gpuId = info[0].id;
+
     for (auto _ : state)
     {
-        auto ts = model.historyTimestamps();
-        benchmark::DoNotOptimize(ts.data());
-        benchmark::DoNotOptimize(ts.size());
+        const auto publication = model.publication();
+        const auto it = publication->histories.find(gpuId);
+        const std::size_t size = (it != publication->histories.end()) ? it->second.timestamps.size() : 0;
+        benchmark::DoNotOptimize(size);
     }
 }
 BENCHMARK(BM_GPUModel_HistoryTimestamps);
 
-// Benchmark utilizationHistory() – extracts float utilization values from
-// per-GPU ring buffer. Called per-GPU per-frame for chart rendering.
+// Benchmark reading a GPU's utilization series from the latest publication. Read per-GPU per-frame
+// for chart rendering.
 static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
 {
     if (skipWithoutGpu(state))
@@ -222,9 +235,10 @@ static void BM_GPUModel_UtilizationHistory(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto hist = model.utilizationHistory(gpuId);
-        benchmark::DoNotOptimize(hist.data());
-        benchmark::DoNotOptimize(hist.size());
+        const auto publication = model.publication();
+        const auto it = publication->histories.find(gpuId);
+        const std::size_t size = (it != publication->histories.end()) ? it->second.utilization.size() : 0;
+        benchmark::DoNotOptimize(size);
     }
 }
 BENCHMARK(BM_GPUModel_UtilizationHistory);

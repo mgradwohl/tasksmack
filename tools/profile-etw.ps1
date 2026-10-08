@@ -71,7 +71,7 @@
 .PARAMETER BenchmarkFilter
     Google Benchmark filter used when Mode=bench. Defaults to a curated set covering every
     probe/model refresh path (Process/System/GPU/Storage/Disk) plus the PDH per-process GPU
-    path and core History container operations - deliberately excludes MemoryGrowth-style
+    path and core HistoryBuffer ring operations - deliberately excludes MemoryGrowth-style
     benchmarks (measure allocation, not CPU hotspots) and the pure-algorithmic Format/Numeric
     micro-benchmarks (better suited to bench.ps1's regression tracking than ETW correlation).
     Pass '.*' to profile the entire benchmark suite instead.
@@ -152,7 +152,7 @@ param(
     # window.
     [string]$TargetPath,
 
-    [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh|GPUModel_ProcessGpuCounters|PDHGPUProbe_ReadProcessGPUCounters|DiskProbe_Read|StorageModel_Sample|History_(Push|RandomAccess|SequentialAccess|CopyTo))$',
+    [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh|GPUModel_ProcessGpuCounters|PDHGPUProbe_ReadProcessGPUCounters|DiskProbe_Read|StorageModel_Sample|HistoryBuffer_(Push|RandomAccess|SequentialAccess|CopyTo))$',
 
     [int]$BenchmarkRepetitions = 5,
 
