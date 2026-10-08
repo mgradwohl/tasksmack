@@ -152,11 +152,9 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         auto nvmlCaps = m_NVMLProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || nvmlCaps.hasTemperature;
-        caps.hasHotspotTemp = caps.hasHotspotTemp || nvmlCaps.hasHotspotTemp;
         caps.hasPowerMetrics = caps.hasPowerMetrics || nvmlCaps.hasPowerMetrics;
         caps.hasClockSpeeds = caps.hasClockSpeeds || nvmlCaps.hasClockSpeeds;
         caps.hasFanSpeed = caps.hasFanSpeed || nvmlCaps.hasFanSpeed;
-        caps.hasPCIeMetrics = caps.hasPCIeMetrics || nvmlCaps.hasPCIeMetrics;
         caps.hasEngineUtilization = caps.hasEngineUtilization || nvmlCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || nvmlCaps.hasPerProcessMetrics;
         caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || nvmlCaps.hasPerProcessUtilization;
@@ -170,11 +168,9 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         auto drmCaps = m_DRMProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || drmCaps.hasTemperature;
-        caps.hasHotspotTemp = caps.hasHotspotTemp || drmCaps.hasHotspotTemp;
         caps.hasPowerMetrics = caps.hasPowerMetrics || drmCaps.hasPowerMetrics;
         caps.hasClockSpeeds = caps.hasClockSpeeds || drmCaps.hasClockSpeeds;
         caps.hasFanSpeed = caps.hasFanSpeed || drmCaps.hasFanSpeed;
-        caps.hasPCIeMetrics = caps.hasPCIeMetrics || drmCaps.hasPCIeMetrics;
         caps.hasEngineUtilization = caps.hasEngineUtilization || drmCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || drmCaps.hasPerProcessMetrics;
         caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || drmCaps.hasPerProcessUtilization;
@@ -188,11 +184,9 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         auto rocmCaps = m_ROCmProbe->capabilities();
 
         caps.hasTemperature = caps.hasTemperature || rocmCaps.hasTemperature;
-        caps.hasHotspotTemp = caps.hasHotspotTemp || rocmCaps.hasHotspotTemp;
         caps.hasPowerMetrics = caps.hasPowerMetrics || rocmCaps.hasPowerMetrics;
         caps.hasClockSpeeds = caps.hasClockSpeeds || rocmCaps.hasClockSpeeds;
         caps.hasFanSpeed = caps.hasFanSpeed || rocmCaps.hasFanSpeed;
-        caps.hasPCIeMetrics = caps.hasPCIeMetrics || rocmCaps.hasPCIeMetrics;
         caps.hasEngineUtilization = caps.hasEngineUtilization || rocmCaps.hasEngineUtilization;
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || rocmCaps.hasPerProcessMetrics;
         caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || rocmCaps.hasPerProcessUtilization;

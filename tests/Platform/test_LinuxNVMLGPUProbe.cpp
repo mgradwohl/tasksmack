@@ -363,7 +363,6 @@ TEST(LinuxNVMLGPUProbeTest, UnavailableProbeReportsNoCapabilities)
     EXPECT_FALSE(caps.hasPowerMetrics);
     EXPECT_FALSE(caps.hasClockSpeeds);
     EXPECT_FALSE(caps.hasFanSpeed);
-    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_FALSE(caps.hasPerProcessMetrics);
     EXPECT_FALSE(caps.supportsMultiGPU);
     EXPECT_FALSE(caps.hasEngineUtilization);
@@ -403,13 +402,9 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryEnablesAvailableCapabilities)
     EXPECT_TRUE(caps.hasPowerMetrics);
     EXPECT_TRUE(caps.hasClockSpeeds);
     EXPECT_TRUE(caps.hasFanSpeed);
-    // NVML only returns PCIe throughput as rates, not cumulative counters, so this probe
-    // deliberately reports the capability as unavailable rather than present-but-always-zero.
-    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_TRUE(caps.hasPerProcessMetrics);
     EXPECT_TRUE(caps.supportsMultiGPU);
     EXPECT_TRUE(caps.hasEngineUtilization);
-    EXPECT_FALSE(caps.hasHotspotTemp);
     EXPECT_FALSE(caps.hasEncoderDecoder);
 }
 
@@ -665,7 +660,8 @@ TEST(LinuxNVMLGPUProbeTest, FailedSensorReadsAreMarkedUnavailable)
     EXPECT_FALSE(failed[0].powerAvailable);
     EXPECT_FALSE(failed[0].gpuClockAvailable);
     EXPECT_FALSE(failed[0].memoryAvailable);
-    EXPECT_EQ(failed[0].memoryClockMHz, 9000U); // reads that still succeed are unaffected
+    EXPECT_GT(healthy[0].fanSpeedMaxRaw, 0U);
+    EXPECT_EQ(failed[0].fanSpeedRaw, healthy[0].fanSpeedRaw); // reads that still succeed are unaffected
 }
 
 TEST(LinuxNVMLGPUProbeTest, DeviceWithoutAHandleIsSkipped)
@@ -744,14 +740,8 @@ TEST(LinuxNVMLGPUProbeTest, MockLibraryReturnsExpectedCountersAndMergesProcessEn
     EXPECT_DOUBLE_EQ(counters[0].powerDrawWatts, 125.0);
     EXPECT_DOUBLE_EQ(counters[0].powerLimitWatts, 250.0);
     EXPECT_EQ(counters[0].gpuClockMHz, 1800U);
-    EXPECT_EQ(counters[0].memoryClockMHz, 9000U);
     EXPECT_EQ(counters[0].fanSpeedRaw, 40U);
     EXPECT_EQ(counters[0].fanSpeedMaxRaw, 100U); // NVML already returns 0-100
-    // nvmlDeviceGetPcieThroughput() returns a rate (KB/s over a ~20ms window), not a
-    // cumulative counter, so the probe deliberately leaves these at their zero default
-    // rather than populate a field GPUModel treats as cumulative with mismatched data.
-    EXPECT_EQ(counters[0].pcieTxBytes, 0U);
-    EXPECT_EQ(counters[0].pcieRxBytes, 0U);
 
     EXPECT_EQ(counters[1].gpuId, "nvidia-1");
     EXPECT_DOUBLE_EQ(counters[1].utilizationPercent, 25.0);

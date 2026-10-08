@@ -56,15 +56,6 @@ colors = [
 ]
 ```
 
-### `[progress]` - Progress Bar Colors
-
-```toml
-[progress]
-low = "#00E676"       # 0-50% (healthy)
-medium = "#FFB300"    # 50-80% (caution)
-high = "#E53935"      # 80-100% (critical)
-```
-
 ### `[semantic]` - Text Colors
 
 ```toml

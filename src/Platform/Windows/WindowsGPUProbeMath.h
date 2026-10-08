@@ -384,7 +384,6 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         dxgiCounter.powerLimitWatts = nvmlCounter.powerLimitWatts;
         dxgiCounter.gpuClockMHz = nvmlCounter.gpuClockMHz;
         dxgiCounter.gpuClockAvailable = nvmlCounter.gpuClockAvailable;
-        dxgiCounter.memoryClockMHz = nvmlCounter.memoryClockMHz;
         dxgiCounter.fanSpeedRaw = nvmlCounter.fanSpeedRaw;
         dxgiCounter.fanSpeedMaxRaw = nvmlCounter.fanSpeedMaxRaw;
 
