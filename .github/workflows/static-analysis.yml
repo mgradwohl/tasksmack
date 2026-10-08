@@ -33,6 +33,8 @@ jobs:
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
           install-clang-tidy: 'true'
+          # No ccache in the tidy jobs (#1406): clang-tidy doesn't compile through it.
+          install-ccache: 'false'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -44,7 +46,7 @@ jobs:
           mode: restore
 
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build GLAD
         run: cmake --build --preset debug --target glad_gl_core_33
