@@ -342,11 +342,27 @@ struct NetworkTotals
 /// a garbage counter value, not a clock.
 inline constexpr double MAX_PROCESSOR_PERFORMANCE_PERCENT = 1000.0;
 
-/// The CPU's current clock in MHz, derived as Task Manager derives its "Speed" (#1184): the base clock
-/// (the registry's ~MHz) scaled by PDH's "\Processor Information(_Total)\% Processor Performance",
-/// the processors' average speed as a percentage of base. The registry's ~MHz on its own is the base
-/// clock, which is not what Linux's cpufreq reports (the current clock) under the same hasCpuFreq.
-/// @param baseMHz                     The ~MHz value under HARDWARE\DESCRIPTION\System\CentralProcessor\0; 0 = unknown.
+/// The nominal (rated base) clock in MHz that "% Processor Performance" is a percentage of (#1530):
+/// the highest PROCESSOR_POWER_INFORMATION::MaxMhz across the logical processors, as
+/// CallNtPowerInformation(ProcessorInformation) reports them -- the figure Win32_Processor.MaxClockSpeed
+/// and Task Manager's "Base speed" show. On a hybrid part each efficiency class has its own MaxMhz
+/// (a Core Ultra 7 255H reports 2000 for its P-cores, 1500 for its E-cores and 700 for its LP E-cores);
+/// the highest is the P-cores' rated base. The registry's ~MHz is not that figure on such parts (3686
+/// on the 255H), so it stands in only when there is no MaxMhz to take.
+/// @param processorMaxMHz Each logical processor's MaxMhz; empty when CallNtPowerInformation failed.
+/// @param registryMHz     The ~MHz value under HARDWARE\DESCRIPTION\System\CentralProcessor\0; 0 = unknown.
+/// @return The highest non-zero MaxMhz; registryMHz when there is none.
+[[nodiscard]] inline std::uint64_t nominalCpuBaseMHz(std::span<const std::uint32_t> processorMaxMHz, std::uint64_t registryMHz) noexcept
+{
+    const std::uint32_t highest = processorMaxMHz.empty() ? 0U : std::ranges::max(processorMaxMHz);
+    return (highest != 0U) ? highest : registryMHz;
+}
+
+/// The CPU's current clock in MHz, derived as Task Manager derives its "Speed" (#1184): the nominal
+/// base clock (nominalCpuBaseMHz) scaled by PDH's "\Processor Information(_Total)\% Processor
+/// Performance", the processors' average speed as a percentage of base. The base on its own is not
+/// what Linux's cpufreq reports (the current clock) under the same hasCpuFreq.
+/// @param baseMHz                     The nominal base clock from nominalCpuBaseMHz; 0 = unknown.
 /// @param processorPerformancePercent The PDH reading, or nullopt when there is none yet (PDH needs two
 ///                                    samples for a rate) or the counter is unavailable.
 /// @return The current clock; the base clock when there is no usable reading; 0 when the base is unknown.

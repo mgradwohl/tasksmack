@@ -1,6 +1,6 @@
 /// @file test_WindowsSystemProbeMath.cpp
 /// @brief Unit tests for WindowsSystemProbeMath.h's pure page-file, CPU-time and network-total math,
-/// its network-interface classification (#1284) and the current CPU clock (#1184)
+/// its network-interface classification (#1284) and the current CPU clock and its rated base (#1184, #1530)
 ///
 /// WindowsSystemProbeMath.h includes no Windows header, so these tests build and run on every
 /// platform, including Linux CI's sanitizer and coverage jobs (#1133). Tests that need the real
@@ -506,6 +506,63 @@ TEST(CurrentCpuFrequencyTest, UnknownBaseClockStaysUnknown)
 {
     EXPECT_EQ(currentCpuFrequencyMHz(0, 150.0), 0U);
     EXPECT_EQ(currentCpuFrequencyMHz(0, std::nullopt), 0U);
+}
+
+// =============================================================================
+// nominalCpuBaseMHz: the rated base "% Processor Performance" is relative to (#1530)
+// =============================================================================
+
+namespace
+{
+
+/// The registry's ~MHz on a Core Ultra 7 255H: well above its 2000 MHz rated base.
+constexpr std::uint64_t CORE_ULTRA_255H_REGISTRY_MHZ = 3686;
+
+/// CallNtPowerInformation's MaxMhz per logical processor on a Core Ultra 7 255H, in its order:
+/// P-cores at 2000, E-cores at 1500, LP E-cores at 700.
+constexpr std::array<std::uint32_t, 16> CORE_ULTRA_255H_MAX_MHZ{
+    2000, 2000, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 2000, 2000, 2000, 2000, 700, 700};
+
+} // namespace
+
+TEST(NominalCpuBaseTest, HybridPartsUseTheHighestRatedBase)
+{
+    // Task Manager's "Base speed" and Win32_Processor.MaxClockSpeed both read 2000 on this part
+    EXPECT_EQ(nominalCpuBaseMHz(CORE_ULTRA_255H_MAX_MHZ, CORE_ULTRA_255H_REGISTRY_MHZ), 2000U);
+}
+
+TEST(NominalCpuBaseTest, SpeedOnACoreUltra255HStaysUnderItsTurboClock)
+{
+    // Measured: "% Processor Performance" about 149 at light load. The rated base gives about
+    // 2.98 GHz; the registry's ~MHz gave 5.49 GHz there and 8.21 GHz under load, past the 5.1 GHz turbo.
+    const std::uint64_t base = nominalCpuBaseMHz(CORE_ULTRA_255H_MAX_MHZ, CORE_ULTRA_255H_REGISTRY_MHZ);
+    EXPECT_EQ(currentCpuFrequencyMHz(base, 149.0), 2980U);
+}
+
+TEST(NominalCpuBaseTest, UniformPartsUseTheirRatedBase)
+{
+    const std::array<std::uint32_t, 4> maxMHz{3600, 3600, 3600, 3600};
+    EXPECT_EQ(nominalCpuBaseMHz(maxMHz, 3593), 3600U);
+}
+
+TEST(NominalCpuBaseTest, FailedCallFallsBackToTheRegistry)
+{
+    EXPECT_EQ(nominalCpuBaseMHz({}, CORE_ULTRA_255H_REGISTRY_MHZ), CORE_ULTRA_255H_REGISTRY_MHZ);
+    EXPECT_EQ(nominalCpuBaseMHz({}, 0), 0U);
+}
+
+TEST(NominalCpuBaseTest, ZeroRatedBaseFallsBackToTheRegistry)
+{
+    const std::array<std::uint32_t, 3> zeros{0, 0, 0};
+    EXPECT_EQ(nominalCpuBaseMHz(zeros, CORE_ULTRA_255H_REGISTRY_MHZ), CORE_ULTRA_255H_REGISTRY_MHZ);
+    EXPECT_EQ(nominalCpuBaseMHz(zeros, 0), 0U);
+}
+
+TEST(NominalCpuBaseTest, UnwrittenEntriesAreIgnored)
+{
+    // The probe sizes its buffer for every possible processor; entries Windows didn't fill stay 0
+    const std::array<std::uint32_t, 4> partlyFilled{2400, 2400, 0, 0};
+    EXPECT_EQ(nominalCpuBaseMHz(partlyFilled, 3686), 2400U);
 }
 
 // =============================================================================

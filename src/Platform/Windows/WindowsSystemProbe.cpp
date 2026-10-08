@@ -29,6 +29,7 @@
 #undef max
 #undef min
 
+#include "CpuBaseClock.h"
 #include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
 #include "WindowsNtQuery.h"
@@ -154,8 +155,9 @@ template<typename Query>
     return processorGroupFirstCoreIds(maximums);
 }
 
-/// The base clock in MHz from the registry's ~MHz; 0 if it can't be read.
-[[nodiscard]] std::uint64_t readBaseCpuMHz()
+/// The registry's ~MHz; 0 if it can't be read. Not the rated base on hybrid parts (#1530): only the
+/// fallback when CallNtPowerInformation has no MaxMhz.
+[[nodiscard]] std::uint64_t readRegistryCpuMHz()
 {
     DWORD mhz = 0;
     DWORD dataSize = sizeof(mhz);
@@ -289,13 +291,25 @@ void readVirtualization(CpuDetails& details)
     }
 }
 
-/// Every CpuDetails fact this probe reports (#809). Base speed stays unknown (#1530).
+/// Every CpuDetails fact this probe reports (#809). Base speed is the rated MaxMhz from powrprof
+/// (#1530) and stays unknown without it: the registry's ~MHz fallback is not a base clock.
 [[nodiscard]] CpuDetails readCpuDetails(std::span<const std::size_t> groupFirstCoreIds)
 {
     CpuDetails details;
     readProcessorTopology(details, groupFirstCoreIds);
     readVirtualization(details);
+    const std::vector<std::uint32_t> processorMaxMHz = readProcessorMaxMHz(&CallNtPowerInformation);
+    if (const std::uint64_t ratedMHz = nominalCpuBaseMHz(processorMaxMHz, 0); ratedMHz > 0)
+    {
+        details.baseSpeedMHz = ratedMHz;
+    }
     return details;
+}
+
+/// The nominal base clock "% Processor Performance" scales (#1530): powrprof's rated MaxMhz, else ~MHz.
+[[nodiscard]] std::uint64_t readBaseCpuMHz()
+{
+    return readNominalCpuBaseMHz(&CallNtPowerInformation, readRegistryCpuMHz());
 }
 
 } // namespace
@@ -362,8 +376,6 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr
     // The CPU Details block's static facts (#809), read once: none change during a boot session
     m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds);
     m_CpuDetailsProcessorCount = m_NumCores;
-    // baseSpeedMHz stays unknown: the registry's ~MHz is not the nominal base clock on every CPU
-    // (3686 against 2000 MHz on a Core Ultra 7 255H), so it is not published as one (#1530).
 
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
@@ -642,9 +654,9 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasIoWait = false,            // Windows doesn't expose iowait
         .hasSteal = false,             // Windows doesn't expose steal time
         .hasLoadAvg = false,           // Windows doesn't have load average
-        .hasCpuFreq = true,            // Current clock: ~MHz x % Processor Performance (#1184)
+        .hasCpuFreq = true,            // Current clock: rated base x % Processor Performance (#1184, #1530)
         .hasNetworkCounters = true,    // Via GetIfTable2 (64-bit counters, Unicode names)
-        .hasVirtualizationInfo = true, // Firmware/SLAT/hypervisor/VBS status, read once (#809)
+        .hasVirtualizationInfo = true, // Firmware/SLAT/hypervisor/VBS status (#809)
     };
 }
 
