@@ -4,7 +4,8 @@
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
-#include "App/Panels/CpuSummaryText.h"
+#include "App/Panels/CpuDetailsBlock.h"
+#include "App/Panels/CpuDetailsText.h"
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/MemorySection.h"
 #include "App/Panels/NetworkSection.h"
@@ -29,7 +30,6 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/LineLayout.h"
 #include "UI/RateAxis.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
@@ -44,7 +44,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -537,93 +536,51 @@ void SystemMetricsPanel::renderOverview()
     updateSmoothedCpu(snap, m_LastDeltaSeconds);
     updateSmoothedMemory(snap, m_LastDeltaSeconds);
 
-    // Header line: CPU Model | Cores | Freq | Uptime (right-aligned). Its strings come from the
-    // publications and the process count, so they are rebuilt only when one of those changes (#1171).
+    // The CPU Details block (#809), in place of the header line that listed some of these facts. Its
+    // rows come from the publications, the process count and the process histories, so they are
+    // rebuilt only when one of those changes (#1171).
     const std::size_t processCount = (processModel != nullptr) ? processModel->processCount() : 0;
     const std::uint64_t systemVersion = m_SystemPublication ? m_SystemPublication->version : 0;
     const std::uint64_t gpuVersion = m_GPUPublication ? m_GPUPublication->version : 0;
-    if (!m_OverviewHeader.valid || m_OverviewHeader.systemVersion != systemVersion || m_OverviewHeader.gpuVersion != gpuVersion ||
-        m_OverviewHeader.processCount != processCount || m_OverviewHeader.hasProcessModel != (processModel != nullptr))
+    if (!m_CpuDetails.valid || m_CpuDetails.systemVersion != systemVersion || m_CpuDetails.gpuVersion != gpuVersion ||
+        m_CpuDetails.processHistoryVersion != m_ProcessHistoryVersion || m_CpuDetails.processCount != processCount ||
+        m_CpuDetails.hasProcessModel != (processModel != nullptr))
     {
-        // Built in a fresh OverviewHeaderText and moved in whole, validity last: a render exception is
-        // caught and the app carries on, so a rebuild that throws part-way must leave the cache stale.
-        OverviewHeaderText fresh;
-        fresh.uptime = UI::Format::formatUptimeShort(snap.uptimeSeconds);
-
-        // Display: "CPU Model (N logical processors @ X.XX GHz)     Uptime: Xd Yh Zm"
-        // The same summary as the CPU Cores header (#1180).
-        fresh.coreInfo = Detail::cpuCoreSummary(snap.coreCount, snap.cpuFreqMHz);
-
-        fresh.processes =
-            (processModel != nullptr) ? std::format("Processes: {}", UI::Format::formatIntLocalized(processCount)) : std::string{};
-
-        // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
-        const std::uint64_t totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0;
-        // RAM and VRAM, appended to the CPU line
-        fresh.memory = (totalVramBytes > 0) ? std::format(", {} RAM, {} VRAM",
-                                                          UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)),
-                                                          UI::Format::formatBytes(static_cast<double>(totalVramBytes)))
-                                            : std::format(", {} RAM", UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes)));
+        // Built in a fresh cache and moved in whole, validity last: a render exception is caught and
+        // the app carries on, so a rebuild that throws part-way must leave the cache stale.
+        CpuDetailsCache fresh;
+        const Platform::SystemCapabilities caps = (m_Model != nullptr) ? m_Model->capabilities() : Platform::SystemCapabilities{};
+        const auto lastOf = [](const std::vector<double>& history)
+        {
+            return history.empty() ? std::optional<double>{} : std::optional<double>{history.back()};
+        };
+        const bool hasProcesses = (processModel != nullptr);
+        fresh.rows = CpuDetailsText::buildRows({
+            .snapshot = &snap,
+            .hasCpuFreq = caps.hasCpuFreq,
+            .hasUptime = caps.hasUptime,
+            .hasVirtualizationInfo = caps.hasVirtualizationInfo,
+            .processCount = hasProcesses ? std::optional<std::size_t>{processCount} : std::nullopt,
+            .threadCount = (hasProcesses && m_ProcessCapabilities.hasThreadCount) ? lastOf(m_ProcessThreadCountHistory) : std::nullopt,
+            .handleCount = (hasProcesses && m_ProcessCapabilities.hasHandleCount) ? lastOf(m_ProcessHandleCountHistory) : std::nullopt,
+#ifdef _WIN32
+            .handlesAreFileDescriptors = false,
+#else
+            .handlesAreFileDescriptors = true,
+#endif
+            // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
+            .totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0,
+        });
         fresh.systemVersion = systemVersion;
         fresh.gpuVersion = gpuVersion;
+        fresh.processHistoryVersion = m_ProcessHistoryVersion;
         fresh.processCount = processCount;
-        fresh.hasProcessModel = (processModel != nullptr);
+        fresh.hasProcessModel = hasProcesses;
+        fresh.generation = m_CpuDetails.generation + 1;
         fresh.valid = true;
-        m_OverviewHeader = std::move(fresh);
+        m_CpuDetails = std::move(fresh);
     }
-    const std::string& uptimeStr = m_OverviewHeader.uptime;
-    const std::string& coreInfo = m_OverviewHeader.coreInfo;
-    const std::string& processStr = m_OverviewHeader.processes;
-    const std::string& memoryStr = m_OverviewHeader.memory;
-
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-    const float uptimeWidth = uptimeStr.empty() ? 0.0F : ImGui::CalcTextSize(uptimeStr.c_str()).x;
-    const float processWidth = processStr.empty() ? 0.0F : ImGui::CalcTextSize(processStr.c_str()).x;
-    const float spacer = (!processStr.empty() && !uptimeStr.empty()) ? style.ItemSpacing.x : 0.0F;
-    const float rightBlockWidth = uptimeWidth + processWidth + spacer;
-
-    // CPU model with core count, frequency, RAM, and VRAM
-    ImGui::TextUnformatted(snap.cpuModel.c_str());
-    ImGui::SameLine(0, 0);
-    ImGui::TextUnformatted(coreInfo.c_str());
-    ImGui::SameLine(0, 0);
-    ImGui::TextUnformatted(memoryStr.c_str());
-
-    // Right-align process count and uptime -- beside the CPU summary when both fit, otherwise on
-    // a line of their own. Positioned from the right edge alone they were drawn straight over the
-    // summary on a window too narrow for both (#967).
-    if (rightBlockWidth > 0.0F)
-    {
-        // Window-local X throughout: the space ImGui::SameLine() and SetCursorPosX() work in. The
-        // right edge is therefore the line's start plus the width available from it -- availWidth
-        // on its own is a width, and used as a position it stopped a padding's width short of the
-        // content's right edge, which is where this block had always been drawn.
-        const float lineStartX = ImGui::GetCursorStartPos().x;
-        const float summaryEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-        const auto placement = UI::LineLayout::placeTrailingBlock(
-            lineStartX, summaryEndX, lineStartX + availWidth, rightBlockWidth, style.ItemSpacing.x * 2.0F);
-        if (placement.sameLine)
-        {
-            ImGui::SameLine(placement.x);
-        }
-        else
-        {
-            ImGui::SetCursorPosX(placement.x);
-        }
-        if (!processStr.empty())
-        {
-            ImGui::TextUnformatted(processStr.c_str());
-            if (!uptimeStr.empty())
-            {
-                ImGui::SameLine(0.0F, spacer);
-            }
-        }
-        if (!uptimeStr.empty())
-        {
-            ImGui::TextUnformatted(uptimeStr.c_str());
-        }
-    }
+    CpuDetailsBlock::render(snap.cpuModel, m_CpuDetails.rows, m_CpuDetails.generation, m_CpuDetailsMeasured);
 
     ImGui::Spacing();
 

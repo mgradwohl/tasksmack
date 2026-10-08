@@ -149,6 +149,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessConnectionsView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
+    src/App/Panels/CpuDetailsBlock.cpp
     src/App/Panels/MemorySection.cpp
     src/App/Panels/NetworkSection.cpp
     src/App/Panels/StorageSection.cpp
