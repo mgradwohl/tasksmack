@@ -1111,7 +1111,7 @@ void ProcessesPanel::render(bool* open)
 void ProcessesPanel::renderContent()
 {
     // An F9 asked for on a frame the table is not drawn is dropped, never kept for a later one (#170).
-    const bool killRequested = std::exchange(m_KillShortcutPending, false);
+    const bool killRequested = m_KillShortcut.take();
 
     if (!m_ProcessModel)
     {

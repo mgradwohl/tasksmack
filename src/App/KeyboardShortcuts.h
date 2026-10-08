@@ -1,7 +1,9 @@
 #pragma once
 
 // The application's keyboard shortcuts (#160, #170): the htop-style function keys and the gate that
-// keeps every shortcut from firing while the user is typing or a dialog is up. ImGui-free, so the
+// keeps them, and the Processes table's navigation keys, from firing while the user is typing or a
+// dialog is up. The older chords (Ctrl+=/-, Ctrl+Shift+M, Alt/Ctrl+Space) are handled elsewhere and
+// are not gated by it. ImGui-free, so the
 // key map and the gate are unit-tested directly (test_KeyboardShortcuts.cpp); the thin ImGui
 // adapter that reads this frame's keys is App/KeyboardInput.cpp, and the Processes table's
 // row-stepping math is App/Panels/ProcessTableNavigation.h.
@@ -9,6 +11,7 @@
 #include <array>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 namespace App::KeyboardShortcuts
 {
@@ -130,5 +133,75 @@ inline constexpr std::array<ShortcutHelpEntry, 13> SHORTCUT_HELP{{
     {.keys = "Ctrl + Shift + M", .description = "Render metrics overlay"},
     {.keys = "Alt + Space / Ctrl + Space", .description = "Window menu"},
 }};
+
+/// Which panel a tab-sensitive shortcut goes to.
+enum class ShortcutTarget : std::uint8_t
+{
+    None,
+    Processes,      ///< The Processes tab's table
+    ProcessDetails, ///< The Process Details tab
+};
+
+/// Whether @p action depends on the tab on show (F5, F9): the shell dispatches these only after the
+/// tab bar has taken this frame's tab click, so they go to the tab actually drawn this frame (#170).
+[[nodiscard]] constexpr bool isTabShortcut(ShortcutAction action) noexcept
+{
+    return action == ShortcutAction::ToggleTreeView || action == ShortcutAction::KillSelected;
+}
+
+/// The panel a tab-sensitive @p action goes to with @p activeTab (the shell's tab event name) on show:
+/// F5 to the Processes table only; F9 to Processes or Process Details, each with its own confirm.
+/// Anything else, or another tab (the System tab has no selection): None.
+[[nodiscard]] constexpr ShortcutTarget tabShortcutTarget(ShortcutAction action, std::string_view activeTab) noexcept
+{
+    if (action == ShortcutAction::ToggleTreeView)
+    {
+        return (activeTab == "Processes") ? ShortcutTarget::Processes : ShortcutTarget::None;
+    }
+    if (action == ShortcutAction::KillSelected)
+    {
+        if (activeTab == "Processes")
+        {
+            return ShortcutTarget::Processes;
+        }
+        if (activeTab == "ProcessDetails")
+        {
+            return ShortcutTarget::ProcessDetails;
+        }
+    }
+    return ShortcutTarget::None;
+}
+
+/// A one-shot request that lives for a single frame (#170): made by a shortcut, taken by the panel's
+/// render that frame, and expired at the frame's end if nothing took it, so a request made for a panel
+/// that was not drawn can never act on a later frame.
+class FrameRequest
+{
+  public:
+    void request() noexcept
+    {
+        m_Pending = true;
+    }
+
+    /// Whether a request was made this frame; taking it clears it, so it is acted on once.
+    [[nodiscard]] bool take() noexcept
+    {
+        return std::exchange(m_Pending, false);
+    }
+
+    /// The frame is over: drop a request nothing took.
+    void expire() noexcept
+    {
+        m_Pending = false;
+    }
+
+    [[nodiscard]] bool pending() const noexcept
+    {
+        return m_Pending;
+    }
+
+  private:
+    bool m_Pending = false;
+};
 
 } // namespace App::KeyboardShortcuts

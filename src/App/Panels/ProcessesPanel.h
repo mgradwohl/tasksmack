@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
@@ -226,11 +227,18 @@ class ProcessesPanel : public Panel
     }
 
     /// F9 (#170): on this frame's render, ask to kill the selected process through the same confirm
-    /// dialog as the row menu's Kill, its target captured now. Nothing happens when no process is
+    /// dialog as the row menu's Kill, its target captured then. Nothing happens when no process is
     /// selected, the selection is not a visible row, or the platform cannot kill. Never kills directly.
+    /// Lives for this frame only: expireFrameRequests() drops it if the table was not drawn.
     void requestKillSelected() noexcept
     {
-        m_KillShortcutPending = true;
+        m_KillShortcut.request();
+    }
+
+    /// End of frame: drop a shortcut request this frame's render did not take (#170).
+    void expireFrameRequests() noexcept
+    {
+        m_KillShortcut.expire();
     }
 
   private:
@@ -306,7 +314,7 @@ class ProcessesPanel : public Panel
 
     // Keyboard navigation (#160) and F9 (#170). A move scrolls the newly selected row into view on the
     // frame it is drawn; the clipper is told to draw that row even when it is off-screen.
-    bool m_KillShortcutPending = false;
+    KeyboardShortcuts::FrameRequest m_KillShortcut;
     bool m_ScrollSelectedIntoView = false;
     std::size_t m_ScrollTargetRow = 0; // Index of the selected row in the visible order
 

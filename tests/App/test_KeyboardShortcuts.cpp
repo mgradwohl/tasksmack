@@ -91,5 +91,57 @@ TEST(KeyboardShortcutsTest, AboutListStartsWithTheFunctionKeys)
     }
 }
 
+TEST(KeyboardShortcutsTest, OnlyF5AndF9DependOnTheTab)
+{
+    EXPECT_TRUE(isTabShortcut(ShortcutAction::ToggleTreeView));
+    EXPECT_TRUE(isTabShortcut(ShortcutAction::KillSelected));
+    EXPECT_FALSE(isTabShortcut(ShortcutAction::ShowAbout));
+    EXPECT_FALSE(isTabShortcut(ShortcutAction::OpenSettings));
+    EXPECT_FALSE(isTabShortcut(ShortcutAction::Quit));
+    EXPECT_FALSE(isTabShortcut(ShortcutAction::None));
+}
+
+TEST(KeyboardShortcutsTest, TabShortcutsGoToTheTabOnShow)
+{
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "Processes"), ShortcutTarget::Processes);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "ProcessDetails"), ShortcutTarget::None);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::ToggleTreeView, "SystemOverview"), ShortcutTarget::None);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "Processes"), ShortcutTarget::Processes);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "ProcessDetails"), ShortcutTarget::ProcessDetails);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::KillSelected, "SystemOverview"), ShortcutTarget::None); // No selection
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::ShowAbout, "Processes"), ShortcutTarget::None);
+    EXPECT_EQ(tabShortcutTarget(ShortcutAction::Quit, "ProcessDetails"), ShortcutTarget::None);
+}
+
+TEST(KeyboardShortcutsTest, AFrameRequestIsTakenOnce)
+{
+    FrameRequest request;
+    EXPECT_FALSE(request.pending());
+    EXPECT_FALSE(request.take());
+    request.request();
+    EXPECT_TRUE(request.pending());
+    EXPECT_TRUE(request.take());
+    EXPECT_FALSE(request.take()); // Acted on once
+    request.expire();
+    EXPECT_FALSE(request.take());
+}
+
+TEST(KeyboardShortcutsTest, AFrameRequestNothingTookIsDroppedAtTheFrameEnd)
+{
+    // F9 for a tab that was not drawn this frame: nothing takes it, the frame ends, and a later
+    // render of that tab must not act on it (Copilot review on #1471).
+    FrameRequest request;
+    request.request();
+    request.expire();
+    EXPECT_FALSE(request.pending());
+    EXPECT_FALSE(request.take());
+
+    // A request made and taken in the same frame is unaffected by that frame's expiry.
+    request.request();
+    EXPECT_TRUE(request.take());
+    request.expire();
+    EXPECT_FALSE(request.take());
+}
+
 } // namespace
 } // namespace App::KeyboardShortcuts

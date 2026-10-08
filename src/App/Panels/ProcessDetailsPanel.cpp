@@ -189,6 +189,10 @@ const std::string& ProcessDetailsPanel::tabLabel() const
 
 void ProcessDetailsPanel::renderContent()
 {
+    // F9 (#170), taken now so it can only act on this frame: by the time the tabs below are drawn,
+    // every reason not to (no selection, not on show, exited, not yet sampled) has returned early.
+    const bool killRequested = m_KillShortcut.take();
+
     if (m_SelectedPid == -1)
     {
         UI::Widgets::renderEmptyState(ICON_FA_CIRCLE_INFO "  No process selected",
@@ -219,6 +223,13 @@ void ProcessDetailsPanel::renderContent()
         const std::string detail = std::format("Process {} is not in the current process list.", m_SelectedPid);
         UI::Widgets::renderEmptyState(ICON_FA_TRIANGLE_EXCLAMATION "  Process not found", detail.c_str());
         return;
+    }
+
+    // F9: the Actions tab's Kill confirm for the process shown, its target captured now; the tab is
+    // brought forward below so the dialog is drawn.
+    if (killRequested && m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
+    {
+        m_SelectActionsTab = true;
     }
 
     // Tabs for different info sections
@@ -591,19 +602,6 @@ void ProcessDetailsPanel::renderActions()
     m_ActionsView.render(m_ProcessActions.get(), m_ActionCapabilities, cachedSnapshot().name, target);
     const std::optional<std::int32_t> currentNice = m_HasSnapshot ? std::optional<std::int32_t>{cachedSnapshot().nice} : std::nullopt;
     m_PriorityView.render(m_ProcessActions.get(), m_ActionCapabilities, currentNice, target);
-}
-
-void ProcessDetailsPanel::requestKillSelected()
-{
-    // Only while the tabs are drawn: otherwise the request would wait, invisible, for a later frame.
-    if (!m_IsActiveTab || m_SelectedPid == -1 || !m_HasSnapshot || m_ProcessExited)
-    {
-        return;
-    }
-    if (m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
-    {
-        m_SelectActionsTab = true;
-    }
 }
 
 Platform::ProcessTarget ProcessDetailsPanel::selectedTarget() const
