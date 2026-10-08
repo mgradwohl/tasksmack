@@ -155,6 +155,7 @@ set(TASKSMACK_SOURCES
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
+    src/Domain/ServiceModel.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
@@ -191,6 +192,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/DXGIGPUProbe.cpp
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp
+    src/Platform/Windows/WindowsServiceProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
@@ -225,6 +227,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessEnvironment.h
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
+    src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
@@ -242,6 +245,7 @@ set(TASKSMACK_HEADERS
     src/Domain/SharedHistory.h
     src/Domain/GPUSnapshot.h
     src/Domain/GPUModel.h
+    src/Domain/ServiceModel.h
 )
 
 # Platform-specific headers
@@ -270,6 +274,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsGPUProbe.h
         src/Platform/Windows/DXGIGPUProbe.h
         src/Platform/Windows/NVMLGPUProbe.h
+        src/Platform/Windows/WindowsServiceProbe.h
         src/Platform/Windows/WinString.h
     )
 endif()

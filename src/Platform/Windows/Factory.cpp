@@ -8,6 +8,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "WindowsDiskProbe.h"
 #include "WindowsGPUProbe.h"
@@ -15,6 +16,7 @@
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
 #include "WindowsProcessProbe.h"
+#include "WindowsServiceProbe.h"
 #include "WindowsSystemProbe.h"
 
 #include <memory>
@@ -69,6 +71,11 @@ std::unique_ptr<IPowerProbe> makePowerProbe()
 std::unique_ptr<IGPUProbe> makeGPUProbe()
 {
     return std::make_unique<WindowsGPUProbe>();
+}
+
+std::unique_ptr<IServiceProbe> makeServiceProbe()
+{
+    return std::make_unique<WindowsServiceProbe>();
 }
 
 } // namespace Platform

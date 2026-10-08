@@ -8,6 +8,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -43,5 +44,9 @@ namespace Platform
 
 /// Creates the platform-appropriate IGPUProbe implementation.
 [[nodiscard]] std::unique_ptr<IGPUProbe> makeGPUProbe();
+
+/// Creates the platform-appropriate IServiceProbe implementation (#800). Linux returns an
+/// UnsupportedServiceProbe (capabilities().canEnumerate false) until systemd support lands.
+[[nodiscard]] std::unique_ptr<IServiceProbe> makeServiceProbe();
 
 } // namespace Platform
