@@ -102,10 +102,11 @@ export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_
 echo "==> Merging coverage data..."
 $LLVM_PROFDATA merge -sparse "${BUILD_DIR}"/*.profraw -o "${BUILD_DIR}/default.profdata"
 
-# Files excluded from coverage: generated/third-party paths and test sources only. ImGui panel code
+# Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/ holds
+# test-support headers the tests include, #1395). ImGui panel code
 # (Widgets.h, the panel headers) is deliberately NOT excluded any more (#1131): untested code has
 # to count against the total.
-COV_IGNORE_REGEX='.*/(build|_deps|tests|\.cache)/.*'
+COV_IGNORE_REGEX='.*/(build|_deps|tests|benchmarks|\.cache)/.*'
 
 # llvm-cov only reports files compiled into the binaries it is given, so with TaskSmackTests
 # alone the ~27% of src/ that is never linked into the tests (panels, layers, Theme.cpp,
