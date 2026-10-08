@@ -502,6 +502,31 @@ the untested logic needs OS handles or not:
    file's anonymous namespace), since an
    anonymous-namespace type is a different entity than the one the friend declaration names.
 
+### Visual validation without input (Process Details)
+
+Agents must not inject clicks or keys, so three test-only environment variables (#1559), read once at
+startup, open Process Details for one process by themselves. When the process first appears in a
+snapshot, it is selected exactly as a click and the row menu's **Details** do. If it has not appeared
+after 20 snapshots, one warning is logged and nothing is selected. While one is set, the startup
+"Limited Data" notice is not shown, since it would cover the details. Unset, they do nothing.
+
+| Variable | Value |
+|---|---|
+| `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
+| `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match (case-insensitive on Windows). |
+| `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
+| `TASKSMACK_TAB` | The top-level tab to open: `system` (or `machine`), `processes`, `details`, or any tab's registered id or label, case-insensitive. Wins over the Details tab a selection opens; an unknown name logs one warning. |
+
+Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
+works while the window is covered):
+
+```powershell
+$env:TASKSMACK_WINDOW='1900x1000'; $env:TASKSMACK_SELECT_NAME='explorer.exe'; $env:TASKSMACK_DETAILS_TAB='overview'
+$p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru
+# Wait a few seconds, then PrintWindow($p.MainWindowHandle, hdc, PW_RENDERFULLCONTENT = 2) into a bitmap.
+Stop-Process -Id $p.Id -Force   # not a graceful close, which would save your config.toml
+```
+
 ## VS Code
 
 Recommended extensions:

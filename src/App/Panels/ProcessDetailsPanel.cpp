@@ -3,6 +3,7 @@
 #include "App/Panel.h"
 #include "App/Panels/ProcessStateColor.h"
 #include "App/Panels/ProcessTypeColor.h"
+#include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
 #include "Core/ApplicationEvents.h"
@@ -241,7 +242,7 @@ void ProcessDetailsPanel::renderContent()
     // Overview, which holds the block (#1493), is brought forward below.
     if (killRequested && m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
     {
-        m_SelectOverviewTab = true;
+        m_RequestedTab = SelectOverride::DetailsTab::Overview;
     }
 
     // Tabs for different info sections
@@ -255,7 +256,13 @@ void ProcessDetailsPanel::renderContent()
         // 1. Overview, with the Actions block beside Identity and Runtime (#1493). Brought forward by
         // F9, so its Kill confirm shows over the block it belongs to (#170).
         // Each tab's body scrolls in its own child, so the tab bar itself stays in view (#968).
-        const ImGuiTabItemFlags overviewFlags = std::exchange(m_SelectOverviewTab, false) ? ImGuiTabItemFlags_SetSelected : 0;
+        // The test hook's TASKSMACK_DETAILS_TAB may ask for another tab instead (#1559).
+        const std::optional<SelectOverride::DetailsTab> requestedTab = std::exchange(m_RequestedTab, std::nullopt);
+        const auto tabFlags = [&requestedTab](const SelectOverride::DetailsTab tab) -> ImGuiTabItemFlags
+        {
+            return requestedTab == tab ? ImGuiTabItemFlags_SetSelected : 0;
+        };
+        const ImGuiTabItemFlags overviewFlags = tabFlags(SelectOverride::DetailsTab::Overview);
         if (ImGui::BeginTabItem(ICON_FA_CIRCLE_INFO "  Overview", nullptr, overviewFlags))
         {
             {
@@ -283,7 +290,7 @@ void ProcessDetailsPanel::renderContent()
         }
 
         // 2. GPU (always show, with message if data unavailable)
-        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU"))
+        if (ImGui::BeginTabItem(ICON_FA_MICROCHIP "  GPU", nullptr, tabFlags(SelectOverride::DetailsTab::Gpu)))
         {
             {
                 const UI::Widgets::TabContentScope content("##GpuContent");
@@ -294,7 +301,7 @@ void ProcessDetailsPanel::renderContent()
 
         // 3. Network and I/O. Always present, like the GPU tab, so the tab set does not change while a
         // process stays selected; an empty state stands in until there is data (#1210).
-        if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O"))
+        if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O", nullptr, tabFlags(SelectOverride::DetailsTab::Network)))
         {
             {
                 const UI::Widgets::TabContentScope content("##NetworkContent");

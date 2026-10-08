@@ -12,6 +12,7 @@
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
+#include "App/SelectOverride.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
@@ -152,6 +153,11 @@ class ProcessesPanel : public Panel
     /// Have the process model keep a sample of process @p pid from every generation it publishes
     /// (Domain::ProcessModel::watchProcess()). pid <= 0 stops watching.
     void watchProcess(std::int32_t pid);
+
+    /// The test hook's startup selection (#1559, App/SelectOverride.h): the first snapshot that holds
+    /// @p target's process selects it like a click and, with @p showDetails, opens Process Details.
+    /// Set once by ShellLayer.
+    void requestStartupSelection(std::optional<SelectOverride::Target> target, bool showDetails);
 
     /// The watched process's samples newer than @p lastSeenVersion, oldest first, appended to
     /// @p outSamples; see Domain::ProcessModel::watchedSamplesSince(). Like findSnapshot(), this
@@ -382,6 +388,8 @@ class ProcessesPanel : public Panel
     std::shared_ptr<const std::vector<Domain::ProcessSnapshot>> m_CachedRenderSnapshots =
         std::make_shared<const std::vector<Domain::ProcessSnapshot>>();
     std::uint64_t m_CachedSnapshotVersion = std::numeric_limits<std::uint64_t>::max();
+    SelectOverride::Pending m_StartupSelection; // TASKSMACK_SELECT_PID/_NAME (#1559); idle once fired
+    bool m_StartupSelectionShowsDetails = true; // false when TASKSMACK_TAB picks the tab instead
     // The probe's capabilities published with m_CachedRenderSnapshots' generation (#1254).
     Platform::ProcessCapabilities m_CachedCapabilities;
     // The GPU support m_CachedRenderSnapshots' GPU fields were read under (#1210), copied with them:
@@ -469,6 +477,9 @@ class ProcessesPanel : public Panel
     /// it is newer than the cached one (onAttach(), onUpdate() and renderContent(), #1180). Does
     /// nothing while the pane is frozen by a held Ctrl (#928), except to load the first generation.
     void adoptNewerSnapshots();
+
+    /// Offers the adopted generation to m_StartupSelection; selects its process when it appears.
+    void applyStartupSelection();
 
     /// Feeds this frame's keyboard and window state to m_DisplayFreeze (#928). Must be called inside
     /// the window the pane renders into, since it asks ImGui whether that window is hovered/focused.

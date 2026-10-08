@@ -12,6 +12,7 @@
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/ProcessTypes.h"
+#include "SelectOverride.h"
 #include "ShellMetrics.h"
 #include "StatusBarText.h"
 #include "SyntheticScenario.h"
@@ -42,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -95,6 +97,16 @@ void ShellLayer::onAttach()
     // Initialize panels
     m_Tabs.onAttach();
 
+    // The test hook's startup selection (#1559): read once here, applied when the process appears.
+    // TASKSMACK_TAB wins over the Details tab the selection would bring forward.
+    const char* mainTab = SDL_getenv(std::string(SelectOverride::MAIN_TAB_ENV_VAR).c_str());
+    const bool mainTabSet = mainTab != nullptr && !SelectOverride::Detail::trim(mainTab).empty();
+    if (const std::optional<SelectOverride::Target>& select = SelectOverride::active(); select.has_value())
+    {
+        m_ProcessesPanel.requestStartupSelection(select, /*showDetails=*/!mainTabSet);
+        m_ProcessDetailsPanel.requestTab(select->tab);
+    }
+
     // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
     ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
 
@@ -119,11 +131,29 @@ void ShellLayer::onAttach()
     m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, m_SystemMetricsPanel.hostname(), TabLabel::SYSTEM_TAB_ID);
     m_DetailsTabLabel.get(m_ProcessDetailsPanel.tabLabel(), makeDetailsTabLabel);
 
+    // TASKSMACK_TAB (#1559), matched against the registered tabs once their labels are built.
+    if (mainTabSet)
+    {
+        std::vector<SelectOverride::TabInfo> tabs;
+        for (const auto& tab : m_Tabs.tabs())
+        {
+            tabs.push_back({.id = tab.eventName, .label = tab.label()});
+        }
+        m_StartupTabIndex = SelectOverride::findTab(mainTab, tabs);
+        if (!m_StartupTabIndex)
+        {
+            spdlog::warn("{}: '{}' names no tab; ignored", SelectOverride::MAIN_TAB_ENV_VAR, mainTab);
+        }
+    }
+
     // Trigger the startup notice if needed. The status bar's lock icon reads the live value instead
     // (#1254); the notice itself is a one-off at startup.
     // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
     // m_PendingPrivilegeNotice is dispatched in the first onUpdate() call, after all layers are stacked.
-    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice)
+    // Not under the startup-selection test hook (#1559): the modal would cover the details it opens,
+    // and dismissing it needs input.
+    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice &&
+        !SelectOverride::active().has_value())
     {
         m_PendingPrivilegeNotice = true;
     }
@@ -609,7 +639,7 @@ void ShellLayer::renderTabBar()
         for (const auto& tab : m_Tabs.tabs())
         {
             ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
-            if (m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails")
+            if ((m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") || m_StartupTabIndex == index)
             {
                 tabFlags |= ImGuiTabItemFlags_SetSelected;
             }
@@ -621,6 +651,7 @@ void ShellLayer::renderTabBar()
             ++index;
         }
         m_ShowDetailsTabRequested = false;
+        m_StartupTabIndex.reset();
 
         ImGui::EndTabBar();
 

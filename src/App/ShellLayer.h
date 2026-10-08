@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -112,6 +113,8 @@ class ShellLayer : public Core::Layer
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;
+    // TASKSMACK_TAB (#1559): the tab the first tab bar selects, resolved once in onAttach().
+    std::optional<std::size_t> m_StartupTabIndex;
 
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().

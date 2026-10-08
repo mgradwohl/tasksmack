@@ -229,6 +229,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_KeyboardInputRender.cpp
+    App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
