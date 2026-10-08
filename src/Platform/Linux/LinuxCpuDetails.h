@@ -77,6 +77,7 @@ namespace Detail
 /// One /proc/cpuinfo "processor" block's topology fields; each is nullopt where the block has none.
 struct CpuInfoProcessor
 {
+    std::optional<std::size_t> processor; ///< The logical CPU number N (sysfs cpuN)
     std::optional<std::uint64_t> physicalId;
     std::optional<std::uint64_t> coreId;
     std::optional<std::uint64_t> cpuCores; ///< Cores in this processor's socket
@@ -104,7 +105,12 @@ struct CpuInfoProcessor
         const std::string_view value = line.substr(colon + 1);
         if (key == "processor")
         {
-            processors.emplace_back();
+            const auto number = Detail::parseUnsigned(value);
+            processors.push_back(
+                {.processor = number.has_value() ? std::optional<std::size_t>{static_cast<std::size_t>(*number)} : std::nullopt,
+                 .physicalId = std::nullopt,
+                 .coreId = std::nullopt,
+                 .cpuCores = std::nullopt});
             continue;
         }
         if (processors.empty())
@@ -131,14 +137,20 @@ struct CpuInfoProcessor
 /// Sockets, physical cores and logical processors from the processor records. Each record is one
 /// logical processor; sockets are the distinct "physical id"s and cores the distinct
 /// ("physical id", "core id") pairs. Where a processor has no "core id" (some VMs), cores are the
-/// sum of each socket's "cpu cores", if every socket gives one. Architectures that list no
-/// "physical id" (most ARM) leave sockets and cores unknown. A hybrid CPU's cores are counted, not
-/// split: /proc/cpuinfo does not say which are which.
+/// sum of each socket's "cpu cores", if every socket gives one. If any processor lists no
+/// "physical id" (most ARM lists none) sockets and cores stay unknown: counting only the processors
+/// that have one would undercount both. A hybrid CPU's cores are counted, not split: /proc/cpuinfo
+/// does not say which are which.
 inline void summarizeCpuInfoTopology(std::span<const CpuInfoProcessor> processors, CpuDetails& details)
 {
-    if (!processors.empty())
+    if (processors.empty())
     {
-        details.logicalProcessors = processors.size();
+        return;
+    }
+    details.logicalProcessors = processors.size();
+    if (!std::ranges::all_of(processors, [](const CpuInfoProcessor& processor) { return processor.physicalId.has_value(); }))
+    {
+        return;
     }
 
     std::set<std::uint64_t> sockets;
@@ -147,14 +159,11 @@ inline void summarizeCpuInfoTopology(std::span<const CpuInfoProcessor> processor
     bool everyProcessorHasCoreId = true;
     for (const CpuInfoProcessor& processor : processors)
     {
-        if (!processor.physicalId.has_value())
-        {
-            continue;
-        }
-        sockets.insert(*processor.physicalId);
+        const std::uint64_t physicalId = processor.physicalId.value_or(0); // Every processor has one (checked above)
+        sockets.insert(physicalId);
         if (processor.coreId.has_value())
         {
-            cores.emplace(*processor.physicalId, *processor.coreId);
+            cores.emplace(physicalId, *processor.coreId);
         }
         else
         {
@@ -162,12 +171,8 @@ inline void summarizeCpuInfoTopology(std::span<const CpuInfoProcessor> processor
         }
         if (processor.cpuCores.has_value())
         {
-            coresPerSocket.emplace(*processor.physicalId, *processor.cpuCores);
+            coresPerSocket.emplace(physicalId, *processor.cpuCores);
         }
-    }
-    if (sockets.empty())
-    {
-        return;
     }
     details.sockets = sockets.size();
 
@@ -196,6 +201,30 @@ inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
 {
     const std::vector<CpuInfoProcessor> processors = parseCpuInfoProcessors(text);
     summarizeCpuInfoTopology(processors, details);
+}
+
+/// The online CPUs' numbers: the processors /proc/cpuinfo lists (it lists online CPUs only).
+/// nullopt when there are none, or any has no number, and the sysfs scans then take every cpuN.
+[[nodiscard]] inline std::optional<std::set<std::size_t>> onlineCpus(std::span<const CpuInfoProcessor> processors)
+{
+    std::set<std::size_t> online;
+    for (const CpuInfoProcessor& processor : processors)
+    {
+        if (!processor.processor.has_value())
+        {
+            return std::nullopt;
+        }
+        online.insert(*processor.processor);
+    }
+    return online.empty() ? std::nullopt : std::optional<std::set<std::size_t>>{std::move(online)};
+}
+
+/// Whether sysfs's cpuN is one of `online` (every cpuN when the online set is unknown). sysfs lists
+/// possible CPUs, offline ones too; their caches and capacities would describe a different set of
+/// CPUs from the topology /proc/cpuinfo gives.
+[[nodiscard]] inline bool isOnline(const std::optional<std::set<std::size_t>>& online, std::size_t cpu)
+{
+    return !online.has_value() || online->contains(cpu);
 }
 
 /// A sysfs cache size ("32K", "1024K", "8M", "16384 KB") in bytes; nullopt if unreadable or zero.
@@ -300,16 +329,17 @@ struct SysfsCacheEntry
     return index;
 }
 
-/// Every cpuN/cache/index* entry under `cpuSysfsRoot`. Missing directories and unreadable files
-/// leave entries out rather than fail.
-[[nodiscard]] inline std::vector<SysfsCacheEntry> readCacheEntries(const std::filesystem::path& cpuSysfsRoot)
+/// Every online cpuN/cache/index* entry under `cpuSysfsRoot`. Missing directories and unreadable
+/// files leave entries out rather than fail.
+[[nodiscard]] inline std::vector<SysfsCacheEntry> readCacheEntries(const std::filesystem::path& cpuSysfsRoot,
+                                                                   const std::optional<std::set<std::size_t>>& online)
 {
     std::vector<SysfsCacheEntry> entries;
     std::error_code ec;
     for (std::filesystem::directory_iterator cpuIt(cpuSysfsRoot, ec), end; !ec && cpuIt != end; cpuIt.increment(ec))
     {
         const auto cpu = cpuDirectoryIndex(cpuIt->path().filename().string());
-        if (!cpu.has_value())
+        if (!cpu.has_value() || !isOnline(online, *cpu))
         {
             continue;
         }
@@ -347,15 +377,16 @@ struct SysfsCacheEntry
 
 /// Each logical processor's efficiency class from cpuN/cpu_capacity (#809), where the kernel gives
 /// one (Arm big.LITTLE, recent x86 hybrids): the rank of its capacity among the distinct capacities,
-/// lowest 0. Empty unless there is more than one capacity.
-[[nodiscard]] inline std::vector<std::uint8_t> readEfficiencyClasses(const std::filesystem::path& cpuSysfsRoot)
+/// lowest 0, online CPUs only. Empty unless there is more than one capacity.
+[[nodiscard]] inline std::vector<std::uint8_t> readEfficiencyClasses(const std::filesystem::path& cpuSysfsRoot,
+                                                                     const std::optional<std::set<std::size_t>>& online)
 {
     std::vector<std::pair<std::size_t, std::uint64_t>> capacities;
     std::error_code ec;
     for (std::filesystem::directory_iterator it(cpuSysfsRoot, ec), end; !ec && it != end; it.increment(ec))
     {
         const auto cpu = cpuDirectoryIndex(it->path().filename().string());
-        const auto text = cpu.has_value() ? Detail::readFile(it->path() / "cpu_capacity") : std::nullopt;
+        const auto text = (cpu.has_value() && isOnline(online, *cpu)) ? Detail::readFile(it->path() / "cpu_capacity") : std::nullopt;
         const auto capacity = text.has_value() ? Detail::parseUnsigned(*text) : std::nullopt;
         if (capacity.has_value())
         {
@@ -418,15 +449,19 @@ struct SysfsCacheEntry
 [[nodiscard]] inline CpuDetails read(const std::filesystem::path& procRoot, const std::filesystem::path& cpuSysfsRoot)
 {
     CpuDetails details;
+    std::vector<CpuInfoProcessor> processors;
     if (const auto cpuInfo = Detail::readFile(procRoot / "cpuinfo"); cpuInfo.has_value())
     {
-        parseCpuInfoTopology(*cpuInfo, details);
+        processors = parseCpuInfoProcessors(*cpuInfo);
     }
+    summarizeCpuInfoTopology(processors, details);
+    // One coherent set of CPUs: the sysfs scans take only the CPUs /proc/cpuinfo listed as online
+    const std::optional<std::set<std::size_t>> online = onlineCpus(processors);
 
-    const std::vector<SysfsCacheEntry> entries = readCacheEntries(cpuSysfsRoot);
+    const std::vector<SysfsCacheEntry> entries = readCacheEntries(cpuSysfsRoot, online);
     const std::vector<CpuTopology::CacheInstance> instances = distinctCacheInstances(entries);
     CpuTopology::sumCacheInstances(instances, details);
-    details.efficiencyClassByCoreId = readEfficiencyClasses(cpuSysfsRoot);
+    details.efficiencyClassByCoreId = readEfficiencyClasses(cpuSysfsRoot, online);
 
     details.baseSpeedMHz = readBaseSpeedMHz(cpuSysfsRoot);
     return details;

@@ -149,7 +149,7 @@ SystemCounters LinuxSystemProbe::read()
     // vector growth reallocations per read() call.
     counters.cpuPerCore.reserve(m_NumCores);
     readCpuCounters(counters, m_ProcRoot);
-    refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore.size());
+    readCpuDetails(counters);
     readMemoryCounters(counters, m_ProcRoot);
     readUptime(counters, m_ProcRoot);
     readLoadAvg(counters, m_ProcRoot);
@@ -383,20 +383,20 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
     counters.cpuCoreCount = m_NumCores;
-    const std::scoped_lock lock(m_CpuDetailsMutex);
-    counters.cpuDetails = m_CpuDetails;
 }
 
-void LinuxSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors)
+void LinuxSystemProbe::readCpuDetails(SystemCounters& counters)
 {
     const std::scoped_lock lock(m_CpuDetailsMutex);
-    const CpuTopology::ProcessorCountUpdate update = CpuTopology::updateProcessorCount(m_CpuDetailsProcessorCount, sampledProcessors);
+    const CpuTopology::ProcessorCountUpdate update =
+        CpuTopology::updateProcessorCount(m_CpuDetailsProcessorCount, counters.cpuPerCore.size());
     if (update.rereadDetails)
     {
         // Rare: only when a CPU goes online or offline, never every sample
         m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
     }
     m_CpuDetailsProcessorCount = update.processorCount;
+    counters.cpuDetails = m_CpuDetails;
 }
 
 void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)

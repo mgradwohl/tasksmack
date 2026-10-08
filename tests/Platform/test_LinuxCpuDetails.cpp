@@ -356,6 +356,34 @@ TEST(LinuxCpuDetailsTest, NoPolicyBaseFrequencyLeavesBaseSpeedUnknown)
     EXPECT_FALSE(LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs()).baseSpeedMHz.has_value());
 }
 
+TEST(LinuxCpuDetailsTest, AProcessorWithoutAPhysicalIdLeavesSocketsAndCoresUnknown)
+{
+    // Counting only the processors that list one would undercount both (#809 review)
+    std::string text = processorBlock(0, 0, 0) + "\n" + processorBlock(1, 0, 1) + "\n" + processorBlock(2, std::nullopt, 2) + "\n";
+    CpuDetails details;
+    LinuxCpuDetails::parseCpuInfoTopology(text, details);
+    EXPECT_EQ(details.logicalProcessors, 3U);
+    EXPECT_FALSE(details.sockets.has_value());
+    EXPECT_FALSE(details.physicalCores.has_value());
+}
+
+TEST(LinuxCpuDetailsTest, OfflineCpusInSysfsAreLeftOut)
+{
+    // sysfs lists cpu3, but /proc/cpuinfo (the online CPUs) does not: its private caches and its
+    // capacity describe a CPU outside the set the topology counts (#809 review)
+    const FixtureDir fixture;
+    fixture.writeCpuInfo({processorBlock(0, 0, 0), processorBlock(1, 0, 1), processorBlock(2, 0, 2)});
+    for (std::size_t cpu = 0; cpu < 4; ++cpu)
+    {
+        fixture.writeCache(cpu, 0, 2, "Unified", "1M", std::format("{}", cpu));
+        FixtureDir::write(fixture.cpuSysfs() / std::format("cpu{}", cpu) / "cpu_capacity", (cpu == 3) ? "512\n" : "1024\n");
+    }
+    const CpuDetails details = LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs());
+    EXPECT_EQ(details.logicalProcessors, 3U);
+    EXPECT_EQ(details.l2CacheBytes, 3 * MIB);             // cpu3's L2 is not counted
+    EXPECT_TRUE(details.efficiencyClassByCoreId.empty()); // Without cpu3, one capacity: not hybrid
+}
+
 TEST(LinuxCpuDetailsTest, CachesWithoutASharedListAreTakenAsPrivate)
 {
     const FixtureDir fixture;
