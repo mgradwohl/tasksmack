@@ -121,7 +121,7 @@ constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
     return false;
 }
 
-// How long a row-menu action's result stays in the toolbar, like the Actions tab's (#1209).
+// How long a row-menu action's result stays in the toolbar, like the Actions block's (#1209).
 constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
 
 [[nodiscard]] float measureTextWidth(std::string_view text)
@@ -1374,7 +1374,7 @@ void ProcessesPanel::renderContent()
     // The row menu's batch priority dialog (#1484); a picked value goes on to the confirmation below.
     renderBatchPriorityDialog();
 
-    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209), or a
+    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209), or a
     // batch priority change (#1484)
     renderRowActionConfirm();
 
@@ -2447,7 +2447,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
     };
 
-    // Only what this platform can do (ProcessActionCapabilities), as in the Actions tab.
+    // Only what this platform can do (ProcessActionCapabilities), as in the Actions block.
     const Platform::ProcessActionCapabilities& can = m_ActionCapabilities;
     if (can.canStop || can.canContinue)
     {
@@ -2462,7 +2462,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
     }
     // One priority for the whole selection (#1484): picked in its own dialog, then confirmed as a batch.
-    // A single process's priority stays in Process Details' Actions tab.
+    // A single process's priority stays in Process Details' Actions block.
     if (ProcessBatch::offersBatchPriority(can, batchCount))
     {
         ImGui::Separator();
@@ -2475,7 +2475,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     if (can.canTerminate || can.canKill)
     {
         // Ending a process can lose its work: in the danger colour, and confirmed in the dialog's
-        // danger-coloured button, as in the Actions tab (#1273).
+        // danger-coloured button, as in the Actions block (#1273).
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textError);
         if (can.canTerminate && actionItem(Detail::ProcessAction::Terminate, ICON_FA_XMARK, nullptr))

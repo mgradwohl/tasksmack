@@ -2002,7 +2002,7 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`/`dev/**`, all PRs, merge-queue merge groups, weekly, and via manual dispatch. It detects docs-only changes (for both pull requests and merge groups -- `dorny/paths-filter` supports `merge_group` natively) to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR/merge-group, a Linux Release build on the same events plus the weekly schedule (Windows Release runs on push/schedule/dispatch only), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/merge groups/schedule/dispatch (skipped on docs-only PRs and merge groups, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a **blocking** Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs. It outputs a `ci-success` gate job used for branch protection.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, weekly, and via manual dispatch. It detects docs-only pull requests to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR, a Linux Release build on the same events plus the weekly schedule (Windows Release runs on push/schedule/dispatch only), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/schedule/dispatch (skipped on docs-only PRs, and on plain pushes to `main`, which `static-analysis.yml` already covers; the Windows job is also skipped when every change is Linux-only), runs IWYU (include analysis) only via manual dispatch, and runs a **blocking** Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs. It outputs a `CI Success` gate job used for branch protection; when a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
@@ -2010,7 +2010,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
-- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (pushes/weekly). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) had already completed on the PR's head commit, and it runs on the push of the merge itself, so merge only after `Analyze C++` has passed or the newest commit counts as unscanned (#1405).
+- **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` runs TSan only, because ASan+UBSan already gates every PR in `ci.yml`; manual dispatch runs both, and `heavy-checks.yml` runs both weekly.
 - **`main-health.yml`**: After every run of the main workflows on `main` (CI, CodeQL, Static Analysis, Sanitizers, Heavy Checks, OSV, Pre-commit), opens or updates a single tracking issue labelled `ci-red-main` while any of them is red, and closes it when all are green again (#1406).
@@ -2019,7 +2019,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes to main, PRs).
 - **`static-analysis.yml`**: Dedicated workflow for running `clang-tidy` against the codebase on Linux and on Windows, both blocking (pushes to main, manual dispatch).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule).
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (pushes to main, schedule, manual dispatch). The coverage jobs report **line** coverage from `coverage/coverage.lcov` and warn (never fail) when it drops below a floor set a few points under the current baseline; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
 - **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases on `v*.*.*` tags.
@@ -2027,12 +2027,13 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
 
-PR optimization: docs-only pull requests skip compile/test and environment-validation jobs in `ci.yml` to keep feedback fast.
+PR optimization: docs-only pull requests skip compile/test and `clang-tidy` jobs in `ci.yml` to keep feedback fast.
 
 Concurrency: a new push to a PR branch cancels that branch's in-progress runs, but pushes to `main` never cancel
 each other. `ci.yml`, `sanitizers.yml`, `static-analysis.yml` and `heavy-checks.yml` give each `main` commit its
 own concurrency group, so back-to-back merges each get a complete run and a regression is blamed on the commit
 that caused it (#1187). `codeql.yml` doesn't cancel `main` runs either, but queues them in one group.
+`pre-commit.yml` and `dependency-review.yml` also cancel a PR's superseded run.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
 [OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
@@ -2097,11 +2098,11 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
   its formatting behavior tracks the same LLVM major as the compiler toolchain, so its *major*
   bumps are gated exactly like the rest of the LLVM-major process below (a `packageRules` entry
   keyed on the manager's `pre-commit/mirrors-clang-format` dep name) -- minor/patch bumps still
-  auto-PR freely. The Windows CI's exact Chocolatey pins for `ninja`/`ccache` (both in
-  `.github/actions/setup-windows-llvm/action.yml`) track the live Chocolatey community feed
-  directly via the `nuget` datasource (Chocolatey packages are NuGet packages under the hood),
-  not just upstream GitHub tags, so a proposed bump is guaranteed installable via
-  `choco install`.
+  auto-PR freely. Windows CI has no Renovate-tracked `ninja`/`ccache` pins: `ninja` is
+  preinstalled on the `windows-2025` runner image and `.github/actions/setup-windows-llvm/action.yml`
+  only verifies its version (bump its `ninja-version` input when the image changes), and
+  `ccache` is installed by `hendrikmuhs/ccache-action` from that action's own pinned,
+  checksum-verified release binary.
 - *Tier 2 -- detected automatically, but only opens a PR after a human ticks the checkbox on
   the Dependency Dashboard issue Renovate maintains* (`dependencyDashboardApproval: true`):
   compiler/interpreter/build-generator bumps that need a deliberate look (new warnings, codegen
@@ -2211,8 +2212,8 @@ ccache with no dev-box pin written down anywhere -- a value can't be tracked for
 isn't recorded somewhere. All three now pin an explicit version: CMake and Ninja match what the
 `windows-2025` GitHub Actions runner image itself ships (confirmed directly against
 `actions/runner-images`' `Windows2025-Readme.md`, for dev/CI parity); ccache has no CI-side
-winget equivalent to mirror (CI installs it via Chocolatey instead, pinned separately per Tier 1
-above), so it pins the latest version winget actually has available.
+winget equivalent to mirror (CI gets it from `hendrikmuhs/ccache-action`'s own pinned,
+checksum-verified release binary), so it pins the latest version winget actually has available.
 
 **`check-prereqs.sh`'s `MIN_*` floors** (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`,
 `MIN_CCACHE_VERSION`, `MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`): these remain **not** automated,

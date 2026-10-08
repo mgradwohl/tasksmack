@@ -7,7 +7,7 @@ on:
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
 # complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
+# ref (a manual run off another branch) still cancels the run it supersedes.
 concurrency:
   group: sanitizers-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -18,30 +18,7 @@ env:
 permissions: {}
 
 jobs:
-  validate-environment:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup LLVM
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-          install-clang-tidy: 'true'
-          install-clangd: 'true'
-          install-clang-format: 'true'
-
-      - name: Setup Python for GLAD
-        uses: ./.github/actions/setup-python-glad
-
-      - name: Validate prerequisites
-        run: ./tools/check-prereqs.sh
-
   sanitizers:
-    needs: [validate-environment]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     permissions:

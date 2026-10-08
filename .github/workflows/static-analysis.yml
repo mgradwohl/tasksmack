@@ -7,7 +7,7 @@ on:
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
 # complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
+# ref (a manual run off another branch) still cancels the run it supersedes.
 concurrency:
   group: static-analysis-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -98,6 +98,9 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # Force the action's pinned, SHA-256-verified ccache binary; 'detect' would pick up
+          # Strawberry Perl's bundled ccache 4.9.1 already on the image PATH (#1406).
+          install: binary
           key: windows-tidy-llvm${{ env.LLVM_SEMVER_VERSION }}
           max-size: 500M
 

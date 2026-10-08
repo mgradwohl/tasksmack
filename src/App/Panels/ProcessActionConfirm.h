@@ -1,6 +1,6 @@
 #pragma once
 
-// The process-action confirmation dialog, shared by Process Details' Actions tab and the Processes
+// The process-action confirmation dialog, shared by Process Details' Actions block and the Processes
 // table's row menu (#1209), so a Terminate or Kill asks the same question, with the same buttons in
 // the same colours, wherever it starts.
 

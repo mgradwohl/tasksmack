@@ -44,6 +44,11 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
+          # No ccache in this job (#1406): nothing restores a cache here, so every traced compile
+          # paid for a cold-cache miss (an extra preprocessor pass plus hashing) for nothing. And
+          # a cache *hit* would skip the real compiler, which hides that translation unit from the
+          # CodeQL tracer. The Configure step also turns the launcher off explicitly.
+          install-ccache: 'false'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -53,7 +58,24 @@ jobs:
       # Doing this after init is what caused false-positive cpp/uninitialized-local
       # alerts in build/debug/CMakeFiles/CMakeScratch/TryCompile-*/src.c.
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
+
+      # Build the third-party libraries before CodeQL init (#1406). With a manual (traced) C/C++
+      # build, CodeQL extracts every compiler invocation it traces, and only those: what enters
+      # the database is decided by which compiles run after init, not by codeql-config.yml
+      # (its paths/paths-ignore filter reported results, not which compiled TUs are extracted).
+      # These ~370 dependency translation units (mostly SDL3 and FreeType) are compiled here,
+      # before the tracer is active, so they are never extracted and cost no traced-build or
+      # TRAP-import time; Ninja then sees them as up to date in the traced Build step, which
+      # compiles only TaskSmack, its tests and the test mocks. Dependency headers are still
+      # extracted wherever our own sources include them.
+      # A renamed or removed dependency target fails this step loudly; a new dependency missing
+      # from this list is still built (and traced) by the Build step, so it is only slower.
+      - name: Build third-party dependencies (untraced)
+        run: >-
+          cmake --build --preset debug --target
+          SDL3-static freetype spdlog imgui_lib implot_lib glad_gl_core_33
+          gtest gtest_main gmock gmock_main
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4

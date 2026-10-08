@@ -2,10 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, 'dev/**']
+    branches: [main]
   pull_request:
-    branches: [main, 'dev/**']
-  merge_group:
+    branches: [main]
   schedule:
     # Run weekly on Sundays at 09:00 UTC
     - cron: '0 9 * * 0'
@@ -13,7 +12,7 @@ on:
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
 # complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
-# ref (a PR, dev/**, a merge group, a manual run off main) still cancels the run it supersedes.
+# ref (a PR, a manual run off another branch) still cancels the run it supersedes.
 concurrency:
   group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -46,12 +45,7 @@ jobs:
     steps:
       - name: Detect docs-only and platform-only pull request changes
         id: filter
-        # merge_group is included: dorny/paths-filter natively supports it (it uses the
-        # merge_group event's own base/head commits when `base`/`ref` are left unset), and
-        # without this, docs_only always defaulted to "false" for merge_group runs below,
-        # so a docs-only PR entering the merge queue still ran the full (and, for
-        # static-analysis, ~9-minute) build/lint matrix.
-        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         with:
           # With predicate-quantifier=every a FILE matches a filter only if it matches all of the
@@ -86,12 +80,11 @@ jobs:
         env:
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Shared by both the pull_request (non-bot-PR) and merge_group branches below --
-          # steps.filter only actually ran (see its own `if:`) for those two event types.
+          # steps.filter only ran (see its own `if:`) for pull_request events.
           emit_platform_outputs() {
             # A set's "only" output is true when no changed file lies outside it (see the filter
             # step). paths-filter reports 'false' for a filter no file matched, and an empty
-            # change set can't occur for a pull request or merge group.
+            # change set can't occur for a pull request.
             if [[ "${{ steps.filter.outputs.outside_docs }}" = 'false' ]]; then
               echo "docs_only=true" >> "$GITHUB_OUTPUT"
             else
@@ -119,8 +112,6 @@ jobs:
             else
               emit_platform_outputs
             fi
-          elif [[ "${{ github.event_name }}" = 'merge_group' ]]; then
-            emit_platform_outputs
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
             echo "linux_only=false" >> "$GITHUB_OUTPUT"
@@ -130,7 +121,7 @@ jobs:
   build-linux-debug:
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       github.event_name != 'schedule' &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
@@ -149,7 +140,7 @@ jobs:
   build-linux-release:
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -165,7 +156,7 @@ jobs:
   build-windows-debug:
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       github.event_name != 'schedule' &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
@@ -176,7 +167,7 @@ jobs:
       os: windows-2025
       build_type: debug
 
-  # Windows release (~9 min) runs after merge -- on push to main/dev/** -- plus the weekly schedule
+  # Windows release (~9 min) runs after merge -- on push to main -- plus the weekly schedule
   # and manual runs, rather than on every PR, to keep PR runner usage down; Linux release above
   # covers the PR gate (#1134).
   build-windows-release:
@@ -218,15 +209,11 @@ jobs:
 
   static-analysis:
     needs: [detect-docs-only]
-    # Runs on pull_request and merge_group (the actual PR/merge-queue gate -- #833) plus the
-    # existing schedule/workflow_dispatch coverage, skipping docs-only changes for both event
-    # types (detect-docs-only computes docs_only for merge_group too, not just pull_request).
-    # Deliberately excludes push to main specifically: static-analysis.yml already runs this
-    # identical job on every push to main (but not to dev/**, which this workflow also triggers
-    # on and static-analysis.yml does not cover), so excluding all pushes here would leave
-    # dev/** pushes with no clang-tidy coverage at all.
+    # Runs on pull_request (the PR gate -- #833) plus schedule/workflow_dispatch, skipping
+    # docs-only PRs. Excludes push to main: static-analysis.yml already runs this identical job
+    # on every push to main.
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       (github.event_name != 'push' || github.ref != 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -289,7 +276,7 @@ jobs:
     name: Static Analysis (Windows)
     needs: [detect-docs-only]
     if: >-
-      ((github.event_name != 'pull_request' && github.event_name != 'merge_group') || needs.detect-docs-only.outputs.docs_only != 'true') &&
+      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       (github.event_name != 'push' || github.ref != 'refs/heads/main') &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     runs-on: windows-2025
@@ -312,6 +299,9 @@ jobs:
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
+          # Force the action's pinned, SHA-256-verified ccache binary; 'detect' would pick up
+          # Strawberry Perl's bundled ccache 4.9.1 already on the image PATH (#1406).
+          install: binary
           key: windows-tidy-llvm${{ env.LLVM_SEMVER_VERSION }}
           max-size: 500M
 
@@ -580,7 +570,11 @@ jobs:
   # ── Gate job ────────────────────────────────────────────────────────────────
   # A single required check for branch protection.  All required jobs must succeed
   # for this job to pass, giving a single status check to configure in branch settings.
-  # Uses `always()` so the gate always runs even when upstream jobs are skipped.
+  # Uses `always()` so the gate always runs even when upstream jobs are skipped or cancelled.
+  # Never change that to `!cancelled()`: a skipped required check counts as passing, so a
+  # cancelled run would then look green. A cancelled job therefore still fails the gate, but the
+  # first step says plainly that it was a cancellation (superseded push or a manual stop), not a
+  # code failure, so nobody goes looking for a bug that isn't there.
   ci-success:
     name: CI Success
     if: always()
@@ -599,7 +593,34 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
+      # Both steps use always(): when the run itself was cancelled a step's default success()
+      # condition can be false, which would skip the check and leave the gate green.
+      - name: Report cancelled jobs
+        if: always()
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          cancelled="$(jq -r 'to_entries[] | select(.value.result == "cancelled") | .key' <<<"$NEEDS_JSON")"
+          failed="$(jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS_JSON")"
+          if [[ -z "$cancelled" ]]; then
+            exit 0
+          fi
+          list="$(paste -sd, - <<<"$cancelled" | sed 's/,/, /g')"
+          if [[ -z "$failed" ]]; then
+            msg="CANCELLED, not a code failure: ${list} did not finish (superseded by a newer push or stopped by hand). Re-run the workflow if this head still needs a result."
+          else
+            msg="Cancelled: ${list}. Other jobs also FAILED; see the next step for the real failures."
+          fi
+          echo "::error title=CI cancelled::${msg}"
+          {
+            echo "## CI Success: cancelled"
+            echo ""
+            echo "${msg}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Keep going: the next step lists every job's result and fails the gate.
+
       - name: Check all required jobs passed
+        if: always()
         env:
           DETECT_RESULT:  ${{ needs.detect-docs-only.result }}
           DOCS_ONLY:      ${{ needs.detect-docs-only.outputs.docs_only }}
@@ -651,8 +672,8 @@ jobs:
             failed=true
           fi
 
-          # Windows release runs on push, schedule and workflow_dispatch only (skipped on PRs and
-          # merge_group by design).
+          # Windows release runs on push, schedule and workflow_dispatch only (skipped on PRs by
+          # design).
           if [[ "$EVENT_NAME" == 'push' || "$EVENT_NAME" == 'schedule' || "$EVENT_NAME" == 'workflow_dispatch' ]]; then
             if [[ "$WINDOWS_RELEASE_RESULT" != 'success' ]]; then
               echo "❌ Windows release build did not succeed: $WINDOWS_RELEASE_RESULT"
@@ -669,7 +690,7 @@ jobs:
 
           # static-analysis is skipped on push to main specifically (static-analysis.yml
           # already covers that) and on docs-only PRs (both intentional); require success
-          # everywhere else, including push to dev/** branches.
+          # everywhere else.
           if [[ "$EVENT_NAME" != 'push' || "$REF" != 'refs/heads/main' ]]; then
             if [[ "$STATIC_ANALYSIS_RESULT" != 'success' &&
                   ! ("$STATIC_ANALYSIS_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
