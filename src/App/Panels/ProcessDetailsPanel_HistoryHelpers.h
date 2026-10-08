@@ -90,7 +90,8 @@ struct SampleIntake
 };
 
 /// Takes @p samples (oldest first) into @p intake for the process selected as @p selectedPid /
-/// @p selectedKey, adopting the key from its first sample when it was selected by PID alone.
+/// @p selectedStartTicks: its exact identity, so neither a reused PID nor a colliding uniqueKey hash is
+/// taken for it (#927, #1503).
 ///
 /// Calls `record(sample, gapBefore)` once for each sample of the selected process -- one history point
 /// per published generation, stamped with the generation's own sample time -- where the pane used to
@@ -105,7 +106,7 @@ struct SampleIntake
 template<typename Record>
 inline void takeSamples(std::span<const Domain::ProcessSample> samples,
                         std::int32_t selectedPid,
-                        std::uint64_t& selectedKey,
+                        std::uint64_t selectedStartTicks,
                         SampleIntake& intake,
                         Record&& record) // NOLINT(cppcoreguidelines-missing-std-forward) - called once per sample, as an lvalue
 {
@@ -119,15 +120,11 @@ inline void takeSamples(std::span<const Domain::ProcessSample> samples,
         intake.lastVersion = sample.version;
 
         const Domain::ProcessSnapshot* snapshot = sample.snapshot.get();
-        intake.present = (snapshot != nullptr) &&
-                         ProcessDetailsLayout::snapshotIsSelectedProcess(selectedPid, selectedKey, snapshot->pid, snapshot->uniqueKey);
+        intake.present = (snapshot != nullptr) && ProcessDetailsLayout::snapshotIsSelectedProcess(
+                                                      selectedPid, selectedStartTicks, snapshot->pid, snapshot->startTimeTicks);
         if (!intake.present)
         {
             continue;
-        }
-        if (selectedKey == 0)
-        {
-            selectedKey = snapshot->uniqueKey;
         }
         record(sample, gapBefore);
     }

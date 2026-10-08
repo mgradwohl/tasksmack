@@ -105,7 +105,7 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     bool recorded = false;
     Detail::takeSamples(samples,
                         m_SelectedPid,
-                        m_SelectedUniqueKey,
+                        m_SelectedStartTicks,
                         m_SampleIntake,
                         [this, &recorded](const Domain::ProcessSample& sample, bool gapBefore)
                         {
@@ -330,7 +330,7 @@ void ProcessDetailsPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ProcessSelectedEvent>(
         [this](Core::ProcessSelectedEvent& e)
         {
-            setSelectedPid(e.getPid(), e.getUniqueKey());
+            setSelectedPid(e.getPid(), e.getStartTimeTicks());
             return false; // Don't consume - other panels might care
         });
 
@@ -364,22 +364,18 @@ void ProcessDetailsPanel::setProcessCapabilities(const Platform::ProcessCapabili
     m_ProcessCapabilities = capabilities;
 }
 
-void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueKey)
+void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTimeTicks)
 {
-    // A different key under the same PID is a different process (the PID was reused), so it is a
-    // new selection and resets the pane like any other. An unknown key on either side is not a
-    // different process: re-selecting what is already shown must not wipe its history.
-    if (ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedUniqueKey, pid, uniqueKey))
+    // A different start time under the same PID is a different process (the PID was reused), so it is
+    // a new selection and resets the pane like any other. Re-selecting what is already shown must not
+    // wipe its history.
+    if (ProcessDetailsLayout::snapshotIsSelectedProcess(m_SelectedPid, m_SelectedStartTicks, pid, startTimeTicks))
     {
-        if (m_SelectedUniqueKey == 0)
-        {
-            m_SelectedUniqueKey = uniqueKey;
-        }
         return;
     }
 
     m_SelectedPid = pid;
-    m_SelectedUniqueKey = uniqueKey;
+    m_SelectedStartTicks = startTimeTicks;
     m_History.clear();
     m_HistoryGeneration = UI::Widgets::nextChartDataGeneration();
     m_SampleIntake = {};

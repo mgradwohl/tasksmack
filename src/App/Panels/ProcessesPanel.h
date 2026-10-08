@@ -3,6 +3,7 @@
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
 #include "App/Panels/ProcessBatchAction.h"
+#include "App/Panels/ProcessBatchPriorityDialog.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
@@ -265,16 +266,17 @@ class ProcessesPanel : public Panel
 
     // The primary process: last clicked or moved to, shown by Process Details.
     std::int32_t m_SelectedPid = -1;
-    std::uint64_t m_SelectedUniqueKey = 0; // Selected process's identity: a PID can be reused
-    // Every selected row, by uniqueKey (#804): the rows drawn highlighted, and what a batch action is
-    // for. A plain click or keyboard move makes it the primary alone.
+    // With m_SelectedPid, the primary process's exact identity: a PID can be reused, and the uniqueKey
+    // hash could collide (#1503).
+    std::uint64_t m_SelectedStartTicks = 0;
+    // Every selected row, by PID and start time (#804, #1503): the rows drawn highlighted, and what a
+    // batch action is for. A plain click or keyboard move makes it the primary alone.
     ProcessSelection::Selection m_Selection;
     // A row click, applied after the rows are drawn (#804): a Shift+click's range needs the visible
     // order, which must not be rebuilt while the tree rows are iterated.
     struct PendingClick
     {
-        std::int32_t pid = 0;
-        std::uint64_t key = 0;
+        ProcessSelection::Identity id;
         ProcessSelection::ClickKind kind = ProcessSelection::ClickKind::Replace;
     };
     std::optional<PendingClick> m_PendingClick;
@@ -322,15 +324,26 @@ class ProcessesPanel : public Panel
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     // The action awaiting confirmation: one target from a row (or F9), several from the selection
     // (#804). Each target is a PID and start time, so a reused PID is refused (#973). The dialog's
-    // text is built once, here, when the action is requested.
+    // text is built once, here, when the action is requested. A batch priority change (#1484) has no
+    // ProcessAction; it carries the nice value to set instead.
     struct RowAction
     {
         Detail::ProcessAction action = Detail::ProcessAction::None;
+        std::optional<std::int32_t> priorityNice;
         std::vector<ProcessBatch::BatchTarget> targets;
         std::string title;
         std::string question;
+
+        /// Whether an action or a priority change is awaiting confirmation.
+        [[nodiscard]] bool pending() const noexcept
+        {
+            return action != Detail::ProcessAction::None || priorityNice.has_value();
+        }
     } m_RowAction;
     bool m_ShowRowActionConfirm = false;
+    // The row menu's "Set priority for N processes..." (#1484): picks the value, then the batch
+    // confirmation above sets it.
+    ProcessBatchPriorityDialog m_BatchPriorityDialog;
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the
@@ -500,8 +513,14 @@ class ProcessesPanel : public Panel
                             std::vector<std::size_t>& visible,
                             std::vector<ProcessTableNavigation::TreeRowShape>* shapes);
 
-    /// The uniqueKeys of the visible rows, in drawn order.
-    [[nodiscard]] std::vector<std::uint64_t> visibleKeys(const std::vector<Domain::ProcessSnapshot>& snapshots);
+    /// The identities (PID and start time) of the visible rows, in drawn order.
+    [[nodiscard]] std::vector<ProcessSelection::Identity> visibleIdentities(const std::vector<Domain::ProcessSnapshot>& snapshots);
+
+    /// The primary process's identity (m_SelectedPid, m_SelectedStartTicks).
+    [[nodiscard]] ProcessSelection::Identity primaryIdentity() const noexcept
+    {
+        return {.pid = m_SelectedPid, .startTimeTicks = m_SelectedStartTicks};
+    }
 
     /// Applies this frame's row click (m_PendingClick) to the selection, after the rows are drawn.
     void applyPendingClick(const std::vector<Domain::ProcessSnapshot>& snapshots);
@@ -509,7 +528,7 @@ class ProcessesPanel : public Panel
     /// Makes `proc` the primary process -- what Process Details shows -- and tells the other panels.
     /// Leaves the multi-selection alone.
     void selectProcess(const Domain::ProcessSnapshot& proc);
-    void selectProcess(std::int32_t pid, std::uint64_t uniqueKey);
+    void selectProcess(const ProcessSelection::Identity& id);
 
     /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
     void renderRowContextMenu(const Domain::ProcessSnapshot& proc);
@@ -520,6 +539,13 @@ class ProcessesPanel : public Panel
     /// Asks to run `action` on every selected process still listed, through the batch confirmation
     /// (#804). One process left: the single-process dialog. None: nothing happens.
     void requestSelectionAction(Detail::ProcessAction action);
+
+    /// Asks to set @p nice on every selected process still listed, through the batch confirmation
+    /// (#1484). None left: nothing happens.
+    void requestSelectionPriority(std::int32_t nice);
+
+    /// The batch priority dialog (#1484); its picked value goes on to requestSelectionPriority().
+    void renderBatchPriorityDialog();
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
     void renderRowActionConfirm();

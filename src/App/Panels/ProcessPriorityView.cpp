@@ -278,29 +278,48 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
 float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Platform::ProcessTarget& target)
 {
     // Windows has priority classes, not nice values (#1204): name the current class and offer the five
-    // settable ones in a combo. Each writes its representative nice value through setPriority(), which
-    // maps it back to that class; Realtime can only be shown.
+    // settable ones in a combo (Detail::renderPriorityPicker()). Each writes its representative nice
+    // value through setPriority(), which maps it back to that class; Realtime can only be shown.
     const auto& theme = UI::Theme::get();
-    const float emPx = ImGui::GetFontSize();
     const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
-    // A row label, level with the combo, rather than a header: the Actions block's row (#1493).
+    // A row label, level with the combo, rather than a header: the Actions block's row (#1493). The
+    // current class follows Apply when the row has room, and is on the label's tooltip always.
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Priority");
+    ImGui::SetItemTooltip("Current priority class: %s", currentClassName.c_str());
     ImGui::SameLine();
 
     const Detail::WindowsPriorityClass selectedClass = Detail::windowsPriorityClassFromNice(m_NiceValue);
-    const std::string selectedClassName{Detail::windowsPriorityClassName(selectedClass)};
-    const float comboWidth = std::min(Detail::PRIORITY_CLASS_COMBO_WIDTH_EM * emPx, std::max(ImGui::GetContentRegionAvail().x, 1.0F));
+    const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
+    editNice(pick.nice, target);
+    if (selectedClass == Detail::WindowsPriorityClass::Realtime)
+    {
+        ImGui::TextColored(theme.scheme().textWarning,
+                           ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
+    }
+    return pick.rightEdge;
+}
+
+namespace Detail
+{
+
+PriorityPick renderPriorityPicker(std::int32_t shown)
+{
+    const float emPx = ImGui::GetFontSize();
+    PriorityPick pick{.nice = shown, .rightEdge = 0.0F};
+    const WindowsPriorityClass selectedClass = windowsPriorityClassFromNice(shown);
+    const std::string selectedClassName{windowsPriorityClassName(selectedClass)};
+    const float comboWidth = std::min(PRIORITY_CLASS_COMBO_WIDTH_EM * emPx, std::max(ImGui::GetContentRegionAvail().x, 1.0F));
     ImGui::SetNextItemWidth(comboWidth);
     if (ImGui::BeginCombo("##priority_class", selectedClassName.c_str()))
     {
-        for (const Detail::WindowsPriorityClass priorityClass : Detail::SETTABLE_WINDOWS_PRIORITY_CLASSES)
+        for (const WindowsPriorityClass priorityClass : SETTABLE_WINDOWS_PRIORITY_CLASSES)
         {
-            const std::string optionName{Detail::windowsPriorityClassName(priorityClass)};
+            const std::string optionName{windowsPriorityClassName(priorityClass)};
             const bool isSelected = priorityClass == selectedClass;
             if (ImGui::Selectable(optionName.c_str(), isSelected) && !isSelected)
             {
-                editNice(Detail::windowsPriorityClassNice(priorityClass), target);
+                pick.nice = windowsPriorityClassNice(priorityClass);
             }
             if (isSelected)
             {
@@ -311,23 +330,19 @@ float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Plat
     }
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("Windows priority class (current: %s): higher classes get CPU time first.\n"
+        ImGui::SetTooltip("Windows priority class: higher classes get CPU time first.\n"
                           "Realtime cannot be set here.\n\n"
-                          "Note: Changing another user's or an elevated process typically requires administrator privileges",
-                          currentClassName.c_str());
+                          "Note: Changing another user's or an elevated process typically requires administrator privileges");
     }
-    if (selectedClass == Detail::WindowsPriorityClass::Realtime)
-    {
-        ImGui::TextColored(theme.scheme().textWarning,
-                           ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
-    }
-    return comboWidth;
+    pick.rightEdge = comboWidth;
+    return pick;
 }
+
+} // namespace Detail
 #else
 float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform::ProcessTarget& target)
 {
     const auto& theme = UI::Theme::get();
-    const float emPx = ImGui::GetFontSize();
 
     // A row label and the current nice value, quieter, rather than a header: the Actions block's
     // row (#1493).
@@ -335,6 +350,19 @@ float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform
     ImGui::TextUnformatted("Priority");
     ImGui::SameLine();
     ImGui::TextColored(theme.scheme().textMuted, "%s", currentDetail.c_str());
+
+    const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
+    editNice(pick.nice, target);
+    return pick.rightEdge;
+}
+
+namespace Detail
+{
+
+PriorityPick renderPriorityPicker(std::int32_t shown)
+{
+    const auto& theme = UI::Theme::get();
+    const float emPx = ImGui::GetFontSize();
 
     auto* drawList = ImGui::GetWindowDrawList();
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -357,8 +385,8 @@ float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform
     // Build context for helper methods
     PrioritySliderContext ctx;
     ctx.drawList = drawList;
-    ctx.niceValue = m_NiceValue;
-    ctx.normalizedPos = getNicePosition(m_NiceValue);
+    ctx.niceValue = shown;
+    ctx.normalizedPos = getNicePosition(shown);
     ctx.style = &style;
     ctx.priorityHighColor = theme.scheme().priorityHighColor;
     ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
@@ -401,7 +429,7 @@ float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform
 
     // Make the slider interactive with an invisible button
     ImGui::InvisibleButton("##priority_slider", ImVec2(metrics.sliderWidth, metrics.sliderHeight));
-    editNice(sliderInputNice(ctx, m_NiceValue), target);
+    const std::int32_t picked = sliderInputNice(ctx, shown);
 
     // Draw "Low" label and "Default" label
     drawPriorityScaleLabels(ctx);
@@ -421,8 +449,10 @@ float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform
     }
     // The track starts after the "High" label, so the label offset belongs in the sum: without it the
     // Apply button stopped that far short of the track's right edge.
-    return highLabelOffset + metrics.sliderWidth;
+    return {.nice = picked, .rightEdge = highLabelOffset + metrics.sliderWidth};
 }
+
+} // namespace Detail
 #endif
 
 void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,

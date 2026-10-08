@@ -237,9 +237,9 @@ namespace Platform
 }
 
 /// The id of the DXGI adapter each mapped NVML device is, keyed by the NVML device's own id (its
-/// UUID), from a mapDXGIToNVML() mapping. NVML's per-process counters carry it, so they name the
-/// same GPU as the DXGI adapter matched to the device by PCI location -- not "GPU{nvmlIndex}", which
-/// in NVML's numbering could be another adapter's id (#1091, #1317). An unmapped device has no entry.
+/// UUID), from a mapDXGIToNVML() mapping, so a PDH reading for an adapter can be traced to its NVML
+/// device (nvmlDevicesToLeaveIdle(), excludeIdleNVMLMemory()) by PCI location rather than by
+/// NVML's own numbering, which isn't DXGI's (#1091, #1265). An unmapped device has no entry.
 [[nodiscard]] inline std::unordered_map<std::string, std::string>
 nvmlDeviceAdapterIds(const std::vector<GPUInfo>& dxgiGPUs,
                      const std::vector<GPUInfo>& nvmlGPUs,
@@ -386,6 +386,12 @@ mergeNVMLIntoDXGICounters(std::vector<GPUCounters>& dxgiCounters,
         dxgiCounter.gpuClockAvailable = nvmlCounter.gpuClockAvailable;
         dxgiCounter.fanSpeedRaw = nvmlCounter.fanSpeedRaw;
         dxgiCounter.fanSpeedMaxRaw = nvmlCounter.fanSpeedMaxRaw;
+        // The video engines' utilization (#1485): DXGI has none, so NVML's reading -- or its gap,
+        // when the read failed, the query is missing or the GPU is asleep -- is the adapter's.
+        dxgiCounter.encoderUtilPercent = nvmlCounter.encoderUtilPercent;
+        dxgiCounter.encoderAvailable = nvmlCounter.encoderAvailable;
+        dxgiCounter.decoderUtilPercent = nvmlCounter.decoderUtilPercent;
+        dxgiCounter.decoderAvailable = nvmlCounter.decoderAvailable;
 
         // Otherwise PDH's merge supplies utilization, as for every other adapter (#1264). Without
         // PDH: NVML's when this sample's read succeeded, even if it's 0 (valid at idle). When it

@@ -2,15 +2,14 @@
 
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/NVMLEngineUtilization.h"
 #include "Platform/NVMLTypes.h"
 
-#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -49,6 +48,9 @@ class NVMLGPUProbe : public IGPUProbe
 
     [[nodiscard]] std::vector<GPUInfo> enumerateGPUs() override;
     [[nodiscard]] std::vector<GPUCounters> readGPUCounters() override;
+    /// Always empty: Windows takes per-process GPU utilization and memory from PDH, the source Task
+    /// Manager uses, for every vendor (WindowsGPUProbe::readProcessGPUCounters()). NVML's running-
+    /// process read was never called in production and was removed (#1480).
     [[nodiscard]] std::vector<ProcessGPUCounters> readProcessGPUCounters() override;
     [[nodiscard]] GPUCapabilities capabilities() const override;
     /// Full: re-initialise NVML if a query since the last (re)start reported NVML_ERROR_GPU_IS_LOST or
@@ -70,17 +72,7 @@ class NVMLGPUProbe : public IGPUProbe
         return m_RestartCount;
     }
 
-    /// The id each device's per-process counters carry, by the device's own id (its UUID): the id of
-    /// the DXGI adapter WindowsGPUProbe matched it to by PCI location, so a process is attributed to
-    /// the same GPU the GPU tab shows. NVML numbers its devices in its own order, not DXGI's, so the
-    /// "GPU{nvmlIndex}" these used to carry could name another adapter (#1091, #1317). A device with
-    /// no entry keeps its own id. Replaces the previous set.
-    void setProcessGpuIds(std::unordered_map<std::string, std::string> adapterIdByDeviceId)
-    {
-        m_ProcessGpuIds = std::move(adapterIdByDeviceId);
-    }
-
-    /// The devices (by device id) readGPUCounters() and readProcessGPUCounters() leave unqueried,
+    /// The devices (by device id) readGPUCounters() leaves unqueried,
     /// repeating each one's previous readings instead: WindowsGPUProbe's choice of NVIDIA GPUs idle
     /// by PDH, whose NVML queries could keep a hybrid dGPU from suspending (#1265). A device never
     /// read yet is read anyway. Replaces the previous set.
@@ -103,7 +95,7 @@ class NVMLGPUProbe : public IGPUProbe
 
   private:
     // Test-only accessor: lets unit tests substitute fake NVML function pointers and device
-    // handles after construction, so enumerateGPUs()/readGPUCounters()/readProcessGPUCounters()/
+    // handles after construction, so enumerateGPUs()/readGPUCounters()/
     // capabilities() can be exercised deterministically without a real NVIDIA GPU or nvml.dll.
     // The constructor's loadNVML()/initializeNVML() still run as normal before the accessor
     // substitutes the backend; this does not change or bypass loadNVML()'s
@@ -129,23 +121,6 @@ class NVMLGPUProbe : public IGPUProbe
     /// UUID is queried only for a device enumeration did not record ("NVML_GPU{index}" without one).
     [[nodiscard]] std::string deviceId(std::uint32_t index, NVML::nvmlDevice_t device) const;
 
-    // A running-process entry point and the size of the entries it writes (#1313): the legacy
-    // unversioned export writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte
-    // nvmlProcessInfo_v2_t ones, so the struct is opaque here and the entries are parsed by size
-    // (NVMLRunningProcesses). The third parameter is the shared NVML::nvmlProcessInfoEntries, which
-    // the test fake's definitions also take, so the call matches the callee's own function type.
-    using RunningProcessesFn = NVML::nvmlReturn_t (*)(NVML::nvmlDevice_t, unsigned int*, NVML::nvmlProcessInfoEntries*);
-    struct RunningProcessesQuery
-    {
-        RunningProcessesFn fn = nullptr;
-        std::size_t entrySize = 0;
-    };
-
-    /// The newest of `baseName`'s _v3, _v2 and unversioned exports that `resolve(name)` finds
-    /// (nullptr when it isn't exported), with its entry size; an empty query if none is (#1313).
-    [[nodiscard]] static RunningProcessesQuery loadRunningProcessesQuery(std::string_view baseName,
-                                                                         const std::function<void*(const std::string&)>& resolve);
-
     // NVML function pointers (dynamically loaded)
     struct NVMLFunctions
     {
@@ -168,9 +143,10 @@ class NVMLGPUProbe : public IGPUProbe
         NVML::nvmlReturn_t (*DeviceGetFanSpeed)(NVML::nvmlDevice_t, unsigned int*) = nullptr;
         // PCI identity, to match NVML devices to DXGI adapters (#1091); optional
         NVML::nvmlReturn_t (*DeviceGetPciInfo)(NVML::nvmlDevice_t, NVML::nvmlPciInfo_t*) = nullptr;
-        // Per-process GPU functions, each the newest variant nvml.dll exports (#1313)
-        RunningProcessesQuery DeviceGetComputeRunningProcesses;
-        RunningProcessesQuery DeviceGetGraphicsRunningProcesses;
+        // The video engines' utilization (#1485); optional: without them the encoder/decoder
+        // series isn't drawn
+        NVMLEngineUtilization::EngineUtilizationFn DeviceGetEncoderUtilization = nullptr;
+        NVMLEngineUtilization::EngineUtilizationFn DeviceGetDecoderUtilization = nullptr;
     };
 
     void* m_NVMLHandle{nullptr};
@@ -183,13 +159,10 @@ class NVMLGPUProbe : public IGPUProbe
     // failed). Counter reads reuse it rather than querying the UUID again: a second, independently
     // fallible query could give a device a different id and lose its NVML metrics (#1040).
     std::unordered_map<uint32_t, std::string> m_DeviceIds;
-    // setProcessGpuIds(): per-process counters' gpuId by device id (#1317).
-    std::unordered_map<std::string, std::string> m_ProcessGpuIds;
-    // setIdleDevices(): devices left unqueried, by device id, and each device's last readings
-    // (counters and processes, by device index) repeated for them meanwhile (#1265).
+    // setIdleDevices(): devices left unqueried, by device id, and each device's last counters (by
+    // device index) repeated for them meanwhile (#1265).
     std::unordered_set<std::string> m_IdleDeviceIds;
     std::unordered_map<uint32_t, GPUCounters> m_LastCounters;
-    std::unordered_map<uint32_t, std::vector<ProcessGPUCounters>> m_LastProcessCounters;
 
     /// Whether device @p index is one setIdleDevices() named (by its enumerated id).
     [[nodiscard]] bool isDeviceIdle(uint32_t index) const;

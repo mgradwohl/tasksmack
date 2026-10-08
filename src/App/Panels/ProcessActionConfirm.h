@@ -40,4 +40,14 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
 Outcome
 renderText(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question, bool dismiss = false);
 
+/// The same modal for a change that is not one of the ProcessActions, its confirm button labelled
+/// @p confirmLabel (in the danger fill when @p destructive): the Processes table's batch priority
+/// change (#1484), "[Cancel][Set Priority]".
+Outcome renderLabelled(bool& showRequested,
+                       const char* confirmLabel,
+                       bool destructive,
+                       std::string_view title,
+                       std::string_view question,
+                       bool dismiss = false);
+
 } // namespace App::ProcessActionConfirm

@@ -4,13 +4,16 @@
 // the run over every selected process, and the one-line summary of how it went. Pure aside from the
 // calls through IProcessActions, so it is unit-tested with MockProcessActions
 // (test_ProcessBatchAction.cpp). The single-process wording and dispatch it builds on are in
-// ProcessDetailsPanel_ActionHelpers.h.
+// ProcessDetailsPanel_ActionHelpers.h. A batch priority change (#1484) runs the same way, with the
+// nice value carried alongside (runBatchPriority()).
 //
 // Each process is acted on by its ProcessTarget (PID and start time), exactly as a single action is:
 // the platform refuses any whose PID now belongs to another process (#973), and that refusal is
 // reported as one of the batch's failures.
 
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
+#include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 
 #include <cstddef>
@@ -20,7 +23,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -53,41 +55,23 @@ struct BatchTarget
 }
 
 /// The selected processes still listed in @p snapshots, as targets, in @p snapshots' order. @p isSelected
-/// is asked with each snapshot's uniqueKey (an O(1) set lookup in ProcessesPanel). A selected process
-/// that has exited is simply not found, so it is never acted on.
-///
-/// uniqueKey is a 64-bit hash of PID and start time, so two live processes could in principle share
-/// one. A key that more than one snapshot carries is ambiguous: neither process is resolved, so a
-/// destructive batch can never reach a process the user did not select (#804 review).
+/// is asked with each snapshot's exact identity, PID and start time (an O(1) set lookup in
+/// ProcessesPanel). A selected process that has exited is simply not found, so it is never acted on,
+/// and no other process can stand in for it: not one given its PID, and not one whose uniqueKey hash
+/// happens to match, since the hash is never what is compared (#1503).
 template<typename SnapshotRange, typename SelectedPredicate>
 [[nodiscard]] std::vector<BatchTarget> resolveTargets(const SnapshotRange& snapshots, SelectedPredicate isSelected)
 {
     std::vector<BatchTarget> targets;
-    std::vector<std::uint64_t> keys; // targets[i]'s uniqueKey
     for (const auto& snapshot : snapshots)
     {
-        if (isSelected(snapshot.uniqueKey))
+        const Platform::ProcessTarget target{.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks};
+        if (isSelected(target))
         {
-            targets.push_back({.target = {.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks}, .name = snapshot.name});
-            keys.push_back(snapshot.uniqueKey);
+            targets.push_back({.target = target, .name = snapshot.name});
         }
     }
-    std::unordered_map<std::uint64_t, std::size_t> seen;
-    seen.reserve(keys.size());
-    for (const std::uint64_t key : keys)
-    {
-        ++seen[key];
-    }
-    std::vector<BatchTarget> unambiguous;
-    unambiguous.reserve(targets.size());
-    for (std::size_t i = 0; i < targets.size(); ++i)
-    {
-        if (seen[keys[i]] == 1)
-        {
-            unambiguous.push_back(std::move(targets[i]));
-        }
-    }
-    return unambiguous;
+    return targets;
 }
 
 /// "Kill 5 processes?"
@@ -115,17 +99,21 @@ template<typename SnapshotRange, typename SelectedPredicate>
     return {};
 }
 
-/// The confirmation's body: the summary, then the processes by name and PID -- TaskSmack itself and
-/// PID 1 first and always, then the others up to CONFIRM_LIST_LIMIT names in all, then "and N more" --
-/// then a line for each of TaskSmack itself and PID 1 that is among them. @p ownPid is TaskSmack's own
-/// PID (0 when unknown).
-[[nodiscard]] inline std::string confirmBody(Detail::ProcessAction action, std::span<const BatchTarget> targets, std::int32_t ownPid)
+/// Which of TaskSmack itself and PID 1 appendTargetList() listed (null: not among the targets).
+struct NotableTargets
 {
-    std::string body = confirmSummary(action, targets.size());
-    body += '\n';
-    std::size_t listed = 0;
     const BatchTarget* self = nullptr;
     const BatchTarget* init = nullptr;
+};
+
+/// Appends the processes to @p body by name and PID, a line each -- TaskSmack itself and PID 1 first
+/// and always, then the others up to CONFIRM_LIST_LIMIT names in all, then "and N more" -- and returns
+/// which of TaskSmack itself and PID 1 are among them. @p ownPid is TaskSmack's own PID (0 when
+/// unknown).
+inline NotableTargets appendTargetList(std::string& body, std::span<const BatchTarget> targets, std::int32_t ownPid)
+{
+    std::size_t listed = 0;
+    NotableTargets notable;
     for (const BatchTarget& t : targets)
     {
         if (isNotableTarget(t.target.pid, ownPid))
@@ -136,11 +124,11 @@ template<typename SnapshotRange, typename SelectedPredicate>
             // both warnings apply (#804 review).
             if (t.target.pid == INIT_PID)
             {
-                init = &t;
+                notable.init = &t;
             }
             if (ownPid > 0 && t.target.pid == ownPid)
             {
-                self = &t;
+                notable.self = &t;
             }
         }
     }
@@ -160,17 +148,33 @@ template<typename SnapshotRange, typename SelectedPredicate>
     {
         std::format_to(std::back_inserter(body), "\n    and {} more", targets.size() - listed);
     }
-    if (self != nullptr)
+    return notable;
+}
+
+/// Appends a paragraph for each of TaskSmack itself and PID 1 that @p notable has: "This includes
+/// TaskSmack itself (PID 4000). It is {selfDone} last." and "This includes PID 1 (systemd), ...".
+inline void appendNotableWarnings(std::string& body, const NotableTargets& notable, std::string_view selfDone)
+{
+    if (notable.self != nullptr)
     {
-        std::format_to(std::back_inserter(body),
-                       "\n\nThis includes TaskSmack itself (PID {}). It is {} last.",
-                       self->target.pid,
-                       action == Detail::ProcessAction::Resume ? "resumed" : "acted on");
+        std::format_to(
+            std::back_inserter(body), "\n\nThis includes TaskSmack itself (PID {}). It is {} last.", notable.self->target.pid, selfDone);
     }
-    if (init != nullptr)
+    if (notable.init != nullptr)
     {
-        std::format_to(std::back_inserter(body), "\n\nThis includes PID 1 ({}), the system's init process.", init->name);
+        std::format_to(std::back_inserter(body), "\n\nThis includes PID 1 ({}), the system's init process.", notable.init->name);
     }
+}
+
+/// The confirmation's body: the summary, then the processes by name and PID (appendTargetList()), then
+/// a line for each of TaskSmack itself and PID 1 that is among them. @p ownPid is TaskSmack's own PID
+/// (0 when unknown).
+[[nodiscard]] inline std::string confirmBody(Detail::ProcessAction action, std::span<const BatchTarget> targets, std::int32_t ownPid)
+{
+    std::string body = confirmSummary(action, targets.size());
+    body += '\n';
+    const NotableTargets notable = appendTargetList(body, targets, ownPid);
+    appendNotableWarnings(body, notable, action == Detail::ProcessAction::Resume ? "resumed" : "acted on");
     return body;
 }
 
@@ -196,17 +200,18 @@ struct BatchResult
     }
 };
 
-/// Sends @p action to every target through @p actions, one ProcessTarget at a time, each checked by
-/// the platform exactly as a single action is. TaskSmack's own process (@p ownPid) goes last, so a Kill
-/// or Terminate that ends TaskSmack has reached every other target first.
-[[nodiscard]] inline BatchResult
-runBatchAction(Platform::IProcessActions& actions, Detail::ProcessAction action, std::span<const BatchTarget> targets, std::int32_t ownPid)
+/// Calls @p actOnTarget (a ProcessTarget in, a ProcessActionResult out) for every target, one
+/// ProcessTarget at a time, each checked by the platform exactly as a single action is, and tallies
+/// the results. TaskSmack's own process (@p ownPid) goes last, so an action that ends TaskSmack has
+/// reached every other target first.
+template<typename ActOnTarget>
+[[nodiscard]] BatchResult runBatch(std::span<const BatchTarget> targets, std::int32_t ownPid, const ActOnTarget& actOnTarget)
 {
     BatchResult result;
     const auto runOne = [&](const BatchTarget& t)
     {
         ++result.attempted;
-        const Platform::ProcessActionResult r = Detail::dispatchProcessAction(actions, action, t.target);
+        const Platform::ProcessActionResult r = actOnTarget(t.target);
         if (r.success)
         {
             ++result.succeeded;
@@ -237,6 +242,33 @@ runBatchAction(Platform::IProcessActions& actions, Detail::ProcessAction action,
     return result;
 }
 
+/// Sends @p action to every target through @p actions (runBatch()): a Kill or Terminate that ends
+/// TaskSmack has reached every other target first.
+[[nodiscard]] inline BatchResult
+runBatchAction(Platform::IProcessActions& actions, Detail::ProcessAction action, std::span<const BatchTarget> targets, std::int32_t ownPid)
+{
+    return runBatch(targets,
+                    ownPid,
+                    [&actions, action](const Platform::ProcessTarget& target)
+                    { return Detail::dispatchProcessAction(actions, action, target); });
+}
+
+/// Appends @p result's quoted failures to @p text -- ": PID 1 (systemd): Operation not permitted;
+/// ..." -- and counts the rest ("; and 2 more").
+inline void appendFailures(std::string& text, const BatchResult& result)
+{
+    std::string_view separator = ": ";
+    for (const BatchFailure& f : result.firstFailures)
+    {
+        std::format_to(std::back_inserter(text), "{}PID {} ({}): {}", separator, f.pid, f.name, f.error);
+        separator = "; ";
+    }
+    if (result.failed() > result.firstFailures.size())
+    {
+        std::format_to(std::back_inserter(text), "; and {} more", result.failed() - result.firstFailures.size());
+    }
+}
+
 /// The toolbar's one-line result: "Kill sent to 5 processes", or "Kill sent to 3 of 5 processes; 2
 /// failed: PID 1 (systemd): Operation not permitted; ...", or "Could not kill 5 processes: ...". The
 /// first RESULT_FAILURE_LIMIT failures are quoted and the rest counted. `ok` only when every one
@@ -253,16 +285,97 @@ runBatchAction(Platform::IProcessActions& actions, Detail::ProcessAction action,
                                                              result.succeeded,
                                                              result.attempted,
                                                              result.failed());
-    std::string_view separator = ": ";
-    for (const BatchFailure& f : result.firstFailures)
+    appendFailures(text, result);
+    return {.ok = false, .text = std::move(text)};
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Batch priority (#1484): one nice value -- a priority class on Windows -- set on every selected
+// process, confirmed in the same dialog and summarised in the same one line as the actions above.
+// ---------------------------------------------------------------------------------------------------
+
+/// The confirm button's label for a batch priority change.
+inline constexpr const char* PRIORITY_CONFIRM_LABEL = "Set Priority";
+
+/// Whether the Processes table's row menu offers "Set priority for N processes...": only for a row of a
+/// multi-selection (@p batchCount, 0 for a single row, whose priority stays in Process Details), and only
+/// where the platform can set priority.
+[[nodiscard]] constexpr bool offersBatchPriority(const Platform::ProcessActionCapabilities& capabilities, std::size_t batchCount) noexcept
+{
+    return batchCount > 1 && capabilities.canSetPriority;
+}
+
+/// "1 process", "5 processes".
+[[nodiscard]] inline std::string processCountText(std::size_t count)
+{
+    return std::format("{} {}", count, count == 1 ? "process" : "processes");
+}
+
+/// The priority a batch sets, as it will be applied: the class name on Windows, where setPriority()
+/// maps the nice value to a priority class (#1204), so that class is what the processes get; the label
+/// with its nice value elsewhere ("Below Normal (nice: 10)"). @p nice is held to the nice range first,
+/// as runBatchPriority() holds it.
+[[nodiscard]] inline std::string priorityValueText(std::int32_t nice, bool windowsClasses = Detail::PRIORITY_USES_WINDOWS_CLASSES)
+{
+    return Detail::priorityDisplayText(Domain::Priority::clampNice(nice), windowsClasses);
+}
+
+/// "Set priority for 5 processes?"
+[[nodiscard]] inline std::string priorityConfirmTitle(std::size_t count)
+{
+    return std::format("Set priority for {}?", processCountText(count));
+}
+
+/// The batch priority confirmation's body: the priority that will be applied, the processes
+/// (appendTargetList()), TaskSmack itself and PID 1 when among them, and -- for a nice value below 0
+/// outside Windows, which only a privileged user may set -- that the processes may refuse.
+[[nodiscard]] inline std::string priorityConfirmBody(std::int32_t nice,
+                                                     std::span<const BatchTarget> targets,
+                                                     std::int32_t ownPid,
+                                                     bool windowsClasses = Detail::PRIORITY_USES_WINDOWS_CLASSES)
+{
+    std::string body =
+        std::format("The priority of {} will be set to {}.\n", processCountText(targets.size()), priorityValueText(nice, windowsClasses));
+    const NotableTargets notable = appendTargetList(body, targets, ownPid);
+    appendNotableWarnings(body, notable, "changed");
+    if (!windowsClasses && Domain::Priority::clampNice(nice) < Domain::Priority::NORMAL_NICE)
     {
-        std::format_to(std::back_inserter(text), "{}PID {} ({}): {}", separator, f.pid, f.name, f.error);
-        separator = "; ";
+        body += "\n\nA nice value below 0 raises the priority, which usually needs root: without it, each process will refuse.";
     }
-    if (result.failed() > result.firstFailures.size())
+    return body;
+}
+
+/// Sets @p nice, held to the nice range, on every target through @p actions (runBatch()), TaskSmack's
+/// own process last.
+[[nodiscard]] inline BatchResult
+runBatchPriority(Platform::IProcessActions& actions, std::span<const BatchTarget> targets, std::int32_t nice, std::int32_t ownPid)
+{
+    const std::int32_t clamped = Domain::Priority::clampNice(nice);
+    return runBatch(
+        targets, ownPid, [&actions, clamped](const Platform::ProcessTarget& target) { return actions.setPriority(target, clamped); });
+}
+
+/// The toolbar's one-line result for a batch priority change, naming what was applied: "Priority set to
+/// Below Normal (nice: 10) for 5 processes", or "Priority set to ... for 3 of 5 processes; 2 failed:
+/// PID 1 (systemd): Permission denied; ...", or "Could not set priority to High (nice: -15) for 5
+/// processes: ...". The first RESULT_FAILURE_LIMIT failures are quoted and the rest counted. `ok` only
+/// when every one succeeded.
+[[nodiscard]] inline Detail::ActionResultMessage
+formatBatchPriorityResultMessage(std::int32_t nice, const BatchResult& result, bool windowsClasses = Detail::PRIORITY_USES_WINDOWS_CLASSES)
+{
+    const std::string value = priorityValueText(nice, windowsClasses);
+    if (result.failed() == 0)
     {
-        std::format_to(std::back_inserter(text), "; and {} more", result.failed() - result.firstFailures.size());
+        return {.ok = true, .text = std::format("Priority set to {} for {}", value, processCountText(result.attempted))};
     }
+    std::string text = (result.succeeded == 0)
+                         ? std::format("Could not set priority to {} for {}", value, processCountText(result.attempted))
+                         : std::format("Priority set to {} for {} of {}; {} failed",
+                                       value,
+                                       result.succeeded,
+                                       processCountText(result.attempted),
+                                       result.failed());
+    appendFailures(text, result);
     return {.ok = false, .text = std::move(text)};
 }
 

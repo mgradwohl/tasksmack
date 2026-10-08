@@ -121,15 +121,16 @@ TEST(ProcessDetailsLayoutTest, ActionButtonsSurviveDegenerateInput)
 
 using ProcessDetailsLayout::snapshotIsSelectedProcess;
 
-TEST(ProcessDetailsLayoutTest, SamePidAndKeyIsTheSelectedProcess)
+TEST(ProcessDetailsLayoutTest, SamePidAndStartTimeIsTheSelectedProcess)
 {
-    EXPECT_TRUE(snapshotIsSelectedProcess(/*selectedPid=*/4242, /*selectedKey=*/0xABCDU, /*snapshotPid=*/4242, /*snapshotKey=*/0xABCDU));
+    EXPECT_TRUE(snapshotIsSelectedProcess(
+        /*selectedPid=*/4242, /*selectedStartTicks=*/0xABCDU, /*snapshotPid=*/4242, /*snapshotStartTicks=*/0xABCDU));
 }
 
 // The reviewed defect: the PID has been reused. Same number, different process -- it must not be
 // taken for the one the user selected, or an exited process's pane and its Terminate/Kill buttons
 // come back aimed at something else.
-TEST(ProcessDetailsLayoutTest, ReusedPidWithDifferentKeyIsNotTheSelectedProcess)
+TEST(ProcessDetailsLayoutTest, ReusedPidWithDifferentStartTimeIsNotTheSelectedProcess)
 {
     EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0xABCDU, 4242, 0x1234U));
 }
@@ -140,11 +141,13 @@ TEST(ProcessDetailsLayoutTest, DifferentPidIsNeverTheSelectedProcess)
     EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0, 4243, 0));
 }
 
-// A key of zero means "not known"; the PID is then all there is to compare.
-TEST(ProcessDetailsLayoutTest, UnknownKeyFallsBackToPid)
+// The identity is compared exactly (#1503): an unknown (0) start time is not a wildcard, so a reused
+// PID whose start time could or could not be read is still a different process. A process whose
+// start time is unreadable on both sides is still itself.
+TEST(ProcessDetailsLayoutTest, StartTimeIsComparedExactly)
 {
-    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0, 4242, 0x1234U));
-    EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0xABCDU, 4242, 0));
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0, 4242, 0x1234U));
+    EXPECT_FALSE(snapshotIsSelectedProcess(4242, 0xABCDU, 4242, 0));
     EXPECT_TRUE(snapshotIsSelectedProcess(4242, 0, 4242, 0));
 }
 
