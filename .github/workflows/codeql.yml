@@ -44,6 +44,11 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
+          # No ccache in this job (#1406): nothing restores a cache here, so every traced compile
+          # paid for a cold-cache miss (an extra preprocessor pass plus hashing) for nothing. And
+          # a cache *hit* would skip the real compiler, which hides that translation unit from the
+          # CodeQL tracer. The Configure step also turns the launcher off explicitly.
+          install-ccache: 'false'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -53,7 +58,20 @@ jobs:
       # Doing this after init is what caused false-positive cpp/uninitialized-local
       # alerts in build/debug/CMakeFiles/CMakeScratch/TryCompile-*/src.c.
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
+
+      # Build the third-party libraries before CodeQL init, outside the trace (#1406). They are
+      # outside the scanned paths (codeql-config.yml scans only src/ and tests/), so tracing their
+      # ~370 translation units (mostly SDL3 and FreeType) only cost build and TRAP-import time and
+      # grew the database. Their headers are still extracted wherever our own sources include them.
+      # The traced Build step below then compiles only TaskSmack, its tests and the test mocks.
+      # A renamed or removed dependency target fails this step loudly; a new dependency missing
+      # from this list is still built (and traced) by the Build step, so it is only slower.
+      - name: Build third-party dependencies (untraced)
+        run: >-
+          cmake --build --preset debug --target
+          SDL3-static freetype spdlog imgui_lib implot_lib glad_gl_core_33
+          gtest gtest_main gmock gmock_main
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
