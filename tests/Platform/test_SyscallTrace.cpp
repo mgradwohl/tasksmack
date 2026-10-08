@@ -3,6 +3,7 @@
 /// PATH lookup, terminal selection from $TERMINAL and what is installed, the argv each terminal is
 /// given, and the up-front ptrace check that turns a doomed attach into a clear message.
 
+#include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/Linux/SyscallTrace.h"
 
 #include <gtest/gtest.h>
@@ -234,6 +235,31 @@ TEST(SyscallTraceTest, ReadsCapSysPtraceFromFileCapabilities)
 }
 
 // --- ptrace pre-check ------------------------------------------------------------------------------
+
+TEST(SyscallTraceTest, RootTracerHasCapSysPtraceOnlyWhenCapEffSaysSo)
+{
+    constexpr std::uint64_t PTRACE_BIT = std::uint64_t{1} << ProcPrivileges::CAP_SYS_PTRACE_BIT;
+    EXPECT_TRUE(rootTracerHasSysPtrace(true, PTRACE_BIT));
+    EXPECT_TRUE(rootTracerHasSysPtrace(true, 0x000001ffffffffffULL));
+    // Root with the capability dropped (a container, a hardened service).
+    EXPECT_FALSE(rootTracerHasSysPtrace(true, 0x000001ffffffffffULL & ~PTRACE_BIT));
+    EXPECT_FALSE(rootTracerHasSysPtrace(true, 0));
+    // A non-root process's effective set is not kept across exec.
+    EXPECT_FALSE(rootTracerHasSysPtrace(false, PTRACE_BIT));
+}
+
+TEST(SyscallTraceTest, UnreadableOrMalformedCapEffFailsClosed)
+{
+    // /proc/self/status unreadable: no CapEff at all.
+    EXPECT_FALSE(rootTracerHasSysPtrace(true, std::nullopt));
+    // Present but malformed, or missing from the status text.
+    for (const std::string_view status : {"Name:\tx\nCapEff:\tzzzz\n", "Name:\tx\nCapEff:\t\n", "Name:\tx\nCapPrm:\t000001ffffffffff\n"})
+    {
+        SCOPED_TRACE(status);
+        EXPECT_FALSE(rootTracerHasSysPtrace(true, ProcPrivileges::parseCapEff(status)));
+    }
+    EXPECT_TRUE(rootTracerHasSysPtrace(true, ProcPrivileges::parseCapEff("CapEff:\t0000000000080000\n")));
+}
 
 TEST(SyscallTraceTest, OwnProcessIsAllowedWithoutYamaOrInClassicMode)
 {

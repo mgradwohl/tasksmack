@@ -9,6 +9,7 @@
 #include "Platform/Linux/IoPriority.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/ProcParsing.h"
+#include "Platform/Linux/ProcPrivileges.h"
 #include "Platform/Linux/SyscallTrace.h"
 #include "ScopedTempDir.h"
 
@@ -768,7 +769,13 @@ TEST(LinuxProcessActionsTest, SyscallTraceOpensTheTerminalWithStraceOrExplainsPt
     std::ifstream scopeFile("/proc/sys/kernel/yama/ptrace_scope");
     int scope = 0;
     scopeFile >> scope;
-    if (geteuid() != 0 && (scope == 1 || scope == 2))
+    // What decides Yama's verdict is CAP_SYS_PTRACE, not EUID 0: a root container can run with it
+    // dropped. The fake tracer carries no file capability, so only root's effective set can grant it;
+    // an unreadable CapEff is treated as not having it, as the implementation does.
+    std::ifstream statusFile("/proc/self/status");
+    const std::string status((std::istreambuf_iterator<char>(statusFile)), std::istreambuf_iterator<char>());
+    const bool hasSysPtrace = SyscallTrace::rootTracerHasSysPtrace(geteuid() == 0, ProcPrivileges::parseCapEff(status));
+    if (!hasSysPtrace && (scope == 1 || scope == 2))
     {
         // Yama would refuse strace's attach, so no terminal is opened and the message says why.
         EXPECT_FALSE(result.success);

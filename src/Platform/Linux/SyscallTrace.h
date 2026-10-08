@@ -301,12 +301,22 @@ template<typename Find> [[nodiscard]] std::optional<Terminal> selectTerminal(std
     return (magicEtc & VFS_CAP_FLAGS_EFFECTIVE) != 0 && ((permittedLow >> ProcPrivileges::CAP_SYS_PTRACE_BIT) & 1U) != 0;
 }
 
+/// Whether strace, exec'd by a process running with EUID @p isRoot and effective capability set
+/// @p capEff (the CapEff line of /proc/self/status), keeps CAP_SYS_PTRACE: root keeps its effective
+/// capabilities across exec, so it does when the bit is set. EUID 0 alone proves nothing -- a
+/// container or hardened service can run as root with the capability dropped -- so an unknown set
+/// (status unreadable or malformed) fails closed: the capability is not assumed.
+[[nodiscard]] constexpr bool rootTracerHasSysPtrace(bool isRoot, std::optional<std::uint64_t> capEff) noexcept
+{
+    return isRoot && capEff.has_value() && ((*capEff >> ProcPrivileges::CAP_SYS_PTRACE_BIT) & 1U) != 0;
+}
+
 /// What ptrace(2) will be checked against when strace attaches.
 struct PtraceContext
 {
     std::optional<int> ptraceScope; ///< Yama's kernel.yama.ptrace_scope; nullopt without Yama.
     bool sameCredentials = false;   ///< The target's real/effective/saved UIDs and GIDs are ours, and it is dumpable.
-    bool privileged = false;        ///< strace will run with CAP_SYS_PTRACE (we are root, or strace has the file capability).
+    bool privileged = false;        ///< strace will run with CAP_SYS_PTRACE (we are root with it, or strace has the file capability).
 };
 
 /// Why strace could not attach to @p pid, or nullopt when ptrace should allow it.
@@ -329,22 +339,23 @@ struct PtraceContext
     }
     if (!context.sameCredentials)
     {
-        return std::format("Process {} runs as another user (or changed its user or group IDs); tracing it needs root or "
-                           "CAP_SYS_PTRACE",
+        return std::format("Process {} runs as another user (or changed its user or group IDs); tracing it needs "
+                           "CAP_SYS_PTRACE (root with that capability, or a strace that carries it)",
                            pid);
     }
     if (context.ptraceScope == 2)
     {
         return std::format("Only processes with CAP_SYS_PTRACE may attach with ptrace here (/proc/sys/kernel/yama/ptrace_scope is 2), "
-                           "so strace cannot trace process {} without root",
+                           "so strace cannot trace process {} without that capability",
                            pid);
     }
     if (context.ptraceScope == 1)
     {
-        return std::format("ptrace is limited to a process's own descendants here (/proc/sys/kernel/yama/ptrace_scope is 1), so strace "
-                           "cannot attach to process {}. Set kernel.yama.ptrace_scope to 0, or run TaskSmack as root (CAP_SYS_PTRACE), "
-                           "to trace it",
-                           pid);
+        return std::format(
+            "ptrace is limited to a process's own descendants here (/proc/sys/kernel/yama/ptrace_scope is 1), so strace "
+            "cannot attach to process {}. Set kernel.yama.ptrace_scope to 0, or give strace CAP_SYS_PTRACE (run TaskSmack as root "
+            "with that capability), to trace it",
+            pid);
     }
     return std::nullopt;
 }

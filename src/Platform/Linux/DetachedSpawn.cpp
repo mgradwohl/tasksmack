@@ -63,12 +63,32 @@ struct Report
     std::int32_t error = 0;
 };
 
-/// Write @p report to @p fd. Async-signal-safe: only write(2).
+/// Write @p report to @p fd. Async-signal-safe: only write(2), retried while a signal interrupts it
+/// (otherwise the child would exit, the parent would see EOF, and a real failure would read as
+/// success) and continued after a short write. The report is smaller than PIPE_BUF, so a pipe write
+/// is all-or-nothing in practice; the loop just doesn't rely on it. Nothing useful can be done if
+/// the write fails for any other reason.
 void writeReport(int fd, SpawnFailure::Stage stage, int error) noexcept
 {
     const Report report{.stage = static_cast<std::int32_t>(stage), .error = error};
-    // Smaller than PIPE_BUF, so one write is atomic; nothing useful can be done if it fails.
-    [[maybe_unused]] const auto written = ::write(fd, &report, sizeof(report));
+    const auto bytes = std::as_bytes(std::span(&report, 1));
+    std::size_t done = 0;
+    while (done < bytes.size())
+    {
+        const auto written = ::write(fd, bytes.subspan(done).data(), bytes.size() - done);
+        if (written > 0)
+        {
+            done += static_cast<std::size_t>(written);
+        }
+        else if (written < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        else
+        {
+            return;
+        }
+    }
 }
 
 /// Mark @p fd close-on-exec. Async-signal-safe: fcntl(2) only. A descriptor that is not open fails

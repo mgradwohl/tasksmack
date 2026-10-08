@@ -621,14 +621,14 @@ namespace
 
 /// Whether strace, as exec'd from TaskSmack, will hold CAP_SYS_PTRACE: TaskSmack runs as root with the
 /// capability in its effective set (root keeps it across exec), or strace carries it as a file
-/// capability.
+/// capability. An unreadable or malformed CapEff does not count as having it (fail closed).
 [[nodiscard]] bool tracerIsPrivileged(const std::string& tracerPath)
 {
     if (::geteuid() == 0)
     {
         const std::optional<std::string> status = readSmallFile("/proc/self/status");
         const std::optional<std::uint64_t> capEff = status ? ProcPrivileges::parseCapEff(*status) : std::nullopt;
-        if (!capEff.has_value() || ((*capEff >> ProcPrivileges::CAP_SYS_PTRACE_BIT) & 1U) != 0)
+        if (SyscallTrace::rootTracerHasSysPtrace(true, capEff))
         {
             return true;
         }
