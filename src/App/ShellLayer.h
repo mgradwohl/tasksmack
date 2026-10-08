@@ -7,6 +7,7 @@
 #include "PanelTabs.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
+#include "Panels/ServicesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "TabLabel.h"
 
@@ -14,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -64,6 +66,7 @@ class ShellLayer : public Core::Layer
     ProcessesPanel m_ProcessesPanel;
     ProcessDetailsPanel m_ProcessDetailsPanel;
     SystemMetricsPanel m_SystemMetricsPanel;
+    ServicesPanel m_ServicesPanel;
 
     // Frame timing / FPS display
     FpsCounter m_FpsCounter;
@@ -112,6 +115,8 @@ class ShellLayer : public Core::Layer
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;
+    // TASKSMACK_TAB (#1559): the tab the first tab bar selects, resolved once in onAttach().
+    std::optional<std::size_t> m_StartupTabIndex;
 
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().

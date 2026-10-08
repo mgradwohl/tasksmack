@@ -4,6 +4,7 @@
 /// The pure helpers (WindowsSystemProbeMath.h) are tested on every platform in
 /// WindowsMath/test_WindowsSystemProbeMath.cpp.
 
+#include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/CpuBaseClock.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h"
@@ -61,6 +62,59 @@ TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasSwap);
     EXPECT_TRUE(caps.hasUptime);
     EXPECT_FALSE(caps.hasLoadAvg);
+    EXPECT_TRUE(caps.hasVirtualizationInfo); // #809
+}
+
+TEST(WindowsSystemProbeTest, CpuDetailsDescribeThisMachinesTopology)
+{
+    // GetLogicalProcessorInformationEx works for any user on any supported Windows (#809)
+    WindowsSystemProbe probe;
+    const auto counters = probe.read();
+    const auto& cpu = counters.cpuDetails;
+    ASSERT_TRUE(cpu.sockets.has_value());
+    ASSERT_TRUE(cpu.physicalCores.has_value());
+    ASSERT_TRUE(cpu.logicalProcessors.has_value());
+    const std::size_t sockets = cpu.sockets.value_or(0);
+    const std::size_t cores = cpu.physicalCores.value_or(0);
+    const std::size_t logical = cpu.logicalProcessors.value_or(0);
+    EXPECT_GE(sockets, 1U);
+    EXPECT_GE(cores, sockets);
+    EXPECT_GE(logical, cores);
+    EXPECT_LE(logical, cores * 2); // At most two hardware threads a core
+    // The same processors the per-core counters are sampled from (the active ones)
+    EXPECT_EQ(logical, counters.cpuCoreCount);
+    // A Hyper-V guest may report no cache records, so caches are checked only where present
+    for (const auto& cache : {cpu.l1CacheBytes, cpu.l2CacheBytes, cpu.l3CacheBytes})
+    {
+        if (cache.has_value())
+        {
+            EXPECT_GT(cache.value_or(0), 0U);
+        }
+    }
+    // A hybrid split, where there is one, accounts for every core
+    EXPECT_EQ(cpu.performanceCores.has_value(), cpu.efficiencyCores.has_value());
+    // Per-processor classes exactly where the CPU is hybrid, one per sampled processor
+    EXPECT_EQ(cpu.performanceCores.has_value(), !cpu.efficiencyClassByCoreId.empty());
+    EXPECT_EQ(std::ranges::count_if(cpu.efficiencyClassByCoreId, [](std::uint8_t c) { return c != UNKNOWN_EFFICIENCY_CLASS; }),
+              cpu.efficiencyClassByCoreId.empty() ? 0 : static_cast<std::ptrdiff_t>(logical));
+    if (cpu.performanceCores.has_value())
+    {
+        EXPECT_EQ(cpu.performanceCores.value_or(0) + cpu.efficiencyCores.value_or(0), cores);
+    }
+    // Virtualization facts are read without elevation; at least the processor-feature flags are known
+    EXPECT_TRUE(cpu.virtualizationFirmwareEnabled.has_value());
+    EXPECT_TRUE(cpu.slatSupported.has_value());
+}
+
+TEST(WindowsSystemProbeTest, CpuDetailsBaseSpeedIsTheRatedMaxMhzNotTheRegistryClock)
+{
+    // Base speed is powrprof's rated MaxMhz (#1530), whatever base clock the probe was given; without
+    // MaxMhz it is unknown rather than the registry's ~MHz, which is not the nominal base everywhere.
+    const std::uint64_t ratedMHz = readNominalCpuBaseMHz(&CallNtPowerInformation, 0);
+    WindowsSystemProbe probe(3686, nullptr);
+    const auto baseSpeed = probe.read().cpuDetails.baseSpeedMHz;
+    EXPECT_EQ(baseSpeed.has_value(), ratedMHz > 0);
+    EXPECT_EQ(baseSpeed.value_or(0), ratedMHz);
 }
 
 namespace

@@ -1,0 +1,119 @@
+name: Main Health
+
+# Keeps one tracking issue (label `ci-red-main`) open while any watched workflow's latest finished
+# run on main failed, and closes it once they are all green again (#1406). Main used to stay red for
+# days without anyone noticing: benchmark-regression Oct 2-5, Sanitizers asan-ubsan from Oct 8
+# (#1541). workflow_run always runs this file from the default branch, with this file's permissions.
+on:
+  workflow_run:
+    # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
+    # dispatch, so one failed dispatch would stay its latest main run and keep the issue red forever.
+    # CI's nightly schedule runs the same full clang-tidy and is watched as CI.
+    workflows: [CI, CodeQL Security Analysis, Sanitizers, Heavy Checks, OSV Dependency Scan, Pre-commit]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# Each run re-reads every watched workflow, so queued runs can collapse into the newest one.
+concurrency:
+  group: main-health
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  track:
+    name: Track red main
+    # Only main's own runs (push, schedule, dispatch on main); a PR from a branch named "main" in a
+    # fork would also match `branches: [main]`.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.conclusion != 'cancelled' &&
+       github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SERVER: ${{ github.server_url }}
+          LABEL: ci-red-main
+          # workflow file|display name
+          WATCHED: |-
+            ci.yml|CI
+            codeql.yml|CodeQL Security Analysis
+            sanitizers.yml|Sanitizers
+            heavy-checks.yml|Heavy Checks
+            osv-scanner.yml|OSV Dependency Scan
+            pre-commit.yml|Pre-commit
+          TRIGGER_NAME: ${{ github.event.workflow_run.name }}
+          TRIGGER_URL: ${{ github.event.workflow_run.html_url }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # The latest *finished* main run of each watched workflow, ignoring cancelled and skipped
+          # runs and pull_request runs (whose head branch can also be called main in a fork).
+          red=""
+          while IFS='|' read -r file name; do
+            [[ -n "$file" ]] || continue
+            latest=$(gh api "repos/$REPO/actions/workflows/$file/runs?branch=main&status=completed&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event != "pull_request")
+                     | select(.conclusion != "cancelled" and .conclusion != "skipped")][0]
+                    | select(. != null) | "\(.conclusion)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
+            [[ -n "$latest" ]] || continue
+            IFS='|' read -r conclusion url sha created <<<"$latest"
+            echo "$name: $conclusion ($sha, $url)"
+            if [[ "$conclusion" != 'success' && "$conclusion" != 'neutral' ]]; then
+              red+="- **${name}**: \`${conclusion}\` on \`${sha}\` (${created}): ${url}"$'\n'
+            fi
+          done <<<"$WATCHED"
+
+          # REST only: `gh issue edit`/`view` go through GraphQL fields that fail on this repo.
+          issue=$(gh api "repos/$REPO/issues?labels=$LABEL&state=open&per_page=1" --jq '.[0].number // empty')
+          run_link="[${GITHUB_WORKFLOW}](${SERVER}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
+
+          if [[ -z "$red" ]]; then
+            if [[ -n "$issue" ]]; then
+              gh api "repos/$REPO/issues/$issue/comments" --silent \
+                -f body="Main is green again: the latest finished run of every watched workflow on \`main\` passed (closed by ${run_link})."
+              gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f state=closed -f state_reason=completed
+              echo "Closed #$issue."
+            else
+              echo "Main is green; no tracking issue open."
+            fi
+            exit 0
+          fi
+
+          body="One or more workflows are failing on \`main\`. This issue is maintained by \`.github/workflows/main-health.yml\` (#1406): it is rewritten after every watched run on \`main\` and closed automatically once all of them pass again.
+
+          **Currently red** (latest finished, non-cancelled run on \`main\`):
+
+          ${red}
+          File a separate bug for each root cause and link it here. Last updated by ${run_link}."
+
+          if [[ -z "$issue" ]]; then
+            gh api "repos/$REPO/labels" --silent -f name="$LABEL" -f color=B60205 \
+              -f description="Tracking issue: a workflow is failing on main (main-health.yml)" 2>/dev/null || true
+            issue=$(gh api "repos/$REPO/issues" -f title="CI: main is red" -f body="$body" -f "labels[]=$LABEL" --jq .number)
+            echo "Opened #$issue."
+            exit 0
+          fi
+
+          # Comment only when a workflow turns red that the issue didn't already list, so a workflow
+          # that stays red across several merges doesn't add a comment per merge.
+          previous=$(gh api "repos/$REPO/issues/$issue" --jq .body)
+          gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f body="$body"
+          if [[ "${TRIGGER_CONCLUSION:-}" == 'failure' || "${TRIGGER_CONCLUSION:-}" == 'timed_out' ]] &&
+             ! grep -qF -- "- **${TRIGGER_NAME}**:" <<<"$previous"; then
+            gh api "repos/$REPO/issues/$issue/comments" --silent \
+              -f body="**${TRIGGER_NAME}** turned red: ${TRIGGER_CONCLUSION} on \`${TRIGGER_SHA:0:8}\`: ${TRIGGER_URL}"
+          fi
+          echo "Updated #$issue."

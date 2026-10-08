@@ -130,6 +130,7 @@ set(TASKSMACK_SOURCES
     src/App/KeyboardInput.cpp
     src/App/PlatformOpen.cpp
     src/App/SettingsLayer.cpp
+    src/App/SelectOverride.cpp
     src/App/ShellLayer.cpp
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
@@ -152,6 +153,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/NetworkSection.cpp
     src/App/Panels/StorageSection.cpp
     src/App/Panels/GpuSection.cpp
+    src/App/Panels/ServicesPanel.cpp
+    src/App/Panels/ServicesView.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp

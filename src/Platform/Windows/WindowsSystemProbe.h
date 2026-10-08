@@ -1,6 +1,8 @@
 #pragma once
 
+#include "Platform/CpuDetails.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/SystemTypes.h"
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
 #include <chrono>
@@ -8,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -56,6 +59,12 @@ class WindowsSystemProbe : public ISystemProbe
     [[nodiscard]] static SwapBytes readSwap();
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
+    /// When the per-core read sampled a different set of active processors than m_CpuDetails
+    /// describes, re-read them and commit the re-read only if its topology describes exactly this
+    /// sample's processors (CpuTopology::commitIfConsistent(), #809); otherwise keep the previous
+    /// details and retry on the next sample. m_NumCores (the published cpuCoreCount and the fallback
+    /// buffer size) follows every non-empty sample.
+    void refreshCpuDetailsIfProcessorsChanged(std::span<const CpuCounters> perCore);
     void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);
 
@@ -89,6 +98,10 @@ class WindowsSystemProbe : public ISystemProbe
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
+    // Topology, caches, rated base clock and virtualization status (#809), with the active processor
+    // ids they describe; read at construction and again when the set of active processors the
+    // per-core read samples changes (a processor hot-added). Sampler thread only.
+    CpuTopology::CachedCpuDetails m_CpuDetails;
 };
 
 } // namespace Platform

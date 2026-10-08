@@ -183,6 +183,8 @@ set(COMMON_TEST_SOURCES
     App/test_CpuCoreGridIds.cpp
     App/test_CpuSummaryText.cpp
     Platform/test_CgroupFreezerPath.cpp
+    Platform/test_CpuDetails.cpp
+    Platform/test_LinuxCpuDetails.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
     Platform/test_ProcessEnvironment.cpp
@@ -220,6 +222,8 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessEnvironmentViewRender.cpp
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
+    App/test_ServicesViewRender.cpp
+    App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
@@ -233,6 +237,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_AboutDialogRender.cpp
     App/test_KeyboardInputRender.cpp
+    App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
     App/test_WindowOverride.cpp
@@ -388,6 +393,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
     # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
+    # Startup-selection test hook (#1559): the platform name comparisons test_SelectOverride.cpp exercises
+    ${CMAKE_SOURCE_DIR}/src/App/SelectOverride.cpp
     # The process-action confirm modal, the Overview's Actions block, the priority controls, the chart tabs and
     # the Environment and Connections sections, run headless (test_ProcessActionConfirmPopup.cpp,
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
@@ -410,6 +417,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StorageSection.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/NetworkSection.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
+    # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ServicesView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls

@@ -504,6 +504,32 @@ the untested logic needs OS handles or not:
    file's anonymous namespace), since an
    anonymous-namespace type is a different entity than the one the friend declaration names.
 
+### Visual validation without input (Process Details)
+
+Agents must not inject clicks or keys, so four test-only environment variables (#1559), read once at
+startup, select a process and open a tab by themselves. With `TASKSMACK_SELECT_PID` or
+`TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
+click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
+snapshots, one warning is logged and nothing is selected. While a selection is set, the startup
+"Limited Data" notice is not shown, since it would cover the details. Unset, the variables do nothing.
+
+| Variable | Value |
+|---|---|
+| `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
+| `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
+| `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
+| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. |
+
+Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
+works while the window is covered):
+
+```powershell
+$env:TASKSMACK_WINDOW='1900x1000'; $env:TASKSMACK_SELECT_NAME='explorer.exe'; $env:TASKSMACK_DETAILS_TAB='overview'
+$p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru
+# Wait a few seconds, then PrintWindow($p.MainWindowHandle, hdc, PW_RENDERFULLCONTENT = 2) into a bitmap.
+Stop-Process -Id $p.Id -Force   # not a graceful close, which would save your config.toml
+```
+
 ## VS Code
 
 Recommended extensions:
@@ -1620,7 +1646,8 @@ single-instance lock would stop the new one at its "already running" box); close
 Per-thread CPU comes from `pidstat -u -t -p <pid> 1 <N>` (package `sysstat`) when installed,
 otherwise from `/proc/<pid>/task/*/stat` deltas over the same window. Threads are named so the rows
 are readable: the background samplers are `ts-sampler-proc` (process enumeration) and
-`ts-sampler-sys` (system/storage/GPU). On Linux the UI thread keeps the process name (`TaskSmack`;
+`ts-sampler-sys` (system/storage/GPU), plus `ts-sampler-svc` (the Services tab's list, created
+the first time that tab is shown). On Linux the UI thread keeps the process name (`TaskSmack`;
 its TID equals the PID), because renaming the main thread renames the process for `ps`, `top` and
 `pgrep`. On Windows the UI thread is described as `tasksmack-ui` and shows in WPA and debuggers.
 Names come from `Platform/ThreadName.h`; give any new worker thread one there (15 bytes at most).
@@ -2004,7 +2031,7 @@ Override the cache dir with `TASKSMACK_FETCHCONTENT_CACHE_DIR` or `FETCHCONTENT_
 We use GitHub Actions for our CI workflows. They are categorized as follows:
 
 ### Core Build & Test
-- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch. It detects docs-only pull requests to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR, a Linux Release build on the same events plus the nightly schedule (Windows Release runs nightly and on dispatch only; the unity build weekly), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/schedule/dispatch (skipped on docs-only PRs and on pushes to `main`; the Windows job is also skipped when every change is Linux-only). On a PR it analyzes only the translation units the change can affect -- changed `src/` `.cpp` files plus every `.cpp` that includes a changed `src/` header -- and falls back to every file when `.clang-tidy`, the tidy scripts, CMake files, `ci.yml`, the toolchain setup actions (`setup-llvm`, `setup-windows-llvm`, `setup-python-glad`) or `requirements-glad.*` change (`tools/tidy-changed-files.py`, #1406); the nightly run analyzes every file, runs IWYU (include analysis) only via manual dispatch, and runs a non-blocking advisory Address/Undefined Behavior sanitizer on PRs. It outputs a `CI Success` gate job used for branch protection; when a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
+- **`ci.yml`**: The primary hub. Runs on pushes to `main`, PRs to `main`, nightly (Monday to Saturday; the Sunday weekly run is the same full run plus the unity build), and via manual dispatch. It detects docs-only pull requests to skip C++ builds and `clang-tidy`. It runs Linux and Windows Debug builds on push/PR, a Linux Release build on the same events plus the nightly schedule (Windows Release runs nightly and on dispatch only; the unity build weekly), compiles and links (but does not run) `TaskSmackBenchmarks` in that Linux Release job so a PR that breaks the benchmark build fails CI (#1348), checks markdown links, runs `clang-tidy` (blocking) on Linux and on Windows on PRs/schedule/dispatch (skipped on docs-only PRs and on pushes to `main`; the Windows job is also skipped when every change is Linux-only). On a PR it analyzes only the translation units the change can affect -- changed `src/` `.cpp` files plus every `.cpp` that includes a changed `src/` header -- and falls back to every file when `.clang-tidy`, the tidy scripts, CMake files, `ci.yml`, the toolchain setup actions (`setup-llvm`, `setup-windows-llvm`, `setup-python-glad`) or `requirements-glad.*` change (`tools/tidy-changed-files.py`, #1406); the nightly run analyzes every file, runs IWYU (include analysis) only via manual dispatch, and runs a **blocking** Address/Undefined Behavior sanitizer job (`ASan+UBSan`, part of `CI Success`) on PRs. It outputs a `CI Success` gate job used for branch protection; when a needed job was cancelled (a superseded push or a manual stop) the gate still fails, but its first step reports "CANCELLED, not a code failure" so it isn't mistaken for a broken build.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
@@ -2016,7 +2043,8 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
-- **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers on pushes to `main`, generating HTML reports of memory leaks or data races.
+- **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` runs TSan only, because ASan+UBSan already gates every PR in `ci.yml`; manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
+- **`main-health.yml`**: After every run of the main workflows on `main` (CI -- which includes the nightly full `clang-tidy` --, CodeQL, Sanitizers, Heavy Checks, OSV, Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates a single tracking issue labelled `ci-red-main` while any of them is red, and closes it when all are green again (#1406).
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene

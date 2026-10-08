@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/CpuDetails.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -95,6 +97,9 @@ struct SystemSnapshot
     int coreCount = 0;
     std::string hostname;
     std::string cpuModel;
+    // Sockets, cores, base clock, caches and (Windows) virtualization status, for the CPU Details
+    // block (#809). coreCount above counts logical processors; the physical cores are here.
+    Platform::CpuDetails cpuDetails;
 
     // Load average (1, 5, 15 minute) - Linux only
     double loadAvg1 = 0.0;

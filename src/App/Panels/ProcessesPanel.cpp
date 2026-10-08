@@ -22,6 +22,7 @@
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
 #include "App/ProcessColumnConfig.h"
+#include "App/SelectOverride.h"
 #include "App/SyntheticScenario.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
@@ -1046,6 +1047,41 @@ void ProcessesPanel::onUpdate(float deltaTime)
     }
 
     adoptNewerSnapshots();
+    // The test hook's startup selection (#1559): one flag test per frame until it fires or gives up.
+    if (m_StartupSelection.pending())
+    {
+        applyStartupSelection();
+    }
+}
+
+void ProcessesPanel::requestStartupSelection(std::optional<SelectOverride::Target> target, const bool showDetails)
+{
+    m_StartupSelectionShowsDetails = showDetails;
+    m_StartupSelection = SelectOverride::Pending(std::move(target));
+}
+
+void ProcessesPanel::applyStartupSelection()
+{
+    const std::vector<Domain::ProcessSnapshot>& snapshots = *m_CachedRenderSnapshots;
+    const SelectOverride::Pending::Step step = m_StartupSelection.onSnapshot(m_CachedSnapshotVersion, snapshots);
+    if (step.match.has_value())
+    {
+        // As a plain click on the row, then the row menu's Details (#1209).
+        const ProcessSelection::Identity id = ProcessSelection::identityOf(snapshots[*step.match]);
+        spdlog::info("ProcessesPanel: startup selection found PID {} ({})", id.pid, snapshots[*step.match].name);
+        m_Selection.selectOnly(id);
+        selectProcess(id);
+        if (m_StartupSelectionShowsDetails)
+        {
+            Core::ShowProcessDetailsEvent event;
+            Core::Application::get().raiseEvent(event);
+        }
+    }
+    else if (step.gaveUp)
+    {
+        spdlog::warn("ProcessesPanel: startup selection: no process matched after {} snapshots; nothing selected",
+                     SelectOverride::MAX_SNAPSHOTS);
+    }
 }
 
 void ProcessesPanel::adoptNewerSnapshots()

@@ -12,6 +12,7 @@
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/ProcessTypes.h"
+#include "SelectOverride.h"
 #include "ShellMetrics.h"
 #include "StatusBarText.h"
 #include "SyntheticScenario.h"
@@ -42,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -50,8 +52,12 @@ namespace
 {
 // A literal, so the tab's label provider can hand it out with no storage of its own. Identified by its
 // "###" suffix like the other main tabs (see TabLabel.h, #1140).
+// Its visible text, unescaped, for TASKSMACK_TAB (#1559).
+constexpr const char* PROCESSES_TAB_TEXT = "Processes";
 constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
 static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
+constexpr const char* SERVICES_TAB_TEXT = "Services";                                // #800
+constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab"; // #800
 
 // The status bar's Settings/About buttons (native decorations only), named once: their widths are
 // measured before they are drawn, so the text beside them can make room (#1200).
@@ -70,10 +76,22 @@ constexpr const char* STATUS_HELP_LABEL = ICON_FA_CIRCLE_QUESTION "##StatusBarHe
 
 ShellLayer::ShellLayer()
     : Layer("ShellLayer"),
-      m_Tabs(
-          {{.panel = m_SystemMetricsPanel, .eventName = "SystemOverview", .label = [this] { return m_CachedSystemTabLabel.c_str(); }},
-           {.panel = m_ProcessesPanel, .eventName = "Processes", .label = [] { return PROCESSES_TAB_LABEL; }},
-           {.panel = m_ProcessDetailsPanel, .eventName = "ProcessDetails", .label = [this] { return m_DetailsTabLabel.label().c_str(); }}})
+      m_Tabs({{.panel = m_SystemMetricsPanel,
+               .eventName = "SystemOverview",
+               .label = [this] { return m_CachedSystemTabLabel.c_str(); },
+               .text = [this] { return std::string_view(m_SystemMetricsPanel.hostname()); }},
+              {.panel = m_ProcessesPanel,
+               .eventName = "Processes",
+               .label = [] { return PROCESSES_TAB_LABEL; },
+               .text = [] { return std::string_view(PROCESSES_TAB_TEXT); }},
+              {.panel = m_ProcessDetailsPanel,
+               .eventName = "ProcessDetails",
+               .label = [this] { return m_DetailsTabLabel.label().c_str(); },
+               .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); }},
+              {.panel = m_ServicesPanel,
+               .eventName = "Services",
+               .label = [] { return SERVICES_TAB_LABEL; },
+               .text = [] { return std::string_view(SERVICES_TAB_TEXT); }}})
 {}
 
 void ShellLayer::onAttach()
@@ -94,6 +112,26 @@ void ShellLayer::onAttach()
 
     // Initialize panels
     m_Tabs.onAttach();
+
+    // The test hook's startup selection (#1559): read once here, applied when the process appears.
+    // TASKSMACK_TAB wins over the Details tab the selection would bring forward.
+    // An unknown TASKSMACK_TAB is ignored, with one warning, and changes nothing.
+    std::vector<SelectOverride::TabInfo> tabInfos;
+    for (const auto& tab : m_Tabs.tabs())
+    {
+        tabInfos.push_back({.id = tab.eventName, .text = tab.text ? tab.text() : std::string_view{}});
+    }
+    const SelectOverride::MainTabChoice mainTab =
+        SelectOverride::resolveMainTab(SDL_getenv(std::string(SelectOverride::MAIN_TAB_ENV_VAR).c_str()), tabInfos);
+    if (!mainTab.warning.empty())
+    {
+        spdlog::warn("{}", mainTab.warning);
+    }
+    m_StartupTabIndex = mainTab.index;
+    if (const std::optional<SelectOverride::Target>& select = SelectOverride::active(); select.has_value())
+    {
+        m_ProcessesPanel.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
+    }
 
     // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
     ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
@@ -123,7 +161,10 @@ void ShellLayer::onAttach()
     // (#1254); the notice itself is a one-off at startup.
     // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
     // m_PendingPrivilegeNotice is dispatched in the first onUpdate() call, after all layers are stacked.
-    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice)
+    // Not under the startup-selection test hook (#1559): the modal would cover the details it opens,
+    // and dismissing it needs input.
+    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice &&
+        !SelectOverride::active().has_value())
     {
         m_PendingPrivilegeNotice = true;
     }
@@ -295,6 +336,13 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // Update panels
     m_Tabs.onUpdate(deltaTime);
+
+    // TASKSMACK_DETAILS_TAB (#1559): handed over only once the startup selection fired, so a selection
+    // that gave up leaves no stale tab request behind.
+    if (const std::optional<SelectOverride::DetailsTab> startupTab = m_ProcessesPanel.takeStartupDetailsTab(); startupTab.has_value())
+    {
+        m_ProcessDetailsPanel.requestTab(*startupTab);
+    }
 
     // The details pane follows the capabilities published with the latest generation (#1254): a
     // plain copy of what ProcessesPanel fetched with its snapshots, so no lock is taken here.
@@ -609,7 +657,7 @@ void ShellLayer::renderTabBar()
         for (const auto& tab : m_Tabs.tabs())
         {
             ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
-            if (m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails")
+            if ((m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") || m_StartupTabIndex == index)
             {
                 tabFlags |= ImGuiTabItemFlags_SetSelected;
             }
@@ -621,6 +669,7 @@ void ShellLayer::renderTabBar()
             ++index;
         }
         m_ShowDetailsTabRequested = false;
+        m_StartupTabIndex.reset();
 
         ImGui::EndTabBar();
 
