@@ -289,6 +289,44 @@ TEST(ProcessActionsViewTest, SelectionChangeCancelsThePendingConfirm)
     EXPECT_TRUE(view.lastResult().empty());
 }
 
+// --- F9 (#170) ----------------------------------------------------------------------------------------
+
+constexpr Platform::ProcessActionCapabilities KILL_ONLY{.canKill = true};
+
+TEST(ProcessActionsViewTest, KillShortcutAllowedNeedsCapabilityTargetAndNothingPending)
+{
+    EXPECT_TRUE(Detail::killShortcutAllowed(KILL_ONLY, TARGET_A, false));
+    EXPECT_FALSE(Detail::killShortcutAllowed(KILL_ONLY, TARGET_A, true)); // A confirm is pending
+    EXPECT_FALSE(Detail::killShortcutAllowed({.canTerminate = true}, TARGET_A, false));
+    EXPECT_FALSE(Detail::killShortcutAllowed(KILL_ONLY, {.pid = -1, .startTimeTicks = 0}, false));
+    EXPECT_FALSE(Detail::killShortcutAllowed(KILL_ONLY, {.pid = 0, .startTimeTicks = 0}, false));
+}
+
+TEST(ProcessActionsViewTest, KillShortcutNeverReplacesAPendingConfirm)
+{
+    ProcessActionsView view;
+    view.requestAction(ProcessAction::Stop, TARGET_A, "a");
+    EXPECT_FALSE(view.requestKillShortcut(KILL_ONLY, TARGET_B, "b"));
+    EXPECT_EQ(view.pendingAction(), ProcessAction::Stop);
+    EXPECT_EQ(view.confirmTarget().target.pid, TARGET_A.pid);
+    EXPECT_EQ(view.confirmTarget().processName, "a");
+}
+
+TEST(ProcessActionsViewTest, SelectionChangeWithNothingPendingQueuesNoDismiss)
+{
+    ProcessActionsView view;
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.takeDismiss(TARGET_B));
+
+    // And a dismissal queued earlier is dropped by a new F9 request, which it must not close.
+    view.requestAction(ProcessAction::Stop, TARGET_A, "a");
+    view.onSelectionChanged();
+    ASSERT_TRUE(view.requestKillShortcut(KILL_ONLY, TARGET_B, "b"));
+    EXPECT_FALSE(view.takeDismiss(TARGET_B));
+    EXPECT_TRUE(view.confirmRequested());
+    EXPECT_EQ(view.pendingAction(), ProcessAction::Kill);
+}
+
 TEST(ProcessActionsViewTest, SameTargetKeepsTheDialogOpen)
 {
     ProcessActionsView view;

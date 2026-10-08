@@ -245,4 +245,21 @@ struct TreeStep
     return {};
 }
 
+/// Left/Right from @p current, the selection's row in @p rows, or none when it is not visible
+/// (unselected, filtered out, or under a collapsed parent). With no visible selection, Left/Right select
+/// the first row, as every other move does (stepSelection()); otherwise treeStep().
+[[nodiscard]] constexpr TreeStep
+treeStepFrom(std::span<const TreeRowShape> rows, std::optional<std::size_t> current, NavCommand command) noexcept
+{
+    if (command != NavCommand::Left && command != NavCommand::Right)
+    {
+        return {};
+    }
+    if (!current.has_value() || *current >= rows.size())
+    {
+        return rows.empty() ? TreeStep{} : TreeStep{.kind = TreeStepKind::Select, .index = 0};
+    }
+    return treeStep(rows, *current, command);
+}
+
 } // namespace App::ProcessTableNavigation

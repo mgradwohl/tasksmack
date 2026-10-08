@@ -4,6 +4,7 @@
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessActionConfirm.h"
+#include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
@@ -2208,10 +2209,18 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     const std::optional<std::size_t> current = (m_SelectedPid == -1) ? std::nullopt : Nav::indexOfKey(keys, m_SelectedUniqueKey);
 
     // F9: the row menu's Kill, confirmed in its dialog for the target captured here. Only for a
-    // selected row the user can see, and only when the platform can kill (#170).
-    if (killRequested && current.has_value() && m_ActionCapabilities.canKill)
+    // selected row the user can see, only when the platform can kill, and never over a row action
+    // already requested or open: a menu action's dialog opens on the next frame, before ImGui knows
+    // of it, so the popup stack alone would let F9 replace its action and target (#170).
+    if (killRequested && current.has_value())
     {
-        requestRowAction(Detail::ProcessAction::Kill, snapshots[visible[*current]]);
+        const Domain::ProcessSnapshot& proc = snapshots[visible[*current]];
+        const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.action != Detail::ProcessAction::None;
+        if (Detail::killShortcutAllowed(
+                m_ActionCapabilities, Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, rowActionPending))
+        {
+            requestRowAction(Detail::ProcessAction::Kill, proc);
+        }
     }
 
     const auto selectRow = [&](std::size_t row)
@@ -2226,11 +2235,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
 
     if (command == Nav::NavCommand::Left || command == Nav::NavCommand::Right)
     {
-        if (!current.has_value())
-        {
-            return;
-        }
-        const Nav::TreeStep step = Nav::treeStep(shapes, *current, command);
+        // With no visible selection this selects the first row, like every other move.
+        const Nav::TreeStep step = Nav::treeStepFrom(shapes, current, command);
         switch (step.kind)
         {
         case Nav::TreeStepKind::Collapse:
@@ -2342,8 +2348,14 @@ void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain
 
 void ProcessesPanel::renderRowActionConfirm()
 {
-    if (ProcessActionConfirm::render(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.processName, m_RowAction.target.pid) !=
-        ProcessActionConfirm::Outcome::Confirmed)
+    const ProcessActionConfirm::Outcome outcome =
+        ProcessActionConfirm::render(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.processName, m_RowAction.target.pid);
+    if (outcome == ProcessActionConfirm::Outcome::Cancelled)
+    {
+        m_RowAction = {}; // Nothing is pending any more: F9 may ask again (#170)
+        return;
+    }
+    if (outcome != ProcessActionConfirm::Outcome::Confirmed)
     {
         return;
     }
@@ -2352,6 +2364,7 @@ void ProcessesPanel::renderRowActionConfirm()
                          : Platform::ProcessActionResult::error("Process actions unavailable");
     m_RowActionResult = Detail::formatActionResultMessage(m_RowAction.action, m_RowAction.target.pid, result);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    m_RowAction = {}; // Acted on once; nothing is pending any more
     if (result.success)
     {
         requestRefresh(); // Show the process suspended, resumed or gone without waiting for the next sample

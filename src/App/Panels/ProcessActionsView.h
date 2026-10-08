@@ -57,6 +57,17 @@ namespace Detail
     return captured.startTimeTicks == 0 || live.startTimeTicks == 0 || captured.startTimeTicks == live.startTimeTicks;
 }
 
+/// Whether F9 may ask to confirm Kill on @p target (#170): the platform can kill, there is a target
+/// (PID > 0), and no confirm is pending (@p confirmPending: requested, open, or holding a captured action
+/// and target), so the shortcut never replaces an action already being confirmed. Shared by the Actions
+/// tab and the Processes table's row-menu confirm.
+[[nodiscard]] constexpr bool killShortcutAllowed(const Platform::ProcessActionCapabilities& capabilities,
+                                                 const Platform::ProcessTarget& target,
+                                                 bool confirmPending) noexcept
+{
+    return isActionAvailable(capabilities, ProcessAction::Kill) && target.pid > 0 && !confirmPending;
+}
+
 /// One button of the Actions tab's 2x2 grid. The label is also the button's ImGui ID.
 struct ActionButtonSpec
 {
@@ -123,12 +134,20 @@ class ProcessActionsView
     }
 
     /// A different process was selected: drop the pending confirm and its captured target, have the
-    /// next render() close the dialog if ImGui still has it open, and drop the result line.
+    /// next render() close the dialog if ImGui still has it open, and drop the result line. A dismissal
+    /// is queued only when a confirm was pending or open: queued with nothing to close, it would wait
+    /// for the next render() and close the next confirm requested before it, such as F9's (#170).
     void onSelectionChanged() noexcept
     {
+        m_DismissPending = m_DismissPending || confirmPending();
         cancelConfirm();
-        m_DismissPending = true;
         m_LastResult = {};
+    }
+
+    /// Whether a confirm is requested, open, or holds a captured action and target.
+    [[nodiscard]] bool confirmPending() const noexcept
+    {
+        return m_ShowConfirmDialog || m_ConfirmAction != Detail::ProcessAction::None;
     }
 
     /// The dialog closed without acting (Cancel, or dismissed): nothing is pending any more, so
@@ -149,17 +168,21 @@ class ProcessActionsView
     }
 
     /// F9 (#170): ask to confirm Kill on @p target, as the Kill button does, capturing it now. Refused
-    /// (returns false, nothing changes) when the platform cannot kill, when there is no target (PID
-    /// <= 0), or while another confirm is already pending. Only ever opens the dialog: the kill itself
+    /// (returns false, nothing changes) when Detail::killShortcutAllowed() says no: the platform cannot
+    /// kill, there is no target (PID <= 0), or another confirm is pending -- requested, open, or holding
+    /// a captured action, so the shortcut never replaces it. Only ever opens the dialog: the kill itself
     /// still needs the dialog's own button (dispatchConfirmed()).
     bool requestKillShortcut(const Platform::ProcessActionCapabilities& capabilities,
                              const Platform::ProcessTarget& target,
                              std::string processName)
     {
-        if (!Detail::isActionAvailable(capabilities, Detail::ProcessAction::Kill) || target.pid <= 0 || m_ShowConfirmDialog)
+        if (!Detail::killShortcutAllowed(capabilities, target, confirmPending()))
         {
             return false;
         }
+        // Nothing is pending, so a dismissal still queued has no dialog of its own to close; left
+        // queued, the next render() would close this confirm as soon as it opens.
+        m_DismissPending = false;
         requestAction(Detail::ProcessAction::Kill, target, std::move(processName));
         return true;
     }

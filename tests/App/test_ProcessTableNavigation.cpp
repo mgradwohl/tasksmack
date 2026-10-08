@@ -177,6 +177,27 @@ TEST(ProcessTableNavigationTest, RightExpandsThenGoesToTheFirstChild)
     EXPECT_EQ(treeStep(TREE, 4, NavCommand::Right).kind, TreeStepKind::None);
 }
 
+TEST(ProcessTableNavigationTest, LeftRightWithoutAVisibleSelectionSelectTheFirstRow)
+{
+    // Unselected, filtered out or collapsed away: Left and Right select the first row, as every other
+    // move does (Copilot review on #1471).
+    for (const NavCommand command : {NavCommand::Left, NavCommand::Right})
+    {
+        SCOPED_TRACE("command " + std::to_string(static_cast<int>(command)));
+        const TreeStep none = treeStepFrom(TREE, std::nullopt, command);
+        EXPECT_EQ(none.kind, TreeStepKind::Select);
+        EXPECT_EQ(none.index, 0U);
+        const TreeStep stale = treeStepFrom(TREE, 99, command); // Past the end counts as none
+        EXPECT_EQ(stale.kind, TreeStepKind::Select);
+        EXPECT_EQ(stale.index, 0U);
+        EXPECT_EQ(treeStepFrom({}, std::nullopt, command).kind, TreeStepKind::None); // No rows
+    }
+    // A visible selection gets treeStep()'s answer; other moves are not Left/Right's business.
+    EXPECT_EQ(treeStepFrom(TREE, 1, NavCommand::Left).kind, TreeStepKind::Collapse);
+    EXPECT_EQ(treeStepFrom(TREE, 3, NavCommand::Right).kind, TreeStepKind::Expand);
+    EXPECT_EQ(treeStepFrom(TREE, std::nullopt, NavCommand::Down).kind, TreeStepKind::None);
+}
+
 TEST(ProcessTableNavigationTest, TreeStepIgnoresOtherMovesAndBadRows)
 {
     EXPECT_EQ(treeStep(TREE, 1, NavCommand::Down).kind, TreeStepKind::None);

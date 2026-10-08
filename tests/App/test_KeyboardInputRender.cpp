@@ -110,13 +110,22 @@ struct ActionsHarness
     Platform::ProcessTarget target = TARGET;
     bool popupOpen = false;
     int f9Requests = 0;
+    int f9Accepted = 0;
+    // An action button pressed at the start of the next frame, before the keys are read (as the
+    // Processes row menu is drawn before its table reads them).
+    std::optional<Detail::ProcessAction> buttonPress;
 
     void frame()
     {
+        if (buttonPress.has_value())
+        {
+            view.requestAction(*buttonPress, target, "victim");
+            buttonPress.reset();
+        }
         if (KeyboardInput::pollFunctionKeys() == ShortcutAction::KillSelected)
         {
             ++f9Requests;
-            static_cast<void>(view.requestKillShortcut(capabilities, target, "victim"));
+            f9Accepted += view.requestKillShortcut(capabilities, target, "victim") ? 1 : 0;
         }
         view.render(&mock, capabilities, "victim", target);
         popupOpen = ImGui::IsPopupOpen(CONFIRM_POPUP_ID);
@@ -149,6 +158,64 @@ TEST_F(KeyboardInputRenderTest, F9OpensTheKillConfirmAndKillsNothing)
     pressKey(ImGuiKey_F9, body);
     EXPECT_EQ(h.f9Requests, 1);
     EXPECT_TRUE(h.popupOpen);
+    EXPECT_EQ(h.mock.killCount(), 0);
+}
+
+TEST_F(KeyboardInputRenderTest, F9NeverReplacesARequestedConfirm)
+{
+    // Suspend requested on the very frame F9 is pressed: its dialog is not on ImGui's popup stack
+    // yet, so only the pending request can stop F9 replacing it (Copilot review on #1471).
+    ActionsHarness sameFrame;
+    const auto sameBody = [&sameFrame]
+    {
+        sameFrame.frame();
+    };
+    runFrame(sameBody);
+    sameFrame.buttonPress = Detail::ProcessAction::Stop;
+    pressKey(ImGuiKey_F9, sameBody);
+    runFrame(sameBody);
+    EXPECT_EQ(sameFrame.f9Requests, 1);
+    EXPECT_EQ(sameFrame.f9Accepted, 0);
+    EXPECT_TRUE(sameFrame.popupOpen);
+    EXPECT_EQ(sameFrame.view.pendingAction(), Detail::ProcessAction::Stop);
+    EXPECT_EQ(sameFrame.view.confirmTarget().target.pid, TARGET.pid);
+    EXPECT_EQ(sameFrame.mock.killCount(), 0);
+}
+
+TEST_F(KeyboardInputRenderTest, F9OnTheFrameAfterARequestDoesNotReplaceIt)
+{
+    // Requested one frame, F9 on the next, while the dialog is only just opening. A fresh test, so no
+    // dialog from another harness is still open on the shared ImGui context.
+    ActionsHarness nextFrame;
+    const auto nextBody = [&nextFrame]
+    {
+        nextFrame.frame();
+    };
+    runFrame(nextBody);
+    nextFrame.view.requestAction(Detail::ProcessAction::Terminate, TARGET, "victim");
+    pressKey(ImGuiKey_F9, nextBody);
+    runFrame(nextBody);
+    EXPECT_EQ(nextFrame.f9Accepted, 0);
+    EXPECT_EQ(nextFrame.view.pendingAction(), Detail::ProcessAction::Terminate);
+    EXPECT_EQ(nextFrame.mock.killCount(), 0);
+    EXPECT_EQ(nextFrame.mock.terminateCount(), 0);
+}
+
+TEST_F(KeyboardInputRenderTest, F9AfterASelectionChangeOpensItsConfirm)
+{
+    // A selection change with no confirm open must not leave a dismissal queued for the next render,
+    // which would close F9's confirm as it opens (Copilot review on #1471).
+    ActionsHarness h;
+    const auto body = [&h]
+    {
+        h.frame();
+    };
+    h.view.onSelectionChanged();
+    ASSERT_TRUE(h.view.requestKillShortcut(CAN_KILL, TARGET, "victim"));
+    runFrame(body);
+    runFrame(body);
+    EXPECT_TRUE(h.popupOpen);
+    EXPECT_EQ(h.view.pendingAction(), Detail::ProcessAction::Kill);
     EXPECT_EQ(h.mock.killCount(), 0);
 }
 
