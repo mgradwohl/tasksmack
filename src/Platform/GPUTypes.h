@@ -72,8 +72,8 @@ struct GPUInfo
     /// segment). Set by the probe that reads the figure, so per-process memory is counted against
     /// the same segment whatever its value -- a 0 shared reading is a reading, not "no segment" (#1164).
     bool memoryIsShared = false;
-    /// The sensor metrics this particular adapter reports (temperature, hotspot, power, clocks,
-    /// fan, PCIe, encoder/decoder); the other fields are not used. GPUCapabilities from a probe
+    /// The sensor metrics this particular adapter reports (temperature, power, clocks, fan,
+    /// encoder/decoder); the other fields are not used. GPUCapabilities from a probe
     /// describes the probe as a whole, so on a hybrid Windows laptop NVML's capabilities applied to
     /// the Intel iGPU too, and two NVIDIA cards with different sensors both drew every series
     /// (#1040). nullopt means the probe's capabilities apply to this adapter unchanged. Set on
