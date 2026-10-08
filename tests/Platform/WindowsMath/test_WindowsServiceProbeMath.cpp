@@ -86,6 +86,21 @@ TEST(WindowsServiceProbeMathTest, ScmOpenFailureDisablesEnumerationWithAReason)
     EXPECT_EQ(other.unavailableReason, "The Service Control Manager could not be opened (error 1722)");
 }
 
+TEST(WindowsServiceProbeMathTest, TabsSeparateArgumentsLikeSpaces)
+{
+    EXPECT_EQ(svchostGroup("svchost.exe\t-k\tnetsvcs"), "netsvcs");
+    EXPECT_EQ(svchostGroup("\tC:\\Windows\\System32\\svchost.exe\t-k\tnetsvcs\t-p"), "netsvcs");
+    EXPECT_EQ(svchostGroup("\"C:\\Windows\\System32\\svchost.exe\"\t-k netsvcs"), "netsvcs");
+    EXPECT_EQ(svchostGroup("C:\\Windows\\System32\\svchost.exe \t -k\t \tLocalService  -p"), "LocalService");
+    EXPECT_EQ(svchostGroup("C:\\Tools\\my-svchost.exe\t-k\tworker"), "");
+
+    const auto [program, rest] = splitProgram("\"C:\\A B\\x.exe\"\t-a");
+    EXPECT_EQ(program, "C:\\A B\\x.exe");
+    EXPECT_EQ(rest, "\t-a");
+    EXPECT_EQ(splitProgram("C:\\A B\\x.exe\t-a").first, "C:\\A B\\x.exe");
+    EXPECT_EQ(splitProgram("tool\t-a").first, "tool");
+}
+
 TEST(WindowsServiceProbeMathTest, SplitProgramHandlesQuotesAndUnquotedSpaces)
 {
     EXPECT_EQ(splitProgram(R"("C:\A B\x.exe" -a)").first, R"(C:\A B\x.exe)");

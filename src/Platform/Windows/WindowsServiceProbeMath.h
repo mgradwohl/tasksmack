@@ -12,7 +12,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -105,12 +104,15 @@ namespace Platform::Windows::ServiceMath
 }
 
 /// The program a command line starts, and the rest of the line. The program is the first argument,
-/// quoted ("C:\Program Files\x.exe" -a) or not. An unquoted one may hold spaces (the SCM accepts
+/// quoted ("C:\Program Files\x.exe" -a) or not, separated from the rest by spaces or tabs. An unquoted one may hold spaces (the SCM accepts
 /// C:\Program Files\x.exe -a), so it runs to the first ".exe" that ends a word, or else to the
 /// first space.
+/// The characters that separate command-line arguments on Windows: a space or a tab.
+inline constexpr std::string_view ARGUMENT_SEPARATORS = " \t";
+
 [[nodiscard]] inline std::pair<std::string_view, std::string_view> splitProgram(std::string_view commandLine)
 {
-    const auto first = commandLine.find_first_not_of(' ');
+    const auto first = commandLine.find_first_not_of(ARGUMENT_SEPARATORS);
     if (first == std::string_view::npos)
     {
         return {};
@@ -126,13 +128,13 @@ namespace Platform::Windows::ServiceMath
         return {commandLine.substr(1, close - 1), commandLine.substr(close + 1)};
     }
     constexpr std::string_view EXE = ".exe";
-    std::size_t end = commandLine.find(' ');
+    std::size_t end = commandLine.find_first_of(ARGUMENT_SEPARATORS);
     for (std::size_t i = 0; (i + EXE.size()) <= commandLine.size(); ++i)
     {
         const std::size_t after = i + EXE.size();
         const bool isExe = std::ranges::equal(
             commandLine.substr(i, EXE.size()), EXE, [](unsigned char a, unsigned char b) { return std::tolower(a) == b; });
-        if (isExe && (after == commandLine.size() || commandLine[after] == ' '))
+        if (isExe && (after == commandLine.size() || ARGUMENT_SEPARATORS.contains(commandLine[after])))
         {
             end = after;
             break;
@@ -163,18 +165,19 @@ namespace Platform::Windows::ServiceMath
         return {};
     }
     bool afterFlag = false;
-    for (const auto token : args | std::views::split(' '))
+    std::string_view rest = args;
+    for (auto start = rest.find_first_not_of(ARGUMENT_SEPARATORS); start != std::string_view::npos;
+         start = rest.find_first_not_of(ARGUMENT_SEPARATORS))
     {
-        const std::string_view word(token.begin(), token.end());
-        if (word.empty())
-        {
-            continue;
-        }
+        rest.remove_prefix(start);
+        const auto length = std::min(rest.find_first_of(ARGUMENT_SEPARATORS), rest.size());
+        const std::string_view word = rest.substr(0, length);
         if (afterFlag)
         {
             return std::string(word);
         }
         afterFlag = equalsIgnoringCase(word, "-k");
+        rest.remove_prefix(length);
     }
     return {};
 }
