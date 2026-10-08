@@ -225,6 +225,31 @@ TEST(MergeNVMLIntoDXGICountersTest, MergesMappedGPUAndReportsIdAsSourced)
     EXPECT_EQ(dxgi[0].memoryTotalBytes, 8ULL * 1024 * 1024 * 1024);
 }
 
+// #1485: NVML's video-engine utilization reaches the adapter the GPU tab draws, with whether each
+// read succeeded, so a failed or missing read is a gap rather than 0%.
+TEST(MergeNVMLIntoDXGICountersTest, EncoderAndDecoderUtilizationAndAvailabilityCarryToTheAdapter)
+{
+    std::vector<GPUCounters> dxgi(2);
+    dxgi[0].gpuId = "GPU0";
+    dxgi[1].gpuId = "GPU1";
+    std::vector<GPUCounters> nvml(2);
+    nvml[0].gpuId = "uuid-0";
+    nvml[0].encoderUtilPercent = 30.0;
+    nvml[0].decoderUtilPercent = 12.0;
+    nvml[1].gpuId = "uuid-1";
+    nvml[1].encoderAvailable = false; // e.g. NVML_ERROR_TIMEOUT this sample
+    nvml[1].decoderAvailable = false;
+
+    [[maybe_unused]] const auto sourced = mergeNVMLIntoDXGICounters(dxgi, nvml, {{0U, 0U}, {1U, 1U}});
+
+    EXPECT_TRUE(dxgi[0].encoderAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].encoderUtilPercent, 30.0);
+    EXPECT_TRUE(dxgi[0].decoderAvailable);
+    EXPECT_DOUBLE_EQ(dxgi[0].decoderUtilPercent, 12.0);
+    EXPECT_FALSE(dxgi[1].encoderAvailable);
+    EXPECT_FALSE(dxgi[1].decoderAvailable);
+}
+
 TEST(MergeNVMLIntoDXGICountersTest, ZeroNVMLMemoryTotalKeepsDXGIMemoryValues)
 {
     std::vector<GPUCounters> dxgi(1);

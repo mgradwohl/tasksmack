@@ -20,7 +20,7 @@ class PDHGPUProbe;
 
 /// Composite Windows GPU probe that delegates to vendor-specific probes.
 /// - DXGI: Basic GPU enumeration (all vendors)
-/// - NVML: NVIDIA-specific sensors (temp, power, clocks, fan) and VRAM
+/// - NVML: NVIDIA-specific sensors (temp, power, clocks, fan, video encoder/decoder) and VRAM
 /// - PDH: adapter and per-process GPU utilization, and memory, via Performance Counters (all
 ///   vendors, NVIDIA included, so every adapter's % means what Task Manager's does, #1264)
 ///
