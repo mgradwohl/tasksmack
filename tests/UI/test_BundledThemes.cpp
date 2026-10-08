@@ -554,7 +554,8 @@ struct HueRange
     // its every call being in a TEST body (cpp/unused-static-function, alert 3013).
     [[nodiscard]] constexpr auto contains(double hue) const noexcept -> bool
     {
-        return hue >= lo && hue <= hi;
+        // A range may run past 360 to wrap through red-pink (ROSE is 320..370, i.e. up to hue 10).
+        return (hue >= lo && hue <= hi) || (hue + 360.0 >= lo && hue + 360.0 <= hi);
     }
 };
 
@@ -570,6 +571,14 @@ constexpr HueRange CYAN_TEAL{.lo = 175.0, .hi = 228.0};
 constexpr HueRange BLUE{.lo = 215.0, .hi = 275.0};
 constexpr HueRange VIOLET{.lo = 280.0, .hi = 320.0};
 constexpr HueRange MAGENTA{.lo = 318.0, .hi = 360.0};
+// The families the Overview's and Process Details' other roles take, so each reads as its own metric
+// next to CPU, memory and power: Battery teal, Threads rose, Page Faults periwinkle, GDI green-teal,
+// and Handles a neutral grey (chroma <= HANDLES_MAX_CHROMA, any hue).
+constexpr HueRange BATTERY_TEAL{.lo = 175.0, .hi = 215.0};
+constexpr HueRange ROSE{.lo = 320.0, .hi = 370.0};
+constexpr HueRange PERIWINKLE{.lo = 265.0, .hi = 298.0};
+constexpr HueRange GDI_GREEN_TEAL{.lo = 150.0, .hi = 200.0};
+constexpr double HANDLES_MAX_CHROMA = 0.05;
 // Status text: warning runs orange to Cyberpunk's neon yellow (light themes darken it towards brown),
 // success green to Gruvbox's and Solarized's yellow-green.
 // Wider than the series families: their job is only to read as caution and as fine (Monochrome's were
@@ -735,7 +744,7 @@ TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
     {
         const std::string& name = theme.name;
         const ColorScheme& s = theme.scheme;
-        const std::array<std::tuple<std::string_view, ImVec4, HueRange>, 15> families{{
+        const std::array<std::tuple<std::string_view, ImVec4, HueRange>, 19> families{{
             {"charts.cpu", s.chartCpu, BLUE},
             {"charts.cpu_total", s.chartCpuTotal, BLUE},
             {"cpu_breakdown.user", s.cpuUser, BLUE},
@@ -751,6 +760,10 @@ TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
             {"charts.net_rx", s.chartNetRx, CYAN_TEAL},
             {"charts.gpu.utilization", s.gpuUtilization, MAGENTA},
             {"charts.power", s.chartPower, YELLOW},
+            {"charts.battery", s.chartBattery, BATTERY_TEAL},
+            {"charts.threads", s.chartThreads, ROSE},
+            {"charts.page_faults", s.chartPageFaults, PERIWINKLE},
+            {"charts.gdi", s.chartGdi, GDI_GREEN_TEAL},
         }};
         for (const auto& [key, color, range] : families)
         {
@@ -762,6 +775,8 @@ TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
         // Read and write can share a warm hue; write is the duller of the two, so it never reads as read.
         EXPECT_LE(ColorDifference::toOklch(s.chartIoWrite).c, ColorDifference::toOklch(s.chartIo).c - WRITE_CHROMA_BELOW_READ)
             << name << ": charts.io_write is as vivid as charts.io";
+        // Handles is the one neutral series: grey beside the coloured ones on the Resources chart.
+        EXPECT_LE(ColorDifference::toOklch(s.chartHandles).c, HANDLES_MAX_CHROMA) << name << ": charts.handles is not a neutral grey";
     }
 }
 
