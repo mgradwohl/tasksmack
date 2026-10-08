@@ -196,15 +196,27 @@ void AboutLayer::renderAboutDialog()
         // TaskSmack has no separate help page: F1 opens this dialog, which lists every shortcut (#170).
         ImGui::Spacing();
         ImGui::SeparatorText("Keyboard shortcuts");
-        if (ImGui::BeginTable("##Shortcuts", 2, ImGuiTableFlags_SizingFixedFit))
+        // Fits the dialog's width and wraps both columns, so at large fonts or on a narrow display no
+        // shortcut is clipped by the viewport-capped dialog (which has no horizontal scrollbar).
+        if (ImGui::BeginTable("##Shortcuts", 2, ImGuiTableFlags_SizingStretchProp, ImVec2(ImGui::GetContentRegionAvail().x, 0.0F)))
         {
+            constexpr float KEYS_COLUMN_WEIGHT = 2.0F;
+            constexpr float DESCRIPTION_COLUMN_WEIGHT = 3.0F;
+            ImGui::TableSetupColumn("##Keys", ImGuiTableColumnFlags_WidthStretch, KEYS_COLUMN_WEIGHT);
+            ImGui::TableSetupColumn("##Description", ImGuiTableColumnFlags_WidthStretch, DESCRIPTION_COLUMN_WEIGHT);
             for (const KeyboardShortcuts::ShortcutHelpEntry& entry : KeyboardShortcuts::SHORTCUT_HELP)
             {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::TextColored(theme.accentColor(0), "%.*s", static_cast<int>(entry.keys.size()), entry.keys.data());
+                ImGui::PushStyleColor(ImGuiCol_Text, theme.accentColor(0));
+                ImGui::PushTextWrapPos(0.0F); // wrap at the column's right edge
+                ImGui::TextUnformatted(entry.keys.data(), entry.keys.data() + entry.keys.size());
+                ImGui::PopTextWrapPos();
+                ImGui::PopStyleColor();
                 ImGui::TableNextColumn();
+                ImGui::PushTextWrapPos(0.0F);
                 ImGui::TextUnformatted(entry.description.data(), entry.description.data() + entry.description.size());
+                ImGui::PopTextWrapPos();
             }
             ImGui::EndTable();
         }

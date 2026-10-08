@@ -126,7 +126,7 @@ inline constexpr std::array<ShortcutHelpEntry, 13> SHORTCUT_HELP{{
     {.keys = "Home / End, g / G", .description = "Processes: first / last row"},
     {.keys = "Left / Right", .description = "Tree view: collapse / expand, then parent / first child"},
     {.keys = "Hold Ctrl", .description = "Processes: pause updates while held"},
-    {.keys = "Ctrl + = / Ctrl + -", .description = "Larger / smaller text"},
+    {.keys = "Ctrl + = / Ctrl + -, Ctrl + keypad + / -", .description = "Larger / smaller text"},
     {.keys = "Ctrl + Shift + M", .description = "Render metrics overlay"},
     {.keys = "Alt + Space / Ctrl + Space", .description = "Window menu"},
 }};
