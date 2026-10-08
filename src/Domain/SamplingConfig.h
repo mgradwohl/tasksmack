@@ -95,6 +95,12 @@ inline constexpr int UNATTRIBUTED_SOCKET_HOLD_MS = INODE_PID_CACHE_TTL_MS + REFR
 // the same later one.
 inline constexpr int PROCESS_CMDLINE_CACHE_TTL_MS = 3000;
 
+// How often Process Details re-reads the selected process's environment (milliseconds) (#179)
+// Read on demand, never in the per-sample enumeration: only for the selected process, only while its
+// Environment section is open, once when it opens or the selection changes and then at this cadence.
+// An environment rarely changes after exec, so a slow re-read is enough to notice one that does.
+inline constexpr int PROCESS_ENVIRONMENT_REFRESH_MS = 3000;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------

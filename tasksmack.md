@@ -199,6 +199,8 @@ To maintain 60fps UI responsiveness even with thousands of processes, TaskSmack 
 
 Probe capabilities describe whether fields such as I/O, command line, user, priority, network, GPU, and process status are available. Panels use those flags to hide unsupported columns and actions. Reduced-privilege detection can surface an elevation notice when elevation would restore data.
 
+Some per-process data is read on demand rather than in the per-sample enumeration. A process's environment variables (#179) are read through `Platform::IProcessEnvironmentReader` (`makeProcessEnvironmentReader()`, created by the Process Details panel as composition root; `hasEnvironment()` is its capability flag, false on Windows and in synthetic runs), only for the selected process, only while the Overview's Environment section is open, from the panel's update path (never `render()`), at most every `PROCESS_ENVIRONMENT_REFRESH_MS`. The read is synchronous (about 0.1 ms on WSL2 for ~60 variables) because it is that rare. Values are never logged.
+
 Capability absence is not an error. A supported platform may still omit metrics because of kernel configuration, permissions, hardware, drivers, or optional vendor libraries.
 
 ## Platform Strategy

@@ -5,6 +5,7 @@
 #include "LinuxPathProvider.h"
 #include "LinuxPowerProbe.h"
 #include "LinuxProcessActions.h"
+#include "LinuxProcessEnvironmentReader.h"
 #include "LinuxProcessProbe.h"
 #include "LinuxSystemProbe.h"
 #include "Platform/IDiskProbe.h"
@@ -12,6 +13,7 @@
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 
@@ -28,6 +30,11 @@ std::unique_ptr<IProcessProbe> makeProcessProbe()
 std::unique_ptr<IProcessActions> makeProcessActions()
 {
     return std::make_unique<LinuxProcessActions>();
+}
+
+std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()
+{
+    return std::make_unique<LinuxProcessEnvironmentReader>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()
