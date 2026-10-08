@@ -1,0 +1,740 @@
+/// @file test_SystemSectionsRender.cpp
+/// @brief The System Metrics sections that were never linked into the tests (#1395): Memory & Swap,
+/// CPU Cores, Disk I/O and Network. Their smoothing helpers are checked against computeAlpha()
+/// directly, and
+/// each section is rendered headless to check the plots and series it draws, its empty states, the
+/// per-core and per-disk grids, and the per-disk smoothing map it maintains across frames.
+
+#include "App/Panels/CpuCoresSection.h"
+#include "App/Panels/MemorySection.h"
+#include "App/Panels/NetInterfaceUtils.h"
+#include "App/Panels/NetworkSection.h"
+#include "App/Panels/StorageSection.h"
+#include "Domain/SharedHistory.h"
+#include "Domain/StorageModel.h"
+#include "Domain/StorageSnapshot.h"
+#include "Domain/SystemModel.h"
+#include "Domain/SystemSnapshot.h"
+#include "UI/ChartSmoothing.h"
+#include "UI/ChartWidgets.h"
+#include "UI/FillPlotLayout.h"
+
+#include <gtest/gtest.h>
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <implot.h>
+#include <implot_internal.h>
+
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <set>
+#include <span>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace App
+{
+namespace
+{
+
+constexpr float DISPLAY_WIDTH = 1600.0F;
+constexpr float DISPLAY_HEIGHT = 1200.0F;
+constexpr std::size_t HISTORY_POINTS = 30;
+constexpr std::chrono::milliseconds REFRESH{1000};
+constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
+
+using SeriesLabels = std::set<std::string>;
+
+/// A published-history view that owns @p values, like SharedHistoryBuffer::view() hands out.
+template<typename T> [[nodiscard]] Domain::HistoryView<T> viewOf(std::vector<T> values)
+{
+    auto owner = std::make_shared<const std::vector<T>>(std::move(values));
+    const std::span<const T> span(*owner);
+    return Domain::HistoryView<T>(std::move(owner), span);
+}
+
+/// HISTORY_POINTS timestamps one second apart on historyFrameNowSeconds()'s clock (steady_clock
+/// seconds; that function itself may only be called inside a frame), the newest at now.
+[[nodiscard]] std::vector<double> timestampsToNow()
+{
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::vector<double> times;
+    times.reserve(HISTORY_POINTS);
+    for (std::size_t i = 0; i < HISTORY_POINTS; ++i)
+    {
+        times.push_back(now - static_cast<double>(HISTORY_POINTS - 1 - i));
+    }
+    return times;
+}
+
+/// HISTORY_POINTS samples of @p value.
+template<typename T> [[nodiscard]] std::vector<T> constant(T value)
+{
+    return std::vector<T>(HISTORY_POINTS, value);
+}
+
+class SystemSectionsRenderTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_ImGui = ImGui::CreateContext();
+        m_ImPlot = ImPlot::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;
+        io.LogFilename = nullptr;
+        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DeltaTime = 1.0F / 60.0F;
+        // No renderer: let ImGui build and own the font atlas itself.
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+        io.Fonts->AddFontDefault();
+    }
+
+    void TearDown() override
+    {
+        ImPlot::DestroyContext(m_ImPlot);
+        ImGui::DestroyContext(m_ImGui);
+    }
+
+    /// One frame of a window filling the display, running @p body inside it.
+    static void runFrame(const std::function<void()>& body)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::Begin("System", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        body();
+        ImGui::End();
+        ImGui::Render();
+    }
+
+    /// Every plot ImPlot has seen in this context, each as the set of its series' legend labels.
+    [[nodiscard]] static std::vector<SeriesLabels> plotsDrawn()
+    {
+        std::vector<SeriesLabels> plots;
+        ImPlotContext& context = *ImPlot::GetCurrentContext();
+        for (int i = 0; i < context.Plots.GetBufSize(); ++i)
+        {
+            ImPlotPlot* plot = context.Plots.GetByIndex(i);
+            if (plot == nullptr)
+            {
+                continue;
+            }
+            SeriesLabels labels;
+            for (int item = 0; item < plot->Items.GetLegendCount(); ++item)
+            {
+                labels.emplace(plot->Items.GetLegendLabel(item));
+            }
+            plots.push_back(std::move(labels));
+        }
+        return plots;
+    }
+
+    /// Moves the mouse to the right edge of the first plot ImPlot knows and renders @p draw twice.
+    /// Returns whether a tooltip window was shown.
+    [[nodiscard]] static bool hoverFirstPlot(const std::function<void()>& draw)
+    {
+        ImPlotContext& context = *ImPlot::GetCurrentContext();
+        if (context.Plots.GetBufSize() == 0 || context.Plots.GetByIndex(0) == nullptr)
+        {
+            ADD_FAILURE() << "no plot to hover";
+            return false;
+        }
+        const ImRect rect = context.Plots.GetByIndex(0)->PlotRect;
+        ImGui::GetIO().AddMousePosEvent(rect.Max.x - 2.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+        draw();
+        draw();
+        const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+        return tooltip != nullptr && tooltip->Active;
+    }
+
+  private:
+    ImGuiContext* m_ImGui = nullptr;
+    ImPlotContext* m_ImPlot = nullptr;
+};
+
+// ========== Memory & Swap ==========
+
+TEST(MemorySectionSmoothingTest, FirstSampleStartsAtTheClampedTarget)
+{
+    MemorySection::SmoothedMemory smoothed;
+    Domain::SystemSnapshot snap;
+    snap.memoryUsedPercent = 130.0; // a probe glitch above 100% is clamped, not charted
+    snap.memoryCachedPercent = -4.0;
+    snap.swapUsedPercent = 12.5;
+
+    MemorySection::updateSmoothedMemory(smoothed, snap, 0.016F, REFRESH);
+
+    EXPECT_TRUE(smoothed.initialized);
+    EXPECT_DOUBLE_EQ(smoothed.usedPercent, 100.0);
+    EXPECT_DOUBLE_EQ(smoothed.cachedPercent, 0.0);
+    EXPECT_DOUBLE_EQ(smoothed.swapPercent, 12.5);
+}
+
+TEST(MemorySectionSmoothingTest, LaterSamplesEaseByTheFrameAlpha)
+{
+    MemorySection::SmoothedMemory smoothed;
+    Domain::SystemSnapshot snap;
+    snap.memoryUsedPercent = 20.0;
+    snap.memoryCachedPercent = 10.0;
+    snap.swapUsedPercent = 0.0;
+    MemorySection::updateSmoothedMemory(smoothed, snap, 0.016F, REFRESH);
+
+    snap.memoryUsedPercent = 80.0;
+    snap.memoryCachedPercent = 40.0;
+    snap.swapUsedPercent = 50.0;
+    constexpr float DELTA = 0.1F;
+    MemorySection::updateSmoothedMemory(smoothed, snap, DELTA, REFRESH);
+
+    const double alpha = UI::Widgets::computeAlpha(DELTA, REFRESH);
+    ASSERT_GT(alpha, 0.0);
+    ASSERT_LT(alpha, 1.0);
+    EXPECT_DOUBLE_EQ(smoothed.usedPercent, 20.0 + (alpha * 60.0));
+    EXPECT_DOUBLE_EQ(smoothed.cachedPercent, 10.0 + (alpha * 30.0));
+    EXPECT_DOUBLE_EQ(smoothed.swapPercent, alpha * 50.0);
+}
+
+/// A publication whose memory series are all charted.
+[[nodiscard]] Domain::SystemPublication memoryPublication(bool withSwap = true)
+{
+    Domain::SystemPublication publication;
+    publication.timestamps = viewOf(timestampsToNow());
+    publication.memoryHistory = viewOf(constant(40.0F));
+    publication.memoryCachedHistory = viewOf(constant(15.0F));
+    if (withSwap)
+    {
+        publication.swapHistory = viewOf(constant(5.0F));
+    }
+    publication.snapshot.memoryTotalBytes = 16ULL << 30U;
+    publication.snapshot.memoryUsedBytes = 6ULL << 30U;
+    publication.snapshot.memoryUsedPercent = 40.0;
+    publication.snapshot.memoryCachedPercent = 15.0;
+    publication.snapshot.swapUsedPercent = 5.0;
+    return publication;
+}
+
+TEST_F(SystemSectionsRenderTest, MemorySectionWithoutAPublicationDrawsNothing)
+{
+    MemorySection::RenderContext ctx;
+    runFrame([&] { MemorySection::renderMemorySection(ctx, {}, UI::Widgets::historyFrameNowSeconds(), 3); });
+    EXPECT_TRUE(plotsDrawn().empty());
+}
+
+TEST_F(SystemSectionsRenderTest, MemorySectionDrawsUsedCachedSwapAndPeak)
+{
+    const Domain::SystemPublication publication = memoryPublication();
+    MemorySection::SmoothedMemory smoothed;
+    MemorySection::RenderContext ctx{.publication = &publication, .smoothedMemory = &smoothed};
+    MemorySection::updateSmoothedMemory(smoothed, publication.snapshot, 0.0F, REFRESH);
+    const auto draw = [&]
+    {
+        runFrame([&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
+    };
+    draw();
+    draw();
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Used", "Cached", "Swap", "Peak Used"}));
+    // The tooltip formats Used and Cached as bytes of the known RAM total.
+    EXPECT_TRUE(hoverFirstPlot(draw));
+}
+
+TEST_F(SystemSectionsRenderTest, MemorySectionLeavesOutSeriesWithNoHistory)
+{
+    // No swap on this machine, and an idle chart (0% used): no Swap series and no peak line.
+    Domain::SystemPublication publication = memoryPublication(false);
+    publication.memoryHistory = viewOf(constant(0.0F));
+    publication.snapshot.memoryTotalBytes = 0; // percent-only tooltip rows
+    MemorySection::RenderContext ctx{.publication = &publication};
+    const auto draw = [&]
+    {
+        runFrame([&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
+    };
+    draw();
+    draw();
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Used", "Cached"}));
+    EXPECT_TRUE(hoverFirstPlot(draw));
+}
+
+// ========== CPU Cores ==========
+
+[[nodiscard]] Domain::SystemSnapshot coresSnapshot(const std::vector<double>& totals)
+{
+    Domain::SystemSnapshot snap;
+    for (const double total : totals)
+    {
+        snap.cpuPerCore.push_back(Domain::CpuUsage{.totalPercent = total});
+    }
+    snap.coreCount = static_cast<int>(totals.size());
+    snap.cpuModel = "Test CPU";
+    return snap;
+}
+
+TEST(CpuCoresSmoothingTest, NullSmoothedVectorIsANoOp)
+{
+    CpuCoresSection::RenderContext ctx;
+    const auto snap = coresSnapshot({50.0});
+    CpuCoresSection::updateSmoothedPerCore(snap, ctx); // must not dereference null
+    EXPECT_EQ(ctx.smoothedPerCore, nullptr);
+}
+
+TEST(CpuCoresSmoothingTest, NewCoresStartAtTheirClampedValue)
+{
+    std::vector<double> smoothed;
+    CpuCoresSection::RenderContext ctx{.lastDeltaSeconds = 0.1F, .refreshInterval = REFRESH, .smoothedPerCore = &smoothed};
+
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({25.0, 140.0}), ctx);
+
+    ASSERT_EQ(smoothed.size(), 2U);
+    EXPECT_DOUBLE_EQ(smoothed[0], 25.0);
+    EXPECT_DOUBLE_EQ(smoothed[1], 100.0);
+}
+
+TEST(CpuCoresSmoothingTest, KnownCoresEaseAndAnAddedCoreStartsAtItsValue)
+{
+    std::vector<double> smoothed;
+    constexpr float DELTA = 0.1F;
+    CpuCoresSection::RenderContext ctx{.lastDeltaSeconds = DELTA, .refreshInterval = REFRESH, .smoothedPerCore = &smoothed};
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({10.0}), ctx);
+
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({90.0, 60.0}), ctx);
+
+    const double alpha = UI::Widgets::computeAlpha(DELTA, REFRESH);
+    ASSERT_EQ(smoothed.size(), 2U);
+    EXPECT_DOUBLE_EQ(smoothed[0], 10.0 + (alpha * 80.0));
+    EXPECT_DOUBLE_EQ(smoothed[1], 60.0); // not eased up from 0
+}
+
+TEST(CpuCoresSmoothingTest, AnUnreadCoreIsNaNAndRestartsAtItsValueWhenItReturns)
+{
+    std::vector<double> smoothed;
+    CpuCoresSection::RenderContext ctx{.lastDeltaSeconds = 0.1F, .refreshInterval = REFRESH, .smoothedPerCore = &smoothed};
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({30.0, 30.0}), ctx);
+
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({30.0, NOT_A_NUMBER}), ctx); // core 1 offline
+    ASSERT_EQ(smoothed.size(), 2U);
+    EXPECT_TRUE(std::isnan(smoothed[1]));
+
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({30.0, 75.0}), ctx); // back online
+    EXPECT_DOUBLE_EQ(smoothed[1], 75.0);
+}
+
+TEST(CpuCoresSmoothingTest, NoFrameDeltaSnapsToTheReading)
+{
+    std::vector<double> smoothed;
+    CpuCoresSection::RenderContext ctx{.lastDeltaSeconds = 0.1F, .refreshInterval = REFRESH, .smoothedPerCore = &smoothed};
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({10.0}), ctx);
+
+    ctx.lastDeltaSeconds = 0.0F; // the first frame after the tab is shown
+    CpuCoresSection::updateSmoothedPerCore(coresSnapshot({70.0}), ctx);
+
+    EXPECT_DOUBLE_EQ(smoothed[0], 70.0);
+}
+
+/// A publication with one constant history per core in @p totals.
+[[nodiscard]] Domain::SystemPublication coresPublication(const std::vector<double>& totals)
+{
+    Domain::SystemPublication publication;
+    publication.snapshot = coresSnapshot(totals);
+    publication.timestamps = viewOf(timestampsToNow());
+    for (const double total : totals)
+    {
+        publication.perCoreHistory.push_back(viewOf(constant(static_cast<float>(total))));
+    }
+    return publication;
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresWithoutAPublicationShowsTheEmptyState)
+{
+    CpuCoresSection::RenderContext ctx;
+    runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    EXPECT_TRUE(plotsDrawn().empty());
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresWithNoPerCoreDataDrawsNoChart)
+{
+    Domain::SystemPublication publication;
+    publication.snapshot.cpuModel = "Test CPU";
+    CpuCoresSection::RenderContext ctx{.publication = &publication};
+    runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    EXPECT_TRUE(plotsDrawn().empty());
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresDrawsOneChartPerCoreAndSmoothsThem)
+{
+    const Domain::SystemPublication publication = coresPublication({10.0, 20.0, 30.0, 40.0});
+    std::vector<double> smoothed;
+    CpuCoresSection::RenderContext ctx{.publication = &publication, .smoothedPerCore = &smoothed};
+    const auto draw = [&]
+    {
+        runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    };
+    draw();
+    draw();
+
+    EXPECT_EQ(plotsDrawn().size(), 4U);
+    ASSERT_EQ(smoothed.size(), 4U);
+    EXPECT_DOUBLE_EQ(smoothed[3], 40.0);
+    EXPECT_TRUE(hoverFirstPlot(draw));
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresChartsOnlyTheCoresTheProbeReported)
+{
+    // Ids 0 and 2 seen; slot 1 never reported (#1262), and core 2 has no current reading.
+    Domain::SystemPublication publication = coresPublication({10.0, 0.0, NOT_A_NUMBER});
+    publication.snapshot.seenCoreIds = {0, 2};
+    CpuCoresSection::RenderContext ctx{.publication = &publication}; // no smoothed values: raw readings
+    runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+
+    EXPECT_EQ(plotsDrawn().size(), 2U);
+}
+
+// ========== Disk I/O ==========
+
+TEST(StorageSmoothingTest, MissingPointersAreANoOp)
+{
+    StorageSection::RenderContext ctx;
+    StorageSection::updateSmoothedDiskIO(1.0, 2.0, 0.1F, ctx); // must not dereference null
+    EXPECT_EQ(ctx.smoothedReadBytesPerSec, nullptr);
+}
+
+TEST(StorageSmoothingTest, FirstSampleStartsAtTheTargetThenEases)
+{
+    double read = 0.0;
+    double write = 0.0;
+    bool initialized = false;
+    StorageSection::RenderContext ctx{.refreshInterval = REFRESH,
+                                      .smoothedReadBytesPerSec = &read,
+                                      .smoothedWriteBytesPerSec = &write,
+                                      .smoothedInitialized = &initialized};
+
+    StorageSection::updateSmoothedDiskIO(1000.0, 2000.0, 0.1F, ctx);
+    EXPECT_TRUE(initialized);
+    EXPECT_DOUBLE_EQ(read, 1000.0);
+    EXPECT_DOUBLE_EQ(write, 2000.0);
+
+    constexpr float DELTA = 0.1F;
+    StorageSection::updateSmoothedDiskIO(3000.0, 0.0, DELTA, ctx);
+    const double alpha = UI::Widgets::computeAlpha(DELTA, REFRESH);
+    EXPECT_DOUBLE_EQ(read, 1000.0 + (alpha * 2000.0));
+    EXPECT_DOUBLE_EQ(write, 2000.0 - (alpha * 2000.0));
+}
+
+[[nodiscard]] Domain::PerDiskHistory diskHistory(const std::string& name, double read, double write)
+{
+    return Domain::PerDiskHistory{
+        .deviceName = name, .readBytesPerSec = viewOf(constant(read)), .writeBytesPerSec = viewOf(constant(write))};
+}
+
+[[nodiscard]] Domain::DiskSnapshot diskSample(const std::string& name, double read, double write)
+{
+    Domain::DiskSnapshot disk;
+    disk.deviceName = name;
+    disk.readBytesPerSec = read;
+    disk.writeBytesPerSec = write;
+    return disk;
+}
+
+TEST_F(SystemSectionsRenderTest, StorageWithoutAPublicationShowsTheEmptyState)
+{
+    StorageSection::RenderContext ctx;
+    runFrame([&] { StorageSection::renderStorageSection(ctx); });
+    EXPECT_TRUE(plotsDrawn().empty());
+    EXPECT_FLOAT_EQ(StorageSection::diskGridMinimumHeight(nullptr, DISPLAY_WIDTH), 0.0F);
+}
+
+TEST_F(SystemSectionsRenderTest, StorageWithOneDiskDrawsTheAggregateChart)
+{
+    Domain::StoragePublication publication;
+    publication.timestamps = viewOf(timestampsToNow());
+    publication.totalReadHistory = viewOf(constant(4096.0));
+    publication.totalWriteHistory = viewOf(constant(1024.0));
+    publication.perDiskHistory.push_back(diskHistory("sda", 4096.0, 1024.0));
+    publication.snapshot.totalReadBytesPerSec = 4096.0;
+    publication.snapshot.totalWriteBytesPerSec = 1024.0;
+    double read = 0.0;
+    double write = 0.0;
+    bool initialized = false;
+    StorageSection::RenderContext ctx{.publication = &publication,
+                                      .smoothedReadBytesPerSec = &read,
+                                      .smoothedWriteBytesPerSec = &write,
+                                      .smoothedInitialized = &initialized};
+    const auto draw = [&]
+    {
+        runFrame([&] { StorageSection::renderStorageSection(ctx); });
+    };
+    draw();
+    draw();
+
+    EXPECT_FALSE(StorageSection::usesDiskGrid(&publication));
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Read", "Write"}));
+    // Rendering updated the aggregate smoothing it was handed.
+    EXPECT_TRUE(initialized);
+    EXPECT_DOUBLE_EQ(read, 4096.0);
+    EXPECT_DOUBLE_EQ(write, 1024.0);
+    EXPECT_TRUE(hoverFirstPlot(draw));
+}
+
+TEST_F(SystemSectionsRenderTest, StorageGridDrawsOneCellPerDiskAndTracksTheirSmoothing)
+{
+    Domain::StoragePublication publication;
+    publication.timestamps = viewOf(timestampsToNow());
+    publication.perDiskHistory.push_back(diskHistory("nvme0n1", 8192.0, 512.0));
+    publication.perDiskHistory.push_back(diskHistory("sdb", 100.0, 200.0));
+    // The latest sample lists the disks in another order, and sdb is missing from it (unplugging).
+    publication.snapshot.disks.push_back(diskSample("sdc", 1.0, 1.0));
+    publication.snapshot.disks.push_back(diskSample("nvme0n1", 8192.0, 512.0));
+
+    std::unordered_map<std::string, StorageSection::SmoothedDiskRates> perDisk;
+    perDisk["gone"] = StorageSection::SmoothedDiskRates{.readBytesPerSec = 1.0, .writeBytesPerSec = 1.0, .initialized = true};
+    perDisk["sdb"] = StorageSection::SmoothedDiskRates{.readBytesPerSec = 5.0, .writeBytesPerSec = 5.0, .initialized = true};
+    StorageSection::RenderContext ctx{.publication = &publication, .refreshInterval = REFRESH, .smoothedPerDisk = &perDisk};
+    runFrame([&] { StorageSection::renderStorageSection(ctx); });
+
+    EXPECT_TRUE(StorageSection::usesDiskGrid(&publication));
+    EXPECT_EQ(plotsDrawn().size(), 2U);
+    // A disk no longer in the history is forgotten; one missing from the latest sample starts afresh.
+    EXPECT_FALSE(perDisk.contains("gone"));
+    ASSERT_TRUE(perDisk.contains("sdb"));
+    EXPECT_FALSE(perDisk.at("sdb").initialized);
+    ASSERT_TRUE(perDisk.contains("nvme0n1"));
+    EXPECT_TRUE(perDisk.at("nvme0n1").initialized);
+    EXPECT_DOUBLE_EQ(perDisk.at("nvme0n1").readBytesPerSec, 8192.0);
+    EXPECT_DOUBLE_EQ(perDisk.at("nvme0n1").writeBytesPerSec, 512.0);
+}
+
+TEST_F(SystemSectionsRenderTest, StorageGridReservesAtLeastOneRowOfCells)
+{
+    Domain::StoragePublication single;
+    single.perDiskHistory.push_back(diskHistory("sda", 0.0, 0.0));
+    Domain::StoragePublication two = single;
+    two.perDiskHistory.push_back(diskHistory("sdb", 0.0, 0.0));
+
+    float singleHeight = -1.0F;
+    float gridHeight = 0.0F;
+    runFrame(
+        [&]
+        {
+            singleHeight = StorageSection::diskGridMinimumHeight(&single, DISPLAY_WIDTH);
+            gridHeight = StorageSection::diskGridMinimumHeight(&two, DISPLAY_WIDTH);
+        });
+
+    EXPECT_FLOAT_EQ(singleHeight, 0.0F); // no grid for one disk
+    // At least the heading line plus a cell taller than a text line.
+    EXPECT_GT(gridHeight, ImGui::GetTextLineHeightWithSpacing() * 3.0F);
+}
+
+// ========== Network (and the Disk I/O section it hosts) ==========
+
+[[nodiscard]] Domain::SystemSnapshot::InterfaceSnapshot interfaceSample(const std::string& name, double rx, double tx)
+{
+    Domain::SystemSnapshot::InterfaceSnapshot iface;
+    iface.name = name;
+    iface.displayName = name;
+    iface.rxBytesPerSec = rx;
+    iface.txBytesPerSec = tx;
+    iface.isUp = true;
+    iface.linkSpeedMbps = 1000;
+    iface.isVirtualKnown = true;
+    return iface;
+}
+
+/// A publication with machine totals and two physical interfaces; only eth0 has
+/// its own history.
+[[nodiscard]] Domain::SystemPublication networkPublication()
+{
+    Domain::SystemPublication publication;
+    publication.version = 7;
+    publication.timestamps = viewOf(timestampsToNow());
+    publication.netTxHistory = viewOf(constant(2048.0F));
+    publication.netRxHistory = viewOf(constant(8192.0F));
+    publication.perInterfaceTxHistory["eth0"] = viewOf(constant(1024.0F));
+    publication.perInterfaceRxHistory["eth0"] = viewOf(constant(4096.0F));
+    publication.snapshot.netTxBytesPerSec = 2048.0;
+    publication.snapshot.netRxBytesPerSec = 8192.0;
+    publication.snapshot.networkInterfaces.push_back(interfaceSample("eth0", 4096.0, 1024.0));
+    publication.snapshot.networkInterfaces.push_back(interfaceSample("wlan0", 0.0, 0.0));
+    return publication;
+}
+
+/// Everything the Network tab keeps between frames, wired into one context.
+struct NetworkInputs
+{
+    Domain::SystemPublication publication = networkPublication();
+    double sent = 0.0;
+    double received = 0.0;
+    bool netInitialized = false;
+    std::string selected;
+    bool showAll = false;
+    NetInterfaceUtils::InterfaceNameSet withTraffic;
+    NetworkSection::FrameCache cache;
+    NetworkSection::RenderContext ctx;
+
+    ~NetworkInputs() = default;
+    // ctx points at the members above, so a copy would point at the original's.
+    NetworkInputs(const NetworkInputs&) = delete;
+    NetworkInputs& operator=(const NetworkInputs&) = delete;
+    NetworkInputs(NetworkInputs&&) = delete;
+    NetworkInputs& operator=(NetworkInputs&&) = delete;
+
+    NetworkInputs()
+    {
+        ctx = NetworkSection::RenderContext{
+            .systemPublication = &publication,
+            .hasNetworkCounters = true,
+            .refreshInterval = REFRESH,
+            .smoothedNetSentBytesPerSec = &sent,
+            .smoothedNetRecvBytesPerSec = &received,
+            .smoothedNetInitialized = &netInitialized,
+            .selectedNetworkInterface = &selected,
+            .showAllInterfaces = &showAll,
+            .interfacesWithTraffic = &withTraffic,
+            .cache = &cache,
+        };
+    }
+};
+
+TEST_F(SystemSectionsRenderTest, NetworkWithoutCountersStillDrawsTheDiskSection)
+{
+    Domain::StoragePublication storage;
+    storage.timestamps = viewOf(timestampsToNow());
+    storage.totalReadHistory = viewOf(constant(1.0));
+    storage.totalWriteHistory = viewOf(constant(1.0));
+    NetworkSection::RenderContext ctx{.storagePublication = &storage, .hasNetworkCounters = false};
+    runFrame([&] { NetworkSection::renderNetworkSection(ctx); });
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U); // the disk chart only
+    EXPECT_EQ(plots[0], (SeriesLabels{"Read", "Write"}));
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkTotalDrawsSentAndReceivedAndFillsTheFrameCache)
+{
+    NetworkInputs inputs;
+    const auto draw = [&]
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    };
+    draw();
+    draw();
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U); // no storage publication: no disk chart
+    EXPECT_EQ(plots[0], (SeriesLabels{"Sent", "Received"}));
+    EXPECT_TRUE(inputs.netInitialized);
+    EXPECT_DOUBLE_EQ(inputs.sent, 2048.0);
+    EXPECT_DOUBLE_EQ(inputs.received, 8192.0);
+    // "Total" plus one selector entry per interface, built for this publication.
+    EXPECT_EQ(inputs.cache.publication, &inputs.publication);
+    EXPECT_EQ(inputs.cache.version, 7U);
+    EXPECT_EQ(inputs.cache.interfaceNames.size(), 3U);
+    // eth0 moved traffic, so it is remembered; idle wlan0 is not.
+    EXPECT_TRUE(inputs.withTraffic.contains("eth0"));
+    EXPECT_FALSE(inputs.withTraffic.contains("wlan0"));
+    EXPECT_TRUE(inputs.cache.rowsValid);
+    EXPECT_EQ(inputs.cache.statusRowText.size(), inputs.cache.statusRows.size());
+    EXPECT_TRUE(hoverFirstPlot(draw));
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkSelectedInterfaceDrawsItsLinesOverTheTotals)
+{
+    NetworkInputs inputs;
+    inputs.selected = "eth0";
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+
+    ASSERT_EQ(inputs.cache.interfaceNames.size(), 3U);
+    const std::string& eth0 = inputs.cache.interfaceNames[1];
+    EXPECT_EQ(inputs.cache.labelsName, eth0);
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{eth0 + " Sent", eth0 + " Received", "Sent (Total)", "Received (Total)"}));
+    // The bars follow the interface's own rates.
+    EXPECT_DOUBLE_EQ(inputs.sent, 1024.0);
+    EXPECT_DOUBLE_EQ(inputs.received, 4096.0);
+    EXPECT_EQ(inputs.cache.linkTextMbps, 1000U);
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkInterfaceWithoutHistoryFallsBackToTheTotals)
+{
+    NetworkInputs inputs;
+    inputs.selected = "wlan0";
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Sent (Total)", "Received (Total)"}));
+    EXPECT_NE(inputs.cache.unavailableTitle.find("history unavailable"), std::string::npos);
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkSelectionOfAVanishedInterfaceResetsToTotal)
+{
+    NetworkInputs inputs;
+    inputs.selected = "usb0"; // unplugged since it was picked
+    inputs.sent = 1.0;
+    inputs.received = 1.0;
+    inputs.netInitialized = true;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+
+    EXPECT_TRUE(inputs.selected.empty());
+    // The bars restart at the Total's values rather than easing from the old
+    // interface's.
+    EXPECT_DOUBLE_EQ(inputs.sent, 2048.0);
+    EXPECT_DOUBLE_EQ(inputs.received, 8192.0);
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Sent", "Received"}));
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkCacheRebuildsForANewPublicationAndShowAll)
+{
+    NetworkInputs inputs;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+
+    // A new publication with one more (idle, down) interface, and "Show all" on.
+    inputs.publication.version = 8;
+    auto down = interfaceSample("eth1", 0.0, 0.0);
+    down.isUp = false;
+    inputs.publication.snapshot.networkInterfaces.push_back(down);
+    inputs.showAll = true;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+
+    EXPECT_EQ(inputs.cache.version, 8U);
+    EXPECT_EQ(inputs.cache.interfaceNames.size(), 4U);
+    EXPECT_TRUE(inputs.cache.rowsShowAll);
+    EXPECT_EQ(inputs.cache.statusRows.size(), 3U); // every interface listed
+    // Still counted as hidden by default (down, never seen moving traffic), for the "Show all" label.
+    EXPECT_EQ(inputs.cache.hiddenCount, 1U);
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkTabSharesItsHeightWithTheDiskGrid)
+{
+    NetworkInputs inputs;
+    Domain::StoragePublication storage;
+    storage.timestamps = viewOf(timestampsToNow());
+    storage.perDiskHistory.push_back(diskHistory("sda", 10.0, 20.0));
+    storage.perDiskHistory.push_back(diskHistory("sdb", 30.0, 40.0));
+    UI::Widgets::PlotFillState fillState;
+    inputs.ctx.storagePublication = &storage;
+    inputs.ctx.fillState = &fillState;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+
+    EXPECT_EQ(inputs.ctx.fill, nullptr); // the fill scope is closed again
+    EXPECT_EQ(plotsDrawn().size(), 3U);  // the network chart and one cell per disk
+}
+} // namespace
+} // namespace App
