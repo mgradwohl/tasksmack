@@ -171,13 +171,13 @@ try {
 
     # ── #1186: app lifecycle -- warm-up before the trace, and a crash fails the capture ──────
     # Stub apps (batch files, run hidden): one exits at once with a code, one exits with a code
-    # once the trace has started, one runs until it is killed. Pinging localhost is the sleep, as
-    # timeout.exe needs a console input.
+    # once the capture window has begun, one runs until it is killed. Pinging localhost is the
+    # sleep, as timeout.exe needs a console input.
     #
     # Nothing here may depend on how fast a process starts or exits: under a parallel ctest run
     # a cmd.exe can take well over a second to start and exit (#1438). So the "exits later"
-    # stubs wait for a release file, which the stub trace start writes, rather than sleeping for
-    # a fixed time that a loaded machine could outlast before the warm-up check.
+    # stubs wait for a release file, written once the capture has passed its checks that the app
+    # is still running (see Invoke-StubCapture), rather than sleeping for a fixed time.
     $exitNow0 = Join-Path $root 'exit-now-0.cmd'
     Set-Content -LiteralPath $exitNow0 -Encoding ascii -Value "@exit /b 0"
     $exitNow3 = Join-Path $root 'exit-now-3.cmd'
@@ -212,12 +212,25 @@ try {
                 try { -not (Get-Process -Id $_.ProcessId -ErrorAction Stop).HasExited } catch { $false }
             }).Count -gt 0
     }
-    $traceStart = { $script:events.Add('start'); Set-Content -LiteralPath $releaseFile -Value 'go' }
+    $traceStart = { $script:events.Add('start') }
     $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubLeaf))") }
     function Invoke-StubCapture {
         param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart)
         $script:events.Clear()
         Remove-Item -LiteralPath $releaseFile -ErrorAction SilentlyContinue
+        # The "exits later" stubs are released only once Invoke-AppCapture has entered the capture
+        # window: it announces the window ('Recording for ...' or 'Exercise the application ...')
+        # after its post-trace-start HasExited check, so a released stub can no longer exit before
+        # that check. Releasing them from the trace start raced it. Commands resolve through the
+        # caller's scopes, so this Write-Host shadows the cmdlet only inside this call.
+        function Write-Host {
+            param([Parameter(Position = 0)][object]$Object)
+            $text = "$Object"
+            if ($text -like 'Recording for *' -or $text -like 'Exercise the application*') {
+                Set-Content -LiteralPath $releaseFile -Value 'go'
+            }
+            Microsoft.PowerShell.Utility\Write-Host $text
+        }
         $script:stubLeaf = Split-Path -Leaf $App
         $watch = [Diagnostics.Stopwatch]::StartNew()
         # 3>$null: the no-main-window warning is expected for a hidden stub.
@@ -225,6 +238,7 @@ try {
             -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup -MainWindowTimeoutSeconds 0 -InteractiveTimeoutSeconds 60 `
             -WindowStyle Hidden 3>$null
         $r.Elapsed = $watch.Elapsed.TotalSeconds
+        $r.Released = Test-Path -LiteralPath $releaseFile
         return $r
     }
 
@@ -244,6 +258,7 @@ try {
     # Exits with an error during a fixed window: fails, and the trace is stopped at once rather
     # than at the end of the 30 s window.
     $r = Invoke-StubCapture -App $exitLater3 -DurationSeconds 30 -WarmupSeconds 0
+    Assert-True $r.Released "The stub was never released: Invoke-AppCapture no longer announces the capture window as Invoke-StubCapture expects ($($r.EndReason))"
     Assert-True ($r.Failure -like '*capture window*' -and $r.ExitCode -eq 3) "A crash mid-window must fail: $($r.Failure) (exit $($r.ExitCode))"
     Assert-True (($script:events -join ',') -eq 'start,stop(app running: False)') "Trace events: $($script:events -join ', ')"
     Assert-True ($r.Elapsed -lt 20) "The crash must end the capture promptly, took $($r.Elapsed) s"
