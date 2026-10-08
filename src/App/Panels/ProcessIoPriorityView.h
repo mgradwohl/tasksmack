@@ -200,13 +200,19 @@ class ProcessIoPriorityView
     /// the one last read, a read was asked for (after an apply or a selection change), or
     /// IO_PRIORITY_REFRESH_SECONDS have passed since the last read at @p nowSeconds. A target whose
     /// start time is not known yet is not read -- every IProcessActions refuses it -- and has no
-    /// current value. Returns whether it read (or cleared) the value.
+    /// current value. On a different target the shown value goes back to the neutral default before the
+    /// read, so if the read fails the control never shows the previous process's class and level.
+    /// Returns whether it read (or cleared) the value.
     bool refreshCurrent(Platform::IProcessActions* actions, const Platform::ProcessTarget& target, double nowSeconds)
     {
         const bool sameTarget = (m_CurrentTarget.pid == target.pid) && (m_CurrentTarget.startTimeTicks == target.startTimeTicks);
         if (sameTarget && !m_ReadDue && (nowSeconds - m_LastReadSeconds) < Detail::IO_PRIORITY_REFRESH_SECONDS)
         {
             return false;
+        }
+        if (!sameTarget && !m_Changed)
+        {
+            m_Edit = {};
         }
         m_CurrentTarget = target;
         m_LastReadSeconds = nowSeconds;
@@ -266,7 +272,9 @@ class ProcessIoPriorityView
     }
 
     /// Drops a pending edit that may be for a process other than @p liveTarget, as
-    /// ProcessPriorityView::dropEditIfTargetMoved(). Returns whether it did.
+    /// ProcessPriorityView::dropEditIfTargetMoved(), and the edited class and level with it: the control
+    /// shows the neutral default until @p liveTarget's own value is read, never the edit made for another
+    /// process. Returns whether it did.
     bool dropEditIfTargetMoved(const Platform::ProcessTarget& liveTarget) noexcept
     {
         if (!m_Changed || Detail::isSameEditTarget(m_EditTarget, liveTarget))
@@ -275,6 +283,7 @@ class ProcessIoPriorityView
         }
         m_Changed = false;
         m_EditTarget = NO_TARGET;
+        m_Edit = {};
         return true;
     }
 

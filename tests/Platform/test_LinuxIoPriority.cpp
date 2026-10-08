@@ -109,6 +109,14 @@ TEST(LinuxIoPriorityTest, EncodeThenDecodeRoundTrips)
     }
 }
 
+TEST(LinuxIoPriorityTest, ClassNamesAreIoniceWords)
+{
+    EXPECT_EQ(IoPrio::className(IoPriorityClass::None), "none");
+    EXPECT_EQ(IoPrio::className(IoPriorityClass::Realtime), "realtime");
+    EXPECT_EQ(IoPrio::className(IoPriorityClass::BestEffort), "best-effort");
+    EXPECT_EQ(IoPrio::className(IoPriorityClass::Idle), "idle");
+}
+
 // --- Error messages ------------------------------------------------------------------------------
 
 TEST(LinuxIoPriorityTest, EpermForRealtimeNamesTheCapability)

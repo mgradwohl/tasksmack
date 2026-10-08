@@ -9,6 +9,7 @@
 #include "Platform/IProcessActions.h"
 
 #include <optional>
+#include <string_view>
 
 namespace Platform::IoPrio
 {
@@ -30,6 +31,23 @@ inline constexpr int MAX_CLASS = static_cast<int>(IoPriorityClass::Idle);
 [[nodiscard]] constexpr bool classHasLevels(IoPriorityClass ioClass) noexcept
 {
     return ioClass == IoPriorityClass::Realtime || ioClass == IoPriorityClass::BestEffort;
+}
+
+/// The class as ionice(1) names it: "none", "realtime", "best-effort" or "idle", for the logs.
+[[nodiscard]] constexpr std::string_view className(IoPriorityClass ioClass) noexcept
+{
+    switch (ioClass)
+    {
+    case IoPriorityClass::Realtime:
+        return "realtime";
+    case IoPriorityClass::BestEffort:
+        return "best-effort";
+    case IoPriorityClass::Idle:
+        return "idle";
+    case IoPriorityClass::None:
+    default:
+        return "none";
+    }
 }
 
 /// @p priority as the ioprio value ioprio_set(2) takes (IOPRIO_PRIO_VALUE(class, level)). The level is

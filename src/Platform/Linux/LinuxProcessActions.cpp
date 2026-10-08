@@ -295,13 +295,18 @@ constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O prio
 /// The outcome of a per-thread change (nice or I/O priority) to @p target, made through
 /// reniceThreads() after the identity check; @p pidfd is the one opened before that check, and
 /// @p firstErrorMessage the platform message for change.firstError, shown if any thread failed.
+/// @p setting names the value set, for the success log: "nice=5", or "class=idle, level=0".
 ///
 /// Once any thread was changed, it first confirms the target survived the change: if it exited
 /// meanwhile, the change may have reached another process, which matters more than which threads
 /// failed (#1228 review). Then exited workers, an incomplete relisting and threads that kept starting
 /// are each reported, and only a change that reached every thread is a success.
-[[nodiscard]] ProcessActionResult reportThreadChange(
-    const PriorityChange& change, const FdGuard& pidfd, const ProcessTarget& target, ChangeWording wording, std::string firstErrorMessage)
+[[nodiscard]] ProcessActionResult reportThreadChange(const PriorityChange& change,
+                                                     const FdGuard& pidfd,
+                                                     const ProcessTarget& target,
+                                                     ChangeWording wording,
+                                                     std::string_view setting,
+                                                     std::string firstErrorMessage)
 {
     if (change.changed > 0 || change.unconfirmed > 0)
     {
@@ -361,7 +366,7 @@ constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O prio
         }
         if (change.failed == 0)
         {
-            spdlog::info("Successfully set {} for PID {} ({} threads)", wording.lower, target.pid, change.changed);
+            spdlog::info("Successfully set {} ({}) for PID {} ({} threads)", wording.lower, setting, target.pid, change.changed);
             return ProcessActionResult::ok();
         }
     }
@@ -420,7 +425,12 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     {
         return threadListError(target, result.error(), NICE_WORDING);
     }
-    return reportThreadChange(*result, pidfd, target, NICE_WORDING, priorityErrorMessage(result->firstError, clampedNice, target.pid));
+    return reportThreadChange(*result,
+                              pidfd,
+                              target,
+                              NICE_WORDING,
+                              std::format("nice={}", clampedNice),
+                              priorityErrorMessage(result->firstError, clampedNice, target.pid));
 }
 
 ProcessActionResult LinuxProcessActions::setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level)
@@ -435,8 +445,10 @@ ProcessActionResult LinuxProcessActions::setIoPriority(const ProcessTarget& targ
     }
 
     // encode() holds the level to 0-7, and to 0 for the classes without levels.
-    const int ioprio = IoPrio::encode({.ioClass = ioClass, .level = level});
-    spdlog::debug("Setting I/O priority (class={}, level={}) for PID {}", static_cast<int>(ioClass), level, target.pid);
+    const IoPriority priority{.ioClass = ioClass, .level = IoPrio::classHasLevels(ioClass) ? Domain::Priority::clampIoLevel(level) : 0};
+    const int ioprio = IoPrio::encode(priority);
+    const std::string setting = std::format("class={}, level={}", IoPrio::className(ioClass), priority.level);
+    spdlog::debug("Setting I/O priority ({}) for PID {}", setting, target.pid);
 
     // As setPriority(): ioprio_set(2) has no pidfd form either, so the pidfd opened before the
     // identity check is asked afterwards whether the target survived the call.
@@ -461,7 +473,7 @@ ProcessActionResult LinuxProcessActions::setIoPriority(const ProcessTarget& targ
     {
         return threadListError(target, result.error(), IO_WORDING);
     }
-    return reportThreadChange(*result, pidfd, target, IO_WORDING, ioPriorityErrorMessage(result->firstError, ioClass, target.pid));
+    return reportThreadChange(*result, pidfd, target, IO_WORDING, setting, ioPriorityErrorMessage(result->firstError, ioClass, target.pid));
 }
 
 IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& target)

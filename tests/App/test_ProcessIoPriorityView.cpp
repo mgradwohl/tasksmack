@@ -213,6 +213,32 @@ TEST(ProcessIoPriorityViewTest, TheControlFollowsTheProcessUntilEdited)
     EXPECT_EQ(view.shownIoPriority(), BEST_EFFORT_4); // The edit stays
 }
 
+TEST(ProcessIoPriorityViewTest, AnotherProcessWhoseReadFailsShowsNoLeftoverValues)
+{
+    // Edited for A; the pane now shows B, and B's read fails. Neither A's edit nor A's own value may
+    // stay on screen under "current: unknown".
+    TestMocks::MockProcessActions mock;
+    ProcessIoPriorityView view;
+    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, TARGET_A);
+
+    mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
+    EXPECT_TRUE(view.dropEditIfTargetMoved(TARGET_B)); // As render() does: drop, read, sync
+    (void) view.refreshCurrent(&mock, TARGET_B, 0.1);
+    view.syncToProcess();
+    EXPECT_FALSE(view.hasPendingEdit());
+    EXPECT_FALSE(view.currentIoPriority().has_value());
+    EXPECT_EQ(view.shownIoPriority(), IoPriority{});
+
+    // Without an edit too: A's read value is not carried over to B.
+    ProcessIoPriorityView unedited;
+    readCurrent(unedited, mock, TARGET_A, IDLE);
+    mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
+    (void) unedited.refreshCurrent(&mock, TARGET_B, 0.1);
+    unedited.syncToProcess();
+    EXPECT_EQ(unedited.shownIoPriority(), IoPriority{});
+}
+
 // --- Editing -------------------------------------------------------------------------------------
 
 TEST(ProcessIoPriorityViewTest, PickingTheShownValueIsNoEdit)
