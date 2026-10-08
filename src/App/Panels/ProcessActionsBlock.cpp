@@ -96,7 +96,7 @@ float render(const Context& context, const ProcessDetailsLayout::ActionsBlockLay
     {
         // The result and error lines wrap at the block's edge instead of running out of it.
         ImGui::PushTextWrapPos(0.0F);
-        context.actionsView->renderControls(context.capabilities, *context.processName, context.target);
+        context.actionsView->renderControls(context.actions, context.capabilities, *context.processName, context.target);
         context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
         context.actionsView->renderResultLine();
         ImGui::PopTextWrapPos();

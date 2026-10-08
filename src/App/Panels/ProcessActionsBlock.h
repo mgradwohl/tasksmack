@@ -28,11 +28,12 @@ namespace ProcessActionsBlock
 {
 
 /// Whether the block has anything to offer: the platform can run at least one action, or set
-/// priority or I/O priority. Without, it is not drawn at all.
+/// priority or I/O priority, or trace system calls (shown even greyed out). Without, it is not drawn.
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
-           capabilities.canSetPriority || capabilities.canSetIoPriority;
+           capabilities.canSetPriority || capabilities.canSetIoPriority ||
+           capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
 }
 
 /// What the block's rows need across, in pixels, at the current font (needs an ImGui frame).

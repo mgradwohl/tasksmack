@@ -58,15 +58,16 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 // ============================================================================
 // Process & Task Icons
 // ============================================================================
-#define ICON_FA_LIST "\xef\x80\xba"  // U+f03a - List
-#define ICON_FA_BARS "\xef\x83\x89"  // U+f0c9 - Menu bars
-#define ICON_FA_GEAR "\xef\x80\x93"  // U+f013 - Settings gear
-#define ICON_FA_GEARS "\xef\x82\x85" // U+f085 - Multiple gears
-#define ICON_FA_SKULL "\xef\x95\x8c" // U+f54c - Kill process
-#define ICON_FA_STOP "\xef\x81\x8d"  // U+f04d - Stop
-#define ICON_FA_PLAY "\xef\x81\x8b"  // U+f04b - Play/Resume
-#define ICON_FA_PAUSE "\xef\x81\x8c" // U+f04c - Pause/Suspend
-#define ICON_FA_XMARK "\xef\x80\x8d" // U+f00d - Close/Terminate
+#define ICON_FA_LIST "\xef\x80\xba"     // U+f03a - List
+#define ICON_FA_BARS "\xef\x83\x89"     // U+f0c9 - Menu bars
+#define ICON_FA_GEAR "\xef\x80\x93"     // U+f013 - Settings gear
+#define ICON_FA_GEARS "\xef\x82\x85"    // U+f085 - Multiple gears
+#define ICON_FA_SKULL "\xef\x95\x8c"    // U+f54c - Kill process
+#define ICON_FA_STOP "\xef\x81\x8d"     // U+f04d - Stop
+#define ICON_FA_PLAY "\xef\x81\x8b"     // U+f04b - Play/Resume
+#define ICON_FA_PAUSE "\xef\x81\x8c"    // U+f04c - Pause/Suspend
+#define ICON_FA_XMARK "\xef\x80\x8d"    // U+f00d - Close/Terminate
+#define ICON_FA_TERMINAL "\xef\x84\xa0" // U+f120 - Terminal (trace system calls)
 
 // ============================================================================
 // Arrow & Direction Icons

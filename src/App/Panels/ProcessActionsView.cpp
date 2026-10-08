@@ -22,17 +22,67 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
                                 const Platform::ProcessTarget& target)
 {
     renderConfirmation(actions, target);
-    renderControls(capabilities, processName, target);
+    renderControls(actions, capabilities, processName, target);
 }
 
-void ProcessActionsView::renderControls(const Platform::ProcessActionCapabilities& capabilities,
+void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
+                                        const Platform::ProcessActionCapabilities& capabilities,
                                         const std::string& processName,
                                         const Platform::ProcessTarget& target)
 {
     // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
     // block's header and beside the Identity block that names the process (#1493). Its result line
     // goes under the block's last row (renderResultLine()).
-    renderButtons(capabilities, processName, target);
+    const bool anyButton = renderButtons(capabilities, processName, target);
+    renderSyscallTraceButton(actions, capabilities, target, anyButton);
+}
+
+void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* actions,
+                                                  const Platform::ProcessActionCapabilities& capabilities,
+                                                  const Platform::ProcessTarget& target,
+                                                  bool afterButtons)
+{
+    // Its state comes from capabilities found once, when the platform's actions were made: nothing is
+    // looked up on PATH per frame.
+    const Detail::SyscallTraceButton button = Detail::syscallTraceButton(capabilities, target);
+    if (button.state == Detail::SyscallTraceButtonState::Hidden)
+    {
+        return;
+    }
+
+    // The end of the button row at its own label's width (#182), not the others' shared width, which
+    // it would stretch; on a row of its own when it does not fit after them.
+    const float width = syscallTraceButtonWidth(capabilities);
+    if (afterButtons)
+    {
+        // Decided before SameLine(): SameLine() then NewLine() would leave the row's extent at the
+        // SameLine() position, an item spacing past the last button, and widen the block's content.
+        const float rowEnd = ImGui::GetItemRectMax().x;
+        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
+        {
+            ImGui::SameLine();
+        }
+    }
+    const bool disabled = button.state == Detail::SyscallTraceButtonState::Disabled;
+    ImGui::BeginDisabled(disabled);
+    const bool pressed = ImGui::Button(Detail::SYSCALL_TRACE_LABEL, ImVec2(width, 0.0F));
+    ImGui::EndDisabled();
+    if (pressed && !disabled)
+    {
+        launchSyscallTrace(actions, target);
+    }
+    // A disabled button still explains itself on hover.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    {
+        constexpr float TOOLTIP_WIDTH_EM = 30.0F;
+        ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * TOOLTIP_WIDTH_EM, 0.0F));
+        if (ImGui::BeginTooltip())
+        {
+            ImGui::TextWrapped("%s", button.tooltip);
+            ImGui::EndTooltip();
+        }
+    }
 }
 
 void ProcessActionsView::renderResultFeedback() const
@@ -90,6 +140,16 @@ namespace
 
 } // namespace
 
+float ProcessActionsView::syscallTraceButtonWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    if (capabilities.syscallTrace == Platform::SyscallTraceAvailability::Unsupported)
+    {
+        return 0.0F;
+    }
+    return ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(Detail::SYSCALL_TRACE_LABEL).x,
+                                                          ImGui::GetStyle().FramePadding.x);
+}
+
 float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     std::size_t count = 0;
@@ -97,10 +157,12 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
     {
         count += Detail::isActionAvailable(capabilities, button.action) ? 1U : 0U;
     }
-    return ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
+    const float actionRow =
+        ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
+    return ProcessDetailsLayout::computeActionButtonsWidth(actionRow, syscallTraceButtonWidth(capabilities));
 }
 
-void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,
+bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,
                                        const std::string& processName,
                                        const Platform::ProcessTarget& target)
 {
@@ -154,6 +216,7 @@ void ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities
             }
         }
     }
+    return !first;
 }
 
 } // namespace App

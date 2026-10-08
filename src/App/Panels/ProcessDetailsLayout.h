@@ -74,6 +74,19 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
     return (buttons * nonNegative(buttonWidthPx)) + ((buttons - 1.0F) * nonNegative(spacingPx));
 }
 
+/// Width the Actions block's buttons need: the process-control row @p actionRowPx, or the "Trace
+/// system calls (strace)" button @p traceButtonPx (0 where it is hidden) when that is wider (#182). The
+/// trace button follows the row when the block has room for both and starts a row of its own when it
+/// does not, so the block never needs the two side by side.
+[[nodiscard]] inline float computeActionButtonsWidth(float actionRowPx, float traceButtonPx) noexcept
+{
+    const auto nonNegative = [](float value) noexcept
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    return std::max(nonNegative(actionRowPx), nonNegative(traceButtonPx));
+}
+
 /// Width of the Linux nice-slider row in the Overview's Actions block, in ems: "High", a usable
 /// gradient track and "Low", which the slider fits to the width it is given (#1493).
 inline constexpr float PRIORITY_SLIDER_ROW_WIDTH_EM = 28.0F;

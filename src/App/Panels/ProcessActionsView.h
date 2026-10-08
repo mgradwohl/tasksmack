@@ -1,8 +1,9 @@
 #pragma once
 
 // Process Details' process-control buttons: Terminate / Kill / Suspend / Resume, the confirm dialog
-// and its dispatch, and the result line above them (#1179, slice 3). Drawn in the Overview's Actions
-// block (ProcessActionsBlock, #1493), beside the priority control (ProcessPriorityView).
+// and its dispatch, the "Trace system calls (strace)" button (Linux, #182), and the result line above
+// them (#1179, slice 3). Drawn in the Overview's Actions block (ProcessActionsBlock, #1493), beside
+// the priority control (ProcessPriorityView).
 //
 // The view owns only its UI state. The IProcessActions it dispatches to stays owned by the panel (the
 // composition root's Platform::makeProcessActions() result) and is passed in each frame, with the
@@ -16,6 +17,8 @@
 #include "UI/IconsFontAwesome6.h"
 
 #include <array>
+#include <cstdint>
+#include <format>
 #include <string>
 #include <utility>
 
@@ -90,6 +93,59 @@ inline constexpr std::array<ActionButtonSpec, 4> ACTION_BUTTONS{{
 /// How long a result line stays up after an action is dispatched, in seconds.
 inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
 
+/// The "Trace system calls (strace)" button's label, also its ImGui ID.
+inline constexpr const char* SYSCALL_TRACE_LABEL = ICON_FA_TERMINAL " Trace system calls (strace)";
+
+/// How the trace button is drawn.
+enum class SyscallTraceButtonState : std::uint8_t
+{
+    Hidden,   ///< The platform has no such action (Windows): nothing is drawn.
+    Disabled, ///< Drawn greyed out; the tooltip says why.
+    Enabled,
+};
+
+struct SyscallTraceButton
+{
+    SyscallTraceButtonState state = SyscallTraceButtonState::Hidden;
+    const char* tooltip = "";
+};
+
+/// The trace button for @p capabilities (found once, when the platform's actions were made) and the
+/// selected @p target: hidden where the platform has no tracer at all, disabled with the reason when
+/// strace or a terminal is missing or nothing is selected, otherwise enabled. It asks for no confirm:
+/// tracing only watches the process (pausing it just for the instant strace attaches).
+[[nodiscard]] constexpr SyscallTraceButton syscallTraceButton(const Platform::ProcessActionCapabilities& capabilities,
+                                                              const Platform::ProcessTarget& target) noexcept
+{
+    switch (capabilities.syscallTrace)
+    {
+    case Platform::SyscallTraceAvailability::Unsupported:
+        return {.state = SyscallTraceButtonState::Hidden, .tooltip = ""};
+    case Platform::SyscallTraceAvailability::NoTracer:
+    case Platform::SyscallTraceAvailability::NoTerminal:
+        return {.state = SyscallTraceButtonState::Disabled, .tooltip = Platform::syscallTraceUnavailableReason(capabilities.syscallTrace)};
+    case Platform::SyscallTraceAvailability::Available:
+        break;
+    }
+    if (target.pid <= 0)
+    {
+        return {.state = SyscallTraceButtonState::Disabled, .tooltip = "Select a process to trace"};
+    }
+    return {.state = SyscallTraceButtonState::Enabled,
+            .tooltip = "Open a terminal running strace attached to this process, showing each system call it makes. "
+                       "Close the window or press Ctrl+C there to stop tracing; the process keeps running."};
+}
+
+/// "Opened strace for PID 321 in a new terminal" / "Could not trace PID 321: ...".
+[[nodiscard]] inline ActionResultMessage formatSyscallTraceResult(std::int32_t pid, const Platform::ProcessActionResult& result)
+{
+    if (result.success)
+    {
+        return {.ok = true, .text = std::format("Opened strace for PID {} in a new terminal", pid)};
+    }
+    return {.ok = false, .text = std::format("Could not trace PID {}: {}", pid, result.errorMessage)};
+}
+
 } // namespace Detail
 
 /// The Actions block's buttons, confirm dialog and result line for the process Process Details shows.
@@ -121,7 +177,12 @@ class ProcessActionsView
     /// result line or the confirm dialog. The caller draws the header and names the process (the
     /// Overview's Actions block, #1493), draws renderResultLine() under its last row, and calls
     /// renderConfirmation() every frame from a scope that always runs.
-    void renderControls(const Platform::ProcessActionCapabilities& capabilities,
+    ///
+    /// The row ends with "Trace system calls (strace)" where the platform has it (#182), at its own
+    /// label's width; like any button that does not fit, it starts a new row. It has no confirm, so a
+    /// press launches through @p actions at once (null: the result says actions are unavailable).
+    void renderControls(Platform::IProcessActions* actions,
+                        const Platform::ProcessActionCapabilities& capabilities,
                         const std::string& processName,
                         const Platform::ProcessTarget& target);
 
@@ -131,9 +192,15 @@ class ProcessActionsView
         renderResultFeedback();
     }
 
-    /// Width of the row renderControls() draws for @p capabilities, at the current font (needs an
-    /// ImGui frame); 0 when the platform can run none of the actions.
+    /// Width the buttons renderControls() draws for @p capabilities need, at the current font (needs
+    /// an ImGui frame): the process-control row, or the trace button alone when that is wider -- the
+    /// trace button starts a row of its own whenever it does not fit after them, so the block never
+    /// needs both on one line. 0 when the platform has none of the buttons.
     [[nodiscard]] static float buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities);
+
+    /// Width of the trace button for @p capabilities at the current font (needs an ImGui frame), or 0
+    /// where it is hidden (Detail::SyscallTraceButtonState::Hidden).
+    [[nodiscard]] static float syscallTraceButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
 
     /// Submits the confirm dialog while a confirm is pending, and closes it unconfirmed after a
     /// selection change or when @p liveTarget is no longer the captured process; a confirmed action is
@@ -245,6 +312,18 @@ class ProcessActionsView
         cancelConfirm();
     }
 
+    /// The trace button was pressed: open strace on @p target through @p actions (null gives an
+    /// "unavailable" error) and show the outcome in the result line. Returns once the terminal has
+    /// started; never waits for the trace.
+    void launchSyscallTrace(Platform::IProcessActions* actions, const Platform::ProcessTarget& target)
+    {
+        const Platform::ProcessActionResult result = (actions != nullptr)
+                                                       ? actions->launchSyscallTrace(target)
+                                                       : Platform::ProcessActionResult::error("Process actions unavailable");
+        m_LastResult = Detail::formatSyscallTraceResult(target.pid, result);
+        m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
+    }
+
     /// Whether the confirm dialog is open, or requested to open this frame.
     [[nodiscard]] bool confirmRequested() const noexcept
     {
@@ -272,9 +351,14 @@ class ProcessActionsView
   private:
     void renderResultFeedback() const;
     void renderConfirmDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
-    void renderButtons(const Platform::ProcessActionCapabilities& capabilities,
+    /// Returns whether any button was drawn, so the trace button knows whether to follow on the row.
+    bool renderButtons(const Platform::ProcessActionCapabilities& capabilities,
                        const std::string& processName,
                        const Platform::ProcessTarget& target);
+    void renderSyscallTraceButton(Platform::IProcessActions* actions,
+                                  const Platform::ProcessActionCapabilities& capabilities,
+                                  const Platform::ProcessTarget& target,
+                                  bool afterButtons);
 
     bool m_ShowConfirmDialog = false;
     bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open

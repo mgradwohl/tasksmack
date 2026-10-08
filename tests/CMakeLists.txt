@@ -283,6 +283,8 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
+    Platform/test_SyscallTrace.cpp
+    Platform/test_DetachedSpawn.cpp
     Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
@@ -329,6 +331,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DetachedSpawn.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp

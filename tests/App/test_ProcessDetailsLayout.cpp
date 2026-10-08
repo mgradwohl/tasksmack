@@ -117,6 +117,19 @@ TEST(ProcessDetailsLayoutTest, ActionButtonsSurviveDegenerateInput)
     EXPECT_FLOAT_EQ(computeActionButtonRowWidth(nan, 2, nan), 0.0F);
 }
 
+TEST(ProcessDetailsLayoutTest, TraceButtonCountsOnlyWhenWiderThanTheRow)
+{
+    // The trace button (#182) follows the row when there is room and starts its own row when not, so
+    // the buttons need the wider of the two, never their sum.
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::computeActionButtonsWidth(368.0F, 0.0F), 368.0F);   // Hidden (Windows)
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::computeActionButtonsWidth(368.0F, 210.0F), 368.0F); // Linux: under the row
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::computeActionButtonsWidth(180.0F, 210.0F), 210.0F); // wider than a short row
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::computeActionButtonsWidth(0.0F, 210.0F), 210.0F);   // the only button
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::computeActionButtonsWidth(nan, -5.0F), 0.0F);
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::computeActionButtonsWidth(368.0F, std::numeric_limits<float>::infinity()), 368.0F);
+}
+
 // ========== Selected-process identity (#927) ==========
 
 using ProcessDetailsLayout::snapshotIsSelectedProcess;

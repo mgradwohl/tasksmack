@@ -250,8 +250,9 @@ Right-click any process row for Terminate, Kill, Stop and Resume. The **Actions*
 | Resume (SIGCONT) | ✅ | ❌ |
 | Change priority (nice): Process Details, or several selected processes from the row menu | ✅ | ✅ (mapped) |
 | Change I/O priority (ionice class and level), Process Details only | ✅ | ❌ |
+| Trace system calls (strace), Process Details only | ✅ (needs `strace` and a terminal emulator) | ❌ |
 
-In Process Details the Actions block sits beside the Identity and Runtime blocks, no taller than they are, so the charts keep their height: a row with the Terminate and Kill buttons (and Suspend and Resume on Linux), then **Priority** with its control and **Apply** on one line, with the current priority after it (on Linux, then **I/O priority** the same way). A result or error message appears under the last row. When the window is too narrow for three blocks side by side, or the block needs more height than Identity and Runtime have (as the Linux nice slider and I/O priority rows together can), the Actions block moves onto its own row under them, at its full height. **F9** brings the Overview tab forward to show its Kill confirmation.
+In Process Details the Actions block sits beside the Identity and Runtime blocks, no taller than they are, so the charts keep their height: a row with the Terminate and Kill buttons (and Suspend and Resume on Linux, followed by **Trace system calls (strace)**, which takes a row of its own when there is no room for it after them), then **Priority** with its control and **Apply** on one line, with the current priority after it (on Linux, then **I/O priority** the same way). A result or error message appears under the last row. When the window is too narrow for three blocks side by side, or the block needs more height than Identity and Runtime have (as the Linux nice slider and I/O priority rows together can), the Actions block moves onto its own row under them, at its full height. **F9** brings the Overview tab forward to show its Kill confirmation.
 
 Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
 
@@ -272,6 +273,18 @@ On Linux, the Actions block of Process Details has an **I/O Priority** control u
 - **Apply** sets the class and level on every thread of the process. Like the nice control, it applies only to the process the edit was made for. Selecting another process discards an unapplied edit.
 
 Lowering a process you own (Idle, or a higher best-effort level) needs no privilege. Two changes need `CAP_SYS_NICE` (or root): setting **Realtime**, and changing **another user's process**. Without that privilege the change is refused with an error saying so. Windows has no equivalent, so the control is not shown there.
+
+#### Tracing system calls (Linux)
+
+The Actions block of Process Details (on the Overview tab) has a **Trace system calls (strace)** button at the end of its button row (on a row of its own when the block is too narrow for it there), as htop's `s` key does: it opens a new terminal window running `strace -f -tt -p <PID>` attached to that process, so you can watch each system call it makes, timestamped, across all its threads. Close the window, or press Ctrl+C in it, to stop tracing; the process carries on running. No confirmation is asked, because tracing only observes (the process pauses for an instant while strace attaches, and runs slower while it is traced).
+
+- TaskSmack looks for `strace` and a terminal once, when it starts, on `PATH` (relative `PATH` entries are ignored). The terminal is the one `$TERMINAL` names -- a single program name or absolute path, with no arguments -- else `x-terminal-emulator`, else the first installed of gnome-terminal, ptyxis, konsole, xfce4-terminal, mate-terminal, kitty, alacritty, foot, wezterm and xterm. If either is missing the button stays visible but greyed out, and its tooltip says what to install; restart TaskSmack after installing it. On Windows the button is not shown at all.
+- The process is checked by PID and start time, like every other action, so one that has exited (or whose PID now belongs to another process) is refused.
+- Attaching uses ptrace, which the kernel restricts. TaskSmack checks the usual restrictions first and explains them in the result line instead of opening a window that would close at once:
+  - Without `CAP_SYS_PTRACE`, the kernel allows tracing only a process whose real, effective and saved user IDs and group IDs all match yours and that has not changed credentials. Anything else -- another user's process, or one that changed its user or group IDs -- needs `CAP_SYS_PTRACE`: TaskSmack running as root with that capability (root keeps it across exec), or a `strace` binary that carries it as a file capability. The capability is what counts, not EUID 0: root with `CAP_SYS_PTRACE` dropped (common in containers and hardened services) is limited like any other user, and TaskSmack treats root whose capabilities it cannot read the same way.
+  - Yama's `/proc/sys/kernel/yama/ptrace_scope` -- 1 by default on Ubuntu -- lets a process attach only to its own descendants unless it has `CAP_SYS_PTRACE`. strace runs in a terminal TaskSmack starts, so it is never the traced process's ancestor: at 1 or 2 only a `strace` with `CAP_SYS_PTRACE` can trace, and at 3 nobody can. `sudo sysctl kernel.yama.ptrace_scope=0` relaxes this until the next reboot, for every program, so weigh that before doing it.
+  - TaskSmack never asks for or raises privileges itself.
+- strace and the terminal are started directly, never through a shell, so nothing in a process's name can be run as a command. The terminal inherits none of TaskSmack's open files.
 
 ### Themes and Configuration
 
@@ -307,6 +320,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |
 | Process terminate / kill | ✅ | ✅ |
 | Process stop / resume (SIGSTOP/SIGCONT) | ✅ | ❌ |
+| Trace system calls (Process Details) | ✅ (`strace` in a terminal; greyed out with the reason when strace or a terminal is missing; ptrace rules apply: own processes, or root / `CAP_SYS_PTRACE`, and Yama's `ptrace_scope`) | ❌ (button hidden) |
 | I/O wait time (`iowait`) | ✅ (shown as its own band; counted as idle, not busy, so CPU % matches Windows) | ❌ (Windows concept does not exist) |
 | Steal time (`steal`) | ✅ | ❌ |
 | Load average (1/5/15 min) | ✅ | ❌ |
