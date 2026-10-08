@@ -47,6 +47,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
 
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
 else()

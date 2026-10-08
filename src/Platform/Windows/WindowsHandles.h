@@ -1,7 +1,7 @@
 #pragma once
 
-// The Windows platform layer's owners for raw Win32 handles (#1183): one kernel-HANDLE owner and one
-// module owner, shared by every probe, instead of a hand-rolled wrapper per file.
+// The Windows platform layer's owners for raw Win32 handles (#1183): one kernel-HANDLE owner, one
+// SC_HANDLE owner (#800) and one module owner, shared by every probe, instead of a hand-rolled wrapper per file.
 
 #ifdef _WIN32
 // clang-format off
@@ -125,6 +125,31 @@ template<typename Traits> class UniqueResource
 
 /// An owned kernel object handle. Null and INVALID_HANDLE_VALUE are both "no handle".
 using UniqueHandle = UniqueResource<KernelHandleTraits>;
+
+/// Closes Service Control Manager and service handles (OpenSCManagerW, OpenServiceW) with
+/// CloseServiceHandle (#800). Both report failure as null.
+struct ServiceHandleTraits
+{
+    using Type = SC_HANDLE;
+
+    [[nodiscard]] static Type invalid() noexcept
+    {
+        return nullptr;
+    }
+
+    [[nodiscard]] static bool isValid(Type handle) noexcept
+    {
+        return handle != nullptr;
+    }
+
+    static void close(Type handle) noexcept
+    {
+        CloseServiceHandle(handle);
+    }
+};
+
+/// An owned SC_HANDLE.
+using UniqueServiceHandle = UniqueResource<ServiceHandleTraits>;
 
 /// Calls FreeLibrary on a module LoadLibrary returned.
 struct ModuleDeleter
