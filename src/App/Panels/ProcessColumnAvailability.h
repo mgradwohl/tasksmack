@@ -45,7 +45,7 @@ gpuSupport(bool hasGpuModel, bool perProcessKnownUnsupported, bool perProcessUti
 
 /// GpuSupport for formatting one snapshot generation's cells, from the support published with it
 /// (Domain::ProcessModel::GpuSupport): its GPU fields were read under that, which can differ from the
-/// GPU model's current state while GPU merges are throttled (#1210). No per-process data means no
+/// GPU model's current state, which moves on with each GPU sample (#1210, #1417). No per-process data means no
 /// utilization either.
 [[nodiscard]] constexpr GpuSupport gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = false) noexcept
 {

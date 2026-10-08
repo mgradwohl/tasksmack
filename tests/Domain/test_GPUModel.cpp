@@ -213,6 +213,126 @@ TEST(GPUModelTest, AFailedProcessGpuReadStillReportsTheSupportItRanUnder)
     EXPECT_ANY_THROW(static_cast<void>(model.readProcessGPUCounters()));
 }
 
+// =============================================================================
+// Per-process GPU publication (#1417): the GPU sampler is the single owner of GPU acquisition
+// =============================================================================
+
+namespace
+{
+
+/// A probe with GPU0 ("Test GPU", also known by a LUID id) and pid 100 using it, per-process supported.
+std::unique_ptr<MockGPUProbe> makePerProcessProbe()
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    probe->withCapabilities(caps);
+    probe->withSharedMemoryGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", 1024ULL * 1024);
+    return probe;
+}
+
+} // namespace
+
+TEST(GPUModelTest, NothingIsPublishedPerProcessBeforeTheFirstRefresh)
+{
+    const Domain::GPUModel model(makePerProcessProbe());
+    const auto publication = model.processGPUPublication();
+    ASSERT_NE(publication, nullptr);
+    EXPECT_EQ(publication->version, 0U);
+    EXPECT_EQ(model.processGPUPublicationVersion(), 0U);
+    EXPECT_TRUE(publication->counters.empty());
+}
+
+TEST(GPUModelTest, RefreshPublishesPerProcessCountersWithTheirCaptureTime)
+{
+    const auto start = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    auto probe = makePerProcessProbe();
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+
+    model.refreshAt(start);
+    auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_EQ(model.processGPUPublicationVersion(), 1U);
+    EXPECT_EQ(publication->captureTime, start);
+    EXPECT_TRUE(publication->perProcessSupported);
+    EXPECT_TRUE(publication->utilizationSupported);
+    EXPECT_FALSE(publication->readFailed);
+    ASSERT_EQ(publication->counters.size(), 1U);
+    EXPECT_EQ(publication->counters[0].pid, 100);
+    ASSERT_EQ(publication->adapters.size(), 1U);
+    EXPECT_EQ(publication->adapters[0].id, "GPU0");
+    EXPECT_EQ(publication->adapters[0].name, "Test GPU");
+    EXPECT_TRUE(publication->adapters[0].isIntegrated);
+    EXPECT_TRUE(publication->adapters[0].memoryIsShared);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U) << "one per-process read per refresh";
+
+    // Each refresh publishes a newer generation; one already handed out stays as it was.
+    rawProbe->withProcessGPU(200, "GPU0", 2048);
+    model.refreshAt(start + std::chrono::seconds(1));
+    const auto next = model.processGPUPublication();
+    EXPECT_EQ(next->version, 2U);
+    EXPECT_EQ(next->captureTime, start + std::chrono::seconds(1));
+    EXPECT_EQ(next->counters.size(), 2U);
+    EXPECT_EQ(publication->counters.size(), 1U);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 2U);
+}
+
+TEST(GPUModelTest, UnsupportedPerProcessDataIsPublishedWithoutReadingTheProbe)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("GPU0", "Intel DRM").withProcessGPU(100, "GPU0", 1024); // Capabilities: none per process
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+
+    model.refresh();
+    const auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_FALSE(publication->perProcessSupported);
+    EXPECT_FALSE(publication->readFailed);
+    EXPECT_TRUE(publication->counters.empty());
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0U);
+}
+
+TEST(GPUModelTest, AFailingPerProcessReadIsPublishedAsAFailedReadAndTheSystemStillUpdates)
+{
+    auto probe = makePerProcessProbe();
+    probe->withProcessCountersThrowing();
+    Domain::GPUModel model(std::move(probe));
+
+    ASSERT_NO_THROW(model.refresh());
+    const auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_TRUE(publication->perProcessSupported);
+    EXPECT_TRUE(publication->readFailed);
+    EXPECT_TRUE(publication->counters.empty());
+    EXPECT_EQ(model.publicationVersion(), 1U) << "the system GPU data is published regardless";
+    EXPECT_EQ(model.snapshots().size(), 1U);
+}
+
+TEST(GPUModelTest, AFailingSystemReadStillPublishesThePerProcessCounters)
+{
+    auto probe = makePerProcessProbe();
+    probe->withCountersThrowing();
+    Domain::GPUModel model(std::move(probe));
+
+    ASSERT_NO_THROW(model.refresh());
+    EXPECT_EQ(model.publicationVersion(), 0U) << "no system reading, nothing published for it";
+    const auto publication = model.processGPUPublication();
+    EXPECT_EQ(publication->version, 1U);
+    EXPECT_FALSE(publication->readFailed);
+    EXPECT_EQ(publication->counters.size(), 1U);
+}
+
+TEST(GPUModelTest, NoProbePublishesNothingPerProcess)
+{
+    Domain::GPUModel model(nullptr);
+    model.refresh();
+    EXPECT_EQ(model.processGPUPublicationVersion(), 0U);
+    EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersSkipsProbeWhenCapabilityUnsupported)
 {
     // Regression test for #843 Phase 3b: backends that can never return per-process data

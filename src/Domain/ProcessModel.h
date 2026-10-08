@@ -23,8 +23,9 @@
 namespace Domain
 {
 
-// Forward declaration
+// Forward declarations
 class GPUModel;
+struct ProcessGPUPublication;
 
 struct ProcessSystemHistories
 {
@@ -129,7 +130,8 @@ class ProcessModel : public ISamplable
     /// untouched. With @p outCapabilities, the probe's capabilities published with that generation
     /// are copied into it under the same lock (#1254), so a reader keeps them current at no extra cost.
     /// With @p outGpuSupport, likewise the GPU support that generation's GPU fields were read under
-    /// (#1210): not the GPU model's current state, which can differ while merges are throttled.
+    /// (#1210): not the GPU model's current state, which can have moved on since its last
+    /// per-process publication (#1417).
     [[nodiscard]] bool tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                                std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                                std::uint64_t& outVersion,
@@ -206,13 +208,10 @@ class ProcessModel : public ISamplable
     /// tryCopySystemHistoriesIfNewer() instead.
     [[nodiscard]] Platform::ProcessCapabilities capabilities() const;
 
-    /// Set GPU model for per-process GPU data.
-    /// When set, refresh() automatically queries GPU counters and merges them.
+    /// Set GPU model for per-process GPU data. When set, refresh() merges the per-process GPU
+    /// counters the GPU model's own sampler last published (GPUModel::processGPUPublication()); it
+    /// never calls the GPU probe, so a slow GPU driver read doesn't hold up the process list (#1417).
     void setGPUModel(std::shared_ptr<GPUModel> gpuModel);
-
-    /// Hint whether interactive resize/move redraw is currently active.
-    /// Allows throttling expensive GPU merge work during interactions.
-    void setInteractionActive(bool active) noexcept;
 
   private:
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
@@ -237,6 +236,7 @@ class ProcessModel : public ISamplable
         double netSentBytesPerSec = 0.0;      // last network rates, held while the probe's read is cached
         double netReceivedBytesPerSec = 0.0;
         std::uint64_t generation = 0; // refresh generation when last seen
+        Clock::time_point firstSeen;  // sample time of the generation that first listed it (#1417)
     };
 
     // Key for m_PerProcessState: the exact (pid, startTime) identity, distinct from the
@@ -295,11 +295,9 @@ class ProcessModel : public ISamplable
     // from m_SnapshotVersion, whose generations each have a watched sample (watchedSamplesSince()).
     std::uint64_t m_SystemHistoryVersion = 0;
     std::atomic<std::uint64_t> m_PublishedSystemHistoryVersion{0};
-    std::atomic<bool> m_InteractionActive{false};
     std::atomic<double> m_MaxSaneNetworkRateBps{Sampling::MAX_SANE_RATE_BPS_DEFAULT};
-    Clock::time_point m_LastGpuMergeTime;
-    bool m_HasLastGpuMergeTime = false;
     bool m_GpuMergeFailing = false; // guarded by m_SamplingMutex; logs a failing GPU merge once per streak (#1142)
+    bool m_GpuDataStale = false;    // guarded by m_SamplingMutex; logs stale per-process GPU data once per streak (#1417)
 
     // The watched process (watchProcess()) and its latest samples, oldest first. A fixed ring --
     // m_WatchedSampleStart is the oldest slot -- so recording a sample never allocates while the
@@ -321,16 +319,23 @@ class ProcessModel : public ISamplable
     /// Requires m_SamplingMutex held.
     void computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime);
 
-    /// Merges the per-process GPU counters into @p snapshots. @p outSupport is set to the support
-    /// they were read under as soon as the read returns, so a throw later in the merge leaves it set.
-    static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel, GpuSupport& outSupport);
+    /// Merges @p publication's per-process GPU counters into @p snapshots. @p firstSeen holds, for
+    /// each snapshot, when this model first listed that process: a process first listed after the
+    /// publication was read, and absent from it, has GPU fields that were never read (#1210, #1417).
+    static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots,
+                             const std::vector<Clock::time_point>& firstSeen,
+                             const ProcessGPUPublication& publication);
 
-    /// mergeGPUData(), contained: a throwing GPU merge must not stop process publication (#1142).
-    /// On a throw the snapshots are published without GPU fields. The returned support keeps the
-    /// per-process support the failed read ran under, with readFailed set when that was supported,
-    /// so the GPU cells read as unreadable rather than as unsupported (#1210). Requires
-    /// m_SamplingMutex held.
-    GpuSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel);
+    /// The per-process GPU fields of the generation sampled at @p now, from @p gpuModel's newest
+    /// publication (#1417) -- never a probe call -- and the support they were read under (#1210).
+    /// Nothing published yet: no fields read. Older than Sampling::PROCESS_GPU_DATA_MAX_AGE_MS, or a
+    /// failed read: published without GPU fields and marked readFailed, so the cells read as
+    /// unreadable rather than as measured zeros or as unsupported. Contained: a throwing merge
+    /// (bad_alloc) must not stop process publication (#1142). Requires m_SamplingMutex held.
+    GpuSupport mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots,
+                                     const std::vector<Clock::time_point>& firstSeen,
+                                     const GPUModel& gpuModel,
+                                     Clock::time_point now);
 
     /// Records @p sample as the newest watched sample, returning the one it displaced from the ring
     /// (for the caller to destroy after releasing the lock). Requires m_Mutex held exclusively.

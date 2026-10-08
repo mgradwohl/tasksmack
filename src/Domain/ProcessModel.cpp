@@ -27,7 +27,6 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -104,6 +103,125 @@ struct NetworkInterval
     default:
         return Priority::PriorityClass::None;
     }
+}
+
+// One process's GPU usage, aggregated across GPUs.
+// One rule with the adapter figures beside them on the GPU tab (#1164): utilization is the
+// busiest GPU's (an adapter's is 0-100; a sum passed 100% while Process Details clamped it), and
+// memory counts, per GPU, the segment that GPU's "used" figure counts, as the platform says
+// (GPUInfo::memoryIsShared: shared on a Windows integrated GPU, dedicated elsewhere) -- never
+// inferred from the reading, so a 0 shared reading stays a shared 0 -- and a process never shows
+// more than its adapters use. The dedicated and shared amounts are kept apart as well.
+struct AggregatedGPU
+{
+    double maxUtilPercent = 0.0;
+    std::uint64_t totalMemoryBytes = 0;
+    std::uint64_t totalDedicatedMemoryBytes = 0;
+    std::uint64_t totalSharedMemoryBytes = 0;
+    double maxEncoderUtil = 0.0;
+    double maxDecoderUtil = 0.0;
+    std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
+    std::vector<std::string> allEngines;
+    std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
+};
+
+// What the per-process breakdown shows about one adapter.
+struct GpuIdentity
+{
+    std::string name;
+    bool isIntegrated = false;
+    bool memoryIsShared = false;
+};
+
+// The publication's per-process counters aggregated by pid (a process may use several GPUs).
+[[nodiscard]] std::unordered_map<std::int32_t, AggregatedGPU> aggregateProcessGPUUsage(const ProcessGPUPublication& publication)
+{
+    // GPU ID -> adapter. PDH returns LUID-based IDs (e.g., "GPU_0x00000000_0x0000F78E"), and DXGI
+    // provides both index-based IDs ("GPU0") and LUID-based IDs, so both map to the same adapter.
+    // The integrated flag travels with the name. It used to be left out, so PerGPUUsage kept its
+    // default of false and the process details pane labelled every adapter "Discrete", including
+    // one the system GPU tab correctly called integrated (#963).
+    std::unordered_map<std::string, GpuIdentity> gpuIdToIdentity;
+    for (const auto& adapter : publication.adapters)
+    {
+        const GpuIdentity identity{.name = adapter.name, .isIntegrated = adapter.isIntegrated, .memoryIsShared = adapter.memoryIsShared};
+        gpuIdToIdentity[adapter.id] = identity;
+        if (!adapter.luidId.empty())
+        {
+            gpuIdToIdentity[adapter.luidId] = identity;
+        }
+    }
+
+    std::unordered_map<std::int32_t, AggregatedGPU> pidToGPU;
+    for (const auto& gc : publication.counters)
+    {
+        auto& agg = pidToGPU[gc.pid];
+
+        // Look up the friendly name for this GPU; an unknown adapter keeps its id and the defaults
+        // rather than a guess.
+        GpuIdentity identity{.name = gc.gpuId};
+        if (const auto identityIt = gpuIdToIdentity.find(gc.gpuId); identityIt != gpuIdToIdentity.end())
+        {
+            identity = identityIt->second;
+        }
+
+        ProcessSnapshot::PerGPUUsage perGpu;
+        perGpu.gpuId = gc.gpuId;
+        perGpu.gpuName = identity.name;
+        perGpu.isIntegrated = identity.isIntegrated;
+        perGpu.dedicatedMemoryBytes = gc.gpuMemoryBytes;
+        perGpu.sharedMemoryBytes = gc.gpuSharedMemoryBytes;
+        // Where the platform has no shared segment (Linux: NVML, ROCm SMI) the adapter's used figure
+        // is its dedicated memory -- an APU's carve-out included -- so that is what counts. The
+        // choice follows the adapter's segment, not the value: shared usage crossing 0 on a Windows
+        // iGPU doesn't switch "GPU memory" to dedicated and back.
+        perGpu.memoryBytes = identity.memoryIsShared ? gc.gpuSharedMemoryBytes : gc.gpuMemoryBytes;
+        perGpu.utilPercent = Numeric::clampPercent(gc.gpuUtilPercent);
+        perGpu.engines = gc.activeEngines;
+
+        agg.maxUtilPercent = std::max(agg.maxUtilPercent, perGpu.utilPercent);
+        agg.totalMemoryBytes += perGpu.memoryBytes;
+        agg.totalDedicatedMemoryBytes += gc.gpuMemoryBytes;
+        agg.totalSharedMemoryBytes += gc.gpuSharedMemoryBytes;
+        agg.maxEncoderUtil = std::max(agg.maxEncoderUtil, Numeric::clampPercent(gc.encoderUtilPercent));
+        agg.maxDecoderUtil = std::max(agg.maxDecoderUtil, Numeric::clampPercent(gc.decoderUtilPercent));
+        agg.perGpuBreakdown.push_back(std::move(perGpu));
+
+        // Unique GPU names (not IDs) and engines, in first-seen order
+        if (std::ranges::find(agg.gpuNames, identity.name) == agg.gpuNames.end())
+        {
+            agg.gpuNames.push_back(identity.name);
+        }
+        for (const auto& engine : gc.activeEngines)
+        {
+            if (std::ranges::find(agg.allEngines, engine) == agg.allEngines.end())
+            {
+                agg.allEngines.push_back(engine);
+            }
+        }
+    }
+    return pidToGPU;
+}
+
+// The GPU names as one comma-separated string, allocated once.
+[[nodiscard]] std::string joinGpuNames(const std::vector<std::string>& names)
+{
+    std::string joined;
+    std::size_t totalLength = 0;
+    for (const auto& name : names)
+    {
+        totalLength += name.length() + 2; // +2 for ", "
+    }
+    joined.reserve(totalLength);
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+        if (i > 0)
+        {
+            joined += ", ";
+        }
+        joined += names[i];
+    }
+    return joined;
 }
 
 } // namespace
@@ -205,78 +323,18 @@ void ProcessModel::updateFromCounters(const std::vector<Platform::ProcessCounter
 
 void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCounters>& counters, std::uint64_t totalCpuTime)
 {
-
-    struct CachedGpuSnapshotFields
-    {
-        double gpuUtilPercent = 0.0;
-        std::uint64_t gpuMemoryBytes = 0;
-        std::uint64_t gpuDedicatedMemoryBytes = 0;
-        std::uint64_t gpuSharedMemoryBytes = 0;
-        double gpuEncoderUtil = 0.0;
-        double gpuDecoderUtil = 0.0;
-        std::vector<std::string> gpuEngines;
-        std::vector<ProcessSnapshot::PerGPUUsage> perGpuUsage;
-        std::string gpuDevices;
-    };
-
-    constexpr auto INTERACTION_GPU_MERGE_MIN_INTERVAL = std::chrono::milliseconds(1500);
-
     std::vector<ProcessSnapshot> newSnapshots;
-    std::unordered_map<std::uint64_t, CachedGpuSnapshotFields> cachedGpuByUniqueKey;
-    // Identities whose GPU fields the previous generation had read (zeros included), so a throttled
-    // generation can tell a process it has GPU data for from one that started since the last GPU
-    // merge, whose fields were never read (#1210).
-    std::unordered_set<std::uint64_t> gpuReadUniqueKeys;
+    // When this model first listed each process, parallel to newSnapshots: the GPU merge needs it to
+    // tell a process the GPU sampler's last read could have seen from one that started since (#1417).
+    std::vector<Clock::time_point> firstSeen;
     std::shared_ptr<GPUModel> gpuModel;
-    GpuSupport previousGpuSupport;
-    bool shouldMergeGpuData = false;
     std::size_t reserveSize = 0;
 
-    const bool interactionActive = m_InteractionActive.load(std::memory_order_acquire);
-
-    std::shared_ptr<const std::vector<ProcessSnapshot>> previousSnapshots;
     {
         std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
         gpuModel = m_GPUModel;
-        // The support the previous generation's GPU fields were read under, for a generation that
-        // reuses them rather than reading again (the throttled path below, #1210).
-        previousGpuSupport = m_PublishedGpuSupport;
-        // m_Snapshots is immutable once published, so grabbing the shared_ptr here is an O(1)
-        // refcount bump -- the loop below (previously run while still holding this lock) can
-        // run against the local copy after the lock is released, instead of holding readers of
-        // m_Snapshots (tryCopySnapshotsIfNewer(), findSnapshot(), etc.) out for its duration.
-        previousSnapshots = m_Snapshots;
-    }
-    reserveSize = std::max(counters.size(), previousSnapshots->size());
-
-    if (interactionActive)
-    {
-        cachedGpuByUniqueKey.reserve(previousSnapshots->size());
-        gpuReadUniqueKeys.reserve(previousSnapshots->size());
-        for (const auto& previousSnapshot : *previousSnapshots)
-        {
-            if (previousSnapshot.gpuFieldsRead)
-            {
-                gpuReadUniqueKeys.insert(previousSnapshot.uniqueKey);
-            }
-            if ((previousSnapshot.gpuMemoryBytes == 0) && (previousSnapshot.gpuDedicatedMemoryBytes == 0) &&
-                (previousSnapshot.gpuSharedMemoryBytes == 0) && (previousSnapshot.gpuUtilPercent <= 0.0) &&
-                previousSnapshot.gpuDevices.empty() && previousSnapshot.perGpuUsage.empty())
-            {
-                continue;
-            }
-
-            cachedGpuByUniqueKey.emplace(previousSnapshot.uniqueKey,
-                                         CachedGpuSnapshotFields{.gpuUtilPercent = previousSnapshot.gpuUtilPercent,
-                                                                 .gpuMemoryBytes = previousSnapshot.gpuMemoryBytes,
-                                                                 .gpuDedicatedMemoryBytes = previousSnapshot.gpuDedicatedMemoryBytes,
-                                                                 .gpuSharedMemoryBytes = previousSnapshot.gpuSharedMemoryBytes,
-                                                                 .gpuEncoderUtil = previousSnapshot.gpuEncoderUtil,
-                                                                 .gpuDecoderUtil = previousSnapshot.gpuDecoderUtil,
-                                                                 .gpuEngines = previousSnapshot.gpuEngines,
-                                                                 .perGpuUsage = previousSnapshot.perGpuUsage,
-                                                                 .gpuDevices = previousSnapshot.gpuDevices});
-        }
+        // Only the previous generation's size is needed (to reserve), so no copy of it is taken.
+        reserveSize = std::max(counters.size(), m_Snapshots->size());
     }
 
     const double maxSaneRate = m_MaxSaneNetworkRateBps.load(std::memory_order_relaxed);
@@ -322,6 +380,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // Keep m_Snapshots published and readable until the replacement snapshot vector
     // is fully prepared and ready to publish.
     newSnapshots.reserve(reserveSize);
+    firstSeen.reserve(reserveSize);
 
     // Bump the generation counter once per refresh.  At the end of the loop we
     // prune any PerProcessState entry that was NOT touched this refresh (i.e.
@@ -346,6 +405,11 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         auto [it, inserted] = m_PerProcessState.try_emplace(key);
         PerProcessState& state = it->second;
         state.generation = m_CurrentGeneration;
+        if (inserted)
+        {
+            state.firstSeen = currentSampleTime;
+        }
+        firstSeen.push_back(state.firstSeen);
 
         // --- previous CPU counters (for delta calculation) ---
         const Platform::ProcessCounters* previous = inserted ? nullptr : &state.counters;
@@ -440,55 +504,19 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
     m_PrevTotalCpuTime = totalCpuTime;
 
-    if (gpuModel != nullptr)
-    {
-        // Merge immediately when idle; during interaction, throttle merges to the
-        // minimum interval to keep resize/drag responsive.
-        if (!interactionActive || !m_HasLastGpuMergeTime ||
-            ((currentSampleTime - m_LastGpuMergeTime) >= INTERACTION_GPU_MERGE_MIN_INTERVAL))
-        {
-            shouldMergeGpuData = true;
-        }
-    }
-
     // What the GPU probe supplied per process for this generation (#1210), published with it so a
     // reader judges each sample by its own generation's support rather than the latest -- the GPU
-    // model can gain or lose it on re-enumeration, on its own sampler. Taken from the same GPUModel
-    // operation as the counters (readProcessGPUData()), so the stamp always matches the data. No GPU
-    // model means no per-process GPU data.
+    // model can gain or lose it on re-enumeration, on its own sampler. Taken from the same GPU
+    // publication as the counters, so the stamp always matches the data. No GPU model means no
+    // per-process GPU data.
     GpuSupport gpuSupport;
 
-    // GPU aggregation can be expensive (PDH queries/string work). Keep it outside
-    // the ProcessModel write lock so UI readers are not blocked during resize.
-    if (shouldMergeGpuData && (gpuModel != nullptr))
+    // A snapshot read, not a probe call (#1417): the GPU sampler owns GPU acquisition and publishes
+    // the per-process counters, so this neither runs the GPU probe nor waits for its lock. Outside
+    // the ProcessModel write lock, as the aggregation still does string work.
+    if (gpuModel != nullptr)
     {
-        gpuSupport = mergeGPUDataContained(newSnapshots, gpuModel);
-    }
-    else if (gpuModel != nullptr)
-    {
-        // The previous generation's GPU fields, carried over, with the support they were read under.
-        gpuSupport = previousGpuSupport;
-        for (auto& snapshot : newSnapshots)
-        {
-            // A process the last GPU merge did not see has GPU fields that were never read: not
-            // measured zeros (#1210).
-            snapshot.gpuFieldsRead = gpuReadUniqueKeys.contains(snapshot.uniqueKey);
-            const auto it = cachedGpuByUniqueKey.find(snapshot.uniqueKey);
-            if (it == cachedGpuByUniqueKey.end())
-            {
-                continue;
-            }
-            const CachedGpuSnapshotFields& cached = it->second;
-            snapshot.gpuUtilPercent = cached.gpuUtilPercent;
-            snapshot.gpuMemoryBytes = cached.gpuMemoryBytes;
-            snapshot.gpuDedicatedMemoryBytes = cached.gpuDedicatedMemoryBytes;
-            snapshot.gpuSharedMemoryBytes = cached.gpuSharedMemoryBytes;
-            snapshot.gpuEncoderUtil = cached.gpuEncoderUtil;
-            snapshot.gpuDecoderUtil = cached.gpuDecoderUtil;
-            snapshot.gpuEngines = cached.gpuEngines;
-            snapshot.perGpuUsage = cached.perGpuUsage;
-            snapshot.gpuDevices = cached.gpuDevices;
-        }
+        gpuSupport = mergeGPUDataContained(newSnapshots, firstSeen, *gpuModel, currentSampleTime);
     }
 
     // --- Build Process Tree Hierarchy ---
@@ -597,11 +625,6 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
         m_PublishedSnapshotVersion.store(m_SnapshotVersion, std::memory_order_release);
         m_PublishedSystemHistoryVersion.store(m_SystemHistoryVersion, std::memory_order_release);
-        if (shouldMergeGpuData)
-        {
-            m_LastGpuMergeTime = m_Now();
-            m_HasLastGpuMergeTime = true;
-        }
     }
 }
 
@@ -920,199 +943,114 @@ void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
     m_GPUModel = std::move(gpuModel);
 }
 
-void ProcessModel::setInteractionActive(const bool active) noexcept
+void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots,
+                                const std::vector<Clock::time_point>& firstSeen,
+                                const ProcessGPUPublication& publication)
 {
-    m_InteractionActive.store(active, std::memory_order_release);
-}
-
-void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots, const std::shared_ptr<GPUModel>& gpuModel, GpuSupport& outSupport)
-{
-    if (gpuModel == nullptr)
-    {
-        outSupport = {};
-        return;
-    }
-
-    // Query per-process GPU counters from GPUModel, with the support they were read under (#1210)
-    GPUModel::ProcessGPUReading reading = gpuModel->readProcessGPUData();
-    outSupport = {.perProcess = reading.perProcessSupported, .utilization = reading.utilizationSupported, .readFailed = false};
-    if (reading.failure)
-    {
-        // After outSupport is set: a failed read keeps the support it ran under (#1210).
-        std::rethrow_exception(reading.failure);
-    }
-    auto gpuCounters = std::move(reading.counters);
-    if (gpuCounters.empty())
-    {
-        return;
-    }
-
-    // Build lookup map: GPU ID -> what the per-process breakdown shows about that adapter.
-    // PDH returns LUID-based IDs (e.g., "GPU_0x00000000_0x0000F78E")
-    // DXGI provides both index-based IDs ("GPU0") and LUID-based IDs
-    //
-    // The integrated flag travels with the name. It used to be left out, so PerGPUUsage kept its
-    // default of false and the process details pane labelled every adapter "Discrete", including
-    // one the system GPU tab correctly called integrated (#963).
-    struct GpuIdentity
-    {
-        std::string name;
-        bool isIntegrated = false;
-        bool memoryIsShared = false;
-    };
-    std::unordered_map<std::string, GpuIdentity> gpuIdToIdentity;
-    auto gpuSnaps = gpuModel->snapshots();
-    for (const auto& gpuSnap : gpuSnaps)
-    {
-        // Map both ID formats to the same adapter
-        const GpuIdentity identity{.name = gpuSnap.name, .isIntegrated = gpuSnap.isIntegrated, .memoryIsShared = gpuSnap.memoryIsShared};
-        gpuIdToIdentity[gpuSnap.gpuId] = identity;
-        if (!gpuSnap.luidId.empty())
-        {
-            gpuIdToIdentity[gpuSnap.luidId] = identity;
-        }
-    }
-
-    // Build a lookup map: PID -> GPU counters (aggregated across GPUs)
-    // A process may use multiple GPUs, so we aggregate
-    // One rule with the adapter figures beside them on the GPU tab (#1164): utilization is the
-    // busiest GPU's (an adapter's is 0-100; a sum passed 100% while Process Details clamped it), and
-    // memory counts, per GPU, the segment that GPU's "used" figure counts, as the platform says
-    // (GPUSnapshot::memoryIsShared: shared on a Windows integrated GPU, dedicated elsewhere) -- never
-    // inferred from the reading, so a 0 shared reading stays a shared 0 -- and a process never shows
-    // more than its adapters use. The dedicated and shared amounts are kept apart as well.
-    struct AggregatedGPU
-    {
-        double maxUtilPercent = 0.0;
-        std::uint64_t totalMemoryBytes = 0;
-        std::uint64_t totalDedicatedMemoryBytes = 0;
-        std::uint64_t totalSharedMemoryBytes = 0;
-        double maxEncoderUtil = 0.0;
-        double maxDecoderUtil = 0.0;
-        std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
-        std::vector<std::string> allEngines;
-        std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
-    };
-    std::unordered_map<std::int32_t, AggregatedGPU> pidToGPU;
-
-    for (const auto& gc : gpuCounters)
-    {
-        auto& agg = pidToGPU[gc.pid];
-
-        // Look up friendly name for this GPU
-        std::string gpuName = gc.gpuId; // Default to ID if name not found
-        bool isIntegrated = false;      // Unknown adapter: keep the default rather than guess
-        bool memoryIsShared = false;
-        if (const auto identityIt = gpuIdToIdentity.find(gc.gpuId); identityIt != gpuIdToIdentity.end())
-        {
-            gpuName = identityIt->second.name;
-            isIntegrated = identityIt->second.isIntegrated;
-            memoryIsShared = identityIt->second.memoryIsShared;
-        }
-
-        // Add per-GPU breakdown
-        ProcessSnapshot::PerGPUUsage perGpu;
-        perGpu.gpuId = gc.gpuId;
-        perGpu.gpuName = gpuName; // Store friendly name
-        perGpu.isIntegrated = isIntegrated;
-        perGpu.dedicatedMemoryBytes = gc.gpuMemoryBytes;
-        perGpu.sharedMemoryBytes = gc.gpuSharedMemoryBytes;
-        // Where the platform has no shared segment (Linux: NVML, ROCm SMI) the adapter's used figure
-        // is its dedicated memory -- an APU's carve-out included -- so that is what counts. The
-        // choice follows the adapter's segment, not the value: shared usage crossing 0 on a Windows
-        // iGPU doesn't switch "GPU memory" to dedicated and back.
-        perGpu.memoryBytes = memoryIsShared ? gc.gpuSharedMemoryBytes : gc.gpuMemoryBytes;
-        perGpu.utilPercent = Numeric::clampPercent(gc.gpuUtilPercent);
-        perGpu.engines = gc.activeEngines;
-
-        // Aggregate across GPUs
-        agg.maxUtilPercent = std::max(agg.maxUtilPercent, perGpu.utilPercent);
-        agg.totalMemoryBytes += perGpu.memoryBytes;
-        agg.totalDedicatedMemoryBytes += gc.gpuMemoryBytes;
-        agg.totalSharedMemoryBytes += gc.gpuSharedMemoryBytes;
-        agg.maxEncoderUtil = std::max(agg.maxEncoderUtil, Numeric::clampPercent(gc.encoderUtilPercent));
-        agg.maxDecoderUtil = std::max(agg.maxDecoderUtil, Numeric::clampPercent(gc.decoderUtilPercent));
-        agg.perGpuBreakdown.push_back(std::move(perGpu));
-
-        // Collect unique GPU names (not IDs)
-        if (std::ranges::find(agg.gpuNames, gpuName) == agg.gpuNames.end())
-        {
-            agg.gpuNames.push_back(gpuName);
-        }
-
-        // Collect unique engines
-        for (const auto& engine : gc.activeEngines)
-        {
-            if (std::ranges::find(agg.allEngines, engine) == agg.allEngines.end())
-            {
-                agg.allEngines.push_back(engine);
-            }
-        }
-    }
+    const auto pidToGPU = aggregateProcessGPUUsage(publication);
 
     // Merge into snapshots
     int mergedCount = 0;
-    for (auto& snapshot : snapshots)
+    for (std::size_t index = 0; index < snapshots.size(); ++index)
     {
+        ProcessSnapshot& snapshot = snapshots[index];
         auto it = pidToGPU.find(snapshot.pid);
-        if (it != pidToGPU.end())
+        if (it == pidToGPU.end())
         {
-            ++mergedCount;
-            const auto& agg = it->second;
-            snapshot.gpuUtilPercent = agg.maxUtilPercent;
-            snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
-            snapshot.gpuDedicatedMemoryBytes = agg.totalDedicatedMemoryBytes;
-            snapshot.gpuSharedMemoryBytes = agg.totalSharedMemoryBytes;
-            snapshot.gpuEncoderUtil = agg.maxEncoderUtil;
-            snapshot.gpuDecoderUtil = agg.maxDecoderUtil;
-            snapshot.gpuEngines = agg.allEngines;
-            snapshot.perGpuUsage = agg.perGpuBreakdown;
-
-            // Build comma-separated GPU device string (friendly names)
-            // Pre-allocate to avoid multiple reallocations
-            std::string gpuDevices;
-            if (!agg.gpuNames.empty())
-            {
-                size_t totalLength = 0;
-                for (const auto& name : agg.gpuNames)
-                {
-                    totalLength += name.length() + 2; // +2 for ", "
-                }
-                gpuDevices.reserve(totalLength);
-
-                for (size_t i = 0; i < agg.gpuNames.size(); ++i)
-                {
-                    if (i > 0)
-                    {
-                        gpuDevices += ", ";
-                    }
-                    gpuDevices += agg.gpuNames[i];
-                }
-            }
-            snapshot.gpuDevices = std::move(gpuDevices);
+            // No GPU usage in the publication: a measured zero if the process was
+            // already listed when the GPU sampler read, but unread if it was first
+            // listed since -- it may have started after that read, which then could
+            // not have seen it (#1210, #1417). Conservative: a process that started
+            // before the read but was first listed after it also reads as unread, for
+            // at most one GPU interval.
+            snapshot.gpuFieldsRead = (index >= firstSeen.size()) || (firstSeen[index] <= publication.captureTime);
+            continue;
         }
+
+        // The read saw this pid using a GPU. (A pid reused within one GPU interval
+        // would inherit the exited process's figures until the next read; as rare
+        // as it is short-lived.)
+        ++mergedCount;
+        const auto& agg = it->second;
+        snapshot.gpuFieldsRead = true;
+        snapshot.gpuUtilPercent = agg.maxUtilPercent;
+        snapshot.gpuMemoryBytes = agg.totalMemoryBytes;
+        snapshot.gpuDedicatedMemoryBytes = agg.totalDedicatedMemoryBytes;
+        snapshot.gpuSharedMemoryBytes = agg.totalSharedMemoryBytes;
+        snapshot.gpuEncoderUtil = agg.maxEncoderUtil;
+        snapshot.gpuDecoderUtil = agg.maxDecoderUtil;
+        snapshot.gpuEngines = agg.allEngines;
+        snapshot.perGpuUsage = agg.perGpuBreakdown;
+        snapshot.gpuDevices = joinGpuNames(agg.gpuNames);
     }
 
     spdlog::debug("ProcessModel::mergeGPUData: merged GPU data for {} processes", mergedCount);
 }
 
 ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<ProcessSnapshot>& snapshots,
-                                                             const std::shared_ptr<GPUModel>& gpuModel)
+                                                             const std::vector<Clock::time_point>& firstSeen,
+                                                             const GPUModel& gpuModel,
+                                                             Clock::time_point now)
 {
-    // Uncontained, a throw here (bad_alloc, a DRM parse error, a PDH wrapper) escaped refresh()
-    // after the per-process state had already advanced, so a probe that threw every time stopped
-    // the process list from ever updating again (#1142). The processes are published regardless,
-    // without GPU fields for this refresh.
-    // The probe's support as the GPU model has it now, used only if mergeGPUData() throws before it
-    // has the reading (bad_alloc, say). A throwing probe read is not such a case: readProcessGPUData()
-    // returns it together with the support taken under the probe lock, and mergeGPUData() sets
-    // that before rethrowing it (#1210).
-    GpuSupport support{.perProcess = !gpuModel->perProcessMetricsKnownUnsupported(),
-                       .utilization = !gpuModel->perProcessMetricsKnownUnsupported() && !gpuModel->perProcessUtilizationKnownUnsupported(),
-                       .readFailed = false};
+    const std::shared_ptr<const ProcessGPUPublication> publication = gpuModel.processGPUPublication();
+    if (publication->version == 0)
+    {
+        // The GPU sampler hasn't read yet: the support is the GPU model's current
+        // flags, and no process has GPU fields read -- not measured zeros (#1210).
+        const bool perProcess = !gpuModel.perProcessMetricsKnownUnsupported();
+        for (auto& snapshot : snapshots)
+        {
+            snapshot.gpuFieldsRead = false;
+        }
+        return GpuSupport{
+            .perProcess = perProcess, .utilization = perProcess && !gpuModel.perProcessUtilizationKnownUnsupported(), .readFailed = false};
+    }
+
+    // The support the publication's counters were read under (#1210), not the GPU
+    // model's flags now.
+    GpuSupport support{.perProcess = publication->perProcessSupported,
+                       .utilization = publication->utilizationSupported,
+                       .readFailed = publication->readFailed};
+    if (!support.perProcess || support.readFailed)
+    {
+        // Unsupported: nothing to merge. A failed read: no GPU fields, cells read
+        // as unreadable. GPUModel logs a failing read.
+        return support;
+    }
+
+    // Staleness (#1417): the two samplers run on their own cadences, so this
+    // merges the newest publication, which may be up to one GPU interval old (or
+    // a little more after an overrun). One older than PROCESS_GPU_DATA_MAX_AGE_MS
+    // means the GPU sampler has stalled: its figures are no longer current, so
+    // the generation has none, marked as a failed read rather than shown as
+    // measured. A captureTime ahead of now (another clock in tests) counts as
+    // fresh.
+    const bool stale = (now - publication->captureTime) > std::chrono::milliseconds(Sampling::PROCESS_GPU_DATA_MAX_AGE_MS);
+    if (stale)
+    {
+        if (!m_GpuDataStale)
+        {
+            spdlog::warn("ProcessModel: per-process GPU data is older than {} ms; "
+                         "publishing processes without it",
+                         Sampling::PROCESS_GPU_DATA_MAX_AGE_MS);
+            m_GpuDataStale = true;
+        }
+        support.readFailed = true;
+        return support;
+    }
+    if (m_GpuDataStale)
+    {
+        spdlog::info("ProcessModel: per-process GPU data is current again");
+        m_GpuDataStale = false;
+    }
+
+    // Uncontained, a throw here (bad_alloc in the aggregation) escaped refresh()
+    // after the per-process state had already advanced, so a merge that threw
+    // every time stopped the process list from ever updating again (#1142). The
+    // processes are published regardless, without GPU fields for this refresh.
     try
     {
-        mergeGPUData(snapshots, gpuModel, support);
+        mergeGPUData(snapshots, firstSeen, *publication);
         if (m_GpuMergeFailing)
         {
             spdlog::info("ProcessModel: per-process GPU data is being merged again");
@@ -1124,10 +1062,13 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
     {
         if (!m_GpuMergeFailing)
         {
-            spdlog::warn("ProcessModel: merging per-process GPU data failed; publishing processes without it: {}", ex.what());
+            spdlog::warn("ProcessModel: merging per-process GPU data failed; "
+                         "publishing processes without it: {}",
+                         ex.what());
             m_GpuMergeFailing = true;
         }
-        // A merge that threw part way may have filled some processes and not others: clear them all.
+        // A merge that threw part way may have filled some processes and not
+        // others: clear them all.
         for (auto& snapshot : snapshots)
         {
             snapshot.gpuUtilPercent = 0.0;
@@ -1141,13 +1082,13 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
             snapshot.gpuDevices.clear();
         }
     }
-    // No GPU fields this generation. A failed read is not a lack of support: the generation keeps the
-    // probe's support and is marked as a failed read, so its GPU cells read as unreadable and its
-    // history as a gap -- not as measured zeros, nor as "not available on this system" (#1210).
-    support.readFailed = support.perProcess;
+    // No GPU fields this generation. A failed merge is not a lack of support: the
+    // generation keeps the probe's support and is marked as a failed read, so its
+    // GPU cells read as unreadable and its history as a gap -- not as measured
+    // zeros, nor as "not available on this system" (#1210).
+    support.readFailed = true;
     return support;
 }
-
 ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& current,
                                               const Platform::ProcessCounters* previous,
                                               std::uint64_t totalCpuDelta,

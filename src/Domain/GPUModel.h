@@ -59,6 +59,42 @@ struct GPUPublication
     std::unordered_map<std::string, GPUPublishedHistory> histories;
 };
 
+/// What the per-process GPU breakdown needs to know about one adapter: its ids (a per-process
+/// counter names its GPU by either), its name, and which memory segment its "used" figure counts.
+struct GPUAdapterIdentity
+{
+    std::string id;
+    std::string luidId; ///< Empty where the platform has no LUID
+    std::string name;
+    bool isIntegrated = false;
+    bool memoryIsShared = false; ///< GPUInfo::memoryIsShared
+};
+
+/// Per-process GPU counters as the GPU sampler last read them (#1417). GPUModel is the single owner
+/// of GPU acquisition: each refresh reads the system and the per-process counters in one probe-locked
+/// section and publishes these beside GPUPublication, in a slot of their own, so the process sampler
+/// merges the newest publication without ever calling the probe or waiting on its lock.
+///
+/// The two samplers run on their own cadences, so a process generation merges whatever was last
+/// published: one publication may be merged into several process generations, and one may be
+/// skipped. The per-process values stay right: the probe computes each process's utilization over
+/// the interval between its own consecutive reads, which are now all made by the GPU sampler, so
+/// each published figure is a rate over one GPU interval, and memory is a point reading. A consumer
+/// judges how stale a publication is by captureTime (Sampling::PROCESS_GPU_DATA_MAX_AGE_MS).
+struct ProcessGPUPublication
+{
+    std::uint64_t version = 0; ///< 0 until the first refresh has read (or tried to read) per-process data
+    /// The time of the refresh that read the counters (refreshAt()'s `now`), on the steady clock.
+    std::chrono::steady_clock::time_point captureTime;
+    std::vector<Platform::ProcessGPUCounters> counters;
+    /// The adapters as that refresh knew them (from the GPU info), to name and classify the counters' GPUs.
+    std::vector<GPUAdapterIdentity> adapters;
+    bool perProcessSupported = false;  ///< Read under per-process support (#1210)
+    bool utilizationSupported = false; ///< ...including per-process utilization
+    /// Supported, but the probe's read threw: counters is empty, a gap rather than idle processes.
+    bool readFailed = false;
+};
+
 struct TransparentStringHash
 {
     // NOLINTNEXTLINE(readability-identifier-naming) - STL transparent hashing requires this exact alias name.
@@ -174,7 +210,20 @@ class GPUModel : public ISamplable
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
-    // Per-process GPU counters (called by ProcessModel to enrich process snapshots)
+    /// The newest per-process GPU publication (#1417): a shared_ptr copy, never a probe call, so the
+    /// process sampler can take it on every refresh. Version 0 (empty) until the first refresh().
+    [[nodiscard]] std::shared_ptr<const ProcessGPUPublication> processGPUPublication() const noexcept
+    {
+        return m_ProcessPublication.load();
+    }
+    [[nodiscard]] std::uint64_t processGPUPublicationVersion() const noexcept
+    {
+        return m_ProcessPublication.version();
+    }
+
+    /// Read the per-process GPU counters from the probe now, under the probe lock: a direct read for
+    /// tests and benchmarks. The process sampler merges processGPUPublication() instead, which
+    /// refresh() fills, so it never runs the probe on its own thread (#1417).
     [[nodiscard]] std::vector<Platform::ProcessGPUCounters> readProcessGPUCounters() const;
 
     /// Per-process GPU counters together with the per-process support they were read under (#1210).
@@ -198,6 +247,12 @@ class GPUModel : public ISamplable
   private:
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
+    // The per-process GPU publication (#1417). Committed by refreshAt() while it holds m_ProbeMutex,
+    // which therefore also guards the version counter and the failure streak flag: generations are
+    // committed in read order even if two refreshes race. The slot's own lock is a leaf.
+    PublicationSlot<ProcessGPUPublication> m_ProcessPublication;
+    std::uint64_t m_ProcessPublicationVersion = 0; // guarded by m_ProbeMutex
+    bool m_ProcessReadFailing = false;             // guarded by m_ProbeMutex; logs a failing read once per streak
     // The GPU info, its known flag and the capabilities are written only on the sampler thread
     // (the constructor, then rescanGPUs() inside refreshAt()), always under a unique m_Mutex, so the
     // sampler thread may read them without a lock; any other thread takes m_Mutex shared.
@@ -211,10 +266,10 @@ class GPUModel : public ISamplable
     // per-process metrics are unsupported -- see its use of this flag for why.
     bool m_CapabilitiesKnown = false;
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessMetrics, kept in step with both
-    // (written with them, under the unique m_Mutex). readProcessGPUCounters() is called from
-    // the process sampler on every refresh and, on a backend that has no per-process data,
-    // returns straight away: reading this flag instead of taking m_Mutex shared for the two
-    // fields keeps that early exit to a single atomic load (#1322).
+    // (written with them, under the unique m_Mutex). The per-process read (every refresh, and
+    // readProcessGPUCounters()) returns straight away on a backend that has no per-process data:
+    // reading this flag instead of taking m_Mutex shared for the two fields keeps that early exit to
+    // a single atomic load (#1322). ProcessModel reads it too, before the first publication (#1417).
     std::atomic<bool> m_PerProcessKnownUnsupported{false};
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
     std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
@@ -301,8 +356,8 @@ class GPUModel : public ISamplable
     std::chrono::steady_clock::time_point m_LastFullRescan;
 
     // Thread safety. Lock order: m_WriterMutex -> m_Mutex -> the publication slot's mutex, and
-    // m_ProbeMutex -> m_Mutex; m_ProbeMutex and m_WriterMutex are never held together, so a slow probe
-    // read never holds up setMaxHistorySeconds() on the UI thread.
+    // m_ProbeMutex -> m_Mutex, and m_ProbeMutex -> m_ProcessPublication's mutex (a leaf); m_ProbeMutex and m_WriterMutex are never held
+    // together, so a slow probe read never holds up setMaxHistorySeconds() on the UI thread.
     //
     // m_WriterMutex serialises the writers, refreshAt() (from computing the snapshots) and
     // setMaxHistorySeconds(), through the publication commit, so generations are numbered and
@@ -325,6 +380,15 @@ class GPUModel : public ISamplable
     /// Build the next generation from the history state under a shared lock, then commit it.
     /// Requires m_WriterMutex held and m_Mutex not held.
     void publish();
+
+    /// readProcessGPUData()'s read, for a caller that already holds m_ProbeMutex. Never throws the
+    /// probe's exception: it is carried in the result.
+    [[nodiscard]] ProcessGPUReading readProcessGPUDataLocked() const;
+
+    /// Read the per-process counters and commit them as the next ProcessGPUPublication, stamped
+    /// @p now (#1417). Caller holds m_ProbeMutex. A failed probe read is published as readFailed; a
+    /// failure to build the publication (bad_alloc) is logged and leaves the previous one in place.
+    void publishProcessGPUData(std::chrono::steady_clock::time_point now);
 
     // Ask the probe whether the GPU set or its GPUInfo changed (a full rescan every
     // GPU_RESCAN_INTERVAL_SECONDS, a quick one otherwise) and, if so, re-enumerate and take the new
