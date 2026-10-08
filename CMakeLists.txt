@@ -126,6 +126,7 @@ set(TASKSMACK_SOURCES
     src/App/AboutLayer.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/InstanceLock.cpp
+    src/App/KeyboardInput.cpp
     src/App/PlatformOpen.cpp
     src/App/SettingsLayer.cpp
     src/App/ShellLayer.cpp
