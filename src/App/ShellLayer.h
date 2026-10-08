@@ -8,6 +8,7 @@
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/ServicesPanel.h"
+#include "Panels/StartupPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "TabLabel.h"
 
@@ -67,6 +68,7 @@ class ShellLayer : public Core::Layer
     ProcessDetailsPanel m_ProcessDetailsPanel;
     SystemMetricsPanel m_SystemMetricsPanel;
     ServicesPanel m_ServicesPanel;
+    StartupPanel m_StartupPanel;
 
     // Frame timing / FPS display
     FpsCounter m_FpsCounter;
