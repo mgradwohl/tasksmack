@@ -269,8 +269,11 @@ struct TabInfo
     for (std::size_t i = 0; i < tabs.size(); ++i)
     {
         const std::string_view id = tabs[i].id;
-        const bool idMatch = id.size() >= wanted.size() && (Detail::equalsIgnoreCase(id.substr(0, wanted.size()), wanted) ||
-                                                            Detail::equalsIgnoreCase(id.substr(id.size() - wanted.size()), wanted));
+        // Prefix and suffix views from iterators: substr() may throw, and this is noexcept.
+        const bool idMatch =
+            id.size() >= wanted.size() &&
+            (Detail::equalsIgnoreCase(std::string_view(id.begin(), id.begin() + static_cast<std::ptrdiff_t>(wanted.size())), wanted) ||
+             Detail::equalsIgnoreCase(std::string_view(id.end() - static_cast<std::ptrdiff_t>(wanted.size()), id.end()), wanted));
         if (idMatch || Detail::equalsIgnoreCase(tabs[i].text, wanted))
         {
             return i;
