@@ -1168,7 +1168,8 @@ void ProcessesPanel::renderContent()
     // Sized from the font and the hint it has to show, not a fixed 200px (#965).
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
-    ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().statusRunning);
+    // The hint in the muted text colour: the running-process green read as a status (#1196).
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().textMuted);
 
     ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
     ImGui::PopStyleColor();

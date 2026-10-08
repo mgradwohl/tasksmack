@@ -59,33 +59,44 @@ idle = "#A7A7C3"       # Muted purple-gray - idle kernel thread (I)
 # Colors for specific metric lines in graphs
 # =============================================================================
 [charts]
-cpu = "#5DE8FE"       # Electric Blue - CPU usage line
-memory = "#76FF03"    # Neon Green - memory usage line
-io = "#FF4081"        # Neon Pink - I/O read usage line
-io_write = "#FF1744"        # Deep Magenta-Red - I/O write usage line (distinct from Neon Pink)
-net_tx = "#FF6D00"          # Hot Orange - Network transmit (sent) line
-net_rx = "#7C4DFF"          # Violet - Network receive line
-cpu_fill = "#5DE8FE4D"       # Electric Blue with 30% alpha - CPU fill
-memory_fill = "#76FF034D"    # Neon Green with 30% alpha - memory fill
-io_fill = "#FF40814D"        # Neon Pink with 30% alpha - I/O read fill
-io_write_fill = "#FF17444D"   # Deep Magenta-Red with 30% alpha - I/O write fill
-net_tx_fill = "#FF6D004D"    # Hot Orange with 30% alpha - Network TX fill
-net_rx_fill = "#7C4DFF4D"    # Violet with 30% alpha - Network RX fill
+cpu = "#5CAAF9"       # Blue - CPU usage line
+memory = "#8EFE8F"    # Pale green - memory usage line
+io = "#FA7228"        # Orange - I/O read usage line
+io_write = "#B19D61"        # Olive - I/O write usage line
+net_tx = "#FBAE51"          # Amber - Network transmit (sent) line
+net_rx = "#48E6FE"          # Pale cyan - Network receive line
+cpu_fill = "#5CAAF94D"       # Blue with 30% alpha - CPU fill
+memory_fill = "#8EFE8F4D"    # Pale green with 30% alpha - memory fill
+io_fill = "#FA72284D"        # Orange with 30% alpha - I/O read fill
+io_write_fill = "#B19D614D"   # Olive with 30% alpha - I/O write fill
+net_tx_fill = "#FBAE514D"    # Amber with 30% alpha - Network TX fill
+net_rx_fill = "#48E6FE4D"    # Pale cyan with 30% alpha - Network RX fill
 peak_line = "#FFD600B3"      # Gold with 70% alpha - peak reference line
+
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#5CAAF9"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#B0F7D5"   # Pale green - Memory: Cached (also Process Shared)
+swap          = "#B89CFD"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#FEFAA9"   # Pale yellow - Power draw: system, process and GPU
+battery       = "#75DAD2"   # Teal - Battery charge
+threads       = "#F783A2"   # Rose - Thread count
+handles       = "#AAC0D4"   # Blue - Handles / file descriptors
+page_faults   = "#8554F7"   # Violet - Page faults per second
+gdi           = "#55D6BB"   # Teal - GDI objects (Windows)
 
 # =============================================================================
 # GPU METRICS COLORS
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#BC96FF"           # Purple - GPU utilization line
-utilization_fill = "#BC96FF4D"    # Purple with 30% alpha - GPU fill
-memory = "#FFEA00"                # Electric Yellow - GPU memory line (distinct from io Neon Pink)
-memory_fill = "#FFEA004D"         # Electric Yellow with 30% alpha - GPU memory fill
+utilization = "#DF64BD"           # Magenta - GPU utilization line
+utilization_fill = "#DF64BD4D"    # Magenta with 30% alpha - GPU fill
+memory = "#81DF8B"                # Green - GPU memory line
+memory_fill = "#81DF8B4D"         # Green with 30% alpha - GPU memory fill
 temperature = "#D8B516"           # Gold - GPU temperature line
-power = "#76FF03"                 # Green - GPU power draw line
+power = "#FEFAA9"                 # Pale yellow - GPU power draw line
 encoder = "#00E5FF"               # Cyan - GPU encoder utilization
-decoder = "#F50057"               # Deep Magenta-Red - GPU decoder utilization
+decoder = "#B692FE"               # Violet - GPU decoder utilization
 clock = "#7C4DFF"             # Violet - GPU clock speed line (theme-native)
 clock_fill = "#7C4DFFCC"      # Violet with 80% alpha - GPU clock fill
 fan = "#E040FB"               # Magenta - GPU fan speed line (theme-native)
@@ -95,13 +106,13 @@ fan = "#E040FB"               # Magenta - GPU fan speed line (theme-native)
 # Colors for the stacked CPU usage bar
 # =============================================================================
 [cpu_breakdown]
-user = "#00B7D0"      # Electric Blue - user CPU time
+user = "#B4E6FE"      # Pale blue - user CPU time
 system = "#FF4081"    # Neon Pink - system/kernel time
-iowait = "#FFEA00"    # Electric Yellow - I/O wait time
+iowait = "#FEDA85"    # Pale amber - I/O wait time
 idle = "#666680"      # Muted - idle time
-user_fill = "#00B7D059"      # Electric Blue with 35% alpha - user fill
+user_fill = "#B4E6FE59"      # Pale blue with 35% alpha - user fill
 system_fill = "#FF408159"    # Neon Pink with 35% alpha - system fill
-iowait_fill = "#FFEA0059"    # Electric Yellow with 35% alpha - iowait fill
+iowait_fill = "#FEDA8559"    # Pale amber with 35% alpha - iowait fill
 idle_fill = "#66668033"      # Muted with 20% alpha - idle fill
 
 [priority]

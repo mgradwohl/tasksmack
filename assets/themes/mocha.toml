@@ -42,40 +42,51 @@ idle = "#A5A8C0"
 
 [charts]
 cpu = "#89B4FA"
-memory = "#A6E3A1"
-io = "#F38BA8"
-io_write = "#FAB387"
-net_tx = "#CBA6F7"
+memory = "#ACD865"
+io = "#FEC1AC"
+io_write = "#A6A084"
+net_tx = "#E5B672"
 net_rx = "#94E2D5"
 cpu_fill = "#89B4FA4D"
-memory_fill = "#A6E3A14D"
-io_fill = "#F38BA84D"
-io_write_fill = "#FAB3874D"
-net_tx_fill = "#CBA6F74D"
+memory_fill = "#ACD8654D"
+io_fill = "#FEC1AC4D"
+io_write_fill = "#A6A0844D"
+net_tx_fill = "#E5B6724D"
 net_rx_fill = "#94E2D54D"
 peak_line = "#CDD6F4B3"
 
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#89B4FA"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#CBF6DB"   # Pale green - Memory: Cached (also Process Shared)
+swap          = "#AF99C7"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#FEF18F"   # Pale yellow - Power draw: system, process and GPU
+battery       = "#90E1D7"   # Pale teal - Battery charge
+threads       = "#D88FC4"   # Magenta - Thread count
+handles       = "#BDC3CA"   # Gray - Handles / file descriptors
+page_faults   = "#BEC6F6"   # Blue - Page faults per second
+gdi           = "#A8E4CB"   # Pale green - GDI objects (Windows)
+
 [charts.gpu]
-utilization = "#AA90C7"
-utilization_fill = "#AA90C74D"
-memory = "#F9E2AF"
-memory_fill = "#F9E2AF4D"
-temperature = "#F5A674"
-power = "#A6E3A1"
+utilization = "#FFCAEC"
+utilization_fill = "#FFCAEC4D"
+memory = "#8CECC9"
+memory_fill = "#8CECC94D"
+temperature = "#E8B09E"
+power = "#FEF18F"
 encoder = "#5589A1"
-decoder = "#F5C2E7"
-clock = "#89B4FA"
-clock_fill = "#89B4FACC"
+decoder = "#A593CD"
+clock = "#95BCFB"
+clock_fill = "#95BCFBCC"
 fan = "#797C92"
 
 [cpu_breakdown]
 user = "#B8E2FF"
-system = "#F38BA8"
-iowait = "#FAB387"
+system = "#EEA645"
+iowait = "#E8BF96"
 idle = "#45475A"
 user_fill = "#B8E2FF59"
-system_fill = "#F38BA859"
-iowait_fill = "#FAB38759"
+system_fill = "#EEA64559"
+iowait_fill = "#E8BF9659"
 idle_fill = "#45475A33"
 
 [priority]

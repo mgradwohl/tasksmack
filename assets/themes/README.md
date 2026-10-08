@@ -100,6 +100,45 @@ net_rx_fill = "#00E6764D"    # Network receive (RX) fill       (fallback: net_rx
 peak_line = "#FFD54FB3"      # Peak reference line (e.g., peak memory)
 ```
 
+#### Metric roles
+
+Every metric has its own colour, so no chart draws one metric in another's colour. Each role is
+optional: a theme without it keeps the colour the metric used to borrow, shown in the last column.
+The one exception is process Power, which used `semantic.text_info`: it now follows `power` like
+system Power, so it draws in `charts.cpu` unless `charts.power` is set.
+Each takes an optional `<role>_fill` too, except `cpu_total`, `page_faults` and `gdi`, which are drawn
+as lines only (CPU Total's fill is the User/System bands under it); without
+one, the fill is the line at about 35% alpha, or the borrowed fill when the line is borrowed as well.
+
+| Key | Drawn for | Without it |
+|-----|-----------|------------|
+| `cpu_total` | CPU Total, the line over the User/System bands | `cpu` |
+| `memory_cached` | Memory: Cached | `cpu` |
+| `memory_shared` | Process Memory: Shared | `memory_cached` |
+| `swap` | Memory: Swap | `io` |
+| `memory_virtual` | Process Memory: Virtual | `swap` |
+| `power` | Power: system, process (use the same colour for `charts.gpu.power`) | `cpu` |
+| `battery` | Battery charge | `memory` |
+| `threads` | Threads | `cpu` |
+| `handles` | Handles / file descriptors | `memory` |
+| `page_faults` | Page faults per second | `accents.colors[3]` |
+| `gdi` | GDI objects (Windows) | `accents.colors[4]` |
+
+#### Colour families
+
+The bundled themes keep each metric in one family of colour, so a metric looks the same in every
+theme and on every screen, and a unit test holds them to it:
+
+- CPU blue; memory green; swap violet.
+- Disk read orange, disk write brown/olive (duller than read).
+- Network send amber, receive cyan/teal.
+- GPU utilisation magenta; power yellow, the same colour on every screen.
+- The other roles each keep a family too: battery teal, threads rose, page faults periwinkle, GDI
+  objects green-teal, and handles a neutral grey.
+- Severity reads green, amber, red: `text_success`, `text_warning` and `text_error` keep those hues, in that order.
+- The status colours (`text_error`, `text_warning`, `text_success`, `status.running`) are kept for
+  state and messages: no data series uses them, or a colour within CIEDE2000 10 of them.
+
 ### `[charts.gpu]` - GPU Metrics Colors
 
 ```toml
