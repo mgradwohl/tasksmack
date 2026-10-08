@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
 #include "App/TabLabel.h"
 #include "Core/Event.h"
@@ -112,6 +113,22 @@ class ProcessDetailsPanel : public Panel
         return m_ActionCapabilities;
     }
 
+    /// F9 (#170): on this frame's render, opens the Actions tab's Kill confirm for the process shown,
+    /// through ProcessActionsView::requestKillShortcut() (target captured then, never a direct kill),
+    /// and brings the Actions tab forward so the dialog is drawn. Does nothing while this pane is not
+    /// showing a running process, or when the platform cannot kill. Lives for this frame only:
+    /// expireFrameRequests() drops it if the tabs were not drawn.
+    void requestKillSelected() noexcept
+    {
+        m_KillShortcut.request();
+    }
+
+    /// End of frame: drop a shortcut request this frame's render did not take (#170).
+    void expireFrameRequests() noexcept
+    {
+        m_KillShortcut.expire();
+    }
+
   private:
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderActions();
@@ -191,6 +208,8 @@ class ProcessDetailsPanel : public Panel
     // The Actions tab's buttons, confirm dialog and result line, and the priority control under them
     // (#1179). Both act through m_ProcessActions, which the panel keeps owning.
     ProcessActionsView m_ActionsView;
+    KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
+    bool m_SelectActionsTab = false;                // F9 asked for the Kill confirm: show the Actions tab, which draws it
     ProcessPriorityView m_PriorityView;
 
     // The Overview's Environment section (#179). The reader is created by the composition root (the

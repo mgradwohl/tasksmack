@@ -38,6 +38,7 @@ This is the canonical inventory of user-visible and engineering features current
 | Persistent settings | Theme, font size, process columns, sampling, history, window state, and advanced metric/UI settings |
 | Sampling controls | Refresh interval from 100 ms to 5 seconds; default 1 second |
 | History controls | Retention from 10 seconds to 30 minutes; default 5 minutes |
+| Keyboard shortcuts | htop-style F1 About and shortcut list, F2 Settings, F5 tree view, F9 Kill (confirmed), F10 Quit; Processes table navigation with arrows, j/k, Page Up/Down, Home/End, g/G, and Left/Right to collapse/expand in tree view |
 | Capability-aware UI | Unsupported metrics and actions are hidden; reduced privileges can trigger an elevation notice |
 | Responsive sampling | Separate process and system `BackgroundSampler` workers isolate workloads; immutable versioned System/Storage/GPU publications, process snapshot versions, and background tree building avoid render-frame locks, redundant copies, stale history entries, and UI stalls |
 | Resize pipeline | Batched SDL3 event handling, event-driven viewport updates, idle throttling, and minimized throttling |

@@ -3,6 +3,7 @@
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FpsCounter.h"
+#include "KeyboardShortcuts.h"
 #include "PanelTabs.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
@@ -48,6 +49,12 @@ class ShellLayer : public Core::Layer
     }
 
   private:
+    /// The htop-style function keys (#170) that do not depend on the tab: F1 About (with the shortcut
+    /// list), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
+    static void handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action);
+    /// F5 (tree view) and F9 (Kill, confirm dialog only), to the tab drawn this frame: called after
+    /// renderTabBar() and before the tabs draw, whose render takes the request this frame.
+    void handleTabShortcut(KeyboardShortcuts::ShortcutAction action);
     void renderTabBar();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();
