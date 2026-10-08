@@ -9,6 +9,7 @@
 #endif
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -46,6 +47,9 @@ class LinuxProcessConnectionsReader final : public IProcessConnectionsReader
     struct ProcRoot
     {
         std::string path; ///< "<path>/<pid>/..." stands for "/proc/<pid>/..."
+        /// Called after the fd scan, before anything is concluded from it, so a test can change the
+        /// tree there (e.g. rewrite stat: the process exited during the scan). Empty: nothing runs.
+        std::function<void()> afterFdScan;
     };
 
     /// Test seam: read processes under @p root and never use netlink, so every table comes from
@@ -69,6 +73,7 @@ class LinuxProcessConnectionsReader final : public IProcessConnectionsReader
 
   private:
     std::string m_ProcRoot = "/proc";
+    std::function<void()> m_AfterFdScan; // ProcRoot::afterFdScan (tests only; empty in production)
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// The netlink transport, opened on first use unless one was injected; null when unavailable.

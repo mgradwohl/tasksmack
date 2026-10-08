@@ -18,9 +18,7 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -31,7 +29,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -458,7 +455,7 @@ class SyntheticProcConnections : public ::testing::Test
 
     [[nodiscard]] ConnectionsReadResult read() const
     {
-        LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{.path = m_Proc.path.string()});
+        LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{.path = m_Proc.path.string(), .afterFdScan = {}});
         return reader.readConnections(TARGET);
     }
 
@@ -514,52 +511,21 @@ TEST_F(SyntheticProcConnections, AProcessWithNoSocketsReadsNoTables)
 
 TEST_F(SyntheticProcConnections, ANoSocketsResultIsConfirmedAgainstAProcessThatExitedDuringTheScan)
 {
-    // stat is a FIFO a helper thread feeds, one open at a time: the first read (before the fd scan)
-    // sees the target's start time, the second (after it) another's -- the PID was reused while the
-    // empty fd directory was listed. The empty listing must then read as exited, not as "no sockets".
+    // No socket fds; between the fd scan and its conclusion, stat starts naming another process (the
+    // PID was reused while the empty fd directory was listed). That must read as exited, not as "no
+    // sockets".
     std::filesystem::remove(pidDir() / "fd" / "3");
     std::filesystem::remove(pidDir() / "fd" / "4");
-    std::filesystem::remove(pidDir() / "stat");
-    const std::filesystem::path stat = pidDir() / "stat";
-    ASSERT_EQ(::mkfifo(stat.c_str(), 0600), 0);
-
-    std::atomic<int> served{0};
-    std::thread feeder(
-        [&stat, &served]()
+    int scans = 0;
+    LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{
+        .path = pidDir().parent_path().string(),
+        .afterFdScan = [this, &scans]()
         {
-            constexpr std::array<std::string_view, 2> LINES{
-                "100 (server) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 4242 1000 50\n",
-                "100 (other) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 9999 1000 50\n"};
-            for (const std::string_view line : LINES)
-            {
-                // Non-blocking open in a bounded retry: ENXIO until the reader opens its end, so a
-                // reader that never asks a second time cannot hang the test.
-                int fd = -1;
-                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-                while (fd < 0 && std::chrono::steady_clock::now() < deadline)
-                {
-                    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-                    fd = ::open(stat.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-                    if (fd < 0)
-                    {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                    }
-                }
-                if (fd < 0)
-                {
-                    return;
-                }
-                static_cast<void>(::write(fd, line.data(), line.size()));
-                ::close(fd);
-                served.fetch_add(1);
-                // Let the reader take the line and close before the next open, so each open is one read.
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            }
-        });
-
-    const ConnectionsReadResult result = read();
-    feeder.join();
-    EXPECT_EQ(served.load(), 2) << "the start time was read again after the scan";
+            ++scans;
+            write("stat", "100 (other) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 9999 1000 50\n");
+        }});
+    const ConnectionsReadResult result = reader.readConnections(TARGET);
+    EXPECT_EQ(scans, 1);
     EXPECT_EQ(result.status, ConnectionsReadStatus::ProcessExited);
     EXPECT_TRUE(result.connections.empty());
 }
@@ -567,7 +533,8 @@ TEST_F(SyntheticProcConnections, ANoSocketsResultIsConfirmedAgainstAProcessThatE
 TEST_F(SyntheticProcConnections, AStartTimeThatDoesNotMatchReadsAsExited)
 {
     writeAllTables();
-    LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{.path = pidDir().parent_path().string()});
+    LinuxProcessConnectionsReader reader(
+        LinuxProcessConnectionsReader::ProcRoot{.path = pidDir().parent_path().string(), .afterFdScan = {}});
     const ConnectionsReadResult result = reader.readConnections({.pid = PID, .startTimeTicks = 4243});
     EXPECT_EQ(result.status, ConnectionsReadStatus::ProcessExited);
 }

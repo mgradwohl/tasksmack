@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -179,10 +180,12 @@ LinuxProcessConnectionsReader::LinuxProcessConnectionsReader() = default;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 // Never netlink (opened, and null): a synthetic tree's sockets are not the kernel's.
-LinuxProcessConnectionsReader::LinuxProcessConnectionsReader(ProcRoot root) : m_ProcRoot(std::move(root.path)), m_TransportOpened(true)
+LinuxProcessConnectionsReader::LinuxProcessConnectionsReader(ProcRoot root)
+    : m_ProcRoot(std::move(root.path)), m_AfterFdScan(std::move(root.afterFdScan)), m_TransportOpened(true)
 {}
 #else
-LinuxProcessConnectionsReader::LinuxProcessConnectionsReader(ProcRoot root) : m_ProcRoot(std::move(root.path))
+LinuxProcessConnectionsReader::LinuxProcessConnectionsReader(ProcRoot root)
+    : m_ProcRoot(std::move(root.path)), m_AfterFdScan(std::move(root.afterFdScan))
 {}
 #endif
 
@@ -257,6 +260,10 @@ ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const Proce
     std::vector<std::uint64_t> inodes;
     const ProcFdScan::FdScan scan =
         ProcFdScan::scanFds(dir.get(), /*readEveryLink=*/true, [&inodes](std::uint64_t inode) { inodes.push_back(inode); });
+    if (m_AfterFdScan)
+    {
+        m_AfterFdScan(); // test seam (ProcRoot): the process "exits" here
+    }
     if (scan.linkAccess == ProcFdScan::LinkAccess::Denied)
     {
         return failure(ConnectionsReadStatus::PermissionDenied);
