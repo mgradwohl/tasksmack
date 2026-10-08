@@ -23,6 +23,7 @@
 #include <winternl.h>
 #include <iphlpapi.h>    // Network interface APIs (includes netioapi.h)
 #include <cfgmgr32.h>    // CM_Locate_DevNodeW: whether an adapter's device is present (#1284)
+#include <powerbase.h>   // CallNtPowerInformation: the rated base clock (#1530)
 // clang-format on
 
 #undef max
@@ -148,8 +149,9 @@ template<typename Query>
     return processorGroupFirstCoreIds(maximums);
 }
 
-/// The base clock in MHz from the registry's ~MHz; 0 if it can't be read.
-[[nodiscard]] std::uint64_t readBaseCpuMHz()
+/// The registry's ~MHz; 0 if it can't be read. Not the rated base on hybrid parts (#1530): only the
+/// fallback when CallNtPowerInformation has no MaxMhz.
+[[nodiscard]] std::uint64_t readRegistryCpuMHz()
 {
     DWORD mhz = 0;
     DWORD dataSize = sizeof(mhz);
@@ -164,6 +166,46 @@ template<typename Query>
         return 0;
     }
     return toU64NonNegative(mhz);
+}
+
+/// Each logical processor's rated base clock (PROCESSOR_POWER_INFORMATION::MaxMhz) from
+/// CallNtPowerInformation(ProcessorInformation) -- no admin, no WMI; empty if the call fails (#1530).
+[[nodiscard]] std::vector<std::uint32_t> readProcessorMaxMHz()
+{
+    // PROCESSOR_POWER_INFORMATION is documented but not declared in the SDK's headers
+    struct ProcessorPowerInformation
+    {
+        ULONG number;
+        ULONG maxMhz;
+        ULONG currentMhz;
+        ULONG mhzLimit;
+        ULONG maxIdleState;
+        ULONG currentIdleState;
+    };
+    // One entry per processor; sized for every group, and entries left unwritten stay 0 (ignored)
+    std::vector<ProcessorPowerInformation> info(std::max<DWORD>(GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS), 1));
+    const NTSTATUS status = CallNtPowerInformation(
+        ProcessorInformation, nullptr, 0, info.data(), static_cast<ULONG>(info.size() * sizeof(ProcessorPowerInformation)));
+    if (status != 0) // STATUS_SUCCESS = 0
+    {
+        spdlog::debug("WindowsSystemProbe: CallNtPowerInformation(ProcessorInformation) failed ({:#x}); using ~MHz as the base clock",
+                      static_cast<std::uint32_t>(status));
+        return {};
+    }
+    std::vector<std::uint32_t> maxMHz;
+    maxMHz.reserve(info.size());
+    for (const ProcessorPowerInformation& processor : info)
+    {
+        maxMHz.push_back(processor.maxMhz);
+    }
+    return maxMHz;
+}
+
+/// The nominal base clock "% Processor Performance" scales: the rated MaxMhz, else ~MHz; 0 if neither.
+[[nodiscard]] std::uint64_t readBaseCpuMHz()
+{
+    const std::vector<std::uint32_t> maxMHz = readProcessorMaxMHz();
+    return nominalCpuBaseMHz(maxMHz, readRegistryCpuMHz());
 }
 
 } // namespace
@@ -492,7 +534,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasIoWait = false,         // Windows doesn't expose iowait
         .hasSteal = false,          // Windows doesn't expose steal time
         .hasLoadAvg = false,        // Windows doesn't have load average
-        .hasCpuFreq = true,         // Current clock: ~MHz x % Processor Performance (#1184)
+        .hasCpuFreq = true,         // Current clock: rated base x % Processor Performance (#1184, #1530)
         .hasNetworkCounters = true, // Via GetIfTable2 (64-bit counters, Unicode names)
     };
 }

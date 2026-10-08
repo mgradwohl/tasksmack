@@ -258,8 +258,9 @@ TEST_F(WindowsSystemProbeCpuClockTest, QueryIsClosedWithTheProbe)
 
 TEST(WindowsSystemProbeTest, CpuClockIsTheBaseClockScaledByProcessorPerformance)
 {
-    // The real pdh.dll on this machine (#1184): the base ~MHz scaled by "% Processor Performance" stays
-    // within the range turbo and power saving can take it, and never reads 0 once the base is known.
+    // The real pdh.dll on this machine (#1184): the rated base (#1530) scaled by "% Processor Performance"
+    // stays within the range turbo and power saving can take it, and never reads 0 once a base is known.
+    // ~MHz gates the test only as proof that the machine reports a clock at all.
     // The fakes above prove the reading is used; this checks the real counter path end to end.
     DWORD baseMHz = 0;
     DWORD dataSize = sizeof(baseMHz);

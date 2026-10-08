@@ -418,6 +418,7 @@ if(WIN32)
         gdi32
         cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
+        powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
     )
 
     target_link_libraries(TaskSmack PRIVATE ${TASKSMACK_WINDOWS_SYSTEM_LIBS})
