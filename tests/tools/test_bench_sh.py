@@ -326,6 +326,39 @@ class BenchShTest(unittest.TestCase):
         self.assertIsNone(build["compiler_id"])
         self.assertIsNone(build["compiler_version"])
 
+    def test_a_preset_named_after_the_user_or_host_reaches_no_name(self):
+        # #1445 review: '-' is no identity-token boundary, so a preset named after the user or the
+        # machine survived as <preset>-<timestamp>.json in the file names, the manifest's
+        # result_file and --benchmark_out. The names are built from the scrubbed preset instead.
+        user = getpass.getuser()
+        host = socket.gethostname().split(".")[0]
+        identities = [name for name in (user, host, socket.gethostname()) if len(name) >= 3]
+
+        def strings(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    yield from strings(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from strings(item)
+            elif isinstance(value, str):
+                yield value
+
+        for kind, preset in (("user", user), ("host", host)):
+            if len(preset) < 3 or preset.lower() in ("user", "host"):
+                continue
+            with self.subTest(kind=kind):
+                code, output, results, manifests = self.run_bench(f"preset-{kind}", 0, leading=(preset, "--"))
+                self.assertEqual(code, 0, output)
+                self.assertEqual((len(results), len(manifests)), (1, 1), output)
+                manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+                self.assertEqual(manifest["preset"], f"<{kind}>")
+                self.assertEqual(manifest["result_file"], results[0].name)
+                self.assertTrue(results[0].name.startswith(f"{kind}-"), results[0].name)
+                for text in [results[0].name, manifests[0].name, *strings(manifest)]:
+                    for identity in identities:
+                        self.assertNotIn(identity.lower(), text.lower(), f"{identity!r} in {text!r}")
+
     def test_this_machines_host_name_in_the_args_does_not_survive(self):
         host = socket.gethostname()
         if len(host) < 3:
@@ -741,6 +774,28 @@ class ScrubberTest(unittest.TestCase):
                     build = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
                     self.assertEqual(build["build_type"], build_type)
                     self.assertEqual(build["cxx_flags_config_sha256"], hashlib.sha256(flags.encode("utf-8")).hexdigest())
+
+    def test_a_user_or_host_name_in_the_preset_is_hidden_between_preset_separators(self):
+        # #1445 review: the preset's own '-', '.' and '_' bound a user or host name in it too.
+        module = load_bench_manifest()
+        hosts = ["bench-host-123", "bench-host-123.example.com"]
+        for preset, expected in (
+            ("benchuser", "<user>"),
+            ("BENCHUSER", "<user>"),
+            ("win-benchuser", "win-<user>"),
+            ("benchuser.release_x", "<user>.release_x"),
+            ("bench-host-123", "<host>"),
+            ("ci-bench-host-123.example.com-nightly", "ci-<host>-nightly"),
+            # Not the name on its own: left alone.
+            ("benchusers", "benchusers"),
+            ("x86_64-RelWithDebInfo", "x86_64-RelWithDebInfo"),
+            ("win-benchmark", "win-benchmark"),
+        ):
+            with self.subTest(preset=preset):
+                self.assertEqual(module.preset_component(preset, "benchuser", hosts), expected)
+        # A user name under 3 characters is never replaced on its own.
+        self.assertEqual(module.preset_component("ab-release", "ab", []), "ab-release")
+        self.assertEqual(module.preset_file_stem("win-<user>-<host>"), "win-user-host")
 
     def test_an_absent_cache_entry_hashes_as_null_an_empty_one_as_empty(self):
         # #1445 review: unknown flags stay distinguishable from explicitly empty ones.

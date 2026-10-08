@@ -260,11 +260,20 @@ exit [int]$env:STUB_EXIT
         # checked and hashed -- not a same-named decoy earlier on PATH.
         @{ Name = 'bare-name'; StubExit = '0'; StubOutput = 'full'; Cwd = (Split-Path -Parent $stub); PathFirst = $decoyDir
             Command = "& $(& $quote $benchScript) fake-preset -BenchmarkBinary 'TaskSmackBenchmarks.cmd' -OutputDirectory $(& $quote (Join-Path $root 'bare-name')) '--benchmark_filter=BM_X'" }
+        # #1445 review: a preset named after the user or the machine reaches no file name and no
+        # manifest string (scenarios added below when the name has 3+ characters).
         # Self-review: `& bench.ps1 -- --benchmark_filter=...` with no preset, as documented; the
         # stub exits 0 with output that cannot be redacted.
         @{ Name = 'separator'; StubExit = '0'; StubOutput = 'partial'
             Command = "& $(& $quote $benchScript) -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root 'separator')) -- '--benchmark_filter=BM_X'" }
     )
+    $presetIdentities = [ordered]@{ user = [Environment]::UserName; host = [Environment]::MachineName.Split('.')[0] }
+    foreach ($kind in @($presetIdentities.Keys)) {
+        $name = $presetIdentities[$kind]
+        if ($name.Length -lt 3 -or $name -in @('user', 'host')) { $presetIdentities.Remove($kind); continue }
+        $scenarios += @{ Name = "preset-$kind"; StubExit = '0'; StubOutput = 'full'
+            Command = "& $(& $quote $benchScript) $(& $quote $name) -BenchmarkBinary $(& $quote $stub) -OutputDirectory $(& $quote (Join-Path $root "preset-$kind")) '--benchmark_filter=BM_X'" }
+    }
     New-Item -ItemType Directory -Path (Join-Path $checkout 'tools'), (Join-Path $checkout 'build\uni\bin') | Out-Null
     Copy-Item -LiteralPath $benchScript -Destination (Join-Path $checkout 'tools')
     Copy-Item -LiteralPath $stub -Destination (Join-Path $checkout 'build\uni\bin')
@@ -476,6 +485,25 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($relative.ExitCode -eq 0 -and $relative.Manifest.Count -eq 1) "Relative-binary run failed:`n$($relative.Log)"
     $relativeBuild = (Get-Content -LiteralPath $relative.Manifest[0].FullName -Raw | ConvertFrom-Json).build
     Assert-True ($relativeBuild.build_type -eq 'Release' -and $relativeBuild.compiler_version -eq '22.1.8') "A relative binary must find its build tree: $($relativeBuild | ConvertTo-Json -Compress)"
+
+    # ── #1445 review: a preset named after the user or the machine reaches no name ─────────────
+    $identities = @([Environment]::UserName, [Environment]::MachineName, [Environment]::MachineName.Split('.')[0]) | Where-Object { $_.Length -ge 3 }
+    function Get-JsonStrings($Node) {
+        if ($Node -is [string]) { $Node }
+        elseif ($Node -is [System.Management.Automation.PSCustomObject]) { foreach ($property in $Node.PSObject.Properties) { Get-JsonStrings $property.Value } }
+        elseif ($Node -is [System.Collections.IEnumerable]) { foreach ($item in $Node) { Get-JsonStrings $item } }
+    }
+    foreach ($kind in @($presetIdentities.Keys)) {
+        $run = $outcomes["preset-$kind"]
+        Assert-True ($run.ExitCode -eq 0 -and $run.Result.Count -eq 1 -and $run.Manifest.Count -eq 1) "Preset-$kind run failed:`n$($run.Log)"
+        $presetManifest = Get-Content -LiteralPath $run.Manifest[0].FullName -Raw | ConvertFrom-Json
+        Assert-True ($presetManifest.preset -ceq "<$kind>" -and $presetManifest.result_file -ceq $run.Result[0].Name -and $run.Result[0].Name.StartsWith("$kind-", [StringComparison]::Ordinal)) "Preset named after the ${kind}: preset=$($presetManifest.preset) result_file=$($presetManifest.result_file) file=$($run.Result[0].Name)"
+        foreach ($text in @($run.Result[0].Name, $run.Manifest[0].Name) + @(Get-JsonStrings $presetManifest)) {
+            foreach ($identity in $identities) {
+                Assert-True ($text.IndexOf($identity, [StringComparison]::OrdinalIgnoreCase) -lt 0) "'$identity' in '$text' (preset named after the $kind)"
+            }
+        }
+    }
 
     # ── #1445 review: a bare -BenchmarkBinary is the file in the location, not one on PATH ─────
     $bare = $outcomes['bare-name']
@@ -813,6 +841,25 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True ($shortHost -ceq 'tsk_ctx_machine=ab') "A host name under 3 characters is left alone: $shortHost"
     # Hide-Identity's default host list holds this machine's own name.
     Assert-True (@(Get-HostNames) -contains [Environment]::MachineName) "Get-HostNames: $(@(Get-HostNames) -join ', ')"
+
+    # ── #1445 review: the preset's own '-', '.' and '_' bound a user or host name in it too ────
+    # The same cases as test_bench_sh.py.
+    $presetHosts = @('bench-host-123', 'bench-host-123.example.com')
+    foreach ($case in @(
+            , @('benchuser', '<user>')
+            , @('BENCHUSER', '<user>')
+            , @('win-benchuser', 'win-<user>')
+            , @('benchuser.release_x', '<user>.release_x')
+            , @('bench-host-123', '<host>')
+            , @('ci-bench-host-123.example.com-nightly', 'ci-<host>-nightly')
+            , @('benchusers', 'benchusers')
+            , @('x86_64-RelWithDebInfo', 'x86_64-RelWithDebInfo')
+            , @('win-benchmark', 'win-benchmark')
+        )) {
+        $got = Get-PresetComponent $case[0] -User 'benchuser' -Hosts $presetHosts
+        Assert-True ($got -ceq $case[1]) "Preset [$($case[0])] became [$got], expected [$($case[1])]"
+    }
+    Assert-True ((Get-PresetComponent 'ab-release' -User 'ab' -Hosts @()) -ceq 'ab-release') 'A user name under 3 characters is left alone in a preset'
 
     # ── #1445 review: the identity pass leaves validated categorical fields alone ──────────────
     # Host and user names that coincide with OS and compiler values: only free-form fields change.

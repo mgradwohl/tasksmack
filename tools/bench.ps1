@@ -10,7 +10,8 @@
 #
 # Preset defaults to 'win-benchmark'.
 # Produces JSON output at perf-data/<preset>-<timestamp>.json (-2, -3, ... appended when a run in
-# the same second already wrote that name), holding every repetition plus the
+# the same second already wrote that name; a user or host name in the preset becomes "user" /
+# "host" in the file names), holding every repetition plus the
 # mean/median/stddev/cv aggregates, and a provenance sidecar at
 # perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config, benchmark
 # args, anonymized machine class; see CONTRIBUTING.md "Benchmark Output").
@@ -88,36 +89,6 @@ if (-not (Test-Path -LiteralPath $benchBin)) {
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 # .NET file APIs resolve against the process directory, not the PowerShell location.
 $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outDir)
-
-# Claim the result name before the benchmark starts, atomically (CreateNew fails if the file
-# exists), so two runs in the same second -- concurrent ones too -- never share a name: the later
-# one gets -2, -3, ... A name whose manifest is left from an earlier run is skipped as well. The
-# manifest name follows the claimed result name. Kept in step with claim_output in bench.sh.
-$outFile = $null
-for ($suffix = 1; -not $outFile; $suffix++) {
-    $stem = if ($suffix -eq 1) { "$Preset-$timestamp" } else { "$Preset-$timestamp-$suffix" }
-    if (Test-Path -LiteralPath (Join-Path $outDir "$stem.manifest.json")) { continue }
-    $candidate = Join-Path $outDir "$stem.json"
-    try {
-        [IO.File]::Open($candidate, [IO.FileMode]::CreateNew).Dispose()
-        $outFile = $candidate
-    }
-    catch [System.IO.IOException] {
-        if (-not (Test-Path -LiteralPath $candidate)) { throw }
-    }
-}
-$manifestFile = [IO.Path]::ChangeExtension($outFile, '.manifest.json')
-
-# Every repetition is kept in the JSON file (no --benchmark_report_aggregates_only), so the
-# distribution can be re-analysed; Google Benchmark still appends the aggregate rows, which
-# tools/check-benchmark-regression.py compares. Only the console shows aggregates alone.
-$benchArgs = @(
-    "--benchmark_repetitions=10",
-    "--benchmark_min_time=0.5s",
-    "--benchmark_display_aggregates_only=true",
-    "--benchmark_out=$outFile",
-    "--benchmark_out_format=json"
-) + $ExtraArgs
 
 function Get-GitProvenance {
     $git = [ordered]@{ commit = $null; branch = $null; dirty = $null }
@@ -218,6 +189,23 @@ function Get-HostNames {
     catch { $null = $_ }
     foreach ($name in @($names)) { [void]$names.Add($name.Split('.')[0]) }
     return [string[]]@($names | Sort-Object Length -Descending)
+}
+
+function Get-PresetComponent {
+    # The preset as the manifest's preset field and the output file names carry it (#1445
+    # review): each host name and the user name (3+ characters) standing alone between
+    # separators, a preset's '-', '.' and '_' included, becomes <host> / <user>, so a preset named
+    # after the user or the machine reaches neither a file name nor the manifest. Kept in step
+    # with preset_component in tools/bench-manifest.py.
+    param([string]$Preset, [string]$User = [Environment]::UserName, [string[]]$Hosts = (Get-HostNames))
+    $separated = '\s/\\"''=:,;._\-'
+    $tokens = @(@($Hosts | Where-Object { $_ } | Sort-Object Length -Descending | ForEach-Object { , @($_, '<host>') }) + , @($User, '<user>'))
+    foreach ($pair in $tokens) {
+        if ($pair[0] -and $pair[0].Length -ge 3) {
+            $Preset = [regex]::Replace($Preset, "(?<![^$separated])" + [regex]::Escape($pair[0]) + "(?![^$separated])", $pair[1], 'IgnoreCase')
+        }
+    }
+    return $Preset
 }
 
 function Hide-Identity {
@@ -522,7 +510,7 @@ function New-BenchManifest {
         schema_version = 1
         generator      = 'tools/bench.ps1'
         created_utc    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        preset         = $Preset
+        preset         = $presetComponent
         result_file    = Split-Path -Leaf $outFile
         exit_code      = $null
         git            = Get-GitProvenance
@@ -555,6 +543,42 @@ function Invoke-ResultRedaction {
     # -Depth 100: per-repetition rows and user counters nest deeper than a flat aggregate file.
     $json | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $outFile -Encoding utf8
 }
+
+# The preset as the file names and the manifest carry it (#1445 review): a user or host name in
+# it becomes <user> / <host> (Get-PresetComponent), and "user" / "host" in the file names, so
+# neither the files nor the manifest's result_file and --benchmark_out carry it.
+$presetComponent = Get-PresetComponent $Preset
+$presetStem = $presetComponent.Replace('<', '').Replace('>', '')
+
+# Claim the result name before the benchmark starts, atomically (CreateNew fails if the file
+# exists), so two runs in the same second -- concurrent ones too -- never share a name: the later
+# one gets -2, -3, ... A name whose manifest is left from an earlier run is skipped as well. The
+# manifest name follows the claimed result name. Kept in step with claim_output in bench.sh.
+$outFile = $null
+for ($suffix = 1; -not $outFile; $suffix++) {
+    $stem = if ($suffix -eq 1) { "$presetStem-$timestamp" } else { "$presetStem-$timestamp-$suffix" }
+    if (Test-Path -LiteralPath (Join-Path $outDir "$stem.manifest.json")) { continue }
+    $candidate = Join-Path $outDir "$stem.json"
+    try {
+        [IO.File]::Open($candidate, [IO.FileMode]::CreateNew).Dispose()
+        $outFile = $candidate
+    }
+    catch [System.IO.IOException] {
+        if (-not (Test-Path -LiteralPath $candidate)) { throw }
+    }
+}
+$manifestFile = [IO.Path]::ChangeExtension($outFile, '.manifest.json')
+
+# Every repetition is kept in the JSON file (no --benchmark_report_aggregates_only), so the
+# distribution can be re-analysed; Google Benchmark still appends the aggregate rows, which
+# tools/check-benchmark-regression.py compares. Only the console shows aggregates alone.
+$benchArgs = @(
+    "--benchmark_repetitions=10",
+    "--benchmark_min_time=0.5s",
+    "--benchmark_display_aggregates_only=true",
+    "--benchmark_out=$outFile",
+    "--benchmark_out_format=json"
+) + $ExtraArgs
 
 Write-Host "Running benchmarks (preset=$Preset) -> $outFile"
 Write-Host "Binary: $benchBin"

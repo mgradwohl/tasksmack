@@ -744,7 +744,10 @@ deleted too, and the script fails.
 
 Each `bench.sh` / `bench.ps1` run writes two files to `perf-data/`. The result name is claimed
 atomically before the benchmark starts, so a run started in the same second as another --
-concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than overwrite it:
+concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than overwrite it. A
+user or host name in the preset (standing alone between separators, the preset's own `-`, `.`
+and `_` included) becomes `user` / `host` in both file names, and `<user>` / `<host>` in the
+manifest's `preset`, so no file name or manifest field carries it:
 
 - `<preset>-<timestamp>.json` -- Google Benchmark's JSON with **every repetition** (`run_type:
   "iteration"`) plus the `mean`/`median`/`stddev`/`cv` aggregate rows. The scripts deliberately do

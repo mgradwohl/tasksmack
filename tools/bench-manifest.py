@@ -8,6 +8,7 @@ only when they are allowlisted options with safe values (hashed otherwise), and 
 flags are recorded only as SHA-256 hashes.
 
 Usage:
+    bench-manifest.py --preset-stem P                   (the preset part of the output file names)
     bench-manifest.py --manifest OUT --result RESULT_JSON --binary BIN --preset P \
         --repo-root DIR -- <benchmark args...>          (snapshot before the run, exit_code null)
     bench-manifest.py --manifest OUT --finalize --exit-code N   (after the run)
@@ -110,11 +111,32 @@ def identity_strings() -> tuple[list[str], str | None, list[str]]:
 _SEPARATED = r"""\s/\\"'=:,;"""
 
 
-def _hide_token(value: str, token: str | None, replacement: str) -> str:
+def _hide_token(value: str, token: str | None, replacement: str, separated: str = _SEPARATED) -> str:
     if not token or len(token) < 3:
         return value
-    pattern = rf"(?<![^{_SEPARATED}]){re.escape(token)}(?![^{_SEPARATED}])"
+    pattern = rf"(?<![^{separated}]){re.escape(token)}(?![^{separated}])"
     return re.sub(pattern, replacement, value, flags=re.IGNORECASE)
+
+
+# A preset name's own separators ('-', '.', '_') also bound a user or host name in it: the preset
+# names the result and manifest files, and win-<user> must not stay win-benchuser.
+_PRESET_SEPARATED = _SEPARATED + r"._\-"
+
+
+def preset_component(preset: str, user: str | None, hosts: list[str] | tuple[str, ...] = ()) -> str:
+    """The preset as the manifest's preset field and the output file names carry it (#1445
+    review): each host name and the user name (3+ characters) standing alone between separators,
+    a preset's '-', '.' and '_' included, becomes <host> / <user>, so a preset named after the
+    user or the machine reaches neither a file name nor the manifest. Kept in step with
+    Get-PresetComponent in tools/bench.ps1."""
+    for host in sorted(hosts, key=len, reverse=True):
+        preset = _hide_token(preset, host, "<host>", _PRESET_SEPARATED)
+    return _hide_token(preset, user, "<user>", _PRESET_SEPARATED)
+
+
+def preset_file_stem(component: str) -> str:
+    """preset_component() for a file name: the placeholders without their angle brackets."""
+    return component.replace("<", "").replace(">", "")
 
 
 def hide_identity(value, prefixes: list[str], user: str | None, hosts: list[str] | tuple[str, ...] = ()):
@@ -473,7 +495,9 @@ def report_aggregates_only(args: list[str], environ: Mapping[str, str]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
+    # bench.sh names its output files from this (preset_component), before anything is written.
+    parser.add_argument("--preset-stem")
     parser.add_argument("--result", type=Path)
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--preset")
@@ -486,6 +510,13 @@ def main() -> int:
     parser.add_argument("--generator", default="tools/bench.sh")
     parser.add_argument("bench_args", nargs=argparse.REMAINDER)
     options = parser.parse_args()
+    if options.preset_stem is not None:
+        _, user, hosts = identity_strings()
+        # No newline: on Windows it would reach bash's command substitution as "\r\n".
+        sys.stdout.write(preset_file_stem(preset_component(options.preset_stem, user, hosts)))
+        return 0
+    if options.manifest is None:
+        parser.error("--manifest is required")
     if options.finalize:
         manifest = json.loads(options.manifest.read_text(encoding="utf-8"))
         manifest["exit_code"] = options.exit_code
@@ -499,11 +530,12 @@ def main() -> int:
         bench_args = bench_args[1:]
 
     aggregates_only = report_aggregates_only(bench_args, os.environ)
+    prefixes, user, hosts = identity_strings()
     manifest = {
         "schema_version": 1,
         "generator": options.generator,
         "created_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "preset": options.preset,
+        "preset": preset_component(options.preset, user, hosts),
         "result_file": options.result.name,
         "exit_code": options.exit_code,
         "git": git_provenance(options.repo_root),
@@ -516,7 +548,7 @@ def main() -> int:
         },
         "machine": machine_class(),
     }
-    manifest = hide_manifest_identity(manifest, *identity_strings())
+    manifest = hide_manifest_identity(manifest, prefixes, user, hosts)
     options.manifest.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return 0
 
