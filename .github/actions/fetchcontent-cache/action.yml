@@ -1,7 +1,8 @@
 name: 'FetchContent dependency cache'
 description: >-
   Restore (mode: restore) or save (mode: save) the FetchContent source cache under .cache/fetchcontent.
-  Every job restores; only runs on main save, so pull requests read main's entry instead of each
+  Every job restores; only runs on main save (one job per OS, see reusable-build-test.yml), so
+  pull requests read main's entry instead of each
   writing its own ~440 MB copy that only that PR can use (#1406).
 
 inputs:

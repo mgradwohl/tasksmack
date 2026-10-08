@@ -95,9 +95,11 @@ jobs:
           LLVM_ROOT: C:\Program Files\LLVM
         run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }}
 
-      # One saver per OS (the debug build) so parallel jobs don't race to reserve the same key.
-      - name: Save FetchContent dependencies
-        if: inputs.build_type == 'debug'
+      # One saver per OS so parallel jobs don't race to reserve the same key. Windows saves from
+      # the debug build here; Linux saves from the benchmark-enabled build further down, so the
+      # saved sources include Google Benchmark too.
+      - name: Save FetchContent dependencies (Windows)
+        if: runner.os == 'Windows' && inputs.build_type == 'debug'
         uses: ./.github/actions/fetchcontent-cache
         with:
           mode: save
@@ -140,6 +142,14 @@ jobs:
         run: |
           cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_BUILD_BENCHMARKS=ON
           cmake --build --preset ${{ inputs.build_type }} --target TaskSmackBenchmarks
+
+      # Linux's single saver: this configure also fetched the benchmark-only dependencies.
+      - name: Save FetchContent dependencies (Linux)
+        if: runner.os == 'Linux' && inputs.build_benchmarks
+        uses: ./.github/actions/fetchcontent-cache
+        with:
+          mode: save
+          cache-hit: ${{ steps.fetchcontent.outputs.cache-hit }}
 
       - name: Test (Windows)
         if: runner.os == 'Windows'

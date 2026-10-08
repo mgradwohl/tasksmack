@@ -132,6 +132,9 @@ jobs:
         with:
           key: linux-release-package-llvm${{ env.LLVM_VERSION }}
           max-size: 500M
+          # Main-only saving, as in every other workflow (#1406): a cache saved by a tag run can only
+          # be restored by that same tag, so tag runs only restore.
+          save: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Record toolchain versions
         # Documents the exact release environment for cross-run investigation.
@@ -281,6 +284,9 @@ jobs:
         with:
           key: windows-release-package-llvm${{ env.LLVM_SEMVER_VERSION }}
           max-size: 500M
+          # Main-only saving, as in every other workflow (#1406): a cache saved by a tag run can only
+          # be restored by that same tag, so tag runs only restore.
+          save: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Record toolchain versions
         # Documents the exact release environment for cross-run investigation.
