@@ -57,6 +57,14 @@ repos:
       - id: actionlint
         name: Lint GitHub Actions workflows
 
+  # REUSE licensing compliance (#150): every file needs copyright + licence info. Annotations live
+  # in REUSE.toml, licence texts in LICENSES/. See CONTRIBUTING.md "Licensing (REUSE)".
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v6.2.0
+    hooks:
+      - id: reuse
+        name: Check REUSE licensing compliance
+
   # Include-what-you-use (IWYU) - optional, runs in report-only mode
   # Prerequisites:
   #   - IWYU installed (apt install iwyu or brew install include-what-you-use)

@@ -212,6 +212,8 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **shellcheck**: Lint shell scripts
 - **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
   shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)
+- **reuse**: [REUSE](https://reuse.software) licensing compliance (`reuse lint`) -- see
+  [Licensing (REUSE)](#licensing-reuse)
 
 ### Bypassing Hooks (Emergency Only)
 
@@ -220,6 +222,24 @@ If you need to commit without running hooks (not recommended):
 ```bash
 git commit --no-verify
 ```
+
+## Licensing (REUSE)
+
+The repository follows the [REUSE specification](https://reuse.software/spec/): every file's
+copyright and licence is declared, and the `reuse` pre-commit hook (`reuse lint`) fails when one is
+missing. Licence texts live in `LICENSES/`; the annotations live in the top-level `REUSE.toml`
+rather than in per-file headers.
+
+- **New TaskSmack files** need nothing: the catch-all `path = "**"` block in `REUSE.toml` marks them
+  MIT (`2024 Matt Gradwohl`, matching `LICENSE`).
+- **New third-party files** (fonts, images, vendored or copied code, patches against upstream code,
+  adapted documents) MUST get their own `[[annotations]]` block in `REUSE.toml` with the upstream
+  copyright holder and SPDX licence identifier, placed after the catch-all (the last matching block
+  wins) with `precedence = "override"`. Keep the upstream notice next to the file too (as
+  `assets/fonts/LICENSE.txt` does for the fonts).
+- A licence that is not yet in `LICENSES/` must be added there:
+  `reuse download <SPDX-ID>` (with `pip install reuse`), or let the hook tell you which one is missing.
+- Check locally with `pre-commit run reuse --all-files` (or `reuse lint`).
 
 ## Constants
 
