@@ -105,5 +105,21 @@ TEST(IconEncodingTest, ProcessTableIconsAreTheirGlyphsInsideTheBakedRange)
     }
 }
 
+// The filter box, status bar, priority Apply and Settings footer icons (#977).
+TEST(IconEncodingTest, ControlIconsAreTheirGlyphsInsideTheBakedRange)
+{
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_CHECK), 0xF00CU);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_FLOPPY_DISK), 0xF0C7U);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_MAGNIFYING_GLASS), 0xF002U);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_LIST), 0xF03AU);
+    EXPECT_EQ(decodeSingleCodePoint(ICON_FA_ARROWS_ROTATE), 0xF021U);
+    for (const char* icon : {ICON_FA_CHECK, ICON_FA_FLOPPY_DISK, ICON_FA_MAGNIFYING_GLASS, ICON_FA_LIST, ICON_FA_ARROWS_ROTATE})
+    {
+        const std::uint32_t codePoint = decodeSingleCodePoint(icon);
+        EXPECT_GE(codePoint, ICON_MIN_FA);
+        EXPECT_LE(codePoint, ICON_MAX_FA);
+    }
+}
+
 } // namespace
 } // namespace UI
