@@ -122,8 +122,8 @@ inline constexpr const char* UNREADABLE_CELL_REASON =
 /// data (#1210): a gap in one sample, not a lack of support.
 inline constexpr const char* GPU_READ_FAILED_CELL_REASON = "Not available: reading per-process GPU data failed for this sample.";
 
-/// Tooltip of a GPU cell of a process that started since per-process GPU data was last read, while
-/// those reads are throttled (#1210): its GPU figures have not been read yet.
+/// Tooltip of a GPU cell of a process that started since per-process GPU data was last read by the
+/// GPU sampler (#1210, #1417): its GPU figures have not been read yet.
 inline constexpr const char* GPU_NOT_READ_YET_CELL_REASON = "Not available yet: this process started since GPU usage was last read.";
 
 /// Tooltip of a cell in a column this system's process probe cannot fill at all (#1028, #1035).
