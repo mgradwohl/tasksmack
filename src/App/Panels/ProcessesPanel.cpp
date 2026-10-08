@@ -2296,7 +2296,12 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
         // The one highlighted row, found by its key rather than taken to be the primary: an exited
         // primary is kept while the selection moves on, and Ctrl+A over a filter can select one row
         // without making it primary, yet F9 must act on what is highlighted (#804 review).
-        if (const std::optional<std::size_t> row = Nav::indexOfKey(keys, *m_Selection.keys().begin()); row.has_value())
+        // Exactly one visible row must carry the key: uniqueKey is a hash, and with two rows sharing it
+        // F9 cannot know which one is highlighted, so it does nothing rather than guess (#804 review).
+        const std::uint64_t selectedKey = *m_Selection.keys().begin();
+        const std::optional<std::size_t> row =
+            (std::ranges::count(keys, selectedKey) == 1) ? Nav::indexOfKey(keys, selectedKey) : std::nullopt;
+        if (row.has_value())
         {
             const Domain::ProcessSnapshot& proc = snapshots[visible[*row]];
             if (Detail::killShortcutAllowed(m_ActionCapabilities,
