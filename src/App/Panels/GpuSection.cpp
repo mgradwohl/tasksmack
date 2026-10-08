@@ -401,15 +401,15 @@ void renderGpuSection(RenderContext& ctx)
 
         const auto timeData = frameTimeAxis(perGpuTimestamps, alignedCount, nowSeconds);
 
-        // Compute per-GPU axis config from per-GPU timestamps so that X-axis scroll/limits stay
-        // consistent with the data being plotted. A refresh the GPU was missing from has a (gap)
-        // entry of its own, but the GPU's history can still start later than the global one (a GPU
-        // first seen mid-run) or be pruned on its own, so the global timestamps could mismatch.
+        // The x axis is the configured history window ending at now, like every other history chart.
+        // The data is placed on it by this GPU's own timestamps (timeData above): a refresh the GPU was
+        // missing from has a (gap) entry of its own, but the GPU's history can start later than
+        // another's (a GPU first seen mid-run) or be pruned on its own.
         const auto axisConfig = makeTimeAxisConfig(ctx.maxHistorySeconds);
 
-        // Only the clocks the window shows set the scale: not the trim anchor left of it, nor older
-        // samples when scrolled back (#1324). The NowBar's smoothed clock counts too, so the bar never
-        // exceeds the scale while it eases down from a peak that has left the window.
+        // Only the clocks the window shows set the scale: not the trim anchor left of it (#1324). The
+        // NowBar's smoothed clock counts too, so the bar never exceeds the scale while it eases down
+        // from a peak that has left the window.
         const float maxClockMHz = gpuClockReferenceMHz(timeData,
                                                        axisConfig.xMin,
                                                        clockData,

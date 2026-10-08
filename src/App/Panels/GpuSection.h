@@ -230,8 +230,8 @@ inline constexpr float GPU_CLOCK_REFERENCE_FLOOR_MHZ = 2000.0F;
 /// gpuClockReferenceMHz() over only the clock samples the chart's window shows: those at x >= @p xMin
 /// on @p timeAxis, to whose tail @p clockHistory is aligned (UI::Widgets::maxOfSeriesSince()).
 ///
-/// The history holds the trim anchor just left of the window (#1016) and, when the chart is scrolled
-/// back, older samples too. Neither is drawn, so neither may set the 100 % mark: a boost spike that had
+/// The history holds the trim anchor just left of the window (#1016), and may hold samples older than
+/// the window. They are not drawn, so they may not set the 100 % mark: a boost spike that had
 /// just scrolled out kept the idle clock line drawn low against it (#1324), as #1145 fixed for the rate
 /// axes. The current clock still counts, and so does @p shownClockMHz, the smoothed clock the NowBar
 /// shows (UI::Widgets::currentIfAvailable(): NaN when the bar shows N/A, which is ignored). Easing down
