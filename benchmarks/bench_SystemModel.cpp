@@ -81,8 +81,9 @@ static void BM_SystemModel_Snapshot(benchmark::State& state)
 }
 BENCHMARK(BM_SystemModel_Snapshot);
 
-// Benchmark history accessors used by the UI for graph rendering
-// Each accessor acquires a shared_mutex read lock and copies a deque
+// Benchmark the history reads the UI makes for graph rendering: the latest publication and one of
+// its series, a view of the model's shared history rather than a copy (#1412). These used to time
+// per-series copy accessors that only tests called, removed in #1185.
 static void BM_SystemModel_CpuHistory(benchmark::State& state)
 {
     auto probe = Platform::makeSystemProbe();
@@ -96,15 +97,16 @@ static void BM_SystemModel_CpuHistory(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto hist = model.cpuHistory();
+        const auto publication = model.publication();
+        const auto& hist = publication->cpuHistory;
         benchmark::DoNotOptimize(hist.data());
         benchmark::DoNotOptimize(hist.size());
     }
 }
 BENCHMARK(BM_SystemModel_CpuHistory);
 
-// Benchmark perCoreHistory() – most expensive history accessor:
-// returns a vector<vector<float>>, one inner vector per logical CPU core
+// Benchmark the per-core history read: the latest publication's per-core series, one view per
+// logical CPU core
 static void BM_SystemModel_PerCoreHistory(benchmark::State& state)
 {
     auto probe = Platform::makeSystemProbe();
@@ -117,7 +119,8 @@ static void BM_SystemModel_PerCoreHistory(benchmark::State& state)
 
     for (auto _ : state)
     {
-        auto hist = model.perCoreHistory();
+        const auto publication = model.publication();
+        const auto& hist = publication->perCoreHistory;
         benchmark::DoNotOptimize(hist.data());
         benchmark::DoNotOptimize(hist.size());
     }

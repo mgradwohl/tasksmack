@@ -19,7 +19,6 @@
 #include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
 using TestMocks::MockGPUProbe;
 using TestSupport::FailAllocationAfter;
@@ -29,26 +28,9 @@ namespace
 
 constexpr int WARM_UP_SAMPLES = 30;
 
-/// Every series of every GPU in @p gpuIds is as long as that GPU's timestamps, read through the model's
-/// accessors, and every series of every GPU in the publication as long as its published timestamps.
-void expectAligned(const Domain::GPUModel& model, const std::vector<std::string>& gpuIds)
+/// Every series of every GPU in the model's publication is as long as its published timestamps.
+void expectAligned(const Domain::GPUModel& model)
 {
-    for (const auto& gpuId : gpuIds)
-    {
-        const std::size_t samples = model.historyTimestamps(gpuId).size();
-        for (const auto& series : {model.utilizationHistory(gpuId),
-                                   model.memoryPercentHistory(gpuId),
-                                   model.gpuClockHistory(gpuId),
-                                   model.encoderHistory(gpuId),
-                                   model.decoderHistory(gpuId),
-                                   model.temperatureHistory(gpuId),
-                                   model.powerHistory(gpuId),
-                                   model.fanSpeedHistory(gpuId)})
-        {
-            EXPECT_EQ(series.size(), samples) << gpuId;
-        }
-    }
-
     const auto publication = model.publication();
     ASSERT_NE(publication, nullptr);
     for (const auto& [gpuId, history] : publication->histories)
@@ -79,7 +61,6 @@ TEST(GPUModelAllocationFailureTest, AFailedAllocationOnARefreshThatAddsAGpuKeeps
 #if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
     GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
 #endif
-    const std::vector<std::string> gpuIds{"GPU0", "GPU1", "GPU2"};
     constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on the loop, far above one refresh's
     const auto start = std::chrono::ceil<std::chrono::seconds>(std::chrono::steady_clock::now());
 
@@ -99,7 +80,7 @@ TEST(GPUModelAllocationFailureTest, AFailedAllocationOnARefreshThatAddsAGpuKeeps
         }
         const auto publicationBefore = model.publication();
         const std::uint64_t versionBefore = model.publicationVersion();
-        const std::size_t samplesBefore = model.historyTimestamps("GPU0").size();
+        const std::size_t samplesBefore = publicationBefore->histories.at("GPU0").timestamps.size();
 
         rawProbe->withGPU("GPU2", "GPU Two").withUtilization("GPU2", 55.0).withoutGPUCounters("GPU1").withRescanReportingChange();
         bool fired = false;
@@ -114,13 +95,7 @@ TEST(GPUModelAllocationFailureTest, AFailedAllocationOnARefreshThatAddsAGpuKeeps
         }
         ++failed;
 
-        expectAligned(model, gpuIds);
-        // The history either did not move, or moved by exactly this sample for every GPU together:
-        // GPU2's history exists only if the sample applied.
-        const std::size_t samplesAfter = model.historyTimestamps("GPU0").size();
-        EXPECT_TRUE(samplesAfter == samplesBefore || samplesAfter == samplesBefore + 1) << samplesAfter;
-        EXPECT_EQ(model.historyTimestamps("GPU1").size(), samplesAfter);
-        EXPECT_EQ(model.historyTimestamps("GPU2").size(), samplesAfter - samplesBefore);
+        expectAligned(model);
         // Nothing is published (a failure before or in publish()), or the whole generation is (one after it).
         if (model.publicationVersion() == versionBefore)
         {
@@ -132,15 +107,23 @@ TEST(GPUModelAllocationFailureTest, AFailedAllocationOnARefreshThatAddsAGpuKeeps
             EXPECT_TRUE(model.publication()->histories.contains("GPU2"));
         }
 
-        // The model carries on: the next refresh applies and publishes GPU2, and GPU1's gap.
+        // The model carries on: the next refresh applies and publishes GPU2, and GPU1's gap. Its
+        // publication shows the history the failure left: either unmoved by the failed refresh, or
+        // moved by exactly that sample for every GPU together -- GPU2's history has it only if the
+        // sample applied.
         ++step;
         model.refreshAt(start + std::chrono::seconds(step));
-        expectAligned(model, gpuIds);
+        expectAligned(model);
         EXPECT_GT(model.publicationVersion(), versionBefore);
         const auto next = model.publication();
+        ASSERT_TRUE(next->histories.contains("GPU0"));
+        const std::size_t samplesAfter = next->histories.at("GPU0").timestamps.size();
+        EXPECT_TRUE(samplesAfter == samplesBefore + 1 || samplesAfter == samplesBefore + 2) << samplesAfter;
         ASSERT_TRUE(next->histories.contains("GPU2"));
+        EXPECT_EQ(next->histories.at("GPU2").timestamps.size(), samplesAfter - samplesBefore);
         EXPECT_FLOAT_EQ(next->histories.at("GPU2").utilization.back(), 55.0F);
         ASSERT_TRUE(next->histories.contains("GPU1"));
+        EXPECT_EQ(next->histories.at("GPU1").timestamps.size(), samplesAfter);
         EXPECT_TRUE(std::isnan(next->histories.at("GPU1").utilization.back()));
         if (HasFailure())
         {

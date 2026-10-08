@@ -246,10 +246,9 @@ TEST(SyntheticScenarioTest, WithoutAScenarioPreloadDoesNothing)
     App::Synthetic::preloadProcessHistory(&noHistory, processes, now);
 
     EXPECT_EQ(system.publicationVersion(), 0U);
-    EXPECT_TRUE(system.timestamps().empty());
+    EXPECT_TRUE(system.publication()->timestamps.empty());
     EXPECT_EQ(storage.publicationVersion(), 0U);
-    EXPECT_TRUE(storage.historyTimestamps().empty());
-    EXPECT_TRUE(processes.historyTimestamps().empty());
+    EXPECT_TRUE(storage.publication()->timestamps.empty());
     Domain::ProcessSystemHistories histories;
     EXPECT_FALSE(processes.tryCopySystemHistoriesIfNewer(0, histories));
 }
@@ -343,12 +342,12 @@ TEST(SyntheticScenarioTest, PreloadFillsTheFullWindow)
     Platform::SystemCounters liveCounters;
     scenario.workload()->systemCountersAt(scenario.workload()->uptimeAt(now), liveCounters);
     system.updateFromCounters(liveCounters, nowSeconds);
-    const auto liveTimestamps = system.timestamps();
+    const auto liveTimestamps = system.publication()->timestamps;
     EXPECT_GE(liveTimestamps.size(), samples);
     EXPECT_LE(liveTimestamps.size(), Sampling::historyCapacityForSeconds(Sampling::HISTORY_SECONDS_MAX));
     EXPECT_GE(liveTimestamps.back() - liveTimestamps.front(), static_cast<double>(Sampling::HISTORY_SECONDS_MAX) - (2.0 * interval));
     storage.sample();
-    EXPECT_LE(storage.historyTimestamps().size(), Sampling::historyCapacityForSeconds(Sampling::HISTORY_SECONDS_MAX));
+    EXPECT_LE(storage.publication()->timestamps.size(), Sampling::historyCapacityForSeconds(Sampling::HISTORY_SECONDS_MAX));
     processes.refresh();
     EXPECT_EQ(processes.processCount(), 60U);
 }
@@ -360,7 +359,7 @@ TEST(SyntheticScenarioTest, PreloadIsTrimmedToAShorterWindow)
     Domain::SystemModel system(App::Synthetic::makeSystemProbe(&scenario));
     system.setMaxHistorySeconds(60);
     App::Synthetic::preloadSystemHistory(&scenario, system, std::chrono::steady_clock::now());
-    const auto timestamps = system.timestamps();
+    const auto timestamps = system.publication()->timestamps;
     ASSERT_FALSE(timestamps.empty());
     EXPECT_LE(timestamps.back() - timestamps.front(), 60.0 + 0.2);
     EXPECT_LE(timestamps.size(), Sampling::historyCapacityForSeconds(60));

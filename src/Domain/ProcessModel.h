@@ -45,8 +45,6 @@ struct ProcessSystemHistories
 struct ProcessSystemHistorySample
 {
     double timeSeconds = 0.0; ///< steady_clock seconds since its epoch, as the histories' timestamps
-    double netSentBytesPerSec = 0.0;
-    double netReceivedBytesPerSec = 0.0;
     double pageFaultsPerSec = 0.0;
     double threadCount = 0.0;
     double handleCount = 0.0;
@@ -170,15 +168,6 @@ class ProcessModel : public ISamplable
     /// so it is not a snapshotVersion().
     [[nodiscard]] bool tryCopySystemHistoriesIfNewer(std::uint64_t lastSeenVersion, ProcessSystemHistories& outHistories) const;
 
-    // Aggregated system-level histories derived from per-process data
-    [[nodiscard]] std::vector<double> systemNetSentHistory() const;
-    [[nodiscard]] std::vector<double> systemNetRecvHistory() const;
-    [[nodiscard]] std::vector<double> systemPageFaultsHistory() const;
-    [[nodiscard]] std::vector<double> systemThreadCountHistory() const;
-    [[nodiscard]] std::vector<double> systemHandleCountHistory() const;
-    [[nodiscard]] std::vector<double> systemPowerHistory() const;
-    [[nodiscard]] std::vector<double> historyTimestamps() const;
-
     /// Sets the history window, clamped to SamplingConfig's range, and trims the system histories to
     /// it at once, advancing their generation (tryCopySystemHistoriesIfNewer()) when it has one (#1145).
     void setMaxHistorySeconds(double seconds);
@@ -270,13 +259,9 @@ class ProcessModel : public ISamplable
     long m_TicksPerSecond = 100;           // For cpuTimeSeconds calculation
     Clock::time_point m_PrevSampleTime;    // For rate calculations (network, I/O, power)
     bool m_HasPrevSampleTime = false;
-    Clock::time_point m_StartTime; // For history timestamp alignment
-    bool m_HasStartTime = false;
 
     // Aggregated system histories (aligned by timestamps). Capacity is set from the
     // configured window; time-based trimming via discardFront keeps them in the window.
-    HistoryBuffer<double> m_SystemNetSentHistory;
-    HistoryBuffer<double> m_SystemNetRecvHistory;
     HistoryBuffer<double> m_SystemPageFaultsHistory;
     HistoryBuffer<double> m_SystemThreadCountHistory;
     HistoryBuffer<double> m_SystemHandleCountHistory;

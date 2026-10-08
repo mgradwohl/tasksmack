@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Domain/StorageSnapshot.h"
-#include "History.h"
 #include "ISamplable.h"
 #include "Platform/IDiskProbe.h"
 #include "PublicationSlot.h"
@@ -82,20 +81,9 @@ class StorageModel : public ISamplable
     /// Get the latest snapshot (thread-safe, called from UI thread).
     [[nodiscard]] StorageSnapshot latestSnapshot() const;
 
-    /// Get historical snapshots for graphing (thread-safe).
-    /// Returns snapshots in chronological order (oldest first).
-    [[nodiscard]] std::vector<StorageSnapshot> history() const;
-
-    // System-level history helpers (aligned to timestamps)
-    [[nodiscard]] std::vector<double> totalReadHistory() const;
-    [[nodiscard]] std::vector<double> totalWriteHistory() const;
-    [[nodiscard]] std::vector<double> historyTimestamps() const;
-
-    /// Per-device I/O history for charting individual disks, as views of the shared history.
-    /// Each entry is strictly aligned to historyTimestamps(): every per-disk
-    /// series has the same length as historyTimestamps(). Samples where a disk
-    /// was absent (disappeared or not yet seen) are NaN: no reading, drawn as a gap.
-    [[nodiscard]] std::vector<PerDiskHistory> perDiskHistory() const;
+    /// The latest generation: the snapshot and the history for charting. Each per-disk series is
+    /// strictly aligned to its timestamps: every one has the same length. Samples where a disk was
+    /// absent (disappeared or not yet seen) are NaN: no reading, drawn as a gap.
     [[nodiscard]] std::shared_ptr<const StoragePublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
@@ -152,10 +140,10 @@ class StorageModel : public ISamplable
     /// one more sample in every existing series and the buckets and slots the append will use. May
     /// throw; changes nothing observable. Requires m_Mutex held exclusively.
     void stageHistoryAppend(PendingSample& pending, const StorageSnapshot& snapshot, double nowSeconds);
-    /// Apply a staged sample: adopt the staged series and state, append @p snapshot to every series,
-    /// prune long-absent disks and trim. Uses only what stageHistoryAppend() reserved, so it does not
-    /// allocate or throw. Requires m_Mutex held exclusively.
-    void commitHistoryAppend(PendingSample& pending, StorageSnapshot&& snapshot, double nowSeconds) noexcept;
+    /// Apply a staged sample: adopt the staged series and state, append the sample's snapshot
+    /// (pending.latest) to every series, prune long-absent disks and trim. Uses only what
+    /// stageHistoryAppend() reserved, so it does not allocate or throw. Requires m_Mutex held exclusively.
+    void commitHistoryAppend(PendingSample& pending, double nowSeconds) noexcept;
     /// Forget disks absent for longer than the history window (#777).
     void pruneAbsentDisks(double nowSeconds) noexcept;
     void trimHistory(double nowSeconds) noexcept;
@@ -167,14 +155,12 @@ class StorageModel : public ISamplable
     // through the publication commit, so generations are numbered and committed in order. Readers
     // never take it. Taken before m_Mutex, never while holding it.
     std::mutex m_WriterMutex;
-    // Guards the history state below for the per-field accessors: writers mutate it exclusively,
-    // and publish() reads it under a shared lock, so neither publication() nor those accessors wait
-    // on a publication's copy.
+    // Guards the state below for latestSnapshot(): writers mutate it exclusively, and publish() reads
+    // it under a shared lock, so neither publication() nor latestSnapshot() waits on a publication's copy.
     mutable std::shared_mutex m_Mutex;
     StorageSnapshot m_LatestSnapshot;
-    HistoryBuffer<StorageSnapshot> m_History; // for history(); not published
     // The published series: shared append-only buffers that publish() hands out views of instead of
-    // copies (#1412), trimmed by time window in lockstep with m_History.
+    // copies (#1412), trimmed by time window in lockstep.
     SharedHistoryBuffer<double> m_Timestamps;       // Seconds since start
     SharedHistoryBuffer<double> m_TotalReadHistory; // totalRateOrNaN() of each sample
     SharedHistoryBuffer<double> m_TotalWriteHistory;

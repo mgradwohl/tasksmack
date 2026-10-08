@@ -52,46 +52,34 @@ Platform::SystemCounters countersAt(std::uint64_t step, std::size_t cores, const
         cpu(99), TestMocks::makeMemoryCounters(1024, 512), step, std::move(perCore), 0, 0, std::move(ifaces));
 }
 
-/// Every history series the model holds is as long as its timestamps, and every series of its
-/// publication as long as the publication's timestamps.
+/// Every series of the model's publication is as long as the publication's timestamps, and each
+/// interface has both of its series or neither.
 void expectAligned(const Domain::SystemModel& model, const std::vector<std::string>& interfaces)
 {
-    const std::size_t samples = model.timestamps().size();
-    for (const auto& series : {model.cpuHistory(),
-                               model.cpuUserHistory(),
-                               model.cpuSystemHistory(),
-                               model.cpuIowaitHistory(),
-                               model.cpuIdleHistory(),
-                               model.memoryHistory(),
-                               model.memoryCachedHistory(),
-                               model.swapHistory(),
-                               model.powerHistory(),
-                               model.batteryChargeHistory(),
-                               model.netRxHistory(),
-                               model.netTxHistory()})
-    {
-        EXPECT_EQ(series.size(), samples);
-    }
-    for (const auto& core : model.perCoreHistory())
-    {
-        EXPECT_EQ(core.size(), samples);
-    }
-    for (const auto& name : interfaces)
-    {
-        const auto rx = model.netRxHistoryForInterface(name);
-        const auto tx = model.netTxHistoryForInterface(name);
-        EXPECT_EQ(rx.size(), tx.size()) << name; // both or neither
-        EXPECT_TRUE(rx.empty() || rx.size() == samples) << name;
-    }
-
     const auto publication = model.publication();
     const std::size_t published = publication->timestamps.size();
-    EXPECT_EQ(publication->cpuHistory.size(), published);
-    EXPECT_EQ(publication->netRxHistory.size(), published);
-    EXPECT_EQ(publication->perInterfaceRxHistory.size(), publication->perInterfaceTxHistory.size());
+    for (const auto* series : {&publication->cpuHistory,
+                               &publication->cpuUserHistory,
+                               &publication->cpuSystemHistory,
+                               &publication->cpuIowaitHistory,
+                               &publication->cpuIdleHistory,
+                               &publication->memoryHistory,
+                               &publication->memoryCachedHistory,
+                               &publication->swapHistory,
+                               &publication->batteryChargeHistory,
+                               &publication->netRxHistory,
+                               &publication->netTxHistory})
+    {
+        EXPECT_EQ(series->size(), published);
+    }
     for (const auto& core : publication->perCoreHistory)
     {
         EXPECT_EQ(core.size(), published);
+    }
+    EXPECT_EQ(publication->perInterfaceRxHistory.size(), publication->perInterfaceTxHistory.size());
+    for (const auto& name : interfaces)
+    {
+        EXPECT_EQ(publication->perInterfaceRxHistory.count(name), publication->perInterfaceTxHistory.count(name)) << name;
     }
     for (const auto& [name, rx] : publication->perInterfaceRxHistory)
     {
@@ -124,7 +112,7 @@ TEST(SystemModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsAnInter
         }
         const auto publicationBefore = model.publication();
         const std::uint64_t versionBefore = model.publicationVersion();
-        const std::size_t samplesBefore = model.timestamps().size();
+        const std::size_t samplesBefore = model.publication()->timestamps.size();
         const auto newSample = countersAt(step, 3, after);
 
         bool threw = false;
@@ -145,18 +133,18 @@ TEST(SystemModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsAnInter
         }
         ++failed;
 
-        expectAligned(model, after);
         EXPECT_EQ(model.publicationVersion(), versionBefore);
         EXPECT_EQ(model.publication(), publicationBefore);
-        // The history either did not move, or (a failure in publish(), after the append) moved by
-        // exactly one sample in every series together.
-        const std::size_t samplesAfter = model.timestamps().size();
-        EXPECT_TRUE(samplesAfter == samplesBefore || samplesAfter == samplesBefore + 1) << samplesAfter;
 
         // The model carries on: the next sample applies and publishes, with the new core and interface.
+        // Its publication shows the history the failure left: aligned, and either unmoved by the failed
+        // sample or (a failure in publish(), after the append) moved by exactly one sample in every
+        // series together.
         model.updateFromCounters(countersAt(step + 1, 3, after), static_cast<double>(step + 1));
         expectAligned(model, after);
         EXPECT_GT(model.publicationVersion(), versionBefore);
+        const std::size_t samplesAfter = model.publication()->timestamps.size();
+        EXPECT_TRUE(samplesAfter == samplesBefore + 1 || samplesAfter == samplesBefore + 2) << samplesAfter;
         EXPECT_EQ(model.publication()->perCoreHistory.size(), 3U);
         EXPECT_EQ(model.publication()->perInterfaceRxHistory.count("wlan0"), 1U);
         if (HasFailure())

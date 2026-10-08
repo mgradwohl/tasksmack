@@ -1,10 +1,12 @@
-// Benchmarks for Domain/History ring buffer
+// Benchmarks for Domain/History.h's HistoryBuffer ring
 //
-// These benchmarks measure the performance of the History class which is used
-// extensively for time-series data (CPU%, memory, per-core metrics).
+// HistoryBuffer is the runtime-capacity ring ProcessModel keeps its aggregated system histories in.
+// These benchmarks used to time the fixed-capacity History<T, N>, which had no production user and
+// was removed (#1185); they were renamed BM_HistoryBuffer_* with it, since a runtime capacity times
+// differently from a compile-time one and the old names' baseline numbers no longer apply.
 // Memory tracking is included to ensure no unexpected allocations.
 //
-// Every benchmark passes the History object itself through benchmark::DoNotOptimize, not just
+// Every benchmark passes the ring itself through benchmark::DoNotOptimize, not just
 // history.size(): observing only the size let the compiler treat the stored payload as dead (the ring
 // is a local whose elements were never read back), so a push could compile down to the index/size
 // bookkeeping alone. Laundering the whole object also stops reads from being constant-folded out of a
@@ -29,7 +31,7 @@ constexpr std::size_t kCapacity = 300; // 5 minutes at 1Hz
 constexpr std::size_t kIndexPoolSize = 1024;
 constexpr std::size_t kIndexPoolMask = kIndexPoolSize - 1;
 
-template<std::size_t Capacity> void fillHistory(Domain::History<double, Capacity>& history, std::size_t count)
+void fillHistory(Domain::HistoryBuffer<double>& history, std::size_t count)
 {
     for (std::size_t i = 0; i < count; ++i)
     {
@@ -38,9 +40,9 @@ template<std::size_t Capacity> void fillHistory(Domain::History<double, Capacity
 }
 
 // Benchmark push() operation - this is called every sample interval
-static void BM_History_Push(benchmark::State& state)
+static void BM_HistoryBuffer_Push(benchmark::State& state)
 {
-    Domain::History<double, kCapacity> history;
+    Domain::HistoryBuffer<double> history(kCapacity);
     double value = 0.0;
 
     for (auto _ : state)
@@ -51,12 +53,12 @@ static void BM_History_Push(benchmark::State& state)
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(sizeof(double)));
 }
-BENCHMARK(BM_History_Push);
+BENCHMARK(BM_HistoryBuffer_Push);
 
 // Benchmark push() when history is full (steady-state operation)
-static void BM_History_PushFull(benchmark::State& state)
+static void BM_HistoryBuffer_PushFull(benchmark::State& state)
 {
-    Domain::History<double, kCapacity> history;
+    Domain::HistoryBuffer<double> history(kCapacity);
     fillHistory(history, kCapacity);
 
     double value = static_cast<double>(kCapacity);
@@ -68,12 +70,12 @@ static void BM_History_PushFull(benchmark::State& state)
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(sizeof(double)));
 }
-BENCHMARK(BM_History_PushFull);
+BENCHMARK(BM_HistoryBuffer_PushFull);
 
 // Benchmark operator[] access - used when rendering graphs
-static void BM_History_RandomAccess(benchmark::State& state)
+static void BM_HistoryBuffer_RandomAccess(benchmark::State& state)
 {
-    Domain::History<double, kCapacity> history;
+    Domain::HistoryBuffer<double> history(kCapacity);
     fillHistory(history, kCapacity);
 
     // Indices are drawn before timing starts: the per-iteration mt19937 + distribution call used to cost
@@ -95,12 +97,12 @@ static void BM_History_RandomAccess(benchmark::State& state)
     }
     state.SetItemsProcessed(state.iterations());
 }
-BENCHMARK(BM_History_RandomAccess);
+BENCHMARK(BM_HistoryBuffer_RandomAccess);
 
 // Benchmark sequential access - typical for graph rendering
-static void BM_History_SequentialAccess(benchmark::State& state)
+static void BM_HistoryBuffer_SequentialAccess(benchmark::State& state)
 {
-    Domain::History<double, kCapacity> history;
+    Domain::HistoryBuffer<double> history(kCapacity);
     fillHistory(history, kCapacity);
 
     for (auto _ : state)
@@ -115,12 +117,12 @@ static void BM_History_SequentialAccess(benchmark::State& state)
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(kCapacity * sizeof(double)));
 }
-BENCHMARK(BM_History_SequentialAccess);
+BENCHMARK(BM_HistoryBuffer_SequentialAccess);
 
 // Benchmark copyTo() - used for ImPlot rendering
-static void BM_History_CopyTo(benchmark::State& state)
+static void BM_HistoryBuffer_CopyTo(benchmark::State& state)
 {
-    Domain::History<double, kCapacity> history;
+    Domain::HistoryBuffer<double> history(kCapacity);
     fillHistory(history, kCapacity);
 
     std::array<double, kCapacity> buffer{};
@@ -134,12 +136,12 @@ static void BM_History_CopyTo(benchmark::State& state)
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(kCapacity * sizeof(double)));
 }
-BENCHMARK(BM_History_CopyTo);
+BENCHMARK(BM_HistoryBuffer_CopyTo);
 
 // Benchmark copyTo() with wrapped data (worst case)
-static void BM_History_CopyToWrapped(benchmark::State& state)
+static void BM_HistoryBuffer_CopyToWrapped(benchmark::State& state)
 {
-    Domain::History<double, kCapacity> history;
+    Domain::HistoryBuffer<double> history(kCapacity);
     // Push 1.5x capacity so the data wraps around
     fillHistory(history, kCapacity + (kCapacity / 2));
 
@@ -154,12 +156,12 @@ static void BM_History_CopyToWrapped(benchmark::State& state)
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(kCapacity * sizeof(double)));
 }
-BENCHMARK(BM_History_CopyToWrapped);
+BENCHMARK(BM_HistoryBuffer_CopyToWrapped);
 
 // Benchmark latest() - frequently called for current value display
-static void BM_History_Latest(benchmark::State& state)
+static void BM_HistoryBuffer_Latest(benchmark::State& state)
 {
-    Domain::History<double, kCapacity> history;
+    Domain::HistoryBuffer<double> history(kCapacity);
     fillHistory(history, kCapacity);
 
     for (auto _ : state)
@@ -168,15 +170,17 @@ static void BM_History_Latest(benchmark::State& state)
         benchmark::DoNotOptimize(history.latest());
     }
 }
-BENCHMARK(BM_History_Latest);
+BENCHMARK(BM_HistoryBuffer_Latest);
 
-// Steady-state push into a full ring of the given compile-time capacity.
-template<std::size_t Capacity> void pushIntoFullRing(benchmark::State& state)
+// Benchmark steady-state push() into a full ring across capacities (1 minute to 1 hour at 1 Hz, plus
+// the power-of-two sizes 64 and 512).
+static void BM_HistoryBuffer_PushVariableSize(benchmark::State& state)
 {
-    Domain::History<double, Capacity> history;
-    fillHistory(history, Capacity);
+    const auto capacity = static_cast<std::size_t>(state.range(0));
+    Domain::HistoryBuffer<double> history(capacity);
+    fillHistory(history, capacity);
 
-    double value = static_cast<double>(Capacity);
+    double value = static_cast<double>(capacity);
     for (auto _ : state)
     {
         history.push(value);
@@ -185,38 +189,11 @@ template<std::size_t Capacity> void pushIntoFullRing(benchmark::State& state)
     }
     state.SetBytesProcessed(state.iterations() * static_cast<std::int64_t>(sizeof(double)));
 }
+BENCHMARK(BM_HistoryBuffer_PushVariableSize)->Arg(60)->Arg(64)->Arg(512)->Arg(3600)->Unit(benchmark::kNanosecond);
 
-// Benchmark push() across ring capacities. History's capacity is a template parameter, so each argument
-// dispatches to a History of exactly that capacity. This used to push into a single History<double, 3600>
-// and clear() it every N pushes, so the capacity never actually varied -- the argument only changed how
-// often the cheap clear() branch ran (#877). The argument list is the old Range(60, 3600) expansion, so
-// the benchmark names (and their perf-data/linux-ci-baseline.json entries) are unchanged.
-static void BM_History_PushVariableSize(benchmark::State& state)
-{
-    switch (state.range(0))
-    {
-    case 60:
-        pushIntoFullRing<60>(state);
-        break;
-    case 64:
-        pushIntoFullRing<64>(state);
-        break;
-    case 512:
-        pushIntoFullRing<512>(state);
-        break;
-    case 3600:
-        pushIntoFullRing<3600>(state); // 1 hour at 1Hz
-        break;
-    default:
-        state.SkipWithError("BM_History_PushVariableSize: no History instantiation for this capacity");
-        break;
-    }
-}
-BENCHMARK(BM_History_PushVariableSize)->Arg(60)->Arg(64)->Arg(512)->Arg(3600)->Unit(benchmark::kNanosecond);
-
-// Benchmark memory footprint of History with complex types
+// Benchmark memory footprint of a HistoryBuffer of a larger type
 // This measures if storing larger objects causes unexpected allocations
-static void BM_History_MemoryFootprint(benchmark::State& state)
+static void BM_HistoryBuffer_MemoryFootprint(benchmark::State& state)
 {
     auto startStats = BenchmarkUtils::readMemoryStats();
 
@@ -230,7 +207,7 @@ static void BM_History_MemoryFootprint(benchmark::State& state)
         std::uint64_t counter2 = 0;
     };
 
-    Domain::History<LargeValue, kCapacity> history;
+    Domain::HistoryBuffer<LargeValue> history(kCapacity);
 
     // Fill and overwrite multiple times. The pushed value varies per iteration and the whole ring is
     // observed, so the stores can be neither constant-folded nor discarded as dead.
@@ -246,9 +223,9 @@ static void BM_History_MemoryFootprint(benchmark::State& state)
 
     auto endStats = BenchmarkUtils::readMemoryStats();
 
-    // Report expected vs actual memory. History stores its elements inline (std::array), so the object's
-    // own size already includes the payload.
-    constexpr std::size_t expectedBytes = sizeof(Domain::History<LargeValue, kCapacity>);
+    // Report expected vs actual memory: the ring object plus its one backing allocation, made when it
+    // was constructed. Pushing into it allocates nothing more.
+    constexpr std::size_t expectedBytes = sizeof(Domain::HistoryBuffer<LargeValue>) + (kCapacity * sizeof(LargeValue));
     state.counters["expected_bytes"] = benchmark::Counter(static_cast<double>(expectedBytes));
 
     if (startStats.valid() && endStats.valid())
@@ -257,6 +234,6 @@ static void BM_History_MemoryFootprint(benchmark::State& state)
         state.counters["actual_growth_bytes"] = benchmark::Counter(static_cast<double>(growth));
     }
 }
-BENCHMARK(BM_History_MemoryFootprint)->Iterations(10000);
+BENCHMARK(BM_HistoryBuffer_MemoryFootprint)->Iterations(10000);
 
 } // namespace
