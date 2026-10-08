@@ -1,6 +1,7 @@
 #include "WindowsProcessActions.h"
 
 #include "Domain/PriorityConfig.h"
+#include "WindowsHandles.h"
 #include "WindowsProcessActionsMath.h"
 
 #include <spdlog/spdlog.h>
@@ -17,9 +18,7 @@
 
 #include <cstdint>
 #include <format>
-#include <memory>
 #include <string>
-#include <type_traits>
 #include <utility>
 
 namespace Platform
@@ -29,19 +28,10 @@ namespace Platform
 namespace
 {
 
-struct HandleCloser
-{
-    void operator()(HANDLE handle) const noexcept
-    {
-        CloseHandle(handle);
-    }
-};
-using UniqueProcessHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, HandleCloser>;
-
 /// A process handle that has passed the identity check, or the reason there is none.
 struct VerifiedProcess
 {
-    UniqueProcessHandle handle;
+    Windows::UniqueHandle handle;
     ProcessActionResult result;
 };
 
@@ -58,18 +48,18 @@ template<typename DescribeOpenFailure>
 {
     if (target.pid <= 0)
     {
-        return {.handle = nullptr, .result = ProcessActionResult::error("Invalid PID")};
+        return {.handle = {}, .result = ProcessActionResult::error("Invalid PID")};
     }
     if (target.startTimeTicks == 0)
     {
-        return {.handle = nullptr, .result = checkProcessIdentity(target, 0)};
+        return {.handle = {}, .result = checkProcessIdentity(target, 0)};
     }
 
     // Note: Windows APIs require DWORD for PIDs; explicit cast from a positive int32_t is safe.
-    UniqueProcessHandle handle(OpenProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)));
+    Windows::UniqueHandle handle(OpenProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)));
     if (!handle)
     {
-        return {.handle = nullptr, .result = ProcessActionResult::error(describeOpenFailure(GetLastError()))};
+        return {.handle = {}, .result = ProcessActionResult::error(describeOpenFailure(GetLastError()))};
     }
 
     FILETIME creation{};
@@ -79,7 +69,7 @@ template<typename DescribeOpenFailure>
     if (GetProcessTimes(handle.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
     {
         return {
-            .handle = nullptr,
+            .handle = {},
             .result = ProcessActionResult::error(
                 std::format("Cannot confirm the identity of process {}: error {}; action not sent", target.pid, GetLastError())),
         };
@@ -90,7 +80,7 @@ template<typename DescribeOpenFailure>
     ProcessActionResult identity = checkProcessIdentity(target, actualTicks);
     if (!identity.success)
     {
-        return {.handle = nullptr, .result = std::move(identity)};
+        return {.handle = {}, .result = std::move(identity)};
     }
     return {.handle = std::move(handle), .result = ProcessActionResult::ok()};
 }

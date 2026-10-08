@@ -43,6 +43,8 @@
 #include <mstcpip.h>
 // clang-format on
 
+#include "WindowsHandles.h"
+
 namespace Platform
 {
 
@@ -87,7 +89,7 @@ class WindowsProcessProbe : public IProcessProbe
     mutable std::atomic<bool> m_EStatsVerified{false}; // A real sample has classified EStats (no more checks)
     std::chrono::milliseconds m_LightDetailTTL{1000};  // Default; tuned by total physical RAM in constructor
     std::chrono::milliseconds m_HeavyDetailTTL{5000};  // Default; tuned by total physical RAM in constructor
-    HMODULE m_IphlpModule = nullptr;                   // Non-null only when loaded by this class (must be freed in destructor)
+    Windows::UniqueModule m_IphlpModule;               // Non-null only when this class loaded iphlpapi.dll (freed on destruction)
 
     // Samples in a row whose established EStats reads were only NOT_FOUND / garbage (#1161)
     mutable std::atomic<std::size_t> m_EStatsInconclusiveSamples{0};

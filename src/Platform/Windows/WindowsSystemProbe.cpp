@@ -30,7 +30,7 @@
 
 #include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
-#include "WindowsProcAddress.h"
+#include "WindowsNtQuery.h"
 #include "WindowsSystemProbeMath.h"
 
 #include <array>
@@ -77,12 +77,6 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64NonNegative(T value)
     return toU64NonNegative(value.QuadPart);
 }
 
-// NtQuerySystemInformation function pointer type
-using NtQuerySystemInformationFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
-                                                     PVOID systemInformation,
-                                                     ULONG systemInformationLength,
-                                                     PULONG returnLength);
-
 // System information class for per-processor performance
 constexpr ULONG SystemProcessorPerformanceInformation = 8;
 
@@ -103,51 +97,6 @@ struct ProcessorPerformanceInfo
     LARGE_INTEGER InterruptTime;
     ULONG InterruptCount;
 };
-
-/// Get NtQuerySystemInformation function from ntdll.dll (lazy init)
-[[nodiscard]] NtQuerySystemInformationFn getNtQuerySystemInformation()
-{
-    static NtQuerySystemInformationFn fn = nullptr;
-    static bool initialized = false;
-
-    if (!initialized)
-    {
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (ntdll != nullptr)
-        {
-            fn = Windows::getProcAddress<NtQuerySystemInformationFn>(ntdll, "NtQuerySystemInformation");
-        }
-        initialized = true;
-    }
-    return fn;
-}
-
-// NtQuerySystemInformationEx function pointer type. For SystemProcessorPerformanceInformation the
-// input buffer is the USHORT processor group to report (#1107).
-using NtQuerySystemInformationExFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
-                                                       PVOID inputBuffer,
-                                                       ULONG inputBufferLength,
-                                                       PVOID systemInformation,
-                                                       ULONG systemInformationLength,
-                                                       PULONG returnLength);
-
-/// Get NtQuerySystemInformationEx function from ntdll.dll (lazy init)
-[[nodiscard]] NtQuerySystemInformationExFn getNtQuerySystemInformationEx()
-{
-    static NtQuerySystemInformationExFn fn = nullptr;
-    static bool initialized = false;
-
-    if (!initialized)
-    {
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (ntdll != nullptr)
-        {
-            fn = Windows::getProcAddress<NtQuerySystemInformationExFn>(ntdll, "NtQuerySystemInformationEx");
-        }
-        initialized = true;
-    }
-    return fn;
-}
 
 /// Run one SystemProcessorPerformanceInformation query into `buffer`, growing it and retrying on
 /// a length mismatch (the processor count can change between sizing and querying).
@@ -348,7 +297,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     // append them in group order.
     const WORD groupCount = GetActiveProcessorGroupCount();
     const bool multiGroup = groupCount > 1;
-    if (const auto ntQueryEx = getNtQuerySystemInformationEx(); ntQueryEx != nullptr)
+    if (const auto ntQueryEx = Windows::ntQuerySystemInformationEx(); ntQueryEx != nullptr)
     {
         std::vector<CpuCounters> cores;
         cores.reserve(m_NumCores);
@@ -407,7 +356,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     }
 
     // Fallback without NtQuerySystemInformationEx on a single-group machine.
-    auto ntQuery = getNtQuerySystemInformation();
+    auto ntQuery = Windows::ntQuerySystemInformation();
     if (ntQuery == nullptr)
     {
         spdlog::warn("NtQuerySystemInformation not available, per-core CPU disabled");
@@ -471,7 +420,7 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
 
 SwapBytes WindowsSystemProbe::readSwap()
 {
-    const auto ntQuerySystemInformation = getNtQuerySystemInformation();
+    const auto ntQuerySystemInformation = Windows::ntQuerySystemInformation();
     if (ntQuerySystemInformation == nullptr)
     {
         return {};
