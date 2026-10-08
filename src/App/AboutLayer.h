@@ -8,7 +8,7 @@
 namespace App
 {
 
-/// About dialog layer. Opened by raising Core::OpenAboutEvent.
+/// About dialog layer. Opened by raising Core::OpenAboutEvent; the dialog itself is App::AboutDialog.
 /// Thread safety: All layer lifecycle methods (onAttach/onDetach/onUpdate/onRender)
 /// are guaranteed to be called from the main thread only, as required by SDL and ImGui.
 class AboutLayer : public Core::Layer
@@ -29,7 +29,6 @@ class AboutLayer : public Core::Layer
 
   private:
     void requestOpen();
-    void renderAboutDialog();
     void loadIcon();
 
     bool m_OpenRequested = false;

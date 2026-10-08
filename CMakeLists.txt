@@ -123,6 +123,7 @@ set(TASKSMACK_SOURCES
     src/UI/Theme.cpp
     src/UI/ThemeLoader.cpp
     src/UI/IconLoader.cpp
+    src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/InstanceLock.cpp

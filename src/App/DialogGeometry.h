@@ -19,21 +19,34 @@ namespace App
 /// tests assert each one still reproduces the pixel size named in its comment.
 inline constexpr float REFERENCE_EM_PX = 32.0F / 3.0F;
 
-// ---- About box (#935) ----
+// ---- About box (#935, redesigned #1490) ----
 
-/// Margin around the dialog's contents. Replaces a 24pt value converted through a hardcoded
-/// 96.0F / 72.0F and scaled by io.FontGlobalScale.
-inline constexpr float ABOUT_MARGIN_EM = 3.0F; // 32px at REFERENCE_EM_PX
+/// Margin around the dialog's contents. Was 3 em (a 24pt value once converted through a hardcoded
+/// 96.0F / 72.0F); halved in the compact redesign so the margin no longer dwarfs the content (#1490).
+inline constexpr float ABOUT_MARGIN_EM = 1.5F; // 16px at REFERENCE_EM_PX
 
-/// Longest edge of the application icon.
-inline constexpr float ABOUT_ICON_EM = 9.0F; // 96px
+/// Longest edge of the application icon. Was 9 em (96px), taller than the name, version and tagline
+/// beside it; now about their height (#1490).
+inline constexpr float ABOUT_ICON_EM = 6.0F; // 64px
+
+/// Gap between the icon and the text beside it.
+inline constexpr float ABOUT_HEADER_GAP_EM = 1.5F; // 16px
+
+/// Authored width of the dialog, applied every frame so the wrapped shortcut table has a fixed width
+/// to wrap to. It used to auto-fit, and the table's wrapped text fed back into the fit, widening the
+/// dialog a little every frame until it filled most of the window (#1490).
+inline constexpr float ABOUT_WIDTH_EM = 36.0F; // 384px
+
+/// Tallest the dialog may be, as a share of the window's height. Its contents scroll inside it past
+/// that, rather than the dialog growing to the shared 90 % cap and covering the app (#1490).
+inline constexpr float ABOUT_MAX_HEIGHT_FRACTION = 0.7F;
 
 /// Floor on the OK button's width.
 inline constexpr float ABOUT_BUTTON_MIN_EM = 11.25F; // 120px
 
 // ---- Elevation notice (#937) ----
 
-/// Authored width of the notice. Unlike the About box, which auto-fits, this width is applied every
+/// Authored width of the notice. Like the About box (#1490), this width is applied every
 /// frame the popup is open -- see ElevationNoticeLayer for why that distinction matters.
 inline constexpr float ELEVATION_WIDTH_EM = 45.0F; // 480px
 

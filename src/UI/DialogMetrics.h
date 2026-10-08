@@ -207,6 +207,26 @@ computeCappedControlWidth(float desiredWidthPx, float rowStartPx, float surround
     return viewportExtentPx * MAX_VIEWPORT_FRACTION;
 }
 
+/// Largest extent, on one axis, of a compact dialog that should cover only @p fraction of a
+/// viewport @p viewportExtentPx long, rather than the MAX_VIEWPORT_FRACTION every dialog may reach
+/// (#1490). The About box caps its height this way and scrolls its contents past it, so it opens as
+/// a dialog over the app instead of a second window on top of it.
+///
+/// @p fraction is clamped to (0, MAX_VIEWPORT_FRACTION]: never more than the shared cap, and a
+/// non-positive or non-finite fraction falls back to it.
+///
+/// @return The cap in pixels, or a value no real size reaches when the viewport is unknown.
+[[nodiscard]] inline float computeCompactDialogMaxExtent(float viewportExtentPx, float fraction) noexcept
+{
+    if (!std::isfinite(viewportExtentPx) || viewportExtentPx <= 0.0F)
+    {
+        return std::numeric_limits<float>::max();
+    }
+    const float safeFraction =
+        (std::isfinite(fraction) && fraction > 0.0F) ? std::min(fraction, MAX_VIEWPORT_FRACTION) : MAX_VIEWPORT_FRACTION;
+    return viewportExtentPx * safeFraction;
+}
+
 /// Tallest a dialog's scrolling body may be so that the rows pinned below it -- the action buttons
 /// -- always stay inside the dialog, and so inside the viewport (#1129).
 ///
