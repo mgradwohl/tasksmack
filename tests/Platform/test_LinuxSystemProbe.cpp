@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -598,6 +599,119 @@ TEST(LinuxSystemProbeTest, MemAvailableIsReportedOnlyWhenTheKernelHasIt)
     ScopedTempDir without("ts_test_sys_nomemavail");
     std::ofstream(without.path / "meminfo") << "MemTotal: 1000 kB\nMemFree: 100 kB\nCached: 200 kB\n";
     EXPECT_FALSE(LinuxSystemProbe(without.path).read().memory.hasAvailableBytes);
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
+{
+    // The CPU Details block's facts are read from the roots the probe was given (#809, #1351)
+    ScopedTempDir proc("ts_test_sys_cpudetails_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_cpu");
+    std::ofstream(proc.path / "cpuinfo") << "processor\t: 0\nphysical id\t: 0\ncore id\t\t: 0\n\n"
+                                            "processor\t: 1\nphysical id\t: 0\ncore id\t\t: 0\n\n";
+    std::filesystem::create_directories(cpuSysfs.path / "cpu0" / "cpufreq");
+    std::ofstream(cpuSysfs.path / "cpu0" / "cpufreq" / "base_frequency") << "2900000\n";
+    for (const char* cpu : {"cpu0", "cpu1"})
+    {
+        const auto index = cpuSysfs.path / cpu / "cache" / "index0";
+        std::filesystem::create_directories(index);
+        std::ofstream(index / "level") << "2\n";
+        std::ofstream(index / "type") << "Unified\n";
+        std::ofstream(index / "size") << "1024K\n";
+        std::ofstream(index / "shared_cpu_list") << "0-1\n";
+    }
+
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_FALSE(probe.capabilities().hasVirtualizationInfo);
+    const auto details = probe.read().cpuDetails;
+    EXPECT_EQ(details.sockets, 1U);
+    EXPECT_EQ(details.physicalCores, 1U);
+    EXPECT_EQ(details.logicalProcessors, 2U);
+    EXPECT_EQ(details.l2CacheBytes, 1024ULL * 1024ULL); // One instance, shared by both siblings
+    EXPECT_EQ(details.baseSpeedMHz, 2900U);
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuComesOnline)
+{
+    // The details describe the CPUs online when they were read; bringing one online changes the
+    // count in /proc/stat, and the next sample re-reads them (#809). Unchanged samples do not.
+    ScopedTempDir proc("ts_test_sys_cpudetails_online_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_online_cpu");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(2);
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 2U);
+
+    writeOnline(4);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 4U);
+    EXPECT_EQ(probe.read().cpuDetails.physicalCores, 4U);
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuIsSwappedForAnother)
+{
+    // cpu1 goes offline and cpu2 comes online: the count is the same, the set is not (#809 review)
+    ScopedTempDir proc("ts_test_sys_cpudetails_swap_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_swap_cpu");
+    const auto writeOnline = [&](std::initializer_list<int> cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (const int cpu : cpus)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    const auto writeL2 = [&](int cpu, const char* size)
+    {
+        const auto index = cpuSysfs.path / std::format("cpu{}", cpu) / "cache" / "index0";
+        std::filesystem::create_directories(index);
+        std::ofstream(index / "level") << "2\n";
+        std::ofstream(index / "size") << size << "\n";
+        std::ofstream(index / "shared_cpu_list") << cpu << "\n";
+    };
+    writeL2(0, "1024K");
+    writeL2(1, "1024K");
+    writeL2(2, "2048K");
+    writeOnline({0, 1});
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_EQ(probe.read().cpuDetails.l2CacheBytes, 2ULL * 1024 * 1024);
+
+    writeOnline({0, 2});
+    EXPECT_EQ(probe.read().cpuDetails.l2CacheBytes, 3ULL * 1024 * 1024); // cpu2's L2 in place of cpu1's
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsFollowACpuThatComesOnlineBeforeTheFirstRead)
+{
+    // The details read at construction are tied to the CPUs listed then, so a change before the
+    // first read() is caught too (#809 review)
+    ScopedTempDir proc("ts_test_sys_cpudetails_first_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_first_cpu");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(2);
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    writeOnline(4);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 4U);
 }
 
 namespace

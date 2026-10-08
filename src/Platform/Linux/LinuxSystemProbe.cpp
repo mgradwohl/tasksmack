@@ -5,6 +5,8 @@
 #include "LinuxSystemProbe.h"
 
 #include "Domain/SamplingConfig.h"
+#include "LinuxCpuDetails.h"
+#include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "ProcParsing.h"
 
@@ -22,6 +24,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -131,6 +134,11 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
         m_CpuModel = "Unknown CPU";
     }
 
+    // The details describe the CPUs /proc/cpuinfo lists now, so a CPU that goes online or offline
+    // before the first read() is a change from this set, not the baseline (#809).
+    m_CpuDetails.details = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &m_CpuDetails.ids);
+    m_LastCoreCount = m_NumCores;
+
     spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
 }
 
@@ -142,6 +150,7 @@ SystemCounters LinuxSystemProbe::read()
     // vector growth reallocations per read() call.
     counters.cpuPerCore.reserve(m_NumCores);
     readCpuCounters(counters, m_ProcRoot);
+    readCpuDetails(counters);
     readMemoryCounters(counters, m_ProcRoot);
     readUptime(counters, m_ProcRoot);
     readLoadAvg(counters, m_ProcRoot);
@@ -161,7 +170,8 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
                               .hasSteal = true,
                               .hasLoadAvg = true,
                               .hasCpuFreq = true,
-                              .hasNetworkCounters = true};
+                              .hasNetworkCounters = true,
+                              .hasVirtualizationInfo = false}; // No virtualization/VBS facts on Linux (#809)
 }
 
 long LinuxSystemProbe::ticksPerSecond() const
@@ -373,7 +383,25 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
 {
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
-    counters.cpuCoreCount = m_NumCores;
+}
+
+void LinuxSystemProbe::readCpuDetails(SystemCounters& counters)
+{
+    const auto sampledIds = counters.cpuPerCore | std::views::transform(&CpuCounters::coreId);
+    const std::scoped_lock lock(m_CpuDetailsMutex);
+    if (CpuTopology::cpuDetailsNeedRead(m_CpuDetails, sampledIds))
+    {
+        // Rare: only when the set of online CPUs changes, never every sample
+        std::vector<std::size_t> describedIds;
+        CpuDetails fresh = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &describedIds);
+        (void) CpuTopology::commitIfConsistent(sampledIds, std::move(describedIds), std::move(fresh), m_CpuDetails);
+    }
+    if (!counters.cpuPerCore.empty())
+    {
+        m_LastCoreCount = counters.cpuPerCore.size();
+    }
+    counters.cpuCoreCount = m_LastCoreCount;
+    counters.cpuDetails = m_CpuDetails.details;
 }
 
 void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/CpuDetails.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -119,6 +121,9 @@ struct SystemCounters
     std::string hostname;
     std::string cpuModel;
     std::size_t cpuCoreCount = 0;
+    // Topology, base clock, caches and virtualization status (#809): cached by the probe, which
+    // re-reads them when the set of active processors changes (CpuDetails.h)
+    CpuDetails cpuDetails;
 };
 
 /// Reports what this platform's system probe supports.
@@ -133,6 +138,9 @@ struct SystemCapabilities
     bool hasLoadAvg = false;
     bool hasCpuFreq = false;
     bool hasNetworkCounters = false; // System-wide network byte counters
+    // CpuDetails' virtualization fields mean something here (Windows). Elsewhere the CPU Details
+    // block leaves those rows out rather than showing them as unknown (#809).
+    bool hasVirtualizationInfo = false;
 };
 
 } // namespace Platform

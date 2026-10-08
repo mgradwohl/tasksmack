@@ -663,6 +663,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
     // Static info
     snap.hostname = counters.hostname;
     snap.cpuModel = counters.cpuModel;
+    snap.cpuDetails = counters.cpuDetails;
 
     // Load average and CPU frequency
     snap.loadAvg1 = counters.loadAvg1;

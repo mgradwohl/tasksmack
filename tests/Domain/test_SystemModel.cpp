@@ -180,6 +180,21 @@ TEST(SystemModelTest, SampleDelegatesToRefresh)
     EXPECT_EQ(snap.coreCount, 4);
 }
 
+TEST(SystemModelTest, CpuDetailsAreCopiedIntoTheSnapshot)
+{
+    // The probe's static CPU facts reach the UI unchanged (#809)
+    Domain::SystemModel model(nullptr);
+    auto counters = makeSystemCounters(makeCpuCounters(100, 0, 50, 850), makeMemoryCounters(1000, 400));
+    counters.cpuDetails.sockets = 2;
+    counters.cpuDetails.physicalCores = 32;
+    counters.cpuDetails.logicalProcessors = 64;
+    counters.cpuDetails.l3CacheBytes = 64ULL * 1024 * 1024;
+    counters.cpuDetails.vbsRunning = false;
+
+    model.updateFromCounters(counters, 1.0);
+    EXPECT_EQ(model.snapshot().cpuDetails, counters.cpuDetails);
+}
+
 TEST(SystemModelTest, PublishesCoherentVersionedState)
 {
     Domain::SystemModel model(nullptr);
