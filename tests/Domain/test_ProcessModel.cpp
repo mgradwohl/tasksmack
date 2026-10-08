@@ -82,6 +82,14 @@ Platform::ProcessCounters makeCounter(int32_t pid,
     return makeProcessCounters(pid, name, state, userTime, systemTime, startTime, rssBytes, parentPid);
 }
 
+/// The model's published aggregated system histories: all empty before the first generation.
+Domain::ProcessSystemHistories systemHistories(const Domain::ProcessModel& model)
+{
+    Domain::ProcessSystemHistories histories;
+    static_cast<void>(model.tryCopySystemHistoriesIfNewer(0, histories));
+    return histories;
+}
+
 } // namespace
 
 // =============================================================================
@@ -2088,49 +2096,17 @@ TEST(ProcessModelTest, StartTimeTicksArePassedThrough)
 // System-Level History Tests (for untested functions)
 // =============================================================================
 
-TEST(ProcessModelTest, SystemNetSentHistoryIsEmptyInitially)
+TEST(ProcessModelTest, SystemHistoriesAreEmptyInitially)
 {
     auto probe = std::make_unique<MockProcessProbe>();
     Domain::ProcessModel model(std::move(probe));
 
-    auto history = model.systemNetSentHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemNetRecvHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemNetRecvHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemPageFaultsHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemPageFaultsHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemThreadCountHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemThreadCountHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, SystemHandleCountHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemHandleCountHistory();
-    EXPECT_TRUE(history.empty());
+    const auto histories = systemHistories(model);
+    EXPECT_TRUE(histories.timestamps.empty());
+    EXPECT_TRUE(histories.pageFaults.empty());
+    EXPECT_TRUE(histories.threadCount.empty());
+    EXPECT_TRUE(histories.handleCount.empty());
+    EXPECT_TRUE(histories.power.empty());
 }
 
 TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
@@ -2157,7 +2133,7 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAggregatesAcrossProcesses)
     rawProbe->setCounters({c1, c2});
     model.refresh();
 
-    const auto history = model.systemHandleCountHistory();
+    const auto history = systemHistories(model).handleCount;
     ASSERT_FALSE(history.empty());
     // Aggregated handle count should be the sum: 10 + 25 = 35
     EXPECT_DOUBLE_EQ(history.back(), 35.0);
@@ -2183,27 +2159,8 @@ TEST(ProcessModelTest, SystemHandleCountHistoryAlignedWithTimestamps)
     rawProbe->setCounters({counter});
     model.refresh();
 
-    const auto timestamps = model.historyTimestamps();
-    const auto handleHistory = model.systemHandleCountHistory();
-    EXPECT_EQ(timestamps.size(), handleHistory.size());
-}
-
-TEST(ProcessModelTest, SystemPowerHistoryIsEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto history = model.systemPowerHistory();
-    EXPECT_TRUE(history.empty());
-}
-
-TEST(ProcessModelTest, HistoryTimestampsAreEmptyInitially)
-{
-    auto probe = std::make_unique<MockProcessProbe>();
-    Domain::ProcessModel model(std::move(probe));
-
-    auto timestamps = model.historyTimestamps();
-    EXPECT_TRUE(timestamps.empty());
+    const auto histories = systemHistories(model);
+    EXPECT_EQ(histories.timestamps.size(), histories.handleCount.size());
 }
 
 TEST(ProcessModelTest, HistoryRetentionBelowTheMinimumIsClamped)
@@ -2224,14 +2181,14 @@ TEST(ProcessModelTest, HistoryRetentionBelowTheMinimumIsClamped)
         totalCpu += 100000;
         model.updateFromCounters({counter}, totalCpu);
     }
-    ASSERT_EQ(model.historyTimestamps().size(), 5U);
+    ASSERT_EQ(systemHistories(model).timestamps.size(), 5U);
 
     // Clamped to HISTORY_SECONDS_MIN like every other model (#1145), where it used to keep a
     // zero-second window and with it only the current sample: t = 15, 20, 25, plus t = 10 kept just
     // before the cutoff (#1016).
     static_assert(Domain::Sampling::HISTORY_SECONDS_MIN == 10, "the expected count below assumes a 10 s minimum");
     model.setMaxHistorySeconds(0.0);
-    EXPECT_EQ(model.historyTimestamps().size(), 4U);
+    EXPECT_EQ(systemHistories(model).timestamps.size(), 4U);
 }
 
 // #1145: a window change trims the aggregated system histories at once and hands them out as a new
@@ -3769,7 +3726,7 @@ TEST(ProcessModelTest, WatchedSamplesCarryEachGenerationsOwnSampleTime)
     EXPECT_EQ(samples[1].snapshot->pid, 100);
 
     // The same timebase as the model's own history timestamps.
-    const auto timestamps = model.historyTimestamps();
+    const auto timestamps = systemHistories(model).timestamps;
     ASSERT_FALSE(timestamps.empty());
     EXPECT_DOUBLE_EQ(timestamps.back(), secondTime);
 }
@@ -4189,7 +4146,7 @@ TEST(ProcessModelTest, UnreadableHandleCountIsUnavailableAndLeftOutOfTheTotal)
     EXPECT_FALSE(theirs->handleCountAvailable);
     EXPECT_EQ(theirs->handleCount, 0);
 
-    const auto handleTotals = model.systemHandleCountHistory();
+    const auto handleTotals = systemHistories(model).handleCount;
     ASSERT_FALSE(handleTotals.empty());
     EXPECT_DOUBLE_EQ(handleTotals.back(), 10.0);
 }
@@ -4256,11 +4213,11 @@ TEST(ProcessModelTest, NetworkCountersTurnedOffDuringTheSampleAreUnavailableInTh
     EXPECT_DOUBLE_EQ(model.snapshots().at(0).netSentBytesPerSec, 0.0);
 }
 
-TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailableAndLeftOutOfTheTotal)
+TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailable)
 {
     // #1110: a process whose connections can't be attributed to it (another
     // user's, without root, on Linux) showed 0 B/s. Its network rates are now
-    // unavailable and left out of the totals.
+    // unavailable.
     auto probe = std::make_unique<MockProcessProbe>();
     auto* rawProbe = probe.get();
     auto mine = makeCounter(100, "mine", 'R', 1000, 0, 5000);
@@ -4287,8 +4244,4 @@ TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailableAndLeftOutOfTh
     ASSERT_NE(mineSnap, snaps.end());
     EXPECT_TRUE(mineSnap->networkAvailable);
     EXPECT_DOUBLE_EQ(mineSnap->netSentBytesPerSec, 2000.0);
-
-    const auto sentTotals = model.systemNetSentHistory();
-    ASSERT_FALSE(sentTotals.empty());
-    EXPECT_DOUBLE_EQ(sentTotals.back(), 2000.0);
 }
