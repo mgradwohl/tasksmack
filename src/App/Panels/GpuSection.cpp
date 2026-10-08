@@ -200,7 +200,6 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
     const double alpha = computeAlpha(ctx.lastDeltaSeconds, ctx.refreshInterval);
 
     auto& smoothed = (*ctx.smoothedGPUs)[gpuId];
-    const bool initialized = smoothed.initialized;
     // A field this sample couldn't read keeps its last value and is marked uninitialized (its bar
     // shows N/A); the next reading starts afresh rather than easing from it (#1111).
     const auto smoothReading = [alpha](double& value, bool& valueInitialized, bool available, double reading)
@@ -216,8 +215,8 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
     smoothReading(
         smoothed.temperatureC, smoothed.temperatureInitialized, snap.temperatureAvailable, static_cast<double>(snap.temperatureC));
     smoothReading(smoothed.powerWatts, smoothed.powerInitialized, snap.powerAvailable, snap.powerDrawWatts);
-    smoothed.encoderPercent = initializeOrSmooth(smoothed.encoderPercent, snap.encoderUtilPercent, alpha, initialized);
-    smoothed.decoderPercent = initializeOrSmooth(smoothed.decoderPercent, snap.decoderUtilPercent, alpha, initialized);
+    smoothReading(smoothed.encoderPercent, smoothed.encoderInitialized, snap.encoderAvailable, snap.encoderUtilPercent);
+    smoothReading(smoothed.decoderPercent, smoothed.decoderInitialized, snap.decoderAvailable, snap.decoderUtilPercent);
     if (snap.gpuClockAvailable && snap.gpuClockMHz > 0)
     {
         smoothed.clockMHz = initializeOrSmooth(smoothed.clockMHz, static_cast<double>(snap.gpuClockMHz), alpha, smoothed.clockInitialized);
@@ -645,16 +644,18 @@ void renderGpuSection(RenderContext& ctx)
         }
         if (caps.hasEncoderDecoder)
         {
-            gpuCoreBars.push_back({.valueText = UI::Format::formatPercent(smoothed.encoderPercent),
-                                   .label = ENCODER_LABEL,
-                                   .tooltipText = {},
-                                   .value01 = UI::Format::percent01(smoothed.encoderPercent),
-                                   .color = theme.scheme().gpuEncoder});
-            gpuCoreBars.push_back({.valueText = UI::Format::formatPercent(smoothed.decoderPercent),
-                                   .label = DECODER_LABEL,
-                                   .tooltipText = {},
-                                   .value01 = UI::Format::percent01(smoothed.decoderPercent),
-                                   .color = theme.scheme().gpuDecoder});
+            gpuCoreBars.push_back(smoothed.encoderInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.encoderPercent),
+                                                                       .label = ENCODER_LABEL,
+                                                                       .tooltipText = {},
+                                                                       .value01 = UI::Format::percent01(smoothed.encoderPercent),
+                                                                       .color = theme.scheme().gpuEncoder}
+                                                              : unavailableBar(ENCODER_LABEL));
+            gpuCoreBars.push_back(smoothed.decoderInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.decoderPercent),
+                                                                       .label = DECODER_LABEL,
+                                                                       .tooltipText = {},
+                                                                       .value01 = UI::Format::percent01(smoothed.decoderPercent),
+                                                                       .color = theme.scheme().gpuDecoder}
+                                                              : unavailableBar(DECODER_LABEL));
         }
 
         // Build thermal bars early so we can calculate max column count for alignment
