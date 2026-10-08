@@ -344,6 +344,19 @@ struct MainTabChoice
     return !choice.index.has_value();
 }
 
+/// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME or
+/// TASKSMACK_DETAILS_TAB, each nullptr when unset. A blank value counts as unset, as it does everywhere
+/// else. While one is set, the startup "Limited Data" notice is not queued: the hooks exist for
+/// unattended captures, and dismissing the modal needs input.
+[[nodiscard]] inline bool anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab) noexcept
+{
+    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab},
+                               [](const char* value) { return value != nullptr && !Detail::trim(value).empty(); });
+}
+
+/// anyTestHookActive() for the process environment.
+[[nodiscard]] bool testHookActive();
+
 /// The selection the variables ask for, read and logged on the first call; nullopt when they are
 /// unset or invalid. Thread-safe.
 [[nodiscard]] const std::optional<Target>& active();

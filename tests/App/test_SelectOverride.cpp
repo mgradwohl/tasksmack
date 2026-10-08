@@ -326,4 +326,24 @@ TEST(SelectOverrideTest, UnknownMainTabWarnsOnceAndStillOpensDetails)
     }
 }
 
+// #1569: the startup "Limited Data" notice is not queued while any hook is set, TASKSMACK_TAB alone included.
+TEST(SelectOverrideTest, MainTabAloneIsATestHook)
+{
+    using App::SelectOverride::anyTestHookActive;
+
+    EXPECT_TRUE(anyTestHookActive("processes", nullptr, nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive("not-a-tab", nullptr, nullptr, nullptr)); // set, even if ignored
+    EXPECT_TRUE(anyTestHookActive(nullptr, "1234", nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, "explorer.exe", nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, "gpu"));
+}
+
+TEST(SelectOverrideTest, NoHooksMeansNoTestHook)
+{
+    using App::SelectOverride::anyTestHookActive;
+
+    EXPECT_FALSE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr));
+    EXPECT_FALSE(anyTestHookActive("", "  ", "\t", "")); // blank counts as unset
+}
+
 } // namespace
