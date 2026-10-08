@@ -6,8 +6,10 @@ name: Main Health
 # (#1541). workflow_run always runs this file from the default branch, with this file's permissions.
 on:
   workflow_run:
-    # Keep in sync with WATCHED below.
-    workflows: [CI, CodeQL Security Analysis, Static Analysis, Sanitizers, Heavy Checks, OSV Dependency Scan, Pre-commit]
+    # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
+    # dispatch, so one failed dispatch would stay its latest main run and keep the issue red forever.
+    # CI's nightly schedule runs the same full clang-tidy and is watched as CI.
+    workflows: [CI, CodeQL Security Analysis, Sanitizers, Heavy Checks, OSV Dependency Scan, Pre-commit]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -46,7 +48,6 @@ jobs:
           WATCHED: |-
             ci.yml|CI
             codeql.yml|CodeQL Security Analysis
-            static-analysis.yml|Static Analysis
             sanitizers.yml|Sanitizers
             heavy-checks.yml|Heavy Checks
             osv-scanner.yml|OSV Dependency Scan
