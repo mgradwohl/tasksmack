@@ -2096,11 +2096,11 @@ below. See #798 for the full repo-wide audit and rationale behind this split.
   its formatting behavior tracks the same LLVM major as the compiler toolchain, so its *major*
   bumps are gated exactly like the rest of the LLVM-major process below (a `packageRules` entry
   keyed on the manager's `pre-commit/mirrors-clang-format` dep name) -- minor/patch bumps still
-  auto-PR freely. The Windows CI's exact Chocolatey pins for `ninja`/`ccache` (both in
-  `.github/actions/setup-windows-llvm/action.yml`) track the live Chocolatey community feed
-  directly via the `nuget` datasource (Chocolatey packages are NuGet packages under the hood),
-  not just upstream GitHub tags, so a proposed bump is guaranteed installable via
-  `choco install`.
+  auto-PR freely. Windows CI has no Renovate-tracked `ninja`/`ccache` pins: `ninja` is
+  preinstalled on the `windows-2025` runner image and `.github/actions/setup-windows-llvm/action.yml`
+  only verifies its version (bump its `ninja-version` input when the image changes), and
+  `ccache` is installed by `hendrikmuhs/ccache-action` from that action's own pinned,
+  checksum-verified release binary.
 - *Tier 2 -- detected automatically, but only opens a PR after a human ticks the checkbox on
   the Dependency Dashboard issue Renovate maintains* (`dependencyDashboardApproval: true`):
   compiler/interpreter/build-generator bumps that need a deliberate look (new warnings, codegen
@@ -2210,8 +2210,8 @@ ccache with no dev-box pin written down anywhere -- a value can't be tracked for
 isn't recorded somewhere. All three now pin an explicit version: CMake and Ninja match what the
 `windows-2025` GitHub Actions runner image itself ships (confirmed directly against
 `actions/runner-images`' `Windows2025-Readme.md`, for dev/CI parity); ccache has no CI-side
-winget equivalent to mirror (CI installs it via Chocolatey instead, pinned separately per Tier 1
-above), so it pins the latest version winget actually has available.
+winget equivalent to mirror (CI gets it from `hendrikmuhs/ccache-action`'s own pinned,
+checksum-verified release binary), so it pins the latest version winget actually has available.
 
 **`check-prereqs.sh`'s `MIN_*` floors** (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`,
 `MIN_CCACHE_VERSION`, `MIN_GIT_VERSION`, `MIN_PYTHON_VERSION`): these remain **not** automated,
