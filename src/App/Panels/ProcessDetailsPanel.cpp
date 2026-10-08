@@ -11,8 +11,10 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "ProcessActionsView.h"
+#include "ProcessConnectionsView.h"
 #include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsLayout.h"
@@ -55,20 +57,29 @@ namespace App
 // Constructor (inside App namespace)
 ProcessDetailsPanel::ProcessDetailsPanel()
     : ProcessDetailsPanel(Synthetic::makeProcessActions(Synthetic::activeScenario()),
-                          Synthetic::makeProcessEnvironmentReader(Synthetic::activeScenario()))
+                          Synthetic::makeProcessEnvironmentReader(Synthetic::activeScenario()),
+                          Synthetic::makeProcessConnectionsReader(Synthetic::activeScenario()))
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)
-    : ProcessDetailsPanel(std::move(processActions), nullptr)
+    : ProcessDetailsPanel(std::move(processActions), nullptr, nullptr)
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
                                          std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader)
+    : ProcessDetailsPanel(std::move(processActions), std::move(environmentReader), nullptr)
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader)
     : Panel("Process Details"),
       m_ProcessActions(std::move(processActions)),
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{}),
       m_EnvironmentReader(std::move(environmentReader)),
-      m_HasEnvironment(m_EnvironmentReader != nullptr && m_EnvironmentReader->hasEnvironment())
+      m_HasEnvironment(m_EnvironmentReader != nullptr && m_EnvironmentReader->hasEnvironment()),
+      m_ConnectionsReader(std::move(connectionsReader)),
+      m_HasConnections(m_ConnectionsReader != nullptr && m_ConnectionsReader->hasConnections())
 {}
 
 void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime)
@@ -137,6 +148,10 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     // for the selected process alone, identified by PID and start time so a reused PID is not read.
     const bool canReadEnvironment = m_HasEnvironment && m_HasSnapshot && !m_ProcessExited;
     static_cast<void>(m_EnvironmentView.update(canReadEnvironment ? m_EnvironmentReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Connections section's on-demand read (#799), on the same terms.
+    const bool canReadConnections = m_HasConnections && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_ConnectionsView.update(canReadConnections ? m_ConnectionsReader.get() : nullptr, selectedTarget(), deltaTime));
 }
 
 void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
@@ -250,6 +265,8 @@ void ProcessDetailsPanel::renderContent()
                 renderBasicInfo(cachedSnapshot());
                 // Collapsed by default, and hidden where the platform cannot read environments (#179)
                 m_EnvironmentView.render(m_HasEnvironment);
+                // Likewise collapsed by default, and hidden where the platform cannot list sockets (#799)
+                m_ConnectionsView.render(m_HasConnections);
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick
                 if (!m_SmoothedUsage.initialized)
@@ -378,6 +395,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_PeakMemoryBytes = 0.0;
     m_PriorityView.onSelectionChanged();    // Drops an edited priority, so it cannot reach the new process
     m_EnvironmentView.onSelectionChanged(); // Drops the variables and every revealed value (#179)
+    m_ConnectionsView.onSelectionChanged(); // Drops the previous process's sockets (#799)
 
     if (pid != -1)
     {

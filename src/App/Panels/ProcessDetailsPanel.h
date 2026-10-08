@@ -7,9 +7,11 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
+#include "ProcessConnectionsView.h"
 #include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
@@ -45,6 +47,13 @@ class ProcessDetailsPanel : public Panel
     /// A null reader, like the one-argument constructor's, hides the Environment section.
     ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader);
+
+    /// Construct with injected IProcessActions, IProcessEnvironmentReader and IProcessConnectionsReader
+    /// implementations (tests: mocks). A null connections reader, like the shorter constructors', hides
+    /// the Connections section.
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                        std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader);
 
     ~ProcessDetailsPanel() override = default;
 
@@ -209,6 +218,15 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessEnvironmentReader> m_EnvironmentReader;
     bool m_HasEnvironment = false; // m_EnvironmentReader can read environments here (Linux)
     ProcessEnvironmentView m_EnvironmentView;
+
+    // The Overview's Connections section (#799), on the same terms as the Environment section: the
+    // reader comes from the composition root and is called only from updateWithSamples(), through the
+    // view, while the section is open, and only for the selected process. The view runs each read on a
+    // worker and its destructor waits for one in flight, so the reader is declared before the view:
+    // members are destroyed in reverse order, and the reader must outlive any read using it.
+    std::unique_ptr<Platform::IProcessConnectionsReader> m_ConnectionsReader;
+    bool m_HasConnections = false; // m_ConnectionsReader can list sockets here (Linux)
+    ProcessConnectionsView m_ConnectionsView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;
