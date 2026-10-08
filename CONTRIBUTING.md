@@ -1291,16 +1291,16 @@ instead (lower-case `msBetweenPresents`/`msBetweenDisplayChange`, plus a `Droppe
 Percentiles, nearest rank as in the `ResizePerf` lines:
 
 ```powershell
-$rows = Import-Csv perf-data\presentmon-idle.csv
-function Get-Percentile([double[]]$Values, [double]$P) {
-    $sorted = $Values | Sort-Object
-    $sorted[[math]::Max(0, [math]::Ceiling($P / 100 * $sorted.Count) - 1)]
+$rows = @(Import-Csv perf-data\presentmon-idle.csv)
+function Get-Percentile([double[]]$Sorted, [double]$P) {
+    $Sorted[[math]::Max(0, [math]::Ceiling($P / 100 * $Sorted.Count) - 1)]
 }
+if ($rows.Count -eq 0) { 'No presents recorded: is TaskSmack running, and is --process_name right?' }
 foreach ($column in 'MsBetweenPresents', 'MsBetweenDisplayChange') {
-    $values = @($rows | Where-Object { $_.$column -ne 'NA' } | ForEach-Object { [double]$_.$column })
+    $values = @($rows | Where-Object { $_.$column -and $_.$column -ne 'NA' } | ForEach-Object { [double]$_.$column } | Sort-Object)
+    if ($values.Count -eq 0) { "${column}: no values (no presents, or no displayed frames)"; continue }
     '{0}: n={1} p50={2:N2} p95={3:N2} p99={4:N2} max={5:N2} ms' -f $column, $values.Count,
-        (Get-Percentile $values 50), (Get-Percentile $values 95), (Get-Percentile $values 99),
-        ($values | Measure-Object -Maximum).Maximum
+        (Get-Percentile $values 50), (Get-Percentile $values 95), (Get-Percentile $values 99), $values[-1]
 }
 'Not displayed: {0} of {1} presents' -f @($rows | Where-Object MsUntilDisplayed -eq 'NA').Count, $rows.Count
 ```
