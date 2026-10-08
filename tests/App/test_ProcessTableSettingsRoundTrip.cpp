@@ -78,8 +78,9 @@ class HeadlessImGui
             if (table == nullptr)
             {
                 // Never null inside a successful BeginTable(); fail the test rather than crash (#1488).
+                // EndTable() is skipped: it asserts that a table is current. The window and frame
+                // are still closed so the context stays balanced for the next test.
                 ADD_FAILURE() << "ImGui::GetCurrentTable() returned null inside BeginTable()";
-                ImGui::EndTable();
                 ImGui::End();
                 ImGui::Render();
                 return 0;
