@@ -52,6 +52,9 @@ if(WIN32)
         set_tests_properties(EtwCaptureScript PROPERTIES TIMEOUT 180)
         add_test(NAME EtwAnalysisScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
+        # tools/cmake-cache.ps1, the CMakeCache.txt reader bench.ps1 and the ETW scripts share (#1479).
+        add_test(NAME CMakeCacheScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-cmake-cache.ps1)
         # tools/bench.ps1 against a stub benchmark binary: exit-code propagation (#1423) and the
         # provenance manifest (#1424).
         add_test(NAME BenchScript
@@ -63,7 +66,7 @@ if(WIN32)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
-                        "EtwAnalysisScript and BenchScript tests are not registered. Install PowerShell 7 to run them.")
+                        "EtwAnalysisScript, CMakeCacheScript and BenchScript tests are not registered. Install PowerShell 7 to run them.")
     endif()
 endif()
 

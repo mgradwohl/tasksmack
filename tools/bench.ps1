@@ -46,6 +46,8 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
+# Read-CMakeCache and ConvertTo-CMakeUpper, shared with profile-etw-common.ps1 (#1479).
+. (Join-Path $scriptDir 'cmake-cache.ps1')
 
 # Normalize $Preset and $ExtraArgs BEFORE computing any paths so that the
 # invocation `bench.ps1 -- --benchmark_filter=Foo` (where PowerShell binds
@@ -271,49 +273,6 @@ function Get-CMakeCompilerFile {
             ForEach-Object { Join-Path $_.FullName 'CMakeCXXCompiler.cmake' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
     if ($candidates.Count -eq 1) { return $candidates[0] }
     return $null
-}
-
-# CMakeCache.txt entries as CMake itself reads them (cmState::ParseCacheEntry): "KEY":TYPE=VALUE,
-# then KEY:TYPE=VALUE, then the untyped "KEY"=VALUE and KEY=VALUE. CMake quotes a key holding ':',
-# and any other character -- '-', '.', '+' of a custom build type's CMAKE_CXX_FLAGS_<CONFIG> -- is
-# part of an unquoted key. Trailing spaces, tabs and carriage returns are dropped, and a value in
-# single quotes (how CMake writes one with trailing whitespace) loses them. Kept in step with
-# CACHE_ENTRY_PATTERNS / parse_cmake_cache in tools/bench-manifest.py.
-$script:CacheValuePattern = '(.*[^\r\t ]|[\r\t ]*)[\r\t ]*$'
-$script:CacheEntryPatterns = @(
-    ('^"([^"]*)":[^=]*=' + $script:CacheValuePattern)
-    ('^([^=:]*):[^=]*=' + $script:CacheValuePattern)
-    ('^"([^"]*)"=' + $script:CacheValuePattern)
-    ('^([^=]*)=' + $script:CacheValuePattern)
-)
-
-function Read-CMakeCache {
-    # The entries of a CMakeCache.txt, keyed case-sensitively (CMake's keys are); a later entry
-    # wins, as in CMake.
-    param([string]$Path)
-    $cache = [hashtable]::new([StringComparer]::Ordinal)
-    foreach ($raw in [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8).Split("`n")) {
-        # One trailing carriage return is part of the line ending (cmSystemTools::GetLineFromStream).
-        $line = $(if ($raw.EndsWith("`r", [StringComparison]::Ordinal)) { $raw.Substring(0, $raw.Length - 1) } else { $raw }).TrimStart(' ', "`t")
-        # Blank lines, '#' comments and '//' help text are not entries (cmCacheManager::LoadCache).
-        if (-not $line -or $line.StartsWith('#', [StringComparison]::Ordinal) -or $line.StartsWith('//', [StringComparison]::Ordinal)) { continue }
-        foreach ($pattern in $script:CacheEntryPatterns) {
-            $match = [regex]::Match($line, $pattern)
-            if ($match.Success) {
-                $value = $match.Groups[2].Value
-                if ($value.Length -ge 2 -and $value[0] -eq "'" -and $value[-1] -eq "'") { $value = $value.Substring(1, $value.Length - 2) }
-                $cache[$match.Groups[1].Value] = $value
-                break
-            }
-        }
-    }
-    return $cache
-}
-
-function ConvertTo-CMakeUpper {
-    # CMake's cmSystemTools::UpperCase: ASCII letters only, as the <CONFIG> suffix is built.
-    param([string]$Value)
-    return [regex]::Replace($Value, '[a-z]', { param($m) [string][char]([int][char]$m.Value - 32) })
 }
 
 function Find-BuildTree {
