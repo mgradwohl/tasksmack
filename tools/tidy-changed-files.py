@@ -35,6 +35,10 @@ FULL_RUN_PATTERNS = (
     re.compile(r"^tools/common\.(sh|ps1)$"),
     re.compile(r"^tools/tidy-changed-files\.py$"),
     re.compile(r"^\.github/workflows/ci\.yml$"),
+    # The tidy jobs' toolchain: the LLVM/clang-tidy and GLAD setup actions and the GLAD generator's
+    # pinned requirements. A PR that changes only these must still exercise them.
+    re.compile(r"^\.github/actions/(setup-llvm|setup-windows-llvm|setup-python-glad)/"),
+    re.compile(r"^requirements-glad\.(in|txt)$"),
 )
 HEADER_SUFFIXES = (".h", ".hpp", ".inl")
 # Non-header inputs that CMakeLists.txt turns into generated headers (configure_file).
