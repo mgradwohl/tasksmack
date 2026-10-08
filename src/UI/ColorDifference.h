@@ -186,7 +186,11 @@ struct Oklch
     const double okL = (0.2104542553 * lms0) + (0.7936177850 * lms1) - (0.0040720468 * lms2);
     const double okA = (1.9779984951 * lms0) - (2.4285922050 * lms1) + (0.4505937099 * lms2);
     const double okB = (0.0259040371 * lms0) + (0.7827717662 * lms1) - (0.8086757660 * lms2);
-    const double chroma = std::hypot(okA, okB);
+    // The matrices leave a grey a residual chroma of about 1e-7, whose angle is noise (white came out at
+    // hue 89.9): below ACHROMATIC a colour is a grey, with chroma and hue 0.
+    constexpr double ACHROMATIC = 1e-4;
+    const double rawChroma = std::hypot(okA, okB);
+    const double chroma = (rawChroma < ACHROMATIC) ? 0.0 : rawChroma;
     double hue = (chroma > 0.0) ? std::atan2(okB, okA) * (180.0 / std::numbers::pi) : 0.0;
     if (hue < 0.0)
     {

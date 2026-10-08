@@ -872,8 +872,13 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
             ImPlot::PlotDummy("Power");
             return;
         }
-        plotLineWithFill(
-            POWER_LABEL, axis.timeData.data(), powerData.data(), UI::Format::checkedCount(powerData.size()), theme.scheme().chartPower);
+        // The role's own fill, as on the system Power chart, so charts.power_fill applies on every screen.
+        plotLineWithFill(POWER_LABEL,
+                         axis.timeData.data(),
+                         powerData.data(),
+                         UI::Format::checkedCount(powerData.size()),
+                         theme.scheme().chartPower,
+                         theme.scheme().chartPowerFill);
         if (const auto idx = hoveredSampleIndex(axis.timeData, powerData.size()))
         {
             const std::array rows{UI::Widgets::TooltipRow{

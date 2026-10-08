@@ -58,7 +58,7 @@ text_info = "#0067CA"      # Blue - informational text
 running = "#00663E"    # Green - active/running (R)
 sleeping = "#0057AD"   # Blue - sleeping (S)
 disk_sleep = "#973D00" # Orange - uninterruptible I/O (D)
-zombie = "#A51D2D"     # Magenta - defunct process (Z) - distinct from charts.io red
+zombie = "#A51D2D"     # Deep red - defunct process (Z)
 stopped = "#80379F"    # Purple - stopped/traced (T/t)
 idle = "#585858"       # Gray - idle kernel thread (I)
 

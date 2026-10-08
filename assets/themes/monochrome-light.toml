@@ -33,20 +33,20 @@ colors = [
 # =============================================================================
 [progress]
 low = "#3B9F42"       # 0-50%   - Medium green (healthy)
-medium = "#886736"    # 50-80%  - Sand (caution)
+medium = "#886736"    # 50-80%  - Ochre (caution)
 high = "#773D37"      # 80-100% - Deep red (critical)
 
 # =============================================================================
 # SEMANTIC TEXT COLORS
 # Colors for different types of text/messages
-# All variations of green
+# Greens, with a deep red error and a brown warning so severity still reads (#1196)
 # =============================================================================
 [semantic]
 text_primary = "#0D1A0D"   # Dark green-tinted text for contrast on light bg
 text_disabled = "#5A6B5A"  # Muted green-gray for disabled text
 text_muted = "#6C6C6C"     # Gray
-text_error = "#693034"     # Darkest green (stands out)
-text_warning = "#58340A"   # Dark green
+text_error = "#693034"     # Deep red - errors
+text_warning = "#58340A"   # Brown - warnings
 text_success = "#047D22"   # Medium green
 text_info = "#46774A"      # Medium-dark green
 

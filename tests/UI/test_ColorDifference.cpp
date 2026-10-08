@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include <array>
+#include <cmath>
 
 namespace UI::ColorDifference
 {
@@ -175,9 +176,16 @@ TEST(ColorDifferenceTest, OklchMatchesOttossonReferenceValues)
         EXPECT_NEAR(actual.h, expected.h, 0.05);
     }
 
-    const Oklch white = toOklch({1.0F, 1.0F, 1.0F, 1.0F});
-    EXPECT_NEAR(white.l, 1.0, TOLERANCE);
-    EXPECT_NEAR(white.c, 0.0, TOLERANCE);
+    // Greys are achromatic: chroma and hue exactly 0, not the angle of the matrices' residual (#1472).
+    for (const float v : {0.0F, 0.25F, 0.5F, 1.0F})
+    {
+        const Oklch grey = toOklch({v, v, v, 1.0F});
+        EXPECT_NEAR(grey.l, std::cbrt(toLinear(static_cast<double>(v))), TOLERANCE) << v;
+        EXPECT_DOUBLE_EQ(grey.c, 0.0) << v;
+        EXPECT_DOUBLE_EQ(grey.h, 0.0) << v;
+    }
+    // A barely tinted colour still has a hue.
+    EXPECT_GT(toOklch({0.5F, 0.5F, 0.52F, 1.0F}).c, 0.0);
 }
 
 } // namespace

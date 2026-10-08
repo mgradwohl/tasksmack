@@ -305,8 +305,10 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.gpuFan = getColor(tbl, "charts.gpu.fan");
 
     // Metric roles (#1196). Each falls back to the field it borrowed before it had its own, so a
-    // theme that predates them draws exactly as it did. Shared and Virtual fall back through Cached and
-    // Swap, which in turn fall back to what they borrowed.
+    // theme that predates them draws as it did -- except process Power, which was semantic.text_info
+    // and now matches system Power (charts.cpu unless charts.power is set): Power is one colour on
+    // every screen. Shared and Virtual fall back through Cached and Swap, which in turn fall back to
+    // what they borrowed.
     const auto cpuTotal = getRoleColors(tbl, "charts.cpu_total", "charts.cpu_total_fill", scheme.chartCpu, scheme.chartCpuFill);
     scheme.chartCpuTotal = cpuTotal.line;
     scheme.chartCpuTotalFill = cpuTotal.fill;
