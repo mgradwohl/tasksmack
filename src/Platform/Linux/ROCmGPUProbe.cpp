@@ -536,12 +536,10 @@ std::vector<GPUInfo> ROCmGPUProbe::enumerateGPUs()
         info.driverVersion = "ROCm";
 
         // Which sensors this device actually reports (#1112): capabilities() covers ROCm SMI as a
-        // whole, but e.g. an APU or a passively cooled card has no fan, and older parts have no
-        // junction sensor. Only a definitive answer (not supported, not found, not implemented) means
-        // the device lacks a sensor: a transient failure now (busy, a reset) must not hide it for the
-        // session, since the answer is kept (#1111). Found once per device: a sleeping GPU isn't woken
-        // to find out (#1117), so until it is seen awake the probe's capabilities apply to it, and
-        // rescanGPUs() asks for a re-enumeration then (#1289).
+        // whole, but e.g. an APU or a passively cooled card has no fan. Only a definitive answer (not supported, not found, not
+        // implemented) means the device lacks a sensor: a transient failure now (busy, a reset) must not hide it for the session, since the
+        // answer is kept (#1111). Found once per device: a sleeping GPU isn't woken to find out (#1117), so until it is seen awake the
+        // probe's capabilities apply to it, and rescanGPUs() asks for a re-enumeration then (#1289).
         auto& deviceSensors = m_Impl->sensors[deviceIdx];
         if (!deviceSensors.has_value() && !m_Impl->asleep(deviceIdx))
         {

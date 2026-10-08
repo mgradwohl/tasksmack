@@ -4,8 +4,6 @@
 /// Tests cover:
 /// - GPU enumeration and snapshot creation
 /// - Memory utilization percentage calculations
-/// - Power utilization percentage calculations
-/// - PCIe bandwidth rate calculations from counter deltas
 /// - Multi-GPU scenarios
 /// - Capability reporting
 /// - Thread-safe operations

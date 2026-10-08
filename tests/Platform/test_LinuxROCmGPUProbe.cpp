@@ -630,7 +630,7 @@ TEST(LinuxROCmGPUProbeTest, AnUndecodableClockAtEnumerationKeepsTheClock)
 }
 
 // #1112: each device's sensors, from which reads succeed at enumeration. Mock device 1 has no
-// junction sensor, no fan and an undecodable GPU clock sample; device 0 has all of them.
+// fan and an undecodable GPU clock sample; device 0 has both.
 TEST(LinuxROCmGPUProbeTest, SensorCapabilitiesArePerDevice)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
@@ -891,8 +891,7 @@ TEST(LinuxROCmGPUProbeTest, AnInitErrorReinitialisesOnTheNextFullRescan)
 }
 
 // #1289: an AMD GPU asleep at enumeration (mock device 1, at 0000:23:05.1) gets its own sensor set on
-// its first awake sample: a quick rescan asks for a re-enumeration, which finds it has no junction
-// sensor or fan.
+// its first awake sample: a quick rescan asks for a re-enumeration, which finds it has no fan.
 TEST(LinuxROCmGPUProbeTest, AGpuAsleepAtEnumerationGetsItsOwnSensorsOnceAwake)
 {
     const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
@@ -923,7 +922,7 @@ TEST(LinuxROCmGPUProbeTest, AGpuAsleepAtEnumerationGetsItsOwnSensorsOnceAwake)
 
 // #1295 review: a GPU asleep through a ROCm SMI restart -- here one triggered by another AMD GPU
 // being hot-plugged -- keeps the sensor set found while it was awake (mock device 1, at
-// 0000:23:05.1: no junction sensor or fan), and its VRAM total. It isn't woken to find them again,
+// 0000:23:05.1: no fan), and its VRAM total. It isn't woken to find them again,
 // so forgetting them would republish the probe-wide capabilities for it until it woke.
 TEST(LinuxROCmGPUProbeTest, AGpuAsleepThroughARestartKeepsItsSensors)
 {
