@@ -793,6 +793,14 @@ class ScrubberTest(unittest.TestCase):
                 self.assertEqual(module.hide_identity(given, prefixes, "build"), expected)
         # A user name under 3 characters is never replaced on its own; a home prefix always is.
         self.assertEqual(module.hide_identity("-DX=ab /home/ab/src", ["/home/ab"], "ab"), "-DX=ab <home>/src")
+        # A short home directory is still a home prefix (#1445 review); only a root or a bare drive
+        # is never one. The same cases as tools/test-bench.ps1.
+        prefixes = module.home_prefixes(["/ab/", "C:\\ab"])
+        self.assertEqual(
+            module.hide_identity(["--benchmark_filter=/ab/data", "-DX=ab", "C:\\ab\\x"], prefixes, "ab"),
+            ["--benchmark_filter=<home>/data", "-DX=ab", "<home>\\x"],
+        )
+        self.assertEqual(module.home_prefixes(["/", "\\", "//", "C:\\", "D:", "", None]), [])
 
     def test_identity_pass_leaves_validated_categorical_fields_alone(self):
         # #1445 review: host and user names that coincide with OS and compiler values change only

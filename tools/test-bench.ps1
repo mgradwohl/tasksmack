@@ -88,7 +88,10 @@ try {
     $rawConfigFlags = "-O3 -DNDEBUG -fprofile-instr-use=`"$($repoRootForward)/profiles/tasksmack.profdata`" -fprofile-use=$H\x.profdata"
     $flagProbes = @('-fms-compatibility', 'My Includes', 'sdk/include', 'prefix-map', 'APP_NAME', 'tasksmack.profdata', 'x.profdata', '-fprofile', "Jos$([char]0x00E9)")
     function Get-ExpectedSha256([string]$Text) {
-        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text))).ToLowerInvariant()
+        # APIs PowerShell 7.0 (.NET Core 3.1) has; not .NET 5's SHA256.HashData/Convert.ToHexString.
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) }
+        finally { $sha.Dispose() }
     }
     Set-Content -LiteralPath (Join-Path $buildDir 'CMakeCache.txt') -Encoding utf8 -Value @(
         'CMAKE_BUILD_TYPE:STRING=Release'
@@ -788,6 +791,12 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     # A user name under 3 characters is never replaced on its own; a home prefix always is.
     $short = Hide-Identity '-DX=ab /home/ab/src' -Homes @('/home/ab') -User 'ab' -Hosts @()
     Assert-True ($short -ceq '-DX=ab <home>/src') "Short user name: $short"
+    # A short home directory is still a home prefix (#1445 review); only a root or a bare drive
+    # is never one. The same cases as test_bench_sh.py.
+    $shortHome = Hide-Identity @('--benchmark_filter=/ab/data', '-DX=ab', 'C:\ab\x') -Homes @('/ab/', 'C:\ab') -User 'ab' -Hosts @()
+    Assert-True (($shortHome -join ' ') -ceq '--benchmark_filter=<home>/data -DX=ab <home>\x') "Short home /ab: $($shortHome -join ' ')"
+    $notHomes = Hide-Identity '/usr/bin C:\Windows D:/x' -Homes @('/', '\', '//', 'C:\', 'D:', '', $null) -User 'someone' -Hosts @()
+    Assert-True ($notHomes -ceq '/usr/bin C:\Windows D:/x') "A root or bare drive is never a home prefix: $notHomes"
 
     # ── #1445 review: host names (short and FQDN) are hidden the same way, injected here ──────
     $hostCases = @(

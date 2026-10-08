@@ -122,6 +122,11 @@ $benchArgs = @(
 function Get-GitProvenance {
     $git = [ordered]@{ commit = $null; branch = $null; dirty = $null }
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $git }
+    # Before PowerShell 7.2, a native command's stderr becomes error records even when redirected
+    # to $null, and the script's ErrorActionPreference of Stop makes them terminating: git's
+    # "not a git repository" would abort the run. This function's own preference keeps them quiet;
+    # the exit codes below decide.
+    $ErrorActionPreference = 'Continue'
     # Only the script's own checkout counts: git searches parent directories, so a source archive
     # unpacked inside another checkout would otherwise report that checkout's commit (#1445
     # review). The repository root must be git's top level (an empty prefix).
@@ -192,7 +197,12 @@ function Get-TextSha256 {
     # one would turn $null into ''). text_sha256 in tools/bench-manifest.py.
     param($Value)
     if ($null -eq $Value) { return $null }
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([string]$Value))).ToLowerInvariant()
+    # SHA256.Create/ComputeHash and BitConverter, not .NET 5's SHA256.HashData/Convert.ToHexString:
+    # PowerShell 7.0 runs on .NET Core 3.1.
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$Value)) }
+    finally { $sha.Dispose() }
+    return [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
 }
 
 function Get-HostNames {
@@ -212,7 +222,9 @@ function Get-HostNames {
 
 function Hide-Identity {
     # Defensive last pass over every string in the manifest (#1445 review): any home-directory
-    # prefix ($HOME, $env:USERPROFILE, both slash forms) becomes <home> (always); each host name
+    # prefix ($HOME, $env:USERPROFILE, both slash forms) becomes <home>, whatever its length --
+    # trailing separators trimmed, only an empty prefix (a root) and a bare drive (C:) left out,
+    # since they would hide every path; each host name
     # (FQDN, short name) and the user name, when at least 3 characters and standing alone between
     # separators (start or end, whitespace, a slash, a quote, '=', ':', ',' or ';'), become <host>
     # and <user> -- so a user named "build" leaves -DBUILD=1 alone but still hides
@@ -230,7 +242,7 @@ function Hide-Identity {
         return $copy
     }
     if ($Value -is [string]) {
-        $trimmed = @($Homes | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\', '/') } | Where-Object { $_.Length -gt 3 })
+        $trimmed = @($Homes | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\', '/') } | Where-Object { $_ -and $_ -notmatch '\A[A-Za-z]:\z' })
         $prefixes = @($trimmed | ForEach-Object { $_; $_.Replace('\', '/'); $_.Replace('/', '\') } | Sort-Object -Unique | Sort-Object Length -Descending)
         foreach ($prefix in $prefixes) { $Value = [regex]::Replace($Value, [regex]::Escape($prefix), '<home>', 'IgnoreCase') }
         $separated = '\s/\\"''=:,;'
@@ -289,9 +301,9 @@ function Read-CMakeCache {
     $cache = [hashtable]::new([StringComparer]::Ordinal)
     foreach ($raw in [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8).Split("`n")) {
         # One trailing carriage return is part of the line ending (cmSystemTools::GetLineFromStream).
-        $line = $(if ($raw.EndsWith("`r")) { $raw.Substring(0, $raw.Length - 1) } else { $raw }).TrimStart(' ', "`t")
+        $line = $(if ($raw.EndsWith("`r", [StringComparison]::Ordinal)) { $raw.Substring(0, $raw.Length - 1) } else { $raw }).TrimStart(' ', "`t")
         # Blank lines, '#' comments and '//' help text are not entries (cmCacheManager::LoadCache).
-        if (-not $line -or $line.StartsWith('#') -or $line.StartsWith('//')) { continue }
+        if (-not $line -or $line.StartsWith('#', [StringComparison]::Ordinal) -or $line.StartsWith('//', [StringComparison]::Ordinal)) { continue }
         foreach ($pattern in $script:CacheEntryPatterns) {
             $match = [regex]::Match($line, $pattern)
             if ($match.Success) {

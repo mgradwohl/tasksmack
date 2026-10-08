@@ -74,6 +74,22 @@ def host_names() -> list[str]:
     return sorted((name for name in names if name), key=len, reverse=True)
 
 
+def home_prefixes(homes) -> list[str]:
+    """The home-directory prefixes hide_identity() replaces, in both slash forms, longest first.
+
+    Trailing separators are trimmed; only an empty prefix (a root, "/" or "\\") and a bare drive
+    ("C:") are left out, since they would hide every path. Any other home is kept whatever its
+    length (a home of /ab too). Kept in step with Hide-Identity in tools/bench.ps1.
+    """
+    prefixes = set()
+    for home in homes:
+        home = (home or "").rstrip("\\/")
+        if not home or re.fullmatch(r"[A-Za-z]:", home):
+            continue
+        prefixes.update({home, home.replace("\\", "/"), home.replace("/", "\\")})
+    return sorted(prefixes, key=len, reverse=True)
+
+
 def identity_strings() -> tuple[list[str], str | None, list[str]]:
     """This user's home directory (both slash forms), user name and host names, for
     hide_identity()."""
@@ -81,16 +97,11 @@ def identity_strings() -> tuple[list[str], str | None, list[str]]:
     for variable in ("HOME", "USERPROFILE"):
         if os.environ.get(variable):
             homes.add(os.environ[variable])
-    prefixes = set()
-    for home in homes:
-        home = home.rstrip("\\/")
-        if len(home) > 3:  # never a bare drive or "/"
-            prefixes.update({home, home.replace("\\", "/"), home.replace("/", "\\")})
     try:
         user = getpass.getuser()
     except (KeyError, OSError):
         user = os.environ.get("USER") or os.environ.get("USERNAME")
-    return sorted(prefixes, key=len, reverse=True), user, host_names()
+    return home_prefixes(homes), user, host_names()
 
 
 # A user or host name only counts where it stands alone between separators (start or end,
@@ -107,10 +118,10 @@ def _hide_token(value: str, token: str | None, replacement: str) -> str:
 
 
 def hide_identity(value, prefixes: list[str], user: str | None, hosts: list[str] | tuple[str, ...] = ()):
-    """Defensive last pass over every string in the manifest: any home-directory prefix becomes
-    <home> (always); each host name (FQDN, short name) and the user name, when at least 3
-    characters and standing alone between separators, become <host> and <user>. Kept in step
-    with Hide-Identity in tools/bench.ps1."""
+    """Defensive last pass over every string in the manifest: any home-directory prefix
+    (home_prefixes) becomes <home>, whatever its length; each host name (FQDN, short name) and
+    the user name, when at least 3 characters and standing alone between separators, become
+    <host> and <user>. Kept in step with Hide-Identity in tools/bench.ps1."""
     if isinstance(value, dict):
         return {key: hide_identity(item, prefixes, user, hosts) for key, item in value.items()}
     if isinstance(value, list):

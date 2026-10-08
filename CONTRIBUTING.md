@@ -785,7 +785,8 @@ concurrently or not -- appends `-2`, `-3`, ... to the timestamp rather than over
     which sit under user profiles and checkouts.
   - It records no host name, user name, user-profile path, process list or other command line; a
     final pass over the free-form fields (args, branch, compiler file name, preset and
-    result names, CPU model) replaces any remaining home-directory prefix with `<home>`, and the
+    result names, CPU model) replaces any remaining home-directory prefix with `<home>` --
+    whatever its length, so a home of `/ab` too; never a root or a bare drive -- and the
     host name (short and FQDN) and user name (3+ characters, standing alone between separators)
     with `<host>` and `<user>`. Validated categorical fields (OS name/version, architecture,
     compiler id/version, generator, the flag hashes, a standard build type -- Debug, Release, RelWithDebInfo,
