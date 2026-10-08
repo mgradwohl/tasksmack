@@ -231,7 +231,7 @@ missing. Licence texts live in `LICENSES/`; the annotations live in the top-leve
 rather than in per-file headers.
 
 - **New TaskSmack files** need nothing: the catch-all `path = "**"` block in `REUSE.toml` marks them
-  MIT (`2024 Matt Gradwohl`, matching `LICENSE`).
+  MIT (`2024-2026 Matt Gradwohl`, matching `LICENSE`).
 - **New third-party files** (fonts, images, vendored or copied code, patches against upstream code,
   adapted documents) MUST get their own `[[annotations]]` block in `REUSE.toml` with the upstream
   copyright holder and SPDX licence identifier, placed after the catch-all (the last matching block

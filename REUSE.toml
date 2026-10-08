@@ -11,7 +11,7 @@ SPDX-PackageDownloadLocation = "https://github.com/mgradwohl/tasksmack"
 # Default: everything is TaskSmack's own work under the MIT License (LICENSE).
 [[annotations]]
 path = "**"
-SPDX-FileCopyrightText = "2024 Matt Gradwohl"
+SPDX-FileCopyrightText = "2024-2026 Matt Gradwohl"
 SPDX-License-Identifier = "MIT"
 
 # ---------------------------------------------------------------------------------------------
@@ -39,23 +39,12 @@ precedence = "override"
 SPDX-FileCopyrightText = "Fonticons, Inc. <https://fontawesome.com>"
 SPDX-License-Identifier = "OFL-1.1 AND CC-BY-4.0"
 
-# Curated subset of the IconFontCppHeaders Font Awesome 6 header (zlib licence), reworked for
-# TaskSmack; the codepoints come from Font Awesome's icon metadata.
-[[annotations]]
-path = "src/UI/IconsFontAwesome6.h"
-precedence = "override"
-SPDX-FileCopyrightText = [
-    "2024 Matt Gradwohl",
-    "2017 Juliette Foucaut and Doug Binks",
-]
-SPDX-License-Identifier = "MIT AND Zlib"
-
 # Patch against toml++ (https://github.com/marzer/tomlplusplus, MIT); its context lines are toml++ code.
 [[annotations]]
 path = "cmake/patches/tomlplusplus-parse-value-terminator.patch"
 precedence = "override"
 SPDX-FileCopyrightText = [
-    "2024 Matt Gradwohl",
+    "2024-2026 Matt Gradwohl",
     "Mark Gillard <mark.gillard@outlook.com.au>",
 ]
 SPDX-License-Identifier = "MIT"
