@@ -2279,7 +2279,7 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // already requested or open: a menu action's dialog opens on the next frame, before ImGui knows
     // of it, so the popup stack alone would let F9 replace its action and target (#170).
     // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
-    // only when it is the primary row, visible and highlighted.
+    // the one highlighted row, when it is visible.
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.action != Detail::ProcessAction::None;
     if (killRequested && m_Selection.size() > 1)
     {
@@ -2291,13 +2291,20 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
             requestSelectionAction(Detail::ProcessAction::Kill);
         }
     }
-    else if (killRequested && current.has_value() && m_Selection.contains(keys[*current]))
+    else if (killRequested && m_Selection.size() == 1)
     {
-        const Domain::ProcessSnapshot& proc = snapshots[visible[*current]];
-        if (Detail::killShortcutAllowed(
-                m_ActionCapabilities, Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, rowActionPending))
+        // The one highlighted row, found by its key rather than taken to be the primary: an exited
+        // primary is kept while the selection moves on, and Ctrl+A over a filter can select one row
+        // without making it primary, yet F9 must act on what is highlighted (#804 review).
+        if (const std::optional<std::size_t> row = Nav::indexOfKey(keys, *m_Selection.keys().begin()); row.has_value())
         {
-            requestRowAction(Detail::ProcessAction::Kill, proc);
+            const Domain::ProcessSnapshot& proc = snapshots[visible[*row]];
+            if (Detail::killShortcutAllowed(m_ActionCapabilities,
+                                            Platform::ProcessTarget{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                            rowActionPending))
+            {
+                requestRowAction(Detail::ProcessAction::Kill, proc);
+            }
         }
     }
     // No movement key this frame (e.g. a bare F9): nothing below may select or scroll, so a refused F9
