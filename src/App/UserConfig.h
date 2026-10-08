@@ -15,6 +15,14 @@
 namespace App
 {
 
+/// The format of the config file TaskSmack writes, its top-level `config_version` key (#1376).
+///  - 1 (no key): [process_columns] lists every column, whether or not the user chose it.
+///  - 2: [process_columns] lists only the columns whose visibility the user chose; every other column
+///    follows the defaults, including the ones that depend on what this system can fill (#1210).
+/// A version 1 file is migrated when it is read (ProcessColumnSettings::isLegacyChoice()) and
+/// rewritten in the new format on the next save.
+inline constexpr std::int64_t CONFIG_FORMAT_VERSION = 2;
+
 /// User configuration settings that persist across sessions
 struct UserSettings
 {

@@ -28,8 +28,9 @@
 #undef max
 #undef min
 
+#include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
-#include "WindowsProcAddress.h"
+#include "WindowsNtQuery.h"
 #include "WindowsSystemProbeMath.h"
 
 #include <array>
@@ -76,12 +77,6 @@ template<std::integral T> [[nodiscard]] constexpr auto toU64NonNegative(T value)
     return toU64NonNegative(value.QuadPart);
 }
 
-// NtQuerySystemInformation function pointer type
-using NtQuerySystemInformationFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
-                                                     PVOID systemInformation,
-                                                     ULONG systemInformationLength,
-                                                     PULONG returnLength);
-
 // System information class for per-processor performance
 constexpr ULONG SystemProcessorPerformanceInformation = 8;
 
@@ -102,51 +97,6 @@ struct ProcessorPerformanceInfo
     LARGE_INTEGER InterruptTime;
     ULONG InterruptCount;
 };
-
-/// Get NtQuerySystemInformation function from ntdll.dll (lazy init)
-[[nodiscard]] NtQuerySystemInformationFn getNtQuerySystemInformation()
-{
-    static NtQuerySystemInformationFn fn = nullptr;
-    static bool initialized = false;
-
-    if (!initialized)
-    {
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (ntdll != nullptr)
-        {
-            fn = Windows::getProcAddress<NtQuerySystemInformationFn>(ntdll, "NtQuerySystemInformation");
-        }
-        initialized = true;
-    }
-    return fn;
-}
-
-// NtQuerySystemInformationEx function pointer type. For SystemProcessorPerformanceInformation the
-// input buffer is the USHORT processor group to report (#1107).
-using NtQuerySystemInformationExFn = NTSTATUS(WINAPI*)(ULONG systemInformationClass,
-                                                       PVOID inputBuffer,
-                                                       ULONG inputBufferLength,
-                                                       PVOID systemInformation,
-                                                       ULONG systemInformationLength,
-                                                       PULONG returnLength);
-
-/// Get NtQuerySystemInformationEx function from ntdll.dll (lazy init)
-[[nodiscard]] NtQuerySystemInformationExFn getNtQuerySystemInformationEx()
-{
-    static NtQuerySystemInformationExFn fn = nullptr;
-    static bool initialized = false;
-
-    if (!initialized)
-    {
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (ntdll != nullptr)
-        {
-            fn = Windows::getProcAddress<NtQuerySystemInformationExFn>(ntdll, "NtQuerySystemInformationEx");
-        }
-        initialized = true;
-    }
-    return fn;
-}
 
 /// Run one SystemProcessorPerformanceInformation query into `buffer`, growing it and retrying on
 /// a length mismatch (the processor count can change between sizing and querying).
@@ -198,9 +148,36 @@ template<typename Query>
     return processorGroupFirstCoreIds(maximums);
 }
 
+/// The base clock in MHz from the registry's ~MHz; 0 if it can't be read.
+[[nodiscard]] std::uint64_t readBaseCpuMHz()
+{
+    DWORD mhz = 0;
+    DWORD dataSize = sizeof(mhz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &mhz,
+                     &dataSize) != ERROR_SUCCESS)
+    {
+        return 0;
+    }
+    return toU64NonNegative(mhz);
+}
+
 } // namespace
 
-WindowsSystemProbe::WindowsSystemProbe() : m_NumCores(logicalProcessorCount()), m_GroupFirstCoreIds(groupFirstCoreIds())
+WindowsSystemProbe::~WindowsSystemProbe() = default;
+
+WindowsSystemProbe::WindowsSystemProbe() : WindowsSystemProbe(readBaseCpuMHz(), ProcessorPerformanceCounter::open())
+{}
+
+WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance)
+    : m_NumCores(logicalProcessorCount()),
+      m_GroupFirstCoreIds(groupFirstCoreIds()),
+      m_BaseCpuMHz(baseCpuMHz),
+      m_ProcessorPerformance(std::move(processorPerformance))
 {
     // Get hostname (UTF-8 via wide API)
     std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1> hostBuffer{};
@@ -320,7 +297,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     // append them in group order.
     const WORD groupCount = GetActiveProcessorGroupCount();
     const bool multiGroup = groupCount > 1;
-    if (const auto ntQueryEx = getNtQuerySystemInformationEx(); ntQueryEx != nullptr)
+    if (const auto ntQueryEx = Windows::ntQuerySystemInformationEx(); ntQueryEx != nullptr)
     {
         std::vector<CpuCounters> cores;
         cores.reserve(m_NumCores);
@@ -379,7 +356,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     }
 
     // Fallback without NtQuerySystemInformationEx on a single-group machine.
-    auto ntQuery = getNtQuerySystemInformation();
+    auto ntQuery = Windows::ntQuerySystemInformation();
     if (ntQuery == nullptr)
     {
         spdlog::warn("NtQuerySystemInformation not available, per-core CPU disabled");
@@ -443,7 +420,7 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
 
 SwapBytes WindowsSystemProbe::readSwap()
 {
-    const auto ntQuerySystemInformation = getNtQuerySystemInformation();
+    const auto ntQuerySystemInformation = Windows::ntQuerySystemInformation();
     if (ntQuerySystemInformation == nullptr)
     {
         return {};
@@ -497,22 +474,11 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
 
 void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)
 {
-    // Read CPU frequency from registry (in MHz)
-    // This is the base frequency; current frequency requires more complex APIs
-    {
-        DWORD mhz = 0;
-        DWORD dataSize = sizeof(mhz);
-        if (RegGetValueW(HKEY_LOCAL_MACHINE,
-                         LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
-                         L"~MHz",
-                         RRF_RT_REG_DWORD,
-                         nullptr,
-                         &mhz,
-                         &dataSize) == ERROR_SUCCESS)
-        {
-            counters.cpuFreqMHz = toU64NonNegative(mhz);
-        }
-    }
+    // The current clock, as Linux reports it under the same hasCpuFreq: the base clock scaled by
+    // "% Processor Performance" (#1184). The base clock alone until PDH has a rate, or without PDH.
+    const std::optional<double> performancePercent =
+        (m_ProcessorPerformance != nullptr) ? m_ProcessorPerformance->read() : std::optional<double>{};
+    counters.cpuFreqMHz = currentCpuFrequencyMHz(m_BaseCpuMHz, performancePercent);
     // Load average is not available on Windows (leave at 0)
 }
 
@@ -526,7 +492,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasIoWait = false,         // Windows doesn't expose iowait
         .hasSteal = false,          // Windows doesn't expose steal time
         .hasLoadAvg = false,        // Windows doesn't have load average
-        .hasCpuFreq = true,         // From registry ~MHz
+        .hasCpuFreq = true,         // Current clock: ~MHz x % Processor Performance (#1184)
         .hasNetworkCounters = true, // Via GetIfTable2 (64-bit counters, Unicode names)
     };
 }

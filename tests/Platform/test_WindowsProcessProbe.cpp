@@ -35,6 +35,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h> // K32GetProcessMemoryInfo
 // clang-format on
 
 namespace Platform
@@ -603,11 +604,11 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
     EXPECT_GT(before.pageFaultCount, 0ULL);
     EXPECT_GT(before.threadCount, 0);
 
-    // Open a batch of event handles and reserve a large virtual region. A TTL-cached
+    // Open a batch of event handles and commit a large virtual region. A TTL-cached
     // implementation would keep serving the stale pre-change values here. RAII guard
     // ensures cleanup even if an ASSERT aborts the test mid-setup.
     constexpr int EXTRA_HANDLES = 64;
-    constexpr SIZE_T EXTRA_VIRTUAL_BYTES = 256ULL * 1024ULL * 1024ULL; // 256 MB reserve
+    constexpr SIZE_T EXTRA_VIRTUAL_BYTES = 256ULL * 1024ULL * 1024ULL; // 256 MB commit (Virtual is the commit size, #1184)
     struct ScopedResources
     {
         std::vector<HANDLE> events;
@@ -638,16 +639,121 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
         ASSERT_NE(event, nullptr);
         resources.events.push_back(event);
     }
-    resources.reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE, PAGE_NOACCESS);
+    resources.reservation = VirtualAlloc(nullptr, EXTRA_VIRTUAL_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     ASSERT_NE(resources.reservation, nullptr);
 
     const auto after = findOurProcess(probe.enumerate());
 
     // Allow slack for unrelated handle churn in the test process, but the next sample
-    // must observe most of the new handles and the full reservation immediately.
+    // must observe most of the new handles and the full commit immediately.
     EXPECT_GE(after.handleCount, before.handleCount + (EXTRA_HANDLES / 2)) << "handle count must be refreshed every sample, not TTL-cached";
     EXPECT_GE(after.virtualBytes, before.virtualBytes + (EXTRA_VIRTUAL_BYTES / 2))
         << "virtual size must be refreshed every sample, not TTL-cached";
+}
+
+namespace
+{
+/// Our own process in a fresh sample from `probe`, or a pid-0 entry if it is missing.
+[[nodiscard]] ProcessCounters sampleOurProcess(WindowsProcessProbe& probe)
+{
+    const auto ourPid = static_cast<std::int32_t>(GetCurrentProcessId());
+    const auto processes = probe.enumerate();
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    return it != processes.end() ? *it : ProcessCounters{};
+}
+
+/// Releases a VirtualAlloc region, or unmaps a view and closes its section, whatever an ASSERT does.
+struct ScopedMemory
+{
+    void* region = nullptr;
+    void* view = nullptr;
+    HANDLE section = nullptr;
+
+    ScopedMemory() = default;
+    ScopedMemory(const ScopedMemory&) = delete;
+    ScopedMemory& operator=(const ScopedMemory&) = delete;
+    ScopedMemory(ScopedMemory&&) = delete;
+    ScopedMemory& operator=(ScopedMemory&&) = delete;
+    ~ScopedMemory()
+    {
+        if (region != nullptr)
+        {
+            VirtualFree(region, 0, MEM_RELEASE);
+        }
+        if (view != nullptr)
+        {
+            UnmapViewOfFile(view);
+        }
+        if (section != nullptr)
+        {
+            CloseHandle(section);
+        }
+    }
+};
+
+constexpr std::uint64_t TEST_MIB = 1024ULL * 1024ULL;
+} // namespace
+
+TEST(WindowsProcessProbeTest, VirtualIsTheCommitSizeAndLeavesReservationsOut)
+{
+    // Virtual used to be VirtualSize, which counts reserved address space: terabytes for a process
+    // using Control Flow Guard, where Task Manager's Commit size shows what is committed (#1184).
+    WindowsProcessProbe probe;
+    const ProcessCounters before = sampleOurProcess(probe);
+    ASSERT_NE(before.pid, 0);
+
+    constexpr std::uint64_t RESERVATION_BYTES = 64ULL * 1024ULL * TEST_MIB; // 64 GiB, never committed
+    ScopedMemory reservation;
+    reservation.region = VirtualAlloc(nullptr, static_cast<SIZE_T>(RESERVATION_BYTES), MEM_RESERVE, PAGE_NOACCESS);
+    ASSERT_NE(reservation.region, nullptr);
+
+    const ProcessCounters after = sampleOurProcess(probe);
+    ASSERT_NE(after.pid, 0);
+    EXPECT_LT(after.virtualBytes, before.virtualBytes + (RESERVATION_BYTES / 2)) << "a reservation is not committed memory";
+
+    // And Virtual is what GetProcessMemoryInfo calls PrivateUsage, give or take the test's own churn
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the documented way to pass the _EX struct
+    ASSERT_NE(K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)), 0);
+    const std::uint64_t privateUsage = pmc.PrivateUsage;
+    const std::uint64_t slack = 64 * TEST_MIB;
+    EXPECT_LE(after.virtualBytes, privateUsage + slack);
+    EXPECT_GE(after.virtualBytes + slack, privateUsage);
+}
+
+TEST(WindowsProcessProbeTest, MemoryIsThePrivateWorkingSetAndLeavesSharedPagesOut)
+{
+    // Memory used to be the whole working set, which counts shared pages (DLLs, mapped files) in
+    // every process that maps them; Task Manager's default Memory column is the private working set
+    // (#1184). Touching every page of a shared section grows the working set but not the private one.
+    WindowsProcessProbe probe;
+    constexpr std::uint64_t SHARED_BYTES = 256 * TEST_MIB;
+    ScopedMemory shared;
+    shared.section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, static_cast<DWORD>(SHARED_BYTES), nullptr);
+    ASSERT_NE(shared.section, nullptr);
+    shared.view = MapViewOfFile(shared.section, FILE_MAP_WRITE, 0, 0, static_cast<SIZE_T>(SHARED_BYTES));
+    ASSERT_NE(shared.view, nullptr);
+    std::memset(shared.view, 0x5A, static_cast<std::size_t>(SHARED_BYTES));
+
+    const ProcessCounters ours = sampleOurProcess(probe);
+    ASSERT_NE(ours.pid, 0);
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    ASSERT_NE(K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)), 0);
+    const std::uint64_t workingSet = pmc.WorkingSetSize;
+    ASSERT_GE(workingSet, SHARED_BYTES) << "the touched shared pages should be in the working set";
+    EXPECT_GT(ours.rssBytes, 0U);
+    EXPECT_LE(ours.rssBytes + (SHARED_BYTES / 2), workingSet) << "Memory must leave the shared section's pages out";
+}
+
+TEST(WindowsProcessProbeTest, UdpIsNeverClaimed)
+{
+    // Windows has no user-mode per-process UDP byte counters; TCP EStats is all there is (#1258)
+    WindowsProcessProbe probe;
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters);
+    (void) probe.enumerate();
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters);
 }
 
 TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
