@@ -375,12 +375,15 @@ void ShellLayer::onUpdate(float deltaTime)
     const std::size_t processCount = m_ProcessesPanel.adoptedProcessCount();
     if (processCount != m_StatusProcessCount)
     {
-        m_StatusProcessText = StatusBarText::processCountText(processCount);
+        // Each segment leads with an icon (#977); the fitting below measures the whole string, icon included.
+        m_StatusProcessText = ICON_FA_LIST "  " + StatusBarText::processCountText(processCount);
         m_StatusProcessCount = processCount;
     }
     if (m_RefreshIntervalMs != m_StatusIntervalMs)
     {
-        m_StatusIntervalText = StatusBarText::updateIntervalText(m_RefreshIntervalMs);
+        // No interval yet reads as no segment at all (empty), so the icon goes on only when there is text.
+        const std::string intervalText = StatusBarText::updateIntervalText(m_RefreshIntervalMs);
+        m_StatusIntervalText = intervalText.empty() ? std::string{} : ICON_FA_ARROWS_ROTATE "  " + intervalText;
         m_StatusIntervalMs = m_RefreshIntervalMs;
     }
 

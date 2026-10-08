@@ -42,6 +42,8 @@ struct GPUSnapshot
     bool powerAvailable = true;
     bool gpuClockAvailable = true;
     bool memoryAvailable = true; // used/total bytes, and so the memory percent
+    bool encoderAvailable = true;
+    bool decoderAvailable = true;
     // The GPU was asleep (runtime-suspended) and deliberately not queried this sample, so as not to
     // wake it (#1117). Its readings are all unavailable; the UI labels it as sleeping.
     bool suspended = false;

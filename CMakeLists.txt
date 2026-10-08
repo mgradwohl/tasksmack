@@ -96,6 +96,17 @@ configure_file(
     @ONLY
 )
 
+# The built-in fallback theme is Arctic Fire's file, embedded at configure time so the two never
+# drift (#1196). Re-run configure whenever the theme file changes.
+set(TASKSMACK_FALLBACK_THEME_FILE ${CMAKE_CURRENT_SOURCE_DIR}/assets/themes/arctic-fire.toml)
+file(READ ${TASKSMACK_FALLBACK_THEME_FILE} TASKSMACK_FALLBACK_THEME_TOML)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${TASKSMACK_FALLBACK_THEME_FILE})
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/UI/FallbackTheme.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/FallbackTheme.h
+    @ONLY
+)
+
 set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
@@ -243,6 +254,9 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsSystemProbe.h
+        src/Platform/Windows/ProcessorPerformanceCounter.h
+        src/Platform/Windows/WindowsHandles.h
+        src/Platform/Windows/WindowsNtQuery.h
         src/Platform/Windows/WindowsDiskProbe.h
         src/Platform/Windows/WindowsPowerProbe.h
         src/Platform/Windows/WindowsGPUProbe.h

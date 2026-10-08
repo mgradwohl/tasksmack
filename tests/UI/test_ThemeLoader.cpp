@@ -1786,5 +1786,64 @@ TEST(ThemeLoaderTest, LoadThemeFromString_InvalidTomlReturnsNullopt)
     EXPECT_FALSE(ThemeLoader::loadThemeFromString("[meta\nname = \"Broken\"\n").has_value());
 }
 
+// #1196: a theme written before the metric roles existed draws exactly as it did -- each role falls back
+// to the field it used to borrow, line and fill.
+TEST(ThemeLoaderTest, MetricRolesFallBackToTheFieldsTheyBorrowed)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "no-roles.toml");
+    ASSERT_TRUE(scheme.has_value());
+    const auto expectSame = [](const ImVec4& actual, const ImVec4& expected, const char* role)
+    {
+        EXPECT_FLOAT_EQ(actual.x, expected.x) << role;
+        EXPECT_FLOAT_EQ(actual.y, expected.y) << role;
+        EXPECT_FLOAT_EQ(actual.z, expected.z) << role;
+        EXPECT_FLOAT_EQ(actual.w, expected.w) << role;
+    };
+    expectSame(scheme->chartCpuTotal, scheme->chartCpu, "cpu_total");
+    expectSame(scheme->chartMemoryCached, scheme->chartCpu, "memory_cached");
+    expectSame(scheme->chartMemoryCachedFill, scheme->chartCpuFill, "memory_cached_fill");
+    expectSame(scheme->chartMemoryShared, scheme->chartCpu, "memory_shared");
+    expectSame(scheme->chartSwap, scheme->chartIo, "swap");
+    expectSame(scheme->chartSwapFill, scheme->chartIoFill, "swap_fill");
+    expectSame(scheme->chartMemoryVirtual, scheme->chartIo, "memory_virtual");
+    expectSame(scheme->chartMemoryVirtualFill, scheme->chartIoFill, "memory_virtual_fill");
+    expectSame(scheme->chartPower, scheme->chartCpu, "power");
+    expectSame(scheme->chartPowerFill, scheme->chartCpuFill, "power_fill");
+    expectSame(scheme->chartBattery, scheme->chartMemory, "battery");
+    expectSame(scheme->chartBatteryFill, scheme->chartMemoryFill, "battery_fill");
+    expectSame(scheme->chartThreads, scheme->chartCpu, "threads");
+    expectSame(scheme->chartThreadsFill, scheme->chartCpuFill, "threads_fill");
+    expectSame(scheme->chartHandles, scheme->chartMemory, "handles");
+    expectSame(scheme->chartHandlesFill, scheme->chartMemoryFill, "handles_fill");
+    expectSame(scheme->chartPageFaults, scheme->accents[3], "page_faults");
+    expectSame(scheme->chartGdi, scheme->accents[4], "gdi");
+}
+
+// #1196: a role's own colour is read; without its own fill it gets a translucent one, and Shared and
+// Virtual follow Cached and Swap unless they are set too.
+TEST(ThemeLoaderTest, MetricRolesAreReadAndDeriveTheirFills)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(buildFullThemeWithCpuColor("\"#0078D4\"\n"
+                                                                                    "memory_cached = \"#00FF80\"\n"
+                                                                                    "swap = \"#8000FF\"\n"
+                                                                                    "swap_fill = \"#8000FF40\"\n"
+                                                                                    "memory_virtual = \"#A040FF\"\n"
+                                                                                    "power = \"#FFE000\"\n"
+                                                                                    "page_faults = \"#FF80C0\""),
+                                                         "roles.toml");
+    ASSERT_TRUE(scheme.has_value());
+    expectColorNear(scheme->chartMemoryCached, ThemeLoader::hexToImVec4("#00FF80"));
+    expectColorNear(scheme->chartMemoryCachedFill, ThemeLoader::hexToImVec4("#00FF8059")); // 0.35 alpha
+    expectColorNear(scheme->chartMemoryShared, scheme->chartMemoryCached);
+    expectColorNear(scheme->chartSwap, ThemeLoader::hexToImVec4("#8000FF"));
+    expectColorNear(scheme->chartSwapFill, ThemeLoader::hexToImVec4("#8000FF40"));
+    expectColorNear(scheme->chartMemoryVirtual, ThemeLoader::hexToImVec4("#A040FF"));
+    expectColorNear(scheme->chartPower, ThemeLoader::hexToImVec4("#FFE000"));
+    expectColorNear(scheme->chartPageFaults, ThemeLoader::hexToImVec4("#FF80C0"));
+    // Roles left out still borrow.
+    expectColorNear(scheme->chartThreads, scheme->chartCpu);
+    expectColorNear(scheme->chartGdi, scheme->accents[4]);
+}
+
 } // namespace
 } // namespace UI

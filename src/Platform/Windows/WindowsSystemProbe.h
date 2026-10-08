@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -14,18 +15,26 @@
 namespace Platform
 {
 
+class ProcessorPerformanceCounter;
+
 /// Windows implementation of ISystemProbe.
 /// Reads system metrics from Windows APIs (GetSystemTimes, GlobalMemoryStatusEx, etc).
 class WindowsSystemProbe : public ISystemProbe
 {
   public:
     WindowsSystemProbe();
-    ~WindowsSystemProbe() override = default;
+    /// The probe with its current-clock inputs supplied (#1184): the base clock in MHz (0 = unknown) and
+    /// the "% Processor Performance" counter (null = none, and the base clock is reported). The default
+    /// constructor reads the registry's ~MHz and opens pdh.dll's counter; tests inject fakes here.
+    WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance);
+    ~WindowsSystemProbe() override;
 
     WindowsSystemProbe(const WindowsSystemProbe&) = delete;
     WindowsSystemProbe& operator=(const WindowsSystemProbe&) = delete;
-    WindowsSystemProbe(WindowsSystemProbe&&) noexcept = default;
-    WindowsSystemProbe& operator=(WindowsSystemProbe&&) noexcept = default;
+    // Not movable: nothing moves a probe (they live behind unique_ptr), and a defaulted noexcept move
+    // could throw from the unordered_map member (bugprone-exception-escape)
+    WindowsSystemProbe(WindowsSystemProbe&&) = delete;
+    WindowsSystemProbe& operator=(WindowsSystemProbe&&) = delete;
 
     [[nodiscard]] SystemCounters read() override;
     [[nodiscard]] SystemCapabilities capabilities() const override;
@@ -40,7 +49,7 @@ class WindowsSystemProbe : public ISystemProbe
     [[nodiscard]] static SwapBytes readSwap();
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
-    static void readCpuFreq(SystemCounters& counters);
+    void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);
 
     std::size_t m_NumCores{0};
@@ -65,6 +74,11 @@ class WindowsSystemProbe : public ISystemProbe
         std::chrono::steady_clock::time_point retryAt;
     };
     std::unordered_map<std::uint64_t, AdapterDeviceInstanceId> m_AdapterDeviceInstanceIds;
+    // The base clock (the registry's ~MHz), read once: it is fixed for the boot session
+    std::uint64_t m_BaseCpuMHz{0};
+    // PDH's "% Processor Performance", which scales the base clock to the current one (#1184); null
+    // when PDH is unavailable, and the base clock is reported instead. Sampler thread only.
+    std::unique_ptr<ProcessorPerformanceCounter> m_ProcessorPerformance;
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;

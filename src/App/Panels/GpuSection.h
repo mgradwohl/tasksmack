@@ -35,16 +35,18 @@ struct SmoothedGPU
     double encoderPercent = 0.0;
     double decoderPercent = 0.0;
     double fanPercent = 0.0;
-    // Whether each value holds a reading. Utilization, temperature, power, clock and fan are left
-    // alone on a sample that could not read them (their bars show N/A) and restart from the next
-    // reading, rather than easing toward 0 (#1111). Clock and fan were drawn raw before, so they
-    // stepped while the bars beside them glided (#1012).
+    // Whether each value holds a reading. Utilization, temperature, power, clock, fan, encoder and
+    // decoder are left alone on a sample that could not read them (their bars show N/A) and restart
+    // from the next reading, rather than easing toward 0 (#1111, #1477). Clock and fan were drawn raw
+    // before, so they stepped while the bars beside them glided (#1012).
     bool utilizationInitialized = false;
     bool memoryInitialized = false;
     bool temperatureInitialized = false;
     bool powerInitialized = false;
     bool clockInitialized = false;
     bool fanInitialized = false;
+    bool encoderInitialized = false;
+    bool decoderInitialized = false;
     bool initialized = false;
 };
 

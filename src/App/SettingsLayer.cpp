@@ -53,9 +53,9 @@ constexpr const char* OPEN_THEMES_LABEL = ICON_FA_FOLDER "  Open Themes Folder";
 constexpr const char* CANCEL_LABEL = "Cancel";
 // "Save", not "Apply": the button writes config.toml and closes the dialog, which is what Save
 // means; "Apply" suggested the dialog would stay open (#1273).
-constexpr const char* SAVE_LABEL = "Save";
+constexpr const char* SAVE_LABEL = ICON_FA_FLOPPY_DISK "  Save";
 // Fills the dialog's controls with the defaults; nothing is written until Save.
-constexpr const char* RESET_LABEL = "Reset to defaults";
+constexpr const char* RESET_LABEL = ICON_FA_ROTATE_LEFT "  Reset to defaults";
 constexpr const char* PRIVILEGE_NOTICE_LABEL = "Show limited-data notice";
 
 // Row labels. Sentence case, like the rest of the dialog's text; the section headers are Title Case.
