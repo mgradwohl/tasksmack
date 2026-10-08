@@ -347,7 +347,8 @@ $script:BuildInfoName = 'TaskSmackBenchmarks.buildinfo.json'
 $script:IpoSources = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION', 'TASKSMACK_ENABLE_IPO')
 
 function Read-BuildInfo {
-    # The build information next to the binary, as far as it is usable: Ipo (ON or OFF), and
+    # The build information next to the binary, as far as it is usable: Config (a non-empty
+    # configuration name without control characters), Ipo (ON or OFF), and
     # CxxFlags -- the (cxx_flags_sha256, cxx_flags_config_sha256) pair, each a SHA-256 hex string or
     # $null (no such cache entry) -- when both keys are there and well-formed. Empty without a file.
     # Kept in step with read_buildinfo in tools/bench-manifest.py.
@@ -356,6 +357,7 @@ function Read-BuildInfo {
     $path = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($Binary))) $script:BuildInfoName
     try { $info = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8) | ConvertFrom-Json -ErrorAction Stop } catch { return $usable }
     if ($info -isnot [pscustomobject]) { return $usable }
+    if ($null -ne $info.PSObject.Properties['config'] -and $info.config -is [string] -and $info.config -cmatch '\A[^\x00-\x1f]+\z') { $usable.Config = $info.config }
     if ($null -ne $info.PSObject.Properties['ipo'] -and $info.ipo -is [string] -and ($info.ipo -ceq 'ON' -or $info.ipo -ceq 'OFF')) { $usable.Ipo = $info.ipo }
     $keys = @('cxx_flags_sha256', 'cxx_flags_config_sha256')
     $wellFormed = @($keys | Where-Object {
@@ -382,6 +384,10 @@ function Get-BuildProvenance {
         ipo_source       = $null
     }
     $buildInfo = Read-BuildInfo -Binary $benchBin
+    # The configuration the binary was linked as, from the build information (#1445 review): a
+    # single-config tree reconfigured from Release to Debug without a rebuild still holds the
+    # Release binary. build_type, ipo and the flag hashes then all describe the same binary.
+    if ($buildInfo.ContainsKey('Config')) { $build.build_type = $buildInfo.Config }
     if ($buildInfo.ContainsKey('Ipo')) { $build.ipo = $buildInfo.Ipo; $build.ipo_source = 'buildinfo' }
     # The flag hashes the binary was linked with, from the build information (#1445 review): the
     # cache can have been reconfigured since.
@@ -394,8 +400,9 @@ function Get-BuildProvenance {
     if ($null -eq $tree) { return $build }
     $buildDir = $tree.Directory
     $cache = Read-CMakeCache -Path (Join-Path $buildDir 'CMakeCache.txt')
-    # A multi-config tree has no CMAKE_BUILD_TYPE: the binary's bin/<Config>/ names it.
-    $build.build_type = if ($tree.Config) { $tree.Config } elseif ($cache['CMAKE_BUILD_TYPE']) { $cache['CMAKE_BUILD_TYPE'] } else { $null }
+    # Without build information: a multi-config tree has no CMAKE_BUILD_TYPE, and the binary's
+    # bin/<Config>/ names it.
+    if (-not $build.build_type) { $build.build_type = if ($tree.Config) { $tree.Config } elseif ($cache['CMAKE_BUILD_TYPE']) { $cache['CMAKE_BUILD_TYPE'] } else { $null } }
     $build.generator = $cache['CMAKE_GENERATOR']
     if ($cache['CMAKE_CXX_COMPILER']) { $build.compiler = Split-Path -Leaf $cache['CMAKE_CXX_COMPILER'] }
     # Flags can embed absolute paths (the PGO presets' -fprofile-instr-use=${sourceDir}/...).

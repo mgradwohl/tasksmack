@@ -733,6 +733,30 @@ class ScrubberTest(unittest.TestCase):
                     build = module.build_provenance(tree / "bin" / "TaskSmackBenchmarks")
                     self.assertEqual((build["cxx_flags_sha256"], build["cxx_flags_config_sha256"], build["cxx_flags_source"]), (*expected, source))
 
+    def test_the_build_type_is_the_configuration_the_binary_was_linked_as(self):
+        # #1445 review: a single-config tree reconfigured from Release to Debug without a rebuild
+        # holds the Release binary and its build information while the cache says Debug. The same
+        # cases as tools/test-bench.ps1.
+        module = load_bench_manifest()
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, cache, bin_dir, buildinfo, expected in (
+                ("reconfigured", "CMAKE_BUILD_TYPE:STRING=Debug\n", "bin", {"config": "Release", "ipo": "ON"}, "Release"),
+                ("no-cache", None, "bin", {"config": "Release"}, "Release"),
+                ("multi-config", "", "bin/RelWithDebInfo", {"config": "RelWithDebInfo"}, "RelWithDebInfo"),
+                ("no-buildinfo", "CMAKE_BUILD_TYPE:STRING=Debug\n", "bin", None, "Debug"),
+                ("no-buildinfo-multi-config", "", "bin/Release", None, "Release"),
+                ("empty-config", "CMAKE_BUILD_TYPE:STRING=Debug\n", "bin", {"config": "", "ipo": "ON"}, "Debug"),
+                ("non-string-config", "CMAKE_BUILD_TYPE:STRING=Debug\n", "bin", {"config": 7}, "Debug"),
+            ):
+                with self.subTest(case=name):
+                    tree = Path(tmp) / name
+                    (tree / bin_dir).mkdir(parents=True)
+                    if cache is not None:
+                        (tree / "CMakeCache.txt").write_text(cache, encoding="utf-8")
+                    if buildinfo is not None:
+                        (tree / bin_dir / "TaskSmackBenchmarks.buildinfo.json").write_text(json.dumps(buildinfo), encoding="utf-8")
+                    self.assertEqual(module.build_provenance(tree / bin_dir / "TaskSmackBenchmarks")["build_type"], expected)
+
     def test_ipo_is_what_the_benchmark_target_is_built_with(self):
         # #1445 review: CompilerOptions.cmake turns IPO on through a normal variable, so the cached
         # CMAKE_INTERPROCEDURAL_OPTIMIZATION can say OFF, and a multi-config generator can set IPO per
@@ -748,7 +772,7 @@ class ScrubberTest(unittest.TestCase):
                 # each disagreeing with the generic cache value.
                 ("multi-on", "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=ON\n", "bin/Debug", '{"config": "Debug", "ipo": "OFF"}', "Debug", "OFF", "buildinfo"),
                 ("multi-off", "CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF\n", "bin/Release", '{"config": "Release", "ipo": "ON"}', "Release", "ON", "buildinfo"),
-                ("no-cache", None, "bin", '{"config": "Release", "ipo": "ON"}', None, "ON", "buildinfo"),
+                ("no-cache", None, "bin", '{"config": "Release", "ipo": "ON"}', "Release", "ON", "buildinfo"),
                 # Unusable build information falls back to the cache.
                 ("bad-value", conflicting, "bin", '{"ipo": "on"}', "Release", "OFF", "CMAKE_INTERPROCEDURAL_OPTIMIZATION"),
                 ("bad-json", conflicting, "bin", '{"ipo": ', "Release", "OFF", "CMAKE_INTERPROCEDURAL_OPTIMIZATION"),

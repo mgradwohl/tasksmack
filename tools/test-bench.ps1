@@ -789,6 +789,29 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         if ($null -eq $case.Expected[0]) { Assert-True ($null -eq $build.cxx_flags_sha256) "$($case.Name): an absent entry must stay null" }
     }
 
+    # ── #1445 review: the build type is the configuration the binary was linked as ──────────────
+    # A single-config tree reconfigured from Release to Debug without a rebuild holds the Release
+    # binary and its build information while the cache says Debug. The same cases as
+    # test_bench_sh.py.
+    foreach ($case in @(
+            @{ Name = 'type-reconfigured'; Cache = @('CMAKE_BUILD_TYPE:STRING=Debug'); Bin = 'bin'; BuildInfo = '{"config": "Release", "ipo": "ON"}'; Expected = 'Release' }
+            @{ Name = 'type-no-cache'; Cache = $null; Bin = 'bin'; BuildInfo = '{"config": "Release"}'; Expected = 'Release' }
+            @{ Name = 'type-multi-config'; Cache = @(); Bin = 'bin\RelWithDebInfo'; BuildInfo = '{"config": "RelWithDebInfo"}'; Expected = 'RelWithDebInfo' }
+            @{ Name = 'type-no-buildinfo'; Cache = @('CMAKE_BUILD_TYPE:STRING=Debug'); Bin = 'bin'; BuildInfo = $null; Expected = 'Debug' }
+            @{ Name = 'type-no-buildinfo-multi-config'; Cache = @(); Bin = 'bin\Release'; BuildInfo = $null; Expected = 'Release' }
+            @{ Name = 'type-empty-config'; Cache = @('CMAKE_BUILD_TYPE:STRING=Debug'); Bin = 'bin'; BuildInfo = '{"config": "", "ipo": "ON"}'; Expected = 'Debug' }
+            @{ Name = 'type-non-string-config'; Cache = @('CMAKE_BUILD_TYPE:STRING=Debug'); Bin = 'bin'; BuildInfo = '{"config": 7}'; Expected = 'Debug' }
+        )) {
+        $tree = Join-Path $root "build\$($case.Name)"
+        $binaryDir = Join-Path $tree $case.Bin
+        New-Item -ItemType Directory -Path $binaryDir | Out-Null
+        if ($null -ne $case.Cache) { Set-Content -LiteralPath (Join-Path $tree 'CMakeCache.txt') -Encoding utf8 -Value $case.Cache }
+        if ($null -ne $case.BuildInfo) { [IO.File]::WriteAllText((Join-Path $binaryDir 'TaskSmackBenchmarks.buildinfo.json'), $case.BuildInfo) }
+        $benchBin = Join-Path $binaryDir 'TaskSmackBenchmarks.cmd'
+        $build = Get-BuildProvenance
+        Assert-True ($build.build_type -ceq $case.Expected) "$($case.Name): build_type=$($build.build_type), expected $($case.Expected)"
+    }
+
     # ── #1445 review: IPO is what the benchmark target is built with, not the cached variable ──
     # CompilerOptions.cmake turns IPO on through a normal variable, so the cached
     # CMAKE_INTERPROCEDURAL_OPTIMIZATION can say OFF, and a multi-config generator can set IPO per
@@ -803,7 +826,7 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
             # each disagreeing with the generic cache value.
             @{ Name = 'ipo-multi-on'; Cache = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=ON'); Bin = 'bin\Debug'; BuildInfo = '{"config": "Debug", "ipo": "OFF"}'; BuildType = 'Debug'; Ipo = 'OFF'; Source = 'buildinfo' }
             @{ Name = 'ipo-multi-off'; Cache = @('CMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF'); Bin = 'bin\Release'; BuildInfo = '{"config": "Release", "ipo": "ON"}'; BuildType = 'Release'; Ipo = 'ON'; Source = 'buildinfo' }
-            @{ Name = 'ipo-no-cache'; Cache = $null; Bin = 'bin'; BuildInfo = '{"config": "Release", "ipo": "ON"}'; BuildType = $null; Ipo = 'ON'; Source = 'buildinfo' }
+            @{ Name = 'ipo-no-cache'; Cache = $null; Bin = 'bin'; BuildInfo = '{"config": "Release", "ipo": "ON"}'; BuildType = 'Release'; Ipo = 'ON'; Source = 'buildinfo' }
             # Unusable build information falls back to the cache.
             @{ Name = 'ipo-bad-value'; Cache = $conflicting; Bin = 'bin'; BuildInfo = '{"ipo": "on"}'; BuildType = 'Release'; Ipo = 'OFF'; Source = $oldIpo }
             @{ Name = 'ipo-bad-json'; Cache = $conflicting; Bin = 'bin'; BuildInfo = '{"ipo": '; BuildType = 'Release'; Ipo = 'OFF'; Source = $oldIpo }

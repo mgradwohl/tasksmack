@@ -174,7 +174,8 @@ IPO_SOURCES = ("CMAKE_INTERPROCEDURAL_OPTIMIZATION", "TASKSMACK_ENABLE_IPO")
 
 
 def read_buildinfo(binary: Path) -> dict:
-    """The build information next to the binary, as far as it is usable: "ipo" (ON or OFF), and
+    """The build information next to the binary, as far as it is usable: "config" (a non-empty
+    configuration name without control characters), "ipo" (ON or OFF), and
     "cxx_flags" -- the (cxx_flags_sha256, cxx_flags_config_sha256) pair, each a SHA-256 hex string
     or None (no such cache entry) -- when both keys are there and well-formed. Empty without a
     file. Kept in step with Read-BuildInfo in tools/bench.ps1."""
@@ -185,6 +186,8 @@ def read_buildinfo(binary: Path) -> dict:
     if not isinstance(info, dict):
         return {}
     usable = {}
+    if isinstance(info.get("config"), str) and re.fullmatch(r"[^\x00-\x1f]+", info["config"]):
+        usable["config"] = info["config"]
     if info.get("ipo") in ("ON", "OFF"):
         usable["ipo"] = info["ipo"]
 
@@ -272,6 +275,10 @@ def build_provenance(binary: Path) -> dict:
         "ipo_source": None,
     }
     buildinfo = read_buildinfo(binary)
+    # The configuration the binary was linked as, from the build information (#1445 review): a
+    # single-config tree reconfigured from Release to Debug without a rebuild still holds the
+    # Release binary. build_type, ipo and the flag hashes then all describe the same binary.
+    build["build_type"] = buildinfo.get("config")
     if "ipo" in buildinfo:
         build["ipo"], build["ipo_source"] = buildinfo["ipo"], "buildinfo"
     # The flag hashes the binary was linked with, from the build information (#1445 review): the
@@ -283,8 +290,9 @@ def build_provenance(binary: Path) -> dict:
     if build_dir is None:
         return build
     cache = parse_cmake_cache((build_dir / "CMakeCache.txt").read_bytes().decode("utf-8", errors="replace"))
-    # A multi-config tree has no CMAKE_BUILD_TYPE: the binary's bin/<Config>/ names it.
-    build["build_type"] = config or cache.get("CMAKE_BUILD_TYPE") or None
+    # Without build information: a multi-config tree has no CMAKE_BUILD_TYPE, and the binary's
+    # bin/<Config>/ names it.
+    build["build_type"] = build["build_type"] or config or cache.get("CMAKE_BUILD_TYPE") or None
     build["generator"] = cache.get("CMAKE_GENERATOR")
     # Only the compiler's file name: its full path can sit under a user's home directory.
     if cache.get("CMAKE_CXX_COMPILER"):

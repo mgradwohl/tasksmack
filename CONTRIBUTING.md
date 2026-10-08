@@ -770,7 +770,9 @@ manifest's `preset`, so no file name or manifest field carries it:
   files; no diff), `binary` (file
   name and SHA-256), `build` (build type, generator, compiler name/id/version, IPO and the C++
   flags' hashes, read from the build tree's `CMakeCache.txt` -- the nearest one above the binary,
-  so a multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type -- the
+  so a multi-config `bin/<Config>/` binary is found too, with `<Config>` as its build type; the
+  build type is the `config` of the build information described below when it has one, so a tree
+  reconfigured from Release to Debug without a rebuild still reports its Release binary -- the
   compiler id/version from the `CMakeFiles/<version>/` of the cache's own CMake version, or
   unknown; `ipo` is what that configuration of the `TaskSmackBenchmarks` target is built with,
   read from the `TaskSmackBenchmarks.buildinfo.json` that `benchmarks/CMakeLists.txt` generates
