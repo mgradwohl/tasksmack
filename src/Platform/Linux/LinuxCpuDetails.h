@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -73,54 +74,23 @@ namespace Detail
 
 } // namespace Detail
 
-/// Sockets, physical cores and logical processors from /proc/cpuinfo's text. Each "processor" line
-/// is one logical processor; sockets are the distinct "physical id"s and cores the distinct
-/// ("physical id", "core id") pairs. Where the kernel lists no "core id" (some VMs), cores fall back
-/// to each socket's "cpu cores". Architectures that list no "physical id" (most ARM) leave sockets
-/// and cores unknown. A hybrid CPU's cores are counted, not split: /proc/cpuinfo does not say which
-/// are which.
-inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
+/// One /proc/cpuinfo "processor" block's topology fields; each is nullopt where the block has none.
+struct CpuInfoProcessor
 {
-    std::size_t logical = 0;
-    std::set<std::uint64_t> sockets;
-    std::set<std::pair<std::uint64_t, std::uint64_t>> cores;
-    std::set<std::pair<std::uint64_t, std::uint64_t>> socketCoreCounts; // (physical id, cpu cores)
-    bool everyProcessorHasCoreId = true;
-
     std::optional<std::uint64_t> physicalId;
     std::optional<std::uint64_t> coreId;
-    std::optional<std::uint64_t> cpuCores;
-    bool inProcessor = false;
-    const auto endProcessor = [&]
-    {
-        if (!inProcessor)
-        {
-            return;
-        }
-        if (physicalId.has_value())
-        {
-            sockets.insert(*physicalId);
-            if (coreId.has_value())
-            {
-                cores.emplace(*physicalId, *coreId);
-            }
-            else
-            {
-                everyProcessorHasCoreId = false;
-            }
-            if (cpuCores.has_value())
-            {
-                socketCoreCounts.emplace(*physicalId, *cpuCores);
-            }
-        }
-        physicalId.reset();
-        coreId.reset();
-        cpuCores.reset();
-        inProcessor = false;
-    };
+    std::optional<std::uint64_t> cpuCores; ///< Cores in this processor's socket
+};
 
+/// /proc/cpuinfo's text as one record per "processor" line, in order. A block starts at its
+/// "processor" line; any other "key : value" line fills in the current block's topology fields,
+/// and lines before the first block (or without a colon) are ignored.
+[[nodiscard]] inline std::vector<CpuInfoProcessor> parseCpuInfoProcessors(std::string_view text)
+{
+    std::vector<CpuInfoProcessor> processors;
     while (!text.empty())
     {
+        // Take the next line off the front of the text.
         const auto newline = text.find('\n');
         const std::string_view line = text.substr(0, newline);
         text = (newline == std::string_view::npos) ? std::string_view{} : text.substr(newline + 1);
@@ -128,59 +98,104 @@ inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
         const auto colon = line.find(':');
         if (colon == std::string_view::npos)
         {
-            continue;
+            continue; // The blank line between blocks
         }
         const std::string_view key = Detail::trim(line.substr(0, colon));
         const std::string_view value = line.substr(colon + 1);
         if (key == "processor")
         {
-            endProcessor();
-            inProcessor = true;
-            ++logical;
+            processors.emplace_back();
+            continue;
         }
-        else if (key == "physical id")
+        if (processors.empty())
         {
-            physicalId = Detail::parseUnsigned(value);
+            continue;
+        }
+        CpuInfoProcessor& current = processors.back();
+        if (key == "physical id")
+        {
+            current.physicalId = Detail::parseUnsigned(value);
         }
         else if (key == "core id")
         {
-            coreId = Detail::parseUnsigned(value);
+            current.coreId = Detail::parseUnsigned(value);
         }
         else if (key == "cpu cores")
         {
-            cpuCores = Detail::parseUnsigned(value);
+            current.cpuCores = Detail::parseUnsigned(value);
         }
     }
-    endProcessor();
+    return processors;
+}
 
-    if (logical > 0)
+/// Sockets, physical cores and logical processors from the processor records. Each record is one
+/// logical processor; sockets are the distinct "physical id"s and cores the distinct
+/// ("physical id", "core id") pairs. Where a processor has no "core id" (some VMs), cores are the
+/// sum of each socket's "cpu cores", if every socket gives one. Architectures that list no
+/// "physical id" (most ARM) leave sockets and cores unknown. A hybrid CPU's cores are counted, not
+/// split: /proc/cpuinfo does not say which are which.
+inline void summarizeCpuInfoTopology(std::span<const CpuInfoProcessor> processors, CpuDetails& details)
+{
+    if (!processors.empty())
     {
-        details.logicalProcessors = logical;
+        details.logicalProcessors = processors.size();
+    }
+
+    std::set<std::uint64_t> sockets;
+    std::set<std::pair<std::uint64_t, std::uint64_t>> cores;
+    std::map<std::uint64_t, std::uint64_t> coresPerSocket; // The first "cpu cores" listed for each socket
+    bool everyProcessorHasCoreId = true;
+    for (const CpuInfoProcessor& processor : processors)
+    {
+        if (!processor.physicalId.has_value())
+        {
+            continue;
+        }
+        sockets.insert(*processor.physicalId);
+        if (processor.coreId.has_value())
+        {
+            cores.emplace(*processor.physicalId, *processor.coreId);
+        }
+        else
+        {
+            everyProcessorHasCoreId = false;
+        }
+        if (processor.cpuCores.has_value())
+        {
+            coresPerSocket.emplace(*processor.physicalId, *processor.cpuCores);
+        }
     }
     if (sockets.empty())
     {
         return;
     }
     details.sockets = sockets.size();
-    if (everyProcessorHasCoreId && !cores.empty())
+
+    if (everyProcessorHasCoreId)
     {
         details.physicalCores = cores.size();
         return;
     }
-    // One "cpu cores" per socket: the first listed for each.
-    std::size_t total = 0;
-    std::set<std::uint64_t> counted;
-    for (const auto& [socket, count] : socketCoreCounts)
+    // No core ids: fall back to "cpu cores", but only when every socket reported a non-zero count.
+    const bool everySocketCounted = coresPerSocket.size() == sockets.size() &&
+                                    std::ranges::all_of(coresPerSocket, [](const auto& socketCores) { return socketCores.second > 0; });
+    if (everySocketCounted)
     {
-        if (counted.insert(socket).second)
+        std::uint64_t sum = 0;
+        for (const auto& [socket, count] : coresPerSocket)
         {
-            total += count;
+            sum += count;
         }
+        details.physicalCores = static_cast<std::size_t>(sum);
     }
-    if (total > 0 && counted.size() == sockets.size())
-    {
-        details.physicalCores = total;
-    }
+}
+
+/// Sockets, physical cores and logical processors from /proc/cpuinfo's text
+/// (parseCpuInfoProcessors(), then summarizeCpuInfoTopology()).
+inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
+{
+    const std::vector<CpuInfoProcessor> processors = parseCpuInfoProcessors(text);
+    summarizeCpuInfoTopology(processors, details);
 }
 
 /// A sysfs cache size ("32K", "1024K", "8M", "16384 KB") in bytes; nullopt if unreadable or zero.
@@ -363,6 +378,41 @@ struct SysfsCacheEntry
     return classes;
 }
 
+/// The base clock in MHz: the highest base_frequency of any cpufreq policy (#809). base_frequency is
+/// per policy, and on a hybrid CPU cpu0 may sit in an efficiency-core policy with a lower base; the
+/// highest is the performance cores' rated clock. Both cpufreq/policy*/ and each cpuN/cpufreq/ (a
+/// link to its policy on a real system) are read. nullopt when no policy has one.
+[[nodiscard]] inline std::optional<std::uint64_t> readBaseSpeedMHz(const std::filesystem::path& cpuSysfsRoot)
+{
+    std::optional<std::uint64_t> highestKHz;
+    const auto consider = [&highestKHz](const std::filesystem::path& file)
+    {
+        const auto text = Detail::readFile(file);
+        const auto kHz = text.has_value() ? Detail::parseUnsigned(*text) : std::nullopt;
+        if (kHz.has_value() && (!highestKHz.has_value() || *kHz > *highestKHz))
+        {
+            highestKHz = kHz;
+        }
+    };
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(cpuSysfsRoot / "cpufreq", ec), end; !ec && it != end; it.increment(ec))
+    {
+        if (it->path().filename().string().starts_with("policy"))
+        {
+            consider(it->path() / "base_frequency");
+        }
+    }
+    std::error_code cpuEc;
+    for (std::filesystem::directory_iterator it(cpuSysfsRoot, cpuEc), end; !cpuEc && it != end; it.increment(cpuEc))
+    {
+        if (cpuDirectoryIndex(it->path().filename().string()).has_value())
+        {
+            consider(it->path() / "cpufreq" / "base_frequency");
+        }
+    }
+    return baseSpeedMHzFromKHz(highestKHz);
+}
+
 /// The CPU Details facts from `procRoot`/cpuinfo and `cpuSysfsRoot` (normally /proc and
 /// /sys/devices/system/cpu). Whatever cannot be read stays nullopt.
 [[nodiscard]] inline CpuDetails read(const std::filesystem::path& procRoot, const std::filesystem::path& cpuSysfsRoot)
@@ -378,13 +428,7 @@ struct SysfsCacheEntry
     CpuTopology::sumCacheInstances(instances, details);
     details.efficiencyClassByCoreId = readEfficiencyClasses(cpuSysfsRoot);
 
-    const std::filesystem::path cpufreq = cpuSysfsRoot / "cpu0" / "cpufreq";
-    const auto readKHz = [&](const char* name) -> std::optional<std::uint64_t>
-    {
-        const auto text = Detail::readFile(cpufreq / name);
-        return text.has_value() ? Detail::parseUnsigned(*text) : std::nullopt;
-    };
-    details.baseSpeedMHz = baseSpeedMHzFromKHz(readKHz("base_frequency"));
+    details.baseSpeedMHz = readBaseSpeedMHz(cpuSysfsRoot);
     return details;
 }
 

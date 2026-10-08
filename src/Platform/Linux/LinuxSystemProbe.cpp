@@ -6,6 +6,7 @@
 
 #include "Domain/SamplingConfig.h"
 #include "LinuxCpuDetails.h"
+#include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "ProcParsing.h"
 
@@ -145,6 +146,7 @@ SystemCounters LinuxSystemProbe::read()
     // vector growth reallocations per read() call.
     counters.cpuPerCore.reserve(m_NumCores);
     readCpuCounters(counters, m_ProcRoot);
+    refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore.size());
     readMemoryCounters(counters, m_ProcRoot);
     readUptime(counters, m_ProcRoot);
     readLoadAvg(counters, m_ProcRoot);
@@ -378,7 +380,22 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
     counters.cpuCoreCount = m_NumCores;
+    const std::scoped_lock lock(m_CpuDetailsMutex);
     counters.cpuDetails = m_CpuDetails;
+}
+
+void LinuxSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors)
+{
+    const std::scoped_lock lock(m_CpuDetailsMutex);
+    if (CpuTopology::cpuDetailsNeedRefresh(m_CpuDetailsProcessorCount, sampledProcessors))
+    {
+        // Rare: only when a CPU goes online or offline, never every sample
+        m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
+    }
+    if (sampledProcessors > 0)
+    {
+        m_CpuDetailsProcessorCount = sampledProcessors;
+    }
 }
 
 void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)

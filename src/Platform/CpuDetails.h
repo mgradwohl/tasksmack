@@ -134,6 +134,16 @@ inline void summarizeCores(std::span<const CoreRecord> cores, CpuDetails& detail
     }
 }
 
+/// Whether the cached CPU details should be read again (#809): the probe sampled `sampledProcessors`
+/// logical processors this time, and the details were read when it sampled `readForProcessors`. A
+/// processor brought online or offline (or hot-added) changes the topology. 0 on either side is "no
+/// count" -- a failed per-core read, or details not yet tied to a sample -- and asks for no re-read,
+/// so a failing source is never re-read every sample.
+[[nodiscard]] constexpr bool cpuDetailsNeedRefresh(std::size_t readForProcessors, std::size_t sampledProcessors) noexcept
+{
+    return readForProcessors > 0 && sampledProcessors > 0 && readForProcessors != sampledProcessors;
+}
+
 /// Record logical processor `coreId`'s efficiency class, growing `classes` as needed (#809).
 inline void setEfficiencyClass(std::vector<std::uint8_t>& classes, std::size_t coreId, std::uint8_t efficiencyClass)
 {

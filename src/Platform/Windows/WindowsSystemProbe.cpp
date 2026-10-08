@@ -289,6 +289,15 @@ void readVirtualization(CpuDetails& details)
     }
 }
 
+/// Every CpuDetails fact this probe reports (#809). Base speed stays unknown (#1530).
+[[nodiscard]] CpuDetails readCpuDetails(std::span<const std::size_t> groupFirstCoreIds)
+{
+    CpuDetails details;
+    readProcessorTopology(details, groupFirstCoreIds);
+    readVirtualization(details);
+    return details;
+}
+
 } // namespace
 
 WindowsSystemProbe::~WindowsSystemProbe() = default;
@@ -351,10 +360,10 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr
     }
 
     // The CPU Details block's static facts (#809), read once: none change during a boot session
-    readProcessorTopology(m_CpuDetails, m_GroupFirstCoreIds);
+    m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds);
+    m_CpuDetailsProcessorCount = m_NumCores;
     // baseSpeedMHz stays unknown: the registry's ~MHz is not the nominal base clock on every CPU
     // (3686 against 2000 MHz on a Core Ultra 7 255H), so it is not published as one (#1530).
-    readVirtualization(m_CpuDetails);
 
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
@@ -364,6 +373,7 @@ SystemCounters WindowsSystemProbe::read()
     SystemCounters counters{};
 
     readCpuCounters(counters);
+    refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore.size());
     readMemoryCounters(counters);
     readUptime(counters);
     readStaticInfo(counters);
@@ -600,6 +610,16 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.cpuModel = m_CpuModel;
     counters.cpuCoreCount = m_NumCores;
     counters.cpuDetails = m_CpuDetails;
+}
+
+void WindowsSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors)
+{
+    if (CpuTopology::cpuDetailsNeedRefresh(m_CpuDetailsProcessorCount, sampledProcessors))
+    {
+        // Rare: only after a processor is hot-added, never every sample
+        m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds);
+        m_CpuDetailsProcessorCount = sampledProcessors;
+    }
 }
 
 void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)

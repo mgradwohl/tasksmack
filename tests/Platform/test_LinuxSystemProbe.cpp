@@ -629,6 +629,32 @@ TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
     EXPECT_EQ(details.baseSpeedMHz, 2900U);
 }
 
+TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuComesOnline)
+{
+    // The details describe the CPUs online when they were read; bringing one online changes the
+    // count in /proc/stat, and the next sample re-reads them (#809). Unchanged samples do not.
+    ScopedTempDir proc("ts_test_sys_cpudetails_online_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_online_cpu");
+    const auto writeOnline = [&](int cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (int cpu = 0; cpu < cpus; ++cpu)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    writeOnline(2);
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 2U);
+
+    writeOnline(4);
+    EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 4U);
+    EXPECT_EQ(probe.read().cpuDetails.physicalCores, 4U);
+}
+
 namespace
 {
 constexpr std::string_view NET_DEV_HEADER = "Inter-|   Receive                                                |  Transmit\n"

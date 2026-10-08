@@ -81,6 +81,15 @@ TEST(CpuTopologyTest, AMissingCacheLevelStaysUnknownNotZero)
     EXPECT_FALSE(details.l3CacheBytes.has_value()); // No L3; the L4 is not counted as one
 }
 
+TEST(CpuTopologyTest, DetailsAreReadAgainOnlyWhenTheProcessorCountChanges)
+{
+    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(16, 16));
+    EXPECT_TRUE(CpuTopology::cpuDetailsNeedRefresh(16, 20)); // Hot-added, or brought online
+    EXPECT_TRUE(CpuTopology::cpuDetailsNeedRefresh(16, 12)); // Taken offline
+    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(16, 0)); // The per-core read failed: no count
+    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(0, 16)); // Not yet tied to a sample
+}
+
 TEST(CpuTopologyTest, EfficiencyClassesAreKeptOnlyOnAHybridCpu)
 {
     std::vector<std::uint8_t> classes;

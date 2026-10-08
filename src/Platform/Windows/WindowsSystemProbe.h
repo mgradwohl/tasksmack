@@ -51,6 +51,9 @@ class WindowsSystemProbe : public ISystemProbe
     [[nodiscard]] static SwapBytes readSwap();
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
+    /// Re-read m_CpuDetails when the per-core read saw a different number of active processors than
+    /// they were read for (CpuTopology::cpuDetailsNeedRefresh(), #809).
+    void refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors);
     void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);
 
@@ -84,8 +87,11 @@ class WindowsSystemProbe : public ISystemProbe
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
-    // Topology, caches, base clock and virtualization status (#809), read once at construction
+    // Topology, caches and virtualization status (#809), read at construction and again when the
+    // number of active logical processors the per-core read sees changes (a processor hot-added).
+    // Sampler thread only.
     CpuDetails m_CpuDetails;
+    std::size_t m_CpuDetailsProcessorCount{0}; // The active processor count m_CpuDetails describes
 };
 
 } // namespace Platform

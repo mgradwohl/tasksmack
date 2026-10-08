@@ -331,6 +331,31 @@ TEST(LinuxCpuDetailsTest, HybridCoresAreCountedAndTheirCachesSummed)
     EXPECT_EQ(details.efficiencyClassByCoreId, (std::vector<std::uint8_t>{1, 1, 1, 1, 0, 0, 0, 0}));
 }
 
+TEST(LinuxCpuDetailsTest, BaseSpeedIsTheHighestPolicysBaseFrequency)
+{
+    // A hybrid CPU: cpu0 sits in the E-core policy, whose base is lower than the P-cores'
+    const FixtureDir fixture;
+    FixtureDir::write(fixture.cpuSysfs() / "cpufreq" / "policy0" / "base_frequency", "1500000\n");
+    FixtureDir::write(fixture.cpuSysfs() / "cpufreq" / "policy4" / "base_frequency", "2000000\n");
+    fixture.writeCpufreq("base_frequency", "1500000");
+    EXPECT_EQ(LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs()).baseSpeedMHz, 2000U);
+}
+
+TEST(LinuxCpuDetailsTest, BaseSpeedFromASinglePolicy)
+{
+    const FixtureDir fixture;
+    FixtureDir::write(fixture.cpuSysfs() / "cpufreq" / "policy0" / "base_frequency", "3200000\n");
+    EXPECT_EQ(LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs()).baseSpeedMHz, 3200U);
+}
+
+TEST(LinuxCpuDetailsTest, NoPolicyBaseFrequencyLeavesBaseSpeedUnknown)
+{
+    const FixtureDir fixture;
+    FixtureDir::write(fixture.cpuSysfs() / "cpufreq" / "policy0" / "cpuinfo_max_freq", "4800000\n");
+    FixtureDir::write(fixture.cpuSysfs() / "cpufreq" / "policy0" / "bios_limit", "4800000\n");
+    EXPECT_FALSE(LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs()).baseSpeedMHz.has_value());
+}
+
 TEST(LinuxCpuDetailsTest, CachesWithoutASharedListAreTakenAsPrivate)
 {
     const FixtureDir fixture;

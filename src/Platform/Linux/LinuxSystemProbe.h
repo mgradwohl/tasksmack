@@ -95,8 +95,16 @@ class LinuxSystemProbe : public ISystemProbe
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
-    // Topology, caches and base clock from /proc/cpuinfo and the CPU sysfs root (#809)
+    // Topology, caches and base clock from /proc/cpuinfo and the CPU sysfs root (#809), read again
+    // when the number of CPUs in /proc/stat changes (a CPU brought online or offline). Both guarded
+    // by m_CpuDetailsMutex: read() may run on several threads.
+    mutable std::mutex m_CpuDetailsMutex;
     CpuDetails m_CpuDetails;
+    std::size_t m_CpuDetailsProcessorCount = 0; // The /proc/stat CPU count m_CpuDetails describes; 0 = none yet
+
+    /// Re-read m_CpuDetails when `sampledProcessors` (this sample's /proc/stat CPUs) differs from the
+    /// count they were read for (CpuTopology::cpuDetailsNeedRefresh()).
+    void refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors);
 
     // Optimization cache for network interface properties.
     // NOTE: This is NOT semantic state - the probe contract remains stateless (raw counters).

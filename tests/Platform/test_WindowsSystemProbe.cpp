@@ -80,8 +80,14 @@ TEST(WindowsSystemProbeTest, CpuDetailsDescribeThisMachinesTopology)
     EXPECT_LE(logical, cores * 2); // At most two hardware threads a core
     // The same processors the per-core counters are sampled from (the active ones)
     EXPECT_EQ(logical, counters.cpuCoreCount);
-    EXPECT_TRUE(cpu.l1CacheBytes.has_value());
-    EXPECT_TRUE(cpu.l2CacheBytes.has_value());
+    // A Hyper-V guest may report no cache records, so caches are checked only where present
+    for (const auto& cache : {cpu.l1CacheBytes, cpu.l2CacheBytes, cpu.l3CacheBytes})
+    {
+        if (cache.has_value())
+        {
+            EXPECT_GT(cache.value_or(0), 0U);
+        }
+    }
     // A hybrid split, where there is one, accounts for every core
     EXPECT_EQ(cpu.performanceCores.has_value(), cpu.efficiencyCores.has_value());
     // Per-processor classes exactly where the CPU is hybrid, one per sampled processor
