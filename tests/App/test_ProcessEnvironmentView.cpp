@@ -123,6 +123,20 @@ TEST(ProcessEnvironmentViewTest, SelectionChangeReadsAfreshWithoutWaitingForTheI
     EXPECT_EQ(reader.readCount(), 2);
 }
 
+TEST(ProcessEnvironmentViewTest, SelectionChangeForgetsThePreviousProcesssOpenFrame)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    static_cast<void>(frame(view, reader, 0.016F, true)); // the previous process's section drawn open
+    ASSERT_EQ(reader.readCount(), 0);
+
+    // The selection changes before update() consumes that frame: the new process's section has not
+    // been drawn open yet, so nothing may be read for it.
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.update(&reader, TARGET, 0.016F));
+    EXPECT_EQ(reader.readCount(), 0);
+}
+
 TEST(ProcessEnvironmentViewTest, NoReaderOrNoSupportMeansNoRead)
 {
     ProcessEnvironmentView view;

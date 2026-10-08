@@ -153,6 +153,8 @@ class ProcessEnvironmentView
         m_FilteredRows.clear();
         m_FilterDirty = true;
         m_SecondsSinceRead = 0.0F;
+        // The open frame was the previous process's: the new one's section has not been drawn yet.
+        m_DrawnOpen = false;
     }
 
     /// Takes in a read: its status and, for Ok, its variables sorted by name with their mask flags.
