@@ -528,35 +528,11 @@
       versioningTemplate: 'semver-coerce',
     },
 
-    // ── Ninja/ccache exact CI pins (.github/actions/setup-windows-llvm/action.yml), installed
-    //    via Chocolatey, not winget -- tracks Chocolatey's actual community feed (Chocolatey
-    //    packages are NuGet packages under the hood) so a proposed bump is guaranteed
-    //    installable via `choco install`, not just tagged upstream. Verified directly against
-    //    the live feed: both "ninja"/"ccache" package IDs and this registryUrl correctly
-    //    resolve to the exact versions already pinned here (1.13.2 / 4.14.0). Tier 1 (safe to
-    //    auto-PR): no dependencyDashboardApproval gate, same as the FetchContent libs above. ──
-    {
-      customType: 'regex',
-      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
-      matchStrings: [
-        "ninja-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
-      ],
-      depNameTemplate: 'ninja (Chocolatey, CI)',
-      packageNameTemplate: 'ninja',
-      datasourceTemplate: 'nuget',
-      registryUrlTemplate: 'https://community.chocolatey.org/api/v2',
-    },
-    {
-      customType: 'regex',
-      managerFilePatterns: ['/^\\.github/actions/setup-windows-llvm/action\\.yml$/'],
-      matchStrings: [
-        "ccache-version:(?:\\n\\s+\\S.*)*?\\n\\s+default: '(?<currentValue>[0-9.]+)'",
-      ],
-      depNameTemplate: 'ccache (Chocolatey, CI)',
-      packageNameTemplate: 'ccache',
-      datasourceTemplate: 'nuget',
-      registryUrlTemplate: 'https://community.chocolatey.org/api/v2',
-    },
+    // ── No Ninja/ccache managers for Windows CI (#1406): ninja is preinstalled on the
+    //    windows-2025 runner image (setup-windows-llvm only verifies its version, so the pin
+    //    follows the image, not a feed Renovate can watch), and ccache is installed by
+    //    hendrikmuhs/ccache-action from its own pinned, checksum-verified release binary
+    //    (bumped with the action itself). ──
   ],
 
   packageRules: [

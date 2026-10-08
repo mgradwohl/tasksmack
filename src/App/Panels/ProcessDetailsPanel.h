@@ -117,9 +117,9 @@ class ProcessDetailsPanel : public Panel
         return m_ActionCapabilities;
     }
 
-    /// F9 (#170): on this frame's render, opens the Actions tab's Kill confirm for the process shown,
+    /// F9 (#170): on this frame's render, opens the Actions block's Kill confirm for the process shown,
     /// through ProcessActionsView::requestKillShortcut() (target captured then, never a direct kill),
-    /// and brings the Actions tab forward so the dialog is drawn. Does nothing while this pane is not
+    /// and brings the Overview tab, which holds that block (#1493), forward. Does nothing while this pane is not
     /// showing a running process, or when the platform cannot kill. Lives for this frame only:
     /// expireFrameRequests() drops it if the tabs were not drawn.
     void requestKillSelected() noexcept
@@ -135,7 +135,6 @@ class ProcessDetailsPanel : public Panel
 
   private:
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
-    void renderActions();
     /// What the chart tabs draw this frame: the history, the smoothed now-bar values and the displayed
     /// snapshot, by pointer for this frame's calls only (ProcessDetailsCharts, #1179).
     [[nodiscard]] ProcessChartContext chartContext() const;
@@ -205,12 +204,16 @@ class ProcessDetailsPanel : public Panel
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
 
-    // The Actions tab's buttons, confirm dialog and result line, and the priority control under them
-    // (#1179). Both act through m_ProcessActions, which the panel keeps owning.
+    // The Overview's Actions block (#1493): the buttons, confirm dialog and result line, and the
+    // priority control beside them (#1179). Both act through m_ProcessActions, which the panel keeps
+    // owning.
     ProcessActionsView m_ActionsView;
     KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
-    bool m_SelectActionsTab = false;                // F9 asked for the Kill confirm: show the Actions tab, which draws it
+    bool m_SelectOverviewTab = false;               // F9 asked for the Kill confirm: show the Overview, which holds the Actions block
     ProcessPriorityView m_PriorityView;
+    // The Actions block's content height as last drawn (0 until it has been): beside Identity and
+    // Runtime only while it fits their height (ProcessDetailsLayout::computeActionsBlockLayout()).
+    float m_ActionsBlockHeight = 0.0F;
 
     // The Overview's Environment section (#179). The reader is created by the composition root (the
     // default constructor) and called only from updateWithSamples(), through the view, while the

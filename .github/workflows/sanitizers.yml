@@ -72,7 +72,7 @@ jobs:
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
 
-      # Restore only; reusable-build-test.yml's main-branch debug builds save it (#1406).
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
         uses: ./.github/actions/fetchcontent-cache
         with:

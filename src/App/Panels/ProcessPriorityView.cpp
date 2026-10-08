@@ -2,13 +2,14 @@
 
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
-#include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include "UI/ChromeWidgets.h" // trailingNote() for the current class after Apply; the nice slider row has none
+#else
 #include "Domain/PriorityConfig.h" // NORMAL_NICE for the nice slider's 0 key; the Windows class combo has no slider
 #endif
 
@@ -231,12 +232,7 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
         return;
     }
 
-    ImGui::Spacing();
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::Spacing();
-
+    // Rows of the Overview's Actions block (#1493), under its header: no separator or header of its own.
     if (capabilities.canSetPriority)
     {
         renderNiceControl(actions, currentNice, target);
@@ -259,13 +255,19 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     syncToProcess(currentNice);
 
 #ifdef _WIN32
-    const float controlRightEdge = renderClassCombo(currentNice.value_or(0), target);
+    // One line (#1493): Priority [class] [Apply] current: <class>.
+    const std::int32_t shownNice = currentNice.value_or(0);
+    (void) renderClassCombo(shownNice, target);
+    ImGui::SameLine();
+    renderApplyButton(actions, currentNice, target, 0.0F);
+    const std::string currentDetail =
+        "current: " + std::string(Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(shownNice)));
+    (void) UI::Widgets::trailingNote(currentDetail);
 #else
     const float controlRightEdge = renderSlider(currentNice.value_or(0), target);
-#endif
-
     ImGui::Spacing();
     renderApplyButton(actions, currentNice, target, controlRightEdge);
+#endif
 
     // Display persistent error message if priority change failed
     if (!m_Error.empty())
@@ -284,10 +286,12 @@ float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Plat
     // value through setPriority(), which maps it back to that class; Realtime can only be shown.
     const auto& theme = UI::Theme::get();
     const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
-    // The current class stays on the header, quieter than the title (#1200).
-    const std::string currentDetail = "current: " + currentClassName;
-    (void) UI::Widgets::sectionHeader(ICON_FA_GAUGE_HIGH, "Priority", currentDetail);
-    ImGui::Spacing();
+    // A row label, level with the combo, rather than a header: the Actions block's row (#1493). The
+    // current class follows Apply when the row has room, and is on the label's tooltip always.
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Priority");
+    ImGui::SetItemTooltip("Current priority class: %s", currentClassName.c_str());
+    ImGui::SameLine();
 
     const Detail::WindowsPriorityClass selectedClass = Detail::windowsPriorityClassFromNice(m_NiceValue);
     const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
@@ -342,10 +346,14 @@ PriorityPick renderPriorityPicker(std::int32_t shown)
 #else
 float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform::ProcessTarget& target)
 {
-    // The current nice value stays on the header, quieter than the title (#1200).
+    const auto& theme = UI::Theme::get();
+
+    // A row label and the current nice value, quieter, rather than a header: the Actions block's
+    // row (#1493).
     const std::string currentDetail = "current nice: " + std::to_string(currentNice);
-    (void) UI::Widgets::sectionHeader(ICON_FA_GAUGE_HIGH, "Priority", currentDetail);
-    ImGui::Spacing();
+    ImGui::TextUnformatted("Priority");
+    ImGui::SameLine();
+    ImGui::TextColored(theme.scheme().textMuted, "%s", currentDetail.c_str());
 
     const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
     editNice(pick.nice, target);

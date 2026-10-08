@@ -36,7 +36,7 @@ jobs:
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
 
-      # Restore only; reusable-build-test.yml's main-branch debug builds save it (#1406).
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
         uses: ./.github/actions/fetchcontent-cache
         with:
@@ -84,7 +84,7 @@ jobs:
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
 
-      # Restore only; reusable-build-test.yml's main-branch debug builds save it (#1406).
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
         uses: ./.github/actions/fetchcontent-cache
         with:
@@ -92,7 +92,9 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+        # No ccache in the tidy jobs (#1406); keep CMake from finding the stale ccache that
+        # Strawberry Perl puts on the image PATH.
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build GLAD
         shell: pwsh

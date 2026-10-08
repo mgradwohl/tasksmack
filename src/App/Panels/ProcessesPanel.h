@@ -319,7 +319,7 @@ class ProcessesPanel : public Panel
     float m_NameWidthSetForTree = 0.0F;
 
     // Process actions from the row menu (#1209), confirmed in the same dialog as Process Details'
-    // Actions tab. Created at attach, like that panel's: this panel is part of the composition root.
+    // Actions block. Created at attach, like that panel's: this panel is part of the composition root.
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     // The action awaiting confirmation: one target from a row (or F9), several from the selection

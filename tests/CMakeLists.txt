@@ -207,6 +207,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
     App/test_ProcessActionConfirmPopup.cpp
+    App/test_ProcessActionsBlockRender.cpp
     App/test_ProcessPriorityView.cpp
     App/test_ProcessPriorityViewRender.cpp
     App/test_ProcessIoPriorityView.cpp
@@ -372,7 +373,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
     # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
-    # The process-action confirm modal, the Actions tab, the priority controls, the chart tabs and
+    # The process-action confirm modal, the Overview's Actions block, the priority controls, the chart tabs and
     # the Environment and Connections sections, run headless (test_ProcessActionConfirmPopup.cpp,
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
     # test_ProcessDetailsChartsRender.cpp, test_ProcessEnvironmentViewRender.cpp,
@@ -381,6 +382,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIoPriorityView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsCharts.cpp

@@ -5,7 +5,7 @@ name: Renovate
 # (cmake/Dependencies.cmake, tests/CMakeLists.txt, benchmarks/CMakeLists.txt) and the full
 # build/dev toolchain -- LLVM (11 files: every CI workflow that runs a compiler or clang-tooling
 # step, both setup-llvm actions, and both dev-box scripts), Python interpreter (4 files),
-# CMake/Ninja/ccache dev-box pins, the Windows CI's exact Chocolatey ninja/ccache pins, and (via
+# CMake/Ninja/ccache dev-box pins, and (via
 # Renovate's native pre-commit manager) .pre-commit-config.yaml's own hook-tool pins -- see #89
 # and #798 for the full audit and rationale. Dependabot already handles GitHub Actions and Python
 # packages (requirements*.txt) weekly on Mondays; osv-scanner.yml already scans all of these for
