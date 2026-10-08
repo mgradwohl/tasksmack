@@ -172,3 +172,89 @@ else()
     )
 endif()
 unset(_is_multi_config)
+
+# Build information for the benchmark provenance manifests (tools/bench.ps1, tools/bench-manifest.py),
+# written next to the binary for each configuration: TaskSmackBenchmarks.buildinfo.json. It records
+# the interprocedural optimization (IPO) that configuration really builds with, mirroring CMake's
+# own rule (cmGeneratorTarget::GetFeature): INTERPROCEDURAL_OPTIMIZATION_<CONFIG> when set, else
+# INTERPROCEDURAL_OPTIMIZATION -- both initialized at target creation from the
+# CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] variables, which cmake/CompilerOptions.cmake sets as
+# a normal variable when TASKSMACK_ENABLE_IPO is on and IPO is supported (so the cache can still
+# say OFF). Being a generate-time file, it is per configuration under multi-config generators too.
+# (CMake's last resort, a directory-level INTERPROCEDURAL_OPTIMIZATION property, is not used here.)
+#
+# It is generated into this directory and copied next to the binary only when the target links
+# (POST_BUILD), so it always describes the binary beside it: a reconfigure (IPO ON to OFF) without
+# a rebuild leaves the ON binary with its ON file.
+#
+# A per-configuration value that is set but empty (-DCMAKE_INTERPROCEDURAL_OPTIMIZATION_DEBUG:BOOL=)
+# still wins in CMake, as false, but a generator expression cannot tell it from an unset one and
+# would fall back to the generic setting. It is made an explicit OFF first: the same as CMake's
+# reading of an empty value, so the build does not change.
+#
+# It also records the SHA-256 of the cached CMAKE_CXX_FLAGS and CMAKE_CXX_FLAGS_<CONFIG> this
+# configuration builds with -- the exact cache values, UTF-8, as the writers hash them from
+# CMakeCache.txt; null for an entry that is not in the cache -- so a reconfigure of the flags
+# without a rebuild does not change what the binary is reported to be built with either.
+if(CMAKE_CONFIGURATION_TYPES)
+    set(_benchmarks_configs ${CMAKE_CONFIGURATION_TYPES})
+else()
+    set(_benchmarks_configs ${CMAKE_BUILD_TYPE})
+endif()
+if(DEFINED CACHE{CMAKE_CXX_FLAGS})
+    string(SHA256 _benchmarks_hash "$CACHE{CMAKE_CXX_FLAGS}")
+    set(_benchmarks_flags_hash "\"${_benchmarks_hash}\"")
+else()
+    set(_benchmarks_flags_hash "null")
+endif()
+# The configuration's hash, chosen by $<CONFIG>; null for a configuration not listed here (a
+# single-config tree without CMAKE_BUILD_TYPE).
+set(_benchmarks_config_hashes "")
+set(_benchmarks_config_names "")
+foreach(_benchmarks_cfg IN LISTS _benchmarks_configs)
+    string(TOUPPER "${_benchmarks_cfg}" _benchmarks_cfg)
+    if(DEFINED CACHE{CMAKE_CXX_FLAGS_${_benchmarks_cfg}})
+        string(SHA256 _benchmarks_hash "$CACHE{CMAKE_CXX_FLAGS_${_benchmarks_cfg}}")
+        string(APPEND _benchmarks_config_hashes "$<$<CONFIG:${_benchmarks_cfg}>:\"${_benchmarks_hash}\">")
+    else()
+        string(APPEND _benchmarks_config_hashes "$<$<CONFIG:${_benchmarks_cfg}>:null>")
+    endif()
+    list(APPEND _benchmarks_config_names "${_benchmarks_cfg}")
+    get_property(_benchmarks_ipo_set TARGET TaskSmackBenchmarks PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_benchmarks_cfg} SET)
+    get_property(_benchmarks_ipo_value TARGET TaskSmackBenchmarks PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_benchmarks_cfg})
+    if(_benchmarks_ipo_set AND _benchmarks_ipo_value STREQUAL "")
+        set_property(TARGET TaskSmackBenchmarks PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_benchmarks_cfg} OFF)
+    endif()
+endforeach()
+if(_benchmarks_config_names)
+    list(JOIN _benchmarks_config_names "," _benchmarks_config_names)
+    set(_benchmarks_config_flags_hash "$<IF:$<CONFIG:${_benchmarks_config_names}>,${_benchmarks_config_hashes},null>")
+else()
+    set(_benchmarks_config_flags_hash "null")
+endif()
+unset(_benchmarks_configs)
+unset(_benchmarks_cfg)
+unset(_benchmarks_hash)
+unset(_benchmarks_config_hashes)
+unset(_benchmarks_config_names)
+unset(_benchmarks_ipo_set)
+unset(_benchmarks_ipo_value)
+set(_benchmarks_ipo_config "$<TARGET_PROPERTY:TaskSmackBenchmarks,INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>")
+set(_benchmarks_ipo_generic "$<TARGET_PROPERTY:TaskSmackBenchmarks,INTERPROCEDURAL_OPTIMIZATION>")
+set(_benchmarks_ipo "$<IF:$<STREQUAL:${_benchmarks_ipo_config},>,${_benchmarks_ipo_generic},${_benchmarks_ipo_config}>")
+set(_benchmarks_buildinfo "${CMAKE_CURRENT_BINARY_DIR}/buildinfo/$<CONFIG>/TaskSmackBenchmarks.buildinfo.json")
+file(GENERATE
+    OUTPUT "${_benchmarks_buildinfo}"
+    CONTENT "{\n  \"schema_version\": 1,\n  \"config\": \"$<CONFIG>\",\n  \"ipo\": \"$<IF:$<BOOL:${_benchmarks_ipo}>,ON,OFF>\",\n  \"cxx_flags_sha256\": ${_benchmarks_flags_hash},\n  \"cxx_flags_config_sha256\": ${_benchmarks_config_flags_hash}\n}\n"
+)
+add_custom_command(TARGET TaskSmackBenchmarks POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy "${_benchmarks_buildinfo}" "$<TARGET_FILE_DIR:TaskSmackBenchmarks>/TaskSmackBenchmarks.buildinfo.json"
+    COMMENT "Recording the build information of TaskSmackBenchmarks"
+    VERBATIM
+)
+unset(_benchmarks_buildinfo)
+unset(_benchmarks_flags_hash)
+unset(_benchmarks_config_flags_hash)
+unset(_benchmarks_ipo_config)
+unset(_benchmarks_ipo_generic)
+unset(_benchmarks_ipo)
