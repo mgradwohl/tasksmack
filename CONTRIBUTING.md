@@ -809,7 +809,10 @@ manifest's `preset`, so no file name or manifest field carries it:
     with `<host>` and `<user>`. Validated categorical fields (OS name/version, architecture,
     compiler id/version, generator, the flag hashes, a standard build type -- Debug, Release, RelWithDebInfo,
     MinSizeRel --, schema fields, numbers and booleans) are left alone, so a host named `Linux` or
-    a user named `clang` cannot rewrite them; a custom build type is scrubbed. Outside a git
+    a user named `clang` cannot rewrite them; a custom build type is scrubbed. The OS version is
+    still checked for a user or host name between its own `-`, `.` and `_`, as a Linux kernel
+    built with `CONFIG_LOCALVERSION` reports one (`6.8.0-benchhost` becomes `6.8.0-<host>`, in
+    `machine.label` too). Outside a git
     checkout, inside another repository's tree (a source archive unpacked in a checkout), or
     without git, the `git` fields are all `null`. The manifest is written before the benchmark
     starts (`exit_code` `null`) and only the exit code is added afterwards, so the git state, build

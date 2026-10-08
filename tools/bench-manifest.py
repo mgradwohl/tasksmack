@@ -358,7 +358,8 @@ def machine_class() -> dict:
 # that cannot carry a user or host name but can coincide with one (a host named "Linux", a user
 # named "clang"), and the flag hashes. Every other string is free-form input and is scrubbed: the
 # compiler file name, the benchmark args, the git branch, the preset and result names, the CPU model.
-# machine.label is rebuilt from the scrubbed CPU model and the exempt fields. Numbers and booleans
+# machine.os_version only goes through hide_name_identity() (a custom kernel's 6.8.0-benchhost), and
+# machine.label is rebuilt from the scrubbed CPU model and OS version and the exempt fields. Numbers and booleans
 # are never touched. build.build_type is exempt only as one of CMake's standard configurations
 # (STANDARD_BUILD_TYPES): a custom configuration can be named after a user or host. The same
 # lists as $script:IdentityExempt and $script:StandardBuildTypes in tools/bench.ps1.
@@ -404,6 +405,12 @@ def hide_manifest_identity(manifest: dict, prefixes: list[str], user: str | None
 
     result = walk(manifest, "")
     if isinstance(result.get("machine"), dict):
+        # The OS version is exempt as a whole but not free of names: a Linux kernel built with
+        # CONFIG_LOCALVERSION reports 6.8.0-benchhost. A user or host name in it, between its own
+        # '-', '.' and '_', becomes <user> / <host> (hide_name_identity), and the label is rebuilt
+        # from the result.
+        if isinstance(result["machine"].get("os_version"), str):
+            result["machine"]["os_version"] = hide_name_identity(result["machine"]["os_version"], user, hosts)
         result["machine"]["label"] = machine_label(result["machine"])
     return result
 

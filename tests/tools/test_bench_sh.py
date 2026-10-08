@@ -951,6 +951,26 @@ class ScrubberTest(unittest.TestCase):
                 self.assertEqual(hidden["machine"]["cpu_model"], cpu)
                 self.assertEqual(hidden["machine"]["label"], f"{cpu} / 8 logical cores / Linux 6.1")
 
+    def test_a_name_in_a_custom_kernel_release_is_hidden(self):
+        # #1445 review: a Linux kernel built with CONFIG_LOCALVERSION reports its suffix in
+        # platform.release(); the OS version is otherwise exempt. The same cases as
+        # tools/test-bench.ps1.
+        module = load_bench_manifest()
+        for os_name, os_version, user, hosts, expected in (
+            ("Linux", "6.8.0-benchhost", "someone", ["benchhost"], "6.8.0-<host>"),
+            ("Linux", "6.8.0-45-generic", "someone", ["benchhost"], "6.8.0-45-generic"),
+            ("Linux", "6.8.0-benchuser_rt", "benchuser", [], "6.8.0-<user>_rt"),
+            ("Linux", "6.8.0-benchhosts", "someone", ["benchhost"], "6.8.0-benchhosts"),
+            # Windows reports a build number; the same treatment applies, for parity.
+            ("Windows", "10.0.26300.0", "someone", ["benchhost"], "10.0.26300.0"),
+            ("Windows", "10.0.26300-benchhost", "someone", ["benchhost"], "10.0.26300-<host>"),
+        ):
+            with self.subTest(os_version=os_version):
+                machine = {"label": "x", "cpu_model": "Some CPU", "logical_cores": 8, "os_name": os_name, "os_version": os_version, "arch": "x86_64"}
+                hidden = module.hide_manifest_identity({"machine": machine}, [], user, hosts)["machine"]
+                self.assertEqual(hidden["os_version"], expected)
+                self.assertEqual(hidden["label"], f"Some CPU / 8 logical cores / {os_name} {expected}")
+
     def test_custom_build_types_are_scrubbed_standard_ones_kept(self):
         # #1445 review: only CMake's standard configurations are exempt as build types.
         module = load_bench_manifest()

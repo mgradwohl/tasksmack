@@ -476,7 +476,18 @@ function Hide-ManifestIdentity {
         return , (Hide-Identity $Value @identity)
     }
     $result = & $walk $Manifest ''
-    if ($result.Contains('machine') -and $result.machine -is [System.Collections.IDictionary]) { $result.machine.label = Get-MachineLabel $result.machine }
+    if ($result.Contains('machine') -and $result.machine -is [System.Collections.IDictionary]) {
+        # The OS version is exempt as a whole but not free of names: a Linux kernel built with
+        # CONFIG_LOCALVERSION reports 6.8.0-benchhost. A user or host name in it, between its own
+        # '-', '.' and '_', becomes <user> / <host> (Hide-NameIdentity), and the label is rebuilt
+        # from the result. The same on Windows, whose version is a build number, for parity.
+        if ($result.machine.os_version -is [string]) {
+            $names = @{}
+            foreach ($name in 'User', 'Hosts') { if ($identity.ContainsKey($name)) { $names[$name] = $identity[$name] } }
+            $result.machine.os_version = Hide-NameIdentity $result.machine.os_version @names
+        }
+        $result.machine.label = Get-MachineLabel $result.machine
+    }
     return $result
 }
 

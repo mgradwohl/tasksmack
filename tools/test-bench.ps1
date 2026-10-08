@@ -909,6 +909,23 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         Assert-True ($hidden.machine.cpu_model -ceq $expectedCpu -and $hidden.machine.label -ceq "$expectedCpu / 8 logical cores / Linux 6.1") "CPU and label: $($hidden.machine.cpu_model) | $($hidden.machine.label)"
     }
 
+    # ── #1445 review: a user or host name in a custom kernel release is hidden ───────────────────
+    # A Linux kernel built with CONFIG_LOCALVERSION reports its suffix in the OS version, which is
+    # otherwise exempt. The same cases as test_bench_sh.py.
+    foreach ($case in @(
+            , @('Linux', '6.8.0-benchhost', 'someone', @('benchhost'), '6.8.0-<host>')
+            , @('Linux', '6.8.0-45-generic', 'someone', @('benchhost'), '6.8.0-45-generic')
+            , @('Linux', '6.8.0-benchuser_rt', 'benchuser', @(), '6.8.0-<user>_rt')
+            , @('Linux', '6.8.0-benchhosts', 'someone', @('benchhost'), '6.8.0-benchhosts')
+            # Windows reports a build number; the same treatment applies, for parity.
+            , @('Windows', '10.0.26300.0', 'someone', @('benchhost'), '10.0.26300.0')
+            , @('Windows', '10.0.26300-benchhost', 'someone', @('benchhost'), '10.0.26300-<host>')
+        )) {
+        $kernel = [ordered]@{ machine = [ordered]@{ label = 'x'; cpu_model = 'Some CPU'; logical_cores = 8; os_name = $case[0]; os_version = $case[1]; arch = 'X64' } }
+        $hiddenKernel = (Hide-ManifestIdentity $kernel -Homes @() -User $case[2] -Hosts $case[3]).machine
+        Assert-True ($hiddenKernel.os_version -ceq $case[4] -and $hiddenKernel.label -ceq "Some CPU / 8 logical cores / $($case[0]) $($case[4])") "OS version [$($case[1])]: $($hiddenKernel.os_version) | $($hiddenKernel.label)"
+    }
+
     Write-Host 'bench.ps1 tests passed'
 }
 finally {
