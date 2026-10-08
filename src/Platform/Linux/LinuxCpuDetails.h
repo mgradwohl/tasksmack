@@ -1,0 +1,391 @@
+#pragma once
+
+// The Linux CPU Details facts (#809): sockets, cores and logical processors from /proc/cpuinfo,
+// cache sizes from /sys/devices/system/cpu/cpu*/cache/index*, and the base clock from cpu0's
+// cpufreq. Read once, when LinuxSystemProbe is built, from the proc and CPU sysfs roots it was given
+// (#1351), so tests point it at fixture trees.
+//
+// Only standard-library file access, no POSIX headers: the parsing and the fixture tests build and
+// run on every platform.
+
+#include "Platform/CpuDetails.h"
+
+#include <algorithm>
+#include <charconv>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
+#include <set>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+namespace Platform::LinuxCpuDetails
+{
+
+namespace Detail
+{
+
+[[nodiscard]] inline std::string_view trim(std::string_view text) noexcept
+{
+    constexpr std::string_view SPACE = " \t\r\n";
+    const auto first = text.find_first_not_of(SPACE);
+    if (first == std::string_view::npos)
+    {
+        return {};
+    }
+    const auto last = text.find_last_not_of(SPACE);
+    return text.substr(first, last - first + 1);
+}
+
+[[nodiscard]] inline std::optional<std::uint64_t> parseUnsigned(std::string_view text) noexcept
+{
+    text = trim(text);
+    std::uint64_t value = 0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc{} || ptr != text.data() + text.size())
+    {
+        return std::nullopt;
+    }
+    return value;
+}
+
+/// The whole file, or nullopt if it cannot be opened.
+[[nodiscard]] inline std::optional<std::string> readFile(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open())
+    {
+        return std::nullopt;
+    }
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+} // namespace Detail
+
+/// Sockets, physical cores and logical processors from /proc/cpuinfo's text. Each "processor" line
+/// is one logical processor; sockets are the distinct "physical id"s and cores the distinct
+/// ("physical id", "core id") pairs. Where the kernel lists no "core id" (some VMs), cores fall back
+/// to each socket's "cpu cores". Architectures that list no "physical id" (most ARM) leave sockets
+/// and cores unknown. A hybrid CPU's cores are counted, not split: /proc/cpuinfo does not say which
+/// are which.
+inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
+{
+    std::size_t logical = 0;
+    std::set<std::uint64_t> sockets;
+    std::set<std::pair<std::uint64_t, std::uint64_t>> cores;
+    std::set<std::pair<std::uint64_t, std::uint64_t>> socketCoreCounts; // (physical id, cpu cores)
+    bool everyProcessorHasCoreId = true;
+
+    std::optional<std::uint64_t> physicalId;
+    std::optional<std::uint64_t> coreId;
+    std::optional<std::uint64_t> cpuCores;
+    bool inProcessor = false;
+    const auto endProcessor = [&]
+    {
+        if (!inProcessor)
+        {
+            return;
+        }
+        if (physicalId.has_value())
+        {
+            sockets.insert(*physicalId);
+            if (coreId.has_value())
+            {
+                cores.emplace(*physicalId, *coreId);
+            }
+            else
+            {
+                everyProcessorHasCoreId = false;
+            }
+            if (cpuCores.has_value())
+            {
+                socketCoreCounts.emplace(*physicalId, *cpuCores);
+            }
+        }
+        physicalId.reset();
+        coreId.reset();
+        cpuCores.reset();
+        inProcessor = false;
+    };
+
+    while (!text.empty())
+    {
+        const auto newline = text.find('\n');
+        const std::string_view line = text.substr(0, newline);
+        text = (newline == std::string_view::npos) ? std::string_view{} : text.substr(newline + 1);
+
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos)
+        {
+            continue;
+        }
+        const std::string_view key = Detail::trim(line.substr(0, colon));
+        const std::string_view value = line.substr(colon + 1);
+        if (key == "processor")
+        {
+            endProcessor();
+            inProcessor = true;
+            ++logical;
+        }
+        else if (key == "physical id")
+        {
+            physicalId = Detail::parseUnsigned(value);
+        }
+        else if (key == "core id")
+        {
+            coreId = Detail::parseUnsigned(value);
+        }
+        else if (key == "cpu cores")
+        {
+            cpuCores = Detail::parseUnsigned(value);
+        }
+    }
+    endProcessor();
+
+    if (logical > 0)
+    {
+        details.logicalProcessors = logical;
+    }
+    if (sockets.empty())
+    {
+        return;
+    }
+    details.sockets = sockets.size();
+    if (everyProcessorHasCoreId && !cores.empty())
+    {
+        details.physicalCores = cores.size();
+        return;
+    }
+    // One "cpu cores" per socket: the first listed for each.
+    std::size_t total = 0;
+    std::set<std::uint64_t> counted;
+    for (const auto& [socket, count] : socketCoreCounts)
+    {
+        if (counted.insert(socket).second)
+        {
+            total += count;
+        }
+    }
+    if (total > 0 && counted.size() == sockets.size())
+    {
+        details.physicalCores = total;
+    }
+}
+
+/// A sysfs cache size ("32K", "1024K", "8M", "16384 KB") in bytes; nullopt if unreadable or zero.
+[[nodiscard]] inline std::optional<std::uint64_t> parseCacheSize(std::string_view text) noexcept
+{
+    text = Detail::trim(text);
+    std::uint64_t value = 0;
+    const auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc{} || ptr == text.data() || value == 0)
+    {
+        return std::nullopt;
+    }
+    std::string_view suffix = Detail::trim(text.substr(static_cast<std::size_t>(ptr - text.data())));
+    if (suffix.ends_with('B') || suffix.ends_with('b'))
+    {
+        suffix.remove_suffix(1);
+    }
+    std::uint64_t scale = 1;
+    if (suffix.empty())
+    {
+        scale = 1;
+    }
+    else if (suffix == "K" || suffix == "k")
+    {
+        scale = 1024;
+    }
+    else if (suffix == "M" || suffix == "m")
+    {
+        scale = 1024ULL * 1024ULL;
+    }
+    else if (suffix == "G" || suffix == "g")
+    {
+        scale = 1024ULL * 1024ULL * 1024ULL;
+    }
+    else
+    {
+        return std::nullopt;
+    }
+    return value * scale;
+}
+
+/// One cpuN/cache/indexM directory's contents.
+struct SysfsCacheEntry
+{
+    std::size_t cpu = 0; ///< N of the cpuN it was read under.
+    unsigned level = 0;
+    std::string type;          ///< "Data", "Instruction" or "Unified".
+    std::uint64_t bytes = 0;   ///< One instance's size.
+    std::string sharedCpuList; ///< The CPUs sharing this instance ("0-1,8-9"); empty if unreadable.
+};
+
+/// The distinct cache instances among `entries`. Every CPU sharing a cache lists it, so instances
+/// are told apart by level, type and the CPUs sharing them. An entry with no shared list cannot be
+/// matched with its siblings and is taken as private to its CPU.
+[[nodiscard]] inline std::vector<CpuTopology::CacheInstance> distinctCacheInstances(std::span<const SysfsCacheEntry> entries)
+{
+    std::set<std::tuple<unsigned, std::string, std::string>> seen;
+    std::vector<CpuTopology::CacheInstance> instances;
+    for (const SysfsCacheEntry& entry : entries)
+    {
+        if (entry.bytes == 0)
+        {
+            continue;
+        }
+        std::string sharedBy = entry.sharedCpuList.empty() ? ("cpu" + std::to_string(entry.cpu)) : entry.sharedCpuList;
+        if (seen.emplace(entry.level, entry.type, std::move(sharedBy)).second)
+        {
+            instances.push_back({.level = entry.level, .bytes = entry.bytes});
+        }
+    }
+    return instances;
+}
+
+/// The base clock in MHz from cpufreq's readings in kHz, in order of preference: base_frequency (the
+/// rated clock, intel_pstate and amd-pstate), bios_limit, then cpuinfo_max_freq (the top boost clock
+/// on most drivers, so only a last resort). Zero readings are skipped; nullopt if none is left.
+[[nodiscard]] inline std::optional<std::uint64_t> chooseBaseSpeedMHz(std::optional<std::uint64_t> baseFrequencyKHz,
+                                                                     std::optional<std::uint64_t> biosLimitKHz,
+                                                                     std::optional<std::uint64_t> maxFrequencyKHz) noexcept
+{
+    for (const auto& reading : {baseFrequencyKHz, biosLimitKHz, maxFrequencyKHz})
+    {
+        if (reading.has_value() && *reading >= 1000)
+        {
+            return *reading / 1000;
+        }
+    }
+    return std::nullopt;
+}
+
+/// N of a "cpuN" directory name; nullopt for anything else (cpufreq, cpuidle, ...).
+[[nodiscard]] inline std::optional<std::size_t> cpuDirectoryIndex(std::string_view name) noexcept
+{
+    if (!name.starts_with("cpu") || name.size() == 3)
+    {
+        return std::nullopt;
+    }
+    name.remove_prefix(3);
+    std::size_t index = 0;
+    const auto [ptr, ec] = std::from_chars(name.data(), name.data() + name.size(), index);
+    if (ec != std::errc{} || ptr != name.data() + name.size())
+    {
+        return std::nullopt;
+    }
+    return index;
+}
+
+/// Every cpuN/cache/index* entry under `cpuSysfsRoot`. Missing directories and unreadable files
+/// leave entries out rather than fail.
+[[nodiscard]] inline std::vector<SysfsCacheEntry> readCacheEntries(const std::filesystem::path& cpuSysfsRoot)
+{
+    std::vector<SysfsCacheEntry> entries;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator cpuIt(cpuSysfsRoot, ec), end; !ec && cpuIt != end; cpuIt.increment(ec))
+    {
+        const auto cpu = cpuDirectoryIndex(cpuIt->path().filename().string());
+        if (!cpu.has_value())
+        {
+            continue;
+        }
+        std::error_code cacheEc;
+        for (std::filesystem::directory_iterator indexIt(cpuIt->path() / "cache", cacheEc), indexEnd; !cacheEc && indexIt != indexEnd;
+             indexIt.increment(cacheEc))
+        {
+            if (!indexIt->path().filename().string().starts_with("index"))
+            {
+                continue;
+            }
+            const auto level = Detail::readFile(indexIt->path() / "level");
+            const auto size = Detail::readFile(indexIt->path() / "size");
+            const auto levelValue = level.has_value() ? Detail::parseUnsigned(*level) : std::nullopt;
+            const auto bytes = size.has_value() ? parseCacheSize(*size) : std::nullopt;
+            if (!levelValue.has_value() || !bytes.has_value())
+            {
+                continue;
+            }
+            const auto type = Detail::readFile(indexIt->path() / "type");
+            const auto shared = Detail::readFile(indexIt->path() / "shared_cpu_list");
+            entries.push_back({.cpu = *cpu,
+                               .level = static_cast<unsigned>(*levelValue),
+                               .type = type.has_value() ? std::string(Detail::trim(*type)) : std::string{},
+                               .bytes = *bytes,
+                               .sharedCpuList = shared.has_value() ? std::string(Detail::trim(*shared)) : std::string{}});
+        }
+    }
+    // Directory order is unspecified; sort so the result does not depend on it.
+    std::ranges::sort(entries,
+                      [](const SysfsCacheEntry& a, const SysfsCacheEntry& b)
+                      { return std::tie(a.cpu, a.level, a.type) < std::tie(b.cpu, b.level, b.type); });
+    return entries;
+}
+
+/// Each logical processor's efficiency class from cpuN/cpu_capacity (#809), where the kernel gives
+/// one (Arm big.LITTLE, recent x86 hybrids): the rank of its capacity among the distinct capacities,
+/// lowest 0. Empty unless there is more than one capacity.
+[[nodiscard]] inline std::vector<std::uint8_t> readEfficiencyClasses(const std::filesystem::path& cpuSysfsRoot)
+{
+    std::vector<std::pair<std::size_t, std::uint64_t>> capacities;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(cpuSysfsRoot, ec), end; !ec && it != end; it.increment(ec))
+    {
+        const auto cpu = cpuDirectoryIndex(it->path().filename().string());
+        const auto text = cpu.has_value() ? Detail::readFile(it->path() / "cpu_capacity") : std::nullopt;
+        const auto capacity = text.has_value() ? Detail::parseUnsigned(*text) : std::nullopt;
+        if (capacity.has_value())
+        {
+            capacities.emplace_back(*cpu, *capacity);
+        }
+    }
+    std::set<std::uint64_t> distinct;
+    for (const auto& entry : capacities)
+    {
+        distinct.insert(entry.second);
+    }
+    std::vector<std::uint8_t> classes;
+    for (const auto& [cpu, capacity] : capacities)
+    {
+        const auto rank = std::distance(distinct.begin(), distinct.find(capacity));
+        CpuTopology::setEfficiencyClass(
+            classes, cpu, static_cast<std::uint8_t>(std::min<std::ptrdiff_t>(rank, UNKNOWN_EFFICIENCY_CLASS - 1)));
+    }
+    CpuTopology::keepOnlyIfHybrid(classes);
+    return classes;
+}
+
+/// The CPU Details facts from `procRoot`/cpuinfo and `cpuSysfsRoot` (normally /proc and
+/// /sys/devices/system/cpu). Whatever cannot be read stays nullopt.
+[[nodiscard]] inline CpuDetails read(const std::filesystem::path& procRoot, const std::filesystem::path& cpuSysfsRoot)
+{
+    CpuDetails details;
+    if (const auto cpuInfo = Detail::readFile(procRoot / "cpuinfo"); cpuInfo.has_value())
+    {
+        parseCpuInfoTopology(*cpuInfo, details);
+    }
+
+    const std::vector<SysfsCacheEntry> entries = readCacheEntries(cpuSysfsRoot);
+    const std::vector<CpuTopology::CacheInstance> instances = distinctCacheInstances(entries);
+    CpuTopology::sumCacheInstances(instances, details);
+    details.efficiencyClassByCoreId = readEfficiencyClasses(cpuSysfsRoot);
+
+    const std::filesystem::path cpufreq = cpuSysfsRoot / "cpu0" / "cpufreq";
+    const auto readKHz = [&](const char* name) -> std::optional<std::uint64_t>
+    {
+        const auto text = Detail::readFile(cpufreq / name);
+        return text.has_value() ? Detail::parseUnsigned(*text) : std::nullopt;
+    };
+    details.baseSpeedMHz = chooseBaseSpeedMHz(readKHz("base_frequency"), readKHz("bios_limit"), readKHz("cpuinfo_max_freq"));
+    return details;
+}
+
+} // namespace Platform::LinuxCpuDetails

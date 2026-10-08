@@ -180,6 +180,8 @@ set(COMMON_TEST_SOURCES
     App/test_CpuCoreGridIds.cpp
     App/test_CpuSummaryText.cpp
     Platform/test_CgroupFreezerPath.cpp
+    Platform/test_CpuDetails.cpp
+    Platform/test_LinuxCpuDetails.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
     Platform/test_ProcessEnvironment.cpp

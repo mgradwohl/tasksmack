@@ -508,4 +508,31 @@ TEST(CurrentCpuFrequencyTest, UnknownBaseClockStaysUnknown)
     EXPECT_EQ(currentCpuFrequencyMHz(0, std::nullopt), 0U);
 }
 
+// =============================================================================
+// Virtualization status decoding (#809)
+// =============================================================================
+
+TEST(VirtualizationStatusTest, SecureKernelRunningIsTheFirstFlagBit)
+{
+    EXPECT_TRUE(secureKernelRunning(0x01));
+    EXPECT_TRUE(secureKernelRunning(0x03)); // HvciEnabled (bit 1) beside it
+    EXPECT_FALSE(secureKernelRunning(0x00));
+    EXPECT_FALSE(secureKernelRunning(0x02)); // Only HvciEnabled: the secure kernel is not running
+}
+
+TEST(VirtualizationStatusTest, HvciIsTheKernelModeCodeIntegrityOption)
+{
+    EXPECT_TRUE(hvciEnabled(CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED));
+    EXPECT_TRUE(hvciEnabled(0x401U)); // With CODEINTEGRITY_OPTION_ENABLED
+    EXPECT_FALSE(hvciEnabled(0x001U));
+    EXPECT_FALSE(hvciEnabled(0U));
+}
+
+TEST(VirtualizationStatusTest, HypervisorPresentIsCpuidLeafOneEcxBit31)
+{
+    EXPECT_TRUE(hypervisorPresentBit(0x8000'0000U));
+    EXPECT_TRUE(hypervisorPresentBit(0xFFFF'FFFFU));
+    EXPECT_FALSE(hypervisorPresentBit(0x7FFF'FFFFU));
+}
+
 } // namespace Platform

@@ -1,5 +1,6 @@
 #include "WindowsSystemProbe.h"
 
+#include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
 
 #include <spdlog/spdlog.h>
@@ -34,6 +35,7 @@
 #include "WindowsSystemProbeMath.h"
 
 #include <array>
+#include <bit>
 #include <chrono>
 #include <concepts>
 #include <cwchar>
@@ -43,6 +45,10 @@
 #include <vector>
 
 #include <psapi.h> // GetPerformanceInfo (K32GetPerformanceInfo, in kernel32)
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#include <intrin.h> // __cpuid: the hypervisor-present bit (#809)
+#endif
 
 namespace Platform
 {
@@ -166,6 +172,123 @@ template<typename Query>
     return toU64NonNegative(mhz);
 }
 
+// System information classes for the virtualization-based security status (#809)
+constexpr ULONG SystemCodeIntegrityInformationClass = 103;
+constexpr ULONG SystemIsolatedUserModeInformationClass = 165;
+
+/// Sockets, cores, logical processors and cache sizes from one GetLogicalProcessorInformationEx call
+/// (#809). Fields stay nullopt if the call fails. `groupFirstCoreIds` numbers each logical
+/// processor as the per-core counters do (#1107), for efficiencyClassByCoreId.
+void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> groupFirstCoreIds)
+{
+    DWORD length = 0;
+    if (GetLogicalProcessorInformationEx(RelationAll, nullptr, &length) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        length == 0)
+    {
+        spdlog::debug("GetLogicalProcessorInformationEx sizing failed: {}", GetLastError());
+        return;
+    }
+    std::vector<std::byte> buffer(length);
+    if (GetLogicalProcessorInformationEx(RelationAll, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &length) ==
+        FALSE)
+    {
+        spdlog::debug("GetLogicalProcessorInformationEx failed: {}", GetLastError());
+        return;
+    }
+    const std::size_t total = std::min<std::size_t>(length, buffer.size());
+
+    std::size_t packages = 0;
+    std::vector<CpuTopology::CoreRecord> cores;
+    std::vector<CpuTopology::CacheInstance> caches;
+    constexpr std::size_t RECORD_HEADER_BYTES = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor);
+    std::size_t offset = 0;
+    while (offset + RECORD_HEADER_BYTES <= total)
+    {
+        // Copied out rather than cast in place: records are variable-sized, and a copy needs no
+        // alignment. A core's processors are in one group, so its first GroupMask is all of them.
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX record{};
+        const std::size_t available = total - offset;
+        std::memcpy(&record, &buffer[offset], std::min(available, sizeof(record)));
+        if (record.Size == 0 || record.Size > available)
+        {
+            break;
+        }
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - Relationship selects the union member
+        switch (record.Relationship)
+        {
+        case RelationProcessorPackage:
+            ++packages;
+            break;
+        case RelationProcessorCore:
+            if (record.Processor.GroupCount > 0 && record.Processor.GroupMask[0].Group < groupFirstCoreIds.size())
+            {
+                const std::size_t firstId = groupFirstCoreIds[record.Processor.GroupMask[0].Group];
+                for (KAFFINITY mask = record.Processor.GroupMask[0].Mask; mask != 0; mask &= mask - 1)
+                {
+                    const auto bit = static_cast<std::size_t>(std::countr_zero(mask));
+                    CpuTopology::setEfficiencyClass(details.efficiencyClassByCoreId, firstId + bit, record.Processor.EfficiencyClass);
+                }
+            }
+            cores.push_back({.efficiencyClass = record.Processor.EfficiencyClass,
+                             .logicalProcessors = (record.Processor.GroupCount > 0)
+                                                    ? static_cast<std::uint32_t>(std::popcount(record.Processor.GroupMask[0].Mask))
+                                                    : 0U});
+            break;
+        case RelationCache:
+            caches.push_back({.level = record.Cache.Level, .bytes = record.Cache.CacheSize});
+            break;
+        default:
+            break;
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+        offset += record.Size;
+    }
+
+    if (packages > 0)
+    {
+        details.sockets = packages;
+    }
+    CpuTopology::summarizeCores(cores, details);
+    CpuTopology::keepOnlyIfHybrid(details.efficiencyClassByCoreId);
+    CpuTopology::sumCacheInstances(caches, details);
+}
+
+/// Firmware virtualization, SLAT, a running hypervisor and virtualization-based security (#809):
+/// processor-feature flags, CPUID, and two NtQuerySystemInformation classes a standard user may
+/// query -- no WMI, no elevation.
+void readVirtualization(CpuDetails& details)
+{
+    details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
+    details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+    std::array<int, 4> registers{};
+    __cpuid(registers.data(), 1);
+    details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
+#endif
+
+    const auto ntQuery = Windows::ntQuerySystemInformation();
+    if (ntQuery == nullptr)
+    {
+        return;
+    }
+    struct CodeIntegrityInformation // SYSTEM_CODEINTEGRITY_INFORMATION
+    {
+        ULONG Length;
+        ULONG CodeIntegrityOptions;
+    };
+    CodeIntegrityInformation codeIntegrity{.Length = sizeof(CodeIntegrityInformation), .CodeIntegrityOptions = 0};
+    if (ntQuery(SystemCodeIntegrityInformationClass, &codeIntegrity, sizeof(codeIntegrity), nullptr) == 0)
+    {
+        details.hvciEnabled = hvciEnabled(codeIntegrity.CodeIntegrityOptions);
+    }
+    // SYSTEM_ISOLATED_USER_MODE_INFORMATION: two flag bytes, six spare bytes and a spare ULONGLONG.
+    std::array<std::uint8_t, 16> isolatedUserMode{};
+    if (ntQuery(SystemIsolatedUserModeInformationClass, isolatedUserMode.data(), static_cast<ULONG>(isolatedUserMode.size()), nullptr) == 0)
+    {
+        details.vbsRunning = secureKernelRunning(isolatedUserMode[0]);
+    }
+}
+
 } // namespace
 
 WindowsSystemProbe::~WindowsSystemProbe() = default;
@@ -226,6 +349,14 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr
     {
         m_CpuModel = "Unknown CPU";
     }
+
+    // The CPU Details block's static facts (#809), read once: none change during a boot session
+    readProcessorTopology(m_CpuDetails, m_GroupFirstCoreIds);
+    if (m_BaseCpuMHz > 0)
+    {
+        m_CpuDetails.baseSpeedMHz = m_BaseCpuMHz; // The same ~MHz the current clock is scaled from (#1184)
+    }
+    readVirtualization(m_CpuDetails);
 
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
@@ -470,6 +601,7 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
     counters.cpuCoreCount = m_NumCores;
+    counters.cpuDetails = m_CpuDetails;
 }
 
 void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)
@@ -489,11 +621,12 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasMemoryAvailable = true,
         .hasSwap = true,
         .hasUptime = true,
-        .hasIoWait = false,         // Windows doesn't expose iowait
-        .hasSteal = false,          // Windows doesn't expose steal time
-        .hasLoadAvg = false,        // Windows doesn't have load average
-        .hasCpuFreq = true,         // Current clock: ~MHz x % Processor Performance (#1184)
-        .hasNetworkCounters = true, // Via GetIfTable2 (64-bit counters, Unicode names)
+        .hasIoWait = false,            // Windows doesn't expose iowait
+        .hasSteal = false,             // Windows doesn't expose steal time
+        .hasLoadAvg = false,           // Windows doesn't have load average
+        .hasCpuFreq = true,            // Current clock: ~MHz x % Processor Performance (#1184)
+        .hasNetworkCounters = true,    // Via GetIfTable2 (64-bit counters, Unicode names)
+        .hasVirtualizationInfo = true, // Firmware/SLAT/hypervisor/VBS status, read once (#809)
     };
 }
 

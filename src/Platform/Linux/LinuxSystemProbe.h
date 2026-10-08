@@ -1,6 +1,8 @@
 #pragma once
 
+#include "Platform/CpuDetails.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/SystemTypes.h"
 
 #include <chrono>
 #include <cstddef>
@@ -31,7 +33,7 @@ class LinuxSystemProbe : public ISystemProbe
     LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot);
 
     /// Testability constructor that also takes the CPU sysfs root (normally /sys/devices/system/cpu),
-    /// where the CPU frequency is read (#1183).
+    /// where the CPU frequency is read (#1183), and the CPU Details' caches and base clock (#809).
     LinuxSystemProbe(std::filesystem::path procRoot, std::filesystem::path sysClassNetRoot, std::filesystem::path cpuSysfsRoot);
 
     ~LinuxSystemProbe() override = default;
@@ -93,6 +95,8 @@ class LinuxSystemProbe : public ISystemProbe
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
+    // Topology, caches and base clock from /proc/cpuinfo and the CPU sysfs root (#809)
+    CpuDetails m_CpuDetails;
 
     // Optimization cache for network interface properties.
     // NOTE: This is NOT semantic state - the probe contract remains stateless (raw counters).

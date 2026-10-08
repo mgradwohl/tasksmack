@@ -5,6 +5,7 @@
 #include "LinuxSystemProbe.h"
 
 #include "Domain/SamplingConfig.h"
+#include "LinuxCpuDetails.h"
 #include "Platform/SystemTypes.h"
 #include "ProcParsing.h"
 
@@ -131,6 +132,8 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
         m_CpuModel = "Unknown CPU";
     }
 
+    m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
+
     spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
 }
 
@@ -161,7 +164,8 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
                               .hasSteal = true,
                               .hasLoadAvg = true,
                               .hasCpuFreq = true,
-                              .hasNetworkCounters = true};
+                              .hasNetworkCounters = true,
+                              .hasVirtualizationInfo = false}; // No virtualization/VBS facts on Linux (#809)
 }
 
 long LinuxSystemProbe::ticksPerSecond() const
@@ -374,6 +378,7 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.hostname = m_Hostname;
     counters.cpuModel = m_CpuModel;
     counters.cpuCoreCount = m_NumCores;
+    counters.cpuDetails = m_CpuDetails;
 }
 
 void LinuxSystemProbe::readLoadAvg(SystemCounters& counters, const std::filesystem::path& procRoot)

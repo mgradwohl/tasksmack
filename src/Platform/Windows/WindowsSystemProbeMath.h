@@ -364,4 +364,26 @@ inline constexpr double MAX_PROCESSOR_PERFORMANCE_PERCENT = 1000.0;
     return static_cast<std::uint64_t>(std::llround((static_cast<double>(baseMHz) * percent) / 100.0));
 }
 
+/// SystemIsolatedUserModeInformation's first flags byte: bit 0 is SecureKernelRunning, set while
+/// virtualization-based security's secure kernel runs (#809).
+[[nodiscard]] constexpr bool secureKernelRunning(std::uint8_t isolatedUserModeFlags) noexcept
+{
+    return (isolatedUserModeFlags & 0x01U) != 0;
+}
+
+/// CODEINTEGRITY_OPTION_HVCI_KMCI_ENABLED in SYSTEM_CODEINTEGRITY_INFORMATION::CodeIntegrityOptions:
+/// memory integrity (hypervisor-enforced kernel-mode code integrity) is on (#809).
+inline constexpr std::uint32_t CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED = 0x400U;
+
+[[nodiscard]] constexpr bool hvciEnabled(std::uint32_t codeIntegrityOptions) noexcept
+{
+    return (codeIntegrityOptions & CODE_INTEGRITY_OPTION_HVCI_KMCI_ENABLED) != 0;
+}
+
+/// CPUID leaf 1's ECX bit 31, which a hypervisor sets for the code it runs (#809).
+[[nodiscard]] constexpr bool hypervisorPresentBit(std::uint32_t cpuidLeaf1Ecx) noexcept
+{
+    return (cpuidLeaf1Ecx & 0x8000'0000U) != 0;
+}
+
 } // namespace Platform

@@ -1,6 +1,8 @@
 #pragma once
 
+#include "Platform/CpuDetails.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/SystemTypes.h"
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
 #include <chrono>
@@ -82,6 +84,8 @@ class WindowsSystemProbe : public ISystemProbe
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
+    // Topology, caches, base clock and virtualization status (#809), read once at construction
+    CpuDetails m_CpuDetails;
 };
 
 } // namespace Platform

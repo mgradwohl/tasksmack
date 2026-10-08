@@ -1325,6 +1325,8 @@ void Workload::systemCountersAt(double uptime, SystemCounters& out) const
     out.hostname = "tasksmack-synthetic";
     out.cpuModel = "TaskSmack Synthetic CPU";
     out.cpuCoreCount = m_Cores.size();
+    // The CPU Details block's facts (#809): only what the scenario defines; the rest stays unknown.
+    out.cpuDetails.logicalProcessors = m_Cores.size();
 }
 
 void Workload::diskCountersAt(double uptime, SystemDiskCounters& out) const
@@ -1385,7 +1387,8 @@ SystemCapabilities Workload::systemCapabilities() noexcept
                               .hasSteal = true,
                               .hasLoadAvg = true,
                               .hasCpuFreq = true,
-                              .hasNetworkCounters = true};
+                              .hasNetworkCounters = true,
+                              .hasVirtualizationInfo = false};
 }
 
 DiskCapabilities Workload::diskCapabilities() noexcept

@@ -600,6 +600,35 @@ TEST(LinuxSystemProbeTest, MemAvailableIsReportedOnlyWhenTheKernelHasIt)
     EXPECT_FALSE(LinuxSystemProbe(without.path).read().memory.hasAvailableBytes);
 }
 
+TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
+{
+    // The CPU Details block's facts are read from the roots the probe was given (#809, #1351)
+    ScopedTempDir proc("ts_test_sys_cpudetails_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_cpu");
+    std::ofstream(proc.path / "cpuinfo") << "processor\t: 0\nphysical id\t: 0\ncore id\t\t: 0\n\n"
+                                            "processor\t: 1\nphysical id\t: 0\ncore id\t\t: 0\n\n";
+    std::filesystem::create_directories(cpuSysfs.path / "cpu0" / "cpufreq");
+    std::ofstream(cpuSysfs.path / "cpu0" / "cpufreq" / "base_frequency") << "2900000\n";
+    for (const char* cpu : {"cpu0", "cpu1"})
+    {
+        const auto index = cpuSysfs.path / cpu / "cache" / "index0";
+        std::filesystem::create_directories(index);
+        std::ofstream(index / "level") << "2\n";
+        std::ofstream(index / "type") << "Unified\n";
+        std::ofstream(index / "size") << "1024K\n";
+        std::ofstream(index / "shared_cpu_list") << "0-1\n";
+    }
+
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_FALSE(probe.capabilities().hasVirtualizationInfo);
+    const auto details = probe.read().cpuDetails;
+    EXPECT_EQ(details.sockets, 1U);
+    EXPECT_EQ(details.physicalCores, 1U);
+    EXPECT_EQ(details.logicalProcessors, 2U);
+    EXPECT_EQ(details.l2CacheBytes, 1024ULL * 1024ULL); // One instance, shared by both siblings
+    EXPECT_EQ(details.baseSpeedMHz, 2900U);
+}
+
 namespace
 {
 constexpr std::string_view NET_DEV_HEADER = "Inter-|   Receive                                                |  Transmit\n"
