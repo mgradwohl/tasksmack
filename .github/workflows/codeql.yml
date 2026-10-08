@@ -60,11 +60,15 @@ jobs:
       - name: Configure
         run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
 
-      # Build the third-party libraries before CodeQL init, outside the trace (#1406). They are
-      # outside the scanned paths (codeql-config.yml scans only src/ and tests/), so tracing their
-      # ~370 translation units (mostly SDL3 and FreeType) only cost build and TRAP-import time and
-      # grew the database. Their headers are still extracted wherever our own sources include them.
-      # The traced Build step below then compiles only TaskSmack, its tests and the test mocks.
+      # Build the third-party libraries before CodeQL init (#1406). With a manual (traced) C/C++
+      # build, CodeQL extracts every compiler invocation it traces, and only those: what enters
+      # the database is decided by which compiles run after init, not by codeql-config.yml
+      # (its paths/paths-ignore filter reported results, not which compiled TUs are extracted).
+      # These ~370 dependency translation units (mostly SDL3 and FreeType) are compiled here,
+      # before the tracer is active, so they are never extracted and cost no traced-build or
+      # TRAP-import time; Ninja then sees them as up to date in the traced Build step, which
+      # compiles only TaskSmack, its tests and the test mocks. Dependency headers are still
+      # extracted wherever our own sources include them.
       # A renamed or removed dependency target fails this step loudly; a new dependency missing
       # from this list is still built (and traced) by the Build step, so it is only slower.
       - name: Build third-party dependencies (untraced)

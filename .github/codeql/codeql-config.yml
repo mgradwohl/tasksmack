@@ -1,11 +1,15 @@
 name: "TaskSmack CodeQL Config"
 
-# Scan application source and test code
+# Report results for application source and test code.
+# For the traced (manual) C/C++ build in codeql.yml, paths and paths-ignore filter which results
+# are reported; they do not stop compiled translation units from being extracted. Compiled code is
+# kept out of the database by compiling it outside the traced build step (see the "Configure" and
+# "Build third-party dependencies (untraced)" steps in .github/workflows/codeql.yml).
 paths:
   - src
   - tests
 
-# Exclude third-party dependencies and build artifacts
+# Do not report results in third-party, generated or build-artifact paths
 paths-ignore:
   - '**/deps'
   - '**/dependencies'
