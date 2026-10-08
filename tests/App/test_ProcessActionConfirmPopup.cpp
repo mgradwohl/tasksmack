@@ -131,6 +131,48 @@ TEST_F(ProcessActionConfirmPopupTest, BatchConfirmUsesTheSameModalAndStaysWithin
     EXPECT_FALSE(show);
 }
 
+TEST_F(ProcessActionConfirmPopupTest, ATallBatchConfirmScrollsAndKeepsItsButtonsInAShortWindow)
+{
+    // A short window and a question longer than it (long names wrap over many lines): the dialog
+    // stays inside the window, so its buttons can still be reached (#804 review).
+    ImGui::GetIO().DisplaySize = ImVec2(700.0F, 240.0F);
+    constexpr int TARGET_COUNT = 12;
+    std::vector<ProcessBatch::BatchTarget> targets;
+    targets.reserve(TARGET_COUNT);
+    for (int i = 0; i < TARGET_COUNT; ++i)
+    {
+        targets.push_back({.target = {.pid = 100 + i, .startTimeTicks = 1}, .name = std::string(300, static_cast<char>('a' + i))});
+    }
+    const std::string title = ProcessBatch::confirmTitle(ProcessAction::Kill, targets.size());
+    const std::string question = ProcessBatch::confirmBody(ProcessAction::Kill, targets, 0);
+
+    bool show = true;
+    ImVec2 modalPos{};
+    ImVec2 modalSize{};
+    float modalScrollMax = -1.0F;
+    const auto body = [&]
+    {
+        static_cast<void>(ProcessActionConfirm::renderText(show, ProcessAction::Kill, title, question));
+        if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
+        {
+            modalPos = modal->Pos;
+            modalSize = modal->Size;
+            modalScrollMax = modal->ScrollMax.y;
+        }
+    };
+    EXPECT_TRUE(runFrame(body));
+    EXPECT_TRUE(runFrame(body));
+    EXPECT_TRUE(runFrame(body));
+    EXPECT_GT(modalSize.y, 0.0F);
+    EXPECT_LE(modalSize.y, ImGui::GetIO().DisplaySize.y);
+    EXPECT_GE(modalPos.y, 0.0F);
+    EXPECT_LE(modalPos.y + modalSize.y, ImGui::GetIO().DisplaySize.y);
+    // ImGui clamps an auto-fitting window to the display on its own; what matters is that nothing in
+    // it -- the footer's buttons above all -- lies below what it shows: the dialog itself never needs
+    // scrolling, only the question does.
+    EXPECT_FLOAT_EQ(modalScrollMax, 0.0F);
+}
+
 TEST_F(ProcessActionConfirmPopupTest, DismissWithNothingOpenDoesNothing)
 {
     bool show = false;

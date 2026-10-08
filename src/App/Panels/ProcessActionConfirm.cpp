@@ -2,6 +2,7 @@
 
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/Theme.h"
@@ -71,8 +72,15 @@ Outcome renderOpen(bool& showRequested, Detail::ProcessAction action, std::strin
     Outcome outcome = Outcome::None;
     std::string popupTitle(title);
     popupTitle += CONFIRM_POPUP_ID;
+    // Never taller or wider than the viewport: a batch question lists up to eight processes plus
+    // warnings, so at a large font or in a short window the auto-fitting dialog could otherwise push
+    // its buttons off-screen (#804 review). The question scrolls instead (below).
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float dialogMaxHeight = UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y);
+    UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x), dialogMaxHeight));
     if (ImGui::BeginPopupModal(popupTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
+        UI::Widgets::keepCurrentWindowInViewport();
         // The dialog auto-fits, so it is bounded here: neither the question (which carries the
         // process name) nor the button row may be wider than the main window can show. See
         // ProcessDetailsLayout::computeConfirmContentBudget().
@@ -90,9 +98,25 @@ Outcome renderOpen(bool& showRequested, Detail::ProcessAction action, std::strin
         const char* questionEnd = questionBegin + question.size();
         const float questionWidth = ImGui::CalcTextSize(questionBegin, questionEnd).x;
         const float wrapWidth = (contentBudget > 0.0F) ? std::min(questionWidth, contentBudget) : questionWidth;
+        // The question takes what the title bar, padding and footer leave; beyond that it scrolls in
+        // a child of that height, so Cancel and the action stay reachable (#804 review).
+        const float questionHeight = ImGui::CalcTextSize(questionBegin, questionEnd, false, wrapWidth).y;
+        const float reservedHeight = ImGui::GetFrameHeight() + (confirmStyle.WindowPadding.y * 2.0F) + confirmStyle.ItemSpacing.y +
+                                     UI::ChromeLayout::dialogFooterHeight(confirmStyle.ItemSpacing.y, ImGui::GetFrameHeight(), false);
+        const float questionMaxHeight = UI::DialogMetrics::computeScrollableBodyMaxHeight(
+            dialogMaxHeight, reservedHeight, ImGui::GetTextLineHeightWithSpacing() * 2.0F);
+        const bool scrolls = questionHeight > questionMaxHeight;
+        if (scrolls)
+        {
+            ImGui::BeginChild("##ConfirmQuestion", ImVec2(wrapWidth + confirmStyle.ScrollbarSize, questionMaxHeight));
+        }
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
         ImGui::TextUnformatted(questionBegin, questionEnd);
         ImGui::PopTextWrapPos();
+        if (scrolls)
+        {
+            ImGui::EndChild();
+        }
 
         // One width for both, from the font: 11.25 em is the former fixed 120px at the reference
         // em, so the dialog is unchanged there and the buttons stay a comfortable target for a
