@@ -5,6 +5,7 @@
 /// WindowsMath/test_WindowsSystemProbeMath.cpp.
 
 #include "Platform/SystemTypes.h"
+#include "Platform/Windows/ProcessorPerformanceCounter.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
 
 #include <gtest/gtest.h>
@@ -12,7 +13,21 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <initializer_list>
+#include <memory>
+#include <stdexcept>
 #include <thread>
+#include <utility>
+
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// clang-format on
 
 namespace Platform
 {
@@ -41,6 +56,231 @@ TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.hasSwap);
     EXPECT_TRUE(caps.hasUptime);
     EXPECT_FALSE(caps.hasLoadAvg);
+}
+
+namespace
+{
+/// A fake pdh.dll for the current-clock tests (#1184): what each call returns, and what was called.
+struct FakePdh
+{
+    double percent = 100.0;
+    PDH_STATUS openStatus = ERROR_SUCCESS;
+    PDH_STATUS addStatus = ERROR_SUCCESS;
+    PDH_STATUS collectStatus = ERROR_SUCCESS;
+    PDH_STATUS formatStatus = ERROR_SUCCESS;
+    DWORD counterStatus = PDH_CSTATUS_VALID_DATA;
+    bool addThrows = false;
+    int closes = 0;
+};
+FakePdh g_FakePdh; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the fakes are plain function pointers
+
+// Any non-null handle will do; the fakes never dereference it
+const PDH_HQUERY FAKE_QUERY = &g_FakePdh;
+const PDH_HCOUNTER FAKE_COUNTER = &g_FakePdh.percent;
+
+PDH_STATUS WINAPI fakeOpenQuery(LPCWSTR /*source*/, DWORD_PTR /*userData*/, PDH_HQUERY* query)
+{
+    *query = FAKE_QUERY;
+    return g_FakePdh.openStatus;
+}
+
+PDH_STATUS WINAPI fakeAddEnglishCounter(PDH_HQUERY /*query*/, LPCWSTR /*path*/, DWORD_PTR /*userData*/, PDH_HCOUNTER* counter)
+{
+    *counter = FAKE_COUNTER;
+    if (g_FakePdh.addThrows)
+    {
+        throw std::runtime_error("fake PdhAddEnglishCounter threw");
+    }
+    return g_FakePdh.addStatus;
+}
+
+PDH_STATUS WINAPI fakeCollectQueryData(PDH_HQUERY /*query*/)
+{
+    return g_FakePdh.collectStatus;
+}
+
+PDH_STATUS WINAPI fakeGetFormattedCounterValue(PDH_HCOUNTER /*counter*/, DWORD format, LPDWORD /*type*/, PPDH_FMT_COUNTERVALUE value)
+{
+    value->CStatus = g_FakePdh.counterStatus;
+    // As real PDH does, a percentage is capped at 100 unless PDH_FMT_NOCAP100 asks otherwise
+    const double reading = ((format & PDH_FMT_NOCAP100) != 0) ? g_FakePdh.percent : std::min(g_FakePdh.percent, 100.0);
+    value->doubleValue = reading; // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE's member
+    return g_FakePdh.formatStatus;
+}
+
+PDH_STATUS WINAPI fakeCloseQuery(PDH_HQUERY /*query*/)
+{
+    ++g_FakePdh.closes;
+    return ERROR_SUCCESS;
+}
+
+constexpr PdhFunctions FAKE_PDH_FUNCTIONS{
+    .openQuery = &fakeOpenQuery,
+    .addEnglishCounter = &fakeAddEnglishCounter,
+    .collectQueryData = &fakeCollectQueryData,
+    .getFormattedCounterValue = &fakeGetFormattedCounterValue,
+    .closeQuery = &fakeCloseQuery,
+};
+
+constexpr std::uint64_t FAKE_BASE_MHZ = 3000;
+
+/// Resets the fake pdh.dll before each test, so one test's failure mode doesn't leak into the next.
+class WindowsSystemProbeCpuClockTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        g_FakePdh = FakePdh{};
+    }
+};
+} // namespace
+
+TEST_F(WindowsSystemProbeCpuClockTest, ClockFollowsProcessorPerformance)
+{
+    // The registry's ~MHz alone (the old figure) read 3000 for both of these.
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    g_FakePdh.percent = 75.0; // Power saving
+    EXPECT_EQ(probe.read().cpuFreqMHz, 2250U);
+    g_FakePdh.percent = 130.0; // Turbo
+    EXPECT_EQ(probe.read().cpuFreqMHz, 3900U);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, TurboReadsAboveTheBaseClock)
+{
+    // PDH caps a percentage at 100 unless asked not to; a capped turbo reading would read the base clock.
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    g_FakePdh.percent = 150.0;
+    EXPECT_EQ(probe.read().cpuFreqMHz, 4500U);
+}
+
+namespace
+{
+/// A system DLL this process has not loaded, loaded now so its release can be observed (it is unloaded
+/// again exactly when its only reference is freed); empty if every candidate is already loaded. The
+/// fakes never call into it: it only stands in for pdh.dll's module, which the test process may hold.
+[[nodiscard]] std::pair<const wchar_t*, UniqueModule> loadUnusedSystemDll()
+{
+    for (const wchar_t* name : {L"wtsapi32.dll", L"msimg32.dll", L"dciman32.dll", L"mprapi.dll", L"pdh.dll"})
+    {
+        if (GetModuleHandleW(name) == nullptr)
+        {
+            UniqueModule module(LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
+            if (module != nullptr)
+            {
+                return {name, std::move(module)};
+            }
+        }
+    }
+    return {nullptr, UniqueModule{}};
+}
+} // namespace
+
+TEST_F(WindowsSystemProbeCpuClockTest, ThrowWhileOpeningClosesTheQueryAndFreesTheModule)
+{
+    // Every resource open() acquired is released when a call after it throws: the opened query and the
+    // module the functions came from.
+    auto [name, module] = loadUnusedSystemDll();
+    if (module == nullptr)
+    {
+        GTEST_SKIP() << "every candidate DLL is already loaded, so a release can't be observed";
+    }
+    g_FakePdh.addThrows = true;
+    EXPECT_THROW((void) ProcessorPerformanceCounter::open(std::move(module), FAKE_PDH_FUNCTIONS), std::runtime_error);
+    EXPECT_EQ(g_FakePdh.closes, 1) << "the opened query is closed";
+    EXPECT_EQ(GetModuleHandleW(name), nullptr) << "the module is freed";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, FailedOpenFreesTheModule)
+{
+    auto [name, module] = loadUnusedSystemDll();
+    if (module == nullptr)
+    {
+        GTEST_SKIP() << "every candidate DLL is already loaded, so a release can't be observed";
+    }
+    g_FakePdh.openStatus = static_cast<PDH_STATUS>(PDH_INVALID_ARGUMENT);
+    EXPECT_EQ(ProcessorPerformanceCounter::open(std::move(module), FAKE_PDH_FUNCTIONS), nullptr);
+    EXPECT_EQ(GetModuleHandleW(name), nullptr) << "the module is freed";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, NoCounterGivesTheBaseClock)
+{
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, nullptr);
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, CounterThatCannotBeOpenedGivesTheBaseClock)
+{
+    g_FakePdh.openStatus = static_cast<PDH_STATUS>(PDH_INVALID_ARGUMENT);
+    EXPECT_EQ(ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS), nullptr);
+
+    g_FakePdh = FakePdh{};
+    g_FakePdh.addStatus = static_cast<PDH_STATUS>(PDH_CSTATUS_NO_COUNTER);
+    auto counter = ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS);
+    EXPECT_EQ(counter, nullptr);
+    EXPECT_EQ(g_FakePdh.closes, 1) << "the opened query is closed when its counter can't be added";
+
+    PdhFunctions missingExport = FAKE_PDH_FUNCTIONS;
+    missingExport.getFormattedCounterValue = nullptr;
+    EXPECT_EQ(ProcessorPerformanceCounter::open(missingExport), nullptr);
+
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, std::move(counter));
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, FailedReadingGivesTheBaseClock)
+{
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    g_FakePdh.percent = 75.0;
+
+    g_FakePdh.collectStatus = static_cast<PDH_STATUS>(PDH_NO_DATA);
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+
+    g_FakePdh.collectStatus = ERROR_SUCCESS;
+    g_FakePdh.formatStatus = static_cast<PDH_STATUS>(PDH_INVALID_DATA);
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+
+    g_FakePdh.formatStatus = ERROR_SUCCESS;
+    g_FakePdh.counterStatus = PDH_CSTATUS_INVALID_DATA;
+    EXPECT_EQ(probe.read().cpuFreqMHz, FAKE_BASE_MHZ);
+
+    g_FakePdh.counterStatus = PDH_CSTATUS_VALID_DATA;
+    EXPECT_EQ(probe.read().cpuFreqMHz, 2250U) << "a good reading after failures is used again";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, QueryIsClosedWithTheProbe)
+{
+    {
+        const WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    }
+    EXPECT_EQ(g_FakePdh.closes, 1);
+}
+
+TEST(WindowsSystemProbeTest, CpuClockIsTheBaseClockScaledByProcessorPerformance)
+{
+    // The real pdh.dll on this machine (#1184): the base ~MHz scaled by "% Processor Performance" stays
+    // within the range turbo and power saving can take it, and never reads 0 once the base is known.
+    // The fakes above prove the reading is used; this checks the real counter path end to end.
+    DWORD baseMHz = 0;
+    DWORD dataSize = sizeof(baseMHz);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     LR"(HARDWARE\DESCRIPTION\System\CentralProcessor\0)",
+                     L"~MHz",
+                     RRF_RT_REG_DWORD,
+                     nullptr,
+                     &baseMHz,
+                     &dataSize) != ERROR_SUCCESS ||
+        baseMHz == 0)
+    {
+        GTEST_SKIP() << "no ~MHz base clock in the registry";
+    }
+
+    WindowsSystemProbe probe;
+    EXPECT_TRUE(probe.capabilities().hasCpuFreq);
+    (void) probe.read();
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    const auto counters = probe.read();
+    EXPECT_GT(counters.cpuFreqMHz, 0U);
+    EXPECT_LE(counters.cpuFreqMHz, std::uint64_t{baseMHz} * 10U);
 }
 
 TEST(WindowsSystemProbeTest, TicksPerSecondMatchesFileTime)

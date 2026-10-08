@@ -1,5 +1,5 @@
 /// @file test_WindowsProcessProbeMath.cpp
-/// @brief Unit tests for WindowsProcessProbeMath.h's pure process-state, detail-cache and EStats logic
+/// @brief Unit tests for WindowsProcessProbeMath.h's pure process-state, detail-cache, EStats and memory-field logic
 ///
 /// WindowsProcessProbeMath.h includes no Windows header, so these tests build and run on every
 /// platform, including Linux CI's sanitizer and coverage jobs (#1133). Tests that need the real
@@ -1315,6 +1315,76 @@ TEST(ClassifyNetworkCounterDenialTest, ElevatedSampleWithEveryEStatsAccessDenied
     const NetworkCounterDenial denial = classifyNetworkCounterDenial(/*isElevated=*/true, /*hasNetworkCounters=*/false, accessDenied);
     EXPECT_TRUE(denial.blocked);
     EXPECT_FALSE(denial.reducedPrivileges);
+}
+
+// ==========================================================================
+// windowsProcessMemory: which SYSTEM_PROCESS_INFORMATION figure each memory
+// column shows (#1184)
+// ==========================================================================
+
+constexpr std::uint64_t ONE_MIB = 1024ULL * 1024;
+
+TEST(WindowsProcessMemoryTest, MemoryIsThePrivateWorkingSetNotTheWholeWorkingSet)
+{
+    // A process with 40 MiB of its own pages in RAM and 160 MiB of shared DLL and mapped-file pages:
+    // Task Manager's Memory column shows 40 MiB, not 200.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = 2 * ONE_GIB,
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 40 * ONE_MIB);
+}
+
+TEST(WindowsProcessMemoryTest, VirtualIsTheCommitSizeNotReservedAddressSpace)
+{
+    // Control Flow Guard reserves about 2 TiB of address space in every 64-bit process that uses it;
+    // VirtualSize counts it, Task Manager's Commit size does not.
+    constexpr std::uint64_t CFG_RESERVATION = 2048 * ONE_GIB;
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = CFG_RESERVATION + (300 * ONE_MIB),
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.virtualBytes, 60 * ONE_MIB);
+}
+
+TEST(WindowsProcessMemoryTest, PeakIsThePeakWorkingSet)
+{
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = 2 * ONE_GIB,
+        .pagefileUsage = 60 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.peakRssBytes, 250 * ONE_MIB);
+    EXPECT_GE(memory.peakRssBytes, memory.rssBytes);
+}
+
+TEST(WindowsProcessMemoryTest, NegativePrivateWorkingSetReadsAsZero)
+{
+    // WorkingSetPrivateSize is a signed LARGE_INTEGER; a negative value is not a size.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = -1,
+        .workingSetSize = 8 * ONE_MIB,
+        .peakWorkingSetSize = 8 * ONE_MIB,
+        .virtualSize = 16 * ONE_MIB,
+        .pagefileUsage = 4 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.rssBytes, 0U);
+}
+
+TEST(WindowsProcessMemoryTest, KernelPseudoProcessWithNoMemoryReadsZero)
+{
+    const WindowsProcessMemory memory = windowsProcessMemory({});
+    EXPECT_EQ(memory.rssBytes, 0U);
+    EXPECT_EQ(memory.peakRssBytes, 0U);
+    EXPECT_EQ(memory.virtualBytes, 0U);
 }
 
 } // namespace
