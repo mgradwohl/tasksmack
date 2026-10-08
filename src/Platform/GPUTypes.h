@@ -134,6 +134,8 @@ struct GPUCounters
     bool powerAvailable = true;
     bool gpuClockAvailable = true;
     bool memoryAvailable = true; // used/total bytes, and so the memory percent
+    bool encoderAvailable = true;
+    bool decoderAvailable = true;
 
     // The GPU was asleep (PCI runtime-suspended) this sample, so the probe left it alone rather than
     // wake it with sensor queries (#1117): every *Available flag above is then false. Linux reads
@@ -188,7 +190,8 @@ struct GPUCounters
     std::uint32_t fanSpeedRaw = 0;
     std::uint32_t fanSpeedMaxRaw = 0;
 
-    // Engine utilization (0-100, instantaneous)
+    // Video encoder/decoder utilization (0-100), as the driver reports it: NVML averages it over its
+    // own sampling period (#1477). Read only where GPUCapabilities::hasEncoderDecoder says so.
     double encoderUtilPercent = 0.0;
     double decoderUtilPercent = 0.0;
 };

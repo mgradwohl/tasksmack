@@ -31,6 +31,10 @@ struct MockDevice
     // NVML_ERROR_NOT_SUPPORTED, so per-device sensor capabilities can be tested (#1112).
     bool hasPower;
     bool hasFan;
+    // A GPU without NVENC/NVDEC answers the video-engine queries NVML_ERROR_NOT_SUPPORTED (#1477).
+    bool hasVideoEngines;
+    unsigned int encoderPercent;
+    unsigned int decoderPercent;
     const char* busId; // nvmlPciInfo_t::busId, eight-digit domain as NVML prints it (#1117)
     unsigned int pciBus;
 };
@@ -53,6 +57,9 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .pcieRxKilobytes = 64,
      .hasPower = true,
      .hasFan = true,
+     .hasVideoEngines = true,
+     .encoderPercent = 30,
+     .decoderPercent = 12,
      .busId = "00000000:01:00.0",
      .pciBus = 0x01},
     {.name = "Mock NVIDIA GPU 1",
@@ -72,6 +79,9 @@ constexpr std::array<MockDevice, 2> MOCK_DEVICES{{
      .pcieRxKilobytes = 16,
      .hasPower = false,
      .hasFan = false,
+     .hasVideoEngines = false,
+     .encoderPercent = 0,
+     .decoderPercent = 0,
      .busId = "00000000:41:00.0",
      .pciBus = 0x41},
 }};
@@ -204,7 +214,7 @@ constexpr unsigned int NO_FAILING_HANDLE = std::numeric_limits<unsigned int>::ma
 unsigned int g_FailingHandleIndex = NO_FAILING_HANDLE;
 int g_UuidCallsBeforeFailure = -1; // -1: never fail
 unsigned int g_UuidCalls = 0;
-bool g_FailSensorReads = false; // utilization, memory, temperature, power and graphics clock time out (#1111)
+bool g_FailSensorReads = false; // utilization, memory, temperature, power, graphics clock, encoder and decoder time out (#1111)
 // #1116: how many devices NVML reports (the first N of MOCK_DEVICES), so a test can hot-plug or remove
 // one; which device's sensor reads return NVML_ERROR_GPU_IS_LOST; and how often NVML was initialised.
 unsigned int g_DeviceCount = static_cast<unsigned int>(MOCK_DEVICES.size());
@@ -232,6 +242,34 @@ unsigned int g_FailingPciInfoIndex = NO_FAILING_HANDLE; // NOLINT(cppcoreguideli
 [[nodiscard]] bool isLost(const MockDevice* dev)
 {
     return g_LostDeviceIndex < MOCK_DEVICES.size() && dev == &MOCK_DEVICES[g_LostDeviceIndex];
+}
+
+// The video engines' utilization (#1477), as real NVML reports it: the percentage and the period
+// it was averaged over.
+NVML::nvmlReturn_t
+videoEngineUtilization(NVML::nvmlDevice_t device, bool encoder, unsigned int* utilization, unsigned int* samplingPeriodUs)
+{
+    const auto* dev = safeDevice(device);
+    if (dev == nullptr)
+    {
+        return NVML::NVML_ERROR_INVALID_ARGUMENT;
+    }
+    if (isLost(dev))
+    {
+        return NVML::NVML_ERROR_GPU_IS_LOST;
+    }
+    if (!dev->hasVideoEngines)
+    {
+        return NVML::NVML_ERROR_NOT_SUPPORTED;
+    }
+    if (g_FailSensorReads)
+    {
+        return NVML::NVML_ERROR_TIMEOUT;
+    }
+    constexpr unsigned int SAMPLING_PERIOD_US = 167'000;
+    *utilization = encoder ? dev->encoderPercent : dev->decoderPercent;
+    *samplingPeriodUs = SAMPLING_PERIOD_US;
+    return NVML::NVML_SUCCESS;
 }
 
 } // namespace
@@ -503,6 +541,16 @@ extern "C"
         return NVML::NVML_SUCCESS;
     }
 
+    NVML::nvmlReturn_t nvmlDeviceGetEncoderUtilization(NVML::nvmlDevice_t device, unsigned int* utilization, unsigned int* samplingPeriodUs)
+    {
+        return videoEngineUtilization(device, true, utilization, samplingPeriodUs);
+    }
+
+    NVML::nvmlReturn_t nvmlDeviceGetDecoderUtilization(NVML::nvmlDevice_t device, unsigned int* utilization, unsigned int* samplingPeriodUs)
+    {
+        return videoEngineUtilization(device, false, utilization, samplingPeriodUs);
+    }
+
     NVML::nvmlReturn_t nvmlDeviceGetPcieThroughput(NVML::nvmlDevice_t device, NVML::nvmlPcieUtilCounter_t counter, unsigned int* throughput)
     {
         const auto* dev = safeDevice(device);
@@ -548,7 +596,7 @@ extern "C"
         g_UuidCalls = 0;
     }
 
-    // Test control: make the utilization, memory, temperature, power and graphics-clock reads fail with
+    // Test control: make the utilization, memory, temperature, power, graphics-clock, encoder and decoder reads fail with
     // NVML_ERROR_TIMEOUT, as a busy or resetting GPU does (#1111).
     void tasksmackNvmlMockFailSensorReads(int fail)
     {
