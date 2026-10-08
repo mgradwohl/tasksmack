@@ -632,7 +632,7 @@ TEST_F(SystemSectionsRenderTest, StorageGridReservesAtLeastOneRowOfCells)
 /// Everything the Network tab keeps between frames, wired into one context.
 struct NetworkInputs
 {
-    Domain::SystemPublication publication = networkPublication();
+    Domain::SystemPublication publication;
     double sent = 0.0;
     double received = 0.0;
     bool netInitialized = false;
@@ -649,7 +649,9 @@ struct NetworkInputs
     NetworkInputs(NetworkInputs&&) = delete;
     NetworkInputs& operator=(NetworkInputs&&) = delete;
 
-    NetworkInputs()
+    // Initialized here, not with a default member initializer: CodeQL's unused-function query does
+    // not see calls made from default member initializers (alert 3020 on #1549).
+    NetworkInputs() : publication(networkPublication())
     {
         ctx = NetworkSection::RenderContext{
             .systemPublication = &publication,
