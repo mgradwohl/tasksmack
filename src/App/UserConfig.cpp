@@ -73,6 +73,47 @@ namespace
     return static_cast<ProcessColumn>(index);
 }
 
+/// The top-level key that records the config file's format (CONFIG_FORMAT_VERSION, #1376).
+constexpr std::string_view CONFIG_VERSION_KEY = "config_version";
+
+/// The format version of a parsed config file. A file without the key -- or with a value that is not
+/// an integer -- predates it and is version 1.
+[[nodiscard]] std::int64_t configVersionOf(const toml::table& config)
+{
+    return config[CONFIG_VERSION_KEY].value<std::int64_t>().value_or(1);
+}
+
+/// Brings the [process_columns] section of a version 1 document (one that lists every column) to the
+/// sparse format before save() merges into it (#1376): a column whose value equals its default
+/// (ProcessColumnSettings::isLegacyChoice()) and that `mine` does not list as chosen is dropped, the
+/// same rule readSettings() migrates by. Values that are not booleans, and keys that are not column
+/// keys, are left alone. A document already in the sparse format is not touched.
+void migrateLegacyProcessColumns(toml::table& document, const toml::table& mine)
+{
+    if (configVersionOf(document) >= CONFIG_FORMAT_VERSION)
+    {
+        return;
+    }
+    auto* columns = document.get_as<toml::table>("process_columns");
+    if (columns == nullptr)
+    {
+        return;
+    }
+    const auto* chosen = mine.get_as<toml::table>("process_columns");
+    for (const auto col : allProcessColumns())
+    {
+        const std::string_view key = getColumnInfo(col).configKey;
+        if (chosen != nullptr && chosen->contains(key))
+        {
+            continue;
+        }
+        if (const auto saved = (*columns)[key].value<bool>(); saved.has_value() && !ProcessColumnSettings::isLegacyChoice(col, *saved))
+        {
+            columns->erase(key);
+        }
+    }
+}
+
 constexpr int WINDOW_POS_ABS_MAX = 100'000;
 
 [[nodiscard]] bool isSaneWindowPositionComponent(int value)
@@ -294,16 +335,20 @@ void readSettings(const toml::table& config, UserSettings& settings)
         }
     }
 
-    // Process panel column visibility
+    // Process panel column visibility. Since CONFIG_FORMAT_VERSION 2 the section lists only the
+    // columns the user chose (#1376). An older file lists every column, so a value equal to the
+    // column's default is taken for one the user never touched and left to follow the defaults,
+    // including the capability-aware ones applied when the Processes panel attaches (#1210).
     if (const auto* cols = config["process_columns"].as_table())
     {
+        const bool legacyFormat = configVersionOf(config) < CONFIG_FORMAT_VERSION;
         for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
         {
             const auto col = processColumnFromIndex(i);
             const auto info = getColumnInfo(col);
             if (const auto* node = cols->get(info.configKey); node != nullptr)
             {
-                if (auto val = node->value<bool>())
+                if (auto val = node->value<bool>(); val.has_value() && (!legacyFormat || ProcessColumnSettings::isLegacyChoice(col, *val)))
                 {
                     settings.processColumns.setVisible(col, *val);
                 }
@@ -347,13 +392,17 @@ void readSettings(const toml::table& config, UserSettings& settings)
         break;
     }
 
-    // Build process columns table
+    // Build process columns table: only the columns whose visibility the user chose (#1376). The
+    // others are left out so they keep following the defaults, which can change -- a new column, or
+    // one this system can't fill (#1210) -- and a column the user resets is removed from the file.
     auto processColumnsTable = toml::table{};
     for (std::size_t i = 0; i < std::to_underlying(ProcessColumn::Count); ++i)
     {
         const auto col = processColumnFromIndex(i);
-        const auto info = getColumnInfo(col);
-        processColumnsTable.insert(std::string(info.configKey), settings.processColumns.isVisible(col));
+        if (settings.processColumns.isChosen(col))
+        {
+            processColumnsTable.insert(std::string(getColumnInfo(col).configKey), settings.processColumns.isVisible(col));
+        }
     }
 
     // Build TOML document
@@ -700,9 +749,22 @@ void UserConfig::save()
     // Write only what TaskSmack changed since it last read or wrote the file; everything else in
     // the file, including edits made while TaskSmack runs, stays as it is (#1122).
     const toml::table mine = buildTable(m_Settings);
+    // A file in the old format, listing every column, is rewritten to list only the chosen ones
+    // (#1376), once; the version written below keeps it from being migrated again.
+    migrateLegacyProcessColumns(document, mine);
     // A new file gets every setting; an existing one -- even one created or repaired since startup --
     // gets only the keys whose value TaskSmack changed from its baseline.
     UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(m_Synced) : toml::table{}, mine);
+    // No chosen column left (all reset, or none ever chosen): no empty [process_columns] header.
+    if (const auto* columns = document.get_as<toml::table>("process_columns"); columns != nullptr && columns->empty())
+    {
+        document.erase("process_columns");
+    }
+    // A file written by a newer TaskSmack keeps its higher version.
+    if (configVersionOf(document) < CONFIG_FORMAT_VERSION)
+    {
+        document.insert_or_assign(CONFIG_VERSION_KEY, CONFIG_FORMAT_VERSION);
+    }
     // Settings TaskSmack wrote once but never applied, and has since dropped (#1123): removed, so
     // the file doesn't keep advertising tuning that does nothing.
     UserConfigHelpers::eraseRetiredKeys(document);
@@ -731,7 +793,9 @@ void UserConfig::save()
     text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "
             "a position off every connected display is ignored at startup\n";
     text << "#   [window] maximized: reopen maximized; Restore returns to width/height/x/y\n";
-    text << "#   [process_columns]: toggle columns on/off; true shows the column\n";
+    text << "#   config_version: the format of this file (written by TaskSmack; don't change it)\n";
+    text << "#   [process_columns]: columns you showed (true) or hid (false); a column not listed follows the defaults, "
+            "which hide one this system can't fill\n";
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
