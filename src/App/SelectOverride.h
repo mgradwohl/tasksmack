@@ -6,6 +6,7 @@
 //   TASKSMACK_SELECT_PID=1234 ./TaskSmack                 the process with PID 1234
 //   TASKSMACK_SELECT_NAME=explorer.exe ./TaskSmack        the first process with that name
 //   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|network)
+//   TASKSMACK_OPEN=help                                   the Help window (help|about, #172)
 //
 // The variables are read once, at startup (ShellLayer::onAttach() calls active()). When the PID or
 // name first appears in a process snapshot, ProcessesPanel selects that process exactly as a click
@@ -344,18 +345,62 @@ struct MainTabChoice
     return !choice.index.has_value();
 }
 
-/// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME or
-/// TASKSMACK_DETAILS_TAB, each nullptr when unset. A blank value counts as unset, as it does everywhere
-/// else. While one is set, the startup "Limited Data" notice is not queued: the hooks exist for
-/// unattended captures, and dismissing the modal needs input.
-[[nodiscard]] inline bool anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab) noexcept
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog.
+inline constexpr std::string_view OPEN_ENV_VAR = "TASKSMACK_OPEN";
+
+enum class StartupDialog : std::uint8_t
 {
-    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab},
+    Help,
+    About,
+};
+
+/// What TASKSMACK_OPEN asked for.
+struct StartupDialogChoice
+{
+    std::optional<StartupDialog> dialog; ///< nullopt when unset, blank or unknown
+    std::string warning;                 ///< set when a nonblank value names no dialog
+};
+
+/// Parses a TASKSMACK_OPEN value (nullptr when unset): "help" or "about", in any case.
+[[nodiscard]] inline StartupDialogChoice parseStartupDialog(const char* value)
+{
+    StartupDialogChoice choice;
+    const std::string_view text = Detail::trim(value != nullptr ? value : "");
+    if (text.empty())
+    {
+        return choice;
+    }
+    if (Detail::equalsIgnoreCase(text, "help"))
+    {
+        choice.dialog = StartupDialog::Help;
+    }
+    else if (Detail::equalsIgnoreCase(text, "about"))
+    {
+        choice.dialog = StartupDialog::About;
+    }
+    else
+    {
+        choice.warning = std::format("{}: '{}' is not help or about; ignored", OPEN_ENV_VAR, text);
+    }
+    return choice;
+}
+
+/// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME,
+/// TASKSMACK_DETAILS_TAB or TASKSMACK_OPEN, each nullptr when unset. A blank value counts as unset, as
+/// it does everywhere else. While one is set, the startup "Limited Data" notice is not queued: the
+/// hooks exist for unattended captures, and dismissing the modal needs input.
+[[nodiscard]] inline bool
+anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open) noexcept
+{
+    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab, open},
                                [](const char* value) { return value != nullptr && !Detail::trim(value).empty(); });
 }
 
 /// anyTestHookActive() for the process environment.
 [[nodiscard]] bool testHookActive();
+
+/// The dialog TASKSMACK_OPEN asks for, read and logged on the first call. Thread-safe.
+[[nodiscard]] std::optional<StartupDialog> startupDialog();
 
 /// The selection the variables ask for, read and logged on the first call; nullopt when they are
 /// unset or invalid. Thread-safe.

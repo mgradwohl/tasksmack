@@ -331,19 +331,43 @@ TEST(SelectOverrideTest, MainTabAloneIsATestHook)
 {
     using App::SelectOverride::anyTestHookActive;
 
-    EXPECT_TRUE(anyTestHookActive("processes", nullptr, nullptr, nullptr));
-    EXPECT_TRUE(anyTestHookActive("not-a-tab", nullptr, nullptr, nullptr)); // set, even if ignored
-    EXPECT_TRUE(anyTestHookActive(nullptr, "1234", nullptr, nullptr));
-    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, "explorer.exe", nullptr));
-    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, "gpu"));
+    EXPECT_TRUE(anyTestHookActive("processes", nullptr, nullptr, nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive("not-a-tab", nullptr, nullptr, nullptr, nullptr)); // set, even if ignored
+    EXPECT_TRUE(anyTestHookActive(nullptr, "1234", nullptr, nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, "explorer.exe", nullptr, nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, "gpu", nullptr));
+    EXPECT_TRUE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr, "help")); // #172
 }
 
 TEST(SelectOverrideTest, NoHooksMeansNoTestHook)
 {
     using App::SelectOverride::anyTestHookActive;
 
-    EXPECT_FALSE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr));
-    EXPECT_FALSE(anyTestHookActive("", "  ", "\t", "")); // blank counts as unset
+    EXPECT_FALSE(anyTestHookActive(nullptr, nullptr, nullptr, nullptr, nullptr));
+    EXPECT_FALSE(anyTestHookActive("", "  ", "\t", "", " ")); // blank counts as unset
+}
+
+// #172: TASKSMACK_OPEN opens the Help window or the About dialog at startup.
+TEST(SelectOverrideTest, ParsesTheStartupDialog)
+{
+    using App::SelectOverride::parseStartupDialog;
+    using App::SelectOverride::StartupDialog;
+
+    EXPECT_EQ(parseStartupDialog("help").dialog, StartupDialog::Help);
+    EXPECT_EQ(parseStartupDialog(" HELP ").dialog, StartupDialog::Help);
+    EXPECT_EQ(parseStartupDialog("About").dialog, StartupDialog::About);
+    EXPECT_TRUE(parseStartupDialog("help").warning.empty());
+
+    const auto unknown = parseStartupDialog("settings");
+    EXPECT_FALSE(unknown.dialog.has_value());
+    EXPECT_FALSE(unknown.warning.empty());
+
+    for (const char* blank : {static_cast<const char*>(nullptr), "", "  "})
+    {
+        const auto none = parseStartupDialog(blank);
+        EXPECT_FALSE(none.dialog.has_value());
+        EXPECT_TRUE(none.warning.empty());
+    }
 }
 
 } // namespace

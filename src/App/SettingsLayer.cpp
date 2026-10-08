@@ -50,6 +50,7 @@ namespace
 // combo sizing in renderSettingsDialog()), so each is named once and used for both.
 constexpr const char* EDIT_CONFIG_LABEL = ICON_FA_FILE_PEN "  Edit Config File";
 constexpr const char* OPEN_THEMES_LABEL = ICON_FA_FOLDER "  Open Themes Folder";
+constexpr const char* ABOUT_LABEL = ICON_FA_CIRCLE_INFO "  About TaskSmack";
 constexpr const char* CANCEL_LABEL = "Cancel";
 // "Save", not "Apply": the button writes config.toml and closes the dialog, which is what Save
 // means; "Apply" suggested the dialog would stay open (#1273).
@@ -591,6 +592,19 @@ void SettingsLayer::renderSettingsDialog()
         ImGui::Spacing();
         ImGui::Checkbox(PRIVILEGE_NOTICE_LABEL, &m_ShowPrivilegeNotice);
         ImGui::SetItemTooltip("At startup, say when TaskSmack can't read every process's details without administrator or root rights");
+
+        // About moved out of F1, which now opens Help (#172); it is reached from here and from Help.
+        // Only one modal is open at a time, so this closes Settings, as Cancel does, first.
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
+        if (ImGui::Button(ABOUT_LABEL))
+        {
+            ImGui::CloseCurrentPopup();
+            Core::OpenAboutEvent event;
+            Core::Application::get().raiseEvent(event);
+        }
+        ImGui::PopStyleColor();
+        ImGui::SetItemTooltip("Version, build and licences. Closes Settings without saving.");
 
 #ifndef _WIN32
         // Only meaningful on native Wayland -- the custom title bar's drag/resize

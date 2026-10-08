@@ -2,7 +2,8 @@
 /// @brief The About dialog, headless (#1490): it opens at its authored width and stays there -- it
 /// used to auto-fit around a wrapped shortcut table and creep wider every frame until it filled most
 /// of the window -- its height is held to its own cap with the contents scrolling inside it, it
-/// stays inside a small window with its OK button reachable, and OK or Escape closes it.
+/// stays inside a small window with its OK button reachable, and OK or Escape closes it. Since #172
+/// it has no shortcuts section; those are in the Help window (test_HelpWindowRender.cpp).
 
 #include "App/AboutDialog.h"
 #include "App/DialogGeometry.h"
@@ -287,6 +288,23 @@ TEST_F(AboutDialogRenderTest, EscapeClosesIt)
     (void) runFrame();
     ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
     EXPECT_FALSE(runFrame().open);
+}
+
+TEST_F(AboutDialogRenderTest, HasNoShortcutsSection)
+{
+    // #172: the shortcut table moved to the Help window; About is product information only.
+    ASSERT_TRUE(openAndSettle().open);
+    const ImGuiWindow* body = nullptr;
+    for (const ImGuiWindow* window : GImGui->Windows)
+    {
+        if (std::string_view{window->Name}.contains("##AboutBody"))
+        {
+            body = window;
+        }
+    }
+    ASSERT_NE(body, nullptr);
+    EXPECT_NE(ImGui::TableFindByID(ImHashStr("##AboutProject", 0, body->ID)), nullptr); // The probe finds About's tables
+    EXPECT_EQ(ImGui::TableFindByID(ImHashStr("##Shortcuts", 0, body->ID)), nullptr);
 }
 
 TEST_F(AboutDialogRenderTest, DrawsNothingUntilRequested)

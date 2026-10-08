@@ -237,6 +237,8 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_AboutDialogRender.cpp
+    App/test_HelpContent.cpp
+    App/test_HelpWindowRender.cpp
     App/test_KeyboardInputRender.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
@@ -425,6 +427,8 @@ add_executable(TaskSmackTests
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
+    # The Help window (#172), run headless (test_HelpWindowRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp

@@ -577,10 +577,10 @@ void ShellLayer::handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action)
     using KeyboardShortcuts::ShortcutAction;
     switch (action)
     {
-    case ShortcutAction::ShowAbout:
+    case ShortcutAction::ShowHelp:
     {
-        // There is no separate help: the About dialog lists the keyboard shortcuts.
-        Core::OpenAboutEvent event;
+        // The Help window (#172); About is reached from its footer and from Settings.
+        Core::OpenHelpEvent event;
         Core::Application::get().raiseEvent(event);
         break;
     }
@@ -844,12 +844,12 @@ void ShellLayer::renderStatusBar() const
             ImGui::SameLine();
             if (ImGui::SmallButton(STATUS_HELP_LABEL))
             {
-                Core::OpenAboutEvent event;
+                Core::OpenHelpEvent event;
                 Core::Application::get().raiseEvent(event);
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("About TaskSmack and keyboard shortcuts (F1)");
+                ImGui::SetTooltip("Help: keyboard shortcuts, columns and tabs (F1)");
             }
         }
 

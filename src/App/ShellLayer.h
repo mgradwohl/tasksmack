@@ -51,8 +51,8 @@ class ShellLayer : public Core::Layer
     }
 
   private:
-    /// The htop-style function keys (#170) that do not depend on the tab: F1 About (with the shortcut
-    /// list), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
+    /// The htop-style function keys (#170) that do not depend on the tab: F1 Help (with the shortcut
+    /// list, #172), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
     static void handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action);
     /// F5 (tree view) and F9 (Kill, confirm dialog only), to the tab drawn this frame: called after
     /// renderTabBar() and before the tabs draw, whose render takes the request this frame.

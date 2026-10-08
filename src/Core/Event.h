@@ -20,6 +20,7 @@ enum class EventType : uint8_t
     ActiveTabChanged,
     OpenSettings,
     OpenAbout,
+    OpenHelp,
     OpenElevationNotice
 };
 

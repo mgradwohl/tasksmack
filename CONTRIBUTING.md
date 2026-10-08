@@ -386,9 +386,9 @@ The production `.cpp` files exercised this way are listed under "Source files un
 `tests/CMakeLists.txt` (for example `App/Panels/ProcessActionConfirm.cpp`,
 `App/Panels/ProcessActionsView.cpp`, `App/Panels/ProcessPriorityView.cpp`,
 `App/Panels/ProcessEnvironmentView.cpp`, `App/Panels/ProcessConnectionsView.cpp`, `App/AboutDialog.cpp`,
-`UI/ChartLegend.cpp`).
-`TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp` (its dialog
-is `AboutDialog.cpp`, which is), `ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
+`App/HelpWindow.cpp`, `UI/ChartLegend.cpp`).
+`TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp` and `HelpLayer.cpp` (their
+windows are `AboutDialog.cpp` and `HelpWindow.cpp`, which are), `ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
 `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs and `UI/UILayer.cpp` are not in that list. That
 is no longer a link limit on ImGui itself: `UI/Theme.cpp` is replaced in the test binary by
 `tests/Mocks/ThemeStub.cpp`, so a file can only be added once every `Theme` member it calls is
@@ -506,11 +506,11 @@ the untested logic needs OS handles or not:
 
 ### Visual validation without input (Process Details)
 
-Agents must not inject clicks or keys, so four test-only environment variables (#1559), read once at
-startup, select a process and open a tab by themselves. With `TASKSMACK_SELECT_PID` or
+Agents must not inject clicks or keys, so five test-only environment variables (#1559, #172), read
+once at startup, select a process, open a tab or open the Help or About window by themselves. With `TASKSMACK_SELECT_PID` or
 `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
 click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
-snapshots, one warning is logged and nothing is selected. While any of the four variables is set,
+snapshots, one warning is logged and nothing is selected. While any of the five variables is set,
 the startup "Limited Data" notice is not shown, since it would cover the capture. Unset, the
 variables do nothing.
 
@@ -520,6 +520,7 @@ variables do nothing.
 | `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
 | `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. |
+| `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
 
 Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
 works while the window is covered):
