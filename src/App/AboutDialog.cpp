@@ -60,7 +60,10 @@ void renderLink(std::string_view label, const char* url, const ImVec4& color)
     ImGui::SetCursorScreenPos(textMin);
     ImGui::PushID(url);
     const bool pressed =
-        ImGui::InvisibleButton("##Link", ImVec2(std::max(1.0F, textMax.x - textMin.x), std::max(1.0F, textMax.y - textMin.y)));
+        // EnableNav: InvisibleButton opts out of keyboard navigation by default, and a link must be
+        // reachable and activatable from the keyboard like every other control (#1542 review).
+        ImGui::InvisibleButton(
+            "##Link", ImVec2(std::max(1.0F, textMax.x - textMin.x), std::max(1.0F, textMax.y - textMin.y)), ImGuiButtonFlags_EnableNav);
     ImGui::PopID();
     if (pressed)
     {
