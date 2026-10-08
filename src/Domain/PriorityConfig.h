@@ -33,6 +33,26 @@ template<std::integral T> [[nodiscard]] constexpr T clampNice(T value)
     return std::clamp(value, static_cast<T>(MIN_NICE), static_cast<T>(MAX_NICE));
 }
 
+// Linux I/O priority levels within the Realtime and Best-effort classes (ioprio_set(2)): 0 is the
+// highest priority, 7 the lowest (#803).
+inline constexpr int32_t MIN_IO_LEVEL = 0;
+inline constexpr int32_t MAX_IO_LEVEL = 7;
+// Nice values per derived I/O level: the 40 nice values map onto the 8 levels.
+inline constexpr int32_t NICE_PER_IO_LEVEL = 5;
+
+/// Clamp an I/O priority level to the valid range (0 to 7)
+template<std::integral T> [[nodiscard]] constexpr T clampIoLevel(T value)
+{
+    return std::clamp(value, static_cast<T>(MIN_IO_LEVEL), static_cast<T>(MAX_IO_LEVEL));
+}
+
+/// The best-effort level the kernel uses for a process whose I/O class was never set: derived from
+/// its nice value, (nice + 20) / 5, so nice 0 is level 4 (ioprio_set(2), NOTES).
+[[nodiscard]] constexpr int32_t ioLevelForNice(int32_t nice)
+{
+    return (clampNice(nice) - MIN_NICE) / NICE_PER_IO_LEVEL;
+}
+
 /// Get human-readable priority label for a nice value
 /// @param nice Unix nice value (-20 to 19)
 /// @return Priority label ("High", "Above Normal", "Normal", "Below Normal", "Idle")

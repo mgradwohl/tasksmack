@@ -1,6 +1,7 @@
 #include "LinuxProcessActions.h"
 
 #include "Domain/PriorityConfig.h"
+#include "IoPriority.h"
 #include "Platform/IProcessActions.h"
 #include "PosixGuards.h"
 #include "PriorityErrorMessage.h"
@@ -25,8 +26,10 @@
 #include <vector>
 
 #include <fcntl.h>
+
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill() function, csignal does not
 #include <signal.h>
+#include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -121,6 +124,27 @@ struct PidfdOpen
 #endif
 }
 
+/// Whether the process @p pidfd refers to has exited: 1 if it has, 0 if it is still running, -1 with
+/// errno set if poll() fails. A pidfd polls readable once its process exits. Unlike signal 0, this
+/// needs no permission over the process, so another user's live process (EPERM to a signal) is never
+/// taken for an exited one (#803 review).
+[[nodiscard]] int pidfdExited(const FdGuard& pidfd)
+{
+    pollfd entry{.fd = pidfd.get(), .events = POLLIN, .revents = 0};
+    // A signal can interrupt even a zero-timeout poll(); that says nothing about the process, so it
+    // is retried rather than reported as an unconfirmed identity (#803 review).
+    int ready = ::poll(&entry, 1, 0);
+    while (ready < 0 && errno == EINTR)
+    {
+        ready = ::poll(&entry, 1, 0);
+    }
+    if (ready < 0)
+    {
+        return -1;
+    }
+    return (ready > 0 && (entry.revents & (POLLIN | POLLHUP)) != 0) ? 1 : 0;
+}
+
 /// Send `signal` through `pidfd`; 0 on success, -1 with errno set on failure.
 [[nodiscard]] int sendThroughPidfd(const FdGuard& pidfd, int signal)
 {
@@ -158,6 +182,7 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
         .canStop = true,
         .canContinue = true,
         .canSetPriority = true,
+        .canSetIoPriority = true, // ioprio_set(2) (#803)
     };
 }
 
@@ -239,6 +264,150 @@ namespace
         isThreadOf);
 }
 
+/// ioprio_set(2) for one thread: 0, or the errno. There is no glibc wrapper, so it is a raw syscall.
+[[nodiscard]] int ioprioSet(id_t tid, int ioprio)
+{
+#ifdef SYS_ioprio_set
+    return ::syscall(SYS_ioprio_set, IoPrio::WHO_PROCESS, static_cast<pid_t>(tid), ioprio) == 0 ? 0 : errno;
+#else
+    static_cast<void>(tid);
+    static_cast<void>(ioprio);
+    return ENOSYS;
+#endif
+}
+
+/// ioprio_get(2) for one process: the ioprio value, or -1 with errno set.
+[[nodiscard]] int ioprioGet(std::int32_t pid)
+{
+#ifdef SYS_ioprio_get
+    return static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, static_cast<pid_t>(pid)));
+#else
+    static_cast<void>(pid);
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+/// reniceThreads() against the real /proc and ioprio_set(2). I/O priority is per thread on Linux, as
+/// nice is: ioprio_set(IOPRIO_WHO_PROCESS, pid) alone changes only the main thread (#803, as #1104).
+[[nodiscard]] std::expected<PriorityChange, std::error_code> setIoPriorityOfEveryThread(int32_t pid, int ioprio)
+{
+    return reniceThreads(pid, threadIds, [ioprio](id_t tid) -> int { return ioprioSet(tid, ioprio); }, isThreadOf);
+}
+
+/// How the shared reporting below names the change: "priority" or "I/O priority".
+struct ChangeWording
+{
+    std::string_view lower;   ///< Mid-sentence, e.g. "its priority was being changed".
+    std::string_view leading; ///< At the start of a sentence, e.g. "Priority changed for".
+};
+
+constexpr ChangeWording NICE_WORDING{.lower = "priority", .leading = "Priority"};
+constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O priority"};
+
+/// The error for a failed first listing of the target's threads, for either change.
+[[nodiscard]] ProcessActionResult threadListError(const ProcessTarget& target, std::error_code listError, ChangeWording wording)
+{
+    std::string errorMsg = (listError == std::errc::no_such_file_or_directory || listError == std::errc::no_such_process)
+                             ? std::string("Process not found - may have already exited")
+                             : std::format("Can't list the threads of process {}: {}", target.pid, listError.message());
+    spdlog::warn("Failed to set {} for PID {}: {}", wording.lower, target.pid, errorMsg);
+    return ProcessActionResult::error(std::move(errorMsg));
+}
+
+/// The outcome of a per-thread change (nice or I/O priority) to @p target, made through
+/// reniceThreads() after the identity check; @p pidfd is the one opened before that check, and
+/// @p firstErrorMessage the platform message for change.firstError, shown if any thread failed.
+/// @p setting names the value set, for the success log: "nice=5", or "class=idle, level=0".
+///
+/// Once any thread was changed, it first confirms the target survived the change: if it exited
+/// meanwhile, the change may have reached another process, which matters more than which threads
+/// failed (#1228 review). Then exited workers, an incomplete relisting and threads that kept starting
+/// are each reported, and only a change that reached every thread is a success.
+[[nodiscard]] ProcessActionResult reportThreadChange(const PriorityChange& change,
+                                                     const FdGuard& pidfd,
+                                                     const ProcessTarget& target,
+                                                     ChangeWording wording,
+                                                     std::string_view setting,
+                                                     std::string firstErrorMessage)
+{
+    if (change.changed > 0 || change.unconfirmed > 0)
+    {
+        // A pidfd polls readable once its process exits. Unlike signal 0, which needs kill rights
+        // (same UID or CAP_KILL), this needs no permission over the process, so a change made to
+        // another user's process with only CAP_SYS_NICE is not reported as unconfirmed (#1483).
+        // A failing poll() leaves the change unconfirmed: it gives no evidence the target still
+        // held the PID.
+        const int exited = pidfdExited(pidfd);
+        if (exited != 0)
+        {
+            const int probeErr = errno;
+            std::string errorMsg =
+                (exited > 0)
+                    ? std::format("Process {} exited while its {} was being changed; the change may have reached a different process",
+                                  target.pid,
+                                  wording.lower)
+                    : std::format("{} was set, but it could not be confirmed that process {} still held its PID: {}",
+                                  wording.leading,
+                                  target.pid,
+                                  std::system_category().message(probeErr));
+            spdlog::warn("{}", errorMsg);
+            return ProcessActionResult::error(std::move(errorMsg));
+        }
+        if (change.unconfirmed > 0)
+        {
+            std::string errorMsg =
+                std::format("{} changed for {} threads, but {} thread(s) of process {} exited during the change; it may have reached "
+                            "another process",
+                            wording.leading,
+                            change.changed,
+                            change.unconfirmed,
+                            target.pid);
+            spdlog::warn("{}", errorMsg);
+            return ProcessActionResult::error(std::move(errorMsg));
+        }
+        if (change.relistError)
+        {
+            std::string errorMsg =
+                std::format("{} changed for {} threads, but the threads of process {} couldn't be listed again ({}); any started since may "
+                            "still have the old {}",
+                            wording.leading,
+                            change.changed,
+                            target.pid,
+                            change.relistError.message(),
+                            wording.lower);
+            spdlog::warn("{}", errorMsg);
+            return ProcessActionResult::error(std::move(errorMsg));
+        }
+        if (change.threadsKeptStarting)
+        {
+            std::string errorMsg =
+                std::format("{} changed for {} threads, but process {} kept starting new ones; some may still have the old {}",
+                            wording.leading,
+                            change.changed,
+                            target.pid,
+                            wording.lower);
+            spdlog::warn("{}", errorMsg);
+            return ProcessActionResult::error(std::move(errorMsg));
+        }
+        if (change.failed == 0)
+        {
+            spdlog::info("Successfully set {} ({}) for PID {} ({} threads)", wording.lower, setting, target.pid, change.changed);
+            return ProcessActionResult::ok();
+        }
+    }
+
+    std::string errorMsg = std::move(firstErrorMessage);
+    if (change.changed > 0 || change.unconfirmed > 0)
+    {
+        errorMsg = std::format(
+            "{} changed for only {} of {} threads. {}", wording.leading, change.changed, change.changed + change.failed, errorMsg);
+    }
+
+    spdlog::warn("Failed to set {} for PID {}: {}", wording.lower, target.pid, errorMsg);
+    return ProcessActionResult::error(std::move(errorMsg));
+}
+
 } // namespace
 
 ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target, int32_t nice)
@@ -280,82 +449,114 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     const auto result = setPriorityOfEveryThread(target.pid, clampedNice);
     if (!result.has_value())
     {
-        const std::error_code listError = result.error();
-        std::string errorMsg = (listError == std::errc::no_such_file_or_directory || listError == std::errc::no_such_process)
-                                 ? std::string("Process not found - may have already exited")
-                                 : std::format("Can't list the threads of process {}: {}", target.pid, listError.message());
-        spdlog::warn("Failed to set priority for PID {}: {}", target.pid, errorMsg);
-        return ProcessActionResult::error(std::move(errorMsg));
+        return threadListError(target, result.error(), NICE_WORDING);
     }
-    const PriorityChange change = *result;
+    return reportThreadChange(*result,
+                              pidfd,
+                              target,
+                              NICE_WORDING,
+                              std::format("nice={}", clampedNice),
+                              priorityErrorMessage(result->firstError, clampedNice, target.pid));
+}
 
-    // Once any thread was changed, confirm the target survived before reporting anything else: if
-    // it exited meanwhile, the change may have reached another process, which matters more than
-    // which threads failed (#1228 review).
-    if (change.changed > 0 || change.unconfirmed > 0)
+ProcessActionResult LinuxProcessActions::setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level)
+{
+    if (target.pid <= 0)
     {
-        // Signal 0 checks for existence without delivering anything. Any failure of that probe
-        // leaves the call unconfirmed, not only ESRCH: a sandbox that blocks pidfd_send_signal
-        // gives no evidence the target still held the PID.
-        if (sendThroughPidfd(pidfd, 0) != 0)
-        {
-            const int probeErr = errno;
-            std::string errorMsg =
-                (probeErr == ESRCH)
-                    ? std::format("Process {} exited while its priority was being changed; the change may have reached a different process",
-                                  target.pid)
-                    : std::format("Priority was set, but it could not be confirmed that process {} still held its PID: {}",
-                                  target.pid,
-                                  std::system_category().message(probeErr));
-            spdlog::warn("{}", errorMsg);
-            return ProcessActionResult::error(std::move(errorMsg));
-        }
-        if (change.unconfirmed > 0)
-        {
-            std::string errorMsg =
-                std::format("Priority changed for {} threads, but {} thread(s) of process {} exited during the change; it may have reached "
-                            "another process",
-                            change.changed,
-                            change.unconfirmed,
-                            target.pid);
-            spdlog::warn("{}", errorMsg);
-            return ProcessActionResult::error(std::move(errorMsg));
-        }
-        if (change.relistError)
-        {
-            std::string errorMsg = std::format(
-                "Priority changed for {} threads, but the threads of process {} couldn't be listed again ({}); any started since may "
-                "still have the old priority",
-                change.changed,
-                target.pid,
-                change.relistError.message());
-            spdlog::warn("{}", errorMsg);
-            return ProcessActionResult::error(std::move(errorMsg));
-        }
-        if (change.threadsKeptStarting)
-        {
-            std::string errorMsg =
-                std::format("Priority changed for {} threads, but process {} kept starting new ones; some may still have the old priority",
-                            change.changed,
-                            target.pid);
-            spdlog::warn("{}", errorMsg);
-            return ProcessActionResult::error(std::move(errorMsg));
-        }
-        if (change.failed == 0)
-        {
-            spdlog::info("Successfully set priority (nice={}) for PID {} ({} threads)", clampedNice, target.pid, change.changed);
-            return ProcessActionResult::ok();
-        }
+        return ProcessActionResult::error("Invalid PID");
     }
-
-    std::string errorMsg = priorityErrorMessage(change.firstError, clampedNice, target.pid);
-    if (change.changed > 0 || change.unconfirmed > 0)
+    if (static_cast<int>(ioClass) > IoPrio::MAX_CLASS)
     {
-        errorMsg = std::format("Priority changed for only {} of {} threads. {}", change.changed, change.changed + change.failed, errorMsg);
+        return ProcessActionResult::error("Invalid I/O priority class");
     }
 
-    spdlog::warn("Failed to set priority for PID {}: {}", target.pid, errorMsg);
-    return ProcessActionResult::error(errorMsg);
+    // encode() holds the level to 0-7, and to 0 for the classes without levels.
+    const IoPriority priority{.ioClass = ioClass, .level = IoPrio::classHasLevels(ioClass) ? Domain::Priority::clampIoLevel(level) : 0};
+    const int ioprio = IoPrio::encode(priority);
+    const std::string setting = std::format("class={}, level={}", IoPrio::className(ioClass), priority.level);
+    spdlog::debug("Setting I/O priority ({}) for PID {}", setting, target.pid);
+
+    // As setPriority(): ioprio_set(2) has no pidfd form either, so the pidfd opened before the
+    // identity check is asked afterwards whether the target survived the call.
+    const PidfdOpen opened = openPidfd(target.pid);
+    if (opened.fd < 0)
+    {
+        spdlog::warn("Failed to set I/O priority for PID {}: {}", target.pid, opened.refusal);
+        return ProcessActionResult::error(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+
+    ProcessActionResult identity = verifyIdentity(target);
+    if (!identity.success)
+    {
+        spdlog::warn("Not setting I/O priority for PID {}: {}", target.pid, identity.errorMessage);
+        return identity;
+    }
+
+    // I/O priority is per thread, as nice is, so every thread is set (#803, as #1104).
+    const auto result = setIoPriorityOfEveryThread(target.pid, ioprio);
+    if (!result.has_value())
+    {
+        return threadListError(target, result.error(), IO_WORDING);
+    }
+    return reportThreadChange(*result, pidfd, target, IO_WORDING, setting, ioPriorityErrorMessage(result->firstError, ioClass, target.pid));
+}
+
+IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& target)
+{
+    if (target.pid <= 0)
+    {
+        return std::unexpected(std::string("Invalid PID"));
+    }
+
+    // Checked as an action is, so a reused PID's value is never shown for the target: the pidfd is
+    // opened before the identity check and asked after the read whether the target still holds the
+    // PID; if it does, the value read was the target's.
+    const PidfdOpen opened = openPidfd(target.pid);
+    if (opened.fd < 0)
+    {
+        return std::unexpected(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+
+    ProcessActionResult identity = verifyIdentity(target);
+    if (!identity.success)
+    {
+        return std::unexpected(std::move(identity.errorMessage));
+    }
+
+    // The main thread's value: the one ionice(1) shows, and the one setIoPriority() sets with the rest.
+    const int raw = ioprioGet(target.pid);
+    if (raw < 0)
+    {
+        const int err = errno;
+        if (err == ESRCH)
+        {
+            return std::unexpected(std::string("Process not found - may have already exited"));
+        }
+        return std::unexpected(
+            std::format("Can't read the I/O priority of process {}: {}", target.pid, std::system_category().message(err)));
+    }
+    // Reading needs no privilege over the process, so neither may this check: another user's process
+    // refuses signal 0 with EPERM while it is very much alive.
+    const int exited = pidfdExited(pidfd);
+    if (exited < 0)
+    {
+        return std::unexpected(std::format("Can't confirm that process {} still held its PID while its I/O priority was read: {}",
+                                           target.pid,
+                                           std::system_category().message(errno)));
+    }
+    if (exited > 0)
+    {
+        return std::unexpected(std::format("Process {} exited while its I/O priority was being read", target.pid));
+    }
+
+    const std::optional<IoPriority> decoded = IoPrio::decode(raw);
+    if (!decoded.has_value())
+    {
+        return std::unexpected(std::format("Process {} has an I/O priority TaskSmack does not recognise ({})", target.pid, raw));
+    }
+    return *decoded;
 }
 
 ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target, int signal, std::string_view signalName)
