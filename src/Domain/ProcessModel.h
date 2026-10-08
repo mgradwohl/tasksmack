@@ -321,7 +321,8 @@ class ProcessModel : public ISamplable
 
     /// Merges @p publication's per-process GPU counters into @p snapshots. @p firstSeen holds, for
     /// each snapshot, when this model first listed that process: a process first listed after the
-    /// publication was read, and absent from it, has GPU fields that were never read (#1210, #1417).
+    /// publication was read has GPU fields that were never read (#1210, #1417): an entry for its
+    /// pid belongs to an exited process that held the pid at the read, and is not merged.
     static void mergeGPUData(std::vector<ProcessSnapshot>& snapshots,
                              const std::vector<Clock::time_point>& firstSeen,
                              const ProcessGPUPublication& publication);

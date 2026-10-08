@@ -2448,6 +2448,7 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesProcessSnapshots)
     processModel.setGPUModel(gpuModel);
 
     // GPUModel needs to be refreshed first to have process counters available
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
 
     // ProcessModel refresh will automatically merge GPU data
@@ -2476,6 +2477,7 @@ TEST(ProcessModelTest, MergeGPUDataMultipleProcesses)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2512,6 +2514,7 @@ TEST(ProcessModelTest, MergeGPUDataAggregatesMultiGPU)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2551,6 +2554,7 @@ std::vector<Domain::ProcessSnapshot> mergeOnce(std::unique_ptr<MockGPUProbe> gpu
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
     return processModel.snapshots();
@@ -2717,6 +2721,7 @@ TEST(ProcessModelTest, MergeGPUDataUpdatesGpuDevices)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -2816,6 +2821,7 @@ TEST(ProcessModelTest, ProcessRefreshNeverCallsTheGpuProbe)
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
     Domain::ProcessModel processModel(makeGpuProcessProbe(), [&currentTime] { return currentTime; });
     processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: listed before the GPU read, as in the app
 
     std::thread gpuSampler([&gpuModel, currentTime] { gpuModel->refreshAt(currentTime); });
     const auto gpuSamplerId = gpuSampler.get_id();
@@ -2853,9 +2859,10 @@ TEST(ProcessModelTest, ProcessRefreshDoesNotWaitForABlockedGpuProbe)
     auto gpuProbe = makePerProcessGpuProbe();
     auto* rawGpuProbe = gpuProbe.get();
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
-    gpuModel->refresh();
     Domain::ProcessModel processModel(makeGpuProcessProbe());
     processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: listed before the GPU read
+    gpuModel->refresh();
 
     rawGpuProbe->armBlockingReadGPUCounters();
     std::thread gpuSampler([&gpuModel] { gpuModel->refresh(); });
@@ -2889,9 +2896,10 @@ TEST(ProcessModelTest, ProcessSamplingDoesNotWaitForASlowGpuProbe)
     auto gpuProbe = makePerProcessGpuProbe();
     gpuProbe->withProcessReadDelay(SLOW_READ);
     auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
-    gpuModel->refresh(); // One slow read, so there is a publication to merge
     Domain::ProcessModel processModel(makeGpuProcessProbe());
     processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: listed before the GPU read
+    gpuModel->refresh();    // One slow read, so there is a publication to merge
 
     std::atomic<bool> stop{false};
     std::thread gpuSampler(
@@ -2968,11 +2976,11 @@ TEST(ProcessModelTest, GpuSupportComesWithThePublicationItWasReadUnder)
     EXPECT_FALSE(support.readFailed);
 }
 
-// #1210, #1417: a process first listed after the GPU sampler's last read, and
-// absent from it, has GPU fields that read could not have seen: unread, not
-// measured zeros. A process the read did see keeps its figures, and one listed
-// before the read and absent from it is a measured zero. Before the first read,
-// nothing is read.
+// #1210, #1417: a process first listed after the GPU sampler's last read has GPU
+// fields that read could not have seen: unread, not measured zeros, even if the
+// read has an entry for its pid. A process listed before the read keeps its
+// figures, or is a measured zero if the read has none for it. Before the first
+// read, nothing is read.
 TEST(ProcessModelTest, AProcessFirstListedSinceTheGpuReadHasUnreadGpuFields)
 {
     const auto start = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
@@ -3021,8 +3029,9 @@ TEST(ProcessModelTest, AProcessFirstListedSinceTheGpuReadHasUnreadGpuFields)
     }
     if (const auto* newGpuUser = findPid(snapshots, 300); newGpuUser != nullptr)
     {
-        EXPECT_TRUE(newGpuUser->gpuFieldsRead) << "the read saw it on the GPU";
-        EXPECT_EQ(newGpuUser->gpuMemoryBytes, 1024U);
+        // The read's entry for pid 300 can't be this process's: it was not yet listed.
+        EXPECT_FALSE(newGpuUser->gpuFieldsRead) << "first listed since the GPU read";
+        EXPECT_EQ(newGpuUser->gpuMemoryBytes, 0U);
     }
 
     // The next GPU read covers everyone.
@@ -3032,6 +3041,59 @@ TEST(ProcessModelTest, AProcessFirstListedSinceTheGpuReadHasUnreadGpuFields)
     for (const auto& snap : processModel.snapshots())
     {
         EXPECT_TRUE(snap.gpuFieldsRead) << "pid " << snap.pid;
+    }
+    snapshots = processModel.snapshots();
+    if (const auto* gpuUser = findPid(snapshots, 300); gpuUser != nullptr)
+    {
+        EXPECT_EQ(gpuUser->gpuMemoryBytes, 1024U) << "listed before this read, so its entry merges";
+    }
+}
+
+// #1417: a GPU read taken while an earlier process held a pid publishes that process's usage under
+// the pid. A process that reuses the pid and is first listed after the read must not inherit it:
+// its GPU fields are unread and empty. The synchronous read this replaced could not mix them up.
+TEST(ProcessModelTest, APidReusedSinceTheGpuReadDoesNotInheritTheExitedProcesssGpuUsage)
+{
+    const auto start = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
+    auto currentTime = start;
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    auto* rawProcessProbe = processProbe.get();
+    rawProcessProbe->setCounters({makeCounter(42, "old_owner", 'R', 1000, 500, 5000)});
+    rawProcessProbe->setTotalCpuTime(100000);
+    auto gpuProbe = makePerProcessGpuProbe();
+    gpuProbe->withProcessGPU(42, "GPU0", 4096);
+    auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe), [&currentTime] { return currentTime; });
+    processModel.setGPUModel(gpuModel);
+
+    // Pid 42 (first owner) is listed before the read at T: its usage merges.
+    processModel.refresh();
+    const auto captureTime = start + std::chrono::seconds(1);
+    gpuModel->refreshAt(captureTime);
+    currentTime = start + std::chrono::milliseconds(1500);
+    processModel.refresh();
+    {
+        const auto snapshots = processModel.snapshots();
+        ASSERT_EQ(snapshots.size(), 1U);
+        EXPECT_TRUE(snapshots[0].gpuFieldsRead);
+        EXPECT_EQ(snapshots[0].gpuMemoryBytes, 4096U);
+    }
+
+    // The first owner exits and a new process takes pid 42 (a different start time), first listed
+    // after T. The publication still holds the old owner's entry for pid 42.
+    currentTime = start + std::chrono::seconds(2);
+    rawProcessProbe->setCounters({makeCounter(42, "new_owner", 'R', 10, 5, 9000)});
+    rawProcessProbe->setTotalCpuTime(200000);
+    processModel.refresh();
+    {
+        const auto snapshots = processModel.snapshots();
+        ASSERT_EQ(snapshots.size(), 1U);
+        EXPECT_EQ(snapshots[0].name, "new_owner");
+        EXPECT_FALSE(snapshots[0].gpuFieldsRead);
+        EXPECT_EQ(snapshots[0].gpuMemoryBytes, 0U);
+        EXPECT_DOUBLE_EQ(snapshots[0].gpuUtilPercent, 0.0);
+        EXPECT_TRUE(snapshots[0].perGpuUsage.empty());
+        EXPECT_TRUE(snapshots[0].gpuDevices.empty());
     }
 }
 
@@ -3049,6 +3111,7 @@ TEST(ProcessModelTest, StalePerProcessGpuDataIsAGapNotAReading)
     processModel.setGPUModel(gpuModel);
     processModel.watchProcess(100);
 
+    processModel.refresh(); // Seed at start: listed before the GPU read
     gpuModel->refreshAt(start);
     currentTime = start + maxAge; // As old as it may be: still merged
     processModel.refresh();
@@ -3192,6 +3255,7 @@ TEST(ProcessModelTest, MergeGPUDataWithUnknownGPUId)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -3222,6 +3286,7 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 
@@ -3256,6 +3321,7 @@ TEST(ProcessModelTest, MergeGPUDataCarriesIntegratedFlagPerGpu)
     Domain::ProcessModel processModel(std::move(processProbe));
     processModel.setGPUModel(gpuModel);
 
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
     gpuModel->refresh();
     processModel.refresh();
 

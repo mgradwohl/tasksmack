@@ -954,22 +954,27 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots,
     for (std::size_t index = 0; index < snapshots.size(); ++index)
     {
         ProcessSnapshot& snapshot = snapshots[index];
+        // A process first listed after the GPU sampler's read may have started after it, so the read
+        // could not have seen it (#1210, #1417): its GPU fields are unread, whether or not the
+        // publication has an entry for its pid. Such an entry belongs to whatever held the pid at the
+        // read -- an exited process whose pid was reused -- and must not be merged into this one.
+        // Conservative: a process that started before the read but was first listed after it also
+        // reads as unread, for at most one GPU interval.
+        const bool listedAtRead = (index >= firstSeen.size()) || (firstSeen[index] <= publication.captureTime);
+        if (!listedAtRead)
+        {
+            snapshot.gpuFieldsRead = false;
+            continue;
+        }
         auto it = pidToGPU.find(snapshot.pid);
         if (it == pidToGPU.end())
         {
-            // No GPU usage in the publication: a measured zero if the process was
-            // already listed when the GPU sampler read, but unread if it was first
-            // listed since -- it may have started after that read, which then could
-            // not have seen it (#1210, #1417). Conservative: a process that started
-            // before the read but was first listed after it also reads as unread, for
-            // at most one GPU interval.
-            snapshot.gpuFieldsRead = (index >= firstSeen.size()) || (firstSeen[index] <= publication.captureTime);
+            // Listed at the read and not using a GPU then: a measured zero.
+            snapshot.gpuFieldsRead = true;
             continue;
         }
 
-        // The read saw this pid using a GPU. (A pid reused within one GPU interval
-        // would inherit the exited process's figures until the next read; as rare
-        // as it is short-lived.)
+        // The read saw this process using a GPU.
         ++mergedCount;
         const auto& agg = it->second;
         snapshot.gpuFieldsRead = true;
