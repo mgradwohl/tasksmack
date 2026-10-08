@@ -2272,7 +2272,10 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.action != Detail::ProcessAction::None;
     if (killRequested && m_Selection.size() > 1)
     {
-        if (Detail::isActionAvailable(m_ActionCapabilities, Detail::ProcessAction::Kill) && !rowActionPending)
+        // Only while at least one selected row is visible: with every selected row filtered out, F9
+        // must not open a kill for rows the user cannot see (#804 review).
+        if (Detail::isActionAvailable(m_ActionCapabilities, Detail::ProcessAction::Kill) && !rowActionPending &&
+            m_Selection.anyVisible(keys))
         {
             requestSelectionAction(Detail::ProcessAction::Kill);
         }

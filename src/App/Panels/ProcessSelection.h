@@ -15,6 +15,7 @@
 
 #include "App/Panels/ProcessTableNavigation.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -56,6 +57,13 @@ class Selection
     [[nodiscard]] std::size_t size() const noexcept
     {
         return m_Keys.size();
+    }
+
+    /// Whether any of @p visibleKeys is selected: a filter can hide every selected row while they stay
+    /// selected, and a batch shortcut must not act on rows the user cannot see (#804 review).
+    [[nodiscard]] bool anyVisible(std::span<const std::uint64_t> visibleKeys) const noexcept
+    {
+        return std::ranges::any_of(visibleKeys, [this](std::uint64_t key) { return m_Keys.contains(key); });
     }
 
     [[nodiscard]] bool empty() const noexcept

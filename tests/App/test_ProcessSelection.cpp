@@ -53,6 +53,20 @@ TEST(ProcessSelectionTest, PlainClickSelectsOnlyThatRow)
     EXPECT_EQ(sel.anchor(), 105U);
 }
 
+TEST(ProcessSelectionTest, AnyVisibleIsFalseOnceAFilterHidesEverySelectedRow)
+{
+    Selection sel;
+    sel.click(ClickKind::Replace, 102, ROWS);
+    sel.click(ClickKind::Toggle, 104, ROWS);
+    EXPECT_TRUE(sel.anyVisible(ROWS));
+
+    // A filter now shows only rows that are not selected; the selection itself is kept.
+    constexpr std::array<std::uint64_t, 2> FILTERED{101, 105};
+    EXPECT_FALSE(sel.anyVisible(FILTERED));
+    EXPECT_EQ(sel.size(), 2U);
+    EXPECT_FALSE(sel.anyVisible(std::span<const std::uint64_t>{}));
+}
+
 TEST(ProcessSelectionTest, CtrlClickTogglesOneRowAndKeepsTheOthers)
 {
     Selection sel;
