@@ -9,6 +9,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <string>
+
 namespace UI
 {
 namespace
@@ -48,6 +50,19 @@ class RenderMetricsOverlayTest : public ::testing::Test
         ImGui::Render();
     }
 
+    /// One frame of the overlay, returning all the text it drew, captured through ImGui's own logging
+    /// (LogToBuffer(), which also turns clipping off) as the headless view tests do.
+    [[nodiscard]] static std::string frameAndCapture(bool* open)
+    {
+        ImGui::NewFrame();
+        ImGui::LogToBuffer();
+        RenderMetrics::get().renderOverlay(open);
+        std::string captured = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::Render();
+        return captured;
+    }
+
     [[nodiscard]] static ImGuiWindow* overlayWindow()
     {
         return ImGui::FindWindowByName("Render Metrics");
@@ -79,8 +94,18 @@ TEST_F(RenderMetricsOverlayTest, OpeningEnablesCaptureAndClosingDropsTheFrames)
     metrics.record("##Memory", 80, 1.25, 1);
     metrics.beginFrame(2);
     ASSERT_EQ(metrics.lastFrame().size(), 2U);
-    frame(&open); // lists both charts in the table
     frame(&open);
+    const std::string text = frameAndCapture(&open);
+
+    // The summary totals the last frame's charts, and the table lists each one.
+    EXPECT_NE(text.find("Charts: 200 vertices"), std::string::npos) << text;
+    EXPECT_NE(text.find("(2 charts)"), std::string::npos) << text;
+    const auto cpu = text.find("##Cpu");
+    const auto memory = text.find("##Memory");
+    ASSERT_NE(cpu, std::string::npos) << text;
+    ASSERT_NE(memory, std::string::npos) << text;
+    // Sorted by the default sort column, Vertices, ascending: Memory (80) before Cpu (120).
+    EXPECT_LT(memory, cpu) << text;
 
     open = false;
     frame(&open);

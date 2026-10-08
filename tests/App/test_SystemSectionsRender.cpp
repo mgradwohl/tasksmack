@@ -18,6 +18,7 @@
 #include "UI/ChartSmoothing.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -113,6 +114,23 @@ class SystemSectionsRenderTest : public ::testing::Test
         body();
         ImGui::End();
         ImGui::Render();
+    }
+
+    /// Runs one frame of @p body and returns all the text it drew, captured through ImGui's own
+    /// logging (LogToBuffer(), which also turns clipping off) as the other headless view tests do.
+    /// Text drawn straight onto a draw list (a chart's collecting hint) is not captured.
+    [[nodiscard]] static std::string renderAndCapture(const std::function<void()>& body)
+    {
+        std::string captured;
+        runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                body();
+                captured = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+            });
+        return captured;
     }
 
     /// Every plot ImPlot has seen in this context, each as the set of its series' legend labels.
@@ -223,8 +241,10 @@ TEST(MemorySectionSmoothingTest, LaterSamplesEaseByTheFrameAlpha)
 TEST_F(SystemSectionsRenderTest, MemorySectionWithoutAPublicationDrawsNothing)
 {
     MemorySection::RenderContext ctx;
-    runFrame([&] { MemorySection::renderMemorySection(ctx, {}, UI::Widgets::historyFrameNowSeconds(), 3); });
+    const std::string text =
+        renderAndCapture([&] { MemorySection::renderMemorySection(ctx, {}, UI::Widgets::historyFrameNowSeconds(), 3); });
     EXPECT_TRUE(plotsDrawn().empty());
+    EXPECT_EQ(text.find("Memory & Swap"), std::string::npos) << text; // not even the heading
 }
 
 TEST_F(SystemSectionsRenderTest, MemorySectionDrawsUsedCachedSwapAndPeak)
@@ -243,6 +263,12 @@ TEST_F(SystemSectionsRenderTest, MemorySectionDrawsUsedCachedSwapAndPeak)
     const auto plots = plotsDrawn();
     ASSERT_EQ(plots.size(), 1U);
     EXPECT_EQ(plots[0], (SeriesLabels{"Used", "Cached", "Swap", "Peak Used"}));
+    // The heading, and the value strip listing every series with its current value.
+    const std::string text = renderAndCapture(
+        [&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
+    EXPECT_NE(text.find("Memory & Swap"), std::string::npos) << text;
+    EXPECT_NE(text.find("Peak Used"), std::string::npos) << text;
+    EXPECT_NE(text.find(UI::Format::formatPercent(40.0)), std::string::npos) << text;
     // The tooltip formats Used and Cached as bytes of the known RAM total.
     EXPECT_TRUE(hoverFirstPlot(draw));
 }
@@ -264,6 +290,9 @@ TEST_F(SystemSectionsRenderTest, MemorySectionLeavesOutSeriesWithNoHistory)
     const auto plots = plotsDrawn();
     ASSERT_EQ(plots.size(), 1U);
     EXPECT_EQ(plots[0], (SeriesLabels{"Used", "Cached"}));
+    const std::string text = renderAndCapture(
+        [&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
+    EXPECT_EQ(text.find("Peak Used"), std::string::npos) << text; // no peak line, so no strip entry
     EXPECT_TRUE(hoverFirstPlot(draw));
 }
 
@@ -358,8 +387,10 @@ TEST(CpuCoresSmoothingTest, NoFrameDeltaSnapsToTheReading)
 TEST_F(SystemSectionsRenderTest, CpuCoresWithoutAPublicationShowsTheEmptyState)
 {
     CpuCoresSection::RenderContext ctx;
-    runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
     EXPECT_TRUE(plotsDrawn().empty());
+    EXPECT_NE(text.find("CPU data unavailable"), std::string::npos) << text;
+    EXPECT_NE(text.find("no per-core data to show"), std::string::npos) << text;
 }
 
 TEST_F(SystemSectionsRenderTest, CpuCoresWithNoPerCoreDataDrawsNoChart)
@@ -367,8 +398,10 @@ TEST_F(SystemSectionsRenderTest, CpuCoresWithNoPerCoreDataDrawsNoChart)
     Domain::SystemPublication publication;
     publication.snapshot.cpuModel = "Test CPU";
     CpuCoresSection::RenderContext ctx{.publication = &publication};
-    runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
     EXPECT_TRUE(plotsDrawn().empty());
+    EXPECT_NE(text.find("Test CPU"), std::string::npos) << text; // the model header still shows
+    EXPECT_NE(text.find("No per-core data"), std::string::npos) << text;
 }
 
 TEST_F(SystemSectionsRenderTest, CpuCoresDrawsOneChartPerCoreAndSmoothsThem)
@@ -386,6 +419,13 @@ TEST_F(SystemSectionsRenderTest, CpuCoresDrawsOneChartPerCoreAndSmoothsThem)
     EXPECT_EQ(plotsDrawn().size(), 4U);
     ASSERT_EQ(smoothed.size(), 4U);
     EXPECT_DOUBLE_EQ(smoothed[3], 40.0);
+    // Each cell's label names its core and carries its current value (#1193).
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    for (const char* core : {"Core 0", "Core 1", "Core 2", "Core 3"})
+    {
+        EXPECT_NE(text.find(core), std::string::npos) << core << " in: " << text;
+    }
+    EXPECT_NE(text.find(UI::Format::formatPercent(40.0)), std::string::npos) << text;
     EXPECT_TRUE(hoverFirstPlot(draw));
 }
 
@@ -395,9 +435,14 @@ TEST_F(SystemSectionsRenderTest, CpuCoresChartsOnlyTheCoresTheProbeReported)
     Domain::SystemPublication publication = coresPublication({10.0, 0.0, NOT_A_NUMBER});
     publication.snapshot.seenCoreIds = {0, 2};
     CpuCoresSection::RenderContext ctx{.publication = &publication}; // no smoothed values: raw readings
-    runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
 
     EXPECT_EQ(plotsDrawn().size(), 2U);
+    EXPECT_NE(text.find("Core 0"), std::string::npos) << text;
+    EXPECT_NE(text.find("Core 2"), std::string::npos) << text;
+    EXPECT_EQ(text.find("Core 1"), std::string::npos) << text;
+    // Core 2 has no current reading: N/A, not a fake 0% (#1146).
+    EXPECT_NE(text.find(UI::Format::formatPercent(NOT_A_NUMBER)), std::string::npos) << text;
 }
 
 // ========== Disk I/O ==========
@@ -449,8 +494,10 @@ TEST(StorageSmoothingTest, FirstSampleStartsAtTheTargetThenEases)
 TEST_F(SystemSectionsRenderTest, StorageWithoutAPublicationShowsTheEmptyState)
 {
     StorageSection::RenderContext ctx;
-    runFrame([&] { StorageSection::renderStorageSection(ctx); });
+    const std::string text = renderAndCapture([&] { StorageSection::renderStorageSection(ctx); });
     EXPECT_TRUE(plotsDrawn().empty());
+    EXPECT_NE(text.find("Disk data unavailable"), std::string::npos) << text;
+    EXPECT_NE(text.find("no disk activity to show"), std::string::npos) << text;
     EXPECT_FLOAT_EQ(StorageSection::diskGridMinimumHeight(nullptr, DISPLAY_WIDTH), 0.0F);
 }
 
@@ -485,6 +532,10 @@ TEST_F(SystemSectionsRenderTest, StorageWithOneDiskDrawsTheAggregateChart)
     EXPECT_TRUE(initialized);
     EXPECT_DOUBLE_EQ(read, 4096.0);
     EXPECT_DOUBLE_EQ(write, 1024.0);
+    const std::string text = renderAndCapture([&] { StorageSection::renderStorageSection(ctx); });
+    EXPECT_NE(text.find("Disk I/O History"), std::string::npos) << text;
+    EXPECT_EQ(text.find("by Device"), std::string::npos) << text; // not the per-disk grid
+    EXPECT_NE(text.find(UI::Format::formatBytesPerSec(4096.0)), std::string::npos) << text;
     EXPECT_TRUE(hoverFirstPlot(draw));
 }
 
@@ -502,10 +553,18 @@ TEST_F(SystemSectionsRenderTest, StorageGridDrawsOneCellPerDiskAndTracksTheirSmo
     perDisk["gone"] = StorageSection::SmoothedDiskRates{.readBytesPerSec = 1.0, .writeBytesPerSec = 1.0, .initialized = true};
     perDisk["sdb"] = StorageSection::SmoothedDiskRates{.readBytesPerSec = 5.0, .writeBytesPerSec = 5.0, .initialized = true};
     StorageSection::RenderContext ctx{.publication = &publication, .refreshInterval = REFRESH, .smoothedPerDisk = &perDisk};
-    runFrame([&] { StorageSection::renderStorageSection(ctx); });
+    const std::string text = renderAndCapture([&] { StorageSection::renderStorageSection(ctx); });
 
     EXPECT_TRUE(StorageSection::usesDiskGrid(&publication));
     EXPECT_EQ(plotsDrawn().size(), 2U);
+    // The grid's heading with its disk count, then a cell named for each disk in the history.
+    EXPECT_NE(text.find("Disk I/O by Device"), std::string::npos) << text;
+    EXPECT_NE(text.find("2 disks"), std::string::npos) << text;
+    EXPECT_NE(text.find("nvme0n1"), std::string::npos) << text;
+    EXPECT_NE(text.find("sdb"), std::string::npos) << text;
+    EXPECT_EQ(text.find("sdc"), std::string::npos) << text; // in the sample but not the history
+    // sdb is missing from the latest sample: its bars read N/A, not 0.
+    EXPECT_NE(text.find("N/A"), std::string::npos) << text;
     // A disk no longer in the history is forgotten; one missing from the latest sample starts afresh.
     EXPECT_FALSE(perDisk.contains("gone"));
     ASSERT_TRUE(perDisk.contains("sdb"));
@@ -614,11 +673,17 @@ TEST_F(SystemSectionsRenderTest, NetworkWithoutCountersStillDrawsTheDiskSection)
     storage.totalReadHistory = viewOf(constant(1.0));
     storage.totalWriteHistory = viewOf(constant(1.0));
     NetworkSection::RenderContext ctx{.storagePublication = &storage, .hasNetworkCounters = false};
-    runFrame([&] { NetworkSection::renderNetworkSection(ctx); });
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(ctx); });
 
     const auto plots = plotsDrawn();
     ASSERT_EQ(plots.size(), 1U); // the disk chart only
     EXPECT_EQ(plots[0], (SeriesLabels{"Read", "Write"}));
+    // The band says why, and the disk section follows it (#1210).
+    const auto band = text.find("Network monitoring is not available");
+    const auto disk = text.find("Disk I/O History");
+    ASSERT_NE(band, std::string::npos) << text;
+    ASSERT_NE(disk, std::string::npos) << text;
+    EXPECT_LT(band, disk);
 }
 
 TEST_F(SystemSectionsRenderTest, NetworkTotalDrawsSentAndReceivedAndFillsTheFrameCache)
@@ -646,6 +711,11 @@ TEST_F(SystemSectionsRenderTest, NetworkTotalDrawsSentAndReceivedAndFillsTheFram
     EXPECT_FALSE(inputs.withTraffic.contains("wlan0"));
     EXPECT_TRUE(inputs.cache.rowsValid);
     EXPECT_EQ(inputs.cache.statusRowText.size(), inputs.cache.statusRows.size());
+    // The status table lists eth0 with its rates.
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_NE(text.find("Interface Status"), std::string::npos) << text;
+    EXPECT_NE(text.find("eth0"), std::string::npos) << text;
+    EXPECT_NE(text.find(UI::Format::formatBytesPerSec(4096.0)), std::string::npos) << text;
     EXPECT_TRUE(hoverFirstPlot(draw));
 }
 
@@ -666,6 +736,10 @@ TEST_F(SystemSectionsRenderTest, NetworkSelectedInterfaceDrawsItsLinesOverTheTot
     EXPECT_DOUBLE_EQ(inputs.sent, 1024.0);
     EXPECT_DOUBLE_EQ(inputs.received, 4096.0);
     EXPECT_EQ(inputs.cache.linkTextMbps, 1000U);
+    // The selected interface's link speed is shown beside the selector.
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    ASSERT_FALSE(inputs.cache.linkText.empty());
+    EXPECT_NE(text.find(inputs.cache.linkText), std::string::npos) << text;
 }
 
 TEST_F(SystemSectionsRenderTest, NetworkInterfaceWithoutHistoryFallsBackToTheTotals)
@@ -716,6 +790,9 @@ TEST_F(SystemSectionsRenderTest, NetworkCacheRebuildsForANewPublicationAndShowAl
     EXPECT_EQ(inputs.cache.interfaceNames.size(), 4U);
     EXPECT_TRUE(inputs.cache.rowsShowAll);
     EXPECT_EQ(inputs.cache.statusRows.size(), 3U); // every interface listed
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_NE(text.find("eth1"), std::string::npos) << text; // the down interface is in the table
+    EXPECT_NE(text.find("Show all"), std::string::npos) << text;
     // Still counted as hidden by default (down, never seen moving traffic), for the "Show all" label.
     EXPECT_EQ(inputs.cache.hiddenCount, 1U);
 }
@@ -731,10 +808,16 @@ TEST_F(SystemSectionsRenderTest, NetworkTabSharesItsHeightWithTheDiskGrid)
     inputs.ctx.storagePublication = &storage;
     inputs.ctx.fillState = &fillState;
     runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
-    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
 
     EXPECT_EQ(inputs.ctx.fill, nullptr); // the fill scope is closed again
     EXPECT_EQ(plotsDrawn().size(), 3U);  // the network chart and one cell per disk
+    // Network first, the disk grid after it (#823).
+    const auto network = text.find("Interface Status");
+    const auto grid = text.find("Disk I/O by Device");
+    ASSERT_NE(network, std::string::npos) << text;
+    ASSERT_NE(grid, std::string::npos) << text;
+    EXPECT_LT(network, grid);
 }
 } // namespace
 } // namespace App
