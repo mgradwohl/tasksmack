@@ -94,7 +94,7 @@ constexpr std::string_view TREE_VIEW_LABEL = ICON_FA_SITEMAP " Tree";
 constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
-constexpr const char* FILTER_HINT = "Filter by name...";
+constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name...";
 // Shown beside the process count while a held Ctrl freezes the pane (#928).
 constexpr const char* FROZEN_LABEL = ICON_FA_PAUSE " Paused (Ctrl)";
 // The narrow-window form: measureToolbarMinimumWidth() reserves room for this one.
