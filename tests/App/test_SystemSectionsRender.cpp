@@ -10,6 +10,7 @@
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/NetworkSection.h"
 #include "App/Panels/StorageSection.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/SharedHistory.h"
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
@@ -26,9 +27,11 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -47,7 +50,7 @@ namespace
 constexpr float DISPLAY_WIDTH = 1600.0F;
 constexpr float DISPLAY_HEIGHT = 1200.0F;
 constexpr std::size_t HISTORY_POINTS = 30;
-constexpr std::chrono::milliseconds REFRESH{1000};
+constexpr std::chrono::milliseconds REFRESH{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
 constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
 
 using SeriesLabels = std::set<std::string>;
@@ -78,6 +81,21 @@ template<typename T> [[nodiscard]] Domain::HistoryView<T> viewOf(std::vector<T> 
 template<typename T> [[nodiscard]] std::vector<T> constant(T value)
 {
     return std::vector<T>(HISTORY_POINTS, value);
+}
+
+/// Whether @p lines has a line equal to @p wanted; on failure the message lists every line.
+[[nodiscard]] ::testing::AssertionResult hasLine(const std::vector<std::string>& lines, const std::string& wanted)
+{
+    if (std::ranges::find(lines, wanted) != lines.end())
+    {
+        return ::testing::AssertionSuccess() << "found \"" << wanted << "\"";
+    }
+    ::testing::AssertionResult result = ::testing::AssertionFailure() << "no line \"" << wanted << "\" in:";
+    for (const std::string& line : lines)
+    {
+        result << "\n  " << line;
+    }
+    return result;
 }
 
 class SystemSectionsRenderTest : public ::testing::Test
@@ -171,6 +189,43 @@ class SystemSectionsRenderTest : public ::testing::Test
         draw();
         const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
         return tooltip != nullptr && tooltip->Active;
+    }
+
+    /// Like hoverFirstPlot(), for a @p section drawn inside runFrame(): returns every line of text the
+    /// hovered frame drew, each trimmed of surrounding whitespace, tooltip rows included. Empty (and a
+    /// failure) when no tooltip was shown.
+    [[nodiscard]] static std::vector<std::string> hoverFirstPlotAndCaptureLines(const std::function<void()>& section)
+    {
+        ImPlotContext& context = *ImPlot::GetCurrentContext();
+        if (context.Plots.GetBufSize() == 0 || context.Plots.GetByIndex(0) == nullptr)
+        {
+            ADD_FAILURE() << "no plot to hover";
+            return {};
+        }
+        const ImRect rect = context.Plots.GetByIndex(0)->PlotRect;
+        ImGui::GetIO().AddMousePosEvent(rect.Max.x - 2.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+        runFrame(section);
+        const std::string captured = renderAndCapture(section);
+        const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+        if (tooltip == nullptr || !tooltip->Active)
+        {
+            ADD_FAILURE() << "no tooltip shown";
+            return {};
+        }
+        std::vector<std::string> lines;
+        std::size_t start = 0;
+        while (start <= captured.size())
+        {
+            const std::size_t end = std::min(captured.find('\n', start), captured.size());
+            const std::string line = captured.substr(start, end - start);
+            const std::size_t first = line.find_first_not_of(" \t\r");
+            if (first != std::string::npos)
+            {
+                lines.push_back(line.substr(first, line.find_last_not_of(" \t\r") - first + 1));
+            }
+            start = end + 1;
+        }
+        return lines;
     }
 
   private:
@@ -269,8 +324,19 @@ TEST_F(SystemSectionsRenderTest, MemorySectionDrawsUsedCachedSwapAndPeak)
     EXPECT_NE(text.find("Memory & Swap"), std::string::npos) << text;
     EXPECT_NE(text.find("Peak Used"), std::string::npos) << text;
     EXPECT_NE(text.find(UI::Format::formatPercent(40.0)), std::string::npos) << text;
-    // The tooltip formats Used and Cached as bytes of the known RAM total.
-    EXPECT_TRUE(hoverFirstPlot(draw));
+    // The tooltip formats Used and Cached as bytes of the known RAM total, back-calculated from the
+    // hovered sample's percent (40% and 15% of 16 GiB), not the percent alone.
+    const std::vector<std::string> lines = hoverFirstPlotAndCaptureLines(
+        [&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
+    const std::uint64_t total = publication.snapshot.memoryTotalBytes;
+    const std::string usedRow = UI::Widgets::formatTooltipRow(
+        "Used", UI::Format::bytesUsedTotalPercentCompact(static_cast<std::uint64_t>(0.40 * static_cast<double>(total)), total, 40.0));
+    const std::string cachedRow = UI::Widgets::formatTooltipRow(
+        "Cached", UI::Format::bytesUsedTotalPercentCompact(static_cast<std::uint64_t>(0.15 * static_cast<double>(total)), total, 15.0));
+    EXPECT_TRUE(hasLine(lines, usedRow));
+    EXPECT_TRUE(hasLine(lines, cachedRow));
+    EXPECT_FALSE(hasLine(lines, UI::Widgets::formatTooltipRow("Used", UI::Format::formatPercent(40.0))));
+    EXPECT_FALSE(hasLine(lines, UI::Widgets::formatTooltipRow("Cached", UI::Format::formatPercent(15.0))));
 }
 
 TEST_F(SystemSectionsRenderTest, MemorySectionLeavesOutSeriesWithNoHistory)
@@ -293,7 +359,18 @@ TEST_F(SystemSectionsRenderTest, MemorySectionLeavesOutSeriesWithNoHistory)
     const std::string text = renderAndCapture(
         [&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
     EXPECT_EQ(text.find("Peak Used"), std::string::npos) << text; // no peak line, so no strip entry
-    EXPECT_TRUE(hoverFirstPlot(draw));
+    // With no RAM total the tooltip's Used and Cached rows are the hovered sample's percent alone,
+    // with no "used / total" bytes.
+    const std::vector<std::string> lines = hoverFirstPlotAndCaptureLines(
+        [&] { MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3); });
+    const std::string usedRow = UI::Widgets::formatTooltipRow("Used", UI::Format::formatPercent(0.0));
+    const std::string cachedRow = UI::Widgets::formatTooltipRow("Cached", UI::Format::formatPercent(15.0));
+    EXPECT_TRUE(hasLine(lines, usedRow));
+    EXPECT_TRUE(hasLine(lines, cachedRow));
+    for (const std::string& line : lines)
+    {
+        EXPECT_EQ(line.find(" / "), std::string::npos) << line;
+    }
 }
 
 // ========== CPU Cores ==========
