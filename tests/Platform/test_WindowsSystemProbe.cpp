@@ -13,7 +13,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -67,6 +69,7 @@ struct FakePdh
     PDH_STATUS collectStatus = ERROR_SUCCESS;
     PDH_STATUS formatStatus = ERROR_SUCCESS;
     DWORD counterStatus = PDH_CSTATUS_VALID_DATA;
+    bool addThrows = false;
     int closes = 0;
 };
 FakePdh g_FakePdh; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the fakes are plain function pointers
@@ -84,6 +87,10 @@ PDH_STATUS WINAPI fakeOpenQuery(LPCWSTR /*source*/, DWORD_PTR /*userData*/, PDH_
 PDH_STATUS WINAPI fakeAddEnglishCounter(PDH_HQUERY /*query*/, LPCWSTR /*path*/, DWORD_PTR /*userData*/, PDH_HCOUNTER* counter)
 {
     *counter = FAKE_COUNTER;
+    if (g_FakePdh.addThrows)
+    {
+        throw std::runtime_error("fake PdhAddEnglishCounter threw");
+    }
     return g_FakePdh.addStatus;
 }
 
@@ -92,10 +99,12 @@ PDH_STATUS WINAPI fakeCollectQueryData(PDH_HQUERY /*query*/)
     return g_FakePdh.collectStatus;
 }
 
-PDH_STATUS WINAPI fakeGetFormattedCounterValue(PDH_HCOUNTER /*counter*/, DWORD /*format*/, LPDWORD /*type*/, PPDH_FMT_COUNTERVALUE value)
+PDH_STATUS WINAPI fakeGetFormattedCounterValue(PDH_HCOUNTER /*counter*/, DWORD format, LPDWORD /*type*/, PPDH_FMT_COUNTERVALUE value)
 {
     value->CStatus = g_FakePdh.counterStatus;
-    value->doubleValue = g_FakePdh.percent; // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE's member
+    // As real PDH does, a percentage is capped at 100 unless PDH_FMT_NOCAP100 asks otherwise
+    const double reading = ((format & PDH_FMT_NOCAP100) != 0) ? g_FakePdh.percent : std::min(g_FakePdh.percent, 100.0);
+    value->doubleValue = reading; // NOLINT(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE's member
     return g_FakePdh.formatStatus;
 }
 
@@ -134,6 +143,63 @@ TEST_F(WindowsSystemProbeCpuClockTest, ClockFollowsProcessorPerformance)
     EXPECT_EQ(probe.read().cpuFreqMHz, 2250U);
     g_FakePdh.percent = 130.0; // Turbo
     EXPECT_EQ(probe.read().cpuFreqMHz, 3900U);
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, TurboReadsAboveTheBaseClock)
+{
+    // PDH caps a percentage at 100 unless asked not to; a capped turbo reading would read the base clock.
+    WindowsSystemProbe probe(FAKE_BASE_MHZ, ProcessorPerformanceCounter::open(FAKE_PDH_FUNCTIONS));
+    g_FakePdh.percent = 150.0;
+    EXPECT_EQ(probe.read().cpuFreqMHz, 4500U);
+}
+
+namespace
+{
+/// A system DLL this process has not loaded, loaded now so its release can be observed (it is unloaded
+/// again exactly when its only reference is freed); empty if every candidate is already loaded. The
+/// fakes never call into it: it only stands in for pdh.dll's module, which the test process may hold.
+[[nodiscard]] std::pair<const wchar_t*, UniqueModule> loadUnusedSystemDll()
+{
+    for (const wchar_t* name : {L"wtsapi32.dll", L"msimg32.dll", L"dciman32.dll", L"mprapi.dll", L"pdh.dll"})
+    {
+        if (GetModuleHandleW(name) == nullptr)
+        {
+            UniqueModule module(LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
+            if (module != nullptr)
+            {
+                return {name, std::move(module)};
+            }
+        }
+    }
+    return {nullptr, UniqueModule{}};
+}
+} // namespace
+
+TEST_F(WindowsSystemProbeCpuClockTest, ThrowWhileOpeningClosesTheQueryAndFreesTheModule)
+{
+    // Every resource open() acquired is released when a call after it throws: the opened query and the
+    // module the functions came from.
+    auto [name, module] = loadUnusedSystemDll();
+    if (module == nullptr)
+    {
+        GTEST_SKIP() << "every candidate DLL is already loaded, so a release can't be observed";
+    }
+    g_FakePdh.addThrows = true;
+    EXPECT_THROW((void) ProcessorPerformanceCounter::open(std::move(module), FAKE_PDH_FUNCTIONS), std::runtime_error);
+    EXPECT_EQ(g_FakePdh.closes, 1) << "the opened query is closed";
+    EXPECT_EQ(GetModuleHandleW(name), nullptr) << "the module is freed";
+}
+
+TEST_F(WindowsSystemProbeCpuClockTest, FailedOpenFreesTheModule)
+{
+    auto [name, module] = loadUnusedSystemDll();
+    if (module == nullptr)
+    {
+        GTEST_SKIP() << "every candidate DLL is already loaded, so a release can't be observed";
+    }
+    g_FakePdh.openStatus = static_cast<PDH_STATUS>(PDH_INVALID_ARGUMENT);
+    EXPECT_EQ(ProcessorPerformanceCounter::open(std::move(module), FAKE_PDH_FUNCTIONS), nullptr);
+    EXPECT_EQ(GetModuleHandleW(name), nullptr) << "the module is freed";
 }
 
 TEST_F(WindowsSystemProbeCpuClockTest, NoCounterGivesTheBaseClock)
