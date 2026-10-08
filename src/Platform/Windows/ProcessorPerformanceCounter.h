@@ -4,6 +4,7 @@
 // with the PDH functions in an injectable table, so tests can drive the probe with fabricated readings
 // and failures instead of whatever this machine's clock is doing.
 
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcAddress.h"
 
 #include <spdlog/spdlog.h>
@@ -22,7 +23,6 @@
 
 #include <memory>
 #include <optional>
-#include <type_traits>
 #include <utility>
 
 namespace Platform
@@ -50,18 +50,6 @@ struct PdhFunctions
     }
 };
 
-/// Calls FreeLibrary on a module LoadLibrary returned.
-struct ModuleDeleter
-{
-    void operator()(HMODULE module) const noexcept
-    {
-        FreeLibrary(module);
-    }
-};
-
-/// A loaded module, freed when it goes out of scope, so no exit path can leak the reference.
-using UniqueModule = std::unique_ptr<std::remove_pointer_t<HMODULE>, ModuleDeleter>;
-
 /// The counter path, in English so it is found whatever the system's display language.
 inline constexpr const wchar_t* PROCESSOR_PERFORMANCE_COUNTER_PATH = LR"(\Processor Information(_Total)\% Processor Performance)";
 
@@ -75,7 +63,7 @@ class ProcessorPerformanceCounter
     /// The counter from pdh.dll, or null when pdh.dll, its exports, or the counter are unavailable.
     [[nodiscard]] static std::unique_ptr<ProcessorPerformanceCounter> open()
     {
-        UniqueModule module(LoadLibraryExW(L"pdh.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
+        Windows::UniqueModule module(LoadLibraryExW(L"pdh.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32));
         if (module == nullptr)
         {
             spdlog::debug("WindowsSystemProbe: pdh.dll unavailable; reporting the base CPU clock");
@@ -96,14 +84,14 @@ class ProcessorPerformanceCounter
     /// The counter through `functions` alone (a test's fakes), or null as open(module, functions) is.
     [[nodiscard]] static std::unique_ptr<ProcessorPerformanceCounter> open(const PdhFunctions& functions)
     {
-        return open(UniqueModule{}, functions);
+        return open(Windows::UniqueModule{}, functions);
     }
 
     /// The counter through `functions`, which come from `module` (or from no module: a test's fakes), or
     /// null when one is missing or the query or counter can't be opened. `module` is owned from here on:
     /// it is freed on every path that doesn't return the counter, a throw included, and with the counter
     /// otherwise -- after its query is closed.
-    [[nodiscard]] static std::unique_ptr<ProcessorPerformanceCounter> open(UniqueModule module, const PdhFunctions& functions)
+    [[nodiscard]] static std::unique_ptr<ProcessorPerformanceCounter> open(Windows::UniqueModule module, const PdhFunctions& functions)
     {
         if (!functions.complete())
         {
@@ -168,7 +156,7 @@ class ProcessorPerformanceCounter
     {}
 
     PdhFunctions m_Functions;
-    UniqueModule m_Module; // Null for injected functions; freed after the destructor closes the query
+    Windows::UniqueModule m_Module; // Null for injected functions; freed after the destructor closes the query
     PDH_HQUERY m_Query = nullptr;
     PDH_HCOUNTER m_Counter = nullptr;
 };

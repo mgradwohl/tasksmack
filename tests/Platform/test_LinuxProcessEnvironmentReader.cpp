@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <fstream>
+#include <ios>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -68,17 +69,24 @@ class EnvironmentChild
         return m_Pid;
     }
 
-    /// Waits (up to about two seconds) until the child has exec'd sleep, so its environ is the new one.
+    /// Waits (up to about five seconds) until the child has exec'd sleep AND its new environment is in
+    /// place. The name alone is not enough: execve renames the task before it builds the new stack and
+    /// sets the environment's bounds, so a read in between sees an empty environ (#1497).
     [[nodiscard]] bool waitForExec() const
     {
-        for (int attempt = 0; attempt < 200; ++attempt)
+        const std::string proc = "/proc/" + std::to_string(m_Pid);
+        for (int attempt = 0; attempt < 500; ++attempt)
         {
-            std::ifstream comm("/proc/" + std::to_string(m_Pid) + "/comm");
+            std::ifstream comm(proc + "/comm");
             std::string name;
             std::getline(comm, name);
             if (name == "sleep")
             {
-                return true;
+                std::ifstream environ(proc + "/environ", std::ios::binary);
+                if (environ.peek() != std::ifstream::traits_type::eof())
+                {
+                    return true;
+                }
             }
             ::usleep(10'000);
         }

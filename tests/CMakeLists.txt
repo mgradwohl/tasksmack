@@ -255,6 +255,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsDXGIGPUProbe.cpp
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
+    Platform/test_WindowsHandles.cpp
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES

@@ -8,6 +8,7 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/Windows/PDHGPUProbe.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
 
 #include <spdlog/spdlog.h>
 
@@ -372,7 +373,7 @@ struct PDHGPUProbe::Impl
     static constexpr const wchar_t* ADAPTER_DEDICATED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Dedicated Usage";
     static constexpr const wchar_t* ADAPTER_SHARED_COUNTER_PATH = L"\\GPU Adapter Memory(*)\\Shared Usage";
 
-    HMODULE pdhModule = nullptr;
+    Windows::UniqueModule pdhModule;
     PdhOpenQueryFn pdhOpenQuery = nullptr;
     PdhCloseQueryFn pdhCloseQuery = nullptr;
     PdhAddEnglishCounterFn pdhAddEnglishCounter = nullptr;
@@ -491,6 +492,14 @@ struct PDHGPUProbe::Impl
         shutdown();
     }
 
+    /// Whether every PDH function the probe calls was resolved. True whenever pdhModule is held:
+    /// loadPDH() frees the module again if any is missing.
+    [[nodiscard]] bool pdhFunctionsLoaded() const noexcept
+    {
+        return pdhOpenQuery != nullptr && pdhCloseQuery != nullptr && pdhAddEnglishCounter != nullptr && pdhCollectQueryData != nullptr &&
+               pdhGetFormattedCounterArray != nullptr;
+    }
+
     bool loadPDH()
     {
         // Defensive guard: today loadPDH() is only ever called once (from the constructor), so
@@ -499,10 +508,10 @@ struct PDHGPUProbe::Impl
         // leaking one DLL reference count (#781).
         if (pdhModule != nullptr)
         {
-            return true;
+            return pdhFunctionsLoaded();
         }
 
-        pdhModule = LoadLibraryW(L"pdh.dll");
+        pdhModule.reset(LoadLibraryW(L"pdh.dll"));
         if (pdhModule == nullptr)
         {
             spdlog::debug("PDHGPUProbe: Failed to load pdh.dll");
@@ -511,20 +520,18 @@ struct PDHGPUProbe::Impl
 
         // Load function pointers
         // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - Required for GetProcAddress
-        pdhOpenQuery = reinterpret_cast<PdhOpenQueryFn>(GetProcAddress(pdhModule, "PdhOpenQueryW"));
-        pdhCloseQuery = reinterpret_cast<PdhCloseQueryFn>(GetProcAddress(pdhModule, "PdhCloseQuery"));
-        pdhAddEnglishCounter = reinterpret_cast<PdhAddEnglishCounterFn>(GetProcAddress(pdhModule, "PdhAddEnglishCounterW"));
-        pdhCollectQueryData = reinterpret_cast<PdhCollectQueryDataFn>(GetProcAddress(pdhModule, "PdhCollectQueryData"));
+        pdhOpenQuery = reinterpret_cast<PdhOpenQueryFn>(GetProcAddress(pdhModule.get(), "PdhOpenQueryW"));
+        pdhCloseQuery = reinterpret_cast<PdhCloseQueryFn>(GetProcAddress(pdhModule.get(), "PdhCloseQuery"));
+        pdhAddEnglishCounter = reinterpret_cast<PdhAddEnglishCounterFn>(GetProcAddress(pdhModule.get(), "PdhAddEnglishCounterW"));
+        pdhCollectQueryData = reinterpret_cast<PdhCollectQueryDataFn>(GetProcAddress(pdhModule.get(), "PdhCollectQueryData"));
         pdhGetFormattedCounterArray =
-            reinterpret_cast<PdhGetFormattedCounterArrayFn>(GetProcAddress(pdhModule, "PdhGetFormattedCounterArrayW"));
+            reinterpret_cast<PdhGetFormattedCounterArrayFn>(GetProcAddress(pdhModule.get(), "PdhGetFormattedCounterArrayW"));
         // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
-        if (pdhOpenQuery == nullptr || pdhCloseQuery == nullptr || pdhAddEnglishCounter == nullptr || pdhCollectQueryData == nullptr ||
-            pdhGetFormattedCounterArray == nullptr)
+        if (!pdhFunctionsLoaded())
         {
             spdlog::debug("PDHGPUProbe: Failed to load required PDH functions");
-            FreeLibrary(pdhModule);
-            pdhModule = nullptr;
+            pdhModule.reset();
             return false;
         }
 
@@ -757,11 +764,7 @@ struct PDHGPUProbe::Impl
             query = nullptr;
         }
 
-        if (pdhModule != nullptr)
-        {
-            FreeLibrary(pdhModule);
-            pdhModule = nullptr;
-        }
+        pdhModule.reset(); // After the query is closed
 
         initialized = false;
     }
