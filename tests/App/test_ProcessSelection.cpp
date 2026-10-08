@@ -189,6 +189,25 @@ TEST(ProcessSelectionTest, AnExitIsSeenEvenWhenTwoLiveRowsShareASelectedKey)
     EXPECT_FALSE(sel.contains(102));
 }
 
+TEST(ProcessSelectionTest, AKeySeenOnTwoLiveRowsStaysRefusedAfterOneExits)
+{
+    // 101 selected; two live rows carry 101 (a hash collision), then the selected one exits. The
+    // survivor still carries 101, but the key stays refused until the selection is replaced.
+    Selection sel;
+    sel.click(ClickKind::Replace, 101, ROWS);
+    EXPECT_TRUE(sel.isActionable(101));
+    const std::array<FakeSnapshot, 2> both{FakeSnapshot{.uniqueKey = 101}, FakeSnapshot{.uniqueKey = 101}};
+    EXPECT_FALSE(sel.retainPresent(both));
+    EXPECT_FALSE(sel.isActionable(101));
+    const std::array<FakeSnapshot, 1> survivor{FakeSnapshot{.uniqueKey = 101}};
+    EXPECT_FALSE(sel.retainPresent(survivor));
+    EXPECT_TRUE(sel.contains(101));
+    EXPECT_FALSE(sel.isActionable(101));
+    // Replacing the selection clears the refusal.
+    sel.click(ClickKind::Replace, 101, ROWS);
+    EXPECT_TRUE(sel.isActionable(101));
+}
+
 TEST(ProcessSelectionTest, ExitedProcessesDropOut)
 {
     Selection sel;

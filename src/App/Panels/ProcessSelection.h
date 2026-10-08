@@ -59,6 +59,15 @@ class Selection
         return m_Keys.size();
     }
 
+    /// Whether @p key is selected and may be acted on. uniqueKey is a hash: once two live processes
+    /// were seen sharing a selected key (retainPresent()), that key stays refused -- even after one of
+    /// them exits -- until the user replaces the selection, so a collision can never hand an action to
+    /// a process the user did not pick (#804 review).
+    [[nodiscard]] bool isActionable(std::uint64_t key) const noexcept
+    {
+        return m_Keys.contains(key) && !m_Ambiguous.contains(key);
+    }
+
     /// Whether any of @p visibleKeys is selected: a filter can hide every selected row while they stay
     /// selected, and a batch shortcut must not act on rows the user cannot see (#804 review).
     [[nodiscard]] bool anyVisible(std::span<const std::uint64_t> visibleKeys) const noexcept
@@ -88,6 +97,7 @@ class Selection
     void selectOnly(std::uint64_t key)
     {
         m_Keys.clear();
+        m_Ambiguous.clear();
         m_Keys.insert(key);
         m_Anchor = key;
     }
@@ -99,6 +109,7 @@ class Selection
         m_Anchor = key;
         if (m_Keys.erase(key) > 0)
         {
+            m_Ambiguous.erase(key);
             return false;
         }
         m_Keys.insert(key);
@@ -131,6 +142,7 @@ class Selection
         if (!additive)
         {
             m_Keys.clear();
+            m_Ambiguous.clear();
         }
         const auto [first, last] = std::minmax(*from, *to);
         for (std::size_t i = first; i <= last; ++i)
@@ -164,6 +176,7 @@ class Selection
     void selectAll(std::span<const std::uint64_t> visibleKeys)
     {
         m_Keys.clear();
+        m_Ambiguous.clear();
         m_Keys.insert(visibleKeys.begin(), visibleKeys.end());
         if (!m_Anchor.has_value() || !m_Keys.contains(*m_Anchor))
         {
@@ -174,6 +187,7 @@ class Selection
     void clear() noexcept
     {
         m_Keys.clear();
+        m_Ambiguous.clear();
         m_Anchor.reset();
     }
 
@@ -195,9 +209,10 @@ class Selection
         kept.reserve(m_Keys.size());
         for (const auto& snapshot : snapshots)
         {
-            if (m_Keys.contains(snapshot.uniqueKey))
+            // A selected key carried by a second live row is a hash collision: refused from now on.
+            if (m_Keys.contains(snapshot.uniqueKey) && !kept.insert(snapshot.uniqueKey).second)
             {
-                kept.insert(snapshot.uniqueKey);
+                m_Ambiguous.insert(snapshot.uniqueKey);
             }
         }
         if (kept.size() == m_Keys.size())
@@ -210,6 +225,7 @@ class Selection
 
   private:
     std::unordered_set<std::uint64_t> m_Keys;
+    std::unordered_set<std::uint64_t> m_Ambiguous; // selected keys seen on two live rows at once
     std::optional<std::uint64_t> m_Anchor;
 };
 

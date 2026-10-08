@@ -2299,8 +2299,9 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
         // Exactly one visible row must carry the key: uniqueKey is a hash, and with two rows sharing it
         // F9 cannot know which one is highlighted, so it does nothing rather than guess (#804 review).
         const std::uint64_t selectedKey = *m_Selection.keys().begin();
-        const std::optional<std::size_t> row =
-            (std::ranges::count(keys, selectedKey) == 1) ? Nav::indexOfKey(keys, selectedKey) : std::nullopt;
+        const std::optional<std::size_t> row = (m_Selection.isActionable(selectedKey) && std::ranges::count(keys, selectedKey) == 1)
+                                                 ? Nav::indexOfKey(keys, selectedKey)
+                                                 : std::nullopt;
         if (row.has_value())
         {
             const Domain::ProcessSnapshot& proc = snapshots[visible[*row]];
@@ -2487,7 +2488,7 @@ void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
     // The selected processes still listed, each by PID and start time (#973): one that has exited since
     // it was selected is not among them, and one whose PID is reused is refused by the platform.
     std::vector<ProcessBatch::BatchTarget> targets =
-        ProcessBatch::resolveTargets(*m_CachedRenderSnapshots, [this](std::uint64_t key) { return m_Selection.contains(key); });
+        ProcessBatch::resolveTargets(*m_CachedRenderSnapshots, [this](std::uint64_t key) { return m_Selection.isActionable(key); });
     if (targets.empty())
     {
         return;
