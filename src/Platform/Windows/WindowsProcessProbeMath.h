@@ -856,4 +856,41 @@ struct ThreadGroupAffinityReads
     return threads.masks;
 }
 
+/// The memory figures of one SYSTEM_PROCESS_INFORMATION entry that windowsProcessMemory() chooses
+/// between, spelled out so this header stays free of <windows.h>.
+struct WindowsProcessMemoryFields
+{
+    std::int64_t workingSetPrivateSize = 0; ///< WorkingSetPrivateSize (a signed LARGE_INTEGER)
+    std::uint64_t workingSetSize = 0;       ///< WorkingSetSize: private and shared pages in RAM
+    std::uint64_t peakWorkingSetSize = 0;   ///< PeakWorkingSetSize
+    std::uint64_t virtualSize = 0;          ///< VirtualSize: address space, reservations included
+    std::uint64_t pagefileUsage = 0;        ///< PagefileUsage: the commit charge, PROCESS_MEMORY_COUNTERS_EX::PrivateUsage
+};
+
+/// The ProcessCounters memory fields a Windows process reports.
+struct WindowsProcessMemory
+{
+    std::uint64_t rssBytes = 0;
+    std::uint64_t peakRssBytes = 0;
+    std::uint64_t virtualBytes = 0;
+};
+
+/// Which Windows figure each memory column shows, matching Task Manager's Details tab (#1184).
+/// - Memory (rssBytes): the private working set, Task Manager's default "Memory (private working
+///   set)". The full working set also counts shared pages (DLLs, mapped files) that every process
+///   mapping them shows again.
+/// - Virtual (virtualBytes): the commit size, Task Manager's "Commit size". VirtualSize counts
+///   reserved address space too, which reads in terabytes for any process using Control Flow Guard
+///   or a large reservation (Chromium, the JVM).
+/// - Peak Mem (peakRssBytes): PeakWorkingSetSize, the only peak Windows keeps. It counts shared
+///   pages, so it can be above every private working set the process had.
+[[nodiscard]] constexpr WindowsProcessMemory windowsProcessMemory(const WindowsProcessMemoryFields& fields) noexcept
+{
+    return WindowsProcessMemory{
+        .rssBytes = fields.workingSetPrivateSize > 0 ? static_cast<std::uint64_t>(fields.workingSetPrivateSize) : 0,
+        .peakRssBytes = fields.peakWorkingSetSize,
+        .virtualBytes = fields.pagefileUsage,
+    };
+}
+
 } // namespace Platform
