@@ -2879,10 +2879,10 @@ TEST(ProcessModelTest, ProcessRefreshDoesNotWaitForABlockedGpuProbe)
     EXPECT_EQ(snapshots[0].gpuMemoryBytes, GPU_PROCESS_MEMORY) << "merged from the publication made before the block";
 }
 
-// Evidence for #1417: with a deliberately slow per-process GPU read (a slow
-// driver), sampling processes takes nothing like the read's time while the GPU
-// sampler keeps reading in the background. Before, every process refresh made
-// that read itself, so each took at least SLOW_READ.
+// Evidence for #1417 (not a gate): with a deliberately slow per-process GPU read (a slow driver)
+// and the GPU sampler reading in the background, per-process values still flow, and the slowest
+// process refresh is recorded as a test property. Before, every process refresh made that read
+// itself, so each took at least SLOW_READ.
 TEST(ProcessModelTest, ProcessSamplingDoesNotWaitForASlowGpuProbe)
 {
     constexpr auto SLOW_READ = std::chrono::milliseconds(400);
@@ -2917,7 +2917,9 @@ TEST(ProcessModelTest, ProcessSamplingDoesNotWaitForASlowGpuProbe)
     const auto slowestUs = std::chrono::duration_cast<std::chrono::microseconds>(slowest).count();
     RecordProperty("slowest_process_refresh_us", std::to_string(slowestUs));
     RecordProperty("slow_gpu_read_us", std::to_string(std::chrono::microseconds(SLOW_READ).count()));
-    EXPECT_LT(slowest, SLOW_READ / 2) << "slowest process refresh " << slowestUs << " us";
+    // Recorded, not asserted: a wall-clock bound measures scheduling, and a preempted CI worker
+    // would fail it although the process sampler never waits. The ownership boundary itself is
+    // proven deterministically by ProcessRefreshDoesNotWaitForABlockedGpuProbe.
 
     const auto snapshots = processModel.snapshots();
     ASSERT_EQ(snapshots.size(), 1U);
