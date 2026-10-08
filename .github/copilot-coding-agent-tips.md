@@ -183,7 +183,7 @@ Copilot reads these files automatically:
 - `README.md` - Project overview
 - `tasksmack.md` - Canonical architecture and metrics pipeline
 - `CONTRIBUTING.md` - Build/test/tools workflow
-- `completed-features.md` - Shipped features list
+- `docs/dev/completed-features.md` - Shipped features list
 - Encoding: project strings are UTF-8 internally. On Windows, use wide Win32/PDH APIs and convert at the boundaries; avoid ANSI APIs.
 
 **You don't need to repeat this information in issues.**
@@ -270,7 +270,7 @@ If Copilot's PR has clang-tidy warnings:
 | `README.md` | Project overview |
 | `tasksmack.md` | Canonical architecture, sampling, and engineering direction |
 | `CONTRIBUTING.md` | Build/test/tools workflow |
-| `completed-features.md` | Shipped features |
+| `docs/dev/completed-features.md` | Shipped features |
 | `.clang-format` | Code formatting rules |
 | `.clang-tidy` | Static analysis configuration |
 
