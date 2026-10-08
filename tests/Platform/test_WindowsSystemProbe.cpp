@@ -97,12 +97,11 @@ TEST(WindowsSystemProbeTest, CpuDetailsDescribeThisMachinesTopology)
     EXPECT_TRUE(cpu.slatSupported.has_value());
 }
 
-TEST(WindowsSystemProbeTest, CpuDetailsBaseSpeedIsTheInjectedBaseClock)
+TEST(WindowsSystemProbeTest, CpuDetailsBaseSpeedIsNotTheRegistryClock)
 {
-    WindowsSystemProbe probe(3600, nullptr);
-    EXPECT_EQ(probe.read().cpuDetails.baseSpeedMHz, 3600U);
-    WindowsSystemProbe unknown(0, nullptr);
-    EXPECT_FALSE(unknown.read().cpuDetails.baseSpeedMHz.has_value()); // Unknown, not "0 GHz"
+    // The registry's ~MHz is not the nominal base clock on every CPU, so it is not published as one (#1530)
+    WindowsSystemProbe probe(3686, nullptr);
+    EXPECT_FALSE(probe.read().cpuDetails.baseSpeedMHz.has_value());
 }
 
 namespace

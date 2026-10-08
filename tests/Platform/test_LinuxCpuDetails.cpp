@@ -148,13 +148,13 @@ TEST(LinuxCpuDetailsTest, CacheSizesParseWithTheirUnits)
     EXPECT_FALSE(parseCacheSize("12Q").has_value());
 }
 
-TEST(LinuxCpuDetailsTest, BaseSpeedPrefersBaseFrequencyThenBiosLimitThenMax)
+TEST(LinuxCpuDetailsTest, BaseSpeedComesOnlyFromBaseFrequency)
 {
-    using LinuxCpuDetails::chooseBaseSpeedMHz;
-    EXPECT_EQ(chooseBaseSpeedMHz(3'600'000, 2'000'000, 5'000'000), 3600U);
-    EXPECT_EQ(chooseBaseSpeedMHz(std::nullopt, 2'400'000, 5'000'000), 2400U);
-    EXPECT_EQ(chooseBaseSpeedMHz(0, std::nullopt, 4'200'000), 4200U); // A zero reading is skipped
-    EXPECT_FALSE(chooseBaseSpeedMHz(std::nullopt, std::nullopt, std::nullopt).has_value());
+    using LinuxCpuDetails::baseSpeedMHzFromKHz;
+    EXPECT_EQ(baseSpeedMHzFromKHz(3'600'000), 3600U);
+    EXPECT_FALSE(baseSpeedMHzFromKHz(0).has_value());
+    EXPECT_FALSE(baseSpeedMHzFromKHz(999).has_value());
+    EXPECT_FALSE(baseSpeedMHzFromKHz(std::nullopt).has_value());
 }
 
 TEST(LinuxCpuDetailsTest, CpuDirectoryNamesAreRecognised)
@@ -258,8 +258,8 @@ TEST(LinuxCpuDetailsTest, DualSocketSystem)
     EXPECT_EQ(details.logicalProcessors, 8U);
     EXPECT_EQ(details.l1CacheBytes, KIB * 4 * 80);
     EXPECT_EQ(details.l2CacheBytes, 8 * MIB);
-    EXPECT_EQ(details.l3CacheBytes, 32 * MIB); // One 16M L3 per socket
-    EXPECT_EQ(details.baseSpeedMHz, 2400U);    // No base_frequency: bios_limit
+    EXPECT_EQ(details.l3CacheBytes, 32 * MIB);      // One 16M L3 per socket
+    EXPECT_FALSE(details.baseSpeedMHz.has_value()); // No base_frequency: bios_limit is a maximum, not the base
 }
 
 TEST(LinuxCpuDetailsTest, MissingCacheAndCpufreqDirectoriesStayUnknown)
@@ -326,7 +326,7 @@ TEST(LinuxCpuDetailsTest, HybridCoresAreCountedAndTheirCachesSummed)
     EXPECT_EQ(details.l1CacheBytes, (KIB * 2 * 80) + (KIB * 4 * 96));
     EXPECT_EQ(details.l2CacheBytes, (KIB * 2 * 1280) + (2 * MIB));
     EXPECT_EQ(details.l3CacheBytes, 12 * MIB);
-    EXPECT_EQ(details.baseSpeedMHz, 4700U); // Last resort: cpuinfo_max_freq
+    EXPECT_FALSE(details.baseSpeedMHz.has_value()); // cpuinfo_max_freq is the boost clock, not the base
     // cpu_capacity ranks each logical processor: P-cores 1, E-cores 0
     EXPECT_EQ(details.efficiencyClassByCoreId, (std::vector<std::uint8_t>{1, 1, 1, 1, 0, 0, 0, 0}));
 }

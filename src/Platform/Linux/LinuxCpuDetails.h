@@ -251,19 +251,14 @@ struct SysfsCacheEntry
     return instances;
 }
 
-/// The base clock in MHz from cpufreq's readings in kHz, in order of preference: base_frequency (the
-/// rated clock, intel_pstate and amd-pstate), bios_limit, then cpuinfo_max_freq (the top boost clock
-/// on most drivers, so only a last resort). Zero readings are skipped; nullopt if none is left.
-[[nodiscard]] inline std::optional<std::uint64_t> chooseBaseSpeedMHz(std::optional<std::uint64_t> baseFrequencyKHz,
-                                                                     std::optional<std::uint64_t> biosLimitKHz,
-                                                                     std::optional<std::uint64_t> maxFrequencyKHz) noexcept
+/// The base clock in MHz from cpufreq's base_frequency in kHz (the rated clock, as intel_pstate and
+/// amd-pstate report it); nullopt when there is none or it is under 1 MHz. bios_limit and
+/// cpuinfo_max_freq are not used: they are maximums (the boost clock on most drivers), not the base.
+[[nodiscard]] inline std::optional<std::uint64_t> baseSpeedMHzFromKHz(std::optional<std::uint64_t> baseFrequencyKHz) noexcept
 {
-    for (const auto& reading : {baseFrequencyKHz, biosLimitKHz, maxFrequencyKHz})
+    if (baseFrequencyKHz.has_value() && *baseFrequencyKHz >= 1000)
     {
-        if (reading.has_value() && *reading >= 1000)
-        {
-            return *reading / 1000;
-        }
+        return *baseFrequencyKHz / 1000;
     }
     return std::nullopt;
 }
@@ -384,7 +379,7 @@ struct SysfsCacheEntry
         const auto text = Detail::readFile(cpufreq / name);
         return text.has_value() ? Detail::parseUnsigned(*text) : std::nullopt;
     };
-    details.baseSpeedMHz = chooseBaseSpeedMHz(readKHz("base_frequency"), readKHz("bios_limit"), readKHz("cpuinfo_max_freq"));
+    details.baseSpeedMHz = baseSpeedMHzFromKHz(readKHz("base_frequency"));
     return details;
 }
 

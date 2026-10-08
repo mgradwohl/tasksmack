@@ -352,10 +352,8 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr
 
     // The CPU Details block's static facts (#809), read once: none change during a boot session
     readProcessorTopology(m_CpuDetails, m_GroupFirstCoreIds);
-    if (m_BaseCpuMHz > 0)
-    {
-        m_CpuDetails.baseSpeedMHz = m_BaseCpuMHz; // The same ~MHz the current clock is scaled from (#1184)
-    }
+    // baseSpeedMHz stays unknown: the registry's ~MHz is not the nominal base clock on every CPU
+    // (3686 against 2000 MHz on a Core Ultra 7 255H), so it is not published as one (#1530).
     readVirtualization(m_CpuDetails);
 
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
