@@ -30,14 +30,28 @@ TEST(DialogGeometryTest, ReferenceEmIsTheMediumPresetAt96Dpi)
     EXPECT_FLOAT_EQ(REFERENCE_EM_PX, 8.0F * 96.0F / 72.0F);
 }
 
-TEST(DialogGeometryTest, AboutMarginReproducesItsFormerPixelSize)
+// The About box's compact redesign (#1490) halved its margin, shrank its icon to the height of the
+// text beside it and gave it an authored width; these pin the sizes it was designed at.
+TEST(DialogGeometryTest, AboutMarginIsItsDesignedPixelSize)
 {
-    EXPECT_FLOAT_EQ(ABOUT_MARGIN_EM * REFERENCE_EM_PX, 32.0F);
+    EXPECT_FLOAT_EQ(ABOUT_MARGIN_EM * REFERENCE_EM_PX, 16.0F);
 }
 
-TEST(DialogGeometryTest, AboutIconReproducesItsFormerPixelSize)
+TEST(DialogGeometryTest, AboutIconIsItsDesignedPixelSize)
 {
-    EXPECT_FLOAT_EQ(ABOUT_ICON_EM * REFERENCE_EM_PX, 96.0F);
+    EXPECT_FLOAT_EQ(ABOUT_ICON_EM * REFERENCE_EM_PX, 64.0F);
+    EXPECT_FLOAT_EQ(ABOUT_HEADER_GAP_EM * REFERENCE_EM_PX, 16.0F);
+}
+
+TEST(DialogGeometryTest, AboutWidthIsItsDesignedPixelSize)
+{
+    EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM_PX, ABOUT_WIDTH_EM, UNCONSTRAINED_VIEWPORT), 384.0F);
+}
+
+TEST(DialogGeometryTest, AboutHeightCapIsBelowTheSharedCap)
+{
+    EXPECT_GT(ABOUT_MAX_HEIGHT_FRACTION, 0.0F);
+    EXPECT_LT(ABOUT_MAX_HEIGHT_FRACTION, UI::DialogMetrics::MAX_VIEWPORT_FRACTION);
 }
 
 TEST(DialogGeometryTest, AboutButtonReproducesItsFormerPixelSize)
@@ -64,8 +78,9 @@ TEST(DialogGeometryTest, EveryDialogConstantScalesWithTheFont)
 {
     // The whole point of the change: double the font, double the geometry. A constant accidentally
     // left as a pixel literal would not move here.
-    EXPECT_FLOAT_EQ(ABOUT_MARGIN_EM * (REFERENCE_EM_PX * 2.0F), 64.0F);
-    EXPECT_FLOAT_EQ(ABOUT_ICON_EM * (REFERENCE_EM_PX * 2.0F), 192.0F);
+    EXPECT_FLOAT_EQ(ABOUT_MARGIN_EM * (REFERENCE_EM_PX * 2.0F), 32.0F);
+    EXPECT_FLOAT_EQ(ABOUT_ICON_EM * (REFERENCE_EM_PX * 2.0F), 128.0F);
+    EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM_PX * 2.0F, ABOUT_WIDTH_EM, UNCONSTRAINED_VIEWPORT), 768.0F);
     EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM_PX * 2.0F, ELEVATION_WIDTH_EM, UNCONSTRAINED_VIEWPORT), 960.0F);
     EXPECT_FLOAT_EQ(computeActionButtonWidth(NARROW_LABEL_PX, REFERENCE_EM_PX * 2.0F, ABOUT_BUTTON_MIN_EM), 240.0F);
 }

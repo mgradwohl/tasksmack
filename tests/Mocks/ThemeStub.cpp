@@ -182,6 +182,13 @@ auto Theme::boldFont() const -> ImFont*
     return nullptr;
 }
 
+// Referenced by App/AboutDialog.cpp's title (test_AboutDialogRender.cpp). No fonts are loaded here,
+// so the title draws in the context's default font.
+auto Theme::largeFont() const -> ImFont*
+{
+    return nullptr;
+}
+
 // Referenced by ChartWidgets.h's lineWeight(). The reference configuration (Medium font, 100 % display
 // scale), where authored line weights are drawn as written.
 auto Theme::styleScale() const -> float

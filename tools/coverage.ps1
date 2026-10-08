@@ -75,10 +75,11 @@ try {
     & $LlvmProfdata merge -sparse $profrawFiles -o "$BuildDir\default.profdata"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    # Files excluded from coverage: generated/third-party paths and test sources only. ImGui panel
+    # Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/
+    # holds test-support headers the tests include, #1395). ImGui panel
     # code is deliberately NOT excluded (#1131): untested code has to count against the total.
     # Keep in sync with tools/coverage.sh COV_IGNORE_REGEX.
-    $IgnoreRegex = ".*(\\|/)(build|_deps|tests|\.cache)(\\|/).*"
+    $IgnoreRegex = ".*(\\|/)(build|_deps|tests|benchmarks|\.cache)(\\|/).*"
 
     # llvm-cov only reports files compiled into the binaries it is given, so with the test binary
     # alone everything never linked into TaskSmackTests (panels, layers, Theme.cpp, main.cpp, ...)

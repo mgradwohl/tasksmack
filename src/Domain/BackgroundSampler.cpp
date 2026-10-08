@@ -7,6 +7,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -129,21 +130,35 @@ void BackgroundSampler::start()
     }
     m_NextOverrunLogTime = std::chrono::steady_clock::time_point::min();
     m_OverrunsSinceLog = 0;
-    m_Running.store(true);
+    // Everything that can throw before the thread exists comes before the state changes below.
     std::string threadName;
     {
         const std::scoped_lock lock(m_ConfigMutex);
         threadName = m_Config.threadName;
     }
-    m_SamplerThread = std::jthread(
-        [this, name = std::move(threadName)](const std::stop_token& st)
-        {
-            if (!Platform::setCurrentThreadName(name))
+    m_Running.store(true);
+    m_ThreadExited.store(false, std::memory_order_relaxed);
+    try
+    {
+        m_SamplerThread = std::jthread(
+            [this, name = std::move(threadName)](const std::stop_token& st)
             {
-                spdlog::debug("BackgroundSampler: could not name thread '{}'", name);
-            }
-            samplerLoop(st);
-        });
+                if (!Platform::setCurrentThreadName(name))
+                {
+                    spdlog::debug("BackgroundSampler: could not name thread '{}'", name);
+                }
+                samplerLoop(st);
+                m_ThreadExited.store(true, std::memory_order_release);
+            });
+    }
+    catch (...)
+    {
+        // No thread was started (std::system_error, std::bad_alloc): back to stopped, so isRunning() is
+        // false, hasThreadExited() true, and start() can be called again.
+        m_ThreadExited.store(true, std::memory_order_release);
+        m_Running.store(false);
+        throw;
+    }
 }
 
 void BackgroundSampler::stop()
@@ -197,6 +212,19 @@ void BackgroundSampler::logStopSummary() const noexcept
     }
     catch (...) // NOLINT(bugprone-empty-catch) - a lost shutdown log line must not terminate the app
     {}
+}
+
+void BackgroundSampler::requestStop() noexcept
+{
+    // No join: the thread sees the stop at its next check (between samples, or in its wait, which the
+    // stop token wakes), finishes the sample in flight if there is one, and exits.
+    m_SamplerThread.request_stop();
+    m_WakeCondition.notify_all();
+}
+
+bool BackgroundSampler::hasThreadExited() const noexcept
+{
+    return m_ThreadExited.load(std::memory_order_acquire);
 }
 
 bool BackgroundSampler::isRunning() const

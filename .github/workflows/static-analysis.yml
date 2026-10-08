@@ -1,8 +1,9 @@
 name: Static Analysis
 
+# Manual full clang-tidy run (Linux + Windows) on any branch. It no longer runs on every push to
+# main (#1406): the PR's own clang-tidy already checked the merge tree, and ci.yml's nightly
+# schedule runs the full analysis on main.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
@@ -32,29 +33,20 @@ jobs:
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
           install-clang-tidy: 'true'
+          # No ccache in the tidy jobs (#1406): clang-tidy doesn't compile through it.
+          install-ccache: 'false'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          key: linux-tidy-llvm${{ env.LLVM_VERSION }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build GLAD
         run: cmake --build --preset debug --target glad_gl_core_33
@@ -95,29 +87,17 @@ jobs:
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Force the action's pinned, SHA-256-verified ccache binary; 'detect' would pick up
-          # Strawberry Perl's bundled ccache 4.9.1 already on the image PATH (#1406).
-          install: binary
-          key: windows-tidy-llvm${{ env.LLVM_SEMVER_VERSION }}
-          max-size: 500M
-
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
       - name: Configure
         shell: pwsh
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+        # No ccache in the tidy jobs (#1406); keep CMake from finding the stale ccache that
+        # Strawberry Perl puts on the image PATH.
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
 
       - name: Build GLAD
         shell: pwsh
