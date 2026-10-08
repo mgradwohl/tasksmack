@@ -130,6 +130,7 @@ set(TASKSMACK_SOURCES
     src/App/KeyboardInput.cpp
     src/App/PlatformOpen.cpp
     src/App/SettingsLayer.cpp
+    src/App/SelectOverride.cpp
     src/App/ShellLayer.cpp
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp

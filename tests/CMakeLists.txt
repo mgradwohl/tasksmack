@@ -232,6 +232,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_AboutDialogRender.cpp
     App/test_KeyboardInputRender.cpp
+    App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
     App/test_WindowOverride.cpp
@@ -384,6 +385,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
     # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
+    # Startup-selection test hook (#1559): the platform name comparisons test_SelectOverride.cpp exercises
+    ${CMAKE_SOURCE_DIR}/src/App/SelectOverride.cpp
     # The process-action confirm modal, the Overview's Actions block, the priority controls, the chart tabs and
     # the Environment and Connections sections, run headless (test_ProcessActionConfirmPopup.cpp,
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,

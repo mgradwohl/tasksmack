@@ -504,6 +504,32 @@ the untested logic needs OS handles or not:
    file's anonymous namespace), since an
    anonymous-namespace type is a different entity than the one the friend declaration names.
 
+### Visual validation without input (Process Details)
+
+Agents must not inject clicks or keys, so four test-only environment variables (#1559), read once at
+startup, select a process and open a tab by themselves. With `TASKSMACK_SELECT_PID` or
+`TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
+click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
+snapshots, one warning is logged and nothing is selected. While a selection is set, the startup
+"Limited Data" notice is not shown, since it would cover the details. Unset, the variables do nothing.
+
+| Variable | Value |
+|---|---|
+| `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
+| `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
+| `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
+| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. |
+
+Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
+works while the window is covered):
+
+```powershell
+$env:TASKSMACK_WINDOW='1900x1000'; $env:TASKSMACK_SELECT_NAME='explorer.exe'; $env:TASKSMACK_DETAILS_TAB='overview'
+$p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru
+# Wait a few seconds, then PrintWindow($p.MainWindowHandle, hdc, PW_RENDERFULLCONTENT = 2) into a bitmap.
+Stop-Process -Id $p.Id -Force   # not a graceful close, which would save your config.toml
+```
+
 ## VS Code
 
 Recommended extensions:

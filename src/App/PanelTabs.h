@@ -12,6 +12,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -29,6 +30,9 @@ class PanelTabs
         std::reference_wrapper<Panel> panel;
         std::string eventName;
         std::function<const char*()> label;
+        /// The label's visible text, unescaped (no icon, no "###" ID): what TASKSMACK_TAB matches by
+        /// name (#1559). Optional; a tab without it is matched by its event name only.
+        std::function<std::string_view()> text = nullptr;
     };
 
     explicit PanelTabs(std::initializer_list<Tab> tabs) : m_Tabs(tabs)

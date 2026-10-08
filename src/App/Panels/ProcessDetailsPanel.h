@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/SelectOverride.h"
 #include "Core/Event.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
@@ -23,6 +24,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
@@ -102,6 +104,12 @@ class ProcessDetailsPanel : public Panel
     /// What the process probe can report, so series it never fills are not drawn (#1028, #1035).
     /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
     void setProcessCapabilities(const Platform::ProcessCapabilities& capabilities);
+
+    /// Brings @p tab forward the next time the tabs are drawn: the test hook's TASKSMACK_DETAILS_TAB (#1559).
+    void requestTab(SelectOverride::DetailsTab tab)
+    {
+        m_RequestedTab = tab;
+    }
 
     /// Get currently displayed PID.
     [[nodiscard]] std::int32_t selectedPid() const
@@ -209,7 +217,9 @@ class ProcessDetailsPanel : public Panel
     // owning.
     ProcessActionsView m_ActionsView;
     KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
-    bool m_SelectOverviewTab = false;               // F9 asked for the Kill confirm: show the Overview, which holds the Actions block
+    // The tab to bring forward when the tabs are next drawn: the Overview when F9 asked for the Kill
+    // confirm, which shows over the Actions block there; or the test hook's tab (#1559).
+    std::optional<SelectOverride::DetailsTab> m_RequestedTab;
     ProcessPriorityView m_PriorityView;
     // The Actions block's content height as last drawn (0 until it has been): beside Identity and
     // Runtime only while it fits their height (ProcessDetailsLayout::computeActionsBlockLayout()).
