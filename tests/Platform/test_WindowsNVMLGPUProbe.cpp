@@ -9,12 +9,8 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstring>
-#include <functional>
-#include <limits>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -112,22 +108,14 @@ TEST(WindowsNVMLGPUProbeTest, CounterDataIsWellFormedWhenPresent)
     }
 }
 
-TEST(WindowsNVMLGPUProbeTest, ProcessCounterDataIsWellFormedWhenPresent)
+// Windows takes per-process GPU data from PDH, so the NVML probe reads none, with or without a
+// real NVIDIA GPU (#1480).
+TEST(WindowsNVMLGPUProbeTest, ProcessCountersAreAlwaysEmpty)
 {
     NVMLGPUProbe probe;
-    const bool available = probe.isAvailable();
-    const auto gpus = probe.enumerateGPUs();
-    auto counters = probe.readProcessGPUCounters();
-
-    if (available)
-    {
-        EXPECT_FALSE(gpus.empty()) << "Available NVML should enumerate at least one GPU before reading process counters";
-    }
-
-    for (const auto& counter : counters)
-    {
-        EXPECT_GE(counter.pid, 0) << "Process id should be non-negative";
-    }
+    [[maybe_unused]] const auto gpus = probe.enumerateGPUs();
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    EXPECT_FALSE(probe.capabilities().hasPerProcessMetrics);
 }
 
 // ==========================================================================
@@ -194,7 +182,7 @@ TEST(WindowsNVMLGPUProbeTest, AvailableProbeEnumerationIsStable)
 // loadNVML() still runs as normal first; see NVMLGPUProbeTestAccessor::inject() in
 // Mocks/WindowsNVMLFake.h for how
 // any real backend it loaded is torn down first). This exercises enumerateGPUs()/
-// readGPUCounters()/readProcessGPUCounters()/capabilities() deterministically without a real
+// readGPUCounters()/capabilities() deterministically without a real
 // NVIDIA GPU, without weakening the production DLL-loading path in any way.
 // ==========================================================================
 
@@ -396,9 +384,9 @@ TEST_F(NVMLGPUProbeFakeTest, CountersKeepTheIdEnumerationReported)
 
 // #1265: a sleeping GPU (a hybrid laptop's runtime-suspended dGPU) is left alone: a repeat
 // enumeration makes no call addressed to it -- its identity and sensor set were read while it was
-// awake, and are kept (#1294) -- and neither do counter and process reads. Its counters say it is
-// suspended, with every reading unavailable and the VRAM total from the last read while it was
-// awake; the awake GPU is read as usual.
+// awake, and are kept (#1294) -- and neither does a counter read. Its counters say it is
+// suspended, with every reading (the video engines' too, #1485) unavailable and the VRAM total from
+// the last read while it was awake; the awake GPU is read as usual.
 TEST_F(NVMLGPUProbeFakeTest, ASleepingGpuIsNotQueried)
 {
     fakeState().deviceCount = 2;
@@ -406,7 +394,6 @@ TEST_F(NVMLGPUProbeFakeTest, ASleepingGpuIsNotQueried)
     deviceData(0).memTotal = 8ULL << 30U;
     deviceData(1).pciBus = 0x41;
     deviceData(1).uuid = "GPU-22222222-2222-2222-2222-222222222222";
-    fakeState().graphicsProcesses[0] = makeProcessQuery({{.pid = 1234, .usedGpuMemory = 1024, .gpuInstanceId = 0, .computeInstanceId = 0}});
 
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
@@ -423,7 +410,6 @@ TEST_F(NVMLGPUProbeFakeTest, ASleepingGpuIsNotQueried)
     fakeState().deviceQueries.clear();
     const auto gpus = probe.enumerateGPUs();
     const auto asleep = probe.readGPUCounters();
-    const auto processes = probe.readProcessGPUCounters();
 
     // The repeat enumeration reads nothing from it, and keeps the sensor set found while it was awake.
     ASSERT_EQ(gpus.size(), 2U);
@@ -442,11 +428,14 @@ TEST_F(NVMLGPUProbeFakeTest, ASleepingGpuIsNotQueried)
     EXPECT_FALSE(sleeping->powerAvailable);
     EXPECT_FALSE(sleeping->gpuClockAvailable);
     EXPECT_FALSE(sleeping->memoryAvailable);
+    EXPECT_FALSE(sleeping->encoderAvailable) << "A gap, not 0%";
+    EXPECT_FALSE(sleeping->decoderAvailable);
     EXPECT_EQ(sleeping->memoryTotalBytes, 8ULL << 30U);
     EXPECT_FALSE(other->suspended);
     EXPECT_TRUE(other->temperatureAvailable);
+    EXPECT_TRUE(other->encoderAvailable);
+    EXPECT_TRUE(other->decoderAvailable);
 
-    EXPECT_TRUE(processes.empty()); // Its process (pid 1234) isn't listed: that would ask the GPU
     EXPECT_EQ(fakeState().deviceQueries[0], 0) << "No NVML call reached the sleeping GPU";
     EXPECT_GT(fakeState().deviceQueries[1], 3);
 }
@@ -571,41 +560,34 @@ TEST_F(NVMLGPUProbeFakeTest, AGpuLostDuringTheIdentityReadIsNotCachedAndRestarts
 }
 
 // A GPU WindowsGPUProbe marks idle (PDH saw no activity on it) gets no NVML call, which could keep a
-// hybrid dGPU from suspending (#1265): its previous readings and process list are repeated, not
-// zeroed or marked unread. Once it is no longer idle it is read again.
+// hybrid dGPU from suspending (#1265): its previous readings are repeated, not zeroed or marked
+// unread. Once it is no longer idle it is read again.
 TEST_F(NVMLGPUProbeFakeTest, AnIdleGPUIsNotQueriedAndKeepsItsPreviousReadings)
 {
     fakeState().deviceCount = 1;
     deviceData(0).uuid = "GPU-aaaa";
     deviceData(0).temperatureC = 45;
-    fakeState().graphicsProcesses[0] = makeProcessQuery({{.pid = 1234, .usedGpuMemory = 1024, .gpuInstanceId = 0, .computeInstanceId = 0}});
 
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
     ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
     ASSERT_EQ(probe.readGPUCounters().size(), 1U);
-    ASSERT_EQ(probe.readProcessGPUCounters().size(), 1U);
 
     probe.setIdleDevices({"GPU-aaaa"});
     deviceData(0).temperatureC = 60;
-    fakeState().graphicsProcesses[0] = makeProcessQuery({});
     fakeState().deviceQueries.clear();
     const auto idle = probe.readGPUCounters();
-    const auto idleProcesses = probe.readProcessGPUCounters();
     EXPECT_EQ(fakeState().deviceQueries[0], 0) << "No NVML call reached the idle GPU";
     ASSERT_EQ(idle.size(), 1U);
     EXPECT_FALSE(idle[0].suspended) << "Idle is not asleep";
     EXPECT_TRUE(idle[0].temperatureAvailable);
     EXPECT_EQ(idle[0].temperatureC, 45) << "The previous reading stands";
     EXPECT_EQ(idle[0].gpuId, "GPU-aaaa");
-    ASSERT_EQ(idleProcesses.size(), 1U);
-    EXPECT_EQ(idleProcesses[0].pid, 1234);
 
     probe.setIdleDevices({});
     const auto busy = probe.readGPUCounters();
     ASSERT_EQ(busy.size(), 1U);
     EXPECT_EQ(busy[0].temperatureC, 60);
-    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
 }
 
 // A GPU marked idle before NVML has ever read it is read anyway: there is nothing to repeat.
@@ -652,8 +634,6 @@ TEST_F(NVMLGPUProbeFakeTest, AGpuLostDuringTheSensorProbeLeavesTheSensorsUnknown
     EXPECT_TRUE(back[0].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
 }
 
-// NVML_ERROR_UNINITIALIZED from a running-process query is a reset too: NVML restarts at the next
-// full rescan, as it does after a counter read's.
 // A device whose UUID can't be read is named by its NVML index, which a restart can give to another
 // card. What was learnt under such an id isn't carried over: after the restart each device's sensor
 // set is its own, found again (#1338 review).
@@ -671,7 +651,7 @@ TEST_F(NVMLGPUProbeFakeTest, NothingLearntUnderAnIndexIdIsCarriedOverARestart)
     ASSERT_EQ(before.size(), 2U);
     ASSERT_EQ(before[0].id, "NVML_GPU0");
     ASSERT_TRUE(before[0].sensorCapabilities.has_value());
-    EXPECT_FALSE(before[0].sensorCapabilities->hasFanSpeed);
+    EXPECT_FALSE(before[0].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
 
     // NVML renumbers its devices: the card with a fan is index 0 now.
     deviceData(0).fanOk = true;
@@ -681,23 +661,8 @@ TEST_F(NVMLGPUProbeFakeTest, NothingLearntUnderAnIndexIdIsCarriedOverARestart)
     ASSERT_EQ(after.size(), 2U);
     ASSERT_TRUE(after[0].sensorCapabilities.has_value());
     ASSERT_TRUE(after[1].sensorCapabilities.has_value());
-    EXPECT_TRUE(after[0].sensorCapabilities->hasFanSpeed);
-    EXPECT_FALSE(after[1].sensorCapabilities->hasFanSpeed);
-}
-
-TEST_F(NVMLGPUProbeFakeTest, AResetReportedByAProcessQueryRestartsNVMLAtTheNextFullRescan)
-{
-    fakeState().deviceCount = 1;
-    deviceData(0).uuid = "GPU-aaaa";
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
-    fakeState().graphicsProcesses[0] = makeProcessQuery({}, NVML_ERROR_UNINITIALIZED);
-    static_cast<void>(probe.readProcessGPUCounters());
-
-    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
-    EXPECT_EQ(fakeState().initCallCount, 1);
+    EXPECT_TRUE(after[0].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
+    EXPECT_FALSE(after[1].sensorCapabilities.value_or(GPUCapabilities{}).hasFanSpeed);
 }
 
 // NVML_ERROR_UNINITIALIZED means the same as a lost GPU: the library has to be started again. A
@@ -808,230 +773,193 @@ TEST_F(NVMLGPUProbeFakeTest, ReadGPUCountersFallsBackToIndexIdWhenUuidFails)
 }
 
 // ==========================================================================
-// readProcessGPUCounters
+// Video encoder/decoder utilization (#1485)
 // ==========================================================================
 
-TEST_F(NVMLGPUProbeFakeTest, ProcessCountersEmptyWhenNoPerProcessFunctionsAvailable)
+TEST_F(NVMLGPUProbeFakeTest, EncoderAndDecoderAreReadWhenTheGpuHasThem)
 {
-    NVMLGPUProbe probe;
-    auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
-    fns.DeviceGetComputeRunningProcesses = {};
-    fns.DeviceGetGraphicsRunningProcesses = {};
-    NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-
-    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
-}
-
-TEST_F(NVMLGPUProbeFakeTest, ComputeOnlyProcessIsReportedWithComputeEngine)
-{
-    fakeState().computeProcesses[0] =
-        makeProcessQuery({{.pid = 1234, .usedGpuMemory = 512ULL * 1024 * 1024, .gpuInstanceId = 0, .computeInstanceId = 0}});
+    fakeState().deviceCount = 1;
+    deviceData(0).encoderPercent = 42;
+    deviceData(0).decoderPercent = 7;
 
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
+    EXPECT_TRUE(probe.capabilities().hasEncoderDecoder);
 
-    const auto counters = probe.readProcessGPUCounters();
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
+
+    const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters[0].pid, 1234);
-    EXPECT_EQ(counters[0].gpuMemoryBytes, 512U * 1024 * 1024);
-    ASSERT_EQ(counters[0].activeEngines.size(), 1U);
-    EXPECT_EQ(counters[0].activeEngines[0], "Compute");
+    // NVML's percentages, not the sampling period it reports alongside.
+    EXPECT_TRUE(counters[0].encoderAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].encoderUtilPercent, 42.0);
+    EXPECT_TRUE(counters[0].decoderAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].decoderUtilPercent, 7.0);
 }
 
-TEST_F(NVMLGPUProbeFakeTest, GraphicsOnlyProcessIsReportedWithGraphicsEngine)
+// A GPU without NVENC/NVDEC answers NVML_ERROR_NOT_SUPPORTED: no series for it, and its readings
+// are unavailable rather than 0%. Another GPU's engines are unaffected (per device, #1040).
+TEST_F(NVMLGPUProbeFakeTest, AGpuWithoutVideoEnginesHasNoEncoderDecoder)
 {
-    fakeState().graphicsProcesses[0] =
-        makeProcessQuery({{.pid = 5678, .usedGpuMemory = 256ULL * 1024 * 1024, .gpuInstanceId = 0, .computeInstanceId = 0}});
+    fakeState().deviceCount = 2;
+    deviceData(0).uuid = "GPU-aaaa";
+    deviceData(1).uuid = "GPU-bbbb";
+    deviceData(1).encoderResult = NVML_ERROR_NOT_SUPPORTED;
+    deviceData(1).decoderResult = NVML_ERROR_NOT_SUPPORTED;
 
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
 
-    const auto counters = probe.readProcessGPUCounters();
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters[0].pid, 5678);
-    ASSERT_EQ(counters[0].activeEngines.size(), 1U);
-    EXPECT_EQ(counters[0].activeEngines[0], "3D");
-}
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
+    ASSERT_TRUE(gpus[1].sensorCapabilities.has_value());
+    EXPECT_FALSE(gpus[1].sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
 
-TEST_F(NVMLGPUProbeFakeTest, SamePidInBothListsMergesEnginesAndKeepsMaxMemory)
-{
-    constexpr unsigned int pid = 42;
-    fakeState().computeProcesses[0] =
-        makeProcessQuery({{.pid = pid, .usedGpuMemory = 100ULL * 1024 * 1024, .gpuInstanceId = 0, .computeInstanceId = 0}});
-    fakeState().graphicsProcesses[0] =
-        makeProcessQuery({{.pid = pid, .usedGpuMemory = 300ULL * 1024 * 1024, .gpuInstanceId = 0, .computeInstanceId = 0}});
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-
-    const auto counters = probe.readProcessGPUCounters();
-    ASSERT_EQ(counters.size(), 1U) << "Same PID on the same GPU should merge into one entry";
-    EXPECT_EQ(counters[0].gpuMemoryBytes, 300U * 1024 * 1024) << "Merge should keep the larger valid memory value";
-    ASSERT_EQ(counters[0].activeEngines.size(), 2U);
-    EXPECT_EQ(counters[0].activeEngines[0], "Compute");
-    EXPECT_EQ(counters[0].activeEngines[1], "3D");
-}
-
-TEST_F(NVMLGPUProbeFakeTest, UnavailableMemorySentinelReportsZeroBytes)
-{
-    constexpr auto notAvailable = std::numeric_limits<unsigned long long>::max();
-    fakeState().computeProcesses[0] =
-        makeProcessQuery({{.pid = 7, .usedGpuMemory = notAvailable, .gpuInstanceId = 0, .computeInstanceId = 0}});
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-
-    const auto counters = probe.readProcessGPUCounters();
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters[0].gpuMemoryBytes, 0U);
-}
-
-TEST_F(NVMLGPUProbeFakeTest, ImplausibleReportedCountIsSkipped)
-{
-    fakeState().computeProcesses[0] = makeProcessQuery({}, NVML_SUCCESS, NVML_SUCCESS, 100000U);
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-
-    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
-}
-
-TEST_F(NVMLGPUProbeFakeTest, ImplausibleGraphicsReportedCountIsSkipped)
-{
-    // Mirrors ImplausibleReportedCountIsSkipped above, but for the graphics-process guard
-    // rather than the compute-process one - they're separate branches in production code.
-    fakeState().graphicsProcesses[0] = makeProcessQuery({}, NVML_SUCCESS, NVML_SUCCESS, 100000U);
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-
-    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
-}
-
-TEST_F(NVMLGPUProbeFakeTest, InsufficientSizeOnFirstCallStillFetchesProcesses)
-{
-    fakeState().computeProcesses[0] =
-        makeProcessQuery({{.pid = 99, .usedGpuMemory = 1024, .gpuInstanceId = 0, .computeInstanceId = 0}}, NVML_ERROR_INSUFFICIENT_SIZE);
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-
-    const auto counters = probe.readProcessGPUCounters();
-    ASSERT_EQ(counters.size(), 1U);
-    EXPECT_EQ(counters[0].pid, 99);
-}
-
-TEST_F(NVMLGPUProbeFakeTest, UnexpectedFirstCallErrorYieldsNoProcesses)
-{
-    fakeState().computeProcesses[0] = makeProcessQuery({}, NVML_ERROR_UNKNOWN);
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-
-    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
-}
-
-// Running-process entry points (#1313): the loader takes the newest variant nvml.dll exports, and
-// the entries are read at that variant's size (16 bytes for the unversioned v1 export, 24 for _v3).
-
-TEST_F(NVMLGPUProbeFakeTest, LegacyV1RunningProcessesReadsEverySixteenByteEntry)
-{
-    // Before #1313 the probe read the v1 export's 16-byte entries as 24-byte ones, so every entry
-    // after the first came from the wrong offset (the second PID read as the first's memory).
-    fakeState().computeProcesses[0] = makeProcessQuery({{.pid = 111, .usedGpuMemory = 1000}, {.pid = 222, .usedGpuMemory = 2000}});
-    fakeState().graphicsProcesses[0] = makeProcessQuery({{.pid = 333, .usedGpuMemory = 3000}, {.pid = 444, .usedGpuMemory = 4000}});
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::loadRunningProcesses(probe, runningProcessExports(/*withV1=*/true, /*withV3=*/false));
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-    EXPECT_EQ(NVMLGPUProbeTestAccessor::computeEntrySize(probe), FAKE_PROCESS_INFO_V1_SIZE);
-
-    const auto counters = probe.readProcessGPUCounters();
-    ASSERT_EQ(counters.size(), 4U);
-    EXPECT_EQ(counters[0].pid, 111);
-    EXPECT_EQ(counters[0].gpuMemoryBytes, 1000U);
-    EXPECT_EQ(counters[1].pid, 222);
-    EXPECT_EQ(counters[1].gpuMemoryBytes, 2000U);
-    EXPECT_EQ(counters[2].pid, 333);
-    EXPECT_EQ(counters[2].gpuMemoryBytes, 3000U);
-    EXPECT_EQ(counters[3].pid, 444);
-    EXPECT_EQ(counters[3].gpuMemoryBytes, 4000U);
-    EXPECT_TRUE(probe.capabilities().hasPerProcessMetrics);
-}
-
-TEST_F(NVMLGPUProbeFakeTest, V3RunningProcessesIsPreferredAndReadsTwentyFourByteEntries)
-{
-    fakeState().computeProcesses[0] = makeProcessQuery({{.pid = 111, .usedGpuMemory = 1000, .gpuInstanceId = 1, .computeInstanceId = 2},
-                                                        {.pid = 222, .usedGpuMemory = 2000, .gpuInstanceId = 3, .computeInstanceId = 4}});
-
-    NVMLGPUProbe probe;
-    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::loadRunningProcesses(probe, runningProcessExports(/*withV1=*/true, /*withV3=*/true));
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
-    EXPECT_EQ(NVMLGPUProbeTestAccessor::computeEntrySize(probe), FAKE_PROCESS_INFO_V2_SIZE) << "the _v3 export is preferred over v1";
-
-    const auto counters = probe.readProcessGPUCounters();
+    const auto counters = probe.readGPUCounters();
     ASSERT_EQ(counters.size(), 2U);
-    EXPECT_EQ(counters[0].pid, 111);
-    EXPECT_EQ(counters[0].gpuMemoryBytes, 1000U);
-    EXPECT_EQ(counters[1].pid, 222);
-    EXPECT_EQ(counters[1].gpuMemoryBytes, 2000U);
+    const auto without = std::ranges::find(counters, std::string("GPU-bbbb"), &GPUCounters::gpuId);
+    ASSERT_NE(without, counters.end());
+    EXPECT_FALSE(without->encoderAvailable);
+    EXPECT_FALSE(without->decoderAvailable);
+    EXPECT_DOUBLE_EQ(without->encoderUtilPercent, 0.0);
 }
 
-TEST_F(NVMLGPUProbeFakeTest, NoRunningProcessesExportMeansNoPerProcessMetrics)
+// A GPU with only one engine (an NVDEC-only card) still has the capability; the missing engine
+// reads as unavailable each sample.
+TEST_F(NVMLGPUProbeFakeTest, AGpuWithOnlyADecoderKeepsTheCapability)
 {
+    fakeState().deviceCount = 1;
+    deviceData(0).encoderResult = NVML_ERROR_NOT_SUPPORTED;
+
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    NVMLGPUProbeTestAccessor::loadRunningProcesses(probe, runningProcessExports(/*withV1=*/false, /*withV3=*/false));
-    NVMLGPUProbeTestAccessor::addDevice(probe, 0, deviceHandleFor(0));
 
-    EXPECT_FALSE(probe.capabilities().hasPerProcessMetrics);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].encoderAvailable);
+    EXPECT_TRUE(counters[0].decoderAvailable);
+    EXPECT_DOUBLE_EQ(counters[0].decoderUtilPercent, 12.0);
+}
+
+// An nvml.dll without the queries (an old driver): no capability anywhere, and the readings are
+// unavailable. They are optional symbols, so the rest of NVML still works.
+TEST_F(NVMLGPUProbeFakeTest, MissingVideoEngineQueriesMeanNoEncoderDecoder)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0) = FakeDeviceData{};
+
+    NVMLGPUProbe probe;
+    auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
+    fns.DeviceGetEncoderUtilization = nullptr;
+    fns.DeviceGetDecoderUtilization = nullptr;
+    NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
+    EXPECT_FALSE(probe.capabilities().hasEncoderDecoder);
+    EXPECT_TRUE(probe.capabilities().hasTemperature);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_FALSE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasTemperature);
+
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_FALSE(counters[0].encoderAvailable);
+    EXPECT_FALSE(counters[0].decoderAvailable);
+    EXPECT_TRUE(counters[0].temperatureAvailable);
+}
+
+// Either query resolving is enough for the probe-wide capability.
+TEST_F(NVMLGPUProbeFakeTest, EitherVideoEngineQueryGivesTheProbeTheCapability)
+{
+    NVMLGPUProbe probe;
+    auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
+    fns.DeviceGetEncoderUtilization = nullptr;
+    NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
+    EXPECT_TRUE(probe.capabilities().hasEncoderDecoder);
+}
+
+// A transient failure (NVML_ERROR_TIMEOUT, a busy GPU) at enumeration doesn't hide the series for
+// the session (#1111, #1112); a failed read is a gap in that sample, and the next good read fills in.
+TEST_F(NVMLGPUProbeFakeTest, ATransientVideoEngineFailureKeepsTheCapabilityAndIsAGap)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).encoderResult = NVML_ERROR_TIMEOUT;
+    deviceData(0).decoderResult = NVML_ERROR_TIMEOUT;
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    ASSERT_TRUE(gpus[0].sensorCapabilities.has_value());
+    EXPECT_TRUE(gpus[0].sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
+
+    const auto failed = probe.readGPUCounters();
+    ASSERT_EQ(failed.size(), 1U);
+    EXPECT_FALSE(failed[0].encoderAvailable);
+    EXPECT_FALSE(failed[0].decoderAvailable);
+    EXPECT_DOUBLE_EQ(failed[0].encoderUtilPercent, 0.0);
+
+    deviceData(0).encoderResult = NVML_SUCCESS;
+    deviceData(0).decoderResult = NVML_SUCCESS;
+    const auto recovered = probe.readGPUCounters();
+    ASSERT_EQ(recovered.size(), 1U);
+    EXPECT_TRUE(recovered[0].encoderAvailable);
+    EXPECT_DOUBLE_EQ(recovered[0].encoderUtilPercent, 30.0);
+    EXPECT_TRUE(recovered[0].decoderAvailable);
+}
+
+// A video-engine read that finds the GPU lost restarts NVML at the next full rescan, as any other
+// counter read's does (#1294).
+TEST_F(NVMLGPUProbeFakeTest, AResetReportedByAVideoEngineReadRestartsNVMLAtTheNextFullRescan)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0).uuid = "GPU-aaaa";
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    deviceData(0).encoderResult = NVML_ERROR_UNINITIALIZED;
+    static_cast<void>(probe.readGPUCounters());
+
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(fakeState().initCallCount, 1);
+}
+
+// ==========================================================================
+// Per-process counters and capabilities (#1480)
+// ==========================================================================
+
+// Windows takes per-process GPU data from PDH (WindowsGPUProbe::readProcessGPUCounters()), so the
+// NVML probe lists no process and asks no device for one, even with NVIDIA GPUs present.
+TEST_F(NVMLGPUProbeFakeTest, ProcessCountersAreEmptyAndAskNoDevice)
+{
+    fakeState().deviceCount = 1;
+    deviceData(0) = FakeDeviceData{};
+
+    NVMLGPUProbe probe;
+    NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    fakeState().deviceQueries.clear();
+
     EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    EXPECT_EQ(fakeState().deviceQueries[0], 0);
 }
 
-// ==========================================================================
-// capabilities
-// ==========================================================================
-
-TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportsPerProcessMetricsWhenEitherFunctionAvailable)
-{
-    NVMLGPUProbe probe;
-    auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
-    fns.DeviceGetGraphicsRunningProcesses = {}; // only compute available
-    NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
-
-    EXPECT_TRUE(probe.capabilities().hasPerProcessMetrics);
-}
-
-// #1210: the running-process lists give each process's memory, not its utilization, so GPU % per
-// process is not offered from NVML (PDH supplies it on Windows).
-TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportNoPerProcessUtilization)
+TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportNoPerProcessMetrics)
 {
     NVMLGPUProbe probe;
     NVMLGPUProbeTestAccessor::inject(probe, NVMLGPUProbeTestAccessor::fullFakeFunctions(), /*initialized=*/true);
-    EXPECT_TRUE(probe.capabilities().hasPerProcessMetrics);
-    EXPECT_FALSE(probe.capabilities().hasPerProcessUtilization);
-}
-
-TEST_F(NVMLGPUProbeFakeTest, CapabilitiesReportsNoPerProcessMetricsWhenNeitherAvailable)
-{
-    NVMLGPUProbe probe;
-    auto fns = NVMLGPUProbeTestAccessor::fullFakeFunctions();
-    fns.DeviceGetComputeRunningProcesses = {};
-    fns.DeviceGetGraphicsRunningProcesses = {};
-    NVMLGPUProbeTestAccessor::inject(probe, fns, /*initialized=*/true);
-
     EXPECT_FALSE(probe.capabilities().hasPerProcessMetrics);
+    EXPECT_FALSE(probe.capabilities().hasPerProcessUtilization);
 }
 
 // ==========================================================================

@@ -63,9 +63,9 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
             // Map NVIDIA DXGI adapters to NVML devices by name, each NVML device claimed once so
             // identical cards do not all map to the first (#1040).
             m_DXGIToNVMLMap = mapDXGIToNVML(gpus, nvmlGPUs);
-            // NVML's per-process counters name each device by its matched adapter's id (#1317).
+            // Each NVML device's matched adapter id, so PDH's per-adapter readings say which NVML
+            // devices to leave idle (#1265).
             m_NVMLAdapterIds = nvmlDeviceAdapterIds(gpus, nvmlGPUs, m_DXGIToNVMLMap);
-            m_NVMLProbe->setProcessGpuIds(m_NVMLAdapterIds);
             // The mapping holds enumeration positions; counter reads are reordered to match by id.
             m_NVMLEnumeratedIds.clear();
             for (const auto& nvmlGPU : nvmlGPUs)

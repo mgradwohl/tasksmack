@@ -503,28 +503,53 @@ TEST_F(WindowsGPURescanTest, AWokenAdapterGetsItsOwnSensorsOnAQuickRescan)
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
 }
 
-// NVML numbers its devices in its own order, not DXGI's (#1091), so its per-process counters used
-// to name a device "GPU{nvmlIndex}" -- the id of whichever DXGI adapter was listed at that position.
-// They now carry the id of the DXGI adapter the device is matched to by PCI location (#1317).
-TEST_F(WindowsGPURescanTest, NVMLPerProcessCountersCarryTheMatchedAdapterId)
+// NVML's video-engine utilization reaches the adapter the GPU tab draws (#1485): each NVIDIA
+// adapter, matched to its NVML device by PCI location (NVML lists the second DXGI adapter first,
+// #1091), gets its own device's encoder/decoder readings and their availability, and its sensor
+// set says whether it has the engines at all. A card without them (NVML_ERROR_NOT_SUPPORTED) shows
+// gaps, not 0%; the iGPU, which NVML doesn't cover, has no encoder/decoder capability.
+TEST_F(WindowsGPURescanTest, NVMLEncoderAndDecoderReachTheMatchedAdapter)
 {
-    setAdapters({nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x41)});
     fakeState().deviceCount = 2;
-    setNVMLDevice(0, "GPU-second", 0x41, 70); // NVML lists the second DXGI adapter first
+    setNVMLDevice(0, "GPU-second", 0x41, 70);
+    deviceData(0).encoderResult = NVML_ERROR_NOT_SUPPORTED;
+    deviceData(0).decoderResult = NVML_ERROR_NOT_SUPPORTED;
     setNVMLDevice(1, "GPU-first", 0x01, 50);
-    fakeState().computeProcesses[0] =
-        makeProcessQuery({{.pid = 4242, .usedGpuMemory = 64ULL << 20U, .gpuInstanceId = 0, .computeInstanceId = 0}});
+    deviceData(1).encoderPercent = 55;
+    deviceData(1).decoderPercent = 9;
 
     WindowsGPUProbe probe;
     useFakes(probe);
+    EXPECT_TRUE(probe.capabilities().hasEncoderDecoder);
     const auto gpus = probe.enumerateGPUs();
-    ASSERT_EQ(gpus.size(), 2U);
-    const std::string secondId = findByLuid(gpus, 0x300)->id;
+    ASSERT_EQ(gpus.size(), 3U);
+    const GPUInfo* iGPU = findByLuid(gpus, 0x100);
+    const GPUInfo* first = findByLuid(gpus, 0x200);
+    const GPUInfo* second = findByLuid(gpus, 0x300);
+    ASSERT_NE(iGPU, nullptr);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_FALSE(iGPU->sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
+    EXPECT_TRUE(first->sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
+    EXPECT_FALSE(second->sensorCapabilities.value_or(GPUCapabilities{}).hasEncoderDecoder);
 
-    const auto processes = WindowsGPUProbeTestAccessor::nvml(probe).readProcessGPUCounters();
-    ASSERT_EQ(processes.size(), 1U);
-    EXPECT_EQ(processes[0].pid, 4242);
-    EXPECT_EQ(processes[0].gpuId, secondId);
+    const auto counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 3U);
+    const auto counterFor = [&counters](const std::string& id)
+    {
+        return std::ranges::find(counters, id, &GPUCounters::gpuId);
+    };
+    const auto withEngines = counterFor(first->id);
+    const auto withoutEngines = counterFor(second->id);
+    ASSERT_NE(withEngines, counters.end());
+    ASSERT_NE(withoutEngines, counters.end());
+    EXPECT_TRUE(withEngines->encoderAvailable);
+    EXPECT_DOUBLE_EQ(withEngines->encoderUtilPercent, 55.0);
+    EXPECT_TRUE(withEngines->decoderAvailable);
+    EXPECT_DOUBLE_EQ(withEngines->decoderUtilPercent, 9.0);
+    EXPECT_FALSE(withoutEngines->encoderAvailable);
+    EXPECT_FALSE(withoutEngines->decoderAvailable);
 }
 
 } // namespace

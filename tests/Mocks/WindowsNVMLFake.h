@@ -23,12 +23,10 @@
 #include <cstring>
 #include <functional>
 #include <iterator>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
-#include <vector>
 
 namespace Platform
 {
@@ -54,6 +52,8 @@ struct FakeDeviceData
     unsigned int memClockMhz = 10500;
     unsigned int utilizationGpu = 37;
     unsigned int fanPercent = 48;
+    unsigned int encoderPercent = 30; // nvmlDeviceGetEncoderUtilization (#1485)
+    unsigned int decoderPercent = 12; // nvmlDeviceGetDecoderUtilization (#1485)
     unsigned int pciBus = 0x01;
     unsigned int pciDevice = 0x00;
     unsigned int pciDeviceId = 0x268410DEU; // (device ID << 16) | vendor ID, as NVML encodes it
@@ -74,30 +74,11 @@ struct FakeDeviceData
     // reset (NVML_ERROR_GPU_IS_LOST) mid-identity-read.
     nvmlReturn_t uuidFailure = NVML_ERROR_NOT_SUPPORTED;
     nvmlReturn_t pciInfoFailure = NVML_ERROR_NOT_SUPPORTED;
-};
-
-/// One running process as the fake reports it. The entry points write it in the layout of the
-/// variant called: 16-byte nvmlProcessInfo_v1_t {pid, usedGpuMemory} from the unversioned export,
-/// 24-byte nvmlProcessInfo_v2_t (adding the instance ids) from _v3 (#1313).
-struct FakeProcess
-{
-    unsigned int pid = 0;
-    std::uint64_t usedGpuMemory = 0;
-    unsigned int gpuInstanceId = 0;
-    unsigned int computeInstanceId = 0;
-};
-
-inline constexpr std::size_t FAKE_PROCESS_INFO_V1_SIZE = 16;
-inline constexpr std::size_t FAKE_PROCESS_INFO_V2_SIZE = 24;
-
-struct FakeProcessQuery
-{
-    std::vector<FakeProcess> processes;
-    nvmlReturn_t firstCallResult = NVML_SUCCESS;
-    nvmlReturn_t secondCallResult = NVML_SUCCESS;
-    // When set, the "query count" call reports this instead of processes.size() - lets a
-    // test simulate an implausible driver-reported count independent of the real list size.
-    std::optional<unsigned int> reportedCountOverride;
+    // What the video-engine queries answer instead of a reading (#1485): NVML_SUCCESS reads
+    // encoderPercent/decoderPercent; NVML_ERROR_NOT_SUPPORTED is a GPU without that engine, and
+    // anything else (NVML_ERROR_TIMEOUT) a transient failure.
+    nvmlReturn_t encoderResult = NVML_SUCCESS;
+    nvmlReturn_t decoderResult = NVML_SUCCESS;
 };
 
 struct FakeNvmlState
@@ -106,15 +87,13 @@ struct FakeNvmlState
     unsigned int deviceCount = 0;
     std::unordered_set<unsigned int> invalidHandleIndices;
     std::unordered_map<unsigned int, FakeDeviceData> devices;
-    std::unordered_map<unsigned int, FakeProcessQuery> computeProcesses;
-    std::unordered_map<unsigned int, FakeProcessQuery> graphicsProcesses;
     int shutdownCallCount = 0;
     // NVML calls addressed to each device, so a test can prove a sleeping GPU wasn't touched (#1265)
     std::unordered_map<unsigned int, int> deviceQueries;
     // nvmlInit's answer and how often it was called, for restart() (#1294)
     nvmlReturn_t initResult = NVML_SUCCESS;
     int initCallCount = 0;
-    // Devices whose readings (memory, sensors, VBIOS, running processes) report
+    // Devices whose readings (memory, sensors, VBIOS) report
     // NVML_ERROR_GPU_IS_LOST (a driver reset, say) (#1294); identity reads still answer
     std::unordered_set<unsigned int> lostDevices;
 };
@@ -154,19 +133,6 @@ inline nvmlDevice_t deviceHandleFor(unsigned int index)
     // nvmlDevice_t is an opaque handle; encoding the index as a small sentinel pointer (never
     // dereferenced) is the simplest way for the fakes below to recover which device a call is for.
     return reinterpret_cast<nvmlDevice_t>(static_cast<std::uintptr_t>(index) + 1); // NOLINT(performance-no-int-to-ptr)
-}
-
-inline FakeProcessQuery makeProcessQuery(std::vector<FakeProcess> processes,
-                                         nvmlReturn_t firstCallResult = NVML_SUCCESS,
-                                         nvmlReturn_t secondCallResult = NVML_SUCCESS,
-                                         std::optional<unsigned int> reportedCountOverride = std::nullopt)
-{
-    FakeProcessQuery query;
-    query.processes = std::move(processes);
-    query.firstCallResult = firstCallResult;
-    query.secondCallResult = secondCallResult;
-    query.reportedCountOverride = reportedCountOverride;
-    return query;
 }
 
 inline void copyToBuffer(char* dst, unsigned int size, const std::string& s)
@@ -371,102 +337,34 @@ inline nvmlReturn_t fakeDeviceGetPciInfo(nvmlDevice_t device, nvmlPciInfo_t* pci
     return NVML_SUCCESS;
 }
 
-/// Answers a running-process query like NVML does, writing `entrySize`-byte entries: the layout is
-/// spelled out byte by byte (pid at 0, usedGpuMemory at 8, then the instance ids at 16 and 20 in
-/// the 24-byte layout), independently of the parser under test.
-inline nvmlReturn_t queryFakeProcesses(std::unordered_map<unsigned int, FakeProcessQuery>& table,
-                                       unsigned int deviceIndex,
-                                       unsigned int* count,
-                                       nvmlProcessInfoEntries* buffer,
-                                       std::size_t entrySize)
+/// A video engine's utilization (#1485), as NVML reports it: the percentage and the period it was
+/// averaged over.
+inline nvmlReturn_t fakeEngineUtilization(nvmlDevice_t device, bool encoder, unsigned int* utilization, unsigned int* samplingPeriodUs)
 {
-    ++fakeState().deviceQueries[deviceIndex];
-    if (fakeState().lostDevices.contains(deviceIndex))
+    const auto& d = touchDevice(device);
+    if (isLost(device))
     {
         return NVML_ERROR_GPU_IS_LOST;
     }
-    auto it = table.find(deviceIndex);
-    if (it == table.end())
+    const nvmlReturn_t result = encoder ? d.encoderResult : d.decoderResult;
+    if (result != NVML_SUCCESS)
     {
-        *count = 0;
-        return NVML_SUCCESS;
+        return result;
     }
-
-    const auto& query = it->second;
-    const unsigned int reportedCount = query.reportedCountOverride.value_or(static_cast<unsigned int>(query.processes.size()));
-
-    if (buffer == nullptr)
-    {
-        *count = reportedCount;
-        return query.firstCallResult;
-    }
-
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - NVML's untyped entry array
-    auto* out = reinterpret_cast<std::byte*>(buffer);
-    const unsigned int toCopy = std::min(*count, static_cast<unsigned int>(query.processes.size()));
-    for (unsigned int i = 0; i < toCopy; ++i)
-    {
-        const FakeProcess& process = query.processes[i];
-        std::byte* entry = out + (static_cast<std::size_t>(i) * entrySize);
-        std::memcpy(entry, &process.pid, sizeof(process.pid));
-        std::memcpy(entry + 8, &process.usedGpuMemory, sizeof(process.usedGpuMemory));
-        if (entrySize == FAKE_PROCESS_INFO_V2_SIZE)
-        {
-            std::memcpy(entry + 16, &process.gpuInstanceId, sizeof(process.gpuInstanceId));
-            std::memcpy(entry + 20, &process.computeInstanceId, sizeof(process.computeInstanceId));
-        }
-    }
-    *count = toCopy;
-    return query.secondCallResult;
+    constexpr unsigned int SAMPLING_PERIOD_US = 167'000;
+    *utilization = encoder ? d.encoderPercent : d.decoderPercent;
+    *samplingPeriodUs = SAMPLING_PERIOD_US;
+    return NVML_SUCCESS;
 }
 
-// The running-process exports: the unversioned (v1) symbols write 16-byte entries, the _v3 ones
-// 24-byte entries (#1313). Each takes nvmlProcessInfoEntries* like the probe's function-pointer
-// type, so the call matches the callee's own type (UBSan -fsanitize=function, #1306).
-inline nvmlReturn_t fakeDeviceGetComputeRunningProcesses(nvmlDevice_t device, unsigned int* count, nvmlProcessInfoEntries* buffer)
+inline nvmlReturn_t fakeDeviceGetEncoderUtilization(nvmlDevice_t device, unsigned int* utilization, unsigned int* samplingPeriodUs)
 {
-    return queryFakeProcesses(fakeState().computeProcesses, deviceIndexOf(device), count, buffer, FAKE_PROCESS_INFO_V1_SIZE);
+    return fakeEngineUtilization(device, true, utilization, samplingPeriodUs);
 }
 
-inline nvmlReturn_t fakeDeviceGetGraphicsRunningProcesses(nvmlDevice_t device, unsigned int* count, nvmlProcessInfoEntries* buffer)
+inline nvmlReturn_t fakeDeviceGetDecoderUtilization(nvmlDevice_t device, unsigned int* utilization, unsigned int* samplingPeriodUs)
 {
-    return queryFakeProcesses(fakeState().graphicsProcesses, deviceIndexOf(device), count, buffer, FAKE_PROCESS_INFO_V1_SIZE);
-}
-
-// NOLINTNEXTLINE(readability-identifier-naming) - mirrors NVML's _v3 export name
-inline nvmlReturn_t fakeDeviceGetComputeRunningProcesses_v3(nvmlDevice_t device, unsigned int* count, nvmlProcessInfoEntries* buffer)
-{
-    return queryFakeProcesses(fakeState().computeProcesses, deviceIndexOf(device), count, buffer, FAKE_PROCESS_INFO_V2_SIZE);
-}
-
-// NOLINTNEXTLINE(readability-identifier-naming) - mirrors NVML's _v3 export name
-inline nvmlReturn_t fakeDeviceGetGraphicsRunningProcesses_v3(nvmlDevice_t device, unsigned int* count, nvmlProcessInfoEntries* buffer)
-{
-    return queryFakeProcesses(fakeState().graphicsProcesses, deviceIndexOf(device), count, buffer, FAKE_PROCESS_INFO_V2_SIZE);
-}
-
-/// The address of a fake export, as GetProcAddress would hand it to the loader.
-template<typename Fn> void* exportAddress(Fn* fn)
-{
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - as GetProcAddress does
-    return reinterpret_cast<void*>(fn);
-}
-
-/// The running-process symbols a fake nvml.dll exports, by name, for the probe's loader (#1313).
-inline std::unordered_map<std::string, void*> runningProcessExports(bool withV1, bool withV3)
-{
-    std::unordered_map<std::string, void*> exports;
-    if (withV1)
-    {
-        exports["nvmlDeviceGetComputeRunningProcesses"] = exportAddress(&fakeDeviceGetComputeRunningProcesses);
-        exports["nvmlDeviceGetGraphicsRunningProcesses"] = exportAddress(&fakeDeviceGetGraphicsRunningProcesses);
-    }
-    if (withV3)
-    {
-        exports["nvmlDeviceGetComputeRunningProcesses_v3"] = exportAddress(&fakeDeviceGetComputeRunningProcesses_v3);
-        exports["nvmlDeviceGetGraphicsRunningProcesses_v3"] = exportAddress(&fakeDeviceGetGraphicsRunningProcesses_v3);
-    }
-    return exports;
+    return fakeEngineUtilization(device, false, utilization, samplingPeriodUs);
 }
 
 inline nvmlReturn_t fakeShutdown()
@@ -490,13 +388,11 @@ inline nvmlReturn_t fakeSystemGetDriverVersion(char* buf, unsigned int size)
 } // namespace NVMLFake
 
 // Test-only accessor: lets unit tests inject a fake NVMLFunctions table and device handles
-// so enumerateGPUs()/readGPUCounters()/readProcessGPUCounters()/capabilities() can be
-// exercised deterministically without a real NVIDIA GPU or nvml.dll. Declared directly in
-// namespace Platform (not inside an anonymous namespace) so the `friend struct
-// NVMLGPUProbeTestAccessor;` declaration in NVMLGPUProbe.h resolves to this exact type; its
-// members name the fakes above through NVMLFake. inject() below substitutes the backend after the
-// constructor's real loadNVML() has already run; this does not change or bypass
-// loadNVML()'s LOAD_LIBRARY_SEARCH_SYSTEM32 hardening in any way.
+// so enumerateGPUs()/readGPUCounters()/capabilities() can be exercised deterministically without a real NVIDIA GPU or nvml.dll. Declared
+// directly in namespace Platform (not inside an anonymous namespace) so the `friend struct NVMLGPUProbeTestAccessor;` declaration in
+// NVMLGPUProbe.h resolves to this exact type; its members name the fakes above through NVMLFake. inject() below substitutes the backend
+// after the constructor's real loadNVML() has already run; this does not change or bypass loadNVML()'s LOAD_LIBRARY_SEARCH_SYSTEM32
+// hardening in any way.
 struct NVMLGPUProbeTestAccessor
 {
     static void inject(NVMLGPUProbe& probe, const NVMLGPUProbe::NVMLFunctions& fns, bool initialized)
@@ -536,7 +432,7 @@ struct NVMLGPUProbeTestAccessor
     }
 
     /// Builds a fully-populated NVMLFunctions table pointing at the fakes above. Tests null
-    /// out individual fields (e.g. per-process functions) to exercise "not available" branches.
+    /// out individual fields (e.g. the video-engine queries) to exercise "not available" branches.
     [[nodiscard]] static NVMLGPUProbe::NVMLFunctions fullFakeFunctions()
     {
         NVMLGPUProbe::NVMLFunctions fns{};
@@ -556,33 +452,9 @@ struct NVMLGPUProbeTestAccessor
         fns.DeviceGetVbiosVersion = NVMLFake::fakeDeviceGetVbiosVersion;
         fns.DeviceGetFanSpeed = NVMLFake::fakeDeviceGetFanSpeed;
         fns.DeviceGetPciInfo = NVMLFake::fakeDeviceGetPciInfo;
-        // What the loader picks from a current driver: the _v3 exports and their 24-byte entries.
-        fns.DeviceGetComputeRunningProcesses = {.fn = NVMLFake::fakeDeviceGetComputeRunningProcesses_v3,
-                                                .entrySize = NVMLFake::FAKE_PROCESS_INFO_V2_SIZE};
-        fns.DeviceGetGraphicsRunningProcesses = {.fn = NVMLFake::fakeDeviceGetGraphicsRunningProcesses_v3,
-                                                 .entrySize = NVMLFake::FAKE_PROCESS_INFO_V2_SIZE};
+        fns.DeviceGetEncoderUtilization = NVMLFake::fakeDeviceGetEncoderUtilization;
+        fns.DeviceGetDecoderUtilization = NVMLFake::fakeDeviceGetDecoderUtilization;
         return fns;
-    }
-
-    /// Loads the running-process entry points as loadNVML() does, but from `exports` rather than
-    /// nvml.dll (#1313): the newest variant exported, with its entry size.
-    static void loadRunningProcesses(NVMLGPUProbe& probe, const std::unordered_map<std::string, void*>& exports)
-    {
-        const auto resolve = [&exports](const std::string& name) -> void*
-        {
-            const auto it = exports.find(name);
-            return it == exports.end() ? nullptr : it->second;
-        };
-        probe.m_NVML.DeviceGetComputeRunningProcesses =
-            NVMLGPUProbe::loadRunningProcessesQuery("nvmlDeviceGetComputeRunningProcesses", resolve);
-        probe.m_NVML.DeviceGetGraphicsRunningProcesses =
-            NVMLGPUProbe::loadRunningProcessesQuery("nvmlDeviceGetGraphicsRunningProcesses", resolve);
-    }
-
-    /// The entry size of the loaded compute running-process entry point; 0 when none is loaded.
-    [[nodiscard]] static std::size_t computeEntrySize(const NVMLGPUProbe& probe)
-    {
-        return probe.m_NVML.DeviceGetComputeRunningProcesses.entrySize;
     }
 };
 
