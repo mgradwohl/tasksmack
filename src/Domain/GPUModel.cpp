@@ -335,13 +335,29 @@ void GPUModel::refreshAt(std::chrono::steady_clock::time_point now)
 
     try
     {
-        // Read current counters
+        // Read current counters: the system's, then the per-process ones, in one locked section.
+        // This sampler is the only one that runs the probe (#1417): the process sampler merges the
+        // per-process publication made here, never waiting on the probe or its lock.
         std::vector<Platform::GPUCounters> currentCounters;
+        std::exception_ptr systemReadFailure;
         {
             const std::scoped_lock probeLock(m_ProbeMutex);
             // Before the read, so a rebuilt device list and the GPU info describing it arrive together.
             rescanGPUs(now);
-            currentCounters = m_Probe->readGPUCounters();
+            try
+            {
+                currentCounters = m_Probe->readGPUCounters();
+            }
+            catch (...)
+            {
+                // Rethrown below, after the per-process read: one failing read doesn't stop the other.
+                systemReadFailure = std::current_exception();
+            }
+            publishProcessGPUData(now);
+        }
+        if (systemReadFailure)
+        {
+            std::rethrow_exception(systemReadFailure);
         }
         const auto currentTime = now;
 
@@ -685,7 +701,12 @@ GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
         return {};
     }
     const std::scoped_lock probeLock(m_ProbeMutex);
-    // Re-read under the probe lock: rescanGPUs(), which can change the flags, runs holding it, so
+    return readProcessGPUDataLocked();
+}
+
+GPUModel::ProcessGPUReading GPUModel::readProcessGPUDataLocked() const
+{
+    // Read under the probe lock: rescanGPUs(), which can change the flags, runs holding it, so
     // these are the flags the read below happens under (#1210).
     ProcessGPUReading reading;
     reading.perProcessSupported = !m_PerProcessKnownUnsupported.load(std::memory_order_acquire);
@@ -704,6 +725,62 @@ GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
         reading.failure = std::current_exception();
     }
     return reading;
+}
+
+void GPUModel::publishProcessGPUData(std::chrono::steady_clock::time_point now)
+{
+    ProcessGPUReading reading = readProcessGPUDataLocked();
+    if (reading.failure && !m_ProcessReadFailing)
+    {
+        // Once per streak; the publication below carries the failure to ProcessModel (#1142, #1210).
+        try
+        {
+            std::rethrow_exception(reading.failure);
+        }
+        catch (const std::exception& e)
+        {
+            spdlog::warn("GPUModel: reading per-process GPU data failed; publishing a gap: {}", e.what());
+        }
+        catch (...)
+        {
+            spdlog::warn("GPUModel: reading per-process GPU data failed; publishing a gap");
+        }
+    }
+    else if (!reading.failure && m_ProcessReadFailing)
+    {
+        spdlog::info("GPUModel: per-process GPU data is being read again");
+    }
+    m_ProcessReadFailing = static_cast<bool>(reading.failure);
+
+    try
+    {
+        auto publication = std::make_shared<ProcessGPUPublication>();
+        publication->version = m_ProcessPublicationVersion + 1;
+        publication->captureTime = now;
+        publication->perProcessSupported = reading.perProcessSupported;
+        publication->utilizationSupported = reading.utilizationSupported;
+        publication->readFailed = reading.perProcessSupported && static_cast<bool>(reading.failure);
+        publication->counters = std::move(reading.counters);
+        // After construction m_GPUInfo is written only by rescanGPUs(), under m_ProbeMutex, which is
+        // held here: it needs no m_Mutex.
+        publication->adapters.reserve(m_GPUInfo.size());
+        for (const auto& info : m_GPUInfo)
+        {
+            publication->adapters.push_back(GPUAdapterIdentity{.id = info.id,
+                                                               .luidId = info.luidId,
+                                                               .name = info.name,
+                                                               .isIntegrated = info.isIntegrated,
+                                                               .memoryIsShared = info.memoryIsShared});
+        }
+        const std::uint64_t version = publication->version;
+        m_ProcessPublication.commit(std::move(publication));
+        m_ProcessPublicationVersion = version;
+    }
+    catch (const std::exception& e)
+    {
+        // The previous publication stays; it ages until ProcessModel treats it as stale.
+        spdlog::error("GPUModel: publishing per-process GPU data failed: {}", e.what());
+    }
 }
 
 GPUSnapshot
