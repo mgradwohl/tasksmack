@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -653,6 +654,41 @@ TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuComesOnline)
     writeOnline(4);
     EXPECT_EQ(probe.read().cpuDetails.logicalProcessors, 4U);
     EXPECT_EQ(probe.read().cpuDetails.physicalCores, 4U);
+}
+
+TEST(LinuxSystemProbeTest, CpuDetailsAreReadAgainWhenACpuIsSwappedForAnother)
+{
+    // cpu1 goes offline and cpu2 comes online: the count is the same, the set is not (#809 review)
+    ScopedTempDir proc("ts_test_sys_cpudetails_swap_proc");
+    ScopedTempDir cpuSysfs("ts_test_sys_cpudetails_swap_cpu");
+    const auto writeOnline = [&](std::initializer_list<int> cpus)
+    {
+        std::ofstream stat(proc.path / "stat");
+        std::ofstream cpuInfo(proc.path / "cpuinfo");
+        stat << "cpu  40 0 40 400 0 0 0 0 0 0\n";
+        for (const int cpu : cpus)
+        {
+            stat << std::format("cpu{} 10 0 10 100 0 0 0 0 0 0\n", cpu);
+            cpuInfo << std::format("processor\t: {}\nphysical id\t: 0\ncore id\t\t: {}\n\n", cpu, cpu);
+        }
+    };
+    const auto writeL2 = [&](int cpu, const char* size)
+    {
+        const auto index = cpuSysfs.path / std::format("cpu{}", cpu) / "cache" / "index0";
+        std::filesystem::create_directories(index);
+        std::ofstream(index / "level") << "2\n";
+        std::ofstream(index / "size") << size << "\n";
+        std::ofstream(index / "shared_cpu_list") << cpu << "\n";
+    };
+    writeL2(0, "1024K");
+    writeL2(1, "1024K");
+    writeL2(2, "2048K");
+    writeOnline({0, 1});
+    LinuxSystemProbe probe(proc.path, proc.path / "no-sys-class-net", cpuSysfs.path);
+    EXPECT_EQ(probe.read().cpuDetails.l2CacheBytes, 2ULL * 1024 * 1024);
+
+    writeOnline({0, 2});
+    EXPECT_EQ(probe.read().cpuDetails.l2CacheBytes, 3ULL * 1024 * 1024); // cpu2's L2 in place of cpu1's
 }
 
 TEST(LinuxSystemProbeTest, CpuDetailsFollowACpuThatComesOnlineBeforeTheFirstRead)

@@ -121,7 +121,8 @@ struct SystemCounters
     std::string hostname;
     std::string cpuModel;
     std::size_t cpuCoreCount = 0;
-    // Topology, base clock, caches and virtualization status, read once (#809)
+    // Topology, base clock, caches and virtualization status (#809): cached by the probe, which
+    // re-reads them when the set of active processors changes (CpuDetails.h)
     CpuDetails cpuDetails;
 };
 

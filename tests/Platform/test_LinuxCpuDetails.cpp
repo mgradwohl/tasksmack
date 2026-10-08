@@ -378,7 +378,9 @@ TEST(LinuxCpuDetailsTest, OfflineCpusInSysfsAreLeftOut)
         fixture.writeCache(cpu, 0, 2, "Unified", "1M", std::format("{}", cpu));
         FixtureDir::write(fixture.cpuSysfs() / std::format("cpu{}", cpu) / "cpu_capacity", (cpu == 3) ? "512\n" : "1024\n");
     }
-    const CpuDetails details = LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs());
+    std::vector<std::size_t> online;
+    const CpuDetails details = LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs(), &online);
+    EXPECT_EQ(online, (std::vector<std::size_t>{0, 1, 2})); // The set the details describe
     EXPECT_EQ(details.logicalProcessors, 3U);
     EXPECT_EQ(details.l2CacheBytes, 3 * MIB);             // cpu3's L2 is not counted
     EXPECT_TRUE(details.efficiencyClassByCoreId.empty()); // Without cpu3, one capacity: not hybrid

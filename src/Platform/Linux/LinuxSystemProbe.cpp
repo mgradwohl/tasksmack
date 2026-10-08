@@ -24,6 +24,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -133,10 +134,9 @@ LinuxSystemProbe::LinuxSystemProbe(std::filesystem::path procRoot,
         m_CpuModel = "Unknown CPU";
     }
 
-    m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
-    // The details describe the CPUs /proc/cpuinfo listed just now, so a CPU that goes online or
-    // offline before the first read() is a change from this count, not the baseline (#809).
-    m_CpuDetailsProcessorCount = m_CpuDetails.logicalProcessors.value_or(0);
+    // The details describe the CPUs /proc/cpuinfo lists now, so a CPU that goes online or offline
+    // before the first read() is a change from this set, not the baseline (#809).
+    m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot, &m_CpuDetailsProcessorIds);
 
     spdlog::debug("LinuxSystemProbe: {} cores, {} ticks/sec, host={}, cpu={}", m_NumCores, m_TicksPerSecond, m_Hostname, m_CpuModel);
 }
@@ -388,14 +388,11 @@ void LinuxSystemProbe::readStaticInfo(SystemCounters& counters) const
 void LinuxSystemProbe::readCpuDetails(SystemCounters& counters)
 {
     const std::scoped_lock lock(m_CpuDetailsMutex);
-    const CpuTopology::ProcessorCountUpdate update =
-        CpuTopology::updateProcessorCount(m_CpuDetailsProcessorCount, counters.cpuPerCore.size());
-    if (update.rereadDetails)
+    if (CpuTopology::adoptProcessorSet(m_CpuDetailsProcessorIds, counters.cpuPerCore | std::views::transform(&CpuCounters::coreId)))
     {
-        // Rare: only when a CPU goes online or offline, never every sample
+        // Rare: only when the set of online CPUs changes, never every sample
         m_CpuDetails = LinuxCpuDetails::read(m_ProcRoot, m_CpuSysfsRoot);
     }
-    m_CpuDetailsProcessorCount = update.processorCount;
     counters.cpuDetails = m_CpuDetails;
 }
 

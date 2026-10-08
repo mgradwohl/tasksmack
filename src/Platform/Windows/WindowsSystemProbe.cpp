@@ -41,6 +41,7 @@
 #include <concepts>
 #include <cwchar>
 #include <format>
+#include <ranges>
 #include <span>
 #include <type_traits>
 #include <vector>
@@ -180,8 +181,9 @@ constexpr ULONG SystemIsolatedUserModeInformationClass = 165;
 
 /// Sockets, cores, logical processors and cache sizes from one GetLogicalProcessorInformationEx call
 /// (#809). Fields stay nullopt if the call fails. `groupFirstCoreIds` numbers each logical
-/// processor as the per-core counters do (#1107), for efficiencyClassByCoreId.
-void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> groupFirstCoreIds)
+/// processor as the per-core counters do (#1107), for efficiencyClassByCoreId and `activeIds`, which
+/// receives every active logical processor's id, ascending (empty if the call fails).
+void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> groupFirstCoreIds, std::vector<std::size_t>& activeIds)
 {
     DWORD length = 0;
     if (GetLogicalProcessorInformationEx(RelationAll, nullptr, &length) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
@@ -229,6 +231,7 @@ void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> gro
                 {
                     const auto bit = static_cast<std::size_t>(std::countr_zero(mask));
                     CpuTopology::setEfficiencyClass(details.efficiencyClassByCoreId, firstId + bit, record.Processor.EfficiencyClass);
+                    activeIds.push_back(firstId + bit);
                 }
             }
             cores.push_back({.efficiencyClass = record.Processor.EfficiencyClass,
@@ -252,6 +255,7 @@ void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> gro
     }
     CpuTopology::summarizeCores(cores, details);
     CpuTopology::keepOnlyIfHybrid(details.efficiencyClassByCoreId);
+    std::ranges::sort(activeIds);
     CpuTopology::sumCacheInstances(caches, details);
 }
 
@@ -293,10 +297,12 @@ void readVirtualization(CpuDetails& details)
 
 /// Every CpuDetails fact this probe reports (#809). Base speed is the rated MaxMhz from powrprof
 /// (#1530) and stays unknown without it: the registry's ~MHz fallback is not a base clock.
-[[nodiscard]] CpuDetails readCpuDetails(std::span<const std::size_t> groupFirstCoreIds)
+/// `activeIds` receives the active logical processors' ids the topology describes (ascending).
+[[nodiscard]] CpuDetails readCpuDetails(std::span<const std::size_t> groupFirstCoreIds, std::vector<std::size_t>& activeIds)
 {
     CpuDetails details;
-    readProcessorTopology(details, groupFirstCoreIds);
+    activeIds.clear();
+    readProcessorTopology(details, groupFirstCoreIds, activeIds);
     readVirtualization(details);
     const std::vector<std::uint32_t> processorMaxMHz = readProcessorMaxMHz(&CallNtPowerInformation);
     if (const std::uint64_t ratedMHz = nominalCpuBaseMHz(processorMaxMHz, 0); ratedMHz > 0)
@@ -373,9 +379,9 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr
         m_CpuModel = "Unknown CPU";
     }
 
-    // The CPU Details block's static facts (#809), read once: none change during a boot session
-    m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds);
-    m_CpuDetailsProcessorCount = m_NumCores;
+    // The CPU Details facts (#809), read again only when the set of active processors changes
+    // (refreshCpuDetailsIfProcessorsChanged())
+    m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds, m_CpuDetailsProcessorIds);
 
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
@@ -385,7 +391,7 @@ SystemCounters WindowsSystemProbe::read()
     SystemCounters counters{};
 
     readCpuCounters(counters);
-    refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore.size());
+    refreshCpuDetailsIfProcessorsChanged(counters.cpuPerCore);
     readMemoryCounters(counters);
     readUptime(counters);
     readStaticInfo(counters);
@@ -624,18 +630,20 @@ void WindowsSystemProbe::readStaticInfo(SystemCounters& counters) const
     counters.cpuDetails = m_CpuDetails;
 }
 
-void WindowsSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors)
+void WindowsSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::span<const CpuCounters> perCore)
 {
-    const CpuTopology::ProcessorCountUpdate update = CpuTopology::updateProcessorCount(m_CpuDetailsProcessorCount, sampledProcessors);
-    if (update.rereadDetails)
+    if (CpuTopology::adoptProcessorSet(m_CpuDetailsProcessorIds, perCore | std::views::transform(&CpuCounters::coreId)))
     {
-        // Rare: only after a processor is hot-added, never every sample
-        m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds);
+        // Rare: only after the set of active processors changes (a hot-add), never every sample
+        std::vector<std::size_t> unused;
+        m_CpuDetails = readCpuDetails(m_GroupFirstCoreIds, unused);
     }
     // cpuCoreCount and the fallback per-core buffer follow the processors actually sampled, so
-    // cpuPerCore.size() keeps matching cpuCoreCount after a hot-add
-    m_CpuDetailsProcessorCount = update.processorCount;
-    m_NumCores = update.processorCount;
+    // cpuPerCore.size() keeps matching cpuCoreCount after a hot-add. A failed read (none) keeps both.
+    if (!perCore.empty())
+    {
+        m_NumCores = perCore.size();
+    }
 }
 
 void WindowsSystemProbe::readCpuFreq(SystemCounters& counters)

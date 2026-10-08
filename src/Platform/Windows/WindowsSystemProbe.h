@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -58,10 +59,10 @@ class WindowsSystemProbe : public ISystemProbe
     [[nodiscard]] static SwapBytes readSwap();
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
-    /// Re-read m_CpuDetails when the per-core read saw a different number of active processors than
-    /// they were read for (CpuTopology::updateProcessorCount(), #809), and keep m_NumCores (the
+    /// Re-read m_CpuDetails when the per-core read sampled a different set of active processors than
+    /// they were read for (CpuTopology::adoptProcessorSet(), #809), and keep m_NumCores (the
     /// published cpuCoreCount) at the sampled count.
-    void refreshCpuDetailsIfProcessorsChanged(std::size_t sampledProcessors);
+    void refreshCpuDetailsIfProcessorsChanged(std::span<const CpuCounters> perCore);
     void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);
 
@@ -95,11 +96,11 @@ class WindowsSystemProbe : public ISystemProbe
     // Cached static info (read once)
     std::string m_Hostname;
     std::string m_CpuModel;
-    // Topology, caches and virtualization status (#809), read at construction and again when the
-    // number of active logical processors the per-core read sees changes (a processor hot-added).
-    // Sampler thread only.
+    // Topology, caches, rated base clock and virtualization status (#809), read at construction and
+    // again when the set of active logical processors the per-core read samples changes (a processor
+    // hot-added). Sampler thread only.
     CpuDetails m_CpuDetails;
-    std::size_t m_CpuDetailsProcessorCount{0}; // The active processor count m_CpuDetails describes
+    std::vector<std::size_t> m_CpuDetailsProcessorIds; // The active processor ids m_CpuDetails describes, ascending
 };
 
 } // namespace Platform

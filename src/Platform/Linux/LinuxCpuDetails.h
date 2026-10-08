@@ -1,9 +1,13 @@
 #pragma once
 
-// The Linux CPU Details facts (#809): sockets, cores and logical processors from /proc/cpuinfo,
-// cache sizes from /sys/devices/system/cpu/cpu*/cache/index*, and the base clock from cpu0's
-// cpufreq. Read once, when LinuxSystemProbe is built, from the proc and CPU sysfs roots it was given
-// (#1351), so tests point it at fixture trees.
+// The Linux CPU Details facts (#809), read from the proc and CPU sysfs roots LinuxSystemProbe was
+// given (#1351), so tests point them at fixture trees:
+// - sockets, physical cores and logical processors from /proc/cpuinfo, which lists the online
+//   CPUs; their numbers are the online set the sysfs scans below are limited to;
+// - cache totals from the online CPUs' cpuN/cache/index* (each shared instance counted once), and
+//   per-processor efficiency classes from their cpuN/cpu_capacity;
+// - the base clock: the highest base_frequency across cpufreq/policy* and the cpuN/cpufreq links.
+// LinuxSystemProbe reads them when it is built and again when the set of CPUs in /proc/stat changes.
 //
 // Only standard-library file access, no POSIX headers: the parsing and the fixture tests build and
 // run on every platform.
@@ -445,8 +449,11 @@ struct SysfsCacheEntry
 }
 
 /// The CPU Details facts from `procRoot`/cpuinfo and `cpuSysfsRoot` (normally /proc and
-/// /sys/devices/system/cpu). Whatever cannot be read stays nullopt.
-[[nodiscard]] inline CpuDetails read(const std::filesystem::path& procRoot, const std::filesystem::path& cpuSysfsRoot)
+/// /sys/devices/system/cpu). Whatever cannot be read stays nullopt. `onlineCpuIds`, if given,
+/// receives the online CPUs' numbers the facts describe, ascending (empty when /proc/cpuinfo gives
+/// none).
+[[nodiscard]] inline CpuDetails
+read(const std::filesystem::path& procRoot, const std::filesystem::path& cpuSysfsRoot, std::vector<std::size_t>* onlineCpuIds = nullptr)
 {
     CpuDetails details;
     std::vector<CpuInfoProcessor> processors;
@@ -457,6 +464,14 @@ struct SysfsCacheEntry
     summarizeCpuInfoTopology(processors, details);
     // One coherent set of CPUs: the sysfs scans take only the CPUs /proc/cpuinfo listed as online
     const std::optional<std::set<std::size_t>> online = onlineCpus(processors);
+    if (onlineCpuIds != nullptr)
+    {
+        onlineCpuIds->clear();
+        if (online.has_value())
+        {
+            onlineCpuIds->assign(online->begin(), online->end());
+        }
+    }
 
     const std::vector<SysfsCacheEntry> entries = readCacheEntries(cpuSysfsRoot, online);
     const std::vector<CpuTopology::CacheInstance> instances = distinctCacheInstances(entries);

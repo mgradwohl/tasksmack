@@ -96,16 +96,16 @@ class LinuxSystemProbe : public ISystemProbe
     std::string m_Hostname;
     std::string m_CpuModel;
     // Topology, caches and base clock from /proc/cpuinfo and the CPU sysfs root (#809), read again
-    // when the number of CPUs in /proc/stat changes (a CPU brought online or offline). Both guarded
-    // by m_CpuDetailsMutex: read() may run on several threads.
+    // when the set of CPUs in /proc/stat changes (a CPU brought online or offline). Both guarded by
+    // m_CpuDetailsMutex: read() may run on several threads.
     std::mutex m_CpuDetailsMutex;
     CpuDetails m_CpuDetails;
-    std::size_t m_CpuDetailsProcessorCount = 0; // The CPU count m_CpuDetails describes; 0 = unknown
+    std::vector<std::size_t> m_CpuDetailsProcessorIds; // The CPU numbers m_CpuDetails describes, ascending
 
-    /// Re-read m_CpuDetails when this sample's /proc/stat CPU count (counters.cpuPerCore) differs from
-    /// the count they were read for (CpuTopology::updateProcessorCount()), and copy them into
+    /// Re-read m_CpuDetails when this sample's /proc/stat CPUs (counters.cpuPerCore's core ids) differ
+    /// from the set they were read for (CpuTopology::adoptProcessorSet()), and copy them into
     /// `counters` in the same critical section, so a concurrent read() cannot pair this sample's
-    /// per-core counters with details read for another CPU count.
+    /// per-core counters with details read for another set of CPUs.
     void readCpuDetails(SystemCounters& counters);
 
     // Optimization cache for network interface properties.

@@ -1,17 +1,19 @@
 #pragma once
 
-// The CPU's static facts for the Overview's CPU Details block (#809): topology, base clock, cache
-// sizes and, on Windows, virtualization status. Every field is optional, so a value the platform or
-// hardware cannot supply is shown as unavailable (or hidden) rather than as a fake 0. Read once,
-// when the system probe is built: none of these change during a boot session.
+// The CPU facts for the Overview's CPU Details block (#809): topology, base clock, cache sizes and,
+// on Windows, virtualization status. Every field is optional, so a value the platform or hardware
+// cannot supply is shown as unavailable (or hidden) rather than as a fake 0. They are cached facts:
+// each system probe reads them when it is built and again only when the set of active processors it
+// samples changes (hotplug, hot-add, a CPU taken offline) -- see cpuDetailsNeedRefresh().
 //
-// The topology and cache arithmetic below is pure (no OS headers), so it is unit-tested on every
+// The topology, cache and refresh logic below is pure (no OS headers), so it is unit-tested on every
 // platform; the Linux and Windows probes only gather the raw records it works on.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <vector>
 
@@ -134,29 +136,36 @@ inline void summarizeCores(std::span<const CoreRecord> cores, CpuDetails& detail
     }
 }
 
-/// Whether the cached CPU details should be read again (#809): the probe sampled `sampledProcessors`
-/// logical processors this time, and the details were read when it sampled `readForProcessors`. A
-/// processor brought online or offline (or hot-added) changes the topology. 0 on either side is "no
-/// count" -- a failed per-core read, or details not yet tied to a sample -- and asks for no re-read,
-/// so a failing source is never re-read every sample.
-[[nodiscard]] constexpr bool cpuDetailsNeedRefresh(std::size_t readForProcessors, std::size_t sampledProcessors) noexcept
+/// Whether the cached CPU details should be read again (#809): `readFor` is the set of logical
+/// processor ids they were read for, `sampled` this sample's (both ascending). Any difference --
+/// a processor brought online, taken offline or hot-added, even one swapped for another at the same
+/// count (cpu0,cpu1 -> cpu0,cpu2) -- changes the topology. An empty set on either side is "not
+/// known" -- a failed per-core read, or details with no set yet -- and asks for no re-read, so a
+/// failing source is never re-read every sample.
+template<std::ranges::input_range SampledIds>
+[[nodiscard]] bool cpuDetailsNeedRefresh(std::span<const std::size_t> readFor, const SampledIds& sampled)
 {
-    return readForProcessors > 0 && sampledProcessors > 0 && readForProcessors != sampledProcessors;
+    return !readFor.empty() && !std::ranges::empty(sampled) && !std::ranges::equal(readFor, sampled);
 }
 
-/// What a probe does with this sample's processor count (#809).
-struct ProcessorCountUpdate
+/// Take this sample's processor ids as the set the details describe from now on (#809): returns
+/// whether the details must be re-read (cpuDetailsNeedRefresh()), and replaces `readFor` with
+/// `sampled` whenever the two differ and `sampled` is known. Called every sample; it allocates only
+/// when the set changes.
+template<std::ranges::input_range SampledIds>
+[[nodiscard]] bool adoptProcessorSet(std::vector<std::size_t>& readFor, const SampledIds& sampled)
 {
-    bool rereadDetails = false;     ///< cpuDetailsNeedRefresh(): the topology changed
-    std::size_t processorCount = 0; ///< The count to keep from now on: the sampled one, unless there was none
-};
-
-/// The update for `currentProcessors` (the count the probe holds) and `sampledProcessors` (this
-/// sample's; 0 when the per-core read failed, which keeps the current count).
-[[nodiscard]] constexpr ProcessorCountUpdate updateProcessorCount(std::size_t currentProcessors, std::size_t sampledProcessors) noexcept
-{
-    return {.rereadDetails = cpuDetailsNeedRefresh(currentProcessors, sampledProcessors),
-            .processorCount = (sampledProcessors > 0) ? sampledProcessors : currentProcessors};
+    if (std::ranges::empty(sampled) || std::ranges::equal(readFor, sampled))
+    {
+        return false;
+    }
+    const bool reread = cpuDetailsNeedRefresh(readFor, sampled);
+    readFor.clear();
+    for (const std::size_t id : sampled)
+    {
+        readFor.push_back(id);
+    }
+    return reread;
 }
 
 /// Record logical processor `coreId`'s efficiency class, growing `classes` as needed (#809).

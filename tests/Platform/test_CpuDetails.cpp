@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -81,29 +82,32 @@ TEST(CpuTopologyTest, AMissingCacheLevelStaysUnknownNotZero)
     EXPECT_FALSE(details.l3CacheBytes.has_value()); // No L3; the L4 is not counted as one
 }
 
-TEST(CpuTopologyTest, DetailsAreReadAgainOnlyWhenTheProcessorCountChanges)
+TEST(CpuTopologyTest, DetailsAreReadAgainWhenTheProcessorSetChanges)
 {
-    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(16, 16));
-    EXPECT_TRUE(CpuTopology::cpuDetailsNeedRefresh(16, 20)); // Hot-added, or brought online
-    EXPECT_TRUE(CpuTopology::cpuDetailsNeedRefresh(16, 12)); // Taken offline
-    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(16, 0)); // The per-core read failed: no count
-    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(0, 16)); // Not yet tied to a sample
+    const std::vector<std::size_t> readFor{0, 1};
+    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(readFor, std::vector<std::size_t>{0, 1}));   // Identical set
+    EXPECT_TRUE(CpuTopology::cpuDetailsNeedRefresh(readFor, std::vector<std::size_t>{0, 2}));    // Same count, another CPU
+    EXPECT_TRUE(CpuTopology::cpuDetailsNeedRefresh(readFor, std::vector<std::size_t>{0, 1, 2})); // Brought online
+    EXPECT_TRUE(CpuTopology::cpuDetailsNeedRefresh(readFor, std::vector<std::size_t>{1}));       // Taken offline
+    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh(readFor, std::vector<std::size_t>{}));       // Failed read: not known
+    EXPECT_FALSE(CpuTopology::cpuDetailsNeedRefresh({}, std::vector<std::size_t>{0, 1}));        // No set yet
 }
 
-TEST(CpuTopologyTest, TheSampledProcessorCountIsKeptUnlessThereIsNone)
+TEST(CpuTopologyTest, TheSampledProcessorSetIsAdoptedUnlessItIsUnknown)
 {
-    // A hot-add: re-read the details, and the probe's count (its cpuCoreCount) moves to the new one
-    constexpr auto hotAdd = CpuTopology::updateProcessorCount(16, 20);
-    EXPECT_TRUE(hotAdd.rereadDetails);
-    EXPECT_EQ(hotAdd.processorCount, 20U);
-    // Unchanged: nothing to re-read
-    constexpr auto same = CpuTopology::updateProcessorCount(16, 16);
-    EXPECT_FALSE(same.rereadDetails);
-    EXPECT_EQ(same.processorCount, 16U);
-    // A failed per-core read (0) keeps the count it had
-    constexpr auto failed = CpuTopology::updateProcessorCount(16, 0);
-    EXPECT_FALSE(failed.rereadDetails);
-    EXPECT_EQ(failed.processorCount, 16U);
+    std::vector<std::size_t> readFor{0, 1};
+    EXPECT_FALSE(CpuTopology::adoptProcessorSet(readFor, std::vector<std::size_t>{0, 1}));
+    EXPECT_EQ(readFor, (std::vector<std::size_t>{0, 1}));
+
+    EXPECT_TRUE(CpuTopology::adoptProcessorSet(readFor, std::vector<std::size_t>{0, 2})); // Re-read, and adopt
+    EXPECT_EQ(readFor, (std::vector<std::size_t>{0, 2}));
+
+    EXPECT_FALSE(CpuTopology::adoptProcessorSet(readFor, std::vector<std::size_t>{})); // A failed read keeps the set
+    EXPECT_EQ(readFor, (std::vector<std::size_t>{0, 2}));
+
+    std::vector<std::size_t> none;
+    EXPECT_FALSE(CpuTopology::adoptProcessorSet(none, std::vector<std::size_t>{0, 1})); // First set: adopted, no re-read
+    EXPECT_EQ(none, (std::vector<std::size_t>{0, 1}));
 }
 
 TEST(CpuTopologyTest, EfficiencyClassesAreKeptOnlyOnAHybridCpu)
