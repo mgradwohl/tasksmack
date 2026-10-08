@@ -7,6 +7,8 @@
 #include "Core/WindowConstants.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
+#include "KeyboardInput.h"
+#include "KeyboardShortcuts.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/ProcessTypes.h"
@@ -406,6 +408,9 @@ void ShellLayer::onRender()
     // being pushed (and therefore rendered) before ShellLayer -- see main.cpp's pushLayer order.
     UI::RenderMetrics::get().beginFrame(ImGui::GetFrameCount());
 
+    // Before the tabs draw, so F5's view change and F9's confirm request land in this frame's render.
+    handleFunctionKeys();
+
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
 
     // Get dynamic title bar height (matches tab bars). Zero when native OS decorations are in
@@ -504,6 +509,55 @@ void ShellLayer::onRender()
     renderStatusBar();
 
     UI::RenderMetrics::get().renderOverlay(&m_ShowRenderMetrics);
+}
+
+void ShellLayer::handleFunctionKeys()
+{
+    // KeyboardInput::pollFunctionKeys() already returns None while a text field has the keyboard, a
+    // popup or modal (Settings, About, a confirm, a menu) is open, or a modifier is held.
+    using KeyboardShortcuts::ShortcutAction;
+    const std::string_view activeTab = m_Tabs.activeTab().eventName;
+    switch (KeyboardInput::pollFunctionKeys())
+    {
+    case ShortcutAction::ShowAbout:
+    {
+        // There is no separate help: the About dialog lists the keyboard shortcuts.
+        Core::OpenAboutEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case ShortcutAction::OpenSettings:
+    {
+        Core::OpenSettingsEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case ShortcutAction::ToggleTreeView:
+        // Only where the table is on screen: a hidden view change would be a surprise later.
+        if (activeTab == "Processes")
+        {
+            m_ProcessesPanel.toggleTreeView();
+        }
+        break;
+    case ShortcutAction::KillSelected:
+        // Each panel opens its own confirm dialog for the process it shows selected; neither kills
+        // without the dialog's own Kill button. The System tab has no selection.
+        if (activeTab == "Processes")
+        {
+            m_ProcessesPanel.requestKillSelected();
+        }
+        else if (activeTab == "ProcessDetails")
+        {
+            m_ProcessDetailsPanel.requestKillSelected();
+        }
+        break;
+    case ShortcutAction::Quit:
+        // The title bar Close button's path: a close request, vetoable, and onDetach() saves settings.
+        Core::Application::get().getWindow().requestClose();
+        break;
+    case ShortcutAction::None:
+        break;
+    }
 }
 
 void ShellLayer::renderTabBar()
@@ -717,7 +771,7 @@ void ShellLayer::renderStatusBar() const
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("Settings");
+                ImGui::SetTooltip("Settings (F2)");
             }
             ImGui::SameLine();
             if (ImGui::SmallButton(STATUS_HELP_LABEL))
@@ -727,7 +781,7 @@ void ShellLayer::renderStatusBar() const
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("About TaskSmack");
+                ImGui::SetTooltip("About TaskSmack and keyboard shortcuts (F1)");
             }
         }
 

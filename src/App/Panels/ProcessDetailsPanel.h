@@ -105,6 +105,12 @@ class ProcessDetailsPanel : public Panel
         return m_ActionCapabilities;
     }
 
+    /// F9 (#170): opens the Actions tab's Kill confirm for the process shown, through
+    /// ProcessActionsView::requestKillShortcut() (target captured now, never a direct kill), and brings
+    /// the Actions tab forward so the dialog is drawn. Does nothing while this pane is not showing a
+    /// running process, or when the platform cannot kill.
+    void requestKillSelected();
+
   private:
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     void renderActions();
@@ -184,6 +190,7 @@ class ProcessDetailsPanel : public Panel
     // The Actions tab's buttons, confirm dialog and result line, and the priority control under them
     // (#1179). Both act through m_ProcessActions, which the panel keeps owning.
     ProcessActionsView m_ActionsView;
+    bool m_SelectActionsTab = false; // F9 asked for the Kill confirm: show the Actions tab, which draws it
     ProcessPriorityView m_PriorityView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).

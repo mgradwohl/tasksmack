@@ -48,6 +48,10 @@ class ShellLayer : public Core::Layer
     }
 
   private:
+    /// The htop-style function keys (#170): F1 About (with the shortcut list), F2 Settings, F5 tree view,
+    /// F9 Kill (confirm dialog only), F10 Quit (the normal close request). Called at the start of
+    /// onRender(), inside the frame, before the tabs draw.
+    void handleFunctionKeys();
     void renderTabBar();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();

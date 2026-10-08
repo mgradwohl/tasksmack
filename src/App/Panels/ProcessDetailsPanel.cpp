@@ -274,8 +274,9 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        // 4. Actions (last)
-        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions"))
+        // 4. Actions (last). Brought forward by F9, whose confirm dialog it draws (#170).
+        const ImGuiTabItemFlags actionsFlags = std::exchange(m_SelectActionsTab, false) ? ImGuiTabItemFlags_SetSelected : 0;
+        if (ImGui::BeginTabItem(ICON_FA_GEARS "  Actions", nullptr, actionsFlags))
         {
             {
                 const UI::Widgets::TabContentScope content("##ActionsContent");
@@ -590,6 +591,19 @@ void ProcessDetailsPanel::renderActions()
     m_ActionsView.render(m_ProcessActions.get(), m_ActionCapabilities, cachedSnapshot().name, target);
     const std::optional<std::int32_t> currentNice = m_HasSnapshot ? std::optional<std::int32_t>{cachedSnapshot().nice} : std::nullopt;
     m_PriorityView.render(m_ProcessActions.get(), m_ActionCapabilities, currentNice, target);
+}
+
+void ProcessDetailsPanel::requestKillSelected()
+{
+    // Only while the tabs are drawn: otherwise the request would wait, invisible, for a later frame.
+    if (!m_IsActiveTab || m_SelectedPid == -1 || !m_HasSnapshot || m_ProcessExited)
+    {
+        return;
+    }
+    if (m_ActionsView.requestKillShortcut(m_ActionCapabilities, selectedTarget(), cachedSnapshot().name))
+    {
+        m_SelectActionsTab = true;
+    }
 }
 
 Platform::ProcessTarget ProcessDetailsPanel::selectedTarget() const

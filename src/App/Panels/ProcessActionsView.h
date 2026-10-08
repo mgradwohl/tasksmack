@@ -148,6 +148,22 @@ class ProcessActionsView
         m_ShowConfirmDialog = true;
     }
 
+    /// F9 (#170): ask to confirm Kill on @p target, as the Kill button does, capturing it now. Refused
+    /// (returns false, nothing changes) when the platform cannot kill, when there is no target (PID
+    /// <= 0), or while another confirm is already pending. Only ever opens the dialog: the kill itself
+    /// still needs the dialog's own button (dispatchConfirmed()).
+    bool requestKillShortcut(const Platform::ProcessActionCapabilities& capabilities,
+                             const Platform::ProcessTarget& target,
+                             std::string processName)
+    {
+        if (!Detail::isActionAvailable(capabilities, Detail::ProcessAction::Kill) || target.pid <= 0 || m_ShowConfirmDialog)
+        {
+            return false;
+        }
+        requestAction(Detail::ProcessAction::Kill, target, std::move(processName));
+        return true;
+    }
+
     /// Whether the dialog must be closed unconfirmed this frame, given the selection's @p liveTarget:
     /// after a selection change (once; the request is consumed), or while a confirm is pending for a
     /// different process than the one now selected.

@@ -1,6 +1,7 @@
 #include "App/AboutLayer.h"
 
 #include "App/DialogGeometry.h"
+#include "App/KeyboardShortcuts.h"
 #include "App/PlatformOpen.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -191,6 +192,22 @@ void AboutLayer::renderAboutDialog()
         renderLink(fontAwesomeLicenseUrl, theme.accentColor(0));
 
         ImGui::EndGroup();
+
+        // TaskSmack has no separate help page: F1 opens this dialog, which lists every shortcut (#170).
+        ImGui::Spacing();
+        ImGui::SeparatorText("Keyboard shortcuts");
+        if (ImGui::BeginTable("##Shortcuts", 2, ImGuiTableFlags_SizingFixedFit))
+        {
+            for (const KeyboardShortcuts::ShortcutHelpEntry& entry : KeyboardShortcuts::SHORTCUT_HELP)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextColored(theme.accentColor(0), "%.*s", static_cast<int>(entry.keys.size()), entry.keys.data());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(entry.description.data(), entry.description.data() + entry.description.size());
+            }
+            ImGui::EndTable();
+        }
 
         ImGui::PopStyleColor();
 

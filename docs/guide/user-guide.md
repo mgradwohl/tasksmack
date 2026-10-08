@@ -106,9 +106,20 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 
 | Shortcut | Action |
 |----------|--------|
+| **F1** | About TaskSmack, which lists every keyboard shortcut (there is no separate help page) |
+| **F2** | Settings |
+| **F5** | Processes tab: switch between list and tree view |
+| **F9** | Kill the selected process: opens the usual Kill confirmation, never kills without it (Processes and Process Details tabs) |
+| **F10** | Quit, the same as the window's Close button (settings are saved). F10 used to open the title bar's window menu; **Alt+Space** or **Ctrl+Space** still does |
+| **Up** / **Down**, **k** / **j** | Processes table: select the previous / next row |
+| **Page Up** / **Page Down** | Processes table: move one page up / down |
+| **Home** / **End**, **g** / **G** | Processes table: select the first / last row |
+| **Left** / **Right** (tree view) | Collapse the selected process, or if it is already collapsed (or has no children) go to its parent / expand it, or if it is already expanded go to its first child |
 | Hold **Ctrl** (over the process table) | Freeze the process table while held |
 | **Ctrl+=** / **Ctrl+-** (or **Ctrl+keypad +** / **Ctrl+keypad -**) | Increase / decrease the font size |
 | **Ctrl+Shift+M** | Toggle the Render Metrics overlay and the status bar's FPS readout |
+
+The table's keys work while the pointer is over the process table or after clicking in it. They move the selection through the rows in the order they are shown -- sorted, filtered, and in tree view with collapsed branches skipped -- and scroll the selected row into view; with no row selected (or the selected one filtered out or collapsed away), the first key selects the first row (**End** / **G**: the last). While the table has them, the arrow keys no longer move ImGui's own keyboard focus around it; **Tab** still does. None of the shortcuts act while you are typing in the filter box or while a dialog or menu is open, and the function keys do nothing with Ctrl, Shift, Alt or Super held. **F9** acts only on a process you can see selected, and only on platforms that can kill; the confirmation names the process it was pressed for.
 
 ### System Metrics
 
