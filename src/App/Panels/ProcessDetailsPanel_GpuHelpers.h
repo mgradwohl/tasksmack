@@ -6,9 +6,11 @@
 #include "UI/Format.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <ranges>
 #include <string>
 
@@ -82,6 +84,23 @@ enum class GpuTabContent : std::uint8_t
     // selected, so right after selecting it far less than the configured length has been observed.
     return std::format("This process has not used a GPU in its retained history (up to {}).",
                        UI::Format::formatDuration(historySeconds, UI::Format::DurationStyle::Compact));
+}
+
+/// The cache key for noGpuUsageDetail()'s text: the history window in whole milliseconds, so the
+/// cached text is compared by an exact integer rather than by float equality (#1487). Any change of
+/// a millisecond or more rebuilds the text; history lengths are whole seconds. A non-finite or
+/// out-of-range window maps to the lowest key, which no finite window shares.
+[[nodiscard]] inline std::int64_t historyWindowCacheKey(double historySeconds) noexcept
+{
+    constexpr double MS_PER_SECOND = 1000.0;
+    // Well inside std::int64_t, so llround() never overflows (about 285,000 years of history).
+    constexpr double MAX_KEY_MS = 9.0e15;
+    const double milliseconds = historySeconds * MS_PER_SECOND;
+    if (!std::isfinite(milliseconds) || std::abs(milliseconds) > MAX_KEY_MS)
+    {
+        return std::numeric_limits<std::int64_t>::min();
+    }
+    return static_cast<std::int64_t>(std::llround(milliseconds));
 }
 
 /// A process's GPU utilization as the GPU tab shows it: "N/A" where the GPU probe reports per-process

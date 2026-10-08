@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -96,9 +97,10 @@ class ProcessDetailsCharts
     UI::Widgets::PlotFillState m_GpuFill;
 
     // The GPU tab's "No GPU usage" explanation, naming the history window (#1210): rebuilt only when
-    // the window changes. NaN until first built.
+    // the window changes. Keyed by Detail::historyWindowCacheKey() (whole milliseconds, #1487); empty
+    // until first built.
     std::string m_NoGpuUsageDetail;
-    double m_NoGpuUsageDetailSeconds = std::numeric_limits<double>::quiet_NaN();
+    std::optional<std::int64_t> m_NoGpuUsageDetailKey;
 
     // GPU logging throttle state (per-panel tracking)
     std::int32_t m_LastGpuLogPid = -1;
