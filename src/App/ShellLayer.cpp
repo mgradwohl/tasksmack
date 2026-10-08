@@ -52,6 +52,8 @@ namespace
 {
 // A literal, so the tab's label provider can hand it out with no storage of its own. Identified by its
 // "###" suffix like the other main tabs (see TabLabel.h, #1140).
+// Its visible text, unescaped, for TASKSMACK_TAB (#1559).
+constexpr const char* PROCESSES_TAB_TEXT = "Processes";
 constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
 static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
 
@@ -72,10 +74,18 @@ constexpr const char* STATUS_HELP_LABEL = ICON_FA_CIRCLE_QUESTION "##StatusBarHe
 
 ShellLayer::ShellLayer()
     : Layer("ShellLayer"),
-      m_Tabs(
-          {{.panel = m_SystemMetricsPanel, .eventName = "SystemOverview", .label = [this] { return m_CachedSystemTabLabel.c_str(); }},
-           {.panel = m_ProcessesPanel, .eventName = "Processes", .label = [] { return PROCESSES_TAB_LABEL; }},
-           {.panel = m_ProcessDetailsPanel, .eventName = "ProcessDetails", .label = [this] { return m_DetailsTabLabel.label().c_str(); }}})
+      m_Tabs({{.panel = m_SystemMetricsPanel,
+               .eventName = "SystemOverview",
+               .label = [this] { return m_CachedSystemTabLabel.c_str(); },
+               .text = [this] { return std::string_view(m_SystemMetricsPanel.hostname()); }},
+              {.panel = m_ProcessesPanel,
+               .eventName = "Processes",
+               .label = [] { return PROCESSES_TAB_LABEL; },
+               .text = [] { return std::string_view(PROCESSES_TAB_TEXT); }},
+              {.panel = m_ProcessDetailsPanel,
+               .eventName = "ProcessDetails",
+               .label = [this] { return m_DetailsTabLabel.label().c_str(); },
+               .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); }}})
 {}
 
 void ShellLayer::onAttach()
@@ -99,11 +109,22 @@ void ShellLayer::onAttach()
 
     // The test hook's startup selection (#1559): read once here, applied when the process appears.
     // TASKSMACK_TAB wins over the Details tab the selection would bring forward.
-    const char* mainTab = SDL_getenv(std::string(SelectOverride::MAIN_TAB_ENV_VAR).c_str());
-    const bool mainTabSet = mainTab != nullptr && !SelectOverride::Detail::trim(mainTab).empty();
+    // An unknown TASKSMACK_TAB is ignored, with one warning, and changes nothing.
+    std::vector<SelectOverride::TabInfo> tabInfos;
+    for (const auto& tab : m_Tabs.tabs())
+    {
+        tabInfos.push_back({.id = tab.eventName, .text = tab.text ? tab.text() : std::string_view{}});
+    }
+    const SelectOverride::MainTabChoice mainTab =
+        SelectOverride::resolveMainTab(SDL_getenv(std::string(SelectOverride::MAIN_TAB_ENV_VAR).c_str()), tabInfos);
+    if (!mainTab.warning.empty())
+    {
+        spdlog::warn("{}", mainTab.warning);
+    }
+    m_StartupTabIndex = mainTab.index;
     if (const std::optional<SelectOverride::Target>& select = SelectOverride::active(); select.has_value())
     {
-        m_ProcessesPanel.requestStartupSelection(select, /*showDetails=*/!mainTabSet);
+        m_ProcessesPanel.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
         m_ProcessDetailsPanel.requestTab(select->tab);
     }
 
@@ -130,21 +151,6 @@ void ShellLayer::onAttach()
     // so the system tab label is built once here.
     m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, m_SystemMetricsPanel.hostname(), TabLabel::SYSTEM_TAB_ID);
     m_DetailsTabLabel.get(m_ProcessDetailsPanel.tabLabel(), makeDetailsTabLabel);
-
-    // TASKSMACK_TAB (#1559), matched against the registered tabs once their labels are built.
-    if (mainTabSet)
-    {
-        std::vector<SelectOverride::TabInfo> tabs;
-        for (const auto& tab : m_Tabs.tabs())
-        {
-            tabs.push_back({.id = tab.eventName, .label = tab.label()});
-        }
-        m_StartupTabIndex = SelectOverride::findTab(mainTab, tabs);
-        if (!m_StartupTabIndex)
-        {
-            spdlog::warn("{}: '{}' names no tab; ignored", SelectOverride::MAIN_TAB_ENV_VAR, mainTab);
-        }
-    }
 
     // Trigger the startup notice if needed. The status bar's lock icon reads the live value instead
     // (#1254); the notice itself is a one-off at startup.

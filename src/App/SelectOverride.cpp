@@ -25,7 +25,7 @@ const std::optional<Target>& active()
         }
         if (parsed.target)
         {
-            spdlog::info("Startup selection (test hook): Process Details will open for {}", describe(*parsed.target));
+            spdlog::info("Startup selection (test hook) pending: will select {}", describe(*parsed.target));
         }
         return std::move(parsed.target);
     }();

@@ -248,26 +248,16 @@ class Pending
     int m_Snapshots = 0;
 };
 
-/// A registered top-level tab: its event name ("Processes") and its ImGui label.
+/// A registered top-level tab: its event name ("Processes") and its label's visible text, unescaped
+/// (the hostname, "Processes", the process name), as PanelTabs::Tab::text gives it.
 struct TabInfo
 {
     std::string_view id;
-    std::string_view label;
+    std::string_view text;
 };
 
-/// The visible text of an ImGui tab label: before "###", without a leading icon glyph and spaces.
-[[nodiscard]] inline std::string_view labelText(std::string_view label) noexcept
-{
-    label = label.substr(0, label.find("###"));
-    while (!label.empty() && (static_cast<unsigned char>(label.front()) >= 0x80 || label.front() == ' '))
-    {
-        label.remove_prefix(1);
-    }
-    return label;
-}
-
-/// The tab @p name selects, ignoring case: one whose id or label text equals it, or whose id starts
-/// or ends with it ("system" -> "SystemOverview", "details" -> "ProcessDetails"). "machine" is
+/// The tab @p name selects, ignoring case: one whose id or text equals it, or whose id starts or
+/// ends with it ("system" -> "SystemOverview", "details" -> "ProcessDetails"). "machine" is
 /// "system". nullopt when none does or @p name is blank.
 [[nodiscard]] inline std::optional<std::size_t> findTab(const std::string_view name, const std::span<const TabInfo> tabs) noexcept
 {
@@ -281,12 +271,43 @@ struct TabInfo
         const std::string_view id = tabs[i].id;
         const bool idMatch = id.size() >= wanted.size() && (Detail::equalsIgnoreCase(id.substr(0, wanted.size()), wanted) ||
                                                             Detail::equalsIgnoreCase(id.substr(id.size() - wanted.size()), wanted));
-        if (idMatch || Detail::equalsIgnoreCase(labelText(tabs[i].label), wanted))
+        if (idMatch || Detail::equalsIgnoreCase(tabs[i].text, wanted))
         {
             return i;
         }
     }
     return std::nullopt;
+}
+
+/// What TASKSMACK_TAB resolved to.
+struct MainTabChoice
+{
+    std::optional<std::size_t> index; ///< the tab to select; nullopt when unset, blank or unknown
+    std::string warning;              ///< set when a nonblank value names no tab
+};
+
+/// Resolves a TASKSMACK_TAB value (nullptr when unset) against the registered tabs.
+[[nodiscard]] inline MainTabChoice resolveMainTab(const char* value, const std::span<const TabInfo> tabs)
+{
+    MainTabChoice choice;
+    const std::string_view name = Detail::trim(value != nullptr ? value : "");
+    if (name.empty())
+    {
+        return choice;
+    }
+    choice.index = findTab(name, tabs);
+    if (!choice.index)
+    {
+        choice.warning = std::format("{}: '{}' names no tab; ignored", MAIN_TAB_ENV_VAR, name);
+    }
+    return choice;
+}
+
+/// Whether a startup selection opens Process Details: yes, unless TASKSMACK_TAB named a real tab,
+/// which then wins. An unknown TASKSMACK_TAB is ignored and changes nothing.
+[[nodiscard]] constexpr bool selectionShowsDetails(const MainTabChoice& choice) noexcept
+{
+    return !choice.index.has_value();
 }
 
 /// The selection the variables ask for, read and logged on the first call; nullopt when they are

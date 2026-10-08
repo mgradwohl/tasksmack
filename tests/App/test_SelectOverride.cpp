@@ -181,34 +181,83 @@ TEST(SelectOverrideTest, NoTargetIsNeverPending)
     EXPECT_FALSE(step.gaveUp);
 }
 
-TEST(SelectOverrideTest, FindsTopLevelTabsByIdOrLabelIgnoringCase)
+// As ShellLayer registers them, plus one registered later, matched only by its own id or text.
+const std::vector<App::SelectOverride::TabInfo>& registeredTabs()
+{
+    static const std::vector<App::SelectOverride::TabInfo> tabs{
+        {.id = "SystemOverview", .text = "MYHOST"},
+        {.id = "Processes", .text = "Processes"},
+        {.id = "ProcessDetails", .text = "explorer.exe"},
+        {.id = "Services", .text = "Services"},
+    };
+    return tabs;
+}
+
+TEST(SelectOverrideTest, FindsTopLevelTabsByIdOrTextIgnoringCase)
 {
     using App::SelectOverride::findTab;
-    using App::SelectOverride::TabInfo;
-    // As ShellLayer registers them, plus one registered later, matched only by its own id or label.
-    const std::vector<TabInfo> tabs{
-        {.id = "SystemOverview", .label = "\xEF\x84\x88  MYHOST###SystemTab"},
-        {.id = "Processes", .label = "\xEF\x80\xBA  Processes###ProcessesTab"},
-        {.id = "ProcessDetails", .label = "\xEF\x81\x9A  explorer.exe###ProcessDetailsTab"},
-        {.id = "Services", .label = "\xEF\x80\x93  Services###ServicesTab"},
-    };
+    const auto& tabs = registeredTabs();
     EXPECT_EQ(findTab("system", tabs), std::optional<std::size_t>{0});
     EXPECT_EQ(findTab("Machine", tabs), std::optional<std::size_t>{0});
     EXPECT_EQ(findTab("myhost", tabs), std::optional<std::size_t>{0});
     EXPECT_EQ(findTab(" PROCESSES ", tabs), std::optional<std::size_t>{1});
     EXPECT_EQ(findTab("details", tabs), std::optional<std::size_t>{2});
     EXPECT_EQ(findTab("processdetails", tabs), std::optional<std::size_t>{2});
+    EXPECT_EQ(findTab("explorer.exe", tabs), std::optional<std::size_t>{2});
     EXPECT_EQ(findTab("services", tabs), std::optional<std::size_t>{3});
+}
+
+TEST(SelectOverrideTest, MatchesNonAsciiAndHashTextAsIs)
+{
+    // The text is the unescaped display text, so a hostname starting with a non-ASCII letter and a
+    // name holding "##" match whole (the escaped label would hide or mangle both).
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> tabs{
+        {.id = "SystemOverview",
+         .text = "\xC3\x89"
+                 "clair"}, // "Éclair"
+        {.id = "ProcessDetails", .text = "a##b"},
+    };
+    EXPECT_EQ(findTab("\xC3\x89"
+                      "clair",
+                      tabs),
+              std::optional<std::size_t>{0});
+    EXPECT_FALSE(findTab("clair", tabs).has_value());
+    EXPECT_EQ(findTab("a##b", tabs), std::optional<std::size_t>{1});
+    EXPECT_FALSE(findTab("a#b", tabs).has_value());
 }
 
 TEST(SelectOverrideTest, UnknownOrBlankTopLevelTabFindsNothing)
 {
     using App::SelectOverride::findTab;
-    using App::SelectOverride::TabInfo;
-    const std::vector<TabInfo> tabs{{.id = "Processes", .label = "Processes###ProcessesTab"}};
     for (const char* name : {"", "   ", "startup", "processesx", "###ProcessesTab"})
     {
-        EXPECT_FALSE(findTab(name, tabs).has_value()) << name;
+        EXPECT_FALSE(findTab(name, registeredTabs()).has_value()) << name;
+    }
+}
+
+TEST(SelectOverrideTest, UnknownMainTabWarnsOnceAndStillOpensDetails)
+{
+    using App::SelectOverride::resolveMainTab;
+    using App::SelectOverride::selectionShowsDetails;
+
+    const auto unknown = resolveMainTab("processesx", registeredTabs());
+    EXPECT_FALSE(unknown.index.has_value());
+    EXPECT_FALSE(unknown.warning.empty());
+    EXPECT_TRUE(selectionShowsDetails(unknown)); // ignored: the selection still opens Process Details
+
+    const auto known = resolveMainTab("processes", registeredTabs());
+    EXPECT_EQ(known.index, std::optional<std::size_t>{1});
+    EXPECT_TRUE(known.warning.empty());
+    EXPECT_FALSE(selectionShowsDetails(known)); // TASKSMACK_TAB wins
+
+    for (const char* blank : {static_cast<const char*>(nullptr), "", "  "})
+    {
+        const auto none = resolveMainTab(blank, registeredTabs());
+        EXPECT_FALSE(none.index.has_value());
+        EXPECT_TRUE(none.warning.empty());
+        EXPECT_TRUE(selectionShowsDetails(none));
     }
 }
 

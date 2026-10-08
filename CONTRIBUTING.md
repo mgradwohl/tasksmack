@@ -504,11 +504,12 @@ the untested logic needs OS handles or not:
 
 ### Visual validation without input (Process Details)
 
-Agents must not inject clicks or keys, so three test-only environment variables (#1559), read once at
-startup, open Process Details for one process by themselves. When the process first appears in a
-snapshot, it is selected exactly as a click and the row menu's **Details** do. If it has not appeared
-after 20 snapshots, one warning is logged and nothing is selected. While one is set, the startup
-"Limited Data" notice is not shown, since it would cover the details. Unset, they do nothing.
+Agents must not inject clicks or keys, so four test-only environment variables (#1559), read once at
+startup, select a process and open a tab by themselves. With `TASKSMACK_SELECT_PID` or
+`TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
+click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
+snapshots, one warning is logged and nothing is selected. While a selection is set, the startup
+"Limited Data" notice is not shown, since it would cover the details. Unset, the variables do nothing.
 
 | Variable | Value |
 |---|---|
