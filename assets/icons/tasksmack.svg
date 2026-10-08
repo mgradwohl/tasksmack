@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <!-- TaskSmack app icon, "Impact" (#1508): a comic-book impact burst ("SMACK!") around a small bar chart.
-       Master art for 32 px and up; tasksmack-small.svg is the simplified variant for the smallest renders
+       Master art for 48 px and up; tasksmack-small.svg is the simplified variant for the smallest renders
        (see tools/generate-icons.sh). Original work, MIT (REUSE.toml). -->
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">

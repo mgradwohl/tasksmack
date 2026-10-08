@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- TaskSmack app icon, "Impact" (#1508), simplified for the 16 and 24 px renders (tools/generate-icons.sh):
+  <!-- TaskSmack app icon, "Impact" (#1508), simplified for the 16, 24 and 32 px renders (tools/generate-icons.sh):
        a near full-bleed tile, an 8-point burst with a 16-unit outline (1 px at 16 px), and two bold bars,
        so it still reads as an orange tile with a yellow burst. Master art: tasksmack.svg.
        Original work, MIT (REUSE.toml). -->

@@ -3,9 +3,9 @@
 # Sources (#1508):
 #   - assets/icons/tasksmack.svg        master art, rendered for every size not in $SmallSizes
 #   - assets/icons/tasksmack-small.svg  simplified art (fewer burst points, thicker outline, two bars),
-#                                       rendered for $SmallSizes (16 and 24 px) where the master's
+#                                       rendered for $SmallSizes (16, 24 and 32 px) where the master's
 #                                       detail turns to mush
-# The .ico is assembled from those per-size PNGs, so its 16/24 px frames use the small art too.
+# The .ico is assembled from those per-size PNGs, so its 16/24/32 px frames use the small art too.
 #
 # Requirements:
 #   - Inkscape (for SVG to PNG conversion)
@@ -30,11 +30,12 @@ Write-Host "Generating icons from: $SvgPath"
 Write-Host "Output directory: $OutputDir"
 
 # Find Inkscape
-$inkscapePaths = @(
+# Wrapped in @() so a single match stays an array; otherwise [0] below is the path's first character.
+$inkscapePaths = @(@(
     "C:\Program Files\Inkscape\bin\inkscape.exe",
     "$env:LOCALAPPDATA\Programs\Inkscape\bin\inkscape.exe",
     (Get-Command "inkscape" -ErrorAction SilentlyContinue).Source
-) | Where-Object { $_ -and (Test-Path $_) }
+) | Where-Object { $_ -and (Test-Path $_) })
 
 if (-not $inkscapePaths) {
     Write-Error "Inkscape not found. Install from https://inkscape.org/ or via: winget install Inkscape.Inkscape"
@@ -62,7 +63,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # Sizes for icons; $SmallSizes render from $SmallSvgPath instead of $SvgPath
 $sizes = @(16, 24, 32, 48, 64, 128, 256)
-$SmallSizes = @(16, 24)
+$SmallSizes = @(16, 24, 32)
 
 # Generate PNGs at each size
 Write-Host ""

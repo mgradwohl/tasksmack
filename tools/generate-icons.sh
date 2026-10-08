@@ -4,9 +4,9 @@
 # Sources (#1508):
 #   - assets/icons/tasksmack.svg        master art, rendered for every size not listed below
 #   - assets/icons/tasksmack-small.svg  simplified art (fewer burst points, thicker outline, two bars),
-#                                       rendered for SMALL_SIZES (16 and 24 px) where the master's
+#                                       rendered for SMALL_SIZES (16, 24 and 32 px) where the master's
 #                                       detail turns to mush
-# The .ico is assembled from those per-size PNGs, so its 16/24 px frames use the small art too.
+# The .ico is assembled from those per-size PNGs, so its 16/24/32 px frames use the small art too.
 #
 # Requirements:
 #   - Inkscape: sudo apt install inkscape
@@ -45,7 +45,7 @@ fi
 
 # Sizes for icon files; SMALL_SIZES render from SMALL_SVG_PATH instead of SVG_PATH
 SIZES=(16 24 32 48 64 128 256 512)
-SMALL_SIZES=(16 24)
+SMALL_SIZES=(16 24 32)
 
 # Generate PNGs at each size
 echo ""
