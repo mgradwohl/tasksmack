@@ -4,8 +4,6 @@
 #include "ProcessActionConfirm.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
-#include "UI/ChromeWidgets.h"
-#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -23,13 +21,8 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
                                 const std::string& processName,
                                 const Platform::ProcessTarget& target)
 {
-    ImGui::Text("%s (PID %d)", processName.c_str(), target.pid);
-    ImGui::Spacing();
-
-    // Section: Process Control
-    (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Process Control");
-    ImGui::Spacing();
-
+    // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
+    // block's header and beside the Identity block that names the process (#1493).
     renderResultFeedback();
     renderConfirmDialog(actions, target);
     renderButtons(capabilities, processName, target);

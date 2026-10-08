@@ -1,5 +1,5 @@
 /// @file test_ProcessActionsView.cpp
-/// @brief Tests for the Actions tab's state (#1179, slice 3): which buttons the capabilities allow, the
+/// @brief Tests for the Actions block's state (#1179, slice 3): which buttons the capabilities allow, the
 /// confirm request, dispatching the confirmed action to a mock IProcessActions, and the result line's
 /// timeout and reset, without an ImGui context. render() and the real modal lifecycle are covered
 /// headless in test_ProcessActionConfirmPopup.cpp.

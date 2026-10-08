@@ -122,7 +122,7 @@ constexpr const char* FROZEN_ICON = ICON_FA_PAUSE;
     return false;
 }
 
-// How long a row-menu action's result stays in the toolbar, like the Actions tab's (#1209).
+// How long a row-menu action's result stays in the toolbar, like the Actions block's (#1209).
 constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
 
 [[nodiscard]] float measureTextWidth(std::string_view text)
@@ -1372,7 +1372,7 @@ void ProcessesPanel::renderContent()
     }
     ImGui::SetItemTooltip("Tree view (F5): processes under their parents");
 
-    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions tab (#1209)
+    // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209)
     renderRowActionConfirm();
 
     // The row menu (#1209), for the process m_RowMenuTarget holds. One popup at panel level rather
@@ -2441,7 +2441,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
     };
 
-    // Only what this platform can do (ProcessActionCapabilities), as in the Actions tab.
+    // Only what this platform can do (ProcessActionCapabilities), as in the Actions block.
     const Platform::ProcessActionCapabilities& can = m_ActionCapabilities;
     if (can.canStop || can.canContinue)
     {
@@ -2458,7 +2458,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     if (can.canTerminate || can.canKill)
     {
         // Ending a process can lose its work: in the danger colour, and confirmed in the dialog's
-        // danger-coloured button, as in the Actions tab (#1273).
+        // danger-coloured button, as in the Actions block (#1273).
         ImGui::Separator();
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textError);
         if (can.canTerminate && actionItem(Detail::ProcessAction::Terminate, ICON_FA_XMARK, nullptr))

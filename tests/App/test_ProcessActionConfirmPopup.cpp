@@ -200,7 +200,7 @@ TEST_F(ProcessActionConfirmPopupTest, AModalLeftUndrawnDoesNotReturnForTheNextPr
     // A exits with the modal up: the pane is replaced, so the view is not drawn. ImGui itself closes
     // a modal that is not submitted (its next frame refocuses the window under it, which closes the
     // popups over that window), so this passes with or without the view's dismissal; it pins that the
-    // stale modal cannot come back when B is selected and the Actions tab drawn again.
+    // stale modal cannot come back when B is selected and the Actions block drawn again.
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
     view.requestAction(ProcessAction::Terminate, TARGET_A, "a");

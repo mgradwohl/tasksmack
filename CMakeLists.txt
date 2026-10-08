@@ -139,6 +139,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessDetailsCharts.cpp
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessActionsView.cpp
+    src/App/Panels/ProcessActionsBlock.cpp
     src/App/Panels/ProcessPriorityView.cpp
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp

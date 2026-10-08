@@ -87,6 +87,76 @@ computeActionButtonWidth(float widestLabelPx, float emPx, float availableWidthPx
     return std::max(1.0F, std::floor(std::min(wanted, perColumn)));
 }
 
+/// Width of the priority column of the Overview's Actions block, in ems: room for the Priority header
+/// with its current class ("current: Below Normal") and the 12 em class combo on Windows, and a usable
+/// track for the Linux slider, which shrinks to the column it is given (#1493).
+inline constexpr float ACTIONS_PRIORITY_COLUMN_WIDTH_EM = 26.0F;
+
+/// Where the Overview's Actions block goes, and how its two parts sit inside it (#1493).
+struct ActionsBlockLayout
+{
+    /// A third block on the Identity/Runtime row; otherwise it wraps onto its own row below them.
+    bool besideInfo = true;
+    /// The process-control buttons and the priority control side by side; otherwise the priority
+    /// control is under the buttons.
+    bool columnsSideBySide = true;
+    /// The block's width in pixels, padding included.
+    float width = 0.0F;
+};
+
+/// Lays out the Overview's Actions block: the Terminate / Kill (and Suspend / Resume) buttons and the
+/// priority control that had a tab of their own until #1493.
+///
+/// Beside Identity and Runtime the block may be no taller than they are, so the charts below keep
+/// their height, and that is only possible with its two parts side by side: stacked, the priority
+/// control under the buttons is taller than the Identity/Runtime row. So the block goes beside them
+/// only when the side-by-side block fits in what the row leaves; otherwise it wraps below them, side
+/// by side if the pane is wide enough for that, else stacked and held to the pane.
+///
+/// @param paneWidthPx      Width of the pane the row is laid out in.
+/// @param infoRowWidthPx   Width Identity and Runtime take, with the gap between them.
+/// @param spacingPx        Gap between two blocks on the row (ImGuiStyle::ItemSpacing.x).
+/// @param controlsWidthPx  Width the process-control buttons need.
+/// @param priorityWidthPx  Width the priority control needs; 0 when the platform cannot set priority,
+///                         which leaves the buttons alone in the block.
+/// @param columnGapPx      Gap between the buttons and the priority control when side by side.
+/// @param paddingPx        The block's own horizontal padding, both sides together.
+/// @return Beside the row, side by side, at the width it needs, when the pane width is unknown.
+[[nodiscard]] inline ActionsBlockLayout computeActionsBlockLayout(float paneWidthPx,
+                                                                  float infoRowWidthPx,
+                                                                  float spacingPx,
+                                                                  float controlsWidthPx,
+                                                                  float priorityWidthPx,
+                                                                  float columnGapPx,
+                                                                  float paddingPx) noexcept
+{
+    const auto nonNegative = [](float value) noexcept
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float controls = nonNegative(controlsWidthPx);
+    const float priority = nonNegative(priorityWidthPx);
+    const float padding = nonNegative(paddingPx);
+    const float gap = priority > 0.0F ? nonNegative(columnGapPx) : 0.0F;
+
+    const float sideBySideWidth = controls + gap + priority + padding;
+    const float stackedWidth = std::max(controls, priority) + padding;
+
+    if (!std::isfinite(paneWidthPx) || paneWidthPx <= 0.0F)
+    {
+        return {.besideInfo = true, .columnsSideBySide = true, .width = sideBySideWidth};
+    }
+    if (nonNegative(infoRowWidthPx) + nonNegative(spacingPx) + sideBySideWidth <= paneWidthPx)
+    {
+        return {.besideInfo = true, .columnsSideBySide = true, .width = sideBySideWidth};
+    }
+    if (sideBySideWidth <= paneWidthPx)
+    {
+        return {.besideInfo = false, .columnsSideBySide = true, .width = sideBySideWidth};
+    }
+    return {.besideInfo = false, .columnsSideBySide = false, .width = std::min(stackedWidth, paneWidthPx)};
+}
+
 /// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).
 ///
 /// PIDs are reused. A process is selected by PID together with its unique key (a hash of the PID
