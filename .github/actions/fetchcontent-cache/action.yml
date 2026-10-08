@@ -1,0 +1,49 @@
+name: 'FetchContent dependency cache'
+description: >-
+  Restore (mode: restore) or save (mode: save) the FetchContent source cache under .cache/fetchcontent.
+  Every job restores; only runs on main save, so pull requests read main's entry instead of each
+  writing its own ~440 MB copy that only that PR can use (#1406).
+
+inputs:
+  mode:
+    description: "'restore' (before Configure) or 'save' (after Configure)"
+    required: true
+  cache-hit:
+    description: "mode: save only -- the restore step's cache-hit output; an exact hit is not saved again"
+    required: false
+    default: 'false'
+
+outputs:
+  cache-hit:
+    description: 'mode: restore only -- true when the exact key was restored'
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: 'composite'
+  steps:
+    # The key hashes only the files that declare or patch FetchContent dependencies. It used to hash
+    # the top-level CMakeLists.txt as well, which declares none and changes often, so most merges
+    # minted a new 440 MB entry with identical contents.
+    - name: Restore FetchContent dependencies
+      id: restore
+      if: inputs.mode == 'restore'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        # Sources and population stamps only: <dep>-build holds objects compiled with this
+        # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
+        path: |
+          .cache/fetchcontent/*
+          !.cache/fetchcontent/*-build
+        key: ${{ runner.os }}-fetchcontent-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/patches/**', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+        restore-keys: ${{ runner.os }}-fetchcontent-
+
+    - name: Save FetchContent dependencies (main only)
+      if: >-
+        inputs.mode == 'save' && inputs.cache-hit != 'true' &&
+        github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          .cache/fetchcontent/*
+          !.cache/fetchcontent/*-build
+        key: ${{ runner.os }}-fetchcontent-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/patches/**', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}

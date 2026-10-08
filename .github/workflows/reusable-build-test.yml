@@ -40,6 +40,9 @@ jobs:
     permissions:
       contents: read
       checks: write
+    env:
+      # See the Configure steps: PCH stays on only for the weekly unity build.
+      PCH: ${{ inputs.build_type == 'unity' && 'ON' || 'OFF' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -64,28 +67,41 @@ jobs:
           # Include the LLVM version so caches from different toolchains don't mix.
           key: ${{ runner.os }}-${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
           max-size: 500M
+          # Pull requests restore main's cache but never save their own: a PR-ref entry is
+          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
-      - name: Cache FetchContent dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore FetchContent dependencies
+        id: fetchcontent
+        uses: ./.github/actions/fetchcontent-cache
         with:
-          # Sources and population stamps only: <dep>-build holds objects compiled with this
-          # job's flags (sanitizer, coverage, ...), which another job must not restore (#1137).
-          path: |
-            .cache/fetchcontent/*
-            !.cache/fetchcontent/*-build
-          key: ${{ runner.os }}-fetchcontent-${{ hashFiles('CMakeLists.txt', 'cmake/Dependencies.cmake', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
-          restore-keys: ${{ runner.os }}-fetchcontent-
+          mode: restore
 
+      # CI configures with precompiled headers OFF (#1406): ccache can't cache a TU that uses a PCH
+      # without extra sloppiness settings, so with PCH on ~89% of compiles here were uncacheable and
+      # every build was effectively cold. The presets keep PCH on for local builds, and the weekly
+      # unity build and release.yml still build with PCH on. PCH off is also the stricter build:
+      # a missing #include that the PCH would have supplied fails here.
       - name: Configure (Linux)
         if: runner.os == 'Linux'
-        run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)"
+        run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }}
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe"
+        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }}
+
+      # One saver per OS (the debug build) so parallel jobs don't race to reserve the same key.
+      - name: Save FetchContent dependencies
+        if: inputs.build_type == 'debug'
+        uses: ./.github/actions/fetchcontent-cache
+        with:
+          mode: save
+          cache-hit: ${{ steps.fetchcontent.outputs.cache-hit }}
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
@@ -122,7 +138,7 @@ jobs:
       - name: Build benchmarks (Linux)
         if: runner.os == 'Linux' && inputs.build_benchmarks
         run: |
-          cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_BUILD_BENCHMARKS=ON
+          cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_BUILD_BENCHMARKS=ON
           cmake --build --preset ${{ inputs.build_type }} --target TaskSmackBenchmarks
 
       - name: Test (Windows)
