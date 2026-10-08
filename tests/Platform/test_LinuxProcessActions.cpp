@@ -542,6 +542,27 @@ TEST(LinuxProcessActionsTest, SetIoPriorityToIdleChangesEveryThreadOfAChild)
     EXPECT_EQ(current->ioClass, IoPriorityClass::Idle);
 }
 
+TEST(LinuxProcessActionsTest, GetIoPriorityReadsAnotherUsersLiveProcess)
+{
+    // PID 1 belongs to root. Reading its I/O priority needs no privilege, so a non-root test run must
+    // not take the EPERM that signal 0 gets from it for "exited" (#803 review).
+    if (geteuid() == 0)
+    {
+        GTEST_SKIP() << "running as root: PID 1 is not another user's process";
+    }
+    std::ifstream stat("/proc/1/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const std::uint64_t startTicks = ProcParsing::parseStatStartTime(line).value_or(0);
+    if (startTicks == 0)
+    {
+        GTEST_SKIP() << "PID 1's start time is not readable here (hidepid)";
+    }
+
+    LinuxProcessActions actions;
+    const IoPriorityReadResult current = actions.getIoPriority({.pid = 1, .startTimeTicks = startTicks});
+    ASSERT_TRUE(current.has_value()) << current.error();
+}
+
 TEST(LinuxProcessActionsTest, SetIoPriorityBestEffortLevelIsReadBack)
 {
     const SleepingChild child;

@@ -26,8 +26,10 @@
 #include <vector>
 
 #include <fcntl.h>
+
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill() function, csignal does not
 #include <signal.h>
+#include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -120,6 +122,21 @@ struct PidfdOpen
 #else
     return {.fd = -1, .refusal = noPidfdMessage(pid)};
 #endif
+}
+
+/// Whether the process @p pidfd refers to has exited: 1 if it has, 0 if it is still running, -1 with
+/// errno set if poll() fails. A pidfd polls readable once its process exits. Unlike signal 0, this
+/// needs no permission over the process, so another user's live process (EPERM to a signal) is never
+/// taken for an exited one (#803 review).
+[[nodiscard]] int pidfdExited(const FdGuard& pidfd)
+{
+    pollfd entry{.fd = pidfd.get(), .events = POLLIN, .revents = 0};
+    const int ready = ::poll(&entry, 1, 0);
+    if (ready < 0)
+    {
+        return -1;
+    }
+    return (ready > 0 && (entry.revents & (POLLIN | POLLHUP)) != 0) ? 1 : 0;
 }
 
 /// Send `signal` through `pidfd`; 0 on success, -1 with errno set on failure.
@@ -511,7 +528,16 @@ IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& tar
         return std::unexpected(
             std::format("Can't read the I/O priority of process {}: {}", target.pid, std::system_category().message(err)));
     }
-    if (sendThroughPidfd(pidfd, 0) != 0)
+    // Reading needs no privilege over the process, so neither may this check: another user's process
+    // refuses signal 0 with EPERM while it is very much alive.
+    const int exited = pidfdExited(pidfd);
+    if (exited < 0)
+    {
+        return std::unexpected(std::format("Can't confirm that process {} still held its PID while its I/O priority was read: {}",
+                                           target.pid,
+                                           std::system_category().message(errno)));
+    }
+    if (exited > 0)
     {
         return std::unexpected(std::format("Process {} exited while its I/O priority was being read", target.pid));
     }

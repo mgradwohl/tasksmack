@@ -1,6 +1,7 @@
 #include "WindowsProcessActions.h"
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/IProcessActions.h"
 #include "WindowsProcessActionsMath.h"
 
 #include <spdlog/spdlog.h>
