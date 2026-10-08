@@ -438,8 +438,6 @@ void preloadProcessHistory(const Scenario* scenario, Domain::ProcessModel& model
             const auto when = readingTime(now, readings, index++);
             const Platform::Synthetic::ProcessTotals totals = workload.processTotalsAt(workload.uptimeAt(when));
             sample = Domain::ProcessSystemHistorySample{.timeSeconds = steadySeconds(when),
-                                                        .netSentBytesPerSec = totals.netSentBytesPerSec,
-                                                        .netReceivedBytesPerSec = totals.netReceivedBytesPerSec,
                                                         .pageFaultsPerSec = totals.pageFaultsPerSec,
                                                         .threadCount = totals.threadCount,
                                                         .handleCount = totals.handleCount,

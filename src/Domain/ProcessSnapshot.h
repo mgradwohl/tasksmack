@@ -126,7 +126,7 @@ struct ProcessSample
     /// is watched gets a sample, so consecutive samples have consecutive versions.
     std::uint64_t version = 0;
     /// When that generation was sampled, as std::chrono::steady_clock seconds since its epoch -- the
-    /// timebase of ProcessModel::historyTimestamps() -- not when a reader happened to see it.
+    /// timebase of ProcessSystemHistories::timestamps -- not when a reader happened to see it.
     double sampleTimeSeconds = 0.0;
     /// Whether the probe could supply per-process I/O and network counters at all when that generation
     /// was published (Platform::ProcessCapabilities::hasIoCounters / hasNetworkCounters, as published

@@ -339,11 +339,6 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
     const double maxSaneRate = m_MaxSaneNetworkRateBps.load(std::memory_order_relaxed);
     const auto currentSampleTime = m_Now();
-    if (!m_HasStartTime)
-    {
-        m_StartTime = currentSampleTime;
-        m_HasStartTime = true;
-    }
     double elapsedSeconds = 0.0;
     std::uint64_t timeDeltaUs = 0;
     if (m_HasPrevSampleTime)
@@ -387,8 +382,6 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // its generation is still the previous value) in a single erase_if pass.
     ++m_CurrentGeneration;
 
-    double aggNetSent = 0.0;
-    double aggNetRecv = 0.0;
     double aggPageFaults = 0.0;
     double aggThreads = 0.0;
     double aggHandles = 0.0;
@@ -481,11 +474,6 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // Totals are over the values that were read: an unreadable one is left out, not added as a
         // reading (#1110).
         const ProcessSnapshot& snapRef = newSnapshots.back();
-        if (snapRef.networkAvailable)
-        {
-            aggNetSent += snapRef.netSentBytesPerSec;
-            aggNetRecv += snapRef.netReceivedBytesPerSec;
-        }
         aggPageFaults += snapRef.pageFaultsPerSec;
         aggThreads += static_cast<double>(snapRef.threadCount);
         if (snapRef.handleCountAvailable)
@@ -587,8 +575,6 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         if (hasElapsedForHistory)
         {
             m_Timestamps.push(sampleTimeSeconds);
-            m_SystemNetSentHistory.push(aggNetSent);
-            m_SystemNetRecvHistory.push(aggNetRecv);
             m_SystemPageFaultsHistory.push(aggPageFaults);
             m_SystemThreadCountHistory.push(aggThreads);
             m_SystemHandleCountHistory.push(aggHandles);
@@ -833,48 +819,6 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
     return true;
 }
 
-std::vector<double> ProcessModel::systemNetSentHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SystemNetSentHistory);
-}
-
-std::vector<double> ProcessModel::systemNetRecvHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SystemNetRecvHistory);
-}
-
-std::vector<double> ProcessModel::systemPageFaultsHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SystemPageFaultsHistory);
-}
-
-std::vector<double> ProcessModel::systemThreadCountHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SystemThreadCountHistory);
-}
-
-std::vector<double> ProcessModel::systemHandleCountHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SystemHandleCountHistory);
-}
-
-std::vector<double> ProcessModel::systemPowerHistory() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_SystemPowerHistory);
-}
-
-std::vector<double> ProcessModel::historyTimestamps() const
-{
-    std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
-    return HistoryUtils::toVector(m_Timestamps);
-}
-
 void ProcessModel::appendSystemHistory(const SystemHistorySource& next)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
@@ -887,8 +831,6 @@ void ProcessModel::appendSystemHistory(const SystemHistorySource& next)
             continue;
         }
         m_Timestamps.push(sample.timeSeconds);
-        m_SystemNetSentHistory.push(sample.netSentBytesPerSec);
-        m_SystemNetRecvHistory.push(sample.netReceivedBytesPerSec);
         m_SystemPageFaultsHistory.push(sample.pageFaultsPerSec);
         m_SystemThreadCountHistory.push(sample.threadCount);
         m_SystemHandleCountHistory.push(sample.handleCount);
@@ -1219,14 +1161,8 @@ void ProcessModel::trimHistory()
     // rebuilds, or allocations. With maxHistorySeconds == 0 the cutoff equals the newest timestamp,
     // so only the current sample is retained (no anchor before a zero-length window).
     const double cutoff = m_Timestamps.latest() - m_MaxHistorySeconds;
-    static_cast<void>(HistoryUtils::discardBefore(m_Timestamps,
-                                                  cutoff,
-                                                  m_SystemNetSentHistory,
-                                                  m_SystemNetRecvHistory,
-                                                  m_SystemPageFaultsHistory,
-                                                  m_SystemThreadCountHistory,
-                                                  m_SystemHandleCountHistory,
-                                                  m_SystemPowerHistory));
+    static_cast<void>(HistoryUtils::discardBefore(
+        m_Timestamps, cutoff, m_SystemPageFaultsHistory, m_SystemThreadCountHistory, m_SystemHandleCountHistory, m_SystemPowerHistory));
 }
 
 void ProcessModel::applyHistoryCapacity()
@@ -1235,8 +1171,6 @@ void ProcessModel::applyHistoryCapacity()
     // supported refresh cadence; time-based trimming governs actual retention.
     const std::size_t capacity = Sampling::historyCapacityForSeconds(m_MaxHistorySeconds);
     m_Timestamps.setCapacity(capacity);
-    m_SystemNetSentHistory.setCapacity(capacity);
-    m_SystemNetRecvHistory.setCapacity(capacity);
     m_SystemPageFaultsHistory.setCapacity(capacity);
     m_SystemThreadCountHistory.setCapacity(capacity);
     m_SystemHandleCountHistory.setCapacity(capacity);
