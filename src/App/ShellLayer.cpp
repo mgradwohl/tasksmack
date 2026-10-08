@@ -161,10 +161,9 @@ void ShellLayer::onAttach()
     // (#1254); the notice itself is a one-off at startup.
     // NOTE: The event is NOT dispatched here — ElevationNoticeLayer hasn't been pushed yet.
     // m_PendingPrivilegeNotice is dispatched in the first onUpdate() call, after all layers are stacked.
-    // Not under the startup-selection test hook (#1559): the modal would cover the details it opens,
+    // Not while any test hook is set (#1559, #1569): the modal would cover the unattended capture,
     // and dismissing it needs input.
-    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice &&
-        !SelectOverride::active().has_value())
+    if (m_ProcessesPanel.hasReducedPrivileges() && UserConfig::get().settings().showPrivilegeNotice && !SelectOverride::testHookActive())
     {
         m_PendingPrivilegeNotice = true;
     }

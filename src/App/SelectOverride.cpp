@@ -84,4 +84,13 @@ const std::optional<Target>& active()
     return target;
 }
 
+bool testHookActive()
+{
+    const auto read = [](const std::string_view variable)
+    {
+        return SDL_getenv(std::string(variable).c_str());
+    };
+    return anyTestHookActive(read(MAIN_TAB_ENV_VAR), read(PID_ENV_VAR), read(NAME_ENV_VAR), read(TAB_ENV_VAR));
+}
+
 } // namespace App::SelectOverride
