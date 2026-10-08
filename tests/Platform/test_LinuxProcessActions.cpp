@@ -617,7 +617,7 @@ TEST(LinuxProcessActionsTest, SetIoPriorityOfAMissingOrInvalidProcessFails)
 
 TEST(LinuxProcessActionsTest, SetIoPriorityRealtimeWithoutPrivilegeSaysWhy)
 {
-    // Realtime needs CAP_SYS_ADMIN (or CAP_SYS_NICE on newer kernels). Unprivileged, the refusal
+    // Realtime needs CAP_SYS_NICE or CAP_SYS_ADMIN. Unprivileged, the refusal
     // names the capability rather than blaming another user; privileged, it simply succeeds.
     const SleepingChild child;
     ASSERT_TRUE(child.started());
@@ -628,7 +628,7 @@ TEST(LinuxProcessActionsTest, SetIoPriorityRealtimeWithoutPrivilegeSaysWhy)
     {
         GTEST_SKIP() << "running with the privilege to set the Realtime I/O class";
     }
-    EXPECT_NE(result.errorMessage.find("CAP_SYS_ADMIN"), std::string::npos) << result.errorMessage;
+    EXPECT_NE(result.errorMessage.find("CAP_SYS_NICE"), std::string::npos) << result.errorMessage;
     EXPECT_EQ(result.errorMessage.find("another user"), std::string::npos) << result.errorMessage;
 }
 

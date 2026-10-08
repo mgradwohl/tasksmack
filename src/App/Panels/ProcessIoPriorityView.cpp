@@ -26,8 +26,8 @@ constexpr const char* IO_CLASS_TOOLTIP = "I/O scheduling class (ionice):\n"
                                          "  Default: best-effort, at a level derived from the nice value\n"
                                          "  Best-effort: shares the disk by level, 0 (highest) to 7 (lowest)\n"
                                          "  Idle: gets the disk only when no other process wants it\n"
-                                         "  Realtime: served before everything else; needs root (CAP_SYS_ADMIN)\n\n"
-                                         "Changing another user's process needs root.";
+                                         "  Realtime: served before everything else; needs CAP_SYS_NICE (or root)\n\n"
+                                         "Changing another user's process needs CAP_SYS_NICE (or root).";
 
 } // namespace
 

@@ -115,7 +115,7 @@ TEST(LinuxIoPriorityTest, EpermForRealtimeNamesTheCapability)
 {
     const std::string message = ioPriorityErrorMessage(EPERM, IoPriorityClass::Realtime, 1234);
     EXPECT_NE(message.find("Realtime"), std::string::npos) << message;
-    EXPECT_NE(message.find("CAP_SYS_ADMIN"), std::string::npos) << message;
+    EXPECT_NE(message.find("CAP_SYS_NICE"), std::string::npos) << message;
     EXPECT_NE(message.find("1234"), std::string::npos) << message;
     EXPECT_EQ(message.find("another user"), std::string::npos) << message;
 }
@@ -128,7 +128,7 @@ TEST(LinuxIoPriorityTest, EpermOtherwiseNamesAnotherUser)
         SCOPED_TRACE(static_cast<int>(ioClass));
         const std::string message = ioPriorityErrorMessage(EPERM, ioClass, 1234);
         EXPECT_NE(message.find("belongs to another user"), std::string::npos) << message;
-        EXPECT_NE(message.find("Run TaskSmack as root"), std::string::npos) << message;
+        EXPECT_NE(message.find("CAP_SYS_NICE"), std::string::npos) << message;
         EXPECT_EQ(message.find("ionice"), std::string::npos) << message; // ionice -p changes one thread
     }
 }

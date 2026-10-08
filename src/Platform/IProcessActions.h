@@ -67,7 +67,7 @@ struct ProcessTarget
 enum class IoPriorityClass : std::uint8_t
 {
     None = 0,       ///< Never set: the kernel derives a best-effort level from the nice value.
-    Realtime = 1,   ///< Served before every other class; setting it needs CAP_SYS_ADMIN or CAP_SYS_NICE.
+    Realtime = 1,   ///< Served before every other class; setting it needs CAP_SYS_NICE (or CAP_SYS_ADMIN).
     BestEffort = 2, ///< The normal class, with levels 0 (highest) to 7 (lowest).
     Idle = 3,       ///< Served only when no other process wants the disk.
 };

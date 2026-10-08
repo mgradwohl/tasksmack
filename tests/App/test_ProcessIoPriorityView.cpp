@@ -290,14 +290,15 @@ TEST(ProcessIoPriorityViewTest, ApplyAsksForAFreshRead)
 TEST(ProcessIoPriorityViewTest, FailureShowsThePlatformMessageAndRevertsTheControl)
 {
     TestMocks::MockProcessActions mock;
-    mock.setIoPriorityResult(Platform::ProcessActionResult::error("Permission denied: the Realtime I/O class needs root (CAP_SYS_ADMIN)."));
+    mock.setIoPriorityResult(
+        Platform::ProcessActionResult::error("Permission denied: the Realtime I/O class needs CAP_SYS_NICE (or root)."));
     ProcessIoPriorityView view;
     readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
     view.editIoPriority({.ioClass = IoPriorityClass::Realtime, .level = 0}, TARGET_A);
 
     view.apply(&mock, TARGET_A);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
-    EXPECT_EQ(view.error(), "Permission denied: the Realtime I/O class needs root (CAP_SYS_ADMIN).");
+    EXPECT_EQ(view.error(), "Permission denied: the Realtime I/O class needs CAP_SYS_NICE (or root).");
     EXPECT_EQ(view.shownIoPriority(), BEST_EFFORT_4);
 
     // Another edit clears the error.
