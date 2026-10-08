@@ -1,6 +1,8 @@
+#include "Mocks/ColorSchemeFields.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
+#include <imgui.h>
 
 #include <cstddef>
 #include <set>
@@ -101,6 +103,31 @@ TEST(ThemeHeaderTest, SingletonStartsAtDefaultThemeAndFontSize)
     EXPECT_EQ(theme.currentThemeIndex(), 0U);
     EXPECT_TRUE(theme.discoveredThemes().empty());
     EXPECT_EQ(theme.currentFontSize(), FontSize::Medium);
+}
+
+// The headless chart tests and benchmarks draw with the stub's scheme (tests/Mocks/ThemeStub.cpp): a
+// colour left at its zero default is drawn invisibly, so a scene would measure nothing for that series
+// (#1472). Every colour field, accents included, must be visible -- a role added later too.
+TEST(ThemeHeaderTest, StubSchemeDrawsEveryColour)
+{
+    UI::ColorScheme scheme = Theme::get().scheme();
+
+    // The walk ends at the last declared field, so it covers every colour.
+    const std::size_t count = TestColorScheme::colorCount(scheme);
+    const auto* const first =
+        reinterpret_cast<const std::byte*>(scheme.accents.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    const auto* const last =
+        reinterpret_cast<const std::byte*>(&scheme.modalWindowDimBg); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    EXPECT_EQ(static_cast<std::size_t>(last - first), (count - 1) * sizeof(ImVec4));
+
+    std::size_t index = 0;
+    TestColorScheme::forEachColor(scheme,
+                                  [&index](ImVec4& color)
+                                  {
+                                      EXPECT_GT(color.w, 0.0F) << "colour #" << index << " is invisible in the stub scheme";
+                                      ++index;
+                                  });
+    EXPECT_EQ(index, count);
 }
 
 TEST(ThemeHeaderTest, WithAlphaReturnsColorWithUpdatedAlpha)
