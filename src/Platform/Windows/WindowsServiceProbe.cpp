@@ -19,12 +19,14 @@
 
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsServiceConfig.h"
 #include "WindowsServiceProbeMath.h"
 
 #include <chrono>
 #include <memory>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -59,74 +61,89 @@ template<typename T, typename Query> [[nodiscard]] std::vector<T> queryAligned(Q
     return text != nullptr ? WinString::wideToUtf8(text) : std::string{};
 }
 
-/// The configuration fields of one service, cached between enumerations.
+/// One service's configuration, cached between enumerations.
 struct CachedConfig
 {
     std::chrono::steady_clock::time_point readAt; ///< When the last read was attempted, whatever its outcome.
     bool attempted = false;                       ///< False until the first read: a new or reappeared service.
-    ServiceStartType startType = ServiceStartType::Unknown;
-    std::string binaryPath;
-    std::string account;
-    std::string description;
-    std::string group;
+    Windows::ServiceConfig config;
+};
+
+/// Read access to the service list (ENUMERATE_SERVICE) and to each service (CONNECT: OpenServiceW
+/// requires it on the manager handle).
+constexpr DWORD SCM_ACCESS = SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE;
+
+/// Closes a service handle through the injected CloseServiceHandle.
+struct ServiceHandleCloser
+{
+    Windows::ServiceConfigFunctions::CloseServiceHandleFn close = nullptr;
+
+    void operator()(SC_HANDLE handle) const noexcept
+    {
+        close(handle);
+    }
 };
 
 } // namespace
+
+namespace Windows
+{
+
+ServiceConfig readServiceConfig(const ServiceConfigFunctions& api, SC_HANDLE scm, const wchar_t* serviceName)
+{
+    ServiceConfig config;
+    const std::unique_ptr<std::remove_pointer_t<SC_HANDLE>, ServiceHandleCloser> service(
+        api.openService(scm, serviceName, SERVICE_QUERY_CONFIG), ServiceHandleCloser{.close = api.closeServiceHandle});
+    if (!service)
+    {
+        return config;
+    }
+
+    const auto qsc = queryAligned<QUERY_SERVICE_CONFIGW>([&](QUERY_SERVICE_CONFIGW* buffer, DWORD bytes, DWORD* needed)
+                                                         { return api.queryServiceConfig(service.get(), buffer, bytes, needed); });
+    if (!qsc.empty())
+    {
+        const auto& cfg = qsc.front();
+        bool delayed = false;
+        SERVICE_DELAYED_AUTO_START_INFO delayedInfo{};
+        DWORD needed = 0;
+        if (api.queryServiceConfig2(service.get(),
+                                    SERVICE_CONFIG_DELAYED_AUTO_START_INFO,
+                                    reinterpret_cast<LPBYTE>(&delayedInfo),
+                                    sizeof(delayedInfo),
+                                    &needed) != FALSE)
+        {
+            delayed = delayedInfo.fDelayedAutostart != FALSE;
+        }
+        config.startType = ServiceMath::startTypeFromCode(cfg.dwStartType, delayed);
+        config.binaryPath = toUtf8(cfg.lpBinaryPathName);
+        config.account = toUtf8(cfg.lpServiceStartName);
+        config.group = ServiceMath::svchostGroup(config.binaryPath);
+    }
+
+    const auto desc = queryAligned<SERVICE_DESCRIPTIONW>(
+        [&](SERVICE_DESCRIPTIONW* buffer, DWORD bytes, DWORD* needed)
+        { return api.queryServiceConfig2(service.get(), SERVICE_CONFIG_DESCRIPTION, reinterpret_cast<LPBYTE>(buffer), bytes, needed); });
+    if (!desc.empty())
+    {
+        config.description = toUtf8(desc.front().lpDescription);
+    }
+    return config;
+}
+
+} // namespace Windows
 
 struct WindowsServiceProbe::Impl
 {
     Windows::UniqueServiceHandle scm;
     DWORD scmOpenError = ERROR_SUCCESS; ///< OpenSCManagerW's error at construction; nonzero disables the probe.
+    Windows::ServiceConfigFunctions api;
     std::unordered_map<std::string, CachedConfig> configs;
-
-    /// Read one service's configuration. Fields stay empty where the open or a query is denied.
-    [[nodiscard]] CachedConfig readConfig(const wchar_t* serviceName) const
-    {
-        CachedConfig config;
-        config.attempted = true;
-        config.readAt = std::chrono::steady_clock::now();
-        const Windows::UniqueServiceHandle service(OpenServiceW(scm.get(), serviceName, SERVICE_QUERY_CONFIG));
-        if (!service)
-        {
-            return config;
-        }
-
-        const auto qsc = queryAligned<QUERY_SERVICE_CONFIGW>([&service](QUERY_SERVICE_CONFIGW* buffer, DWORD bytes, DWORD* needed)
-                                                             { return QueryServiceConfigW(service.get(), buffer, bytes, needed); });
-        if (!qsc.empty())
-        {
-            const auto& cfg = qsc.front();
-            bool delayed = false;
-            SERVICE_DELAYED_AUTO_START_INFO delayedInfo{};
-            DWORD needed = 0;
-            if (QueryServiceConfig2W(service.get(),
-                                     SERVICE_CONFIG_DELAYED_AUTO_START_INFO,
-                                     reinterpret_cast<LPBYTE>(&delayedInfo),
-                                     sizeof(delayedInfo),
-                                     &needed) != FALSE)
-            {
-                delayed = delayedInfo.fDelayedAutostart != FALSE;
-            }
-            config.startType = Windows::ServiceMath::startTypeFromCode(cfg.dwStartType, delayed);
-            config.binaryPath = toUtf8(cfg.lpBinaryPathName);
-            config.account = toUtf8(cfg.lpServiceStartName);
-            config.group = Windows::ServiceMath::svchostGroup(config.binaryPath);
-        }
-
-        const auto desc = queryAligned<SERVICE_DESCRIPTIONW>(
-            [&service](SERVICE_DESCRIPTIONW* buffer, DWORD bytes, DWORD* needed)
-            { return QueryServiceConfig2W(service.get(), SERVICE_CONFIG_DESCRIPTION, reinterpret_cast<LPBYTE>(buffer), bytes, needed); });
-        if (!desc.empty())
-        {
-            config.description = toUtf8(desc.front().lpDescription);
-        }
-        return config;
-    }
 };
 
 WindowsServiceProbe::WindowsServiceProbe() : m_Impl(std::make_unique<Impl>())
 {
-    m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));
+    m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SCM_ACCESS));
     if (!m_Impl->scm)
     {
         const DWORD error = GetLastError();
@@ -150,7 +167,7 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
     }
     if (!m_Impl->scm)
     {
-        m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));
+        m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SCM_ACCESS));
         if (!m_Impl->scm)
         {
             return ServiceEnumeration::failed(Windows::ServiceMath::scmFailureReason(GetLastError(), "be opened"));
@@ -194,17 +211,19 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
             info.serviceType = Windows::ServiceMath::serviceTypeText(entry.ServiceStatusProcess.dwServiceType);
             info.pid = entry.ServiceStatusProcess.dwProcessId;
 
-            auto& config = m_Impl->configs[info.name];
+            auto& cached = m_Impl->configs[info.name];
             // A denied or failed read leaves the fields empty until the next attempt, CONFIG_REFRESH later.
-            if (Windows::ServiceMath::shouldRefreshConfig(config.readAt, now, config.attempted))
+            if (Windows::ServiceMath::shouldRefreshConfig(cached.readAt, now, cached.attempted))
             {
-                config = m_Impl->readConfig(entry.lpServiceName);
+                cached.config = Windows::readServiceConfig(m_Impl->api, m_Impl->scm.get(), entry.lpServiceName);
+                cached.attempted = true;
+                cached.readAt = now;
             }
-            info.startType = config.startType;
-            info.binaryPath = config.binaryPath;
-            info.account = config.account;
-            info.description = config.description;
-            info.group = config.group;
+            info.startType = cached.config.startType;
+            info.binaryPath = cached.config.binaryPath;
+            info.account = cached.config.account;
+            info.description = cached.config.description;
+            info.group = cached.config.group;
             seen.insert(info.name);
             services.push_back(std::move(info));
         }

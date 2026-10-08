@@ -276,6 +276,7 @@ elseif(WIN32)
         src/Platform/Windows/DXGIGPUProbe.h
         src/Platform/Windows/NVMLGPUProbe.h
         src/Platform/Windows/WindowsServiceProbe.h
+        src/Platform/Windows/WindowsServiceConfig.h
         src/Platform/Windows/WinString.h
     )
 endif()

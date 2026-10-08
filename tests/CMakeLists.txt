@@ -266,6 +266,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsServiceProbe.cpp
+    Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
     Platform/test_WinString.cpp
 )
