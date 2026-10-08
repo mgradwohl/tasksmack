@@ -8,6 +8,7 @@
 
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -866,6 +867,54 @@ class MockProcessEnvironmentReader : public Platform::IProcessEnvironmentReader
   private:
     bool m_HasEnvironment = true;
     Platform::EnvironmentReadResult m_Result{.status = Platform::EnvironmentReadStatus::Ok, .variables = {}};
+    int m_ReadCount = 0;
+    Platform::ProcessTarget m_LastTarget{};
+};
+
+// =============================================================================
+// Mock Process Connections Reader
+// =============================================================================
+
+/// Mock IProcessConnectionsReader (#799): returns a configured result and records each read's
+/// target and how many reads there were, so a test can check the on-demand cadence.
+class MockProcessConnectionsReader : public Platform::IProcessConnectionsReader
+{
+  public:
+    void setHasConnections(bool hasConnections)
+    {
+        m_HasConnections = hasConnections;
+    }
+
+    void setResult(Platform::ConnectionsReadResult result)
+    {
+        m_Result = std::move(result);
+    }
+
+    [[nodiscard]] bool hasConnections() const override
+    {
+        return m_HasConnections;
+    }
+
+    [[nodiscard]] Platform::ConnectionsReadResult readConnections(const Platform::ProcessTarget& target) override
+    {
+        ++m_ReadCount;
+        m_LastTarget = target;
+        return m_Result;
+    }
+
+    [[nodiscard]] int readCount() const
+    {
+        return m_ReadCount;
+    }
+
+    [[nodiscard]] const Platform::ProcessTarget& lastTarget() const
+    {
+        return m_LastTarget;
+    }
+
+  private:
+    bool m_HasConnections = true;
+    Platform::ConnectionsReadResult m_Result{.status = Platform::ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
     int m_ReadCount = 0;
     Platform::ProcessTarget m_LastTarget{};
 };

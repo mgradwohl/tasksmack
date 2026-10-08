@@ -128,7 +128,7 @@ struct ProcessCapabilities {
 - `BackgroundSampler` times every samplable and pass (`metrics()`: last/max duration, overruns, backoffs), logs sustained overruns at most every 30 s, and after a pass that overruns its interval waits as long as the pass took (capped at `REFRESH_INTERVAL_MAX_MS`) instead of sampling back to back; the decision is the pure `Domain::nextSampleTime()` (#1416)
 - UI code retains published generations and process snapshot versions to avoid locks, redundant copies, and stale history entries between samples
 - The default refresh interval is 1 second and is user-configurable
-- Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`; 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
+- Every thread TaskSmack creates is named through `Platform/ThreadName.h` (`ts-sampler-proc`, `ts-sampler-sys`, `ts-conn-read`; 15 bytes max for Linux) so per-thread CPU tools can attribute it; see CONTRIBUTING.md "Measuring idle CPU and frame time"
 
 ### Panel Lifecycle
 ```cpp
@@ -253,7 +253,7 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ## Testing
 
 - Framework: Google Test in `tests/` mirroring `src/` structure
-- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, `IProcessEnvironmentReader`
+- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, `IProcessEnvironmentReader`, `IProcessConnectionsReader`
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
 - Define mocks outside anonymous namespace when using `std::make_unique`
 - `TaskSmackTests` links the real ImGui and ImPlot libraries (`imgui_lib`, `implot_lib`), so a

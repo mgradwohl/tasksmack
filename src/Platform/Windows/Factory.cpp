@@ -5,6 +5,7 @@
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -36,6 +37,13 @@ std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()
     // Reading another process's environment on Windows needs ReadProcessMemory on its PEB: out of
     // scope for now (#179), so the Environment section is hidden.
     return std::make_unique<UnsupportedProcessEnvironmentReader>();
+}
+
+std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
+{
+    // GetExtendedTcpTable/GetExtendedUdpTable rows are not wired up yet (#1489), so the Connections
+    // section (#799) is hidden.
+    return std::make_unique<UnsupportedProcessConnectionsReader>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

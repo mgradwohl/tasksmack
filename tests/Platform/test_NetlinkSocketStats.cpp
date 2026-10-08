@@ -3,6 +3,8 @@
 
 #if defined(__linux__)
 
+#include "Platform/IProcessConnections.h"
+#include "Platform/Linux/InetSocketTable.h"
 #include "Platform/Linux/NetlinkSocketStats.h"
 #include "Platform/NetlinkTestUtils.h"
 #include "Platform/ScopedTempDir.h"
@@ -27,6 +29,7 @@
 #include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner) - Linux UAPI headers; include-cleaner lacks the mappings
+#include <arpa/inet.h> // htons
 #include <linux/inet_diag.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -744,6 +747,116 @@ TEST(BuildInodeToPidMapTest, EachOwnerComesWithItsStartTime)
     EXPECT_EQ(inodeToPid.at(88).startTimeTicks, 9999U);
     EXPECT_EQ(inodeToPid.at(99).pid, 300);
     EXPECT_EQ(inodeToPid.at(99).startTimeTicks, 0U) << "no stat: unknown";
+}
+
+// ========== dumpInetSockets(): endpoints and states for the Connections section (#799) ==========
+
+/// An inet_diag_msg as the kernel sends it: addresses in network order, ports __be16.
+[[nodiscard]] inet_diag_msg diagMessage(std::uint8_t family,
+                                        std::uint8_t state,
+                                        std::uint32_t inode,
+                                        std::span<const std::uint8_t> src,
+                                        std::uint16_t sport,
+                                        std::span<const std::uint8_t> dst,
+                                        std::uint16_t dport)
+{
+    inet_diag_msg message{};
+    message.idiag_family = family;
+    message.idiag_state = state;
+    message.idiag_inode = inode;
+    std::memcpy(static_cast<void*>(message.id.idiag_src), src.data(), std::min(src.size(), sizeof(message.id.idiag_src)));
+    std::memcpy(static_cast<void*>(message.id.idiag_dst), dst.data(), std::min(dst.size(), sizeof(message.id.idiag_dst)));
+    message.id.idiag_sport = htons(sport);
+    message.id.idiag_dport = htons(dport);
+    return message;
+}
+
+TEST(DumpInetSocketsTest, ReadsEndpointsStateAndInodeOfEachSocketWithoutExtensions)
+{
+    ScriptedNetlinkTransport transport;
+    constexpr std::array<std::uint8_t, 4> LOCAL4{10, 0, 2, 15};
+    constexpr std::array<std::uint8_t, 4> REMOTE4{93, 184, 216, 34};
+    const std::array<inet_diag_msg, 2> messages{diagMessage(AF_INET, 1, 501, LOCAL4, 55026, REMOTE4, 443),
+                                                diagMessage(AF_INET, 10, 502, std::array<std::uint8_t, 4>{127, 0, 0, 1}, 631, {}, 0)};
+    transport.onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply;
+        reply.emplace_back(TestSupport::diagMessagesDatagram(messages, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        return reply;
+    };
+
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 7, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(transport.requests.size(), 1U);
+    EXPECT_EQ(transport.requests[0].protocol, IPPROTO_TCP);
+    EXPECT_EQ(transport.requests[0].family, AF_INET);
+    EXPECT_EQ(transport.requests[0].sequence, 7U);
+
+    ASSERT_EQ(sockets.size(), 2U);
+    EXPECT_EQ(sockets[0].inode, 501U);
+    EXPECT_EQ(sockets[0].protocol, ConnectionProtocol::Tcp);
+    EXPECT_EQ(sockets[0].family, ConnectionFamily::IPv4);
+    EXPECT_EQ(sockets[0].state, 1);
+    EXPECT_TRUE(std::equal(LOCAL4.begin(), LOCAL4.end(), sockets[0].local.address.begin()));
+    EXPECT_TRUE(std::equal(REMOTE4.begin(), REMOTE4.end(), sockets[0].remote.address.begin()));
+    EXPECT_EQ(sockets[0].local.address[4], 0) << "an IPv4 address fills only the first four bytes";
+    EXPECT_EQ(sockets[0].local.port, 55026);
+    EXPECT_EQ(sockets[0].remote.port, 443);
+    EXPECT_EQ(InetSockets::toConnection(sockets[1]).state, ConnectionState::Listen);
+    EXPECT_EQ(sockets[1].remote.port, 0);
+}
+
+TEST(DumpInetSocketsTest, ReadsIPv6UdpSockets)
+{
+    ScriptedNetlinkTransport transport;
+    std::array<std::uint8_t, 16> loopback6{};
+    loopback6[15] = 1;
+    const std::array<inet_diag_msg, 1> messages{diagMessage(AF_INET6, 7, 900, loopback6, 5353, {}, 0)};
+    transport.onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply;
+        reply.emplace_back(TestSupport::diagMessagesDatagram(messages, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+        return reply;
+    };
+
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_UDP, AF_INET6, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(transport.requests.size(), 1U);
+    EXPECT_EQ(transport.requests[0].protocol, IPPROTO_UDP);
+    ASSERT_EQ(sockets.size(), 1U);
+    EXPECT_EQ(sockets[0].protocol, ConnectionProtocol::Udp);
+    EXPECT_EQ(sockets[0].family, ConnectionFamily::IPv6);
+    EXPECT_EQ(sockets[0].local.address, loopback6);
+    EXPECT_EQ(sockets[0].local.port, 5353);
+    EXPECT_EQ(InetSockets::toConnection(sockets[0]).state, ConnectionState::Closed);
+}
+
+TEST(DumpInetSocketsTest, AnAbsentDiagModuleIsUnsupportedAndAnyOtherErrorFailed)
+{
+    ScriptedNetlinkTransport transport;
+    int error = -ENOENT;
+    transport.onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        return ScriptedNetlinkTransport::Reply{errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, error)};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_UDP, AF_INET, sockets), InetDumpOutcome::Unsupported);
+    error = -EBUSY;
+    EXPECT_EQ(dumpInetSockets(transport, 2, IPPROTO_UDP, AF_INET, sockets), InetDumpOutcome::Failed);
+    EXPECT_TRUE(sockets.empty());
+}
+
+TEST(DumpInetSocketsTest, ATimeoutIsAFailedDump)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& /*request*/)
+    {
+        return ScriptedNetlinkTransport::Reply{std::nullopt};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
 }
 
 } // namespace

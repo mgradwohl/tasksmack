@@ -224,6 +224,20 @@ On Linux, the Process Details **Overview** tab has a collapsible **Environment**
 - TaskSmack never writes environment values to its log.
 - **Windows:** not available (reading another process's environment there needs its memory); the section is hidden.
 
+### Connections
+
+On Linux, the Process Details **Overview** tab also has a collapsible **Connections** section, closed by default, under the Environment section. Open it to list the selected process's TCP and UDP sockets, netstat-style, in a **PROTO / LOCAL ADDRESS / REMOTE ADDRESS / STATE** table with a count above it ("3 connections"):
+
+- **PROTO** is `TCP`, `TCP6`, `UDP` or `UDP6` (IPv4 or IPv6).
+- **Addresses** are shown as `address:port`: IPv4 dotted (`10.0.0.5:55026`), IPv6 in brackets and in its short form (`[2001:db8::1]:443`, `[::]:22`), with an IPv4 peer of an IPv6 socket as `[::ffff:192.0.2.1]:443`. A port of `*` means none: a listening or unconnected socket's remote end (`0.0.0.0:*`).
+- **STATE** is the TCP state as netstat names it: `ESTABLISHED`, `LISTEN`, `SYN_SENT`, `SYN_RECV`, `FIN_WAIT1`, `FIN_WAIT2`, `CLOSE_WAIT`, `CLOSING`, `LAST_ACK`, `TIME_WAIT`, `CLOSE`. A UDP socket that is only bound shows `UNCONN`; one that called `connect()` shows `ESTABLISHED`.
+- Rows are sorted by state (established first, then listeners, unconnected UDP sockets and the closing states), then by remote address. Click a column header to sort by that column; click it again to reverse. Addresses sort numerically (`10.0.0.9` before `10.0.0.10`), IPv4 before IPv6. The sort you choose stays when you select another process.
+- An address too long for its column is cut off at the column edge; hover it to see it whole. More than 12 rows scroll inside the section.
+- TaskSmack reads the sockets only for the selected process and only while the section is open: once when you open it or select another process, then every 2 seconds, in the background, so the window never waits on a read. It matches the process's open socket descriptors (`/proc/[pid]/fd`) against the system's TCP and UDP sockets, read over netlink (`INET_DIAG`), or from `/proc/[pid]/net/tcp`, `tcp6`, `udp` and `udp6` where netlink is unavailable or the process is in another network namespace (a container).
+- A connection in `TIME_WAIT` usually does not show: once a process closes a socket, the kernel keeps the `TIME_WAIT` entry but no process holds it any more. The same goes for other sockets no process holds.
+- **Another user's process** shows "Not permitted (another user's process)": listing a process's socket descriptors needs the same rights as debugging it (its own user, or root / `CAP_SYS_PTRACE`). A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet". A process with no TCP or UDP sockets shows "No TCP or UDP sockets". If a socket table cannot be read, the section shows "Could not be read" with the reason rather than a partial list.
+- **Windows:** not available yet (tracked in #1489); the section is hidden.
+
 ### Process Actions
 
 Right-click any process row for Terminate, Kill, Stop and Resume. The Actions tab of Process Details has those too, plus the priority controls, which are only there:
@@ -294,6 +308,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Load average (1/5/15 min) | ✅ | ❌ |
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ❌ |
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
+| Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |

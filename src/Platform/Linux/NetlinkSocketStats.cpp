@@ -3,6 +3,8 @@
 
 #include "NetlinkSocketStats.h"
 
+#include "InetSocketTable.h"
+#include "Platform/IProcessConnections.h"
 #include "PosixGuards.h"
 #include "ProcFdScan.h"
 #include "ProcParsing.h"
@@ -14,6 +16,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -199,16 +202,19 @@ class SockDiagTransport final : public INetlinkTransport
             return;
         }
 
-        // Bound recv() so a stalled kernel dump can't hang the background sampler thread
-        // forever (see NetlinkSocketStats::queryDump()). Best-effort: if this fails, recv() simply
-        // keeps its default blocking behavior.
+        // Bound recv() so a stalled kernel dump can't hang the background sampler thread (or a
+        // Connections read, #799) forever (see NetlinkSocketStats::queryDump()). Fails closed: a
+        // socket whose receives could block indefinitely is not used at all, and its callers fall
+        // back as they do without netlink.
         timeval recvTimeout{}; // NOLINT(misc-include-cleaner) - provided by <sys/time.h> (already included)
         recvTimeout.tv_sec = NETLINK_RECV_TIMEOUT_MS / 1000;
         recvTimeout.tv_usec = (NETLINK_RECV_TIMEOUT_MS % 1000) * 1000;
         // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET/SO_RCVTIMEO are provided by <sys/socket.h> (already included)
         if (setsockopt(m_Socket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout)) < 0)
         {
-            spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket: {}", safeStrerror(errno));
+            spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket, not using it: {}", safeStrerror(errno));
+            closeSocket();
+            return;
         }
 
         // Bind the socket
@@ -309,23 +315,190 @@ void drainQueuedReplies(INetlinkTransport& transport, std::span<std::byte> buffe
     }
 }
 
+/// One INET_DIAG dump of `protocol` sockets of address `family` over `transport`, request `sequence`,
+/// asking for the attribute extensions in the `extensions` bitmask; `onSocket(message, length)` is
+/// called with each SOCK_DIAG_BY_FAMILY payload. Anything still queued from an earlier dump is
+/// drained first. Shared by NetlinkSocketStats' byte-counter dumps and dumpInetSockets() (#799).
+template<std::invocable<const void*, std::size_t> OnSocket>
+[[nodiscard]] InetDumpOutcome runInetDiagDump(INetlinkTransport& transport,
+                                              std::span<std::byte> buffer,
+                                              std::uint32_t sequence,
+                                              int protocol,
+                                              int family,
+                                              std::uint8_t extensions,
+                                              OnSocket onSocket)
+{
+    // Anything still queued belongs to an earlier dump (one that timed out, or whose reader gave up
+    // on an error): drop it before asking for a new one (#1160).
+    drainQueuedReplies(transport, buffer);
+
+    InetDiagRequest req{};
+    req.nlh.nlmsg_len = sizeof(req);
+    req.nlh.nlmsg_type = SOCK_DIAG_BY_FAMILY;
+    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    req.nlh.nlmsg_seq = sequence;
+    req.req.sdiag_family = static_cast<std::uint8_t>(family);
+    req.req.sdiag_protocol = static_cast<std::uint8_t>(protocol);
+    req.req.idiag_states = static_cast<std::uint32_t>(-1); // All states
+    req.req.idiag_ext = extensions;
+
+    const NetlinkIoResult sent = transport.send(std::as_bytes(std::span{&req, 1}));
+    if (sent.bytes < 0)
+    {
+        spdlog::debug("Failed to send inet_diag request for family {}: {}", family, safeStrerror(sent.error));
+        return InetDumpOutcome::Failed;
+    }
+
+    const std::uint32_t portId = transport.portId();
+    while (true)
+    {
+        const NetlinkIoResult received = transport.receive(buffer, false);
+        if (received.bytes < 0)
+        {
+            if (received.error == EINTR)
+            {
+                continue;
+            }
+            // A timeout (EAGAIN) leaves the rest of the dump queued; the next query drains it.
+            spdlog::debug("{} inet_diag response for family {}: {}",
+                          isWouldBlock(received.error) ? "Timed out waiting for" : "Failed to receive",
+                          family,
+                          safeStrerror(received.error));
+            return InetDumpOutcome::Failed;
+        }
+        if (received.bytes == 0)
+        {
+            // Orderly shutdown before NLMSG_DONE: the dump is incomplete.
+            return InetDumpOutcome::Failed;
+        }
+
+        // Parse netlink messages
+        // Suppress alignment warning - the caller's buffer is aligned for nlmsghdr and kernel
+        // netlink protocol guarantees proper alignment of messages
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcast-align"
+        auto remainingLen = static_cast<std::size_t>(received.bytes);
+        for (auto* nlh = reinterpret_cast<nlmsghdr*>(buffer.data()); NLMSG_OK(nlh, remainingLen); nlh = NLMSG_NEXT(nlh, remainingLen))
+        {
+            // Not a reply to this request: a stale message from an earlier dump, or not addressed
+            // to this socket.
+            if (nlh->nlmsg_seq != sequence || (portId != 0 && nlh->nlmsg_pid != portId))
+            {
+                continue;
+            }
+
+            // The kernel sets NLM_F_DUMP_INTR on a dump whose socket table changed mid-walk: its
+            // contents are inconsistent, so the whole dump is a failed reading.
+            if ((nlh->nlmsg_flags & NLM_F_DUMP_INTR) != 0)
+            {
+                spdlog::debug("inet_diag dump for family {} was interrupted", family);
+                return InetDumpOutcome::Failed;
+            }
+
+            if (nlh->nlmsg_type == NLMSG_DONE)
+            {
+                // NLMSG_DONE carries the dump's status: negative is an error part-way through.
+                if (NLMSG_PAYLOAD(nlh, 0) >= sizeof(int))
+                {
+                    int status = 0;
+                    std::memcpy(&status, NLMSG_DATA(nlh), sizeof(status));
+                    if (status < 0)
+                    {
+                        spdlog::debug("inet_diag dump for family {} failed: {}", family, safeStrerror(-status));
+                        return InetDumpOutcome::Failed;
+                    }
+                }
+                return InetDumpOutcome::Complete;
+            }
+
+            if (nlh->nlmsg_type == NLMSG_ERROR)
+            {
+                const auto* err = static_cast<const nlmsgerr*>(NLMSG_DATA(nlh));
+                if (err->error == 0)
+                {
+                    continue; // An ACK, not the end of the dump: keep reading until NLMSG_DONE
+                }
+                if (err->error == -ENOENT)
+                {
+                    // The family's (or protocol's) diag module is absent (IPv6 disabled): the dump is
+                    // over and has no sockets.
+                    return InetDumpOutcome::Unsupported;
+                }
+                // Any other error (EBUSY, ENOMEM, ...) is a failed reading, not an empty one: taken as
+                // complete it would drop every socket's baseline and credit their lifetime bytes when
+                // they reappear.
+                spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-err->error));
+                return InetDumpOutcome::Failed;
+            }
+
+            if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY)
+            {
+                onSocket(static_cast<const void*>(NLMSG_DATA(nlh)), static_cast<std::size_t>(NLMSG_PAYLOAD(nlh, 0)));
+            }
+        }
+#pragma clang diagnostic pop
+        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+    }
+}
+
+/// Appends the endpoints, state and inode of one inet_diag_msg to `results` (#799).
+void parseInetSocketMessage(const void* msg, std::size_t len, int protocol, int family, std::vector<InetSockets::RawInetSocket>& results)
+{
+    if (len < sizeof(inet_diag_msg))
+    {
+        return;
+    }
+    // Copied out rather than read in place, like tcp_info above.
+    inet_diag_msg diagMsg{};
+    std::memcpy(&diagMsg, msg, sizeof(diagMsg));
+
+    InetSockets::RawInetSocket socket;
+    socket.inode = diagMsg.idiag_inode;
+    socket.protocol = (protocol == IPPROTO_UDP) ? ConnectionProtocol::Udp : ConnectionProtocol::Tcp;
+    socket.family = (family == AF_INET6) ? ConnectionFamily::IPv6 : ConnectionFamily::IPv4;
+    socket.state = diagMsg.idiag_state;
+    // idiag_src/idiag_dst are __be32[4] (network order; IPv4 in the first word) and the ports __be16:
+    // the address bytes are copied as they are, and the ports converted to numbers.
+    const std::size_t addressBytes = (socket.family == ConnectionFamily::IPv6) ? socket.local.address.size() : 4;
+    std::memcpy(socket.local.address.data(), static_cast<const void*>(diagMsg.id.idiag_src), addressBytes);
+    std::memcpy(socket.remote.address.data(), static_cast<const void*>(diagMsg.id.idiag_dst), addressBytes);
+    socket.local.port = ntohs(diagMsg.id.idiag_sport);
+    socket.remote.port = ntohs(diagMsg.id.idiag_dport);
+    results.push_back(socket);
+}
+
 } // namespace
+
+std::unique_ptr<INetlinkTransport> makeSockDiagTransport()
+{
+    auto transport = std::make_unique<SockDiagTransport>();
+    if (!transport->isOpen())
+    {
+        return nullptr;
+    }
+    return transport;
+}
+
+InetDumpOutcome dumpInetSockets(
+    INetlinkTransport& transport, std::uint32_t sequence, int protocol, int family, std::vector<InetSockets::RawInetSocket>& results)
+{
+    alignas(alignof(nlmsghdr)) std::array<std::byte, NETLINK_BUFFER_SIZE> buffer{};
+    // No extensions: the endpoints, state and inode are all in the inet_diag_msg header.
+    return runInetDiagDump(transport,
+                           buffer,
+                           sequence,
+                           protocol,
+                           family,
+                           0,
+                           [&](const void* message, std::size_t length)
+                           { parseInetSocketMessage(message, length, protocol, family, results); });
+}
 
 NetlinkSocketStats::NetlinkSocketStats() : NetlinkSocketStats(DEFAULT_SOCKET_STATS_CACHE_TTL)
 {}
 
-NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl)
-    : NetlinkSocketStats(
-          []() -> std::unique_ptr<INetlinkTransport>
-          {
-              auto transport = std::make_unique<SockDiagTransport>();
-              if (!transport->isOpen())
-              {
-                  return nullptr;
-              }
-              return transport;
-          }(),
-          cacheTtl)
+NetlinkSocketStats::NetlinkSocketStats(std::chrono::milliseconds cacheTtl) : NetlinkSocketStats(makeSockDiagTransport(), cacheTtl)
 {}
 
 NetlinkSocketStats::NetlinkSocketStats(std::unique_ptr<INetlinkTransport> transport, std::chrono::milliseconds cacheTtl)
@@ -481,10 +654,6 @@ bool NetlinkSocketStats::queryDump(int protocol, int family, std::vector<SocketS
     // Receive buffer - aligned for netlink messages (nlmsghdr has __u32 fields).
     alignas(alignof(nlmsghdr)) std::array<std::byte, NETLINK_BUFFER_SIZE> buffer{};
 
-    // Anything still queued belongs to an earlier dump (one that timed out, or whose reader gave up
-    // on an error): drop it before asking for a new one (#1160).
-    drainQueuedReplies(*m_Transport, buffer);
-
     // A fresh sequence number per request, so a straggling reply from an earlier dump can never be
     // mistaken for this one's -- including its NLMSG_DONE, which used to end this dump early.
     const std::uint32_t sequence = m_NextSequence++;
@@ -493,116 +662,17 @@ bool NetlinkSocketStats::queryDump(int protocol, int family, std::vector<SocketS
         m_NextSequence = 1;
     }
 
-    InetDiagRequest req{};
-    req.nlh.nlmsg_len = sizeof(req);
-    req.nlh.nlmsg_type = SOCK_DIAG_BY_FAMILY;
-    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-    req.nlh.nlmsg_seq = sequence;
-    req.req.sdiag_family = static_cast<std::uint8_t>(family);
-    req.req.sdiag_protocol = static_cast<std::uint8_t>(protocol);
-    req.req.idiag_states = static_cast<std::uint32_t>(-1); // All states
-    // Request INET_DIAG_INFO extension to get tcp_info with byte counters
-    // This is a bitmask: (1 << (INET_DIAG_INFO - 1))
-    req.req.idiag_ext = 1U << (INET_DIAG_INFO - 1);
-
-    const NetlinkIoResult sent = m_Transport->send(std::as_bytes(std::span{&req, 1}));
-    if (sent.bytes < 0)
-    {
-        spdlog::debug("Failed to send inet_diag request for family {}: {}", family, safeStrerror(sent.error));
-        return false;
-    }
-
-    const std::uint32_t portId = m_Transport->portId();
-    while (true)
-    {
-        const NetlinkIoResult received = m_Transport->receive(buffer, false);
-        if (received.bytes < 0)
-        {
-            if (received.error == EINTR)
-            {
-                continue;
-            }
-            // A timeout (EAGAIN) leaves the rest of the dump queued; the next query drains it.
-            spdlog::debug("{} inet_diag response for family {}: {}",
-                          isWouldBlock(received.error) ? "Timed out waiting for" : "Failed to receive",
-                          family,
-                          safeStrerror(received.error));
-            return false;
-        }
-        if (received.bytes == 0)
-        {
-            // Orderly shutdown before NLMSG_DONE: the dump is incomplete.
-            return false;
-        }
-
-        // Parse netlink messages
-        // Suppress alignment warning - buffer is properly aligned above and kernel
-        // netlink protocol guarantees proper alignment of messages
-        // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-align"
-        auto remainingLen = static_cast<std::size_t>(received.bytes);
-        for (auto* nlh = reinterpret_cast<nlmsghdr*>(buffer.data()); NLMSG_OK(nlh, remainingLen); nlh = NLMSG_NEXT(nlh, remainingLen))
-        {
-            // Not a reply to this request: a stale message from an earlier dump, or not addressed
-            // to this socket.
-            if (nlh->nlmsg_seq != sequence || (portId != 0 && nlh->nlmsg_pid != portId))
-            {
-                continue;
-            }
-
-            // The kernel sets NLM_F_DUMP_INTR on a dump whose socket table changed mid-walk: its
-            // contents are inconsistent, so the whole dump is a failed reading.
-            if ((nlh->nlmsg_flags & NLM_F_DUMP_INTR) != 0)
-            {
-                spdlog::debug("inet_diag dump for family {} was interrupted", family);
-                return false;
-            }
-
-            if (nlh->nlmsg_type == NLMSG_DONE)
-            {
-                // NLMSG_DONE carries the dump's status: negative is an error part-way through.
-                if (NLMSG_PAYLOAD(nlh, 0) >= sizeof(int))
-                {
-                    int status = 0;
-                    std::memcpy(&status, NLMSG_DATA(nlh), sizeof(status));
-                    if (status < 0)
-                    {
-                        spdlog::debug("inet_diag dump for family {} failed: {}", family, safeStrerror(-status));
-                        return false;
-                    }
-                }
-                return true;
-            }
-
-            if (nlh->nlmsg_type == NLMSG_ERROR)
-            {
-                const auto* err = static_cast<const nlmsgerr*>(NLMSG_DATA(nlh));
-                if (err->error == 0)
-                {
-                    continue; // An ACK, not the end of the dump: keep reading until NLMSG_DONE
-                }
-                if (err->error == -ENOENT)
-                {
-                    // The family's diag module is absent (IPv6 disabled): the dump is over and has
-                    // no sockets; that's complete.
-                    return true;
-                }
-                // Any other error (EBUSY, ENOMEM, ...) is a failed reading, not an empty one: taken as
-                // complete it would drop every socket's baseline and credit their lifetime bytes when
-                // they reappear.
-                spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-err->error));
-                return false;
-            }
-
-            if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY)
-            {
-                parseSocketMessageImpl(NLMSG_DATA(nlh), NLMSG_PAYLOAD(nlh, 0), results);
-            }
-        }
-#pragma clang diagnostic pop
-        // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
-    }
+    // Request the INET_DIAG_INFO extension for tcp_info's byte counters (a bitmask: 1 << (INET_DIAG_INFO - 1)).
+    const InetDumpOutcome outcome =
+        runInetDiagDump(*m_Transport,
+                        buffer,
+                        sequence,
+                        protocol,
+                        family,
+                        static_cast<std::uint8_t>(1U << (INET_DIAG_INFO - 1)),
+                        [&results](const void* message, std::size_t length) { parseSocketMessageImpl(message, length, results); });
+    // A family whose diag module is absent (IPv6 disabled) has no sockets: that's complete.
+    return outcome != InetDumpOutcome::Failed;
 }
 
 void NetlinkSocketStats::parseSocketMessage(const void* msg, std::size_t len, std::vector<SocketStats>& results)
