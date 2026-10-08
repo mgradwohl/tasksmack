@@ -125,7 +125,6 @@ void ShellLayer::onAttach()
     if (const std::optional<SelectOverride::Target>& select = SelectOverride::active(); select.has_value())
     {
         m_ProcessesPanel.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
-        m_ProcessDetailsPanel.requestTab(select->tab);
     }
 
     // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
@@ -331,6 +330,13 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // Update panels
     m_Tabs.onUpdate(deltaTime);
+
+    // TASKSMACK_DETAILS_TAB (#1559): handed over only once the startup selection fired, so a selection
+    // that gave up leaves no stale tab request behind.
+    if (const std::optional<SelectOverride::DetailsTab> startupTab = m_ProcessesPanel.takeStartupDetailsTab(); startupTab.has_value())
+    {
+        m_ProcessDetailsPanel.requestTab(*startupTab);
+    }
 
     // The details pane follows the capabilities published with the latest generation (#1254): a
     // plain copy of what ProcessesPanel fetched with its snapshots, so no lock is taken here.

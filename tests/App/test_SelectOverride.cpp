@@ -109,6 +109,55 @@ TEST(SelectOverrideTest, NameMatchFollowsPlatformCase)
 #endif
 }
 
+TEST(SelectOverrideTest, NonAsciiNameCaseFollowsWindowsFileNames)
+{
+    // "\xC3\x89" is É and "\xC3\xA9" is é: the same file name on Windows, different ones elsewhere.
+    const Target target{.pid = std::nullopt, .name = "\xC3\x89.exe", .tab = DetailsTab::Overview};
+    EXPECT_TRUE(App::SelectOverride::matches(target, proc(1, "\xC3\x89.exe")));
+#ifdef _WIN32
+    EXPECT_TRUE(App::SelectOverride::matches(target, proc(1, "\xC3\xA9.exe")));
+    EXPECT_TRUE(App::SelectOverride::tabNamesEqual("\xC3\x89"
+                                                   "clair",
+                                                   "\xC3\xA9"
+                                                   "CLAIR"));
+#else
+    EXPECT_FALSE(App::SelectOverride::matches(target, proc(1, "\xC3\xA9.exe")));
+    EXPECT_FALSE(App::SelectOverride::tabNamesEqual("\xC3\x89"
+                                                    "clair",
+                                                    "\xC3\xA9"
+                                                    "CLAIR")); // ASCII-only folding
+    EXPECT_TRUE(App::SelectOverride::tabNamesEqual("\xC3\x89"
+                                                   "clair",
+                                                   "\xC3\x89"
+                                                   "CLAIR"));
+#endif
+}
+
+TEST(SelectOverrideTest, FiredSelectionHandsOverItsDetailsTabOnce)
+{
+    Pending pending(Target{.pid = 42, .name = {}, .tab = DetailsTab::Gpu});
+    EXPECT_FALSE(pending.takeFiredTab().has_value()); // nothing before it fires
+    const std::vector<Domain::ProcessSnapshot> with{proc(42, "target")};
+    ASSERT_TRUE(pending.onSnapshot(1, with).match.has_value());
+    EXPECT_EQ(pending.takeFiredTab(), std::optional<DetailsTab>{DetailsTab::Gpu});
+    EXPECT_FALSE(pending.takeFiredTab().has_value()); // taken once
+}
+
+TEST(SelectOverrideTest, GivingUpLeavesNoDetailsTabRequest)
+{
+    // A PID that never appears, with TASKSMACK_DETAILS_TAB=gpu: after the timeout nothing is pending.
+    Pending pending(Target{.pid = 42, .name = {}, .tab = DetailsTab::Gpu});
+    const std::vector<Domain::ProcessSnapshot> without{proc(1, "a")};
+    bool gaveUp = false;
+    for (std::uint64_t generation = 0; !gaveUp && generation < 100; ++generation)
+    {
+        gaveUp = pending.onSnapshot(generation, without).gaveUp;
+    }
+    ASSERT_TRUE(gaveUp);
+    EXPECT_FALSE(pending.pending());
+    EXPECT_FALSE(pending.takeFiredTab().has_value());
+}
+
 TEST(SelectOverrideTest, FiresExactlyOnceWhenThePidFirstAppears)
 {
     Pending pending(Target{.pid = 42, .name = {}, .tab = DetailsTab::Overview});
@@ -205,6 +254,22 @@ TEST(SelectOverrideTest, FindsTopLevelTabsByIdOrTextIgnoringCase)
     EXPECT_EQ(findTab("processdetails", tabs), std::optional<std::size_t>{2});
     EXPECT_EQ(findTab("explorer.exe", tabs), std::optional<std::size_t>{2});
     EXPECT_EQ(findTab("services", tabs), std::optional<std::size_t>{3});
+}
+
+TEST(SelectOverrideTest, ExactIdsWinAndThereIsNoPrefixOrSuffixMatching)
+{
+    using App::SelectOverride::findTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> tabs{
+        {.id = "SystemOverview", .text = "MYHOST"},
+        {.id = "Overview", .text = "Summary"},
+        {.id = "ProcessDetails", .text = "explorer.exe"},
+    };
+    EXPECT_EQ(findTab("overview", tabs), std::optional<std::size_t>{1}); // not SystemOverview's suffix
+    EXPECT_EQ(findTab("system", tabs), std::optional<std::size_t>{0});   // a documented alias
+    EXPECT_FALSE(findTab("process", tabs).has_value());
+    EXPECT_FALSE(findTab("systemover", tabs).has_value());
+    EXPECT_FALSE(findTab("view", tabs).has_value());
 }
 
 TEST(SelectOverrideTest, MatchesNonAsciiAndHashTextAsIs)

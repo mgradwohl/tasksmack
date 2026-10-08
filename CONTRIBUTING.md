@@ -514,9 +514,9 @@ snapshots, one warning is logged and nothing is selected. While a selection is s
 | Variable | Value |
 |---|---|
 | `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
-| `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match (case-insensitive on Windows). |
+| `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
-| `TASKSMACK_TAB` | The top-level tab to open: `system` (or `machine`), `processes`, `details`, or any tab's registered id or label, case-insensitive. Wins over the Details tab a selection opens; an unknown name logs one warning. |
+| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. |
 
 Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
 works while the window is covered):

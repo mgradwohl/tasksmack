@@ -159,6 +159,13 @@ class ProcessesPanel : public Panel
     /// Set once by ShellLayer.
     void requestStartupSelection(std::optional<SelectOverride::Target> target, bool showDetails);
 
+    /// The Process Details tab the startup selection asks for, once, after it fired; never when it
+    /// gave up (TASKSMACK_DETAILS_TAB, #1559).
+    [[nodiscard]] std::optional<SelectOverride::DetailsTab> takeStartupDetailsTab() noexcept
+    {
+        return m_StartupSelection.takeFiredTab();
+    }
+
     /// The watched process's samples newer than @p lastSeenVersion, oldest first, appended to
     /// @p outSamples; see Domain::ProcessModel::watchedSamplesSince(). Like findSnapshot(), this
     /// bypasses the render cache, so it follows every publish whichever tab is showing.

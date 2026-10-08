@@ -11,14 +11,17 @@
 // name first appears in a process snapshot, ProcessesPanel selects that process exactly as a click
 // and the row menu's Details do, and Process Details brings the requested tab forward. If it has not
 // appeared after MAX_SNAPSHOTS snapshots, one warning is logged and nothing happens. A PID wins over
-// a name. The name match ignores case on Windows, where file names do.
+// a name. The name match ignores case on Windows the way file names do (CompareStringOrdinal), and
+// is exact elsewhere.
 //
-// The parser and the matching are pure and header-only so they are unit-tested without a window
-// (tests/App/test_SelectOverride.cpp); only active() reads the environment and logs.
+// The parser and the matching are header-only and unit-tested without a window
+// (tests/App/test_SelectOverride.cpp); SelectOverride.cpp holds the platform name comparisons and
+// active(), the only part that reads the environment and logs.
 
 #include "Domain/ProcessSnapshot.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cstddef>
@@ -29,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace App::SelectOverride
@@ -171,18 +175,22 @@ namespace Detail
     return result;
 }
 
+/// Whether two process names are the same: ignoring case as Windows compares file names (ordinal,
+/// on UTF-16, so "É.exe" is "é.exe") on Windows; exactly elsewhere, where file names are case-sensitive.
+[[nodiscard]] bool processNamesEqual(std::string_view a, std::string_view b);
+
+/// Whether two tab names are the same, ignoring case: as processNamesEqual() on Windows; for ASCII
+/// letters only elsewhere.
+[[nodiscard]] bool tabNamesEqual(std::string_view a, std::string_view b);
+
 /// Whether @p snapshot is the process @p target names.
-[[nodiscard]] inline bool matches(const Target& target, const Domain::ProcessSnapshot& snapshot) noexcept
+[[nodiscard]] inline bool matches(const Target& target, const Domain::ProcessSnapshot& snapshot)
 {
     if (target.pid.has_value())
     {
         return snapshot.pid == *target.pid;
     }
-#ifdef _WIN32
-    return Detail::equalsIgnoreCase(snapshot.name, target.name);
-#else
-    return snapshot.name == target.name;
-#endif
+    return processNamesEqual(snapshot.name, target.name);
 }
 
 /// "PID 1234" / "'explorer.exe'"
@@ -217,6 +225,13 @@ class Pending
         return m_Target;
     }
 
+    /// The Process Details tab to bring forward, once, after the selection fired; nullopt before
+    /// that, after it was taken, and always when the selection gave up, so no stale request is left.
+    [[nodiscard]] std::optional<DetailsTab> takeFiredTab() noexcept
+    {
+        return std::exchange(m_FiredTab, std::nullopt);
+    }
+
     /// Looks for the process in generation @p generation; a generation already seen does nothing.
     [[nodiscard]] Step onSnapshot(const std::uint64_t generation, const std::span<const Domain::ProcessSnapshot> snapshots)
     {
@@ -230,6 +245,7 @@ class Pending
         if (const auto it = std::ranges::find_if(snapshots, [&target](const Domain::ProcessSnapshot& s) { return matches(target, s); });
             it != snapshots.end())
         {
+            m_FiredTab = target.tab;
             m_Target.reset();
             return Step{.match = static_cast<std::size_t>(it - snapshots.begin()), .gaveUp = false};
         }
@@ -243,6 +259,7 @@ class Pending
 
   private:
     std::optional<Target> m_Target;
+    std::optional<DetailsTab> m_FiredTab;
     std::uint64_t m_LastGeneration = 0;
     bool m_SeenAny = false;
     int m_Snapshots = 0;
@@ -256,27 +273,41 @@ struct TabInfo
     std::string_view text;
 };
 
-/// The tab @p name selects, ignoring case: one whose id or text equals it, or whose id starts or
-/// ends with it ("system" -> "SystemOverview", "details" -> "ProcessDetails"). "machine" is
-/// "system". nullopt when none does or @p name is blank.
-[[nodiscard]] inline std::optional<std::size_t> findTab(const std::string_view name, const std::span<const TabInfo> tabs) noexcept
+/// The ids the documented short names stand for: "system" and "machine" the system tab, "details"
+/// Process Details. Every other name must equal a tab's id or text.
+inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TAB_ALIASES{{
+    {"system", "SystemOverview"},
+    {"machine", "SystemOverview"},
+    {"details", "ProcessDetails"},
+}};
+
+/// The tab @p name selects, ignoring case (tabNamesEqual()): first a tab whose registered id or
+/// visible text equals it, across all tabs; then a documented alias (TAB_ALIASES). nullopt when
+/// none does or @p name is blank.
+[[nodiscard]] inline std::optional<std::size_t> findTab(const std::string_view name, const std::span<const TabInfo> tabs)
 {
-    const std::string_view wanted = Detail::equalsIgnoreCase(Detail::trim(name), "machine") ? "system" : Detail::trim(name);
+    const std::string_view wanted = Detail::trim(name);
     if (wanted.empty())
     {
         return std::nullopt;
     }
-    for (std::size_t i = 0; i < tabs.size(); ++i)
+    const auto findId = [tabs](const auto& pred) -> std::optional<std::size_t>
     {
-        const std::string_view id = tabs[i].id;
-        // Prefix and suffix views from iterators: substr() may throw, and this is noexcept.
-        const bool idMatch =
-            id.size() >= wanted.size() &&
-            (Detail::equalsIgnoreCase(std::string_view(id.begin(), id.begin() + static_cast<std::ptrdiff_t>(wanted.size())), wanted) ||
-             Detail::equalsIgnoreCase(std::string_view(id.end() - static_cast<std::ptrdiff_t>(wanted.size()), id.end()), wanted));
-        if (idMatch || Detail::equalsIgnoreCase(tabs[i].text, wanted))
+        const auto it = std::ranges::find_if(tabs, pred);
+        return it != tabs.end() ? std::optional<std::size_t>{static_cast<std::size_t>(it - tabs.begin())} : std::nullopt;
+    };
+    if (const auto exact =
+            findId([wanted](const TabInfo& tab) { return tabNamesEqual(tab.id, wanted) || tabNamesEqual(tab.text, wanted); });
+        exact.has_value())
+    {
+        return exact;
+    }
+    for (const auto& [alias, id] : TAB_ALIASES)
+    {
+        if (Detail::equalsIgnoreCase(wanted, alias))
         {
-            return i;
+            const std::string_view target = id;
+            return findId([target](const TabInfo& tab) { return tab.id == target; });
         }
     }
     return std::nullopt;
