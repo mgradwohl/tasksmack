@@ -269,7 +269,7 @@ template<std::ranges::input_range... Rs>
 /// tailAlignedSpan()). Values with no x, or before xMin, are left out.
 ///
 /// History trimming keeps one sample before the window's left edge, so a chart's line runs off that
-/// edge (HistoryUtils::keepTrimAnchor, #1016), and scrolling back leaves older samples off-screen.
+/// edge (HistoryUtils::keepTrimAnchor, #1016), and a history can hold samples older than the window.
 /// Neither is drawn, so neither may set the axis or a peak line: a peak just left of the window kept
 /// a rate axis scaled to it with nothing visible near the top (#1145). The right edge is not checked:
 /// the newest sample can be stamped a moment after the frame's "now", a little right of x = 0.

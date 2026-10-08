@@ -61,13 +61,9 @@ TEST(LinuxGPUProbeTest, MockLibrariesExposeCompositeCapabilities)
 
     const auto caps = probe.capabilities();
     EXPECT_TRUE(caps.hasTemperature);
-    EXPECT_TRUE(caps.hasHotspotTemp);
     EXPECT_TRUE(caps.hasPowerMetrics);
     EXPECT_TRUE(caps.hasClockSpeeds);
     EXPECT_TRUE(caps.hasFanSpeed);
-    // None of NVML, DRM, or ROCm provide cumulative PCIe byte counters (NVML/ROCm only expose
-    // rates; DRM doesn't expose PCIe throughput at all), so the OR'd composite is always false.
-    EXPECT_FALSE(caps.hasPCIeMetrics);
     EXPECT_TRUE(caps.hasEngineUtilization);
     EXPECT_TRUE(caps.hasPerProcessMetrics);
     EXPECT_TRUE(caps.supportsMultiGPU);
@@ -93,7 +89,7 @@ TEST(LinuxGPUProbeTest, MockLibrariesContributeEnumeratedGpusAndCounters)
                   counters, [](const GPUCounters& counter) { return counter.gpuId == "mock-nvml-uuid-0" && counter.temperatureC == 65; }),
               counters.end());
     EXPECT_NE(
-        std::ranges::find_if(counters, [](const GPUCounters& counter) { return counter.gpuId == "4001" && counter.hotspotTempC == 72; }),
+        std::ranges::find_if(counters, [](const GPUCounters& counter) { return counter.gpuId == "4001" && counter.temperatureC == 65; }),
         counters.end());
 }
 

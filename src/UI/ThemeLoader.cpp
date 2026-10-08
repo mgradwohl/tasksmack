@@ -210,11 +210,6 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     // Accents
     loadColorArray(tbl, "accents.colors", scheme.accents);
 
-    // Progress colors
-    scheme.progressLow = getColor(tbl, "progress.low");
-    scheme.progressMedium = getColor(tbl, "progress.medium");
-    scheme.progressHigh = getColor(tbl, "progress.high");
-
     // Semantic colors
     scheme.textMuted = getColor(tbl, "semantic.text_muted");
     scheme.textError = getColor(tbl, "semantic.text_error");

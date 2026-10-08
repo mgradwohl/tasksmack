@@ -810,12 +810,9 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     snapshot.memoryUsedBytes = current.memoryUsedBytes;
     snapshot.memoryTotalBytes = current.memoryTotalBytes;
     snapshot.temperatureC = current.temperatureC;
-    snapshot.hotspotTempC = current.hotspotTempC;
     snapshot.powerDrawWatts = current.powerDrawWatts;
     snapshot.powerLimitWatts = current.powerLimitWatts;
     snapshot.gpuClockMHz = current.gpuClockMHz;
-    snapshot.memoryClockMHz = current.memoryClockMHz;
-    snapshot.computeUtilPercent = current.computeUtilPercent;
     snapshot.encoderUtilPercent = current.encoderUtilPercent;
     snapshot.decoderUtilPercent = current.decoderUtilPercent;
 
@@ -848,15 +845,10 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         snapshot.memoryUsedPercent = (static_cast<double>(current.memoryUsedBytes) / static_cast<double>(current.memoryTotalBytes)) * 100.0;
     }
 
-    if (current.powerLimitWatts > 0.0)
-    {
-        snapshot.powerUtilPercent = (current.powerDrawWatts / current.powerLimitWatts) * 100.0;
-    }
-
     // Fan speed: normalize the vendor-native raw reading against the device's own max here in
-    // Domain, not in the Platform probe, matching memoryUsedPercent/powerUtilPercent above (see
+    // Domain, not in the Platform probe, matching memoryUsedPercent above (see
     // #734 review discussion -- GPUCounters holds unconverted raw values only). Left unclamped
-    // to 100, like memoryUsedPercent/powerUtilPercent above: a raw reading above the device's
+    // to 100, like memoryUsedPercent above: a raw reading above the device's
     // reported max is itself useful signal (sensor drift, transient overspeed), not something to
     // silently cap.
     snapshot.fanSpeedAvailable = current.fanSpeedMaxRaw > 0;
@@ -868,14 +860,6 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
         // silently truncate/wrap to an arbitrary small value on a plain narrowing cast, hiding
         // exactly the sensor-drift/overspeed signal this computation is meant to preserve.
         snapshot.fanSpeedPercent = Numeric::narrowOr<std::uint32_t>(percent, std::numeric_limits<std::uint32_t>::max());
-    }
-
-    // Compute rates from deltas (only if we have previous data and valid time delta)
-    if (previous != nullptr && timeDeltaSeconds > 0.0)
-    {
-        // PCIe bandwidth rates
-        snapshot.pcieTxBytesPerSec = Numeric::counterRate(current.pcieTxBytes, previous->pcieTxBytes, timeDeltaSeconds);
-        snapshot.pcieRxBytesPerSec = Numeric::counterRate(current.pcieRxBytes, previous->pcieRxBytes, timeDeltaSeconds);
     }
 
     return snapshot;
