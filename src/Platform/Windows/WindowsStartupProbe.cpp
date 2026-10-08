@@ -214,6 +214,8 @@ class ComScope
 /// shortcut can't be loaded or has no file-system target (e.g. an advertised installer shortcut).
 [[nodiscard]] std::optional<std::wstring> readShortcutCommandWide(const std::wstring& shortcutPath)
 {
+    // The reinterpret_casts below are COM's out-parameter convention: the call writes an interface pointer
+    // of the IID's type through void**, and the ComPtr's slot holds exactly that type.
     ComPtr<IShellLinkW> link;
     if (FAILED(CoCreateInstance(
             CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, reinterpret_cast<void**>(link.releaseAndGetAddressOf()))))
@@ -447,7 +449,9 @@ struct WindowsStartupProbe::Impl
         std::error_code error;
         for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
         {
-            if (it->is_directory(error))
+            // Its own error code: one entry that can't be stat'ed is skipped, not the end of the listing.
+            std::error_code entryError;
+            if (it->is_directory(entryError) || entryError)
             {
                 continue;
             }

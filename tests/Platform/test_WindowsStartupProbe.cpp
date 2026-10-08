@@ -5,6 +5,7 @@
 
 #include "Platform/IStartupProbe.h"
 #include "Platform/Windows/ComPtr.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsStartupProbe.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
@@ -48,10 +49,10 @@ namespace
 
 [[nodiscard]] std::string environmentVariable(const char* name)
 {
-    std::string value(MAX_PATH, '\0');
-    const DWORD length = GetEnvironmentVariableA(name, value.data(), static_cast<DWORD>(value.size()));
+    std::wstring value(MAX_PATH, L'\0');
+    const DWORD length = GetEnvironmentVariableW(WinString::utf8ToWide(name).c_str(), value.data(), static_cast<DWORD>(value.size()));
     value.resize(length < value.size() ? length : 0);
-    return value;
+    return WinString::wideToUtf8(value);
 }
 TEST(WindowsStartupProbeTest, EnumeratesWithoutFailing)
 {
