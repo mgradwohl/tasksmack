@@ -836,8 +836,8 @@ deliberate, reviewed performance change that the gate should treat as the new no
 
 | Benchmark | Description |
 |-----------|-------------|
-| `BM_History_*` | Ring buffer operations (push, access, copyTo) |
-| `BM_History_MemoryFootprint` | Memory usage tracking for history buffers |
+| `BM_HistoryBuffer_*` | `HistoryBuffer` ring operations (push, access, copyTo) |
+| `BM_HistoryBuffer_MemoryFootprint` | Memory usage tracking for history buffers |
 | `BM_ProcessModel_*` | Process enumeration and snapshot computation |
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
@@ -1079,7 +1079,7 @@ Notes:
   built-in `CPU` profile, to avoid the "trace has dropped N events" warning that the built-in
   profile produces on machines with many logical cores under system-wide sampling.
 - The default `-BenchmarkFilter` for `bench` mode covers every probe/model refresh path plus
-  the PDH per-process GPU path and core `History` container operations; pass `.*` to profile
+  the PDH per-process GPU path and core `HistoryBuffer` ring operations (`BM_HistoryBuffer_*`); pass `.*` to profile
   the entire suite instead.
 - `bench` checks the filter first, like `tools/profile-perf.sh` (#874). A filter matching no
   benchmark fails before recording. One matching several warns and lists them: each benchmark

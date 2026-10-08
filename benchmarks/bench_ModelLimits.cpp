@@ -316,7 +316,6 @@ void BM_SystemModel_FullHistory_ReadSeries(benchmark::State& state)
         add(publication->memoryHistory);
         add(publication->memoryCachedHistory);
         add(publication->swapHistory);
-        add(publication->powerHistory);
         add(publication->batteryChargeHistory);
         add(publication->netRxHistory);
         add(publication->netTxHistory);
