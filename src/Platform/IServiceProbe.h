@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform
@@ -66,6 +67,16 @@ struct ServiceCapabilities
     std::string unavailableReason{};
 };
 
+/// The outcome of one IServiceProbe::enumerate(): the services, or why they could not be read. A
+/// failure is reported as such, never as an empty list, so "no services" and "couldn't read the
+/// services" stay distinguishable.
+struct ServiceEnumeration
+{
+    bool ok = false;
+    std::string failureReason{};         ///< Why the read failed, for the UI. Empty when ok.
+    std::vector<ServiceInfo> services{}; ///< Empty unless ok.
+};
+
 /// Reads the system's services (read-only; #800 phase 1). Called from one thread at a time.
 class IServiceProbe
 {
@@ -80,8 +91,8 @@ class IServiceProbe
 
     [[nodiscard]] virtual ServiceCapabilities capabilities() const = 0;
 
-    /// Every service with its current state. Empty when the list cannot be read.
-    [[nodiscard]] virtual std::vector<ServiceInfo> enumerate() = 0;
+    /// Every service with its current state, or the reason the list could not be read.
+    [[nodiscard]] virtual ServiceEnumeration enumerate() = 0;
 };
 
 /// The probe for a platform without a service implementation yet (Linux until systemd support
@@ -91,13 +102,16 @@ class UnsupportedServiceProbe final : public IServiceProbe
   public:
     [[nodiscard]] ServiceCapabilities capabilities() const override
     {
-        return {.unavailableReason = "Services aren't available on this platform yet"};
+        return {.unavailableReason = std::string(UNSUPPORTED_REASON)};
     }
 
-    [[nodiscard]] std::vector<ServiceInfo> enumerate() override
+    [[nodiscard]] ServiceEnumeration enumerate() override
     {
-        return {};
+        return {.failureReason = std::string(UNSUPPORTED_REASON)};
     }
+
+  private:
+    static constexpr std::string_view UNSUPPORTED_REASON = "Services aren't available on this platform yet";
 };
 
 } // namespace Platform

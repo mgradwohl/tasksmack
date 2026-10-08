@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace Domain
@@ -17,6 +18,11 @@ struct ServicePublication
 {
     std::uint64_t version = 0;                   ///< 0 until the first sample.
     std::vector<Platform::ServiceInfo> services; ///< Ordered by name, case-insensitively.
+
+    /// The latest read failed: `services` is the last list that was read (empty if none ever was),
+    /// kept rather than replaced by an empty one, and failureReason says why it is out of date.
+    bool stale = false;
+    std::string failureReason;
 };
 
 /// Samples the services off the UI thread (from a BackgroundSampler) and publishes each list as an
@@ -26,7 +32,8 @@ class ServiceModel : public ISamplable
   public:
     explicit ServiceModel(std::unique_ptr<Platform::IServiceProbe> probe);
 
-    /// Reads the services and publishes them. Thread-safe; samples are serialised.
+    /// Reads the services and publishes them. A failed read publishes the previous list again,
+    /// marked stale with the reason. Thread-safe; samples are serialised.
     void sample() override;
 
     /// The newest generation (an empty version-0 one before the first sample).

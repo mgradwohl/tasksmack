@@ -75,6 +75,45 @@ TEST(ServiceModelTest, EachSampleIsANewImmutableGeneration)
     EXPECT_EQ(model.publication()->services[0].state, Platform::ServiceState::Running);
 }
 
+TEST(ServiceModelTest, AFailedReadKeepsTheLastListMarkedStaleWithItsReason)
+{
+    auto probe = std::make_unique<Mocks::MockServiceProbe>();
+    auto* raw = probe.get();
+    raw->setServices({service("a", Platform::ServiceState::Running, 7), service("b", Platform::ServiceState::Stopped)});
+    ServiceModel model(std::move(probe));
+
+    model.sample();
+    EXPECT_FALSE(model.publication()->stale);
+
+    raw->setFailure("Access to the Service Control Manager was denied");
+    model.sample();
+    const auto failed = model.publication();
+    EXPECT_EQ(failed->version, 2U);
+    EXPECT_TRUE(failed->stale);
+    EXPECT_EQ(failed->failureReason, "Access to the Service Control Manager was denied");
+    ASSERT_EQ(failed->services.size(), 2U); // the last good rows, not an empty list
+    EXPECT_EQ(failed->services[0].pid, 7U);
+
+    raw->setServices({service("c", Platform::ServiceState::Running, 9)});
+    model.sample();
+    const auto recovered = model.publication();
+    EXPECT_FALSE(recovered->stale);
+    EXPECT_TRUE(recovered->failureReason.empty());
+    ASSERT_EQ(recovered->services.size(), 1U);
+    EXPECT_EQ(recovered->services[0].name, "c");
+}
+
+TEST(ServiceModelTest, AFailedFirstReadPublishesNoRowsMarkedStale)
+{
+    auto probe = std::make_unique<Mocks::MockServiceProbe>();
+    probe->setFailure("The Service Control Manager could not list the services (error 1722)");
+    ServiceModel model(std::move(probe));
+    model.sample();
+    EXPECT_EQ(model.version(), 1U);
+    EXPECT_TRUE(model.publication()->stale);
+    EXPECT_TRUE(model.publication()->services.empty());
+}
+
 TEST(ServiceModelTest, UnsupportedProbeReportsNoEnumeration)
 {
     ServiceModel model(std::make_unique<Platform::UnsupportedServiceProbe>());
@@ -82,6 +121,8 @@ TEST(ServiceModelTest, UnsupportedProbeReportsNoEnumeration)
     EXPECT_FALSE(model.capabilities().unavailableReason.empty());
     model.sample();
     EXPECT_TRUE(model.publication()->services.empty());
+    EXPECT_TRUE(model.publication()->stale);
+    EXPECT_EQ(model.publication()->failureReason, model.capabilities().unavailableReason);
 }
 
 TEST(ServiceModelTest, NullProbeThrows)

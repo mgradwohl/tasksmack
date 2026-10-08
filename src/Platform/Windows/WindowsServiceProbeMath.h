@@ -8,10 +8,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <format>
+#include <ranges>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace Platform::Windows::ServiceMath
 {
@@ -100,28 +104,104 @@ namespace Platform::Windows::ServiceMath
     return text;
 }
 
-/// The svchost group a shared service runs in: the token after "-k" in an svchost.exe command line
-/// ("...\svchost.exe -k netsvcs -p" gives "netsvcs"). Empty for any other command line.
+/// The program a command line starts, and the rest of the line. The program is the first argument,
+/// quoted ("C:\Program Files\x.exe" -a) or not. An unquoted one may hold spaces (the SCM accepts
+/// C:\Program Files\x.exe -a), so it runs to the first ".exe" that ends a word, or else to the
+/// first space.
+[[nodiscard]] inline std::pair<std::string_view, std::string_view> splitProgram(std::string_view commandLine)
+{
+    const auto first = commandLine.find_first_not_of(' ');
+    if (first == std::string_view::npos)
+    {
+        return {};
+    }
+    commandLine.remove_prefix(first);
+    if (commandLine.front() == '"')
+    {
+        const auto close = commandLine.find('"', 1);
+        if (close == std::string_view::npos)
+        {
+            return {commandLine.substr(1), {}};
+        }
+        return {commandLine.substr(1, close - 1), commandLine.substr(close + 1)};
+    }
+    constexpr std::string_view EXE = ".exe";
+    std::size_t end = commandLine.find(' ');
+    for (std::size_t i = 0; (i + EXE.size()) <= commandLine.size(); ++i)
+    {
+        const std::size_t after = i + EXE.size();
+        const bool isExe = std::ranges::equal(
+            commandLine.substr(i, EXE.size()), EXE, [](unsigned char a, unsigned char b) { return std::tolower(a) == b; });
+        if (isExe && (after == commandLine.size() || commandLine[after] == ' '))
+        {
+            end = after;
+            break;
+        }
+    }
+    if (end == std::string_view::npos)
+    {
+        return {commandLine, {}};
+    }
+    return {commandLine.substr(0, end), commandLine.substr(end)};
+}
+
+/// The svchost group a shared service runs in: the token after "-k" when the program is
+/// svchost.exe (C:\WINDOWS\system32\svchost.exe -k netsvcs -p gives "netsvcs"). Empty for any other
+/// program, including one whose name merely contains "svchost".
 [[nodiscard]] inline std::string svchostGroup(std::string_view commandLine)
 {
-    std::string lower(commandLine);
-    std::ranges::transform(lower, lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (!lower.contains("svchost.exe"))
+    const auto equalsIgnoringCase = [](std::string_view a, std::string_view b)
+    {
+        return std::ranges::equal(a, b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
+    };
+
+    const auto [program, args] = splitProgram(commandLine);
+    const auto slash = program.find_last_of("\\/");
+    const std::string_view basename = (slash == std::string_view::npos) ? program : program.substr(slash + 1);
+    if (!equalsIgnoringCase(basename, "svchost.exe"))
     {
         return {};
     }
-    const auto flag = lower.find(" -k ");
-    if (flag == std::string::npos)
+    bool afterFlag = false;
+    for (const auto token : args | std::views::split(' '))
     {
-        return {};
+        const std::string_view word(token.begin(), token.end());
+        if (word.empty())
+        {
+            continue;
+        }
+        if (afterFlag)
+        {
+            return std::string(word);
+        }
+        afterFlag = equalsIgnoringCase(word, "-k");
     }
-    const auto start = commandLine.find_first_not_of(' ', flag + 4);
-    if (start == std::string_view::npos)
+    return {};
+}
+
+/// How long a service's cached configuration is trusted before it is read again. Configuration
+/// changes only when someone reconfigures the service, so this only bounds how stale it can look.
+inline constexpr std::chrono::seconds CONFIG_REFRESH{30};
+
+/// Whether a service's configuration should be read now: never attempted, or last attempted
+/// (successfully or not) CONFIG_REFRESH or more ago. A denied read is retried no sooner than a
+/// successful one, so a service the account can't query doesn't cost an open on every poll.
+[[nodiscard]] constexpr bool
+shouldRefreshConfig(std::chrono::steady_clock::time_point readAt, std::chrono::steady_clock::time_point now, bool attempted) noexcept
+{
+    return !attempted || (now - readAt) >= CONFIG_REFRESH;
+}
+/// The reason the UI shows when a Service Control Manager call fails with Win32 `error`:
+/// ERROR_ACCESS_DENIED (5) as a denial, anything else as what could not be done ("be opened",
+/// "list the services") and the code.
+[[nodiscard]] inline std::string scmFailureReason(std::uint32_t error, std::string_view couldNot)
+{
+    constexpr std::uint32_t ACCESS_DENIED = 5;
+    if (error == ACCESS_DENIED)
     {
-        return {};
+        return "Access to the Service Control Manager was denied";
     }
-    const auto end = commandLine.find(' ', start);
-    return std::string(commandLine.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
+    return std::format("The Service Control Manager could not {} (error {})", couldNot, error);
 }
 
 /// The probe's capabilities once OpenSCManagerW has been tried: everything when it succeeded
@@ -130,11 +210,8 @@ namespace Platform::Windows::ServiceMath
 {
     if (scmOpenError != 0)
     {
-        constexpr std::uint32_t ACCESS_DENIED = 5;
         ServiceCapabilities unavailable;
-        unavailable.unavailableReason = (scmOpenError == ACCESS_DENIED)
-                                          ? std::string("Access to the Service Control Manager was denied")
-                                          : std::format("The Service Control Manager could not be opened (error {})", scmOpenError);
+        unavailable.unavailableReason = scmFailureReason(scmOpenError, "be opened");
         return unavailable;
     }
     return {

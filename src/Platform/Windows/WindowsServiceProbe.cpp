@@ -36,10 +36,6 @@ namespace Platform
 namespace
 {
 
-/// How long a service's cached configuration is trusted before it is read again. Configuration
-/// changes only when someone reconfigures the service, so this only bounds how stale it can look.
-constexpr auto CONFIG_REFRESH = std::chrono::seconds(30);
-
 /// Calls a "size query, then fill" Win32 API into a buffer of T, so the result is aligned for T.
 /// `query(buffer, bytes, &needed)` returns the API's BOOL. Empty when the call fails.
 template<typename T, typename Query> [[nodiscard]] std::vector<T> queryAligned(Query query)
@@ -66,8 +62,8 @@ template<typename T, typename Query> [[nodiscard]] std::vector<T> queryAligned(Q
 /// The configuration fields of one service, cached between enumerations.
 struct CachedConfig
 {
-    std::chrono::steady_clock::time_point readAt;
-    bool read = false;
+    std::chrono::steady_clock::time_point readAt; ///< When the last read was attempted, whatever its outcome.
+    bool attempted = false;                       ///< False until the first read: a new or reappeared service.
     ServiceStartType startType = ServiceStartType::Unknown;
     std::string binaryPath;
     std::string account;
@@ -87,6 +83,7 @@ struct WindowsServiceProbe::Impl
     [[nodiscard]] CachedConfig readConfig(const wchar_t* serviceName) const
     {
         CachedConfig config;
+        config.attempted = true;
         config.readAt = std::chrono::steady_clock::now();
         const Windows::UniqueServiceHandle service(OpenServiceW(scm.get(), serviceName, SERVICE_QUERY_CONFIG));
         if (!service)
@@ -110,7 +107,6 @@ struct WindowsServiceProbe::Impl
             {
                 delayed = delayedInfo.fDelayedAutostart != FALSE;
             }
-            config.read = true;
             config.startType = Windows::ServiceMath::startTypeFromCode(cfg.dwStartType, delayed);
             config.binaryPath = toUtf8(cfg.lpBinaryPathName);
             config.account = toUtf8(cfg.lpServiceStartName);
@@ -146,18 +142,18 @@ ServiceCapabilities WindowsServiceProbe::capabilities() const
     return Windows::ServiceMath::capabilitiesForScmOpen(m_Impl->scmOpenError);
 }
 
-std::vector<ServiceInfo> WindowsServiceProbe::enumerate()
+ServiceEnumeration WindowsServiceProbe::enumerate()
 {
     if (m_Impl->scmOpenError != ERROR_SUCCESS)
     {
-        return {}; // capabilities() already reports why
+        return {.failureReason = capabilities().unavailableReason};
     }
     if (!m_Impl->scm)
     {
         m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));
         if (!m_Impl->scm)
         {
-            return {};
+            return {.failureReason = Windows::ServiceMath::scmFailureReason(GetLastError(), "be opened")};
         }
     }
 
@@ -186,7 +182,7 @@ std::vector<ServiceInfo> WindowsServiceProbe::enumerate()
             spdlog::debug("WindowsServiceProbe: EnumServicesStatusExW failed (error {})", error);
             // A failed handle (e.g. the SCM restarted) is reopened on the next call.
             m_Impl->scm.reset();
-            return {};
+            return {.failureReason = Windows::ServiceMath::scmFailureReason(error, "list the services")};
         }
 
         for (const auto& entry : std::span(buffer.data(), count))
@@ -199,7 +195,8 @@ std::vector<ServiceInfo> WindowsServiceProbe::enumerate()
             info.pid = entry.ServiceStatusProcess.dwProcessId;
 
             auto& config = m_Impl->configs[info.name];
-            if (!config.read || (now - config.readAt) >= CONFIG_REFRESH)
+            // A denied or failed read leaves the fields empty until the next attempt, CONFIG_REFRESH later.
+            if (Windows::ServiceMath::shouldRefreshConfig(config.readAt, now, config.attempted))
             {
                 config = m_Impl->readConfig(entry.lpServiceName);
             }
@@ -223,7 +220,7 @@ std::vector<ServiceInfo> WindowsServiceProbe::enumerate()
 
     // Services that were deleted no longer need their configuration.
     std::erase_if(m_Impl->configs, [&seen](const auto& entry) { return !seen.contains(entry.first); });
-    return services;
+    return {.ok = true, .failureReason = {}, .services = std::move(services)};
 }
 
 } // namespace Platform

@@ -26,7 +26,7 @@ class WindowsServiceProbe : public IServiceProbe
     WindowsServiceProbe& operator=(WindowsServiceProbe&&) = delete;
 
     [[nodiscard]] ServiceCapabilities capabilities() const override;
-    [[nodiscard]] std::vector<ServiceInfo> enumerate() override;
+    [[nodiscard]] ServiceEnumeration enumerate() override;
 
   private:
     struct Impl;

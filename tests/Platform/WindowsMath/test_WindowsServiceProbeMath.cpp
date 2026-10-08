@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+
 namespace Platform::Windows::ServiceMath
 {
 namespace
@@ -55,6 +57,12 @@ TEST(WindowsServiceProbeMathTest, ServiceTypeText)
 TEST(WindowsServiceProbeMathTest, SvchostGroupFromCommandLine)
 {
     EXPECT_EQ(svchostGroup(R"(C:\WINDOWS\system32\svchost.exe -k netsvcs -p)"), "netsvcs");
+    EXPECT_EQ(svchostGroup(R"("C:\Windows\System32\svchost.exe" -k netsvcs -p)"), "netsvcs");
+    EXPECT_EQ(svchostGroup(R"(C:\WINDOWS\SYSTEM32\SVCHOST.EXE -k DcomLaunch)"), "DcomLaunch");
+    EXPECT_EQ(svchostGroup(R"(C:\Program Files\Host Dir\svchost.exe -k grouped)"), "grouped");
+    EXPECT_EQ(svchostGroup(R"(C:\Tools\my-svchost.exe -k worker)"), "");
+    EXPECT_EQ(svchostGroup(R"("C:\Tools\svchost.exe.bak" -k worker)"), "");
+    EXPECT_EQ(svchostGroup(R"(C:\Tools\worker.exe C:\Windows\svchost.exe -k worker)"), "");
     EXPECT_EQ(svchostGroup(R"(C:\Windows\System32\SvcHost.exe -K LocalServiceNetworkRestricted)"), "LocalServiceNetworkRestricted");
     EXPECT_EQ(svchostGroup(R"("C:\Program Files\App\service.exe" -k notsvchost)"), "");
     EXPECT_EQ(svchostGroup(R"(C:\WINDOWS\system32\svchost.exe)"), "");
@@ -76,6 +84,33 @@ TEST(WindowsServiceProbeMathTest, ScmOpenFailureDisablesEnumerationWithAReason)
     const ServiceCapabilities other = capabilitiesForScmOpen(1722); // RPC_S_SERVER_UNAVAILABLE
     EXPECT_FALSE(other.canEnumerate);
     EXPECT_EQ(other.unavailableReason, "The Service Control Manager could not be opened (error 1722)");
+}
+
+TEST(WindowsServiceProbeMathTest, SplitProgramHandlesQuotesAndUnquotedSpaces)
+{
+    EXPECT_EQ(splitProgram(R"("C:\A B\x.exe" -a)").first, R"(C:\A B\x.exe)");
+    EXPECT_EQ(splitProgram(R"(C:\A B\x.exe -a)").first, R"(C:\A B\x.exe)");
+    EXPECT_EQ(splitProgram(R"(C:\A B\x.exe -a)").second, " -a");
+    EXPECT_EQ(splitProgram("tool -a").first, "tool");
+    EXPECT_EQ(splitProgram("   ").first, "");
+}
+
+TEST(WindowsServiceProbeMathTest, ConfigIsReadOnceThenEveryRefreshWhateverTheOutcome)
+{
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point readAt{std::chrono::seconds(1000)};
+    // Never attempted: read now.
+    EXPECT_TRUE(shouldRefreshConfig({}, readAt, false));
+    // Attempted (successfully or denied): not again until CONFIG_REFRESH has passed.
+    EXPECT_FALSE(shouldRefreshConfig(readAt, readAt, true));
+    EXPECT_FALSE(shouldRefreshConfig(readAt, readAt + CONFIG_REFRESH - std::chrono::seconds(1), true));
+    EXPECT_TRUE(shouldRefreshConfig(readAt, readAt + CONFIG_REFRESH, true));
+}
+
+TEST(WindowsServiceProbeMathTest, ScmFailureReasons)
+{
+    EXPECT_EQ(scmFailureReason(5, "list the services"), "Access to the Service Control Manager was denied");
+    EXPECT_EQ(scmFailureReason(1722, "list the services"), "The Service Control Manager could not list the services (error 1722)");
 }
 
 } // namespace

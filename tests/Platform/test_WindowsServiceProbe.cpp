@@ -22,11 +22,14 @@ TEST(WindowsServiceProbeTest, EnumeratesWellKnownServices)
         GTEST_SKIP() << probe.capabilities().unavailableReason;
     }
 
-    const auto services = probe.enumerate();
-    if (services.empty())
+    const auto result = probe.enumerate();
+    if (!result.ok)
     {
-        GTEST_SKIP() << "Service enumeration was denied or unavailable on this machine";
+        GTEST_SKIP() << "Service enumeration failed: " << result.failureReason;
     }
+    EXPECT_TRUE(result.failureReason.empty());
+    const auto& services = result.services;
+    ASSERT_FALSE(services.empty());
 
     const auto it = std::ranges::find_if(services, [](const ServiceInfo& s) { return s.name == "EventLog" || s.name == "Winmgmt"; });
     ASSERT_NE(it, services.end());
@@ -37,7 +40,9 @@ TEST(WindowsServiceProbeTest, EnumeratesWellKnownServices)
     }
 
     // A second call reuses the cached configuration and still reports the same services.
-    EXPECT_EQ(probe.enumerate().size(), services.size());
+    const auto again = probe.enumerate();
+    EXPECT_TRUE(again.ok);
+    EXPECT_EQ(again.services.size(), services.size());
 }
 
 } // namespace

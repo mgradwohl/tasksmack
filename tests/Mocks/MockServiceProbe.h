@@ -5,6 +5,7 @@
 
 #include "Platform/IServiceProbe.h"
 
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -23,15 +24,27 @@ class MockServiceProbe : public Platform::IServiceProbe
         return m_Capabilities;
     }
 
-    [[nodiscard]] std::vector<Platform::ServiceInfo> enumerate() override
+    [[nodiscard]] Platform::ServiceEnumeration enumerate() override
     {
         ++m_EnumerateCount;
-        return m_Services;
+        if (!m_FailureReason.empty())
+        {
+            return {.failureReason = m_FailureReason};
+        }
+        return {.ok = true, .failureReason = {}, .services = m_Services};
     }
 
+    /// The next enumerations succeed with these services.
     void setServices(std::vector<Platform::ServiceInfo> services)
     {
         m_Services = std::move(services);
+        m_FailureReason.clear();
+    }
+
+    /// The next enumerations fail with this reason, until setServices().
+    void setFailure(std::string reason)
+    {
+        m_FailureReason = std::move(reason);
     }
 
     [[nodiscard]] int enumerateCount() const noexcept
@@ -42,6 +55,7 @@ class MockServiceProbe : public Platform::IServiceProbe
   private:
     Platform::ServiceCapabilities m_Capabilities;
     std::vector<Platform::ServiceInfo> m_Services;
+    std::string m_FailureReason;
     int m_EnumerateCount = 0;
 };
 
