@@ -17,6 +17,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -42,6 +43,12 @@ std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()
 std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 {
     return std::make_unique<LinuxProcessConnectionsReader>();
+}
+
+std::unique_ptr<IStartupProbe> makeStartupProbe()
+{
+    // XDG autostart (~/.config/autostart, /etc/xdg/autostart) is the Linux lane's follow-up to #801.
+    return std::make_unique<UnsupportedStartupProbe>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

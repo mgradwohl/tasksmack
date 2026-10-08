@@ -108,6 +108,12 @@ inline constexpr int PROCESS_ENVIRONMENT_REFRESH_MS = 3000;
 // than the sample rate; connections come and go faster than an environment, so faster than that.
 inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
 
+// How often the Startup tab re-reads the startup entries (milliseconds) (#801). Sampled only while the
+// tab is shown; entries change only when something installs, removes or toggles one, so this is slow.
+// Within the BackgroundSampler's interval range, which clamps anything longer.
+inline constexpr int STARTUP_REFRESH_MS = 5000;
+static_assert(STARTUP_REFRESH_MS <= REFRESH_INTERVAL_MAX_MS);
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------
