@@ -498,14 +498,17 @@ jobs:
           path: iwyu-output.txt
           retention-days: 14
 
-  # Advisory asan-ubsan run on PRs — non-blocking; promotes awareness of memory/UB issues
-  # before they reach main.  Promoted to blocking in sanitizers.yml on push to main.
-  asan-ubsan-advisory:
+  # Blocking ASan+UBSan run on PRs (#1406). It used to be advisory (`|| true` plus
+  # continue-on-error), so a PR could merge with a sanitizer finding and only the push-to-main run
+  # in sanitizers.yml failed -- after the fact, where nothing gated on it (#1541). It is now one of
+  # CI Success's needs, and sanitizers.yml no longer repeats it on every push (weekly in
+  # heavy-checks.yml and on manual dispatch instead).
+  asan-ubsan:
+    name: ASan+UBSan
     needs: [detect-docs-only]
     if: >-
       github.event_name == 'pull_request' &&
       needs.detect-docs-only.outputs.docs_only != 'true'
-    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -544,22 +547,33 @@ jobs:
       - name: Build
         run: cmake --build --preset asan-ubsan
 
-      - name: Test (advisory — failure annotates but does not block)
+      - name: Test
         run: |
+          set +e
           ctest --preset asan-ubsan -j "$(nproc)" --output-on-failure --timeout 120 \
-            2>&1 | tee asan-ubsan-output.txt || true
-          echo "## ASan+UBSan Advisory" >> "$GITHUB_STEP_SUMMARY"
-          if grep -qE "ERROR:|runtime error:|SUMMARY:" asan-ubsan-output.txt; then
-            echo "⚠️ **Status:** Issues detected (advisory — does not block merge)" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "✅ **Status:** No sanitizer issues detected" >> "$GITHUB_STEP_SUMMARY"
+            2>&1 | tee asan-ubsan-output.txt
+          ctest_exit=${PIPESTATUS[0]}
+          set -e
+          echo "## ASan+UBSan" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$ctest_exit" -ne 0 ]]; then
+            echo "❌ **Status:** tests failed under ASan+UBSan (ctest exit $ctest_exit)" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo '```'
+              grep -E "runtime error:|ERROR: AddressSanitizer|SUMMARY:|\*\*\*Failed|\(Failed\)" asan-ubsan-output.txt | head -30
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            grep -m 10 -E "runtime error:|ERROR: AddressSanitizer" asan-ubsan-output.txt | while IFS= read -r finding; do
+              echo "::error title=ASan+UBSan::${finding//%/%25}"
+            done || true
+            exit "$ctest_exit"
           fi
+          echo "✅ **Status:** all tests passed under ASan+UBSan" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload sanitizer output
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: asan-ubsan-advisory
+          name: asan-ubsan
           path: asan-ubsan-output.txt
           retention-days: 7
 
@@ -580,6 +594,7 @@ jobs:
       - docs-hygiene
       - static-analysis
       - static-analysis-windows
+      - asan-ubsan
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -600,6 +615,7 @@ jobs:
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
           STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
           STATIC_ANALYSIS_WINDOWS_RESULT: ${{ needs.static-analysis-windows.result }}
+          ASAN_UBSAN_RESULT: ${{ needs.asan-ubsan.result }}
         run: |
           failed=false
 
@@ -665,6 +681,16 @@ jobs:
                   ! ("$STATIC_ANALYSIS_WINDOWS_RESULT" == 'skipped' &&
                      ("$DOCS_ONLY" == 'true' || "$LINUX_ONLY" == 'true')) ]]; then
               echo "❌ Windows static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_WINDOWS_RESULT"
+              failed=true
+            fi
+          fi
+
+          # ASan+UBSan runs on pull requests only (push/schedule/dispatch get it from sanitizers.yml
+          # and heavy-checks.yml), and is skipped for docs-only PRs.
+          if [[ "$EVENT_NAME" == 'pull_request' ]]; then
+            if [[ "$ASAN_UBSAN_RESULT" != 'success' &&
+                  ! ("$ASAN_UBSAN_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
+              echo "❌ ASan+UBSan did not succeed or have an intentional skip: $ASAN_UBSAN_RESULT"
               failed=true
             fi
           fi

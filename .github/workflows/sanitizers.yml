@@ -49,7 +49,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [asan-ubsan, tsan]
+        # asan-ubsan gates every PR in ci.yml (#1406), so a push to main runs only tsan; a manual
+        # dispatch runs both, and heavy-checks.yml runs both weekly on main.
+        preset: ${{ fromJSON(github.event_name == 'push' && '["tsan"]' || '["asan-ubsan", "tsan"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
