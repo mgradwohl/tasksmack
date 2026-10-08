@@ -113,7 +113,7 @@ void showCpuBreakdownTooltip(const UI::ColorScheme& scheme,
                              float idlePercent)
 {
     std::vector<UI::Widgets::TooltipRow> rows{
-        {.label = CPU_TOTAL_LABEL, .color = scheme.chartCpu, .value = UI::Format::formatPercent(totalPercent)},
+        {.label = CPU_TOTAL_LABEL, .color = scheme.chartCpuTotal, .value = UI::Format::formatPercent(totalPercent)},
         {.label = CPU_USER_LABEL, .color = scheme.cpuUser, .value = UI::Format::formatPercent(userPercent)},
         {.label = CPU_SYSTEM_LABEL, .color = scheme.cpuSystem, .value = UI::Format::formatPercent(systemPercent)},
     };
@@ -765,8 +765,8 @@ void SystemMetricsPanel::renderOverview()
                                      cpuTimeData.data(),
                                      cpuData.data(),
                                      UI::Format::checkedCount(cpuData.size()),
-                                     theme.scheme().chartCpu,
-                                     theme.scheme().chartCpuFill,
+                                     theme.scheme().chartCpuTotal,
+                                     std::nullopt,
                                      UI::Widgets::PRIMARY_SERIES_WEIGHT,
                                      false);
                 }
@@ -797,7 +797,7 @@ void SystemMetricsPanel::renderOverview()
                        .label = CPU_TOTAL_LABEL,
                        .tooltipText = {},
                        .value01 = UI::Format::percent01(m_SmoothedCpu.total),
-                       .color = theme.scheme().chartCpu}); // The Total line's colour (#1192)
+                       .color = theme.scheme().chartCpuTotal}); // The Total line's colour (#1192)
     cpuBars.push_back({.valueText = UI::Format::formatPercent(m_SmoothedCpu.user),
                        .label = CPU_USER_LABEL,
                        .tooltipText = {},
@@ -913,7 +913,7 @@ void SystemMetricsPanel::renderOverview()
                     .label = POWER_LABEL,
                     .tooltipText = {},
                     .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedPower.watts, powerAxisUpper),
-                    .color = theme.scheme().chartCpu,
+                    .color = theme.scheme().chartPower,
                 });
             }
 
@@ -928,7 +928,7 @@ void SystemMetricsPanel::renderOverview()
                                 // Scaled to the battery axis's top, headroom included, so the bar meets the line.
                                 .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedPower.batteryChargePercent,
                                                                                 UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM),
-                                .color = theme.scheme().chartMemory});
+                                .color = theme.scheme().chartBattery});
             }
 
             auto plot = [&]()
@@ -954,7 +954,7 @@ void SystemMetricsPanel::renderOverview()
                     {
                         UI::Widgets::setupSecondaryRateAxis(UI::Widgets::PERCENT_AXIS_UPPER_WITH_HEADROOM,
                                                             UI::Widgets::formatAxisPercent,
-                                                            theme.scheme().chartMemory,
+                                                            theme.scheme().chartBattery,
                                                             100.0);
                     }
                     // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
@@ -967,8 +967,8 @@ void SystemMetricsPanel::renderOverview()
                                    powerTimeData.data(),
                                    powerHist.data(),
                                    UI::Format::checkedCount(powerHist.size()),
-                                   theme.scheme().chartCpu,
-                                   theme.scheme().chartCpuFill,
+                                   theme.scheme().chartPower,
+                                   theme.scheme().chartPowerFill,
                                    seriesStyle(SeriesRole::Primary));
                     }
 
@@ -980,8 +980,8 @@ void SystemMetricsPanel::renderOverview()
                                    batteryTimeData.data(),
                                    batteryHist.data(),
                                    UI::Format::checkedCount(batteryHist.size()),
-                                   theme.scheme().chartMemory,
-                                   theme.scheme().chartMemoryFill,
+                                   theme.scheme().chartBattery,
+                                   theme.scheme().chartBatteryFill,
                                    // Alone (no power) it is the chart's primary series, and filled.
                                    hasProcessPower ? seriesStyle(SeriesRole::Secondary, 0) : seriesStyle(SeriesRole::Primary));
                         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1); // Reset to primary
@@ -1002,14 +1002,14 @@ void SystemMetricsPanel::renderOverview()
                             if (powerIdx)
                             {
                                 rows.push_back({.label = POWER_LABEL,
-                                                .color = theme.scheme().chartCpu,
+                                                .color = theme.scheme().chartPower,
                                                 .value = UI::Format::formatPowerOrZero(Domain::Numeric::toDouble(powerHist[*powerIdx]))});
                             }
                             if (batteryIdx)
                             {
                                 const double batteryVal = Domain::Numeric::toDouble(batteryHist[*batteryIdx]);
                                 rows.push_back({.label = batteryLabel,
-                                                .color = theme.scheme().chartMemory,
+                                                .color = theme.scheme().chartBattery,
                                                 .value = UI::Widgets::formatSampleOrNA(
                                                     batteryVal, [](double v) { return UI::Format::formatPercent(v); })});
                             }
@@ -1127,17 +1127,17 @@ void SystemMetricsPanel::renderOverview()
                                 // The fallback tooltip, "Threads: <value>", says it all (#1019)
                                 .tooltipText = {},
                                 .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, countAxisUpper),
-                                .color = theme.scheme().chartCpu};
+                                .color = theme.scheme().chartThreads};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
                                .label = FAULTS_LABEL,
                                .tooltipText = {},
                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.pageFaults, faultAxisUpper),
-                               .color = theme.accentColor(3)};
+                               .color = theme.scheme().chartPageFaults};
         const NowBar handlesBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
                                 .label = handleLabel,
                                 .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
                                 .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, countAxisUpper),
-                                .color = theme.scheme().chartMemory};
+                                .color = theme.scheme().chartHandles};
 
         auto plot = [&]()
         {
@@ -1148,7 +1148,7 @@ void SystemMetricsPanel::renderOverview()
                 m_ChartDataGeneration));
             if (chart.active())
             {
-                UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.accentColor(3));
+                UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.scheme().chartPageFaults);
                 // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
                 UI::Widgets::drawCollectingHint(alignedCount);
                 const int count = UI::Format::checkedCount(alignedCount);
@@ -1156,15 +1156,15 @@ void SystemMetricsPanel::renderOverview()
                            timeData.data(),
                            threadData.data(),
                            count,
-                           theme.scheme().chartCpu,
-                           theme.scheme().chartCpuFill,
+                           theme.scheme().chartThreads,
+                           theme.scheme().chartThreadsFill,
                            seriesStyle(SeriesRole::Primary));
                 ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
                 plotSeries(FAULTS_LABEL,
                            timeData.data(),
                            faultData.data(),
                            count,
-                           theme.accentColor(3),
+                           theme.scheme().chartPageFaults,
                            std::nullopt,
                            seriesStyle(SeriesRole::Secondary, 0));
                 ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -1172,8 +1172,8 @@ void SystemMetricsPanel::renderOverview()
                            timeData.data(),
                            handleData.data(),
                            count,
-                           theme.scheme().chartMemory,
-                           theme.scheme().chartMemoryFill,
+                           theme.scheme().chartHandles,
+                           theme.scheme().chartHandlesFill,
                            seriesStyle(SeriesRole::Secondary, 1));
 
                 if (ImPlot::IsPlotHovered())
@@ -1185,13 +1185,13 @@ void SystemMetricsPanel::renderOverview()
                         {
                             const std::array rows{
                                 UI::Widgets::TooltipRow{.label = THREADS_LABEL,
-                                                        .color = theme.scheme().chartCpu,
+                                                        .color = theme.scheme().chartThreads,
                                                         .value = UI::Format::formatIntLocalized(std::llround(threadData[*idxVal]))},
                                 UI::Widgets::TooltipRow{.label = FAULTS_LABEL,
-                                                        .color = theme.accentColor(3),
+                                                        .color = theme.scheme().chartPageFaults,
                                                         .value = UI::Format::formatCountPerSecond(static_cast<double>(faultData[*idxVal]))},
                                 UI::Widgets::TooltipRow{.label = handleLabel,
-                                                        .color = theme.scheme().chartMemory,
+                                                        .color = theme.scheme().chartHandles,
                                                         .value = UI::Format::formatIntLocalized(std::llround(handleData[*idxVal]))},
                             };
                             UI::Widgets::renderHistoryTooltip(timeData[*idxVal], rows);

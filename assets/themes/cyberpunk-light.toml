@@ -37,7 +37,7 @@ text_disabled = "#5E5E6A"  # Muted gray-violet for disabled text
 text_muted = "#676767"     # Gray
 text_error = "#A00517"     # Red - error messages
 text_warning = "#A94B0E"   # Orange - warning messages
-text_success = "#2E7539"   # Green - success messages
+text_success = "#017646"   # Green - success messages
 text_info = "#0068BE"      # Blue - informational text
 
 # =============================================================================
@@ -45,7 +45,7 @@ text_info = "#0068BE"      # Blue - informational text
 # Colors for process states in the process list
 # =============================================================================
 [status]
-running = "#006518"    # Green - active/running (R)
+running = "#065F2D"    # Deep green - active/running (R)
 sleeping = "#5730DE"   # Violet - sleeping (S)
 disk_sleep = "#8A4300" # Orange - uninterruptible I/O (D)
 zombie = "#B1001A"     # Red - defunct process (Z)
@@ -58,32 +58,43 @@ idle = "#565656"       # Light gray - idle kernel thread (I)
 # =============================================================================
 [charts]
 cpu = "#1976D2"       # Blue - CPU usage line
-memory = "#1C7727"    # Green - memory usage line
-io = "#D32F2F"        # Red - I/O read usage line
-io_write = "#DD6300"        # Hot Orange - I/O write usage line (distinct from Red)
-net_tx = "#815CFF"          # Vivid Violet - Network transmit (sent) line
+memory = "#217202"    # Green - memory usage line
+io = "#B6684D"        # Rust orange - I/O read usage line
+io_write = "#69541F"        # Sand - I/O write usage line
+net_tx = "#A56507"          # Amber - Network transmit (sent) line
 net_rx = "#0094B1"          # Electric Cyan - Network receive line
 cpu_fill = "#1976D24D"       # Blue with 30% alpha - CPU fill
-memory_fill = "#1C77274D"    # Green with 30% alpha - memory fill
-io_fill = "#D32F2F4D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#DD63004D"   # Hot Orange with 30% alpha - I/O write fill
-net_tx_fill = "#815CFF4D"    # Vivid Violet with 30% alpha - Network TX fill
+memory_fill = "#2172024D"    # Green with 30% alpha - memory fill
+io_fill = "#B6684D4D"        # Rust orange with 30% alpha - I/O read fill
+io_write_fill = "#69541F4D"   # Sand with 30% alpha - I/O write fill
+net_tx_fill = "#A565074D"    # Amber with 30% alpha - Network TX fill
 net_rx_fill = "#0094B14D"    # Electric Cyan with 30% alpha - Network RX fill
 peak_line = "#9B4C00B3"      # Orange with 70% alpha - peak reference line
+
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#1976D2"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#094D3E"   # Deep teal - Memory: Cached (also Process Shared)
+swap          = "#805BF6"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#6C732C"   # Olive - Power draw: system, process and GPU
+battery       = "#067A73"   # Teal - Battery charge
+threads       = "#C33388"   # Magenta - Thread count
+handles       = "#414851"   # Gray - Handles / file descriptors
+page_faults   = "#5437DE"   # Violet - Page faults per second
+gdi           = "#0A6F61"   # Teal - GDI objects (Windows)
 
 # =============================================================================
 # GPU METRICS COLORS
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#7B1FA2"           # Purple - GPU utilization line
-utilization_fill = "#7B1FA24D"    # Purple with 30% alpha - GPU fill
-memory = "#998800"                # Laser Yellow - GPU memory line (distinct from io Red)
-memory_fill = "#9988004D"         # Laser Yellow with 30% alpha - GPU memory fill
-temperature = "#D46B00"           # Gold - GPU temperature line
-power = "#4C914B"                 # Green - GPU power draw line
+utilization = "#9C1488"           # Magenta - GPU utilization line
+utilization_fill = "#9C14884D"    # Magenta with 30% alpha - GPU fill
+memory = "#457A25"                # Green - GPU memory line
+memory_fill = "#457A254D"         # Green with 30% alpha - GPU memory fill
+temperature = "#9F8518"           # Olive - GPU temperature line
+power = "#6C732C"                 # Olive - GPU power draw line
 encoder = "#0097A7"               # Teal - GPU encoder utilization
-decoder = "#C2185B"               # Magenta - GPU decoder utilization
+decoder = "#A24FB5"               # Magenta - GPU decoder utilization
 clock = "#815CFF"             # Vivid Violet - GPU clock speed line (theme-native)
 clock_fill = "#815CFFCC"      # Vivid Violet with 80% alpha - GPU clock fill
 fan = "#E134ED"               # Magenta - GPU fan speed line (theme-native)
@@ -94,12 +105,12 @@ fan = "#E134ED"               # Magenta - GPU fan speed line (theme-native)
 # =============================================================================
 [cpu_breakdown]
 user = "#004DA3"      # Blue - user CPU time
-system = "#D32F2F"    # Red - system/kernel time
-iowait = "#DA6600"    # Orange - I/O wait time
+system = "#BA1755"    # Rose - system/kernel time
+iowait = "#C5770E"    # Orange - I/O wait time
 idle = "#B0B0B0"      # Light gray - idle time
 user_fill = "#004DA359"      # Blue with 35% alpha - user fill
-system_fill = "#D32F2F59"    # Red with 35% alpha - system fill
-iowait_fill = "#DA660059"    # Orange with 35% alpha - iowait fill
+system_fill = "#BA175559"    # Rose with 35% alpha - system fill
+iowait_fill = "#C5770E59"    # Orange with 35% alpha - iowait fill
 idle_fill = "#B0B0B033"      # Light gray with 20% alpha - idle fill
 
 [priority]

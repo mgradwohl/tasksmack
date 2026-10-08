@@ -3,13 +3,16 @@
 ///
 /// The thresholds are the ones #1190 set: practical floors for selection fills against their
 /// neighbours, and WCAG floors for text (4.5:1) and the overline, a non-text indicator (3:1).
+/// The ThemePaletteTest suite (#1196) holds every theme to one set of colour roles and hue families.
 
+#include "FallbackTheme.h"
 #include "UI/ColorContrast.h"
 #include "UI/ColorDifference.h"
 #include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
 
 #include <gtest/gtest.h>
+#include <imgui.h>
 
 #include <algorithm>
 #include <array>
@@ -17,6 +20,8 @@
 #include <cstddef>
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -139,9 +144,9 @@ TEST(BundledThemesTest, CpuChartSeriesAreDistinct)
         const auto name = path.stem().string();
 
         // User was the Total line's colour in every theme, so the User NowBar looked like Total's (#1192).
-        EXPECT_GE(std::abs(lightness(scheme->cpuUser) - lightness(scheme->chartCpu)), CPU_USER_VS_TOTAL_MIN_DL) << name;
+        EXPECT_GE(std::abs(lightness(scheme->cpuUser) - lightness(scheme->chartCpuTotal)), CPU_USER_VS_TOTAL_MIN_DL) << name;
 
-        const std::array series{scheme->chartCpu, scheme->cpuUser, scheme->cpuSystem, scheme->cpuIowait};
+        const std::array series{scheme->chartCpuTotal, scheme->cpuUser, scheme->cpuSystem, scheme->cpuIowait};
         for (std::size_t i = 0; i < series.size(); ++i)
         {
             for (std::size_t j = i + 1; j < series.size(); ++j)
@@ -261,6 +266,17 @@ TEST(BundledThemesTest, EverySeriesIsVisibleOnThePlotAndTheNowBarTrack)
             {"charts.gpu.decoder", scheme->gpuDecoder},
             {"charts.gpu.clock", scheme->gpuClock},
             {"charts.gpu.fan", scheme->gpuFan},
+            {"charts.cpu_total", scheme->chartCpuTotal},
+            {"charts.memory_cached", scheme->chartMemoryCached},
+            {"charts.memory_shared", scheme->chartMemoryShared},
+            {"charts.memory_virtual", scheme->chartMemoryVirtual},
+            {"charts.swap", scheme->chartSwap},
+            {"charts.power", scheme->chartPower},
+            {"charts.battery", scheme->chartBattery},
+            {"charts.threads", scheme->chartThreads},
+            {"charts.handles", scheme->chartHandles},
+            {"charts.page_faults", scheme->chartPageFaults},
+            {"charts.gdi", scheme->chartGdi},
         };
         for (std::size_t i = 0; i < scheme->accents.size(); ++i)
         {
@@ -387,7 +403,7 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
             {
                 "CPU",
                 {
-                    {"charts.cpu", scheme->chartCpu},
+                    {"charts.cpu_total", scheme->chartCpuTotal},
                     {"cpu_breakdown.user", scheme->cpuUser},
                     {"cpu_breakdown.system", scheme->cpuSystem},
                     {"cpu_breakdown.iowait", scheme->cpuIowait},
@@ -398,8 +414,25 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
                 "Memory",
                 {
                     {"charts.memory", scheme->chartMemory},
-                    {"charts.cpu", scheme->chartCpu},
-                    {"charts.io", scheme->chartIo},
+                    {"charts.memory_cached", scheme->chartMemoryCached},
+                    {"charts.swap", scheme->chartSwap},
+                },
+            },
+            // Process Details' Memory chart: Used, Shared and Virtual.
+            {
+                "Process memory",
+                {
+                    {"charts.memory", scheme->chartMemory},
+                    {"charts.memory_shared", scheme->chartMemoryShared},
+                    {"charts.memory_virtual", scheme->chartMemoryVirtual},
+                },
+            },
+            // Power & Battery chart (SystemMetricsPanel.cpp).
+            {
+                "Power",
+                {
+                    {"charts.power", scheme->chartPower},
+                    {"charts.battery", scheme->chartBattery},
                 },
             },
             // Read/Write and Sent/Received charts sit side by side on Process Details' Network and I/O tab.
@@ -437,10 +470,10 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
             {
                 "Resources",
                 {
-                    {"charts.cpu", scheme->chartCpu},
-                    {"charts.memory", scheme->chartMemory},
-                    {"accents[3]", scheme->accents[3]},
-                    {"accents[4]", scheme->accents[4]},
+                    {"charts.threads", scheme->chartThreads},
+                    {"charts.handles", scheme->chartHandles},
+                    {"charts.page_faults", scheme->chartPageFaults},
+                    {"charts.gdi", scheme->chartGdi},
                 },
             },
         };
@@ -486,6 +519,422 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
             checkPairs(group, series, false);
         }
     }
+}
+
+// ---- #1196: every metric has its own colour role, and each role keeps one hue family in every theme ----
+//
+// Thresholds, all CIEDE2000 (about 1 is just noticeable) or OKLCH (hue in degrees, chroma 0..~0.37):
+// - STATUS_MIN_DE 10: #1196's acceptance bar. Below about 10 a thin line reads as "the error colour"
+//   or "the warning colour" at a glance; an equal hex (disk read == text_error in 13 themes) is 0.
+//   Held against success and running too: they are state colours, not series colours.
+// - SEVERITY_MIN_DE 20: error and warning against success, #1196's bar for the Monochrome themes,
+//   applied everywhere. ERROR_VS_WARNING_MIN_DE 15: the two alarm levels must not merge either.
+// - OVERVIEW_MIN_DE 10: series on different charts of the System Overview are different metrics; the
+//   same bar as a status colour, so one colour never means two metrics on one screen.
+// - Hue ranges are OKLCH, whose hue is even enough to name families by (CIELAB bends blue to violet).
+//   They are 30-55 degrees wide: room for each theme's own shade, too narrow to slip into a neighbour.
+//   A hue counts only with chroma >= FAMILY_MIN_CHROMA 0.03, about where a tint stops reading as grey;
+//   the Monochrome themes' low-chroma tints sit just above it.
+// - PAIR_MAX_HUE_DIFF 30: a light variant keeps its dark sibling's families (Nord vs Nord Light).
+constexpr double STATUS_MIN_DE = 10.0;
+constexpr double SEVERITY_MIN_DE = 20.0;
+constexpr double ERROR_VS_WARNING_MIN_DE = 15.0;
+constexpr double OVERVIEW_MIN_DE = 10.0;
+constexpr double FAMILY_MIN_CHROMA = 0.03;
+constexpr double WRITE_CHROMA_BELOW_READ = 0.02; // disk write is brown/olive: duller than read's orange
+constexpr double PAIR_MAX_HUE_DIFF = 30.0;
+
+/// An OKLCH hue range in degrees, lo..hi.
+struct HueRange
+{
+    double lo = 0.0;
+    double hi = 360.0;
+
+    // A member, not a free helper: CodeQL took the anonymous-namespace function this was for unused,
+    // its every call being in a TEST body (cpp/unused-static-function, alert 3013).
+    [[nodiscard]] constexpr auto contains(double hue) const noexcept -> bool
+    {
+        // A range may run past 360 to wrap through red-pink (ROSE is 320..370, i.e. up to hue 10).
+        return (hue >= lo && hue <= hi) || (hue + 360.0 >= lo && hue + 360.0 <= hi);
+    }
+};
+
+// The families (#1196), in hue order: red < orange < amber < yellow < green < teal/cyan < blue < violet
+// < magenta. Brown/olive is a dull orange-to-yellow.
+constexpr HueRange RED{.lo = 0.0, .hi = 45.0};
+constexpr HueRange ORANGE{.lo = 38.0, .hi = 68.0};
+constexpr HueRange AMBER{.lo = 62.0, .hi = 92.0};
+constexpr HueRange BROWN_OLIVE{.lo = 68.0, .hi = 118.0};
+constexpr HueRange YELLOW{.lo = 88.0, .hi = 118.0};
+constexpr HueRange GREEN{.lo = 120.0, .hi = 175.0};
+constexpr HueRange CYAN_TEAL{.lo = 175.0, .hi = 228.0};
+constexpr HueRange BLUE{.lo = 215.0, .hi = 275.0};
+constexpr HueRange VIOLET{.lo = 280.0, .hi = 320.0};
+constexpr HueRange MAGENTA{.lo = 318.0, .hi = 360.0};
+// The families the Overview's and Process Details' other roles take, so each reads as its own metric
+// next to CPU, memory and power: Battery teal, Threads rose, Page Faults periwinkle, GDI green-teal,
+// and Handles a neutral grey (chroma <= HANDLES_MAX_CHROMA, any hue).
+constexpr HueRange BATTERY_TEAL{.lo = 175.0, .hi = 215.0};
+constexpr HueRange ROSE{.lo = 320.0, .hi = 370.0};
+constexpr HueRange PERIWINKLE{.lo = 265.0, .hi = 298.0};
+constexpr HueRange GDI_GREEN_TEAL{.lo = 150.0, .hi = 200.0};
+constexpr double HANDLES_MAX_CHROMA = 0.05;
+// Status text: warning runs orange to Cyberpunk's neon yellow (light themes darken it towards brown),
+// success green to Gruvbox's and Solarized's yellow-green.
+// Wider than the series families: their job is only to read as caution and as fine (Monochrome's were
+// all green). Their order is checked on its own.
+constexpr HueRange WARNING{.lo = 40.0, .hi = 110.0};
+constexpr HueRange SUCCESS{.lo = 105.0, .hi = 175.0};
+// No data series is drawn in red: hue 12..36 with chroma >= 0.06. Below 12 is pink, above 36 orange.
+constexpr HueRange RED_BAND{.lo = 12.0, .hi = 36.0};
+constexpr double RED_BAND_MIN_CHROMA = 0.06;
+
+struct LoadedTheme
+{
+    std::string name;
+    ColorScheme scheme;
+};
+
+/// Every bundled theme, and the built-in fallback (Arctic Fire's file, embedded at build time).
+auto loadedThemes() -> std::vector<LoadedTheme>
+{
+    std::vector<LoadedTheme> themes;
+    for (const auto& path : bundledThemes())
+    {
+        if (auto scheme = ThemeLoader::loadTheme(path))
+        {
+            themes.push_back({.name = path.stem().string(), .scheme = std::move(*scheme)});
+        }
+        else
+        {
+            ADD_FAILURE() << "failed to load " << path;
+        }
+    }
+    if (auto fallback = ThemeLoader::loadThemeFromString(FALLBACK_THEME_TOML, "fallback"))
+    {
+        themes.push_back({.name = "fallback", .scheme = std::move(*fallback)});
+    }
+    else
+    {
+        ADD_FAILURE() << "the built-in fallback theme does not parse";
+    }
+    return themes;
+}
+
+using NamedColor = std::pair<std::string_view, ImVec4>;
+
+/// Every colour drawn as a data series: chart lines and fills, NowBars and value-strip swatches.
+auto dataSeries(const ColorScheme& s) -> std::vector<NamedColor>
+{
+    return {
+        {"charts.cpu", s.chartCpu},
+        {"charts.cpu_total", s.chartCpuTotal},
+        {"cpu_breakdown.user", s.cpuUser},
+        {"cpu_breakdown.system", s.cpuSystem},
+        {"cpu_breakdown.iowait", s.cpuIowait},
+        {"charts.memory", s.chartMemory},
+        {"charts.memory_cached", s.chartMemoryCached},
+        {"charts.memory_shared", s.chartMemoryShared},
+        {"charts.memory_virtual", s.chartMemoryVirtual},
+        {"charts.swap", s.chartSwap},
+        {"charts.io", s.chartIo},
+        {"charts.io_write", s.chartIoWrite},
+        {"charts.net_tx", s.chartNetTx},
+        {"charts.net_rx", s.chartNetRx},
+        {"charts.power", s.chartPower},
+        {"charts.battery", s.chartBattery},
+        {"charts.threads", s.chartThreads},
+        {"charts.handles", s.chartHandles},
+        {"charts.page_faults", s.chartPageFaults},
+        {"charts.gdi", s.chartGdi},
+        {"charts.gpu.utilization", s.gpuUtilization},
+        {"charts.gpu.memory", s.gpuMemory},
+        {"charts.gpu.temperature", s.gpuTemperature},
+        {"charts.gpu.power", s.gpuPower},
+        {"charts.gpu.encoder", s.gpuEncoder},
+        {"charts.gpu.decoder", s.gpuDecoder},
+        {"charts.gpu.clock", s.gpuClock},
+        {"charts.gpu.fan", s.gpuFan},
+    };
+}
+
+auto hueDistance(double a, double b) -> double
+{
+    const double d = std::fmod(std::abs(a - b), 360.0);
+    return std::min(d, 360.0 - d);
+}
+
+// Status colours are for state and messages. A data series in one reads as an alarm: Swap drew in
+// text_error's red in 13 themes, and Temperature in text_warning's hex in 9.
+TEST(ThemePaletteTest, StatusColoursAreNeverDataSeries)
+{
+    for (const LoadedTheme& theme : loadedThemes())
+    {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
+        const std::array status{
+            NamedColor{"semantic.text_error", s.textError},
+            NamedColor{"semantic.text_warning", s.textWarning},
+            NamedColor{"semantic.text_success", s.textSuccess},
+            NamedColor{"status.running", s.statusRunning},
+        };
+        for (const auto& [seriesKey, series] : dataSeries(s))
+        {
+            for (const auto& [statusKey, statusColor] : status)
+            {
+                EXPECT_FALSE(sameRgb(series, statusColor)) << name << ": " << seriesKey << " is " << statusKey;
+                EXPECT_GE(ColorDifference::deltaE2000(series, statusColor), STATUS_MIN_DE)
+                    << name << ": " << seriesKey << " looks like " << statusKey;
+            }
+            // Red itself is kept for alarms, whatever the theme's error shade: CPU System, a GPU Decoder or
+            // disk read drawn red reads as a problem (pink and orange are fine).
+            const ColorDifference::Oklch c = ColorDifference::toOklch(series);
+            // The hue is spelled out here, not by a free helper CodeQL took for unused (alert 3012).
+            EXPECT_FALSE(c.c >= RED_BAND_MIN_CHROMA && RED_BAND.contains(c.h))
+                << name << ": " << seriesKey << " hue " << c.h << " chroma " << c.c << " is drawn in alarm red";
+        }
+    }
+}
+
+// A fill is its line's colour at a lower alpha, so the status-colour, red-band and family rules on the
+// lines (above and below) hold for every fill too, and band, line and swatch read as one series.
+TEST(ThemePaletteTest, EveryFillIsItsLinesColour)
+{
+    for (const LoadedTheme& theme : loadedThemes())
+    {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
+        const std::array<std::tuple<std::string_view, ImVec4, ImVec4>, 21> fills{{
+            {"charts.cpu_fill", s.chartCpuFill, s.chartCpu},
+            {"charts.memory_fill", s.chartMemoryFill, s.chartMemory},
+            {"charts.io_fill", s.chartIoFill, s.chartIo},
+            {"charts.io_write_fill", s.chartIoWriteFill, s.chartIoWrite},
+            {"charts.net_tx_fill", s.chartNetTxFill, s.chartNetTx},
+            {"charts.net_rx_fill", s.chartNetRxFill, s.chartNetRx},
+            {"charts.memory_cached_fill", s.chartMemoryCachedFill, s.chartMemoryCached},
+            {"charts.memory_shared_fill", s.chartMemorySharedFill, s.chartMemoryShared},
+            {"charts.memory_virtual_fill", s.chartMemoryVirtualFill, s.chartMemoryVirtual},
+            {"charts.swap_fill", s.chartSwapFill, s.chartSwap},
+            {"charts.power_fill", s.chartPowerFill, s.chartPower},
+            {"charts.battery_fill", s.chartBatteryFill, s.chartBattery},
+            {"charts.threads_fill", s.chartThreadsFill, s.chartThreads},
+            {"charts.handles_fill", s.chartHandlesFill, s.chartHandles},
+            {"cpu_breakdown.user_fill", s.cpuUserFill, s.cpuUser},
+            {"cpu_breakdown.system_fill", s.cpuSystemFill, s.cpuSystem},
+            {"cpu_breakdown.iowait_fill", s.cpuIowaitFill, s.cpuIowait},
+            {"cpu_breakdown.idle_fill", s.cpuIdleFill, s.cpuIdle},
+            {"charts.gpu.utilization_fill", s.gpuUtilizationFill, s.gpuUtilization},
+            {"charts.gpu.memory_fill", s.gpuMemoryFill, s.gpuMemory},
+            {"charts.gpu.clock_fill", s.gpuClockFill, s.gpuClock},
+        }};
+        for (const auto& fill : fills)
+        {
+            const ImVec4& fillColor = std::get<1>(fill);
+            EXPECT_TRUE(sameRgb(fillColor, std::get<2>(fill))) << name << ": " << std::get<0>(fill) << " is not its line's colour";
+            EXPECT_LT(fillColor.w, 1.0F) << name << ": " << std::get<0>(fill) << " is opaque";
+        }
+    }
+}
+
+// A metric is the same family of colour in every theme: CPU blue, memory green, swap violet, disk read
+// orange and write brown/olive, network send amber and receive cyan/teal, GPU magenta, power yellow.
+TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
+{
+    for (const LoadedTheme& theme : loadedThemes())
+    {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
+        const std::array<std::tuple<std::string_view, ImVec4, HueRange>, 19> families{{
+            {"charts.cpu", s.chartCpu, BLUE},
+            {"charts.cpu_total", s.chartCpuTotal, BLUE},
+            {"cpu_breakdown.user", s.cpuUser, BLUE},
+            {"charts.memory", s.chartMemory, GREEN},
+            {"charts.memory_cached", s.chartMemoryCached, GREEN},
+            {"charts.memory_shared", s.chartMemoryShared, GREEN},
+            {"charts.gpu.memory", s.gpuMemory, GREEN},
+            {"charts.swap", s.chartSwap, VIOLET},
+            {"charts.memory_virtual", s.chartMemoryVirtual, VIOLET},
+            {"charts.io", s.chartIo, ORANGE},
+            {"charts.io_write", s.chartIoWrite, BROWN_OLIVE},
+            {"charts.net_tx", s.chartNetTx, AMBER},
+            {"charts.net_rx", s.chartNetRx, CYAN_TEAL},
+            {"charts.gpu.utilization", s.gpuUtilization, MAGENTA},
+            {"charts.power", s.chartPower, YELLOW},
+            {"charts.battery", s.chartBattery, BATTERY_TEAL},
+            {"charts.threads", s.chartThreads, ROSE},
+            {"charts.page_faults", s.chartPageFaults, PERIWINKLE},
+            {"charts.gdi", s.chartGdi, GDI_GREEN_TEAL},
+        }};
+        for (const auto& [key, color, range] : families)
+        {
+            const ColorDifference::Oklch c = ColorDifference::toOklch(color);
+            EXPECT_GE(c.c, FAMILY_MIN_CHROMA) << name << ": " << key << " is grey";
+            EXPECT_TRUE(range.contains(c.h)) << name << ": " << key << " hue " << c.h << " chroma " << c.c << " is outside " << range.lo
+                                             << ".." << range.hi;
+        }
+        // Read and write can share a warm hue; write is the duller of the two, so it never reads as read.
+        EXPECT_LE(ColorDifference::toOklch(s.chartIoWrite).c, ColorDifference::toOklch(s.chartIo).c - WRITE_CHROMA_BELOW_READ)
+            << name << ": charts.io_write is as vivid as charts.io";
+        // Handles is the one neutral series: grey beside the coloured ones on the Resources chart.
+        EXPECT_LE(ColorDifference::toOklch(s.chartHandles).c, HANDLES_MAX_CHROMA) << name << ": charts.handles is not a neutral grey";
+    }
+}
+
+// Power is one colour on every screen: system Power was charts.cpu, process Power text_info and GPU
+// Power a field of its own.
+TEST(ThemePaletteTest, PowerIsOneColourOnEveryScreen)
+{
+    for (const LoadedTheme& theme : loadedThemes())
+    {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
+        EXPECT_TRUE(sameRgb(s.chartPower, s.gpuPower)) << name;
+    }
+}
+
+// Severity reads green -> amber -> red in every theme: success green, warning amber, error red, in
+// that hue order, and the error colour stays the most alarming -- not the palest (Monochrome's error
+// was its palest green, its warning another green) and far from warning and success. (#1196 asked the
+// same of the load bars' progress.* ramp; #1185 has since removed those colours.)
+TEST(ThemePaletteTest, SeverityRunsGreenAmberRedAndErrorReadsAsSevere)
+{
+    for (const LoadedTheme& theme : loadedThemes())
+    {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
+        const ColorDifference::Oklch error = ColorDifference::toOklch(s.textError);
+        const ColorDifference::Oklch warning = ColorDifference::toOklch(s.textWarning);
+        const ColorDifference::Oklch success = ColorDifference::toOklch(s.textSuccess);
+        const std::array<std::tuple<std::string_view, ColorDifference::Oklch, HueRange>, 3> steps{{
+            {"semantic.text_error", error, RED},
+            {"semantic.text_warning", warning, WARNING},
+            {"semantic.text_success", success, SUCCESS},
+        }};
+        for (const auto& step : steps)
+        {
+            const std::string_view key = std::get<0>(step);
+            const ColorDifference::Oklch& c = std::get<1>(step);
+            const HueRange range = std::get<2>(step);
+            EXPECT_GE(c.c, FAMILY_MIN_CHROMA) << name << ": " << key << " is grey";
+            EXPECT_TRUE(range.contains(c.h)) << name << ": " << key << " hue " << c.h << " is outside " << range.lo << ".." << range.hi;
+        }
+        EXPECT_LT(error.h, warning.h) << name << ": severity is not ordered red < amber";
+        EXPECT_LT(warning.h, success.h) << name << ": severity is not ordered amber < green";
+
+        EXPECT_GE(ColorDifference::deltaE2000(s.textError, s.textWarning), ERROR_VS_WARNING_MIN_DE) << name;
+        EXPECT_GE(ColorDifference::deltaE2000(s.textError, s.textSuccess), SEVERITY_MIN_DE) << name;
+        EXPECT_GE(ColorDifference::deltaE2000(s.textWarning, s.textSuccess), SEVERITY_MIN_DE) << name;
+
+        // The palest colour is the least saturated and the lightest at once, as Monochrome's glow-green
+        // error was. Either alone is fine: Dracula's error is light to stay readable on its light plot.
+        const bool errorIsPalest = error.c < std::min(warning.c, success.c) && error.l > std::max(warning.l, success.l);
+        EXPECT_FALSE(errorIsPalest) << name << ": text_error is the palest status colour";
+    }
+}
+
+// On one Tokyo Night Overview screen blue meant CPU Total, CPU User and Cached, and green Memory Used,
+// Battery and Handles. Series on different Overview charts are different metrics, so they look different.
+TEST(ThemePaletteTest, OverviewChartsGiveEachMetricItsOwnColour)
+{
+    for (const LoadedTheme& theme : loadedThemes())
+    {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
+        // {chart, key, colour}. Pairs on one chart are SeriesOnTheSameChartAreSeparable's.
+        const std::array<std::tuple<std::string_view, std::string_view, ImVec4>, 12> overview{{
+            {"CPU", "charts.cpu_total", s.chartCpuTotal},
+            {"CPU", "cpu_breakdown.user", s.cpuUser},
+            {"CPU", "cpu_breakdown.system", s.cpuSystem},
+            {"CPU", "cpu_breakdown.iowait", s.cpuIowait},
+            {"Memory", "charts.memory", s.chartMemory},
+            {"Memory", "charts.memory_cached", s.chartMemoryCached},
+            {"Memory", "charts.swap", s.chartSwap},
+            {"Power", "charts.power", s.chartPower},
+            {"Power", "charts.battery", s.chartBattery},
+            {"Resources", "charts.threads", s.chartThreads},
+            {"Resources", "charts.page_faults", s.chartPageFaults},
+            {"Resources", "charts.handles", s.chartHandles},
+        }};
+        for (std::size_t i = 0; i < overview.size(); ++i)
+        {
+            for (std::size_t j = i + 1; j < overview.size(); ++j)
+            {
+                const auto& [chartA, keyA, colorA] = overview[i];
+                const auto& [chartB, keyB, colorB] = overview[j];
+                if (chartA == chartB)
+                {
+                    continue;
+                }
+                EXPECT_GE(ColorDifference::deltaE2000(colorA, colorB), OVERVIEW_MIN_DE) << name << ": " << keyA << " vs " << keyB;
+            }
+        }
+    }
+}
+
+// A light variant keeps its dark sibling's families: Nord drew CPU cyan and Nord Light blue.
+TEST(ThemePaletteTest, LightAndDarkVariantsShareHueFamilies)
+{
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 9> PAIRS{{
+        {"arctic-fire", "arctic-fire-light"},
+        {"cyberpunk", "cyberpunk-light"},
+        {"gruvbox", "gruvbox-light"},
+        {"mocha", "latte"},
+        {"monochrome", "monochrome-light"},
+        {"nord", "nord-light"},
+        {"solarized-dark", "solarized-light"},
+        {"ubuntu-dark", "ubuntu-light"},
+        {"windows-dark", "windows-light"},
+    }};
+    const auto themes = loadedThemes();
+    const auto find = [&themes](std::string_view name) -> const ColorScheme*
+    {
+        const auto it = std::ranges::find(themes, name, &LoadedTheme::name);
+        return (it == themes.end()) ? nullptr : &it->scheme;
+    };
+    for (const auto& [darkName, lightName] : PAIRS)
+    {
+        const ColorScheme* dark = find(darkName);
+        const ColorScheme* light = find(lightName);
+        if (dark == nullptr || light == nullptr)
+        {
+            ADD_FAILURE() << "missing " << darkName << " or " << lightName;
+            continue;
+        }
+        const auto darkSeries = dataSeries(*dark);
+        const auto lightSeries = dataSeries(*light);
+        for (std::size_t i = 0; i < darkSeries.size(); ++i)
+        {
+            const ColorDifference::Oklch d = ColorDifference::toOklch(darkSeries[i].second);
+            const ColorDifference::Oklch l = ColorDifference::toOklch(lightSeries[i].second);
+            if (d.c < FAMILY_MIN_CHROMA || l.c < FAMILY_MIN_CHROMA)
+            {
+                continue; // A grey (GPU Fan, Handles) has no hue to keep
+            }
+            EXPECT_LE(hueDistance(d.h, l.h), PAIR_MAX_HUE_DIFF) << darkName << " / " << lightName << ": " << darkSeries[i].first;
+        }
+    }
+}
+
+// The fallback is Arctic Fire: it had 8 identical accents and drew network in the CPU and memory colours.
+TEST(ThemePaletteTest, FallbackThemeIsArcticFire)
+{
+    const auto fallback = ThemeLoader::loadThemeFromString(FALLBACK_THEME_TOML, "fallback");
+    const auto arcticFire = ThemeLoader::loadTheme(std::filesystem::path(TASKSMACK_SOURCE_THEMES_DIR) / "arctic-fire.toml");
+    ASSERT_TRUE(fallback.has_value());
+    ASSERT_TRUE(arcticFire.has_value());
+    const auto fallbackSeries = dataSeries(*fallback);
+    const auto arcticSeries = dataSeries(*arcticFire);
+    for (std::size_t i = 0; i < fallbackSeries.size(); ++i)
+    {
+        EXPECT_TRUE(sameRgb(fallbackSeries[i].second, arcticSeries[i].second)) << fallbackSeries[i].first;
+    }
+    for (std::size_t i = 0; i < fallback->accents.size(); ++i)
+    {
+        EXPECT_TRUE(sameRgb(fallback->accents[i], arcticFire->accents[i])) << "accents[" << i << "]";
+    }
+    EXPECT_TRUE(sameRgb(fallback->windowBg, arcticFire->windowBg));
+    EXPECT_TRUE(sameRgb(fallback->textError, arcticFire->textError));
+    EXPECT_TRUE(sameRgb(fallback->textSuccess, arcticFire->textSuccess));
 }
 } // namespace
 } // namespace UI

@@ -60,18 +60,29 @@ idle = "#BDBDBD"       # Gray - idle kernel thread (I)
 # =============================================================================
 [charts]
 cpu = "#42A5F5"       # Blue - CPU usage line
-memory = "#00E676"    # Emerald - memory usage line
-io = "#FF7043"        # Orange - I/O read usage line
-io_write = "#26C6DA"        # Cyan - I/O write usage line
-net_tx = "#FFC107"          # Gold - Network transmit (sent) line
-net_rx = "#AB47BC"          # Purple - Network receive line
+memory = "#7EDD3D"    # Green - memory usage line
+io = "#ED8324"        # Orange - I/O read usage line
+io_write = "#9D985C"        # Olive - I/O write usage line
+net_tx = "#FEC97C"          # Pale amber - Network transmit (sent) line
+net_rx = "#57C2D4"          # Cyan - Network receive line
 cpu_fill = "#42A5F54D"       # Blue with 30% alpha - CPU fill
-memory_fill = "#00E6764D"    # Emerald with 30% alpha - memory fill
-io_fill = "#FF70434D"        # Orange with 30% alpha - I/O read fill
-io_write_fill = "#26C6DA4D"   # Cyan with 30% alpha - I/O write fill
-net_tx_fill = "#FFC1074D"    # Gold with 30% alpha - Network TX fill
-net_rx_fill = "#AB47BC4D"    # Purple with 30% alpha - Network RX fill
+memory_fill = "#7EDD3D4D"    # Green with 30% alpha - memory fill
+io_fill = "#ED83244D"        # Orange with 30% alpha - I/O read fill
+io_write_fill = "#9D985C4D"   # Olive with 30% alpha - I/O write fill
+net_tx_fill = "#FEC97C4D"    # Pale amber with 30% alpha - Network TX fill
+net_rx_fill = "#57C2D44D"    # Cyan with 30% alpha - Network RX fill
 peak_line = "#FFD54FB3"      # Gold with 70% alpha - peak reference line
+
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#42A5F5"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#B3FEBF"   # Pale green - Memory: Cached (also Process Shared)
+swap          = "#AE83EF"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#EEF35A"   # Pale yellow - Power draw: system, process and GPU
+battery       = "#2EADAA"   # Teal - Battery charge
+threads       = "#DE75BA"   # Magenta - Thread count
+handles       = "#B6BEC5"   # Gray - Handles / file descriptors
+page_faults   = "#AAB5FC"   # Blue - Page faults per second
+gdi           = "#45C697"   # Green - GDI objects (Windows)
 
 # =============================================================================
 # GPU METRICS COLORS
@@ -80,10 +91,10 @@ peak_line = "#FFD54FB3"      # Gold with 70% alpha - peak reference line
 [charts.gpu]
 utilization = "#BA68C8"           # Purple - GPU utilization line
 utilization_fill = "#BA68C84D"    # Purple with 30% alpha - GPU fill
-memory = "#EC407A"                # Pink - GPU memory line (distinct from io Orange)
-memory_fill = "#EC407A4D"         # Pink with 30% alpha - GPU memory fill
-temperature = "#FFC107"           # Gold - GPU temperature line
-power = "#00E676"                 # Green - GPU power draw line
+memory = "#00EDB5"                # Green - GPU memory line
+memory_fill = "#00EDB54D"         # Green with 30% alpha - GPU memory fill
+temperature = "#E5C11B"           # Yellow - GPU temperature line
+power = "#EEF35A"                 # Pale yellow - GPU power draw line
 encoder = "#52C4D4"               # Teal - GPU encoder utilization
 decoder = "#26A69A"               # Teal - GPU decoder utilization (was Memory's Pink, #1197)
 clock = "#64B5F6"             # Light Blue - GPU clock speed line
@@ -96,18 +107,18 @@ fan = "#5D7783"               # Dark Blue Gray - GPU fan speed line
 # =============================================================================
 [cpu_breakdown]
 user = "#7DD3FF"      # Blue - user CPU time
-system = "#FF7043"    # Orange - system/kernel time
-iowait = "#FFB300"    # Amber - I/O wait time
+system = "#FA8650"    # Orange - system/kernel time
+iowait = "#E1C016"    # Yellow - I/O wait time
 idle = "#808080"      # Gray - idle time
 user_fill = "#7DD3FF59"      # Blue with 35% alpha - user fill
-system_fill = "#FF704359"    # Orange with 35% alpha - system fill
-iowait_fill = "#FFB30059"    # Amber with 35% alpha - iowait fill
+system_fill = "#FA865059"    # Orange with 35% alpha - system fill
+iowait_fill = "#E1C01659"    # Yellow with 35% alpha - iowait fill
 idle_fill = "#80808033"      # Gray with 20% alpha - idle fill
 
 [priority]
 high   = "#E53935"     # Crimson
 normal = "#00E676"     # Emerald
-low    = "#42A5F5"     # Blue (matches charts.cpu)
+low    = "#42A5F5"     # Blue
 badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 
 [buttons.close]

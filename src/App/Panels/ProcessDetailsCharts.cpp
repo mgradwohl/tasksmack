@@ -215,14 +215,14 @@ void memoryTooltip(const ChartTimeAxis& axis, const MemoryChartData& data)
     if (*idxVal < data.shared.size())
     {
         rows.push_back({.label = MEM_SHARED_LABEL,
-                        .color = scheme.chartCpu,
+                        .color = scheme.chartMemoryShared,
                         .value = App::Detail::formatBytesWithRamShare(data.shared[*idxVal], data.percentPerByte)});
     }
     if (*idxVal < data.virtualBytes.size())
     {
         rows.push_back(
             {.label = MEM_VIRTUAL_LABEL,
-             .color = scheme.chartIo,
+             .color = scheme.chartMemoryVirtual,
              .value = UI::Widgets::formatSampleOrNA(data.virtualBytes[*idxVal], [](double v) { return UI::Format::formatBytes(v); })});
     }
     if (data.peakBytes > 0.0)
@@ -269,8 +269,8 @@ void drawMemorySeries(const ChartTimeAxis& axis, const MemoryChartData& data)
                    axis.timeData.data(),
                    data.shared.data(),
                    UI::Format::checkedCount(data.shared.size()),
-                   scheme.chartCpu,
-                   scheme.chartCpuFill,
+                   scheme.chartMemoryShared,
+                   scheme.chartMemorySharedFill,
                    seriesStyle(SeriesRole::Secondary, 0));
     }
 
@@ -282,8 +282,8 @@ void drawMemorySeries(const ChartTimeAxis& axis, const MemoryChartData& data)
                    axis.timeData.data(),
                    data.virtualBytes.data(),
                    UI::Format::checkedCount(data.virtualBytes.size()),
-                   scheme.chartIo,
-                   scheme.chartIoFill,
+                   scheme.chartMemoryVirtual,
+                   scheme.chartMemoryVirtualFill,
                    seriesStyle(SeriesRole::Secondary, 1));
         ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
     }
@@ -321,14 +321,14 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
             .tooltipText =
                 UI::InlineText::format("{}: {}", MEM_SHARED_LABEL, App::Detail::formatBytesWithRamShare(sharedNow, percentPerByte)),
             .value01 = UI::Widgets::normalizeToUnitInterval(sharedNow, memAxisUpper),
-            .color = theme.scheme().chartCpu,
+            .color = theme.scheme().chartMemoryShared,
         });
     }
     memoryBars.push_back({.valueText = UI::Format::formatBytes(smoothed.virtualBytes),
                           .label = MEM_VIRTUAL_LABEL,
                           .tooltipText = {},
                           .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.virtualBytes, virtAxisUpper),
-                          .color = theme.scheme().chartIo});
+                          .color = theme.scheme().chartMemoryVirtual});
 
     return memoryBars;
 }
@@ -356,10 +356,10 @@ void resourceTooltip(const ChartTimeAxis& axis, const ResourceChartData& data)
         return;
     }
     std::vector<UI::Widgets::TooltipRow> rows{
-        {.label = THREADS_LABEL, .color = theme.scheme().chartCpu, .value = App::Detail::formatCountOrNA(data.threads[*idx])},
-        {.label = HANDLE_LABEL, .color = theme.scheme().chartMemory, .value = App::Detail::formatCountOrNA(data.handles[*idx])},
+        {.label = THREADS_LABEL, .color = theme.scheme().chartThreads, .value = App::Detail::formatCountOrNA(data.threads[*idx])},
+        {.label = HANDLE_LABEL, .color = theme.scheme().chartHandles, .value = App::Detail::formatCountOrNA(data.handles[*idx])},
         {.label = FAULTS_LABEL,
-         .color = theme.accentColor(3),
+         .color = theme.scheme().chartPageFaults,
          .value = UI::Widgets::formatSampleOrNA(data.faults[*idx], [](double v) { return UI::Format::formatCountPerSecond(v); })},
     };
 #ifdef _WIN32
@@ -367,7 +367,7 @@ void resourceTooltip(const ChartTimeAxis& axis, const ResourceChartData& data)
     {
         const auto gdiValue = App::Detail::seriesValueAt(data.gdi, data.gdiTimeOffset, *idx);
         rows.push_back({.label = GDI_LABEL,
-                        .color = theme.accentColor(4),
+                        .color = theme.scheme().chartGdi,
                         .value = gdiValue ? UI::Format::formatIntLocalized(std::llround(*gdiValue)) : std::string("N/A")});
     }
 #endif
@@ -383,22 +383,22 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                axis.timeData.data(),
                data.threads.data(),
                plotCount,
-               theme.scheme().chartCpu,
-               theme.scheme().chartCpuFill,
+               theme.scheme().chartThreads,
+               theme.scheme().chartThreadsFill,
                seriesStyle(SeriesRole::Primary));
     plotSeries(HANDLE_LABEL,
                axis.timeData.data(),
                data.handles.data(),
                plotCount,
-               theme.scheme().chartMemory,
-               theme.scheme().chartMemoryFill,
+               theme.scheme().chartHandles,
+               theme.scheme().chartHandlesFill,
                seriesStyle(SeriesRole::Secondary, 0));
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
     plotSeries(FAULTS_LABEL,
                axis.timeData.data(),
                data.faults.data(),
                plotCount,
-               theme.accentColor(3),
+               theme.scheme().chartPageFaults,
                std::nullopt,
                seriesStyle(SeriesRole::Secondary, 1));
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
@@ -411,7 +411,7 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                    axis.timeData.subspan(data.gdiTimeOffset).data(),
                    data.gdi.data(),
                    gdiPlotCount,
-                   theme.accentColor(4),
+                   theme.scheme().chartGdi,
                    std::nullopt,
                    seriesStyle(SeriesRole::Secondary, 2));
     }
@@ -430,20 +430,20 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                             .label = THREADS_LABEL,
                             .tooltipText = {}, // The fallback, "Threads: <value>", says it all (#1019)
                             .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.threadCount, countAxisUpper),
-                            .color = theme.scheme().chartCpu};
+                            .color = theme.scheme().chartThreads};
     // An unreadable count (#1110) shows N/A, as its line shows a gap.
     const NowBar handlesBar{
         .valueText = App::Detail::countTextOrNA(smoothed.handleCountAvailable, smoothed.handleCount),
         .label = HANDLE_LABEL,
         .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
         .value01 = smoothed.handleCountAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.handleCount, countAxisUpper) : 0.0,
-        .color = theme.scheme().chartMemory};
+        .color = theme.scheme().chartHandles};
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(smoothed.pageFaultsPerSec),
                            .label = FAULTS_LABEL,
                            .tooltipText = {},
                            .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.pageFaultsPerSec, faultAxisUpper),
                            // The line's colour: this bar was chartIo while its line is accentColor(3) (#1004).
-                           .color = theme.accentColor(3)};
+                           .color = theme.scheme().chartPageFaults};
 #ifdef _WIN32
     // GDI objects NowBar (Windows-only). A missing reading is NaN: it is skipped by the axis bound and
     // shown as N/A, and a series with no reading at all -- a process TaskSmack cannot open -- is not
@@ -453,7 +453,7 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                         .tooltipText = {}, // The fallback, "GDI Objects: <value>", says it all (#1019)
                         .value01 =
                             smoothed.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(smoothed.gdiObjectCount, countAxisUpper) : 0.0,
-                        .color = theme.accentColor(4)};
+                        .color = theme.scheme().chartGdi};
 #endif
 
     NowBarList bars;
@@ -554,7 +554,7 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
                              .label = CPU_TOTAL_LABEL,
                              .tooltipText = {},
                              .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.cpuPercent, cpuAxisUpper),
-                             .color = theme.scheme().chartCpu}; // The Total line's colour (#1192)
+                             .color = theme.scheme().chartCpuTotal}; // The Total line's colour (#1192)
     const NowBar cpuUserNow{.valueText = UI::Format::percentOneDecimal(smoothed.cpuUserPercent),
                             .label = CPU_USER_LABEL,
                             .tooltipText = {},
@@ -587,7 +587,7 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
             // Total in its line's colour, not a usage-threshold colour, which matched nothing on the chart.
             const std::array rows{
                 UI::Widgets::TooltipRow{
-                    .label = CPU_TOTAL_LABEL, .color = theme.scheme().chartCpu, .value = UI::Format::percentOneDecimal(cpuData[*idx])},
+                    .label = CPU_TOTAL_LABEL, .color = theme.scheme().chartCpuTotal, .value = UI::Format::percentOneDecimal(cpuData[*idx])},
                 UI::Widgets::TooltipRow{
                     .label = CPU_USER_LABEL, .color = theme.scheme().cpuUser, .value = UI::Format::percentOneDecimal(cpuUserData[*idx])},
                 UI::Widgets::TooltipRow{.label = CPU_SYSTEM_LABEL,
@@ -669,7 +669,7 @@ void ProcessDetailsCharts::drawCpuBandsAndLines(std::span<const double> timeData
                      m_CpuPlotTotal.data(),
                      drawCount,
                      {ImPlotProp_LineColor,
-                      theme.scheme().chartCpu,
+                      theme.scheme().chartCpuTotal,
                       ImPlotProp_LineWeight,
                       UI::Widgets::lineWeight(UI::Widgets::PRIMARY_SERIES_WEIGHT)});
     UI::Widgets::plotStyledLine(
@@ -733,7 +733,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
             ctx.historyGeneration));
         if (chart.active())
         {
-            UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes, theme.scheme().chartIo);
+            UI::Widgets::setupSecondaryRateAxis(virtAxisUpper, UI::Widgets::formatAxisBytes, theme.scheme().chartMemoryVirtual);
             UI::Widgets::drawCollectingHint(alignedCount);
             drawMemorySeries(axis, data);
         }
@@ -817,7 +817,7 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
             ctx.historyGeneration));
         if (chart.active())
         {
-            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.accentColor(3));
+            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.scheme().chartPageFaults);
             UI::Widgets::drawCollectingHint(alignedCount);
             drawResourceSeries(axis, data);
         }
@@ -853,7 +853,7 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
                           .label = POWER_LABEL,
                           .tooltipText = {},
                           .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.powerWatts, powerAxisUpper),
-                          .color = theme.scheme().textInfo};
+                          .color = theme.scheme().chartPower};
 
     auto plot = [&]()
     {
@@ -872,13 +872,18 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
             ImPlot::PlotDummy("Power");
             return;
         }
-        plotLineWithFill(
-            POWER_LABEL, axis.timeData.data(), powerData.data(), UI::Format::checkedCount(powerData.size()), theme.scheme().textInfo);
+        // The role's own fill, as on the system Power chart, so charts.power_fill applies on every screen.
+        plotLineWithFill(POWER_LABEL,
+                         axis.timeData.data(),
+                         powerData.data(),
+                         UI::Format::checkedCount(powerData.size()),
+                         theme.scheme().chartPower,
+                         theme.scheme().chartPowerFill);
         if (const auto idx = hoveredSampleIndex(axis.timeData, powerData.size()))
         {
             const std::array rows{UI::Widgets::TooltipRow{
                 .label = POWER_LABEL,
-                .color = theme.scheme().textInfo,
+                .color = theme.scheme().chartPower,
                 .value = UI::Widgets::formatSampleOrNA(powerData[*idx], [](double v) { return UI::Format::formatPowerOrZero(v); })}};
             UI::Widgets::renderHistoryTooltip(axis.timeData[*idx], rows);
         }
