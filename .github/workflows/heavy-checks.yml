@@ -1,11 +1,23 @@
 name: Heavy Checks
 
 on:
+  # On main only when a merge touches what the benchmarks measure or this workflow (#1406); a
+  # top-level paths filter is fine here because Heavy Checks is not a required check. Everything
+  # else on main is covered by the nightly run below.
   push:
     branches: [main]
+    paths:
+      - 'src/Domain/**'
+      - 'src/UI/**'
+      - 'benchmarks/**'
+      - 'perf-data/linux-ci-baseline.json'
+      - 'tools/bench.sh'
+      - 'tools/check-benchmark-regression.py'
+      - '.github/workflows/heavy-checks.yml'
   schedule:
-    # Weekly on Mondays at 04:00 UTC
-    - cron: '0 4 * * 1'
+    # Nightly at 04:00 UTC (was weekly): coverage, Windows coverage, benchmarks; the sanitizer
+    # jobs below still run on this schedule too.
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
