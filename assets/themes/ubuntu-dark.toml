@@ -46,7 +46,7 @@ text_primary = "#F8F8F8"   # Bright white for maximum contrast on dark bg
 text_disabled = "#C0C0C0"  # Brighter gray for disabled text
 text_muted = "#CCCCCC"     # Much brighter for chart axis labels
 text_error = "#FF655E"     # Light Red - error messages
-text_warning = "#FFA348"   # Light Orange - warning messages
+text_warning = "#FD9F4E"   # Orange - warning messages
 text_success = "#51D384"   # Light Green - success messages
 text_info = "#62A0EA"      # Light Blue - informational text
 
@@ -68,34 +68,45 @@ idle = "#AFAFAF"       # Gray - idle kernel thread (I)
 # =============================================================================
 [charts]
 cpu = "#3584E4"       # Blue - CPU usage line
-memory = "#33D17A"    # Light Green - memory usage line
-io = "#ED333B"        # Light Red - I/O read usage line
-io_write = "#26C6DA"        # Cyan - I/O write usage line
-net_tx = "#ED7014"          # Ubuntu Orange - Network transmit (sent) line
-net_rx = "#9A9CFF"          # Light Purple - Network receive line
+memory = "#79C93A"    # Lime - memory usage line
+io = "#E16B16"        # Orange - I/O read usage line
+io_write = "#8C8A55"        # Olive - I/O write usage line
+net_tx = "#DFA527"          # Amber - Network transmit (sent) line
+net_rx = "#41C2D8"          # Cyan - Network receive line
 cpu_fill = "#3584E44D"       # Blue with 30% alpha - CPU fill
-memory_fill = "#33D17A4D"    # Light Green with 30% alpha - memory fill
-io_fill = "#ED333B4D"        # Light Red with 30% alpha - I/O read fill
-io_write_fill = "#26C6DA4D"   # Cyan with 30% alpha - I/O write fill
-net_tx_fill = "#ED70144D"    # Ubuntu Orange with 30% alpha - Network TX fill
-net_rx_fill = "#9A9CFF4D"    # Light Purple with 30% alpha - Network RX fill
+memory_fill = "#79C93A4D"    # Lime with 30% alpha - memory fill
+io_fill = "#E16B164D"        # Orange with 30% alpha - I/O read fill
+io_write_fill = "#8C8A554D"   # Olive with 30% alpha - I/O write fill
+net_tx_fill = "#DFA5274D"    # Amber with 30% alpha - Network TX fill
+net_rx_fill = "#41C2D84D"    # Cyan with 30% alpha - Network RX fill
 peak_line = "#F5C211B3"      # Gold with 70% alpha - peak reference line
+
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#3584E4"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#ACE6B3"   # Pale green - Memory: Cached (also Process Shared)
+swap          = "#A074E1"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#E8DF2F"   # Pale yellow - Power draw: system, process and GPU
+battery       = "#2DC6BF"   # Teal - Battery charge
+threads       = "#E5638F"   # Rose - Thread count
+handles       = "#9BA3AD"   # Gray - Handles / file descriptors
+page_faults   = "#9EA2FA"   # Violet - Page faults per second
+gdi           = "#1A9D8C"   # Teal - GDI objects (Windows)
 
 # =============================================================================
 # GPU METRICS COLORS
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#A958C4"           # Purple - GPU utilization line
-utilization_fill = "#A958C44D"    # Purple with 30% alpha - GPU fill
-memory = "#33D17A"                # Green - GPU memory line (#1197) (distinct from io Red)
-memory_fill = "#33D17A4D"         # Green with 30% alpha - GPU memory fill
-temperature = "#F5C211"           # Gold - GPU temperature line
-power = "#33D17A"                 # Green - GPU power draw line
+utilization = "#DC37AE"           # Magenta - GPU utilization line
+utilization_fill = "#DC37AE4D"    # Magenta with 30% alpha - GPU fill
+memory = "#76C431"                # Lime - GPU memory line (#1197)
+memory_fill = "#76C4314D"         # Lime with 30% alpha - GPU memory fill
+temperature = "#F47217"           # Orange - GPU temperature line
+power = "#E8DF2F"                 # Pale yellow - GPU power draw line
 encoder = "#33C7DE"               # Teal - GPU encoder utilization
-decoder = "#F66151"               # Coral - GPU decoder utilization
-clock = "#62A0EA"             # Ubuntu Light Blue - GPU clock speed line (theme-native)
-clock_fill = "#62A0EACC"      # Ubuntu Light Blue with 80% alpha - GPU clock fill
+decoder = "#899EFD"               # Blue - GPU decoder utilization
+clock = "#2B8FCA"             # Blue - GPU clock speed line
+clock_fill = "#2B8FCACC"      # Blue with 80% alpha - GPU clock fill
 fan = "#7C7C7C"               # Neutral Gray - GPU fan speed line
 
 # =============================================================================
@@ -104,17 +115,17 @@ fan = "#7C7C7C"               # Neutral Gray - GPU fan speed line
 # =============================================================================
 [cpu_breakdown]
 user = "#6FAEFF"      # Blue - user CPU time
-system = "#ED333B"    # Light Red - system/kernel time
-iowait = "#FFA348"    # Light Orange - I/O wait time
+system = "#F86F15"    # Orange - system/kernel time
+iowait = "#FDB230"    # Amber - I/O wait time
 idle = "#3D3D3D"      # Dark gray - idle time
 user_fill = "#6FAEFF59"      # Blue with 35% alpha - user fill
-system_fill = "#ED333B59"    # Light Red with 35% alpha - system fill
-iowait_fill = "#FFA34859"    # Light Orange with 35% alpha - iowait fill
+system_fill = "#F86F1559"    # Orange with 35% alpha - system fill
+iowait_fill = "#FDB23059"    # Amber with 35% alpha - iowait fill
 idle_fill = "#3D3D3D33"      # Dark gray with 20% alpha - idle fill
 
 [priority]
-high   = "#E01B24"     # Ubuntu Red (matches progress.high)
-normal = "#33D17A"     # Ubuntu Green (matches progress.low)
+high   = "#E01B24"     # Ubuntu Red
+normal = "#33D17A"     # Ubuntu Green
 low    = "#9A9CFF"     # Light Purple
 badge_text_color = "#FFFFFF"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 

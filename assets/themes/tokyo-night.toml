@@ -34,11 +34,11 @@ text_disabled = "#565F89"
 text_muted = "#A9B1D6"
 text_error = "#F7768E"
 text_warning = "#C1934E"
-text_success = "#9ECE6A"
+text_success = "#A5CC68"
 text_info = "#7AA2F7"
 
 [status]
-running = "#9ECE6A"
+running = "#9FCE5E"
 sleeping = "#7DA5FA"
 disk_sleep = "#E0AF68"
 zombie = "#FF7D95"
@@ -46,41 +46,52 @@ stopped = "#BB9AF7"
 idle = "#9EA4C9"
 
 [charts]
-cpu = "#749DF1"
-memory = "#9ECE6A"
-io = "#F7768E"
-io_write = "#FF9E64"
+cpu = "#689FF1"
+memory = "#79DA8C"
+io = "#FBA164"
+io_write = "#9A8D61"
 net_tx = "#F3CD9B"
-net_rx = "#BB9AF7"
-cpu_fill = "#749DF14D"
-memory_fill = "#9ECE6A4D"
-io_fill = "#F7768E4D"
-io_write_fill = "#FF9E644D"
+net_rx = "#5ED2DF"
+cpu_fill = "#689FF14D"
+memory_fill = "#79DA8C4D"
+io_fill = "#FBA1644D"
+io_write_fill = "#9A8D614D"
 net_tx_fill = "#F3CD9B4D"
-net_rx_fill = "#BB9AF74D"
+net_rx_fill = "#5ED2DF4D"
 peak_line = "#C0CAF5B3"
 
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#689FF1"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#C6F1CE"   # Pale green - Memory: Cached (also Process Shared)
+swap          = "#C095EB"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#F7E56E"   # Pale yellow - Power draw: system, process and GPU
+battery       = "#63DFCB"   # Teal - Battery charge
+threads       = "#C96B91"   # Rose - Thread count
+handles       = "#B0B6C1"   # Gray - Handles / file descriptors
+page_faults   = "#99A1D7"   # Blue - Page faults per second
+gdi           = "#7CF4EB"   # Pale teal - GDI objects (Windows)
+
 [charts.gpu]
-utilization = "#9C85C4"
-utilization_fill = "#9C85C44D"
-memory = "#30899A"
-memory_fill = "#30899A4D"
-temperature = "#E0AF68"
-power = "#C0E09A"
-encoder = "#7DCFFF"
-decoder = "#73DACA"
-clock = "#7AA2F7"
-clock_fill = "#7AA2F7CC"
+utilization = "#D66BAF"
+utilization_fill = "#D66BAF4D"
+memory = "#68DA9A"
+memory_fill = "#68DA9A4D"
+temperature = "#F3B171"
+power = "#F7E56E"
+encoder = "#78E2D1"
+decoder = "#CCA6FC"
+clock = "#718CF3"
+clock_fill = "#718CF3CC"
 fan = "#6E76A2"
 
 [cpu_breakdown]
 user = "#ABD0FF"
-system = "#F7768E"
-iowait = "#E0AF68"
+system = "#FDB69E"
+iowait = "#EDB457"
 idle = "#414868"
 user_fill = "#ABD0FF59"
-system_fill = "#F7768E59"
-iowait_fill = "#E0AF6859"
+system_fill = "#FDB69E59"
+iowait_fill = "#EDB45759"
 idle_fill = "#41486833"
 
 [priority]

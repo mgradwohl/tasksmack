@@ -33,8 +33,8 @@ colors = [
 # =============================================================================
 [progress]
 low = "#3B9F42"       # 0-50%   - Medium green (healthy)
-medium = "#2F8635"    # 50-80%  - Darker green (caution)
-high = "#1B5E20"      # 80-100% - Darkest green (critical)
+medium = "#886736"    # 50-80%  - Sand (caution)
+high = "#773D37"      # 80-100% - Deep red (critical)
 
 # =============================================================================
 # SEMANTIC TEXT COLORS
@@ -45,8 +45,8 @@ high = "#1B5E20"      # 80-100% - Darkest green (critical)
 text_primary = "#0D1A0D"   # Dark green-tinted text for contrast on light bg
 text_disabled = "#5A6B5A"  # Muted green-gray for disabled text
 text_muted = "#6C6C6C"     # Gray
-text_error = "#1B5E20"     # Darkest green (stands out)
-text_warning = "#1A431A"   # Dark green
+text_error = "#693034"     # Darkest green (stands out)
+text_warning = "#58340A"   # Dark green
 text_success = "#047D22"   # Medium green
 text_info = "#46774A"      # Medium-dark green
 
@@ -67,49 +67,60 @@ idle = "#36633B"       # I - Very light green - idle kernel thread
 # Colors for specific metric lines in graphs
 # =============================================================================
 [charts]
-cpu = "#2E7D32"       # Dark green - CPU usage line
+cpu = "#2D5784"       # Deep blue - CPU usage line
 memory = "#3B9F42"    # Medium green - memory usage line
-io = "#003703"        # Darkest green - I/O read usage line (maximum contrast)
-io_write = "#009AAE"        # Cyan - I/O write usage line (maximum contrast)
-net_tx = "#68976A"          # Light glow - Network transmit (sent) line
-net_rx = "#205E24"          # Dark moss - Network receive line
-cpu_fill = "#2E7D324D"       # Dark green with 30% alpha - CPU fill
+io = "#854712"        # Orange - I/O read usage line (maximum contrast)
+io_write = "#473F1F"        # Deep olive - I/O write usage line (maximum contrast)
+net_tx = "#7C6446"          # Sand - Network transmit (sent) line
+net_rx = "#5394A2"          # Cyan - Network receive line
+cpu_fill = "#2D57844D"       # Deep blue with 30% alpha - CPU fill
 memory_fill = "#3B9F424D"    # Medium green with 30% alpha - memory fill
-io_fill = "#0037034D"        # Darkest green with 30% alpha - I/O read fill
-io_write_fill = "#009AAE4D"   # Cyan with 30% alpha - I/O write fill
-net_tx_fill = "#68976A4D"    # Light glow with 30% alpha - Network TX fill
-net_rx_fill = "#205E244D"    # Dark moss with 30% alpha - Network RX fill
+io_fill = "#8547124D"        # Orange with 30% alpha - I/O read fill
+io_write_fill = "#473F1F4D"   # Deep olive with 30% alpha - I/O write fill
+net_tx_fill = "#7C64464D"    # Sand with 30% alpha - Network TX fill
+net_rx_fill = "#5394A24D"    # Cyan with 30% alpha - Network RX fill
 peak_line = "#00771FB3"      # Medium green with 70% alpha - peak reference line
+
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#2D5784"   # Deep blue - CPU Total line over the User/System bands
+memory_cached = "#043B23"   # Deep green - Memory: Cached (also Process Shared)
+swap          = "#3E3F6D"   # Deep violet - Memory: Swap (also Process Virtual)
+power         = "#707653"   # Olive - Power draw: system, process and GPU
+battery       = "#095760"   # Deep cyan - Battery charge
+threads       = "#5B3D5E"   # Deep magenta - Thread count
+handles       = "#454034"   # Taupe - Handles / file descriptors
+page_faults   = "#606390"   # Violet - Page faults per second
+gdi           = "#256359"   # Teal - GDI objects (Windows)
 
 # =============================================================================
 # GPU METRICS COLORS
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#003A0B"           # Deepest green - GPU utilization line (#1197)
-utilization_fill = "#003A0B4D"    # Deepest green with 30% alpha - GPU fill
-memory = "#1B8B2B"                # Medium-dark green - GPU memory line
-memory_fill = "#1B8B2B4D"         # Medium-dark green with 30% alpha - GPU memory fill
-temperature = "#3B9F42"           # Medium green - GPU temperature line
-power = "#2E7D32"                 # Dark green - GPU power draw line
-encoder = "#68976A"               # Light glow - GPU encoder utilization (distinct from utilization)
-decoder = "#20672C"               # Dark moss - GPU decoder utilization (distinct from memory)
+utilization = "#603D5C"           # Deep magenta - GPU utilization line (#1197)
+utilization_fill = "#603D5C4D"    # Deep magenta with 30% alpha - GPU fill
+memory = "#437F68"                # Green - GPU memory line
+memory_fill = "#437F684D"         # Green with 30% alpha - GPU memory fill
+temperature = "#958B80"           # Taupe - GPU temperature line
+power = "#707653"                 # Olive - GPU power draw line
+encoder = "#658349"               # Lime - GPU encoder utilization
+decoder = "#053D18"               # Deep green - GPU decoder utilization
 clock = "#009AAE"             # Teal - GPU clock speed line (#1197)
 clock_fill = "#009AAECC"      # Teal with 80% alpha - GPU clock fill
-fan = "#00560C"               # Dark green - GPU fan speed line (theme-native)
+fan = "#314134"               # Taupe - GPU fan speed line
 
 # =============================================================================
 # CPU BREAKDOWN COLORS
 # Colors for the stacked CPU usage bar
 # =============================================================================
 [cpu_breakdown]
-user = "#00560C"      # Dark green - user CPU time
-system = "#3B9F42"    # Medium green - system/kernel time
-iowait = "#053108"    # Darkest green - I/O wait time
+user = "#023242"      # Deep cyan - user CPU time
+system = "#8D4E2B"    # Orange - system/kernel time
+iowait = "#634C3F"    # Deep tan - I/O wait time
 idle = "#C8E6C9"      # Very light green - idle time
-user_fill = "#00560C59"      # Dark green with 35% alpha - user fill
-system_fill = "#3B9F4259"    # Medium green with 35% alpha - system fill
-iowait_fill = "#05310859"    # Darkest green with 35% alpha - iowait fill
+user_fill = "#02324259"      # Deep cyan with 35% alpha - user fill
+system_fill = "#8D4E2B59"    # Orange with 35% alpha - system fill
+iowait_fill = "#634C3F59"    # Deep tan with 35% alpha - iowait fill
 idle_fill = "#C8E6C933"      # Very light green with 20% alpha - idle fill
 
 [priority]

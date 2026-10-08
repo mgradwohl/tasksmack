@@ -24,7 +24,7 @@ colors = [
 ]
 
 [progress]
-low = "#756F3A"       # 0-50%   - Dark olive green (healthy)
+low = "#467D49"       # 0-50%   - Green (healthy)
 medium = "#AC6E08"    # 50-80%  - Dark amber (caution)
 high = "#9D0006"      # 80-100% - Dark red (critical)
 
@@ -33,7 +33,7 @@ text_primary = "#3C3836"
 text_disabled = "#928374"
 text_muted = "#65594E"
 text_error = "#7E0F09"
-text_warning = "#6C4E2F"
+text_warning = "#6C4F3E"
 text_success = "#625E00"
 text_info = "#056577"
 
@@ -46,19 +46,30 @@ stopped = "#87376A"
 idle = "#605244"
 
 [charts]
-cpu = "#076678"
-memory = "#79740E"
-io = "#870F09"
-io_write = "#AF3A03"
-net_tx = "#AC6E08"
-net_rx = "#8F3F71"
-cpu_fill = "#0766784D"
-memory_fill = "#79740E4D"
-io_fill = "#870F094D"
-io_write_fill = "#AF3A034D"
-net_tx_fill = "#AC6E084D"
-net_rx_fill = "#8F3F714D"
+cpu = "#2E609D"
+memory = "#406F29"
+io = "#92530B"
+io_write = "#5C4F30"
+net_tx = "#9A7615"
+net_rx = "#1B6E79"
+cpu_fill = "#2E609D4D"
+memory_fill = "#406F294D"
+io_fill = "#92530B4D"
+io_write_fill = "#5C4F304D"
+net_tx_fill = "#9A76154D"
+net_rx_fill = "#1B6E794D"
 peak_line = "#3C3836B3"
+
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#2E609D"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#294621"   # Deep green - Memory: Cached (also Process Shared)
+swap          = "#60469B"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#676C47"   # Olive - Power draw: system, process and GPU
+battery       = "#24706C"   # Teal - Battery charge
+threads       = "#A54D86"   # Magenta - Thread count
+handles       = "#585342"   # Taupe - Handles / file descriptors
+page_faults   = "#413D5E"   # Deep violet - Page faults per second
+gdi           = "#117462"   # Teal - GDI objects (Windows)
 
 [charts.gpu]
 utilization = "#8F3F71"
@@ -66,20 +77,20 @@ utilization_fill = "#8F3F714D"
 memory = "#427B58"
 memory_fill = "#427B584D"
 temperature = "#AC6E08"
-power = "#625E00"
-encoder = "#79740E"
-decoder = "#9D0006"
+power = "#676C47"
+encoder = "#815320"
+decoder = "#513486"
 clock = "#003F50"
 clock_fill = "#003F50CC"
 fan = "#88796B"
 
 [cpu_breakdown]
 user = "#003F50"
-system = "#9D0006"
+system = "#654D20"
 iowait = "#AC6E08"
 idle = "#D5C4A1"
 user_fill = "#003F5059"
-system_fill = "#9D000659"
+system_fill = "#654D2059"
 iowait_fill = "#AC6E0859"
 idle_fill = "#D5C4A133"
 

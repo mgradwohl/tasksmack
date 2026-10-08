@@ -47,7 +47,7 @@ text_disabled = "#666666"  # Muted gray for disabled text
 text_muted = "#6A6A6A"     # Gray - dimmed text
 text_error = "#950E16"     # Red - error messages
 text_warning = "#BA4300"   # Orange - warning messages
-text_success = "#2A7A2D"   # Green - success messages
+text_success = "#17773A"   # Green - success messages
 text_info = "#006BBF"      # Blue - informational text
 
 # =============================================================================
@@ -68,32 +68,43 @@ idle = "#575757"       # Gray - idle kernel thread (I)
 # =============================================================================
 [charts]
 cpu = "#0078D4"       # Windows Blue - CPU usage line
-memory = "#117720"    # Green - memory usage line
-io = "#E74856"        # Red - I/O read usage line
-io_write = "#8764B8"        # Purple - I/O write usage line (was Network Received's teal, #1197)
-net_tx = "#E86B05"          # Orange - Network transmit (sent) line
+memory = "#4F7E0B"    # Lime - memory usage line
+io = "#A75E03"        # Orange - I/O read usage line
+io_write = "#686339"        # Olive - I/O write usage line
+net_tx = "#B58216"          # Amber - Network transmit (sent) line
 net_rx = "#009FAF"          # Teal - Network receive line
 cpu_fill = "#0078D44D"       # Windows Blue with 30% alpha - CPU fill
-memory_fill = "#1177204D"    # Green with 30% alpha - memory fill
-io_fill = "#E748564D"        # Red with 30% alpha - I/O read fill
-io_write_fill = "#8764B84D"   # Purple with 30% alpha - I/O write fill
-net_tx_fill = "#E86B054D"    # Orange with 30% alpha - Network TX fill
+memory_fill = "#4F7E0B4D"    # Lime with 30% alpha - memory fill
+io_fill = "#A75E034D"        # Orange with 30% alpha - I/O read fill
+io_write_fill = "#6863394D"   # Olive with 30% alpha - I/O write fill
+net_tx_fill = "#B582164D"    # Amber with 30% alpha - Network TX fill
 net_rx_fill = "#009FAF4D"    # Teal with 30% alpha - Network RX fill
 peak_line = "#BB4600B3"      # Orange with 70% alpha - peak reference line
+
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#0078D4"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#20593A"   # Deep green - Memory: Cached (also Process Shared)
+swap          = "#8C65B7"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#88915A"   # Olive - Power draw: system, process and GPU
+battery       = "#29878A"   # Teal - Battery charge
+threads       = "#B23B5D"   # Rose - Thread count
+handles       = "#5A6C80"   # Blue - Handles / file descriptors
+page_faults   = "#4E468F"   # Deep violet - Page faults per second
+gdi           = "#16816E"   # Teal - GDI objects (Windows)
 
 # =============================================================================
 # GPU METRICS COLORS
 # Colors for GPU monitoring graphs, bars, and badges
 # =============================================================================
 [charts.gpu]
-utilization = "#8764B8"           # Purple - GPU utilization line
-utilization_fill = "#8764B84D"    # Purple with 30% alpha - GPU fill
-memory = "#D9008A"                # Magenta - GPU memory line (distinct from io Red)
-memory_fill = "#D9008A4D"         # Magenta with 30% alpha - GPU memory fill
+utilization = "#B430A8"           # Magenta - GPU utilization line
+utilization_fill = "#B430A84D"    # Magenta with 30% alpha - GPU fill
+memory = "#169751"                # Green - GPU memory line
+memory_fill = "#1697514D"         # Green with 30% alpha - GPU memory fill
 temperature = "#F46007"           # Gold - GPU temperature line
-power = "#006605"                 # Green - GPU power draw line
+power = "#88915A"                 # Olive - GPU power draw line
 encoder = "#009FAF"               # Teal - GPU encoder utilization
-decoder = "#9B0460"               # Dark Magenta - GPU decoder utilization
+decoder = "#603280"               # Deep violet - GPU decoder utilization
 clock = "#338DE9"             # Windows Blue - GPU clock speed line (theme-native)
 clock_fill = "#338DE9CC"      # Windows Blue with 80% alpha - GPU clock fill
 fan = "#808080"               # Neutral Gray - GPU fan speed line
@@ -104,17 +115,17 @@ fan = "#808080"               # Neutral Gray - GPU fan speed line
 # =============================================================================
 [cpu_breakdown]
 user = "#004FA5"      # Windows Blue - user CPU time
-system = "#E74856"    # Red - system/kernel time
+system = "#AC6110"    # Orange - system/kernel time
 iowait = "#BD8100"    # Gold - I/O wait time
 idle = "#D0D0D0"      # Light gray - idle time
 user_fill = "#004FA559"      # Windows Blue with 35% alpha - user fill
-system_fill = "#E7485659"    # Red with 35% alpha - system fill
+system_fill = "#AC611059"    # Orange with 35% alpha - system fill
 iowait_fill = "#BD810059"    # Gold with 35% alpha - iowait fill
 idle_fill = "#D0D0D033"      # Light gray with 20% alpha - idle fill
 
 [priority]
-high   = "#E74856"     # Red (matches progress.high)
-normal = "#107C10"     # Green (matches progress.low)
+high   = "#E74856"     # Red
+normal = "#107C10"     # Green
 low    = "#7F7AD6"     # Purple
 badge_text_color = "#1A1A1A"  # Preferred badge text; a fill it is too faint on gets the other text colour (#1130)
 

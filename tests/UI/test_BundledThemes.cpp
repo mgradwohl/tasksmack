@@ -567,7 +567,7 @@ struct HueRange
 constexpr HueRange RED{.lo = 0.0, .hi = 45.0};
 constexpr HueRange ORANGE{.lo = 38.0, .hi = 68.0};
 constexpr HueRange AMBER{.lo = 62.0, .hi = 92.0};
-constexpr HueRange RAMP_AMBER{.lo = 55.0, .hi = 100.0};
+constexpr HueRange RAMP_AMBER{.lo = 45.0, .hi = 100.0};
 constexpr HueRange BROWN_OLIVE{.lo = 68.0, .hi = 118.0};
 constexpr HueRange YELLOW{.lo = 88.0, .hi = 118.0};
 constexpr HueRange GREEN{.lo = 120.0, .hi = 175.0};
@@ -575,10 +575,12 @@ constexpr HueRange CYAN_TEAL{.lo = 175.0, .hi = 228.0};
 constexpr HueRange BLUE{.lo = 215.0, .hi = 275.0};
 constexpr HueRange VIOLET{.lo = 280.0, .hi = 320.0};
 constexpr HueRange MAGENTA{.lo = 318.0, .hi = 360.0};
-// Status text: warning is amber to orange (light themes darken it towards brown), success green. Wider
-// than the series families: their job is only to read as caution and as fine (Monochrome's were all green).
-constexpr HueRange WARNING{.lo = 40.0, .hi = 100.0};
-constexpr HueRange SUCCESS{.lo = 115.0, .hi = 175.0};
+// Status text and the load ramp: warning runs orange to Cyberpunk's neon yellow (light themes darken it
+// towards brown), success and the ramp's first step green to Gruvbox's and Solarized's yellow-green.
+// Wider than the series families: their job is only to read as caution and as fine (Monochrome's were
+// all green). The ramp's order is checked on its own.
+constexpr HueRange WARNING{.lo = 40.0, .hi = 110.0};
+constexpr HueRange SUCCESS{.lo = 105.0, .hi = 175.0};
 // No data series is drawn in red: hue 12..36 with chroma >= 0.06. Below 12 is pink, above 36 orange.
 constexpr HueRange RED_BAND{.lo = 12.0, .hi = 36.0};
 constexpr double RED_BAND_MIN_CHROMA = 0.06;
@@ -756,7 +758,7 @@ TEST(ThemePaletteTest, LoadRampRunsGreenAmberRedAndErrorReadsAsSevere)
         const ColorDifference::Oklch high = ColorDifference::toOklch(s.progressHigh);
         const ColorDifference::Oklch error = ColorDifference::toOklch(s.textError);
         const std::array<std::tuple<std::string_view, ColorDifference::Oklch, HueRange>, 6> steps{{
-            {"progress.low", low, GREEN},
+            {"progress.low", low, SUCCESS},
             {"progress.medium", medium, RAMP_AMBER},
             {"progress.high", high, RED},
             {"semantic.text_error", error, RED},
@@ -775,11 +777,16 @@ TEST(ThemePaletteTest, LoadRampRunsGreenAmberRedAndErrorReadsAsSevere)
         EXPECT_GE(ColorDifference::deltaE2000(s.textError, s.textSuccess), SEVERITY_MIN_DE) << name;
         EXPECT_GE(ColorDifference::deltaE2000(s.textWarning, s.textSuccess), SEVERITY_MIN_DE) << name;
 
-        // The palest colour is the one with the least chroma.
-        const double warningChroma = ColorDifference::toOklch(s.textWarning).c;
-        const double successChroma = ColorDifference::toOklch(s.textSuccess).c;
-        EXPECT_GE(error.c, std::min(warningChroma, successChroma)) << name << ": text_error is the palest status colour";
-        EXPECT_GE(high.c, std::min(medium.c, low.c)) << name << ": progress.high is the palest step of the ramp";
+        // The palest colour is the least saturated and the lightest at once, as Monochrome's glow-green
+        // error was. Either alone is fine: Dracula's error is light to stay readable on its light plot.
+        const auto isPalest = [](const ColorDifference::Oklch& c, const ColorDifference::Oklch& b, const ColorDifference::Oklch& d)
+        {
+            return c.c < std::min(b.c, d.c) && c.l > std::max(b.l, d.l);
+        };
+        const ColorDifference::Oklch warning = ColorDifference::toOklch(s.textWarning);
+        const ColorDifference::Oklch success = ColorDifference::toOklch(s.textSuccess);
+        EXPECT_FALSE(isPalest(error, warning, success)) << name << ": text_error is the palest status colour";
+        EXPECT_FALSE(isPalest(high, medium, low)) << name << ": progress.high is the palest step of the ramp";
     }
 }
 

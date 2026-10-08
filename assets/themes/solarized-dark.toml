@@ -33,8 +33,8 @@ text_primary = "#CEDADC"
 text_disabled = "#586E75"
 text_muted = "#869DA4"
 text_error = "#EE7666"
-text_warning = "#DFB458"
-text_success = "#8FA315"
+text_warning = "#E0B761"
+text_success = "#87A711"
 text_info = "#469FE7"
 
 [status]
@@ -47,26 +47,37 @@ idle = "#9BB2BA"
 
 [charts]
 cpu = "#268BD2"
-memory = "#859900"
-io = "#FF6959"
-io_write = "#D2511C"
-net_tx = "#2AA198"
-net_rx = "#6E73C6"
+memory = "#67B758"
+io = "#BE693B"
+io_write = "#928D68"
+net_tx = "#E9992F"
+net_rx = "#34C1C0"
 cpu_fill = "#268BD24D"
-memory_fill = "#8599004D"
-io_fill = "#FF69594D"
-io_write_fill = "#D2511C4D"
-net_tx_fill = "#2AA1984D"
-net_rx_fill = "#6E73C64D"
+memory_fill = "#67B7584D"
+io_fill = "#BE693B4D"
+io_write_fill = "#928D684D"
+net_tx_fill = "#E9992F4D"
+net_rx_fill = "#34C1C04D"
 peak_line = "#93A1A1B3"
 
+# Metric roles (#1196): every metric has its own colour; a theme without them borrows the old fields.
+cpu_total     = "#268BD2"   # Blue - CPU Total line over the User/System bands
+memory_cached = "#A3E5C6"   # Pale green - Memory: Cached (also Process Shared)
+swap          = "#A384D7"   # Violet - Memory: Swap (also Process Virtual)
+power         = "#E8D852"   # Pale yellow - Power draw: system, process and GPU
+battery       = "#1FA599"   # Teal - Battery charge
+threads       = "#E8477B"   # Rose - Thread count
+handles       = "#95A7C1"   # Blue - Handles / file descriptors
+page_faults   = "#6C74D3"   # Blue - Page faults per second
+gdi           = "#1CB5A1"   # Teal - GDI objects (Windows)
+
 [charts.gpu]
-utilization = "#6E73C6"
-utilization_fill = "#6E73C64D"
-memory = "#D93D87"
-memory_fill = "#D93D874D"
+utilization = "#C15FAF"
+utilization_fill = "#C15FAF4D"
+memory = "#5CCA7C"
+memory_fill = "#5CCA7C4D"
 temperature = "#B58900"
-power = "#A5B82F"
+power = "#E8D852"
 encoder = "#2AA198"
 decoder = "#FF88B8"
 clock = "#469FE7"
@@ -75,11 +86,11 @@ fan = "#697F86"
 
 [cpu_breakdown]
 user = "#5FB3FD"
-system = "#E43A35"
+system = "#B76845"
 iowait = "#C09314"
 idle = "#586E75"
 user_fill = "#5FB3FD59"
-system_fill = "#E43A3559"
+system_fill = "#B7684559"
 iowait_fill = "#C0931459"
 idle_fill = "#586E7533"
 
