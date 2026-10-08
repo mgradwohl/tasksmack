@@ -17,7 +17,10 @@ namespace
 TEST(WindowsServiceProbeTest, EnumeratesWellKnownServices)
 {
     WindowsServiceProbe probe;
-    EXPECT_TRUE(probe.capabilities().canEnumerate);
+    if (!probe.capabilities().canEnumerate)
+    {
+        GTEST_SKIP() << probe.capabilities().unavailableReason;
+    }
 
     const auto services = probe.enumerate();
     if (services.empty())

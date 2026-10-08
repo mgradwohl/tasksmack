@@ -61,5 +61,22 @@ TEST(WindowsServiceProbeMathTest, SvchostGroupFromCommandLine)
     EXPECT_EQ(svchostGroup(""), "");
 }
 
+TEST(WindowsServiceProbeMathTest, ScmOpenFailureDisablesEnumerationWithAReason)
+{
+    const ServiceCapabilities opened = capabilitiesForScmOpen(0);
+    EXPECT_TRUE(opened.canEnumerate);
+    EXPECT_TRUE(opened.hasPid);
+    EXPECT_TRUE(opened.unavailableReason.empty());
+
+    const ServiceCapabilities denied = capabilitiesForScmOpen(5); // ERROR_ACCESS_DENIED
+    EXPECT_FALSE(denied.canEnumerate);
+    EXPECT_FALSE(denied.hasPid);
+    EXPECT_EQ(denied.unavailableReason, "Access to the Service Control Manager was denied");
+
+    const ServiceCapabilities other = capabilitiesForScmOpen(1722); // RPC_S_SERVER_UNAVAILABLE
+    EXPECT_FALSE(other.canEnumerate);
+    EXPECT_EQ(other.unavailableReason, "The Service Control Manager could not be opened (error 1722)");
+}
+
 } // namespace
 } // namespace Platform::Windows::ServiceMath

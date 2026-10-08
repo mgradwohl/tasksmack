@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 
@@ -121,6 +122,33 @@ namespace Platform::Windows::ServiceMath
     }
     const auto end = commandLine.find(' ', start);
     return std::string(commandLine.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start));
+}
+
+/// The probe's capabilities once OpenSCManagerW has been tried: everything when it succeeded
+/// (`scmOpenError` 0), else nothing, with the reason the UI shows. ERROR_ACCESS_DENIED is 5.
+[[nodiscard]] inline ServiceCapabilities capabilitiesForScmOpen(std::uint32_t scmOpenError)
+{
+    if (scmOpenError != 0)
+    {
+        constexpr std::uint32_t ACCESS_DENIED = 5;
+        ServiceCapabilities unavailable;
+        unavailable.unavailableReason = (scmOpenError == ACCESS_DENIED)
+                                          ? std::string("Access to the Service Control Manager was denied")
+                                          : std::format("The Service Control Manager could not be opened (error {})", scmOpenError);
+        return unavailable;
+    }
+    return {
+        .canEnumerate = true,
+        .hasDisplayName = true,
+        .hasDescription = true,
+        .hasStartType = true,
+        .hasServiceType = true,
+        .hasPid = true,
+        .hasBinaryPath = true,
+        .hasAccount = true,
+        .hasGroup = true,
+        .unavailableReason = {},
+    };
 }
 
 } // namespace Platform::Windows::ServiceMath

@@ -80,6 +80,7 @@ struct CachedConfig
 struct WindowsServiceProbe::Impl
 {
     Windows::UniqueServiceHandle scm;
+    DWORD scmOpenError = ERROR_SUCCESS; ///< OpenSCManagerW's error at construction; nonzero disables the probe.
     std::unordered_map<std::string, CachedConfig> configs;
 
     /// Read one service's configuration. Fields stay empty where the open or a query is denied.
@@ -132,7 +133,9 @@ WindowsServiceProbe::WindowsServiceProbe() : m_Impl(std::make_unique<Impl>())
     m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));
     if (!m_Impl->scm)
     {
-        spdlog::warn("WindowsServiceProbe: OpenSCManagerW failed (error {})", GetLastError());
+        const DWORD error = GetLastError();
+        m_Impl->scmOpenError = (error != ERROR_SUCCESS) ? error : ERROR_GEN_FAILURE;
+        spdlog::warn("WindowsServiceProbe: OpenSCManagerW failed (error {})", m_Impl->scmOpenError);
     }
 }
 
@@ -140,21 +143,15 @@ WindowsServiceProbe::~WindowsServiceProbe() = default;
 
 ServiceCapabilities WindowsServiceProbe::capabilities() const
 {
-    return {
-        .canEnumerate = true,
-        .hasDisplayName = true,
-        .hasDescription = true,
-        .hasStartType = true,
-        .hasServiceType = true,
-        .hasPid = true,
-        .hasBinaryPath = true,
-        .hasAccount = true,
-        .hasGroup = true,
-    };
+    return Windows::ServiceMath::capabilitiesForScmOpen(m_Impl->scmOpenError);
 }
 
 std::vector<ServiceInfo> WindowsServiceProbe::enumerate()
 {
+    if (m_Impl->scmOpenError != ERROR_SUCCESS)
+    {
+        return {}; // capabilities() already reports why
+    }
     if (!m_Impl->scm)
     {
         m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE));

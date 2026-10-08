@@ -79,6 +79,7 @@ TEST(ServiceModelTest, UnsupportedProbeReportsNoEnumeration)
 {
     ServiceModel model(std::make_unique<Platform::UnsupportedServiceProbe>());
     EXPECT_FALSE(model.capabilities().canEnumerate);
+    EXPECT_FALSE(model.capabilities().unavailableReason.empty());
     model.sample();
     EXPECT_TRUE(model.publication()->services.empty());
 }

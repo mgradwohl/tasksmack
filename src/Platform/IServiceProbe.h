@@ -52,7 +52,7 @@ struct ServiceInfo
 /// Which ServiceInfo fields this platform can fill at all, following ProcessCapabilities.
 struct ServiceCapabilities
 {
-    bool canEnumerate = false; ///< False: this platform has no service list (the UI says so).
+    bool canEnumerate = false; ///< False: no service list here; unavailableReason says why.
     bool hasDisplayName = false;
     bool hasDescription = false;
     bool hasStartType = false;
@@ -61,6 +61,9 @@ struct ServiceCapabilities
     bool hasBinaryPath = false;
     bool hasAccount = false;
     bool hasGroup = false;
+    /// Why canEnumerate is false, for the UI to show (e.g. the service manager denied access), so
+    /// an unreadable list is told apart from one with no services. Empty when canEnumerate is true.
+    std::string unavailableReason{};
 };
 
 /// Reads the system's services (read-only; #800 phase 1). Called from one thread at a time.
@@ -88,7 +91,7 @@ class UnsupportedServiceProbe final : public IServiceProbe
   public:
     [[nodiscard]] ServiceCapabilities capabilities() const override
     {
-        return {};
+        return {.unavailableReason = "Services aren't available on this platform yet"};
     }
 
     [[nodiscard]] std::vector<ServiceInfo> enumerate() override
