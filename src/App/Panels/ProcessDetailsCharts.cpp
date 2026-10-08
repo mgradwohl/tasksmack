@@ -1066,11 +1066,13 @@ void ProcessDetailsCharts::renderGpuTab(const ProcessChartContext& ctx)
     else if (gpuContent == Detail::GpuTabContent::NoUsage)
     {
         // Only the retained history is looked at, so the text names that window (#1210); rebuilt only
-        // when the window changes.
-        if (m_NoGpuUsageDetail.empty() || m_NoGpuUsageDetailSeconds != ctx.maxHistorySeconds)
+        // when the window changes. The window's whole milliseconds are the cache key: an exact
+        // integer compare, not float equality (#1487).
+        const std::int64_t windowKey = Detail::historyWindowCacheKey(ctx.maxHistorySeconds);
+        if (!m_NoGpuUsageDetailKey.has_value() || *m_NoGpuUsageDetailKey != windowKey)
         {
             m_NoGpuUsageDetail = Detail::noGpuUsageDetail(ctx.maxHistorySeconds);
-            m_NoGpuUsageDetailSeconds = ctx.maxHistorySeconds;
+            m_NoGpuUsageDetailKey = windowKey;
         }
         UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage", m_NoGpuUsageDetail.c_str());
     }
