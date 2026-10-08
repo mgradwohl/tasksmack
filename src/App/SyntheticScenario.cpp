@@ -10,6 +10,7 @@
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -344,6 +345,15 @@ std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReade
         return std::make_unique<Platform::UnsupportedProcessEnvironmentReader>();
     }
     return Platform::makeProcessEnvironmentReader();
+}
+
+std::unique_ptr<Platform::IProcessConnectionsReader> makeProcessConnectionsReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessConnectionsReader>();
+    }
+    return Platform::makeProcessConnectionsReader();
 }
 
 std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario)

@@ -95,6 +95,18 @@ inline void appendMessage(Datagram& datagram,
     return datagram;
 }
 
+/// A datagram holding one SOCK_DIAG_BY_FAMILY message per inet_diag_msg, with no attributes: what a
+/// dump without extensions returns (dumpInetSockets(), #799).
+[[nodiscard]] inline Datagram diagMessagesDatagram(std::span<const inet_diag_msg> messages, std::uint32_t sequence, std::uint32_t portId)
+{
+    Datagram datagram;
+    for (const auto& message : messages)
+    {
+        appendMessage(datagram, SOCK_DIAG_BY_FAMILY, sequence, portId, std::as_bytes(std::span{&message, 1}));
+    }
+    return datagram;
+}
+
 /// A datagram holding the dump's NLMSG_DONE.
 /// `status` is the dump's result (negative errno on failure); `flags` may add NLM_F_DUMP_INTR.
 [[nodiscard]] inline Datagram

@@ -253,7 +253,7 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ## Testing
 
 - Framework: Google Test in `tests/` mirroring `src/` structure
-- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, `IProcessEnvironmentReader`
+- Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, `IProcessEnvironmentReader`, `IProcessConnectionsReader`
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
 - Define mocks outside anonymous namespace when using `std::make_unique`
 - `TaskSmackTests` links the real ImGui and ImPlot libraries (`imgui_lib`, `implot_lib`), so a

@@ -3,6 +3,8 @@
 // Only compile on Linux with required headers
 #if defined(__linux__) && __has_include(<linux/inet_diag.h>) && __has_include(<linux/sock_diag.h>)
 
+#include "InetSocketTable.h"
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -60,6 +62,27 @@ class INetlinkTransport
     /// The port ID the kernel addresses this socket's replies to (their nlmsg_pid); 0 = unknown.
     [[nodiscard]] virtual std::uint32_t portId() const noexcept = 0;
 };
+
+/// A NETLINK_SOCK_DIAG socket bound for dump requests, with a bounded receive timeout; null if one
+/// can't be created or bound (no netlink, a seccomp filter).
+[[nodiscard]] std::unique_ptr<INetlinkTransport> makeSockDiagTransport();
+
+/// What came of one INET_DIAG dump.
+enum class InetDumpOutcome : std::uint8_t
+{
+    Complete,    ///< NLMSG_DONE with no error: every socket of that protocol and family was returned.
+    Unsupported, ///< The kernel has no diag module for it (ENOENT: IPv6 disabled, udp_diag not built).
+    Failed,      ///< Timed out, interrupted, or an error part-way: what was appended is not a reading.
+};
+
+/// One INET_DIAG dump of every `protocol` (IPPROTO_TCP or IPPROTO_UDP) socket of address `family`
+/// (AF_INET or AF_INET6), in every state, appending each socket's endpoints, state and inode to
+/// `results` (#799: the Process Details Connections section). No INET_DIAG_INFO is asked for: only the
+/// inet_diag_msg header is read. `sequence` must differ from the transport's earlier requests'; replies
+/// for any other sequence, or addressed to another port, are ignored, and anything still queued from
+/// an earlier dump is drained first (as for NetlinkSocketStats, #1160).
+[[nodiscard]] InetDumpOutcome dumpInetSockets(
+    INetlinkTransport& transport, std::uint32_t sequence, int protocol, int family, std::vector<InetSockets::RawInetSocket>& results);
 
 /// Queries TCP socket statistics via Netlink INET_DIAG.
 /// This provides per-socket byte counters that can be mapped to processes.

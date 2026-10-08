@@ -342,7 +342,9 @@ start time (#973); `lastTarget()` returns the whole target the most recent actio
 For `Platform::IProcessEnvironmentReader` (the on-demand environment read behind Process Details'
 Environment section, #179), use `TestMocks::MockProcessEnvironmentReader`: `setResult(...)` and
 `setHasEnvironment(...)` configure it, and `readCount()`/`lastTarget()` let a test check the read
-cadence and the target.
+cadence and the target. `Platform::IProcessConnectionsReader` (the Connections section, #799) has
+`TestMocks::MockProcessConnectionsReader` on the same terms (`setResult(...)`,
+`setHasConnections(...)`, `readCount()`, `lastTarget()`).
 
 ### Testing App/UI code that needs a live ImGui context
 
@@ -363,7 +365,7 @@ links but cannot run there.
 The production `.cpp` files exercised this way are listed under "Source files under test" in
 `tests/CMakeLists.txt` (for example `App/Panels/ProcessActionConfirm.cpp`,
 `App/Panels/ProcessActionsView.cpp`, `App/Panels/ProcessPriorityView.cpp`,
-`App/Panels/ProcessEnvironmentView.cpp`, `UI/ChartLegend.cpp`).
+`App/Panels/ProcessEnvironmentView.cpp`, `App/Panels/ProcessConnectionsView.cpp`, `UI/ChartLegend.cpp`).
 `TitleBarLayer.cpp`, `ShellLayer.cpp`, `SettingsLayer.cpp`, `AboutLayer.cpp`,
 `ElevationNoticeLayer.cpp`, `ProcessesPanel.cpp`, `ProcessDetailsPanel.cpp`,
 `SystemMetricsPanel.cpp`, the `*Section.cpp` tabs and `UI/UILayer.cpp` are not in that list. That

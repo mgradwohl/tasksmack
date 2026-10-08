@@ -141,6 +141,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessPriorityView.cpp
     src/App/Panels/ProcessEnvironmentView.cpp
+    src/App/Panels/ProcessConnectionsView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/MemorySection.cpp
@@ -163,6 +164,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
+    src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
@@ -219,6 +221,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessActions.h
     src/Platform/IProcessEnvironment.h
     src/Platform/ProcessEnvironment.h
+    src/Platform/IProcessConnections.h
     src/Platform/ISystemProbe.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
@@ -229,6 +232,7 @@ set(TASKSMACK_HEADERS
     src/Domain/ProcessSnapshot.h
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h
+    src/Domain/ProcessConnections.h
     src/Domain/ISamplable.h
     src/Domain/PublicationSlot.h
     src/Domain/SharedHistory.h
@@ -241,6 +245,8 @@ if(UNIX AND NOT APPLE)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Linux/LinuxProcessProbe.h
         src/Platform/Linux/LinuxProcessEnvironmentReader.h
+        src/Platform/Linux/LinuxProcessConnectionsReader.h
+        src/Platform/Linux/InetSocketTable.h
         src/Platform/Linux/LinuxDiskProbe.h
         src/Platform/Linux/LinuxPowerProbe.h
         src/Platform/Linux/LinuxGPUProbe.h

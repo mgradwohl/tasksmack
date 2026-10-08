@@ -101,6 +101,13 @@ inline constexpr int PROCESS_CMDLINE_CACHE_TTL_MS = 3000;
 // An environment rarely changes after exec, so a slow re-read is enough to notice one that does.
 inline constexpr int PROCESS_ENVIRONMENT_REFRESH_MS = 3000;
 
+// How often Process Details re-reads the selected process's TCP/UDP connections (milliseconds) (#799)
+// Read on demand, never in the per-sample enumeration: only for the selected process, only while its
+// Connections section is open, once when it opens or the selection changes and then at this cadence.
+// Each read walks the process's fd links and dumps the system's socket tables, so it is kept slower
+// than the sample rate; connections come and go faster than an environment, so faster than that.
+inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
+
 // -----------------------------------------------------------------------------
 // Instance Enumeration Caches (User-Configurable via TOML)
 // -----------------------------------------------------------------------------
