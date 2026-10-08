@@ -186,7 +186,7 @@ TEST(DetachedSpawnTest, RunsTheProgramWithExactlyTheArgvGivenAndLeavesNoZombie)
     ASSERT_TRUE(recorded.has_value()) << "the fake terminal never ran";
     // argv[0] is the shell's own; $@ is everything after it.
     const std::vector<std::string> expected(argv.begin() + 1, argv.end());
-    EXPECT_EQ(lines(*recorded), expected);
+    EXPECT_EQ(lines(recorded.value_or("")), expected);
     EXPECT_FALSE(std::filesystem::exists(dir.path / "injected"));
     EXPECT_EQ(readFile(dir.path / "fds.txt").value_or(""), "clean\n");
 
@@ -212,7 +212,8 @@ TEST(DetachedSpawnTest, FallbackWithoutCloseRangeLeaksNoDescriptorEvenAbove65535
     const std::filesystem::path terminal = writeFakeTerminal(dir.path, leakable.fds(), 0);
 
     const std::vector<std::string> argv{terminal.string(), "fallback"};
-    const auto result = Detail::spawnDetached(argv, Detail::SpawnHooks{.useCloseRange = false, .poll = nullptr});
+    const auto result = Detail::spawnDetached(
+        argv, Detail::SpawnHooks{.useCloseRange = false, .poll = nullptr, .useProcFdList = true, .setsid = nullptr, .beforeFork = nullptr});
     ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), terminal.string());
 
     ASSERT_TRUE(waitForFile(dir.path / "argv.txt").has_value()) << "the fake terminal never ran";
@@ -258,9 +259,10 @@ TEST(DetachedSpawnTest, ReportsAnExecFailureEvenWithStandardDescriptorsClosed)
     std::optional<std::expected<void, SpawnFailure>> result;
     withStdioClosed([&] { result = spawnDetached(missing); });
     ASSERT_TRUE(result.has_value());
-    ASSERT_FALSE(result->has_value());
-    EXPECT_EQ(result->error().stage, SpawnFailure::Stage::Exec);
-    EXPECT_EQ(result->error().error, ENOENT);
+    const std::expected<void, SpawnFailure> spawned = result.value_or(std::expected<void, SpawnFailure>{});
+    ASSERT_FALSE(spawned.has_value());
+    EXPECT_EQ(spawned.error().stage, SpawnFailure::Stage::Exec);
+    EXPECT_EQ(spawned.error().error, ENOENT);
 }
 
 TEST(DetachedSpawnTest, StartsTheProgramWithStandardDescriptorsClosed)
@@ -271,10 +273,10 @@ TEST(DetachedSpawnTest, StartsTheProgramWithStandardDescriptorsClosed)
     std::optional<std::expected<void, SpawnFailure>> result;
     withStdioClosed([&] { result = spawnDetached(argv); });
     ASSERT_TRUE(result.has_value());
-    EXPECT_TRUE(result->has_value());
+    EXPECT_TRUE(result.value_or(std::unexpected(SpawnFailure{})).has_value());
     const std::optional<std::string> recorded = waitForFile(dir.path / "argv.txt");
     ASSERT_TRUE(recorded.has_value()) << "the fake terminal never ran";
-    EXPECT_EQ(lines(*recorded), std::vector<std::string>{"no-stdio"});
+    EXPECT_EQ(lines(recorded.value_or("")), std::vector<std::string>{"no-stdio"});
 }
 
 /// A poll() that fails outright, as after ENOMEM; counts its calls.
@@ -295,11 +297,149 @@ TEST(DetachedSpawnTest, AFailedPollIsTreatedAsATimeoutAndNeverBlocksOnRead)
     const std::vector<std::string> missing{(dir.path / "no-such-terminal").string()};
     g_FailingPollCalls = 0;
     const auto started = std::chrono::steady_clock::now();
-    const auto result = Detail::spawnDetached(missing, Detail::SpawnHooks{.useCloseRange = true, .poll = &failingPoll});
+    const auto result = Detail::spawnDetached(
+        missing,
+        Detail::SpawnHooks{.useCloseRange = true, .poll = &failingPoll, .useProcFdList = true, .setsid = nullptr, .beforeFork = nullptr});
     const auto elapsed = std::chrono::steady_clock::now() - started;
     EXPECT_TRUE(result.has_value());
     EXPECT_EQ(g_FailingPollCalls, 1);
     EXPECT_LT(elapsed, std::chrono::milliseconds(1000));
+}
+
+TEST(DetachedSpawnTest, LastResortDescriptorWalkLeaksNoDescriptor)
+{
+    // Neither close_range() nor /proc/self/fd: every descriptor up to RLIMIT_NOFILE is marked.
+    const ScopedTempDir dir("tasksmack_detached_spawn_rlimit");
+    const LeakableFds leakable;
+    ASSERT_FALSE(leakable.fds().empty());
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, leakable.fds(), 0);
+
+    const std::vector<std::string> argv{terminal.string(), "rlimit-walk"};
+    const auto result = Detail::spawnDetached(
+        argv,
+        Detail::SpawnHooks{.useCloseRange = false, .poll = nullptr, .useProcFdList = false, .setsid = nullptr, .beforeFork = nullptr});
+    ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), terminal.string());
+    ASSERT_TRUE(waitForFile(dir.path / "argv.txt").has_value()) << "the fake terminal never ran";
+    EXPECT_EQ(readFile(dir.path / "fds.txt").value_or(""), "clean\n");
+}
+
+/// The descriptor beforeFork opens: what another thread might open, without O_CLOEXEC, after any
+/// pre-fork snapshot of /proc/self/fd was taken.
+constexpr int LATE_FD = 150;
+void openLateInheritableFd()
+{
+    ::dup2(STDERR_FILENO, LATE_FD);
+}
+
+TEST(DetachedSpawnTest, ADescriptorOpenedJustBeforeForkIsNotInherited)
+{
+    // The fallback lists /proc/self/fd in the child itself, so even a descriptor opened immediately
+    // before fork() is marked close-on-exec.
+    const ScopedTempDir dir("tasksmack_detached_spawn_late_fd");
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, {LATE_FD}, 0);
+    const std::vector<std::string> argv{terminal.string(), "late-fd"};
+    const auto result = Detail::spawnDetached(
+        argv,
+        Detail::SpawnHooks{
+            .useCloseRange = false, .poll = nullptr, .useProcFdList = true, .setsid = nullptr, .beforeFork = &openLateInheritableFd});
+    ::close(LATE_FD);
+    ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), terminal.string());
+    ASSERT_TRUE(waitForFile(dir.path / "argv.txt").has_value()) << "the fake terminal never ran";
+    EXPECT_EQ(readFile(dir.path / "fds.txt").value_or(""), "clean\n");
+}
+
+/// A setsid() that fails, as it does for a process-group leader. Async-signal-safe.
+pid_t failingSetsid()
+{
+    errno = EPERM;
+    return -1;
+}
+
+TEST(DetachedSpawnTest, ReportsASetsidFailureAndStartsNothing)
+{
+    const ScopedTempDir dir("tasksmack_detached_spawn_setsid");
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, {}, 0);
+    const std::vector<std::string> argv{terminal.string()};
+    const auto result = Detail::spawnDetached(
+        argv,
+        Detail::SpawnHooks{.useCloseRange = true, .poll = nullptr, .useProcFdList = true, .setsid = &failingSetsid, .beforeFork = nullptr});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().stage, SpawnFailure::Stage::Setup);
+    EXPECT_EQ(result.error().error, EPERM);
+    errno = 0;
+    EXPECT_EQ(waitNoHang(-1), -1);
+    EXPECT_EQ(errno, ECHILD);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+}
+
+/// A setsid() that never returns: an intermediate child stuck before it can fork the program.
+pid_t stallingSetsid()
+{
+    for (;;)
+    {
+        ::pause();
+    }
+}
+
+TEST(DetachedSpawnTest, AStuckIntermediateChildIsKilledAtTheDeadline)
+{
+    const ScopedTempDir dir("tasksmack_detached_spawn_stuck");
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, {}, 0);
+    const std::vector<std::string> argv{terminal.string()};
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = Detail::spawnDetached(
+        argv,
+        Detail::SpawnHooks{
+            .useCloseRange = true, .poll = nullptr, .useProcFdList = true, .setsid = &stallingSetsid, .beforeFork = nullptr});
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().stage, SpawnFailure::Stage::Fork);
+    EXPECT_EQ(result.error().error, ETIMEDOUT);
+    // The whole call honours the two-second bound (plus the kill and reap).
+    EXPECT_GE(elapsed, std::chrono::milliseconds(1900));
+    EXPECT_LT(elapsed, std::chrono::milliseconds(3000));
+    // Killed and reaped: no zombie of ours is left.
+    errno = 0;
+    EXPECT_EQ(waitNoHang(-1), -1);
+    EXPECT_EQ(errno, ECHILD);
+}
+
+/// A poll() interrupted by a signal three times (each after 100 ms) before really polling; records the
+/// timeout it was given each time.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - a plain function pointer hook can't capture
+std::vector<int> g_InterruptedPollTimeouts;
+int interruptedPoll(pollfd* fds, nfds_t count, int timeout)
+{
+    g_InterruptedPollTimeouts.push_back(timeout);
+    if (g_InterruptedPollTimeouts.size() <= 3)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        errno = EINTR;
+        return -1;
+    }
+    return ::poll(fds, count, timeout);
+}
+
+TEST(DetachedSpawnTest, PollRetriesAfterEintrUseOnlyTheTimeLeft)
+{
+    const ScopedTempDir dir("tasksmack_detached_spawn_eintr");
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, {}, 0);
+    const std::vector<std::string> argv{terminal.string()};
+    g_InterruptedPollTimeouts.clear();
+    const auto result = Detail::spawnDetached(
+        argv,
+        Detail::SpawnHooks{
+            .useCloseRange = true, .poll = &interruptedPoll, .useProcFdList = true, .setsid = nullptr, .beforeFork = nullptr});
+    ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), terminal.string());
+    ASSERT_EQ(g_InterruptedPollTimeouts.size(), 4U);
+    EXPECT_LE(g_InterruptedPollTimeouts.front(), 2000);
+    for (std::size_t i = 1; i < g_InterruptedPollTimeouts.size(); ++i)
+    {
+        // Each retry is given what is left of the one deadline, not a fresh two seconds.
+        EXPECT_LE(g_InterruptedPollTimeouts[i], g_InterruptedPollTimeouts[i - 1] - 90) << "retry " << i;
+    }
+    ASSERT_TRUE(waitForFile(dir.path / "argv.txt").has_value()) << "the fake terminal never ran";
 }
 
 TEST(DetachedSpawnTest, ReportsAProgramThatDoesNotExist)

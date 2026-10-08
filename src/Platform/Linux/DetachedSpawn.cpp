@@ -4,22 +4,26 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
-#include <charconv>
+#include <chrono>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
-#include <filesystem>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, rlimit, wait macros
+#include <dirent.h>
 #include <fcntl.h>
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides sigaction(), csignal does not
 #include <signal.h>
@@ -39,10 +43,14 @@ namespace
 
 using Posix::FdGuard;
 
-/// How long to wait for the detached child to report that execve() failed (or, by closing the pipe,
-/// that it succeeded). An exec takes milliseconds; the cap only bounds a pathological stall (a hung
-/// network filesystem) so the UI thread is never held for long.
-constexpr int EXEC_REPORT_TIMEOUT_MS = 2000;
+/// The most the whole call waits: for the detached child to report that execve() failed (or, by
+/// closing the pipe, that it succeeded) and for the intermediate child to be reaped. An exec takes
+/// milliseconds; the cap only bounds a pathological stall (a hung network filesystem) so the UI thread
+/// is never held for long.
+constexpr std::chrono::milliseconds SPAWN_TIMEOUT{2000};
+
+/// How often the intermediate child is polled for with waitpid(WNOHANG) while it has not exited yet.
+constexpr std::chrono::milliseconds REAP_POLL_INTERVAL{1};
 
 /// Highest descriptor (exclusive) the last-resort fallback walks when RLIMIT_NOFILE is unlimited:
 /// the kernel's default fs.nr_open, which no descriptor can exceed unless an administrator raised it.
@@ -63,8 +71,8 @@ void writeReport(int fd, SpawnFailure::Stage stage, int error) noexcept
     [[maybe_unused]] const auto written = ::write(fd, &report, sizeof(report));
 }
 
-/// Mark @p fd close-on-exec. Async-signal-safe: fcntl(2) only. A descriptor closed since the
-/// snapshot fails with EBADF, which is harmless.
+/// Mark @p fd close-on-exec. Async-signal-safe: fcntl(2) only. A descriptor that is not open fails
+/// with EBADF, which is harmless.
 void setCloseOnExec(int fd) noexcept
 {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX fcntl() is variadic by definition
@@ -80,16 +88,87 @@ struct ChildPlan
     int devNull = -1;  ///< Above STDERR_FILENO.
     int reportFd = -1; ///< Write end of the report pipe; above STDERR_FILENO.
     bool useCloseRange = true;
-    std::span<const int> openFds; ///< Descriptors open before fork(), from /proc/self/fd.
-    bool openFdsKnown = false;    ///< Whether openFds could be listed.
-    int fdLimit = 0;              ///< Last resort when they couldn't: walk 3 .. fdLimit-1.
+    bool useProcFdList = true; ///< Whether the fallback may list /proc/self/fd in the child.
+    int fdLimit = 0;           ///< Last resort when it can't: walk 3 .. fdLimit-1.
     const struct sigaction* defaultAction = nullptr;
     // NOLINTNEXTLINE(misc-include-cleaner) - sigset_t is provided by <signal.h>
     const sigset_t* emptyMask = nullptr;
 };
 
+/// @p name (a /proc/self/fd entry, NUL-terminated) as a descriptor, or -1 for "." and "..".
+/// Async-signal-safe: no library calls.
+[[nodiscard]] int parseFdName(std::span<const char> name) noexcept
+{
+    int fd = 0;
+    bool any = false;
+    for (const char c : name)
+    {
+        if (c == '\0')
+        {
+            break;
+        }
+        if (c < '0' || c > '9' || fd > (INT_MAX - 9) / 10)
+        {
+            return -1;
+        }
+        fd = (fd * 10) + (c - '0');
+        any = true;
+    }
+    return any ? fd : -1;
+}
+
+/// Mark every descriptor above STDERR_FILENO listed in this process's /proc/self/fd close-on-exec.
+/// Runs in the forked child, which has no other threads, so the list is exactly its descriptor table:
+/// nothing can be opened between the listing and execve(). Async-signal-safe: open(2), the raw
+/// getdents64(2) syscall into a stack buffer, fcntl(2) and close(2) -- no allocation. Returns false if
+/// the directory could not be read to its end (no /proc, say).
+[[nodiscard]] bool markListedFdsCloseOnExec() noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
+    const int dir = ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir < 0)
+    {
+        return false;
+    }
+    // The kernel's linux_dirent64 records, as glibc's dirent64 lays them out.
+    constexpr std::size_t RECLEN_OFFSET = offsetof(dirent64, d_reclen);
+    constexpr std::size_t NAME_OFFSET = offsetof(dirent64, d_name);
+    alignas(dirent64) std::array<char, 4096> buffer{};
+    bool complete = false;
+    for (;;)
+    {
+        const long got = ::syscall(SYS_getdents64, dir, buffer.data(), buffer.size());
+        if (got <= 0)
+        {
+            complete = got == 0;
+            break;
+        }
+        const auto size = static_cast<std::size_t>(got);
+        for (std::size_t offset = 0; offset + NAME_OFFSET < size;)
+        {
+            unsigned short recordLength = 0;
+            std::memcpy(&recordLength, std::span<const char>(buffer).subspan(offset + RECLEN_OFFSET).data(), sizeof(recordLength));
+            if (recordLength <= NAME_OFFSET || offset + recordLength > size)
+            {
+                break;
+            }
+            const int fd = parseFdName(std::span<const char>(buffer).subspan(offset + NAME_OFFSET, recordLength - NAME_OFFSET));
+            if (fd > STDERR_FILENO && fd != dir)
+            {
+                // The report pipe's write end is already close-on-exec; marking it again is harmless,
+                // and it stays open until execve() so a failure can still be reported.
+                setCloseOnExec(fd);
+            }
+            offset += recordLength;
+        }
+    }
+    ::close(dir);
+    return complete;
+}
+
 /// Mark every descriptor from 3 up close-on-exec, keeping them open until execve() so the report pipe
-/// still works if it fails. Async-signal-safe: syscall(2) and fcntl(2) only.
+/// still works if it fails. Runs in the forked (single-threaded) child, so no descriptor can appear
+/// after it. Async-signal-safe: syscall(2), open(2), fcntl(2) and close(2) only.
 void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
 {
 #if defined(SYS_close_range) && defined(CLOSE_RANGE_CLOEXEC)
@@ -98,19 +177,11 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
         return;
     }
 #endif
-    if (plan.openFdsKnown)
+    if (plan.useProcFdList && markListedFdsCloseOnExec())
     {
-        // Every descriptor open when spawnDetached() began. One another thread opens after that
-        // snapshot without O_CLOEXEC could still leak here; TaskSmack opens its own with O_CLOEXEC.
-        for (const int fd : plan.openFds)
-        {
-            if (fd > STDERR_FILENO)
-            {
-                setCloseOnExec(fd);
-            }
-        }
         return;
     }
+    // Last resort: every descriptor RLIMIT_NOFILE allows (none can be at or above it).
     for (int fd = STDERR_FILENO + 1; fd < plan.fdLimit; ++fd)
     {
         setCloseOnExec(fd);
@@ -163,27 +234,6 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
     return moved;
 }
 
-/// The descriptors open in this process now, from /proc/self/fd (including the one used to list
-/// it, which is closed again by the time the list is used; harmless). Empty when it can't be read.
-[[nodiscard]] std::vector<int> listOpenFds(bool& known)
-{
-    std::vector<int> fds;
-    std::error_code ec;
-    std::filesystem::directory_iterator it("/proc/self/fd", ec);
-    for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
-    {
-        const std::string name = it->path().filename().string();
-        int fd = -1;
-        const auto [ptr, parseError] = std::from_chars(name.data(), name.data() + name.size(), fd);
-        if (parseError == std::errc{} && ptr == name.data() + name.size())
-        {
-            fds.push_back(fd);
-        }
-    }
-    known = !ec;
-    return fds;
-}
-
 /// The last-resort fallback's bound: the whole finite RLIMIT_NOFILE (no descriptor can be at or above
 /// it), else the kernel's default ceiling.
 [[nodiscard]] int descriptorLimit() noexcept
@@ -194,6 +244,47 @@ void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
         return fileLimit.rlim_cur > static_cast<rlim_t>(INT_MAX) ? INT_MAX : static_cast<int>(fileLimit.rlim_cur);
     }
     return UNLIMITED_FD_LIMIT;
+}
+
+/// The milliseconds left until @p deadline for poll(2): 0 once it has passed, never more than the cap.
+[[nodiscard]] int remainingMs(std::chrono::steady_clock::time_point deadline) noexcept
+{
+    const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    return left.count() <= 0 ? 0 : static_cast<int>(std::min(left, SPAWN_TIMEOUT).count());
+}
+
+/// Reap @p child, polling with waitpid(WNOHANG) until @p deadline. If it has not exited by then it is
+/// killed (SIGKILL) and reaped, so it is never left as a zombie, and false is returned.
+[[nodiscard]] bool reapBy(pid_t child, std::chrono::steady_clock::time_point deadline, const std::string& program)
+{
+    for (;;)
+    {
+        int status = 0;
+        // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
+        const pid_t waited = ::waitpid(child, &status, WNOHANG);
+        if (waited == child || (waited < 0 && errno == ECHILD)) // ECHILD: SIGCHLD ignored, already reaped
+        {
+            return true;
+        }
+        if (waited < 0 && errno != EINTR)
+        {
+            spdlog::warn(
+                "DetachedSpawn: waitpid for the intermediate child of {} failed: {}", program, std::system_category().message(errno));
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            break;
+        }
+        std::this_thread::sleep_for(REAP_POLL_INTERVAL);
+    }
+    spdlog::warn("DetachedSpawn: the intermediate child of {} did not exit within {} ms; killing it", program, SPAWN_TIMEOUT.count());
+    static_cast<void>(::kill(child, SIGKILL));
+    int status = 0;
+    while (::waitpid(child, &status, 0) < 0 && errno == EINTR)
+    {
+    }
+    return false;
 }
 
 } // namespace
@@ -268,10 +359,6 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
         return std::unexpected(SpawnFailure{.stage = SpawnFailure::Stage::Setup, .error = errno});
     }
 
-    // Listed even when close_range() is expected to work: it can still fail in the child (a kernel
-    // before 5.11, or a seccomp filter), and the child cannot list /proc itself without allocating.
-    bool openFdsKnown = false;
-    const std::vector<int> openFds = listOpenFds(openFdsKnown);
     struct sigaction defaultAction{};
     defaultAction.sa_handler = SIG_DFL;
     sigemptyset(&defaultAction.sa_mask);
@@ -285,12 +372,17 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
         .devNull = devNull.get(),
         .reportFd = reportWrite.get(),
         .useCloseRange = hooks.useCloseRange,
-        .openFds = openFds,
-        .openFdsKnown = openFdsKnown,
+        .useProcFdList = hooks.useProcFdList,
         .fdLimit = descriptorLimit(),
         .defaultAction = &defaultAction,
         .emptyMask = &emptyMask,
     };
+
+    const auto setsidFn = hooks.setsid != nullptr ? hooks.setsid : &::setsid;
+    if (hooks.beforeFork != nullptr)
+    {
+        hooks.beforeFork();
+    }
 
     const pid_t intermediate = ::fork();
     if (intermediate < 0)
@@ -301,8 +393,13 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     {
         // TaskSmack's child: a session of its own, so the terminal is not in TaskSmack's process group
         // and session (a Ctrl+C or hangup aimed at those does not reach it); then fork the program's
-        // process and exit, orphaning it to init.
-        static_cast<void>(::setsid());
+        // process and exit, orphaning it to init. Without the new session it is not detached, so a
+        // failure is reported rather than ignored.
+        if (setsidFn() < 0)
+        {
+            writeReport(plan.reportFd, SpawnFailure::Stage::Setup, errno);
+            ::_exit(1);
+        }
         const pid_t program = ::fork();
         if (program < 0)
         {
@@ -320,54 +417,59 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     // it -- the intermediate exited and the program exec'd (close-on-exec) -- without a failure report.
     reportWrite = FdGuard(-1);
 
-    // Reap the intermediate child, which exits as soon as it has forked: this is the only wait, and it
-    // is not on the program.
-    int status = 0;
-    pid_t waited = ::waitpid(intermediate, &status, 0);
-    while (waited < 0 && errno == EINTR)
-    {
-        waited = ::waitpid(intermediate, &status, 0);
-    }
-    if (waited < 0 && errno != ECHILD) // ECHILD: SIGCHLD is ignored, so the kernel reaped it already
-    {
-        spdlog::warn(
-            "DetachedSpawn: waitpid for the intermediate child of {} failed: {}", argv.front(), std::system_category().message(errno));
-    }
+    // One deadline bounds the whole wait: the poll for the report (retried on EINTR with only the time
+    // left), then reaping the intermediate child, which exits as soon as it has forked.
+    const auto deadline = std::chrono::steady_clock::now() + SPAWN_TIMEOUT;
+    const std::string& program = argv.front();
 
-    // The bound on this wait is the poll: read() below runs only once the pipe is readable (a report,
-    // or end of file), so it never blocks.
+    // read() below runs only once the pipe is readable (a report, or end of file), so it never blocks.
     const auto pollFn = hooks.poll != nullptr ? hooks.poll : &::poll;
     pollfd pending{.fd = reportRead.get(), .events = POLLIN, .revents = 0};
-    int ready = pollFn(&pending, 1, EXEC_REPORT_TIMEOUT_MS);
+    int ready = pollFn(&pending, 1, remainingMs(deadline));
     while (ready < 0 && errno == EINTR)
     {
-        ready = pollFn(&pending, 1, EXEC_REPORT_TIMEOUT_MS);
+        ready = pollFn(&pending, 1, remainingMs(deadline));
+    }
+    const int pollError = errno;
+
+    std::optional<SpawnFailure> reported;
+    if (ready > 0)
+    {
+        Report report{};
+        auto got = ::read(reportRead.get(), &report, sizeof(report));
+        while (got < 0 && errno == EINTR)
+        {
+            got = ::read(reportRead.get(), &report, sizeof(report));
+        }
+        // Otherwise end of file: exec succeeded. A short read cannot happen (the report is written whole).
+        if (std::cmp_equal(got, sizeof(report)))
+        {
+            reported = SpawnFailure{.stage = static_cast<SpawnFailure::Stage>(report.stage), .error = report.error};
+        }
+    }
+
+    // The only wait, and it is not on the program. Bounded by the same deadline.
+    if (!reapBy(intermediate, deadline, program))
+    {
+        // Stuck before it could fork the program (or report why it couldn't): nothing was started.
+        return std::unexpected(reported.value_or(SpawnFailure{.stage = SpawnFailure::Stage::Fork, .error = ETIMEDOUT}));
+    }
+    if (reported)
+    {
+        return std::unexpected(*reported);
     }
     if (ready < 0)
     {
         // As for a timeout: the program may still exec, so it is not reported as failed (the user
         // would start a second one), and a blocking read() here could hold the UI thread indefinitely.
         spdlog::warn("DetachedSpawn: poll for the exec report of {} failed ({}); assuming it started",
-                     argv.front(),
-                     std::system_category().message(errno));
-        return {};
+                     program,
+                     std::system_category().message(pollError));
     }
-    if (ready == 0)
+    else if (ready == 0)
     {
-        spdlog::warn("DetachedSpawn: {} has not reported its exec after {} ms; assuming it started", argv.front(), EXEC_REPORT_TIMEOUT_MS);
-        return {};
+        spdlog::warn("DetachedSpawn: {} has not reported its exec after {} ms; assuming it started", program, SPAWN_TIMEOUT.count());
     }
-    Report report{};
-    auto got = ::read(reportRead.get(), &report, sizeof(report));
-    while (got < 0 && errno == EINTR)
-    {
-        got = ::read(reportRead.get(), &report, sizeof(report));
-    }
-    if (std::cmp_equal(got, sizeof(report)))
-    {
-        return std::unexpected(SpawnFailure{.stage = static_cast<SpawnFailure::Stage>(report.stage), .error = report.error});
-    }
-    // End of file: exec succeeded. A short read cannot happen (the report is written whole).
     return {};
 }
 
