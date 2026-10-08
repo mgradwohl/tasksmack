@@ -327,14 +327,17 @@ constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O prio
 {
     if (change.changed > 0 || change.unconfirmed > 0)
     {
-        // Signal 0 checks for existence without delivering anything. Any failure of that probe
-        // leaves the call unconfirmed, not only ESRCH: a sandbox that blocks pidfd_send_signal
-        // gives no evidence the target still held the PID.
-        if (sendThroughPidfd(pidfd, 0) != 0)
+        // A pidfd polls readable once its process exits. Unlike signal 0, which needs kill rights
+        // (same UID or CAP_KILL), this needs no permission over the process, so a change made to
+        // another user's process with only CAP_SYS_NICE is not reported as unconfirmed (#1483).
+        // A failing poll() leaves the change unconfirmed: it gives no evidence the target still
+        // held the PID.
+        const int exited = pidfdExited(pidfd);
+        if (exited != 0)
         {
             const int probeErr = errno;
             std::string errorMsg =
-                (probeErr == ESRCH)
+                (exited > 0)
                     ? std::format("Process {} exited while its {} was being changed; the change may have reached a different process",
                                   target.pid,
                                   wording.lower)
