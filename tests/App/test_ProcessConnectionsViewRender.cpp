@@ -54,7 +54,8 @@ constexpr float WINDOW_HEIGHT = 800.0F;
                                               .local = {.address = {}, .port = 22},
                                               .remote = {},
                                               .state = ConnectionState::Listen},
-                            tcp4(35, 55027, 80, ConnectionState::CloseWait)}};
+                            tcp4(35, 55027, 80, ConnectionState::CloseWait)},
+            .detail = {}};
 }
 
 class ProcessConnectionsViewRenderTest : public ::testing::Test
@@ -112,6 +113,7 @@ class ProcessConnectionsViewRenderTest : public ::testing::Test
         for (int i = 0; i < 3 && !view.hasRead(); ++i)
         {
             static_cast<void>(view.update(&reader, TARGET, 1.0F / 60.0F));
+            view.finishPendingRead(TARGET); // the read runs on a worker
             static_cast<void>(renderAndCapture(view, true));
         }
         ASSERT_TRUE(view.hasRead());
@@ -238,7 +240,7 @@ TEST_F(ProcessConnectionsViewRenderTest, FailedReadsDrawTheirStatusInsteadOfAnEm
     {
         ProcessConnectionsView view;
         TestMocks::MockProcessConnectionsReader reader;
-        reader.setResult({.status = status, .connections = {}});
+        reader.setResult({.status = status, .connections = {}, .detail = {}});
         openAndRead(view, reader);
         const std::string text = renderAndCapture(view, true);
         EXPECT_TRUE(text.contains(std::string(Detail::connectionsStatusText(status))));

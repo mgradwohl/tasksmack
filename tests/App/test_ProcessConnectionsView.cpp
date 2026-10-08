@@ -14,9 +14,13 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <future>
 #include <initializer_list>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -48,7 +52,7 @@ constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_C
 
 [[nodiscard]] Platform::ConnectionsReadResult okResult(std::vector<ProcessConnection> connections)
 {
-    return {.status = Platform::ConnectionsReadStatus::Ok, .connections = std::move(connections)};
+    return {.status = Platform::ConnectionsReadStatus::Ok, .connections = std::move(connections), .detail = {}};
 }
 
 /// A small mixed set: a listener, two established connections, a TIME_WAIT one and a UDP socket.
@@ -70,6 +74,7 @@ constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_C
 bool frame(ProcessConnectionsView& view, TestMocks::MockProcessConnectionsReader& reader, float deltaSeconds, bool drawnOpen)
 {
     const bool read = view.update(&reader, TARGET, deltaSeconds);
+    view.finishPendingRead(TARGET); // the read runs on a worker: wait for it, as a later frame would take it in
     if (drawnOpen)
     {
         view.markDrawnOpen();
@@ -161,10 +166,12 @@ TEST(ProcessConnectionsViewTest, SelectionChangeDropsTheRowsAndReadsAfreshWithou
     EXPECT_TRUE(view.rows().empty()) << "nothing of the previous process is shown for the next";
     view.markDrawnOpen();
     EXPECT_TRUE(view.update(&reader, TARGET, 0.016F));
+    view.finishPendingRead(TARGET);
     EXPECT_EQ(reader.readCount(), 2);
+    EXPECT_TRUE(view.hasRead());
 }
 
-TEST(ProcessConnectionsViewTest, SelectionChangeForgetsThePreviousProcesssOpenFrame)
+TEST(ProcessConnectionsViewTest, SelectionChangeForgetsThePreviousProcessOpenFrame)
 {
     ProcessConnectionsView view;
     TestMocks::MockProcessConnectionsReader reader;
@@ -260,7 +267,7 @@ TEST(ProcessConnectionsViewTest, KeepsEachReadStatusForItsStatusLine)
                               Platform::ConnectionsReadStatus::Failed})
     {
         ProcessConnectionsView view;
-        view.applyResult({.status = status, .connections = {}});
+        view.applyResult({.status = status, .connections = {}, .detail = {}});
         EXPECT_TRUE(view.hasRead());
         EXPECT_EQ(view.status(), status);
         EXPECT_TRUE(view.rows().empty());
@@ -268,6 +275,132 @@ TEST(ProcessConnectionsViewTest, KeepsEachReadStatusForItsStatusLine)
     }
     EXPECT_TRUE(Detail::connectionsStatusText(Platform::ConnectionsReadStatus::Ok).empty());
     EXPECT_EQ(Detail::connectionsStatusText(Platform::ConnectionsReadStatus::PermissionDenied), "Not permitted (another user's process)");
+}
+
+TEST(ProcessConnectionsViewTest, AFailedReadsStatusLineCarriesItsDetail)
+{
+    EXPECT_EQ(Detail::connectionsStatusLine(Platform::ConnectionsReadStatus::Failed, "Input/output error"),
+              "Could not be read: Input/output error");
+    EXPECT_EQ(Detail::connectionsStatusLine(Platform::ConnectionsReadStatus::Failed, ""), "Could not be read");
+    EXPECT_EQ(Detail::connectionsStatusLine(Platform::ConnectionsReadStatus::ProcessExited, "ignored"), "Process exited");
+
+    ProcessConnectionsView view;
+    view.applyResult({.status = Platform::ConnectionsReadStatus::Failed, .connections = {}, .detail = "Input/output error"});
+    EXPECT_EQ(view.detail(), "Input/output error");
+    view.onSelectionChanged();
+    EXPECT_TRUE(view.detail().empty());
+}
+
+// ========== Off the UI thread ==========
+
+/// A reader whose reads wait until the test opens its gate: a kernel that does not answer.
+class BlockingConnectionsReader final : public Platform::IProcessConnectionsReader
+{
+  public:
+    [[nodiscard]] bool hasConnections() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] Platform::ConnectionsReadResult readConnections(const Platform::ProcessTarget& target) override
+    {
+        m_Started.fetch_add(1);
+        m_Gate.wait();
+        return okResult({tcp4({10, 0, 0, 5}, static_cast<std::uint16_t>(target.pid), {10, 0, 0, 9}, 443, ConnectionState::Established)});
+    }
+
+    void open()
+    {
+        m_Release.set_value();
+    }
+
+    [[nodiscard]] int started() const
+    {
+        return m_Started.load();
+    }
+
+  private:
+    std::promise<void> m_Release;
+    std::shared_future<void> m_Gate = m_Release.get_future().share();
+    std::atomic<int> m_Started{0};
+};
+
+TEST(ProcessConnectionsViewTest, UpdateNeverWaitsForABlockedReadAndNeverStartsASecond)
+{
+    BlockingConnectionsReader reader;
+    {
+        ProcessConnectionsView view;
+        view.markDrawnOpen();
+        EXPECT_TRUE(view.update(&reader, TARGET, 0.016F)); // started on its worker
+        EXPECT_TRUE(view.readInFlight());
+
+        // Frames go on while the read is stuck: each update() returns at once, starts nothing more, and
+        // the section still says "Reading...".
+        for (int i = 0; i < 20; ++i)
+        {
+            view.markDrawnOpen();
+            const auto before = std::chrono::steady_clock::now();
+            EXPECT_FALSE(view.update(&reader, TARGET, REFRESH_SECONDS));
+            EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::milliseconds(100));
+        }
+        EXPECT_TRUE(view.readInFlight());
+        EXPECT_FALSE(view.hasRead());
+
+        reader.open();
+        view.finishPendingRead(TARGET);
+        EXPECT_FALSE(view.readInFlight());
+        EXPECT_TRUE(view.hasRead());
+        ASSERT_EQ(view.rows().size(), 1U);
+        EXPECT_EQ(reader.started(), 1);
+    }
+}
+
+TEST(ProcessConnectionsViewTest, AReadInFlightAcrossASelectionChangeIsDropped)
+{
+    BlockingConnectionsReader reader;
+    ProcessConnectionsView view;
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.016F));
+
+    // Another process is selected while the read for the first is stuck.
+    view.onSelectionChanged();
+    constexpr Platform::ProcessTarget OTHER{.pid = 5151, .startTimeTicks = 888};
+    view.markDrawnOpen();
+    EXPECT_FALSE(view.update(&reader, OTHER, 0.016F)) << "never two reads in flight";
+
+    reader.open();
+    view.finishPendingRead(OTHER);
+    EXPECT_FALSE(view.hasRead()) << "the first process's sockets are never shown for the second";
+    EXPECT_TRUE(view.rows().empty());
+
+    // The next frame reads the newly selected process at once.
+    view.markDrawnOpen();
+    EXPECT_TRUE(view.update(&reader, OTHER, 0.016F));
+    view.finishPendingRead(OTHER);
+    EXPECT_TRUE(view.hasRead());
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_EQ(view.rows()[0].connection.local.port, OTHER.pid);
+}
+
+TEST(ProcessConnectionsViewTest, DestroyingTheViewWaitsForTheReadInFlight)
+{
+    // The reader must outlive a read using it: the view's destructor waits for the worker, so a reader
+    // declared before the view (as in ProcessDetailsPanel) is never used after it is gone.
+    BlockingConnectionsReader reader;
+    std::thread opener;
+    {
+        ProcessConnectionsView view;
+        view.markDrawnOpen();
+        ASSERT_TRUE(view.update(&reader, TARGET, 0.016F));
+        opener = std::thread(
+            [&reader]()
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                reader.open();
+            });
+    } // waits here for the read
+    EXPECT_EQ(reader.started(), 1);
+    opener.join();
 }
 
 TEST(ProcessConnectionsViewTest, CountTextIsSingularForOne)

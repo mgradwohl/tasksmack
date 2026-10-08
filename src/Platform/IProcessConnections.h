@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace Platform
@@ -88,6 +89,8 @@ struct ConnectionsReadResult
 {
     ConnectionsReadStatus status = ConnectionsReadStatus::Unsupported;
     std::vector<ProcessConnection> connections;
+    /// For Failed, what failed, if known (the OS's error message, e.g. "Input/output error"); else empty.
+    std::string detail;
 };
 
 /// Lists one process's TCP and UDP sockets on request.
@@ -125,7 +128,7 @@ class UnsupportedProcessConnectionsReader final : public IProcessConnectionsRead
 
     [[nodiscard]] ConnectionsReadResult readConnections(const ProcessTarget& /*target*/) override
     {
-        return {.status = ConnectionsReadStatus::Unsupported, .connections = {}};
+        return {.status = ConnectionsReadStatus::Unsupported, .connections = {}, .detail = {}};
     }
 };
 

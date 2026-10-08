@@ -221,7 +221,9 @@ class ProcessDetailsPanel : public Panel
 
     // The Overview's Connections section (#799), on the same terms as the Environment section: the
     // reader comes from the composition root and is called only from updateWithSamples(), through the
-    // view, while the section is open, and only for the selected process.
+    // view, while the section is open, and only for the selected process. The view runs each read on a
+    // worker and its destructor waits for one in flight, so the reader is declared before the view:
+    // members are destroyed in reverse order, and the reader must outlive any read using it.
     std::unique_ptr<Platform::IProcessConnectionsReader> m_ConnectionsReader;
     bool m_HasConnections = false; // m_ConnectionsReader can list sockets here (Linux)
     ProcessConnectionsView m_ConnectionsView;

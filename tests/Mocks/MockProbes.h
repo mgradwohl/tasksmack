@@ -862,7 +862,7 @@ class MockProcessConnectionsReader : public Platform::IProcessConnectionsReader
 
   private:
     bool m_HasConnections = true;
-    Platform::ConnectionsReadResult m_Result{.status = Platform::ConnectionsReadStatus::Ok, .connections = {}};
+    Platform::ConnectionsReadResult m_Result{.status = Platform::ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
     int m_ReadCount = 0;
     Platform::ProcessTarget m_LastTarget{};
 };

@@ -12,6 +12,7 @@
 #include "Platform/Linux/LinuxProcessConnectionsReader.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/NetlinkTestUtils.h"
+#include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -20,11 +21,13 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -401,6 +404,116 @@ TEST(LinuxProcessConnectionsReaderTest, AnotherUsersProcessIsNotPermitted)
     const ConnectionsReadResult result = reader.readConnections({.pid = 1, .startTimeTicks = initStart});
     EXPECT_EQ(result.status, ConnectionsReadStatus::PermissionDenied);
     EXPECT_TRUE(result.connections.empty());
+}
+
+// ========== The /proc/[pid]/net tables over a synthetic /proc ==========
+
+/// A synthetic /proc holding one process, PID 100 started at tick 4242, with two sockets open (inodes
+/// 1001 and 1002) and the /proc/[pid]/net tables a test writes.
+class SyntheticProcConnections : public ::testing::Test
+{
+  protected:
+    static constexpr std::int32_t PID = 100;
+    static constexpr ProcessTarget TARGET{.pid = PID, .startTimeTicks = 4242};
+
+    void SetUp() override
+    {
+        std::filesystem::create_directories(pidDir() / "fd");
+        std::filesystem::create_directories(pidDir() / "net");
+        std::filesystem::create_directories(pidDir() / "ns");
+        write("stat", "100 (server) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 4242 1000 50\n");
+        std::filesystem::create_symlink("socket:[1001]", pidDir() / "fd" / "3");
+        std::filesystem::create_symlink("socket:[1002]", pidDir() / "fd" / "4");
+        std::filesystem::create_symlink("/dev/null", pidDir() / "fd" / "5");
+        std::filesystem::create_symlink("net:[1]", pidDir() / "ns" / "net");
+    }
+
+    [[nodiscard]] std::filesystem::path pidDir() const
+    {
+        return m_Proc.path / std::to_string(PID);
+    }
+
+    void write(const std::string& name, const std::string& contents) const
+    {
+        std::ofstream(pidDir() / name) << contents;
+    }
+
+    /// The four tables, each with a header; tcp holds inode 1001 (listening) and udp inode 1002.
+    void writeAllTables() const
+    {
+        write("net/tcp",
+              "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+              "   0: 0100007F:0277 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1001 1 0\n"
+              "   1: 0100007F:0278 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 7777 1 0\n");
+        write("net/udp",
+              "   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n"
+              "  5: 00000000:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 1002 2 0 0\n");
+        write("net/tcp6", "  sl  local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n");
+        write("net/udp6", "  sl  local_address remote_address st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n");
+    }
+
+    [[nodiscard]] ConnectionsReadResult read() const
+    {
+        LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{.path = m_Proc.path.string()});
+        return reader.readConnections(TARGET);
+    }
+
+  private:
+    TestSupport::ScopedTempDir m_Proc{"ts_test_proc_connections"};
+};
+
+TEST_F(SyntheticProcConnections, EveryTableReadWholeGivesOnlyThatProcessSockets)
+{
+    writeAllTables();
+    const ConnectionsReadResult result = read();
+    ASSERT_EQ(result.status, ConnectionsReadStatus::Ok);
+    ASSERT_EQ(result.connections.size(), 2U) << "inode 7777 is another process's";
+    EXPECT_EQ(result.connections[0].protocol, ConnectionProtocol::Tcp);
+    EXPECT_EQ(result.connections[0].local.port, 631);
+    EXPECT_EQ(result.connections[0].state, ConnectionState::Listen);
+    EXPECT_EQ(result.connections[1].protocol, ConnectionProtocol::Udp);
+    EXPECT_EQ(result.connections[1].local.port, 5353);
+}
+
+TEST_F(SyntheticProcConnections, AnAbsentFamilyHasCompleteEmptyTables)
+{
+    // IPv6 disabled: no tcp6 or udp6 at all (ENOENT) -- known absent, not a failure.
+    writeAllTables();
+    std::filesystem::remove(pidDir() / "net" / "tcp6");
+    std::filesystem::remove(pidDir() / "net" / "udp6");
+    const ConnectionsReadResult result = read();
+    ASSERT_EQ(result.status, ConnectionsReadStatus::Ok);
+    EXPECT_EQ(result.connections.size(), 2U);
+}
+
+TEST_F(SyntheticProcConnections, ATableThatCannotBeReadFailsTheReadInsteadOfAPartialOk)
+{
+    // tcp reads, udp does not (EISDIR here; an I/O error in life): never Ok with the UDP rows missing.
+    writeAllTables();
+    std::filesystem::remove(pidDir() / "net" / "udp");
+    std::filesystem::create_directories(pidDir() / "net" / "udp");
+    const ConnectionsReadResult result = read();
+    EXPECT_EQ(result.status, ConnectionsReadStatus::Failed);
+    EXPECT_TRUE(result.connections.empty());
+    EXPECT_EQ(result.detail, std::generic_category().message(EISDIR));
+}
+
+TEST_F(SyntheticProcConnections, AProcessWithNoSocketsReadsNoTables)
+{
+    std::filesystem::remove(pidDir() / "fd" / "3");
+    std::filesystem::remove(pidDir() / "fd" / "4");
+    // No tables at all: with no socket inodes they are never opened.
+    const ConnectionsReadResult result = read();
+    ASSERT_EQ(result.status, ConnectionsReadStatus::Ok);
+    EXPECT_TRUE(result.connections.empty());
+}
+
+TEST_F(SyntheticProcConnections, AStartTimeThatDoesNotMatchReadsAsExited)
+{
+    writeAllTables();
+    LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{.path = pidDir().parent_path().string()});
+    const ConnectionsReadResult result = reader.readConnections({.pid = PID, .startTimeTicks = 4243});
+    EXPECT_EQ(result.status, ConnectionsReadStatus::ProcessExited);
 }
 
 } // namespace

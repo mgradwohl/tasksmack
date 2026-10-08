@@ -58,10 +58,10 @@ void ProcessConnectionsView::render(bool hasConnections)
     if (m_Status != Platform::ConnectionsReadStatus::Ok)
     {
         // Not an empty table: an empty one would read as "this process has no connections".
-        const std::string_view text = Detail::connectionsStatusText(m_Status);
+        const std::string text = Detail::connectionsStatusLine(m_Status, m_Detail);
         const ImVec4 color = (m_Status == Platform::ConnectionsReadStatus::PermissionDenied) ? scheme.textWarning : scheme.textMuted;
         ImGui::PushStyleColor(ImGuiCol_Text, color);
-        ImGui::TextUnformatted(text.data(), text.data() + text.size());
+        ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
         return;
     }

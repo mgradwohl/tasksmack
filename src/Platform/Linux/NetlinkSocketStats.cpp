@@ -202,16 +202,19 @@ class SockDiagTransport final : public INetlinkTransport
             return;
         }
 
-        // Bound recv() so a stalled kernel dump can't hang the background sampler thread
-        // forever (see NetlinkSocketStats::queryDump()). Best-effort: if this fails, recv() simply
-        // keeps its default blocking behavior.
+        // Bound recv() so a stalled kernel dump can't hang the background sampler thread (or a
+        // Connections read, #799) forever (see NetlinkSocketStats::queryDump()). Fails closed: a
+        // socket whose receives could block indefinitely is not used at all, and its callers fall
+        // back as they do without netlink.
         timeval recvTimeout{}; // NOLINT(misc-include-cleaner) - provided by <sys/time.h> (already included)
         recvTimeout.tv_sec = NETLINK_RECV_TIMEOUT_MS / 1000;
         recvTimeout.tv_usec = (NETLINK_RECV_TIMEOUT_MS % 1000) * 1000;
         // NOLINTNEXTLINE(misc-include-cleaner) - SOL_SOCKET/SO_RCVTIMEO are provided by <sys/socket.h> (already included)
         if (setsockopt(m_Socket, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, sizeof(recvTimeout)) < 0)
         {
-            spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket: {}", safeStrerror(errno));
+            spdlog::debug("Failed to set SO_RCVTIMEO on netlink socket, not using it: {}", safeStrerror(errno));
+            closeSocket();
+            return;
         }
 
         // Bind the socket

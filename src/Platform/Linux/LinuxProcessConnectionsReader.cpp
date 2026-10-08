@@ -1,21 +1,28 @@
 #include "LinuxProcessConnectionsReader.h"
 
 #include "InetSocketTable.h"
-#include "NetlinkSocketStats.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
+#include "Platform/PlatformConfig.h"
 #include "PosixGuards.h"
 #include "ProcFdScan.h"
 #include "ProcParsing.h"
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+#include "NetlinkSocketStats.h"
+#endif
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -82,11 +89,21 @@ constexpr std::array<SocketTable, 4> SOCKET_TABLES{{
     }
 }
 
-[[nodiscard]] ConnectionsReadResult failure(ConnectionsReadStatus status)
+[[nodiscard]] ConnectionsReadResult failure(ConnectionsReadStatus status, std::string detail = {})
 {
-    return {.status = status, .connections = {}};
+    return {.status = status, .connections = {}, .detail = std::move(detail)};
 }
 
+/// The start time (/proc/[pid]/stat field 22) from the stat file in the /proc/[pid] directory
+/// @p pidDirFd is open on; 0 if it can't be read (the process exited).
+[[nodiscard]] std::uint64_t startTimeTicksAt(int pidDirFd) noexcept
+{
+    std::array<char, 1024> buf{};
+    const std::size_t len = ProcParsing::readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
+    return ProcParsing::parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
+}
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 /// The target of the symlink @p name in the directory @p dirFd ("net:[4026531840]" for ns/net), or
 /// empty if it can't be read.
 [[nodiscard]] std::string readLinkAt(int dirFd, const char* name)
@@ -109,34 +126,70 @@ constexpr std::array<SocketTable, 4> SOCKET_TABLES{{
     const std::string ours = readLinkAt(AT_FDCWD, "/proc/self/ns/net");
     return !theirs.empty() && theirs == ours;
 }
+#endif
 
-/// Every socket of @p table from the process's own /proc/[pid]/net file; false if it can't be read
-/// (absent: IPv6 disabled).
-[[nodiscard]] bool readProcNetTable(int pidDirFd, const SocketTable& table, std::vector<InetSockets::RawInetSocket>& sockets)
+/// The whole of the file @p name in the directory @p dirFd, or the errno of the open or read that
+/// failed. Read to EOF in chunks: a /proc/net table is served a page at a time.
+[[nodiscard]] std::expected<std::string, int> readWholeFileAt(int dirFd, const char* name)
 {
-    const std::vector<char> contents = ProcParsing::readProcFileFullAt(pidDirFd, table.procFile);
-    if (contents.empty())
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const FdGuard fd(::openat(dirFd, name, O_RDONLY | O_CLOEXEC));
+    if (fd.get() < 0)
     {
-        return false; // even a table with no sockets has its header line
+        return std::unexpected(errno);
     }
-    InetSockets::parseProcNetTable(std::string_view(contents.data(), contents.size()), table.protocol, table.family, sockets);
-    return true;
+    std::string contents;
+    std::array<char, 8192> chunk{};
+    for (;;)
+    {
+        const auto n = ::read(fd.get(), chunk.data(), chunk.size());
+        if (n == 0)
+        {
+            return contents;
+        }
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue; // interrupted by a signal: retry
+            }
+            return std::unexpected(errno);
+        }
+        contents.append(chunk.data(), static_cast<std::size_t>(n));
+    }
+}
+
+/// Every socket of @p table from the process's own /proc/[pid]/net file, appended to @p sockets.
+/// Returns 0 when the table was read whole or is absent (ENOENT: its family is disabled, e.g. no
+/// IPv6 -- complete, with no sockets); otherwise the errno of the open or read that failed.
+[[nodiscard]] int readProcNetTable(int pidDirFd, const SocketTable& table, std::vector<InetSockets::RawInetSocket>& sockets)
+{
+    const std::expected<std::string, int> contents = readWholeFileAt(pidDirFd, table.procFile);
+    if (!contents.has_value())
+    {
+        return contents.error() == ENOENT ? 0 : contents.error();
+    }
+    InetSockets::parseProcNetTable(*contents, table.protocol, table.family, sockets);
+    return 0;
 }
 
 } // namespace
 
 LinuxProcessConnectionsReader::LinuxProcessConnectionsReader() = default;
 
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
+// Never netlink (opened, and null): a synthetic tree's sockets are not the kernel's.
+LinuxProcessConnectionsReader::LinuxProcessConnectionsReader(ProcRoot root) : m_ProcRoot(std::move(root.path)), m_TransportOpened(true)
+{}
+#else
+LinuxProcessConnectionsReader::LinuxProcessConnectionsReader(ProcRoot root) : m_ProcRoot(std::move(root.path))
+{}
+#endif
+
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 LinuxProcessConnectionsReader::LinuxProcessConnectionsReader(std::unique_ptr<INetlinkTransport> transport)
     : m_Transport(std::move(transport)), m_TransportOpened(true)
 {}
-
-LinuxProcessConnectionsReader::~LinuxProcessConnectionsReader() = default;
-
-bool LinuxProcessConnectionsReader::hasConnections() const
-{
-    return true;
-}
 
 INetlinkTransport* LinuxProcessConnectionsReader::transport()
 {
@@ -146,6 +199,14 @@ INetlinkTransport* LinuxProcessConnectionsReader::transport()
         m_Transport = makeSockDiagTransport(); // null if netlink is unavailable: /proc/[pid]/net it is
     }
     return m_Transport.get();
+}
+#endif
+
+LinuxProcessConnectionsReader::~LinuxProcessConnectionsReader() = default;
+
+bool LinuxProcessConnectionsReader::hasConnections() const
+{
+    return true;
 }
 
 ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const ProcessTarget& target)
@@ -164,15 +225,21 @@ ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const Proce
     // One handle on the process's /proc directory: once open it keeps naming this process, so a file
     // read through it after the process exits fails instead of reaching whatever process is given the
     // PID next.
-    const std::string dirPath = "/proc/" + std::to_string(target.pid);
+    const std::string dirPath = m_ProcRoot + "/" + std::to_string(target.pid);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
     const FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (dir.get() < 0)
     {
         return failure(statusFromErrno(errno));
     }
-    const std::uint64_t startTicks = readStartTimeTicksAt(dir.get());
-    if (startTicks == 0 || startTicks != target.startTimeTicks)
+    // The target's identity, through the same handle: checked before anything is read, and again
+    // whenever a read fails or completes, so neither a failure nor a short read of an exiting process
+    // passes for the process's sockets.
+    const auto stillTarget = [&dir, &target]()
+    {
+        return startTimeTicksAt(dir.get()) == target.startTimeTicks;
+    };
+    if (!stillTarget())
     {
         return failure(ConnectionsReadStatus::ProcessExited); // gone, or the PID now names another process
     }
@@ -196,21 +263,23 @@ ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const Proce
     }
     if (!scan.listed)
     {
-        return failure(readStartTimeTicksAt(dir.get()) == 0 ? ConnectionsReadStatus::ProcessExited : ConnectionsReadStatus::Failed);
+        return failure(stillTarget() ? ConnectionsReadStatus::Failed : ConnectionsReadStatus::ProcessExited);
     }
     std::ranges::sort(inodes);
     const auto duplicates = std::ranges::unique(inodes); // one socket open on several fds is one row
     inodes.erase(duplicates.begin(), duplicates.end());
     if (inodes.empty())
     {
-        return {.status = ConnectionsReadStatus::Ok, .connections = {}}; // no sockets: nothing to dump
+        return {.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}}; // no sockets: nothing to dump
     }
 
     std::vector<InetSockets::RawInetSocket> sockets;
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     INetlinkTransport* netlink = sharesOurNetworkNamespace(dir.get()) ? transport() : nullptr;
-    std::size_t tablesRead = 0;
+#endif
     for (const SocketTable& table : SOCKET_TABLES)
     {
+#if TASKSMACK_HAS_NETLINK_SOCKET_STATS
         if (netlink != nullptr)
         {
             const std::size_t before = sockets.size();
@@ -222,28 +291,36 @@ ConnectionsReadResult LinuxProcessConnectionsReader::readConnections(const Proce
             const InetDumpOutcome outcome = dumpInetSockets(*netlink, sequence, table.ipProtocol, table.addressFamily, sockets);
             if (outcome == InetDumpOutcome::Complete)
             {
-                ++tablesRead;
                 continue;
             }
             sockets.resize(before); // a partial or refused dump: this table comes from /proc instead
             if (outcome == InetDumpOutcome::Failed)
             {
                 // A timed-out or broken dump: the rest of this read uses /proc too, so a stalled
-                // kernel costs this (UI-thread) read one receive timeout, not one per table.
+                // kernel costs this read one receive timeout, not one per table.
                 netlink = nullptr;
             }
         }
-        if (readProcNetTable(dir.get(), table, sockets))
+#endif
+        if (const int error = readProcNetTable(dir.get(), table, sockets); error != 0)
         {
-            ++tablesRead;
+            // Never an Ok with this table's sockets missing: the process exited mid-read (its /proc
+            // files fail through the handle), or the read itself failed.
+            if (!stillTarget())
+            {
+                return failure(ConnectionsReadStatus::ProcessExited);
+            }
+            return failure(ConnectionsReadStatus::Failed, std::generic_category().message(error));
         }
     }
-    if (tablesRead == 0)
+    // A table that read as absent (ENOENT) because the process exited, not because its family is
+    // disabled, would leave the rows incomplete.
+    if (!stillTarget())
     {
-        return failure(ConnectionsReadStatus::Failed);
+        return failure(ConnectionsReadStatus::ProcessExited);
     }
 
-    ConnectionsReadResult result{.status = ConnectionsReadStatus::Ok, .connections = {}};
+    ConnectionsReadResult result{.status = ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
     for (const InetSockets::RawInetSocket& socket : sockets)
     {
         // Inode 0 is a socket no file holds (TIME_WAIT): never this process's.
