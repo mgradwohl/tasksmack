@@ -119,6 +119,29 @@ TEST(PriorityHelpersTest, BadgeCenterFollowsThumbWithinTrack)
     EXPECT_FLOAT_EQ(computeBadgeCenterX(500.0F, 100.0F, 400.0F, 20.0F), 480.0F);
 }
 
+TEST(PriorityHelpersTest, BadgeArrowBaseIsCentredUnderTheThumbAndHeldToTheBadge)
+{
+    // Badge from x=280 to x=320, arrow half-base 6.
+    const BadgeArrowBase centred = computeBadgeArrowBase(300.0F, 6.0F, 280.0F, 320.0F);
+    EXPECT_FLOAT_EQ(centred.left, 294.0F);
+    EXPECT_FLOAT_EQ(centred.right, 306.0F);
+
+    // Thumb at the track's left end: the badge is clamped to x=100..140 but the tip stays at x=100, so
+    // the base starts at the badge's left edge instead of hanging off it.
+    const BadgeArrowBase atStart = computeBadgeArrowBase(100.0F, 6.0F, 100.0F, 140.0F);
+    EXPECT_FLOAT_EQ(atStart.left, 100.0F);
+    EXPECT_FLOAT_EQ(atStart.right, 106.0F);
+
+    const BadgeArrowBase atEnd = computeBadgeArrowBase(500.0F, 6.0F, 460.0F, 500.0F);
+    EXPECT_FLOAT_EQ(atEnd.left, 494.0F);
+    EXPECT_FLOAT_EQ(atEnd.right, 500.0F);
+
+    // A badge narrower than the arrow: the base is the whole badge.
+    const BadgeArrowBase narrow = computeBadgeArrowBase(300.0F, 6.0F, 298.0F, 302.0F);
+    EXPECT_FLOAT_EQ(narrow.left, 298.0F);
+    EXPECT_FLOAT_EQ(narrow.right, 302.0F);
+}
+
 // A track narrower than the badge leaves no valid clamp range; the badge is centred on the track
 // rather than handing std::clamp crossed bounds.
 TEST(PriorityHelpersTest, BadgeCenterIsTrackCentreWhenTrackIsNarrowerThanBadge)
