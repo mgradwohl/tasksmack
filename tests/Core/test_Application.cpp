@@ -383,8 +383,8 @@ class SdlEventPushingLayer : public Core::Layer
 /// the first frame (onUpdate) to begin after the push already had the key dispatched (onSDLEvent).
 ///
 /// "After the push" is decided by causality, not timestamps: the timer thread enqueues the event and
-/// sets m_Pushed under m_PushMutex, and onUpdate() reads m_Pushed under the same mutex. A frame that
-/// sees m_Pushed began after the enqueue; a frame that does not began before it (its onUpdate() held
+/// sets Pushed under the push-state mutex, and onUpdate() reads Pushed under the same mutex. A frame
+/// that sees Pushed began after the enqueue; a frame that does not began before it (its onUpdate() held
 /// the lock first). Comparing SDL_GetTicksNS() stamps instead raced: SDL_PushEvent() can wake the loop
 /// before the push time is read, so the old loop's stale post-wake frame could land just before the
 /// recorded push time, be excluded, and let the test pass on the bug.
@@ -411,6 +411,13 @@ class SdlEventPushingLayer : public Core::Layer
 ///
 /// The old loop (SDL_WaitEventTimeout(nullptr, ...), then render) still fails a counted attempt:
 /// the push wakes its wait, and the frame it renders straight away has not drained the key.
+///
+/// Teardown (#1502): on X11, SDL_PushEvent() wakes the wait with an XSendEvent() to the window, so a
+/// push that runs while ~Application() destroys the window aborts the process with BadWindow, and
+/// SDL_RemoveTimer() does not wait for a callback already running. onDetach() runs before the window
+/// is destroyed and disarms the timer under the push mutex: the callback pushes only while holding
+/// that mutex and only for the timer still armed, so after onDetach() no push is running or can start.
+/// The push state is static, not in the layer, so a late callback never touches a destroyed layer.
 class KeyDuringIdleWaitLayer : public Core::Layer
 {
   public:
@@ -430,7 +437,12 @@ class KeyDuringIdleWaitLayer : public Core::Layer
     static constexpr SDL_Keycode KEY = SDLK_F13;
 
     KeyDuringIdleWaitLayer() : Layer("KeyDuringIdleWait")
-    {}
+    {
+        PushState& state = pushState();
+        const std::scoped_lock lock(state.Mutex);
+        state.ArmedTimer = 0;
+        state.Pushed = false;
+    }
 
     KeyDuringIdleWaitLayer(const KeyDuringIdleWaitLayer&) = delete;
     KeyDuringIdleWaitLayer& operator=(const KeyDuringIdleWaitLayer&) = delete;
@@ -439,10 +451,13 @@ class KeyDuringIdleWaitLayer : public Core::Layer
 
     ~KeyDuringIdleWaitLayer() override
     {
-        if (m_Timer != 0)
-        {
-            SDL_RemoveTimer(m_Timer);
-        }
+        disarm();
+    }
+
+    void onDetach() override
+    {
+        // Before ~Application() destroys the window (#1502).
+        disarm();
     }
 
     void onSDLEvent(SDL_Event* event) override
@@ -459,11 +474,7 @@ class KeyDuringIdleWaitLayer : public Core::Layer
 
     void onUpdate(float /*deltaTime*/) override
     {
-        bool pushed = false;
-        {
-            const std::scoped_lock lock(m_PushMutex);
-            pushed = m_Pushed;
-        }
+        const bool pushed = KeyDuringIdleWaitLayer::pushed();
         const std::uint64_t nowNs = SDL_GetTicksNS();
         const auto& app = Core::Application::get();
         const std::uint64_t idleWaits = Core::ApplicationTestAccessor::idleWaitCount(app);
@@ -547,10 +558,11 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         return m_PolledAttemptsWithoutKey;
     }
 
-    [[nodiscard]] bool pushed() const
+    [[nodiscard]] static bool pushed()
     {
-        const std::scoped_lock lock(m_PushMutex);
-        return m_Pushed;
+        PushState& state = pushState();
+        const std::scoped_lock lock(state.Mutex);
+        return state.Pushed;
     }
 
   private:
@@ -562,37 +574,71 @@ class KeyDuringIdleWaitLayer : public Core::Layer
         Done,
     };
 
+    /// Shared with the timer thread. Static, so a callback still running after the layer is gone
+    /// (SDL_RemoveTimer() does not wait for it) touches no freed memory.
+    struct PushState
+    {
+        std::mutex Mutex;
+        SDL_TimerID ArmedTimer = 0; // the one timer allowed to push; 0 once disarmed
+        bool Pushed = false;
+    };
+
+    static PushState& pushState()
+    {
+        static PushState state;
+        return state;
+    }
+
+    /// Stops any further push. Taking the mutex waits out a push in progress; a callback that has not
+    /// taken it yet finds its timer disarmed and does nothing.
+    void disarm()
+    {
+        {
+            PushState& state = pushState();
+            const std::scoped_lock lock(state.Mutex);
+            state.ArmedTimer = 0;
+        }
+        if (m_Timer != 0)
+        {
+            SDL_RemoveTimer(m_Timer);
+            m_Timer = 0;
+        }
+    }
+
     /// Starts an attempt: resets the per-attempt state and starts the timer.
     void arm(std::uint64_t idleWaits)
     {
-        {
-            const std::scoped_lock lock(m_PushMutex);
-            m_Pushed = false;
-        }
         m_KeyDispatched = false;
         m_OtherEventsAtArm = m_OtherEvents;
         m_IdleWaitsAtArm = idleWaits;
         ++m_Attempts;
         m_Phase = Phase::Armed;
         // The previous attempt's one-shot timer has fired; removing it again is a harmless no-op.
-        if (m_Timer != 0)
-        {
-            SDL_RemoveTimer(m_Timer);
-        }
-        m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, this);
+        disarm();
+        PushState& state = pushState();
+        // Held across SDL_AddTimer() so the callback, which takes it first, sees its own timer armed.
+        const std::scoped_lock lock(state.Mutex);
+        state.Pushed = false;
+        m_Timer = SDL_AddTimer(PUSH_DELAY_MS, &KeyDuringIdleWaitLayer::pushKey, nullptr);
+        state.ArmedTimer = m_Timer;
     }
 
-    static Uint32 pushKey(void* userdata, SDL_TimerID /*timerId*/, Uint32 /*interval*/)
+    static Uint32 pushKey(void* /*userdata*/, SDL_TimerID timerId, Uint32 /*interval*/)
     {
-        auto* self = static_cast<KeyDuringIdleWaitLayer*>(userdata);
         SDL_Event event{};
         event.type = SDL_EVENT_KEY_DOWN;
         event.key.key = KEY;
         event.key.down = true;
         // Enqueue and record under one lock: a frame whose onUpdate() runs after the enqueue blocks
-        // until m_Pushed is set, so it can't be mistaken for a frame from before the push.
-        const std::scoped_lock lock(self->m_PushMutex);
-        self->m_Pushed = SDL_PushEvent(&event);
+        // until Pushed is set, so it can't be mistaken for a frame from before the push. The push
+        // (and its X11 wake-up) also finishes before disarm() can return (#1502).
+        PushState& state = pushState();
+        const std::scoped_lock lock(state.Mutex);
+        if (timerId != state.ArmedTimer)
+        {
+            return 0; // disarmed: the layer is being torn down, or this is a stale timer
+        }
+        state.Pushed = SDL_PushEvent(&event);
         return 0; // one shot
     }
 
@@ -609,8 +655,6 @@ class KeyDuringIdleWaitLayer : public Core::Layer
     int m_OtherEventsAtArm = 0;
     bool m_KeyDispatched = false;
     std::optional<bool> m_FirstFrameAfterPushHadKey;
-    mutable std::mutex m_PushMutex;
-    bool m_Pushed = false; // guarded by m_PushMutex
     SDL_TimerID m_Timer = 0;
 };
 
@@ -961,7 +1005,7 @@ TEST(ApplicationTest, KeyDuringIdleWaitIsDispatchedBeforeTheNextFrame)
 
         app.run();
 
-        ASSERT_TRUE(layer.pushed()) << "the timer never pushed the key: " << SDL_GetError();
+        ASSERT_TRUE(KeyDuringIdleWaitLayer::pushed()) << "the timer never pushed the key: " << SDL_GetError();
         EXPECT_EQ(layer.polledAttemptsWithoutKey(), 0)
             << "an idle wait timed out with the key queued, and the frame after it rendered without the key (#1450)";
         const std::optional<bool> firstFrameHadKey = layer.firstFrameAfterPushHadKey();
