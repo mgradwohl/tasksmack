@@ -324,6 +324,10 @@ void readSettings(const toml::table& config, UserSettings& settings)
     {
         settings.showPrivilegeNotice = *val;
     }
+    if (auto val = config["ui"]["cpu_details_expanded"].value<bool>())
+    {
+        settings.cpuDetailsExpanded = *val;
+    }
 
     // Process table column layout (widths, order, sort). Length-capped here; its content is
     // filtered where it is used, before ImGui parses it.
@@ -443,6 +447,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
              {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(settings.chartTauMsMin)},
              {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
              {"show_privilege_notice", settings.showPrivilegeNotice},
+             {"cpu_details_expanded", settings.cpuDetailsExpanded},
              {"chart_anti_aliasing", settings.chartAntiAliasing},
          }},
         {"theme", toml::table{{"id", settings.themeId}}},
@@ -788,6 +793,8 @@ void UserConfig::save()
             "as a fraction of the refresh interval; read at startup\n";
     text << "#   [ui] chart_tau_ms_min/max: the shortest (5-100ms) and longest (100-2000ms) that easing may take; read at startup\n";
     text << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
+    text << "#   [ui] cpu_details_expanded: whether the Overview's CPU Details block is expanded (true/false); its heading "
+            "toggles it\n";
     text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
             "on integrated GPUs\n";
     text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "

@@ -669,6 +669,38 @@ TEST_F(UserConfigSaveLoadFixture, ShowPrivilegeNoticeTrueIsSavedAndLoaded)
     EXPECT_TRUE(config.settings().showPrivilegeNotice);
 }
 
+// ========== cpuDetailsExpanded Persistence (#809) ==========
+
+TEST(UserSettingsTest, CpuDetailsExpandedDefaultsToTrue)
+{
+    const UserSettings settings;
+    EXPECT_TRUE(settings.cpuDetailsExpanded);
+}
+
+TEST_F(UserConfigSaveLoadFixture, CpuDetailsCollapsedIsSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings().cpuDetailsExpanded = false;
+    config.save();
+    config.settings().cpuDetailsExpanded = true;
+    config.load();
+    EXPECT_FALSE(config.settings().cpuDetailsExpanded);
+}
+
+TEST_F(UserConfigSaveLoadFixture, AConfigFromBeforeTheCpuDetailsBlockLoadsExpanded)
+{
+    // Written by a version without the key: the block opens expanded
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[ui]\nshow_privilege_notice = false\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{}; // A fresh start: load() fills in only the keys the file has
+    config.load();
+    EXPECT_TRUE(config.settings().cpuDetailsExpanded);
+    EXPECT_FALSE(config.settings().showPrivilegeNotice);
+}
+
 // ========== Process table layout persistence (#952) ==========
 
 TEST(UserSettingsTest, ProcessTableLayoutDefaultsToEmpty)

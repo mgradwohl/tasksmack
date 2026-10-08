@@ -20,11 +20,23 @@ struct MeasuredRows
     std::vector<float> valueWidths;   ///< Value column width per row, gap included
 };
 
-/// The Overview's CPU Details block (#809): a "CPU Details" heading with the CPU model beside it,
-/// then `rows` as label/value column pairs, as many side by side as the width allows
-/// (CpuDetailsText::columnLayout()), so a wide window spends less height on it and more on the
-/// charts. A value that is not a reading is drawn muted, with its reason on hover. `rowsGeneration`
-/// changes whenever `rows` do (never 0), and `measured` holds their widths between frames.
-void render(std::string_view cpuModel, std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGeneration, MeasuredRows& measured);
+/// What the block shows this frame.
+struct Content
+{
+    std::string_view cpuModel;                 ///< Beside the heading while expanded
+    std::string_view collapsedSummary;         ///< Beside the heading while collapsed (CpuDetailsText::collapsedSummary())
+    std::span<const CpuDetailsText::Row> rows; ///< The facts, while expanded
+    std::uint64_t rowsGeneration = 0;          ///< Changes whenever `rows` do (never 0)
+    bool expanded = true;
+};
+
+/// The Overview's CPU Details block (#809). Its heading -- a caret, "CPU Details" and, beside it,
+/// the CPU model (expanded) or a one-line summary (collapsed) -- is one text line and toggles the
+/// block. Expanded, `rows` follow as label/value column pairs across the full width
+/// (CpuDetailsText::columnLayout()); collapsed, the heading line is all, no taller than the
+/// one-line header it replaced. A value that is not a reading is drawn muted, with its reason on
+/// hover. `measured` holds the rows' widths between frames. Returns true when the heading was
+/// clicked: the caller flips `expanded` and keeps it.
+[[nodiscard]] bool render(const Content& content, MeasuredRows& measured);
 
 } // namespace App::CpuDetailsBlock
