@@ -195,8 +195,16 @@ TEST(LinuxProcessEnvironmentReaderTest, AnotherUsersProcessIsPermissionDenied)
         GTEST_SKIP() << "/proc/1/environ is readable here (root or CAP_SYS_PTRACE)";
     }
 
+    // With procfs mounted hidepid, /proc/1/stat is unreadable too: no start time, no identity, so the
+    // reader rightly answers IdentityUnknown and there is no permission-denied path to exercise.
+    const std::uint64_t initStartTicks = startTicksOf(1);
+    if (initStartTicks == 0)
+    {
+        GTEST_SKIP() << "/proc/1/stat is unreadable here (procfs hidepid): PID 1's identity is unknown";
+    }
+
     LinuxProcessEnvironmentReader reader;
-    const EnvironmentReadResult result = reader.readEnvironment({.pid = 1, .startTimeTicks = startTicksOf(1)});
+    const EnvironmentReadResult result = reader.readEnvironment({.pid = 1, .startTimeTicks = initStartTicks});
     EXPECT_EQ(result.status, EnvironmentReadStatus::PermissionDenied);
     EXPECT_TRUE(result.variables.empty());
 }

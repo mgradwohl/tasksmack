@@ -26,7 +26,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -93,13 +92,16 @@ namespace EnvironmentMaskingDetail
 [[nodiscard]] inline std::string toUpperAscii(std::string_view text)
 {
     std::string upper(text);
-    std::ranges::transform(upper, upper.begin(), [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); });
+    // ASCII only, as containsIgnoringCase() does: std::toupper follows the C locale, which main() sets
+    // from the user's environment, so it could leave a keyword's letters unmapped.
+    std::ranges::transform(upper, upper.begin(), [](char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; });
     return upper;
 }
 
 [[nodiscard]] inline bool isWordChar(char c) noexcept
 {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0;
+    // ASCII only, like the case folding above: std::isalnum follows the C locale.
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
 }
 
 /// Whether one upper-cased word of a name marks it as a secret (rule 3 above).
@@ -142,9 +144,10 @@ namespace EnvironmentMaskingDetail
     std::string_view rest{upper};
     while (!rest.empty())
     {
-        const auto* const wordStart = std::ranges::find_if(rest, Masking::isWordChar);
+        // The iterator type, not a pointer: MSVC's string_view iterator is a class.
+        const std::string_view::const_iterator wordStart = std::ranges::find_if(rest, Masking::isWordChar);
         rest.remove_prefix(static_cast<std::size_t>(wordStart - rest.begin()));
-        const auto* const wordEnd = std::ranges::find_if_not(rest, Masking::isWordChar);
+        const std::string_view::const_iterator wordEnd = std::ranges::find_if_not(rest, Masking::isWordChar);
         const auto wordLength = static_cast<std::size_t>(wordEnd - rest.begin());
         if (wordLength > 0 && Masking::isSecretWord(rest.substr(0, wordLength)))
         {
