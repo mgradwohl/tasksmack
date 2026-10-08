@@ -82,7 +82,9 @@ class BackgroundSampler
     /// `name` labels its timing in metrics() and the overrun log ("samplable N" when empty).
     void addSamplable(std::weak_ptr<ISamplable> samplable, std::string name = {});
 
-    /// Start background sampling thread.
+    /// Start background sampling thread. If the thread can't be created (std::system_error,
+    /// std::bad_alloc), the exception propagates and the sampler is left stopped: isRunning() false,
+    /// hasThreadExited() true, and start() can be called again.
     void start();
 
     /// Stop background sampling thread (waits for completion).

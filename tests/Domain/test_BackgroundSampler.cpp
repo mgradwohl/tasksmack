@@ -9,6 +9,7 @@
 /// - Thread safety
 /// - Capabilities passthrough
 
+#include "AllocationFailureHook.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/ISamplable.h"
 #include "Domain/SamplingConfig.h"
@@ -25,6 +26,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <new> // IWYU pragma: keep - std::bad_alloc, used where the allocator hook is built
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -1074,7 +1076,14 @@ TEST(BackgroundSamplerTest, RequestStopReturnsWithoutWaitingForASampleInFlight)
     EXPECT_TRUE(sampler.hasThreadExited()); // not started
     sampler.addSamplable(samplable);
     sampler.start();
-    ASSERT_TRUE(samplable->waitUntilInSample());
+    const bool inSample = samplable->waitUntilInSample();
+    if (!inSample)
+    {
+        // Release before the fatal assert: otherwise the destructor's join waits on a sample that
+        // may still enter the gate after the timeout, and the test hangs instead of failing.
+        samplable->release();
+    }
+    ASSERT_TRUE(inSample);
     EXPECT_FALSE(sampler.hasThreadExited());
 
     // Returns while the sample is still blocked: a join here would deadlock the test.
@@ -1104,4 +1113,57 @@ TEST(BackgroundSamplerTest, RequestStopBeforeStartDoesNothing)
     EXPECT_FALSE(sampler.hasThreadExited());
     sampler.stop();
     EXPECT_TRUE(sampler.hasThreadExited());
+}
+
+// start() as a transaction: a failure to create the thread (here a std::bad_alloc from each of its
+// allocations in turn: the thread name's copy, the jthread's stop state and thread state) leaves the
+// sampler stopped and startable, rather than "running" with no thread, which hasThreadExited() and
+// stop() could never recover from.
+TEST(BackgroundSamplerTest, AFailedStartLeavesTheSamplerStoppedAndStartable)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#else
+    // Longer than any small-string buffer, so copying the name allocates too.
+    const Domain::SamplerConfig config{.interval = 100ms, .threadName = std::string(48, 'n')};
+    int failedStarts = 0;
+    for (std::int64_t failAt = 0; failAt < 256; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        const auto samplable = std::make_shared<MockSamplable>();
+        Domain::BackgroundSampler sampler(config);
+        sampler.addSamplable(samplable);
+
+        bool threw = false;
+        bool pending = false;
+        {
+            const TestSupport::FailAllocationAfter failure(failAt);
+            try
+            {
+                sampler.start();
+            }
+            catch (const std::bad_alloc&)
+            {
+                threw = true;
+            }
+            pending = TestSupport::allocationFailurePending();
+        }
+
+        if (threw)
+        {
+            ++failedStarts;
+            EXPECT_FALSE(sampler.isRunning());
+            EXPECT_TRUE(sampler.hasThreadExited());
+            sampler.start(); // startable again
+        }
+        samplable->waitForSamples(1);
+        sampler.stop();
+        EXPECT_TRUE(sampler.hasThreadExited());
+        if (pending)
+        {
+            break; // start() made fewer allocations than failAt: every one of them has been failed
+        }
+    }
+    EXPECT_GT(failedStarts, 0);
+#endif
 }
