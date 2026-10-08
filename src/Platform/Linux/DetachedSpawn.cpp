@@ -4,12 +4,14 @@
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <span>
 #include <string>
@@ -42,9 +44,9 @@ using Posix::FdGuard;
 /// network filesystem) so the UI thread is never held for long.
 constexpr int EXEC_REPORT_TIMEOUT_MS = 2000;
 
-/// Highest descriptor (exclusive) the pre-5.11 fallback marks close-on-exec one by one. Bounded so a
-/// huge RLIMIT_NOFILE (systemd raises it to 2^20 or more) cannot make that loop slow.
-constexpr int FALLBACK_FD_LIMIT = 65536;
+/// Highest descriptor (exclusive) the last-resort fallback walks when RLIMIT_NOFILE is unlimited:
+/// the kernel's default fs.nr_open, which no descriptor can exceed unless an administrator raised it.
+constexpr int UNLIMITED_FD_LIMIT = 1 << 20;
 
 /// What a child writes to the report pipe when it fails: the stage and errno.
 struct Report
@@ -61,57 +63,137 @@ void writeReport(int fd, SpawnFailure::Stage stage, int error) noexcept
     [[maybe_unused]] const auto written = ::write(fd, &report, sizeof(report));
 }
 
+/// Mark @p fd close-on-exec. Async-signal-safe: fcntl(2) only. A descriptor closed since the
+/// snapshot fails with EBADF, which is harmless.
+void setCloseOnExec(int fd) noexcept
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX fcntl() is variadic by definition
+    static_cast<void>(::fcntl(fd, F_SETFD, FD_CLOEXEC));
+}
+
+/// Everything the detached child needs, prepared before fork() so the child never allocates.
+struct ChildPlan
+{
+    const char* path = nullptr;
+    char* const* argv = nullptr;
+    char* const* envp = nullptr;
+    int devNull = -1;  ///< Above STDERR_FILENO.
+    int reportFd = -1; ///< Write end of the report pipe; above STDERR_FILENO.
+    bool useCloseRange = true;
+    std::span<const int> openFds; ///< Descriptors open before fork(), from /proc/self/fd.
+    bool openFdsKnown = false;    ///< Whether openFds could be listed.
+    int fdLimit = 0;              ///< Last resort when they couldn't: walk 3 .. fdLimit-1.
+    const struct sigaction* defaultAction = nullptr;
+    // NOLINTNEXTLINE(misc-include-cleaner) - sigset_t is provided by <signal.h>
+    const sigset_t* emptyMask = nullptr;
+};
+
 /// Mark every descriptor from 3 up close-on-exec, keeping them open until execve() so the report pipe
 /// still works if it fails. Async-signal-safe: syscall(2) and fcntl(2) only.
-void markInheritedFdsCloseOnExec(int fallbackLimit) noexcept
+void markInheritedFdsCloseOnExec(const ChildPlan& plan) noexcept
 {
 #if defined(SYS_close_range) && defined(CLOSE_RANGE_CLOEXEC)
-    if (::syscall(SYS_close_range, 3U, ~0U, CLOSE_RANGE_CLOEXEC) == 0)
+    if (plan.useCloseRange && ::syscall(SYS_close_range, 3U, ~0U, CLOSE_RANGE_CLOEXEC) == 0)
     {
         return;
     }
 #endif
-    for (int fd = 3; fd < fallbackLimit; ++fd)
+    if (plan.openFdsKnown)
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX fcntl() is variadic by definition
-        static_cast<void>(::fcntl(fd, F_SETFD, FD_CLOEXEC));
+        // Every descriptor open when spawnDetached() began. One another thread opens after that
+        // snapshot without O_CLOEXEC could still leak here; TaskSmack opens its own with O_CLOEXEC.
+        for (const int fd : plan.openFds)
+        {
+            if (fd > STDERR_FILENO)
+            {
+                setCloseOnExec(fd);
+            }
+        }
+        return;
+    }
+    for (int fd = STDERR_FILENO + 1; fd < plan.fdLimit; ++fd)
+    {
+        setCloseOnExec(fd);
     }
 }
 
 /// The detached program's process: reset what it would otherwise inherit from TaskSmack, then exec.
 /// Never returns. Async-signal-safe calls only (signal(7)).
-[[noreturn]] void execDetached(const char* path,
-                               char* const* argv,
-                               char* const* envp,
-                               int devNull,
-                               int reportFd,
-                               int fallbackFdLimit,
-                               const struct sigaction& defaultAction,
-                               // NOLINTNEXTLINE(misc-include-cleaner) - sigset_t is provided by <signal.h>
-                               const sigset_t& emptyMask) noexcept
+[[noreturn]] void execDetached(const ChildPlan& plan) noexcept
 {
     // Default dispositions: exec keeps ignored signals ignored (SIGPIPE, for one), which the terminal
     // and strace would then inherit. sigaction() refuses SIGKILL, SIGSTOP and libc's reserved signals;
     // that is harmless.
     for (int sig = 1; sig < NSIG; ++sig)
     {
-        static_cast<void>(::sigaction(sig, &defaultAction, nullptr));
+        static_cast<void>(::sigaction(sig, plan.defaultAction, nullptr));
     }
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - this forked child is single-threaded, and sigprocmask is async-signal-safe
-    static_cast<void>(::sigprocmask(SIG_SETMASK, &emptyMask, nullptr));
+    static_cast<void>(::sigprocmask(SIG_SETMASK, plan.emptyMask, nullptr));
 
     // stdin/stdout/stderr on /dev/null: the terminal draws its own window and must not write into
-    // whatever TaskSmack was started from. dup2() clears close-on-exec on the copies.
-    if (::dup2(devNull, STDIN_FILENO) < 0 || ::dup2(devNull, STDOUT_FILENO) < 0 || ::dup2(devNull, STDERR_FILENO) < 0)
+    // whatever TaskSmack was started from. dup2() clears close-on-exec on the copies. /dev/null and the
+    // report pipe are above STDERR_FILENO, so these never overwrite the pipe.
+    if (::dup2(plan.devNull, STDIN_FILENO) < 0 || ::dup2(plan.devNull, STDOUT_FILENO) < 0 || ::dup2(plan.devNull, STDERR_FILENO) < 0)
     {
-        writeReport(reportFd, SpawnFailure::Stage::Exec, errno);
+        writeReport(plan.reportFd, SpawnFailure::Stage::Exec, errno);
         ::_exit(127);
     }
-    markInheritedFdsCloseOnExec(fallbackFdLimit);
+    markInheritedFdsCloseOnExec(plan);
 
-    ::execve(path, argv, envp);
-    writeReport(reportFd, SpawnFailure::Stage::Exec, errno);
+    ::execve(plan.path, plan.argv, plan.envp);
+    writeReport(plan.reportFd, SpawnFailure::Stage::Exec, errno);
     ::_exit(127);
+}
+
+/// @p fd, moved above STDERR_FILENO (close-on-exec) if it is one of 0-2, which happens when TaskSmack
+/// was started with its standard descriptors closed. The low descriptor is closed again, as it was.
+/// Returns -1 with errno set if it could not be moved.
+[[nodiscard]] int moveAboveStdio(int fd) noexcept
+{
+    if (fd < 0 || fd > STDERR_FILENO)
+    {
+        return fd;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX fcntl() is variadic by definition
+    const int moved = ::fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    const int err = errno;
+    ::close(fd);
+    errno = err;
+    return moved;
+}
+
+/// The descriptors open in this process now, from /proc/self/fd (including the one used to list
+/// it, which is closed again by the time the list is used; harmless). Empty when it can't be read.
+[[nodiscard]] std::vector<int> listOpenFds(bool& known)
+{
+    std::vector<int> fds;
+    std::error_code ec;
+    std::filesystem::directory_iterator it("/proc/self/fd", ec);
+    for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
+    {
+        const std::string name = it->path().filename().string();
+        int fd = -1;
+        const auto [ptr, parseError] = std::from_chars(name.data(), name.data() + name.size(), fd);
+        if (parseError == std::errc{} && ptr == name.data() + name.size())
+        {
+            fds.push_back(fd);
+        }
+    }
+    known = !ec;
+    return fds;
+}
+
+/// The last-resort fallback's bound: the whole finite RLIMIT_NOFILE (no descriptor can be at or above
+/// it), else the kernel's default ceiling.
+[[nodiscard]] int descriptorLimit() noexcept
+{
+    rlimit fileLimit{};
+    if (::getrlimit(RLIMIT_NOFILE, &fileLimit) == 0 && fileLimit.rlim_cur != RLIM_INFINITY)
+    {
+        return fileLimit.rlim_cur > static_cast<rlim_t>(INT_MAX) ? INT_MAX : static_cast<int>(fileLimit.rlim_cur);
+    }
+    return UNLIMITED_FD_LIMIT;
 }
 
 } // namespace
@@ -141,6 +223,11 @@ std::string spawnFailureMessage(const SpawnFailure& failure, const std::string& 
 
 std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> argv)
 {
+    return Detail::spawnDetached(argv, Detail::SpawnHooks{});
+}
+
+std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::string> argv, const SpawnHooks& hooks)
+{
     if (argv.empty() || !argv.front().starts_with('/'))
     {
         return std::unexpected(SpawnFailure{.stage = SpawnFailure::Stage::Setup, .error = EINVAL});
@@ -156,37 +243,54 @@ std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> arg
         argPointers.push_back(const_cast<char*>(arg.c_str()));
     }
     argPointers.push_back(nullptr);
-    char* const* const envp = environ;
 
+    // Opened first, then each moved above STDERR_FILENO: with 0-2 closed, /dev/null would be 0 and
+    // the pipe 1 and 2, and the child's dup2() onto 0-2 would replace the report pipe with /dev/null.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
-    const FdGuard devNull(::open("/dev/null", O_RDWR | O_CLOEXEC));
-    if (devNull.get() < 0)
+    const int devNullRaw = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (devNullRaw < 0)
     {
         return std::unexpected(SpawnFailure{.stage = SpawnFailure::Stage::Setup, .error = errno});
     }
     std::array<int, 2> reportPipe{-1, -1};
     if (::pipe2(reportPipe.data(), O_CLOEXEC) != 0)
     {
+        const int err = errno;
+        ::close(devNullRaw);
+        return std::unexpected(SpawnFailure{.stage = SpawnFailure::Stage::Setup, .error = err});
+    }
+    // Each moved only after all three are open, so a closed 0-2 is not reused by the next one.
+    const FdGuard devNull(moveAboveStdio(devNullRaw));
+    const FdGuard reportRead(moveAboveStdio(reportPipe[0]));
+    FdGuard reportWrite(moveAboveStdio(reportPipe[1]));
+    if (devNull.get() < 0 || reportRead.get() < 0 || reportWrite.get() < 0)
+    {
         return std::unexpected(SpawnFailure{.stage = SpawnFailure::Stage::Setup, .error = errno});
     }
-    const FdGuard reportRead(reportPipe[0]);
-    FdGuard reportWrite(reportPipe[1]);
 
-    int fallbackFdLimit = FALLBACK_FD_LIMIT;
-    rlimit fileLimit{};
-    if (::getrlimit(RLIMIT_NOFILE, &fileLimit) == 0 && fileLimit.rlim_cur != RLIM_INFINITY)
-    {
-        fallbackFdLimit = static_cast<int>(std::min<rlim_t>(fileLimit.rlim_cur, FALLBACK_FD_LIMIT));
-    }
+    // Listed even when close_range() is expected to work: it can still fail in the child (a kernel
+    // before 5.11, or a seccomp filter), and the child cannot list /proc itself without allocating.
+    bool openFdsKnown = false;
+    const std::vector<int> openFds = listOpenFds(openFdsKnown);
     struct sigaction defaultAction{};
     defaultAction.sa_handler = SIG_DFL;
     sigemptyset(&defaultAction.sa_mask);
     sigset_t emptyMask{};
     sigemptyset(&emptyMask);
 
-    const char* const path = argPointers.front();
-    const int devNullFd = devNull.get();
-    const int reportFd = reportWrite.get();
+    const ChildPlan plan{
+        .path = argPointers.front(),
+        .argv = argPointers.data(),
+        .envp = environ,
+        .devNull = devNull.get(),
+        .reportFd = reportWrite.get(),
+        .useCloseRange = hooks.useCloseRange,
+        .openFds = openFds,
+        .openFdsKnown = openFdsKnown,
+        .fdLimit = descriptorLimit(),
+        .defaultAction = &defaultAction,
+        .emptyMask = &emptyMask,
+    };
 
     const pid_t intermediate = ::fork();
     if (intermediate < 0)
@@ -202,12 +306,12 @@ std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> arg
         const pid_t program = ::fork();
         if (program < 0)
         {
-            writeReport(reportFd, SpawnFailure::Stage::Fork, errno);
+            writeReport(plan.reportFd, SpawnFailure::Stage::Fork, errno);
             ::_exit(1);
         }
         if (program == 0)
         {
-            execDetached(path, argPointers.data(), envp, devNullFd, reportFd, fallbackFdLimit, defaultAction, emptyMask);
+            execDetached(plan);
         }
         ::_exit(0);
     }
@@ -230,11 +334,23 @@ std::expected<void, SpawnFailure> spawnDetached(std::span<const std::string> arg
             "DetachedSpawn: waitpid for the intermediate child of {} failed: {}", argv.front(), std::system_category().message(errno));
     }
 
+    // The bound on this wait is the poll: read() below runs only once the pipe is readable (a report,
+    // or end of file), so it never blocks.
+    const auto pollFn = hooks.poll != nullptr ? hooks.poll : &::poll;
     pollfd pending{.fd = reportRead.get(), .events = POLLIN, .revents = 0};
-    int ready = ::poll(&pending, 1, EXEC_REPORT_TIMEOUT_MS);
+    int ready = pollFn(&pending, 1, EXEC_REPORT_TIMEOUT_MS);
     while (ready < 0 && errno == EINTR)
     {
-        ready = ::poll(&pending, 1, EXEC_REPORT_TIMEOUT_MS);
+        ready = pollFn(&pending, 1, EXEC_REPORT_TIMEOUT_MS);
+    }
+    if (ready < 0)
+    {
+        // As for a timeout: the program may still exec, so it is not reported as failed (the user
+        // would start a second one), and a blocking read() here could hold the UI thread indefinitely.
+        spdlog::warn("DetachedSpawn: poll for the exec report of {} failed ({}); assuming it started",
+                     argv.front(),
+                     std::system_category().message(errno));
+        return {};
     }
     if (ready == 0)
     {

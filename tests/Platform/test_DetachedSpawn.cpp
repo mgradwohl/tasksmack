@@ -10,9 +10,12 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -26,6 +29,7 @@
 
 // NOLINTBEGIN(misc-include-cleaner) - POSIX headers: include-cleaner lacks mappings for pid_t, wait macros
 #include <fcntl.h>
+#include <sys/poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -93,34 +97,77 @@ void writeScript(const std::filesystem::path& path, const std::string& body)
     std::filesystem::permissions(path, std::filesystem::perms::owner_all);
 }
 
-/// A fake terminal in @p dir: records its argv (one per line) in argv.txt, its PID in pid.txt, and
-/// whether descriptor @p probeFd was open in it in fds.txt, then sleeps @p sleepSeconds. Each file is
-/// renamed into place once written, so a reader never sees half of one.
-[[nodiscard]] std::filesystem::path writeFakeTerminal(const std::filesystem::path& dir, int probeFd, int sleepSeconds)
+/// A fake terminal in @p dir: records its argv (one per line) in argv.txt, its PID in pid.txt, and in
+/// fds.txt "clean", or "leaked N" for each of @p probeFds open in it, then sleeps @p sleepSeconds.
+/// Each file is renamed into place once written, so a reader never sees half of one.
+[[nodiscard]] std::filesystem::path writeFakeTerminal(const std::filesystem::path& dir, const std::vector<int>& probeFds, int sleepSeconds)
 {
+    std::string fdChecks;
+    for (const int fd : probeFds)
+    {
+        fdChecks += std::format("[ -e /proc/self/fd/{0} ] && echo 'leaked {0}'\n", fd);
+    }
     const std::filesystem::path script = dir / "fake-terminal";
     writeScript(script,
                 std::format("out='{0}'\n"
                             "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$out/argv.tmp\"\n"
                             "echo $$ > \"$out/pid.tmp\"\n"
-                            "if [ -e /proc/self/fd/{1} ]; then echo leaked; else echo clean; fi > \"$out/fds.tmp\"\n"
+                            "{{ {1} true; }} > \"$out/fds.tmp\"\n"
+                            "[ -s \"$out/fds.tmp\" ] || echo clean > \"$out/fds.tmp\"\n"
                             "mv \"$out/pid.tmp\" \"$out/pid.txt\"\n"
                             "mv \"$out/fds.tmp\" \"$out/fds.txt\"\n"
                             "mv \"$out/argv.tmp\" \"$out/argv.txt\"\n"
                             "sleep {2}\n",
                             dir.string(),
-                            probeFd,
+                            fdChecks,
                             sleepSeconds));
     return script;
 }
 
+/// Inheritable (no FD_CLOEXEC) descriptors for the leak checks: one at 100, and one at 70000 -- above
+/// 65535, where the old fallback stopped -- when RLIMIT_NOFILE allows it.
+class LeakableFds
+{
+  public:
+    LeakableFds()
+    {
+        for (const int minimum : {100, 70000})
+        {
+            const int fd = ::fcntl(STDERR_FILENO, F_DUPFD, minimum);
+            if (fd >= 0)
+            {
+                m_Fds.push_back(fd);
+            }
+        }
+    }
+    ~LeakableFds()
+    {
+        for (const int fd : m_Fds)
+        {
+            ::close(fd);
+        }
+    }
+    LeakableFds(const LeakableFds&) = delete;
+    LeakableFds& operator=(const LeakableFds&) = delete;
+    LeakableFds(LeakableFds&&) = delete;
+    LeakableFds& operator=(LeakableFds&&) = delete;
+
+    [[nodiscard]] const std::vector<int>& fds() const noexcept
+    {
+        return m_Fds;
+    }
+
+  private:
+    std::vector<int> m_Fds;
+};
+
 TEST(DetachedSpawnTest, RunsTheProgramWithExactlyTheArgvGivenAndLeavesNoZombie)
 {
     const ScopedTempDir dir("tasksmack_detached_spawn");
-    // A descriptor deliberately left inheritable: the detached program must not get it.
-    const int leakable = ::fcntl(STDERR_FILENO, F_DUPFD, 100);
-    ASSERT_GE(leakable, 0);
-    const std::filesystem::path terminal = writeFakeTerminal(dir.path, leakable, 2);
+    // Descriptors deliberately left inheritable: the detached program must not get them.
+    const LeakableFds leakable;
+    ASSERT_FALSE(leakable.fds().empty());
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, leakable.fds(), 2);
 
     // The real argv for a process whose name is shell syntax: it must arrive as one plain argument.
     const SyscallTrace::Terminal fake{.path = terminal.string(), .syntax = SyscallTrace::TerminalSyntax::DashE};
@@ -131,7 +178,6 @@ TEST(DetachedSpawnTest, RunsTheProgramWithExactlyTheArgvGivenAndLeavesNoZombie)
     const auto started = std::chrono::steady_clock::now();
     const auto result = spawnDetached(argv);
     const auto elapsed = std::chrono::steady_clock::now() - started;
-    ::close(leakable);
     ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), terminal.string());
     // The script sleeps 2 s after recording; the call returns as soon as it has exec'd.
     EXPECT_LT(elapsed, std::chrono::milliseconds(1500));
@@ -156,6 +202,104 @@ TEST(DetachedSpawnTest, RunsTheProgramWithExactlyTheArgvGivenAndLeavesNoZombie)
     errno = 0;
     EXPECT_EQ(waitNoHang(-1), -1);
     EXPECT_EQ(errno, ECHILD);
+}
+
+TEST(DetachedSpawnTest, FallbackWithoutCloseRangeLeaksNoDescriptorEvenAbove65535)
+{
+    const ScopedTempDir dir("tasksmack_detached_spawn_fallback");
+    const LeakableFds leakable;
+    ASSERT_FALSE(leakable.fds().empty());
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, leakable.fds(), 0);
+
+    const std::vector<std::string> argv{terminal.string(), "fallback"};
+    const auto result = Detail::spawnDetached(argv, Detail::SpawnHooks{.useCloseRange = false, .poll = nullptr});
+    ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), terminal.string());
+
+    ASSERT_TRUE(waitForFile(dir.path / "argv.txt").has_value()) << "the fake terminal never ran";
+    EXPECT_EQ(readFile(dir.path / "fds.txt").value_or(""), "clean\n");
+    if (leakable.fds().size() < 2)
+    {
+        GTEST_SKIP() << "RLIMIT_NOFILE does not allow a descriptor at 70000; only the low one was checked";
+    }
+}
+
+/// Runs @p body with descriptors 0, 1 and 2 closed, as when TaskSmack is started with them closed,
+/// and restores them afterwards. @p body must not use gtest assertions (they print to stdout).
+template<typename Body> void withStdioClosed(const Body& body)
+{
+    std::array<int, 3> saved{-1, -1, -1};
+    for (int fd = 0; fd <= STDERR_FILENO; ++fd)
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX fcntl() is variadic by definition
+        saved.at(static_cast<std::size_t>(fd)) = ::fcntl(fd, F_DUPFD_CLOEXEC, 3);
+    }
+    for (int fd = 0; fd <= STDERR_FILENO; ++fd)
+    {
+        ::close(fd);
+    }
+    body();
+    for (int fd = 0; fd <= STDERR_FILENO; ++fd)
+    {
+        const int copy = saved.at(static_cast<std::size_t>(fd));
+        if (copy >= 0)
+        {
+            ::dup2(copy, fd);
+            ::close(copy);
+        }
+    }
+}
+
+TEST(DetachedSpawnTest, ReportsAnExecFailureEvenWithStandardDescriptorsClosed)
+{
+    // With 0-2 closed, /dev/null and the report pipe would land on them, and the child's dup2() onto
+    // 0-2 would overwrite the pipe, turning this failure into a reported success.
+    const ScopedTempDir dir("tasksmack_detached_spawn_nostdio");
+    const std::vector<std::string> missing{(dir.path / "no-such-terminal").string()};
+    std::optional<std::expected<void, SpawnFailure>> result;
+    withStdioClosed([&] { result = spawnDetached(missing); });
+    ASSERT_TRUE(result.has_value());
+    ASSERT_FALSE(result->has_value());
+    EXPECT_EQ(result->error().stage, SpawnFailure::Stage::Exec);
+    EXPECT_EQ(result->error().error, ENOENT);
+}
+
+TEST(DetachedSpawnTest, StartsTheProgramWithStandardDescriptorsClosed)
+{
+    const ScopedTempDir dir("tasksmack_detached_spawn_nostdio_ok");
+    const std::filesystem::path terminal = writeFakeTerminal(dir.path, {}, 0);
+    const std::vector<std::string> argv{terminal.string(), "no-stdio"};
+    std::optional<std::expected<void, SpawnFailure>> result;
+    withStdioClosed([&] { result = spawnDetached(argv); });
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->has_value());
+    const std::optional<std::string> recorded = waitForFile(dir.path / "argv.txt");
+    ASSERT_TRUE(recorded.has_value()) << "the fake terminal never ran";
+    EXPECT_EQ(lines(*recorded), std::vector<std::string>{"no-stdio"});
+}
+
+/// A poll() that fails outright, as after ENOMEM; counts its calls.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - a plain function pointer hook can't capture
+int g_FailingPollCalls = 0;
+int failingPoll(pollfd* /*fds*/, nfds_t /*count*/, int /*timeout*/)
+{
+    ++g_FailingPollCalls;
+    errno = ENOMEM;
+    return -1;
+}
+
+TEST(DetachedSpawnTest, AFailedPollIsTreatedAsATimeoutAndNeverBlocksOnRead)
+{
+    // The program does not exist, so its exec fails and a report would be waiting -- but with poll()
+    // failing nothing may be read: the result is "assumed started", as for a timeout, never a block.
+    const ScopedTempDir dir("tasksmack_detached_spawn_pollfail");
+    const std::vector<std::string> missing{(dir.path / "no-such-terminal").string()};
+    g_FailingPollCalls = 0;
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = Detail::spawnDetached(missing, Detail::SpawnHooks{.useCloseRange = true, .poll = &failingPoll});
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_TRUE(result.has_value());
+    EXPECT_EQ(g_FailingPollCalls, 1);
+    EXPECT_LT(elapsed, std::chrono::milliseconds(1000));
 }
 
 TEST(DetachedSpawnTest, ReportsAProgramThatDoesNotExist)

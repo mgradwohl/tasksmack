@@ -91,7 +91,7 @@ using IoPriorityReadResult = std::expected<IoPriority, std::string>;
 /// Whether IProcessActions::launchSyscallTrace() can open a system call tracer on this machine (#182).
 enum class SyscallTraceAvailability : std::uint8_t
 {
-    Unsupported, ///< The platform has no such action (Windows): the UI hides it.
+    Unsupported, ///< No such action here (Windows, or the synthetic scenario): the UI hides it.
     Available,   ///< A tracer and a terminal to show it in were found.
     NoTracer,    ///< The platform supports it, but no tracer (strace) was found on PATH.
     NoTerminal,  ///< The platform supports it, but no terminal emulator was found to run it in.
@@ -103,12 +103,13 @@ enum class SyscallTraceAvailability : std::uint8_t
     switch (availability)
     {
     case SyscallTraceAvailability::Unsupported:
-        return "Tracing system calls is not supported on this platform";
+        // Windows, and the synthetic scenario on any platform.
+        return "Tracing system calls is not available here";
     case SyscallTraceAvailability::NoTracer:
         return "strace is not installed (or not on PATH). Install it (e.g. sudo apt install strace) and restart TaskSmack.";
     case SyscallTraceAvailability::NoTerminal:
-        return "No terminal emulator was found to run strace in. Set $TERMINAL, or install x-terminal-emulator, gnome-terminal, "
-               "konsole or xterm, and restart TaskSmack.";
+        return "No terminal emulator was found to run strace in. Set $TERMINAL to one (a program name or absolute path), or "
+               "install one such as gnome-terminal, konsole or xterm, and restart TaskSmack.";
     case SyscallTraceAvailability::Available:
         break;
     }
@@ -178,8 +179,9 @@ class IProcessActions
     ///
     /// Returns once the terminal has been started, never waiting for it or the tracer to finish; the
     /// trace itself is shown and ended in that window. Like every action it refuses a target whose
-    /// identity cannot be confirmed. Only Linux implements it: the default reports it unsupported, as
-    /// actionCapabilities().syscallTrace does (SyscallTraceAvailability::Unsupported).
+    /// identity cannot be confirmed. Only LinuxProcessActions implements it. The default refuses it as
+    /// unsupported, matching ProcessActionCapabilities' default syscallTrace (Unsupported), which an
+    /// implementation that does not override this must leave as it is.
     [[nodiscard]] virtual ProcessActionResult launchSyscallTrace(const ProcessTarget& target)
     {
         static_cast<void>(target);

@@ -274,10 +274,13 @@ Lowering a process you own (Idle, or a higher best-effort level) needs no privil
 
 The Actions tab of Process Details has a **Trace system calls (strace)** button, as htop's `s` key does: it opens a new terminal window running `strace -f -tt -p <PID>` attached to that process, so you can watch each system call it makes, timestamped, across all its threads. Close the window, or press Ctrl+C in it, to stop tracing; the process carries on running. No confirmation is asked, because tracing only observes (the process pauses for an instant while strace attaches, and runs slower while it is traced).
 
-- TaskSmack looks for `strace` and a terminal once, at start-up. The terminal is the one `$TERMINAL` names, else `x-terminal-emulator`, else the first installed of gnome-terminal, ptyxis, konsole, xfce4-terminal, mate-terminal, kitty, alacritty, foot, wezterm and xterm. If either is missing the button is greyed out and its tooltip says what to install; restart TaskSmack after installing it.
+- TaskSmack looks for `strace` and a terminal once, when it starts, on `PATH` (relative `PATH` entries are ignored). The terminal is the one `$TERMINAL` names -- a single program name or absolute path, with no arguments -- else `x-terminal-emulator`, else the first installed of gnome-terminal, ptyxis, konsole, xfce4-terminal, mate-terminal, kitty, alacritty, foot, wezterm and xterm. If either is missing the button stays visible but greyed out, and its tooltip says what to install; restart TaskSmack after installing it. On Windows the button is not shown at all.
 - The process is checked by PID and start time, like every other action, so one that has exited (or whose PID now belongs to another process) is refused.
-- Attaching uses ptrace, which the kernel restricts. TaskSmack checks the usual restrictions first and explains them in the result line instead of opening a window that would close at once: another user's process needs root (or `CAP_SYS_PTRACE`), and Yama's `/proc/sys/kernel/yama/ptrace_scope` -- 1 by default on Ubuntu -- lets only root trace a process that is not its own child (at 3 not even root can). `sudo sysctl kernel.yama.ptrace_scope=0` relaxes that until the next reboot, for every program, so weigh that before doing it. TaskSmack never asks for or raises privileges itself.
-- strace and the terminal are started directly, never through a shell, so nothing in a process's name can be run as a command.
+- Attaching uses ptrace, which the kernel restricts. TaskSmack checks the usual restrictions first and explains them in the result line instead of opening a window that would close at once:
+  - Another user's process (or one that changed its user or group IDs) can only be traced with `CAP_SYS_PTRACE`: TaskSmack running as root, or a `strace` binary that carries that capability.
+  - Yama's `/proc/sys/kernel/yama/ptrace_scope` -- 1 by default on Ubuntu -- lets a process attach only to its own descendants unless it has `CAP_SYS_PTRACE`. strace runs in a terminal TaskSmack starts, so it is never the traced process's ancestor: at 1 or 2 only root can trace, and at 3 nobody can. `sudo sysctl kernel.yama.ptrace_scope=0` relaxes this until the next reboot, for every program, so weigh that before doing it.
+  - TaskSmack never asks for or raises privileges itself.
+- strace and the terminal are started directly, never through a shell, so nothing in a process's name can be run as a command. The terminal inherits none of TaskSmack's open files.
 
 ### Themes and Configuration
 
@@ -313,7 +316,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |
 | Process terminate / kill | ✅ | ✅ |
 | Process stop / resume (SIGSTOP/SIGCONT) | ✅ | ❌ |
-| Trace system calls (Process Details > Actions) | ✅ (`strace` in a terminal; ptrace rules apply: own processes, or root / `CAP_SYS_PTRACE`, and Yama's `ptrace_scope`) | ❌ (button hidden) |
+| Trace system calls (Process Details > Actions) | ✅ (`strace` in a terminal; greyed out with the reason when strace or a terminal is missing; ptrace rules apply: own processes, or root / `CAP_SYS_PTRACE`, and Yama's `ptrace_scope`) | ❌ (button hidden) |
 | I/O wait time (`iowait`) | ✅ (shown as its own band; counted as idle, not busy, so CPU % matches Windows) | ❌ (Windows concept does not exist) |
 | Steal time (`steal`) | ✅ | ❌ |
 | Load average (1/5/15 min) | ✅ | ❌ |

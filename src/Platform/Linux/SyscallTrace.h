@@ -341,7 +341,7 @@ struct PtraceContext
     }
     if (context.ptraceScope == 1)
     {
-        return std::format("ptrace is limited to a process's own children here (/proc/sys/kernel/yama/ptrace_scope is 1), so strace "
+        return std::format("ptrace is limited to a process's own descendants here (/proc/sys/kernel/yama/ptrace_scope is 1), so strace "
                            "cannot attach to process {}. Set kernel.yama.ptrace_scope to 0, or run TaskSmack as root (CAP_SYS_PTRACE), "
                            "to trace it",
                            pid);
