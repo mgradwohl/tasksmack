@@ -3052,7 +3052,7 @@ TEST(ProcessModelTest, AProcessFirstListedSinceTheGpuReadHasUnreadGpuFields)
 // #1417: a GPU read taken while an earlier process held a pid publishes that process's usage under
 // the pid. A process that reuses the pid and is first listed after the read must not inherit it:
 // its GPU fields are unread and empty. The synchronous read this replaced could not mix them up.
-TEST(ProcessModelTest, APidReusedSinceTheGpuReadDoesNotInheritTheExitedProcesssGpuUsage)
+TEST(ProcessModelTest, APidReusedSinceTheGpuReadDoesNotInheritTheExitedProcessGpuUsage)
 {
     const auto start = Domain::ProcessModel::Clock::time_point{} + std::chrono::hours(1);
     auto currentTime = start;
