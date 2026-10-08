@@ -45,6 +45,13 @@ class RecordingProcessActions : public TestMocks::MockProcessActions
     {
         return record(target);
     }
+    /// Also records each nice value set (#1484), in call order with `calls`.
+    std::vector<std::int32_t> nices;
+    [[nodiscard]] Platform::ProcessActionResult setPriority(const Platform::ProcessTarget& target, std::int32_t nice) override
+    {
+        nices.push_back(nice);
+        return record(target);
+    }
 
   private:
     Platform::ProcessActionResult record(const Platform::ProcessTarget& target)
@@ -298,6 +305,126 @@ TEST(ProcessBatchActionTest, AllFailedCountsTheUnquotedOnes)
     EXPECT_FALSE(msg.ok);
     EXPECT_TRUE(msg.text.starts_with("Could not terminate 5 processes: PID 100 (proc0): Operation not permitted; "));
     EXPECT_TRUE(msg.text.ends_with("; and 2 more"));
+}
+
+// ========== Batch priority (#1484) ==========
+
+TEST(ProcessBatchActionTest, BatchPriorityIsOfferedOnlyForASelectionWhereThePlatformCanSetIt)
+{
+    constexpr Platform::ProcessActionCapabilities CAN{.canSetPriority = true};
+    constexpr Platform::ProcessActionCapabilities CANNOT{.canTerminate = true, .canKill = true, .canSetPriority = false};
+    EXPECT_TRUE(offersBatchPriority(CAN, 2));
+    EXPECT_TRUE(offersBatchPriority(CAN, 50));
+    EXPECT_FALSE(offersBatchPriority(CAN, 0)); // A single row: Process Details' control
+    EXPECT_FALSE(offersBatchPriority(CAN, 1));
+    EXPECT_FALSE(offersBatchPriority(CANNOT, 5));
+}
+
+TEST(ProcessBatchActionTest, PriorityValueTextStatesWhatIsApplied)
+{
+    // Linux: the label and the nice value; Windows: the class the nice value maps to.
+    EXPECT_EQ(priorityValueText(10, false), "Below Normal (nice: 10)");
+    EXPECT_EQ(priorityValueText(-15, false), "High (nice: -15)");
+    EXPECT_EQ(priorityValueText(10, true), "Below Normal");
+    EXPECT_EQ(priorityValueText(-7, true), "Above Normal");
+    // Held to the nice range, as runBatchPriority() holds it.
+    EXPECT_EQ(priorityValueText(99, false), "Idle (nice: 19)");
+}
+
+TEST(ProcessBatchActionTest, PriorityConfirmTitleAndBody)
+{
+    EXPECT_EQ(priorityConfirmTitle(5), "Set priority for 5 processes?");
+    EXPECT_EQ(priorityConfirmTitle(1), "Set priority for 1 process?");
+
+    const std::vector<BatchTarget> two{target(10, "a"), target(11, "b")};
+    const std::string linuxBody = priorityConfirmBody(10, two, OWN_PID, false);
+    EXPECT_TRUE(linuxBody.starts_with("The priority of 2 processes will be set to Below Normal (nice: 10)."));
+    EXPECT_TRUE(linuxBody.contains("a (PID 10)"));
+    EXPECT_TRUE(linuxBody.contains("b (PID 11)"));
+    EXPECT_FALSE(linuxBody.contains("root"));
+    EXPECT_TRUE(priorityConfirmBody(10, two, OWN_PID, true).starts_with("The priority of 2 processes will be set to Below Normal."));
+}
+
+TEST(ProcessBatchActionTest, PriorityConfirmBodyNamesTaskSmackAndPidOneAndWarnsAboutRaising)
+{
+    std::vector<BatchTarget> targets = numberedTargets(CONFIRM_LIST_LIMIT + 3);
+    targets.push_back(target(INIT_PID, "systemd"));
+    targets.push_back(target(OWN_PID, "TaskSmack"));
+    const std::string body = priorityConfirmBody(-5, targets, OWN_PID, false);
+    EXPECT_TRUE(body.contains(std::format("This includes TaskSmack itself (PID {}). It is changed last.", OWN_PID)));
+    EXPECT_TRUE(body.contains("This includes PID 1 (systemd), the system's init process."));
+    EXPECT_TRUE(body.contains("and 5 more"));
+    // A nice value below 0 needs root on Linux; Windows sets classes and has no such line.
+    EXPECT_TRUE(body.contains("usually needs root"));
+    EXPECT_FALSE(priorityConfirmBody(-15, targets, OWN_PID, true).contains("root"));
+}
+
+TEST(ProcessBatchActionTest, PriorityRunsEveryTargetByIdentityWithTheValueAndTaskSmackLast)
+{
+    RecordingProcessActions actions;
+    const std::vector<BatchTarget> targets{target(10, "a"), target(OWN_PID, "TaskSmack"), target(12, "c")};
+    const BatchResult result = runBatchPriority(actions, targets, 7, OWN_PID);
+    EXPECT_EQ(result.attempted, 3U);
+    EXPECT_EQ(result.succeeded, 3U);
+    ASSERT_EQ(actions.calls.size(), 3U);
+    EXPECT_EQ(actions.calls[0].pid, 10);
+    EXPECT_EQ(actions.calls[0].startTimeTicks, 100U);
+    EXPECT_EQ(actions.calls[1].pid, 12);
+    EXPECT_EQ(actions.calls[1].startTimeTicks, 120U);
+    EXPECT_EQ(actions.calls[2].pid, OWN_PID);
+    EXPECT_EQ(actions.calls[2].startTimeTicks, static_cast<std::uint64_t>(OWN_PID) * 10U);
+    EXPECT_EQ(actions.nices, (std::vector<std::int32_t>{7, 7, 7}));
+}
+
+TEST(ProcessBatchActionTest, PriorityIsHeldToTheNiceRangeAndSendsNoOtherAction)
+{
+    TestMocks::MockProcessActions mock;
+    const std::vector<BatchTarget> targets{target(10, "a"), target(11, "b")};
+    (void) runBatchPriority(mock, targets, -100, OWN_PID);
+    EXPECT_EQ(mock.setPriorityCount(), 2);
+    EXPECT_EQ(mock.lastSetPriorityNice(), -20);
+    EXPECT_EQ(mock.lastSetPriorityPid(), 11);
+    EXPECT_EQ(mock.killCount(), 0);
+    EXPECT_EQ(mock.terminateCount(), 0);
+    EXPECT_EQ(mock.setIoPriorityCount(), 0);
+}
+
+TEST(ProcessBatchActionTest, PriorityResultLineNamesTheAppliedValue)
+{
+    const BatchResult all{.attempted = 4, .succeeded = 4, .firstFailures = {}};
+    const Detail::ActionResultMessage ok = formatBatchPriorityResultMessage(10, all, false);
+    EXPECT_TRUE(ok.ok);
+    EXPECT_EQ(ok.text, "Priority set to Below Normal (nice: 10) for 4 processes");
+    EXPECT_EQ(formatBatchPriorityResultMessage(10, all, true).text, "Priority set to Below Normal for 4 processes");
+}
+
+TEST(ProcessBatchActionTest, PriorityPartialFailuresReadWell)
+{
+    // Lowering nice below 0 without privileges: some refuse, the rest are changed.
+    RecordingProcessActions actions;
+    const std::vector<BatchTarget> targets = numberedTargets(6);
+    actions.failing = {101, 103, 104, 105};
+    const BatchResult result = runBatchPriority(actions, targets, -7, OWN_PID);
+    EXPECT_EQ(actions.calls.size(), 6U);
+    EXPECT_EQ(result.succeeded, 2U);
+    const Detail::ActionResultMessage msg = formatBatchPriorityResultMessage(-7, result, false);
+    EXPECT_FALSE(msg.ok);
+    EXPECT_EQ(msg.text,
+              "Priority set to Above Normal (nice: -7) for 2 of 6 processes; 4 failed: PID 101 (proc1): Operation not permitted; "
+              "PID 103 (proc3): Operation not permitted; PID 104 (proc4): Operation not permitted; and 1 more");
+}
+
+TEST(ProcessBatchActionTest, PriorityAllFailedSaysWhatCouldNotBeSet)
+{
+    RecordingProcessActions actions;
+    const std::vector<BatchTarget> targets = numberedTargets(2);
+    actions.failing = {100, 101};
+    const BatchResult result = runBatchPriority(actions, targets, -15, OWN_PID);
+    const Detail::ActionResultMessage msg = formatBatchPriorityResultMessage(-15, result, true);
+    EXPECT_FALSE(msg.ok);
+    EXPECT_EQ(msg.text,
+              "Could not set priority to High for 2 processes: PID 100 (proc0): Operation not permitted; PID 101 (proc1): Operation not "
+              "permitted");
 }
 
 } // namespace

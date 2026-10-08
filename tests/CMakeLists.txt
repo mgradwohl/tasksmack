@@ -226,6 +226,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessTableNavigation.cpp
     App/test_ProcessSelection.cpp
     App/test_ProcessBatchAction.cpp
+    App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_KeyboardInputRender.cpp
     App/test_SyntheticScenario.cpp
     App/test_WindowOverride.cpp
@@ -375,8 +376,10 @@ add_executable(TaskSmackTests
     # the Environment and Connections sections, run headless (test_ProcessActionConfirmPopup.cpp,
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
     # test_ProcessDetailsChartsRender.cpp, test_ProcessEnvironmentViewRender.cpp,
-    # test_ProcessConnectionsViewRender.cpp)
+    # test_ProcessConnectionsViewRender.cpp), and the batch priority dialog (#1484,
+    # test_ProcessBatchPriorityDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIoPriorityView.cpp
