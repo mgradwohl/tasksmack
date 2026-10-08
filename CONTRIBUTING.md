@@ -59,6 +59,23 @@ pwsh tools/check-prereqs.ps1  # Verify environment
 
 The Windows setup installs the Visual Studio 2022 C++ Build Tools workload (including a compatible Windows SDK), the requested LLVM version, CMake, Ninja, Python 3.14, ccache, GLAD's hash-locked build dependencies, and, unless `-Minimal` is used, the development dependencies from `requirements.txt`.
 
+### Dev Container
+
+`.devcontainer/` defines a reproducible Linux environment for VS Code (Dev Containers extension) and GitHub Codespaces. It is Ubuntu 24.04, the Linux CI runner OS, with the same LLVM major, GUI build dependencies, and Xvfb test runtime that Linux CI installs (the package lists are copied from `.github/actions/setup-llvm/action.yml` and `.github/workflows/reusable-build-test.yml`), plus CMake from Kitware's apt repository and Python 3.14 from deadsnakes as `tools/setup-dev.sh` installs them. It runs as the non-root `ubuntu` user, who has passwordless `sudo`.
+
+- **VS Code:** install the Dev Containers extension, open the repository, and run **Dev Containers: Reopen in Container**.
+- **Codespaces:** on GitHub, **Code → Codespaces → Create codespace**.
+
+The first build of the image takes several minutes. After the container is created, `.devcontainer/post-create.sh` creates `.venv/` from `requirements-glad.txt` and `requirements.txt` and runs `tools/check-prereqs.sh`. The repository is bind-mounted, so if a `.venv/` from your host can't run inside the container, the script recreates it in place, and you then need to recreate it again before using it on the host. `pre-commit install` is left to you, because the hook it writes into `.git/hooks` points at the container's interpreter.
+
+The container has no display. `cmake --workflow --preset dev` builds and runs the tests, and the GL/window test suites skip without a display. To run those suites the way CI does, use the bundled Xvfb:
+
+```bash
+xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset debug
+```
+
+To run the app itself, forward an X11 or Wayland display into the container yourself, for example WSLg's `/tmp/.X11-unix` socket and `DISPLAY`. The dev container doesn't configure one.
+
 ### One-Command Dev Workflow
 
 After setup, use CMake workflow presets for the full configure → build → test cycle in a single command:
