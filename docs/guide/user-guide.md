@@ -221,7 +221,7 @@ On Linux, the Process Details **Overview** tab has a collapsible **Environment**
 
 ### Process Actions
 
-Right-click any process row to access actions:
+Right-click any process row for Terminate, Kill, Stop and Resume. The Actions tab of Process Details has those too, plus the priority controls, which are only there:
 
 | Action | Linux | Windows |
 |--------|-------|---------|
@@ -229,8 +229,8 @@ Right-click any process row to access actions:
 | Kill (SIGKILL / force) | ✅ | ✅ |
 | Stop (SIGSTOP / suspend) | ✅ | ❌ |
 | Resume (SIGCONT) | ✅ | ❌ |
-| Change priority (nice) | ✅ | ✅ (mapped) |
-| Change I/O priority (ionice class and level) | ✅ | ❌ |
+| Change priority (nice), Process Details only | ✅ | ✅ (mapped) |
+| Change I/O priority (ionice class and level), Process Details only | ✅ | ❌ |
 
 Destructive actions require confirmation. In Process Details, Terminate and Kill, which end the process, are drawn in red, apart from Suspend and Resume.
 

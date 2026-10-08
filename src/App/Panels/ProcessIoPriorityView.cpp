@@ -98,15 +98,21 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         ImGui::SetTooltip("%s", waiting ? "Waiting for process details" : "Apply the selected I/O priority to the process");
     }
 
+    // Wrapped at the content edge: the privilege and identity messages are long, and the panel does
+    // not scroll horizontally, so unwrapped they would lose the remediation at narrow widths.
     if (!m_Error.empty())
     {
         ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0F);
         ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_Error.c_str());
+        ImGui::PopTextWrapPos();
     }
     else if (!m_ReadError.empty())
     {
         ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0F);
         ImGui::TextColored(theme.scheme().textMuted, ICON_FA_CIRCLE_INFO "  %s", m_ReadError.c_str());
+        ImGui::PopTextWrapPos();
     }
     ImGui::PopID();
 }
