@@ -779,7 +779,7 @@ void SystemMetricsPanel::renderOverview()
                                      cpuData.data(),
                                      UI::Format::checkedCount(cpuData.size()),
                                      theme.scheme().chartCpuTotal,
-                                     theme.scheme().chartCpuTotalFill,
+                                     std::nullopt,
                                      UI::Widgets::PRIMARY_SERIES_WEIGHT,
                                      false);
                 }

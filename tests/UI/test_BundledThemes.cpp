@@ -549,6 +549,13 @@ struct HueRange
 {
     double lo = 0.0;
     double hi = 360.0;
+
+    // A member, not a free helper: CodeQL took the anonymous-namespace function this was for unused,
+    // its every call being in a TEST body (cpp/unused-static-function, alert 3013).
+    [[nodiscard]] constexpr auto contains(double hue) const noexcept -> bool
+    {
+        return hue >= lo && hue <= hi;
+    }
 };
 
 // The families (#1196), in hue order: red < orange < amber < yellow < green < teal/cyan < blue < violet
@@ -580,8 +587,6 @@ struct LoadedTheme
 };
 
 /// Every bundled theme, and the built-in fallback (Arctic Fire's file, embedded at build time).
-/// Callers take each LoadedTheme by name, not as a structured binding: CodeQL did not see the calls made
-/// inside a `[name, scheme]` loop and reported the helpers they used as unused (alerts 3012, 3013).
 auto loadedThemes() -> std::vector<LoadedTheme>
 {
     std::vector<LoadedTheme> themes;
@@ -644,22 +649,10 @@ auto dataSeries(const ColorScheme& s) -> std::vector<NamedColor>
     };
 }
 
-auto inHueRange(double hue, HueRange range) -> bool
-{
-    return hue >= range.lo && hue <= range.hi;
-}
-
 auto hueDistance(double a, double b) -> double
 {
     const double d = std::fmod(std::abs(a - b), 360.0);
     return std::min(d, 360.0 - d);
-}
-
-/// "hue 123 chroma 0.045", for failure messages.
-auto describeHue(const ImVec4& color) -> std::string
-{
-    const ColorDifference::Oklch c = ColorDifference::toOklch(color);
-    return "hue " + std::to_string(std::lround(c.h)) + " chroma " + std::to_string(c.c);
 }
 
 // Status colours are for state and messages. A data series in one reads as an alarm: Swap drew in
@@ -687,8 +680,49 @@ TEST(ThemePaletteTest, StatusColoursAreNeverDataSeries)
             // Red itself is kept for alarms, whatever the theme's error shade: CPU System, a GPU Decoder or
             // disk read drawn red reads as a problem (pink and orange are fine).
             const ColorDifference::Oklch c = ColorDifference::toOklch(series);
-            EXPECT_FALSE(c.c >= RED_BAND_MIN_CHROMA && inHueRange(c.h, RED_BAND))
-                << name << ": " << seriesKey << " " << describeHue(series) << " is drawn in alarm red";
+            // The hue is spelled out here, not by a free helper CodeQL took for unused (alert 3012).
+            EXPECT_FALSE(c.c >= RED_BAND_MIN_CHROMA && RED_BAND.contains(c.h))
+                << name << ": " << seriesKey << " hue " << c.h << " chroma " << c.c << " is drawn in alarm red";
+        }
+    }
+}
+
+// A fill is its line's colour at a lower alpha, so the status-colour, red-band and family rules on the
+// lines (above and below) hold for every fill too, and band, line and swatch read as one series.
+TEST(ThemePaletteTest, EveryFillIsItsLinesColour)
+{
+    for (const LoadedTheme& theme : loadedThemes())
+    {
+        const std::string& name = theme.name;
+        const ColorScheme& s = theme.scheme;
+        const std::array<std::tuple<std::string_view, ImVec4, ImVec4>, 21> fills{{
+            {"charts.cpu_fill", s.chartCpuFill, s.chartCpu},
+            {"charts.memory_fill", s.chartMemoryFill, s.chartMemory},
+            {"charts.io_fill", s.chartIoFill, s.chartIo},
+            {"charts.io_write_fill", s.chartIoWriteFill, s.chartIoWrite},
+            {"charts.net_tx_fill", s.chartNetTxFill, s.chartNetTx},
+            {"charts.net_rx_fill", s.chartNetRxFill, s.chartNetRx},
+            {"charts.memory_cached_fill", s.chartMemoryCachedFill, s.chartMemoryCached},
+            {"charts.memory_shared_fill", s.chartMemorySharedFill, s.chartMemoryShared},
+            {"charts.memory_virtual_fill", s.chartMemoryVirtualFill, s.chartMemoryVirtual},
+            {"charts.swap_fill", s.chartSwapFill, s.chartSwap},
+            {"charts.power_fill", s.chartPowerFill, s.chartPower},
+            {"charts.battery_fill", s.chartBatteryFill, s.chartBattery},
+            {"charts.threads_fill", s.chartThreadsFill, s.chartThreads},
+            {"charts.handles_fill", s.chartHandlesFill, s.chartHandles},
+            {"cpu_breakdown.user_fill", s.cpuUserFill, s.cpuUser},
+            {"cpu_breakdown.system_fill", s.cpuSystemFill, s.cpuSystem},
+            {"cpu_breakdown.iowait_fill", s.cpuIowaitFill, s.cpuIowait},
+            {"cpu_breakdown.idle_fill", s.cpuIdleFill, s.cpuIdle},
+            {"charts.gpu.utilization_fill", s.gpuUtilizationFill, s.gpuUtilization},
+            {"charts.gpu.memory_fill", s.gpuMemoryFill, s.gpuMemory},
+            {"charts.gpu.clock_fill", s.gpuClockFill, s.gpuClock},
+        }};
+        for (const auto& fill : fills)
+        {
+            const ImVec4& fillColor = std::get<1>(fill);
+            EXPECT_TRUE(sameRgb(fillColor, std::get<2>(fill))) << name << ": " << std::get<0>(fill) << " is not its line's colour";
+            EXPECT_LT(fillColor.w, 1.0F) << name << ": " << std::get<0>(fill) << " is opaque";
         }
     }
 }
@@ -722,8 +756,8 @@ TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
         {
             const ColorDifference::Oklch c = ColorDifference::toOklch(color);
             EXPECT_GE(c.c, FAMILY_MIN_CHROMA) << name << ": " << key << " is grey";
-            EXPECT_TRUE(inHueRange(c.h, range))
-                << name << ": " << key << " " << describeHue(color) << " is outside " << range.lo << ".." << range.hi;
+            EXPECT_TRUE(range.contains(c.h)) << name << ": " << key << " hue " << c.h << " chroma " << c.c << " is outside " << range.lo
+                                             << ".." << range.hi;
         }
         // Read and write can share a warm hue; write is the duller of the two, so it never reads as read.
         EXPECT_LE(ColorDifference::toOklch(s.chartIoWrite).c, ColorDifference::toOklch(s.chartIo).c - WRITE_CHROMA_BELOW_READ)
@@ -767,7 +801,7 @@ TEST(ThemePaletteTest, SeverityRunsGreenAmberRedAndErrorReadsAsSevere)
             const ColorDifference::Oklch& c = std::get<1>(step);
             const HueRange range = std::get<2>(step);
             EXPECT_GE(c.c, FAMILY_MIN_CHROMA) << name << ": " << key << " is grey";
-            EXPECT_TRUE(inHueRange(c.h, range)) << name << ": " << key << " hue " << c.h << " is outside " << range.lo << ".." << range.hi;
+            EXPECT_TRUE(range.contains(c.h)) << name << ": " << key << " hue " << c.h << " is outside " << range.lo << ".." << range.hi;
         }
         EXPECT_LT(error.h, warning.h) << name << ": severity is not ordered red < amber";
         EXPECT_LT(warning.h, success.h) << name << ": severity is not ordered amber < green";

@@ -304,9 +304,8 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     // and now matches system Power (charts.cpu unless charts.power is set): Power is one colour on
     // every screen. Shared and Virtual fall back through Cached and Swap, which in turn fall back to
     // what they borrowed.
-    const auto cpuTotal = getRoleColors(tbl, "charts.cpu_total", "charts.cpu_total_fill", scheme.chartCpu, scheme.chartCpuFill);
-    scheme.chartCpuTotal = cpuTotal.line;
-    scheme.chartCpuTotalFill = cpuTotal.fill;
+    // CPU Total is a line over the User/System bands, which are its fill, so it has no fill of its own.
+    scheme.chartCpuTotal = getColor(tbl, "charts.cpu_total", scheme.chartCpu);
     const auto cached = getRoleColors(tbl, "charts.memory_cached", "charts.memory_cached_fill", scheme.chartCpu, scheme.chartCpuFill);
     scheme.chartMemoryCached = cached.line;
     scheme.chartMemoryCachedFill = cached.fill;

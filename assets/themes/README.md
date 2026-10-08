@@ -106,7 +106,8 @@ Every metric has its own colour, so no chart draws one metric in another's colou
 optional: a theme without it keeps the colour the metric used to borrow, shown in the last column.
 The one exception is process Power, which used `semantic.text_info`: it now follows `power` like
 system Power, so it draws in `charts.cpu` unless `charts.power` is set.
-Each takes an optional `<role>_fill` too (page faults and GDI objects are drawn as lines only); without
+Each takes an optional `<role>_fill` too, except `cpu_total`, `page_faults` and `gdi`, which are drawn
+as lines only (CPU Total's fill is the User/System bands under it); without
 one, the fill is the line at about 35% alpha, or the borrowed fill when the line is borrowed as well.
 
 | Key | Drawn for | Without it |

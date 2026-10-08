@@ -1800,7 +1800,6 @@ TEST(ThemeLoaderTest, MetricRolesFallBackToTheFieldsTheyBorrowed)
         EXPECT_FLOAT_EQ(actual.w, expected.w) << role;
     };
     expectSame(scheme->chartCpuTotal, scheme->chartCpu, "cpu_total");
-    expectSame(scheme->chartCpuTotalFill, scheme->chartCpuFill, "cpu_total_fill");
     expectSame(scheme->chartMemoryCached, scheme->chartCpu, "memory_cached");
     expectSame(scheme->chartMemoryCachedFill, scheme->chartCpuFill, "memory_cached_fill");
     expectSame(scheme->chartMemoryShared, scheme->chartCpu, "memory_shared");

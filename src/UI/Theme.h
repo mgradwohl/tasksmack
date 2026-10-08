@@ -107,10 +107,10 @@ struct ColorScheme
 
     // Metric roles (#1196): every metric has its own colour field, so no chart borrows another
     // metric's colour. Each falls back to the field it used to borrow when a theme omits it, so older
-    // themes look as they did (except process Power, which now matches system Power); a fill falls back to its line at ~0.35 alpha (or to
-    // the borrowed fill).
+    // themes look as they did (except process Power, which now matches system Power). A fill falls
+    // back to its line at ~0.35 alpha, or to the borrowed fill; CPU Total, Page Faults and GDI are
+    // drawn as lines only and have none.
     ImVec4 chartCpuTotal;          // CPU Total line over the User/System bands (fallback: charts.cpu)
-    ImVec4 chartCpuTotalFill;      // Its fill (fallback: charts.cpu_fill)
     ImVec4 chartMemoryCached;      // System Memory: Cached (fallback: charts.cpu)
     ImVec4 chartMemoryCachedFill;  // (fallback: charts.cpu_fill)
     ImVec4 chartMemoryShared;      // Process Memory: Shared (fallback: charts.memory_cached)
