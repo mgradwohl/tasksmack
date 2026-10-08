@@ -115,7 +115,8 @@ runs:
       continue-on-error: true
       if: >-
         steps.llvm-cache.outputs.cache-hit != 'true' &&
-        github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        ((github.ref == 'refs/heads/main' && github.event_name != 'pull_request') ||
+         github.head_ref == 'ci-1406-llvm-cache') # TEMPORARY: exercise the hit path on this PR; reverted before merge
       shell: pwsh
       run: |
         robocopy 'C:\Program Files\LLVM' 'C:\llvm-cache\LLVM' /E /COPY:DAT /DCOPY:DAT /R:2 /W:5 /NFL /NDL /NP
