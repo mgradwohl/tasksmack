@@ -137,16 +137,18 @@ TEST(LinuxProcessEnvironmentReaderTest, ReadsAChildsEnvironment)
     EXPECT_EQ(valueOf(result, "FOO"), "bar=baz");
 }
 
-TEST(LinuxProcessEnvironmentReaderTest, UnknownStartTimeSkipsTheIdentityCheck)
+TEST(LinuxProcessEnvironmentReaderTest, UnknownStartTimeIsRefusedNotRead)
 {
     const EnvironmentChild child;
     ASSERT_GT(child.pid(), 0);
     ASSERT_TRUE(child.waitForExec());
 
+    // A live, readable process -- but with its identity unconfirmed, nothing is read (as the process
+    // actions refuse an unknown start time).
     LinuxProcessEnvironmentReader reader;
     const EnvironmentReadResult result = reader.readEnvironment({.pid = child.pid(), .startTimeTicks = 0});
-    EXPECT_EQ(result.status, EnvironmentReadStatus::Ok);
-    EXPECT_EQ(valueOf(result, "FOO"), "bar=baz");
+    EXPECT_EQ(result.status, EnvironmentReadStatus::IdentityUnknown);
+    EXPECT_TRUE(result.variables.empty());
 }
 
 TEST(LinuxProcessEnvironmentReaderTest, MismatchedStartTimeIsAnExitedProcess)
@@ -185,9 +187,10 @@ TEST(LinuxProcessEnvironmentReaderTest, MissingProcessIsAnExitedProcess)
 
 TEST(LinuxProcessEnvironmentReaderTest, AnotherUsersProcessIsPermissionDenied)
 {
-    // PID 1 (init) belongs to root. As root, or with CAP_SYS_PTRACE, it is readable: nothing to test.
-    std::ifstream probe("/proc/1/environ");
-    if (probe.is_open() && probe.peek() != std::ifstream::traits_type::eof())
+    // PID 1 (init) belongs to root. As root, or with CAP_SYS_PTRACE, it opens: nothing to test. Whether
+    // it opens decides it -- an empty environment is a valid one, so its contents are not checked.
+    const std::ifstream probe("/proc/1/environ");
+    if (probe.is_open())
     {
         GTEST_SKIP() << "/proc/1/environ is readable here (root or CAP_SYS_PTRACE)";
     }

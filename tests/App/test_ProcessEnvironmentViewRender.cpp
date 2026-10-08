@@ -196,7 +196,8 @@ TEST_F(ProcessEnvironmentViewRenderTest, MaskedValueIsNotDrawnUntilRevealedAndRe
     {
         clickAt(view, *button);
     }
-    EXPECT_TRUE(view.isRevealed("MY_API_TOKEN"));
+    ASSERT_EQ(view.rows()[1].name, "MY_API_TOKEN");
+    EXPECT_TRUE(view.isRevealed(view.rows()[1]));
     view.setFilter("");
 
     text = renderAndCapture(view, true);

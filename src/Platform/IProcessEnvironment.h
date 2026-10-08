@@ -24,6 +24,7 @@ enum class EnvironmentReadStatus : std::uint8_t
     PermissionDenied, ///< The OS refused (Linux: EACCES/EPERM -- another user's process without ptrace rights).
     ProcessExited,    ///< The process is gone, or its PID now belongs to a different process (ENOENT/ESRCH).
     Unsupported,      ///< This platform cannot read another process's environment (Windows, synthetic runs).
+    IdentityUnknown,  ///< The target's start time is unknown (0), so the process could not be confirmed; nothing was read.
     Failed,           ///< Any other error.
 };
 
@@ -62,8 +63,10 @@ class IProcessEnvironmentReader
     [[nodiscard]] virtual bool hasEnvironment() const = 0;
 
     /// Read @p target's environment now. Synchronous; one small /proc read on Linux.
-    /// A known start time (non-zero) is checked against the process holding the PID, so a process that
-    /// reused it reports ProcessExited instead of showing a stranger's environment; 0 skips the check.
+    /// The target's start time is checked against the process holding the PID, so a process that reused
+    /// it reports ProcessExited instead of showing a stranger's environment. An unknown start time (0)
+    /// is refused with IdentityUnknown and nothing is read, as the process actions refuse it
+    /// (Platform::checkProcessIdentity()): a PID alone cannot confirm whose environment it would be.
     [[nodiscard]] virtual EnvironmentReadResult readEnvironment(const ProcessTarget& target) = 0;
 };
 

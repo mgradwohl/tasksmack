@@ -74,6 +74,12 @@ EnvironmentReadResult LinuxProcessEnvironmentReader::readEnvironment(const Proce
     {
         return failure(ESRCH);
     }
+    if (target.startTimeTicks == 0)
+    {
+        // Unconfirmed identity: refused rather than read by PID alone, as checkProcessIdentity() refuses
+        // an action. The caller retries at its next refresh, once the process's start time is known.
+        return {.status = EnvironmentReadStatus::IdentityUnknown, .variables = {}};
+    }
 
     // One handle on the process's /proc directory: once open it keeps naming this process, so a file
     // read through it after the process exits fails (ESRCH/ENOENT) instead of reaching whatever
@@ -86,22 +92,19 @@ EnvironmentReadResult LinuxProcessEnvironmentReader::readEnvironment(const Proce
         return failure(errno);
     }
 
-    if (target.startTimeTicks != 0)
+    const std::expected<std::string, int> stat = readWholeFileAt(dir.get(), "stat");
+    if (!stat.has_value())
     {
-        const std::expected<std::string, int> stat = readWholeFileAt(dir.get(), "stat");
-        if (!stat.has_value())
-        {
-            return failure(stat.error());
-        }
-        const std::optional<std::uint64_t> startTicks = ProcParsing::parseStatStartTime(*stat);
-        if (!startTicks.has_value())
-        {
-            return failure(EIO);
-        }
-        if (*startTicks != target.startTimeTicks)
-        {
-            return failure(ESRCH); // the PID now belongs to a different process
-        }
+        return failure(stat.error());
+    }
+    const std::optional<std::uint64_t> startTicks = ProcParsing::parseStatStartTime(*stat);
+    if (!startTicks.has_value())
+    {
+        return failure(EIO);
+    }
+    if (*startTicks != target.startTimeTicks)
+    {
+        return failure(ESRCH); // the PID now belongs to a different process
     }
 
     const std::expected<std::string, int> block = readWholeFileAt(dir.get(), "environ");

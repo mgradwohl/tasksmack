@@ -60,6 +60,8 @@ inline constexpr std::size_t ENVIRONMENT_TABLE_MAX_VISIBLE_ROWS = 12;
         return "Process exited";
     case Platform::EnvironmentReadStatus::Unsupported:
         return "Not available on this platform";
+    case Platform::EnvironmentReadStatus::IdentityUnknown:
+        return "Not available yet"; // retried at the next refresh, once the start time is known
     case Platform::EnvironmentReadStatus::Failed:
         break;
     }
@@ -92,7 +94,14 @@ class ProcessEnvironmentView
         std::string name;
         std::string value;
         bool secret = false; ///< Detail::isSecretEnvironmentName(name): drawn masked until revealed
+        /// How many earlier entries of the read had the same name. execve() allows duplicate names and
+        /// /proc/[pid]/environ keeps every entry, so (name, occurrence) -- not the name alone -- is the
+        /// row's identity for its reveal state, and stays the same across re-reads of the same environment.
+        std::size_t occurrence = 0;
     };
+
+    /// A row's identity for its reveal state (Row::occurrence).
+    using RowKey = std::pair<std::string, std::size_t>;
 
     /// Draws the section: a collapsing "Environment" header and, while it is open, the last read's
     /// table or its status line. Draws nothing at all when @p hasEnvironment is false (the platform
@@ -147,9 +156,17 @@ class ProcessEnvironmentView
         for (Platform::EnvironmentVariable& variable : result.variables)
         {
             const bool secret = Detail::isSecretEnvironmentName(variable.name);
-            m_Rows.push_back({.name = std::move(variable.name), .value = std::move(variable.value), .secret = secret});
+            m_Rows.push_back({.name = std::move(variable.name), .value = std::move(variable.value), .secret = secret, .occurrence = 0});
         }
+        // Stable: duplicates of a name keep their read order, which the occurrence numbers follow.
         std::ranges::stable_sort(m_Rows, {}, &Row::name);
+        for (std::size_t i = 1; i < m_Rows.size(); ++i)
+        {
+            if (m_Rows[i].name == m_Rows[i - 1].name)
+            {
+                m_Rows[i].occurrence = m_Rows[i - 1].occurrence + 1;
+            }
+        }
         m_FilterDirty = true;
     }
 
@@ -159,31 +176,33 @@ class ProcessEnvironmentView
         m_DrawnOpen = true;
     }
 
-    /// Shows @p name's value if it is masked, or masks it again if it was revealed.
-    void toggleReveal(std::string_view name)
+    /// Shows @p row's value if it is masked, or masks it again if it was revealed. Only that row:
+    /// another entry with the same name stays as it was.
+    void toggleReveal(const Row& row)
     {
-        const auto it = std::ranges::lower_bound(m_Revealed, name, {}, [](const std::string& s) { return std::string_view{s}; });
-        if (it != m_Revealed.end() && *it == name)
+        RowKey key{row.name, row.occurrence};
+        const auto it = std::ranges::lower_bound(m_Revealed, key);
+        if (it != m_Revealed.end() && *it == key)
         {
             m_Revealed.erase(it);
         }
         else
         {
-            m_Revealed.insert(it, std::string{name});
+            m_Revealed.insert(it, std::move(key));
         }
         m_FilterDirty = true; // a revealed value becomes searchable
     }
 
-    /// Whether @p name's value has been revealed since the selection changed.
-    [[nodiscard]] bool isRevealed(std::string_view name) const noexcept
+    /// Whether @p row's value has been revealed since the selection changed.
+    [[nodiscard]] bool isRevealed(const Row& row) const
     {
-        return std::ranges::binary_search(m_Revealed, name, {}, [](const std::string& s) { return std::string_view{s}; });
+        return std::ranges::binary_search(m_Revealed, RowKey{row.name, row.occurrence});
     }
 
     /// Whether @p row's value is drawn as Detail::MASKED_ENVIRONMENT_VALUE now.
-    [[nodiscard]] bool isMasked(const Row& row) const noexcept
+    [[nodiscard]] bool isMasked(const Row& row) const
     {
-        return row.secret && !isRevealed(row.name);
+        return row.secret && !isRevealed(row);
     }
 
     /// Whether a read has been taken in since the selection changed (false: "Reading...").
@@ -241,7 +260,7 @@ class ProcessEnvironmentView
     float m_SecondsSinceRead = 0.0F;
     Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
     std::vector<Row> m_Rows;
-    std::vector<std::string> m_Revealed; // sorted names whose values are shown
+    std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown
     std::string m_Filter;
     std::string m_FilterKey; // m_Filter as m_FilteredRows was built for
     std::vector<std::size_t> m_FilteredRows;

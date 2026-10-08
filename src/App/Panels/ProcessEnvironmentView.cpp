@@ -155,11 +155,11 @@ void ProcessEnvironmentView::renderTable()
             if (row.secret)
             {
                 // Per-row reveal: shows this one value until the selection changes (or it is hidden again).
-                const bool revealed = isRevealed(row.name);
+                const bool revealed = isRevealed(row);
                 ImGui::PushID(i);
                 if (ImGui::SmallButton(revealed ? ICON_FA_EYE_SLASH "##Reveal" : ICON_FA_EYE "##Reveal"))
                 {
-                    toggleReveal(row.name);
+                    toggleReveal(row);
                 }
                 ImGui::SetItemTooltip("%s", revealed ? "Hide value" : "Show value");
                 ImGui::PopID();

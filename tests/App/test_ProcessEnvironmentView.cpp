@@ -166,10 +166,11 @@ TEST(ProcessEnvironmentViewTest, KeepsEachReadStatusForItsStatusLine)
         Platform::EnvironmentReadStatus status;
         std::string_view text;
     };
-    constexpr std::array<Case, 4> CASES{{
+    constexpr std::array<Case, 5> CASES{{
         {.status = Platform::EnvironmentReadStatus::PermissionDenied, .text = "Not readable (permission denied)"},
         {.status = Platform::EnvironmentReadStatus::ProcessExited, .text = "Process exited"},
         {.status = Platform::EnvironmentReadStatus::Unsupported, .text = "Not available on this platform"},
+        {.status = Platform::EnvironmentReadStatus::IdentityUnknown, .text = "Not available yet"},
         {.status = Platform::EnvironmentReadStatus::Failed, .text = "Could not be read"},
     }};
     for (const Case& c : CASES)
@@ -195,23 +196,53 @@ TEST(ProcessEnvironmentViewTest, RevealLastsAcrossReReadsAndEndsOnSelectionChang
     ProcessEnvironmentView view;
     const auto result = okResult({{.name = "MY_API_TOKEN", .value = "supersecret"}, {.name = "DB_PASSWORD", .value = "hunter2"}});
     view.applyResult(result);
+    // Sorted: DB_PASSWORD, MY_API_TOKEN
+    ASSERT_EQ(view.rows()[1].name, "MY_API_TOKEN");
 
-    view.toggleReveal("MY_API_TOKEN");
-    EXPECT_TRUE(view.isRevealed("MY_API_TOKEN"));
-    EXPECT_FALSE(view.isRevealed("DB_PASSWORD")); // one row only
-    EXPECT_FALSE(view.isMasked(view.rows()[1]));  // MY_API_TOKEN sorts after DB_PASSWORD
+    view.toggleReveal(view.rows()[1]);
+    EXPECT_TRUE(view.isRevealed(view.rows()[1]));
+    EXPECT_FALSE(view.isRevealed(view.rows()[0])); // one row only
+    EXPECT_FALSE(view.isMasked(view.rows()[1]));
     EXPECT_TRUE(view.isMasked(view.rows()[0]));
 
     view.applyResult(result); // the periodic re-read
-    EXPECT_TRUE(view.isRevealed("MY_API_TOKEN"));
+    EXPECT_TRUE(view.isRevealed(view.rows()[1]));
 
-    view.toggleReveal("MY_API_TOKEN"); // pressed again: hidden again
-    EXPECT_FALSE(view.isRevealed("MY_API_TOKEN"));
-    view.toggleReveal("MY_API_TOKEN");
+    view.toggleReveal(view.rows()[1]); // pressed again: hidden again
+    EXPECT_FALSE(view.isRevealed(view.rows()[1]));
+    view.toggleReveal(view.rows()[1]);
 
     view.onSelectionChanged();
-    EXPECT_FALSE(view.isRevealed("MY_API_TOKEN"));
     EXPECT_TRUE(view.rows().empty());
+    view.applyResult(result); // the next process happens to have the same variable
+    EXPECT_FALSE(view.isRevealed(view.rows()[1]));
+}
+
+TEST(ProcessEnvironmentViewTest, RevealingOneDuplicateNameLeavesTheOtherMaskedAndUnsearchable)
+{
+    // execve() allows duplicate names and /proc/[pid]/environ keeps both entries.
+    ProcessEnvironmentView view;
+    const auto result = okResult({{.name = "TOKEN", .value = "first-secret"}, {.name = "TOKEN", .value = "second-secret"}});
+    view.applyResult(result);
+    ASSERT_EQ(view.rows().size(), 2U);
+    EXPECT_EQ(view.rows()[0].value, "first-secret"); // read order kept within a name
+    EXPECT_EQ(view.rows()[0].occurrence, 0U);
+    EXPECT_EQ(view.rows()[1].occurrence, 1U);
+    ASSERT_TRUE(view.isMasked(view.rows()[0]));
+    ASSERT_TRUE(view.isMasked(view.rows()[1]));
+
+    view.toggleReveal(view.rows()[0]);
+    EXPECT_FALSE(view.isMasked(view.rows()[0]));
+    EXPECT_TRUE(view.isMasked(view.rows()[1]));
+
+    view.setFilter("first-secret");
+    EXPECT_EQ(view.filteredRows().size(), 1U);
+    view.setFilter("second-secret");
+    EXPECT_TRUE(view.filteredRows().empty());
+
+    view.applyResult(result); // a re-read keeps the same row revealed, and only it
+    EXPECT_FALSE(view.isMasked(view.rows()[0]));
+    EXPECT_TRUE(view.isMasked(view.rows()[1]));
 }
 
 // ========== Filter ==========
@@ -237,7 +268,7 @@ TEST(ProcessEnvironmentViewTest, FilterMatchesNamesAndPlainValuesButNeverMaskedV
     view.setFilter("supersecret"); // a masked value is not searched: no probing a secret by guessing
     EXPECT_TRUE(view.filteredRows().empty());
 
-    view.toggleReveal("MY_API_TOKEN"); // once revealed, it is
+    view.toggleReveal(view.rows()[2]); // once revealed, it is (sorted: EDITOR, FOO, MY_API_TOKEN)
     EXPECT_EQ(view.filteredRows().size(), 1U);
 
     view.setFilter("token"); // the name of a masked row always matches
