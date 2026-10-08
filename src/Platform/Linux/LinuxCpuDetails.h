@@ -41,8 +41,11 @@ namespace Detail
     {
         return {};
     }
+    // remove_prefix/remove_suffix, not substr(), which can throw: this is noexcept
     const auto last = text.find_last_not_of(SPACE);
-    return text.substr(first, last - first + 1);
+    text.remove_suffix(text.size() - last - 1);
+    text.remove_prefix(first);
+    return text;
 }
 
 [[nodiscard]] inline std::optional<std::uint64_t> parseUnsigned(std::string_view text) noexcept
@@ -190,7 +193,9 @@ inline void parseCpuInfoTopology(std::string_view text, CpuDetails& details)
     {
         return std::nullopt;
     }
-    std::string_view suffix = Detail::trim(text.substr(static_cast<std::size_t>(ptr - text.data())));
+    std::string_view suffix = text;
+    suffix.remove_prefix(static_cast<std::size_t>(ptr - text.data()));
+    suffix = Detail::trim(suffix);
     if (suffix.ends_with('B') || suffix.ends_with('b'))
     {
         suffix.remove_suffix(1);
