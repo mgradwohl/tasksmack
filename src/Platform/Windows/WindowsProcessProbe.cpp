@@ -30,6 +30,8 @@
 #undef min
 
 #include "WinString.h"
+#include "WindowsHandles.h"
+#include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
 #include "WindowsTcpRows.h"
 
@@ -59,71 +61,6 @@ namespace Platform
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {
-
-/// RAII wrapper for a Win32 HANDLE — guarantees CloseHandle() runs on every exit path
-/// (including an exception unwinding the stack between acquisition and an explicit
-/// CloseHandle call), not just the normal fall-through path (#774). Uses nullptr as its
-/// "no handle" sentinel because every API it wraps here (OpenProcess, OpenProcessToken)
-/// documents nullptr as its failure return -- unlike WindowsDiskProbe.cpp's separate
-/// DiskHandle, which wraps CreateFileW and correctly uses that API's own failure sentinel,
-/// INVALID_HANDLE_VALUE, instead.
-class ScopedHandle
-{
-  public:
-    ScopedHandle() = default;
-    explicit ScopedHandle(HANDLE hIn) noexcept : m_Handle(hIn)
-    {}
-    ScopedHandle(const ScopedHandle&) = delete;
-    ScopedHandle& operator=(const ScopedHandle&) = delete;
-    ScopedHandle(ScopedHandle&& other) noexcept : m_Handle(other.m_Handle)
-    {
-        other.m_Handle = nullptr;
-    }
-    ScopedHandle& operator=(ScopedHandle&& other) noexcept
-    {
-        if (this != &other)
-        {
-            reset();
-            m_Handle = other.m_Handle;
-            other.m_Handle = nullptr;
-        }
-        return *this;
-    }
-    ~ScopedHandle() noexcept
-    {
-        reset();
-    }
-
-    // NOLINTNEXTLINE(google-explicit-constructor) - implicit conversion lets a ScopedHandle
-    // be passed directly to HANDLE-taking Win32 APIs at every use site.
-    [[nodiscard]] operator HANDLE() const noexcept
-    {
-        return m_Handle;
-    }
-    [[nodiscard]] bool valid() const noexcept
-    {
-        return m_Handle != nullptr;
-    }
-    /// For APIs that write the handle through an out-param (e.g. OpenProcessToken's PHANDLE):
-    /// releases any handle already held, then returns the address to write the new one into.
-    [[nodiscard]] HANDLE* put() noexcept
-    {
-        reset();
-        return &m_Handle;
-    }
-
-  private:
-    void reset() noexcept
-    {
-        if (m_Handle != nullptr)
-        {
-            CloseHandle(m_Handle);
-            m_Handle = nullptr;
-        }
-    }
-
-    HANDLE m_Handle = nullptr;
-};
 
 /// Convert FILETIME to 100-nanosecond intervals (ticks)
 [[nodiscard]] uint64_t filetimeToTicks(const FILETIME& ft)
@@ -159,7 +96,7 @@ class ScopedHandle
         return {};
     }
 
-    ScopedHandle hToken;
+    Windows::UniqueHandle hToken;
     if (OpenProcessToken(hProcess, TOKEN_QUERY, hToken.put()) == 0)
     {
         return {};
@@ -167,17 +104,17 @@ class ScopedHandle
 
     // Get token user size
     DWORD tokenInfoLen = 0;
-    GetTokenInformation(hToken, TokenUser, nullptr, 0, &tokenInfoLen);
+    GetTokenInformation(hToken.get(), TokenUser, nullptr, 0, &tokenInfoLen);
     if (tokenInfoLen == 0)
     {
         return {};
     }
 
-    // Allocate buffer and get token user. hToken is released automatically (ScopedHandle) on
+    // Allocate buffer and get token user. hToken is released automatically (UniqueHandle) on
     // every exit path below, including if this allocation throws std::bad_alloc (#774's leak
     // class, one level deeper than getProcessDetails' own hProcess/hQueryInfo).
     std::vector<BYTE> tokenInfo(tokenInfoLen);
-    if (GetTokenInformation(hToken, TokenUser, tokenInfo.data(), tokenInfoLen, &tokenInfoLen) == 0)
+    if (GetTokenInformation(hToken.get(), TokenUser, tokenInfo.data(), tokenInfoLen, &tokenInfoLen) == 0)
     {
         return {};
     }
@@ -319,23 +256,6 @@ static_assert(offsetof(SystemProcessInfo, peakPagefileUsage) == offsetof(SYSTEM_
 static_assert(offsetof(SystemProcessInfo, privatePageCount) == offsetof(SYSTEM_PROCESS_INFORMATION, PrivatePageCount));
 // The SDK's trailing Reserved7[6] covers the six I/O LARGE_INTEGER counters we declare.
 static_assert(offsetof(SystemProcessInfo, readOperationCount) == offsetof(SYSTEM_PROCESS_INFORMATION, Reserved7));
-
-using NtQuerySystemInformationFn = NTSTATUS(NTAPI*)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
-
-[[nodiscard]] NtQuerySystemInformationFn getNtQuerySystemInformationFn() noexcept
-{
-    static NtQuerySystemInformationFn cachedFn = []() -> NtQuerySystemInformationFn
-    {
-        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (ntdll == nullptr)
-        {
-            return nullptr;
-        }
-        return Windows::getProcAddress<NtQuerySystemInformationFn>(ntdll, "NtQuerySystemInformation");
-    }();
-
-    return cachedFn;
-}
 
 // Safe and necessary: STATUS_INFO_LENGTH_MISMATCH is the documented NTSTATUS value 0xC0000004;
 // NTSTATUS is signed, so the high-bit-set literal requires an explicit cast.
@@ -676,8 +596,8 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// Conservative: any failure reports "not elevated".
 [[nodiscard]] bool isCurrentProcessElevated()
 {
-    // ScopedHandle ensures CloseHandle is called on all paths.
-    ScopedHandle token;
+    // UniqueHandle ensures CloseHandle is called on all paths.
+    Windows::UniqueHandle token;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
     {
         spdlog::debug("WindowsProcessProbe: OpenProcessToken failed (error code: {})", GetLastError());
@@ -686,7 +606,7 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 
     TOKEN_ELEVATION elevation{};
     DWORD dwSize = sizeof(elevation);
-    if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &dwSize) == FALSE)
+    if (GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &dwSize) == FALSE)
     {
         spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
         return false;
@@ -792,9 +712,10 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
         // Safe and necessary: the kernel stores thread IDs as HANDLE-sized integers; they fit in 32 bits.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         const auto tid = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(thread.ClientId.UniqueThread));
-        const ScopedHandle hThread(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
+        const Windows::UniqueHandle hThread(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
         GROUP_AFFINITY affinity{};
-        if (!hThread.valid() || GetProcessIdOfThread(hThread) != ownerPid || GetThreadGroupAffinity(hThread, &affinity) == FALSE)
+        if (!hThread.valid() || GetProcessIdOfThread(hThread.get()) != ownerPid ||
+            GetThreadGroupAffinity(hThread.get(), &affinity) == FALSE)
         {
             reads.complete = false;
             break; // The affinity is unreadable now; the remaining threads can't change that
@@ -831,14 +752,9 @@ WindowsProcessProbe::WindowsProcessProbe()
         "Detail cache TTLs tuned for total physical RAM: light={}ms, heavy={}ms", m_LightDetailTTL.count(), m_HeavyDetailTTL.count());
 }
 
-WindowsProcessProbe::~WindowsProcessProbe()
-{
-    if (m_IphlpModule != nullptr)
-    {
-        FreeLibrary(m_IphlpModule);
-        m_IphlpModule = nullptr;
-    }
-}
+// m_IphlpModule (a UniqueModule) frees iphlpapi.dll, if this probe loaded it, after the members
+// declared after it are destroyed.
+WindowsProcessProbe::~WindowsProcessProbe() = default;
 
 std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
 {
@@ -846,7 +762,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     results.reserve(m_LastEnumeratedProcessCount);
     ++m_DetailCacheGeneration;
 
-    auto* queryFn = getNtQuerySystemInformationFn();
+    auto* queryFn = Windows::ntQuerySystemInformation();
     if (queryFn == nullptr)
     {
         spdlog::error("NtQuerySystemInformation unavailable; cannot enumerate processes");
@@ -1091,7 +1007,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     // A handle is only needed to refresh TTL-cached details. Non-cacheable entries
     // (startTimeTicks == 0) are kernel pseudo-processes like Idle that OpenProcess can never
     // access, and TTL backoff cannot be remembered for them — skip the attempt entirely.
-    const ScopedHandle hProcess(canCache ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
+    const Windows::UniqueHandle hProcess(canCache ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
     if (!hProcess.valid())
     {
         // Can't access this process (protected/system). Push the due TTLs forward so we don't retry
@@ -1112,7 +1028,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     {
         // Mid-bucket nice values, so each class is labelled as itself (#1204).
         // The class itself too: Realtime and High share a nice bucket (#1280).
-        const DWORD priorityClass = GetPriorityClass(hProcess);
+        const DWORD priorityClass = GetPriorityClass(hProcess.get());
         counters.nice = priorityClassToNice(priorityClass);
         counters.priorityClass = toPriorityClass(priorityClass);
         cache.nice = counters.nice;
@@ -1123,12 +1039,12 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     if (plan.heavy)
     {
         // Expensive data: owner, command line, image path and publisher at a lower cadence.
-        const std::wstring imagePath = getProcessImagePath(hProcess);
+        const std::wstring imagePath = getProcessImagePath(hProcess.get());
         imagePathUtf8 = WinString::wideToUtf8(imagePath);
-        counters.user = getProcessOwner(hProcess);
+        counters.user = getProcessOwner(hProcess.get());
 
         // The command line, as Linux shows it (#1156); the image path where it can't be read.
-        counters.command = getProcessCommandLine(hProcess);
+        counters.command = getProcessCommandLine(hProcess.get());
         if (counters.command.empty())
         {
             counters.command = imagePathUtf8;
@@ -1138,26 +1054,26 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
         counters.publisher = getFilePublisher(imagePath);
 
         // CPU affinity rarely changes — refresh alongside heavy details, and cached with them.
-        counters.cpuAffinity = readCpuAffinity(hProcess, threadRecords);
+        counters.cpuAffinity = readCpuAffinity(hProcess.get(), threadRecords);
     }
     fallBackToName();
 
     if (plan.light || plan.heavy)
     {
         // Medium-cost data refreshed more frequently than heavy details.
-        counters.status = getProcessStatus(hProcess);
+        counters.status = getProcessStatus(hProcess.get());
 
         // GDI objects change as the process draws, so on the light cadence (#1156), with the handle
         // already open. A refused read is retried with PROCESS_QUERY_INFORMATION (see
         // getProcessGdiObjectCount), and the handle that worked is shared with classifyProcessType.
-        ScopedHandle hQueryInfo;
-        HANDLE hGui = hProcess;
-        counters.gdiObjectCount = getProcessGdiObjectCount(hProcess);
+        Windows::UniqueHandle hQueryInfo;
+        HANDLE hGui = hProcess.get();
+        counters.gdiObjectCount = getProcessGdiObjectCount(hProcess.get());
         if (!counters.gdiObjectCount.has_value())
         {
-            hQueryInfo = ScopedHandle(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid)));
-            hGui = hQueryInfo;
-            counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo);
+            hQueryInfo.reset(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid)));
+            hGui = hQueryInfo.get();
+            counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo.get());
         }
 
         if (plan.heavy)
@@ -1395,17 +1311,17 @@ bool WindowsProcessProbe::detectNetworkCounters()
         // access-denied result.
         if (m_IphlpModule != nullptr)
         {
-            iphlp = m_IphlpModule;
+            iphlp = m_IphlpModule.get();
         }
         else
         {
-            iphlp = LoadLibraryW(L"iphlpapi.dll");
-            if (iphlp == nullptr)
+            // iphlpapi.dll was not already loaded, so we own this reference; m_IphlpModule frees it
+            m_IphlpModule.reset(LoadLibraryW(L"iphlpapi.dll"));
+            if (m_IphlpModule == nullptr)
             {
                 return false;
             }
-            // iphlpapi.dll was not already loaded, so we own this handle and must free it in the destructor
-            m_IphlpModule = iphlp;
+            iphlp = m_IphlpModule.get();
         }
     }
 
