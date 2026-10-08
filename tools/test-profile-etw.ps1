@@ -171,16 +171,33 @@ try {
 
     # ── #1186: app lifecycle -- warm-up before the trace, and a crash fails the capture ──────
     # Stub apps (batch files, run hidden): one exits at once with a code, one exits with a code
-    # after a few seconds, one runs until it is killed. Pinging localhost is the sleep, as
-    # timeout.exe needs a console input.
+    # once the capture window has begun, one runs until it is killed. Pinging localhost is the
+    # sleep, as timeout.exe needs a console input.
+    #
+    # Nothing here may depend on how fast a process starts or exits: under a parallel ctest run
+    # a cmd.exe can take well over a second to start and exit (#1438). So the "exits later"
+    # stubs wait for a release file, written once the capture has passed its checks that the app
+    # is still running (see Invoke-StubCapture), rather than sleeping for a fixed time.
     $exitNow0 = Join-Path $root 'exit-now-0.cmd'
     Set-Content -LiteralPath $exitNow0 -Encoding ascii -Value "@exit /b 0"
     $exitNow3 = Join-Path $root 'exit-now-3.cmd'
     Set-Content -LiteralPath $exitNow3 -Encoding ascii -Value "@exit /b 3"
-    $exitLater3 = Join-Path $root 'exit-later-3.cmd'
-    Set-Content -LiteralPath $exitLater3 -Encoding ascii -Value "@ping -n 3 127.0.0.1 >nul`r`n@exit /b 3"
-    $exitLater0 = Join-Path $root 'exit-later-0.cmd'
-    Set-Content -LiteralPath $exitLater0 -Encoding ascii -Value "@ping -n 3 127.0.0.1 >nul`r`n@exit /b 0"
+    # The release file sits next to the stubs, which find it through %~dp0 (their own directory),
+    # so no path has to survive the ASCII batch file.
+    $releaseFile = Join-Path $root 'release-exit-later'
+    function New-ExitLaterStub([string]$Leaf, [int]$Code) {
+        $path = Join-Path $root $Leaf
+        Set-Content -LiteralPath $path -Encoding ascii -Value @(
+            '@echo off'
+            ':wait'
+            "if exist `"%~dp0release-exit-later`" exit /b $Code"
+            'ping -n 2 127.0.0.1 >nul'
+            'goto wait'
+        )
+        return $path
+    }
+    $exitLater3 = New-ExitLaterStub -Leaf 'exit-later-3.cmd' -Code 3
+    $exitLater0 = New-ExitLaterStub -Leaf 'exit-later-0.cmd' -Code 0
     $runForever = Join-Path $root 'run-forever.cmd'
     Set-Content -LiteralPath $runForever -Encoding ascii -Value "@echo off`r`n:loop`r`nping -n 2 127.0.0.1 >nul`r`ngoto loop"
 
@@ -188,13 +205,32 @@ try {
     $script:events = [System.Collections.Generic.List[string]]::new()
     $script:stubLeaf = $null
     function Test-StubRunning([string]$Leaf) {
-        @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" | Where-Object { $_.CommandLine -like "*$Leaf*" }).Count -gt 0
+        # Each match's own exit state decides, not its presence in the list: a process that has
+        # exited can still be listed for a while, and longer under load, while a handle to it is
+        # open, as Invoke-AppCapture keeps one (#1438).
+        @(Get-CimInstance Win32_Process -Filter "Name = 'cmd.exe'" | Where-Object { $_.CommandLine -like "*$Leaf*" } | Where-Object {
+                try { -not (Get-Process -Id $_.ProcessId -ErrorAction Stop).HasExited } catch { $false }
+            }).Count -gt 0
     }
     $traceStart = { $script:events.Add('start') }
     $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubLeaf))") }
     function Invoke-StubCapture {
         param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart)
         $script:events.Clear()
+        Remove-Item -LiteralPath $releaseFile -ErrorAction SilentlyContinue
+        # The "exits later" stubs are released only once Invoke-AppCapture has entered the capture
+        # window: it announces the window ('Recording for ...' or 'Exercise the application ...')
+        # after its post-trace-start HasExited check, so a released stub can no longer exit before
+        # that check. Releasing them from the trace start raced it. Commands resolve through the
+        # caller's scopes, so this Write-Host shadows the cmdlet only inside this call.
+        function Write-Host {
+            param([Parameter(Position = 0)][object]$Object)
+            $text = "$Object"
+            if ($text -like 'Recording for *' -or $text -like 'Exercise the application*') {
+                Set-Content -LiteralPath $releaseFile -Value 'go'
+            }
+            Microsoft.PowerShell.Utility\Write-Host $text
+        }
         $script:stubLeaf = Split-Path -Leaf $App
         $watch = [Diagnostics.Stopwatch]::StartNew()
         # 3>$null: the no-main-window warning is expected for a hidden stub.
@@ -202,14 +238,17 @@ try {
             -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup -MainWindowTimeoutSeconds 0 -InteractiveTimeoutSeconds 60 `
             -WindowStyle Hidden 3>$null
         $r.Elapsed = $watch.Elapsed.TotalSeconds
+        $r.Released = Test-Path -LiteralPath $releaseFile
         return $r
     }
 
     # Exits at once with 0, or with an error code: fails during warm-up, and the trace is never
-    # started (no UAC prompt for a run that already failed).
+    # started (no UAC prompt for a run that already failed). The warm-up is a wait for the app
+    # to exit, so a long one costs nothing when the stub exits promptly; a 1 s warm-up failed
+    # this check whenever a loaded machine took longer than that to run the stub (#1438).
     foreach ($case in @(@{ App = $exitNow0; Code = 0 }, @{ App = $exitNow3; Code = 3 })) {
         foreach ($duration in @(0, 30)) {
-            $r = Invoke-StubCapture -App $case.App -DurationSeconds $duration -WarmupSeconds 1
+            $r = Invoke-StubCapture -App $case.App -DurationSeconds $duration -WarmupSeconds 30
             Assert-True ($r.Failure -like '*exited during warm-up*') "Immediate exit ($($case.Code), duration $duration) must fail in warm-up: $($r.Failure)"
             Assert-True ($r.ExitCode -eq $case.Code) "Exit code $($r.ExitCode), expected $($case.Code)"
             Assert-True ($script:events.Count -eq 0) "The trace must not start for an app that died in warm-up: $($script:events -join ', ')"
@@ -219,6 +258,7 @@ try {
     # Exits with an error during a fixed window: fails, and the trace is stopped at once rather
     # than at the end of the 30 s window.
     $r = Invoke-StubCapture -App $exitLater3 -DurationSeconds 30 -WarmupSeconds 0
+    Assert-True $r.Released "The stub was never released: Invoke-AppCapture no longer announces the capture window as Invoke-StubCapture expects ($($r.EndReason))"
     Assert-True ($r.Failure -like '*capture window*' -and $r.ExitCode -eq 3) "A crash mid-window must fail: $($r.Failure) (exit $($r.ExitCode))"
     Assert-True (($script:events -join ',') -eq 'start,stop(app running: False)') "Trace events: $($script:events -join ', ')"
     Assert-True ($r.Elapsed -lt 20) "The crash must end the capture promptly, took $($r.Elapsed) s"
@@ -264,6 +304,9 @@ try {
             -Timestamp $Name -DurationSeconds $DurationSeconds -WarmupSeconds 0 -MainWindowTimeoutSeconds 0 *>&1 | Out-String
         return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $out }
     }
+    # The script's own dry-run trace start does not release the "exits later" stub, so release it
+    # up front: it then exits with 3 during the warm-up or the window, and either is a failed capture.
+    Set-Content -LiteralPath $releaseFile -Value 'go'
     foreach ($case in @(@{ App = $exitNow0; Name = 'now0' }, @{ App = $exitNow3; Name = 'now3' }, @{ App = $exitLater3; Name = 'later3' })) {
         $run = Invoke-DryRun -App $case.App -Name $case.Name -DurationSeconds 30
         Assert-True ($run.ExitCode -ne 0) "A crashing app ($($case.Name)) must fail the script: $($run.Output)"
