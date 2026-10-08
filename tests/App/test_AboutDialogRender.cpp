@@ -13,6 +13,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal, its body and its OK button
 
+#include <algorithm>
 #include <string_view>
 
 namespace App
@@ -24,12 +25,19 @@ namespace
 struct Measured
 {
     bool open = false;
-    float emPx = 0.0F; ///< ImGui::GetFontSize() during the frame
+    bool visible = false; ///< The modal was drawn this frame (ImGui hides a new popup's first frame)
+    float emPx = 0.0F;    ///< ImGui::GetFontSize() during the frame
     ImVec2 pos;
     ImVec2 size;
     float scrollMaxY = -1.0F;
     float bodyHeight = 0.0F;
+    float bodyScrollMaxX = -1.0F;
     float bodyScrollMaxY = -1.0F;
+    float scrollMaxX = -1.0F;
+    float bodyContentWidth = 0.0F; ///< Width of the body's content region (inside any scrollbar)
+    float bodyContentRight = 0.0F; ///< Screen x of that region's right edge
+    float bodyContentUsed = 0.0F;  ///< Width the body's items reached (its ContentSize.x)
+    float widestOverflowPx = 0.0F; ///< Most any table cell's content ran past its column's right edge
 };
 
 class AboutDialogRenderTest : public ::testing::Test
@@ -70,17 +78,45 @@ class AboutDialogRenderTest : public ::testing::Test
             measured.pos = modal->Pos;
             measured.size = modal->Size;
             measured.scrollMaxY = modal->ScrollMax.y;
+            measured.scrollMaxX = modal->ScrollMax.x;
+            measured.visible = !modal->Hidden;
             for (const ImGuiWindow* window : GImGui->Windows)
             {
                 if (window->ParentWindow == modal && std::string_view{window->Name}.contains("##AboutBody"))
                 {
                     measured.bodyHeight = window->Size.y;
                     measured.bodyScrollMaxY = window->ScrollMax.y;
+                    measured.bodyScrollMaxX = window->ScrollMax.x;
+                    measured.bodyContentWidth = window->ContentRegionRect.GetWidth();
+                    measured.bodyContentRight = window->ContentRegionRect.Max.x;
+                    measured.bodyContentUsed = window->ContentSize.x;
+                    measured.widestOverflowPx = widestTableOverflow(window);
                 }
             }
         }
         ImGui::Render();
         return measured;
+    }
+
+    /// Most any cell's content in a table drawn in @p window ran past the right edge of its column
+    /// this frame -- what a table clips without a scrollbar, so a positive value is text cut off.
+    static float widestTableOverflow(const ImGuiWindow* window)
+    {
+        float widest = 0.0F;
+        for (int n = 0; n < GImGui->Tables.GetMapSize(); ++n)
+        {
+            const ImGuiTable* table = GImGui->Tables.TryGetMapData(n);
+            if (table == nullptr || table->OuterWindow != window)
+            {
+                continue;
+            }
+            for (int column = 0; column < table->ColumnsCount; ++column)
+            {
+                const ImGuiTableColumn& col = table->Columns[column];
+                widest = std::max(widest, col.ContentMaxXUnfrozen - col.MaxX);
+            }
+        }
+        return widest;
     }
 
     /// Opens the dialog and runs enough frames for its height to settle.
@@ -134,20 +170,27 @@ class AboutDialogRenderTest : public ::testing::Test
 TEST_F(AboutDialogRenderTest, OpensAtItsAuthoredWidthAndNeverGrows)
 {
     // The issue: the dialog crept wider frame after frame. Its width is now set every frame, so the
-    // first visible frame and the hundredth agree.
-    const Measured settled = openAndSettle();
-    ASSERT_TRUE(settled.open);
+    // first frame it is seen on already has it, and the hundredth agrees.
+    m_OpenRequested = true;
+    Measured first = runFrame();
+    int frames = 1;
+    while (!first.visible && frames < SETTLE_FRAMES)
+    {
+        first = runFrame(); // ImGui hides a popup's first frame while it measures it
+        ++frames;
+    }
+    ASSERT_TRUE(first.open);
+    ASSERT_TRUE(first.visible);
+    EXPECT_LE(frames, 2);
     EXPECT_FALSE(m_OpenRequested);
-    EXPECT_FLOAT_EQ(settled.size.x, expectedWidth(settled));
+    EXPECT_FLOAT_EQ(first.size.x, expectedWidth(first));
 
-    Measured later = settled;
+    Measured later = first;
     for (int frame = 0; frame < 120; ++frame)
     {
         later = runFrame();
     }
-    EXPECT_FLOAT_EQ(later.size.x, settled.size.x);
-    EXPECT_FLOAT_EQ(later.size.y, settled.size.y);
-    EXPECT_FLOAT_EQ(later.pos.x, settled.pos.x);
+    EXPECT_FLOAT_EQ(later.size.x, first.size.x);
 }
 
 TEST_F(AboutDialogRenderTest, IsCentredOnceItsHeightHasSettled)
@@ -209,6 +252,24 @@ TEST_F(AboutDialogRenderTest, StaysInsideASmallWindowWithItsButtonReachable)
     }
     EXPECT_FLOAT_EQ(shrunk.scrollMaxY, 0.0F);
     expectInsideDisplay(shrunk);
+}
+
+TEST_F(AboutDialogRenderTest, AtALargeFontInASmallWindowNothingIsClipped)
+{
+    // The body scrolls only vertically, so anything wider than it is cut off: at 2.5x in a 480px
+    // window the header stacks the icon above the text, and the links and the version wrap
+    // (#1490 review).
+    ImGui::GetStyle().FontScaleMain = 2.5F;
+    ImGui::GetIO().DisplaySize = ImVec2(480.0F, 400.0F);
+    const Measured measured = openAndSettle();
+    ASSERT_TRUE(measured.open);
+    ASSERT_GT(measured.bodyContentWidth, 0.0F);
+    EXPECT_LE(measured.bodyContentUsed, measured.bodyContentWidth + 0.5F);
+    EXPECT_LE(measured.widestOverflowPx, 0.5F);
+    EXPECT_FLOAT_EQ(measured.bodyScrollMaxX, 0.0F);
+    EXPECT_FLOAT_EQ(measured.scrollMaxX, 0.0F);
+    EXPECT_FLOAT_EQ(measured.scrollMaxY, 0.0F);
+    expectInsideDisplay(measured);
 }
 
 TEST_F(AboutDialogRenderTest, OkClosesIt)

@@ -15,6 +15,8 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <format>
+#include <string>
 #include <string_view>
 
 namespace App::AboutDialog
@@ -26,30 +28,52 @@ namespace
 constexpr const char* OK_LABEL = "OK";
 constexpr const char* REPO_URL = "https://github.com/mgradwohl/tasksmack";
 constexpr const char* FONT_AWESOME_LICENSE_URL = "https://fontawesome.com/license/free";
+// Short forms of the URLs, shown as the links' text so they can wrap in a narrow dialog; the full
+// URL is the tooltip.
+constexpr std::string_view REPO_LABEL = "github.com/mgradwohl/tasksmack";
+constexpr std::string_view FONT_AWESOME_LICENSE_LABEL = "fontawesome.com/license/free";
 
-/// A URL drawn in the accent colour, underlined on hover with a hand cursor, that opens in the
-/// system browser when clicked or activated from the keyboard (#1212). Sized to its text: a
-/// Selectable left at its default width highlighted the whole row on hover, which read as a list
-/// item rather than a link (#1490).
-void renderLink(const char* url, const ImVec4& color)
+/// Text wrapped at the right edge of the cell or window it is in.
+void wrapped(std::string_view text)
 {
-    const ImVec2 textSize = ImGui::CalcTextSize(url);
-    const ImVec2 textPos = ImGui::GetCursorScreenPos();
+    ImGui::PushTextWrapPos(0.0F);
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    ImGui::PopTextWrapPos();
+}
+
+/// A link: @p label in the accent colour, wrapped at the right edge of its cell like the text around
+/// it, that opens @p url in the system browser when clicked or activated from the keyboard (#1212).
+/// The full URL shows as a tooltip and the cursor becomes a hand; a one-line link is underlined on
+/// hover.
+///
+/// The label is a short form of the URL and wraps: a one-line Selectable as wide as the full URL
+/// could not shrink with the dialog, and was clipped by a narrow window at a large font (#1490
+/// review). An invisible button over the wrapped text is what makes it clickable and focusable.
+void renderLink(std::string_view label, const char* url, const ImVec4& color)
+{
     ImGui::PushStyleColor(ImGuiCol_Text, color);
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.0F, 0.0F, 0.0F, 0.0F));
-    if (ImGui::Selectable(url, false, ImGuiSelectableFlags_DontClosePopups, textSize))
+    wrapped(label);
+    ImGui::PopStyleColor();
+    const ImVec2 textMin = ImGui::GetItemRectMin();
+    const ImVec2 textMax = ImGui::GetItemRectMax();
+
+    ImGui::SetCursorScreenPos(textMin);
+    ImGui::PushID(url);
+    const bool pressed =
+        ImGui::InvisibleButton("##Link", ImVec2(std::max(1.0F, textMax.x - textMin.x), std::max(1.0F, textMax.y - textMin.y)));
+    ImGui::PopID();
+    if (pressed)
     {
         (void) App::PlatformOpen::openWithSystemHandler(std::string_view{url});
     }
-    ImGui::PopStyleColor(4);
     if (ImGui::IsItemHovered())
     {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        const float underlineY = textPos.y + textSize.y;
-        ImGui::GetWindowDrawList()->AddLine(
-            ImVec2(textPos.x, underlineY), ImVec2(textPos.x + textSize.x, underlineY), ImGui::GetColorU32(color));
+        ImGui::SetTooltip("%s", url);
+        if ((textMax.y - textMin.y) < (ImGui::GetTextLineHeight() * 1.5F))
+        {
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(textMin.x, textMax.y), textMax, ImGui::GetColorU32(color));
+        }
     }
 }
 
@@ -63,17 +87,43 @@ void mutedWrapped(std::string_view text)
     ImGui::PopStyleColor();
 }
 
-/// Text wrapped at the right edge of the cell or window it is in.
-void wrapped(std::string_view text)
+/// Draws the icon, @p iconPx on its longest edge, or an empty space as large when there is none.
+void renderIcon(const UI::Texture& icon, float iconPx)
 {
-    ImGui::PushTextWrapPos(0.0F);
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
-    ImGui::PopTextWrapPos();
+    if (icon.valid())
+    {
+        const ImVec2 rawSize = icon.size();
+        const float scale = std::min(iconPx / rawSize.x, iconPx / rawSize.y);
+        ImGui::Image(icon.textureId(), ImVec2(rawSize.x * scale, rawSize.y * scale));
+    }
+    else
+    {
+        ImGui::Dummy(ImVec2(iconPx, iconPx));
+    }
 }
 
-/// The icon beside the name, version and tagline, the three lines centred on the icon (or the icon
-/// on them, whichever is taller). A two-column table keeps the two halves on one row without
-/// SameLine()/SetCursorPosY() arithmetic fighting ImGui's line tracking.
+/// The name in the large font, then the version and the tagline, which wrap.
+void renderHeaderText(ImFont* titleFont)
+{
+    if (titleFont != nullptr)
+    {
+        ImGui::PushFont(titleFont);
+    }
+    wrapped("TaskSmack");
+    if (titleFont != nullptr)
+    {
+        ImGui::PopFont();
+    }
+    const std::string version = std::format("Version {} ({} build)", tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
+    mutedWrapped(version);
+    // The name is already the large title above, so the tagline does not repeat it (#1212).
+    wrapped("A cross-platform system monitor");
+}
+
+/// The icon beside the name, version and tagline, the two centred on each other -- or, when the
+/// dialog is too narrow for both on one row (a large font in a small window), the icon above the
+/// text, so neither is clipped (#1490 review). A two-column table keeps the side-by-side halves on
+/// one row without SameLine()/SetCursorPosY() arithmetic fighting ImGui's line tracking.
 void renderHeader(const UI::Texture& icon, float emPx)
 {
     const auto& theme = UI::Theme::get();
@@ -81,16 +131,27 @@ void renderHeader(const UI::Texture& icon, float emPx)
 
     ImFont* titleFont = theme.largeFont();
     float titleHeight = ImGui::GetTextLineHeight();
+    float titleWidth = ImGui::CalcTextSize("TaskSmack").x;
     if (titleFont != nullptr)
     {
         ImGui::PushFont(titleFont);
         titleHeight = ImGui::GetTextLineHeight();
+        titleWidth = ImGui::CalcTextSize("TaskSmack").x;
         ImGui::PopFont();
     }
-    const float textBlockHeight = titleHeight + (ImGui::GetTextLineHeight() * 2.0F) + (style.ItemSpacing.y * 2.0F);
     const float iconPx = ABOUT_ICON_EM * emPx;
+    const float gapPx = ABOUT_HEADER_GAP_EM * emPx;
+    const float availPx = ImGui::GetContentRegionAvail().x;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(ABOUT_HEADER_GAP_EM * emPx * 0.5F, 0.0F));
+    if (!UI::DialogMetrics::fitsSideBySide(availPx, iconPx, gapPx, std::max(titleWidth, ABOUT_HEADER_MIN_TEXT_EM * emPx)))
+    {
+        renderIcon(icon, std::min(iconPx, availPx));
+        renderHeaderText(titleFont);
+        return;
+    }
+
+    const float textBlockHeight = titleHeight + (ImGui::GetTextLineHeight() * 2.0F) + (style.ItemSpacing.y * 2.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(gapPx * 0.5F, 0.0F));
     if (ImGui::BeginTable("##AboutHeader", 2, ImGuiTableFlags_SizingFixedFit))
     {
         ImGui::TableSetupColumn("##Icon", ImGuiTableColumnFlags_WidthFixed, iconPx);
@@ -100,31 +161,11 @@ void renderHeader(const UI::Texture& icon, float emPx)
         ImGui::TableNextColumn();
         const float rowTop = ImGui::GetCursorPosY();
         ImGui::SetCursorPosY(rowTop + std::max(0.0F, (textBlockHeight - iconPx) * 0.5F));
-        if (icon.valid())
-        {
-            const ImVec2 rawSize = icon.size();
-            const float scale = std::min(iconPx / rawSize.x, iconPx / rawSize.y);
-            ImGui::Image(icon.textureId(), ImVec2(rawSize.x * scale, rawSize.y * scale));
-        }
-        else
-        {
-            ImGui::Dummy(ImVec2(iconPx, iconPx));
-        }
+        renderIcon(icon, iconPx);
 
         ImGui::TableNextColumn();
         ImGui::SetCursorPosY(rowTop + std::max(0.0F, (iconPx - textBlockHeight) * 0.5F));
-        if (titleFont != nullptr)
-        {
-            ImGui::PushFont(titleFont);
-        }
-        ImGui::TextUnformatted("TaskSmack");
-        if (titleFont != nullptr)
-        {
-            ImGui::PopFont();
-        }
-        ImGui::TextColored(theme.scheme().textMuted, "Version %s (%s build)", tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
-        // The name is already the large title above, so the tagline does not repeat it (#1212).
-        wrapped("A cross-platform system monitor");
+        renderHeaderText(titleFont);
 
         ImGui::EndTable();
     }
@@ -159,7 +200,7 @@ void renderDetails()
     if (beginDetailsTable("##AboutProject"))
     {
         detailsRow("Source");
-        renderLink(REPO_URL, theme.accentColor(0));
+        renderLink(REPO_LABEL, REPO_URL, theme.accentColor(0));
         detailsRow("License");
         ImGui::TextUnformatted("MIT");
         detailsRow("Commit");
@@ -183,7 +224,7 @@ void renderCredits()
         detailsRow("Icons");
         wrapped("Font Awesome Free by Fonticons, Inc.");
         mutedWrapped("Icons CC BY 4.0, font SIL Open Font License 1.1");
-        renderLink(FONT_AWESOME_LICENSE_URL, theme.accentColor(0));
+        renderLink(FONT_AWESOME_LICENSE_LABEL, FONT_AWESOME_LICENSE_URL, theme.accentColor(0));
         ImGui::EndTable();
     }
 }
@@ -193,7 +234,9 @@ void renderCredits()
 void renderShortcuts()
 {
     const auto& theme = UI::Theme::get();
-    (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Keyboard shortcuts");
+    // "Shortcuts", not "Keyboard shortcuts": a header is one unwrapped line, and the longer title
+    // overran the body at a large font in a small window (#1490 review).
+    (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Shortcuts");
     constexpr ImGuiTableFlags flags = ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX;
     if (ImGui::BeginTable("##Shortcuts", 2, flags))
     {

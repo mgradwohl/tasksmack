@@ -207,6 +207,25 @@ computeCappedControlWidth(float desiredWidthPx, float rowStartPx, float surround
     return viewportExtentPx * MAX_VIEWPORT_FRACTION;
 }
 
+/// Whether a fixed-width leading item (an icon) and the content beside it fit on one row
+/// @p availWidthPx wide, with @p gapPx between them and the content given at least
+/// @p trailingMinPx. A row that does not fit is laid out stacked instead, so a narrow dialog at a
+/// large font clips neither half (#1490 review).
+///
+/// @return true when unknown (non-finite) width leaves nothing to fit into.
+[[nodiscard]] inline bool fitsSideBySide(float availWidthPx, float leadingPx, float gapPx, float trailingMinPx) noexcept
+{
+    const auto safe = [](float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    if (!std::isfinite(availWidthPx))
+    {
+        return true;
+    }
+    return safe(leadingPx) + safe(gapPx) + safe(trailingMinPx) <= availWidthPx;
+}
+
 /// Largest extent, on one axis, of a compact dialog that should cover only @p fraction of a
 /// viewport @p viewportExtentPx long, rather than the MAX_VIEWPORT_FRACTION every dialog may reach
 /// (#1490). The About box caps its height this way and scrolls its contents past it, so it opens as

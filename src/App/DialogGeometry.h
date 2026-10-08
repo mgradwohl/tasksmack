@@ -32,6 +32,10 @@ inline constexpr float ABOUT_ICON_EM = 6.0F; // 64px
 /// Gap between the icon and the text beside it.
 inline constexpr float ABOUT_HEADER_GAP_EM = 1.5F; // 16px
 
+/// Narrowest the text beside the icon may be (or the title's width, if wider) before the header
+/// stacks the icon above the text instead (#1490 review).
+inline constexpr float ABOUT_HEADER_MIN_TEXT_EM = 12.0F; // 128px
+
 /// Authored width of the dialog, applied every frame so the wrapped shortcut table has a fixed width
 /// to wrap to. It used to auto-fit, and the table's wrapped text fed back into the fit, widening the
 /// dialog a little every frame until it filled most of the window (#1490).

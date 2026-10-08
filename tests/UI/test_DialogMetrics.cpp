@@ -176,6 +176,27 @@ TEST(DialogMetricsTest, DialogMaxExtentIsUnboundedForAnUnusableViewport)
     EXPECT_EQ(computeDialogMaxExtent(nan), std::numeric_limits<float>::max());
 }
 
+// ---- A header row that stacks when it doesn't fit (#1490 review) ----
+
+TEST(DialogMetricsTest, SideBySideFitsWhenTheRowHasRoom)
+{
+    EXPECT_TRUE(fitsSideBySide(300.0F, 64.0F, 16.0F, 128.0F));
+    EXPECT_TRUE(fitsSideBySide(208.0F, 64.0F, 16.0F, 128.0F)); // Exactly
+}
+
+TEST(DialogMetricsTest, SideBySideStacksWhenTheRowIsTooNarrow)
+{
+    EXPECT_FALSE(fitsSideBySide(207.0F, 64.0F, 16.0F, 128.0F));
+    EXPECT_FALSE(fitsSideBySide(0.0F, 64.0F, 16.0F, 128.0F));
+}
+
+TEST(DialogMetricsTest, SideBySideIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_TRUE(fitsSideBySide(nan, 64.0F, 16.0F, 128.0F));
+    EXPECT_TRUE(fitsSideBySide(144.0F, 64.0F, -16.0F, nan));
+}
+
 // ---- A compact dialog's own, smaller cap (#1490) ----
 
 TEST(DialogMetricsTest, CompactDialogMaxExtentIsItsOwnFraction)
