@@ -56,11 +56,11 @@ class ProcessIoPriorityViewRenderTest : public ::testing::Test
     }
 
     /// One frame of a window like the Process Details pane, running @p body inside it.
-    static void runFrame(const std::function<void()>& body)
+    static void runFrame(const std::function<void()>& body, float windowWidth = 1600.0F)
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(1600.0F, 1000.0F));
+        ImGui::SetNextWindowSize(ImVec2(windowWidth, 1000.0F));
         ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         body();
         ImGui::End();
@@ -181,6 +181,30 @@ TEST_F(ProcessIoPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     EXPECT_EQ(view.ioPriorityView().error(), "Permission denied");
     EXPECT_EQ(view.ioPriorityView().shownIoPriority(), BEST_EFFORT_4);
     EXPECT_TRUE(view.error().empty()); // The nice control's error line is its own
+}
+
+TEST_F(ProcessIoPriorityViewRenderTest, ApplyStaysInsideANarrowPanel)
+{
+    // Process Details does not scroll horizontally: at a narrow width the row shrinks, then wraps,
+    // so Apply is never clipped off the right edge.
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(BEST_EFFORT_4); // Best-effort: combo, slider and Apply on the row
+    ProcessPriorityView view;
+    for (const float width : {420.0F, 300.0F, 160.0F})
+    {
+        SCOPED_TRACE(width);
+        float applyRight = 0.0F;
+        float windowRight = 0.0F;
+        const auto body = [&]
+        {
+            view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+            applyRight = ImGui::GetItemRectMax().x;
+            windowRight = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x;
+        };
+        runFrame(body, width);
+        runFrame(body, width);
+        EXPECT_LE(applyRight, windowRight);
+    }
 }
 
 } // namespace

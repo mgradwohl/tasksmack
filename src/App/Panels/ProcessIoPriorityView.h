@@ -20,6 +20,7 @@
 #include "Platform/IProcessActions.h"
 #include "PriorityEditTarget.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <format>
@@ -42,6 +43,70 @@ inline constexpr float IO_PRIORITY_CLASS_COMBO_WIDTH_EM = 9.0F;
 
 /// Width of the level slider, in ems.
 inline constexpr float IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM = 9.0F;
+
+/// How far the combo and the slider may shrink before the row gives up a line instead: two thirds of
+/// their authored widths (6 em each at the default sizes).
+inline constexpr float IO_PRIORITY_MIN_WIDTH_FRACTION = 2.0F / 3.0F;
+
+/// Where the I/O priority row's items go and how wide they are, for a panel @p available pixels wide.
+struct IoPriorityRowLayout
+{
+    float comboWidth = 0.0F;      ///< The class combo.
+    float sliderWidth = 0.0F;     ///< The level slider (0 when the class has none).
+    float applyWidth = 0.0F;      ///< The Apply button.
+    bool sliderOnNewLine = false; ///< The slider sits under the combo rather than beside it.
+    bool applyOnNewLine = false;  ///< Apply sits under the controls rather than after them.
+};
+
+/// The combo and the slider (when @p hasSlider) side by side, at their authored widths times @p scale.
+[[nodiscard]] constexpr float ioControlsWidth(float emPx, float spacing, bool hasSlider, float scale) noexcept
+{
+    const float combo = IO_PRIORITY_CLASS_COMBO_WIDTH_EM * emPx * scale;
+    return hasSlider ? combo + spacing + (IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * emPx * scale) : combo;
+}
+
+/// Lays out the I/O priority row so nothing is clipped: Process Details does not scroll horizontally.
+/// As the nice control does, Apply's width (@p applyNaturalWidth, capped to the panel) is reserved
+/// first; the combo and slider get what is left, at their authored widths when they fit, shrunk
+/// proportionally down to IO_PRIORITY_MIN_WIDTH_FRACTION when not. Narrower than that, Apply moves to
+/// its own line and the controls get the whole width, shrinking again; narrower still, the slider
+/// moves under the combo and each takes at most the panel's width. @p spacing is ImGui's item spacing.
+[[nodiscard]] constexpr IoPriorityRowLayout
+computeIoPriorityRowLayout(float available, float emPx, float spacing, float applyNaturalWidth, bool hasSlider) noexcept
+{
+    const float width = std::max(available, 1.0F);
+    IoPriorityRowLayout layout;
+    layout.applyWidth = std::min(applyNaturalWidth, width);
+
+    const float idealControls = ioControlsWidth(emPx, spacing, hasSlider, 1.0F);
+    const float minControls = ioControlsWidth(emPx, spacing, hasSlider, IO_PRIORITY_MIN_WIDTH_FRACTION);
+    const float gaps = hasSlider ? spacing : 0.0F;
+
+    // The room for the controls: beside Apply when they fit there at their minimum, else a line of their own.
+    float room = width - spacing - layout.applyWidth;
+    if (room < minControls)
+    {
+        layout.applyOnNewLine = true;
+        room = width;
+    }
+
+    float scale = 1.0F;
+    if (room < idealControls)
+    {
+        scale = (room - gaps) / (idealControls - gaps);
+    }
+    if (room < minControls)
+    {
+        // Too narrow for the two side by side even alone: stack them, each up to the panel's width.
+        layout.sliderOnNewLine = hasSlider;
+        layout.comboWidth = std::min(IO_PRIORITY_CLASS_COMBO_WIDTH_EM * emPx, width);
+        layout.sliderWidth = hasSlider ? std::min(IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * emPx, width) : 0.0F;
+        return layout;
+    }
+    layout.comboWidth = IO_PRIORITY_CLASS_COMBO_WIDTH_EM * emPx * scale;
+    layout.sliderWidth = hasSlider ? IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * emPx * scale : 0.0F;
+    return layout;
+}
 
 /// The classes the combo offers, in its order: the default first, the privileged one last.
 inline constexpr std::array<Platform::IoPriorityClass, 4> SETTABLE_IO_PRIORITY_CLASSES = {
@@ -306,8 +371,10 @@ class ProcessIoPriorityView
                m_CurrentTarget.startTimeTicks == liveTarget.startTimeTicks;
     }
 
-    /// Draws the class combo and, for a class with levels, the level slider.
-    void renderControls(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
+    /// Draws the class combo and, for a class with levels, the level slider, sized and placed by @p layout.
+    void renderControls(std::optional<std::int32_t> currentNice,
+                        const Platform::ProcessTarget& target,
+                        const Detail::IoPriorityRowLayout& layout);
 
     Platform::IoPriority m_Edit;
     bool m_Changed = false;

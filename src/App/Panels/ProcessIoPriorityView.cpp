@@ -53,22 +53,31 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "I/O Priority", currentDetail);
     ImGui::Spacing();
 
-    renderControls(currentNice, target);
-
-    // Apply on the same row, after the controls: the section stays one line tall.
+    // Apply on the same row, after the controls, so the section stays one line tall -- unless the panel
+    // is too narrow: it does not scroll horizontally, so the row shrinks, then wraps, rather than clip.
     const auto& theme = UI::Theme::get();
     const float emPx = ImGui::GetFontSize();
     const bool enabled = canApply(target);
     const bool waiting = waitingForProcessDetails(target);
-    const float applyButtonWidth =
-        UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, Detail::PRIORITY_APPLY_BUTTON_MIN_EM);
-    ImGui::SameLine(0.0F, ImGui::GetStyle().ItemSpacing.x);
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(
+        ImGui::GetContentRegionAvail().x,
+        emPx,
+        spacing,
+        UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, Detail::PRIORITY_APPLY_BUTTON_MIN_EM),
+        Detail::ioClassHasLevels(m_Edit.ioClass));
+
+    renderControls(currentNice, target, layout);
+    if (!layout.applyOnNewLine)
+    {
+        ImGui::SameLine(0.0F, spacing);
+    }
     if (!enabled)
     {
         ImGui::BeginDisabled();
     }
     if (UI::Widgets::filledButton("Apply",
-                                  ImVec2(applyButtonWidth, 0.0F),
+                                  ImVec2(layout.applyWidth, 0.0F),
                                   {
                                       .resting = theme.scheme().successButton,
                                       .hovered = theme.scheme().successButtonHovered,
@@ -102,13 +111,13 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     ImGui::PopID();
 }
 
-void ProcessIoPriorityView::renderControls(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target)
+void ProcessIoPriorityView::renderControls(std::optional<std::int32_t> currentNice,
+                                           const Platform::ProcessTarget& target,
+                                           const Detail::IoPriorityRowLayout& layout)
 {
-    const float emPx = ImGui::GetFontSize();
-
     // The class combo.
     const std::string selectedName{Detail::ioPriorityClassName(m_Edit.ioClass)};
-    ImGui::SetNextItemWidth(Detail::IO_PRIORITY_CLASS_COMBO_WIDTH_EM * emPx);
+    ImGui::SetNextItemWidth(layout.comboWidth);
     if (ImGui::BeginCombo("##io_class", selectedName.c_str()))
     {
         for (const Platform::IoPriorityClass ioClass : Detail::SETTABLE_IO_PRIORITY_CLASSES)
@@ -131,12 +140,16 @@ void ProcessIoPriorityView::renderControls(std::optional<std::int32_t> currentNi
         ImGui::SetTooltip("%s", IO_CLASS_TOOLTIP);
     }
 
-    // The level slider, only for the classes that have levels.
-    if (Detail::ioClassHasLevels(m_Edit.ioClass))
+    // The level slider, only for the classes that have levels. The layout was made before the combo, so
+    // a class picked this frame gets its slider next frame, when the row has room laid out for it.
+    if (Detail::ioClassHasLevels(m_Edit.ioClass) && layout.sliderWidth > 0.0F)
     {
-        ImGui::SameLine();
+        if (!layout.sliderOnNewLine)
+        {
+            ImGui::SameLine();
+        }
         int level = m_Edit.level;
-        ImGui::SetNextItemWidth(Detail::IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * emPx);
+        ImGui::SetNextItemWidth(layout.sliderWidth);
         if (ImGui::SliderInt("##io_level",
                              &level,
                              Domain::Priority::MIN_IO_LEVEL,

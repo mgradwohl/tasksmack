@@ -78,6 +78,76 @@ TEST(ProcessIoPriorityViewTest, DescribeUsesIoniceWords)
     EXPECT_EQ(Detail::describeIoPriority({}, std::nullopt), "default (from nice)");
 }
 
+// --- Row layout (the panel does not scroll horizontally) ------------------------------------------
+
+constexpr float EM = 16.0F;
+constexpr float GAP = 8.0F;
+constexpr float APPLY = 180.0F; // 11.25 em, the Apply floor
+
+TEST(ProcessIoPriorityViewTest, AWideRowKeepsTheAuthoredWidthsOnOneLine)
+{
+    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(1000.0F, EM, GAP, APPLY, true);
+    EXPECT_FLOAT_EQ(layout.comboWidth, Detail::IO_PRIORITY_CLASS_COMBO_WIDTH_EM * EM);
+    EXPECT_FLOAT_EQ(layout.sliderWidth, Detail::IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * EM);
+    EXPECT_FLOAT_EQ(layout.applyWidth, APPLY);
+    EXPECT_FALSE(layout.applyOnNewLine);
+    EXPECT_FALSE(layout.sliderOnNewLine);
+}
+
+TEST(ProcessIoPriorityViewTest, ANarrowRowShrinksTheControlsBesideApply)
+{
+    // 400 px: Apply reserved first, the combo and slider shrink proportionally into the remaining 212 px.
+    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(400.0F, EM, GAP, APPLY, true);
+    EXPECT_FALSE(layout.applyOnNewLine);
+    EXPECT_FALSE(layout.sliderOnNewLine);
+    EXPECT_FLOAT_EQ(layout.applyWidth, APPLY);
+    EXPECT_LT(layout.comboWidth, Detail::IO_PRIORITY_CLASS_COMBO_WIDTH_EM * EM);
+    EXPECT_FLOAT_EQ(layout.comboWidth, layout.sliderWidth);
+    EXPECT_GE(layout.comboWidth, Detail::IO_PRIORITY_CLASS_COMBO_WIDTH_EM * EM * Detail::IO_PRIORITY_MIN_WIDTH_FRACTION);
+    EXPECT_LE(layout.comboWidth + GAP + layout.sliderWidth + GAP + layout.applyWidth, 400.0F + 0.001F);
+}
+
+TEST(ProcessIoPriorityViewTest, BelowTheMinimumApplyWrapsOntoItsOwnLine)
+{
+    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(300.0F, EM, GAP, APPLY, true);
+    EXPECT_TRUE(layout.applyOnNewLine);
+    EXPECT_FALSE(layout.sliderOnNewLine);
+    EXPECT_LE(layout.comboWidth + GAP + layout.sliderWidth, 300.0F + 0.001F);
+
+    // Without a slider the combo alone needs less, but Apply still wraps once even that cannot fit.
+    const Detail::IoPriorityRowLayout idle = Detail::computeIoPriorityRowLayout(250.0F, EM, GAP, APPLY, false);
+    EXPECT_TRUE(idle.applyOnNewLine);
+    EXPECT_FLOAT_EQ(idle.sliderWidth, 0.0F);
+}
+
+TEST(ProcessIoPriorityViewTest, AVeryNarrowRowStacksEverythingWithinThePanel)
+{
+    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(100.0F, EM, GAP, APPLY, true);
+    EXPECT_TRUE(layout.applyOnNewLine);
+    EXPECT_TRUE(layout.sliderOnNewLine);
+    EXPECT_FLOAT_EQ(layout.comboWidth, 100.0F);
+    EXPECT_FLOAT_EQ(layout.sliderWidth, 100.0F);
+    EXPECT_FLOAT_EQ(layout.applyWidth, 100.0F);
+}
+
+TEST(ProcessIoPriorityViewTest, NoLineIsEverWiderThanThePanel)
+{
+    for (const bool hasSlider : {true, false})
+    {
+        for (int pixels = 20; pixels <= 1200; pixels += 10)
+        {
+            SCOPED_TRACE(pixels);
+            const auto width = static_cast<float>(pixels);
+            const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(width, EM, GAP, APPLY, hasSlider);
+            const float slider = (hasSlider && !layout.sliderOnNewLine) ? GAP + layout.sliderWidth : 0.0F;
+            const float apply = layout.applyOnNewLine ? 0.0F : GAP + layout.applyWidth;
+            EXPECT_LE(layout.comboWidth + slider + apply, width + 0.001F);
+            EXPECT_LE(layout.sliderWidth, width + 0.001F);
+            EXPECT_LE(layout.applyWidth, width + 0.001F);
+        }
+    }
+}
+
 // --- The on-demand read --------------------------------------------------------------------------
 
 TEST(ProcessIoPriorityViewTest, ReadsTheShownProcessOnceUntilDue)
