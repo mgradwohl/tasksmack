@@ -576,6 +576,23 @@ TEST(LinuxProcessActionsTest, SetIoPriorityBestEffortLevelIsReadBack)
     EXPECT_EQ(*current, (IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 7}));
 }
 
+TEST(LinuxProcessActionsTest, SetIoPriorityDefaultRestoresTheNiceDerivedClass)
+{
+    // "Default" is IOPRIO_CLASS_NONE with level 0, which ioprio_set(2) accepts (only a non-zero
+    // level with NONE is EINVAL) and which hands the process back to nice-derived I/O priority, as
+    // `ionice -c 0` does (#803 review).
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+
+    LinuxProcessActions actions;
+    ASSERT_TRUE(actions.setIoPriority(child.target(), IoPriorityClass::Idle, 0).success);
+    const auto result = actions.setIoPriority(child.target(), IoPriorityClass::None, 0);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    const IoPriorityReadResult current = actions.getIoPriority(child.target());
+    ASSERT_TRUE(current.has_value()) << current.error();
+    EXPECT_EQ(current->ioClass, IoPriorityClass::None);
+}
+
 TEST(LinuxProcessActionsTest, SetIoPriorityReachesTheProcessOnlyWhenTheStartTimeMatches)
 {
     const SleepingChild child;
