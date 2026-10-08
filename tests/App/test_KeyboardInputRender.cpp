@@ -254,6 +254,30 @@ TEST_F(KeyboardInputRenderTest, ModifiedFunctionKeysDoNothing)
     EXPECT_EQ(seen, ShortcutAction::Quit);
 }
 
+TEST_F(KeyboardInputRenderTest, CtrlASelectsAllOnlyAsThatExactChord)
+{
+    // The Processes table's select-all (#804): Ctrl+A, not a bare A (and not Ctrl+Shift+A).
+    int seen = 0;
+    const auto body = [&seen]
+    {
+        if (KeyboardInput::pollSelectAll())
+        {
+            ++seen;
+        }
+    };
+    ImGuiIO& io = ImGui::GetIO();
+    pressKey(ImGuiKey_A, body);
+    EXPECT_EQ(seen, 0);
+
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    pressKey(ImGuiKey_A, body, /*shift=*/true);
+    EXPECT_EQ(seen, 0);
+    pressKey(ImGuiKey_A, body);
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    runFrame(body);
+    EXPECT_EQ(seen, 1); // Once per press: it does not repeat on the next frame
+}
+
 /// A small scrolling table of selectable rows, keyboard-driven exactly as ProcessesPanel drives its
 /// table: armed and polled in the panel's window, the move applied inside the table, the moved-to row
 /// drawn even when clipped and scrolled into view.

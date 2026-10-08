@@ -152,6 +152,7 @@ set(TASKSMACK_SOURCES
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp
     src/Domain/GPUModel.cpp
+    src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
     src/Platform/Synthetic/SyntheticProbes.cpp
@@ -223,6 +224,7 @@ set(TASKSMACK_HEADERS
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
+    src/Platform/CurrentProcess.h
     src/Platform/ThreadName.h
     src/Platform/Synthetic/SyntheticProbes.h
     src/Platform/Synthetic/SyntheticWorkload.h

@@ -134,6 +134,12 @@ NavCommand pollNavigationCommand(bool treeView)
     return NavCommand::None;
 }
 
+bool pollSelectAll()
+{
+    // IsKeyChordPressed() wants exactly these modifiers, so Ctrl+Shift+A and the like are not it.
+    return ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_A);
+}
+
 float tableScrollViewHeight()
 {
     const ImGuiTable* table = ImGui::GetCurrentTable();

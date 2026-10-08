@@ -216,6 +216,8 @@ set(COMMON_TEST_SOURCES
     App/test_FontSizeChange.cpp
     App/test_KeyboardShortcuts.cpp
     App/test_ProcessTableNavigation.cpp
+    App/test_ProcessSelection.cpp
+    App/test_ProcessBatchAction.cpp
     App/test_KeyboardInputRender.cpp
     App/test_SyntheticScenario.cpp
     App/test_WindowOverride.cpp
