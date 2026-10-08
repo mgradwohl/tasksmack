@@ -7,11 +7,13 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
+#include "ProcessEnvironmentView.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
@@ -38,6 +40,11 @@ class ProcessDetailsPanel : public Panel
     /// Platform::makeProcessActions() (or, under TASKSMACK_SYNTHETIC, the synthetic scenario's
     /// refusing actions: App/SyntheticScenario.h).
     explicit ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions);
+
+    /// Construct with injected IProcessActions and IProcessEnvironmentReader implementations (tests: mocks).
+    /// A null reader, like the one-argument constructor's, hides the Environment section.
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader);
 
     ~ProcessDetailsPanel() override = default;
 
@@ -195,6 +202,13 @@ class ProcessDetailsPanel : public Panel
     KeyboardShortcuts::FrameRequest m_KillShortcut; // F9, taken by renderContent() this frame
     bool m_SelectActionsTab = false;                // F9 asked for the Kill confirm: show the Actions tab, which draws it
     ProcessPriorityView m_PriorityView;
+
+    // The Overview's Environment section (#179). The reader is created by the composition root (the
+    // default constructor) and called only from updateWithSamples(), through the view, while the
+    // section is open: never from render(), and never for any process but the selected one.
+    std::unique_ptr<Platform::IProcessEnvironmentReader> m_EnvironmentReader;
+    bool m_HasEnvironment = false; // m_EnvironmentReader can read environments here (Linux)
+    ProcessEnvironmentView m_EnvironmentView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;

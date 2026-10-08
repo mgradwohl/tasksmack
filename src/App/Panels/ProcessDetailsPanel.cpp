@@ -11,6 +11,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessEnvironment.h"
 #include "ProcessActionsView.h"
 #include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
@@ -18,6 +19,7 @@
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "ProcessEnvironmentView.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
@@ -51,13 +53,22 @@ namespace App
 {
 
 // Constructor (inside App namespace)
-ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(Synthetic::makeProcessActions(Synthetic::activeScenario()))
+ProcessDetailsPanel::ProcessDetailsPanel()
+    : ProcessDetailsPanel(Synthetic::makeProcessActions(Synthetic::activeScenario()),
+                          Synthetic::makeProcessEnvironmentReader(Synthetic::activeScenario()))
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)
+    : ProcessDetailsPanel(std::move(processActions), nullptr)
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader)
     : Panel("Process Details"),
       m_ProcessActions(std::move(processActions)),
-      m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{})
+      m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{}),
+      m_EnvironmentReader(std::move(environmentReader)),
+      m_HasEnvironment(m_EnvironmentReader != nullptr && m_EnvironmentReader->hasEnvironment())
 {}
 
 void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime)
@@ -120,6 +131,12 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     {
         m_SmoothedUsage.update(*m_CachedSnapshot, m_CachedRateReadings, deltaTime, m_RefreshInterval);
     }
+
+    // The Environment section's on-demand read (#179): here in the update path, never in render(), and
+    // only when the section was drawn open last frame and a read is due (ProcessEnvironmentView::update()),
+    // for the selected process alone, identified by PID and start time so a reused PID is not read.
+    const bool canReadEnvironment = m_HasEnvironment && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_EnvironmentView.update(canReadEnvironment ? m_EnvironmentReader.get() : nullptr, selectedTarget(), deltaTime));
 }
 
 void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
@@ -231,6 +248,8 @@ void ProcessDetailsPanel::renderContent()
                 // Its charts share their plot edges, with or without a right-hand axis (#1206).
                 const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
                 renderBasicInfo(cachedSnapshot());
+                // Collapsed by default, and hidden where the platform cannot read environments (#179)
+                m_EnvironmentView.render(m_HasEnvironment);
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick
                 if (!m_SmoothedUsage.initialized)
@@ -357,7 +376,8 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t uniqueK
     m_SmoothedUsage.reset();
     m_CachedRateReadings = {};
     m_PeakMemoryBytes = 0.0;
-    m_PriorityView.onSelectionChanged(); // Drops an edited priority, so it cannot reach the new process
+    m_PriorityView.onSelectionChanged();    // Drops an edited priority, so it cannot reach the new process
+    m_EnvironmentView.onSelectionChanged(); // Drops the variables and every revealed value (#179)
 
     if (pid != -1)
     {
