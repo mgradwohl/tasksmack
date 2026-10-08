@@ -1,8 +1,9 @@
 name: Static Analysis
 
+# Manual full clang-tidy run (Linux + Windows) on any branch. It no longer runs on every push to
+# main (#1406): the PR's own clang-tidy already checked the merge tree, and ci.yml's nightly
+# schedule runs the full analysis on main.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
