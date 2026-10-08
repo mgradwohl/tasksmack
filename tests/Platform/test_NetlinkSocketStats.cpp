@@ -764,8 +764,16 @@ TEST(BuildInodeToPidMapTest, EachOwnerComesWithItsStartTime)
     message.idiag_family = family;
     message.idiag_state = state;
     message.idiag_inode = inode;
-    std::memcpy(static_cast<void*>(message.id.idiag_src), src.data(), std::min(src.size(), sizeof(message.id.idiag_src)));
-    std::memcpy(static_cast<void*>(message.id.idiag_dst), dst.data(), std::min(dst.size(), sizeof(message.id.idiag_dst)));
+    // An empty span's data() may be null, and memcpy with a null source is undefined even for 0
+    // bytes (UBSan nonnull-attribute, #1541), so empty addresses are skipped, not copied.
+    if (!src.empty())
+    {
+        std::memcpy(static_cast<void*>(message.id.idiag_src), src.data(), std::min(src.size(), sizeof(message.id.idiag_src)));
+    }
+    if (!dst.empty())
+    {
+        std::memcpy(static_cast<void*>(message.id.idiag_dst), dst.data(), std::min(dst.size(), sizeof(message.id.idiag_dst)));
+    }
     message.id.idiag_sport = htons(sport);
     message.id.idiag_dport = htons(dport);
     return message;

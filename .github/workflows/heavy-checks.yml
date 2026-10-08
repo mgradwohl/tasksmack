@@ -1,11 +1,27 @@
 name: Heavy Checks
 
 on:
+  # On main only when a merge touches code the benchmarks measure (benchmarks/*.cpp include
+  # Domain, UI, Platform -- e.g. NetlinkSocketStats, LinuxProcessProbe -- and
+  # App/Panels/ProcessDetailsHistory) or this workflow (#1406); a
+  # top-level paths filter is fine here because Heavy Checks is not a required check. Everything
+  # else on main is covered by the nightly run below.
   push:
     branches: [main]
+    paths:
+      - 'src/Domain/**'
+      - 'src/UI/**'
+      - 'src/Platform/**'
+      - 'src/App/Panels/ProcessDetailsHistory.*'
+      - 'benchmarks/**'
+      - 'perf-data/linux-ci-baseline.json'
+      - 'tools/bench.sh'
+      - 'tools/check-benchmark-regression.py'
+      - '.github/workflows/heavy-checks.yml'
   schedule:
-    # Weekly on Mondays at 04:00 UTC
-    - cron: '0 4 * * 1'
+    # Nightly at 04:00 UTC (was weekly): coverage, Windows coverage, benchmarks; the sanitizer
+    # jobs below still run on this schedule too.
+    - cron: '0 4 * * *'
   workflow_dispatch:
     inputs:
       scope:
