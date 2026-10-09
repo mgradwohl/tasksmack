@@ -29,6 +29,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -959,6 +960,124 @@ TEST_F(SystemSectionsRenderTest, NetworkTabSharesItsHeightWithTheDiskGrid)
     ASSERT_NE(network, std::string::npos) << text;
     ASSERT_NE(grid, std::string::npos) << text;
     EXPECT_LT(network, grid);
+}
+
+// The child window drawn for the card @p id (an ImGui child is named "<parent>/<id>_<hash>").
+[[nodiscard]] const ImGuiWindow* findCard(const std::string& id)
+{
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    for (const ImGuiWindow* window : g.Windows)
+    {
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string(window->Name).find("/" + id + "_") != std::string::npos)
+        {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+// Network Throughput (the selector, heading and chart) and Interface Status are cards (#1587), the
+// chart inside the first; the throughput card settles at one height rather than cycling with the
+// fill layout (#1617), and the two fill the tab without overflowing it.
+TEST_F(SystemSectionsRenderTest, NetworkSectionsAreCardsThatFillTheTab)
+{
+    NetworkInputs inputs;
+    // One disk, as on most machines: its chart shares the tab's height with the network chart. (With
+    // no storage publication at all, the disk section's empty state takes whatever height is left,
+    // which the fill layout only approaches over several frames.)
+    Domain::StoragePublication storage;
+    storage.timestamps = viewOf(timestampsToNow());
+    storage.totalReadHistory = viewOf(constant(1.0));
+    storage.totalWriteHistory = viewOf(constant(1.0));
+    inputs.ctx.storagePublication = &storage;
+    UI::Widgets::PlotFillState fillState;
+    inputs.ctx.fillState = &fillState;
+    for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    }
+
+    const ImGuiWindow* throughput = findCard("##NetThroughputCard");
+    const ImGuiWindow* status = findCard("##InterfaceStatusCard");
+    ASSERT_NE(throughput, nullptr);
+    ASSERT_NE(status, nullptr);
+    EXPECT_NE(throughput->ChildFlags & ImGuiChildFlags_Borders, 0);
+    EXPECT_NE(status->ChildFlags & ImGuiChildFlags_Borders, 0);
+    EXPECT_GE(status->Pos.y, throughput->Pos.y + throughput->Size.y); // Below it, not overlapping
+
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    ASSERT_EQ(context.Plots.GetBufSize(), 2); // Network, then the disk chart
+    const ImPlotPlot* plot = context.Plots.GetByIndex(0);
+    ASSERT_NE(plot, nullptr);
+    EXPECT_TRUE(throughput->Rect().Contains(plot->FrameRect)) << "the chart is drawn outside its card";
+
+    const float settledHeight = throughput->Size.y;
+    for (int frame = 0; frame < 12; ++frame)
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+        EXPECT_FLOAT_EQ(throughput->Size.y, settledHeight) << "frame " << frame;
+    }
+    const ImGuiWindow* tab = ImGui::FindWindowByName("System");
+    ASSERT_NE(tab, nullptr);
+    EXPECT_LE(tab->ScrollMax.y, 0.0F) << "the cards overflow the tab";
+}
+
+// A centred compact strip sits in the middle of its row (#1588): drawn under a Compact one with the
+// same entries, it is that strip's width, with equal space either side of it.
+TEST_F(SystemSectionsRenderTest, CompactCenteredValueStripIsCentredInItsRow)
+{
+    const std::array bars{
+        UI::Widgets::NowBar{.valueText = "1.0 MiB/s", .label = "Read", .tooltipText = {}, .value01 = 0.5, .color = ImVec4(1, 0, 0, 1)},
+        UI::Widgets::NowBar{.valueText = "2.0 MiB/s", .label = "Write", .tooltipText = {}, .value01 = 0.5, .color = ImVec4(0, 1, 0, 1)},
+    };
+    float rowLeft = 0.0F;
+    float rowRight = 0.0F;
+    float compactRight = 0.0F;
+    float centeredRight = 0.0F;
+    runFrame(
+        [&]
+        {
+            rowLeft = ImGui::GetCursorScreenPos().x;
+            rowRight = rowLeft + ImGui::GetContentRegionAvail().x;
+            UI::Widgets::renderNowBarValueStrip(bars, {}, UI::Widgets::ValueStripLayout::Compact);
+            compactRight = ImGui::GetItemRectMax().x;
+            UI::Widgets::renderNowBarValueStrip(bars, {}, UI::Widgets::ValueStripLayout::CompactCentered, "##CenteredStrip");
+            centeredRight = ImGui::GetItemRectMax().x;
+        });
+
+    const float stripWidth = compactRight - rowLeft;
+    ASSERT_GT(stripWidth, 0.0F);
+    ASSERT_LT(stripWidth, rowRight - rowLeft);
+    const float centeredLeft = centeredRight - stripWidth;
+    EXPECT_NEAR(centeredLeft - rowLeft, rowRight - centeredRight, 1.0F);
+}
+
+// With no disk data, the disk section's message below the network chart is a band of fixed height,
+// so the chart settles at its fill height within two frames instead of creeping to it (#1620).
+TEST_F(SystemSectionsRenderTest, NetworkChartSettlesWhenDiskDataIsUnavailable)
+{
+    NetworkInputs inputs; // No storage publication
+    UI::Widgets::PlotFillState fillState;
+    inputs.ctx.fillState = &fillState;
+    const auto plotHeight = []
+    {
+        const ImPlotPlot* plot = ImPlot::GetCurrentContext()->Plots.GetByIndex(0);
+        return (plot != nullptr) ? plot->FrameRect.GetHeight() : 0.0F;
+    };
+    for (int frame = 0; frame < 3; ++frame) // Unmeasured, measured, settled
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    }
+    const float settled = plotHeight();
+    ASSERT_GT(settled, 0.0F);
+    for (int frame = 0; frame < 6; ++frame)
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+        EXPECT_FLOAT_EQ(plotHeight(), settled) << "frame " << frame;
+    }
+    const ImGuiWindow* tab = ImGui::FindWindowByName("System");
+    ASSERT_NE(tab, nullptr);
+    EXPECT_LE(tab->ScrollMax.y, 0.0F);
 }
 } // namespace
 } // namespace App

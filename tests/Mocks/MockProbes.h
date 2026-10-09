@@ -10,7 +10,9 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
@@ -936,6 +938,66 @@ class MockProcessConnectionsReader : public Platform::IProcessConnectionsReader
     Platform::ConnectionsReadResult m_Result{.status = Platform::ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
     int m_ReadCount = 0;
     Platform::ProcessTarget m_LastTarget{};
+};
+
+/// Mock IProcessModulesReader (#802): returns a configured result and counts the reads.
+class MockProcessModulesReader : public Platform::IProcessModulesReader
+{
+  public:
+    void setResult(Platform::ModulesReadResult result)
+    {
+        m_Result = std::move(result);
+    }
+
+    [[nodiscard]] bool hasModules() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] Platform::ModulesReadResult readModules(const Platform::ProcessTarget& /*target*/) override
+    {
+        ++m_ReadCount;
+        return m_Result;
+    }
+
+    [[nodiscard]] int readCount() const
+    {
+        return m_ReadCount;
+    }
+
+  private:
+    Platform::ModulesReadResult m_Result{.status = Platform::ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    int m_ReadCount = 0;
+};
+
+/// Mock IProcessSecurityReader (#1526): returns the result it was given and counts the reads.
+class MockProcessSecurityReader : public Platform::IProcessSecurityReader
+{
+  public:
+    void setResult(Platform::SecurityReadResult result)
+    {
+        m_Result = std::move(result);
+    }
+
+    [[nodiscard]] bool hasSecurity() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] Platform::SecurityReadResult readSecurity(const Platform::ProcessTarget& /*target*/) override
+    {
+        ++m_ReadCount;
+        return m_Result;
+    }
+
+    [[nodiscard]] int readCount() const
+    {
+        return m_ReadCount;
+    }
+
+  private:
+    Platform::SecurityReadResult m_Result{.status = Platform::SecurityReadStatus::Ok, .security = {}, .detail = {}};
+    int m_ReadCount = 0;
 };
 
 } // namespace TestMocks

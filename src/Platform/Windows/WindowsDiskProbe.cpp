@@ -80,12 +80,10 @@ namespace
 /// first failure and logs at debug level until it next succeeds (#1159).
 [[nodiscard]] Windows::UniqueHandle openPhysicalDriveForPerfQuery(int driveIndex, FailureLogLimiter& failures)
 {
-    const std::wstring devicePath = L"\\\\.\\PhysicalDrive" + std::to_wstring(driveIndex);
     // The UTF-8 path, for the failure logs below.
-    const std::string path = WinString::wideToUtf8(devicePath);
+    const std::string path = R"(\\.\PhysicalDrive)" + std::to_string(driveIndex);
     // CreateFileW fails with INVALID_HANDLE_VALUE, which UniqueHandle treats as empty.
-    Windows::UniqueHandle handle(
-        CreateFileW(devicePath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
+    Windows::UniqueHandle handle = Windows::openPhysicalDriveQueryOnly(driveIndex);
     if (!handle)
     {
         // Capture GetLastError() before any other call can overwrite it - argument evaluation
@@ -271,7 +269,7 @@ SystemDiskCounters WindowsDiskProbe::readCounters()
 
         for (int i = 0; i < 26; ++i)
         {
-            if ((drives & (1U << i)) == 0U)
+            if ((drives & (1U << static_cast<unsigned>(i))) == 0U)
             {
                 continue;
             }

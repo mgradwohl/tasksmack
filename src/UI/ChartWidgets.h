@@ -2981,9 +2981,11 @@ inline void drawValueStripEntry(std::string_view head,
 /// How renderNowBarValueStrip() lays out its entries.
 enum class ValueStripLayout : std::uint8_t
 {
-    Wrap,    ///< Each bar's tooltip text; entries that do not fit start a new line
-    Compact, ///< One line of "label: valueText": for containers that budget exactly one line (grid
-             ///< cells), where a longer tooltip text could run past the edge. The hover keeps it.
+    Wrap,            ///< Each bar's tooltip text; entries that do not fit start a new line
+    Compact,         ///< One line of "label: valueText": for containers that budget exactly one line (grid
+                     ///< cells), where a longer tooltip text could run past the edge. The hover keeps it.
+    CompactCentered, ///< Compact, centred in the row: under a centred grid-cell title (#1588). Give it a
+                     ///< layoutId, so held slot widths keep it still as its values change.
 };
 
 /// Each series' current value, readable without hovering (#1193), and the chart's only key (#1198):
@@ -3149,6 +3151,16 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
             rowWraps = false;
         }
         rowRight = chartRight;
+    }
+    else if (layout == ValueStripLayout::CompactCentered)
+    {
+        float stripWidth = 0.0F;
+        for (std::size_t i = 0; i < entries.size(); ++i)
+        {
+            stripWidth += entries[i].slotWidth + ((i > 0) ? entryGap : 0.0F);
+        }
+        // Whole pixels, so the text stays crisp; a strip wider than the row starts at its left edge.
+        ImGui::SetCursorPosX(lineStartX + std::floor(std::max(0.0F, rowWidth - stripWidth) * 0.5F));
     }
     const ImVec4 muted = UI::Theme::get().scheme().textMuted;
     bool first = true;

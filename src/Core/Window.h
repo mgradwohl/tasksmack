@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/GraphicsHostInfo.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 
@@ -129,6 +130,10 @@ class Window
     /// The refresh rate of the display the window is on, in Hz, or 0 when SDL does not know it.
     /// Queries SDL; Application caches it and re-reads it when the window changes display (#1126).
     [[nodiscard]] double getDisplayRefreshRate() const noexcept;
+    /// TaskSmack's OpenGL context (captured once, when it was created) and every display's name, bounds,
+    /// mode, scale, HDR state and whether it is primary, as plain data for the System Information page
+    /// (#1519). Queries SDL: call it on the main thread, once per System Information read, not per frame.
+    [[nodiscard]] GraphicsHostInfo queryGraphicsHostInfo() const;
     void maximize();
     /// Replace an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED: Win+Up, snap to the top edge,
     /// ShowWindow(SW_MAXIMIZE)) with maximize()'s client-side one, which fills the current display's
@@ -187,6 +192,7 @@ class Window
     WindowSpecification m_Spec;
     SDL_Window* m_Handle = nullptr;
     SDL_GLContext m_GLContext = nullptr;
+    GraphicsHostInfo m_GLInfo; // the OpenGL strings, captured once the context exists
     bool m_ShouldClose = false;
 
     // How the window is maximized and the rectangle it restores to, through every maximize and

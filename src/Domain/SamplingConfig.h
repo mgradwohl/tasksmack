@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 
 namespace Domain::Sampling
@@ -107,6 +108,17 @@ inline constexpr int PROCESS_ENVIRONMENT_REFRESH_MS = 3000;
 // Each read walks the process's fd links and dumps the system's socket tables, so it is kept slower
 // than the sample rate; connections come and go faster than an environment, so faster than that.
 inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
+
+// How often Process Details re-reads the selected process's loaded modules (milliseconds) (#802)
+// Read on demand, never in the per-sample enumeration: only for the selected process, only while its
+// Modules section is open, once when it opens or the selection changes and then at this cadence. A
+// process loads and unloads modules rarely after startup, so a slow re-read is enough to notice one.
+inline constexpr int PROCESS_MODULES_REFRESH_MS = 3000;
+
+// How often Process Details re-reads the selected process's security context (milliseconds) (#1526)
+// On demand, like the modules: only for the selected process, only while its Security section is open.
+// Credentials change rarely (setuid(), a capability drop), so a slow re-read is enough to notice one.
+inline constexpr int PROCESS_SECURITY_REFRESH_MS = 3000;
 
 // How often the Services tab re-reads the service list (milliseconds) (#800). Sampled only while the
 // tab is shown; a service changes state far less often than a process's counters do.

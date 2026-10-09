@@ -150,6 +150,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessIoPriorityView.cpp
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp
+    src/App/Panels/ProcessModulesView.cpp
+    src/App/Panels/ProcessSecurityView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/CpuDetailsBlock.cpp
@@ -188,6 +190,8 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
+    src/Platform/Linux/LinuxProcessModulesReader.cpp
+    src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
@@ -204,6 +208,7 @@ set(PLATFORM_SOURCES_LINUX
 set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
+    src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
@@ -235,6 +240,7 @@ set(TASKSMACK_HEADERS
     src/Core/ConfigDirOverride.h
     src/Core/PathService.h
     src/Core/Window.h
+    src/Core/GraphicsHostInfo.h
     src/Core/Layer.h
     src/UI/AssetPath.h
     src/UI/TabularDigits.h
@@ -253,12 +259,15 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessEnvironment.h
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
+    src/Platform/IProcessModules.h
+    src/Platform/IProcessSecurity.h
     src/Platform/IStartupProbe.h
     src/Platform/IStartupActions.h
     src/Platform/IServiceActions.h
     src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
     src/Platform/ISystemInfoProbe.h
+    src/Platform/EdidParser.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
@@ -270,6 +279,8 @@ set(TASKSMACK_HEADERS
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ProcessConnections.h
+    src/Domain/ProcessModules.h
+    src/Domain/ProcessSecurity.h
     src/Domain/ISamplable.h
     src/Domain/PublicationSlot.h
     src/Domain/SharedHistory.h
@@ -286,6 +297,10 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessProbe.h
         src/Platform/Linux/LinuxProcessEnvironmentReader.h
         src/Platform/Linux/LinuxProcessConnectionsReader.h
+        src/Platform/Linux/LinuxProcessModulesReader.h
+        src/Platform/Linux/LinuxProcessSecurityReader.h
+        src/Platform/Linux/ProcStatusSecurityParser.h
+        src/Platform/Linux/ProcMapsParser.h
         src/Platform/Linux/InetSocketTable.h
         src/Platform/Linux/LinuxDiskProbe.h
         src/Platform/Linux/LinuxPowerProbe.h
@@ -294,11 +309,18 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/DRMGPUProbe.h
         src/Platform/Linux/LinuxSystemInfoProbe.h
         src/Platform/Linux/LinuxOsInfo.h
+        src/Platform/Linux/LinuxCommitPaging.h
+        src/Platform/Linux/LinuxStorage.h
+        src/Platform/Linux/LinuxGraphics.h
+        src/Platform/Linux/LinuxPlatformSecurity.h
+        src/Platform/Linux/LinuxSensors.h
+        src/Platform/Linux/LinuxNetworkAdapters.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
+        src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h
@@ -318,6 +340,10 @@ elseif(WIN32)
         src/Platform/Windows/WinString.h
         src/Platform/Windows/WindowsSystemInfoProbe.h
         src/Platform/Windows/WindowsOsInfoMath.h
+        src/Platform/Windows/WindowsInstalledMemory.h
+        src/Platform/Windows/WindowsCommitPaging.h
+        src/Platform/Windows/WindowsStorage.h
+        src/Platform/Windows/WindowsGraphics.h
     )
 endif()
 

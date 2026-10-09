@@ -1,16 +1,21 @@
 #include "SystemInfoSections.h"
 
+#include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -59,7 +64,223 @@ void appendRowsLinux(const Platform::OsInfo& os, std::vector<Row>& rows)
     rows.push_back(row("Virtualization", os.virtualization));
 }
 
+/// The texts joined by @p separator, empty ones skipped.
+[[nodiscard]] std::string joinNonEmpty(std::initializer_list<std::string_view> parts, std::string_view separator)
+{
+    std::string text;
+    for (const std::string_view part : parts)
+    {
+        if (part.empty())
+        {
+            continue;
+        }
+        if (!text.empty())
+        {
+            text += separator;
+        }
+        text += part;
+    }
+    return text;
+}
+
+/// The label of module @p index: its locator, or with the bank locator in front when another module has
+/// the same locator; "Module N" when the table names neither.
+[[nodiscard]] std::string moduleLabel(std::span<const Platform::MemoryModule> modules, std::size_t index)
+{
+    const Platform::MemoryModule& module = modules[index];
+    if (module.locator.empty())
+    {
+        return module.bankLocator.empty() ? std::format("Module {}", index + 1) : module.bankLocator;
+    }
+    const auto sameLocator = std::ranges::count(modules, module.locator, &Platform::MemoryModule::locator);
+    if (sameLocator > 1 && !module.bankLocator.empty())
+    {
+        return module.bankLocator + " " + module.locator;
+    }
+    return module.locator;
+}
+
+/// Every module's moduleLabel(), with labels that still collide numbered in table order ("Motherboard
+/// #1", "Motherboard #2"): soldered memory often gives every device the same locator and no bank.
+[[nodiscard]] std::vector<std::string> moduleLabels(std::span<const Platform::MemoryModule> modules)
+{
+    std::vector<std::string> labels;
+    labels.reserve(modules.size());
+    for (std::size_t i = 0; i < modules.size(); ++i)
+    {
+        labels.push_back(moduleLabel(modules, i));
+    }
+    const std::vector<std::string> plain = labels;
+    for (std::size_t i = 0; i < labels.size(); ++i)
+    {
+        if (std::ranges::count(plain, plain[i]) > 1)
+        {
+            const auto before = std::count(plain.begin(), plain.begin() + static_cast<std::ptrdiff_t>(i), plain[i]);
+            labels[i] = std::format("{} #{}", plain[i], before + 1);
+        }
+    }
+    return labels;
+}
+
+/// A size that can be 0: "0 B" for nothing, otherwise formatMemoryCapacity().
+[[nodiscard]] std::string sizeText(std::uint64_t bytes)
+{
+    return bytes == 0 ? std::string("0 B") : formatMemoryCapacity(bytes);
+}
+
+/// The page file or swap rows: one per file, labelled by its path; else one row saying none are set
+/// up, or why the list is missing.
+void appendPageFileRows(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    const bool windows = paging.family == Platform::OsFamily::Windows;
+    const char* listLabel = windows ? "Page files" : "Swap";
+    if (!paging.pageFilesRead)
+    {
+        rows.push_back(row(listLabel, "", windows ? "The page file list couldn't be read" : "/proc/swaps couldn't be read"));
+        return;
+    }
+    if (paging.pageFiles.empty())
+    {
+        rows.push_back(row(listLabel, windows ? "None (paging is off)" : "None configured"));
+        return;
+    }
+    for (std::size_t i = 0; i < paging.pageFiles.size(); ++i)
+    {
+        const Platform::PageFile& file = paging.pageFiles[i];
+        std::string label = file.path.empty() ? std::format("{} {}", windows ? "Page file" : "Swap device", i + 1) : file.path;
+        rows.push_back(row(std::move(label), formatPageFile(file, paging.family)));
+    }
+}
+
+void appendPagingRowsWindows(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    rows.push_back(row("Peak commit", formatMemoryCapacity(paging.commitPeakBytes), "GetPerformanceInfo failed"));
+    appendPageFileRows(paging, rows);
+    rows.push_back(row("Compressed memory",
+                       paging.compressedBytes.has_value() ? sizeText(*paging.compressedBytes) : std::string{},
+                       "No Memory Compression process: compression is off, or its working set couldn't be read"));
+    const std::uint64_t page = paging.pageSizeBytes;
+    rows.push_back(row("Page size",
+                       page != 0 && page % 1024 == 0 ? std::format("{} KiB", page / 1024) : formatMemoryCapacity(page),
+                       "GetPerformanceInfo failed"));
+}
+
+void appendPagingRowsLinux(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    const char* mode = "";
+    switch (paging.overcommit)
+    {
+    case Platform::OvercommitMode::Heuristic:
+        mode = "Heuristic (0)";
+        break;
+    case Platform::OvercommitMode::Always:
+        mode = "Always overcommit (1)";
+        break;
+    case Platform::OvercommitMode::Strict:
+        mode = "Strict, the commit limit is enforced (2)";
+        break;
+    case Platform::OvercommitMode::Unknown:
+        break;
+    }
+    rows.push_back(row("Overcommit mode", mode, "/proc/sys/vm/overcommit_memory couldn't be read"));
+    appendPageFileRows(paging, rows);
+
+    if (!paging.zramRead)
+    {
+        rows.push_back(row("zram", "", "/sys/block couldn't be listed"));
+    }
+    else if (paging.zram.empty())
+    {
+        rows.push_back(row("zram", "None"));
+    }
+    for (const Platform::ZramDevice& device : paging.zram)
+    {
+        rows.push_back(row(device.name, formatZramDevice(device)));
+    }
+    std::string zswap;
+    if (paging.zswapEnabled.has_value())
+    {
+        zswap = *paging.zswapEnabled ? "Enabled" : "Disabled";
+    }
+    rows.push_back(row("zswap", std::move(zswap), "/sys/module/zswap couldn't be read (zswap isn't built in)"));
+
+    std::string hugePages;
+    if (paging.hugePagesRead)
+    {
+        const std::string pageSize =
+            paging.hugePageSizeBytes != 0 ? std::format(" ({} pages)", formatMemoryCapacity(paging.hugePageSizeBytes)) : std::string{};
+        hugePages = paging.hugePagesTotal == 0 ? "None reserved" + pageSize
+                                               : std::format("{} of {} free, {} reserved, {} surplus{}",
+                                                             paging.hugePagesFree,
+                                                             paging.hugePagesTotal,
+                                                             paging.hugePagesReserved,
+                                                             paging.hugePagesSurplus,
+                                                             pageSize);
+    }
+    rows.push_back(row("Huge pages", std::move(hugePages), "/proc/meminfo has no HugePages_ lines"));
+    rows.push_back(row("Transparent huge pages", paging.transparentHugePages, "/sys/kernel/mm/transparent_hugepage couldn't be read"));
+}
+
 } // namespace
+
+std::string formatMemoryCapacity(std::uint64_t bytes)
+{
+    constexpr std::uint64_t MIB = std::uint64_t{1024} * 1024;
+    constexpr std::uint64_t GIB = MIB * 1024;
+    if (bytes == 0)
+    {
+        return {};
+    }
+    if (bytes % GIB == 0)
+    {
+        return std::format("{} GiB", bytes / GIB);
+    }
+    if (bytes < GIB && bytes % MIB == 0)
+    {
+        return std::format("{} MiB", bytes / MIB);
+    }
+    return UI::Format::formatBytes(static_cast<double>(bytes));
+}
+
+std::uint64_t installedMemoryBytes(const Platform::MemoryModulesInfo& memory)
+{
+    if (memory.installedBytes != 0 || !memory.tableRead || memory.modules.empty())
+    {
+        return memory.installedBytes;
+    }
+    std::uint64_t total = 0;
+    for (const Platform::MemoryModule& module : memory.modules)
+    {
+        if (module.sizeBytes == 0)
+        {
+            return 0; // an unknown size would understate the total
+        }
+        total += module.sizeBytes;
+    }
+    return total;
+}
+
+std::string formatMemorySpeed(std::uint32_t configuredMts, std::uint32_t ratedMts)
+{
+    if (configuredMts == 0)
+    {
+        return ratedMts == 0 ? std::string{} : std::format("rated {} MT/s", ratedMts);
+    }
+    if (ratedMts == 0 || ratedMts == configuredMts)
+    {
+        return std::format("{} MT/s", configuredMts);
+    }
+    return std::format("{} MT/s (rated {} MT/s)", configuredMts, ratedMts);
+}
+
+std::string formatMemoryModule(const Platform::MemoryModule& module)
+{
+    const std::string capacity = formatMemoryCapacity(module.sizeBytes);
+    const std::string kind = joinNonEmpty({capacity, module.type, module.formFactor}, " ");
+    const std::string speed = formatMemorySpeed(module.configuredSpeedMts, module.speedMts);
+    const std::string maker = joinNonEmpty({module.manufacturer, module.partNumber}, " ");
+    return joinNonEmpty({kind, speed, maker}, ", ");
+}
 
 std::string formatUtcOffset(int minutes)
 {
@@ -166,7 +387,689 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware)
     return section;
 }
 
-std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
+Section buildMemorySection(const Platform::MemoryModulesInfo& memory)
+{
+    Section section{.title = "Memory modules", .icon = ICON_FA_MEMORY, .rows = {}};
+    auto& rows = section.rows;
+    // Without the SMBIOS table there are no modules or slots to list; say why once, in their place.
+    const std::string_view tableReason = memory.tableNeedsAdmin ? NEEDS_ADMIN : NOT_REPORTED;
+    const bool hasSlots = memory.tableRead && memory.slotCount > 0;
+    rows.push_back(row("Slots used", hasSlots ? std::format("{} of {}", memory.modules.size(), memory.slotCount) : "", tableReason));
+    rows.push_back(row("Maximum capacity", formatMemoryCapacity(memory.maxCapacityBytes), tableReason));
+    const std::uint64_t installed = installedMemoryBytes(memory);
+    rows.push_back(row("Installed memory", formatMemoryCapacity(installed), tableReason));
+    std::string usable = formatMemoryCapacity(memory.usableBytes);
+    if (memory.usableBytes != 0 && installed > memory.usableBytes)
+    {
+        usable += std::format(" ({} hardware reserved)", formatMemoryCapacity(installed - memory.usableBytes));
+    }
+    rows.push_back(row("Usable memory", std::move(usable)));
+
+    if (!memory.tableRead || memory.modules.empty())
+    {
+        rows.push_back(row("Modules", "", memory.tableRead ? std::string_view{"The SMBIOS table lists no installed memory"} : tableReason));
+        return section;
+    }
+    std::vector<std::string> labels = moduleLabels(memory.modules);
+    for (std::size_t i = 0; i < memory.modules.size(); ++i)
+    {
+        rows.push_back(row(std::move(labels[i]), formatMemoryModule(memory.modules[i])));
+    }
+    return section;
+}
+
+std::string formatCommitCharge(std::uint64_t committedBytes, std::uint64_t limitBytes)
+{
+    if (committedBytes == 0)
+    {
+        return {};
+    }
+    if (limitBytes == 0)
+    {
+        return sizeText(committedBytes);
+    }
+    const double percent = (static_cast<double>(committedBytes) * 100.0) / static_cast<double>(limitBytes);
+    return std::format("{} / {} ({:.0f}%)", sizeText(committedBytes), sizeText(limitBytes), percent);
+}
+
+std::string formatPageFile(const Platform::PageFile& file, Platform::OsFamily family)
+{
+    std::string text = std::format("{} used of {}", sizeText(file.usedBytes), sizeText(file.sizeBytes));
+    if (family == Platform::OsFamily::Windows)
+    {
+        text += std::format(", peak {}", sizeText(file.peakBytes));
+        return text;
+    }
+    if (!file.kind.empty())
+    {
+        text += ", " + file.kind;
+    }
+    text += std::format(", priority {}", file.priority);
+    return text;
+}
+
+std::string formatZramDevice(const Platform::ZramDevice& device)
+{
+    if (device.originalBytes == 0)
+    {
+        return "Empty";
+    }
+    std::string text = std::format("{} stored in {}", sizeText(device.originalBytes), sizeText(device.compressedBytes));
+    if (device.compressedBytes != 0)
+    {
+        text += std::format(" ({:.1f}:1)", static_cast<double>(device.originalBytes) / static_cast<double>(device.compressedBytes));
+    }
+    text += std::format(", {} of RAM", sizeText(device.memoryUsedBytes));
+    return text;
+}
+
+Section buildCommitPagingSection(const Platform::CommitPagingInfo& paging)
+{
+    Section section{.title = "Commit & paging", .icon = ICON_FA_COMPRESS, .rows = {}};
+    auto& rows = section.rows;
+    const bool windows = paging.family == Platform::OsFamily::Windows;
+    rows.push_back(row("Commit charge",
+                       formatCommitCharge(paging.committedBytes, paging.commitLimitBytes),
+                       windows ? "GetPerformanceInfo failed" : "/proc/meminfo has no Committed_AS line"));
+    if (windows)
+    {
+        appendPagingRowsWindows(paging, rows);
+    }
+    else
+    {
+        appendPagingRowsLinux(paging, rows);
+    }
+    return section;
+}
+
+std::string formatDisk(const Platform::PhysicalDisk& disk)
+{
+    std::string kind = disk.bus;
+    if (disk.media != Platform::DiskMedia::Unknown)
+    {
+        kind = joinNonEmpty({kind, disk.media == Platform::DiskMedia::Ssd ? "SSD" : "HDD"}, " ");
+    }
+    const std::string firmware = disk.firmware.empty() ? std::string{} : "firmware " + disk.firmware;
+    constexpr std::string_view DEGREE = "\xC2\xB0"; // U+00B0, UTF-8
+    const std::string temperature =
+        disk.temperatureCelsius.has_value() ? std::format("{} {}C", *disk.temperatureCelsius, DEGREE) : std::string{};
+    return joinNonEmpty({disk.model, kind, formatMemoryCapacity(disk.sizeBytes), firmware, temperature}, ", ");
+}
+
+std::string formatNvmeHealth(const Platform::NvmeHealth& health)
+{
+    std::string text = health.criticalWarning != 0 ? std::format("Critical warning (0x{:02X}), ", health.criticalWarning) : std::string{};
+    text +=
+        std::format("{}% used, {}% spare left, {} media errors", health.percentageUsed, health.availableSparePercent, health.mediaErrors);
+    return text;
+}
+
+std::string formatVolume(const Platform::Volume& volume)
+{
+    std::string fileSystem = volume.fileSystem;
+    if (!volume.device.empty())
+    {
+        fileSystem = joinNonEmpty({fileSystem, volume.device}, " on ");
+    }
+    std::string space;
+    if (volume.network)
+    {
+        space = "network, size not read";
+    }
+    else if (volume.sizeRead && volume.sizeBytes != 0)
+    {
+        const std::uint64_t used = volume.sizeBytes - std::min(volume.freeBytes, volume.sizeBytes);
+        const double percent = (static_cast<double>(used) * 100.0) / static_cast<double>(volume.sizeBytes);
+        space = std::format("{} free of {} ({:.0f}% used)", sizeText(volume.freeBytes), sizeText(volume.sizeBytes), percent);
+    }
+    return joinNonEmpty({volumeLabelIsIdentifier(volume.label) ? std::string_view{} : volume.label, fileSystem, space}, ", ");
+}
+
+bool volumeLabelIsIdentifier(std::string_view label)
+{
+    return label.contains('@');
+}
+
+Section buildStorageSection(const Platform::StorageInfo& storage)
+{
+    Section section{.title = "Storage", .icon = ICON_FA_HARD_DRIVE, .rows = {}};
+    auto& rows = section.rows;
+    const bool windows = storage.family == Platform::OsFamily::Windows;
+    if (!storage.disksRead || storage.disks.empty())
+    {
+        rows.push_back(row("Disks", storage.disksRead ? "None found" : "", "/sys/block couldn't be listed"));
+    }
+    for (const Platform::PhysicalDisk& disk : storage.disks)
+    {
+        rows.push_back(row(disk.name, formatDisk(disk)));
+        rows.push_back(row(disk.name + " serial number", disk.serial, "Not reported by this drive", true));
+        if (disk.health.has_value() || !disk.healthUnavailableReason.empty())
+        {
+            rows.push_back(row(disk.name + " health",
+                               disk.health.has_value() ? formatNvmeHealth(*disk.health) : std::string{},
+                               disk.healthUnavailableReason));
+        }
+    }
+
+    if (!storage.volumesRead || storage.volumes.empty())
+    {
+        rows.push_back(row("Volumes",
+                           storage.volumesRead ? "None mounted" : "",
+                           windows ? "GetLogicalDriveStringsW failed" : "/proc/self/mountinfo couldn't be read"));
+    }
+    for (const Platform::Volume& volume : storage.volumes)
+    {
+        // "C: drive" rather than a bare "C:", which copies as "C:: ...".
+        const std::string label = windows ? volume.mountPoint + " drive" : volume.mountPoint;
+        rows.push_back(row(label, formatVolume(volume), "Its file system and size couldn't be read"));
+        if (volumeLabelIsIdentifier(volume.label))
+        {
+            rows.push_back(row(label + " label", volume.label, NOT_REPORTED, true));
+        }
+    }
+    return section;
+}
+
+std::string formatAdapter(const Platform::GraphicsAdapter& adapter)
+{
+    const std::string dedicated = adapter.dedicatedBytes == 0 ? std::string{} : formatMemoryCapacity(adapter.dedicatedBytes) + " dedicated";
+    const std::string shared = adapter.sharedBytes == 0 ? std::string{} : formatMemoryCapacity(adapter.sharedBytes) + " shared";
+    const std::string location = adapter.location.empty() ? std::string{} : "PCI " + adapter.location;
+    return joinNonEmpty({adapter.name, dedicated, shared, location}, ", ");
+}
+
+std::string formatAdapterDriver(const Platform::GraphicsAdapter& adapter)
+{
+    std::string text = joinNonEmpty({adapter.driver, adapter.driverVersion}, " ");
+    if (!adapter.driverDate.empty())
+    {
+        text = joinNonEmpty({text, "(" + adapter.driverDate + ")"}, " ");
+    }
+    return text;
+}
+
+std::vector<std::optional<std::size_t>> matchMonitors(std::span<const Core::DisplayInfo> displays,
+                                                      std::span<const Platform::Monitor> monitors)
+{
+    std::vector<std::optional<std::size_t>> matches(displays.size());
+    std::vector<bool> used(monitors.size(), false);
+    const auto claim = [&](std::size_t display, const auto& same)
+    {
+        for (std::size_t m = 0; m < monitors.size() && !matches[display].has_value(); ++m)
+        {
+            if (!used[m] && same(displays[display], monitors[m]))
+            {
+                matches[display] = m;
+                used[m] = true;
+            }
+        }
+    };
+    for (std::size_t d = 0; d < displays.size(); ++d)
+    {
+        claim(d,
+              [](const Core::DisplayInfo& display, const Platform::Monitor& monitor)
+              {
+                  return monitor.hasDesktopRect && monitor.desktopX == display.x && monitor.desktopY == display.y &&
+                         monitor.desktopWidth == display.width && monitor.desktopHeight == display.height;
+              });
+        claim(d,
+              [](const Core::DisplayInfo& display, const Platform::Monitor& monitor)
+              { return !monitor.name.empty() && monitor.name == display.name; });
+    }
+    const auto unmatchedDisplays = std::ranges::count(matches, std::optional<std::size_t>{});
+    const auto unusedMonitors = std::ranges::count(used, false);
+    if (unmatchedDisplays == 1 && unusedMonitors == 1)
+    {
+        const auto display = static_cast<std::size_t>(std::ranges::find(matches, std::optional<std::size_t>{}) - matches.begin());
+        const auto monitor = static_cast<std::size_t>(std::ranges::find(used, false) - used.begin());
+        if (!monitors[monitor].hasDesktopRect)
+        {
+            matches[display] = monitor;
+        }
+    }
+    return matches;
+}
+
+std::string formatVulnerabilityName(std::string_view name)
+{
+    // Acronyms the kernel's names use, written as they are in the advisories.
+    static constexpr std::array<std::string_view, 9> ACRONYMS{"mds", "srbds", "l1tf", "tsa", "tsx", "itlb", "mmio", "gds", "rfds"};
+    std::string out;
+    std::size_t start = 0;
+    while (start <= name.size())
+    {
+        const std::size_t end = std::min(name.find('_', start), name.size());
+        const std::string_view word = name.substr(start, end - start);
+        if (!out.empty())
+        {
+            out += ' ';
+        }
+        if (std::ranges::find(ACRONYMS, word) != ACRONYMS.end())
+        {
+            std::ranges::transform(
+                word, std::back_inserter(out), [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); });
+        }
+        else if (!word.empty())
+        {
+            out += (out.empty() ? static_cast<char>(std::toupper(static_cast<unsigned char>(word.front()))) : word.front());
+            out += word.substr(1);
+        }
+        start = end + 1;
+    }
+    return out;
+}
+
+std::string formatVulnerabilitySummary(std::span<const Platform::CpuVulnerability> vulnerabilities)
+{
+    std::size_t vulnerable = 0;
+    std::size_t mitigated = 0;
+    std::size_t notAffected = 0;
+    std::size_t other = 0;
+    for (const Platform::CpuVulnerability& item : vulnerabilities)
+    {
+        if (item.status.starts_with("Vulnerable"))
+        {
+            ++vulnerable;
+        }
+        else if (item.status.starts_with("Mitigation"))
+        {
+            ++mitigated;
+        }
+        else if (item.status.starts_with("Not affected"))
+        {
+            ++notAffected;
+        }
+        else
+        {
+            ++other; // "Unknown: ...", or a status a newer kernel words differently
+        }
+    }
+    std::string text;
+    const auto add = [&text](std::size_t count, std::string_view what)
+    {
+        if (count == 0)
+        {
+            return;
+        }
+        if (!text.empty())
+        {
+            text += ", ";
+        }
+        text += std::format("{} {}", count, what);
+    };
+    add(vulnerable, "vulnerable");
+    add(mitigated, "mitigated");
+    add(notAffected, "not affected");
+    add(other, "unknown");
+    return text;
+}
+
+namespace
+{
+
+/// A monitor's physical size: "27.0" (597 × 336 mm)"; empty when unknown.
+[[nodiscard]] std::string monitorSize(const Platform::Monitor& monitor)
+{
+    if (monitor.widthMm == 0 || monitor.heightMm == 0)
+    {
+        return {};
+    }
+    const double inches = std::hypot(static_cast<double>(monitor.widthMm), static_cast<double>(monitor.heightMm)) / 25.4;
+    return std::format("{:.1f}\" ({} \xC3\x97 {} mm)", inches, monitor.widthMm, monitor.heightMm);
+}
+
+/// "HDR (BT.2020 PQ, 10-bit)" / "SDR (sRGB, 8-bit)"; empty without a colour space.
+[[nodiscard]] std::string monitorColor(const Platform::Monitor& monitor)
+{
+    if (monitor.colorSpace.empty())
+    {
+        return {};
+    }
+    const std::string bits = monitor.bitsPerColor == 0 ? std::string{} : std::format("{}-bit", monitor.bitsPerColor);
+    return std::format("{} ({})", monitor.hdr ? "HDR" : "SDR", joinNonEmpty({monitor.colorSpace, bits}, ", "));
+}
+
+void appendMonitorRows(std::string label, const Platform::Monitor& monitor, std::string value, std::vector<Row>& rows)
+{
+    rows.push_back(row(label, std::move(value)));
+    rows.push_back(row(std::move(label) + " serial number", monitor.serial, "Not reported by this monitor", true));
+}
+
+/// A present TPM: "Present (TPM 2.0)", "Present (TPM 1.2)", or "Present" when the version is unknown.
+[[nodiscard]] std::string tpmPresentText(std::uint32_t versionMajor)
+{
+    switch (versionMajor)
+    {
+    case 2:
+        return "Present (TPM 2.0)";
+    case 1:
+        return "Present (TPM 1.2)";
+    default:
+        return "Present";
+    }
+}
+
+/// @p whenTrue, @p whenFalse, or @p whenAbsent for an empty @p value.
+[[nodiscard]] std::string
+triStateText(std::optional<bool> value, std::string_view whenTrue, std::string_view whenFalse, std::string_view whenAbsent)
+{
+    if (!value.has_value())
+    {
+        return std::string(whenAbsent);
+    }
+    return std::string(*value ? whenTrue : whenFalse);
+}
+
+} // namespace
+
+std::string formatDisplay(const Core::DisplayInfo& display, const Platform::Monitor* monitor)
+{
+    const std::string_view name = monitor != nullptr && !monitor->name.empty() ? std::string_view{monitor->name} : display.name;
+    std::string mode = display.pixelWidth > 0 ? std::format("{} \xC3\x97 {}", display.pixelWidth, display.pixelHeight) : std::string{};
+    if (display.refreshHz > 0.0)
+    {
+        const bool whole = std::abs(display.refreshHz - std::round(display.refreshHz)) < 0.005;
+        mode =
+            joinNonEmpty({mode, whole ? std::format("{:.0f} Hz", display.refreshHz) : std::format("{:.2f} Hz", display.refreshHz)}, " at ");
+    }
+    const std::string scale = display.contentScale > 0.0F ? std::format("{:.0f}% scale", display.contentScale * 100.0F) : std::string{};
+    const std::string size = monitor != nullptr ? monitorSize(*monitor) : std::string{};
+    std::string color = monitor != nullptr ? monitorColor(*monitor) : std::string{};
+    if (color.empty() && display.hdrEnabled)
+    {
+        color = "HDR";
+    }
+    return joinNonEmpty({name, mode, scale, size, color, display.primary ? "primary" : ""}, ", ");
+}
+
+Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core::GraphicsHostInfo& host)
+{
+    Section section{.title = "Graphics & displays", .icon = ICON_FA_TV, .rows = {}};
+    auto& rows = section.rows;
+    const bool windows = graphics.family == Platform::OsFamily::Windows;
+    if (!graphics.adaptersRead || graphics.adapters.empty())
+    {
+        rows.push_back(row("GPU",
+                           graphics.adaptersRead ? "None found" : "",
+                           windows ? "A DXGI factory couldn't be created" : "/sys/class/drm couldn't be listed"));
+    }
+    for (std::size_t i = 0; i < graphics.adapters.size(); ++i)
+    {
+        const Platform::GraphicsAdapter& adapter = graphics.adapters[i];
+        const std::string label = graphics.adapters.size() == 1 ? std::string("GPU") : std::format("GPU {}", i + 1);
+        rows.push_back(row(label, formatAdapter(adapter)));
+        rows.push_back(row(label + " driver",
+                           formatAdapterDriver(adapter),
+                           windows ? "No display device node matched this adapter" : "No kernel driver is bound to it"));
+    }
+
+    constexpr std::string_view NO_CONTEXT = "TaskSmack's OpenGL context isn't available";
+    rows.push_back(row("OpenGL", host.glVersion, NO_CONTEXT));
+    const std::string vendor = host.glVendor.empty() ? std::string{} : "(" + host.glVendor + ")";
+    rows.push_back(row("OpenGL renderer", joinNonEmpty({host.glRenderer, vendor}, " "), NO_CONTEXT));
+    if (graphics.family == Platform::OsFamily::Linux)
+    {
+        std::string server = graphics.displayServer;
+        if (server == "Wayland" && host.videoDriver == "x11")
+        {
+            server += " (TaskSmack runs through XWayland)";
+        }
+        rows.push_back(
+            row("Display server", std::move(server), "No graphical session: XDG_SESSION_TYPE, WAYLAND_DISPLAY and DISPLAY aren't set"));
+    }
+
+    const std::vector<std::optional<std::size_t>> matches = matchMonitors(host.displays, graphics.monitors);
+    std::vector<bool> shown(graphics.monitors.size(), false);
+    if (host.displays.empty())
+    {
+        rows.push_back(row("Displays", "", "SDL reported no displays"));
+    }
+    for (std::size_t d = 0; d < host.displays.size(); ++d)
+    {
+        const std::string label = std::format("Display {}", d + 1);
+        const std::optional<std::size_t> match = matches[d];
+        if (!match.has_value())
+        {
+            rows.push_back(row(label, formatDisplay(host.displays[d], nullptr)));
+            continue;
+        }
+        const Platform::Monitor& monitor = graphics.monitors[*match];
+        shown[*match] = true;
+        appendMonitorRows(label, monitor, formatDisplay(host.displays[d], &monitor), rows);
+    }
+    for (std::size_t m = 0; m < graphics.monitors.size(); ++m)
+    {
+        if (shown[m])
+        {
+            continue;
+        }
+        const Platform::Monitor& monitor = graphics.monitors[m];
+        const std::string label = monitor.connector.empty() ? std::format("Monitor {}", m + 1) : "Monitor " + monitor.connector;
+        appendMonitorRows(label, monitor, joinNonEmpty({monitor.name, monitorSize(monitor), monitorColor(monitor)}, ", "), rows);
+    }
+    return section;
+}
+
+Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
+{
+    using Platform::SecurityFeatureState;
+    Section section{.title = "Security", .icon = ICON_FA_LOCK, .rows = {}};
+    auto& rows = section.rows;
+
+    std::string secureBoot;
+    switch (security.secureBoot)
+    {
+    case SecurityFeatureState::On:
+        secureBoot = "On";
+        break;
+    case SecurityFeatureState::Off:
+        secureBoot = "Off";
+        break;
+    case SecurityFeatureState::NotSupported:
+        secureBoot = "Not supported (not booted with UEFI)";
+        break;
+    case SecurityFeatureState::Unknown:
+        break;
+    }
+    rows.push_back(row("Secure Boot", std::move(secureBoot), "The SecureBoot EFI variable couldn't be read"));
+
+    std::string tpm;
+    switch (security.tpm)
+    {
+    case SecurityFeatureState::On:
+        tpm = tpmPresentText(security.tpmVersionMajor);
+        break;
+    case SecurityFeatureState::Off:
+    case SecurityFeatureState::NotSupported:
+        tpm = "Not detected";
+        break;
+    case SecurityFeatureState::Unknown:
+        break;
+    }
+    rows.push_back(row("TPM", std::move(tpm), "/sys/class/tpm couldn't be read"));
+
+    std::string lsms;
+    for (const std::string& name : security.lsms)
+    {
+        lsms += (lsms.empty() ? "" : ", ") + name;
+    }
+    rows.push_back(row("Security modules", std::move(lsms), "securityfs (/sys/kernel/security) isn't mounted"));
+    rows.push_back(row("SELinux", triStateText(security.selinuxEnforcing, "Enforcing", "Permissive", "Not active")));
+    rows.push_back(row("AppArmor", triStateText(security.apparmorEnabled, "Enabled", "Disabled", "Not loaded")));
+    std::string lockdown = security.lockdown;
+    if (!lockdown.empty())
+    {
+        lockdown.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(lockdown.front())));
+    }
+    rows.push_back(row(
+        "Kernel lockdown", std::move(lockdown), "securityfs (/sys/kernel/security) isn't mounted, or the lockdown module isn't built in"));
+
+    if (!security.vulnerabilitiesRead)
+    {
+        rows.push_back(row("CPU vulnerabilities", {}, "/sys/devices/system/cpu/vulnerabilities couldn't be read"));
+        return section;
+    }
+    rows.push_back(row("CPU vulnerabilities", formatVulnerabilitySummary(security.vulnerabilities), "The kernel lists none"));
+    for (const Platform::CpuVulnerability& item : security.vulnerabilities)
+    {
+        rows.push_back(row(formatVulnerabilityName(item.name), item.status));
+    }
+    return section;
+}
+
+std::string formatSensorReading(const Platform::SensorReading& reading)
+{
+    using Platform::SensorKind;
+    switch (reading.kind)
+    {
+    case SensorKind::Temperature:
+    {
+        std::string text = std::format("{:.1f} \u00B0C", reading.value);
+        std::string limits;
+        if (reading.high.has_value())
+        {
+            limits = std::format("high {:.1f} \u00B0C", *reading.high);
+        }
+        if (reading.critical.has_value())
+        {
+            limits += std::format("{}critical {:.1f} \u00B0C", limits.empty() ? "" : ", ", *reading.critical);
+        }
+        if (!limits.empty())
+        {
+            text += " (" + limits + ")";
+        }
+        return text;
+    }
+    case SensorKind::Fan:
+        return std::format("{:.0f} RPM", reading.value);
+    case SensorKind::Voltage:
+        return std::format("{:.2f} V", reading.value);
+    case SensorKind::Current:
+        return std::format("{:.2f} A", reading.value);
+    case SensorKind::Power:
+        return std::format("{:.1f} W", reading.value);
+    }
+    return {};
+}
+
+Section buildSensorsSection(const Platform::SensorsInfo& sensors)
+{
+    Section section{.title = "Sensors", .icon = ICON_FA_TEMPERATURE_HALF, .rows = {}};
+    for (const Platform::SensorDevice& device : sensors.devices)
+    {
+        for (const Platform::SensorReading& reading : device.readings)
+        {
+            section.rows.push_back(row(std::format("{}: {}", device.name, reading.label), formatSensorReading(reading)));
+        }
+    }
+    if (section.rows.empty())
+    {
+        section.rows.push_back(row("Sensors",
+                                   {},
+                                   sensors.listed
+                                       ? "No hwmon sensors or thermal zones are exposed (common in virtual machines, containers and WSL)"
+                                       : "/sys/class/hwmon couldn't be read"));
+    }
+    return section;
+}
+
+std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter)
+{
+    std::string text = adapter.up ? "Up" : "Down";
+    if (adapter.wireless)
+    {
+        text += ", Wi-Fi";
+    }
+    if (adapter.mtu != 0)
+    {
+        text += std::format(", MTU {}", adapter.mtu);
+    }
+    if (!adapter.driver.empty())
+    {
+        text += ", driver " + adapter.driver;
+    }
+    return text;
+}
+
+std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
+{
+    std::string text;
+    for (const bool v6 : {false, true})
+    {
+        for (const Platform::AdapterAddress& address : adapter.addresses)
+        {
+            if (address.v6 != v6)
+            {
+                continue;
+            }
+            if (!text.empty())
+            {
+                text += ", ";
+            }
+            text += std::format("{}/{}", address.address, address.prefix);
+        }
+    }
+    return text;
+}
+
+Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network)
+{
+    Section section{.title = "Network adapters", .icon = ICON_FA_ETHERNET, .rows = {}};
+    auto& rows = section.rows;
+    const auto gateway = [](const std::string& address, const std::string& adapter)
+    {
+        return address.empty() ? std::string{} : std::format("{} ({})", address, adapter);
+    };
+    rows.push_back(row("Default gateway", gateway(network.gatewayV4, network.gatewayV4Adapter), "No IPv4 default route"));
+    if (!network.gatewayV6.empty())
+    {
+        rows.push_back(row("IPv6 gateway", gateway(network.gatewayV6, network.gatewayV6Adapter)));
+    }
+    std::string dns;
+    for (const std::string& server : network.dnsServers)
+    {
+        dns += (dns.empty() ? "" : ", ") + server;
+    }
+    if (network.dnsIsLocalStub)
+    {
+        dns += " (systemd-resolved; its upstream servers couldn't be read)";
+    }
+    rows.push_back(row("DNS servers", std::move(dns), network.dnsRead ? "None configured" : "The resolver configuration couldn't be read"));
+    if (!network.searchDomains.empty())
+    {
+        std::string domains;
+        for (const std::string& domain : network.searchDomains)
+        {
+            domains += (domains.empty() ? "" : ", ") + domain;
+        }
+        // A search domain can name the organisation, like a domain name in the Operating system section.
+        rows.push_back(row("Search domains", std::move(domains), NOT_REPORTED, true));
+    }
+
+    if (network.adapters.empty())
+    {
+        rows.push_back(row("Adapters", network.listed ? "None found" : "", "/sys/class/net couldn't be listed"));
+        return section;
+    }
+    for (const Platform::NetworkAdapter& adapter : network.adapters)
+    {
+        rows.push_back(row(adapter.name, formatAdapterSummary(adapter)));
+        rows.push_back(row(adapter.name + " addresses", formatAdapterAddresses(adapter), "No IP address assigned"));
+        if (!adapter.mac.empty())
+        {
+            rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
+        }
+        if (adapter.wireless)
+        {
+            rows.push_back(row(adapter.name + " Wi-Fi signal",
+                               adapter.wifiSignalDbm.has_value() ? std::format("{} dBm", *adapter.wifiSignalDbm) : std::string{},
+                               "Not reported by the driver, or not connected"));
+        }
+    }
+    return section;
+}
+
+std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot, const Core::GraphicsHostInfo& host)
 {
     std::vector<Section> sections;
     if (snapshot.version == 0)
@@ -180,6 +1083,34 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.firmware.available)
     {
         sections.push_back(buildFirmwareSection(snapshot.firmware));
+    }
+    if (snapshot.memory.available)
+    {
+        sections.push_back(buildMemorySection(snapshot.memory));
+    }
+    if (snapshot.paging.available)
+    {
+        sections.push_back(buildCommitPagingSection(snapshot.paging));
+    }
+    if (snapshot.storage.available)
+    {
+        sections.push_back(buildStorageSection(snapshot.storage));
+    }
+    if (snapshot.security.available)
+    {
+        sections.push_back(buildSecuritySection(snapshot.security));
+    }
+    if (snapshot.sensors.available)
+    {
+        sections.push_back(buildSensorsSection(snapshot.sensors));
+    }
+    if (snapshot.graphics.available)
+    {
+        sections.push_back(buildGraphicsSection(snapshot.graphics, host));
+    }
+    if (snapshot.adapters.available)
+    {
+        sections.push_back(buildNetworkAdaptersSection(snapshot.adapters));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

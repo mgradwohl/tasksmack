@@ -7,7 +7,9 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -33,6 +35,13 @@ namespace Platform
 /// Creates the platform-appropriate IProcessConnectionsReader implementation (#799). Windows returns
 /// an UnsupportedProcessConnectionsReader (hasConnections() false) until #1489.
 [[nodiscard]] std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader();
+
+/// Creates the platform-appropriate IProcessModulesReader implementation (#802).
+[[nodiscard]] std::unique_ptr<IProcessModulesReader> makeProcessModulesReader();
+
+/// Creates the platform-appropriate IProcessSecurityReader implementation (#1526). Windows returns an
+/// UnsupportedProcessSecurityReader until its token reader lands.
+[[nodiscard]] std::unique_ptr<IProcessSecurityReader> makeProcessSecurityReader();
 
 /// Creates the platform-appropriate IStartupProbe implementation (#801). Linux returns an
 /// UnsupportedStartupProbe (capabilities().canEnumerate false) until XDG autostart support lands.

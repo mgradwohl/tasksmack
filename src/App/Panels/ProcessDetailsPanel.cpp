@@ -14,6 +14,8 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessSecurity.h"
 #include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -24,8 +26,10 @@
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessEnvironmentView.h"
+#include "ProcessModulesView.h"
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
+#include "ProcessSecurityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
@@ -37,7 +41,6 @@
 #include "UI/Widgets.h"
 
 #include <imgui.h>
-#include <implot.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -60,7 +63,9 @@ namespace App
 ProcessDetailsPanel::ProcessDetailsPanel()
     : ProcessDetailsPanel(Synthetic::makeProcessActions(Synthetic::activeScenario()),
                           Synthetic::makeProcessEnvironmentReader(Synthetic::activeScenario()),
-                          Synthetic::makeProcessConnectionsReader(Synthetic::activeScenario()))
+                          Synthetic::makeProcessConnectionsReader(Synthetic::activeScenario()),
+                          Synthetic::makeProcessModulesReader(Synthetic::activeScenario()),
+                          Synthetic::makeProcessSecurityReader(Synthetic::activeScenario()))
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)
@@ -75,13 +80,33 @@ ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActio
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
                                          std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                                          std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader)
+    : ProcessDetailsPanel(std::move(processActions), std::move(environmentReader), std::move(connectionsReader), nullptr)
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                                         std::unique_ptr<Platform::IProcessModulesReader> modulesReader)
+    : ProcessDetailsPanel(
+          std::move(processActions), std::move(environmentReader), std::move(connectionsReader), std::move(modulesReader), nullptr)
+{}
+
+ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                                         std::unique_ptr<Platform::IProcessModulesReader> modulesReader,
+                                         std::unique_ptr<Platform::IProcessSecurityReader> securityReader)
     : Panel("Process Details"),
       m_ProcessActions(std::move(processActions)),
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{}),
       m_EnvironmentReader(std::move(environmentReader)),
       m_HasEnvironment(m_EnvironmentReader != nullptr && m_EnvironmentReader->hasEnvironment()),
       m_ConnectionsReader(std::move(connectionsReader)),
-      m_HasConnections(m_ConnectionsReader != nullptr && m_ConnectionsReader->hasConnections())
+      m_HasConnections(m_ConnectionsReader != nullptr && m_ConnectionsReader->hasConnections()),
+      m_ModulesReader(std::move(modulesReader)),
+      m_HasModules(m_ModulesReader != nullptr && m_ModulesReader->hasModules()),
+      m_SecurityReader(std::move(securityReader)),
+      m_HasSecurity(m_SecurityReader != nullptr && m_SecurityReader->hasSecurity())
 {}
 
 void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime)
@@ -154,6 +179,14 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     // The Connections section's on-demand read (#799), on the same terms.
     const bool canReadConnections = m_HasConnections && m_HasSnapshot && !m_ProcessExited;
     static_cast<void>(m_ConnectionsView.update(canReadConnections ? m_ConnectionsReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Modules section's on-demand read (#802), on the same terms.
+    const bool canReadModules = m_HasModules && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_ModulesView.update(canReadModules ? m_ModulesReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Security section's on-demand read (#1526), on the same terms.
+    const bool canReadSecurity = m_HasSecurity && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_SecurityView.update(canReadSecurity ? m_SecurityReader.get() : nullptr, selectedTarget(), deltaTime));
 }
 
 void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
@@ -277,6 +310,10 @@ void ProcessDetailsPanel::renderContent()
                 m_EnvironmentView.render(m_HasEnvironment);
                 // Likewise collapsed by default, and hidden where the platform cannot list sockets (#799)
                 m_ConnectionsView.render(m_HasConnections);
+                // Likewise collapsed by default; hidden only in synthetic runs (#802)
+                m_ModulesView.render(m_HasModules);
+                // Likewise collapsed by default; hidden on Windows until its token reader lands (#1526)
+                m_SecurityView.render(m_HasSecurity);
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick
                 if (!m_SmoothedUsage.initialized)
@@ -396,6 +433,8 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTi
     m_PriorityView.onSelectionChanged();    // Drops an edited priority, so it cannot reach the new process
     m_EnvironmentView.onSelectionChanged(); // Drops the variables and every revealed value (#179)
     m_ConnectionsView.onSelectionChanged(); // Drops the previous process's sockets (#799)
+    m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
+    m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
 
     if (pid != -1)
     {
