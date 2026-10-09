@@ -780,6 +780,7 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_proc_parsing` | the allocation-free `/proc` numeric parsers (`Platform/Linux/ProcParsing.h`) | none |
 | `fuzz_smbios` | the SMBIOS table parser (`Platform/SmbiosParser.h`) | none |
 | `fuzz_proc_maps` | the `/proc/[pid]/maps` module parser (`Platform/Linux/ProcMapsParser.h`) | `tests/fuzz/corpus/fuzz_proc_maps/` |
+| `fuzz_proc_fd` | the `/proc/[pid]/fd` link classifier and `fdinfo` parser (`Platform/Linux/ProcFdParser.h`) | `tests/fuzz/corpus/fuzz_proc_fd/` |
 | `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
 

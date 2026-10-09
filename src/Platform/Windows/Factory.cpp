@@ -8,6 +8,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
@@ -21,6 +22,7 @@
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
 #include "WindowsProcessModules.h"
+#include "WindowsProcessOpenFiles.h"
 #include "WindowsProcessProbe.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
@@ -61,6 +63,11 @@ std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 {
     return std::make_unique<Windows::WindowsProcessModulesReader>();
+}
+
+std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()
+{
+    return std::make_unique<Windows::WindowsProcessOpenFilesReader>();
 }
 
 std::unique_ptr<IStartupProbe> makeStartupProbe()

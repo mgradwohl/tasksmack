@@ -45,6 +45,10 @@ build_fuzzer fuzz_smbios
 build_fuzzer fuzz_proc_maps
 seed_corpus fuzz_proc_maps tests/fuzz/corpus/fuzz_proc_maps/*
 
+# The /proc/[pid]/fd link classifier and fdinfo parser (#183): header-only.
+build_fuzzer fuzz_proc_fd
+seed_corpus fuzz_proc_fd tests/fuzz/corpus/fuzz_proc_fd/*
+
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
 # toml++ crash inputs (#1387, #1388, #1389) as regression seeds.

@@ -13,6 +13,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/StorageTypes.h"
@@ -364,6 +365,15 @@ std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const 
         return std::make_unique<Platform::UnsupportedProcessModulesReader>();
     }
     return Platform::makeProcessModulesReader();
+}
+
+std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessOpenFilesReader>();
+    }
+    return Platform::makeProcessOpenFilesReader();
 }
 
 std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario)

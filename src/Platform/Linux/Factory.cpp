@@ -8,6 +8,7 @@
 #include "LinuxProcessConnectionsReader.h"
 #include "LinuxProcessEnvironmentReader.h"
 #include "LinuxProcessModulesReader.h"
+#include "LinuxProcessOpenFilesReader.h"
 #include "LinuxProcessProbe.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
@@ -19,6 +20,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
@@ -55,6 +57,11 @@ std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 {
     return std::make_unique<LinuxProcessModulesReader>();
+}
+
+std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()
+{
+    return std::make_unique<LinuxProcessOpenFilesReader>();
 }
 
 std::unique_ptr<IStartupProbe> makeStartupProbe()

@@ -11,6 +11,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -19,6 +20,7 @@
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessEnvironmentView.h"
 #include "ProcessModulesView.h"
+#include "ProcessOpenFilesView.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
@@ -59,12 +61,13 @@ class ProcessDetailsPanel : public Panel
                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader);
 
-    /// As above, with an injected IProcessModulesReader too (tests: mocks). A null modules reader, like
-    /// the shorter constructors', hides the Modules section (#802).
+    /// As above, with an injected IProcessModulesReader and IProcessOpenFilesReader too (tests: mocks).
+    /// A null reader, like the shorter constructors', hides its section (Modules #802, Open files #183).
     ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
-                        std::unique_ptr<Platform::IProcessModulesReader> modulesReader);
+                        std::unique_ptr<Platform::IProcessModulesReader> modulesReader,
+                        std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader = nullptr);
 
     ~ProcessDetailsPanel() override = default;
 
@@ -255,6 +258,11 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
     bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
     ProcessModulesView m_ModulesView;
+
+    // The Overview's Open files section (#183), on the same terms; its reader declared before its view.
+    std::unique_ptr<Platform::IProcessOpenFilesReader> m_OpenFilesReader;
+    bool m_HasOpenFiles = false; // m_OpenFilesReader can list open files here (Windows, Linux; not synthetic runs)
+    ProcessOpenFilesView m_OpenFilesView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;

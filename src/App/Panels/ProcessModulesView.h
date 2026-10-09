@@ -19,6 +19,7 @@
 
 #include "Domain/ProcessModules.h"
 #include "Domain/SamplingConfig.h"
+#include "LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/ThreadName.h"
@@ -26,16 +27,12 @@
 #include "UI/Format.h"
 
 #include <algorithm>
-#include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
-#include <exception>
-#include <future>
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -105,17 +102,14 @@ class ProcessModulesView
     bool update(Platform::IProcessModulesReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_SecondsSinceRequest += deltaSeconds;
-        const bool shownOpen = std::exchange(m_DrawnOpen, false);
-        if (!shownOpen || reader == nullptr || m_Pending.valid() || !reader->hasModules())
+        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasModules())
         {
             return false;
         }
-        if (m_HasRequested && (m_SecondsSinceRequest * 1000.0F) < static_cast<float>(Domain::Sampling::PROCESS_MODULES_REFRESH_MS))
+        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readModules(t); }))
         {
-            return false;
+            applyResult(*failed);
         }
-        startRead(*reader, target);
         return true;
     }
 
@@ -129,16 +123,13 @@ class ProcessModulesView
     /// flight is dropped when it arrives. The sort and the filter are viewing preferences and stay.
     void onSelectionChanged() noexcept
     {
-        ++m_Generation;
-        m_HasRequested = false;
+        m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::ModulesReadStatus::Ok;
         m_Detail.clear();
         m_Rows.clear();
         m_FilteredRows.clear();
         m_FilterDirty = true;
-        m_SecondsSinceRequest = 0.0F;
-        m_DrawnOpen = false;
     }
 
     /// Takes in a read: its status and, for Ok, its modules formatted and sorted by the current order.
@@ -167,7 +158,7 @@ class ProcessModulesView
 
     void markDrawnOpen() noexcept
     {
-        m_DrawnOpen = true;
+        m_Read.markDrawnOpen();
     }
 
     /// Sorts by @p column, as clicking its header does. Ties fall back to the base address.
@@ -227,56 +218,19 @@ class ProcessModulesView
     }
 
   private:
-    void startRead(Platform::IProcessModulesReader& reader, const Platform::ProcessTarget& target)
-    {
-        m_HasRequested = true;
-        m_SecondsSinceRequest = 0.0F;
-        m_PendingGeneration = m_Generation;
-        m_PendingTarget = target;
-        try
-        {
-            m_Pending = std::async(std::launch::async,
-                                   [&reader, target]
-                                   {
-                                       static_cast<void>(Platform::setCurrentThreadName(Platform::MODULES_READ_THREAD_NAME));
-                                       return reader.readModules(target);
-                                   });
-        }
-        catch (const std::system_error& e)
-        {
-            applyResult({.status = Platform::ModulesReadStatus::Failed, .modules = {}, .detail = e.what()});
-        }
-    }
-
     /// Takes in the read in flight once it has finished (or, with @p wait, after waiting for it), if it
     /// is for this selection and @p target; a stale one is dropped.
     void takeFinishedRead(const Platform::ProcessTarget& target, bool wait)
     {
-        if (!m_Pending.valid() || (!wait && m_Pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+        if (auto result = m_Read.takeFinished(target, wait))
         {
-            return;
+            applyResult(*result);
         }
-        Platform::ModulesReadResult result;
-        try
-        {
-            result = m_Pending.get();
-        }
-        catch (const std::exception& e)
-        {
-            result = {.status = Platform::ModulesReadStatus::Failed, .modules = {}, .detail = e.what()};
-        }
-        if (m_PendingGeneration != m_Generation)
-        {
-            return;
-        }
-        if (m_PendingTarget == target)
-        {
-            applyResult(result);
-        }
-        else
-        {
-            m_HasRequested = false; // read for another target without a selection change: read again
-        }
+    }
+
+    [[nodiscard]] static Platform::ModulesReadResult failedRead(std::string detail)
+    {
+        return {.status = Platform::ModulesReadStatus::Failed, .modules = {}, .detail = std::move(detail)};
     }
 
     [[nodiscard]] static std::strong_ordering compareOn(Detail::ModulesColumn column, const Row& a, const Row& b) noexcept
@@ -325,10 +279,7 @@ class ProcessModulesView
 
     void renderTable();
 
-    bool m_DrawnOpen = false;    // render() drew the section open since the last update()
-    bool m_HasRequested = false; // a read was started since the selection changed
-    bool m_HasRead = false;      // a read was taken in since the selection changed
-    float m_SecondsSinceRequest = 0.0F;
+    bool m_HasRead = false; // a read was taken in since the selection changed
     Platform::ModulesReadStatus m_Status = Platform::ModulesReadStatus::Ok;
     std::string m_Detail;
     std::vector<Row> m_Rows;
@@ -341,12 +292,9 @@ class ProcessModulesView
     std::string m_CountLabel;            // the header with the count: "Modules (87)"
     std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
 
-    // The read in flight on its worker (std::async), if any, and what it was started for. A future from
-    // std::async waits for its thread when destroyed, so destroying the view waits for at most one read.
-    std::future<Platform::ModulesReadResult> m_Pending;
-    std::uint64_t m_Generation = 0; // bumped by each selection change
-    std::uint64_t m_PendingGeneration = 0;
-    Platform::ProcessTarget m_PendingTarget{};
+    // The read in flight and its cadence. Destroying the view waits for at most one read.
+    Detail::LazyBackgroundRead<Platform::ModulesReadResult> m_Read{
+        Domain::Sampling::PROCESS_MODULES_REFRESH_MS, Platform::MODULES_READ_THREAD_NAME, &failedRead};
 };
 
 } // namespace App

@@ -11,6 +11,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/PowerTypes.h"
@@ -966,6 +967,36 @@ class MockProcessModulesReader : public Platform::IProcessModulesReader
 
   private:
     Platform::ModulesReadResult m_Result{.status = Platform::ModulesReadStatus::Ok, .modules = {}, .detail = {}};
+    int m_ReadCount = 0;
+};
+
+/// Mock IProcessOpenFilesReader (#183): returns a configured result and counts the reads.
+class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
+{
+  public:
+    void setResult(Platform::OpenFilesReadResult result)
+    {
+        m_Result = std::move(result);
+    }
+
+    [[nodiscard]] bool hasOpenFiles() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] Platform::OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& /*target*/) override
+    {
+        ++m_ReadCount;
+        return m_Result;
+    }
+
+    [[nodiscard]] int readCount() const
+    {
+        return m_ReadCount;
+    }
+
+  private:
+    Platform::OpenFilesReadResult m_Result;
     int m_ReadCount = 0;
 };
 

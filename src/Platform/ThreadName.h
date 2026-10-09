@@ -28,6 +28,10 @@ inline constexpr std::string_view STARTUP_SAMPLER_THREAD_NAME = "ts-sampler-auto
 inline constexpr std::string_view CONNECTIONS_READ_THREAD_NAME = "ts-conn-read";
 /// The worker that runs one Process Details Modules read at a time (#802).
 inline constexpr std::string_view MODULES_READ_THREAD_NAME = "ts-mod-read";
+/// The worker that runs one Process Details Open files read at a time (#183).
+inline constexpr std::string_view OPEN_FILES_READ_THREAD_NAME = "ts-files-read";
+/// The thread that types and names a Windows process's File handles for one read (#183).
+inline constexpr std::string_view OPEN_FILES_NAMER_THREAD_NAME = "ts-files-name";
 /// The worker that reads the System Information page's static facts (#1399), once or on Refresh.
 inline constexpr std::string_view SYSTEM_INFO_READ_THREAD_NAME = "ts-sysinfo-read";
 /// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).

@@ -114,6 +114,12 @@ inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
 // process loads and unloads modules rarely after startup, so a slow re-read is enough to notice one.
 inline constexpr int PROCESS_MODULES_REFRESH_MS = 3000;
 
+// How often Process Details re-reads the selected process's open files (milliseconds) (#183), on the
+// Modules section's terms: only while its Open files section is open. Files open and close more often
+// than modules load, but a read walks every descriptor (Linux) or the whole system handle table
+// (Windows), so not faster than this.
+inline constexpr int PROCESS_OPEN_FILES_REFRESH_MS = 3000;
+
 // How often the Services tab re-reads the service list (milliseconds) (#800). Sampled only while the
 // tab is shown; a service changes state far less often than a process's counters do.
 inline constexpr int SERVICES_REFRESH_MS = 2000;

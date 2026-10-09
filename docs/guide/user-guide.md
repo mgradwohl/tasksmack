@@ -262,6 +262,17 @@ The Process Details **Overview** tab also has a collapsible **Modules** section,
 - **Linux:** read from `/proc/[pid]/maps`. A module is a file with at least one executable mapping, so data files the process has mapped (a locale archive, fonts) are not listed, nor are anonymous memory and the kernel's `[heap]`, `[stack]` and `[vdso]`. Its base is its lowest mapping and its size the total of its mappings. A library that was deleted or replaced on disk after it was loaded (typically by a package upgrade) shows "(deleted)" after its name. Another user's process shows "Access denied ...": reading its mappings needs the process's own user, or root / `CAP_SYS_PTRACE`.
 - A process that has exited shows "Process exited"; one whose start time TaskSmack does not know (Windows' Idle and System) shows "Not available for this process".
 
+### Open files
+
+Under Modules, the **Open files** section (closed by default) lists what the selected process has open, like `lsof -p` or Process Explorer's handle view, with the count in its header ("Open files (42)"):
+
+- **FD** (Linux) is the descriptor number; **HANDLE** (Windows) the handle value in hex (`0x1A4`). **TYPE** is File, Directory, Device, Socket, Pipe, Anon inode, memfd or Other. **PATH** is the file's path, or the kernel's name for something with none (`socket:[12345]`, `pipe:[678]`, `anon_inode:[eventfd]`). **MODE** (Linux only) is how it was opened: `r`, `w` or `rw`, plus `append`.
+- Rows are sorted by descriptor. Click a column header to sort by it; type in the filter box to show only rows whose path or type contains the text. More than 12 rows scroll inside the section, and at most 10,000 are listed ("Showing the first 10000 open files").
+- Read only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds, in the background.
+- **Linux:** read from `/proc/[pid]/fd` (each entry's link) and `/proc/[pid]/fdinfo` (its open flags); TaskSmack never runs `lsof` and never touches the files themselves. A file deleted after it was opened shows "(deleted)" after its path. Another user's process shows "Access denied ...": listing its descriptors needs its own user, or root / `CAP_SYS_PTRACE`.
+- **Windows:** the process's File handles, from the system handle table. TaskSmack copies each handle into itself to ask what it is (never closing or changing the process's own), and asks for a path only for disk files: pipes and consoles are listed by type, without a name, because asking for one can block. If a handle still does not answer within half a second, the rest are listed as "(name not read)" with a note, and that handle is skipped from then on. A protected process, or an elevated one while TaskSmack is not running as administrator, shows "Access denied ...". Directories are listed as File.
+- A process that has exited shows "Process exited"; Windows' Idle and System show "Not available for this process".
+
 ### Services
 
 The **Services** tab lists the system's services, and on Windows starts, stops and restarts them and changes their startup type:

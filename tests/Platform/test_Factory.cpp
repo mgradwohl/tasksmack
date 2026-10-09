@@ -15,6 +15,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
@@ -97,6 +98,13 @@ TEST(FactoryTest, MakeProcessModulesReaderListsModules)
     const auto reader = makeProcessModulesReader();
     ASSERT_NE(reader, nullptr);
     EXPECT_TRUE(reader->hasModules()); // both platforms (#802)
+}
+
+TEST(FactoryTest, MakeProcessOpenFilesReaderListsOpenFiles)
+{
+    const auto reader = makeProcessOpenFilesReader();
+    ASSERT_NE(reader, nullptr);
+    EXPECT_TRUE(reader->hasOpenFiles()); // both platforms (#183)
 }
 
 TEST(FactoryTest, MakeStartupProbeReturnsNonNull)
