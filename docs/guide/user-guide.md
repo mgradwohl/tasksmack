@@ -278,7 +278,7 @@ The **Startup** tab lists the programs Windows starts when you sign in, and enab
 
 ### System Information
 
-The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (memory modules, disks, adapters, GPUs and displays, security) are planned.
+The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (disks, adapters, GPUs and displays, security) are planned.
 
 - **Operating system:**
   - **Windows:** edition and version (for example "Windows 11 Home", "25H2"), build with its update revision, architecture, install date, boot time and uptime, computer name, workgroup or domain, user, locale, time zone with its current UTC offset, and the system and Windows directories.
@@ -286,6 +286,9 @@ The **System** tab shows what this machine is, in titled sections of label/value
 - **Firmware & board:** the system's manufacturer, model, version, SKU and family; the BIOS vendor, version and release date; the firmware mode (UEFI or legacy BIOS); the SMBIOS version; the embedded controller's version, when there is one; the board's manufacturer, product and version; the chassis type (Desktop, Notebook, Convertible, ...) and manufacturer; and the platform role (desktop, mobile, server). The system serial number, UUID and board serial number are identifiers.
   - **Windows:** read from the SMBIOS table (`GetSystemFirmwareTable`), and the firmware mode from `GetFirmwareType`; no administrator rights needed.
   - **Linux:** read from `/sys/class/dmi/id`, UEFI when `/sys/firmware/efi` exists. The serial numbers, the UUID and the SMBIOS version are readable by root only on most systems, so they show "—" with "requires administrator" otherwise.
+- **Memory modules:** how many memory slots are used out of how many there are, the maximum capacity the board supports, installed memory, and usable memory (with the hardware-reserved difference, for example "31.7 GiB (312 MiB hardware reserved)"). Then one row per installed module, labelled by its slot (for example "DIMM A1" or "ChannelA-DIMM0"): its capacity, type (DDR4, DDR5, LPDDR5, ...), form factor (DIMM, SODIMM, Row of chips for soldered memory, ...), the speed it runs at and its rated speed in MT/s, manufacturer and part number. Empty slots count toward the total but aren't listed.
+  - **Windows:** read from the SMBIOS table (`GetSystemFirmwareTable`, memory device and memory array records); installed memory from `GetPhysicallyInstalledSystemMemory` and usable memory from `GlobalMemoryStatusEx`; no administrator rights needed.
+  - **Linux:** the modules come from the raw SMBIOS table, `/sys/firmware/dmi/tables/DMI`, which only root can read; otherwise the slots, maximum capacity, installed memory and modules show "—" with "requires administrator". TaskSmack never runs `dmidecode` or a helper to get them. Usable memory is `MemTotal` from `/proc/meminfo`, and installed memory is the modules' total.
 - **Read once:** the facts are read in the background the first time you open the tab, never while sampling. **Refresh** reads them again; the uptime is as of that read ("Read at" beside the button).
 - **Unavailable values** show a muted "—"; hover it for the reason.
 - **Identifiers hidden:** the user name, the computer name, a domain name, serial numbers and the system UUID are hidden until you tick **Show identifiers**, and are left out of copies until then.
@@ -389,6 +392,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
 | System Information: Operating system section | ✅ (os-release, uname, `/proc`, XDG session, container/VM hints) | ✅ (CurrentVersion registry key, session APIs) |
 | System Information: Firmware & board section | ✅ (`/sys/class/dmi/id`; serials, UUID and SMBIOS version need root) | ✅ (SMBIOS table, `GetFirmwareType`) |
+| System Information: Memory modules section | ✅ (`/sys/firmware/dmi/tables/DMI`, needs root; usable memory from `/proc/meminfo` without) | ✅ (SMBIOS table, `GetPhysicallyInstalledSystemMemory`) |
 | Startup apps tab | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders; enable / disable through StartupApproved, all-users entries need administrator) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |

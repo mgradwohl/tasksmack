@@ -1,7 +1,8 @@
 /// @file test_LinuxOsInfo.cpp
 /// @brief Platform::LinuxOsInfo (#1512): os-release parsing, the zone from the /etc/localtime link,
 /// the locale choice, btime, and the file facts and container/VM hints read under a fixture root; and
-/// Platform::LinuxFirmwareInfo (#1513), the Firmware & board facts from /sys/class/dmi/id under one.
+/// Platform::LinuxFirmwareInfo (#1513), the Firmware & board facts from /sys/class/dmi/id under one, and
+/// the Memory modules facts (#1515) from the raw DMI table and /proc/meminfo.
 /// Both headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
@@ -13,9 +14,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <ios>
 #include <string>
 #include <string_view>
@@ -254,6 +257,96 @@ TEST(LinuxFirmwareInfoTest, NoDmiAtAll)
     EXPECT_EQ(LinuxFirmwareInfo::parseChassisType("3"), 3);
     EXPECT_EQ(LinuxFirmwareInfo::parseChassisType("x"), 0);
     EXPECT_EQ(LinuxFirmwareInfo::parseChassisType("300"), 0);
+}
+
+/// A raw SMBIOS table, as /sys/firmware/dmi/tables/DMI holds it: one 8 GiB DDR4 SODIMM, then the end.
+[[nodiscard]] std::string dmiTable()
+{
+    std::string table(0x22, '\0');
+    const auto put = [&table](std::size_t offset, unsigned value, std::size_t size)
+    {
+        for (std::size_t i = 0; i < size; ++i)
+        {
+            table.at(offset + i) = static_cast<char>((value >> (8U * i)) & 0xFFU);
+        }
+    };
+    put(0x00, 17, 1);     // Memory Device
+    put(0x01, 0x22, 1);   // length
+    put(0x04, 0xFFFE, 2); // no array
+    put(0x0C, 0x2000, 2); // 8192 MiB
+    put(0x0E, 0x0D, 1);   // SODIMM
+    put(0x10, 1, 1);      // locator
+    put(0x12, 0x1A, 1);   // DDR4
+    put(0x15, 3200, 2);   // speed
+    put(0x17, 2, 1);      // manufacturer
+    put(0x1A, 3, 1);      // part number
+    put(0x20, 3200, 2);   // configured speed
+    for (const std::string_view text : {"ChannelA-DIMM0", "Kingston", "KF432C16"})
+    {
+        table += text;
+        table.push_back('\0');
+    }
+    table.push_back('\0');
+    table += std::string{'\x7F', '\x04', '\0', '\0', '\0', '\0'}; // end of table
+    return table;
+}
+
+TEST(LinuxFirmwareInfoTest, ReadsMemoryModulesAsRoot)
+{
+    const FixtureRoot root;
+    root.write("proc/meminfo", "MemTotal:        8030000 kB\nMemFree:         1000000 kB\n");
+    root.write("sys/firmware/dmi/tables/DMI", dmiTable());
+
+    MemoryModulesInfo info;
+    LinuxFirmwareInfo::readMemoryModuleFacts(root.path(), info);
+    EXPECT_TRUE(info.available);
+    EXPECT_TRUE(info.tableRead);
+    EXPECT_FALSE(info.tableNeedsAdmin);
+    EXPECT_EQ(info.usableBytes, 8030000ULL * 1024);
+    EXPECT_EQ(info.slotCount, 1U);
+    ASSERT_EQ(info.modules.size(), 1U);
+    EXPECT_EQ(info.modules.front().locator, "ChannelA-DIMM0");
+    EXPECT_EQ(info.modules.front().type, "DDR4");
+    EXPECT_EQ(info.modules.front().formFactor, "SODIMM");
+    EXPECT_EQ(info.modules.front().configuredSpeedMts, 3200U);
+    EXPECT_EQ(info.modules.front().manufacturer, "Kingston");
+    EXPECT_EQ(info.modules.front().partNumber, "KF432C16");
+    EXPECT_EQ(info.modules.front().sizeBytes, 8ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(info.installedBytes, 0U); // no figure of its own; the page totals the modules
+}
+
+TEST(LinuxFirmwareInfoTest, RootOnlyMemoryTableNeedsAdmin)
+{
+    const FixtureRoot root;
+    root.write("proc/meminfo", "MemTotal: 16000000 kB\n");
+    root.write("sys/firmware/dmi/tables/DMI", dmiTable());
+
+    MemoryModulesInfo info;
+    LinuxFirmwareInfo::readMemoryModuleFacts(root.path(), info, [](const std::filesystem::path& path) { return path.filename() != "DMI"; });
+    EXPECT_TRUE(info.available);
+    EXPECT_FALSE(info.tableRead);
+    EXPECT_TRUE(info.tableNeedsAdmin);
+    EXPECT_TRUE(info.modules.empty());
+    EXPECT_EQ(info.installedBytes, 0U);
+    EXPECT_EQ(info.usableBytes, 16000000ULL * 1024);
+
+    // No table at all (a container): nothing is root-only.
+    const FixtureRoot bare;
+    MemoryModulesInfo none;
+    LinuxFirmwareInfo::readMemoryModuleFacts(bare.path(), none);
+    EXPECT_FALSE(none.tableNeedsAdmin);
+    EXPECT_FALSE(none.tableRead);
+    EXPECT_EQ(none.usableBytes, 0U);
+}
+
+TEST(LinuxFirmwareInfoTest, ParsesMemTotal)
+{
+    EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes("MemTotal:       1024 kB\n"), 1024ULL * 1024);
+    EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes("MemFree: 5 kB\nMemTotal: 2 kB"), 2048U);
+    EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes("MemFree: 5 kB\n"), 0U);
+    EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes("MemTotal:   \n"), 0U);
+    EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes("MemTotal: x kB\n"), 0U);
+    EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes(""), 0U);
 }
 
 } // namespace

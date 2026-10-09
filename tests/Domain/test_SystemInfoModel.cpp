@@ -45,6 +45,14 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::MemoryModulesInfo readMemoryModules() override
+    {
+        Platform::MemoryModulesInfo info;
+        info.available = true;
+        info.slotCount = 2;
+        return info;
+    }
+
   private:
     bool m_HasOs;
     int* m_Reads;
@@ -66,6 +74,7 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->os.name, "Windows 11 Pro");
     EXPECT_EQ(first->os.build, "26100.1");
     EXPECT_EQ(first->firmware.systemManufacturer, "Contoso");
+    EXPECT_EQ(first->memory.slotCount, 2U);
     EXPECT_GT(first->readAtUnixSeconds, 0U);
 
     model.read(); // Refresh
@@ -83,6 +92,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_EQ(reads, 0);
     EXPECT_EQ(model.snapshot()->os.family, Platform::OsFamily::Unknown);
     EXPECT_FALSE(model.snapshot()->firmware.available);
+    EXPECT_FALSE(model.snapshot()->memory.available);
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);

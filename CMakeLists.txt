@@ -316,6 +316,7 @@ elseif(WIN32)
         src/Platform/Windows/WinString.h
         src/Platform/Windows/WindowsSystemInfoProbe.h
         src/Platform/Windows/WindowsOsInfoMath.h
+        src/Platform/Windows/WindowsInstalledMemory.h
     )
 endif()
 

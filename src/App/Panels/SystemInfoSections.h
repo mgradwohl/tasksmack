@@ -67,6 +67,27 @@ struct VisibleSection
 /// row is left out when there is none.
 [[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware);
 
+/// A memory size: whole GiB ("16 GiB") or, under 1 GiB, whole MiB ("512 MiB") when exact, else
+/// UI::Format::formatBytes() ("31.7 GiB"). Empty for 0 (unknown).
+[[nodiscard]] std::string formatMemoryCapacity(std::uint64_t bytes);
+
+/// The installed memory: the platform's own figure (Windows), else the populated modules' total when
+/// the table was read and every module's size is known (Linux); 0 when unknown.
+[[nodiscard]] std::uint64_t installedMemoryBytes(const Platform::MemoryModulesInfo& memory);
+
+/// "5600 MT/s", "5600 MT/s (rated 6400 MT/s)", "rated 6400 MT/s" when only the rating is known; empty
+/// when neither is.
+[[nodiscard]] std::string formatMemorySpeed(std::uint32_t configuredMts, std::uint32_t ratedMts);
+
+/// One module's value: "16 GiB DDR5 SODIMM, 5600 MT/s (rated 6400 MT/s), Samsung M425R2GA3BB0-CWMOD",
+/// unknown parts left out.
+[[nodiscard]] std::string formatMemoryModule(const Platform::MemoryModule& module);
+
+/// The Memory modules section (#1515): slots used of total, maximum capacity, installed and usable
+/// memory (with the hardware-reserved difference), then one row per populated module, labelled by its
+/// locator. Without the SMBIOS table (Linux, unprivileged) a "Modules" row says it needs administrator.
+[[nodiscard]] Section buildMemorySection(const Platform::MemoryModulesInfo& memory);
+
 /// The page's sections, in display order. Empty before the first read.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot);
 
