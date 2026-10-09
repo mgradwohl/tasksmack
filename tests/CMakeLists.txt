@@ -183,6 +183,7 @@ set(COMMON_TEST_SOURCES
     App/test_CpuCoreGridIds.cpp
     App/test_CpuSummaryText.cpp
     App/test_CpuDetailsText.cpp
+    App/test_CpuDetailsBlockRender.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
@@ -412,6 +413,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsCharts.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
+    # The Overview's CPU Details block, run headless (test_CpuDetailsBlockRender.cpp, #809)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuDetailsBlock.cpp
     # The System Metrics tab's Memory & Swap, CPU Cores, Disk I/O and Network sections and the render-metrics
     # overlay, run headless (test_SystemSectionsRender.cpp, test_RenderMetricsOverlay.cpp, #1395)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/MemorySection.cpp

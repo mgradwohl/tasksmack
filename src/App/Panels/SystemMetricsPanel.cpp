@@ -555,7 +555,7 @@ void SystemMetricsPanel::renderOverview()
             return history.empty() ? std::optional<double>{} : std::optional<double>{history.back()};
         };
         const bool hasProcesses = (processModel != nullptr);
-        fresh.rows = CpuDetailsText::buildRows({
+        const CpuDetailsText::Inputs inputs{
             .snapshot = &snap,
             .hasCpuFreq = caps.hasCpuFreq,
             .hasUptime = caps.hasUptime,
@@ -570,7 +570,9 @@ void SystemMetricsPanel::renderOverview()
 #endif
             // Total dedicated VRAM: discrete GPUs only, an integrated GPU's "memory" being system RAM (#1114).
             .totalVramBytes = m_GPUPublication ? GpuSection::totalDedicatedVramBytes(m_GPUPublication->snapshots) : 0,
-        });
+        };
+        fresh.rows = CpuDetailsText::buildRows(inputs);
+        fresh.collapsedSummary = CpuDetailsText::collapsedSummary(inputs);
         fresh.systemVersion = systemVersion;
         fresh.gpuVersion = gpuVersion;
         fresh.processHistoryVersion = m_ProcessHistoryVersion;
@@ -580,7 +582,19 @@ void SystemMetricsPanel::renderOverview()
         fresh.valid = true;
         m_CpuDetails = std::move(fresh);
     }
-    CpuDetailsBlock::render(snap.cpuModel, m_CpuDetails.rows, m_CpuDetails.generation, m_CpuDetailsMeasured);
+    // Expanded or collapsed, as the user left it (UserConfig, #809). The block renders inside the fill
+    // layout's scope, so the charts share whatever height it leaves, at either size.
+    auto& userSettings = UserConfig::get().settings();
+    if (CpuDetailsBlock::render({.cpuModel = snap.cpuModel,
+                                 .collapsedSummary = m_CpuDetails.collapsedSummary,
+                                 .rows = m_CpuDetails.rows,
+                                 .rowsGeneration = m_CpuDetails.generation,
+                                 .expanded = userSettings.cpuDetailsExpanded},
+                                m_CpuDetailsMeasured))
+    {
+        userSettings.cpuDetailsExpanded = !userSettings.cpuDetailsExpanded;
+        UserConfig::get().save();
+    }
 
     ImGui::Spacing();
 

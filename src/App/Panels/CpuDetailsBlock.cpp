@@ -8,6 +8,7 @@
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -59,26 +60,46 @@ void measure(std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGenera
 
 } // namespace
 
-void render(std::string_view cpuModel, std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGeneration, MeasuredRows& measured)
+bool render(const Content& content, MeasuredRows& measured)
 {
     const auto& theme = UI::Theme::get();
-    (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "CPU Details", cpuModel);
-    if (rows.empty())
+
+    // The heading line is the toggle: an invisible button one text line tall across the width, then
+    // the caret and heading drawn over it. Text takes no input, so clicks reach the button, and the
+    // cursor ends where the line of text would, so the collapsed block is exactly one text line.
+    const ImVec2 lineStart = ImGui::GetCursorScreenPos();
+    const float lineWidth = std::max(ImGui::GetContentRegionAvail().x, 1.0F);
+    const bool toggled = ImGui::InvisibleButton("##CpuDetailsToggle", ImVec2(lineWidth, ImGui::GetTextLineHeight()));
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
     {
-        return;
+        ImGui::SetTooltip("%s", content.expanded ? "Collapse CPU Details" : "Expand CPU Details");
+    }
+    ImGui::SetCursorScreenPos(lineStart);
+    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
+    textView(content.expanded ? std::string_view{ICON_FA_CARET_DOWN} : std::string_view{ICON_FA_CARET_RIGHT});
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "CPU Details", content.expanded ? content.cpuModel : content.collapsedSummary);
+    // The heading line leaves the cursor where the button did (moving it there explicitly would
+    // extend the window past its items, which ImGui rejects).
+
+    const std::span<const CpuDetailsText::Row> rows = content.rows;
+    if (!content.expanded || rows.empty())
+    {
+        return toggled;
     }
 
-    measure(rows, rowsGeneration, measured);
+    measure(rows, content.rowsGeneration, measured);
     const float perPairExtra = ImGui::GetStyle().CellPadding.x * 4.0F; // Two cells' padding a pair
     const CpuDetailsText::ColumnLayout layout =
         CpuDetailsText::columnLayout(measured.labelWidths, measured.valueWidths, ImGui::GetContentRegionAvail().x, perPairExtra);
 
-    // Sized to its columns (NoHostExtendX), so the row shading stops where the facts do.
+    // Sized to its columns (NoHostExtendX), which columnLayout() has widened to the full width.
     constexpr ImGuiTableFlags TABLE_FLAGS =
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_NoHostExtendX;
     if (!ImGui::BeginTable("##CpuDetails", static_cast<int>(layout.pairs * 2), TABLE_FLAGS))
     {
-        return;
+        return toggled;
     }
     for (std::size_t pair = 0; pair < layout.pairs; ++pair)
     {
@@ -114,6 +135,7 @@ void render(std::string_view cpuModel, std::span<const CpuDetailsText::Row> rows
         }
     }
     ImGui::EndTable();
+    return toggled;
 }
 
 } // namespace App::CpuDetailsBlock

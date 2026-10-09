@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <optional>
 #include <string>
@@ -242,6 +243,12 @@ TEST(CpuDetailsTextTest, WiderWindowsUseMorePairsAndFewerRows)
     EXPECT_EQ(four.pairs, 4U);
     EXPECT_EQ(four.rowsPerPair, 5U);
     EXPECT_FLOAT_EQ(four.totalWidth, 800.0F);
+    // Past the widest layout, the spare width goes to the value columns: the block spans the window
+    const std::vector<float> few(4, 50.0F);
+    const auto spread = columnLayout(few, few, 1000.0F, 0.0F);
+    EXPECT_EQ(spread.pairs, 4U);
+    EXPECT_FLOAT_EQ(spread.totalWidth, 1000.0F);
+    EXPECT_FLOAT_EQ(spread.valueWidths[0], 50.0F + 150.0F);
 }
 
 TEST(CpuDetailsTextTest, EachPairIsSizedToItsOwnRows)
@@ -250,12 +257,51 @@ TEST(CpuDetailsTextTest, EachPairIsSizedToItsOwnRows)
     std::vector<float> labels(9, 60.0F);
     labels.back() = 200.0F;
     const std::vector<float> values(9, 50.0F);
-    const auto layout = columnLayout(labels, values, 500.0F, 0.0F);
+    const auto layout = columnLayout(labels, values, 470.0F, 0.0F);
     EXPECT_EQ(layout.pairs, 3U);
     EXPECT_FLOAT_EQ(layout.labelWidths[0], 60.0F);
     EXPECT_FLOAT_EQ(layout.labelWidths[2], 200.0F);
-    EXPECT_FLOAT_EQ(layout.totalWidth, 60.0F + 60.0F + 200.0F + (3 * 50.0F));
+    EXPECT_FLOAT_EQ(layout.totalWidth, 60.0F + 60.0F + 200.0F + (3 * 50.0F)); // Exactly fits: no slack to share
     // Sized to the widest row overall it would need 3 x 250 = 750 px
+}
+
+TEST(CpuDetailsTextTest, AWideWindowFitsEveryRowInThreeLinesAcrossTheFullWidth)
+{
+    // Widths like the Overview's at the default font: 22 rows of ~90 px labels (one long one,
+    // "Virtualization-based security") and ~60 px values, gaps included
+    std::vector<float> labels(22, 90.0F);
+    labels[18] = 215.0F;
+    const std::vector<float> values(22, 60.0F);
+    constexpr float AVAILABLE = 1870.0F; // A 1900 px window's content width
+    const auto layout = columnLayout(labels, values, AVAILABLE, 16.0F);
+    EXPECT_LE(layout.rowsPerPair, 3U);
+    EXPECT_FLOAT_EQ(layout.totalWidth, AVAILABLE); // The leftover width is shared out: the block spans it all
+    float sum = 0.0F;
+    for (std::size_t pair = 0; pair < layout.pairs; ++pair)
+    {
+        sum += layout.labelWidths[pair] + layout.valueWidths[pair] + 16.0F;
+    }
+    EXPECT_NEAR(sum, AVAILABLE, 0.01F);
+
+    // At 1000 px the same rows take about three pairs of seven or eight lines
+    const auto narrow = columnLayout(labels, values, 970.0F, 16.0F);
+    EXPECT_GE(narrow.pairs, 3U);
+    EXPECT_LE(narrow.rowsPerPair, 8U);
+}
+
+TEST(CpuDetailsTextTest, TheCollapsedSummaryListsTheKnownHeadlineFacts)
+{
+    auto snap = windowsLikeSnapshot();
+    snap.cpuModel = "Test CPU";
+    snap.cpuTotal.totalPercent = 4.2;
+    EXPECT_EQ(CpuDetailsText::collapsedSummary(windowsInputs(snap)),
+              "Test CPU \xC2\xB7 24 cores (8 P + 16 E) \xC2\xB7 3.00 GHz base \xC2\xB7 4.25 GHz \xC2\xB7 4.2%");
+    // Unknown facts are left out, not shown as 0
+    Domain::SystemSnapshot bare;
+    bare.cpuModel = "Bare CPU";
+    Inputs in;
+    in.snapshot = &bare;
+    EXPECT_EQ(CpuDetailsText::collapsedSummary(in), "Bare CPU \xC2\xB7 0%");
 }
 
 TEST(CpuDetailsTextTest, PairsAreCappedAndEvenedOut)
@@ -263,12 +309,12 @@ TEST(CpuDetailsTextTest, PairsAreCappedAndEvenedOut)
     const std::vector<float> wide(24, 50.0F);
     const auto capped = columnLayout(wide, wide, 10000.0F, 0.0F);
     EXPECT_EQ(capped.pairs, CpuDetailsText::MAX_COLUMN_PAIRS);
-    EXPECT_EQ(capped.rowsPerPair, 4U);
-    // 7 rows over up to 6 pairs: 2 rows a pair, 4 pairs, none left empty
-    const std::vector<float> seven(7, 50.0F);
-    const auto even = columnLayout(seven, seven, 10000.0F, 0.0F);
+    EXPECT_EQ(capped.rowsPerPair, 3U); // 24 rows over 8 pairs
+    // 9 rows over up to 8 pairs: 2 rows a pair, 5 pairs, none left empty
+    const std::vector<float> nine(9, 50.0F);
+    const auto even = columnLayout(nine, nine, 10000.0F, 0.0F);
     EXPECT_EQ(even.rowsPerPair, 2U);
-    EXPECT_EQ(even.pairs, 4U);
+    EXPECT_EQ(even.pairs, 5U);
 }
 
 TEST(CpuDetailsTextTest, DegenerateInputsFallBackToOnePair)

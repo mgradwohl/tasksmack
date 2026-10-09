@@ -249,9 +249,53 @@ struct Inputs
     return rows;
 }
 
-/// The most label/value column pairs the block uses, however wide the window: past this, a row of
-/// facts is too long to read across.
-inline constexpr std::size_t MAX_COLUMN_PAIRS = 6;
+/// The one-line summary the block's heading shows while it is collapsed (#809): the CPU model, then
+/// the cores, base clock, current clock and utilization that are known, separated by middle dots,
+/// e.g. "Intel(R) Core(TM) Ultra 7 255H · 16 cores (6 P + 10 E) · 2.00 GHz base · 3.71 GHz · 4.2%".
+[[nodiscard]] inline std::string collapsedSummary(const Inputs& in)
+{
+    if (in.snapshot == nullptr)
+    {
+        return {};
+    }
+    const Domain::SystemSnapshot& snap = *in.snapshot;
+    const Platform::CpuDetails& cpu = snap.cpuDetails;
+    constexpr std::string_view SEPARATOR = " \xC2\xB7 ";
+    std::string text = snap.cpuModel;
+    const auto append = [&text, SEPARATOR](std::string_view part)
+    {
+        if (!text.empty())
+        {
+            text += SEPARATOR;
+        }
+        text += part;
+    };
+    if (cpu.physicalCores.has_value() && *cpu.physicalCores > 0)
+    {
+        const std::string cores = formatCores(cpu); // "16" or "16 (6 P + 10 E)"
+        const auto split = cores.find(' ');
+        append((split == std::string::npos) ? std::format("{} cores", cores)
+                                            : std::format("{} cores{}", cores.substr(0, split), cores.substr(split)));
+    }
+    else if (snap.coreCount > 0)
+    {
+        append(std::format("{} logical processors", snap.coreCount));
+    }
+    if (cpu.baseSpeedMHz.has_value() && *cpu.baseSpeedMHz > 0)
+    {
+        append(formatGigahertz(*cpu.baseSpeedMHz) + " base");
+    }
+    if (in.hasCpuFreq && snap.cpuFreqMHz > 0)
+    {
+        append(formatGigahertz(snap.cpuFreqMHz));
+    }
+    append(UI::Format::formatPercent(snap.cpuTotal.totalPercent));
+    return text;
+}
+
+/// The most label/value column pairs the block uses, however wide the window: enough for every row
+/// in three lines on a wide window, past which a line of facts is too long to read across.
+inline constexpr std::size_t MAX_COLUMN_PAIRS = 8;
 
 /// How the rows are laid out: `pairs` label/value column pairs side by side, filled top to bottom
 /// and then left to right, `rowsPerPair` rows deep, each pair's columns as wide as its own widest
@@ -262,13 +306,14 @@ struct ColumnLayout
     std::size_t rowsPerPair = 0;
     std::array<float, MAX_COLUMN_PAIRS> labelWidths{}; ///< Each pair's label column, in pixels
     std::array<float, MAX_COLUMN_PAIRS> valueWidths{}; ///< Each pair's value column, in pixels
-    float totalWidth = 0.0F;                           ///< Every pair's columns plus `perPairExtraPx`
+    float totalWidth = 0.0F;                           ///< Every pair's columns plus `perPairExtraPx`: the available width when it fits
 };
 
 /// The shallowest layout of the rows that fits `availableWidthPx`: the most column pairs (at most
 /// MAX_COLUMN_PAIRS) whose columns -- each pair sized to its own rows' widest label and value, plus
 /// `perPairExtraPx` of cell padding -- fit side by side; one pair when none does. The rows per pair
-/// are then evened out, so no pair is left empty or nearly so. The fewer rows, the more height the
+/// are then evened out, so no pair is left empty or nearly so, and the width left over is shared out
+/// among the value columns, so the block spans the whole width. The fewer rows, the more height the
 /// charts below keep. `labelWidthsPx` and `valueWidthsPx` hold each row's measured width (the same
 /// length); pure arithmetic, so it costs nothing to run each frame.
 [[nodiscard]] inline ColumnLayout columnLayout(std::span<const float> labelWidthsPx,
@@ -308,6 +353,16 @@ struct ColumnLayout
             layout = candidate;
             break;
         }
+    }
+    // Spread what is left of the width over the value columns, so the block uses all of it
+    if (std::isfinite(availableWidthPx) && layout.totalWidth < availableWidthPx && layout.pairs > 0)
+    {
+        const float share = (availableWidthPx - layout.totalWidth) / static_cast<float>(layout.pairs);
+        for (std::size_t pair = 0; pair < layout.pairs; ++pair)
+        {
+            layout.valueWidths[pair] += share;
+        }
+        layout.totalWidth = availableWidthPx;
     }
     return layout;
 }

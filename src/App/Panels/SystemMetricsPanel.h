@@ -163,6 +163,7 @@ class SystemMetricsPanel : public Panel
         bool hasProcessModel = false;
         std::uint64_t generation = 0; // Bumped on every rebuild, for CpuDetailsBlock's measurements
         std::vector<CpuDetailsText::Row> rows;
+        std::string collapsedSummary; // The heading's text while the block is collapsed
     } m_CpuDetails;
     CpuDetailsBlock::MeasuredRows m_CpuDetailsMeasured; // The rows' widths, kept between frames
 

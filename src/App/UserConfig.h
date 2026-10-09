@@ -92,6 +92,10 @@ struct UserSettings
     // Set to false permanently via "Don't show again" in the dialog.
     bool showPrivilegeNotice = true;
 
+    // Whether the Overview's CPU Details block is expanded (#809); its heading toggles it. A config
+    // written before the block existed has no such key and loads expanded.
+    bool cpuDetailsExpanded = true;
+
     // Opt-in escape hatch (default off -- the custom title bar is the default
     // everywhere): use native OS/compositor window decorations instead of the custom
     // borderless title bar. Only has an effect on native Wayland; read once at startup
