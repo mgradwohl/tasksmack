@@ -105,6 +105,14 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::NetworkAdaptersInfo readNetworkAdapters() override
+    {
+        Platform::NetworkAdaptersInfo info;
+        info.available = true;
+        info.gatewayV4 = "192.168.1.1";
+        return info;
+    }
+
   private:
     bool m_HasOs;
     int* m_Reads;
@@ -135,6 +143,7 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->security.secureBoot, Platform::SecurityFeatureState::On);
     EXPECT_TRUE(first->sensors.listed);
     EXPECT_TRUE(first->devices.pciRead);
+    EXPECT_EQ(first->adapters.gatewayV4, "192.168.1.1");
     EXPECT_GT(first->readAtUnixSeconds, 0U);
 
     model.read(); // Refresh
@@ -159,6 +168,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->security.available);
     EXPECT_FALSE(model.snapshot()->sensors.available);
     EXPECT_FALSE(model.snapshot()->devices.available);
+    EXPECT_FALSE(model.snapshot()->adapters.available);
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);

@@ -390,6 +390,46 @@ struct DevicesInfo
     std::vector<Device> problems; ///< Windows: every present device with a problem; Linux: PCI devices without a driver
 };
 
+/// One IP address on an adapter (#1518).
+struct AdapterAddress
+{
+    std::string address;      ///< "192.168.1.20", "fe80::1c2a:3bff:fe4d:5e6f"
+    std::uint32_t prefix = 0; ///< The prefix length ("/24", "/64")
+    bool v6 = false;
+
+    [[nodiscard]] friend bool operator==(const AdapterAddress&, const AdapterAddress&) = default;
+};
+
+/// One network adapter's configuration (#1518). A fact the probe couldn't read is empty or 0.
+struct NetworkAdapter
+{
+    std::string name; ///< "eth0", "wlp3s0"
+    std::string mac;  ///< "a4:5e:60:12:34:56"; an identifier
+    std::uint32_t mtu = 0;
+    std::string driver; ///< "e1000e", "iwlwifi"
+    bool up = false;    ///< The OS reports the link up.
+    bool wireless = false;
+    std::vector<AdapterAddress> addresses;
+    std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
+};
+
+/// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways
+/// and the DNS servers.
+struct NetworkAdaptersInfo
+{
+    bool available = false;               ///< The probe read the section at all.
+    bool listed = false;                  ///< The adapters could be listed: an empty `adapters` means none.
+    std::vector<NetworkAdapter> adapters; ///< By name; the loopback adapter is left out.
+    std::string gatewayV4;                ///< The IPv4 default gateway; empty when there is none or it is unknown.
+    std::string gatewayV4Adapter;
+    std::string gatewayV6; ///< The IPv6 default gateway.
+    std::string gatewayV6Adapter;
+    bool dnsRead = false; ///< The resolver configuration was read.
+    std::vector<std::string> dnsServers;
+    std::vector<std::string> searchDomains;
+    bool dnsIsLocalStub = false; ///< Linux: only systemd-resolved's local stub (127.0.0.53) was found.
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -439,6 +479,9 @@ class ISystemInfoProbe
 
     /// The Devices facts (#1520); read when hasOs is true. Enumeration only: no device state changes.
     [[nodiscard]] virtual DevicesInfo readDevices() = 0;
+
+    /// The Network adapters facts (#1518); read when hasOs is true.
+    [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -491,6 +534,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] DevicesInfo readDevices() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override
     {
         return {};
     }

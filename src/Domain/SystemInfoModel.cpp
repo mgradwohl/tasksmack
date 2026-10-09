@@ -37,6 +37,7 @@ void SystemInfoModel::read()
         next->security = m_Probe->readPlatformSecurity();
         next->sensors = m_Probe->readSensors();
         next->devices = m_Probe->readDevices();
+        next->adapters = m_Probe->readNetworkAdapters();
     }
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = static_cast<std::uint64_t>(now);
