@@ -651,6 +651,62 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
     return section;
 }
 
+std::string formatSensorReading(const Platform::SensorReading& reading)
+{
+    using Platform::SensorKind;
+    switch (reading.kind)
+    {
+    case SensorKind::Temperature:
+    {
+        std::string text = std::format("{:.1f} \u00B0C", reading.value);
+        std::string limits;
+        if (reading.high.has_value())
+        {
+            limits = std::format("high {:.1f} \u00B0C", *reading.high);
+        }
+        if (reading.critical.has_value())
+        {
+            limits += std::format("{}critical {:.1f} \u00B0C", limits.empty() ? "" : ", ", *reading.critical);
+        }
+        if (!limits.empty())
+        {
+            text += " (" + limits + ")";
+        }
+        return text;
+    }
+    case SensorKind::Fan:
+        return std::format("{:.0f} RPM", reading.value);
+    case SensorKind::Voltage:
+        return std::format("{:.2f} V", reading.value);
+    case SensorKind::Current:
+        return std::format("{:.2f} A", reading.value);
+    case SensorKind::Power:
+        return std::format("{:.1f} W", reading.value);
+    }
+    return {};
+}
+
+Section buildSensorsSection(const Platform::SensorsInfo& sensors)
+{
+    Section section{.title = "Sensors", .icon = ICON_FA_TEMPERATURE_HALF, .rows = {}};
+    for (const Platform::SensorDevice& device : sensors.devices)
+    {
+        for (const Platform::SensorReading& reading : device.readings)
+        {
+            section.rows.push_back(row(std::format("{}: {}", device.name, reading.label), formatSensorReading(reading)));
+        }
+    }
+    if (section.rows.empty())
+    {
+        section.rows.push_back(row("Sensors",
+                                   {},
+                                   sensors.listed
+                                       ? "No hwmon sensors or thermal zones are exposed (common in virtual machines, containers and WSL)"
+                                       : "/sys/class/hwmon couldn't be read"));
+    }
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
 {
     std::vector<Section> sections;
@@ -677,6 +733,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.security.available)
     {
         sections.push_back(buildSecuritySection(snapshot.security));
+    }
+    if (snapshot.sensors.available)
+    {
+        sections.push_back(buildSensorsSection(snapshot.sensors));
     }
     // Further sections follow here, in the page's order.
     return sections;

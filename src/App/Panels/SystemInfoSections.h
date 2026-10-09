@@ -116,6 +116,14 @@ struct VisibleSection
 /// kernel lockdown mode, then the CPU vulnerabilities, a summary row and one row per vulnerability.
 [[nodiscard]] Section buildSecuritySection(const Platform::PlatformSecurityInfo& security);
 
+/// One sensor's value in its unit: "45.0 °C (high 80.0 °C, critical 100.0 °C)", "1200 RPM",
+/// "12.18 V", "1.20 A", "15.2 W". The thresholds follow a temperature only when the driver reports them.
+[[nodiscard]] std::string formatSensorReading(const Platform::SensorReading& reading);
+
+/// The Sensors section (#1522): one row per reading, labelled "device: sensor" ("coretemp: Package id
+/// 0"), devices in the OS's order. None exposed (common in VMs and WSL) shows one muted row saying so.
+[[nodiscard]] Section buildSensorsSection(const Platform::SensorsInfo& sensors);
+
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot);
 
 /// The sections and rows to draw: hidden identifiers left out, then, with a filter, a section whose

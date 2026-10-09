@@ -21,6 +21,7 @@ struct SystemInfoSnapshot
     Platform::MemoryModulesInfo memory;
     Platform::CommitPagingInfo paging;
     Platform::PlatformSecurityInfo security;
+    Platform::SensorsInfo sensors;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,
