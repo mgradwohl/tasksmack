@@ -333,7 +333,7 @@ inline constexpr std::uint8_t CHASSIS_TYPE_MASK = 0x7F;
 }
 
 /// The name of a chassis type (DSP0134 7.4.1); the lock bit is ignored. Empty for 0 or an unknown value.
-[[nodiscard]] constexpr std::string_view chassisTypeName(std::uint8_t type) noexcept
+[[nodiscard]] constexpr std::string_view chassisTypeName(std::uint8_t type)
 {
     constexpr std::array<std::string_view, 0x25> NAMES{
         "",
