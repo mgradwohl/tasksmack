@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -339,7 +340,13 @@ class CloseRequestingLayer : public Core::Layer
 class SdlEventPushingLayer : public Core::Layer
 {
   public:
-    SdlEventPushingLayer(std::uint32_t eventType, int stopAfter) : Layer("SdlEventPusher"), m_EventType(eventType), m_StopAfter(stopAfter)
+    SdlEventPushingLayer(std::uint32_t eventType, int stopAfter)
+        : SdlEventPushingLayer(eventType, [stopAfter](int updateCount) { return updateCount >= stopAfter; })
+    {}
+
+    /// Stops the app on the first update for which @p stopWhen(update count) is true.
+    SdlEventPushingLayer(std::uint32_t eventType, std::function<bool(int)> stopWhen)
+        : Layer("SdlEventPusher"), m_EventType(eventType), m_StopWhen(std::move(stopWhen))
     {}
 
     void onUpdate(float /*deltaTime*/) override
@@ -355,7 +362,7 @@ class SdlEventPushingLayer : public Core::Layer
             }
             m_Pushed = SDL_PushEvent(&event);
         }
-        if (m_UpdateCount >= m_StopAfter)
+        if (m_StopWhen(m_UpdateCount))
         {
             Core::Application::get().stop();
         }
@@ -373,7 +380,7 @@ class SdlEventPushingLayer : public Core::Layer
 
   private:
     std::uint32_t m_EventType;
-    int m_StopAfter;
+    std::function<bool(int)> m_StopWhen;
     int m_UpdateCount = 0;
     bool m_Pushed = false;
 };
@@ -938,14 +945,32 @@ TEST(ApplicationTest, CloseRequestedRaisesOneVetoableWindowCloseEvent)
     {
         Core::Application app(spec);
         const auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
-        constexpr int STOP_AFTER = 5;
-        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(SDL_EVENT_WINDOW_CLOSE_REQUESTED, STOP_AFTER);
+        // Stop on what the test is about, not a fixed frame count: the loop drains events within an
+        // 8 ms budget per frame (#1410), so under a loaded parallel run the pushed close request
+        // could still be queued at a fixed frame 5 and the app stopped before it was dispatched
+        // (#1556). Run until it has been dispatched, then SETTLE_FRAMES more so a duplicate (#1150)
+        // would still be seen. FRAME_CAP only guards against a hang.
+        constexpr int SETTLE_FRAMES = 10;
+        constexpr int FRAME_CAP = 600;
+        int dispatchedAt = 0;
+        const auto& pusher = app.pushLayer<SdlEventPushingLayer>(
+            SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+            [&vetoer, &dispatchedAt](int updateCount)
+            {
+                if (dispatchedAt == 0 && vetoer.closeEventsSeen() > 0)
+                {
+                    dispatchedAt = updateCount;
+                }
+                return (dispatchedAt != 0 && updateCount >= dispatchedAt + SETTLE_FRAMES) || updateCount >= FRAME_CAP;
+            });
 
         app.run();
 
         ASSERT_TRUE(pusher.pushed()) << SDL_GetError();
+        ASSERT_NE(dispatchedAt, 0) << "the close request was never dispatched in " << FRAME_CAP << " frames";
         EXPECT_EQ(vetoer.closeEventsSeen(), 1);
-        EXPECT_EQ(pusher.updateCount(), STOP_AFTER);
+        // The veto kept the app running until the test's own stop.
+        EXPECT_EQ(pusher.updateCount(), dispatchedAt + SETTLE_FRAMES);
     }
     catch (const std::exception& e)
     {
