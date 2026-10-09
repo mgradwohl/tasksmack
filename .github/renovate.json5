@@ -406,6 +406,19 @@
       extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)$',
     },
+    {
+      // The dev container image (#136) installs the same Linux LLVM major as CI.
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.devcontainer/Dockerfile$/'],
+      matchStrings: [
+        'ARG LLVM_VERSION=(?<currentValue>[0-9]+)',
+      ],
+      depNameTemplate: 'llvm/llvm-project',
+      packageNameTemplate: 'llvm/llvm-project',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^llvmorg-(?<version>\\d+)\\.\\d+\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)$',
+    },
 
     // ── Python interpreter (setup-python-glad/action.yml, tools/setup-dev.ps1,
     //    tools/setup-dev.sh, and CI's own pre-commit.yml, which independently pins
@@ -487,6 +500,19 @@
       extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
       versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
     },
+    {
+      // The dev container image (#136) installs the same deadsnakes Python as tools/setup-dev.sh.
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.devcontainer/Dockerfile$/'],
+      matchStrings: [
+        'ARG PYTHON_VERSION=(?<currentValue>[0-9.]+)',
+      ],
+      depNameTemplate: 'python/cpython',
+      packageNameTemplate: 'python/cpython',
+      datasourceTemplate: 'github-tags',
+      extractVersionTemplate: '^v(?<version>\\d+\\.\\d+)\\.\\d+$',
+      versioningTemplate: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)$',
+    },
 
     // ── CMake/Ninja/ccache dev-box pins (tools/setup-dev.ps1) -- major-or-riskier per #798,
     //    gated the same way as LLVM/Python major below. Tracks each tool's real upstream
@@ -542,7 +568,8 @@
       // release.yml, static-analysis.yml, reusable-build-test.yml, setup-windows-llvm/
       // action.yml, setup-dev.ps1) and the Linux major-only pins (ci.yml, heavy-checks.yml,
       // release.yml, static-analysis.yml, codeql.yml, sanitizers.yml,
-      // copilot-setup-steps.yml, reusable-build-test.yml, setup-dev.sh, cmake/Options.cmake).
+      // copilot-setup-steps.yml, reusable-build-test.yml, setup-dev.sh, cmake/Options.cmake,
+      // .devcontainer/Dockerfile).
       // reusable-build-test.yml matters most of all: its own input defaults, not ci.yml's env
       // vars, are what actually govern the compiler the main build-linux-*/build-windows-*
       // jobs use (see the customManagers above).
@@ -570,7 +597,7 @@
       dependencyDashboardApproval: true,
     },
     {
-      // All four Python pin locations move together.
+      // All five Python pin locations (including .devcontainer/Dockerfile) move together.
       matchPackageNames: ['python/cpython'],
       groupName: 'Python interpreter',
     },
