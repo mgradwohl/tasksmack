@@ -268,6 +268,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ISystemProbe.h
     src/Platform/ISystemInfoProbe.h
     src/Platform/EdidParser.h
+    src/Platform/HwIdsParser.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
@@ -312,6 +313,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxCommitPaging.h
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h
+        src/Platform/Linux/LinuxDevices.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxSensors.h
     )
@@ -343,6 +345,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsCommitPaging.h
         src/Platform/Windows/WindowsStorage.h
         src/Platform/Windows/WindowsGraphics.h
+        src/Platform/Windows/WindowsDevices.h
+        src/Platform/Windows/ComScope.h
     )
 endif()
 

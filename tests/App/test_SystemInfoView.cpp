@@ -2,7 +2,7 @@
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
 /// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
 /// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the Graphics & displays rows
-/// (#1519), the filter,
+/// (#1519), the Devices rows (#1520), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
 /// filter narrowing and the identifier toggle.
 
@@ -977,6 +977,123 @@ TEST(SystemInfoSectionsTest, GraphicsSectionFollowsStorage)
     EXPECT_EQ(sections[2].title, "Graphics & displays");
 }
 
+[[nodiscard]] Platform::Device device(std::string vendor, std::string name, std::uint16_t vendorId, std::uint16_t productId)
+{
+    Platform::Device made;
+    made.vendor = std::move(vendor);
+    made.name = std::move(name);
+    made.vendorId = vendorId;
+    made.productId = productId;
+    return made;
+}
+
+[[nodiscard]] Platform::DevicesInfo windowsDevices()
+{
+    Platform::DevicesInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.pciRead = true;
+    info.usbRead = true;
+    info.audioRead = true;
+    info.problemsRead = true;
+    Platform::Device gpu = device("NVIDIA", "NVIDIA GeForce RTX 4070", 0x10DE, 0x2786);
+    gpu.className = "Display adapters";
+    gpu.location = "01:00.0";
+    gpu.driver = "nvlddmkm";
+    Platform::Device wifi = device("Intel Corporation", "Intel(R) Wi-Fi 6E AX211", 0x8086, 0x51F0);
+    wifi.className = "Network adapters";
+    wifi.problem = "This device cannot start (Code 10)";
+    info.pci = {wifi, gpu}; // by location, as the probe gives them
+    info.problems = {wifi};
+    Platform::Device hub = device("", "Generic USB Hub", 0x05E3, 0x0610);
+    hub.depth = 1;
+    Platform::Device stick = device("SanDisk", "Ultra", 0x0781, 0x5583);
+    stick.depth = 2;
+    stick.parent = 0;
+    stick.speedMbps = 5000.0;
+    stick.serial = "4C530001";
+    info.usb = {hub, stick};
+    info.audio = {
+        {.name = "Speakers (Realtek(R) Audio)", .flow = Platform::AudioFlow::Output},
+        {.name = "Microphone (USB Audio)", .flow = Platform::AudioFlow::Input},
+    };
+    return info;
+}
+
+TEST(SystemInfoSectionsTest, FormatsDeviceValues)
+{
+    EXPECT_EQ(SystemInfo::formatDeviceName(device("Intel Corporation", "Alder Lake-P GT2", 0x8086, 0x46A6)),
+              "Intel Corporation Alder Lake-P GT2 (8086:46A6)");
+    EXPECT_EQ(SystemInfo::formatDeviceName(device("Intel Corporation", "Intel(R) Wi-Fi 6E AX211", 0x8086, 0x51F0)),
+              "Intel(R) Wi-Fi 6E AX211 (8086:51F0)"); // the vendor isn't repeated
+    EXPECT_EQ(SystemInfo::formatDeviceName(device("Intel Corporation", "", 0x8086, 0x51F0)), "Intel Corporation device (8086:51F0)");
+    EXPECT_EQ(SystemInfo::formatDeviceName(device("", "", 0x1B21, 0x2142)), "Unknown device (1B21:2142)");
+    EXPECT_EQ(SystemInfo::formatDeviceName(device("", "Disabled thing", 0, 0)), "Disabled thing");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(1.5), "1.5 Mbps");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(480.0), "480 Mbps");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(5000.0), "5 Gbps");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(0.0), "");
+}
+
+TEST(SystemInfoSectionsTest, DevicesRowsWindows)
+{
+    const Section section = SystemInfo::buildDevicesSection(windowsDevices());
+    EXPECT_EQ(section.title, "Devices");
+    EXPECT_EQ(findRow(section, "Problem devices")->value, "1");
+    EXPECT_EQ(findRow(section, "Problem device")->value, "Intel(R) Wi-Fi 6E AX211 (8086:51F0): This device cannot start (Code 10)");
+    EXPECT_EQ(findRow(section, "Display adapters")->value, "NVIDIA GeForce RTX 4070 (10DE:2786), PCI 01:00.0, driver nvlddmkm");
+    EXPECT_EQ(findRow(section, "Network adapters")->value, "Intel(R) Wi-Fi 6E AX211 (8086:51F0), This device cannot start (Code 10)");
+    EXPECT_EQ(findRow(section, "USB 1")->value, "Generic USB Hub (05E3:0610)");
+    EXPECT_EQ(findRow(section, "USB 2")->value, "SanDisk Ultra (0781:5583), 5 Gbps, via Generic USB Hub (05E3:0610)");
+    const Row* serial = findRow(section, "USB 2 serial number");
+    ASSERT_NE(serial, nullptr);
+    EXPECT_TRUE(serial->isIdentifier);
+    EXPECT_EQ(findRow(section, "USB 1 serial number"), nullptr);
+    EXPECT_EQ(findRow(section, "Audio output")->value, "Speakers (Realtek(R) Audio)");
+    EXPECT_EQ(findRow(section, "Audio input")->value, "Microphone (USB Audio)");
+    // PCI rows are grouped by class: Display adapters before Network adapters.
+    const auto display = std::ranges::find(section.rows, "Display adapters", &Row::label);
+    const auto network = std::ranges::find(section.rows, "Network adapters", &Row::label);
+    EXPECT_LT(display, network);
+}
+
+TEST(SystemInfoSectionsTest, DevicesRowsEmptyAndUnreadable)
+{
+    Platform::DevicesInfo empty;
+    empty.available = true;
+    empty.family = Platform::OsFamily::Linux;
+    empty.pciRead = true;
+    empty.problemsRead = true;
+    empty.usbRead = true;
+    empty.audioRead = true;
+    const Section none = SystemInfo::buildDevicesSection(empty);
+    EXPECT_EQ(findRow(none, "Problem devices")->value, "None");
+    EXPECT_EQ(findRow(none, "PCI devices")->value, "None found");
+    EXPECT_EQ(findRow(none, "USB devices")->value, "None found");
+    EXPECT_EQ(findRow(none, "Audio")->value, "No active devices");
+
+    Platform::DevicesInfo unread;
+    unread.available = true;
+    unread.family = Platform::OsFamily::Linux;
+    const Section muted = SystemInfo::buildDevicesSection(unread);
+    EXPECT_EQ(findRow(muted, "Problem devices")->unavailableReason, "/sys/bus/pci/devices couldn't be listed");
+    EXPECT_EQ(findRow(muted, "USB devices")->unavailableReason, "/sys/bus/usb/devices couldn't be listed");
+    EXPECT_FALSE(findRow(muted, "Audio")->available());
+    unread.family = Platform::OsFamily::Windows;
+    EXPECT_EQ(findRow(SystemInfo::buildDevicesSection(unread), "PCI devices")->unavailableReason, "SetupAPI couldn't list the devices");
+}
+
+TEST(SystemInfoSectionsTest, DevicesSectionComesLast)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.graphics = windowsGraphics();
+    all.devices = windowsDevices();
+    const auto sections = SystemInfo::buildSystemInfoSections(all, windowsHost());
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[1].title, "Graphics & displays");
+    EXPECT_EQ(sections[2].title, "Devices");
+}
+
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
 {
     EXPECT_TRUE(SystemInfo::buildSystemInfoSections(Domain::SystemInfoSnapshot{}).empty());
@@ -1106,6 +1223,27 @@ TEST_F(SystemInfoViewRenderTest, GraphicsSectionRendersAndHidesMonitorSerials)
     ASSERT_EQ(state.visible.size(), 2U);
 
     state.filter = "display 1";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 1U); // the serial is hidden
+
+    state.showIdentifiers = true;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 2U);
+}
+
+TEST_F(SystemInfoViewRenderTest, DevicesSectionRendersAndHidesUsbSerials)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.devices = windowsDevices();
+    SystemInfoViewState state;
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+
+    state.filter = "usb 2";
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 1U); // the serial is hidden

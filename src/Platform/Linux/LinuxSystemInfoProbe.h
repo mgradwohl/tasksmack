@@ -17,7 +17,8 @@ namespace Platform
 /// statvfs (LinuxStorage.h, #1517); Secure Boot, the TPM, security modules, lockdown and CPU
 /// vulnerabilities from /sys (LinuxPlatformSecurity.h, #1514); hwmon and thermal-zone sensors
 /// (LinuxSensors.h, #1522); GPUs and monitors from /sys/class/drm and the display server from the
-/// session environment (LinuxGraphics.h, #1519).
+/// session environment (LinuxGraphics.h, #1519); PCI and USB devices from /sys/bus and audio from
+/// /proc/asound (LinuxDevices.h, #1520).
 class LinuxSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -35,6 +36,7 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] GraphicsInfo readGraphics() override;
     [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override;
     [[nodiscard]] SensorsInfo readSensors() override;
+    [[nodiscard]] DevicesInfo readDevices() override;
 
   private:
     std::filesystem::path m_Root;
