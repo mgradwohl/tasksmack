@@ -47,19 +47,19 @@ struct IdNames
 
 /// The value of @p digits hex digits at the start of @p line followed by two spaces, and the name after
 /// them; false when the line isn't one.
-template<typename T> [[nodiscard]] bool parseIdLine(std::string_view line, std::size_t digits, T& id, std::string_view& name) noexcept
+template<typename T> [[nodiscard]] bool parseIdLine(std::string_view line, std::size_t digits, T& id, std::string_view& name)
 {
     if (line.size() < digits + 3 || line[digits] != ' ' || line[digits + 1] != ' ')
     {
         return false;
     }
-    const auto [end, ec] = std::from_chars(line.data(), line.data() + digits, id, 16);
-    if (ec != std::errc{} || end != line.data() + digits)
+    const std::string_view hex = line.substr(0, digits);
+    const auto [end, ec] = std::from_chars(hex.data(), hex.data() + hex.size(), id, 16);
+    if (ec != std::errc{} || end != hex.data() + hex.size())
     {
         return false;
     }
-    name = line;
-    name.remove_prefix(digits + 2); // in range: checked above, and remove_prefix doesn't throw
+    name = line.substr(digits + 2);
     while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
     {
         name.remove_suffix(1);
