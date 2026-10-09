@@ -6,12 +6,14 @@
 #include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <format>
 #include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
