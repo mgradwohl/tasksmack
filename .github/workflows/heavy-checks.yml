@@ -171,7 +171,7 @@ jobs:
           name: coverage-report
           path: coverage/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -297,7 +297,7 @@ jobs:
           name: windows-coverage-report
           path: coverage/
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -501,7 +501,7 @@ jobs:
           path: |
             sanitizer-logs/${{ matrix.preset }}.log
             sanitizer-reports/${{ matrix.preset }}.html
-          retention-days: 14
+          retention-days: 5
 
       - name: Fail job if sanitizer found issues
         if: steps.sanitizer-test.outputs.test_result != '0'
@@ -612,7 +612,7 @@ jobs:
           path: |
             perf-data/benchmark-current.json
             benchmark-regression-output.txt
-          retention-days: 30
+          retention-days: 7
 
       - name: Fail on regression
         if: steps.regression-check.outputs.exit_code != '0'

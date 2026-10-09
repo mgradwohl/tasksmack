@@ -63,7 +63,7 @@ jobs:
         with:
           name: clang-tidy-results
           path: clang-tidy-output.txt
-          retention-days: 14
+          retention-days: 5
 
   # Windows-only code (src/Platform/Windows/, the _WIN32 branches of shared files). Blocking,
   # like the Linux job: ci.yml runs the same job on pull requests and gates CI Success on it
@@ -115,4 +115,4 @@ jobs:
         with:
           name: clang-tidy-results-windows
           path: clang-tidy-windows-output.txt
-          retention-days: 14
+          retention-days: 5

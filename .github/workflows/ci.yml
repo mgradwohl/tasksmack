@@ -299,7 +299,7 @@ jobs:
           name: clang-tidy-results
           path: clang-tidy-output.txt
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 5
 
   # Blocking clang-tidy for Windows-only code (#1233). The Linux job above can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
@@ -395,7 +395,7 @@ jobs:
           name: clang-tidy-results-windows
           path: clang-tidy-windows-output.txt
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 5
 
   include-analysis:
     needs: [detect-docs-only, build-linux-debug]
@@ -538,7 +538,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📦 Full report available in artifacts (retention: 14 days)" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Full report available in artifacts (retention: 5 days)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "💡 **Tip:** IWYU suggestions are advisory and context-dependent. Review each suggestion before applying." >> $GITHUB_STEP_SUMMARY
 
@@ -548,7 +548,7 @@ jobs:
         with:
           name: iwyu-results
           path: iwyu-output.txt
-          retention-days: 14
+          retention-days: 5
 
   # Blocking ASan+UBSan run on PRs (#1406). It used to be advisory (`|| true` plus
   # continue-on-error), so a PR could merge with a sanitizer finding and only the push-to-main run
@@ -634,7 +634,7 @@ jobs:
         with:
           name: asan-ubsan
           path: asan-ubsan-output.txt
-          retention-days: 7
+          retention-days: 5
 
   # ── Gate job ────────────────────────────────────────────────────────────────
   # A single required check for branch protection.  All required jobs must succeed
