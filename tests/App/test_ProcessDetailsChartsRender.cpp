@@ -295,6 +295,92 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewFollowsTheSharedMemoryAndPowerCap
     EXPECT_EQ(plots[3], resourceSeries());
 }
 
+// The child window drawn for the card @p id (an ImGui child is named "<parent>/<id>_<hash>").
+[[nodiscard]] const ImGuiWindow* findCard(const std::string& id)
+{
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    for (const ImGuiWindow* window : g.Windows)
+    {
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string(window->Name).find("/" + id + "_") != std::string::npos)
+        {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+using CardCharts = std::vector<std::pair<std::string, SeriesLabels>>;
+
+// Each chart section is a bordered card (#1589, #1590), in order, its chart inside it; together the
+// cards fill the pane without overflowing it, as the card padding is counted as non-chart height.
+void expectChartsInFillingCards(const CardCharts& cards)
+{
+    float lastBottom = 0.0F;
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    for (const auto& [id, labels] : cards)
+    {
+        SCOPED_TRACE(id);
+        const ImGuiWindow* card = findCard(id);
+        ASSERT_NE(card, nullptr);
+        EXPECT_NE(card->ChildFlags & ImGuiChildFlags_Borders, 0);
+        EXPECT_GE(card->Pos.y, lastBottom); // In order, none overlapping the one before
+        lastBottom = card->Pos.y + card->Size.y;
+
+        bool found = false;
+        for (int i = 0; i < context.Plots.GetBufSize(); ++i)
+        {
+            ImPlotPlot* plot = context.Plots.GetByIndex(i);
+            SeriesLabels plotLabels;
+            for (int item = 0; plot != nullptr && item < plot->Items.GetLegendCount(); ++item)
+            {
+                plotLabels.emplace(plot->Items.GetLegendLabel(item));
+            }
+            if (plot == nullptr || plotLabels != labels)
+            {
+                continue;
+            }
+            found = true;
+            EXPECT_TRUE(card->Rect().Contains(plot->FrameRect)) << "the chart is drawn outside its card";
+        }
+        EXPECT_TRUE(found);
+    }
+
+    const ImGuiWindow* pane = ImGui::FindWindowByName("Details");
+    ASSERT_NE(pane, nullptr);
+    EXPECT_LE(pane->ScrollMax.y, 0.0F) << "the cards overflow the pane";
+    // Filled: what is left below the last card is less than one line, not an empty band.
+    EXPECT_LT(pane->InnerRect.Max.y - lastBottom, ImGui::GetFontSize() + ImGui::GetStyle().ItemSpacing.y);
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, OverviewChartsSitInsideCardsThatFillThePane)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.ctx.hasPowerUsage = true;
+    ProcessDetailsCharts charts;
+    for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
+    {
+        renderOverview(charts, inputs.ctx);
+    }
+
+    ASSERT_EQ(plotsDrawn().size(), 4U);
+    // Settled, not cycling: an auto-sized card lagged its chart by a frame, and the fill layout's
+    // correction for that lag made the heights cycle every six frames without end.
+    const ImGuiWindow* cpuCard = findCard("##ProcCpuCard");
+    ASSERT_NE(cpuCard, nullptr);
+    const float settledHeight = cpuCard->Size.y;
+    for (int frame = 0; frame < 12; ++frame)
+    {
+        renderOverview(charts, inputs.ctx);
+        EXPECT_FLOAT_EQ(cpuCard->Size.y, settledHeight) << "frame " << frame;
+    }
+    expectChartsInFillingCards({
+        {"##ProcCpuCard", cpuSeries()},
+        {"##ProcMemoryCard", memorySeries()},
+        {"##ProcPowerCard", SeriesLabels{"Power"}},
+        {"##ProcResourcesCard", resourceSeries()},
+    });
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, OverviewDrawsNothingWithoutHistory)
 {
     ChartInputs inputs(busyPoint);
@@ -327,6 +413,22 @@ TEST_F(ProcessDetailsChartsRenderTest, NetworkTabDrawsIoThenNetwork)
     ASSERT_EQ(plots.size(), 2U);
     EXPECT_EQ(plots[0], (SeriesLabels{"Read", "Write"}));
     EXPECT_EQ(plots[1], (SeriesLabels{"Sent", "Received"}));
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, NetworkChartsSitInsideCardsThatFillThePane)
+{
+    ChartInputs inputs(busyPoint);
+    ProcessDetailsCharts charts;
+    for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
+    {
+        runFrame([&] { charts.renderNetworkTab(inputs.ctx); });
+    }
+
+    ASSERT_EQ(plotsDrawn().size(), 2U);
+    expectChartsInFillingCards({
+        {"##ProcIoCard", SeriesLabels{"Read", "Write"}},
+        {"##ProcNetworkCard", SeriesLabels{"Sent", "Received"}},
+    });
 }
 
 TEST_F(ProcessDetailsChartsRenderTest, NetworkTabWithOnlyGapsShowsItsEmptyState)
