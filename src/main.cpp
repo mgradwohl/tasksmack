@@ -4,6 +4,7 @@
 
 #include "App/AboutLayer.h"
 #include "App/ElevationNoticeLayer.h"
+#include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
 #include "App/SettingsLayer.h"
 #include "App/ShellLayer.h"
@@ -293,9 +294,10 @@ auto runApp() -> int
         // panels need, which the title bar folds into the window's minimum size (#1207).
         appRef.pushLayer<App::ShellLayer>().setTitleBar(titleBar);
 
-        // Dialog layers (modal overlays), opened by OpenAboutEvent, OpenSettingsEvent and
-        // OpenElevationNoticeEvent. The elevation notice is shown at startup when running without
-        // elevated privileges.
+        // The Help window (non-modal, #172) and the dialog layers (modal overlays), opened by
+        // OpenHelpEvent, OpenAboutEvent, OpenSettingsEvent and OpenElevationNoticeEvent. The
+        // elevation notice is shown at startup when running without elevated privileges.
+        appRef.pushLayer<App::HelpLayer>();
         appRef.pushLayer<App::AboutLayer>();
         appRef.pushLayer<App::SettingsLayer>();
         appRef.pushLayer<App::ElevationNoticeLayer>();

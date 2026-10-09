@@ -1,6 +1,7 @@
 #include "App/AboutLayer.h"
 
 #include "App/AboutDialog.h"
+#include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
@@ -23,6 +24,11 @@ AboutLayer::~AboutLayer() = default;
 void AboutLayer::onAttach()
 {
     loadIcon();
+    // TASKSMACK_OPEN=about (#172): open at startup, for an unattended capture.
+    if (SelectOverride::startupDialog() == SelectOverride::StartupDialog::About)
+    {
+        requestOpen();
+    }
 }
 
 void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
@@ -39,7 +45,7 @@ void AboutLayer::onEvent(Core::Event& event)
 {
     Core::EventDispatcher dispatcher(event);
 
-    // Listen for about/help requests
+    // Listen for About requests: Help's "About TaskSmack..." link and Settings (#172)
     dispatcher.dispatch<Core::OpenAboutEvent>(
         [this](Core::OpenAboutEvent&)
         {

@@ -90,7 +90,22 @@ bool testHookActive()
     {
         return SDL_getenv(std::string(variable).c_str());
     };
-    return anyTestHookActive(read(MAIN_TAB_ENV_VAR), read(PID_ENV_VAR), read(NAME_ENV_VAR), read(TAB_ENV_VAR));
+    return anyTestHookActive(read(MAIN_TAB_ENV_VAR), read(PID_ENV_VAR), read(NAME_ENV_VAR), read(TAB_ENV_VAR), read(OPEN_ENV_VAR));
+}
+
+std::optional<StartupDialog> startupDialog()
+{
+    // Read once, as active() is.
+    static const std::optional<StartupDialog> dialog = [] -> std::optional<StartupDialog>
+    {
+        const StartupDialogChoice choice = parseStartupDialog(SDL_getenv(std::string(OPEN_ENV_VAR).c_str()));
+        if (!choice.warning.empty())
+        {
+            spdlog::warn("{}", choice.warning);
+        }
+        return choice.dialog;
+    }();
+    return dialog;
 }
 
 } // namespace App::SelectOverride

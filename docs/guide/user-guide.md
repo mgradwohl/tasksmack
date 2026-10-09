@@ -108,7 +108,7 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 
 | Shortcut | Action |
 |----------|--------|
-| **F1** | About TaskSmack, which lists every keyboard shortcut (there is no separate help page) |
+| **F1** | Help: every keyboard shortcut, what each Processes column means, the tabs, and links to this guide and the issue tracker (see [Help and About](#help-and-about)) |
 | **F2** | Settings |
 | **F5** | Processes tab: switch between list and tree view |
 | **F9** | Kill the selected process: opens the usual Kill confirmation, never kills without it (Processes and Process Details tabs). With several processes selected in the Processes table, asks to kill all of them |
@@ -125,6 +125,12 @@ Process rows are color-coded by state (running, sleeping, stopped, zombie).
 | **Ctrl+Shift+M** | Toggle the Render Metrics overlay and the status bar's FPS readout |
 
 The table's keys work while the pointer is over the process table or after clicking in it. They move the selection through the rows in the order they are shown -- sorted, filtered, and in tree view with collapsed branches skipped -- and scroll the selected row into view; with no row selected (or the selected one filtered out or collapsed away), the first key selects the first row (**End** / **G**: the last). While the table has them, the arrow keys no longer move ImGui's own keyboard focus around it; **Tab** still does. The function keys (F1, F2, F5, F9, F10) and the process table's navigation keys do nothing while you are typing in the filter box or while a dialog or menu is open, and the function keys also do nothing with Ctrl, Shift, Alt or Super held. The older chords -- Ctrl+= / Ctrl+-, Ctrl+Shift+M and the window menu's Alt+Space / Ctrl+Space -- are not held back this way. **F9** acts only on a process you can see selected, and only on platforms that can kill; the confirmation names the process it was pressed for. With several processes selected, F9 asks to kill all of them, in one confirmation that lists them. Ctrl+A, like the navigation keys, does nothing while you are typing in the filter box (where it selects the typed text) or while a dialog or menu is open.
+
+### Help and About
+
+**F1**, or the **?** button in the title bar or the status bar, opens the **Help** window. It is not a dialog: you can keep it open beside the rest of TaskSmack, move it and resize it, and it keeps its place and size until you quit. It lists every keyboard shortcut grouped by where it works (Global, Processes, Process Details), with a box to find one by typing; describes each Processes column, with its units and platform notes, from the same text as the column headers' tooltips; gives one line on each tab; and links to this guide and the issue tracker. Escape or its close button closes it.
+
+**About TaskSmack** (the version, build, commit, licences and credits) opens from the link at the foot of the Help window, or from **About TaskSmack** in Settings' Advanced section.
 
 ### System Metrics
 
@@ -384,11 +390,11 @@ The Settings dialog (the gear icon) has three sections:
 
 - **Appearance:** Theme and Font size (Small to Largest).
 - **Performance:** Update interval (how often values are sampled) and History length (how much the charts keep).
-- **Advanced:** buttons that open `config.toml` and the user themes folder, and **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked.
+- **Advanced:** buttons that open `config.toml` and the user themes folder, and **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked, and **About TaskSmack**, which closes Settings (without saving) and opens About.
 
 **Save** writes your changes to `config.toml` and closes the dialog; **Cancel** (or Escape) closes it without changing anything. **Reset to defaults** sets every control in the dialog back to its default, and Save keeps them.
 
-Dialogs (Settings, About and the limited-data notice) are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Save buttons stay visible.
+Dialogs (Settings, About and the limited-data notice) and the Help window are kept inside the main window. When the font size or display scaling makes the Settings dialog taller than the window, its options scroll and the Cancel and Save buttons stay visible.
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
 

@@ -1280,7 +1280,7 @@ void TitleBarLayer::renderTitleBar()
     ImGui::SetCursorPos(ImVec2(buttonX, 0));
     if (ImGui::Button(ICON_FA_CIRCLE_QUESTION "##Help", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
     {
-        Core::OpenAboutEvent event;
+        Core::OpenHelpEvent event;
         Core::Application::get().raiseEvent(event);
     }
     const bool helpHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
@@ -1290,14 +1290,14 @@ void TitleBarLayer::renderTitleBar()
     {
         ImGui::PopFont();
     }
-    // The "?" opens the About box, so its tooltip says so rather than promising help (#1200).
+    // The "?" opens the Help window (#172); About is reached from its footer.
     if (settingsHovered)
     {
         ImGui::SetTooltip("Settings (F2)");
     }
     else if (helpHovered)
     {
-        ImGui::SetTooltip("About TaskSmack and keyboard shortcuts (F1)");
+        ImGui::SetTooltip("Help: keyboard shortcuts, columns and tabs (F1)");
     }
     ImGui::PopStyleColor(3); // Button colors
     ImGui::PopStyleVar(2);   // Frame padding, item spacing

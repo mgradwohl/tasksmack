@@ -1,7 +1,6 @@
 #include "App/AboutDialog.h"
 
 #include "App/DialogGeometry.h"
-#include "App/KeyboardShortcuts.h"
 #include "App/PlatformOpen.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
@@ -232,34 +231,8 @@ void renderCredits()
     }
 }
 
-/// TaskSmack has no separate help page: F1 opens this dialog, which lists every shortcut (#170). Both
-/// columns wrap, so at a large font or in a narrow window no shortcut is clipped.
-void renderShortcuts()
-{
-    const auto& theme = UI::Theme::get();
-    // "Shortcuts", not "Keyboard shortcuts": a header is one unwrapped line, and the longer title
-    // overran the body at a large font in a small window (#1490 review).
-    (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Shortcuts");
-    constexpr ImGuiTableFlags flags = ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX;
-    if (ImGui::BeginTable("##Shortcuts", 2, flags))
-    {
-        constexpr float KEYS_COLUMN_WEIGHT = 2.0F;
-        constexpr float DESCRIPTION_COLUMN_WEIGHT = 3.0F;
-        ImGui::TableSetupColumn("##Keys", ImGuiTableColumnFlags_WidthStretch, KEYS_COLUMN_WEIGHT);
-        ImGui::TableSetupColumn("##Description", ImGuiTableColumnFlags_WidthStretch, DESCRIPTION_COLUMN_WEIGHT);
-        for (const KeyboardShortcuts::ShortcutHelpEntry& entry : KeyboardShortcuts::SHORTCUT_HELP)
-        {
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::PushStyleColor(ImGuiCol_Text, theme.accentColor(0));
-            wrapped(entry.keys);
-            ImGui::PopStyleColor();
-            ImGui::TableNextColumn();
-            wrapped(entry.description);
-        }
-        ImGui::EndTable();
-    }
-}
+// The keyboard shortcuts were listed here until Help became a window of its own (#172): About is
+// product information only, and F1 opens App::HelpWindow.
 
 } // namespace
 
@@ -318,7 +291,7 @@ void render(bool& openRequested, const UI::Texture& icon)
 
     // Everything above the OK row scrolls in a child fitted to its content but never taller than
     // leaves room for that row, so the button stays in the dialog at any font size in any window
-    // height (#1129): the shortcut list scrolls instead of growing the dialog (#1490). Reserved: the
+    // height (#1129): the body scrolls instead of growing the dialog (#1490). Reserved: the
     // title bar, the window padding, and the footer with the item spacing before it -- laid out here
     // from the inputs dialogFooter() will see, so the height reserved is the height it takes.
     const float okWidth = UI::Widgets::footerButtonWidth({OK_LABEL}, ABOUT_BUTTON_MIN_EM);
@@ -336,8 +309,6 @@ void render(bool& openRequested, const UI::Texture& icon)
     renderDetails();
     UI::Widgets::sectionGap();
     renderCredits();
-    UI::Widgets::sectionGap();
-    renderShortcuts();
     ImGui::EndChild(); // ##AboutBody
 
     ImGui::PopStyleColor();

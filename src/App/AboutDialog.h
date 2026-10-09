@@ -15,7 +15,7 @@ inline constexpr const char* POPUP_ID = "About TaskSmack";
 /// can be rendered headless in the tests (CONTRIBUTING.md, "Testing App/UI code that needs a live
 /// ImGui context").
 ///
-/// @param openRequested  Set by an OpenAboutEvent (F1, the title bar's ? button); cleared here.
+/// @param openRequested  Set by an OpenAboutEvent (Help's "About TaskSmack..." link, Settings); cleared here.
 /// @param icon           The application icon; an invalid texture leaves its space empty.
 void render(bool& openRequested, const UI::Texture& icon);
 

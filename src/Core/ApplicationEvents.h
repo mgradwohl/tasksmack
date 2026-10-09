@@ -164,7 +164,7 @@ class OpenSettingsEvent : public Event
     EVENT_CLASS_TYPE(OpenSettings)
 };
 
-/// About dialog request event - emitted when user wants to open about/help
+/// About dialog request event - emitted from Help's "About TaskSmack..." link and from Settings
 class OpenAboutEvent : public Event
 {
   public:
@@ -176,6 +176,20 @@ class OpenAboutEvent : public Event
     }
 
     EVENT_CLASS_TYPE(OpenAbout)
+};
+
+/// Help window request event - emitted by F1 and the title bar's and status bar's ? buttons (#172)
+class OpenHelpEvent : public Event
+{
+  public:
+    OpenHelpEvent() = default;
+
+    [[nodiscard]] auto toString() const -> std::string override
+    {
+        return "OpenHelpEvent";
+    }
+
+    EVENT_CLASS_TYPE(OpenHelp)
 };
 
 /// Elevation notice dialog request event - emitted at startup when running without elevated privileges
