@@ -19,6 +19,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -50,6 +51,12 @@ std::unique_ptr<IStartupProbe> makeStartupProbe()
 {
     // XDG autostart (~/.config/autostart, /etc/xdg/autostart) is the Linux lane's follow-up to #801.
     return std::make_unique<UnsupportedStartupProbe>();
+}
+
+std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
+{
+    // The Operating system probes land with the next commit (#1512).
+    return std::make_unique<UnsupportedSystemInfoProbe>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

@@ -158,6 +158,9 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ServicesView.cpp
     src/App/Panels/StartupPanel.cpp
     src/App/Panels/StartupView.cpp
+    src/App/Panels/SystemInfoPanel.cpp
+    src/App/Panels/SystemInfoSections.cpp
+    src/App/Panels/SystemInfoView.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
@@ -165,6 +168,7 @@ set(TASKSMACK_SOURCES
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
     src/Domain/ServiceModel.cpp
+    src/Domain/SystemInfoModel.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
@@ -241,6 +245,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IStartupProbe.h
     src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
+    src/Platform/ISystemInfoProbe.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
@@ -259,6 +264,7 @@ set(TASKSMACK_HEADERS
     src/Domain/GPUModel.h
     src/Domain/StartupModel.h
     src/Domain/ServiceModel.h
+    src/Domain/SystemInfoModel.h
 )
 
 # Platform-specific headers

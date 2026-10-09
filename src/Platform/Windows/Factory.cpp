@@ -10,6 +10,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "WindowsDiskProbe.h"
 #include "WindowsGPUProbe.h"
@@ -53,6 +54,12 @@ std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 std::unique_ptr<IStartupProbe> makeStartupProbe()
 {
     return std::make_unique<WindowsStartupProbe>();
+}
+
+std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
+{
+    // The Operating system probes land with the next commit (#1512).
+    return std::make_unique<UnsupportedSystemInfoProbe>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

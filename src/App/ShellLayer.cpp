@@ -60,6 +60,9 @@ constexpr const char* SERVICES_TAB_TEXT = "Services";                           
 constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab";  // #800
 constexpr const char* STARTUP_TAB_TEXT = "Startup";                                   // #801
 constexpr const char* STARTUP_TAB_LABEL = ICON_FA_POWER_OFF "  Startup###StartupTab"; // #801
+// #1399. Last: static reference facts, visited least often, and the tabs before it keep their places.
+constexpr const char* SYSTEM_INFO_TAB_TEXT = "System";
+constexpr const char* SYSTEM_INFO_TAB_LABEL = ICON_FA_SERVER "  System###SystemInfoTab";
 
 // The status bar's Settings/About buttons (native decorations only), named once: their widths are
 // measured before they are drawn, so the text beside them can make room (#1200).
@@ -97,7 +100,11 @@ ShellLayer::ShellLayer()
               {.panel = m_StartupPanel,
                .eventName = "Startup",
                .label = [] { return STARTUP_TAB_LABEL; },
-               .text = [] { return std::string_view(STARTUP_TAB_TEXT); }}})
+               .text = [] { return std::string_view(STARTUP_TAB_TEXT); }},
+              {.panel = m_SystemInfoPanel,
+               .eventName = "SystemInfo",
+               .label = [] { return SYSTEM_INFO_TAB_LABEL; },
+               .text = [] { return std::string_view(SYSTEM_INFO_TAB_TEXT); }}})
 {}
 
 void ShellLayer::onAttach()
