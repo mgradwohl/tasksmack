@@ -36,19 +36,22 @@ constexpr const char* CANCEL_LABEL = "Cancel";
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).
 constexpr float BUTTON_MIN_EM = 11.25F;
 
-// The Windows dialog's width, in ems: room for the class combo and the list's three columns.
+// The Windows dialog's width, in ems, unless its class slider needs more for its stop names (#1538);
+// room for the list's three columns too.
 constexpr float WINDOWS_DIALOG_WIDTH_EM = 30.0F;
 
 /// The dialog's width: room for the nice slider at its authored width and its "High" / "Low" labels
-/// (on Windows, for the class combo and the list), never wider than the viewport allows.
+/// (on Windows, for the class slider with its stop names) and for the process list, never wider than
+/// the viewport allows.
 [[nodiscard]] float dialogWidth()
 {
     const float emPx = ImGui::GetFontSize();
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float contentWidth = Detail::PRIORITY_USES_WINDOWS_CLASSES
-                                 ? WINDOWS_DIALOG_WIDTH_EM * emPx
-                                 : (Detail::PRIORITY_SLIDER_WIDTH_EM * emPx) + (2.0F * Detail::PRIORITY_LABEL_PADDING_EM * emPx) +
-                                       ImGui::CalcTextSize("High").x + ImGui::CalcTextSize("Low").x;
+    const float contentWidth =
+        Detail::PRIORITY_USES_WINDOWS_CLASSES
+            ? std::max(WINDOWS_DIALOG_WIDTH_EM * emPx, Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER))
+            : (Detail::PRIORITY_SLIDER_WIDTH_EM * emPx) + (2.0F * Detail::PRIORITY_LABEL_PADDING_EM * emPx) +
+                  ImGui::CalcTextSize("High").x + ImGui::CalcTextSize("Low").x;
     const float wanted = contentWidth + (style.WindowPadding.x * 2.0F);
     return std::min(wanted, UI::DialogMetrics::computeDialogMaxExtent(ImGui::GetMainViewport()->WorkSize.x));
 }

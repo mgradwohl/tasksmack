@@ -1,12 +1,12 @@
 #pragma once
 
 // The Processes table's "Set priority for N processes..." dialog (#1484, #1539): one priority, picked with
-// the same control as Process Details' (Detail::renderPriorityPicker(): the nice slider, or the Windows
-// priority-class combo), for every selected process. It is the only dialog for the change: it lists the
-// processes it will touch -- name, PID and current priority, TaskSmack itself and PID 1 always named --
-// and its "Apply to N processes" is the confirmation. Apply hands the picked value to ProcessesPanel,
-// which sets it on each listed process by identity (ProcessBatch::runBatchPriority()). Nothing here calls
-// the platform, so Cancel can change nothing.
+// the same control as Process Details' (Detail::renderPriorityPicker(): the nice slider, or on Windows the
+// slider with a stop per priority class, #1538), for every selected process. It is the only dialog for
+// the change: it lists the processes it will touch -- name, PID and current priority, TaskSmack itself
+// and PID 1 always named -- and its "Apply to N processes" is the confirmation. Apply hands the picked
+// value to ProcessesPanel, which sets it on each listed process by identity
+// (ProcessBatch::runBatchPriority()). Nothing here calls the platform, so Cancel can change nothing.
 
 #include "App/Panels/ProcessBatchAction.h"
 #include "Domain/PriorityConfig.h"
