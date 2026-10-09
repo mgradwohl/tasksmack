@@ -18,6 +18,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -88,6 +89,12 @@ std::unique_ptr<IServiceProbe> makeServiceProbe()
 {
     // systemd (D-Bus org.freedesktop.systemd1) is the Linux lane's follow-up to #800.
     return std::make_unique<UnsupportedServiceProbe>();
+}
+
+std::unique_ptr<IServiceActions> makeServiceActions()
+{
+    // systemd control (D-Bus StartUnit/StopUnit/...) is the Linux lane's follow-up to #1577.
+    return std::make_unique<UnsupportedServiceActions>();
 }
 
 } // namespace Platform

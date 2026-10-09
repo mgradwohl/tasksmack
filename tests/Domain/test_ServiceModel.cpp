@@ -57,6 +57,20 @@ TEST(ServiceModelTest, SamplePublishesServicesOrderedByNameIgnoringCase)
     EXPECT_EQ(publication->services[2].pid, 1234U);
 }
 
+TEST(ServiceModelTest, AConfigRereadRequestReachesTheProbeOnceOnTheNextSample)
+{
+    auto probe = std::make_unique<Mocks::MockServiceProbe>();
+    auto* raw = probe.get();
+    ServiceModel model(std::move(probe));
+
+    model.sample();
+    EXPECT_EQ(raw->forgetCount(), 0);
+    model.requestConfigReread(); // after a service action (#1577)
+    model.sample();
+    model.sample();
+    EXPECT_EQ(raw->forgetCount(), 1);
+}
+
 TEST(ServiceModelTest, EachSampleIsANewImmutableGeneration)
 {
     auto probe = std::make_unique<Mocks::MockServiceProbe>();

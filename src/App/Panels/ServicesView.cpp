@@ -1,6 +1,7 @@
 #include "ServicesView.h"
 
 #include "App/Panels/ProcessTableLayout.h"
+#include "App/Panels/ServiceActionsView.h"
 #include "Domain/ServiceModel.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/EmptyState.h"
@@ -201,7 +202,8 @@ buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_vi
 
 ServicesViewContent renderServicesView(const Domain::ServicePublication* publication,
                                        const Platform::ServiceCapabilities& capabilities,
-                                       ServicesViewState& state)
+                                       ServicesViewState& state,
+                                       ServiceActionsView* actions)
 {
     if (!capabilities.canEnumerate)
     {
@@ -243,6 +245,19 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
         // The rows are the last good read; the latest one failed.
         ImGui::TextColored(scheme.textMuted, ICON_FA_TRIANGLE_EXCLAMATION "  Out of date: %s", publication->failureReason.c_str());
     }
+    if (actions != nullptr && actions->supported())
+    {
+        // Looked up only while a row is selected, by name, so a re-sort or a new sample keeps it; the
+        // list is a few hundred services at most.
+        const Platform::ServiceInfo* selected = nullptr;
+        if (!state.selectedName.empty())
+        {
+            const auto found = std::ranges::find(publication->services, state.selectedName, &Platform::ServiceInfo::name);
+            selected = (found != publication->services.end()) ? &*found : nullptr;
+        }
+        actions->renderActionBar(selected);
+        actions->renderResultLine();
+    }
 
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
                                             ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
@@ -282,13 +297,23 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
         {
             const auto& service = publication->services[state.rows[static_cast<std::size_t>(row)]];
             ImGui::TableNextRow();
-            ImGui::PushID(row);
+            // Keyed by the service, not the row: a re-sort or a new sample must not move an open row
+            // menu onto another service.
+            ImGui::PushID(service.name.c_str());
 
             ImGui::TableNextColumn();
-            ImGui::Selectable(service.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+            if (ImGui::Selectable(service.name.c_str(), state.selectedName == service.name, ImGuiSelectableFlags_SpanAllColumns) ||
+                ImGui::IsItemClicked(ImGuiMouseButton_Right))
+            {
+                state.selectedName = service.name;
+            }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             {
                 renderServiceTooltip(service);
+            }
+            if (actions != nullptr)
+            {
+                actions->renderContextMenu(service);
             }
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(service.displayName.c_str());
