@@ -43,6 +43,23 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
     return std::min(wanted, availableWidthPx);
 }
 
+/// Height of one of the Overview's section cards (#1537) holding its header line and @p rows rows of
+/// text: one text line each (ImGui::GetTextLineHeightWithSpacing()), inside the card's window padding
+/// top and bottom. Identity and Runtime both take the taller of their two heights, and Actions beside
+/// them takes it too, so the three cards share their top and bottom edges.
+///
+/// @param rows                 The card's rows, not counting the header.
+/// @param lineHeightPx         ImGui::GetTextLineHeightWithSpacing().
+/// @param windowPaddingYPx     ImGuiStyle::WindowPadding.y, one side.
+[[nodiscard]] inline float computeInfoCardHeight(float rows, float lineHeightPx, float windowPaddingYPx) noexcept
+{
+    const auto nonNegative = [](float value) noexcept
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    return ((nonNegative(rows) + 1.0F) * nonNegative(lineHeightPx)) + (2.0F * nonNegative(windowPaddingYPx));
+}
+
 /// Width of each process-control button (Terminate, Kill, Suspend, Resume): the widest label among
 /// those shown, with the frame padding on both sides, so the buttons are equal and as narrow as their
 /// labels allow (#1493). They were a 180px em floor apiece (#949), then stretched to half the Actions

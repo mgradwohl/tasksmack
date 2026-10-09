@@ -85,10 +85,10 @@ sectionHeader(const char* icon, std::string_view title, std::string_view detail 
     return hovered;
 }
 
-/// Quieter context after the last item, on its line: "current: Normal" after a priority row's Apply
-/// (#1493). Drawn only when it fits before the window's content edge, and drawn rather than submitted,
-/// so the item before it stays the last item and the row's content width is its controls'. A caller
-/// that must always show @p text puts it in a tooltip as well.
+/// Quieter context after the last item, on its line: "current: Best-effort (level 4)" after the I/O
+/// priority row's Apply (#1493). Drawn only when it fits before the window's content edge, and drawn
+/// rather than submitted, so the item before it stays the last item and the row's content width is
+/// its controls'. A caller that must always show @p text puts it in a tooltip as well.
 /// @return Whether it was drawn.
 inline bool trailingNote(std::string_view text)
 {

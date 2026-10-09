@@ -1,8 +1,8 @@
 #include "ProcessPriorityView.h"
 
 #include "Platform/IProcessActions.h"
+#include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
-#include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -26,8 +26,6 @@ namespace App
 
 namespace
 {
-
-using Detail::PRIORITY_APPLY_BUTTON_MIN_EM;
 
 // The Apply button's label, named once so its width is measured from what is drawn (icon included).
 constexpr const char* APPLY_LABEL = ICON_FA_CHECK "  Apply";
@@ -356,23 +354,15 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
 
 float ProcessPriorityView::renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target)
 {
-    const auto& theme = UI::Theme::get();
-
-    // A row label and the process's current priority, quieter, rather than a header: the Actions
-    // block's row (#1493).
+    // A row label rather than a header: the Actions block's row (#1493). The process's current priority
+    // is Runtime's Priority row and this label's tooltip, not repeated beside it (#1537); the slider's
+    // badge shows the value picked.
     ImGui::TextUnformatted("Priority");
-    ImGui::SameLine();
 #ifdef _WIN32
-    // The class's name, unformatted: no string is built per frame.
     const std::string_view currentClass = Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice.value_or(0)));
-    ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
-    ImGui::TextUnformatted("current:");
-    ImGui::SameLine();
-    ImGui::TextUnformatted(currentClass.data(), currentClass.data() + currentClass.size());
-    ImGui::PopStyleColor();
+    ImGui::SetItemTooltip("Current priority class: %.*s", static_cast<int>(currentClass.size()), currentClass.data());
 #else
-    const std::string currentDetail = "current nice: " + std::to_string(currentNice.value_or(0));
-    ImGui::TextColored(theme.scheme().textMuted, "%s", currentDetail.c_str());
+    ImGui::SetItemTooltip("Current nice value: %d", currentNice.value_or(0));
 #endif
 
     const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
@@ -388,7 +378,7 @@ float ProcessPriorityView::renderSlider(std::optional<std::int32_t> currentNice,
     }
     if (Detail::windowsPriorityClassFromNice(m_NiceValue) == Detail::WindowsPriorityClass::Realtime)
     {
-        ImGui::TextColored(theme.scheme().textWarning,
+        ImGui::TextColored(UI::Theme::get().scheme().textWarning,
                            ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
     }
 #endif
@@ -596,17 +586,17 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
                                             float controlRightEdge)
 {
     const auto& theme = UI::Theme::get();
-    const float emPx = ImGui::GetFontSize();
     // Disabled without an edit, and also until a snapshot has confirmed the start time: no platform
     // acts on an unknown one (IProcessActions' checkProcessIdentity()).
     const bool enabled = canApply(currentNice, target);
     const bool waiting = waitingForProcessDetails(currentNice, target);
 
-    // Right-align the Apply button
+    // Right-align the Apply button. As wide as its label, the same rule as Terminate's and Kill's
+    // (#1537): its old em floor made it wider than the class combo beside it.
     // Capped to the panel for the same reason the track is: the content area does not scroll
     // horizontally, so a button wider than the space available would be clipped.
     const float applyButtonWidth =
-        std::min(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM),
+        std::min(ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, ImGui::GetStyle().FramePadding.x),
                  std::max(ImGui::GetContentRegionAvail().x, 1.0F));
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, controlRightEdge - applyButtonWidth));
 

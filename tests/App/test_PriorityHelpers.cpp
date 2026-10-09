@@ -57,7 +57,6 @@ TEST(PriorityHelpersTest, SliderMetricsReproduceOriginalPixelsAtReferenceEm)
     EXPECT_FLOAT_EQ(m.thumbOutlineThickness, 2.0F);
     EXPECT_FLOAT_EQ(m.labelPadding, 8.0F);
     EXPECT_FLOAT_EQ(m.thumbRadius, 12.0F * 0.6F);
-    EXPECT_FLOAT_EQ(PRIORITY_APPLY_BUTTON_MIN_EM * App::REFERENCE_EM_PX, 120.0F);
 }
 
 TEST(PriorityHelpersTest, SliderMetricsScaleLinearlyWithEm)
