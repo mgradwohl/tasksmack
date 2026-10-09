@@ -54,5 +54,15 @@ TEST(WindowsOsInfoMathTest, MachineNames)
     EXPECT_EQ(machineName(0), "");
 }
 
+TEST(WindowsOsInfoMathTest, PlatformRoleNames)
+{
+    EXPECT_EQ(platformRoleName(0), ""); // PlatformRoleUnspecified
+    EXPECT_EQ(platformRoleName(1), "Desktop");
+    EXPECT_EQ(platformRoleName(2), "Mobile");
+    EXPECT_EQ(platformRoleName(4), "Enterprise server");
+    EXPECT_EQ(platformRoleName(8), "Slate");
+    EXPECT_EQ(platformRoleName(9), "");
+}
+
 } // namespace
 } // namespace Platform::WindowsOsInfo

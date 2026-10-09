@@ -1,5 +1,6 @@
 #include "LinuxSystemInfoProbe.h"
 
+#include "LinuxFirmwareInfo.h"
 #include "LinuxOsInfo.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UserNameLookup.h"
@@ -74,6 +75,13 @@ OsInfo LinuxSystemInfoProbe::readOs()
     {
         info.utcOffsetMinutes = static_cast<int>(local.tm_gmtoff / 60);
     }
+    return info;
+}
+
+FirmwareInfo LinuxSystemInfoProbe::readFirmware()
+{
+    FirmwareInfo info;
+    LinuxFirmwareInfo::readFirmwareFacts(m_Root, info);
     return info;
 }
 

@@ -29,6 +29,7 @@ void SystemInfoModel::read()
     if (m_Capabilities.hasOs)
     {
         next->os = m_Probe->readOs();
+        next->firmware = m_Probe->readFirmware();
     }
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = static_cast<std::uint64_t>(now);

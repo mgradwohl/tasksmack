@@ -1,21 +1,26 @@
 /// @file test_LinuxOsInfo.cpp
 /// @brief Platform::LinuxOsInfo (#1512): os-release parsing, the zone from the /etc/localtime link,
-/// the locale choice, btime, and the file facts and container/VM hints read under a fixture root.
-/// LinuxOsInfo.h uses only the standard library, so these build and run on every platform.
+/// the locale choice, btime, and the file facts and container/VM hints read under a fixture root; and
+/// Platform::LinuxFirmwareInfo (#1513), the Firmware & board facts from /sys/class/dmi/id under one.
+/// Both headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Linux/LinuxFirmwareInfo.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <ios>
+#include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace Platform::LinuxOsInfo
 {
@@ -151,6 +156,104 @@ TEST(LinuxOsInfoTest, VirtualizationHints)
     EXPECT_EQ(virtualizationHint(root.path()), "Container (Docker)");
     root.write("run/.containerenv", "engine=\"podman\"\n");
     EXPECT_EQ(virtualizationHint(root.path()), "Container (Podman)");
+}
+
+void writeDmi(const FixtureRoot& root)
+{
+    const std::string dmi = "sys/class/dmi/id/";
+    root.write(dmi + "sys_vendor", "LENOVO\n");
+    root.write(dmi + "product_name", "21KC\n");
+    root.write(dmi + "product_version", "ThinkPad T14 Gen 5\n");
+    root.write(dmi + "product_family", "ThinkPad T14 Gen 5\n");
+    root.write(dmi + "product_sku", "LENOVO_MT_21KC\n");
+    root.write(dmi + "bios_vendor", "LENOVO\n");
+    root.write(dmi + "bios_version", "R2LET30W (1.11 )\n");
+    root.write(dmi + "bios_date", "05/14/2024\n");
+    root.write(dmi + "ec_firmware_release", "1.7\n");
+    root.write(dmi + "board_vendor", "LENOVO\n");
+    root.write(dmi + "board_name", "21KCCTO1WW\n");
+    root.write(dmi + "board_version", "SDK0T76530 WIN\n");
+    root.write(dmi + "chassis_type", "10\n");
+    root.write(dmi + "chassis_vendor", "LENOVO\n");
+    // Root-only (0400) on a real system.
+    root.write(dmi + "product_serial", "PF4XXXXX\n");
+    root.write(dmi + "product_uuid", "0c1f2a3b-0000-0000-0000-000000000000\n");
+    root.write(dmi + "board_serial", "L1HF4XXXXX\n");
+}
+
+TEST(LinuxFirmwareInfoTest, ReadsDmiAsRoot)
+{
+    const FixtureRoot root;
+    writeDmi(root);
+    root.write("sys/firmware/efi/fw_platform_size", "64\n");
+    std::vector<char> entryPoint(0x18, '\0');
+    const std::string anchor = "_SM3_";
+    std::ranges::copy(anchor, entryPoint.begin());
+    entryPoint.at(7) = 3;
+    entryPoint.at(8) = 6;
+    root.write("sys/firmware/dmi/tables/smbios_entry_point", std::string_view(entryPoint.data(), entryPoint.size()));
+
+    FirmwareInfo info;
+    LinuxFirmwareInfo::readFirmwareFacts(root.path(), info);
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.systemManufacturer, "LENOVO");
+    EXPECT_EQ(info.systemModel, "21KC");
+    EXPECT_EQ(info.systemVersion, "ThinkPad T14 Gen 5");
+    EXPECT_EQ(info.systemSku, "LENOVO_MT_21KC");
+    EXPECT_EQ(info.biosVersion, "R2LET30W (1.11 )");
+    EXPECT_EQ(info.biosReleaseDate, "05/14/2024");
+    EXPECT_EQ(info.embeddedControllerVersion, "1.7");
+    EXPECT_EQ(info.boardProduct, "21KCCTO1WW");
+    EXPECT_EQ(info.chassisType, "Notebook");
+    EXPECT_EQ(info.platformRole, "Mobile");
+    EXPECT_EQ(info.firmwareMode, FirmwareMode::Uefi);
+    EXPECT_EQ(info.smbiosVersion, "3.6");
+    EXPECT_EQ(info.systemSerial, "PF4XXXXX");
+    EXPECT_EQ(info.boardSerial, "L1HF4XXXXX");
+    EXPECT_FALSE(info.identifiersNeedAdmin);
+    EXPECT_FALSE(info.smbiosVersionNeedsAdmin);
+}
+
+TEST(LinuxFirmwareInfoTest, RootOnlyFilesNeedAdmin)
+{
+    const FixtureRoot root;
+    writeDmi(root);
+    root.write("sys/firmware/acpi/tables/DSDT", ""); // /sys/firmware without efi: legacy BIOS
+    root.write("sys/firmware/dmi/tables/smbios_entry_point", "_SM3_");
+    const auto unprivileged = [](const std::filesystem::path& path)
+    {
+        const std::string name = path.filename().string();
+        return name != "product_serial" && name != "product_uuid" && name != "board_serial" && name != "smbios_entry_point";
+    };
+
+    FirmwareInfo info;
+    LinuxFirmwareInfo::readFirmwareFacts(root.path(), info, unprivileged);
+    EXPECT_EQ(info.systemManufacturer, "LENOVO");
+    EXPECT_EQ(info.systemSerial, "");
+    EXPECT_EQ(info.systemUuid, "");
+    EXPECT_EQ(info.boardSerial, "");
+    EXPECT_TRUE(info.identifiersNeedAdmin);
+    EXPECT_EQ(info.smbiosVersion, "");
+    EXPECT_TRUE(info.smbiosVersionNeedsAdmin);
+    EXPECT_EQ(info.firmwareMode, FirmwareMode::Legacy);
+}
+
+TEST(LinuxFirmwareInfoTest, NoDmiAtAll)
+{
+    // A container or a board without DMI: nothing is there, so nothing is root-only either.
+    const FixtureRoot root;
+    FirmwareInfo info;
+    LinuxFirmwareInfo::readFirmwareFacts(root.path(), info, [](const std::filesystem::path&) { return false; });
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.systemManufacturer, "");
+    EXPECT_EQ(info.chassisType, "");
+    EXPECT_EQ(info.firmwareMode, FirmwareMode::Unknown);
+    EXPECT_FALSE(info.identifiersNeedAdmin);
+    EXPECT_FALSE(info.smbiosVersionNeedsAdmin);
+
+    EXPECT_EQ(LinuxFirmwareInfo::parseChassisType("3"), 3);
+    EXPECT_EQ(LinuxFirmwareInfo::parseChassisType("x"), 0);
+    EXPECT_EQ(LinuxFirmwareInfo::parseChassisType("300"), 0);
 }
 
 } // namespace

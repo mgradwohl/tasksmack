@@ -17,6 +17,7 @@ struct SystemInfoSnapshot
     std::uint64_t version = 0;           ///< 0 until the first read.
     std::uint64_t readAtUnixSeconds = 0; ///< When the read was taken.
     Platform::OsInfo os;
+    Platform::FirmwareInfo firmware;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,

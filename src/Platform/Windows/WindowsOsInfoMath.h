@@ -85,4 +85,31 @@ inline constexpr std::uint32_t WINDOWS_11_FIRST_BUILD = 22000;
     }
 }
 
+/// The name of a POWER_PLATFORM_ROLE (PowerDeterminePlatformRoleEx, #1513); empty for unspecified or
+/// unknown.
+[[nodiscard]] constexpr std::string_view platformRoleName(std::uint32_t role) noexcept
+{
+    switch (role)
+    {
+    case 1:
+        return "Desktop";
+    case 2:
+        return "Mobile";
+    case 3:
+        return "Workstation";
+    case 4:
+        return "Enterprise server";
+    case 5:
+        return "Small office server";
+    case 6:
+        return "Appliance PC";
+    case 7:
+        return "Performance server";
+    case 8:
+        return "Slate";
+    default:
+        return {};
+    }
+}
+
 } // namespace Platform::WindowsOsInfo
