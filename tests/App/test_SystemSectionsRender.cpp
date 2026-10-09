@@ -29,6 +29,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -959,6 +960,36 @@ TEST_F(SystemSectionsRenderTest, NetworkTabSharesItsHeightWithTheDiskGrid)
     ASSERT_NE(network, std::string::npos) << text;
     ASSERT_NE(grid, std::string::npos) << text;
     EXPECT_LT(network, grid);
+}
+
+// A centred compact strip sits in the middle of its row (#1588): drawn under a Compact one with the
+// same entries, it is that strip's width, with equal space either side of it.
+TEST_F(SystemSectionsRenderTest, CompactCenteredValueStripIsCentredInItsRow)
+{
+    const std::array bars{
+        UI::Widgets::NowBar{.valueText = "1.0 MiB/s", .label = "Read", .tooltipText = {}, .value01 = 0.5, .color = ImVec4(1, 0, 0, 1)},
+        UI::Widgets::NowBar{.valueText = "2.0 MiB/s", .label = "Write", .tooltipText = {}, .value01 = 0.5, .color = ImVec4(0, 1, 0, 1)},
+    };
+    float rowLeft = 0.0F;
+    float rowRight = 0.0F;
+    float compactRight = 0.0F;
+    float centeredRight = 0.0F;
+    runFrame(
+        [&]
+        {
+            rowLeft = ImGui::GetCursorScreenPos().x;
+            rowRight = rowLeft + ImGui::GetContentRegionAvail().x;
+            UI::Widgets::renderNowBarValueStrip(bars, {}, UI::Widgets::ValueStripLayout::Compact);
+            compactRight = ImGui::GetItemRectMax().x;
+            UI::Widgets::renderNowBarValueStrip(bars, {}, UI::Widgets::ValueStripLayout::CompactCentered, "##CenteredStrip");
+            centeredRight = ImGui::GetItemRectMax().x;
+        });
+
+    const float stripWidth = compactRight - rowLeft;
+    ASSERT_GT(stripWidth, 0.0F);
+    ASSERT_LT(stripWidth, rowRight - rowLeft);
+    const float centeredLeft = centeredRight - stripWidth;
+    EXPECT_NEAR(centeredLeft - rowLeft, rowRight - centeredRight, 1.0F);
 }
 } // namespace
 } // namespace App
