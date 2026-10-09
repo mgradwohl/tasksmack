@@ -2,10 +2,12 @@
 /// @brief Platform::LinuxOsInfo (#1512): os-release parsing, the zone from the /etc/localtime link,
 /// the locale choice, btime, and the file facts and container/VM hints read under a fixture root; and
 /// Platform::LinuxFirmwareInfo (#1513), the Firmware & board facts from /sys/class/dmi/id under one, and
-/// the Memory modules facts (#1515) from the raw DMI table and /proc/meminfo.
-/// Both headers use only the standard library, so these build and run on every platform.
+/// the Memory modules facts (#1515) from the raw DMI table and /proc/meminfo; and Platform::LinuxCommitPaging
+/// (#1516), the Commit & paging parsers and facts from /proc and /sys.
+/// The headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Linux/LinuxCommitPaging.h"
 #include "Platform/Linux/LinuxFirmwareInfo.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 
@@ -20,6 +22,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <ios>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -347,6 +350,128 @@ TEST(LinuxFirmwareInfoTest, ParsesMemTotal)
     EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes("MemTotal:   \n"), 0U);
     EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes("MemTotal: x kB\n"), 0U);
     EXPECT_EQ(LinuxFirmwareInfo::parseMemTotalBytes(""), 0U);
+}
+
+// --- Commit & paging (#1516) ---
+
+/// /proc/meminfo as a 32 GiB desktop writes it, trimmed to the lines around the ones read.
+constexpr std::string_view MEMINFO = "MemTotal:       32562356 kB\n"
+                                     "MemFree:         8123456 kB\n"
+                                     "SwapTotal:      14680052 kB\n"
+                                     "CommitLimit:    30961228 kB\n"
+                                     "Committed_AS:   14201876 kB\n"
+                                     "HugePages_Total:       4\n"
+                                     "HugePages_Free:        3\n"
+                                     "HugePages_Rsvd:        1\n"
+                                     "HugePages_Surp:        0\n"
+                                     "Hugepagesize:       2048 kB\n"
+                                     "Hugetlb:            8192 kB\n";
+
+/// /proc/swaps with a partition, a zram device and a file whose name has a space (escaped as \040).
+constexpr std::string_view SWAPS = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+                                   "/dev/nvme0n1p3                          partition\t8388604\t\t524288\t\t-2\n"
+                                   "/dev/zram0                              partition\t4194300\t\t102400\t\t100\n"
+                                   "/swap\\040file                           file\t\t2097148\t\t0\t\t-3\n";
+
+TEST(LinuxCommitPagingTest, ParsesTheFiles)
+{
+    EXPECT_EQ(LinuxCommitPaging::meminfoValue(MEMINFO, "Committed_AS"), 14201876U);
+    EXPECT_EQ(LinuxCommitPaging::meminfoValue(MEMINFO, "HugePages_Total"), 4U);
+    EXPECT_EQ(LinuxCommitPaging::meminfoValue(MEMINFO, "HugePages"), std::nullopt); // a prefix isn't a key
+    EXPECT_EQ(LinuxCommitPaging::meminfoValue("CommitLimit: x kB\n", "CommitLimit"), std::nullopt);
+    EXPECT_EQ(LinuxCommitPaging::meminfoValue("CommitLimit:\n", "CommitLimit"), std::nullopt);
+
+    EXPECT_EQ(LinuxCommitPaging::parseOvercommitMode("0\n"), OvercommitMode::Heuristic);
+    EXPECT_EQ(LinuxCommitPaging::parseOvercommitMode("1\n"), OvercommitMode::Always);
+    EXPECT_EQ(LinuxCommitPaging::parseOvercommitMode("2\n"), OvercommitMode::Strict);
+    for (const std::string_view bad : {"3\n", "", "x", "0 1"})
+    {
+        EXPECT_EQ(LinuxCommitPaging::parseOvercommitMode(bad), OvercommitMode::Unknown) << bad;
+    }
+
+    const std::vector<PageFile> swaps = LinuxCommitPaging::parseSwaps(SWAPS);
+    ASSERT_EQ(swaps.size(), 3U);
+    EXPECT_EQ(swaps[0].path, "/dev/nvme0n1p3");
+    EXPECT_EQ(swaps[0].kind, "partition");
+    EXPECT_EQ(swaps[0].sizeBytes, 8388604ULL * 1024);
+    EXPECT_EQ(swaps[0].usedBytes, 524288ULL * 1024);
+    EXPECT_EQ(swaps[0].priority, -2);
+    EXPECT_EQ(swaps[1].priority, 100);
+    EXPECT_EQ(swaps[2].path, "/swap file");
+    EXPECT_EQ(swaps[2].kind, "file");
+    EXPECT_TRUE(LinuxCommitPaging::parseSwaps("Filename Type Size Used Priority\n").empty());
+    EXPECT_TRUE(LinuxCommitPaging::parseSwaps("/dev/sda2 partition x 0 -2\n/dev/sda3 partition 1\n").empty());
+    EXPECT_EQ(LinuxCommitPaging::unescapeSwapPath("/a\\134b\\0"), "/a\\b\\0"); // a short escape stays as written
+
+    const auto zram =
+        LinuxCommitPaging::parseZramMmStat("  1073741824   268435456   285212672        0   300000000     1234        0        5\n");
+    ASSERT_TRUE(zram.has_value());
+    const ZramDevice device = zram.value_or(ZramDevice{});
+    EXPECT_EQ(device.originalBytes, 1073741824U);
+    EXPECT_EQ(device.compressedBytes, 268435456U);
+    EXPECT_EQ(device.memoryUsedBytes, 285212672U);
+    EXPECT_FALSE(LinuxCommitPaging::parseZramMmStat("1 2\n").has_value());
+    EXPECT_FALSE(LinuxCommitPaging::parseZramMmStat("1 x 3\n").has_value());
+
+    EXPECT_EQ(LinuxCommitPaging::parseSysfsBool("Y\n"), true);
+    EXPECT_EQ(LinuxCommitPaging::parseSysfsBool("N\n"), false);
+    EXPECT_EQ(LinuxCommitPaging::parseSysfsBool(""), std::nullopt);
+    EXPECT_EQ(LinuxCommitPaging::parseBracketedChoice("always [madvise] never\n"), "madvise");
+    EXPECT_EQ(LinuxCommitPaging::parseBracketedChoice("always madvise never\n"), "");
+    EXPECT_EQ(LinuxCommitPaging::parseBracketedChoice("[always"), "");
+}
+
+TEST(LinuxCommitPagingTest, ReadsTheFactsUnderARoot)
+{
+    const FixtureRoot root;
+    root.write("proc/meminfo", MEMINFO);
+    root.write("proc/swaps", SWAPS);
+    root.write("proc/sys/vm/overcommit_memory", "2\n");
+    root.write("sys/block/zram1/mm_stat", "0 0 0 0 0 0 0 0\n");
+    root.write("sys/block/zram0/mm_stat", "1073741824 268435456 285212672 0 300000000 1234 0 5\n");
+    root.write("sys/block/zram2/mm_stat", "garbage\n"); // left out
+    root.write("sys/block/nvme0n1/size", "1000215216\n");
+    root.write("sys/module/zswap/parameters/enabled", "N\n");
+    root.write("sys/kernel/mm/transparent_hugepage/enabled", "always [madvise] never\n");
+
+    CommitPagingInfo info;
+    LinuxCommitPaging::readCommitPagingFacts(root.path(), info);
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.family, OsFamily::Linux);
+    EXPECT_EQ(info.committedBytes, 14201876ULL * 1024);
+    EXPECT_EQ(info.commitLimitBytes, 30961228ULL * 1024);
+    EXPECT_EQ(info.overcommit, OvercommitMode::Strict);
+    EXPECT_TRUE(info.pageFilesRead);
+    EXPECT_EQ(info.pageFiles.size(), 3U);
+    EXPECT_TRUE(info.zramRead);
+    ASSERT_EQ(info.zram.size(), 2U);
+    EXPECT_EQ(info.zram[0].name, "zram0"); // sorted by name
+    EXPECT_EQ(info.zram[0].compressedBytes, 268435456U);
+    EXPECT_EQ(info.zram[1].name, "zram1");
+    EXPECT_EQ(info.zswapEnabled, false);
+    EXPECT_TRUE(info.hugePagesRead);
+    EXPECT_EQ(info.hugePagesTotal, 4U);
+    EXPECT_EQ(info.hugePagesFree, 3U);
+    EXPECT_EQ(info.hugePagesReserved, 1U);
+    EXPECT_EQ(info.hugePagesSurplus, 0U);
+    EXPECT_EQ(info.hugePageSizeBytes, 2048ULL * 1024);
+    EXPECT_EQ(info.transparentHugePages, "madvise");
+}
+
+TEST(LinuxCommitPagingTest, NothingReadableLeavesEverythingUnknown)
+{
+    const FixtureRoot root; // none of the files exist
+    CommitPagingInfo info;
+    LinuxCommitPaging::readCommitPagingFacts(root.path(), info);
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.committedBytes, 0U);
+    EXPECT_EQ(info.commitLimitBytes, 0U);
+    EXPECT_EQ(info.overcommit, OvercommitMode::Unknown);
+    EXPECT_FALSE(info.pageFilesRead);
+    EXPECT_FALSE(info.zramRead);
+    EXPECT_FALSE(info.zswapEnabled.has_value());
+    EXPECT_FALSE(info.hugePagesRead);
+    EXPECT_TRUE(info.transparentHugePages.empty());
 }
 
 } // namespace

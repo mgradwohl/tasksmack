@@ -118,6 +118,105 @@ void appendRowsLinux(const Platform::OsInfo& os, std::vector<Row>& rows)
     return labels;
 }
 
+/// A size that can be 0: "0 B" for nothing, otherwise formatMemoryCapacity().
+[[nodiscard]] std::string sizeText(std::uint64_t bytes)
+{
+    return bytes == 0 ? std::string("0 B") : formatMemoryCapacity(bytes);
+}
+
+/// The page file or swap rows: one per file, labelled by its path; else one row saying none are set
+/// up, or why the list is missing.
+void appendPageFileRows(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    const bool windows = paging.family == Platform::OsFamily::Windows;
+    const char* listLabel = windows ? "Page files" : "Swap";
+    if (!paging.pageFilesRead)
+    {
+        rows.push_back(row(listLabel, "", windows ? "The page file list couldn't be read" : "/proc/swaps couldn't be read"));
+        return;
+    }
+    if (paging.pageFiles.empty())
+    {
+        rows.push_back(row(listLabel, windows ? "None (paging is off)" : "None configured"));
+        return;
+    }
+    for (std::size_t i = 0; i < paging.pageFiles.size(); ++i)
+    {
+        const Platform::PageFile& file = paging.pageFiles[i];
+        std::string label = file.path.empty() ? std::format("{} {}", windows ? "Page file" : "Swap device", i + 1) : file.path;
+        rows.push_back(row(std::move(label), formatPageFile(file, paging.family)));
+    }
+}
+
+void appendPagingRowsWindows(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    rows.push_back(row("Peak commit", formatMemoryCapacity(paging.commitPeakBytes), "GetPerformanceInfo failed"));
+    appendPageFileRows(paging, rows);
+    rows.push_back(row("Compressed memory",
+                       paging.compressedBytes.has_value() ? sizeText(*paging.compressedBytes) : std::string{},
+                       "No Memory Compression process: compression is off, or its working set couldn't be read"));
+    const std::uint64_t page = paging.pageSizeBytes;
+    rows.push_back(row("Page size",
+                       page != 0 && page % 1024 == 0 ? std::format("{} KiB", page / 1024) : formatMemoryCapacity(page),
+                       "GetPerformanceInfo failed"));
+}
+
+void appendPagingRowsLinux(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    const char* mode = "";
+    switch (paging.overcommit)
+    {
+    case Platform::OvercommitMode::Heuristic:
+        mode = "Heuristic (0)";
+        break;
+    case Platform::OvercommitMode::Always:
+        mode = "Always overcommit (1)";
+        break;
+    case Platform::OvercommitMode::Strict:
+        mode = "Strict, the commit limit is enforced (2)";
+        break;
+    case Platform::OvercommitMode::Unknown:
+        break;
+    }
+    rows.push_back(row("Overcommit mode", mode, "/proc/sys/vm/overcommit_memory couldn't be read"));
+    appendPageFileRows(paging, rows);
+
+    if (!paging.zramRead)
+    {
+        rows.push_back(row("zram", "", "/sys/block couldn't be listed"));
+    }
+    else if (paging.zram.empty())
+    {
+        rows.push_back(row("zram", "None"));
+    }
+    for (const Platform::ZramDevice& device : paging.zram)
+    {
+        rows.push_back(row(device.name, formatZramDevice(device)));
+    }
+    std::string zswap;
+    if (paging.zswapEnabled.has_value())
+    {
+        zswap = *paging.zswapEnabled ? "Enabled" : "Disabled";
+    }
+    rows.push_back(row("zswap", std::move(zswap), "/sys/module/zswap couldn't be read (zswap isn't built in)"));
+
+    std::string hugePages;
+    if (paging.hugePagesRead)
+    {
+        const std::string pageSize =
+            paging.hugePageSizeBytes != 0 ? std::format(" ({} pages)", formatMemoryCapacity(paging.hugePageSizeBytes)) : std::string{};
+        hugePages = paging.hugePagesTotal == 0 ? "None reserved" + pageSize
+                                               : std::format("{} of {} free, {} reserved, {} surplus{}",
+                                                             paging.hugePagesFree,
+                                                             paging.hugePagesTotal,
+                                                             paging.hugePagesReserved,
+                                                             paging.hugePagesSurplus,
+                                                             pageSize);
+    }
+    rows.push_back(row("Huge pages", std::move(hugePages), "/proc/meminfo has no HugePages_ lines"));
+    rows.push_back(row("Transparent huge pages", paging.transparentHugePages, "/sys/kernel/mm/transparent_hugepage couldn't be read"));
+}
+
 } // namespace
 
 std::string formatMemoryCapacity(std::uint64_t bytes)
@@ -315,6 +414,70 @@ Section buildMemorySection(const Platform::MemoryModulesInfo& memory)
     return section;
 }
 
+std::string formatCommitCharge(std::uint64_t committedBytes, std::uint64_t limitBytes)
+{
+    if (committedBytes == 0)
+    {
+        return {};
+    }
+    if (limitBytes == 0)
+    {
+        return sizeText(committedBytes);
+    }
+    const double percent = (static_cast<double>(committedBytes) * 100.0) / static_cast<double>(limitBytes);
+    return std::format("{} / {} ({:.0f}%)", sizeText(committedBytes), sizeText(limitBytes), percent);
+}
+
+std::string formatPageFile(const Platform::PageFile& file, Platform::OsFamily family)
+{
+    std::string text = std::format("{} used of {}", sizeText(file.usedBytes), sizeText(file.sizeBytes));
+    if (family == Platform::OsFamily::Windows)
+    {
+        text += std::format(", peak {}", sizeText(file.peakBytes));
+        return text;
+    }
+    if (!file.kind.empty())
+    {
+        text += ", " + file.kind;
+    }
+    text += std::format(", priority {}", file.priority);
+    return text;
+}
+
+std::string formatZramDevice(const Platform::ZramDevice& device)
+{
+    if (device.originalBytes == 0)
+    {
+        return "Empty";
+    }
+    std::string text = std::format("{} stored in {}", sizeText(device.originalBytes), sizeText(device.compressedBytes));
+    if (device.compressedBytes != 0)
+    {
+        text += std::format(" ({:.1f}:1)", static_cast<double>(device.originalBytes) / static_cast<double>(device.compressedBytes));
+    }
+    text += std::format(", {} of RAM", sizeText(device.memoryUsedBytes));
+    return text;
+}
+
+Section buildCommitPagingSection(const Platform::CommitPagingInfo& paging)
+{
+    Section section{.title = "Commit & paging", .icon = ICON_FA_COMPRESS, .rows = {}};
+    auto& rows = section.rows;
+    const bool windows = paging.family == Platform::OsFamily::Windows;
+    rows.push_back(row("Commit charge",
+                       formatCommitCharge(paging.committedBytes, paging.commitLimitBytes),
+                       windows ? "GetPerformanceInfo failed" : "/proc/meminfo has no Committed_AS line"));
+    if (windows)
+    {
+        appendPagingRowsWindows(paging, rows);
+    }
+    else
+    {
+        appendPagingRowsLinux(paging, rows);
+    }
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
 {
     std::vector<Section> sections;
@@ -333,6 +496,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.memory.available)
     {
         sections.push_back(buildMemorySection(snapshot.memory));
+    }
+    if (snapshot.paging.available)
+    {
+        sections.push_back(buildCommitPagingSection(snapshot.paging));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

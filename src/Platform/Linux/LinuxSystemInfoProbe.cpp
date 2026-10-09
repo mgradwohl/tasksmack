@@ -1,5 +1,6 @@
 #include "LinuxSystemInfoProbe.h"
 
+#include "LinuxCommitPaging.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxOsInfo.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -89,6 +90,13 @@ MemoryModulesInfo LinuxSystemInfoProbe::readMemoryModules()
 {
     MemoryModulesInfo info;
     LinuxFirmwareInfo::readMemoryModuleFacts(m_Root, info);
+    return info;
+}
+
+CommitPagingInfo LinuxSystemInfoProbe::readCommitPaging()
+{
+    CommitPagingInfo info;
+    LinuxCommitPaging::readCommitPagingFacts(m_Root, info);
     return info;
 }
 

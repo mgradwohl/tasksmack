@@ -31,6 +31,7 @@ void SystemInfoModel::read()
         next->os = m_Probe->readOs();
         next->firmware = m_Probe->readFirmware();
         next->memory = m_Probe->readMemoryModules();
+        next->paging = m_Probe->readCommitPaging();
     }
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = static_cast<std::uint64_t>(now);
