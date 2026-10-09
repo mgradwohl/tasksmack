@@ -7,10 +7,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::Detail
@@ -557,6 +561,131 @@ TEST(WindowsPriorityClassTest, OverviewTextHasNoNiceWordingWithWindowsClasses)
     // Elsewhere the nice value stays.
     EXPECT_EQ(priorityDisplayText(0, false), "Normal (nice: 0)");
     EXPECT_EQ(priorityDisplayText(-20, false), "High (nice: -20)");
+}
+
+// =============================================================================
+// Discrete-stop slider (#1538)
+// =============================================================================
+
+TEST(DiscreteSliderTest, WindowsStopsRoundTripClassToStopToNice)
+{
+    // High at the left, where nice -20 is on the nice slider; Idle at the right.
+    ASSERT_EQ(WINDOWS_PRIORITY_STOPS.size(), SETTABLE_WINDOWS_PRIORITY_CLASSES.size());
+    EXPECT_EQ(windowsPriorityClassAtStop(0), WindowsPriorityClass::High);
+    EXPECT_EQ(windowsPriorityClassAtStop(4), WindowsPriorityClass::Idle);
+    for (const WindowsPriorityClass priorityClass : SETTABLE_WINDOWS_PRIORITY_CLASSES)
+    {
+        SCOPED_TRACE(std::string(windowsPriorityClassName(priorityClass)));
+        const int32_t stop = windowsPriorityStopIndex(priorityClass);
+        ASSERT_GE(stop, 0);
+        ASSERT_LT(stop, 5);
+        EXPECT_EQ(windowsPriorityClassAtStop(stop), priorityClass);
+        const PrioritySliderStop& entry = WINDOWS_PRIORITY_STOPS.at(static_cast<std::size_t>(stop));
+        EXPECT_EQ(entry.name, windowsPriorityClassName(priorityClass));
+        EXPECT_EQ(entry.colorNice, windowsPriorityClassNice(priorityClass));
+        EXPECT_TRUE(std::string_view{entry.itemLabel}.contains(entry.name));
+        EXPECT_TRUE(std::string_view{entry.itemLabel}.ends_with(WINDOWS_PRIORITY_SLIDER_ID));
+        // The stop's nice value maps back to its class, and another stop's pick writes that class's value.
+        EXPECT_EQ(windowsPriorityClassFromNice(entry.colorNice), priorityClass);
+        EXPECT_EQ(windowsPriorityNiceForStop(stop, Domain::Priority::NORMAL_NICE),
+                  priorityClass == WindowsPriorityClass::Normal ? Domain::Priority::NORMAL_NICE : windowsPriorityClassNice(priorityClass));
+    }
+    // Higher priority toward the left: the stops' nice values rise left to right.
+    for (std::size_t i = 1; i < WINDOWS_PRIORITY_STOPS.size(); ++i)
+    {
+        EXPECT_LT(WINDOWS_PRIORITY_STOPS.at(i - 1).colorNice, WINDOWS_PRIORITY_STOPS.at(i).colorNice);
+    }
+}
+
+TEST(DiscreteSliderTest, RealtimeIsReportOnly)
+{
+    EXPECT_EQ(windowsPriorityStopIndex(WindowsPriorityClass::Realtime), PRIORITY_STOP_BEYOND_START);
+    EXPECT_EQ(windowsPriorityClassAtStop(PRIORITY_STOP_BEYOND_START), WindowsPriorityClass::Realtime);
+    EXPECT_EQ(WINDOWS_PRIORITY_SLIDER.beyondStart, &WINDOWS_REALTIME_STOP);
+    EXPECT_EQ(WINDOWS_REALTIME_STOP.name, "Realtime");
+    // Left as shown, a Realtime process keeps its own value: no edit.
+    const int32_t realtimeNice = windowsPriorityClassNice(WindowsPriorityClass::Realtime);
+    EXPECT_EQ(windowsPriorityNiceForStop(PRIORITY_STOP_BEYOND_START, realtimeNice), realtimeNice);
+    // No settable stop is Realtime.
+    for (const PrioritySliderStop& stop : WINDOWS_PRIORITY_STOPS)
+    {
+        EXPECT_NE(windowsPriorityClassFromNice(stop.colorNice), WindowsPriorityClass::Realtime);
+    }
+    // The same class as shown is no edit: the reported value is kept, not the class's representative.
+    EXPECT_EQ(windowsPriorityNiceForStop(windowsPriorityStopIndex(WindowsPriorityClass::BelowNormal), 12), 12);
+}
+
+TEST(DiscreteSliderTest, PositionsAreEvenAndADragSnapsToTheNearestStop)
+{
+    EXPECT_FLOAT_EQ(discreteStopPosition(0, 5), 0.0F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(2, 5), 0.5F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(4, 5), 1.0F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(9, 5), 1.0F);
+    EXPECT_FLOAT_EQ(discreteStopPosition(0, 1), 0.0F);
+
+    EXPECT_EQ(discreteStopFromPosition(0.0F, 5), 0);
+    EXPECT_EQ(discreteStopFromPosition(0.12F, 5), 0);
+    EXPECT_EQ(discreteStopFromPosition(0.13F, 5), 1);
+    EXPECT_EQ(discreteStopFromPosition(0.49F, 5), 2);
+    EXPECT_EQ(discreteStopFromPosition(0.70F, 5), 3);
+    EXPECT_EQ(discreteStopFromPosition(0.90F, 5), 4);
+    EXPECT_EQ(discreteStopFromPosition(-3.0F, 5), 0); // Past either end: held there
+    EXPECT_EQ(discreteStopFromPosition(7.0F, 5), 4);
+    EXPECT_EQ(discreteStopFromPosition(std::numeric_limits<float>::quiet_NaN(), 5), 0);
+    EXPECT_EQ(discreteStopFromPosition(0.8F, 1), 0);
+}
+
+TEST(DiscreteSliderTest, KeysStepAndAreHeldToTheStops)
+{
+    EXPECT_EQ(stepDiscreteStop(2, -1, 5), 1);
+    EXPECT_EQ(stepDiscreteStop(2, 1, 5), 3);
+    EXPECT_EQ(stepDiscreteStop(0, -1, 5), 0); // Held at the high end
+    EXPECT_EQ(stepDiscreteStop(4, 1, 5), 4);  // And at the low end
+    EXPECT_EQ(stepDiscreteStop(2, -5, 5), 0); // Home
+    EXPECT_EQ(stepDiscreteStop(2, 5, 5), 4);  // End
+    // From beyond the start (Realtime): toward the high end stays; toward the low end lands on a stop.
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, -1, 5), PRIORITY_STOP_BEYOND_START);
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, -5, 5), PRIORITY_STOP_BEYOND_START);
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, 1, 5), 0);
+    EXPECT_EQ(stepDiscreteStop(PRIORITY_STOP_BEYOND_START, 5, 5), 4);
+    EXPECT_EQ(stepDiscreteStop(3, 1, 0), 3); // No stops: nothing moves
+}
+
+TEST(DiscreteSliderTest, TheTrackRunsThroughTheStopsColours)
+{
+    for (std::size_t i = 0; i < WINDOWS_PRIORITY_STOPS.size(); ++i)
+    {
+        const float position = discreteStopPosition(static_cast<int32_t>(i), 5);
+        EXPECT_EQ(discreteTrackColorNice(position, WINDOWS_PRIORITY_STOPS), WINDOWS_PRIORITY_STOPS.at(i).colorNice);
+    }
+    // Halfway between Normal (0) and Below Normal (10).
+    EXPECT_EQ(discreteTrackColorNice(0.625F, WINDOWS_PRIORITY_STOPS), 5);
+    EXPECT_EQ(discreteTrackColorNice(0.5F, {}), Domain::Priority::NORMAL_NICE);
+}
+
+TEST(DiscreteSliderTest, ScaleLabelsStayInsideTheTrackAndApart)
+{
+    EXPECT_FLOAT_EQ(discreteStopLabelX(100.0F, 40.0F, 0, 5), 100.0F); // First: starts at its stop
+    EXPECT_FLOAT_EQ(discreteStopLabelX(300.0F, 40.0F, 4, 5), 260.0F); // Last: ends at its stop
+    EXPECT_FLOAT_EQ(discreteStopLabelX(200.0F, 40.0F, 2, 5), 180.0F); // Others: centred
+
+    // Five labels 40 wide, 10 apart: the end pairs need 40 + 20 + 10 = 70 per gap, the middle 50.
+    const std::array<float, 5> widths{40.0F, 40.0F, 40.0F, 40.0F, 40.0F};
+    const auto widthOf = [&widths](std::size_t i)
+    {
+        return widths.at(i);
+    };
+    const float minWidth = discreteStopLabelsMinWidth(widths.size(), widthOf, 10.0F);
+    EXPECT_FLOAT_EQ(minWidth, 280.0F);
+    // At that width no neighbours overlap.
+    for (std::size_t i = 0; i + 1 < widths.size(); ++i)
+    {
+        const auto index = static_cast<int32_t>(i);
+        const float rightEdge = discreteStopLabelX(discreteStopPosition(index, 5) * minWidth, widths.at(i), index, 5) + widths.at(i);
+        const float nextLeft = discreteStopLabelX(discreteStopPosition(index + 1, 5) * minWidth, widths.at(i + 1), index + 1, 5);
+        EXPECT_LE(rightEdge + 10.0F, nextLeft + 0.001F);
+    }
+    EXPECT_FLOAT_EQ(discreteStopLabelsMinWidth(0, widthOf, 10.0F), 0.0F);
 }
 
 } // namespace

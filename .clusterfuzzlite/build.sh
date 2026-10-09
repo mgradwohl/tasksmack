@@ -43,8 +43,9 @@ build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # toml++ crash inputs (#1387, #1388, #1389) as regression seeds.
 seed_corpus fuzz_theme_loader assets/themes/*.toml tests/fuzz/corpus/fuzz_theme_loader/* tests/fuzz/corpus/toml-regressions/*
 
-# ThemeStub stands in for Theme.cpp (ImGui/ImPlot runtime), exactly as in the unit-test build.
-build_fuzzer fuzz_user_config src/App/UserConfig.cpp tests/Mocks/ThemeStub.cpp
+# ThemeStub stands in for Theme.cpp (ImGui/ImPlot runtime), exactly as in the unit-test build, and
+# ConfigDirOverrideStub for Core/ConfigDirOverride.cpp, which reads TASKSMACK_CONFIG_DIR through SDL.
+build_fuzzer fuzz_user_config src/App/UserConfig.cpp tests/Mocks/ThemeStub.cpp tests/fuzz/ConfigDirOverrideStub.cpp
 # config.toml as UserConfig::save() writes it (defaults, and every optional key set), plus legacy keys
 # and out-of-range values, and the toml++ regression seeds.
 seed_corpus fuzz_user_config tests/fuzz/corpus/fuzz_user_config/* tests/fuzz/corpus/toml-regressions/*

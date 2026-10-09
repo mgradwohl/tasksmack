@@ -95,6 +95,7 @@ set(COMMON_TEST_SOURCES
     test_main.cpp
     Benchmarks/test_AllocationCounter.cpp
     Core/test_Application.cpp
+    Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
@@ -122,6 +123,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_GPUModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
+    Domain/test_SystemInfoModel.cpp
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
     Domain/test_BackgroundSampler.cpp
@@ -181,17 +183,21 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessFilterCache.cpp
     App/test_ProcessDisplayFreeze.cpp
     App/test_CpuCoreGridIds.cpp
+    App/test_CpuCoreKinds.cpp
     App/test_CpuSummaryText.cpp
     App/test_CpuDetailsText.cpp
     App/test_CpuDetailsBlockRender.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
+    Platform/test_LinuxOsInfo.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp
     Platform/test_ThreadName.cpp
+    Platform/test_CurrentProcess.cpp
+    Platform/test_Factory.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
@@ -228,6 +234,7 @@ set(COMMON_TEST_SOURCES
     App/test_ServicesViewRender.cpp
     App/test_StartupViewRender.cpp
     App/test_StartupActionsView.cpp
+    App/test_SystemInfoView.cpp
     App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
@@ -262,6 +269,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
@@ -287,6 +295,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
     Platform/test_WindowsStartupActions.cpp
+    Platform/test_WindowsSystemInfoProbe.cpp
     Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
@@ -321,7 +330,6 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxROCmGPUProbe.cpp
     Platform/test_NetlinkSocketStats.cpp
     Platform/test_DRMGPUProbe.cpp
-    Platform/test_Factory.cpp
 )
 set(LINUX_INTEGRATION_TEST_SOURCES
     Integration/test_CrossLayer.cpp
@@ -346,6 +354,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
@@ -364,6 +373,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
@@ -397,6 +407,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/ConfigDirOverride.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
@@ -438,6 +449,9 @@ add_executable(TaskSmackTests
     # The Startup tab's table (#801), run headless (test_StartupViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupActionsView.cpp
+    # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
@@ -451,9 +465,11 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)

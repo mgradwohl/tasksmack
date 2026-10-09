@@ -42,7 +42,7 @@ namespace App::SelectOverride
 inline constexpr std::string_view PID_ENV_VAR = "TASKSMACK_SELECT_PID";
 inline constexpr std::string_view NAME_ENV_VAR = "TASKSMACK_SELECT_NAME";
 inline constexpr std::string_view TAB_ENV_VAR = "TASKSMACK_DETAILS_TAB";
-/// The top-level tab to open (system/machine, processes, details, or any registered tab's id or label).
+/// The top-level tab to open (machine/overview, processes, details, or any registered tab's id or label).
 /// It wins over the Process Details tab a TASKSMACK_SELECT_PID/_NAME selection would bring forward.
 inline constexpr std::string_view MAIN_TAB_ENV_VAR = "TASKSMACK_TAB";
 
@@ -274,11 +274,12 @@ struct TabInfo
     std::string_view text;
 };
 
-/// The ids the documented short names stand for: "system" and "machine" the system tab, "details"
-/// Process Details. Every other name must equal a tab's id or text.
+/// The ids the documented short names stand for: "machine" and "overview" the hostname tab, "details"
+/// Process Details. Every other name must equal a tab's id or text ("system" is the System
+/// Information tab's text, #1399).
 inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TAB_ALIASES{{
-    {"system", "SystemOverview"},
     {"machine", "SystemOverview"},
+    {"overview", "SystemOverview"},
     {"details", "ProcessDetails"},
 }};
 
@@ -463,7 +464,7 @@ anyTestHookActive(const char* mainTab, const char* pid, const char* name, const 
                                [](const char* value) { return value != nullptr && !Detail::trim(value).empty(); });
 }
 
-/// anyTestHookActive() for the process environment.
+/// anyTestHookActive() for the process environment, or TASKSMACK_CONFIG_DIR set (#1596).
 [[nodiscard]] bool testHookActive();
 
 /// The dialog TASKSMACK_OPEN asks for, read and logged on the first call. Thread-safe.

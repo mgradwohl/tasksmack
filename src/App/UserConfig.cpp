@@ -2,6 +2,7 @@
 
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
+#include "Core/ConfigDirOverride.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "Domain/Numeric.h"
@@ -474,6 +475,11 @@ UserConfig::UserConfig()
 
 auto UserConfig::getConfigDirectory() -> std::filesystem::path
 {
+    // TASKSMACK_CONFIG_DIR (#1596): a test launch's own directory, for config.toml and the lock beside it.
+    if (const auto& overrideDir = Core::ConfigDirOverride::active(); overrideDir.has_value())
+    {
+        return *overrideDir;
+    }
 #ifdef _WIN32
     // Windows: %APPDATA%/TaskSmack
     wchar_t* appDataPath = nullptr;

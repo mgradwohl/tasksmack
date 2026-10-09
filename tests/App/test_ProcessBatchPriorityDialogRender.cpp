@@ -11,6 +11,11 @@
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
+#ifdef _WIN32
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h" // The Windows class slider: its ID and minimum width
+#include "App/Panels/ProcessPriorityView.h"                 // discretePrioritySliderMinWidth()
+#endif
+
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): find and press a dialog's buttons
@@ -259,6 +264,47 @@ TEST_F(ProcessBatchPriorityDialogRenderTest, ContinueThenConfirmSetsThePickedVal
     EXPECT_TRUE(result.ok);
     EXPECT_EQ(result.text, std::string("Priority set to ") + ProcessBatch::priorityValueText(10) + " for 3 processes");
 }
+
+#ifdef _WIN32
+// The dialog picks with Process Details' own control: on Windows the slider with a stop per class
+// (#1538), not a combo, wide enough for its five stop names.
+TEST_F(ProcessBatchPriorityDialogRenderTest, OnWindowsTheDialogPicksWithTheClassSlider)
+{
+    FlowHarness flow;
+    flow.chooseMenuItem(runFrame);
+    runFrame([&] { flow.frame(); });
+    ASSERT_TRUE(flow.dialogOpen);
+    float sliderMinWidth = 0.0F;
+    runFrame(
+        [&]
+        {
+            sliderMinWidth = Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER);
+            flow.frame(); // An open popup not drawn for a frame closes
+        });
+    EXPECT_GE(flow.dialogSize.x, sliderMinWidth);
+
+    ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    const ImGuiID sliderId = ImHashStr(Detail::WINDOWS_PRIORITY_SLIDER_ID, 0, modal->ID);
+    bool focus = true;
+    const auto body = [&]
+    {
+        if (focus)
+        {
+            ImGui::SetFocusID(sliderId, modal);
+            focus = false;
+        }
+        flow.frame();
+    };
+    runFrame(body);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, true); // Normal to Below Normal
+    runFrame(body);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, false);
+    runFrame(body);
+    EXPECT_EQ(flow.dialog.niceValue(), Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::BelowNormal));
+    EXPECT_EQ(flow.mock.setPriorityCount(), 0);
+}
+#endif
 
 TEST_F(ProcessBatchPriorityDialogRenderTest, CancellingTheConfirmationSetsNothing)
 {

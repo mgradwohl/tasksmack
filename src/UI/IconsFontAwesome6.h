@@ -32,6 +32,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_BOLT "\xef\x83\xa7"                   // U+f0e7 - Lightning bolt (charging)
 #define ICON_FA_PLUG "\xef\x87\xa6"                   // U+f1e6 - Power plug (AC)
 #define ICON_FA_CHARGING_STATION "\xef\x97\xa7"       // U+f5e7 - Charging station
+#define ICON_FA_LEAF "\xef\x81\xac"                   // U+f06c - Leaf (efficiency core)
 
 // ============================================================================
 // Status & Info Icons
