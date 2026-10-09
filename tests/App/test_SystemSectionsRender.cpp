@@ -981,6 +981,14 @@ TEST_F(SystemSectionsRenderTest, NetworkTabSharesItsHeightWithTheDiskGrid)
 TEST_F(SystemSectionsRenderTest, NetworkSectionsAreCardsThatFillTheTab)
 {
     NetworkInputs inputs;
+    // One disk, as on most machines: its chart shares the tab's height with the network chart. (With
+    // no storage publication at all, the disk section's empty state takes whatever height is left,
+    // which the fill layout only approaches over several frames.)
+    Domain::StoragePublication storage;
+    storage.timestamps = viewOf(timestampsToNow());
+    storage.totalReadHistory = viewOf(constant(1.0));
+    storage.totalWriteHistory = viewOf(constant(1.0));
+    inputs.ctx.storagePublication = &storage;
     UI::Widgets::PlotFillState fillState;
     inputs.ctx.fillState = &fillState;
     for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
@@ -997,7 +1005,7 @@ TEST_F(SystemSectionsRenderTest, NetworkSectionsAreCardsThatFillTheTab)
     EXPECT_GE(status->Pos.y, throughput->Pos.y + throughput->Size.y); // Below it, not overlapping
 
     ImPlotContext& context = *ImPlot::GetCurrentContext();
-    ASSERT_EQ(context.Plots.GetBufSize(), 1);
+    ASSERT_EQ(context.Plots.GetBufSize(), 2); // Network, then the disk chart
     const ImPlotPlot* plot = context.Plots.GetByIndex(0);
     ASSERT_NE(plot, nullptr);
     EXPECT_TRUE(throughput->Rect().Contains(plot->FrameRect)) << "the chart is drawn outside its card";
