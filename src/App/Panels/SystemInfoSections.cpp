@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <string>
@@ -59,7 +60,223 @@ void appendRowsLinux(const Platform::OsInfo& os, std::vector<Row>& rows)
     rows.push_back(row("Virtualization", os.virtualization));
 }
 
+/// The texts joined by @p separator, empty ones skipped.
+[[nodiscard]] std::string joinNonEmpty(std::initializer_list<std::string_view> parts, std::string_view separator)
+{
+    std::string text;
+    for (const std::string_view part : parts)
+    {
+        if (part.empty())
+        {
+            continue;
+        }
+        if (!text.empty())
+        {
+            text += separator;
+        }
+        text += part;
+    }
+    return text;
+}
+
+/// The label of module @p index: its locator, or with the bank locator in front when another module has
+/// the same locator; "Module N" when the table names neither.
+[[nodiscard]] std::string moduleLabel(std::span<const Platform::MemoryModule> modules, std::size_t index)
+{
+    const Platform::MemoryModule& module = modules[index];
+    if (module.locator.empty())
+    {
+        return module.bankLocator.empty() ? std::format("Module {}", index + 1) : module.bankLocator;
+    }
+    const auto sameLocator = std::ranges::count(modules, module.locator, &Platform::MemoryModule::locator);
+    if (sameLocator > 1 && !module.bankLocator.empty())
+    {
+        return module.bankLocator + " " + module.locator;
+    }
+    return module.locator;
+}
+
+/// Every module's moduleLabel(), with labels that still collide numbered in table order ("Motherboard
+/// #1", "Motherboard #2"): soldered memory often gives every device the same locator and no bank.
+[[nodiscard]] std::vector<std::string> moduleLabels(std::span<const Platform::MemoryModule> modules)
+{
+    std::vector<std::string> labels;
+    labels.reserve(modules.size());
+    for (std::size_t i = 0; i < modules.size(); ++i)
+    {
+        labels.push_back(moduleLabel(modules, i));
+    }
+    const std::vector<std::string> plain = labels;
+    for (std::size_t i = 0; i < labels.size(); ++i)
+    {
+        if (std::ranges::count(plain, plain[i]) > 1)
+        {
+            const auto before = std::count(plain.begin(), plain.begin() + static_cast<std::ptrdiff_t>(i), plain[i]);
+            labels[i] = std::format("{} #{}", plain[i], before + 1);
+        }
+    }
+    return labels;
+}
+
+/// A size that can be 0: "0 B" for nothing, otherwise formatMemoryCapacity().
+[[nodiscard]] std::string sizeText(std::uint64_t bytes)
+{
+    return bytes == 0 ? std::string("0 B") : formatMemoryCapacity(bytes);
+}
+
+/// The page file or swap rows: one per file, labelled by its path; else one row saying none are set
+/// up, or why the list is missing.
+void appendPageFileRows(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    const bool windows = paging.family == Platform::OsFamily::Windows;
+    const char* listLabel = windows ? "Page files" : "Swap";
+    if (!paging.pageFilesRead)
+    {
+        rows.push_back(row(listLabel, "", windows ? "The page file list couldn't be read" : "/proc/swaps couldn't be read"));
+        return;
+    }
+    if (paging.pageFiles.empty())
+    {
+        rows.push_back(row(listLabel, windows ? "None (paging is off)" : "None configured"));
+        return;
+    }
+    for (std::size_t i = 0; i < paging.pageFiles.size(); ++i)
+    {
+        const Platform::PageFile& file = paging.pageFiles[i];
+        std::string label = file.path.empty() ? std::format("{} {}", windows ? "Page file" : "Swap device", i + 1) : file.path;
+        rows.push_back(row(std::move(label), formatPageFile(file, paging.family)));
+    }
+}
+
+void appendPagingRowsWindows(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    rows.push_back(row("Peak commit", formatMemoryCapacity(paging.commitPeakBytes), "GetPerformanceInfo failed"));
+    appendPageFileRows(paging, rows);
+    rows.push_back(row("Compressed memory",
+                       paging.compressedBytes.has_value() ? sizeText(*paging.compressedBytes) : std::string{},
+                       "No Memory Compression process: compression is off, or its working set couldn't be read"));
+    const std::uint64_t page = paging.pageSizeBytes;
+    rows.push_back(row("Page size",
+                       page != 0 && page % 1024 == 0 ? std::format("{} KiB", page / 1024) : formatMemoryCapacity(page),
+                       "GetPerformanceInfo failed"));
+}
+
+void appendPagingRowsLinux(const Platform::CommitPagingInfo& paging, std::vector<Row>& rows)
+{
+    const char* mode = "";
+    switch (paging.overcommit)
+    {
+    case Platform::OvercommitMode::Heuristic:
+        mode = "Heuristic (0)";
+        break;
+    case Platform::OvercommitMode::Always:
+        mode = "Always overcommit (1)";
+        break;
+    case Platform::OvercommitMode::Strict:
+        mode = "Strict, the commit limit is enforced (2)";
+        break;
+    case Platform::OvercommitMode::Unknown:
+        break;
+    }
+    rows.push_back(row("Overcommit mode", mode, "/proc/sys/vm/overcommit_memory couldn't be read"));
+    appendPageFileRows(paging, rows);
+
+    if (!paging.zramRead)
+    {
+        rows.push_back(row("zram", "", "/sys/block couldn't be listed"));
+    }
+    else if (paging.zram.empty())
+    {
+        rows.push_back(row("zram", "None"));
+    }
+    for (const Platform::ZramDevice& device : paging.zram)
+    {
+        rows.push_back(row(device.name, formatZramDevice(device)));
+    }
+    std::string zswap;
+    if (paging.zswapEnabled.has_value())
+    {
+        zswap = *paging.zswapEnabled ? "Enabled" : "Disabled";
+    }
+    rows.push_back(row("zswap", std::move(zswap), "/sys/module/zswap couldn't be read (zswap isn't built in)"));
+
+    std::string hugePages;
+    if (paging.hugePagesRead)
+    {
+        const std::string pageSize =
+            paging.hugePageSizeBytes != 0 ? std::format(" ({} pages)", formatMemoryCapacity(paging.hugePageSizeBytes)) : std::string{};
+        hugePages = paging.hugePagesTotal == 0 ? "None reserved" + pageSize
+                                               : std::format("{} of {} free, {} reserved, {} surplus{}",
+                                                             paging.hugePagesFree,
+                                                             paging.hugePagesTotal,
+                                                             paging.hugePagesReserved,
+                                                             paging.hugePagesSurplus,
+                                                             pageSize);
+    }
+    rows.push_back(row("Huge pages", std::move(hugePages), "/proc/meminfo has no HugePages_ lines"));
+    rows.push_back(row("Transparent huge pages", paging.transparentHugePages, "/sys/kernel/mm/transparent_hugepage couldn't be read"));
+}
+
 } // namespace
+
+std::string formatMemoryCapacity(std::uint64_t bytes)
+{
+    constexpr std::uint64_t MIB = std::uint64_t{1024} * 1024;
+    constexpr std::uint64_t GIB = MIB * 1024;
+    if (bytes == 0)
+    {
+        return {};
+    }
+    if (bytes % GIB == 0)
+    {
+        return std::format("{} GiB", bytes / GIB);
+    }
+    if (bytes < GIB && bytes % MIB == 0)
+    {
+        return std::format("{} MiB", bytes / MIB);
+    }
+    return UI::Format::formatBytes(static_cast<double>(bytes));
+}
+
+std::uint64_t installedMemoryBytes(const Platform::MemoryModulesInfo& memory)
+{
+    if (memory.installedBytes != 0 || !memory.tableRead || memory.modules.empty())
+    {
+        return memory.installedBytes;
+    }
+    std::uint64_t total = 0;
+    for (const Platform::MemoryModule& module : memory.modules)
+    {
+        if (module.sizeBytes == 0)
+        {
+            return 0; // an unknown size would understate the total
+        }
+        total += module.sizeBytes;
+    }
+    return total;
+}
+
+std::string formatMemorySpeed(std::uint32_t configuredMts, std::uint32_t ratedMts)
+{
+    if (configuredMts == 0)
+    {
+        return ratedMts == 0 ? std::string{} : std::format("rated {} MT/s", ratedMts);
+    }
+    if (ratedMts == 0 || ratedMts == configuredMts)
+    {
+        return std::format("{} MT/s", configuredMts);
+    }
+    return std::format("{} MT/s (rated {} MT/s)", configuredMts, ratedMts);
+}
+
+std::string formatMemoryModule(const Platform::MemoryModule& module)
+{
+    const std::string capacity = formatMemoryCapacity(module.sizeBytes);
+    const std::string kind = joinNonEmpty({capacity, module.type, module.formFactor}, " ");
+    const std::string speed = formatMemorySpeed(module.configuredSpeedMts, module.speedMts);
+    const std::string maker = joinNonEmpty({module.manufacturer, module.partNumber}, " ");
+    return joinNonEmpty({kind, speed, maker}, ", ");
+}
 
 std::string formatUtcOffset(int minutes)
 {
@@ -166,6 +383,101 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware)
     return section;
 }
 
+Section buildMemorySection(const Platform::MemoryModulesInfo& memory)
+{
+    Section section{.title = "Memory modules", .icon = ICON_FA_MEMORY, .rows = {}};
+    auto& rows = section.rows;
+    // Without the SMBIOS table there are no modules or slots to list; say why once, in their place.
+    const std::string_view tableReason = memory.tableNeedsAdmin ? NEEDS_ADMIN : NOT_REPORTED;
+    const bool hasSlots = memory.tableRead && memory.slotCount > 0;
+    rows.push_back(row("Slots used", hasSlots ? std::format("{} of {}", memory.modules.size(), memory.slotCount) : "", tableReason));
+    rows.push_back(row("Maximum capacity", formatMemoryCapacity(memory.maxCapacityBytes), tableReason));
+    const std::uint64_t installed = installedMemoryBytes(memory);
+    rows.push_back(row("Installed memory", formatMemoryCapacity(installed), tableReason));
+    std::string usable = formatMemoryCapacity(memory.usableBytes);
+    if (memory.usableBytes != 0 && installed > memory.usableBytes)
+    {
+        usable += std::format(" ({} hardware reserved)", formatMemoryCapacity(installed - memory.usableBytes));
+    }
+    rows.push_back(row("Usable memory", std::move(usable)));
+
+    if (!memory.tableRead || memory.modules.empty())
+    {
+        rows.push_back(row("Modules", "", memory.tableRead ? std::string_view{"The SMBIOS table lists no installed memory"} : tableReason));
+        return section;
+    }
+    std::vector<std::string> labels = moduleLabels(memory.modules);
+    for (std::size_t i = 0; i < memory.modules.size(); ++i)
+    {
+        rows.push_back(row(std::move(labels[i]), formatMemoryModule(memory.modules[i])));
+    }
+    return section;
+}
+
+std::string formatCommitCharge(std::uint64_t committedBytes, std::uint64_t limitBytes)
+{
+    if (committedBytes == 0)
+    {
+        return {};
+    }
+    if (limitBytes == 0)
+    {
+        return sizeText(committedBytes);
+    }
+    const double percent = (static_cast<double>(committedBytes) * 100.0) / static_cast<double>(limitBytes);
+    return std::format("{} / {} ({:.0f}%)", sizeText(committedBytes), sizeText(limitBytes), percent);
+}
+
+std::string formatPageFile(const Platform::PageFile& file, Platform::OsFamily family)
+{
+    std::string text = std::format("{} used of {}", sizeText(file.usedBytes), sizeText(file.sizeBytes));
+    if (family == Platform::OsFamily::Windows)
+    {
+        text += std::format(", peak {}", sizeText(file.peakBytes));
+        return text;
+    }
+    if (!file.kind.empty())
+    {
+        text += ", " + file.kind;
+    }
+    text += std::format(", priority {}", file.priority);
+    return text;
+}
+
+std::string formatZramDevice(const Platform::ZramDevice& device)
+{
+    if (device.originalBytes == 0)
+    {
+        return "Empty";
+    }
+    std::string text = std::format("{} stored in {}", sizeText(device.originalBytes), sizeText(device.compressedBytes));
+    if (device.compressedBytes != 0)
+    {
+        text += std::format(" ({:.1f}:1)", static_cast<double>(device.originalBytes) / static_cast<double>(device.compressedBytes));
+    }
+    text += std::format(", {} of RAM", sizeText(device.memoryUsedBytes));
+    return text;
+}
+
+Section buildCommitPagingSection(const Platform::CommitPagingInfo& paging)
+{
+    Section section{.title = "Commit & paging", .icon = ICON_FA_COMPRESS, .rows = {}};
+    auto& rows = section.rows;
+    const bool windows = paging.family == Platform::OsFamily::Windows;
+    rows.push_back(row("Commit charge",
+                       formatCommitCharge(paging.committedBytes, paging.commitLimitBytes),
+                       windows ? "GetPerformanceInfo failed" : "/proc/meminfo has no Committed_AS line"));
+    if (windows)
+    {
+        appendPagingRowsWindows(paging, rows);
+    }
+    else
+    {
+        appendPagingRowsLinux(paging, rows);
+    }
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
 {
     std::vector<Section> sections;
@@ -180,6 +492,14 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.firmware.available)
     {
         sections.push_back(buildFirmwareSection(snapshot.firmware));
+    }
+    if (snapshot.memory.available)
+    {
+        sections.push_back(buildMemorySection(snapshot.memory));
+    }
+    if (snapshot.paging.available)
+    {
+        sections.push_back(buildCommitPagingSection(snapshot.paging));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

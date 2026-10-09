@@ -25,6 +25,8 @@
 
 #include "Platform/SmbiosParser.h"
 #include "WinString.h"
+#include "WindowsCommitPaging.h"
+#include "WindowsInstalledMemory.h"
 #include "WindowsOsInfoMath.h"
 
 #include <chrono>
@@ -156,6 +158,27 @@ void readTimeZone(OsInfo& info)
     info.timeZone = WinString::wideToUtf8(zone.TimeZoneKeyName[0] != L'\0' ? zone.TimeZoneKeyName : zone.StandardName);
 }
 
+/// The raw SMBIOS table (a RawSMBIOSData blob) from GetSystemFirmwareTable('RSMB'); no administrator
+/// rights needed. Empty on failure. The size can change between the two calls (it doesn't in
+/// practice), so a second call that wants more room gives nothing.
+[[nodiscard]] std::vector<std::uint8_t> readRawSmbios()
+{
+    constexpr DWORD RSMB = 0x52534D42;
+    const UINT size = GetSystemFirmwareTable(RSMB, 0, nullptr, 0);
+    if (size == 0)
+    {
+        return {};
+    }
+    std::vector<std::uint8_t> table(size);
+    const UINT written = GetSystemFirmwareTable(RSMB, 0, table.data(), size);
+    if (written == 0 || written > size)
+    {
+        return {};
+    }
+    table.resize(written);
+    return table;
+}
+
 } // namespace
 
 SystemInfoCapabilities WindowsSystemInfoProbe::capabilities() const
@@ -222,18 +245,9 @@ FirmwareInfo WindowsSystemInfoProbe::readFirmware()
         }
     }
 
-    // 'RSMB': the raw SMBIOS table; no administrator rights needed. The size can change between the two
-    // calls (it doesn't in practice), so a second call that wants more room leaves the facts empty.
-    constexpr DWORD RSMB = 0x52534D42;
-    if (const UINT size = GetSystemFirmwareTable(RSMB, 0, nullptr, 0); size > 0)
+    if (const std::vector<std::uint8_t> table = readRawSmbios(); !table.empty())
     {
-        std::vector<std::uint8_t> table(size);
-        const UINT written = GetSystemFirmwareTable(RSMB, 0, table.data(), size);
-        if (written > 0 && written <= size)
-        {
-            table.resize(written);
-            Smbios::decodeFirmware(table, info);
-        }
+        Smbios::decodeFirmware(table, info);
     }
 
     // The power manager's role (from the ACPI FADT preferred profile) is what msinfo32 shows; the
@@ -244,6 +258,25 @@ FirmwareInfo WindowsSystemInfoProbe::readFirmware()
     {
         info.platformRole = std::string(role);
     }
+    return info;
+}
+
+MemoryModulesInfo WindowsSystemInfoProbe::readMemoryModules()
+{
+    MemoryModulesInfo info;
+    info.available = true;
+    if (const std::vector<std::uint8_t> table = readRawSmbios(); !table.empty())
+    {
+        Smbios::decodeMemoryModules(table, info);
+    }
+    readInstalledMemory(info);
+    return info;
+}
+
+CommitPagingInfo WindowsSystemInfoProbe::readCommitPaging()
+{
+    CommitPagingInfo info;
+    WindowsCommitPaging::readCommitPaging(info);
     return info;
 }
 

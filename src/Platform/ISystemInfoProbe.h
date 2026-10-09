@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Platform
 {
@@ -83,6 +84,91 @@ struct FirmwareInfo
     bool smbiosVersionNeedsAdmin = false; ///< Linux: the SMBIOS entry point exists but is readable by root only.
 };
 
+/// One populated memory device (SMBIOS type 17, #1515), decoded but unformatted. A fact the table
+/// doesn't give is left empty or 0.
+struct MemoryModule
+{
+    std::string locator;                  ///< The slot or device locator ("DIMM A1", "ChannelA-DIMM0")
+    std::string bankLocator;              ///< "BANK 0", "P0 CHANNEL A"
+    std::uint64_t sizeBytes = 0;          ///< 0 when the module reports an unknown size
+    std::string type;                     ///< "DDR5", "LPDDR5", ...; empty when unknown
+    std::string formFactor;               ///< "DIMM", "SODIMM", "Row of chips", ...; empty when unknown
+    std::uint32_t speedMts = 0;           ///< The rated (maximum) speed in MT/s
+    std::uint32_t configuredSpeedMts = 0; ///< The speed it runs at, in MT/s
+    std::string manufacturer;
+    std::string partNumber;
+};
+
+/// The Memory modules facts (#1515): the populated modules and slots from SMBIOS types 16 and 17, and
+/// installed against usable memory.
+struct MemoryModulesInfo
+{
+    bool available = false;             ///< The probe read the section at all.
+    bool tableRead = false;             ///< The SMBIOS table was read: modules and slotCount are meaningful.
+    bool tableNeedsAdmin = false;       ///< Linux: the SMBIOS table exists but is readable by root only.
+    std::vector<MemoryModule> modules;  ///< Populated slots only, in table order
+    std::uint32_t slotCount = 0;        ///< Every memory device slot, empty ones included; 0 when unknown
+    std::uint64_t maxCapacityBytes = 0; ///< The system memory arrays' maximum capacity; 0 when unknown
+    std::uint64_t installedBytes = 0;   ///< Physically installed, as the OS reports it (Windows); 0 when unknown
+    std::uint64_t usableBytes = 0;      ///< What the OS can use (installed less hardware-reserved); 0 when unknown
+};
+
+/// One page file (Windows) or swap device (Linux, /proc/swaps), #1516. A size the OS doesn't give is 0.
+struct PageFile
+{
+    std::string path;            ///< A DOS path ("C:\pagefile.sys") / the swap file or partition
+    std::string kind;            ///< Linux: /proc/swaps' Type ("partition", "file"); empty on Windows
+    std::uint64_t sizeBytes = 0; ///< Its current size
+    std::uint64_t usedBytes = 0;
+    std::uint64_t peakBytes = 0; ///< Windows: the most it has held since boot; 0 on Linux
+    int priority = 0;            ///< Linux: the swap priority
+};
+
+/// One zram device's /sys/block/zramN/mm_stat totals (#1516).
+struct ZramDevice
+{
+    std::string name;                  ///< "zram0"
+    std::uint64_t originalBytes = 0;   ///< Data stored, uncompressed
+    std::uint64_t compressedBytes = 0; ///< That data compressed
+    std::uint64_t memoryUsedBytes = 0; ///< RAM the device uses, overhead included
+};
+
+/// Linux's vm.overcommit_memory (0, 1, 2).
+enum class OvercommitMode : std::uint8_t
+{
+    Unknown,
+    Heuristic, ///< 0
+    Always,    ///< 1
+    Strict,    ///< 2: the commit limit is enforced
+};
+
+/// The Commit & paging facts (#1516). A size the probe couldn't read is 0 (a commit charge or limit is
+/// never 0 for real); a fact that can legitimately be 0 or off is an optional.
+struct CommitPagingInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    std::uint64_t committedBytes = 0;   ///< Windows CommitTotal / Linux Committed_AS
+    std::uint64_t commitLimitBytes = 0; ///< Windows CommitLimit / Linux CommitLimit
+    std::uint64_t commitPeakBytes = 0;  ///< Windows only
+    std::uint64_t pageSizeBytes = 0;    ///< Windows only
+    bool pageFilesRead = false;         ///< The list was read: an empty pageFiles means none configured.
+    std::vector<PageFile> pageFiles;
+    std::optional<std::uint64_t> compressedBytes; ///< Windows: the Memory Compression process's working set
+
+    OvercommitMode overcommit = OvercommitMode::Unknown; ///< Linux
+    bool zramRead = false;                               ///< Linux: /sys/block was listed
+    std::vector<ZramDevice> zram;                        ///< Linux
+    std::optional<bool> zswapEnabled;                    ///< Linux
+    bool hugePagesRead = false;                          ///< Linux: HugePages_Total was in /proc/meminfo
+    std::uint64_t hugePagesTotal = 0;
+    std::uint64_t hugePagesFree = 0;
+    std::uint64_t hugePagesReserved = 0;
+    std::uint64_t hugePagesSurplus = 0;
+    std::uint64_t hugePageSizeBytes = 0;
+    std::string transparentHugePages; ///< Linux: the bracketed mode ("always", "madvise", "never")
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -110,6 +196,12 @@ class ISystemInfoProbe
 
     /// The Firmware & board facts (#1513); read when hasOs is true.
     [[nodiscard]] virtual FirmwareInfo readFirmware() = 0;
+
+    /// The Memory modules facts (#1515); read when hasOs is true.
+    [[nodiscard]] virtual MemoryModulesInfo readMemoryModules() = 0;
+
+    /// The Commit & paging facts (#1516); read when hasOs is true.
+    [[nodiscard]] virtual CommitPagingInfo readCommitPaging() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -127,6 +219,16 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] FirmwareInfo readFirmware() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] MemoryModulesInfo readMemoryModules() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] CommitPagingInfo readCommitPaging() override
     {
         return {};
     }

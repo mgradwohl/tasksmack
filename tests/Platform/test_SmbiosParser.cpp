@@ -360,5 +360,271 @@ TEST(SmbiosParserTest, DecodeFirmwareFillsTheSection)
     EXPECT_TRUE(none.smbiosVersion.empty());
 }
 
+/// Writes @p value little-endian over @p size bytes at @p offset of a structure's formatted area.
+void putLittleEndian(ByteVector& structure, std::size_t offset, std::uint64_t value, std::size_t size)
+{
+    for (std::size_t i = 0; i < size; ++i)
+    {
+        structure.at(offset + i) = static_cast<std::uint8_t>((value >> (8U * i)) & 0xFFU);
+    }
+}
+
+/// A type 16 (Physical Memory Array) of SMBIOS 2.7+ length.
+[[nodiscard]] ByteVector
+memoryArray(std::uint16_t handle, std::uint8_t use, std::uint32_t maxCapacityKib, std::uint16_t devices, std::uint64_t extendedBytes = 0)
+{
+    ByteVector bytes = makeStructure(TYPE_PHYSICAL_MEMORY_ARRAY, 0x17, {{0x04, 0x03}, {0x05, use}, {0x06, 0x03}}, {}, handle);
+    putLittleEndian(bytes, 0x07, maxCapacityKib, 4);
+    putLittleEndian(bytes, 0x0B, 0xFFFE, 2);
+    putLittleEndian(bytes, 0x0D, devices, 2);
+    putLittleEndian(bytes, 0x0F, extendedBytes, 8);
+    return bytes;
+}
+
+/// What a type 17 (Memory Device) of SMBIOS 3.3+ length holds; strings are 1 locator, 2 bank,
+/// 3 manufacturer, 4 serial, 5 part number.
+struct DeviceSpec
+{
+    std::uint16_t arrayHandle = 0x1000;
+    std::uint16_t size = 0x4000; // 16384 MiB
+    std::uint32_t extendedSizeMib = 0;
+    std::uint8_t formFactor = 0x09; // DIMM
+    std::uint8_t type = 0x22;       // DDR5
+    std::uint16_t speed = 6400;
+    std::uint16_t configuredSpeed = 5600;
+    std::uint32_t extendedSpeed = 0;
+    std::uint32_t extendedConfiguredSpeed = 0;
+    std::string_view locator = "DIMM A1";
+    std::string_view manufacturer = "Samsung";
+    std::string_view partNumber = "M323R2GA3BB0-CQKOD    ";
+    std::uint8_t length = 0x5C;
+};
+
+[[nodiscard]] ByteVector memoryDevice(const DeviceSpec& spec, std::uint16_t handle = 0x1100)
+{
+    ByteVector bytes = makeStructure(TYPE_MEMORY_DEVICE,
+                                     0x5C,
+                                     {{0x0E, spec.formFactor}, {0x10, 1}, {0x11, 2}, {0x12, spec.type}, {0x17, 3}, {0x18, 4}, {0x1A, 5}},
+                                     {spec.locator, "BANK 0", spec.manufacturer, "12345678", spec.partNumber},
+                                     handle);
+    putLittleEndian(bytes, 0x04, spec.arrayHandle, 2);
+    putLittleEndian(bytes, 0x0C, spec.size, 2);
+    putLittleEndian(bytes, 0x15, spec.speed, 2);
+    putLittleEndian(bytes, 0x1C, spec.extendedSizeMib, 4);
+    putLittleEndian(bytes, 0x20, spec.configuredSpeed, 2);
+    putLittleEndian(bytes, 0x54, spec.extendedSpeed, 4);
+    putLittleEndian(bytes, 0x58, spec.extendedConfiguredSpeed, 4);
+    if (spec.length < 0x5C)
+    {
+        // An older, shorter structure: drop the formatted bytes past its length, keep the strings.
+        bytes.erase(bytes.begin() + spec.length, bytes.begin() + 0x5C);
+        bytes.at(1) = spec.length;
+    }
+    return bytes;
+}
+
+constexpr std::uint64_t MIB = std::uint64_t{1024} * 1024;
+constexpr std::uint64_t GIB = MIB * 1024;
+
+TEST(SmbiosParserTest, DecodesATypicalMemoryDevice)
+{
+    const ByteVector bytes = memoryDevice(DeviceSpec{});
+    const auto structures = parseStructures(bytes);
+    ASSERT_EQ(structures.size(), 1U);
+    const MemoryDeviceFields fields = decodeMemoryDevice(structures.front());
+    EXPECT_EQ(fields.arrayHandle, 0x1000);
+    EXPECT_TRUE(fields.installed);
+    EXPECT_EQ(fields.sizeBytes, 16 * GIB);
+    EXPECT_EQ(memoryTypeName(fields.memoryType), "DDR5");
+    EXPECT_EQ(memoryFormFactorName(fields.formFactor), "DIMM");
+    EXPECT_EQ(fields.locator, "DIMM A1");
+    EXPECT_EQ(fields.bankLocator, "BANK 0");
+    EXPECT_EQ(fields.speedMts, 6400U);
+    EXPECT_EQ(fields.configuredSpeedMts, 5600U);
+    EXPECT_EQ(fields.manufacturer, "Samsung");
+    EXPECT_EQ(fields.partNumber, "M323R2GA3BB0-CQKOD"); // trailing padding trimmed
+}
+
+TEST(SmbiosParserTest, MemoryDeviceSizes)
+{
+    const auto decode = [](const DeviceSpec& spec)
+    {
+        const ByteVector bytes = memoryDevice(spec);
+        return decodeMemoryDevice(parseStructures(bytes).front());
+    };
+    // An empty slot.
+    EXPECT_FALSE(decode({.size = 0, .manufacturer = "Unknown", .partNumber = "Not Specified"}).installed);
+    // Extended size: 0x7FFF says the size is the DWORD at 0x1C, in MiB (bit 31 reserved).
+    const MemoryDeviceFields extended = decode({.size = 0x7FFF, .extendedSizeMib = 0x8001'0000});
+    EXPECT_EQ(extended.sizeBytes, 64 * GIB);
+    // Bit 15 set: KiB granularity.
+    EXPECT_EQ(decode({.size = 0x8200}).sizeBytes, 512U * 1024); // 0x8000 | 512
+    // 0xFFFF: installed, size unknown.
+    const MemoryDeviceFields unknown = decode({.size = 0xFFFF});
+    EXPECT_TRUE(unknown.installed);
+    EXPECT_EQ(unknown.sizeBytes, 0U);
+}
+
+TEST(SmbiosParserTest, MemoryDeviceExtendedSpeedsAndPlaceholders)
+{
+    const ByteVector bytes = memoryDevice({
+        .formFactor = 0x0B,
+        .type = 0x23,
+        .speed = 0xFFFF,
+        .configuredSpeed = 0xFFFF,
+        .extendedSpeed = 8533,
+        .extendedConfiguredSpeed = 7500,
+        .manufacturer = "NOT SPECIFIED",
+        .partNumber = "Unknown",
+    });
+    const MemoryDeviceFields fields = decodeMemoryDevice(parseStructures(bytes).front());
+    EXPECT_EQ(memoryTypeName(fields.memoryType), "LPDDR5");
+    EXPECT_EQ(memoryFormFactorName(fields.formFactor), "Row of chips");
+    EXPECT_EQ(fields.speedMts, 8533U);
+    EXPECT_EQ(fields.configuredSpeedMts, 7500U);
+    EXPECT_EQ(fields.manufacturer, "");
+    EXPECT_EQ(fields.partNumber, "");
+}
+
+TEST(SmbiosParserTest, TruncatedMemoryDevicesReadOnlyWhatIsThere)
+{
+    // SMBIOS 2.3 length (0x1B): no extended size, no configured speed.
+    const ByteVector v23 = memoryDevice({.size = 0x7FFF, .extendedSizeMib = 0x10000, .length = 0x1B});
+    const MemoryDeviceFields old = decodeMemoryDevice(parseStructures(v23).front());
+    EXPECT_TRUE(old.installed);
+    EXPECT_EQ(old.sizeBytes, 0U); // the extended size it points at isn't there
+    EXPECT_EQ(old.speedMts, 6400U);
+    EXPECT_EQ(old.configuredSpeedMts, 0U);
+    EXPECT_EQ(old.partNumber, "M323R2GA3BB0-CQKOD");
+
+    // 0xFFFF speeds in a structure too short for the extended fields read as unknown.
+    const ByteVector v27 = memoryDevice({.speed = 0xFFFF, .configuredSpeed = 0xFFFF, .extendedSpeed = 9000, .length = 0x28});
+    const MemoryDeviceFields mid = decodeMemoryDevice(parseStructures(v27).front());
+    EXPECT_EQ(mid.speedMts, 0U);
+    EXPECT_EQ(mid.configuredSpeedMts, 0U);
+    EXPECT_EQ(mid.sizeBytes, 16 * GIB);
+
+    // Too short to hold Size: counted as installed with an unknown size; strings past it are empty.
+    const ByteVector header = makeStructure(TYPE_MEMORY_DEVICE, 0x08, {}, {"DIMM"});
+    const MemoryDeviceFields bare = decodeMemoryDevice(parseStructures(header).front());
+    EXPECT_TRUE(bare.installed);
+    EXPECT_EQ(bare.sizeBytes, 0U);
+    EXPECT_EQ(bare.locator, "");
+    EXPECT_EQ(memoryTypeName(bare.memoryType), "");
+}
+
+TEST(SmbiosParserTest, MemoryArrays)
+{
+    const ByteVector plain = memoryArray(0x1000, MEMORY_ARRAY_USE_SYSTEM, 64 * 1024 * 1024, 4);
+    const MemoryArrayFields fields = decodeMemoryArray(parseStructures(plain).front());
+    EXPECT_EQ(fields.handle, 0x1000);
+    EXPECT_EQ(fields.use, MEMORY_ARRAY_USE_SYSTEM);
+    EXPECT_EQ(fields.maxCapacityBytes, 64 * GIB);
+    EXPECT_EQ(fields.deviceCount, 4);
+
+    const ByteVector extended = memoryArray(0x1000, MEMORY_ARRAY_USE_SYSTEM, MEMORY_ARRAY_EXTENDED_CAPACITY, 8, 4096 * GIB);
+    EXPECT_EQ(decodeMemoryArray(parseStructures(extended).front()).maxCapacityBytes, 4096 * GIB);
+
+    // SMBIOS 2.1 length (0x0F): no extended capacity to defer to.
+    ByteVector old = memoryArray(0x1000, MEMORY_ARRAY_USE_SYSTEM, MEMORY_ARRAY_EXTENDED_CAPACITY, 2);
+    old.erase(old.begin() + 0x0F, old.begin() + 0x17);
+    old.at(1) = 0x0F;
+    const MemoryArrayFields short21 = decodeMemoryArray(parseStructures(old).front());
+    EXPECT_EQ(short21.maxCapacityBytes, 0U);
+    EXPECT_EQ(short21.deviceCount, 2);
+}
+
+[[nodiscard]] ByteVector memoryTable()
+{
+    return concat({
+        biosStructure(),
+        memoryArray(0x1000, MEMORY_ARRAY_USE_SYSTEM, MEMORY_ARRAY_EXTENDED_CAPACITY, 4, 128 * GIB),
+        memoryArray(0x2000, 0x05, 1024, 1), // flash: not RAM
+        memoryDevice({.locator = "DIMM A1"}, 0x1100),
+        memoryDevice({.size = 0, .locator = "DIMM A2", .manufacturer = "NO DIMM", .partNumber = "NO DIMM"}, 0x1101),
+        memoryDevice({.size = 0x7FFF, .extendedSizeMib = 0x10000, .locator = "DIMM B1"}, 0x1102),
+        memoryDevice({.size = 0, .locator = "DIMM B2"}, 0x1103),
+        memoryDevice({.arrayHandle = 0x2000, .size = 1, .locator = "FLASH"}, 0x1104),
+        makeStructure(TYPE_END_OF_TABLE, 4, {}, {}),
+    });
+}
+
+TEST(SmbiosParserTest, DecodeMemoryModulesListsPopulatedSystemMemory)
+{
+    MemoryModulesInfo info;
+    ASSERT_TRUE(decodeMemoryModules(makeRaw(3, 4, memoryTable()), info));
+    EXPECT_TRUE(info.tableRead);
+    EXPECT_EQ(info.slotCount, 4U);
+    EXPECT_EQ(info.maxCapacityBytes, 128 * GIB);
+    ASSERT_EQ(info.modules.size(), 2U);
+    EXPECT_EQ(info.modules.at(0).locator, "DIMM A1");
+    EXPECT_EQ(info.modules.at(0).sizeBytes, 16 * GIB);
+    EXPECT_EQ(info.modules.at(0).type, "DDR5");
+    EXPECT_EQ(info.modules.at(0).formFactor, "DIMM");
+    EXPECT_EQ(info.modules.at(0).configuredSpeedMts, 5600U);
+    EXPECT_EQ(info.modules.at(0).speedMts, 6400U);
+    EXPECT_EQ(info.modules.at(1).locator, "DIMM B1");
+    EXPECT_EQ(info.modules.at(1).sizeBytes, 64 * GIB);
+    // decodeMemoryModules() fills only the table's facts.
+    EXPECT_EQ(info.installedBytes, 0U);
+    EXPECT_EQ(info.usableBytes, 0U);
+
+    MemoryModulesInfo none;
+    EXPECT_FALSE(decodeMemoryModules(ByteVector{0, 3, 4}, none));
+    EXPECT_FALSE(none.tableRead);
+}
+
+TEST(SmbiosParserTest, MemorySlotsWithoutAnArray)
+{
+    // No type 16: the slots are the memory devices, and devices of an unknown array count.
+    MemoryModulesInfo info;
+    decodeMemoryTable(concat({memoryDevice({.arrayHandle = 0x4242}), memoryDevice({.size = 0, .locator = "DIMM 1"}, 0x1101)}), info);
+    EXPECT_TRUE(info.tableRead);
+    EXPECT_EQ(info.slotCount, 2U);
+    EXPECT_EQ(info.maxCapacityBytes, 0U);
+    EXPECT_EQ(info.modules.size(), 1U);
+
+    // An empty table: read, nothing in it.
+    MemoryModulesInfo empty;
+    decodeMemoryTable({}, empty);
+    EXPECT_TRUE(empty.tableRead);
+    EXPECT_EQ(empty.slotCount, 0U);
+    EXPECT_TRUE(empty.modules.empty());
+}
+
+TEST(SmbiosParserTest, EveryPrefixOfAMemoryTableDecodesSafely)
+{
+    const ByteVector table = memoryTable();
+    for (std::size_t size = 0; size <= table.size(); ++size)
+    {
+        MemoryModulesInfo info;
+        decodeMemoryTable(std::span(table).first(size), info);
+        EXPECT_LE(info.modules.size(), 2U) << size;
+    }
+}
+
+TEST(SmbiosParserTest, MemoryTypeAndFormFactorNames)
+{
+    EXPECT_EQ(memoryTypeName(0x1A), "DDR4");
+    EXPECT_EQ(memoryTypeName(0x18), "DDR3");
+    EXPECT_EQ(memoryTypeName(0x1E), "LPDDR4");
+    EXPECT_EQ(memoryTypeName(0x22), "DDR5");
+    EXPECT_EQ(memoryTypeName(0x23), "LPDDR5");
+    EXPECT_EQ(memoryTypeName(0x24), "HBM3");
+    EXPECT_EQ(memoryTypeName(0x02), ""); // Unknown
+    EXPECT_EQ(memoryTypeName(0x15), ""); // reserved
+    EXPECT_EQ(memoryTypeName(0xFF), "");
+    EXPECT_EQ(memoryFormFactorName(0x0D), "SODIMM");
+    EXPECT_EQ(memoryFormFactorName(0x11), "CAMM");
+    EXPECT_EQ(memoryFormFactorName(0x02), "");
+    EXPECT_EQ(memoryFormFactorName(0x40), "");
+
+    EXPECT_TRUE(isPlaceholderString("Not Specified"));
+    EXPECT_TRUE(isPlaceholderString("UNKNOWN"));
+    EXPECT_TRUE(isPlaceholderString("To Be Filled By O.E.M."));
+    EXPECT_FALSE(isPlaceholderString("Kingston"));
+    EXPECT_FALSE(isPlaceholderString(""));
+}
+
 } // namespace
 } // namespace Platform::Smbios

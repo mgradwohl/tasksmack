@@ -1,0 +1,9 @@
+MemTotal:       32562356 kB
+MemFree:         8123456 kB
+CommitLimit:    30961228 kB
+Committed_AS:   14201876 kB
+HugePages_Total:       4
+HugePages_Free:        3
+HugePages_Rsvd:        1
+HugePages_Surp:        0
+Hugepagesize:       2048 kB

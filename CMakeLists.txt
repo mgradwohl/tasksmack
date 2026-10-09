@@ -308,6 +308,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/DRMGPUProbe.h
         src/Platform/Linux/LinuxSystemInfoProbe.h
         src/Platform/Linux/LinuxOsInfo.h
+        src/Platform/Linux/LinuxCommitPaging.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
@@ -334,6 +335,8 @@ elseif(WIN32)
         src/Platform/Windows/WinString.h
         src/Platform/Windows/WindowsSystemInfoProbe.h
         src/Platform/Windows/WindowsOsInfoMath.h
+        src/Platform/Windows/WindowsInstalledMemory.h
+        src/Platform/Windows/WindowsCommitPaging.h
     )
 endif()
 

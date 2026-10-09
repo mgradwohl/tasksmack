@@ -67,6 +67,43 @@ struct VisibleSection
 /// row is left out when there is none.
 [[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware);
 
+/// A memory size: whole GiB ("16 GiB") or, under 1 GiB, whole MiB ("512 MiB") when exact, else
+/// UI::Format::formatBytes() ("31.7 GiB"). Empty for 0 (unknown).
+[[nodiscard]] std::string formatMemoryCapacity(std::uint64_t bytes);
+
+/// The installed memory: the platform's own figure (Windows), else the populated modules' total when
+/// the table was read and every module's size is known (Linux); 0 when unknown.
+[[nodiscard]] std::uint64_t installedMemoryBytes(const Platform::MemoryModulesInfo& memory);
+
+/// "5600 MT/s", "5600 MT/s (rated 6400 MT/s)", "rated 6400 MT/s" when only the rating is known; empty
+/// when neither is.
+[[nodiscard]] std::string formatMemorySpeed(std::uint32_t configuredMts, std::uint32_t ratedMts);
+
+/// One module's value: "16 GiB DDR5 SODIMM, 5600 MT/s (rated 6400 MT/s), Samsung M425R2GA3BB0-CWMOD",
+/// unknown parts left out.
+[[nodiscard]] std::string formatMemoryModule(const Platform::MemoryModule& module);
+
+/// The Memory modules section (#1515): slots used of total, maximum capacity, installed and usable
+/// memory (with the hardware-reserved difference), then one row per populated module, labelled by its
+/// locator. Without the SMBIOS table (Linux, unprivileged) a "Modules" row says it needs administrator.
+[[nodiscard]] Section buildMemorySection(const Platform::MemoryModulesInfo& memory);
+
+/// A commit charge: "12.3 GiB / 31.7 GiB (39%)"; the used figure alone without a limit, empty when
+/// the charge is unknown (0).
+[[nodiscard]] std::string formatCommitCharge(std::uint64_t committedBytes, std::uint64_t limitBytes);
+
+/// One page file or swap device: "1.2 GiB used of 16 GiB, peak 3.4 GiB" (Windows) / "512 MiB used of
+/// 8 GiB, partition, priority -2" (Linux).
+[[nodiscard]] std::string formatPageFile(const Platform::PageFile& file, Platform::OsFamily family);
+
+/// One zram device: "3.2 GiB stored in 812 MiB (4.0:1), 840 MiB of RAM"; "Empty" before it holds data.
+[[nodiscard]] std::string formatZramDevice(const Platform::ZramDevice& device);
+
+/// The Commit & paging section (#1516): the commit charge against its limit, then per platform the
+/// peak commit, each page file, compressed memory and the page size (Windows), or the overcommit mode,
+/// each swap device, zram, zswap and huge pages (Linux).
+[[nodiscard]] Section buildCommitPagingSection(const Platform::CommitPagingInfo& paging);
+
 /// The page's sections, in display order. Empty before the first read.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot);
 

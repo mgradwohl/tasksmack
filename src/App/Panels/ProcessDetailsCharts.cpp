@@ -6,6 +6,7 @@
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_GpuHelpers.h"
 #include "ProcessSmoothedUsage.h"
+#include "UI/Card.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
@@ -514,12 +515,10 @@ void ProcessDetailsCharts::renderOverviewCharts(const ProcessChartContext& ctx, 
     }
     renderCpuUsageSection(ctx, fill);
     renderMemoryUsageSection(ctx, fill);
-    ImGui::Separator();
     // Only where the platform measures it: Windows does not, and used to chart a fabricated figure (#1028).
     if (ctx.hasPowerUsage)
     {
         renderPowerUsage(ctx, fill);
-        ImGui::Separator();
     }
     renderThreadAndFaultHistory(ctx, fill);
 }
@@ -598,15 +597,18 @@ void ProcessDetailsCharts::renderCpuUsageSection(const ProcessChartContext& ctx,
         }
     };
 
-    (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "CPU", {}, alignedCount);
-    renderHistoryWithNowBars("ProcessCPUHistoryOverview",
-                             fill.plotHeight(),
-                             cpuPlot,
-                             {cpuTotalNow, cpuUserNow, cpuSystemNow},
-                             false,
-                             Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+    if (UI::Widgets::beginChartCard("##ProcCpuCard", fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "CPU", {}, alignedCount);
+        renderHistoryWithNowBars("ProcessCPUHistoryOverview",
+                                 fill.plotHeight(),
+                                 cpuPlot,
+                                 {cpuTotalNow, cpuUserNow, cpuSystemNow},
+                                 false,
+                                 Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+    }
+    UI::Widgets::endChartCard("##ProcCpuCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 }
 
 // The CPU chart's User and System bands and its Total, User and System lines, inside its plot.
@@ -739,7 +741,12 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
         }
     };
 
-    ImGui::Spacing();
+    if (!UI::Widgets::beginChartCard("##ProcMemoryCard", fill.plotHeight()))
+    {
+        UI::Widgets::endChartCard("##ProcMemoryCard", fill.plotHeight());
+        fill.addPlot();
+        return;
+    }
     (void) UI::Widgets::sectionHeader(ICON_FA_MEMORY, "Memory", {}, alignedCount);
     // Peak Memory is a line with a tooltip row but no bar; list it in the value strip too (#1193).
     const std::array peakEntry{UI::Widgets::ValueStripEntry{
@@ -759,8 +766,8 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
                              false,
                              UI::Widgets::NowBarValues::Strip,
                              stripExtras);
+    UI::Widgets::endChartCard("##ProcMemoryCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 }
 
 // Renders the thread/handle/page-fault history plot plus matching "now" bars. Every series has one
@@ -823,10 +830,13 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
         }
     };
 
-    (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Resources", {}, alignedCount);
-    renderHistoryWithNowBars("ProcessResourceHistory", fill.plotHeight(), plot, bars, false, Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+    if (UI::Widgets::beginChartCard("##ProcResourcesCard", fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, "Resources", {}, alignedCount);
+        renderHistoryWithNowBars("ProcessResourceHistory", fill.plotHeight(), plot, bars, false, Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+    }
+    UI::Widgets::endChartCard("##ProcResourcesCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 }
 
 void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill)
@@ -889,10 +899,14 @@ void ProcessDetailsCharts::renderPowerUsage(const ProcessChartContext& ctx, UI::
         }
     };
 
-    (void) UI::Widgets::sectionHeader(ICON_FA_BOLT, "Power Usage", {}, axis.alignedCount);
-    renderHistoryWithNowBars("ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+    if (UI::Widgets::beginChartCard("##ProcPowerCard", fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_BOLT, "Power Usage", {}, axis.alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessPowerHistory", fill.plotHeight(), plot, {powerBar}, false, Detail::PROCESS_OVERVIEW_NOW_BAR_COLUMNS);
+    }
+    UI::Widgets::endChartCard("##ProcPowerCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 }
 
 void ProcessDetailsCharts::renderNetworkTab(const ProcessChartContext& ctx)
@@ -913,7 +927,6 @@ void ProcessDetailsCharts::renderNetworkTab(const ProcessChartContext& ctx)
     const UI::Widgets::AlignedChartStack alignedCharts("##ProcNetworkCharts"); // #1206
     // Render I/O stats first (at the top)
     renderIoStats(ctx, fill);
-    ImGui::Separator();
     renderNetworkStats(ctx, fill);
 }
 
@@ -966,11 +979,14 @@ void ProcessDetailsCharts::renderIoStats(const ProcessChartContext& ctx, UI::Wid
             {.label = IO_WRITE_LABEL, .data = writeData, .color = theme.scheme().chartIoWrite, .fill = theme.scheme().chartIoWriteFill});
     };
 
-    (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "I/O Statistics", {}, axis.alignedCount);
-    renderHistoryWithNowBars(
-        "ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+    if (UI::Widgets::beginChartCard("##ProcIoCard", fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "I/O Statistics", {}, axis.alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessIoHistory", fill.plotHeight(), plot, {readBar, writeBar}, false, Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+    }
+    UI::Widgets::endChartCard("##ProcIoCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 }
 
 void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill)
@@ -1028,9 +1044,13 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
     // the item drawn just before it, so nothing else is submitted between the two. It is the header's
     // only tooltip, so it carries the sample count too: a second one in the same frame would replace
     // the other (#1200 review).
-    const bool headingHovered = UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network");
-    renderHistoryWithNowBars(
-        "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+    const bool cardVisible = UI::Widgets::beginChartCard("##ProcNetworkCard", fill.plotHeight());
+    const bool headingHovered = cardVisible && UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network");
+    if (cardVisible)
+    {
+        renderHistoryWithNowBars(
+            "ProcessNetworkHistory", fill.plotHeight(), plot, {sentBar, recvBar}, false, Detail::PROCESS_NETWORK_IO_NOW_BAR_COLUMNS);
+    }
     if (headingHovered && ImGui::BeginTooltip())
     {
         ImGui::TextUnformatted("Network bytes/sec between readings of the process's open connections. A refresh that reuses a cached "
@@ -1040,8 +1060,8 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
         ImGui::TextUnformatted(samples.data(), samples.data() + samples.size());
         ImGui::EndTooltip();
     }
+    UI::Widgets::endChartCard("##ProcNetworkCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 }
 
 void ProcessDetailsCharts::renderGpuTab(const ProcessChartContext& ctx)

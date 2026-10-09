@@ -306,7 +306,7 @@ The **Startup** tab lists the programs Windows starts when you sign in, and enab
 
 ### System Information
 
-The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (memory modules, disks, adapters, GPUs and displays, security) are planned.
+The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (disks, adapters, GPUs and displays, security) are planned.
 
 - **Operating system:**
   - **Windows:** edition and version (for example "Windows 11 Home", "25H2"), build with its update revision, architecture, install date, boot time and uptime, computer name, workgroup or domain, user, locale, time zone with its current UTC offset, and the system and Windows directories.
@@ -314,6 +314,12 @@ The **System** tab shows what this machine is, in titled sections of label/value
 - **Firmware & board:** the system's manufacturer, model, version, SKU and family; the BIOS vendor, version and release date; the firmware mode (UEFI or legacy BIOS); the SMBIOS version; the embedded controller's version, when there is one; the board's manufacturer, product and version; the chassis type (Desktop, Notebook, Convertible, ...) and manufacturer; and the platform role (desktop, mobile, server). The system serial number, UUID and board serial number are identifiers.
   - **Windows:** read from the SMBIOS table (`GetSystemFirmwareTable`), and the firmware mode from `GetFirmwareType`; no administrator rights needed.
   - **Linux:** read from `/sys/class/dmi/id`, UEFI when `/sys/firmware/efi` exists. The serial numbers, the UUID and the SMBIOS version are readable by root only on most systems, so they show "—" with "requires administrator" otherwise.
+- **Memory modules:** how many memory slots are used out of how many there are, the maximum capacity the board supports, installed memory, and usable memory (with the hardware-reserved difference, for example "31.7 GiB (312 MiB hardware reserved)"). Then one row per installed module, labelled by its slot (for example "DIMM A1" or "ChannelA-DIMM0"): its capacity, type (DDR4, DDR5, LPDDR5, ...), form factor (DIMM, SODIMM, Row of chips for soldered memory, ...), the speed it runs at and its rated speed in MT/s, manufacturer and part number. Empty slots count toward the total but aren't listed.
+  - **Windows:** read from the SMBIOS table (`GetSystemFirmwareTable`, memory device and memory array records); installed memory from `GetPhysicallyInstalledSystemMemory` and usable memory from `GlobalMemoryStatusEx`; no administrator rights needed.
+  - **Linux:** the modules come from the raw SMBIOS table, `/sys/firmware/dmi/tables/DMI`, which only root can read; otherwise the slots, maximum capacity, installed memory and modules show "—" with "requires administrator". TaskSmack never runs `dmidecode` or a helper to get them. Usable memory is `MemTotal` from `/proc/meminfo`, and installed memory is the modules' total.
+- **Commit & paging:** the commit charge against the commit limit (for example "35.0 GiB / 73.7 GiB (48%)"): memory programs have been promised, which RAM plus the page files or swap must back. It explains "out of memory" errors while RAM is still free. Then one row per page file or swap device, labelled by its path, with how much of it is in use.
+  - **Windows:** also the peak commit since boot, each page file's peak use, compressed memory (the Memory Compression process's working set; "—" when compression is off) and the page size. Read from `GetPerformanceInfo` and `NtQuerySystemInformation` (page files, and the process list for compression); no administrator rights needed.
+  - **Linux:** `Committed_AS` and `CommitLimit` from `/proc/meminfo` (the limit is only enforced in strict mode), the overcommit mode (heuristic, always, or strict, from `/proc/sys/vm/overcommit_memory`), swap devices from `/proc/swaps` with their type and priority, each zram device's stored and compressed sizes, ratio and RAM used (`/sys/block/zram*/mm_stat`), whether zswap is enabled, huge pages (`HugePages_*`) and the transparent huge page mode. A file that can't be read shows "—"; debugfs is never read.
 - **Read once:** the facts are read in the background the first time you open the tab, never while sampling. **Refresh** reads them again; the uptime is as of that read ("Read at" beside the button).
 - **Unavailable values** show a muted "—"; hover it for the reason.
 - **Identifiers hidden:** the user name, the computer name, a domain name, serial numbers and the system UUID are hidden until you tick **Show identifiers**, and are left out of copies until then.
@@ -415,6 +421,8 @@ The following table summarises capabilities that differ between Windows and Linu
 | Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
 | System Information: Operating system section | ✅ (os-release, uname, `/proc`, XDG session, container/VM hints) | ✅ (CurrentVersion registry key, session APIs) |
 | System Information: Firmware & board section | ✅ (`/sys/class/dmi/id`; serials, UUID and SMBIOS version need root) | ✅ (SMBIOS table, `GetFirmwareType`) |
+| System Information: Memory modules section | ✅ (`/sys/firmware/dmi/tables/DMI`, needs root; usable memory from `/proc/meminfo` without) | ✅ (SMBIOS table, `GetPhysicallyInstalledSystemMemory`) |
+| System Information: Commit & paging section | ✅ (`/proc/meminfo`, `/proc/swaps`, overcommit mode, zram, zswap, huge pages; no peak commit or page size) | ✅ (`GetPerformanceInfo`, page files with peak use, compressed memory) |
 | Startup apps tab | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders; enable / disable through StartupApproved, all-users entries need administrator) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
