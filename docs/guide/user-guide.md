@@ -262,6 +262,22 @@ The Process Details **Overview** tab also has a collapsible **Modules** section,
 - **Linux:** read from `/proc/[pid]/maps`. A module is a file with at least one executable mapping, so data files the process has mapped (a locale archive, fonts) are not listed, nor are anonymous memory and the kernel's `[heap]`, `[stack]` and `[vdso]`. Its base is its lowest mapping and its size the total of its mappings. A library that was deleted or replaced on disk after it was loaded (typically by a package upgrade) shows "(deleted)" after its name. Another user's process shows "Access denied ...": reading its mappings needs the process's own user, or root / `CAP_SYS_PTRACE`.
 - A process that has exited shows "Process exited"; one whose start time TaskSmack does not know (Windows' Idle and System) shows "Not available for this process".
 
+### Security
+
+On Linux the Process Details **Overview** tab also has a collapsible **Security** section, closed by default, under the Modules section. Open it to see what the selected process is allowed to do, as a two-column table:
+
+- **User** and **Group**: the effective ID with its name (`1000 (matt)`). When the real, saved or filesystem ID differs, as in a setuid program, it follows: `0 (root), real 1000 (matt), saved 1000 (matt)`.
+- **Supplementary groups**: the other groups the process belongs to, with their names, or "none".
+- **Effective**, **Permitted**, **Inheritable** and **Ambient capabilities**, and the **Bounding set**: each set's capability names (`CAP_NET_BIND_SERVICE, CAP_NET_RAW`), "none", or "all (41)" for the full set. A set the kernel does not report (Ambient before Linux 4.3) has no row.
+- **No new privileges**: whether the process has set `no_new_privs`, so it can never gain privileges, for example through a setuid program.
+- **Seccomp**: Disabled, Strict or Filter (a sandboxed process, such as a browser's renderer).
+- **Security label**: the SELinux context or AppArmor profile (`unconfined`, `/usr/bin/firefox (enforce)`); no row where there is no security module label.
+- **Control group**: the process's cgroup (`/user.slice/user-1000.slice/session-2.scope`), as systemd and containers place it.
+
+TaskSmack reads these from `/proc/[pid]/status`, `/proc/[pid]/attr/current` and `/proc/[pid]/cgroup`, only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds. They are readable for every user's processes. A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet".
+
+On **Windows** the section is not available yet (the process token: integrity level, elevation, privileges and groups is a follow-up); it is hidden.
+
 ### Services
 
 The **Services** tab lists the system's services, and on Windows starts, stops and restarts them and changes their startup type:
