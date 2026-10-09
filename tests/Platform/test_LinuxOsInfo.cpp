@@ -3,13 +3,15 @@
 /// the locale choice, btime, and the file facts and container/VM hints read under a fixture root; and
 /// Platform::LinuxFirmwareInfo (#1513), the Firmware & board facts from /sys/class/dmi/id under one, and
 /// the Memory modules facts (#1515) from the raw DMI table and /proc/meminfo; and Platform::LinuxCommitPaging
-/// (#1516), the Commit & paging parsers and facts from /proc and /sys.
+/// (#1516), the Commit & paging parsers and facts from /proc and /sys; and Platform::LinuxPlatformSecurity
+/// (#1514), the Security parsers and facts from /sys.
 /// The headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxCommitPaging.h"
 #include "Platform/Linux/LinuxFirmwareInfo.h"
 #include "Platform/Linux/LinuxOsInfo.h"
+#include "Platform/Linux/LinuxPlatformSecurity.h"
 
 #include <gtest/gtest.h>
 
@@ -472,6 +474,100 @@ TEST(LinuxCommitPagingTest, NothingReadableLeavesEverythingUnknown)
     EXPECT_FALSE(info.zswapEnabled.has_value());
     EXPECT_FALSE(info.hugePagesRead);
     EXPECT_TRUE(info.transparentHugePages.empty());
+}
+
+TEST(LinuxPlatformSecurityTest, ParsesTheFiles)
+{
+    using namespace std::string_view_literals;
+    // Four attribute bytes, then the value.
+    EXPECT_EQ(LinuxPlatformSecurity::parseSecureBootVariable("\x06\x00\x00\x00\x01"sv), std::optional<bool>(true));
+    EXPECT_EQ(LinuxPlatformSecurity::parseSecureBootVariable("\x06\x00\x00\x00\x00"sv), std::optional<bool>(false));
+    EXPECT_FALSE(LinuxPlatformSecurity::parseSecureBootVariable("\x06\x00\x00\x00"sv).has_value());
+    EXPECT_EQ(LinuxPlatformSecurity::parseLsmList("lockdown,capability,landlock,yama,apparmor\n"),
+              (std::vector<std::string>{"lockdown", "capability", "landlock", "yama", "apparmor"}));
+    EXPECT_TRUE(LinuxPlatformSecurity::parseLsmList("").empty());
+    EXPECT_EQ(LinuxPlatformSecurity::parseSelinuxEnforce("1"), std::optional<bool>(true));
+    EXPECT_EQ(LinuxPlatformSecurity::parseSelinuxEnforce("0"), std::optional<bool>(false));
+    EXPECT_FALSE(LinuxPlatformSecurity::parseSelinuxEnforce("").has_value());
+}
+
+TEST(LinuxPlatformSecurityTest, ReadsTheFactsUnderARoot)
+{
+    using namespace std::string_view_literals;
+    const FixtureRoot root;
+    root.write(std::format("sys/firmware/efi/efivars/{}", LinuxPlatformSecurity::SECURE_BOOT_VARIABLE), "\x06\x00\x00\x00\x01"sv);
+    root.write("sys/class/tpm/tpm0/tpm_version_major", "2\n");
+    root.write("sys/kernel/security/lsm", "lockdown,capability,yama,apparmor");
+    root.write("sys/kernel/security/lockdown", "none [integrity] confidentiality\n");
+    root.write("sys/module/apparmor/parameters/enabled", "Y\n");
+    root.write("sys/devices/system/cpu/vulnerabilities/spectre_v2", "Mitigation: Enhanced / Automatic IBRS\n");
+    root.write("sys/devices/system/cpu/vulnerabilities/meltdown", "Not affected\n");
+    root.write("sys/devices/system/cpu/vulnerabilities/empty", ""); // left out
+
+    PlatformSecurityInfo info;
+    LinuxPlatformSecurity::readPlatformSecurityFacts(root.path(), info);
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.secureBoot, SecurityFeatureState::On);
+    EXPECT_EQ(info.tpm, SecurityFeatureState::On);
+    EXPECT_EQ(info.tpmVersionMajor, 2U);
+    EXPECT_TRUE(info.lsmRead);
+    EXPECT_EQ(info.lsms.size(), 4U);
+    EXPECT_FALSE(info.selinuxEnforcing.has_value());
+    EXPECT_EQ(info.apparmorEnabled, std::optional<bool>(true));
+    EXPECT_EQ(info.lockdown, "integrity");
+    EXPECT_TRUE(info.vulnerabilitiesRead);
+    ASSERT_EQ(info.vulnerabilities.size(), 2U);
+    EXPECT_EQ(info.vulnerabilities[0].name, "meltdown"); // sorted by name
+    EXPECT_EQ(info.vulnerabilities[0].status, "Not affected");
+    EXPECT_EQ(info.vulnerabilities[1].name, "spectre_v2");
+}
+
+TEST(LinuxPlatformSecurityTest, SecureBootOffLegacyBiosAndAMissingVariable)
+{
+    using namespace std::string_view_literals;
+    {
+        const FixtureRoot root;
+        root.write(std::format("sys/firmware/efi/efivars/{}", LinuxPlatformSecurity::SECURE_BOOT_VARIABLE), "\x06\x00\x00\x00\x00"sv);
+        EXPECT_EQ(LinuxPlatformSecurity::readSecureBoot(root.path()), SecurityFeatureState::Off);
+    }
+    {
+        const FixtureRoot root; // no /sys/firmware/efi: booted from a legacy BIOS
+        EXPECT_EQ(LinuxPlatformSecurity::readSecureBoot(root.path()), SecurityFeatureState::NotSupported);
+    }
+    {
+        const FixtureRoot root; // efivarfs mounted, but the firmware has no SecureBoot variable
+        root.write("sys/firmware/efi/efivars/BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c", "\x07\x00\x00\x00\x01\x00"sv);
+        EXPECT_EQ(LinuxPlatformSecurity::readSecureBoot(root.path()), SecurityFeatureState::NotSupported);
+    }
+    {
+        const FixtureRoot root; // UEFI, but efivarfs isn't mounted: can't tell
+        std::filesystem::create_directories(root.path() / "sys/firmware/efi");
+        EXPECT_EQ(LinuxPlatformSecurity::readSecureBoot(root.path()), SecurityFeatureState::Unknown);
+    }
+    {
+        const FixtureRoot root; // the older sysfs interface: the value alone
+        root.write(std::format("sys/firmware/efi/vars/{}/data", LinuxPlatformSecurity::SECURE_BOOT_VARIABLE), "\x01"sv);
+        EXPECT_EQ(LinuxPlatformSecurity::readSecureBoot(root.path()), SecurityFeatureState::On);
+    }
+}
+
+TEST(LinuxPlatformSecurityTest, NothingReadableLeavesEverythingUnknown)
+{
+    const FixtureRoot root; // none of the files exist, not even /sys/class
+    PlatformSecurityInfo info;
+    LinuxPlatformSecurity::readPlatformSecurityFacts(root.path(), info);
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.secureBoot, SecurityFeatureState::NotSupported);
+    EXPECT_EQ(info.tpm, SecurityFeatureState::Unknown);
+    EXPECT_FALSE(info.lsmRead);
+    EXPECT_FALSE(info.selinuxEnforcing.has_value());
+    EXPECT_FALSE(info.apparmorEnabled.has_value());
+    EXPECT_TRUE(info.lockdown.empty());
+    EXPECT_FALSE(info.vulnerabilitiesRead);
+
+    std::filesystem::create_directories(root.path() / "sys/class"); // sysfs, but no TPM
+    LinuxPlatformSecurity::readPlatformSecurityFacts(root.path(), info);
+    EXPECT_EQ(info.tpm, SecurityFeatureState::NotSupported);
 }
 
 } // namespace

@@ -169,6 +169,42 @@ struct CommitPagingInfo
     std::string transparentHugePages; ///< Linux: the bracketed mode ("always", "madvise", "never")
 };
 
+/// The state of one platform security feature (#1514).
+enum class SecurityFeatureState : std::uint8_t
+{
+    Unknown,      ///< It couldn't be read.
+    On,           ///< Enabled, or present (a TPM).
+    Off,          ///< Supported but disabled.
+    NotSupported, ///< The machine can't have it (Secure Boot on a legacy BIOS boot, no TPM).
+};
+
+/// One CPU vulnerability as the kernel reports it: the file name under
+/// /sys/devices/system/cpu/vulnerabilities and its one-line status.
+struct CpuVulnerability
+{
+    std::string name;   ///< "spectre_v2", "meltdown"
+    std::string status; ///< "Not affected", "Vulnerable", "Mitigation: Retpolines; ..."
+};
+
+/// The Security facts (#1514): read-only status of the platform's security features. A fact that
+/// couldn't be read is Unknown, empty or nullopt rather than a guess.
+struct PlatformSecurityInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    SecurityFeatureState secureBoot = SecurityFeatureState::Unknown;
+    SecurityFeatureState tpm = SecurityFeatureState::Unknown;
+    std::uint32_t tpmVersionMajor = 0; ///< 1 or 2 when known; 0 otherwise.
+
+    bool lsmRead = false;                 ///< Linux: /sys/kernel/security/lsm was read.
+    std::vector<std::string> lsms;        ///< Linux: the active security modules, in load order.
+    std::optional<bool> selinuxEnforcing; ///< Linux: nullopt when SELinux isn't active.
+    std::optional<bool> apparmorEnabled;  ///< Linux: nullopt when the AppArmor module isn't loaded.
+    std::string lockdown;                 ///< Linux: "none", "integrity" or "confidentiality"; empty when unknown.
+
+    bool vulnerabilitiesRead = false;              ///< The kernel's list was read.
+    std::vector<CpuVulnerability> vulnerabilities; ///< Sorted by name.
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -202,6 +238,9 @@ class ISystemInfoProbe
 
     /// The Commit & paging facts (#1516); read when hasOs is true.
     [[nodiscard]] virtual CommitPagingInfo readCommitPaging() = 0;
+
+    /// The Security facts (#1514); read when hasOs is true.
+    [[nodiscard]] virtual PlatformSecurityInfo readPlatformSecurity() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -229,6 +268,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] CommitPagingInfo readCommitPaging() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override
     {
         return {};
     }

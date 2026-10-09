@@ -13,7 +13,8 @@ namespace Platform
 /// and the session's XDG and locale environment (#1512); firmware, board and chassis from
 /// /sys/class/dmi/id (LinuxFirmwareInfo.h, #1513); memory modules from the root-only SMBIOS table and
 /// the usable total from /proc/meminfo (#1515); commit, swap, zram, zswap and huge pages from /proc and
-/// /sys (LinuxCommitPaging.h, #1516).
+/// /sys (LinuxCommitPaging.h, #1516); Secure Boot, the TPM, security modules, lockdown and CPU
+/// vulnerabilities from /sys (LinuxPlatformSecurity.h, #1514).
 class LinuxSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -26,6 +27,7 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] FirmwareInfo readFirmware() override;
     [[nodiscard]] MemoryModulesInfo readMemoryModules() override;
     [[nodiscard]] CommitPagingInfo readCommitPaging() override;
+    [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override;
 
   private:
     std::filesystem::path m_Root;

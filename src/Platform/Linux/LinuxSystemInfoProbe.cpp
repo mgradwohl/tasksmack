@@ -3,6 +3,7 @@
 #include "LinuxCommitPaging.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxOsInfo.h"
+#include "LinuxPlatformSecurity.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UserNameLookup.h"
 
@@ -97,6 +98,13 @@ CommitPagingInfo LinuxSystemInfoProbe::readCommitPaging()
 {
     CommitPagingInfo info;
     LinuxCommitPaging::readCommitPagingFacts(m_Root, info);
+    return info;
+}
+
+PlatformSecurityInfo LinuxSystemInfoProbe::readPlatformSecurity()
+{
+    PlatformSecurityInfo info;
+    LinuxPlatformSecurity::readPlatformSecurityFacts(m_Root, info);
     return info;
 }
 

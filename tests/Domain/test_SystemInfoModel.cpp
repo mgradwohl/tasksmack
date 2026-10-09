@@ -61,6 +61,14 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::PlatformSecurityInfo readPlatformSecurity() override
+    {
+        Platform::PlatformSecurityInfo info;
+        info.available = true;
+        info.secureBoot = Platform::SecurityFeatureState::On;
+        return info;
+    }
+
   private:
     bool m_HasOs;
     int* m_Reads;
@@ -84,6 +92,7 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->firmware.systemManufacturer, "Contoso");
     EXPECT_EQ(first->memory.slotCount, 2U);
     EXPECT_EQ(first->paging.committedBytes, 4096U);
+    EXPECT_EQ(first->security.secureBoot, Platform::SecurityFeatureState::On);
     EXPECT_GT(first->readAtUnixSeconds, 0U);
 
     model.read(); // Refresh
@@ -103,6 +112,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->firmware.available);
     EXPECT_FALSE(model.snapshot()->memory.available);
     EXPECT_FALSE(model.snapshot()->paging.available);
+    EXPECT_FALSE(model.snapshot()->security.available);
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);

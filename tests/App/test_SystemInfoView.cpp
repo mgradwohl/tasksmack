@@ -1,8 +1,8 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
-/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the filter,
-/// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
-/// filter narrowing and the identifier toggle.
+/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Security rows
+/// (#1514), the filter, identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading
+/// states, sections drawn, the filter narrowing and the identifier toggle.
 
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace App
 {
@@ -470,6 +471,76 @@ TEST(SystemInfoSectionsTest, CommitPagingRowsLinux)
     EXPECT_EQ(findRow(section, "Transparent huge pages")->value, "madvise");
     EXPECT_EQ(findRow(section, "Peak commit"), nullptr); // Windows only
     EXPECT_EQ(findRow(section, "zram"), nullptr);        // devices listed instead
+}
+
+TEST(SystemInfoSectionsTest, SecurityRows)
+{
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.secureBoot = Platform::SecurityFeatureState::On;
+    security.tpm = Platform::SecurityFeatureState::On;
+    security.tpmVersionMajor = 2;
+    security.lsmRead = true;
+    security.lsms = {"lockdown", "capability", "apparmor"};
+    security.selinuxEnforcing = std::nullopt;
+    security.apparmorEnabled = true;
+    security.lockdown = "integrity";
+    security.vulnerabilitiesRead = true;
+    security.vulnerabilities = {{.name = "meltdown", .status = "Not affected"},
+                                {.name = "spectre_v2", .status = "Mitigation: Enhanced / Automatic IBRS"},
+                                {.name = "mds", .status = "Vulnerable: Clear CPU buffers attempted, no microcode"}};
+    const Section section = SystemInfo::buildSecuritySection(security);
+    EXPECT_EQ(section.title, "Security");
+    EXPECT_EQ(findRow(section, "Secure Boot")->value, "On");
+    EXPECT_EQ(findRow(section, "TPM")->value, "Present (TPM 2.0)");
+    EXPECT_EQ(findRow(section, "Security modules")->value, "lockdown, capability, apparmor");
+    EXPECT_EQ(findRow(section, "SELinux")->value, "Not active");
+    EXPECT_EQ(findRow(section, "AppArmor")->value, "Enabled");
+    EXPECT_EQ(findRow(section, "Kernel lockdown")->value, "Integrity");
+    EXPECT_EQ(findRow(section, "CPU vulnerabilities")->value, "1 vulnerable, 1 mitigated, 1 not affected");
+    EXPECT_EQ(findRow(section, "Meltdown")->value, "Not affected");
+    EXPECT_EQ(findRow(section, "Spectre v2")->value, "Mitigation: Enhanced / Automatic IBRS");
+    EXPECT_EQ(findRow(section, "MDS")->value, "Vulnerable: Clear CPU buffers attempted, no microcode");
+    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; })); // nothing names the machine
+}
+
+TEST(SystemInfoSectionsTest, SecurityUnknownsAreMutedAndNotSupportedSaysSo)
+{
+    Platform::PlatformSecurityInfo unread;
+    unread.available = true;
+    const Section section = SystemInfo::buildSecuritySection(unread);
+    for (const std::string_view label : {"Secure Boot", "TPM", "Security modules", "Kernel lockdown", "CPU vulnerabilities"})
+    {
+        const Row* item = findRow(section, label);
+        ASSERT_NE(item, nullptr) << label;
+        EXPECT_FALSE(item->available()) << label;
+        EXPECT_FALSE(item->unavailableReason.empty()) << label;
+    }
+    EXPECT_EQ(findRow(section, "SELinux")->value, "Not active");
+    EXPECT_EQ(findRow(section, "AppArmor")->value, "Not loaded");
+
+    unread.secureBoot = Platform::SecurityFeatureState::NotSupported;
+    unread.tpm = Platform::SecurityFeatureState::NotSupported;
+    unread.selinuxEnforcing = false;
+    const Section legacy = SystemInfo::buildSecuritySection(unread);
+    EXPECT_EQ(findRow(legacy, "Secure Boot")->value, "Not supported (not booted with UEFI)");
+    EXPECT_EQ(findRow(legacy, "TPM")->value, "Not detected");
+    EXPECT_EQ(findRow(legacy, "SELinux")->value, "Permissive");
+}
+
+TEST(SystemInfoSectionsTest, VulnerabilityNamesAndSummary)
+{
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("spectre_v2"), "Spectre v2");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("spec_store_bypass"), "Spec store bypass");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("mds"), "MDS");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("tsx_async_abort"), "TSX async abort");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("itlb_multihit"), "ITLB multihit");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("mmio_stale_data"), "MMIO stale data");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("l1tf"), "L1TF");
+    EXPECT_EQ(SystemInfo::formatVulnerabilitySummary({}), "");
+    const std::vector<Platform::CpuVulnerability> odd{{.name = "x", .status = "Unknown: no microcode"},
+                                                      {.name = "y", .status = "Not affected"}};
+    EXPECT_EQ(SystemInfo::formatVulnerabilitySummary(odd), "1 not affected, 1 unknown");
 }
 
 TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)
