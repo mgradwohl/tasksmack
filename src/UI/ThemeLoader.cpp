@@ -242,6 +242,9 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.textInfo = getColor(tbl, "semantic.text_info");
     scheme.textPrimary = getColor(tbl, "semantic.text_primary", scheme.textInfo);
     scheme.textDisabled = getColor(tbl, "semantic.text_disabled", scheme.textMuted);
+    scheme.corePerformance = getColor(tbl, "semantic.core_performance", scheme.textWarning);
+    scheme.coreEfficiency = getColor(tbl, "semantic.core_efficiency", scheme.textSuccess);
+    scheme.coreLowPower = getColor(tbl, "semantic.core_low_power", scheme.textMuted);
 
     // Status colors
     scheme.statusRunning = getColor(tbl, "status.running");
