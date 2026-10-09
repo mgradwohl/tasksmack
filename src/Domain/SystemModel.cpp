@@ -968,6 +968,19 @@ PowerStatus SystemModel::computePowerStatus(const Platform::PowerCounters& count
     // Battery details
     status.technology = counters.technology;
     status.model = counters.model;
+    status.manufacturer = counters.manufacturer;
+    status.reportsCapacity = m_PowerCapabilities.hasDesignCapacity;
+    status.reportsCycleCount = m_PowerCapabilities.hasCycleCount;
+    status.reportsTechnology = m_PowerCapabilities.hasTechnology;
+    if (status.reportsCapacity)
+    {
+        status.designCapacityWh = counters.chargeDesignWh;
+        status.fullChargeCapacityWh = counters.chargeFullWh;
+    }
+    if (status.reportsCycleCount)
+    {
+        status.cycleCount = counters.cycleCount;
+    }
 
     return status;
 }

@@ -158,6 +158,9 @@ void LinuxPowerProbe::discoverBatteries()
         m_Capabilities.hasCycleCount = Fs::exists(batteryPath + "/cycle_count", ec);
         m_Capabilities.hasHealthPercent =
             Fs::exists(batteryPath + "/energy_full", ec) && Fs::exists(batteryPath + "/energy_full_design", ec);
+        // Design and full-charge capacity are read with the charge capacity, from energy_* or charge_* (#1523)
+        m_Capabilities.hasDesignCapacity = m_Capabilities.hasChargeCapacity && (Fs::exists(batteryPath + "/energy_full_design", ec) ||
+                                                                                Fs::exists(batteryPath + "/charge_full_design", ec));
         m_Capabilities.hasTimeEstimates = false; // Linux doesn't provide time estimates directly
     }
 }
