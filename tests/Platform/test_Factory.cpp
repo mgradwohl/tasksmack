@@ -14,6 +14,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
@@ -89,6 +90,13 @@ TEST(FactoryTest, MakeProcessConnectionsReaderReturnsNonNull)
     // Not wired up on Windows yet (#1489): the Connections section is hidden.
     EXPECT_NE(dynamic_cast<UnsupportedProcessConnectionsReader*>(reader.get()), nullptr);
 #endif
+}
+
+TEST(FactoryTest, MakeProcessModulesReaderListsModules)
+{
+    const auto reader = makeProcessModulesReader();
+    ASSERT_NE(reader, nullptr);
+    EXPECT_TRUE(reader->hasModules()); // both platforms (#802)
 }
 
 TEST(FactoryTest, MakeStartupProbeReturnsNonNull)

@@ -29,6 +29,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/Synthetic/SyntheticWorkload.h"
@@ -107,6 +108,8 @@ class Scenario
 [[nodiscard]] std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReader(const Scenario* scenario);
 /// With a scenario, a reader that reports no connections support, for the same reason (#799).
 [[nodiscard]] std::unique_ptr<Platform::IProcessConnectionsReader> makeProcessConnectionsReader(const Scenario* scenario);
+/// With a scenario, a reader that reports no modules support, for the same reason (#802).
+[[nodiscard]] std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IPowerProbe> makePowerProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IDiskProbe> makeDiskProbe(const Scenario* scenario);

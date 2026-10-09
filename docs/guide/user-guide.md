@@ -247,6 +247,18 @@ On Linux, the Process Details **Overview** tab also has a collapsible **Connecti
 - **Another user's process** shows "Not permitted (another user's process)": listing a process's socket descriptors needs the same rights as debugging it (its own user, or root / `CAP_SYS_PTRACE`). A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet". A process with no TCP or UDP sockets shows "No TCP or UDP sockets". If a socket table cannot be read, the section shows "Could not be read" with the reason rather than a partial list.
 - **Windows:** not available yet (tracked in #1489); the section is hidden.
 
+### Modules
+
+The Process Details **Overview** tab also has a collapsible **Modules** section, closed by default, under the Connections section (on Windows, where Environment and Connections are hidden, it is the only one). Open it to list the code the selected process has loaded, its executable and every DLL or shared library, in a **NAME / VERSION / BASE / SIZE / PATH** table, with the count in the section's header ("Modules (87)"):
+
+- **NAME** is the file name; **PATH** the full path. **BASE** is the address the module is loaded at, in hex (`0x7FF8A1B20000`), and **SIZE** its size in memory.
+- **VERSION** is the file version from the module's version information (`10.0.26100.4202`), blank for a file without one. It is Windows only: Linux shared libraries carry no file version, so on Linux the column is left out.
+- Rows are sorted by name. Click a column header to sort by that column; click it again to reverse. Type in the filter box to show only modules whose name or path contains the text (case doesn't matter). A path too long for its column is cut off at the column edge; hover it to see it whole. More than 12 rows scroll inside the section.
+- TaskSmack reads the modules only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds, in the background, so the window never waits on a read.
+- **Windows:** listed with `EnumProcessModulesEx`, including a 32-bit process's 32-bit modules. Each module's version is read from its file once and remembered. A protected process, or an elevated one while TaskSmack is not running as administrator, shows "Access denied: a protected or elevated process, or another user's". A process that is still starting may briefly show "Could not be read" with the reason; the next refresh tries again.
+- **Linux:** read from `/proc/[pid]/maps`. A module is a file with at least one executable mapping, so data files the process has mapped (a locale archive, fonts) are not listed, nor are anonymous memory and the kernel's `[heap]`, `[stack]` and `[vdso]`. Its base is its lowest mapping and its size the total of its mappings. A library that was deleted or replaced on disk after it was loaded (typically by a package upgrade) shows "(deleted)" after its name. Another user's process shows "Access denied ...": reading its mappings needs the process's own user, or root / `CAP_SYS_PTRACE`.
+- A process that has exited shows "Process exited"; one whose start time TaskSmack does not know (Windows' Idle and System) shows "Not available for this process".
+
 ### Services
 
 The **Services** tab lists the system's services, and on Windows starts, stops and restarts them and changes their startup type:

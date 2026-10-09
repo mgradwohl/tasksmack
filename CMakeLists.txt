@@ -150,6 +150,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessIoPriorityView.cpp
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp
+    src/App/Panels/ProcessModulesView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/CpuDetailsBlock.cpp
@@ -188,6 +189,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
+    src/Platform/Linux/LinuxProcessModulesReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
@@ -204,6 +206,7 @@ set(PLATFORM_SOURCES_LINUX
 set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
+    src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
@@ -252,6 +255,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessEnvironment.h
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
+    src/Platform/IProcessModules.h
     src/Platform/IStartupProbe.h
     src/Platform/IStartupActions.h
     src/Platform/IServiceActions.h
@@ -269,6 +273,7 @@ set(TASKSMACK_HEADERS
     src/Domain/ProcessModel.h
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ProcessConnections.h
+    src/Domain/ProcessModules.h
     src/Domain/ISamplable.h
     src/Domain/PublicationSlot.h
     src/Domain/SharedHistory.h
@@ -285,6 +290,8 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessProbe.h
         src/Platform/Linux/LinuxProcessEnvironmentReader.h
         src/Platform/Linux/LinuxProcessConnectionsReader.h
+        src/Platform/Linux/LinuxProcessModulesReader.h
+        src/Platform/Linux/ProcMapsParser.h
         src/Platform/Linux/InetSocketTable.h
         src/Platform/Linux/LinuxDiskProbe.h
         src/Platform/Linux/LinuxPowerProbe.h
@@ -298,6 +305,7 @@ elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
+        src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h
