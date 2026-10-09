@@ -37,13 +37,14 @@ struct OsRelease
     }
     std::string out;
     out.reserve(value.size());
-    for (std::size_t i = 0; i < value.size(); ++i)
+    // A backslash escapes the character after it; a trailing one is kept as written.
+    std::size_t i = 0;
+    while (i < value.size())
     {
-        if (value[i] == '\\' && i + 1 < value.size())
-        {
-            ++i;
-        }
-        out.push_back(value[i]);
+        const bool escape = value[i] == '\\' && i + 1 < value.size();
+        const std::size_t next = escape ? i + 1 : i;
+        out.push_back(value[next]);
+        i = next + 1;
     }
     return out;
 }

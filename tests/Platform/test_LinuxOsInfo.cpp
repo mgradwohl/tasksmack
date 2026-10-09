@@ -82,6 +82,10 @@ TEST(LinuxOsInfoTest, ParsesOsRelease)
     EXPECT_EQ(bare.prettyName, "Arch Linux");
     EXPECT_EQ(bare.versionId, "rolling");
     EXPECT_EQ(unquoteOsReleaseValue(R"("say \"hi\" \\ \$x")"), R"(say "hi" \ $x)");
+    EXPECT_EQ(unquoteOsReleaseValue(R"(a\\)"), R"(a\)"); // an escaped backslash at the end
+    EXPECT_EQ(unquoteOsReleaseValue(R"(a\)"), R"(a\)");  // a trailing backslash is kept
+    EXPECT_EQ(unquoteOsReleaseValue(R"(\\\\)"), R"(\\)");
+    EXPECT_EQ(unquoteOsReleaseValue(""), "");
     EXPECT_EQ(parseOsRelease("").prettyName, "");
 }
 
