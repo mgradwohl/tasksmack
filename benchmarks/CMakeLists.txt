@@ -50,6 +50,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp  # Factory.cpp makes it (#1577)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
 else()
@@ -92,6 +93,7 @@ add_executable(TaskSmackBenchmarks
     bench_ChartGeometry.cpp
     bench_ModelLimits.cpp
     bench_ProcessDetailsHistory.cpp
+    bench_ProcessRowMeter.cpp
     ${PLATFORM_BENCH_SOURCES}
     # Source files under benchmark
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp

@@ -8,6 +8,8 @@
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessRowMeter.h"
+#include "App/Panels/ProcessRowMeterView.h"
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
@@ -324,6 +326,16 @@ class ProcessesPanel : public Panel
     // hides differently is the user's toggle in its header menu; before, it is a restored layout.
     bool m_TableShowsColumnSettings = false;
 
+    // Inline meters (#1528): which columns draw one (Columns > Show meter, saved in config.toml), the
+    // absolute columns' maxima for the adopted generation (rebuilt once per generation, not per frame),
+    // and this frame's heat colours. m_MetersShown is false on a frame with no meter on, so the rows
+    // skip the per-cell check entirely.
+    ProcessRowMeter::Settings m_MeterSettings;
+    ProcessRowMeter::ColumnMaxima m_MeterMaxima;
+    std::uint64_t m_MeterMaximaVersion = std::numeric_limits<std::uint64_t>::max();
+    ProcessRowMeter::Colors m_MeterColors;
+    bool m_MetersShown = false;
+
     // Tree view gives the Name column room (#1209): adjusted once when the view mode changes. The
     // width it had before, and the width tree view set (0 when it left it alone), so leaving tree
     // view can restore a width the user did not change in the meantime.
@@ -503,6 +515,13 @@ class ProcessesPanel : public Panel
 
     /// The toolbar's Columns menu: a check per column and "Reset columns" (#1209).
     void renderColumnsMenu();
+
+    /// The Columns menu's "Show meter" submenu (#1528): a check per meter column.
+    void renderMeterMenu();
+
+    /// Readies this frame's meters (#1528): the maxima for a newly adopted generation, the theme's
+    /// colours. Before the rows are drawn.
+    void prepareRowMeters(const std::vector<Domain::ProcessSnapshot>& snapshots);
 
     /// Hands the Columns menu's requests to ImGui. Inside the table, after its columns are set up and
     /// before the first row. Returns true when column visibility was changed this frame.

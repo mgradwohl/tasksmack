@@ -1,5 +1,6 @@
 #include "UserConfig.h"
 
+#include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
 #include "Core/ConfigDirOverride.h"
@@ -364,6 +365,18 @@ void readSettings(const toml::table& config, UserSettings& settings)
         settings.processColumns.keepUnhideableColumnsVisible();
     }
 
+    // Inline meters (#1528): a key per meter column; one not listed keeps its default.
+    if (const auto* meters = config["process_meters"].as_table())
+    {
+        for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
+        {
+            if (const auto val = (*meters)[getColumnInfo(col).configKey].value<bool>(); val.has_value())
+            {
+                settings.processMeters.set(col, *val);
+            }
+        }
+    }
+
     // Note: imgui_layout is no longer used (removed in favor of tabbed UI)
 }
 
@@ -408,6 +421,13 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {
             processColumnsTable.insert(std::string(getColumnInfo(col).configKey), settings.processColumns.isVisible(col));
         }
+    }
+
+    // Inline meters (#1528): every meter column, keyed like [process_columns].
+    auto processMetersTable = toml::table{};
+    for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
+    {
+        processMetersTable.insert(std::string(getColumnInfo(col).configKey), settings.processMeters.isOn(col));
     }
 
     // Build TOML document
@@ -455,6 +475,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {"font", toml::table{{"size", fontSizeStr}}},
         {"window", windowTable},
         {"process_columns", processColumnsTable},
+        {"process_meters", processMetersTable},
         {"process_table", toml::table{{"layout", settings.processTableLayout}}},
     };
 }
@@ -809,6 +830,7 @@ void UserConfig::save()
     text << "#   config_version: the format of this file (written by TaskSmack; don't change it)\n";
     text << "#   [process_columns]: columns you showed (true) or hid (false); a column not listed follows the defaults, "
             "which hide one this system can't fill\n";
+    text << "#   [process_meters]: columns that draw a meter behind their value (true/false); Columns > Show meter\n";
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
