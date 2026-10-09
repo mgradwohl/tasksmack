@@ -20,6 +20,13 @@ namespace App
  * LockFileEx() on Windows. The operating system drops it when the process exits, however it
  * exits, so a crash never leaves a stale lock behind. The file itself is left in place.
  */
+/// The lock file for the config directory @p configDir: one TaskSmack per config directory, so a
+/// launch with its own TASKSMACK_CONFIG_DIR (#1596) gets its own lock.
+[[nodiscard]] inline std::filesystem::path instanceLockPath(const std::filesystem::path& configDir)
+{
+    return configDir / "tasksmack.lock";
+}
+
 class InstanceLock
 {
   public:

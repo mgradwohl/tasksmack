@@ -3,6 +3,7 @@
 #include "Platform/IServiceProbe.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <memory>
 #include <mutex>
@@ -25,6 +26,10 @@ void ServiceModel::sample()
 {
     const std::scoped_lock lock(m_SampleMutex);
 
+    if (m_ConfigRereadRequested.exchange(false, std::memory_order_acq_rel))
+    {
+        m_Probe->forgetCachedConfig();
+    }
     auto next = std::make_shared<ServicePublication>();
     Platform::ServiceEnumeration result = m_Probe->enumerate();
     if (!result.ok)

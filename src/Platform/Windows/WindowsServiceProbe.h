@@ -32,6 +32,7 @@ class WindowsServiceProbe : public IServiceProbe
 
     [[nodiscard]] ServiceCapabilities capabilities() const override;
     [[nodiscard]] ServiceEnumeration enumerate() override;
+    void forgetCachedConfig() override;
 
   private:
     struct Impl;

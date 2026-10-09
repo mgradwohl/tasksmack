@@ -60,6 +60,9 @@ constexpr const char* SERVICES_TAB_TEXT = "Services";                           
 constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab";  // #800
 constexpr const char* STARTUP_TAB_TEXT = "Startup";                                   // #801
 constexpr const char* STARTUP_TAB_LABEL = ICON_FA_POWER_OFF "  Startup###StartupTab"; // #801
+// #1399. Last: static reference facts, visited least often, and the tabs before it keep their places.
+constexpr const char* SYSTEM_INFO_TAB_TEXT = "System";
+constexpr const char* SYSTEM_INFO_TAB_LABEL = ICON_FA_SERVER "  System###SystemInfoTab";
 
 // The status bar's Settings/About buttons (native decorations only), named once: their widths are
 // measured before they are drawn, so the text beside them can make room (#1200).
@@ -97,7 +100,11 @@ ShellLayer::ShellLayer()
               {.panel = m_StartupPanel,
                .eventName = "Startup",
                .label = [] { return STARTUP_TAB_LABEL; },
-               .text = [] { return std::string_view(STARTUP_TAB_TEXT); }}})
+               .text = [] { return std::string_view(STARTUP_TAB_TEXT); }},
+              {.panel = m_SystemInfoPanel,
+               .eventName = "SystemInfo",
+               .label = [] { return SYSTEM_INFO_TAB_LABEL; },
+               .text = [] { return std::string_view(SYSTEM_INFO_TAB_TEXT); }}})
 {}
 
 void ShellLayer::onAttach()
@@ -133,7 +140,7 @@ void ShellLayer::onAttach()
     {
         spdlog::warn("{}", mainTab.warning);
     }
-    m_StartupTabIndex = mainTab.index;
+    m_StartupTab = SelectOverride::PendingMainTab(mainTab.id);
     if (const std::optional<SelectOverride::Target>& select = SelectOverride::active(); select.has_value())
     {
         m_ProcessesPanel.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
@@ -658,15 +665,19 @@ void ShellLayer::renderTabBar()
         // Track previous tab to emit change event if selection changes
         const auto* previousTab = &m_Tabs.activeTab();
 
+        // TASKSMACK_TAB's tab is found by its registered id, not its position, and asked for on every
+        // frame until BeginTabItem() reports it selected (#1575).
         std::size_t index = 0;
         for (const auto& tab : m_Tabs.tabs())
         {
             ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
-            if ((m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") || m_StartupTabIndex == index)
+            if ((m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") || m_StartupTab.wantsSelected(tab.eventName))
             {
                 tabFlags |= ImGuiTabItemFlags_SetSelected;
             }
-            if (ImGui::BeginTabItem(tab.label(), nullptr, tabFlags))
+            const bool selected = ImGui::BeginTabItem(tab.label(), nullptr, tabFlags);
+            m_StartupTab.onTabSubmitted(tab.eventName, selected);
+            if (selected)
             {
                 m_Tabs.select(index);
                 ImGui::EndTabItem();
@@ -674,7 +685,13 @@ void ShellLayer::renderTabBar()
             ++index;
         }
         m_ShowDetailsTabRequested = false;
-        m_StartupTabIndex.reset();
+        if (const std::optional<std::string> dropped = m_StartupTab.onFrameEnd(); dropped.has_value())
+        {
+            spdlog::warn("{}: tab '{}' was not selected after {} frames; ignored",
+                         SelectOverride::MAIN_TAB_ENV_VAR,
+                         *dropped,
+                         SelectOverride::MAX_MAIN_TAB_FRAMES);
+        }
 
         ImGui::EndTabBar();
 

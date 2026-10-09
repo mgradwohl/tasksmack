@@ -74,6 +74,48 @@ class MockSamplable : public Domain::ISamplable
     int sampleCount = 0;
 };
 
+/// A sample that blocks until the test releases it, to hold a sample in flight.
+class GatedSamplable : public Domain::ISamplable
+{
+  public:
+    void sample() override
+    {
+        std::unique_lock lock(m_Mutex);
+        m_InSample = true;
+        ++m_Samples;
+        m_Changed.notify_all();
+        m_Changed.wait(lock, [this] { return m_Released; });
+    }
+
+    [[nodiscard]] bool waitUntilInSample()
+    {
+        std::unique_lock lock(m_Mutex);
+        return m_Changed.wait_for(lock, 2000ms, [this] { return m_InSample; });
+    }
+
+    void release()
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Released = true;
+        }
+        m_Changed.notify_all();
+    }
+
+    [[nodiscard]] int samples() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Samples;
+    }
+
+  private:
+    mutable std::mutex m_Mutex;
+    std::condition_variable m_Changed;
+    bool m_InSample = false;
+    bool m_Released = false;
+    int m_Samples = 0;
+};
+
 template<typename Predicate> [[nodiscard]] bool waitFor(Predicate predicate, std::chrono::milliseconds timeout = 2000ms)
 {
     constexpr auto POLL_INTERVAL = 5ms;
@@ -471,39 +513,69 @@ TEST(BackgroundSamplerTest, ConcurrentSamplableAdd)
 
 TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    // Refresh requests from several threads at once are safe, coalesce into one sample, and that
+    // sample is still taken. Driven by a gated samplable rather than wall-clock windows: every
+    // request lands while the first sample is held in flight, so the outcome doesn't depend on how
+    // the scheduler interleaves the threads (#1573). The long interval means only a refresh can
+    // cause the second sample.
+    constexpr int THREAD_COUNT = 5;
+    constexpr int REQUESTS_PER_THREAD = 10;
 
-    Domain::SamplerConfig config;
-    config.interval = 200ms;
-
-    Domain::BackgroundSampler sampler(config);
+    const auto samplable = std::make_shared<GatedSamplable>();
+    Domain::BackgroundSampler sampler(Domain::SamplerConfig{.interval = 10000ms});
     sampler.addSamplable(samplable);
-
     sampler.start();
 
-    // Multiple threads requesting refresh
+    const bool inSample = samplable->waitUntilInSample();
+    if (!inSample)
+    {
+        // Release before the fatal assert, so stop() doesn't join on a sample that enters the gate late.
+        samplable->release();
+    }
+    ASSERT_TRUE(inSample);
+
+    // Every thread waits for the others, then all request refreshes concurrently.
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
     std::vector<std::thread> threads;
-    for (int i = 0; i < 5; ++i)
+    threads.reserve(THREAD_COUNT);
+    for (int i = 0; i < THREAD_COUNT; ++i)
     {
         threads.emplace_back(
-            [&sampler]()
+            [&sampler, &ready, &go]()
             {
-                for (int j = 0; j < 10; ++j)
+                ready.fetch_add(1);
+                while (!go.load())
+                {
+                    std::this_thread::yield();
+                }
+                for (int j = 0; j < REQUESTS_PER_THREAD; ++j)
                 {
                     sampler.requestRefresh();
-                    std::this_thread::sleep_for(10ms);
                 }
             });
     }
-
+    while (ready.load() < THREAD_COUNT)
+    {
+        std::this_thread::yield();
+    }
+    go.store(true);
     for (auto& t : threads)
     {
         t.join();
     }
 
-    sampler.stop();
+    EXPECT_EQ(samplable->samples(), 1); // still the first sample, held in the gate
+    samplable->release();
 
-    EXPECT_GT(samplable->getSampleCount(), 1);
+    // The refreshes are honoured: a second sample follows well before the 10 s interval.
+    EXPECT_TRUE(waitFor([&samplable] { return samplable->samples() >= 2; }, 5000ms)) << "samples: " << samplable->samples();
+
+    // ...and coalesced: the 50 requests produced that one sample, not one each. Nothing else is
+    // pending, so no further sample comes within this window (the interval is 10 s).
+    std::this_thread::sleep_for(300ms);
+    sampler.stop();
+    EXPECT_EQ(samplable->samples(), 2);
 }
 
 // =============================================================================
@@ -1021,53 +1093,6 @@ TEST(BackgroundSamplerTest, MetricsStartOverOnRestart)
 // =============================================================================
 // Non-blocking stop (#801)
 // =============================================================================
-
-namespace
-{
-
-/// A sample that blocks until the test releases it, to hold a sample in flight.
-class GatedSamplable : public Domain::ISamplable
-{
-  public:
-    void sample() override
-    {
-        std::unique_lock lock(m_Mutex);
-        m_InSample = true;
-        ++m_Samples;
-        m_Changed.notify_all();
-        m_Changed.wait(lock, [this] { return m_Released; });
-    }
-
-    [[nodiscard]] bool waitUntilInSample()
-    {
-        std::unique_lock lock(m_Mutex);
-        return m_Changed.wait_for(lock, 2000ms, [this] { return m_InSample; });
-    }
-
-    void release()
-    {
-        {
-            const std::scoped_lock lock(m_Mutex);
-            m_Released = true;
-        }
-        m_Changed.notify_all();
-    }
-
-    [[nodiscard]] int samples() const
-    {
-        const std::scoped_lock lock(m_Mutex);
-        return m_Samples;
-    }
-
-  private:
-    mutable std::mutex m_Mutex;
-    std::condition_variable m_Changed;
-    bool m_InSample = false;
-    bool m_Released = false;
-    int m_Samples = 0;
-};
-
-} // namespace
 
 TEST(BackgroundSamplerTest, RequestStopReturnsWithoutWaitingForASampleInFlight)
 {

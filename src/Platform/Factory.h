@@ -8,8 +8,10 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -35,6 +37,9 @@ namespace Platform
 /// UnsupportedStartupProbe (capabilities().canEnumerate false) until XDG autostart support lands.
 [[nodiscard]] std::unique_ptr<IStartupProbe> makeStartupProbe();
 
+/// Creates the platform-appropriate ISystemInfoProbe, the System Information page's static facts (#1399).
+[[nodiscard]] std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe();
+
 /// Creates the platform-appropriate ISystemProbe implementation.
 [[nodiscard]] std::unique_ptr<ISystemProbe> makeSystemProbe();
 
@@ -53,5 +58,9 @@ namespace Platform
 /// Creates the platform-appropriate IServiceProbe implementation (#800). Linux returns an
 /// UnsupportedServiceProbe (capabilities().canEnumerate false) until systemd support lands.
 [[nodiscard]] std::unique_ptr<IServiceProbe> makeServiceProbe();
+
+/// Creates the platform-appropriate IServiceActions implementation (#1577). Linux returns an
+/// UnsupportedServiceActions (every capability false) until systemd control lands.
+[[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
 
 } // namespace Platform

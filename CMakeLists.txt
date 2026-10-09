@@ -110,6 +110,7 @@ configure_file(
 set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
+    src/Core/ConfigDirOverride.cpp
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
@@ -157,9 +158,13 @@ set(TASKSMACK_SOURCES
     src/App/Panels/StorageSection.cpp
     src/App/Panels/GpuSection.cpp
     src/App/Panels/ServicesPanel.cpp
+    src/App/Panels/ServiceActionsView.cpp
     src/App/Panels/ServicesView.cpp
     src/App/Panels/StartupPanel.cpp
     src/App/Panels/StartupView.cpp
+    src/App/Panels/SystemInfoPanel.cpp
+    src/App/Panels/SystemInfoSections.cpp
+    src/App/Panels/SystemInfoView.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
@@ -167,6 +172,7 @@ set(TASKSMACK_SOURCES
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
     src/Domain/ServiceModel.cpp
+    src/Domain/SystemInfoModel.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
@@ -182,6 +188,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
+    src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/LinuxPowerProbe.cpp
@@ -197,6 +204,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
+    src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsPowerProbe.cpp
@@ -205,6 +213,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp
     src/Platform/Windows/WindowsStartupProbe.cpp
+    src/Platform/Windows/WindowsServiceActions.cpp
     src/Platform/Windows/WindowsServiceProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
@@ -220,6 +229,7 @@ endif()
 
 set(TASKSMACK_HEADERS
     src/Core/Application.h
+    src/Core/ConfigDirOverride.h
     src/Core/PathService.h
     src/Core/Window.h
     src/Core/Layer.h
@@ -241,8 +251,10 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
     src/Platform/IStartupProbe.h
+    src/Platform/IServiceActions.h
     src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
+    src/Platform/ISystemInfoProbe.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
@@ -261,6 +273,7 @@ set(TASKSMACK_HEADERS
     src/Domain/GPUModel.h
     src/Domain/StartupModel.h
     src/Domain/ServiceModel.h
+    src/Domain/SystemInfoModel.h
 )
 
 # Platform-specific headers
@@ -275,6 +288,8 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxGPUProbe.h
         src/Platform/Linux/NVMLGPUProbe.h
         src/Platform/Linux/DRMGPUProbe.h
+        src/Platform/Linux/LinuxSystemInfoProbe.h
+        src/Platform/Linux/LinuxOsInfo.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
@@ -293,7 +308,10 @@ elseif(WIN32)
         src/Platform/Windows/WindowsStartupProbe.h
         src/Platform/Windows/WindowsServiceProbe.h
         src/Platform/Windows/WindowsServiceConfig.h
+        src/Platform/Windows/WindowsServiceActions.h
         src/Platform/Windows/WinString.h
+        src/Platform/Windows/WindowsSystemInfoProbe.h
+        src/Platform/Windows/WindowsOsInfoMath.h
     )
 endif()
 

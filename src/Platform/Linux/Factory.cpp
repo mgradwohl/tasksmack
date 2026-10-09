@@ -8,6 +8,7 @@
 #include "LinuxProcessConnectionsReader.h"
 #include "LinuxProcessEnvironmentReader.h"
 #include "LinuxProcessProbe.h"
+#include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
@@ -17,8 +18,10 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -52,6 +55,11 @@ std::unique_ptr<IStartupProbe> makeStartupProbe()
     return std::make_unique<UnsupportedStartupProbe>();
 }
 
+std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
+{
+    return std::make_unique<LinuxSystemInfoProbe>();
+}
+
 std::unique_ptr<ISystemProbe> makeSystemProbe()
 {
     return std::make_unique<LinuxSystemProbe>();
@@ -81,6 +89,12 @@ std::unique_ptr<IServiceProbe> makeServiceProbe()
 {
     // systemd (D-Bus org.freedesktop.systemd1) is the Linux lane's follow-up to #800.
     return std::make_unique<UnsupportedServiceProbe>();
+}
+
+std::unique_ptr<IServiceActions> makeServiceActions()
+{
+    // systemd control (D-Bus StartUnit/StopUnit/...) is the Linux lane's follow-up to #1577.
+    return std::make_unique<UnsupportedServiceActions>();
 }
 
 } // namespace Platform

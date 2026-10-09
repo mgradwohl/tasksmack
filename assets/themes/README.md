@@ -67,6 +67,9 @@ text_error = "#E53935"     # Error messages
 text_warning = "#FFB300"   # Warnings
 text_success = "#00E676"   # Success messages
 text_info = "#42A5F5"      # Info messages
+core_performance = "#FFB300" # CPU Cores P-core marker (fallback: text_warning)
+core_efficiency = "#00E676"  # CPU Cores E-core marker (fallback: text_success)
+core_low_power = "#999999"   # CPU Cores low-power E-core marker (fallback: text_muted)
 ```
 
 ### `[status]` - Process State Colors

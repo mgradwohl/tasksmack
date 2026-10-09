@@ -520,4 +520,72 @@ TEST(WindowsProcessActionsTest, KillWithTheMatchingStartTimeEndsTheProcess)
     EXPECT_TRUE(child.exitsSoon());
 }
 
+// #1566: the failure after a verified open. The child has exited, but the test's handle keeps its
+// process object (and so its PID and start time) alive: the identity check passes and
+// TerminateProcess is refused, which must come back as an error rather than a success.
+TEST(WindowsProcessActionsTest, KillingAnExitedProcessIsReportedAsAFailure)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+    const ProcessTarget target = child.target();
+
+    WindowsProcessActions actions;
+    ASSERT_TRUE(actions.kill(target).success);
+    ASSERT_TRUE(child.exitsSoon());
+
+    const auto again = actions.kill(target);
+    EXPECT_FALSE(again.success);
+    EXPECT_NE(again.errorMessage.find("Failed to terminate process"), std::string::npos) << again.errorMessage;
+}
+
+TEST(WindowsProcessActionsTest, SetPriorityChangesTheClassOfAMatchingProcess)
+{
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+
+    WindowsProcessActions actions;
+    const auto result = actions.setPriority(child.target(), priorityClassToNice(BELOW_NORMAL_PRIORITY_CLASS));
+    EXPECT_TRUE(result.success) << result.errorMessage;
+
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(child.target().pid));
+    ASSERT_NE(process, nullptr);
+    EXPECT_EQ(GetPriorityClass(process), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
+    CloseHandle(process);
+}
+
+TEST(WindowsProcessActionsTest, SetPriorityOfANonExistentProcessSaysItIsGone)
+{
+    WindowsProcessActions actions;
+    const auto result = actions.setPriority({.pid = std::numeric_limits<int32_t>::max(), .startTimeTicks = 1}, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
+}
+
+TEST(WindowsProcessActionsTest, SetPriorityOfTheSystemProcessIsRefused)
+{
+    // PID 4 is the System process. Without elevation it can't be opened to set its priority; with
+    // elevation it can, but its start time isn't 1, so the identity check refuses. Either way nothing
+    // is sent to it.
+    WindowsProcessActions actions;
+    const auto result = actions.setPriority({.pid = 4, .startTimeTicks = 1}, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_FALSE(result.errorMessage.empty());
+}
+
+TEST(WindowsProcessActionsTest, IoPriorityIsNotSupportedAndNothingIsSent)
+{
+    // #803: Windows has no ionice equivalent, so the capability is off and both calls refuse.
+    WindowsProcessActions actions;
+    EXPECT_FALSE(actions.actionCapabilities().canSetIoPriority);
+
+    const auto set = actions.setIoPriority({.pid = 1234, .startTimeTicks = 1}, IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(set.success);
+    EXPECT_NE(set.errorMessage.find("not supported on Windows"), std::string::npos) << set.errorMessage;
+    EXPECT_NE(set.errorMessage.find("1234"), std::string::npos) << set.errorMessage;
+
+    const auto get = actions.getIoPriority({.pid = 1234, .startTimeTicks = 1});
+    ASSERT_FALSE(get.has_value());
+    EXPECT_NE(get.error().find("not supported on Windows"), std::string::npos) << get.error();
+}
+
 } // namespace Platform

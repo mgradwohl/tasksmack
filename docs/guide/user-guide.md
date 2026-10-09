@@ -137,7 +137,7 @@ The table's keys work while the pointer is over the process table or after click
 The System Metrics panel displays real-time and historical charts for:
 
 - **CPU Details** — the Overview opens with a block of CPU facts laid out like Task Manager's Performance › CPU page: utilization, kernel time, current speed, processes, threads, handles (file descriptors on Linux) and up time, then base speed, sockets, physical cores (split into performance and efficiency cores on a Windows hybrid CPU), logical processors, L1/L2/L3 cache sizes and installed memory. On Windows it also shows whether virtualization is enabled, whether a hypervisor is running, and whether virtualization-based security and memory integrity are on. A fact the system does not report shows as a muted dash with the reason on hover. The block uses as many label/value columns as the window is wide enough for and spans its full width, so a wide window spends less height on it. Click its heading to collapse it to one line with a summary (cores, base and current clock, utilization); TaskSmack remembers the choice (`[ui] cpu_details_expanded` in `config.toml`).
-- **CPU utilisation** — system-wide and per-core breakdowns. The CPU Cores tab has a chart for each CPU reported since TaskSmack started, so a CPU that never comes online (reserved hot-add capacity, a CPU offline since boot) gets none, and one that goes offline keeps its chart, with a gap while it's offline.
+- **CPU utilisation** — system-wide and per-core breakdowns. The CPU Cores tab has a chart for each CPU reported since TaskSmack started, so a CPU that never comes online (reserved hot-add capacity, a CPU offline since boot) gets none, and one that goes offline keeps its chart, with a gap while it's offline. On a hybrid CPU (Intel Alder Lake and later, Arm big.LITTLE), each core's name has a marker for its kind: a bolt for a performance core, a leaf for an efficiency core, and a dimmer leaf with "LP" for a low-power efficiency core. Hover the marker or the name to see the kind in words. A CPU with one kind of core shows no marker.
 - **Memory** — used and cached RAM displayed as percentage history, with current availability derived from the latest system snapshot
 - **Swap** — swap usage percentage history
 - **Storage** — aggregate and per-device throughput
@@ -247,14 +247,19 @@ On Linux, the Process Details **Overview** tab also has a collapsible **Connecti
 
 ### Services
 
-The **Services** tab lists the system's services, read-only (starting, stopping and changing the start type are planned, #800):
+The **Services** tab lists the system's services, and on Windows starts, stops and restarts them and changes their startup type:
 
 - **Columns:** **Name** (the service's short name), **Display name**, **State** (Running in the running colour, Starting/Stopping/Resuming/Pausing in the amber pending colour, Paused, Stopped muted), **Start type** (Automatic, Automatic (delayed), Manual, Disabled), **PID** (blank when the service isn't running) and **Account** (the account it logs on as).
 - Hover a row for its description, its command line, its svchost group (for services that share an `svchost.exe`) and whether it runs in its own process or a shared one.
 - Click a column header to sort by it; click again to reverse. Type in the filter box to show only services whose name or display name contains the text (case doesn't matter).
 - The list is read only while the tab is shown, when you open it and then every 2 seconds, in the background. A service's configuration (start type, command line, account, description) is re-read every 30 seconds.
 - **Windows:** read from the Service Control Manager without administrator rights. A service whose configuration Windows won't show to your account leaves those columns blank. If the Service Control Manager itself can't be opened, the tab says so (for example "Access to the Service Control Manager was denied") instead of showing an empty list. If a later read fails, the last list read stays on screen under an "Out of date: <reason>" line until a read succeeds again; if no read has ever succeeded, the tab shows "Couldn't read the services" with the reason.
-- **Linux:** not available yet ("Services aren't available on this platform yet"); systemd support is planned.
+- **Actions (Windows):** right-click a row for **Start**, **Stop**, **Restart** and **Startup type** (Automatic, Automatic (delayed), Manual, Disabled), or select a row and use the buttons above the table. An action that doesn't fit the service's state is greyed out (Start needs a stopped service, Stop a running or paused one, Restart a running one).
+  - **Stop**, **Restart** and **Disabled** ask first, in a dialog centred over the window. Well-known services Windows depends on (for example RpcSs, EventLog, Winmgmt, LSM, CryptSvc, Dhcp and Dnscache) get a stronger warning.
+  - The action runs in the background; a line above the table says "Stopping Spooler..." and then the outcome ("Stopped Spooler", or "Could not stop Spooler: Requires administrator"). Start, stop and restart wait up to 10 seconds for each change of state. The list is re-read straight after, start types included.
+  - Stopping a service that other running services depend on is refused, naming them ("Stop the services that depend on it first: ..."): TaskSmack never stops dependents for you.
+  - Most services need TaskSmack to run as administrator to be controlled. Without it, the actions stay available (a service's own permissions may allow some) and a note says "Requires administrator for most services"; a refused action reports "Requires administrator".
+- **Linux:** not available yet ("Services aren't available on this platform yet"); systemd support, and control through it, is planned.
 
 ### Startup Apps
 
@@ -266,6 +271,20 @@ The **Startup** tab lists the programs Windows starts when you sign in, read-onl
 - The list is read only while the tab is shown, when you open it and then every 5 seconds, in the background. No administrator rights are needed.
 - Scheduled tasks that run at sign-in, and services, are not listed here.
 - **Linux:** not available yet ("Startup apps aren't available on this platform yet"); XDG autostart support is planned.
+
+### System Information
+
+The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (firmware, memory modules, disks, adapters, GPUs and displays, security) are planned.
+
+- **Operating system:**
+  - **Windows:** edition and version (for example "Windows 11 Home", "25H2"), build with its update revision, architecture, install date, boot time and uptime, computer name, workgroup or domain, user, locale, time zone with its current UTC offset, and the system and Windows directories.
+  - **Linux:** distribution and version (`/etc/os-release`), kernel and architecture, init system, desktop and session type (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`), boot time and uptime, host name, user, locale, time zone, and whether TaskSmack is running in a container or a virtual machine.
+- **Read once:** the facts are read in the background the first time you open the tab, never while sampling. **Refresh** reads them again; the uptime is as of that read ("Read at" beside the button).
+- **Unavailable values** show a muted "—"; hover it for the reason.
+- **Identifiers hidden:** the user name, the computer name and a domain name are hidden until you tick **Show identifiers**, and are left out of copies until then.
+- **Filter:** type to show only rows whose label or value contains the text, or every row of a section whose title does (case doesn't matter).
+- **Copy:** each section's **Copy** button, or **Copy all**, puts the section(s) on the clipboard as plain `Label: Value` lines, ready for a bug report. Copies include every row (not just the filtered ones), less hidden identifiers.
+- No administrator rights or network access are needed.
 
 ### Process Actions
 
@@ -358,7 +377,8 @@ The following table summarises capabilities that differ between Windows and Linu
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ❌ |
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
-| Services tab (read-only) | ❌ (planned: systemd) | ✅ (Service Control Manager; no administrator needed) |
+| Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
+| System Information: Operating system section | ✅ (os-release, uname, `/proc`, XDG session, container/VM hints) | ✅ (CurrentVersion registry key, session APIs) |
 | Startup apps tab (read-only) | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders, enabled state from StartupApproved; no administrator needed) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |

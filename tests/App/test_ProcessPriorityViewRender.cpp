@@ -3,8 +3,9 @@
 /// without the capability, Apply is disabled until an edit, a click on Apply sets the edit on the
 /// selected process only, an edit made for another process is dropped before it can be applied, and
 /// the slider's keyboard shortcuts move the value as before (Linux only: the slider is the Linux control).
-/// There is no popup or modal on Linux. The Windows priority-class combo has no render test of its
-/// own, but Apply is as wide as its label and the row repeats no "current" value on both (#1537).
+/// There is no popup or modal on Linux. On Windows, the priority-class combo: the class picked from
+/// its popup is what Apply sets, and a Realtime class gets a warning line (#1566). On both, Apply is as
+/// wide as its label and the row repeats no "current" value (#1537).
 
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
@@ -13,7 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
-#include <imgui_internal.h> // The frame's text log and the window's draw list
+#include <imgui_internal.h> // The frame's text log, the window's draw list, the combo's popup
 
 #include <cmath>
 #include <cstdint>
@@ -21,7 +22,11 @@
 #include <optional>
 #include <string>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
+
+#include <cstddef>
+#else
 #include <array>
 #endif
 
@@ -254,8 +259,8 @@ TEST_F(ProcessPriorityViewRenderTest, TheRowRepeatsNoCurrentValue)
     EXPECT_EQ(beyondApply, 0);
 }
 
-// The nice slider is the Linux control; Windows draws the priority-class combo instead (#1204), which
-// has no render test here.
+// The nice slider is the Linux control; Windows draws the priority-class combo instead (#1204), tested
+// at the end of this file.
 #ifndef _WIN32
 TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
 {
@@ -342,6 +347,89 @@ TEST_F(ProcessPriorityViewRenderTest, TheScaleLabelsIgnoreAnInheritedWrapPositio
     const float unwrapped = heightOf(false);
     ASSERT_GT(unwrapped, 0.0F);
     EXPECT_FLOAT_EQ(heightOf(true), unwrapped);
+}
+#endif
+
+#ifdef _WIN32
+// The Windows priority-class combo (#1204, #1566): the class picked from its popup is what Apply
+// sets, and a Realtime class set outside TaskSmack is shown with a warning, never offered.
+
+/// The centre of row @p index of the open combo popup. The rows are text-high Selectables,
+/// ItemSpacing.y apart, from the popup's first content position. Valid from the popup's second
+/// frame: on its first it is still being sized and placed.
+[[nodiscard]] ImVec2 comboRowCentre(std::size_t index)
+{
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    if (g.OpenPopupStack.empty() || g.OpenPopupStack.back().Window == nullptr)
+    {
+        return {-1.0F, -1.0F};
+    }
+    const ImGuiWindow& popup = *g.OpenPopupStack.back().Window;
+    const float row = ImGui::GetFontSize() + ImGui::GetStyle().ItemSpacing.y;
+    return {popup.DC.CursorStartPos.x + 10.0F,
+            popup.DC.CursorStartPos.y + (static_cast<float>(index) * row) + (ImGui::GetFontSize() * 0.5F)};
+}
+
+TEST_F(ProcessPriorityViewRenderTest, PickingAClassInTheComboAndApplyingSetsThatClass)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const std::int32_t normal = Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::Normal);
+    const ImVec2 apply = renderAndFindApply(view, mock, normal, TARGET_A);
+
+    // The combo follows the "Priority" label on its line, ItemSpacing.x after it.
+    ImVec2 combo;
+    const auto body = [&]
+    {
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        combo = ImVec2(start.x + ImGui::CalcTextSize("Priority").x + ImGui::GetStyle().ItemSpacing.x + 10.0F,
+                       start.y + (ImGui::GetFrameHeight() * 0.5F));
+        view.render(&mock, CAN_SET_PRIORITY, normal, TARGET_A);
+    };
+    runFrame(body);
+    click(combo, body);
+    ASSERT_FALSE(ImGui::GetCurrentContext()->OpenPopupStack.empty()) << "the click should open the combo";
+    runFrame(body); // A new popup is sized and placed on its first frame; its rows settle on the next
+
+    // The rows are SETTABLE_WINDOWS_PRIORITY_CLASSES in order: High is the last.
+    const std::size_t highRow = Detail::SETTABLE_WINDOWS_PRIORITY_CLASSES.size() - 1;
+    ASSERT_EQ(Detail::SETTABLE_WINDOWS_PRIORITY_CLASSES[highRow], Detail::WindowsPriorityClass::High);
+    click(comboRowCentre(highRow), body);
+    const std::int32_t high = Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::High);
+    EXPECT_TRUE(ImGui::GetCurrentContext()->OpenPopupStack.empty()) << "a pick closes the combo";
+    EXPECT_EQ(view.niceValue(), high);
+    EXPECT_TRUE(view.hasPendingEdit());
+    EXPECT_EQ(mock.setPriorityCount(), 0); // Picking alone sends nothing
+
+    click(apply, body);
+    ASSERT_EQ(mock.setPriorityCount(), 1);
+    EXPECT_EQ(mock.lastSetPriorityNice(), high);
+    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
+}
+
+TEST_F(ProcessPriorityViewRenderTest, ARealtimeProcessGetsAWarningLine)
+{
+    TestMocks::MockProcessActions mock;
+    const auto heightFor = [&](std::int32_t currentNice)
+    {
+        ProcessPriorityView view;
+        float height = 0.0F;
+        runFrame(
+            [&]
+            {
+                const float top = ImGui::GetCursorPosY();
+                view.render(&mock, CAN_SET_PRIORITY, currentNice, TARGET_A);
+                height = ImGui::GetCursorPosY() - top;
+            });
+        EXPECT_EQ(view.niceValue(), currentNice);
+        return height;
+    };
+
+    const float normal = heightFor(Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::Normal));
+    const float realtime = heightFor(Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::Realtime));
+    // One more line: the warning that Realtime was set elsewhere and can only be lowered here.
+    EXPECT_GT(realtime, normal);
+    EXPECT_EQ(mock.setPriorityCount(), 0);
 }
 #endif
 

@@ -9,7 +9,9 @@
 #include "Panels/ProcessesPanel.h"
 #include "Panels/ServicesPanel.h"
 #include "Panels/StartupPanel.h"
+#include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "SelectOverride.h"
 #include "TabLabel.h"
 
 #include <SDL3/SDL_video.h>
@@ -69,6 +71,7 @@ class ShellLayer : public Core::Layer
     SystemMetricsPanel m_SystemMetricsPanel;
     ServicesPanel m_ServicesPanel;
     StartupPanel m_StartupPanel;
+    SystemInfoPanel m_SystemInfoPanel;
 
     // Frame timing / FPS display
     FpsCounter m_FpsCounter;
@@ -117,8 +120,9 @@ class ShellLayer : public Core::Layer
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;
-    // TASKSMACK_TAB (#1559): the tab the first tab bar selects, resolved once in onAttach().
-    std::optional<std::size_t> m_StartupTabIndex;
+    // TASKSMACK_TAB (#1559): the tab the tab bar selects at startup, resolved once in onAttach() to the
+    // tab's registered id and kept until that tab reports selected (#1575).
+    SelectOverride::PendingMainTab m_StartupTab;
 
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().

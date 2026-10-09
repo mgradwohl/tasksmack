@@ -4,6 +4,7 @@
 #include "Domain/PublicationSlot.h"
 #include "Platform/IServiceProbe.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -47,6 +48,13 @@ class ServiceModel : public ISamplable
         return m_Slot.version();
     }
 
+    /// Has the next sample re-read every service's configuration rather than wait for the probe's
+    /// cache to expire: a service action may have changed one (#1577). Thread-safe.
+    void requestConfigReread() noexcept
+    {
+        m_ConfigRereadRequested.store(true, std::memory_order_release);
+    }
+
     /// What the probe can read, fixed at construction.
     [[nodiscard]] const Platform::ServiceCapabilities& capabilities() const noexcept
     {
@@ -58,6 +66,7 @@ class ServiceModel : public ISamplable
     Platform::ServiceCapabilities m_Capabilities;
     std::mutex m_SampleMutex;
     std::uint64_t m_LastVersion = 0; // guarded by m_SampleMutex
+    std::atomic<bool> m_ConfigRereadRequested{false};
     PublicationSlot<ServicePublication> m_Slot;
 };
 
