@@ -168,6 +168,16 @@ struct VisibleSection
 
 /// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
 /// for the Graphics & displays section, captured on the UI thread.
+/// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.
+[[nodiscard]] std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter);
+
+/// An adapter's addresses: "192.168.1.20/24, fe80::1c2a:3bff:fe4d:5e6f/64", IPv4 first.
+[[nodiscard]] std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter);
+
+/// The Network adapters section (#1518): the default gateways and DNS servers, then per adapter its
+/// summary, addresses, MAC address (an identifier) and Wi-Fi signal.
+[[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network);
+
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
                                                            const Core::GraphicsHostInfo& host = {});
 

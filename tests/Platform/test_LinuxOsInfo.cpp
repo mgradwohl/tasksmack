@@ -6,12 +6,14 @@
 /// (#1516), the Commit & paging parsers and facts from /proc and /sys; and Platform::LinuxStorage (#1517),
 /// the mountinfo parser and the volume choice, and the disks and volumes under a fixture root; and
 /// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys; and
-/// Platform::LinuxSensors (#1522), hwmon and thermal-zone sensors.
+/// Platform::LinuxSensors (#1522), hwmon and thermal-zone sensors; and Platform::LinuxNetworkAdapters
+/// (#1518), routes, resolv.conf, Wi-Fi levels and the adapters under a fixture root.
 /// The headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxCommitPaging.h"
 #include "Platform/Linux/LinuxFirmwareInfo.h"
+#include "Platform/Linux/LinuxNetworkAdapters.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 #include "Platform/Linux/LinuxPlatformSecurity.h"
 #include "Platform/Linux/LinuxSensors.h"
@@ -33,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace Platform::LinuxOsInfo
@@ -854,6 +857,125 @@ TEST(LinuxSensorsTest, NoSensorsAndNoSysfs)
         EXPECT_TRUE(info.available);
         EXPECT_FALSE(info.listed);
         EXPECT_TRUE(info.devices.empty());
+    }
+}
+
+TEST(LinuxNetworkAdaptersTest, FormatsAddresses)
+{
+    EXPECT_EQ(LinuxNetworkAdapters::formatRouteIpv4("0101A8C0"), "192.168.1.1");
+    EXPECT_EQ(LinuxNetworkAdapters::formatRouteIpv4("00000000"), "0.0.0.0");
+    EXPECT_EQ(LinuxNetworkAdapters::formatRouteIpv4("0101A8"), "");
+    EXPECT_EQ(LinuxNetworkAdapters::formatIpv6Hex("fe800000000000001c2a3bfffe4d5e6f"), "fe80::1c2a:3bff:fe4d:5e6f");
+    EXPECT_EQ(LinuxNetworkAdapters::formatIpv6Hex("00000000000000000000000000000001"), "::1");
+    EXPECT_EQ(LinuxNetworkAdapters::formatIpv6Hex("20010db8000000010000000000000001"), "2001:db8:0:1::1");      // longest zero run
+    EXPECT_EQ(LinuxNetworkAdapters::formatIpv6Hex("20010db8000100000001000100010001"), "2001:db8:1:0:1:1:1:1"); // one zero group stays
+    EXPECT_EQ(LinuxNetworkAdapters::formatIpv6Hex("20010db8000000000001000000000001"), "2001:db8::1:0:0:1");    // first run on a tie
+    EXPECT_EQ(LinuxNetworkAdapters::formatIpv6Hex("xyz"), "");
+}
+
+TEST(LinuxNetworkAdaptersTest, ParsesRoutesResolvConfAndWireless)
+{
+    constexpr std::string_view ROUTE = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+                                       "wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n"
+                                       "eth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+                                       "eth0\t0000A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n";
+    EXPECT_EQ(LinuxNetworkAdapters::parseDefaultRouteV4(ROUTE),
+              (std::pair<std::string, std::string>{"192.168.0.1", "eth0"})); // lowest metric
+    EXPECT_EQ(LinuxNetworkAdapters::parseDefaultRouteV4("Iface Destination Gateway\n"), (std::pair<std::string, std::string>{}));
+
+    constexpr std::string_view ROUTE6 = "00000000000000000000000000000000 00 00000000000000000000000000000000 00 "
+                                        "fe800000000000000000000000000001 00000400 00000001 00000000 00450003   eth0\n"
+                                        "fe800000000000000000000000000000 40 00000000000000000000000000000000 00 "
+                                        "00000000000000000000000000000000 00000100 00000001 00000000 00000001   eth0\n";
+    EXPECT_EQ(LinuxNetworkAdapters::parseDefaultRouteV6(ROUTE6), (std::pair<std::string, std::string>{"fe80::1", "eth0"}));
+
+    const LinuxNetworkAdapters::ResolverConfig config = LinuxNetworkAdapters::parseResolvConf(
+        "# comment\nnameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\nsearch lan example.com\noptions edns0\n");
+    EXPECT_EQ(config.servers, (std::vector<std::string>{"1.1.1.1", "2606:4700:4700::1111"}));
+    EXPECT_EQ(config.searchDomains, (std::vector<std::string>{"lan", "example.com"}));
+
+    constexpr std::string_view WIRELESS = "Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE\n"
+                                          " face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22\n"
+                                          "wlp3s0: 0000   54.  -56.  -256        0      0      0      0      0        0\n";
+    EXPECT_EQ(LinuxNetworkAdapters::parseWirelessLevel(WIRELESS, "wlp3s0"), std::optional<int>(-56));
+    EXPECT_FALSE(LinuxNetworkAdapters::parseWirelessLevel(WIRELESS, "wlp3").has_value());
+    EXPECT_FALSE(LinuxNetworkAdapters::parseWirelessLevel("wlan0: 0000 54. 0. 0\n", "wlan0").has_value()); // quality only
+}
+
+std::vector<LinuxNetworkAdapters::ListedAddress> fixtureAddresses()
+{
+    return {
+        {.adapter = "eth0", .address = {.address = "fe80::1c2a:3bff:fe4d:5e6f", .prefix = 64, .v6 = true}},
+        {.adapter = "eth0", .address = {.address = "192.168.0.20", .prefix = 24, .v6 = false}},
+        {.adapter = "lo", .address = {.address = "127.0.0.1", .prefix = 8, .v6 = false}},
+        {.adapter = "gone0", .address = {.address = "10.0.0.1", .prefix = 8, .v6 = false}}, // no /sys entry: dropped
+    };
+}
+
+TEST(LinuxNetworkAdaptersTest, ReadsTheFactsUnderARoot)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/lo/address", "00:00:00:00:00:00\n");
+    root.write("sys/class/net/eth0/address", "a4:5e:60:12:34:56\n");
+    root.write("sys/class/net/eth0/mtu", "1500\n");
+    root.write("sys/class/net/eth0/operstate", "up\n");
+    root.write("sys/class/net/wlp3s0/address", "3c:22:fb:00:11:22\n");
+    root.write("sys/class/net/wlp3s0/mtu", "1500\n");
+    root.write("sys/class/net/wlp3s0/operstate", "dormant\n");
+    std::filesystem::create_directories(root.path() / "sys/class/net/wlp3s0/wireless");
+    std::filesystem::create_directories(root.path() / "sys/bus/pci/drivers/e1000e");
+    std::filesystem::create_directories(root.path() / "sys/class/net/eth0/device");
+    std::filesystem::create_directory_symlink(root.path() / "sys/bus/pci/drivers/e1000e", root.path() / "sys/class/net/eth0/device/driver");
+    root.write("proc/net/wireless", "Inter-| sta-|\n face | tus |\nwlp3s0: 0000   54.  -61.  -256 0 0 0 0 0 0\n");
+    root.write("proc/net/route",
+               "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\neth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\n");
+    root.write("etc/resolv.conf", "nameserver 127.0.0.53\nsearch lan\n");
+    root.write("run/systemd/resolve/resolv.conf", "nameserver 192.168.0.1\nnameserver 1.1.1.1\nsearch lan\n");
+
+    NetworkAdaptersInfo info;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, &fixtureAddresses);
+    EXPECT_TRUE(info.available);
+    EXPECT_TRUE(info.listed);
+    ASSERT_EQ(info.adapters.size(), 2U); // lo left out
+    const NetworkAdapter& eth0 = info.adapters[0];
+    EXPECT_EQ(eth0.name, "eth0");
+    EXPECT_EQ(eth0.mac, "a4:5e:60:12:34:56");
+    EXPECT_EQ(eth0.mtu, 1500U);
+    EXPECT_TRUE(eth0.up);
+    EXPECT_EQ(eth0.driver, "e1000e");
+    EXPECT_FALSE(eth0.wireless);
+    EXPECT_EQ(eth0.addresses.size(), 2U);
+    const NetworkAdapter& wifi = info.adapters[1];
+    EXPECT_TRUE(wifi.wireless);
+    EXPECT_FALSE(wifi.up);
+    EXPECT_EQ(wifi.wifiSignalDbm, std::optional<int>(-61));
+    EXPECT_EQ(info.gatewayV4, "192.168.0.1");
+    EXPECT_EQ(info.gatewayV4Adapter, "eth0");
+    EXPECT_TRUE(info.gatewayV6.empty());
+    EXPECT_TRUE(info.dnsRead);
+    EXPECT_EQ(info.dnsServers, (std::vector<std::string>{"192.168.0.1", "1.1.1.1"})); // resolved's upstream file, not the stub
+    EXPECT_FALSE(info.dnsIsLocalStub);
+    EXPECT_EQ(info.searchDomains, (std::vector<std::string>{"lan"}));
+}
+
+TEST(LinuxNetworkAdaptersTest, OnlyTheStubAndNothingReadable)
+{
+    {
+        const FixtureRoot root;
+        root.write("etc/resolv.conf", "nameserver 127.0.0.53\n");
+        NetworkAdaptersInfo info;
+        LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr);
+        EXPECT_TRUE(info.dnsIsLocalStub);
+        EXPECT_FALSE(info.listed); // no /sys/class/net
+    }
+    {
+        const FixtureRoot root;
+        NetworkAdaptersInfo info;
+        LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr);
+        EXPECT_TRUE(info.available);
+        EXPECT_FALSE(info.dnsRead);
+        EXPECT_TRUE(info.adapters.empty());
+        EXPECT_TRUE(info.gatewayV4.empty());
     }
 }
 

@@ -314,6 +314,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxGraphics.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxSensors.h
+        src/Platform/Linux/LinuxNetworkAdapters.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS

@@ -973,6 +973,102 @@ Section buildSensorsSection(const Platform::SensorsInfo& sensors)
     return section;
 }
 
+std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter)
+{
+    std::string text = adapter.up ? "Up" : "Down";
+    if (adapter.wireless)
+    {
+        text += ", Wi-Fi";
+    }
+    if (adapter.mtu != 0)
+    {
+        text += std::format(", MTU {}", adapter.mtu);
+    }
+    if (!adapter.driver.empty())
+    {
+        text += ", driver " + adapter.driver;
+    }
+    return text;
+}
+
+std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
+{
+    std::string text;
+    for (const bool v6 : {false, true})
+    {
+        for (const Platform::AdapterAddress& address : adapter.addresses)
+        {
+            if (address.v6 != v6)
+            {
+                continue;
+            }
+            if (!text.empty())
+            {
+                text += ", ";
+            }
+            text += std::format("{}/{}", address.address, address.prefix);
+        }
+    }
+    return text;
+}
+
+Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network)
+{
+    Section section{.title = "Network adapters", .icon = ICON_FA_ETHERNET, .rows = {}};
+    auto& rows = section.rows;
+    const auto gateway = [](const std::string& address, const std::string& adapter)
+    {
+        return address.empty() ? std::string{} : std::format("{} ({})", address, adapter);
+    };
+    rows.push_back(row("Default gateway", gateway(network.gatewayV4, network.gatewayV4Adapter), "No IPv4 default route"));
+    if (!network.gatewayV6.empty())
+    {
+        rows.push_back(row("IPv6 gateway", gateway(network.gatewayV6, network.gatewayV6Adapter)));
+    }
+    std::string dns;
+    for (const std::string& server : network.dnsServers)
+    {
+        dns += (dns.empty() ? "" : ", ") + server;
+    }
+    if (network.dnsIsLocalStub)
+    {
+        dns += " (systemd-resolved; its upstream servers couldn't be read)";
+    }
+    rows.push_back(row("DNS servers", std::move(dns), network.dnsRead ? "None configured" : "The resolver configuration couldn't be read"));
+    if (!network.searchDomains.empty())
+    {
+        std::string domains;
+        for (const std::string& domain : network.searchDomains)
+        {
+            domains += (domains.empty() ? "" : ", ") + domain;
+        }
+        // A search domain can name the organisation, like a domain name in the Operating system section.
+        rows.push_back(row("Search domains", std::move(domains), NOT_REPORTED, true));
+    }
+
+    if (network.adapters.empty())
+    {
+        rows.push_back(row("Adapters", network.listed ? "None found" : "", "/sys/class/net couldn't be listed"));
+        return section;
+    }
+    for (const Platform::NetworkAdapter& adapter : network.adapters)
+    {
+        rows.push_back(row(adapter.name, formatAdapterSummary(adapter)));
+        rows.push_back(row(adapter.name + " addresses", formatAdapterAddresses(adapter), "No IP address assigned"));
+        if (!adapter.mac.empty())
+        {
+            rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
+        }
+        if (adapter.wireless)
+        {
+            rows.push_back(row(adapter.name + " Wi-Fi signal",
+                               adapter.wifiSignalDbm.has_value() ? std::format("{} dBm", *adapter.wifiSignalDbm) : std::string{},
+                               "Not reported by the driver, or not connected"));
+        }
+    }
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot, const Core::GraphicsHostInfo& host)
 {
     std::vector<Section> sections;
@@ -1011,6 +1107,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.graphics.available)
     {
         sections.push_back(buildGraphicsSection(snapshot.graphics, host));
+    }
+    if (snapshot.adapters.available)
+    {
+        sections.push_back(buildNetworkAdaptersSection(snapshot.adapters));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;
