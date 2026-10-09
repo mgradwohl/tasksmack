@@ -169,6 +169,62 @@ struct CommitPagingInfo
     std::string transparentHugePages; ///< Linux: the bracketed mode ("always", "madvise", "never")
 };
 
+/// Whether a disk spins (#1517): Windows' seek-penalty property / Linux's queue/rotational.
+enum class DiskMedia : std::uint8_t
+{
+    Unknown,
+    Ssd,
+    Hdd,
+};
+
+/// An NVMe drive's health log page (#1517), the fields the page shows.
+struct NvmeHealth
+{
+    std::uint8_t criticalWarning = 0;       ///< The critical warning bits; 0 is healthy
+    std::uint8_t availableSparePercent = 0; ///< Spare capacity left
+    std::uint8_t percentageUsed = 0;        ///< Life used, by the vendor's estimate; can pass 100
+    std::uint64_t mediaErrors = 0;          ///< Unrecovered data integrity errors (the low 64 bits)
+};
+
+/// One physical disk (#1517). A string the probe couldn't read is empty and a size 0.
+struct PhysicalDisk
+{
+    std::string name;  ///< "Disk 0" (\\.\PhysicalDrive0) / "nvme0n1"
+    std::string model; ///< "Samsung SSD 980 PRO 1TB"
+    std::string bus;   ///< "NVMe", "SATA", "USB", ...
+    DiskMedia media = DiskMedia::Unknown;
+    std::uint64_t sizeBytes = 0;
+    std::string firmware; ///< The firmware revision
+    std::string serial;   ///< An identifier
+    std::optional<int> temperatureCelsius;
+    std::optional<NvmeHealth> health;    ///< Windows: NVMe drives, when the health log could be read
+    std::string healthUnavailableReason; ///< Why health is missing; empty when it isn't read for this disk at all
+};
+
+/// One mounted volume (#1517): a drive letter or a mount point.
+struct Volume
+{
+    std::string mountPoint; ///< "C:" / "/home"
+    std::string label;
+    std::string fileSystem; ///< "NTFS" / "ext4"
+    std::string device;     ///< Linux: the mount source ("/dev/nvme0n1p2"); empty on Windows
+    bool network = false;   ///< A network drive or file system: never queried, as the calls can hang
+    bool sizeRead = false;  ///< sizeBytes and freeBytes were read
+    std::uint64_t sizeBytes = 0;
+    std::uint64_t freeBytes = 0;
+};
+
+/// The Storage facts (#1517): physical disks and mounted volumes.
+struct StorageInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    bool disksRead = false; ///< The disks were enumerated: an empty disks means none were found.
+    std::vector<PhysicalDisk> disks;
+    bool volumesRead = false; ///< The volumes were enumerated.
+    std::vector<Volume> volumes;
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -202,6 +258,10 @@ class ISystemInfoProbe
 
     /// The Commit & paging facts (#1516); read when hasOs is true.
     [[nodiscard]] virtual CommitPagingInfo readCommitPaging() = 0;
+
+    /// The Storage facts (#1517); read when hasOs is true. A slow disk can make this take a while, which
+    /// is fine: reads run off the UI thread.
+    [[nodiscard]] virtual StorageInfo readStorage() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -229,6 +289,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] CommitPagingInfo readCommitPaging() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] StorageInfo readStorage() override
     {
         return {};
     }
