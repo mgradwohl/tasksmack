@@ -22,7 +22,7 @@ const std::optional<std::filesystem::path>& active()
             return std::nullopt;
         }
         std::error_code ec;
-        if (std::filesystem::path absolute = std::filesystem::absolute(*parsed, ec); !ec)
+        if (const std::filesystem::path absolute = std::filesystem::absolute(*parsed, ec); !ec)
         {
             parsed = absolute.lexically_normal();
         }

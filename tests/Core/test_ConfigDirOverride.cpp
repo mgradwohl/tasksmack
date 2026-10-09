@@ -30,14 +30,14 @@ TEST(ConfigDirOverrideTest, ValueIsTheDirectory)
 {
     const auto dir = parse("tasksmack-test/run1");
     ASSERT_TRUE(dir.has_value());
-    EXPECT_EQ(*dir, std::filesystem::path("tasksmack-test/run1"));
+    EXPECT_EQ(dir.value_or(std::filesystem::path{}), std::filesystem::path("tasksmack-test/run1"));
 }
 
 TEST(ConfigDirOverrideTest, SurroundingWhitespaceIsTrimmed)
 {
     const auto dir = parse("  tasksmack-test \t");
     ASSERT_TRUE(dir.has_value());
-    EXPECT_EQ(*dir, std::filesystem::path("tasksmack-test"));
+    EXPECT_EQ(dir.value_or(std::filesystem::path{}), std::filesystem::path("tasksmack-test"));
 }
 
 TEST(ConfigDirOverrideTest, ValueIsReadAsUtf8)
@@ -45,7 +45,7 @@ TEST(ConfigDirOverrideTest, ValueIsReadAsUtf8)
     // SDL_getenv() returns UTF-8 on every platform; "tëst" must not go through the ANSI code page.
     const auto dir = parse("t\xC3\xABst");
     ASSERT_TRUE(dir.has_value());
-    EXPECT_EQ(*dir, std::filesystem::path(u8"tëst"));
+    EXPECT_EQ(dir.value_or(std::filesystem::path{}), std::filesystem::path(u8"tëst"));
 }
 
 TEST(ConfigDirOverrideTest, ResolveUsesTheOverrideWhenSet)

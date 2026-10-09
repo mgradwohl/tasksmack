@@ -328,8 +328,8 @@ TEST(PathServiceTest, ConfigDirOverrideReplacesTheProviderConfigDir)
     const auto utf8 = overrideDir.u8string();
     const std::string value(utf8.begin(), utf8.end()); // the environment's encoding, as SDL_getenv() gives it
 
-    Core::PathService svc(std::make_unique<FakePathProvider>(execDir, base / "tasksmack_test_config"),
-                          ConfigDirOverride::parse(value.c_str()));
+    const Core::PathService svc(std::make_unique<FakePathProvider>(execDir, base / "tasksmack_test_config"),
+                                ConfigDirOverride::parse(value.c_str()));
 
     EXPECT_EQ(svc.userConfigDir(), overrideDir.lexically_normal());
     EXPECT_EQ(svc.executableDir(), execDir.lexically_normal()); // only the config directory moves
@@ -342,7 +342,7 @@ TEST(PathServiceTest, UnsetOrBlankConfigDirOverrideKeepsTheProviderConfigDir)
 
     for (const char* value : {static_cast<const char*>(nullptr), "", "  \t "})
     {
-        Core::PathService svc(std::make_unique<FakePathProvider>(base, configDir), ConfigDirOverride::parse(value));
+        const Core::PathService svc(std::make_unique<FakePathProvider>(base, configDir), ConfigDirOverride::parse(value));
         EXPECT_EQ(svc.userConfigDir(), configDir.lexically_normal()) << (value != nullptr ? value : "(unset)");
     }
 }

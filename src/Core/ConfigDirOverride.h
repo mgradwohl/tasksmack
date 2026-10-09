@@ -19,7 +19,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace Core::ConfigDirOverride
 {
@@ -51,9 +50,10 @@ inline constexpr std::string_view ENV_VAR = "TASKSMACK_CONFIG_DIR";
 }
 
 /// The config directory to use: the override when there is one, else @p platformDir.
-[[nodiscard]] inline std::filesystem::path resolve(const std::optional<std::filesystem::path>& override, std::filesystem::path platformDir)
+[[nodiscard]] inline std::filesystem::path resolve(const std::optional<std::filesystem::path>& override,
+                                                   const std::filesystem::path& platformDir)
 {
-    return override.has_value() ? *override : std::move(platformDir);
+    return override.value_or(platformDir);
 }
 
 /// The overriding directory, absolute; nullopt when TASKSMACK_CONFIG_DIR is unset or blank. Read on
