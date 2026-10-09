@@ -184,6 +184,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessDisplayFreeze.cpp
     App/test_CpuCoreGridIds.cpp
     App/test_CpuCoreKinds.cpp
+    App/test_ProcessRowMeter.cpp
     App/test_CpuSummaryText.cpp
     App/test_CpuDetailsText.cpp
     App/test_CpuDetailsBlockRender.cpp

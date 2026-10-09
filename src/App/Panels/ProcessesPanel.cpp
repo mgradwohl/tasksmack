@@ -11,6 +11,8 @@
 #include "App/Panels/ProcessDisplayFreeze.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
+#include "App/Panels/ProcessRowMeter.h"
+#include "App/Panels/ProcessRowMeterView.h"
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
@@ -861,6 +863,7 @@ void ProcessesPanel::onAttach()
     // Load column settings from user config
     m_ColumnSettings = UserConfig::get().settings().processColumns;
     m_ColumnSettings.keepUnhideableColumnsVisible(); // Whatever the settings were given (#1209)
+    m_MeterSettings = UserConfig::get().settings().processMeters;
 
     // m_RefreshInterval starts at the SamplingConfig default, and the model at its built-in history
     // length; ShellLayer raises the configured values as events on its first update (#1079).
@@ -950,6 +953,7 @@ void ProcessesPanel::onDetach()
 {
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
+    UserConfig::get().settings().processMeters = m_MeterSettings;
     // Order doesn't matter for safety here, same as the destructor above: BackgroundSampler
     // observes m_ProcessModel via a weak_ptr, so it's never left holding a dangling pointer
     // regardless of which is reset first. Stopping the sampler first still avoids a sample()
@@ -1654,6 +1658,8 @@ void ProcessesPanel::renderContent()
         // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
         applyKeyboardInput(currentSnapshots, navCommand, killRequested, selectAllRequested);
 
+        prepareRowMeters(currentSnapshots); // Inline meters (#1528)
+
         // Render process rows - tree view or flat list
         if (m_TreeViewEnabled)
         {
@@ -1852,8 +1858,32 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             renderNameCell(proc, fmt, depth, hasChildren, isExpanded);
             continue;
         }
+        // The meter first, so the cell's text is drawn over it (#1528): one O(1) check per cell, and
+        // at most one rectangle.
+        if (m_MetersShown)
+        {
+            ProcessRowMeter::renderCellMeter(m_MeterSettings, col, proc, m_MeterMaxima, m_MeterColors);
+        }
         CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }
+}
+
+void ProcessesPanel::prepareRowMeters(const std::vector<Domain::ProcessSnapshot>& snapshots)
+{
+    m_MetersShown = m_MeterSettings.anyOn();
+    if (!m_MetersShown)
+    {
+        return;
+    }
+    // The absolute columns are scaled against their largest value in the adopted generation, worked
+    // out once when it is adopted, not per frame.
+    if (m_MeterMaximaVersion != m_CachedSnapshotVersion)
+    {
+        m_MeterMaxima.rebuild(snapshots);
+        m_MeterMaximaVersion = m_CachedSnapshotVersion;
+    }
+    const auto& scheme = UI::Theme::get().scheme();
+    m_MeterColors = {.low = scheme.processMeterLow, .high = scheme.processMeterHigh};
 }
 
 void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible)
@@ -2091,6 +2121,7 @@ void ProcessesPanel::renderColumnsMenu()
     ImGui::PopItemFlag();
 
     ImGui::Separator();
+    renderMeterMenu();
     const bool canReset = !ProcessColumnAvailability::hasDefaultColumns(shown, caps, m_GpuSupport) || !m_TableHasDefaultOrder;
     if (ImGui::MenuItem(ICON_FA_ROTATE_LEFT " Reset columns", nullptr, false, canReset))
     {
@@ -2099,6 +2130,33 @@ void ProcessesPanel::renderColumnsMenu()
         m_ResetColumnOrderRequested = true;
     }
     ImGui::SetItemTooltip("Show the default columns, in their default order");
+}
+
+void ProcessesPanel::renderMeterMenu()
+{
+    if (!ImGui::BeginMenu(ICON_FA_CHART_BAR " Show meter"))
+    {
+        ImGui::SetItemTooltip("Draw a bar behind a column's value, proportional to it");
+        return;
+    }
+    ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+    for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
+    {
+        const auto info = getColumnInfo(col);
+        const bool on = m_MeterSettings.isOn(col);
+        // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr literals are null-terminated
+        if (ImGui::MenuItem(info.menuName.data(), nullptr, on))
+        {
+            m_MeterSettings.set(col, !on);
+            UserConfig::get().settings().processMeters = m_MeterSettings;
+        }
+        if (ProcessRowMeter::scaleOf(col) == ProcessRowMeter::Scale::Absolute)
+        {
+            ImGui::SetItemTooltip("Scaled against the largest value in the list");
+        }
+    }
+    ImGui::PopItemFlag();
+    ImGui::EndMenu();
 }
 
 bool ProcessesPanel::applyColumnRequests()

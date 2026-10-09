@@ -701,6 +701,48 @@ TEST_F(UserConfigSaveLoadFixture, AConfigFromBeforeTheCpuDetailsBlockLoadsExpand
     EXPECT_FALSE(config.settings().showPrivilegeNotice);
 }
 
+// ========== Inline meters (#1528) ==========
+
+TEST(UserSettingsTest, ProcessMetersDefaultToCpuOnly)
+{
+    const UserSettings settings;
+    EXPECT_TRUE(settings.processMeters.isOn(ProcessColumn::CpuPercent));
+    EXPECT_FALSE(settings.processMeters.isOn(ProcessColumn::Resident));
+    EXPECT_FALSE(settings.processMeters.isOn(ProcessColumn::NetReceived));
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMetersAreSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings().processMeters.set(ProcessColumn::CpuPercent, false);
+    config.settings().processMeters.set(ProcessColumn::Resident, true);
+    config.settings().processMeters.set(ProcessColumn::GpuMemory, true);
+    const ProcessRowMeter::Settings saved = config.settings().processMeters;
+    config.save();
+    config.settings().processMeters = ProcessRowMeter::Settings{};
+    config.load();
+    EXPECT_EQ(config.settings().processMeters, saved);
+    EXPECT_FALSE(config.settings().processMeters.isOn(ProcessColumn::CpuPercent));
+    EXPECT_TRUE(config.settings().processMeters.isOn(ProcessColumn::Resident));
+    config.settings().processMeters = ProcessRowMeter::Settings{}; // The singleton outlives this test
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMetersMissingOrInvalidKeepDefaults)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_meters]\nio_read = true\ncpu_percent = \"yes\"\npid = true\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    const ProcessRowMeter::Settings& meters = config.settings().processMeters;
+    EXPECT_TRUE(meters.isOn(ProcessColumn::IoRead));
+    EXPECT_TRUE(meters.isOn(ProcessColumn::CpuPercent)); // Not a boolean: the default
+    EXPECT_FALSE(meters.isOn(ProcessColumn::PID));       // No meter column: ignored
+    EXPECT_FALSE(meters.isOn(ProcessColumn::IoWrite));   // Not listed: the default
+}
+
 // ========== Process table layout persistence (#952) ==========
 
 TEST(UserSettingsTest, ProcessTableLayoutDefaultsToEmpty)

@@ -196,6 +196,18 @@ hovered = "#CC1A1A"
 active = "#E63333"
 ```
 
+### `[process_meter]` - Processes Table Meter Colors
+
+```toml
+[process_meter]
+low = "#E5C07B26"   # A meter's colour at 0 (alpha included, so the cell's text stays readable)
+high = "#E060704D"  # Its colour at full scale; a bar in between blends the two
+```
+
+Optional. The Processes table's inline meters (Columns › Show meter) draw a bar behind a cell's text
+whose colour runs from `low` to `high` as the value rises. Without this section they use
+`semantic.text_warning` at up to 0.15 alpha and `semantic.text_error` at up to 0.30 alpha, made fainter where needed so `text_primary` keeps 4.5:1 on them over plain, striped and selected rows. If you set them, keep that contrast yourself.
+
 ### `[priority]` - Priority Badge Colors
 
 ```toml

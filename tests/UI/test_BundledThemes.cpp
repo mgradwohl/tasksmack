@@ -347,6 +347,34 @@ TEST(BundledThemesTest, TextRolesAreReadableOnEveryBackground)
     }
 }
 
+// #1528: a cell's text stays readable on its inline meter at either end of the heat gradient, on
+// plain, striped and selected rows, and the meter shows at all (it differs from the row).
+TEST(BundledThemesTest, ProcessMeterKeepsTextReadable)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+        for (const auto& [end, meter] : {std::pair{"low", scheme->processMeterLow}, std::pair{"high", scheme->processMeterHigh}})
+        {
+            for (const auto& [rowKind, row] :
+                 {std::pair{"plain", bg.row}, std::pair{"striped", bg.stripe}, std::pair{"selected", bg.selected}})
+            {
+                const ImVec4 shaded = flattenOver(meter, row);
+                EXPECT_GE(contrastRatio(scheme->textPrimary, shaded), TEXT_MIN)
+                    << name << " text_primary on the " << end << " meter over a " << rowKind << " row";
+                EXPECT_FALSE(sameRgb(shaded, row)) << name << " the " << end << " meter does not show on a " << rowKind << " row";
+            }
+        }
+    }
+}
+
 // #1167: process status letters are readable on plain, striped and selected rows.
 TEST(BundledThemesTest, StatusColoursAreReadableOnEveryRow)
 {

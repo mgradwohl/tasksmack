@@ -1,6 +1,7 @@
 #include "ThemeLoader.h"
 
 #include "Theme.h"
+#include "UI/ColorContrast.h"
 #include "UI/Format.h"
 
 #include <imgui.h>
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
@@ -217,6 +219,38 @@ template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_
             colors[i] = parseColorNode(*arr->get(i));
         }
     }
+}
+
+/// The inline meters' fallback alphas (#1528): a faint amber at 0, a stronger red at full scale.
+constexpr float PROCESS_METER_LOW_ALPHA = 0.15F;
+constexpr float PROCESS_METER_HIGH_ALPHA = 0.30F;
+constexpr float PROCESS_METER_ALPHA_STEP = 0.01F;
+
+/// A theme without [process_meter] colours: @p color at the strongest alpha up to @p maxAlpha at
+/// which text_primary keeps ColorContrast::TEXT_CONTRAST_MIN on it over a plain, striped and
+/// selected row, so the meter never makes a cell's text unreadable, in a light or dark theme.
+/// Needs the scheme's text, window, table row and header colours loaded.
+auto readableMeterFill(const ImVec4& color, float maxAlpha, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const ImVec4 row = ColorContrast::flattenOver(scheme.tableRowBg, window);
+    const ImVec4 stripe = ColorContrast::flattenOver(scheme.tableRowBgAlt, window);
+    const std::array<ImVec4, 3> rows{row, stripe, ColorContrast::flattenOver(scheme.header, row)};
+    const auto steps = static_cast<int>(std::lround(maxAlpha / PROCESS_METER_ALPHA_STEP));
+    for (int step = steps; step > 0; --step)
+    {
+        const ImVec4 fill = withAlpha(color, static_cast<float>(step) * PROCESS_METER_ALPHA_STEP);
+        if (std::ranges::all_of(rows,
+                                [&](const ImVec4& under)
+                                {
+                                    return ColorContrast::contrastRatio(scheme.textPrimary, ColorContrast::flattenOver(fill, under)) >=
+                                           ColorContrast::TEXT_CONTRAST_MIN;
+                                }))
+        {
+            return fill;
+        }
+    }
+    return withAlpha(color, 0.0F); // Text already below the minimum on a bare row: no meter would help
 }
 
 /// Builds a ColorScheme from a parsed theme document. A missing or malformed colour becomes
@@ -449,6 +483,12 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.navWindowingHighlight = getColor(tbl, "ui.misc.nav_windowing_highlight");
     scheme.navWindowingDimBg = getColor(tbl, "ui.misc.nav_windowing_dim_background");
     scheme.modalWindowDimBg = getColor(tbl, "ui.misc.modal_window_dim_background");
+
+    // Inline meters (#1528), last: their fallbacks are fitted to the rows they are drawn on.
+    scheme.processMeterLow = tbl.at_path("process_meter.low") ? getColor(tbl, "process_meter.low")
+                                                              : readableMeterFill(scheme.textWarning, PROCESS_METER_LOW_ALPHA, scheme);
+    scheme.processMeterHigh = tbl.at_path("process_meter.high") ? getColor(tbl, "process_meter.high")
+                                                                : readableMeterFill(scheme.textError, PROCESS_METER_HIGH_ALPHA, scheme);
 
     return scheme;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/Panels/ProcessRowMeter.h"
 #include "App/ProcessColumnConfig.h"
 #include "Domain/SamplingConfig.h"
 #include "UI/Theme.h"
@@ -34,6 +35,9 @@ struct UserSettings
 
     // Process table column visibility
     ProcessColumnSettings processColumns;
+
+    // Which Processes columns draw an inline meter behind their text (#1528), [process_meters].
+    ProcessRowMeter::Settings processMeters;
 
     // Process table column widths, order and sort, as ImGui's own "[Table]" settings text (#952).
     // Opaque to TaskSmack: it is filtered by ProcessTableSettings::sanitize() and handed to ImGui.
