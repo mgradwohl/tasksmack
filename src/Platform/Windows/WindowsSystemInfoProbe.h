@@ -31,6 +31,12 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     {
         return {};
     }
+    /// Not read yet: GetAdaptersAddresses and WlanQueryInterface are the Windows lane's follow-up to
+    /// #1518, so the section is left out on Windows.
+    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override
+    {
+        return {};
+    }
 };
 
 } // namespace Platform

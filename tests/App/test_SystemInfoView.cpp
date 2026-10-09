@@ -1,7 +1,7 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
 /// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
-/// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the filter,
+/// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the Network adapters rows (#1518), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
 /// filter narrowing and the identifier toggle.
 
@@ -595,6 +595,67 @@ TEST(SystemInfoSectionsTest, NoSensorsIsOneMutedRow)
     const Section unread = SystemInfo::buildSensorsSection(none);
     ASSERT_EQ(unread.rows.size(), 1U);
     EXPECT_TRUE(unread.rows[0].unavailableReason.contains("couldn't be read")) << unread.rows[0].unavailableReason;
+}
+
+TEST(SystemInfoSectionsTest, NetworkAdapterRows)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    network.gatewayV4 = "192.168.0.1";
+    network.gatewayV4Adapter = "eth0";
+    network.gatewayV6 = "fe80::1";
+    network.gatewayV6Adapter = "eth0";
+    network.dnsRead = true;
+    network.dnsServers = {"192.168.0.1", "1.1.1.1"};
+    network.searchDomains = {"corp.example.com"};
+    Platform::NetworkAdapter eth0;
+    eth0.name = "eth0";
+    eth0.mac = "a4:5e:60:12:34:56";
+    eth0.mtu = 1500;
+    eth0.driver = "e1000e";
+    eth0.up = true;
+    eth0.addresses = {{.address = "fe80::1c2a:3bff:fe4d:5e6f", .prefix = 64, .v6 = true},
+                      {.address = "192.168.0.20", .prefix = 24, .v6 = false}};
+    Platform::NetworkAdapter wifi;
+    wifi.name = "wlp3s0";
+    wifi.wireless = true;
+    wifi.wifiSignalDbm = -61;
+    network.adapters = {eth0, wifi};
+
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(section.title, "Network adapters");
+    EXPECT_EQ(findRow(section, "Default gateway")->value, "192.168.0.1 (eth0)");
+    EXPECT_EQ(findRow(section, "IPv6 gateway")->value, "fe80::1 (eth0)");
+    EXPECT_EQ(findRow(section, "DNS servers")->value, "192.168.0.1, 1.1.1.1");
+    EXPECT_TRUE(findRow(section, "Search domains")->isIdentifier);
+    EXPECT_EQ(findRow(section, "eth0")->value, "Up, MTU 1500, driver e1000e");
+    EXPECT_EQ(findRow(section, "eth0 addresses")->value, "192.168.0.20/24, fe80::1c2a:3bff:fe4d:5e6f/64"); // IPv4 first
+    EXPECT_TRUE(findRow(section, "eth0 MAC address")->isIdentifier);
+    EXPECT_EQ(findRow(section, "wlp3s0")->value, "Down, Wi-Fi");
+    EXPECT_FALSE(findRow(section, "wlp3s0 addresses")->available());
+    EXPECT_EQ(findRow(section, "wlp3s0 MAC address"), nullptr); // none reported
+    EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi signal")->value, "-61 dBm");
+    EXPECT_EQ(findRow(section, "eth0 Wi-Fi signal"), nullptr);
+}
+
+TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    const Section unread = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_FALSE(findRow(unread, "Default gateway")->available());
+    EXPECT_FALSE(findRow(unread, "DNS servers")->available());
+    EXPECT_EQ(findRow(unread, "IPv6 gateway"), nullptr);
+    EXPECT_FALSE(findRow(unread, "Adapters")->available());
+
+    network.listed = true;
+    network.dnsRead = true;
+    network.dnsServers = {"127.0.0.53"};
+    network.dnsIsLocalStub = true;
+    const Section stub = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(stub, "DNS servers")->value, "127.0.0.53 (systemd-resolved; its upstream servers couldn't be read)");
+    EXPECT_EQ(findRow(stub, "Adapters")->value, "None found");
 }
 
 TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)

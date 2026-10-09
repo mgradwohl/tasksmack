@@ -23,6 +23,7 @@ struct SystemInfoSnapshot
     Platform::StorageInfo storage;
     Platform::PlatformSecurityInfo security;
     Platform::SensorsInfo sensors;
+    Platform::NetworkAdaptersInfo adapters;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,
