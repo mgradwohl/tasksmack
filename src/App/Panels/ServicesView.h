@@ -68,12 +68,18 @@ struct ServicesViewState
     bool rowsAscending = true;
 
     std::string unavailableHeading; ///< The empty state's heading when the list can't be read.
+
+    std::string selectedName; ///< The selected row's service (#1577); empty when none.
 };
 
-/// Draws the filter box and the table (or an empty state) into the current window.
+class ServiceActionsView;
+
+/// Draws the filter box and the table (or an empty state) into the current window, with @p actions'
+/// action bar, result line and row menus when it is given (#1577).
 /// @param publication Null is treated as no sample yet.
 ServicesViewContent renderServicesView(const Domain::ServicePublication* publication,
                                        const Platform::ServiceCapabilities& capabilities,
-                                       ServicesViewState& state);
+                                       ServicesViewState& state,
+                                       ServiceActionsView* actions = nullptr);
 
 } // namespace App

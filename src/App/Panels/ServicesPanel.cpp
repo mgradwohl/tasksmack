@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/SamplingGate.h"
+#include "App/Panels/ServiceActionsView.h"
 #include "App/Panels/ServicesView.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -10,6 +11,8 @@
 #include "Domain/ServiceModel.h"
 #include "Platform/Factory.h"
 #include "Platform/ThreadName.h"
+
+#include <imgui.h>
 
 #include <chrono>
 #include <memory>
@@ -32,10 +35,12 @@ void ServicesPanel::onAttach()
     // The composition root's one probe creation for this panel; sampling waits for the tab to show.
     m_Model = std::make_shared<Domain::ServiceModel>(Platform::makeServiceProbe());
     m_Gate = std::make_shared<SamplingGate>(m_Model);
+    m_Actions = std::make_unique<ServiceActionsView>(Platform::makeServiceActions());
 }
 
 void ServicesPanel::onDetach()
 {
+    m_Actions.reset(); // waits for an action still running (bounded by the platform's timeout)
     m_Sampler.reset(); // joins the sampler thread: the one place it is waited for
     m_Gate.reset();
     m_Publication.reset();
@@ -90,7 +95,18 @@ void ServicesPanel::renderContent()
     {
         m_Publication = m_Model->publication();
     }
-    static_cast<void>(renderServicesView(m_Publication.get(), m_Model->capabilities(), m_ViewState));
+    m_Actions->tick(ImGui::GetIO().DeltaTime);
+    if (m_Actions->takeFinished())
+    {
+        // The action changed a state or a start type: re-read now, configuration included.
+        m_Model->requestConfigReread();
+        if (m_Sampler)
+        {
+            m_Sampler->requestRefresh();
+        }
+    }
+    static_cast<void>(renderServicesView(m_Publication.get(), m_Model->capabilities(), m_ViewState, m_Actions.get()));
+    m_Actions->renderConfirmation();
 }
 
 } // namespace App
