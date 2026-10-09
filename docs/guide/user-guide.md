@@ -250,6 +250,17 @@ The **Services** tab lists the system's services, read-only (starting, stopping 
 - **Windows:** read from the Service Control Manager without administrator rights. A service whose configuration Windows won't show to your account leaves those columns blank. If the Service Control Manager itself can't be opened, the tab says so (for example "Access to the Service Control Manager was denied") instead of showing an empty list. If a later read fails, the last list read stays on screen under an "Out of date: <reason>" line until a read succeeds again; if no read has ever succeeded, the tab shows "Couldn't read the services" with the reason.
 - **Linux:** not available yet ("Services aren't available on this platform yet"); systemd support is planned.
 
+### Startup Apps
+
+The **Startup** tab lists the programs Windows starts when you sign in, read-only (enabling and disabling them is planned, #801):
+
+- **Columns:** **Name**, **Publisher** (the company named in the program's version information), **Enabled** ("Enabled", or "Disabled since" the date it was disabled in Task Manager or Settings), **Scope** (Current user, or All users), **Location** (the Run or RunOnce registry key, including the 32-bit `WOW6432Node` view, or the user's or all-users Startup folder) and **Command** (the command line it runs; for a Startup folder shortcut, its target and arguments).
+- An entry whose program no longer exists is shown in the warning colour; hover it to see the command and the missing program's path. A Startup folder shortcut whose target can't be read shows its shortcut path with "(target unresolved)".
+- Click a column header to sort by it; click again to reverse. Type in the filter box to show only entries whose name, publisher or command contains the text (case doesn't matter).
+- The list is read only while the tab is shown, when you open it and then every 5 seconds, in the background. No administrator rights are needed.
+- Scheduled tasks that run at sign-in, and services, are not listed here.
+- **Linux:** not available yet ("Startup apps aren't available on this platform yet"); XDG autostart support is planned.
+
 ### Process Actions
 
 Right-click any process row for Terminate, Kill, Stop and Resume. The **Actions** block of Process Details' **Overview** tab has those too, plus the priority controls; the row menu of a multi-selection can also set one priority for all the selected processes (see below):
@@ -342,6 +353,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
 | Services tab (read-only) | ❌ (planned: systemd) | ✅ (Service Control Manager; no administrator needed) |
+| Startup apps tab (read-only) | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders, enabled state from StartupApproved; no administrator needed) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |

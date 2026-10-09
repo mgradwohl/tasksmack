@@ -56,8 +56,10 @@ namespace
 constexpr const char* PROCESSES_TAB_TEXT = "Processes";
 constexpr const char* PROCESSES_TAB_LABEL = ICON_FA_LIST "  Processes###ProcessesTab";
 static_assert(TabLabel::idPart(PROCESSES_TAB_LABEL) == TabLabel::PROCESSES_TAB_ID);
-constexpr const char* SERVICES_TAB_TEXT = "Services";                                // #800
-constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab"; // #800
+constexpr const char* SERVICES_TAB_TEXT = "Services";                                 // #800
+constexpr const char* SERVICES_TAB_LABEL = ICON_FA_GEARS "  Services###ServicesTab";  // #800
+constexpr const char* STARTUP_TAB_TEXT = "Startup";                                   // #801
+constexpr const char* STARTUP_TAB_LABEL = ICON_FA_POWER_OFF "  Startup###StartupTab"; // #801
 
 // The status bar's Settings/About buttons (native decorations only), named once: their widths are
 // measured before they are drawn, so the text beside them can make room (#1200).
@@ -91,7 +93,11 @@ ShellLayer::ShellLayer()
               {.panel = m_ServicesPanel,
                .eventName = "Services",
                .label = [] { return SERVICES_TAB_LABEL; },
-               .text = [] { return std::string_view(SERVICES_TAB_TEXT); }}})
+               .text = [] { return std::string_view(SERVICES_TAB_TEXT); }},
+              {.panel = m_StartupPanel,
+               .eventName = "Startup",
+               .label = [] { return STARTUP_TAB_LABEL; },
+               .text = [] { return std::string_view(STARTUP_TAB_TEXT); }}})
 {}
 
 void ShellLayer::onAttach()

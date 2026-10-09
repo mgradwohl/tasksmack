@@ -156,6 +156,8 @@ set(TASKSMACK_SOURCES
     src/App/Panels/GpuSection.cpp
     src/App/Panels/ServicesPanel.cpp
     src/App/Panels/ServicesView.cpp
+    src/App/Panels/StartupPanel.cpp
+    src/App/Panels/StartupView.cpp
     src/Domain/ProcessModel.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
