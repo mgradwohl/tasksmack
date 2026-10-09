@@ -1020,5 +1020,33 @@ TEST_F(SystemSectionsRenderTest, NetworkSectionsAreCardsThatFillTheTab)
     ASSERT_NE(tab, nullptr);
     EXPECT_LE(tab->ScrollMax.y, 0.0F) << "the cards overflow the tab";
 }
+
+// With no disk data, the disk section's message below the network chart is a band of fixed height,
+// so the chart settles at its fill height within two frames instead of creeping to it (#1620).
+TEST_F(SystemSectionsRenderTest, NetworkChartSettlesWhenDiskDataIsUnavailable)
+{
+    NetworkInputs inputs; // No storage publication
+    UI::Widgets::PlotFillState fillState;
+    inputs.ctx.fillState = &fillState;
+    const auto plotHeight = []
+    {
+        const ImPlotPlot* plot = ImPlot::GetCurrentContext()->Plots.GetByIndex(0);
+        return (plot != nullptr) ? plot->FrameRect.GetHeight() : 0.0F;
+    };
+    for (int frame = 0; frame < 3; ++frame) // Unmeasured, measured, settled
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    }
+    const float settled = plotHeight();
+    ASSERT_GT(settled, 0.0F);
+    for (int frame = 0; frame < 6; ++frame)
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+        EXPECT_FLOAT_EQ(plotHeight(), settled) << "frame " << frame;
+    }
+    const ImGuiWindow* tab = ImGui::FindWindowByName("System");
+    ASSERT_NE(tab, nullptr);
+    EXPECT_LE(tab->ScrollMax.y, 0.0F);
+}
 } // namespace
 } // namespace App
