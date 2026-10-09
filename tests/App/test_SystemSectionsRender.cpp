@@ -960,5 +960,65 @@ TEST_F(SystemSectionsRenderTest, NetworkTabSharesItsHeightWithTheDiskGrid)
     ASSERT_NE(grid, std::string::npos) << text;
     EXPECT_LT(network, grid);
 }
+
+// The child window drawn for the card @p id (an ImGui child is named "<parent>/<id>_<hash>").
+[[nodiscard]] const ImGuiWindow* findCard(const std::string& id)
+{
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    for (const ImGuiWindow* window : g.Windows)
+    {
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string(window->Name).find("/" + id + "_") != std::string::npos)
+        {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+// Network Throughput (the selector, heading and chart) and Interface Status are cards (#1587), the
+// chart inside the first; the throughput card settles at one height rather than cycling with the
+// fill layout (#1617), and the two fill the tab without overflowing it.
+TEST_F(SystemSectionsRenderTest, NetworkSectionsAreCardsThatFillTheTab)
+{
+    NetworkInputs inputs;
+    // One disk, as on most machines: its chart shares the tab's height with the network chart. (With
+    // no storage publication at all, the disk section's empty state takes whatever height is left,
+    // which the fill layout only approaches over several frames.)
+    Domain::StoragePublication storage;
+    storage.timestamps = viewOf(timestampsToNow());
+    storage.totalReadHistory = viewOf(constant(1.0));
+    storage.totalWriteHistory = viewOf(constant(1.0));
+    inputs.ctx.storagePublication = &storage;
+    UI::Widgets::PlotFillState fillState;
+    inputs.ctx.fillState = &fillState;
+    for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    }
+
+    const ImGuiWindow* throughput = findCard("##NetThroughputCard");
+    const ImGuiWindow* status = findCard("##InterfaceStatusCard");
+    ASSERT_NE(throughput, nullptr);
+    ASSERT_NE(status, nullptr);
+    EXPECT_NE(throughput->ChildFlags & ImGuiChildFlags_Borders, 0);
+    EXPECT_NE(status->ChildFlags & ImGuiChildFlags_Borders, 0);
+    EXPECT_GE(status->Pos.y, throughput->Pos.y + throughput->Size.y); // Below it, not overlapping
+
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    ASSERT_EQ(context.Plots.GetBufSize(), 2); // Network, then the disk chart
+    const ImPlotPlot* plot = context.Plots.GetByIndex(0);
+    ASSERT_NE(plot, nullptr);
+    EXPECT_TRUE(throughput->Rect().Contains(plot->FrameRect)) << "the chart is drawn outside its card";
+
+    const float settledHeight = throughput->Size.y;
+    for (int frame = 0; frame < 12; ++frame)
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+        EXPECT_FLOAT_EQ(throughput->Size.y, settledHeight) << "frame " << frame;
+    }
+    const ImGuiWindow* tab = ImGui::FindWindowByName("System");
+    ASSERT_NE(tab, nullptr);
+    EXPECT_LE(tab->ScrollMax.y, 0.0F) << "the cards overflow the tab";
+}
 } // namespace
 } // namespace App
