@@ -15,7 +15,7 @@
 #include <algorithm>
 
 #ifdef _WIN32
-#include <string> // The current class's text, measured for the Windows Priority row
+#include <string_view> // The class names, measured for the Windows Priority row
 #endif
 
 namespace App::ProcessActionsBlock
@@ -32,8 +32,7 @@ namespace
         ImGui::CalcTextSize(label).x, ImGui::GetFontSize(), Detail::PRIORITY_APPLY_BUTTON_MIN_EM);
 }
 
-/// The priority rows ProcessPriorityView draws for @p capabilities: label, controls, Apply and, on
-/// Windows, the current class after it.
+/// The priority rows ProcessPriorityView draws for @p capabilities: label, controls and Apply.
 [[nodiscard]] float priorityRowsWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     const float emPx = ImGui::GetFontSize();
@@ -42,15 +41,20 @@ namespace
     if (capabilities.canSetPriority)
     {
 #ifdef _WIN32
-        // Priority [class combo] [Apply] current: <class>, the class at its longest.
-        float widestCurrent = 0.0F;
-        for (const Detail::WindowsPriorityClass priorityClass : Detail::SETTABLE_WINDOWS_PRIORITY_CLASSES)
+        // "Priority current: <class>" (the class at its longest), over the class slider at the narrowest
+        // that shows all five stop names (#1538), and Apply under it.
+        const auto nameWidth = [](std::string_view name)
         {
-            const std::string current = "current: " + std::string(Detail::windowsPriorityClassName(priorityClass));
-            widestCurrent = std::max(widestCurrent, ImGui::CalcTextSize(current.c_str()).x);
+            return ImGui::CalcTextSize(name.data(), name.data() + name.size()).x;
+        };
+        float widestClass = nameWidth(Detail::WINDOWS_REALTIME_STOP.name);
+        for (const Detail::PrioritySliderStop& stop : Detail::WINDOWS_PRIORITY_STOPS)
+        {
+            widestClass = std::max(widestClass, nameWidth(stop.name));
         }
-        width = ImGui::CalcTextSize("Priority").x + spacing + (Detail::PRIORITY_CLASS_COMBO_WIDTH_EM * emPx) + spacing +
-                applyButtonWidth(ICON_FA_CHECK "  Apply") + spacing + widestCurrent;
+        width = std::max({ImGui::CalcTextSize("Priority").x + spacing + ImGui::CalcTextSize("current:").x + spacing + widestClass,
+                          Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER),
+                          applyButtonWidth(ICON_FA_CHECK "  Apply")});
 #else
         // The gradient slider row, which fits itself to the width it is given.
         width = ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx;
