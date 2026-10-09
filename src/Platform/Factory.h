@@ -11,6 +11,7 @@
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -35,6 +36,9 @@ namespace Platform
 /// Creates the platform-appropriate IStartupProbe implementation (#801). Linux returns an
 /// UnsupportedStartupProbe (capabilities().canEnumerate false) until XDG autostart support lands.
 [[nodiscard]] std::unique_ptr<IStartupProbe> makeStartupProbe();
+
+/// Creates the platform-appropriate ISystemInfoProbe, the System Information page's static facts (#1399).
+[[nodiscard]] std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe();
 
 /// Creates the platform-appropriate ISystemProbe implementation.
 [[nodiscard]] std::unique_ptr<ISystemProbe> makeSystemProbe();

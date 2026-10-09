@@ -272,6 +272,20 @@ The **Startup** tab lists the programs Windows starts when you sign in, read-onl
 - Scheduled tasks that run at sign-in, and services, are not listed here.
 - **Linux:** not available yet ("Startup apps aren't available on this platform yet"); XDG autostart support is planned.
 
+### System Information
+
+The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (firmware, memory modules, disks, adapters, GPUs and displays, security) are planned.
+
+- **Operating system:**
+  - **Windows:** edition and version (for example "Windows 11 Home", "25H2"), build with its update revision, architecture, install date, boot time and uptime, computer name, workgroup or domain, user, locale, time zone with its current UTC offset, and the system and Windows directories.
+  - **Linux:** distribution and version (`/etc/os-release`), kernel and architecture, init system, desktop and session type (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`), boot time and uptime, host name, user, locale, time zone, and whether TaskSmack is running in a container or a virtual machine.
+- **Read once:** the facts are read in the background the first time you open the tab, never while sampling. **Refresh** reads them again; the uptime is as of that read ("Read at" beside the button).
+- **Unavailable values** show a muted "—"; hover it for the reason.
+- **Identifiers hidden:** the user name, the computer name and a domain name are hidden until you tick **Show identifiers**, and are left out of copies until then.
+- **Filter:** type to show only rows whose label or value contains the text, or every row of a section whose title does (case doesn't matter).
+- **Copy:** each section's **Copy** button, or **Copy all**, puts the section(s) on the clipboard as plain `Label: Value` lines, ready for a bug report. Copies include every row (not just the filtered ones), less hidden identifiers.
+- No administrator rights or network access are needed.
+
 ### Process Actions
 
 Right-click any process row for Terminate, Kill, Stop and Resume. The **Actions** block of Process Details' **Overview** tab has those too, plus the priority controls; the row menu of a multi-selection can also set one priority for all the selected processes (see below):
@@ -364,6 +378,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
 | Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
+| System Information: Operating system section | ✅ (os-release, uname, `/proc`, XDG session, container/VM hints) | ✅ (CurrentVersion registry key, session APIs) |
 | Startup apps tab (read-only) | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders, enabled state from StartupApproved; no administrator needed) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |

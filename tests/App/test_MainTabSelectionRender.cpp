@@ -114,7 +114,7 @@ class MainTabSelectionRenderTest : public ::testing::Test
 TEST_F(MainTabSelectionRenderTest, SelectsTheRequestedIdWhenTheBarDrawsTabsInAnotherOrder)
 {
     const std::vector<DrawnTab> drawn{SYSTEM, PROCESSES, DETAILS, EXTRA, SERVICES, STARTUP};
-    for (const char* name : {"startup", "services", "Processes", "details", "system"})
+    for (const char* name : {"startup", "services", "Processes", "details", "machine"})
     {
         SCOPED_TRACE(name);
         const auto choice = resolveMainTab(name, registered());

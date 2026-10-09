@@ -266,6 +266,7 @@ const std::vector<App::SelectOverride::TabInfo>& registeredTabs()
         {.id = "Processes", .text = "Processes"},
         {.id = "ProcessDetails", .text = "explorer.exe"},
         {.id = "Services", .text = "Services"},
+        {.id = "SystemInfo", .text = "System"},
     };
     return tabs;
 }
@@ -274,8 +275,9 @@ TEST(SelectOverrideTest, FindsTopLevelTabsByIdOrTextIgnoringCase)
 {
     using App::SelectOverride::findTab;
     const auto& tabs = registeredTabs();
-    EXPECT_EQ(findTab("system", tabs), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("system", tabs), std::optional<std::size_t>{4}); // the System Information tab's text (#1399)
     EXPECT_EQ(findTab("Machine", tabs), std::optional<std::size_t>{0});
+    EXPECT_EQ(findTab("overview", tabs), std::optional<std::size_t>{0});
     EXPECT_EQ(findTab("myhost", tabs), std::optional<std::size_t>{0});
     EXPECT_EQ(findTab(" PROCESSES ", tabs), std::optional<std::size_t>{1});
     EXPECT_EQ(findTab("details", tabs), std::optional<std::size_t>{2});
@@ -294,7 +296,7 @@ TEST(SelectOverrideTest, ExactIdsWinAndThereIsNoPrefixOrSuffixMatching)
         {.id = "ProcessDetails", .text = "explorer.exe"},
     };
     EXPECT_EQ(findTab("overview", tabs), std::optional<std::size_t>{1}); // not SystemOverview's suffix
-    EXPECT_EQ(findTab("system", tabs), std::optional<std::size_t>{0});   // a documented alias
+    EXPECT_EQ(findTab("machine", tabs), std::optional<std::size_t>{0});  // a documented alias
     EXPECT_FALSE(findTab("process", tabs).has_value());
     EXPECT_FALSE(findTab("systemover", tabs).has_value());
     EXPECT_FALSE(findTab("view", tabs).has_value());

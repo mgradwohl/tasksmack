@@ -366,6 +366,31 @@ cadence and the target. `Platform::IProcessConnectionsReader` (the Connections s
 `TestMocks::MockProcessConnectionsReader` on the same terms (`setResult(...)`,
 `setHasConnections(...)`, `readCount()`, `lastTarget()`).
 
+### Adding a System Information section
+
+The System tab (#1399) is a list of sections, each `{title, icon, rows}` with rows
+`{label, value, unavailableReason, isIdentifier}` (`src/App/Panels/SystemInfoSections.h`). The
+Operating system section (#1512) is the pattern to follow:
+
+1. **Platform:** a raw struct of the section's facts in `src/Platform/ISystemInfoProbe.h` and a
+   `read<Section>()` method on `ISystemInfoProbe` (and its unsupported stub), implemented in
+   `WindowsSystemInfoProbe` and `LinuxSystemInfoProbe`. Leave a fact it can't read empty or 0; no
+   labels or formatting here. Put the parsing in pure helpers with fixture tests: a
+   `*Math.h` under `Platform/Windows` (tests in `tests/Platform/WindowsMath`), or a standard-library-only
+   Linux header that reads under an injected root, like `Platform/Linux/LinuxOsInfo.h`.
+2. **Domain:** a member of `SystemInfoSnapshot`, filled in `SystemInfoModel::read()`. Reads happen
+   once on a worker thread when the tab first shows, and on Refresh: never per tick or per frame.
+3. **App:** a `build<Section>Section()` in `SystemInfoSections.cpp` turning the facts into rows, and
+   one line in `buildSystemInfoSections()`. Give an empty value an `unavailableReason` (it shows as a
+   muted "—" with that tooltip and is copied as "unavailable (reason)"), and mark anything that names
+   the user, the machine or the organisation (serial numbers, MAC addresses, UUIDs, product IDs)
+   `isIdentifier`, so it stays hidden and out of Copy until "Show identifiers" is ticked. The filter,
+   Copy and layout then work with no further code.
+4. **Tests:** the parsers; the section's rows (`tests/App/test_SystemInfoView.cpp`), including
+   which rows are identifiers; a smoke test of the real probe on its platform.
+5. **Docs:** the section's bullet under "System Information" in `docs/guide/user-guide.md`, and a
+   Platform Differences row.
+
 ### Testing App/UI code that needs a live ImGui context
 
 Shell tab registration and lifecycle forwarding live in the header-only `App/PanelTabs.h`.
@@ -519,7 +544,7 @@ cover the capture. Unset, the variables do nothing.
 | `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
 | `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
-| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
+| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `machine`/`overview` (the hostname tab) and `details`. `system` is the System Information tab's label. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
 | `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
 
