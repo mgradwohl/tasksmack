@@ -1,7 +1,7 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
 /// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
-/// rows (#1517), the Security rows (#1514), the filter,
+/// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
 /// filter narrowing and the identifier toggle.
 
@@ -542,6 +542,59 @@ TEST(SystemInfoSectionsTest, VulnerabilityNamesAndSummary)
     const std::vector<Platform::CpuVulnerability> odd{{.name = "x", .status = "Unknown: no microcode"},
                                                       {.name = "y", .status = "Not affected"}};
     EXPECT_EQ(SystemInfo::formatVulnerabilitySummary(odd), "1 not affected, 1 unknown");
+}
+
+TEST(SystemInfoSectionsTest, SensorRows)
+{
+    using Platform::SensorKind;
+    using Platform::SensorReading;
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Temperature, .label = "t", .value = 52.0, .high = 100.0, .critical = 105.0}),
+        "52.0 \u00B0C (high 100.0 \u00B0C, critical 105.0 \u00B0C)");
+    EXPECT_EQ(SystemInfo::formatSensorReading(
+                  {.kind = SensorKind::Temperature, .label = "t", .value = 38.86, .high = std::nullopt, .critical = 85.0}),
+              "38.9 \u00B0C (critical 85.0 \u00B0C)");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Fan, .label = "f", .value = 1180.0, .high = {}, .critical = {}}),
+              "1180 RPM");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Voltage, .label = "v", .value = 12.18, .high = {}, .critical = {}}),
+              "12.18 V");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Current, .label = "c", .value = 1.2, .high = {}, .critical = {}}),
+              "1.20 A");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Power, .label = "p", .value = 15.24, .high = {}, .critical = {}}),
+              "15.2 W");
+
+    Platform::SensorsInfo sensors;
+    sensors.available = true;
+    sensors.listed = true;
+    sensors.devices = {
+        {.name = "coretemp",
+         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Package id 0", .value = 52.0, .high = {}, .critical = {}}}},
+        {.name = "nvme #2",
+         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Composite", .value = 41.0, .high = {}, .critical = {}}}},
+    };
+    const Section section = SystemInfo::buildSensorsSection(sensors);
+    EXPECT_EQ(section.title, "Sensors");
+    ASSERT_EQ(section.rows.size(), 2U);
+    EXPECT_EQ(section.rows[0].label, "coretemp: Package id 0");
+    EXPECT_EQ(section.rows[0].value, "52.0 \u00B0C");
+    EXPECT_EQ(section.rows[1].label, "nvme #2: Composite");
+    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; }));
+}
+
+TEST(SystemInfoSectionsTest, NoSensorsIsOneMutedRow)
+{
+    Platform::SensorsInfo none;
+    none.available = true;
+    none.listed = true;
+    const Section empty = SystemInfo::buildSensorsSection(none);
+    ASSERT_EQ(empty.rows.size(), 1U);
+    EXPECT_FALSE(empty.rows[0].available());
+    EXPECT_TRUE(empty.rows[0].unavailableReason.contains("No hwmon sensors")) << empty.rows[0].unavailableReason;
+
+    none.listed = false;
+    const Section unread = SystemInfo::buildSensorsSection(none);
+    ASSERT_EQ(unread.rows.size(), 1U);
+    EXPECT_TRUE(unread.rows[0].unavailableReason.contains("couldn't be read")) << unread.rows[0].unavailableReason;
 }
 
 TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)

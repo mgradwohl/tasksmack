@@ -79,6 +79,14 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::SensorsInfo readSensors() override
+    {
+        Platform::SensorsInfo info;
+        info.available = true;
+        info.listed = true;
+        return info;
+    }
+
   private:
     bool m_HasOs;
     int* m_Reads;
@@ -105,6 +113,7 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     ASSERT_EQ(first->storage.disks.size(), 1U);
     EXPECT_EQ(first->storage.disks[0].name, "Disk 0");
     EXPECT_EQ(first->security.secureBoot, Platform::SecurityFeatureState::On);
+    EXPECT_TRUE(first->sensors.listed);
     EXPECT_GT(first->readAtUnixSeconds, 0U);
 
     model.read(); // Refresh
@@ -126,6 +135,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->paging.available);
     EXPECT_FALSE(model.snapshot()->storage.available);
     EXPECT_FALSE(model.snapshot()->security.available);
+    EXPECT_FALSE(model.snapshot()->sensors.available);
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);

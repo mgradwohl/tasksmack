@@ -25,6 +25,12 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     {
         return {};
     }
+    /// Not read yet: the thermal zone counters (PDH "\Thermal Zone Information(*)\Temperature") are the
+    /// Windows lane's follow-up to #1522, so the section is left out on Windows.
+    [[nodiscard]] SensorsInfo readSensors() override
+    {
+        return {};
+    }
 };
 
 } // namespace Platform
