@@ -1,6 +1,7 @@
 #include "CpuCoresSection.h"
 
 #include "App/Panels/CpuCoreGridIds.h"
+#include "App/Panels/CpuCoreKinds.h"
 #include "App/Panels/CpuSummaryText.h"
 #include "Domain/SharedHistory.h"
 #include "Domain/SystemSnapshot.h"
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <limits>
 #include <optional>
@@ -67,6 +69,41 @@ using UI::Widgets::tailAlignedSpan;
 /// reference em (32/3 px), the fixed width it replaces, so the width floor is unchanged at the
 /// reference configuration. Below this the X-axis labels run into each other.
 constexpr float MIN_CELL_WIDTH_EM = 22.5F;
+
+/// The glyph in front of a core's name on a hybrid CPU (#1536): a bolt for a P-core, a leaf for an
+/// E-core, and the leaf with "LP" for a low-power E-core, so it differs from an E-core by more than
+/// its dimmer colour. Font Awesome glyphs merged into the body font, not emoji.
+[[nodiscard]] constexpr const char* coreKindMarker(const CoreKind kind) noexcept
+{
+    switch (kind)
+    {
+    case CoreKind::Performance:
+        return ICON_FA_BOLT;
+    case CoreKind::Efficiency:
+        return ICON_FA_LEAF;
+    case CoreKind::LowPower:
+        return ICON_FA_LEAF "LP";
+    case CoreKind::None:
+        break;
+    }
+    return "";
+}
+
+/// The marker's theme colour (UI::ColorScheme::corePerformance and its siblings).
+[[nodiscard]] ImVec4 coreKindColor(const CoreKind kind, const UI::ColorScheme& scheme) noexcept
+{
+    switch (kind)
+    {
+    case CoreKind::Performance:
+        return scheme.corePerformance;
+    case CoreKind::Efficiency:
+        return scheme.coreEfficiency;
+    case CoreKind::LowPower:
+    case CoreKind::None:
+        break;
+    }
+    return scheme.coreLowPower;
+}
 
 } // namespace
 
@@ -141,6 +178,17 @@ void renderCpuCoresSection(RenderContext& ctx)
             coreNames.push_back(std::format("Core {}", coreId));
         }
         namedCoreIds = gridCoreIds;
+    }
+
+    // Each core's P/E marker on a hybrid CPU (#1536), indexed by core id, re-derived only when the
+    // probe's efficiency classes change (cached facts, re-read on hotplug), not every frame. Empty on
+    // a CPU with one kind of core: no marker anywhere. UI thread only.
+    static std::vector<CoreKind> coreKinds;
+    static std::vector<std::uint8_t> kindsFromClasses;
+    if (kindsFromClasses != snap.cpuDetails.efficiencyClassByCoreId)
+    {
+        kindsFromClasses = snap.cpuDetails.efficiencyClassByCoreId;
+        classifyCoreKinds(kindsFromClasses, coreKinds);
     }
 
     // Grid layout: fills the full available panel space (width and height), choosing a
@@ -237,10 +285,29 @@ void renderCpuCoresSection(RenderContext& ctx)
                 const std::string& coreLabel = coreName;
                 const float availableWidth = ImGui::GetContentRegionAvail().x;
                 const float valueGap = ImGui::GetStyle().ItemSpacing.x;
-                const float labelWidth = ImGui::CalcTextSize(coreLabel.c_str()).x + valueGap + ImGui::CalcTextSize(bar.valueText.c_str()).x;
+                const CoreKind kind = coreKindFor(coreKinds, coreIdx);
+                const char* const marker = coreKindMarker(kind);
+                const float markerWidth = (kind == CoreKind::None) ? 0.0F : ImGui::CalcTextSize(marker).x + valueGap;
+                const float labelWidth =
+                    markerWidth + ImGui::CalcTextSize(coreLabel.c_str()).x + valueGap + ImGui::CalcTextSize(bar.valueText.c_str()).x;
                 const float labelOffset = std::max(0.0F, (availableWidth - labelWidth) * 0.5F);
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + labelOffset);
-                ImGui::TextUnformatted(coreLabel.c_str());
+                if (kind != CoreKind::None)
+                {
+                    // The marker's words, on the marker and on the core's name (#1536).
+                    const char* const description = coreKindDescription(kind);
+                    ImGui::PushStyleColor(ImGuiCol_Text, coreKindColor(kind, theme.scheme()));
+                    ImGui::TextUnformatted(marker);
+                    ImGui::PopStyleColor();
+                    ImGui::SetItemTooltip("%s", description);
+                    ImGui::SameLine(0.0F, valueGap);
+                    ImGui::TextUnformatted(coreLabel.c_str());
+                    ImGui::SetItemTooltip("%s", description);
+                }
+                else
+                {
+                    ImGui::TextUnformatted(coreLabel.c_str());
+                }
                 ImGui::SameLine(0.0F, valueGap);
                 ImGui::TextUnformatted(bar.valueText.c_str());
                 ImGui::Spacing();

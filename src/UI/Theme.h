@@ -54,6 +54,12 @@ struct ColorScheme
     ImVec4 textSuccess;  // Success messages
     ImVec4 textInfo;     // Informational text
 
+    // CPU Cores markers on a hybrid CPU (#1536): the P-core bolt, the E-core leaf and the dimmer
+    // low-power E-core leaf (fallbacks: text_warning, text_success, text_muted).
+    ImVec4 corePerformance;
+    ImVec4 coreEfficiency;
+    ImVec4 coreLowPower;
+
     // Status colors for process states
     ImVec4 statusRunning;   // R - Running/Active (green)
     ImVec4 statusSleeping;  // S - Sleeping/Interruptible (gray/muted)
