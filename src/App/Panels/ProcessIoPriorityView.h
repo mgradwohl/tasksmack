@@ -1,8 +1,9 @@
 #pragma once
 
 // Process Details' I/O priority control (#803): the Linux ionice setting, drawn by ProcessPriorityView
-// under the nice control. A class combo (Default / Best-effort / Idle / Realtime), a level slider for the
-// classes that have levels, its own Apply button, and the process's current class and level.
+// under the nice control: one discrete slider through every class and level in bands -- Realtime 0..7 |
+// Best-effort 0..7 | Idle (#1540) -- with the never-set default drawn hollow at the level nice derives, a
+// "Reset to default" button, and its own Apply button.
 //
 // The safety model is ProcessPriorityView's, rule for rule: an edit records the process it was made for
 // (PID and start time); Apply is enabled only when the edit's and the live target's start times are
@@ -40,77 +41,7 @@ namespace Detail
 /// a change made outside TaskSmack (ionice) shows up.
 inline constexpr double IO_PRIORITY_REFRESH_SECONDS = 2.0;
 
-/// Width of the I/O class combo, in ems: room for its longest name, "Best-effort", plus the arrow.
-inline constexpr float IO_PRIORITY_CLASS_COMBO_WIDTH_EM = 9.0F;
-
-/// Width of the level slider, in ems.
-inline constexpr float IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM = 9.0F;
-
-/// How far the combo and the slider may shrink before the row gives up a line instead: two thirds of
-/// their authored widths (6 em each at the default sizes).
-inline constexpr float IO_PRIORITY_MIN_WIDTH_FRACTION = 2.0F / 3.0F;
-
-/// Where the I/O priority row's items go and how wide they are, for a panel @p available pixels wide.
-struct IoPriorityRowLayout
-{
-    float comboWidth = 0.0F;      ///< The class combo.
-    float sliderWidth = 0.0F;     ///< The level slider (0 when the class has none).
-    float applyWidth = 0.0F;      ///< The Apply button.
-    bool sliderOnNewLine = false; ///< The slider sits under the combo rather than beside it.
-    bool applyOnNewLine = false;  ///< Apply sits under the controls rather than after them.
-};
-
-/// The combo and the slider (when @p hasSlider) side by side, at their authored widths times @p scale.
-[[nodiscard]] constexpr float ioControlsWidth(float emPx, float spacing, bool hasSlider, float scale) noexcept
-{
-    const float combo = IO_PRIORITY_CLASS_COMBO_WIDTH_EM * emPx * scale;
-    return hasSlider ? combo + spacing + (IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * emPx * scale) : combo;
-}
-
-/// Lays out the I/O priority row so nothing is clipped: Process Details does not scroll horizontally.
-/// As the nice control does, Apply's width (@p applyNaturalWidth, capped to the panel) is reserved
-/// first; the combo and slider get what is left, at their authored widths when they fit, shrunk
-/// proportionally down to IO_PRIORITY_MIN_WIDTH_FRACTION when not. Narrower than that, Apply moves to
-/// its own line and the controls get the whole width, shrinking again; narrower still, the slider
-/// moves under the combo and each takes at most the panel's width. @p spacing is ImGui's item spacing.
-[[nodiscard]] constexpr IoPriorityRowLayout
-computeIoPriorityRowLayout(float available, float emPx, float spacing, float applyNaturalWidth, bool hasSlider) noexcept
-{
-    const float width = std::max(available, 1.0F);
-    IoPriorityRowLayout layout;
-    layout.applyWidth = std::min(applyNaturalWidth, width);
-
-    const float idealControls = ioControlsWidth(emPx, spacing, hasSlider, 1.0F);
-    const float minControls = ioControlsWidth(emPx, spacing, hasSlider, IO_PRIORITY_MIN_WIDTH_FRACTION);
-    const float gaps = hasSlider ? spacing : 0.0F;
-
-    // The room for the controls: beside Apply when they fit there at their minimum, else a line of their own.
-    float room = width - spacing - layout.applyWidth;
-    if (room < minControls)
-    {
-        layout.applyOnNewLine = true;
-        room = width;
-    }
-
-    float scale = 1.0F;
-    if (room < idealControls)
-    {
-        scale = (room - gaps) / (idealControls - gaps);
-    }
-    if (room < minControls)
-    {
-        // Too narrow for the two side by side even alone: stack them, each up to the panel's width.
-        layout.sliderOnNewLine = hasSlider;
-        layout.comboWidth = std::min(IO_PRIORITY_CLASS_COMBO_WIDTH_EM * emPx, width);
-        layout.sliderWidth = hasSlider ? std::min(IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * emPx, width) : 0.0F;
-        return layout;
-    }
-    layout.comboWidth = IO_PRIORITY_CLASS_COMBO_WIDTH_EM * emPx * scale;
-    layout.sliderWidth = hasSlider ? IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * emPx * scale : 0.0F;
-    return layout;
-}
-
-/// The classes the combo offers, in its order: the default first, the privileged one last.
+/// The classes the control can set: the default first, the privileged one last.
 inline constexpr std::array<Platform::IoPriorityClass, 4> SETTABLE_IO_PRIORITY_CLASSES = {
     Platform::IoPriorityClass::None,
     Platform::IoPriorityClass::BestEffort,
@@ -118,7 +49,7 @@ inline constexpr std::array<Platform::IoPriorityClass, 4> SETTABLE_IO_PRIORITY_C
     Platform::IoPriorityClass::Realtime,
 };
 
-/// The class's name in the combo.
+/// The class's name.
 [[nodiscard]] constexpr std::string_view ioPriorityClassName(Platform::IoPriorityClass ioClass) noexcept
 {
     switch (ioClass)
@@ -295,11 +226,14 @@ class ProcessIoPriorityView
 {
   public:
     /// Draws the control for @p target: reads its current I/O priority when due (refreshCurrent()),
-    /// then the header, the class combo, the level slider (Best-effort and Realtime) and Apply, which
-    /// sets the edit through @p actions. @p currentNice is the process's nice value from its latest
-    /// snapshot, used only to name the level a never-set class derives from it. The caller checks the
-    /// capability.
-    void render(Platform::IProcessActions* actions, std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
+    /// then the row label, one slider through every class and level (Detail::IO_PRIORITY_SLIDER, or
+    /// without Realtime unless @p realtimeSettable, #1540), "Reset to default" and Apply, which sets the
+    /// edit through @p actions. @p currentNice is the process's nice value from its latest snapshot: a
+    /// class never set shows at the Best-effort level it derives. The caller checks the capability.
+    void render(Platform::IProcessActions* actions,
+                std::optional<std::int32_t> currentNice,
+                const Platform::ProcessTarget& target,
+                bool realtimeSettable);
 
     /// A different process was selected: drop the edit, its target, the error line and the value read
     /// for the previous process.
@@ -498,11 +432,6 @@ class ProcessIoPriorityView
         return m_Current.has_value() && m_CurrentTarget.pid == liveTarget.pid &&
                m_CurrentTarget.startTimeTicks == liveTarget.startTimeTicks;
     }
-
-    /// Draws the class combo and, for a class with levels, the level slider, sized and placed by @p layout.
-    void renderControls(std::optional<std::int32_t> currentNice,
-                        const Platform::ProcessTarget& target,
-                        const Detail::IoPriorityRowLayout& layout);
 
     Platform::IoPriority m_Edit;
     bool m_Changed = false;
