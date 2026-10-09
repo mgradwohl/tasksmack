@@ -226,7 +226,7 @@ class EventTrackingLayer : public Core::Layer
 
     void onEvent(Core::Event& event) override
     {
-        receivedEventNames.push_back(event.getName());
+        receivedEventNames.emplace_back(event.getName());
         if (m_DispatchLog != nullptr)
         {
             m_DispatchLog->push_back(getName());
@@ -722,7 +722,7 @@ TEST(ApplicationTest, ConstructWithDefaultSpec)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_EQ(&Core::Application::get(), &app);
     }
     catch (const std::exception& e)
@@ -746,7 +746,7 @@ TEST(ApplicationTest, ConstructWithCustomSpec)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const auto& window = app.getWindow();
         EXPECT_EQ(window.getWidth(), 800);
@@ -770,7 +770,7 @@ TEST(ApplicationTest, SingletonInstanceIsAccessible)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_EQ(&Core::Application::get(), &app);
     }
     catch (const std::exception& e)
@@ -1070,6 +1070,89 @@ TEST(ApplicationTest, PushMultipleLayers)
     {
         FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
+}
+
+// =============================================================================
+// Headless Application Tests (#880): no display needed, so these always run
+// =============================================================================
+
+TEST(ApplicationHeadlessTest, ConstructsWithoutAWindow)
+{
+    Core::ApplicationSpecification spec;
+    spec.Name = "HeadlessTest";
+    spec.Headless = true;
+
+    const Core::Application app(spec);
+    EXPECT_EQ(&Core::Application::get(), &app);
+    EXPECT_FALSE(app.hasWindow());
+    EXPECT_THROW(static_cast<void>(app.getWindow()), std::logic_error);
+}
+
+TEST(ApplicationHeadlessTest, RunNeedsAWindow)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+
+    Core::Application app(spec);
+    EXPECT_THROW(app.run(), std::logic_error);
+}
+
+namespace
+{
+
+/// Counts what a headless application hands its layers (#880), into counters that outlive it.
+struct HeadlessLayerCounts
+{
+    int attached = 0;
+    int events = 0;
+    int detached = 0;
+};
+
+class HeadlessCountingLayer : public Core::Layer
+{
+  public:
+    explicit HeadlessCountingLayer(HeadlessLayerCounts& counts) : Layer("HeadlessCountingLayer"), m_Counts(counts)
+    {}
+
+    void onAttach() override
+    {
+        ++m_Counts.attached;
+    }
+
+    void onDetach() override
+    {
+        ++m_Counts.detached;
+    }
+
+    void onEvent(Core::Event& /*event*/) override
+    {
+        ++m_Counts.events;
+    }
+
+  private:
+    HeadlessLayerCounts& m_Counts;
+};
+
+} // namespace
+
+TEST(ApplicationHeadlessTest, LayersAttachReceiveEventsAndDetach)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    HeadlessLayerCounts counts;
+    {
+        Core::Application app(spec);
+        app.pushLayer<HeadlessCountingLayer>(counts);
+        EXPECT_EQ(counts.attached, 1);
+
+        Core::WindowCloseEvent event;
+        app.raiseEvent(event);
+        EXPECT_EQ(counts.events, 1);
+
+        app.detachAllLayers();
+        EXPECT_EQ(counts.detached, 1);
+    }
+    EXPECT_EQ(counts.detached, 1); // Not detached a second time by the destructor
 }
 
 // =============================================================================
@@ -2213,7 +2296,7 @@ TEST(ApplicationTest, GetTimeReturnsMonotonicValue)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const double time1 = Core::Application::getTime();
         const double time2 = Core::Application::getTime();
@@ -2239,7 +2322,7 @@ TEST(ApplicationTest, GetTimeIsConsistent)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const double time1 = Core::Application::getTime();
         const double time2 = Core::Application::getTime();
@@ -2271,7 +2354,7 @@ TEST(ApplicationTest, GetWindowReturnsValidWindow)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
 
         const auto& window = app.getWindow();
         EXPECT_EQ(window.getWidth(), 640);
@@ -2295,7 +2378,7 @@ TEST(ApplicationTest, IsInteractionRedrawActiveIsFalseBeforeAnyInteraction)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_FALSE(app.isInteractionRedrawActive());
     }
     catch (const std::exception& e)
@@ -2643,9 +2726,9 @@ TEST(ApplicationTest, SetInstanceMaintainsSingletonSemantics)
         Core::Application::setInstance(std::move(app));
 
         // Calling get() multiple times should always return the same instance
-        Core::Application& ref1 = Core::Application::get();
-        Core::Application& ref2 = Core::Application::get();
-        Core::Application& ref3 = Core::Application::get();
+        const Core::Application& ref1 = Core::Application::get();
+        const Core::Application& ref2 = Core::Application::get();
+        const Core::Application& ref3 = Core::Application::get();
 
         EXPECT_EQ(&ref1, &ref2);
         EXPECT_EQ(&ref2, &ref3);
@@ -2694,7 +2777,7 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     spec.Name = "FailureTest";
 
     // Construction must throw because SDL_Init will reject the invalid driver.
-    EXPECT_THROW({ Core::Application failedApp(spec); }, std::exception);
+    EXPECT_THROW({ const Core::Application failedApp(spec); }, std::exception);
 
     // After the failed construction the singleton must be cleared;
     // Application::get() must throw rather than returning a dangling reference.
@@ -2720,7 +2803,7 @@ TEST(ApplicationTest, FailedConstructionClearsSingletonAndAllowsRetry)
     // and the singleton must point at the new instance — no dangling state from above.
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         EXPECT_EQ(&Core::Application::get(), &app);
     }
     catch (const std::exception& e)
@@ -2799,7 +2882,7 @@ TEST(ApplicationTest, PathsReturnsValidPathService)
 
     try
     {
-        Core::Application app(spec);
+        const Core::Application app(spec);
         const Core::PathService& paths = app.paths();
 
         // Both dirs must be non-empty, absolute paths — the same guarantee PathService

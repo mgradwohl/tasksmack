@@ -381,6 +381,14 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
             m_Spec.Height = DEFAULT_HEIGHT;
         }
 
+        // A headless application (#880) stops here: no video subsystem, no window, no GL context.
+        // SDL's clock (getTime()) needs no initialization, and raiseEvent() needs only the layers.
+        if (m_Spec.Headless)
+        {
+            spdlog::info("Headless: no window is created");
+            return;
+        }
+
         // Initialize SDL video subsystem
 #ifndef _WIN32
         ensureXdgRuntimeDir();
@@ -484,6 +492,10 @@ void Application::detachAllLayers()
 
 void Application::run()
 {
+    if (!m_Window)
+    {
+        throw std::logic_error("Application::run() needs a window; a headless application is driven by its owner (#880)");
+    }
     m_Running = true;
     // The UI thread is whichever thread runs the loop. A no-op on Linux, where the main thread's
     // name is the process name (see Platform::setMainThreadName).
