@@ -49,6 +49,10 @@ seed_corpus fuzz_proc_maps tests/fuzz/corpus/fuzz_proc_maps/*
 build_fuzzer fuzz_commit_paging
 seed_corpus fuzz_commit_paging tests/fuzz/corpus/fuzz_commit_paging/*
 
+# The Storage parsers (#1517): header-only, seeded with a real-looking /proc/self/mountinfo and udev file.
+build_fuzzer fuzz_mountinfo
+seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
+
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
 # toml++ crash inputs (#1387, #1388, #1389) as regression seeds.

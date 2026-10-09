@@ -302,6 +302,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxSystemInfoProbe.h
         src/Platform/Linux/LinuxOsInfo.h
         src/Platform/Linux/LinuxCommitPaging.h
+        src/Platform/Linux/LinuxStorage.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
@@ -329,6 +330,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsOsInfoMath.h
         src/Platform/Windows/WindowsInstalledMemory.h
         src/Platform/Windows/WindowsCommitPaging.h
+        src/Platform/Windows/WindowsStorage.h
     )
 endif()
 

@@ -104,6 +104,28 @@ struct VisibleSection
 /// each swap device, zram, zswap and huge pages (Linux).
 [[nodiscard]] Section buildCommitPagingSection(const Platform::CommitPagingInfo& paging);
 
+/// One disk's value: "Samsung SSD 980 PRO 1TB, NVMe SSD, 932 GiB, firmware 5B2QGXA7, 41 °C", unknown
+/// parts left out.
+[[nodiscard]] std::string formatDisk(const Platform::PhysicalDisk& disk);
+
+/// An NVMe health log: "3% used, 100% spare left, 0 media errors", with "Critical warning (0x04), " in
+/// front when any warning bit is set.
+[[nodiscard]] std::string formatNvmeHealth(const Platform::NvmeHealth& health);
+
+/// One volume's value: "Windows, NTFS, 120 GiB free of 476 GiB (75% used)" / "ext4 on /dev/sda2, ...";
+/// a network one isn't sized ("nfs4 on server:/export, network, size not read"). A label that is an
+/// identifier is left out.
+[[nodiscard]] std::string formatVolume(const Platform::Volume& volume);
+
+/// Whether a volume label names someone: cloud drives label theirs with the account's e-mail address
+/// ("someone@example.com - Google Drive"), so a label with an '@' gets its own identifier row.
+[[nodiscard]] bool volumeLabelIsIdentifier(std::string_view label);
+
+/// The Storage section (#1517): one row per physical disk, its serial number (an identifier) and, where
+/// read, its health; then one row per volume, labelled by its mount point or "C: drive", plus an
+/// identifier row for a label that names someone.
+[[nodiscard]] Section buildStorageSection(const Platform::StorageInfo& storage);
+
 /// The page's sections, in display order. Empty before the first read.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot);
 
