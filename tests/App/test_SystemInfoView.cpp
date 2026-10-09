@@ -1,7 +1,7 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
-/// filter, identifier hiding, the Copy text and unavailable values; then the view headless: the
-/// unsupported and loading states, sections drawn, the filter narrowing and the identifier toggle.
+/// Firmware & board section's rows (#1513), the filter, identifier hiding, the Copy text and unavailable values; then the view headless:
+/// the unsupported and loading states, sections drawn, the filter narrowing and the identifier toggle.
 
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -48,7 +49,7 @@ using SystemInfo::Section;
 
 [[nodiscard]] Domain::SystemInfoSnapshot snapshot()
 {
-    return {.version = 3, .readAtUnixSeconds = 1'700'000'000 + 93'784, .os = windowsOs()};
+    return {.version = 3, .readAtUnixSeconds = 1'700'000'000 + 93'784, .os = windowsOs(), .firmware = {}};
 }
 
 [[nodiscard]] const Row* findRow(const Section& section, std::string_view label)
@@ -134,6 +135,86 @@ TEST(SystemInfoSectionsTest, CopyTextLeavesHiddenIdentifiersOut)
     const std::string shown = SystemInfo::sectionText(sections[0], true);
     EXPECT_TRUE(shown.contains("User: MATTS-PC\\matt\n"));
     EXPECT_TRUE(shown.contains("Computer name: MATTS-PC\n"));
+}
+
+[[nodiscard]] Platform::FirmwareInfo firmware()
+{
+    Platform::FirmwareInfo info;
+    info.available = true;
+    info.systemManufacturer = "Contoso";
+    info.systemModel = "Surface Pro";
+    info.systemSerial = "SN-123";
+    info.systemUuid = "00112233-4455-6677-8899-AABBCCDDEEFF";
+    info.biosVendor = "Contoso";
+    info.biosVersion = "1.2.3";
+    info.firmwareMode = Platform::FirmwareMode::Uefi;
+    info.smbiosVersion = "3.4";
+    info.boardSerial = "BSN-1";
+    info.chassisType = "Notebook";
+    info.platformRole = "Mobile";
+    return info; // no SKU, no embedded controller
+}
+
+TEST(SystemInfoSectionsTest, FirmwareSectionRows)
+{
+    const Section section = SystemInfo::buildFirmwareSection(firmware());
+    EXPECT_EQ(section.title, "Firmware & board");
+    EXPECT_EQ(findRow(section, "Manufacturer")->value, "Contoso");
+    EXPECT_EQ(findRow(section, "Firmware mode")->value, "UEFI");
+    EXPECT_EQ(findRow(section, "SMBIOS version")->value, "3.4");
+    EXPECT_EQ(findRow(section, "Chassis type")->value, "Notebook");
+    EXPECT_EQ(findRow(section, "Platform role")->value, "Mobile");
+    EXPECT_EQ(findRow(section, "Embedded controller"), nullptr); // only when there is one
+    EXPECT_FALSE(findRow(section, "SKU")->available());
+    EXPECT_EQ(findRow(section, "SKU")->unavailableReason, "Not reported by this system");
+
+    // Serials and the UUID are identifiers; nothing else is.
+    for (const Row& item : section.rows)
+    {
+        const bool identifier = item.label == "Serial number" || item.label == "UUID" || item.label == "Board serial number";
+        EXPECT_EQ(item.isIdentifier, identifier) << item.label;
+    }
+    const auto hidden = SystemInfo::visibleSections(std::span(&section, 1), "", false);
+    const auto shown = SystemInfo::visibleSections(std::span(&section, 1), "", true);
+    EXPECT_EQ(shown[0].rows.size(), hidden[0].rows.size() + 3);
+    EXPECT_FALSE(SystemInfo::sectionText(section, false).contains("SN-123"));
+    EXPECT_TRUE(SystemInfo::sectionText(section, true).contains("Serial number: SN-123\n"));
+
+    Platform::FirmwareInfo ec = firmware();
+    ec.embeddedControllerVersion = "1.23";
+    ec.firmwareMode = Platform::FirmwareMode::Legacy;
+    const Section withEc = SystemInfo::buildFirmwareSection(ec);
+    EXPECT_EQ(findRow(withEc, "Embedded controller")->value, "1.23");
+    EXPECT_EQ(findRow(withEc, "Firmware mode")->value, "Legacy BIOS");
+    EXPECT_FALSE(SystemInfo::buildFirmwareSection(Platform::FirmwareInfo{}).rows.empty());
+    EXPECT_FALSE(findRow(SystemInfo::buildFirmwareSection(Platform::FirmwareInfo{}), "Firmware mode")->available());
+}
+
+TEST(SystemInfoSectionsTest, FirmwareRootOnlyRowsSayWhy)
+{
+    Platform::FirmwareInfo rootOnly;
+    rootOnly.available = true;
+    rootOnly.identifiersNeedAdmin = true;
+    rootOnly.smbiosVersionNeedsAdmin = true;
+    const Section section = SystemInfo::buildFirmwareSection(rootOnly);
+    for (const std::string_view label : {"Serial number", "UUID", "Board serial number", "SMBIOS version"})
+    {
+        const Row* item = findRow(section, label);
+        ASSERT_NE(item, nullptr) << label;
+        EXPECT_FALSE(item->available());
+        EXPECT_TRUE(item->unavailableReason.contains("administrator")) << label;
+    }
+    EXPECT_FALSE(findRow(section, "Model")->unavailableReason.contains("administrator"));
+}
+
+TEST(SystemInfoSectionsTest, FirmwareSectionFollowsTheOsSection)
+{
+    Domain::SystemInfoSnapshot both = snapshot();
+    both.firmware = firmware();
+    const auto sections = SystemInfo::buildSystemInfoSections(both);
+    ASSERT_EQ(sections.size(), 2U);
+    EXPECT_EQ(sections[0].title, "Operating system");
+    EXPECT_EQ(sections[1].title, "Firmware & board");
 }
 
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)

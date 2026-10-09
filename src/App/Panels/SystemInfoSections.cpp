@@ -25,6 +25,7 @@ namespace
 {
 
 constexpr std::string_view NOT_REPORTED = "Not reported by this system";
+constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by root only)";
 
 [[nodiscard]] Row row(std::string label, std::string value, std::string_view reason = NOT_REPORTED, bool identifier = false)
 {
@@ -119,6 +120,52 @@ Section buildOsSection(const Platform::OsInfo& os, std::uint64_t readAtUnixSecon
     return section;
 }
 
+Section buildFirmwareSection(const Platform::FirmwareInfo& firmware)
+{
+    Section section{.title = "Firmware & board", .icon = ICON_FA_MICROCHIP, .rows = {}};
+    auto& rows = section.rows;
+    const std::string_view identifierReason = firmware.identifiersNeedAdmin ? NEEDS_ADMIN : NOT_REPORTED;
+    rows.push_back(row("Manufacturer", firmware.systemManufacturer));
+    rows.push_back(row("Model", firmware.systemModel));
+    rows.push_back(row("Version", firmware.systemVersion));
+    rows.push_back(row("SKU", firmware.systemSku));
+    rows.push_back(row("Family", firmware.systemFamily));
+    rows.push_back(row("Serial number", firmware.systemSerial, identifierReason, true));
+    rows.push_back(row("UUID", firmware.systemUuid, identifierReason, true));
+
+    rows.push_back(row("BIOS vendor", firmware.biosVendor));
+    rows.push_back(row("BIOS version", firmware.biosVersion));
+    rows.push_back(row("BIOS release date", firmware.biosReleaseDate));
+    const char* mode = "";
+    switch (firmware.firmwareMode)
+    {
+    case Platform::FirmwareMode::Uefi:
+        mode = "UEFI";
+        break;
+    case Platform::FirmwareMode::Legacy:
+        mode = "Legacy BIOS";
+        break;
+    case Platform::FirmwareMode::Unknown:
+        break;
+    }
+    rows.push_back(row("Firmware mode", mode));
+    rows.push_back(row("SMBIOS version", firmware.smbiosVersion, firmware.smbiosVersionNeedsAdmin ? NEEDS_ADMIN : NOT_REPORTED));
+    if (!firmware.embeddedControllerVersion.empty())
+    {
+        rows.push_back(row("Embedded controller", firmware.embeddedControllerVersion));
+    }
+
+    rows.push_back(row("Board manufacturer", firmware.boardManufacturer));
+    rows.push_back(row("Board product", firmware.boardProduct));
+    rows.push_back(row("Board version", firmware.boardVersion));
+    rows.push_back(row("Board serial number", firmware.boardSerial, identifierReason, true));
+
+    rows.push_back(row("Chassis type", firmware.chassisType));
+    rows.push_back(row("Chassis manufacturer", firmware.chassisManufacturer));
+    rows.push_back(row("Platform role", firmware.platformRole));
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
 {
     std::vector<Section> sections;
@@ -130,7 +177,11 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     {
         sections.push_back(buildOsSection(snapshot.os, snapshot.readAtUnixSeconds));
     }
-    // Further sections (#1513 and on) follow here, in the page's order.
+    if (snapshot.firmware.available)
+    {
+        sections.push_back(buildFirmwareSection(snapshot.firmware));
+    }
+    // Further sections (#1514 and on) follow here, in the page's order.
     return sections;
 }
 
