@@ -1,8 +1,8 @@
 #pragma once
 
 // The Processes table's "Set priority for N processes..." dialog (#1484): one priority, picked with the
-// same control as Process Details' (Detail::renderPriorityPicker(): the nice slider, or the Windows
-// priority-class combo), for every selected process. It only picks the value: Continue hands it to
+// same control as Process Details' (Detail::renderPriorityPicker(): the nice slider, or on Windows the
+// slider with a stop per priority class, #1538), for every selected process. It only picks the value: Continue hands it to
 // ProcessesPanel, which asks the batch confirmation (ProcessBatch::priorityConfirmBody()) and then
 // sets it on each process by identity (ProcessBatch::runBatchPriority()). Nothing here calls the
 // platform, so Cancel can change nothing.

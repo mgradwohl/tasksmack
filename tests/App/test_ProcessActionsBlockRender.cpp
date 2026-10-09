@@ -12,6 +12,10 @@
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
+#ifdef _WIN32
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h" // The Windows class slider: its ID and minimum width
+#endif
+
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // The block's child window, for its size, and the open modal
@@ -192,22 +196,55 @@ TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheBlockIsTheRowsHeightAndItsC
 }
 
 #ifdef _WIN32
-TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockIsTwoRowsAndFitsTheRowWithoutScrolling)
+TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockDrawsTheClassSliderWhole)
 {
-    // Windows' actions: [Terminate] [Kill], then Priority [class] [Apply] -- two framed rows, no
-    // separator or header of the priority control's own -- well inside the six-row Identity/Runtime
-    // row (Runtime always has its Type row on Windows).
+    // Windows' actions: [Terminate] [Kill], then the priority slider with a stop per class (#1538),
+    // not a combo. The block is measured wide enough for the slider's five stop names, and wrapped
+    // below the row it is shown whole: nothing to scroll either way.
     constexpr Platform::ProcessActionCapabilities WINDOWS_ACTIONS{
         .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = true};
     Harness h;
-    (void) renderBlock(h, WINDOWS_ACTIONS, 1900.0F, 776.0F, 6.0F);
-
+    const auto layout = renderBlock(h, WINDOWS_ACTIONS, 1000.0F, 776.0F, 0.0F);
+    ASSERT_FALSE(layout.besideInfo);
+    float priorityWidth = 0.0F;
+    float sliderMinWidth = 0.0F;
+    (void) runFrame(
+        [&]
+        {
+            priorityWidth = ProcessActionsBlock::measure(WINDOWS_ACTIONS).priority;
+            sliderMinWidth = Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER);
+        });
+    EXPECT_GE(priorityWidth, sliderMinWidth);
     const ImGuiWindow* block = blockWindow();
     ASSERT_NE(block, nullptr);
+    EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
     EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
-    EXPECT_LE(block->ContentSize.y, (2.0F * ImGui::GetFrameHeightWithSpacing()) + 1.0F);
-    // So the panel keeps it beside the row (computeActionsBlockLayout()'s height test).
-    EXPECT_LE(lastNeededHeight, rowChildHeight(6.0F));
+
+    // The slider is there, under its own ID, and its keys pick the next class down from Normal.
+    ImGuiWindow* blockForFocus = ImGui::FindWindowByID(block->ID);
+    const ImGuiID sliderId = ImHashStr(Detail::WINDOWS_PRIORITY_SLIDER_ID, 0, block->ID);
+    bool focus = true;
+    const auto body = [&]
+    {
+        if (focus)
+        {
+            ImGui::SetFocusID(sliderId, blockForFocus);
+            focus = false;
+        }
+        const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(WINDOWS_ACTIONS);
+        (void) ProcessActionsBlock::render(
+            h.context(WINDOWS_ACTIONS),
+            ProcessDetailsLayout::computeActionsBlockLayout(1000.0F, 776.0F, ImGui::GetStyle().ItemSpacing.x, widths.content()),
+            0.0F);
+    };
+    (void) runFrame(body);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, true);
+    (void) runFrame(body);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, false);
+    (void) runFrame(body);
+    EXPECT_EQ(h.priorityView.niceValue(), Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::BelowNormal));
+    EXPECT_TRUE(h.priorityView.hasPendingEdit());
+    EXPECT_EQ(h.mock.setPriorityCount(), 0);
 }
 #endif
 
