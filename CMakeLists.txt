@@ -376,6 +376,13 @@ endif()
 # clang-format only see real C++ sources.
 include(cmake/StaticAnalysis.cmake)
 
+# Everything but main(): compiled once, as an object library, and linked into TaskSmack and into the
+# headless PGO UI training driver (TaskSmackUiTraining, src/Training/, #880). Sharing the objects keeps
+# the driver from compiling the app a second time, and means the profile it records is for exactly
+# the code TaskSmack is built from.
+set(TASKSMACK_APP_SOURCES ${TASKSMACK_SOURCES})
+list(REMOVE_ITEM TASKSMACK_APP_SOURCES src/main.cpp)
+
 # Windows resource file (icon, version info, manifest). CMAKE_RC_COMPILER is guaranteed
 # to be set by this point on WIN32 -- the pre-project() block above fails configuration
 # outright if no RC compiler can be found.
@@ -400,7 +407,6 @@ if(WIN32)
 
     # Configure the RC file with version info
     configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_RC_OUT} @ONLY)
-    list(APPEND TASKSMACK_SOURCES ${TASKSMACK_RC_OUT})
     message(STATUS "Configured Windows resource file with version ${PROJECT_VERSION}")
 
     # Configure and use our custom manifest for DPI awareness and Windows compatibility
@@ -423,106 +429,122 @@ if(TASKSMACK_ENABLE_UNITY_BUILD)
     set(CMAKE_UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
-add_executable(TaskSmack WIN32
-    ${TASKSMACK_SOURCES}
-    ${TASKSMACK_HEADERS}
-)
+# The settings every target built from the app's sources shares: TaskSmackApp (the objects),
+# TaskSmack (main() and the Windows resources) and TaskSmackUiTraining (src/Training/, #880).
+function(tasksmack_configure_app_target target)
+    target_compile_features(${target} PRIVATE cxx_std_23)
 
-# Compile-time flamegraph tracing is limited to TaskSmack sources so FetchContent
-# dependencies do not emit unrelated traces or incur tracing overhead.
+    # Compile-time flamegraph tracing is limited to TaskSmack sources so FetchContent
+    # dependencies do not emit unrelated traces or incur tracing overhead.
+    if(TASKSMACK_ENABLE_TIME_TRACE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-ftime-trace>")
+    endif()
+
+    # Keep libc++, pthread, and the selected linker consistent across all
+    # TaskSmack-owned executables and configurations.
+    tasksmack_apply_linux_toolchain(${target})
+
+    tasksmack_apply_default_warnings(${target})
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(${target} PRIVATE
+            $<$<CONFIG:Debug>:-glldb>
+            $<$<CONFIG:RelWithDebInfo>:-glldb>
+        )
+    endif()
+
+    if(WIN32)
+        # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
+        # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
+        # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
+        target_compile_definitions(${target} PRIVATE
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+            _WIN32_WINNT=0x0A00
+            WINVER=0x0A00
+            NTDDI_VERSION=0x0A000000
+            # Make spdlog's filename_t std::wstring on Windows so the log path is opened as the
+            # native wide path. Without this spdlog uses std::string + _fsopen, so a %TEMP% path
+            # containing characters outside the active ANSI code page (a non-ASCII user name, say)
+            # fails or resolves to the wrong file -- and the app.manifest does not opt into
+            # activeCodePage=UTF-8, so narrow paths really do go through the ANSI code page.
+            # The same on every target built from the app's sources, so spdlog's templates agree
+            # across them; spdlog is consumed header-only (spdlog::spdlog_header_only), so there
+            # is no prebuilt library whose ABI could disagree.
+            SPDLOG_WCHAR_FILENAMES
+        )
+    endif()
+
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
+    )
+
+    # SYSTEM (not PRIVATE above): stb is third-party, and the FetchContent_Declare(SYSTEM)
+    # keyword only marks CMake's own view of the dependency, not this consuming include path -
+    # without this, its headers were reported as project code by warnings-as-errors, papered
+    # over by manual #pragma diagnostic guards at the one #include site (IconLoader.cpp) that
+    # would silently stop covering any future stb-touching file or warning class.
+    target_include_directories(${target} SYSTEM PRIVATE ${stb_SOURCE_DIR})
+
+    target_link_libraries(${target} PRIVATE
+        spdlog::spdlog_header_only
+        imgui_lib
+        implot_lib
+        tomlplusplus::tomlplusplus
+        OpenGL::GL
+    )
+
+    if(WIN32)
+        target_link_libraries(${target} PRIVATE
+            iphlpapi
+            ws2_32
+            dxgi
+            gdi32
+            cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
+            version
+            powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
+            setupapi # WindowsBatteryInfo: the battery devices (#1523)
+        )
+    elseif(UNIX AND NOT APPLE)
+        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525)
+        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus)
+    endif()
+endfunction()
+
 if(TASKSMACK_ENABLE_TIME_TRACE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_compile_options(TaskSmack PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-ftime-trace>")
         message(STATUS "Compile-time tracing enabled (-ftime-trace). Run tools/time-trace.sh after build.")
     else()
         message(WARNING "TASKSMACK_ENABLE_TIME_TRACE requires Clang. Ignoring on ${CMAKE_CXX_COMPILER_ID}.")
     endif()
 endif()
+
+# Everything but main(), compiled once (see TASKSMACK_APP_SOURCES above).
+add_library(TaskSmackApp OBJECT
+    ${TASKSMACK_APP_SOURCES}
+    ${TASKSMACK_HEADERS}
+)
+tasksmack_configure_app_target(TaskSmackApp)
+
+# Precompiled headers, for the app's sources; main.cpp, alone in TaskSmack, is not worth one.
+if(TASKSMACK_ENABLE_PCH)
+    include(cmake/PrecompiledHeaders.cmake)
+    target_precompile_headers(TaskSmackApp PRIVATE ${TASKSMACK_PCH_HEADERS})
+endif()
+
+add_executable(TaskSmack WIN32
+    src/main.cpp
+    ${TASKSMACK_RC_OUT} # Windows resources (icon, version info); unset elsewhere
+    $<TARGET_OBJECTS:TaskSmackApp>
+)
+tasksmack_configure_app_target(TaskSmack)
+
 # Embed custom manifest on Windows (for DPI awareness and OS compatibility)
 if(WIN32 AND EXISTS ${CMAKE_BINARY_DIR}/app.manifest)
     target_link_options(TaskSmack PRIVATE
         "LINKER:/MANIFESTINPUT:${CMAKE_BINARY_DIR}/app.manifest"
     )
-endif()
-
-target_compile_features(TaskSmack PRIVATE cxx_std_23)
-
-# Keep libc++, pthread, and the selected linker consistent across all
-# TaskSmack-owned executables and configurations.
-tasksmack_apply_linux_toolchain(TaskSmack)
-
-# Precompiled headers
-if(TASKSMACK_ENABLE_PCH)
-    include(cmake/PrecompiledHeaders.cmake)
-    target_precompile_headers(TaskSmack PRIVATE ${TASKSMACK_PCH_HEADERS})
-endif()
-
-tasksmack_apply_default_warnings(TaskSmack)
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(TaskSmack PRIVATE
-        $<$<CONFIG:Debug>:-glldb>
-        $<$<CONFIG:RelWithDebInfo>:-glldb>
-    )
-endif()
-
-if(WIN32)
-    # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
-    # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
-    # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
-    target_compile_definitions(TaskSmack PRIVATE
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
-        _WIN32_WINNT=0x0A00
-        WINVER=0x0A00
-        NTDDI_VERSION=0x0A000000
-        # Make spdlog's filename_t std::wstring on Windows so the log path is opened as the
-        # native wide path. Without this spdlog uses std::string + _fsopen, so a %TEMP% path
-        # containing characters outside the active ANSI code page (a non-ASCII user name, say)
-        # fails or resolves to the wrong file -- and the app.manifest does not opt into
-        # activeCodePage=UTF-8, so narrow paths really do go through the ANSI code page.
-        # PRIVATE is consistent here: filename_t is used only in src/main.cpp, which belongs to
-        # this target alone, and spdlog is consumed header-only (spdlog::spdlog_header_only) so
-        # there is no prebuilt library whose ABI could disagree.
-        SPDLOG_WCHAR_FILENAMES
-    )
-endif()
-
-target_include_directories(TaskSmack PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_BINARY_DIR}/generated
-)
-
-# SYSTEM (not PRIVATE above): stb is third-party, and the FetchContent_Declare(SYSTEM)
-# keyword only marks CMake's own view of the dependency, not this consuming include path -
-# without this, its headers were reported as project code by warnings-as-errors, papered
-# over by manual #pragma diagnostic guards at the one #include site (IconLoader.cpp) that
-# would silently stop covering any future stb-touching file or warning class.
-target_include_directories(TaskSmack SYSTEM PRIVATE ${stb_SOURCE_DIR})
-
-target_link_libraries(TaskSmack PRIVATE
-    spdlog::spdlog_header_only
-    imgui_lib
-    implot_lib
-    tomlplusplus::tomlplusplus
-    OpenGL::GL
-)
-
-if(WIN32)
-    set(TASKSMACK_WINDOWS_SYSTEM_LIBS
-        iphlpapi
-        ws2_32
-        dxgi
-        gdi32
-        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
-        version
-        powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
-        setupapi # WindowsBatteryInfo: the battery devices (#1523)
-    )
-
-    target_link_libraries(TaskSmack PRIVATE ${TASKSMACK_WINDOWS_SYSTEM_LIBS})
-elseif(UNIX AND NOT APPLE)
-    target_link_libraries(TaskSmack PRIVATE dl tasksmack_sdbus)
 endif()
 
 # For multi-config generators (e.g., Visual Studio, Ninja Multi-Config), include
@@ -558,6 +580,30 @@ add_custom_command(TARGET TaskSmack POST_BUILD
         "$<TARGET_FILE_DIR:TaskSmack>/assets/themes"
     COMMENT "Copying assets (fonts, themes) to build directory"
 )
+
+# The headless PGO UI training driver (#880): the real panels, on the app's own objects, rendered
+# for a fixed, weighted number of frames without a window. tools/pgo.sh and tools/pgo.ps1 run it
+# after the benchmarks; ctest runs it for a few frames as a smoke test (tests/CMakeLists.txt).
+if(TASKSMACK_BUILD_UI_TRAINING)
+    add_executable(TaskSmackUiTraining
+        src/Training/main.cpp
+        src/Training/UiTrainingDriver.cpp
+        src/Training/UiTrainingPlan.cpp
+        src/Training/UiTrainingDriver.h
+        src/Training/UiTrainingPlan.h
+        $<TARGET_OBJECTS:TaskSmackApp>
+    )
+    tasksmack_configure_app_target(TaskSmackUiTraining)
+    # Beside TaskSmack, whose POST_BUILD step copies the fonts and themes the driver loads.
+    add_dependencies(TaskSmackUiTraining TaskSmack)
+    get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    if(_is_multi_config)
+        set_target_properties(TaskSmackUiTraining PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>")
+    else()
+        set_target_properties(TaskSmackUiTraining PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    endif()
+    unset(_is_multi_config)
+endif()
 
 include(cmake/InstallRules.cmake)
 

@@ -29,10 +29,14 @@ class UILayer : public Core::Layer
     void onEvent(Core::Event& event) override;
     void onSDLEvent(SDL_Event* event) override;
 
+    /// Bakes every font size preset into the current ImGui context's atlas and registers them with
+    /// Theme. Needs only an ImGui context, not a window or renderer, so the headless PGO UI training
+    /// driver (#880, training/) loads the app's own fonts through it. @p fontFiles must outlive the atlas.
+    static void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale);
+
   private:
     void beginFrame();
     void endFrame();
-    static void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale);
     static void loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsDir, float displayScale);
     void rebuildForDisplayScaleChange();
 

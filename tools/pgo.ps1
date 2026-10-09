@@ -5,8 +5,20 @@
 #   pwsh tools/pgo.ps1 generate    # Phase 1 only: instrumented build + run to collect data
 #   pwsh tools/pgo.ps1 merge       # Phase 2 only: merge *.profraw → profiles/tasksmack.profdata
 #   pwsh tools/pgo.ps1 use         # Phase 3 only: build PGO-optimized binary
+#   pwsh tools/pgo.ps1 baseline    # The win-pgo-use build without profile data, to measure PGO against
 #
 # The resulting binary is at: build\win-pgo-use\bin\TaskSmack.exe
+#
+# Training (phase 1) runs two workloads on the instrumented build:
+#   1. the benchmark suite (TaskSmackBenchmarks), for the Domain/Platform hot paths;
+#   2. the headless UI training driver (TaskSmackUiTraining, #880): the real panels, every main tab,
+#      by the weights in src/Training/UiTrainingPlan.h, once on the real probes and once on the
+#      synthetic large-UI machine (#1413). No window, no input: it never takes a process action.
+#
+# PGO builds are not profiling builds. win-pgo-generate is instrumented (slow, counts branches) and
+# is only for collecting training data; for ETW/VTune use the win-profile preset (build\win-profile).
+# To measure what PGO alone buys, compare win-pgo-use with win-pgo-baseline: the same flags, no
+# profile data.
 #
 # Requirements:
 #   - LLVM/Clang 22 (LLVM_ROOT must point to your LLVM 22 install, see CONTRIBUTING.md)
@@ -28,6 +40,7 @@ $ProfrawPattern = Join-Path $ProfilesDir 'tasksmack-%p.profraw'
 $Profdata = Join-Path $ProfilesDir 'tasksmack.profdata'
 $BenchBin = Join-Path $Root 'build\win-pgo-generate\bin\TaskSmackBenchmarks.exe'
 $AppBin = Join-Path $Root 'build\win-pgo-generate\bin\TaskSmack.exe'
+$UiTrainingBin = Join-Path $Root 'build\win-pgo-generate\bin\TaskSmackUiTraining.exe'
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,7 +77,7 @@ function Invoke-Native {
 # ── phase 1: instrumented build and profiling run ─────────────────────────────
 
 function Invoke-Generate {
-    Write-Step 'Phase 1 – Instrumented build (win-pgo-generate preset)'
+    Write-Step 'Phase 1 – Instrumented PGO training build (win-pgo-generate preset; not a profiling build)'
 
     Invoke-Native cmake --preset win-pgo-generate -S $Root
     Invoke-Native cmake --build --preset win-pgo-generate
@@ -91,6 +104,20 @@ function Invoke-Generate {
     $env:LLVM_PROFILE_FILE = $ProfrawPattern
     try {
         Invoke-Native $BenchBin --benchmark_min_time=0.5
+
+        Write-Step 'Phase 1 – UI training: the real panels, headless (TaskSmackUiTraining, #880)'
+
+        if (-not (Test-Path $UiTrainingBin)) {
+            Write-Error "UI training binary not found: $UiTrainingBin"
+            exit 1
+        }
+
+        # Every main tab, by the weights in src/Training/UiTrainingPlan.h, for a fixed number of frames;
+        # once per probe set (TASKSMACK_SYNTHETIC is read once per process). Each run writes its own
+        # .profraw (%p) when it exits.
+        foreach ($probes in @('real', 'synthetic')) {
+            Invoke-Native $UiTrainingBin --probes $probes
+        }
     }
     finally {
         if ($null -eq $prevLlvmProfileFile) {
@@ -100,12 +127,12 @@ function Invoke-Generate {
         }
     }
 
+    # Interactive use adds to the automated training; it does not replace it.
     if (Test-Path $AppBin) {
         Write-Host ''
-        Write-Host 'Tip: You can run the main application to capture additional UI profile data:'
+        Write-Host "Optional: add an interactive session's profile before merging:"
         Write-Host "  `$env:LLVM_PROFILE_FILE = '$ProfrawPattern'"
         Write-Host "  & '$AppBin'"
-        Write-Host '  (Use it for a few seconds, then exit.)'
     }
 
     Write-Host ''
@@ -198,6 +225,19 @@ function Invoke-Use {
     }
 }
 
+# ── baseline: the win-pgo-use build without profile data ─────────────────────
+
+function Invoke-Baseline {
+    Write-Step 'Baseline – win-pgo-use flags without profile data (win-pgo-baseline preset)'
+
+    Invoke-Native cmake --preset win-pgo-baseline -S $Root
+    Invoke-Native cmake --build --preset win-pgo-baseline
+
+    Write-Host ''
+    Write-Host "Baseline binary: $(Join-Path $Root 'build\win-pgo-baseline\bin\TaskSmack.exe')"
+    Write-Host 'Compare it with build\win-pgo-use: the two differ only in the profile data.'
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 $cmd = if ($args.Count -gt 0) { $args[0] } else { 'all' }
@@ -206,6 +246,7 @@ switch ($cmd) {
     'generate' { Invoke-Generate }
     'merge'    { Invoke-Merge }
     'use'      { Invoke-Use }
+    'baseline' { Invoke-Baseline }
     'all' {
         # Validate llvm-profdata availability and version before starting the expensive
         # instrumented build so a missing or wrong-version tool fails fast.
@@ -219,11 +260,12 @@ switch ($cmd) {
         Write-Host "  Optimized binary    : build\win-pgo-use\bin\TaskSmack.exe"
     }
     default {
-        Write-Host 'Usage: pwsh tools/pgo.ps1 [generate|merge|use|all]'
-        Write-Host '  generate  – instrumented build + collect profile data'
+        Write-Host 'Usage: pwsh tools/pgo.ps1 [generate|merge|use|baseline|all]'
+        Write-Host '  generate  – instrumented build + collect profile data (benchmarks + headless UI training)'
         Write-Host '  merge     – merge *.profraw files into tasksmack.profdata'
         Write-Host '  use       – build PGO-optimized binary from tasksmack.profdata'
-        Write-Host '  all       – run all three phases in order (default)'
+        Write-Host "  baseline  – build win-pgo-use's flags without profile data, to compare against"
+        Write-Host '  all       – run generate, merge and use in order (default)'
         exit 1
     }
 }
