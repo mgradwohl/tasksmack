@@ -11,7 +11,9 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h> // SetFocusID(), ActivateItemByID(), ImHashStr(): the slider and Reset by ID
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -56,6 +58,34 @@ class ProcessIoPriorityViewRenderTest : public ::testing::Test
     }
 
     /// One frame of a window like the Process Details pane, running @p body inside it.
+    /// The I/O slider's ID in the window runFrame() draws into: under the view's "io_priority" scope.
+    [[nodiscard]] static ImGuiID ioSliderId()
+    {
+        const ImGuiID scope = ImHashStr("io_priority", 0, ImGui::GetCurrentWindow()->ID);
+        return ImHashStr(Detail::IO_PRIORITY_SLIDER_ID, 0, scope);
+    }
+
+    /// Focuses the I/O slider, then presses and releases @p key, drawing @p body each frame.
+    static void pressOnIoSlider(ImGuiKey key, const std::function<void()>& body)
+    {
+        bool focus = true;
+        const auto focused = [&]
+        {
+            if (focus)
+            {
+                ImGui::SetFocusID(ioSliderId(), ImGui::GetCurrentWindow());
+                focus = false;
+            }
+            body();
+        };
+        runFrame(focused);
+        runFrame(focused);
+        ImGui::GetIO().AddKeyEvent(key, true);
+        runFrame(focused);
+        ImGui::GetIO().AddKeyEvent(key, false);
+        runFrame(focused);
+    }
+
     static void runFrame(const std::function<void()>& body, float windowWidth = 1600.0F)
     {
         ImGui::NewFrame();
@@ -183,12 +213,32 @@ TEST_F(ProcessIoPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     EXPECT_TRUE(view.error().empty()); // The nice control's error line is its own
 }
 
+// As wide as its label, as the nice control's Apply and Terminate and Kill are (#1537): its old em
+// floor made it a wide muted bar while disabled.
+TEST_F(ProcessIoPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(BEST_EFFORT_4);
+    ProcessPriorityView view;
+    float applyWidth = 0.0F;
+    float labelWidth = 0.0F;
+    runFrame(
+        [&]
+        {
+            view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+            applyWidth = ImGui::GetItemRectSize().x; // The I/O Apply is the last item while no error line shows
+            labelWidth = ImGui::CalcTextSize("Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
+        });
+    EXPECT_GT(applyWidth, 0.0F);
+    EXPECT_LE(applyWidth, std::ceil(labelWidth));
+}
+
 TEST_F(ProcessIoPriorityViewRenderTest, ApplyStaysInsideANarrowPanel)
 {
     // Process Details does not scroll horizontally: at a narrow width the row shrinks, then wraps,
     // so Apply is never clipped off the right edge.
     TestMocks::MockProcessActions mock;
-    mock.setIoPriorityReadResult(BEST_EFFORT_4); // Best-effort: combo, slider and Apply on the row
+    mock.setIoPriorityReadResult(BEST_EFFORT_4); // Explicit Best-effort: the slider, then Reset to default and Apply
     ProcessPriorityView view;
     for (const float width : {420.0F, 300.0F, 160.0F})
     {
@@ -205,6 +255,78 @@ TEST_F(ProcessIoPriorityViewRenderTest, ApplyStaysInsideANarrowPanel)
         runFrame(body, width);
         EXPECT_LE(applyRight, windowRight);
     }
+}
+
+// One slider for class and level (#1540): no class combo, and its keys step across the class bands --
+// Best-effort 7 to Idle, and (with CAP_SYS_NICE) Best-effort 0 to Realtime 7.
+TEST_F(ProcessIoPriorityViewRenderTest, TheSliderStepsAcrossTheClassBands)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(Platform::IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 7});
+    ProcessPriorityView view;
+    const auto body = [&]
+    {
+        view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+    };
+    runFrame(body); // Reads the current value
+    pressOnIoSlider(ImGuiKey_RightArrow, body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority(), IDLE);
+    EXPECT_TRUE(view.ioPriorityView().hasPendingEdit());
+    pressOnIoSlider(ImGuiKey_LeftArrow, body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority().ioClass, IoPriorityClass::BestEffort);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority().level, 7);
+    EXPECT_EQ(mock.setIoPriorityCount(), 0); // Picking applies nothing
+}
+
+TEST_F(ProcessIoPriorityViewRenderTest, RealtimeIsOnTheSliderOnlyWithThePrivilege)
+{
+    for (const bool privileged : {false, true})
+    {
+        SCOPED_TRACE(privileged ? "CAP_SYS_NICE" : "unprivileged");
+        TestMocks::MockProcessActions mock;
+        mock.setIoPriorityReadResult(Platform::IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 0});
+        Platform::ProcessActionCapabilities capabilities = NICE_AND_IO;
+        capabilities.canSetRealtimeIoPriority = privileged;
+        ProcessPriorityView view;
+        const auto body = [&]
+        {
+            view.render(&mock, capabilities, NICE, TARGET_A);
+        };
+        runFrame(body);
+        pressOnIoSlider(ImGuiKey_LeftArrow, body); // Toward the high end, from Best-effort 0
+        const Platform::IoPriority shown = view.ioPriorityView().shownIoPriority();
+        if (privileged)
+        {
+            EXPECT_EQ(shown.ioClass, IoPriorityClass::Realtime);
+            EXPECT_EQ(shown.level, 7);
+        }
+        else
+        {
+            EXPECT_EQ(shown.ioClass, IoPriorityClass::BestEffort); // Held at the start: no Realtime band
+            EXPECT_EQ(shown.level, 0);
+            EXPECT_FALSE(view.ioPriorityView().hasPendingEdit());
+        }
+    }
+}
+
+TEST_F(ProcessIoPriorityViewRenderTest, ResetToDefaultFollowsTheNiceValueAgain)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(BEST_EFFORT_4);
+    ProcessPriorityView view;
+    const auto body = [&]
+    {
+        view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+    };
+    runFrame(body);
+    runFrame(body);
+    const ImGuiID resetId = ImHashStr("Reset to default", 0, ImHashStr("io_priority", 0, ImGui::FindWindowByName("Details")->ID));
+    ImGui::ActivateItemByID(resetId);
+    runFrame(body);
+    runFrame(body);
+    EXPECT_EQ(view.ioPriorityView().shownIoPriority().ioClass, IoPriorityClass::None);
+    EXPECT_TRUE(view.ioPriorityView().hasPendingEdit());
+    EXPECT_EQ(mock.setIoPriorityCount(), 0);
 }
 
 } // namespace

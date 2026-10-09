@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -42,7 +44,6 @@ inline constexpr float PRIORITY_SLIDER_CORNER_RADIUS_EM = 0.1875F;    // 2px, bo
 inline constexpr float PRIORITY_BADGE_CORNER_RADIUS_EM = 0.375F;      // 4px, border rounding for value badge
 inline constexpr float PRIORITY_THUMB_OUTLINE_THICKNESS_EM = 0.1875F; // 2px, outline width for slider thumb
 inline constexpr float PRIORITY_LABEL_PADDING_EM = 0.75F;             // 8px, between High/Low labels and slider
-inline constexpr float PRIORITY_APPLY_BUTTON_MIN_EM = 11.25F;         // 120px, floor on the Apply button
 
 /// Thumb radius as a fraction of the track height, so the thumb overhangs the track slightly.
 inline constexpr float PRIORITY_THUMB_RADIUS_FRACTION = 0.6F;
@@ -293,15 +294,11 @@ inline constexpr float PRIORITY_BADGE_TEXT_MIN_CONTRAST = 4.5F;
 // =============================================================================
 //
 // Windows has six priority classes, not forty nice steps, so on Windows Process Details offers the
-// classes by name. The probe reports each class as a nice value in the middle of its
+// classes by name, as stops on the discrete slider (#1538). The probe reports each class as a nice value in the middle of its
 // getPriorityLabel() bucket (Platform::priorityClassToNice) and setPriority() maps a nice value back
 // to a class (Platform::niceToPriorityClass), so the control writes one representative nice value
 // per class through the same setPriority() path. Pure and platform-independent, so it is tested on
 // every platform; the panel uses it only under _WIN32.
-
-/// Width of the Windows priority-class combo, in ems: room for its longest name, "Below Normal",
-/// plus the arrow button.
-inline constexpr float PRIORITY_CLASS_COMBO_WIDTH_EM = 12.0F;
 
 /// Whether this build shows Windows priority classes rather than Unix nice values.
 #ifdef _WIN32
@@ -390,6 +387,233 @@ inline constexpr std::array<WindowsPriorityClass, 5> SETTABLE_WINDOWS_PRIORITY_C
         return std::string(windowsPriorityClassName(windowsPriorityClassFromNice(nice)));
     }
     return std::format("{} (nice: {})", Domain::Priority::getPriorityLabel(nice), nice);
+}
+
+// =============================================================================
+// Discrete-stop slider (#1538)
+// =============================================================================
+//
+// The priority slider's discrete mode, for a priority that is a handful of named classes rather than
+// forty nice steps: Windows' priority classes, and Linux's I/O priority classes (#1540). N evenly
+// spaced stops with snapping, a tick under each and the stop's name on the badge. Stop 0 is at the
+// left, the high-priority end, where nice -20 is on the continuous slider. Each stop carries a nice
+// value only for its colour, so getNiceColor() and the gradient are shared with that slider.
+// Detail::renderDiscretePrioritySlider() (ProcessPriorityView.h) draws it.
+
+/// Room left of the track for a state shown beyond the high end (Windows' Realtime), in ems.
+inline constexpr float PRIORITY_DISCRETE_LEAD_EM = 1.75F;
+
+/// The shown index of a state beyond the high end: shown, never picked.
+inline constexpr int32_t PRIORITY_STOP_BEYOND_START = -1;
+
+/// One stop of a discrete slider.
+struct PrioritySliderStop
+{
+    std::string_view name;      ///< The badge's text and the stop's scale label ("Below Normal")
+    const char* itemLabel = ""; ///< The control's ImGui label at this stop, naming it for assistive tools;
+                                ///< it ends in the slider's "###" ID, so the ID holds as the value moves
+    int32_t colorNice = 0;      ///< The nice value whose getNiceColor() colours this stop
+};
+
+/// A discrete slider: its stops, left (highest priority) to right, at least one, and optionally a
+/// state beyond the high end that can be shown but not picked.
+struct DiscretePrioritySlider
+{
+    std::span<const PrioritySliderStop> stops;
+    const PrioritySliderStop* beyondStart = nullptr;
+    const char* tooltip = ""; ///< Shown while the track is hovered
+    /// Stops that begin a new band (a class, for the I/O slider's Realtime | Best-effort | Idle, #1540):
+    /// a divider is drawn across the track before each. Empty: one band.
+    std::span<const int32_t> bandStarts;
+};
+
+/// Where stop @p index of @p count sits on the track, 0 (left) to 1 (right); a lone stop sits at 0.
+[[nodiscard]] constexpr auto discreteStopPosition(int32_t index, int32_t count) noexcept -> float
+{
+    if (count <= 1)
+    {
+        return 0.0F;
+    }
+    return static_cast<float>(std::clamp(index, 0, count - 1)) / static_cast<float>(count - 1);
+}
+
+/// The stop nearest @p position (0 to 1, held there): where a drag snaps.
+[[nodiscard]] inline auto discreteStopFromPosition(float position, int32_t count) noexcept -> int32_t
+{
+    if (count <= 1 || !std::isfinite(position))
+    {
+        return 0;
+    }
+    return static_cast<int32_t>(std::lround(std::clamp(position, 0.0F, 1.0F) * static_cast<float>(count - 1)));
+}
+
+/// @p current moved @p delta stops (negative is toward the high end), held to the stops: the arrow,
+/// Home and End keys. From beyond the start (PRIORITY_STOP_BEYOND_START, shown but never picked) only a
+/// move toward the low end leaves, landing on the stop it reaches; a move toward the high end stays.
+[[nodiscard]] constexpr auto stepDiscreteStop(int32_t current, int32_t delta, int32_t count) noexcept -> int32_t
+{
+    if (count <= 0)
+    {
+        return current;
+    }
+    if (current < 0)
+    {
+        return (delta > 0) ? std::min(delta - 1, count - 1) : current;
+    }
+    return std::clamp(current + delta, 0, count - 1);
+}
+
+/// The nice value whose colour the track has at @p position (0 to 1): the stops' colour values,
+/// interpolated between neighbours, so each tick sits on its own stop's colour.
+[[nodiscard]] inline auto discreteTrackColorNice(float position, std::span<const PrioritySliderStop> stops) noexcept -> int32_t
+{
+    if (stops.empty())
+    {
+        return Domain::Priority::NORMAL_NICE;
+    }
+    if (stops.size() == 1 || !std::isfinite(position))
+    {
+        return stops.front().colorNice;
+    }
+    const float scaled = std::clamp(position, 0.0F, 1.0F) * static_cast<float>(stops.size() - 1);
+    const std::size_t lower = std::min(static_cast<std::size_t>(scaled), stops.size() - 2);
+    const float t = scaled - static_cast<float>(lower);
+    const int32_t from = stops[lower].colorNice;
+    return from + static_cast<int32_t>(std::lround(t * static_cast<float>(stops[lower + 1].colorNice - from)));
+}
+
+/// The left edge of stop @p index's scale label, @p labelWidthPx wide, whose stop is at @p stopX: the
+/// first label starts at its stop and the last ends at its stop, so neither runs past the track's
+/// ends; the others are centred on theirs.
+[[nodiscard]] constexpr auto discreteStopLabelX(float stopX, float labelWidthPx, int32_t index, int32_t count) noexcept -> float
+{
+    if (index <= 0)
+    {
+        return stopX;
+    }
+    if (index >= count - 1)
+    {
+        return stopX - labelWidthPx;
+    }
+    return stopX - (labelWidthPx * 0.5F);
+}
+
+/// The narrowest track on which @p count scale labels, stop i's @p labelWidthPx(i) wide, placed by
+/// discreteStopLabelX(), stay @p gapPx apart: the stops are evenly spaced, so the closest pair sets it.
+template<typename LabelWidth>
+[[nodiscard]] auto discreteStopLabelsMinWidth(std::size_t count, const LabelWidth& labelWidthPx, float gapPx) -> float
+{
+    if (count <= 1)
+    {
+        return count == 0 ? 0.0F : labelWidthPx(0);
+    }
+    float widestSpacing = 0.0F;
+    for (std::size_t i = 0; i + 1 < count; ++i)
+    {
+        const float rightOfStop = (i == 0) ? labelWidthPx(i) : labelWidthPx(i) * 0.5F;
+        const float leftOfNext = (i + 2 == count) ? labelWidthPx(i + 1) : labelWidthPx(i + 1) * 0.5F;
+        widestSpacing = std::max(widestSpacing, rightOfStop + leftOfNext + gapPx);
+    }
+    return widestSpacing * static_cast<float>(count - 1);
+}
+
+// Windows' priority classes on the discrete slider (#1538): the five settable classes, highest
+// first, so High is at the left like nice -20; Realtime is shown beyond High, never picked.
+
+/// The settable classes in the slider's order: SETTABLE_WINDOWS_PRIORITY_CLASSES, highest first.
+inline constexpr std::array<WindowsPriorityClass, 5> WINDOWS_PRIORITY_SLIDER_ORDER = {
+    WindowsPriorityClass::High,
+    WindowsPriorityClass::AboveNormal,
+    WindowsPriorityClass::Normal,
+    WindowsPriorityClass::BelowNormal,
+    WindowsPriorityClass::Idle,
+};
+
+/// Normal's stop: the middle one.
+inline constexpr int32_t WINDOWS_NORMAL_STOP = 2;
+static_assert(WINDOWS_PRIORITY_SLIDER_ORDER[static_cast<std::size_t>(WINDOWS_NORMAL_STOP)] == WindowsPriorityClass::Normal);
+
+/// The slider stop for @p priorityClass: PRIORITY_STOP_BEYOND_START for Realtime (shown, never set),
+/// Normal's stop for None (which windowsPriorityClassFromNice() never gives).
+[[nodiscard]] constexpr auto windowsPriorityStopIndex(WindowsPriorityClass priorityClass) noexcept -> int32_t
+{
+    if (priorityClass == WindowsPriorityClass::Realtime)
+    {
+        return PRIORITY_STOP_BEYOND_START;
+    }
+    for (std::size_t i = 0; i < WINDOWS_PRIORITY_SLIDER_ORDER.size(); ++i)
+    {
+        if (WINDOWS_PRIORITY_SLIDER_ORDER[i] == priorityClass)
+        {
+            return static_cast<int32_t>(i);
+        }
+    }
+    return WINDOWS_NORMAL_STOP;
+}
+
+/// The class at slider stop @p index (held to the stops); Realtime beyond the start.
+[[nodiscard]] constexpr auto windowsPriorityClassAtStop(int32_t index) noexcept -> WindowsPriorityClass
+{
+    if (index < 0)
+    {
+        return WindowsPriorityClass::Realtime;
+    }
+    const auto last = static_cast<int32_t>(WINDOWS_PRIORITY_SLIDER_ORDER.size()) - 1;
+    return WINDOWS_PRIORITY_SLIDER_ORDER[static_cast<std::size_t>(std::min(index, last))];
+}
+
+/// Windows' stops: the class name, a label naming it, and its representative nice value's colour.
+inline constexpr std::array<PrioritySliderStop, 5> WINDOWS_PRIORITY_STOPS = {{
+    {.name = windowsPriorityClassName(WindowsPriorityClass::High),
+     .itemLabel = "Priority class: High###priority_class_slider",
+     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::High)},
+    {.name = windowsPriorityClassName(WindowsPriorityClass::AboveNormal),
+     .itemLabel = "Priority class: Above Normal###priority_class_slider",
+     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::AboveNormal)},
+    {.name = windowsPriorityClassName(WindowsPriorityClass::Normal),
+     .itemLabel = "Priority class: Normal###priority_class_slider",
+     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Normal)},
+    {.name = windowsPriorityClassName(WindowsPriorityClass::BelowNormal),
+     .itemLabel = "Priority class: Below Normal###priority_class_slider",
+     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::BelowNormal)},
+    {.name = windowsPriorityClassName(WindowsPriorityClass::Idle),
+     .itemLabel = "Priority class: Idle###priority_class_slider",
+     .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Idle)},
+}};
+
+/// Realtime, shown beyond High when a process already has it.
+inline constexpr PrioritySliderStop WINDOWS_REALTIME_STOP{
+    .name = windowsPriorityClassName(WindowsPriorityClass::Realtime),
+    .itemLabel = "Priority class: Realtime (set outside TaskSmack)###priority_class_slider",
+    .colorNice = windowsPriorityClassNice(WindowsPriorityClass::Realtime),
+};
+
+/// The ImGui ID every Windows stop's itemLabel ends in.
+inline constexpr const char* WINDOWS_PRIORITY_SLIDER_ID = "###priority_class_slider";
+
+/// The Windows priority slider.
+inline constexpr DiscretePrioritySlider WINDOWS_PRIORITY_SLIDER{
+    .stops = WINDOWS_PRIORITY_STOPS,
+    .beyondStart = &WINDOWS_REALTIME_STOP,
+    .tooltip = "Windows priority class: higher classes get CPU time first.\n"
+               "Realtime cannot be set here.\n\n"
+               "Keyboard shortcuts:\n"
+               "  Left/Right, Up/Down: One class higher or lower\n"
+               "  Home/End: Highest/lowest class\n\n"
+               "Note: Changing another user's or an elevated process typically requires administrator privileges",
+    .bandStarts = {},
+};
+
+/// The nice value to pass setPriority() for slider stop @p picked when @p shown is the value on show:
+/// @p shown itself while the stop is still its class's (so an untouched control is no edit), else the
+/// picked class's representative value.
+[[nodiscard]] constexpr auto windowsPriorityNiceForStop(int32_t picked, int32_t shown) noexcept -> int32_t
+{
+    if (picked == windowsPriorityStopIndex(windowsPriorityClassFromNice(shown)))
+    {
+        return shown;
+    }
+    return windowsPriorityClassNice(windowsPriorityClassAtStop(picked));
 }
 
 // Note: For priority labels, use Domain::Priority::getPriorityLabel() from PriorityConfig.h

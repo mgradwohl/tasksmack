@@ -78,6 +78,26 @@ TEST(ProcessDetailsLayoutTest, SurvivesDegenerateInput)
     }
 }
 
+// ========== Section cards (#1537) ==========
+
+using ProcessDetailsLayout::computeInfoCardHeight;
+
+// A card holds its header line above its rows, inside its padding top and bottom.
+TEST(ProcessDetailsLayoutTest, InfoCardIsItsHeaderAndRowsPadded)
+{
+    EXPECT_FLOAT_EQ(computeInfoCardHeight(6.0F, 17.0F, 8.0F), (7.0F * 17.0F) + 16.0F);
+    EXPECT_FLOAT_EQ(computeInfoCardHeight(0.0F, 17.0F, 8.0F), 17.0F + 16.0F);
+}
+
+TEST(ProcessDetailsLayoutTest, InfoCardSurvivesDegenerateInput)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    EXPECT_FLOAT_EQ(computeInfoCardHeight(nan, 17.0F, 8.0F), 17.0F + 16.0F);
+    EXPECT_FLOAT_EQ(computeInfoCardHeight(-3.0F, 17.0F, -1.0F), 17.0F);
+    EXPECT_FLOAT_EQ(computeInfoCardHeight(inf, inf, inf), 0.0F);
+}
+
 // ========== Process-control buttons (#949, #1493) ==========
 
 using ProcessDetailsLayout::computeActionButtonRowWidth;

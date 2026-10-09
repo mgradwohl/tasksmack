@@ -2,21 +2,34 @@
 /// @brief The Overview's Actions block (#1493), headless: one compact stack as wide as its widest row
 /// -- the buttons at their labels' width, then the priority row(s) -- exactly as tall as the
 /// Identity/Runtime row beside it and as tall as its content wrapped below it, held to a narrow pane,
-/// and the shared confirm dialog still opens for it, acting on nothing until confirmed.
+/// and the shared confirm dialog still opens for it, acting on nothing until confirmed. Identity,
+/// Runtime and Actions are cards styled as a CPU Cores grid cell is, sharing their edges beside one
+/// another (#1537).
 
 #include "App/Panels/ProcessActionsBlock.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessOverviewCard.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
+#include "UI/Card.h"
+#include "UI/ChartGrid.h"
+#include "UI/ChartGridLayout.h"
+#include "UI/IconsFontAwesome6.h"
+#include "UI/Theme.h"
+
+#ifdef _WIN32
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h" // The Windows class slider: its ID and minimum width
+#endif
 
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // The block's child window, for its size, and the open modal
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -84,10 +97,24 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
         return nullptr;
     }
 
-    /// The Identity/Runtime child height for @p rows rows, worked out as ProcessDetailsPanel does.
+    /// The Identity/Runtime card height for @p rows rows, worked out as ProcessDetailsPanel does: the
+    /// header line and the rows, inside the card's padding (#1537).
     [[nodiscard]] static float rowChildHeight(float rows)
     {
-        return (ImGui::GetTextLineHeightWithSpacing() * rows) + (ImGui::GetStyle().WindowPadding.y * 2.0F);
+        return ProcessDetailsLayout::computeInfoCardHeight(rows, ImGui::GetTextLineHeightWithSpacing(), ImGui::GetStyle().WindowPadding.y);
+    }
+
+    /// The child window whose name contains @p id, as the last frame left it.
+    [[nodiscard]] static const ImGuiWindow* childWindow(std::string_view id)
+    {
+        for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
+        {
+            if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains(id))
+            {
+                return window;
+            }
+        }
+        return nullptr;
     }
 
     struct Harness
@@ -192,22 +219,55 @@ TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheBlockIsTheRowsHeightAndItsC
 }
 
 #ifdef _WIN32
-TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockIsTwoRowsAndFitsTheRowWithoutScrolling)
+TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockDrawsTheClassSliderWhole)
 {
-    // Windows' actions: [Terminate] [Kill], then Priority [class] [Apply] -- two framed rows, no
-    // separator or header of the priority control's own -- well inside the six-row Identity/Runtime
-    // row (Runtime always has its Type row on Windows).
+    // Windows' actions: [Terminate] [Kill], then the priority slider with a stop per class (#1538),
+    // not a combo. The block is measured wide enough for the slider's five stop names, and wrapped
+    // below the row it is shown whole: nothing to scroll either way.
     constexpr Platform::ProcessActionCapabilities WINDOWS_ACTIONS{
         .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = true};
     Harness h;
-    (void) renderBlock(h, WINDOWS_ACTIONS, 1900.0F, 776.0F, 6.0F);
-
+    const auto layout = renderBlock(h, WINDOWS_ACTIONS, 1000.0F, 776.0F, 0.0F);
+    ASSERT_FALSE(layout.besideInfo);
+    float priorityWidth = 0.0F;
+    float sliderMinWidth = 0.0F;
+    (void) runFrame(
+        [&]
+        {
+            priorityWidth = ProcessActionsBlock::measure(WINDOWS_ACTIONS).priority;
+            sliderMinWidth = Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER);
+        });
+    EXPECT_GE(priorityWidth, sliderMinWidth);
     const ImGuiWindow* block = blockWindow();
     ASSERT_NE(block, nullptr);
+    EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
     EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
-    EXPECT_LE(block->ContentSize.y, (2.0F * ImGui::GetFrameHeightWithSpacing()) + 1.0F);
-    // So the panel keeps it beside the row (computeActionsBlockLayout()'s height test).
-    EXPECT_LE(lastNeededHeight, rowChildHeight(6.0F));
+
+    // The slider is there, under its own ID, and its keys pick the next class down from Normal.
+    ImGuiWindow* blockForFocus = ImGui::FindWindowByID(block->ID);
+    const ImGuiID sliderId = ImHashStr(Detail::WINDOWS_PRIORITY_SLIDER_ID, 0, block->ID);
+    bool focus = true;
+    const auto body = [&]
+    {
+        if (focus)
+        {
+            ImGui::SetFocusID(sliderId, blockForFocus);
+            focus = false;
+        }
+        const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(WINDOWS_ACTIONS);
+        (void) ProcessActionsBlock::render(
+            h.context(WINDOWS_ACTIONS),
+            ProcessDetailsLayout::computeActionsBlockLayout(1000.0F, 776.0F, ImGui::GetStyle().ItemSpacing.x, widths.content()),
+            0.0F);
+    };
+    (void) runFrame(body);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, true);
+    (void) runFrame(body);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, false);
+    (void) runFrame(body);
+    EXPECT_EQ(h.priorityView.niceValue(), Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::BelowNormal));
+    EXPECT_TRUE(h.priorityView.hasPendingEdit());
+    EXPECT_EQ(h.mock.setPriorityCount(), 0);
 }
 #endif
 
@@ -238,9 +298,10 @@ TEST_F(ProcessActionsBlockRenderTest, InANarrowPaneTheBlockIsHeldToItAndTheButto
     const ImGuiWindow* block = blockWindow();
     ASSERT_NE(block, nullptr);
     EXPECT_LE(block->Size.x, 120.0F);
-    // Kill went to a row of its own rather than being clipped off the right edge.
+    // Kill went to a row of its own rather than being clipped off the right edge: under the card's
+    // header line (#1537), more than one framed row.
     EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
-    EXPECT_GT(block->ContentSize.y, ImGui::GetFrameHeightWithSpacing());
+    EXPECT_GT(block->ContentSize.y, ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing());
 }
 
 TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndActsOnNothingYet)
@@ -381,6 +442,13 @@ TEST_F(ProcessActionsBlockRenderTest, TheTraceButtonFitsTheBlockWideOrNarrow)
         // Nothing runs out of the block or makes it scroll sideways: the button followed the row or
         // started its own.
         EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
+        // Nor down (#1511): beside the cards only when its content fits their height, card header
+        // and padding included (#1537); otherwise below them, at its content's height.
+        EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
+        if (layout.besideInfo)
+        {
+            EXPECT_LE(neededHeight, rowChildHeight(6.0F));
+        }
         EXPECT_LE(block->ContentSize.x, layout.width - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
         EXPECT_EQ(h.mock.syscallTraceCount(), 0); // Drawing it launches nothing
     }
@@ -398,6 +466,164 @@ TEST_F(ProcessActionsBlockRenderTest, TheTraceButtonAddsARowOnlyWhereItIsShown)
     const float shownHeight = lastNeededHeight;
     EXPECT_GT(shownHeight, hiddenHeight);
     EXPECT_LE(shownHeight - hiddenHeight, ImGui::GetFrameHeightWithSpacing() + 1.0F);
+}
+
+// --- Section cards (#1537) -------------------------------------------------------------------------
+
+/// What makes a child window look like a card: its flags, and whether it pushed its own border and
+/// background colours. The test's sentinel colours are what a child that pushed nothing would draw in.
+struct CardLook
+{
+    bool bordered = false;
+    bool neverScrolls = false;
+    bool drawnInTheSentinelColours = false;
+};
+
+/// The style colours a child gets when nothing is pushed for it: distinct from every colour the theme
+/// stub hands out, so a card that does not push its own shows up.
+constexpr ImVec4 SENTINEL_BORDER{1.0F, 0.0F, 1.0F, 1.0F};
+constexpr ImVec4 SENTINEL_CHILD_BG{0.0F, 1.0F, 1.0F, 1.0F};
+
+[[nodiscard]] CardLook cardLookOf(const ImGuiWindow& window)
+{
+    const ImU32 sentinelBorder = ImGui::ColorConvertFloat4ToU32(SENTINEL_BORDER);
+    const ImU32 sentinelBackground = ImGui::ColorConvertFloat4ToU32(SENTINEL_CHILD_BG);
+    bool sentinel = false;
+    for (const ImDrawVert& vertex : window.DrawList->VtxBuffer)
+    {
+        sentinel = sentinel || vertex.col == sentinelBorder || vertex.col == sentinelBackground;
+    }
+    return CardLook{
+        .bordered = (window.ChildFlags & ImGuiChildFlags_Borders) != 0,
+        .neverScrolls = (window.Flags & UI::Widgets::CARD_WINDOW_FLAGS) == UI::Widgets::CARD_WINDOW_FLAGS,
+        .drawnInTheSentinelColours = sentinel,
+    };
+}
+
+/// Identity and Runtime as ProcessDetailsPanel draws them, @p cardHeight tall and @p cardWidth wide,
+/// then the Actions block laid out for @p paneWidth, then a one-cell chart grid as CPU Cores draws
+/// its cells, for comparison. Returns the Actions block's layout.
+ProcessDetailsLayout::ActionsBlockLayout renderOverviewRow(ProcessActionsBlock::Context context, float paneWidth, float cardWidth)
+{
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float cardHeight =
+        ProcessDetailsLayout::computeInfoCardHeight(6.0F, ImGui::GetTextLineHeightWithSpacing(), ImGui::GetStyle().WindowPadding.y);
+    const auto rows = []
+    {
+        for (int row = 0; row < 6; ++row)
+        {
+            ImGui::TextUnformatted("Label  value");
+        }
+    };
+    (void) ProcessOverviewCard::render(
+        "BasicInfoLeft", ICON_FA_ID_CARD, "Identity", ImVec2(cardWidth, cardHeight), ImGuiChildFlags_None, rows);
+    ImGui::SameLine();
+    (void) ProcessOverviewCard::render(
+        "BasicInfoRight", ICON_FA_CLOCK, "Runtime", ImVec2(cardWidth, cardHeight), ImGuiChildFlags_None, rows);
+
+    const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(context.capabilities);
+    const auto layout = ProcessDetailsLayout::computeActionsBlockLayout(
+        paneWidth, cardWidth + spacing + cardWidth, spacing, widths.content(), 0.0F, cardHeight);
+    if (layout.besideInfo)
+    {
+        ImGui::SameLine();
+    }
+    (void) ProcessActionsBlock::render(context, layout, cardHeight);
+
+    UI::Widgets::ChartGridConfig grid;
+    grid.availableWidth = 400.0F;
+    grid.availableHeight = 300.0F;
+    UI::Widgets::renderChartGrid(
+        "CoresLikeGrid", 1, grid, [](std::size_t /*index*/, float /*width*/, float /*height*/) { ImGui::TextUnformatted("cpu0"); });
+    return layout;
+}
+
+TEST_F(ProcessActionsBlockRenderTest, TheOverviewCardsLookLikeAChartGridCellBesideTheRowAndBelowIt)
+{
+    ImGui::GetStyle().Colors[ImGuiCol_Border] = SENTINEL_BORDER;
+    ImGui::GetStyle().Colors[ImGuiCol_ChildBg] = SENTINEL_CHILD_BG;
+    for (const bool beside : {true, false})
+    {
+        SCOPED_TRACE(beside ? "beside the row" : "wrapped below it");
+        Harness h;
+        ProcessDetailsLayout::ActionsBlockLayout layout;
+        const auto body = [&]
+        {
+            layout = renderOverviewRow(h.context(ALL_ACTIONS), beside ? 1900.0F : 1000.0F, 384.0F);
+        };
+        (void) runFrame(body);
+        (void) runFrame(body);
+        ASSERT_EQ(layout.besideInfo, beside);
+
+        const ImGuiWindow* cell = childWindow("GridCell");
+        ASSERT_NE(cell, nullptr);
+        const CardLook cellLook = cardLookOf(*cell);
+        ASSERT_TRUE(cellLook.bordered);
+        ASSERT_TRUE(cellLook.neverScrolls);
+        ASSERT_FALSE(cellLook.drawnInTheSentinelColours);
+
+        for (const std::string_view id : {"BasicInfoLeft", "BasicInfoRight", "ProcessActionsBlock"})
+        {
+            SCOPED_TRACE(id);
+            const ImGuiWindow* card = childWindow(id);
+            ASSERT_NE(card, nullptr);
+            const CardLook look = cardLookOf(*card);
+            EXPECT_EQ(look.bordered, cellLook.bordered);
+            EXPECT_EQ(look.neverScrolls, cellLook.neverScrolls);
+            EXPECT_EQ(look.drawnInTheSentinelColours, cellLook.drawnInTheSentinelColours);
+        }
+    }
+}
+
+TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheThreeCardsShareTheirTopAndBottomEdges)
+{
+    Harness h;
+    ProcessDetailsLayout::ActionsBlockLayout layout;
+    const auto body = [&]
+    {
+        layout = renderOverviewRow(h.context(ALL_ACTIONS), 1900.0F, 384.0F);
+    };
+    (void) runFrame(body);
+    (void) runFrame(body);
+    ASSERT_TRUE(layout.besideInfo);
+
+    const ImGuiWindow* identity = childWindow("BasicInfoLeft");
+    const ImGuiWindow* runtime = childWindow("BasicInfoRight");
+    const ImGuiWindow* actions = blockWindow();
+    ASSERT_NE(identity, nullptr);
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_NE(actions, nullptr);
+    for (const ImGuiWindow* card : {runtime, actions})
+    {
+        EXPECT_FLOAT_EQ(card->Pos.y, identity->Pos.y);
+        EXPECT_FLOAT_EQ(card->Pos.y + card->Size.y, identity->Pos.y + identity->Size.y);
+    }
+    // The header is inside each card, at its top (as a core's name heads its grid cell), so nothing
+    // of the section is drawn above the card's top edge.
+    EXPECT_FLOAT_EQ(identity->Pos.y, ImGui::GetStyle().WindowPadding.y);
+}
+
+TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheActionsCardTakesItsContentWidthAndHeight)
+{
+    Harness h;
+    ProcessDetailsLayout::ActionsBlockLayout layout;
+    const auto body = [&]
+    {
+        layout = renderOverviewRow(h.context(ALL_ACTIONS), 1000.0F, 384.0F);
+    };
+    (void) runFrame(body);
+    (void) runFrame(body);
+    ASSERT_FALSE(layout.besideInfo);
+
+    const ImGuiWindow* identity = childWindow("BasicInfoLeft");
+    const ImGuiWindow* actions = blockWindow();
+    ASSERT_NE(identity, nullptr);
+    ASSERT_NE(actions, nullptr);
+    EXPECT_GE(actions->Pos.y, identity->Pos.y + identity->Size.y);
+    EXPECT_FLOAT_EQ(actions->Pos.x, identity->Pos.x);
+    EXPECT_NEAR(actions->Size.x, layout.width, 1.0F);
+    EXPECT_NE(actions->ChildFlags & ImGuiChildFlags_AutoResizeY, 0);
+    EXPECT_FLOAT_EQ(actions->ScrollMax.y, 0.0F);
 }
 
 } // namespace

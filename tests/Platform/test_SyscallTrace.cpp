@@ -298,5 +298,17 @@ TEST(SyscallTraceTest, YamaModeThreeRefusesEvenRoot)
     EXPECT_NE(refusal->find("/proc/sys/kernel/yama/ptrace_scope is 3"), std::string::npos);
 }
 
+// The Realtime I/O class needs CAP_SYS_NICE or CAP_SYS_ADMIN in TaskSmack's own effective set; unknown
+// is no, so the I/O slider leaves Realtime out rather than offer a class each attempt would refuse (#1540).
+TEST(SyscallTraceTest, RealtimeIoNeedsSysNiceOrSysAdmin)
+{
+    EXPECT_TRUE(ProcPrivileges::canSetRealtimeIoPriority(ProcPrivileges::parseCapEff("CapEff:\t0000000000800000\n")));  // bit 23
+    EXPECT_TRUE(ProcPrivileges::canSetRealtimeIoPriority(ProcPrivileges::parseCapEff("CapEff:\t0000000000200000\n")));  // bit 21
+    EXPECT_TRUE(ProcPrivileges::canSetRealtimeIoPriority(ProcPrivileges::parseCapEff("CapEff:\t000001ffffffffff\n")));  // full set
+    EXPECT_FALSE(ProcPrivileges::canSetRealtimeIoPriority(ProcPrivileges::parseCapEff("CapEff:\t0000000000080000\n"))); // ptrace only
+    EXPECT_FALSE(ProcPrivileges::canSetRealtimeIoPriority(ProcPrivileges::parseCapEff("CapEff:\t0000000000000000\n")));
+    EXPECT_FALSE(ProcPrivileges::canSetRealtimeIoPriority(std::nullopt)); // unreadable
+}
+
 } // namespace
 } // namespace Platform::SyscallTrace

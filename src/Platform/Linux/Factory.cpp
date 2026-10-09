@@ -8,6 +8,7 @@
 #include "LinuxProcessConnectionsReader.h"
 #include "LinuxProcessEnvironmentReader.h"
 #include "LinuxProcessProbe.h"
+#include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
@@ -19,7 +20,9 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 
 #include <memory>
@@ -51,6 +54,17 @@ std::unique_ptr<IStartupProbe> makeStartupProbe()
 {
     // XDG autostart (~/.config/autostart, /etc/xdg/autostart) is the Linux lane's follow-up to #801.
     return std::make_unique<UnsupportedStartupProbe>();
+}
+
+std::unique_ptr<IStartupActions> makeStartupActions()
+{
+    // Toggling XDG autostart entries (Hidden=true) is the Linux lane's follow-up to #801.
+    return std::make_unique<UnsupportedStartupActions>();
+}
+
+std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
+{
+    return std::make_unique<LinuxSystemInfoProbe>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

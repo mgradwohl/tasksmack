@@ -6,6 +6,7 @@
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessSelection.h"
+#include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
@@ -78,7 +79,7 @@ Domain::ProcessSnapshot snapshot(std::int32_t pid, std::uint64_t startTicks, std
 
 BatchTarget target(std::int32_t pid, std::string name)
 {
-    return {.target = {.pid = pid, .startTimeTicks = static_cast<std::uint64_t>(pid) * 10U}, .name = std::move(name)};
+    return {.target = {.pid = pid, .startTimeTicks = static_cast<std::uint64_t>(pid) * 10U}, .name = std::move(name), .priority = {}};
 }
 
 std::vector<BatchTarget> numberedTargets(std::size_t count)
@@ -331,32 +332,43 @@ TEST(ProcessBatchActionTest, PriorityValueTextStatesWhatIsApplied)
     EXPECT_EQ(priorityValueText(99, false), "Idle (nice: 19)");
 }
 
-TEST(ProcessBatchActionTest, PriorityConfirmTitleAndBody)
+TEST(ProcessBatchActionTest, ResolvedTargetsCarryTheirCurrentPriority)
 {
-    EXPECT_EQ(priorityConfirmTitle(5), "Set priority for 5 processes?");
-    EXPECT_EQ(priorityConfirmTitle(1), "Set priority for 1 process?");
-
-    const std::vector<BatchTarget> two{target(10, "a"), target(11, "b")};
-    const std::string linuxBody = priorityConfirmBody(10, two, OWN_PID, false);
-    EXPECT_TRUE(linuxBody.starts_with("The priority of 2 processes will be set to Below Normal (nice: 10)."));
-    EXPECT_TRUE(linuxBody.contains("a (PID 10)"));
-    EXPECT_TRUE(linuxBody.contains("b (PID 11)"));
-    EXPECT_FALSE(linuxBody.contains("root"));
-    EXPECT_TRUE(priorityConfirmBody(10, two, OWN_PID, true).starts_with("The priority of 2 processes will be set to Below Normal."));
+    // The batch priority dialog lists each process's priority when it was picked (#1539).
+    std::vector<Domain::ProcessSnapshot> snaps{snapshot(10, 1000, 501, "a"), snapshot(11, 1100, 502, "b")};
+    snaps[0].nice = 10;
+    snaps[1].nice = -15;
+    const ProcessSelection::IdentitySet selected{{.pid = 10, .startTimeTicks = 1000}, {.pid = 11, .startTimeTicks = 1100}};
+    const std::vector<BatchTarget> targets = resolveSelected(snaps, selected);
+    ASSERT_EQ(targets.size(), 2U);
+    EXPECT_EQ(targets[0].priority, Domain::Priority::getProcessPriorityLabel(snaps[0].priorityClass, 10));
+    EXPECT_EQ(targets[1].priority, Domain::Priority::getProcessPriorityLabel(snaps[1].priorityClass, -15));
+    EXPECT_NE(targets[0].priority, targets[1].priority);
 }
 
-TEST(ProcessBatchActionTest, PriorityConfirmBodyNamesTaskSmackAndPidOneAndWarnsAboutRaising)
+TEST(ProcessBatchActionTest, ListTargetsNamesTaskSmackAndPidOneFirstThenUpToTheLimit)
 {
     std::vector<BatchTarget> targets = numberedTargets(CONFIRM_LIST_LIMIT + 3);
     targets.push_back(target(INIT_PID, "systemd"));
     targets.push_back(target(OWN_PID, "TaskSmack"));
-    const std::string body = priorityConfirmBody(-5, targets, OWN_PID, false);
-    EXPECT_TRUE(body.contains(std::format("This includes TaskSmack itself (PID {}). It is changed last.", OWN_PID)));
-    EXPECT_TRUE(body.contains("This includes PID 1 (systemd), the system's init process."));
-    EXPECT_TRUE(body.contains("and 5 more"));
-    // A nice value below 0 needs root on Linux; Windows sets classes and has no such line.
-    EXPECT_TRUE(body.contains("usually needs root"));
-    EXPECT_FALSE(priorityConfirmBody(-15, targets, OWN_PID, true).contains("root"));
+
+    const ListedTargets listed = listTargets(targets, OWN_PID);
+    ASSERT_EQ(listed.listed.size(), CONFIRM_LIST_LIMIT);
+    EXPECT_EQ(listed.more, targets.size() - CONFIRM_LIST_LIMIT); // 13 - 8 = 5 folded into "+5 more"
+    // The notable ones first, whatever their place in the selection.
+    EXPECT_EQ(listed.listed[0]->target.pid, INIT_PID);
+    EXPECT_EQ(listed.listed[1]->target.pid, OWN_PID);
+    EXPECT_EQ(listed.listed[2]->name, "proc0");
+    ASSERT_NE(listed.notable.self, nullptr);
+    ASSERT_NE(listed.notable.init, nullptr);
+    EXPECT_EQ(listed.notable.self->target.pid, OWN_PID);
+
+    // Under the limit: every process, nothing folded.
+    const std::vector<BatchTarget> two{target(10, "a"), target(11, "b")};
+    const ListedTargets few = listTargets(two, OWN_PID);
+    EXPECT_EQ(few.listed.size(), 2U);
+    EXPECT_EQ(few.more, 0U);
+    EXPECT_EQ(few.notable.self, nullptr);
 }
 
 TEST(ProcessBatchActionTest, PriorityRunsEveryTargetByIdentityWithTheValueAndTaskSmackLast)

@@ -123,6 +123,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_GPUModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
+    Domain/test_SystemInfoModel.cpp
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
     Domain/test_BackgroundSampler.cpp
@@ -190,6 +191,8 @@ set(COMMON_TEST_SOURCES
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
+    Platform/test_LinuxOsInfo.cpp
+    Platform/test_SmbiosParser.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
     Platform/test_ProcessEnvironment.cpp
@@ -232,6 +235,8 @@ set(COMMON_TEST_SOURCES
     App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp
     App/test_StartupViewRender.cpp
+    App/test_StartupActionsView.cpp
+    App/test_SystemInfoView.cpp
     App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_NetInterfaceUtils.cpp
@@ -266,6 +271,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
@@ -291,6 +297,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsStartupActions.cpp
+    Platform/test_WindowsSystemInfoProbe.cpp
     Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
@@ -349,6 +357,8 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
@@ -367,6 +377,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
@@ -441,6 +452,10 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServicesView.cpp
     # The Startup tab's table (#801), run headless (test_StartupViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupActionsView.cpp
+    # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
@@ -454,6 +469,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp

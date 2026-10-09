@@ -180,12 +180,17 @@ struct PidfdOpen
     }
 }
 
+/// Whether TaskSmack itself may set the Realtime I/O class: CAP_SYS_NICE or CAP_SYS_ADMIN in its own
+/// effective set (ProcPrivileges::canSetRealtimeIoPriority()). Read once, by the constructors (#1540).
+[[nodiscard]] bool ownProcessCanSetRealtimeIo();
 } // namespace
 
-LinuxProcessActions::LinuxProcessActions() : m_TraceTools(discoverSyscallTraceTools())
+LinuxProcessActions::LinuxProcessActions()
+    : m_TraceTools(discoverSyscallTraceTools()), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
 {}
 
-LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools) : m_TraceTools(std::move(traceTools))
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools)
+    : m_TraceTools(std::move(traceTools)), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
 {}
 
 ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
@@ -206,6 +211,7 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
         .canContinue = true,
         .canSetPriority = true,
         .canSetIoPriority = true, // ioprio_set(2) (#803)
+        .canSetRealtimeIoPriority = m_CanSetRealtimeIoPriority,
         .syscallTrace = syscallTrace,
     };
 }
@@ -617,6 +623,12 @@ namespace
         return std::nullopt;
     }
     return std::string(buf.data(), static_cast<std::size_t>(len));
+}
+
+bool ownProcessCanSetRealtimeIo()
+{
+    const std::optional<std::string> status = readSmallFile("/proc/self/status");
+    return ProcPrivileges::canSetRealtimeIoPriority(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
 }
 
 /// Whether strace, as exec'd from TaskSmack, will hold CAP_SYS_PTRACE: TaskSmack runs as root with the

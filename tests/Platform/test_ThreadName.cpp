@@ -60,7 +60,8 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
                                Platform::SAMPLER_THREAD_NAME,
                                Platform::PROCESS_SAMPLER_THREAD_NAME,
                                Platform::SYSTEM_SAMPLER_THREAD_NAME,
-                               Platform::CONNECTIONS_READ_THREAD_NAME};
+                               Platform::CONNECTIONS_READ_THREAD_NAME,
+                               Platform::SYSTEM_INFO_READ_THREAD_NAME};
     for (const std::string_view name : NAMES)
     {
         EXPECT_LE(name.size(), Platform::MAX_LINUX_THREAD_NAME_LENGTH) << name;

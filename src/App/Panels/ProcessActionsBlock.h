@@ -65,16 +65,17 @@ struct Context
     std::optional<std::int32_t> currentNice;
 };
 
-/// Draws the block at the cursor: the "Actions" header, then a child @p layout.width wide holding the
-/// button row, the priority row(s) and the result line, one under the other. Beside the Identity and
-/// Runtime blocks (layout.besideInfo) the child is @p rowChildHeight tall, the height of theirs;
-/// wrapped below them it takes the height its content needs. Returns that height, padding included,
-/// for the next frame's computeActionsBlockLayout(), or 0 when the child was not drawn (scrolled out
-/// of view). Text in the block (the result and error lines) wraps at its edge rather than being clipped.
+/// Draws the block at the cursor: a card (ProcessOverviewCard, #1537) @p layout.width wide holding the
+/// "Actions" header, then the button row, the priority row(s) and the result line, one under the
+/// other. Beside the Identity and Runtime cards (layout.besideInfo) it is @p rowCardHeight tall, the
+/// height of theirs, so the three share their edges; wrapped below them it takes the height its
+/// content needs. Returns that height, header and padding included, for the next frame's
+/// computeActionsBlockLayout(), or 0 when the card was not drawn (scrolled out of view). Text in the
+/// block (the result and error lines) wraps at its edge rather than being clipped.
 ///
-/// The confirm dialog is not drawn here, since the child, and all in it, is skipped while scrolled out
+/// The confirm dialog is not drawn here, since the card, and all in it, is skipped while scrolled out
 /// of view. The caller submits it every frame with ProcessActionsView::renderConfirmation().
-[[nodiscard]] float render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowChildHeight);
+[[nodiscard]] float render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowCardHeight);
 
 } // namespace ProcessActionsBlock
 
