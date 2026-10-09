@@ -2,8 +2,10 @@
 
 #include "App/Panel.h"
 #include "App/Panels/SystemInfoView.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Core/Window.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/Factory.h"
 #include "Platform/ThreadName.h"
@@ -107,6 +109,11 @@ void SystemInfoPanel::renderContent()
     if (!m_Snapshot || m_Snapshot->version != m_Model->version())
     {
         m_Snapshot = m_Model->snapshot();
+        if (m_Snapshot->version != 0)
+        {
+            // Core's OpenGL and SDL display facts, on the UI thread that owns them, once per read (#1519).
+            m_ViewState.host = Core::Application::get().getWindow().queryGraphicsHostInfo();
+        }
     }
     const SystemInfoViewResult result = renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), m_Pending.valid(), m_ViewState);
     if (result.refreshRequested)
