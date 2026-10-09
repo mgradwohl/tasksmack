@@ -510,9 +510,9 @@ Agents must not inject clicks or keys, so five test-only environment variables (
 once at startup, select a process, open a tab or open the Help or About window by themselves. With `TASKSMACK_SELECT_PID` or
 `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
 click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
-snapshots, one warning is logged and nothing is selected. While any of the five variables is set,
-the startup "Limited Data" notice is not shown, since it would cover the capture. Unset, the
-variables do nothing.
+snapshots, one warning is logged and nothing is selected. While any of the five variables, or
+`TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since it would
+cover the capture. Unset, the variables do nothing.
 
 | Variable | Value |
 |---|---|
@@ -521,15 +521,24 @@ variables do nothing.
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
 | `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
+| `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
+
+**Every agent and developer test launch should set `TASKSMACK_CONFIG_DIR` to a fresh directory.**
+Without it, a test instance shares the lock and `config.toml` with the TaskSmack you use every day:
+whichever starts second is told "TaskSmack is already running" and exits, and a test instance that
+saves overwrites your settings. A per-run temp directory starts each run from default settings and
+lets it run beside your own instance. (`tasksmack-debug.log` stays in the temp directory either way.)
 
 Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
 works while the window is covered):
 
 ```powershell
+$env:TASKSMACK_CONFIG_DIR = Join-Path $env:TEMP "tasksmack-test-$PID"
 $env:TASKSMACK_WINDOW='1900x1000'; $env:TASKSMACK_SELECT_NAME='explorer.exe'; $env:TASKSMACK_DETAILS_TAB='overview'
 $p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru
 # Wait a few seconds, then PrintWindow($p.MainWindowHandle, hdc, PW_RENDERFULLCONTENT = 2) into a bitmap.
-Stop-Process -Id $p.Id -Force   # not a graceful close, which would save your config.toml
+Stop-Process -Id $p.Id -Force
+Remove-Item -Recurse -Force $env:TASKSMACK_CONFIG_DIR
 ```
 
 ## VS Code

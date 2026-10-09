@@ -95,6 +95,7 @@ set(COMMON_TEST_SOURCES
     test_main.cpp
     Benchmarks/test_AllocationCounter.cpp
     Core/test_Application.cpp
+    Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
@@ -389,6 +390,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/ConfigDirOverride.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp

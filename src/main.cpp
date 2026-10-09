@@ -13,6 +13,7 @@
 #include "App/UserConfig.h"
 #include "App/WindowOverride.h"
 #include "Core/Application.h"
+#include "Core/ConfigDirOverride.h"
 // NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
 #include "Core/EnvUtils.h"
 #include "Core/WindowConstants.h"
@@ -112,7 +113,7 @@ auto runApp() -> int
     // Taken before the file logger below opens tasksmack-debug.log, which truncates it: a rejected
     // second launch must not erase the running instance's log. Its warning goes to the default
     // (console) logger.
-    const std::filesystem::path instanceLockPath = userConfig.configPath().parent_path() / "tasksmack.lock";
+    const std::filesystem::path instanceLockPath = App::instanceLockPath(userConfig.configPath().parent_path());
     const App::InstanceLock instanceLock(instanceLockPath);
     if (instanceLock.status() == App::InstanceLock::Status::HeldByAnotherInstance)
     {
@@ -175,6 +176,13 @@ auto runApp() -> int
         // sits outside the try block above. UTF-8 bytes are lossless and cannot throw.
         const auto utf8Path = logPath.u8string();
         spdlog::info("Debug log file: {}", std::string(utf8Path.begin(), utf8Path.end()));
+    }
+
+    // Logged here rather than when it is read (UserConfig::get() above), so it reaches the log file.
+    if (const auto& configDir = Core::ConfigDirOverride::active(); configDir.has_value())
+    {
+        const auto utf8Dir = configDir->u8string();
+        spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, std::string(utf8Dir.begin(), utf8Dir.end()));
     }
 
 #ifndef NDEBUG

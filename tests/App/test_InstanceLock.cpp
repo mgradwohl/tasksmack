@@ -1,4 +1,5 @@
 #include "App/InstanceLock.h"
+#include "Core/ConfigDirOverride.h"
 
 #include <gtest/gtest.h>
 
@@ -17,6 +18,13 @@ namespace App
 {
 namespace
 {
+
+/// TASKSMACK_CONFIG_DIR's value for @p dir: UTF-8, as SDL_getenv() returns it.
+std::string envValue(const std::filesystem::path& dir)
+{
+    const auto utf8 = dir.u8string();
+    return {utf8.begin(), utf8.end()};
+}
 
 /// A fresh directory per test, so parallel test processes never share a lock file.
 class InstanceLockTest : public ::testing::Test
@@ -68,6 +76,43 @@ TEST_F(InstanceLockTest, LockIsReleasedWhenTheInstanceEnds)
     }
     const InstanceLock next(m_Dir / "tasksmack.lock");
     EXPECT_EQ(next.status(), InstanceLock::Status::Acquired);
+}
+
+TEST_F(InstanceLockTest, LockFileLivesInTheConfigDirectory)
+{
+    EXPECT_EQ(instanceLockPath(m_Dir), m_Dir / "tasksmack.lock");
+}
+
+TEST_F(InstanceLockTest, ConfigDirOverrideMovesTheLock)
+{
+    // #1596: TASKSMACK_CONFIG_DIR moves the lock with config.toml; unset or blank leaves it alone.
+    const auto platformDir = m_Dir / "platform";
+    const auto overrideDir = m_Dir / "override";
+    EXPECT_EQ(
+        instanceLockPath(Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(envValue(overrideDir).c_str()), platformDir)),
+        overrideDir / "tasksmack.lock");
+    EXPECT_EQ(instanceLockPath(Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(nullptr), platformDir)),
+              platformDir / "tasksmack.lock");
+    EXPECT_EQ(instanceLockPath(Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(" "), platformDir)),
+              platformDir / "tasksmack.lock");
+}
+
+TEST_F(InstanceLockTest, InstancesWithDifferentConfigDirectoriesBothRun)
+{
+    // #1596: a test launch with its own TASKSMACK_CONFIG_DIR starts while the user's TaskSmack runs,
+    // and a second launch on either directory is still refused.
+    const auto platformDir = m_Dir / "platform";
+    const auto testDir = Core::ConfigDirOverride::resolve(Core::ConfigDirOverride::parse(envValue(m_Dir / "test").c_str()), platformDir);
+
+    const InstanceLock user(instanceLockPath(platformDir));
+    const InstanceLock test(instanceLockPath(testDir));
+    EXPECT_EQ(user.status(), InstanceLock::Status::Acquired);
+    EXPECT_EQ(test.status(), InstanceLock::Status::Acquired);
+
+    const InstanceLock secondTest(instanceLockPath(testDir));
+    EXPECT_EQ(secondTest.status(), InstanceLock::Status::HeldByAnotherInstance);
+    const InstanceLock secondUser(instanceLockPath(platformDir));
+    EXPECT_EQ(secondUser.status(), InstanceLock::Status::HeldByAnotherInstance);
 }
 
 TEST_F(InstanceLockTest, CreatesAMissingConfigDirectory)
