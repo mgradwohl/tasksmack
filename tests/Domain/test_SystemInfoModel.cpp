@@ -61,6 +61,16 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::StorageInfo readStorage() override
+    {
+        Platform::StorageInfo info;
+        info.available = true;
+        Platform::PhysicalDisk disk;
+        disk.name = "Disk 0";
+        info.disks.push_back(disk);
+        return info;
+    }
+
     [[nodiscard]] Platform::PlatformSecurityInfo readPlatformSecurity() override
     {
         Platform::PlatformSecurityInfo info;
@@ -100,6 +110,8 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->firmware.systemManufacturer, "Contoso");
     EXPECT_EQ(first->memory.slotCount, 2U);
     EXPECT_EQ(first->paging.committedBytes, 4096U);
+    ASSERT_EQ(first->storage.disks.size(), 1U);
+    EXPECT_EQ(first->storage.disks[0].name, "Disk 0");
     EXPECT_EQ(first->security.secureBoot, Platform::SecurityFeatureState::On);
     EXPECT_TRUE(first->sensors.listed);
     EXPECT_GT(first->readAtUnixSeconds, 0U);
@@ -121,6 +133,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->firmware.available);
     EXPECT_FALSE(model.snapshot()->memory.available);
     EXPECT_FALSE(model.snapshot()->paging.available);
+    EXPECT_FALSE(model.snapshot()->storage.available);
     EXPECT_FALSE(model.snapshot()->security.available);
     EXPECT_FALSE(model.snapshot()->sensors.available);
 

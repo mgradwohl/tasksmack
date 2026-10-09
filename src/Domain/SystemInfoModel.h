@@ -20,6 +20,7 @@ struct SystemInfoSnapshot
     Platform::FirmwareInfo firmware;
     Platform::MemoryModulesInfo memory;
     Platform::CommitPagingInfo paging;
+    Platform::StorageInfo storage;
     Platform::PlatformSecurityInfo security;
     Platform::SensorsInfo sensors;
 };

@@ -11,6 +11,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -20,6 +21,7 @@
 #include "ProcessEnvironmentView.h"
 #include "ProcessModulesView.h"
 #include "ProcessPriorityView.h"
+#include "ProcessSecurityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
 
@@ -65,6 +67,14 @@ class ProcessDetailsPanel : public Panel
                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
                         std::unique_ptr<Platform::IProcessModulesReader> modulesReader);
+
+    /// As above, with an injected IProcessSecurityReader too (tests: mocks). A null security reader, like
+    /// the shorter constructors', hides the Security section (#1526).
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                        std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                        std::unique_ptr<Platform::IProcessModulesReader> modulesReader,
+                        std::unique_ptr<Platform::IProcessSecurityReader> securityReader);
 
     ~ProcessDetailsPanel() override = default;
 
@@ -255,6 +265,11 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
     bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
     ProcessModulesView m_ModulesView;
+
+    // The Overview's Security section (#1526), on the same terms, its reader declared before its view.
+    std::unique_ptr<Platform::IProcessSecurityReader> m_SecurityReader;
+    bool m_HasSecurity = false; // m_SecurityReader can read security contexts here (Linux; not Windows yet, not synthetic runs)
+    ProcessSecurityView m_SecurityView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;

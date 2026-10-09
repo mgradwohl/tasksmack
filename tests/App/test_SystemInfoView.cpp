@@ -1,8 +1,9 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
-/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Security rows
-/// (#1514), the filter, identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading
-/// states, sections drawn, the filter narrowing and the identifier toggle.
+/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
+/// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the filter,
+/// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
+/// filter narrowing and the identifier toggle.
 
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
@@ -634,6 +635,146 @@ TEST(SystemInfoSectionsTest, CommitPagingSectionFollowsMemoryModules)
     EXPECT_EQ(sections[3].title, "Commit & paging");
 }
 
+[[nodiscard]] Platform::StorageInfo windowsStorage()
+{
+    Platform::StorageInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.disksRead = true;
+    Platform::PhysicalDisk nvme;
+    nvme.name = "Disk 0";
+    nvme.model = "Samsung SSD 980 PRO 1TB";
+    nvme.bus = "NVMe";
+    nvme.media = Platform::DiskMedia::Ssd;
+    nvme.sizeBytes = 931 * GIB;
+    nvme.firmware = "5B2QGXA7";
+    nvme.serial = "S5GXNX0R123456";
+    nvme.temperatureCelsius = 41;
+    nvme.health = Platform::NvmeHealth{.criticalWarning = 0, .availableSparePercent = 100, .percentageUsed = 3, .mediaErrors = 0};
+    info.disks.push_back(nvme);
+    Platform::PhysicalDisk usb;
+    usb.name = "Disk 1";
+    usb.model = "SanDisk Ultra";
+    usb.bus = "USB";
+    usb.sizeBytes = 64 * GIB;
+    info.disks.push_back(usb);
+    info.volumesRead = true;
+    info.volumes.push_back({
+        .mountPoint = "C:",
+        .label = "Windows",
+        .fileSystem = "NTFS",
+        .device = {},
+        .network = false,
+        .sizeRead = true,
+        .sizeBytes = 400 * GIB,
+        .freeBytes = 100 * GIB,
+    });
+    info.volumes.push_back({
+        .mountPoint = "Z:",
+        .label = {},
+        .fileSystem = {},
+        .device = {},
+        .network = true,
+        .sizeRead = false,
+        .sizeBytes = 0,
+        .freeBytes = 0,
+    });
+    return info;
+}
+
+TEST(SystemInfoSectionsTest, FormatsStorageValues)
+{
+    const Platform::StorageInfo storage = windowsStorage();
+    EXPECT_EQ(SystemInfo::formatDisk(storage.disks[0]),
+              "Samsung SSD 980 PRO 1TB, NVMe SSD, 931 GiB, firmware 5B2QGXA7, 41 \xC2\xB0"
+              "C");
+    EXPECT_EQ(SystemInfo::formatDisk(storage.disks[1]), "SanDisk Ultra, USB, 64 GiB"); // media unknown
+    EXPECT_EQ(SystemInfo::formatDisk(Platform::PhysicalDisk{}), "");
+    EXPECT_EQ(SystemInfo::formatNvmeHealth({.criticalWarning = 0, .availableSparePercent = 100, .percentageUsed = 3, .mediaErrors = 0}),
+              "3% used, 100% spare left, 0 media errors");
+    EXPECT_EQ(SystemInfo::formatNvmeHealth({.criticalWarning = 4, .availableSparePercent = 9, .percentageUsed = 101, .mediaErrors = 2}),
+              "Critical warning (0x04), 101% used, 9% spare left, 2 media errors");
+    EXPECT_EQ(SystemInfo::formatVolume(storage.volumes[0]), "Windows, NTFS, 100 GiB free of 400 GiB (75% used)");
+    EXPECT_EQ(SystemInfo::formatVolume(storage.volumes[1]), "network, size not read");
+    EXPECT_EQ(SystemInfo::formatVolume({.mountPoint = "/home",
+                                        .label = {},
+                                        .fileSystem = "ext4",
+                                        .device = "/dev/sda2",
+                                        .network = false,
+                                        .sizeRead = true,
+                                        .sizeBytes = 8 * GIB,
+                                        .freeBytes = 8 * GIB}),
+              "ext4 on /dev/sda2, 8 GiB free of 8 GiB (0% used)");
+}
+
+TEST(SystemInfoSectionsTest, StorageRowsWindows)
+{
+    const Section section = SystemInfo::buildStorageSection(windowsStorage());
+    EXPECT_EQ(section.title, "Storage");
+    ASSERT_NE(findRow(section, "Disk 0"), nullptr);
+    EXPECT_EQ(findRow(section, "Disk 0 health")->value, "3% used, 100% spare left, 0 media errors");
+    EXPECT_EQ(findRow(section, "Disk 1 health"), nullptr); // not read for a USB drive: no row
+    ASSERT_NE(findRow(section, "Disk 0 serial number"), nullptr);
+    EXPECT_TRUE(findRow(section, "Disk 0 serial number")->isIdentifier);
+    EXPECT_FALSE(findRow(section, "Disk 1 serial number")->available());
+    EXPECT_EQ(findRow(section, "C: drive")->value, "Windows, NTFS, 100 GiB free of 400 GiB (75% used)");
+    EXPECT_EQ(findRow(section, "Z: drive")->value, "network, size not read");
+    for (const Row& item : section.rows)
+    {
+        EXPECT_EQ(item.isIdentifier, item.label.ends_with("serial number")) << item.label;
+    }
+    // Serials stay out of Copy until identifiers are shown.
+    EXPECT_EQ(SystemInfo::sectionText(section, false).find("S5GXNX0R123456"), std::string::npos);
+    EXPECT_NE(SystemInfo::sectionText(section, true).find("S5GXNX0R123456"), std::string::npos);
+
+    // A cloud drive labelled with the account's e-mail: the label moves to its own identifier row.
+    Platform::StorageInfo cloud = windowsStorage();
+    cloud.volumes[0].label = "someone@example.com - Google Drive";
+    const Section withCloud = SystemInfo::buildStorageSection(cloud);
+    EXPECT_EQ(findRow(withCloud, "C: drive")->value, "NTFS, 100 GiB free of 400 GiB (75% used)");
+    ASSERT_NE(findRow(withCloud, "C: drive label"), nullptr);
+    EXPECT_TRUE(findRow(withCloud, "C: drive label")->isIdentifier);
+    EXPECT_EQ(SystemInfo::sectionText(withCloud, false).find("someone@"), std::string::npos);
+}
+
+TEST(SystemInfoSectionsTest, StorageRowsLinuxAndUnreadable)
+{
+    Platform::StorageInfo linuxStorage;
+    linuxStorage.available = true;
+    linuxStorage.family = Platform::OsFamily::Linux;
+    linuxStorage.disksRead = true;
+    Platform::PhysicalDisk sda;
+    sda.name = "sda";
+    sda.healthUnavailableReason = "SMART status needs udisks2";
+    linuxStorage.disks.push_back(sda);
+    const Section section = SystemInfo::buildStorageSection(linuxStorage);
+    ASSERT_NE(findRow(section, "sda health"), nullptr);
+    EXPECT_FALSE(findRow(section, "sda health")->available());
+    EXPECT_EQ(findRow(section, "sda health")->unavailableReason, "SMART status needs udisks2");
+    EXPECT_FALSE(findRow(section, "sda")->available()); // nothing known about it
+    EXPECT_FALSE(findRow(section, "Volumes")->available());
+    EXPECT_EQ(findRow(section, "Volumes")->unavailableReason, "/proc/self/mountinfo couldn't be read");
+
+    Platform::StorageInfo none;
+    none.available = true;
+    none.family = Platform::OsFamily::Linux;
+    none.volumesRead = true;
+    const Section empty = SystemInfo::buildStorageSection(none);
+    EXPECT_FALSE(findRow(empty, "Disks")->available());
+    EXPECT_EQ(findRow(empty, "Volumes")->value, "None mounted");
+}
+
+TEST(SystemInfoSectionsTest, StorageSectionFollowsCommitPaging)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.paging = windowsPaging();
+    all.storage = windowsStorage();
+    const auto sections = SystemInfo::buildSystemInfoSections(all);
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[1].title, "Commit & paging");
+    EXPECT_EQ(sections[2].title, "Storage");
+}
+
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
 {
     EXPECT_TRUE(SystemInfo::buildSystemInfoSections(Domain::SystemInfoSnapshot{}).empty());
@@ -728,6 +869,27 @@ TEST_F(SystemInfoViewRenderTest, CommitPagingSectionRendersAndFilters)
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 1U);
+}
+
+TEST_F(SystemInfoViewRenderTest, StorageSectionRendersAndHidesSerials)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.storage = windowsStorage();
+    SystemInfoViewState state;
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+
+    state.filter = "disk 0";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 2U); // the disk and its health; the serial is hidden
+
+    state.showIdentifiers = true;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 3U);
 }
 
 } // namespace

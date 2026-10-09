@@ -2,12 +2,15 @@
 /// @brief The real WindowsSystemInfoProbe (#1512), smoke-tested: it reports an edition and a build,
 /// and the session facts any signed-in test run has; the real SMBIOS table (#1513) parses; and the
 /// memory modules and installed/usable memory (#1515), real and through a faked function table; and commit,
-/// page files and compressed memory (#1516), real and faked, including the NT-to-DOS path conversion.
+/// page files and compressed memory (#1516), real and faked, including the NT-to-DOS path conversion; and
+/// the Storage section's disks and volumes (#1517), real and through a faked function table.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/SmbiosParser.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsInstalledMemory.h"
+#include "Platform/Windows/WindowsStorage.h"
 #include "Platform/Windows/WindowsSystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -22,14 +25,17 @@
 #include <windows.h>
 #include <winternl.h>
 #include <psapi.h>
+#include <winioctl.h>
 // clang-format on
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -369,6 +375,345 @@ TEST(WindowsSystemInfoProbeTest, MalformedPageFileBuffersStayInBounds)
     EXPECT_EQ(files[0].totalPages, 7U);
     EXPECT_TRUE(WindowsCommitPaging::parsePageFiles(std::span(buffer.data(), 3)).empty());
     EXPECT_FALSE(WindowsCommitPaging::memoryCompressionWorkingSet(buffer).has_value());
+}
+
+// --- Storage (#1517) ---
+
+TEST(WindowsSystemInfoProbeTest, ReadsDisksAndVolumes)
+{
+    WindowsSystemInfoProbe probe;
+    const StorageInfo info = probe.readStorage();
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.family, OsFamily::Windows);
+    EXPECT_TRUE(info.disksRead);
+    ASSERT_TRUE(info.volumesRead);
+    // The system drive is always a local volume with a size.
+    const auto system = std::ranges::find_if(info.volumes, [](const Volume& volume) { return volume.mountPoint == "C:"; });
+    ASSERT_NE(system, info.volumes.end());
+    EXPECT_TRUE(system->sizeRead);
+    EXPECT_GT(system->sizeBytes, 0U);
+    EXPECT_FALSE(system->fileSystem.empty());
+    for (const PhysicalDisk& disk : info.disks)
+    {
+        EXPECT_TRUE(disk.name.starts_with("Disk ")) << disk.name;
+    }
+}
+
+/// A STORAGE_DEVICE_DESCRIPTOR with its strings after it, as the driver returns it.
+[[nodiscard]] std::vector<std::byte> deviceDescriptor(
+    std::string_view vendor, std::string_view product, std::string_view revision, std::string_view serial, STORAGE_BUS_TYPE bus)
+{
+    std::vector<std::byte> buffer(sizeof(STORAGE_DEVICE_DESCRIPTOR));
+    const auto append = [&buffer](std::string_view text) -> DWORD
+    {
+        if (text.empty())
+        {
+            return 0;
+        }
+        const auto offset = static_cast<DWORD>(buffer.size());
+        for (const char c : text)
+        {
+            buffer.push_back(static_cast<std::byte>(c));
+        }
+        buffer.push_back(std::byte{0});
+        return offset;
+    };
+    STORAGE_DEVICE_DESCRIPTOR header{};
+    header.Version = sizeof(header);
+    header.VendorIdOffset = append(vendor);
+    header.ProductIdOffset = append(product);
+    header.ProductRevisionOffset = append(revision);
+    header.SerialNumberOffset = append(serial);
+    header.BusType = bus;
+    header.Size = static_cast<DWORD>(buffer.size());
+    std::memcpy(buffer.data(), &header, sizeof(header));
+    return buffer;
+}
+
+TEST(WindowsSystemInfoProbeTest, ParsesDeviceDescriptorsAndHealthLogs)
+{
+    const auto nvme = WindowsStorage::parseDeviceDescriptor(
+        deviceDescriptor("NVMe", "Samsung SSD 980 PRO 1TB", "5B2QGXA7", "  S5GX_1234.  ", BusTypeNvme));
+    ASSERT_TRUE(nvme.has_value());
+    EXPECT_EQ(nvme.value_or(WindowsStorage::DeviceDescriptor{}).model, "Samsung SSD 980 PRO 1TB"); // "NVMe" vendor dropped
+    EXPECT_EQ(nvme.value_or(WindowsStorage::DeviceDescriptor{}).serial, "S5GX_1234.");             // trimmed
+    EXPECT_EQ(WindowsStorage::busTypeName(nvme.value_or(WindowsStorage::DeviceDescriptor{}).busType), "NVMe");
+
+    const auto usb = WindowsStorage::parseDeviceDescriptor(deviceDescriptor("SanDisk", "Ultra", "1.00", "", BusTypeUsb));
+    EXPECT_EQ(usb.value_or(WindowsStorage::DeviceDescriptor{}).model, "SanDisk Ultra");
+    EXPECT_EQ(usb.value_or(WindowsStorage::DeviceDescriptor{}).serial, "");
+
+    // Offsets past the end leave strings empty; a short buffer isn't a descriptor.
+    std::vector<std::byte> bad = deviceDescriptor("", "X", "", "", BusTypeSata);
+    STORAGE_DEVICE_DESCRIPTOR header{};
+    std::memcpy(&header, bad.data(), sizeof(header));
+    header.ProductIdOffset = 5000;
+    std::memcpy(bad.data(), &header, sizeof(header));
+    EXPECT_EQ(WindowsStorage::parseDeviceDescriptor(bad).value_or(WindowsStorage::DeviceDescriptor{}).model, "");
+    EXPECT_FALSE(WindowsStorage::parseDeviceDescriptor(std::span(bad.data(), 8)).has_value());
+    EXPECT_EQ(WindowsStorage::busTypeName(999), "");
+
+    std::array<std::byte, WindowsStorage::NVME_LOG_PAGE_BYTES> page{};
+    page[0] = std::byte{0x04};
+    page[3] = std::byte{100};
+    page[5] = std::byte{3};
+    page[160] = std::byte{0x02};
+    page[161] = std::byte{0x01};
+    const auto health = WindowsStorage::parseNvmeHealthLog(page);
+    ASSERT_TRUE(health.has_value());
+    EXPECT_EQ(health.value_or(NvmeHealth{}).criticalWarning, 0x04);
+    EXPECT_EQ(health.value_or(NvmeHealth{}).availableSparePercent, 100);
+    EXPECT_EQ(health.value_or(NvmeHealth{}).percentageUsed, 3);
+    EXPECT_EQ(health.value_or(NvmeHealth{}).mediaErrors, 0x0102U);
+    EXPECT_FALSE(WindowsStorage::parseNvmeHealthLog(std::span(page.data(), 100)).has_value());
+
+    const std::wstring_view drives{L"C:\\\0D:\\\0\0", 9};
+    EXPECT_EQ(WindowsStorage::splitDriveStrings(drives), (std::vector<std::wstring>{L"C:\\", L"D:\\"}));
+}
+
+// The fake machine: Disk 0 is an NVMe SSD with a temperature and a health log; Disk 2 a SATA HDD that
+// reports no temperature; the rest don't exist. Drives C: (fixed), D: (an empty optical drive), E:
+// (removable, with media) and Z: (a network drive, which must never be queried).
+HANDLE g_Nvme = nullptr;             // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+bool g_HealthDenied = false;         // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<std::wstring> g_Queried; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<DWORD> g_ErrorModes;     // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+Windows::UniqueHandle openFakeDrive(int index)
+{
+    if (index != 0 && index != 2)
+    {
+        return {};
+    }
+    Windows::UniqueHandle handle(CreateEventW(nullptr, TRUE, FALSE, nullptr)); // any real handle to close
+    // Disk 0 is closed before Disk 2 is opened, so Disk 2's handle can reuse its value.
+    g_Nvme = index == 0 ? handle.get() : nullptr;
+    return handle;
+}
+
+template<typename T> BOOL answer(const T& value, LPVOID out, DWORD outSize, LPDWORD returned)
+{
+    if (outSize < sizeof(T))
+    {
+        return FALSE;
+    }
+    std::memcpy(out, &value, sizeof(T));
+    *returned = sizeof(T);
+    return TRUE;
+}
+
+BOOL WINAPI fakeIoControl(
+    HANDLE disk, DWORD code, LPVOID in, DWORD /*inSize*/, LPVOID out, DWORD outSize, LPDWORD returned, LPOVERLAPPED /*overlapped*/)
+{
+    const bool nvme = disk == g_Nvme;
+    if (code == IOCTL_DISK_GET_DRIVE_GEOMETRY_EX)
+    {
+        DISK_GEOMETRY_EX geometry{};
+        geometry.DiskSize.QuadPart = nvme ? 1'000'204'886'016LL : 2'000'398'934'016LL;
+        return answer(geometry, out, outSize, returned);
+    }
+    if (code != IOCTL_STORAGE_QUERY_PROPERTY)
+    {
+        return FALSE;
+    }
+    STORAGE_PROPERTY_QUERY query{};
+    std::memcpy(&query, in, offsetof(STORAGE_PROPERTY_QUERY, AdditionalParameters));
+    switch (query.PropertyId)
+    {
+    case StorageDeviceProperty:
+    {
+        const std::vector<std::byte> descriptor = nvme
+                                                    ? deviceDescriptor("NVMe", "Samsung SSD 980 PRO 1TB", "5B2QGXA7", "S5GX", BusTypeNvme)
+                                                    : deviceDescriptor("", "WDC WD20EZRZ-00Z5HB0", "80.00A80", "WD-WCC4M", BusTypeSata);
+        if (outSize < descriptor.size())
+        {
+            return FALSE;
+        }
+        std::memcpy(out, descriptor.data(), descriptor.size());
+        *returned = static_cast<DWORD>(descriptor.size());
+        return TRUE;
+    }
+    case StorageDeviceSeekPenaltyProperty:
+    {
+        DEVICE_SEEK_PENALTY_DESCRIPTOR seek{};
+        seek.Version = sizeof(seek);
+        seek.Size = sizeof(seek);
+        seek.IncursSeekPenalty = nvme ? FALSE : TRUE;
+        return answer(seek, out, outSize, returned);
+    }
+    case StorageDeviceTemperatureProperty:
+    {
+        if (!nvme)
+        {
+            return FALSE;
+        }
+        STORAGE_TEMPERATURE_DATA_DESCRIPTOR temperature{};
+        temperature.InfoCount = 1;
+        temperature.TemperatureInfo[0].Temperature = 41;
+        return answer(temperature, out, outSize, returned);
+    }
+    case StorageDeviceProtocolSpecificProperty:
+    {
+        EXPECT_TRUE(nvme); // only NVMe drives are asked for the health log
+        if (g_HealthDenied)
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return FALSE;
+        }
+        constexpr std::size_t HEADER = offsetof(STORAGE_PROTOCOL_DATA_DESCRIPTOR, ProtocolSpecificData);
+        STORAGE_PROTOCOL_SPECIFIC_DATA data{};
+        data.ProtocolDataOffset = sizeof(data);
+        data.ProtocolDataLength = WindowsStorage::NVME_LOG_PAGE_BYTES;
+        auto* bytes = static_cast<std::byte*>(out);
+        EXPECT_GE(outSize, HEADER + sizeof(data) + WindowsStorage::NVME_LOG_PAGE_BYTES);
+        std::memset(bytes, 0, outSize);
+        std::memcpy(bytes + HEADER, &data, sizeof(data));
+        bytes[HEADER + sizeof(data) + 5] = std::byte{7}; // percentage used
+        bytes[HEADER + sizeof(data) + 3] = std::byte{99};
+        *returned = outSize;
+        return TRUE;
+    }
+    default:
+        return FALSE;
+    }
+}
+
+DWORD WINAPI fakeDriveStrings(DWORD size, LPWSTR buffer)
+{
+    constexpr std::wstring_view DRIVES{L"C:\\\0D:\\\0E:\\\0Z:\\\0\0", 17};
+    if (size < DRIVES.size() || buffer == nullptr)
+    {
+        return static_cast<DWORD>(DRIVES.size());
+    }
+    std::memcpy(buffer, DRIVES.data(), DRIVES.size() * sizeof(wchar_t));
+    return static_cast<DWORD>(DRIVES.size() - 1);
+}
+
+UINT WINAPI fakeDriveType(LPCWSTR root)
+{
+    switch (root[0])
+    {
+    case L'C':
+        return DRIVE_FIXED;
+    case L'D':
+        return DRIVE_CDROM;
+    case L'E':
+        return DRIVE_REMOVABLE;
+    default:
+        return DRIVE_REMOTE;
+    }
+}
+
+BOOL WINAPI fakeVolumeInformation(LPCWSTR root,
+                                  LPWSTR label,
+                                  DWORD labelSize,
+                                  LPDWORD /*serial*/,
+                                  LPDWORD /*maxComponent*/,
+                                  LPDWORD /*flags*/,
+                                  LPWSTR fileSystem,
+                                  DWORD fileSystemSize)
+{
+    g_Queried.emplace_back(root);
+    if (root[0] == L'D')
+    {
+        SetLastError(ERROR_NOT_READY);
+        return FALSE;
+    }
+    const std::wstring_view name = root[0] == L'C' ? L"Windows" : L"USB";
+    const std::wstring_view fs = root[0] == L'C' ? L"NTFS" : L"exFAT";
+    EXPECT_GT(labelSize, name.size());
+    EXPECT_GT(fileSystemSize, fs.size());
+    std::memcpy(label, name.data(), name.size() * sizeof(wchar_t));
+    label[name.size()] = L'\0';
+    std::memcpy(fileSystem, fs.data(), fs.size() * sizeof(wchar_t));
+    fileSystem[fs.size()] = L'\0';
+    return TRUE;
+}
+
+BOOL WINAPI fakeFreeSpace(LPCWSTR root, PULARGE_INTEGER available, PULARGE_INTEGER total, PULARGE_INTEGER /*totalFree*/)
+{
+    g_Queried.emplace_back(root);
+    available->QuadPart = 100ULL << 30U;
+    total->QuadPart = 400ULL << 30U;
+    return TRUE;
+}
+
+BOOL WINAPI fakeErrorMode(DWORD mode, LPDWORD previous)
+{
+    g_ErrorModes.push_back(mode);
+    if (previous != nullptr)
+    {
+        *previous = 0x8000; // SEM_NOOPENFILEERRORBOX: restored afterwards
+    }
+    return TRUE;
+}
+
+[[nodiscard]] WindowsStorage::Functions fakeStorage()
+{
+    return {
+        .openPhysicalDrive = &openFakeDrive,
+        .deviceIoControl = &fakeIoControl,
+        .getLogicalDriveStrings = &fakeDriveStrings,
+        .getDriveType = &fakeDriveType,
+        .getVolumeInformation = &fakeVolumeInformation,
+        .getDiskFreeSpaceEx = &fakeFreeSpace,
+        .setThreadErrorMode = &fakeErrorMode,
+    };
+}
+
+TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
+{
+    g_Queried.clear();
+    g_ErrorModes.clear();
+    g_HealthDenied = false;
+    StorageInfo info;
+    WindowsStorage::readStorage(info, fakeStorage());
+    EXPECT_TRUE(info.available);
+    ASSERT_EQ(info.disks.size(), 2U);
+    const PhysicalDisk& nvme = info.disks[0];
+    EXPECT_EQ(nvme.name, "Disk 0");
+    EXPECT_EQ(nvme.model, "Samsung SSD 980 PRO 1TB");
+    EXPECT_EQ(nvme.bus, "NVMe");
+    EXPECT_EQ(nvme.media, DiskMedia::Ssd);
+    EXPECT_EQ(nvme.sizeBytes, 1'000'204'886'016ULL);
+    EXPECT_EQ(nvme.firmware, "5B2QGXA7");
+    EXPECT_EQ(nvme.serial, "S5GX");
+    EXPECT_EQ(nvme.temperatureCelsius, 41);
+    ASSERT_TRUE(nvme.health.has_value());
+    EXPECT_EQ(nvme.health.value_or(NvmeHealth{}).percentageUsed, 7);
+    EXPECT_EQ(nvme.health.value_or(NvmeHealth{}).availableSparePercent, 99);
+    const PhysicalDisk& hdd = info.disks[1];
+    EXPECT_EQ(hdd.name, "Disk 2");
+    EXPECT_EQ(hdd.model, "WDC WD20EZRZ-00Z5HB0");
+    EXPECT_EQ(hdd.bus, "SATA");
+    EXPECT_EQ(hdd.media, DiskMedia::Hdd);
+    EXPECT_FALSE(hdd.temperatureCelsius.has_value());
+    EXPECT_FALSE(hdd.health.has_value());
+    EXPECT_TRUE(hdd.healthUnavailableReason.empty()); // not NVMe: no health row at all
+
+    ASSERT_TRUE(info.volumesRead);
+    ASSERT_EQ(info.volumes.size(), 3U); // the empty optical drive is left out
+    EXPECT_EQ(info.volumes[0].mountPoint, "C:");
+    EXPECT_EQ(info.volumes[0].label, "Windows");
+    EXPECT_EQ(info.volumes[0].fileSystem, "NTFS");
+    EXPECT_TRUE(info.volumes[0].sizeRead);
+    EXPECT_EQ(info.volumes[0].freeBytes, 100ULL << 30U);
+    EXPECT_EQ(info.volumes[1].mountPoint, "E:");
+    EXPECT_EQ(info.volumes[2].mountPoint, "Z:");
+    EXPECT_TRUE(info.volumes[2].network);
+    EXPECT_FALSE(info.volumes[2].sizeRead);
+    EXPECT_EQ(std::ranges::count_if(g_Queried, [](const std::wstring& root) { return root.starts_with(L'Z'); }), 0);
+    // Critical-error prompts off for the calls, the old mode back after.
+    EXPECT_EQ(g_ErrorModes, (std::vector<DWORD>{SEM_FAILCRITICALERRORS, 0x8000}));
+
+    // Health refused to a query-only handle: says administrator, never asks for more access.
+    g_HealthDenied = true;
+    StorageInfo denied;
+    WindowsStorage::readStorage(denied, fakeStorage());
+    ASSERT_FALSE(denied.disks.empty());
+    EXPECT_FALSE(denied.disks[0].health.has_value());
+    EXPECT_EQ(denied.disks[0].healthUnavailableReason, "Requires administrator");
+    g_HealthDenied = false;
 }
 
 } // namespace
