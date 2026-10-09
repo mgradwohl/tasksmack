@@ -8,7 +8,9 @@
 #include <cstring>
 #include <utility>
 
-#include <systemd/sd-bus-protocol.h>
+// Newer libsystemd (259 here) declares sd_bus and sd_bus_error in sd-bus-protocol.h; older releases
+// (Ubuntu 24.04's, in CI) declare them in sd-bus.h, so include-cleaner wants this line on one and not the other.
+#include <systemd/sd-bus-protocol.h> // NOLINT(misc-include-cleaner) - see above
 #include <systemd/sd-bus.h>
 #endif
 
