@@ -159,6 +159,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ServicesPanel.cpp
     src/App/Panels/ServiceActionsView.cpp
     src/App/Panels/ServicesView.cpp
+    src/App/Panels/StartupActionsView.cpp
     src/App/Panels/StartupPanel.cpp
     src/App/Panels/StartupView.cpp
     src/Domain/ProcessModel.cpp

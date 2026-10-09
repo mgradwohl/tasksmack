@@ -263,12 +263,16 @@ The **Services** tab lists the system's services, and on Windows starts, stops a
 
 ### Startup Apps
 
-The **Startup** tab lists the programs Windows starts when you sign in, read-only (enabling and disabling them is planned, #801):
+The **Startup** tab lists the programs Windows starts when you sign in, and enables or disables them:
 
 - **Columns:** **Name**, **Publisher** (the company named in the program's version information), **Enabled** ("Enabled", or "Disabled since" the date it was disabled in Task Manager or Settings), **Scope** (Current user, or All users), **Location** (the Run or RunOnce registry key, including the 32-bit `WOW6432Node` view, or the user's or all-users Startup folder) and **Command** (the command line it runs; for a Startup folder shortcut, its target and arguments).
 - An entry whose program no longer exists is shown in the warning colour; hover it to see the command and the missing program's path. A Startup folder shortcut whose target can't be read shows its shortcut path with "(target unresolved)".
 - Click a column header to sort by it; click again to reverse. Type in the filter box to show only entries whose name, publisher or command contains the text (case doesn't matter).
-- The list is read only while the tab is shown, when you open it and then every 5 seconds, in the background. No administrator rights are needed.
+- The list is read only while the tab is shown, when you open it and then every 5 seconds, in the background. Listing needs no administrator rights.
+- **Enable / Disable (Windows):** right-click a row for **Enable** or **Disable**, or select a row and use the buttons above the table. TaskSmack does it the way Task Manager does: it records the entry's state under `Explorer\StartupApproved` and never deletes or moves the registry entry or the shortcut, so a disabled app can be enabled again here, in Task Manager or in Settings.
+  - **Disable** asks first, in a dialog centred over the window; **Enable** runs straight away.
+  - A line above the table says "Disabling OneDrive..." and then the outcome ("Disabled OneDrive", or "Could not disable OneDrive: Requires administrator"). The list is re-read straight after, so the **Enabled** column shows "Disabled since" today's date.
+  - All-users entries (HKLM, and the all-users Startup folder) need TaskSmack to run as administrator: without it their actions are greyed out and say "Requires administrator". RunOnce entries run once at the next sign-in and have no enabled state, so they can't be enabled or disabled.
 - Scheduled tasks that run at sign-in, and services, are not listed here.
 - **Linux:** not available yet ("Startup apps aren't available on this platform yet"); XDG autostart support is planned.
 
@@ -364,7 +368,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
 | Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
-| Startup apps tab (read-only) | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders, enabled state from StartupApproved; no administrator needed) |
+| Startup apps tab | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders; enable / disable through StartupApproved, all-users entries need administrator) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |
 | Intel/generic GPU | ✅ (DRM/sysfs) | ✅ (DXGI/PDH) |

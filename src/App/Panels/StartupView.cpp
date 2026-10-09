@@ -1,6 +1,7 @@
 #include "StartupView.h"
 
 #include "App/Panels/ProcessTableLayout.h"
+#include "App/Panels/StartupActionsView.h"
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupProbe.h"
 #include "UI/EmptyState.h"
@@ -257,15 +258,27 @@ void applySortSpecs(StartupViewState& state)
     specs->SpecsDirty = false;
 }
 
-/// The Name cell: a row-wide selectable, in the warning colour when the program is missing, with the
-/// entry's tooltip (straight away for a missing program, after the usual delay otherwise).
-void renderNameCell(const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme)
+[[nodiscard]] bool isSelected(const Platform::StartupEntry& entry, const StartupViewState& state)
+{
+    return entry.location == state.selectedLocation && entry.name == state.selectedName;
+}
+
+/// The Name cell: a row-wide selectable (left or right click selects it), in the warning colour when
+/// the program is missing, with the entry's tooltip (straight away for a missing program, after the
+/// usual delay otherwise) and its action menu.
+void renderNameCell(
+    const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme, StartupViewState& state, StartupActionsView* actions)
 {
     if (missing)
     {
         ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
     }
-    ImGui::Selectable(entry.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns);
+    if (ImGui::Selectable(entry.name.c_str(), isSelected(entry, state), ImGuiSelectableFlags_SpanAllColumns) ||
+        ImGui::IsItemClicked(ImGuiMouseButton_Right))
+    {
+        state.selectedName = entry.name;
+        state.selectedLocation = entry.location;
+    }
     if (missing)
     {
         ImGui::PopStyleColor();
@@ -273,6 +286,10 @@ void renderNameCell(const Platform::StartupEntry& entry, bool missing, const UI:
     if (ImGui::IsItemHovered(missing ? ImGuiHoveredFlags_None : ImGuiHoveredFlags_DelayNormal))
     {
         renderStartupTooltip(entry);
+    }
+    if (actions != nullptr)
+    {
+        actions->renderContextMenu(entry);
     }
 }
 
@@ -299,11 +316,13 @@ void renderCommandCell(const Platform::StartupEntry& entry, bool missing, const 
 void renderStartupRow(const Platform::StartupEntry& entry,
                       const std::string& enabledLabel,
                       const Platform::StartupCapabilities& capabilities,
-                      const UI::ColorScheme& scheme)
+                      const UI::ColorScheme& scheme,
+                      StartupViewState& state,
+                      StartupActionsView* actions)
 {
     const bool missing = entry.target == Platform::StartupTargetState::Missing;
     ImGui::TableNextColumn();
-    renderNameCell(entry, missing, scheme);
+    renderNameCell(entry, missing, scheme, state, actions);
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(entry.publisher.c_str());
     ImGui::TableNextColumn();
@@ -324,8 +343,9 @@ void renderStartupRow(const Platform::StartupEntry& entry,
 /// The visible rows only (ImGuiListClipper), in the order state.rows holds.
 void renderStartupRows(const Domain::StartupPublication& publication,
                        const Platform::StartupCapabilities& capabilities,
-                       const StartupViewState& state,
-                       const UI::ColorScheme& scheme)
+                       StartupViewState& state,
+                       const UI::ColorScheme& scheme,
+                       StartupActionsView* actions)
 {
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(state.rows.size()));
@@ -334,9 +354,14 @@ void renderStartupRows(const Domain::StartupPublication& publication,
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
         {
             const std::size_t index = state.rows[static_cast<std::size_t>(row)];
+            const auto& entry = publication.entries[index];
             ImGui::TableNextRow();
-            ImGui::PushID(row);
-            renderStartupRow(publication.entries[index], state.enabledLabels[index], capabilities, scheme);
+            // Keyed by the entry (location and name), not the row: a re-sort or a new sample must not
+            // move an open row menu onto another entry.
+            ImGui::PushID(static_cast<int>(entry.location));
+            ImGui::PushID(entry.name.c_str());
+            renderStartupRow(entry, state.enabledLabels[index], capabilities, scheme, state, actions);
+            ImGui::PopID();
             ImGui::PopID();
         }
     }
@@ -344,8 +369,10 @@ void renderStartupRows(const Domain::StartupPublication& publication,
 
 } // namespace
 
-StartupViewContent
-renderStartupView(const Domain::StartupPublication* publication, const Platform::StartupCapabilities& capabilities, StartupViewState& state)
+StartupViewContent renderStartupView(const Domain::StartupPublication* publication,
+                                     const Platform::StartupCapabilities& capabilities,
+                                     StartupViewState& state,
+                                     StartupActionsView* actions)
 {
     if (!capabilities.canEnumerate)
     {
@@ -360,6 +387,20 @@ renderStartupView(const Domain::StartupPublication* publication, const Platform:
 
     const auto& scheme = UI::Theme::get().scheme();
     renderFilterBar(*publication, state, scheme);
+    if (actions != nullptr && actions->supported())
+    {
+        // Looked up by name and location only while a row is selected, so a re-sort or a new sample
+        // keeps it; the list is a few dozen entries.
+        const Platform::StartupEntry* selected = nullptr;
+        if (!state.selectedName.empty())
+        {
+            const auto found =
+                std::ranges::find_if(publication->entries, [&state](const Platform::StartupEntry& e) { return isSelected(e, state); });
+            selected = (found != publication->entries.end()) ? &*found : nullptr;
+        }
+        actions->renderActionBar(selected);
+        actions->renderResultLine();
+    }
 
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable |
                                             ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
@@ -372,7 +413,7 @@ renderStartupView(const Domain::StartupPublication* publication, const Platform:
     setupStartupColumns();
     applySortSpecs(state);
     rebuildRowsIfStale(*publication, state); // a header click may have changed the order
-    renderStartupRows(*publication, capabilities, state, scheme);
+    renderStartupRows(*publication, capabilities, state, scheme, actions);
     ImGui::EndTable();
     return StartupViewContent::Table;
 }
