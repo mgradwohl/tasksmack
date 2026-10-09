@@ -167,6 +167,16 @@ class SystemMetricsPanel : public Panel
     } m_CpuDetails;
     CpuDetailsBlock::MeasuredRows m_CpuDetailsMeasured; // The rows' widths, kept between frames
 
+    // The battery details rows beneath the Battery chart (#1523): rebuilt once per system sample,
+    // and their generation bumped (so they are re-measured) only when the text actually changed.
+    struct BatteryDetailsCache
+    {
+        std::uint64_t systemVersion = 0;
+        std::uint64_t generation = 0;
+        std::vector<CpuDetailsText::Row> rows;
+    } m_BatteryDetails;
+    CpuDetailsBlock::MeasuredRows m_BatteryDetailsMeasured;
+
     std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
     bool m_ForceRefresh = false;
     float m_LastDeltaSeconds = 0.0F;

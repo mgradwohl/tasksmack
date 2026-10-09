@@ -35,6 +35,8 @@ struct Row
     std::string value;     ///< UNAVAILABLE_TEXT when !available.
     bool available = true; ///< False: drawn muted, with `tooltip` saying why.
     std::string tooltip;   ///< Hover text; empty for none.
+
+    bool operator==(const Row&) const = default;
 };
 
 /// Everything the rows are built from. The live values (utilization, kernel time, speed, uptime)

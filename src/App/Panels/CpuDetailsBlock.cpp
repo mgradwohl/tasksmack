@@ -83,13 +83,21 @@ bool render(const Content& content, MeasuredRows& measured)
     // The heading line leaves the cursor where the button did (moving it there explicitly would
     // extend the window past its items, which ImGui rejects).
 
-    const std::span<const CpuDetailsText::Row> rows = content.rows;
-    if (!content.expanded || rows.empty())
+    if (content.expanded)
     {
-        return toggled;
+        renderRows("##CpuDetails", content.rows, content.rowsGeneration, measured);
     }
+    return toggled;
+}
 
-    measure(rows, content.rowsGeneration, measured);
+void renderRows(const char* tableId, std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGeneration, MeasuredRows& measured)
+{
+    if (rows.empty())
+    {
+        return;
+    }
+    const auto& theme = UI::Theme::get();
+    measure(rows, rowsGeneration, measured);
     const float perPairExtra = ImGui::GetStyle().CellPadding.x * 4.0F; // Two cells' padding a pair
     const CpuDetailsText::ColumnLayout layout =
         CpuDetailsText::columnLayout(measured.labelWidths, measured.valueWidths, ImGui::GetContentRegionAvail().x, perPairExtra);
@@ -97,9 +105,9 @@ bool render(const Content& content, MeasuredRows& measured)
     // Sized to its columns (NoHostExtendX), which columnLayout() has widened to the full width.
     constexpr ImGuiTableFlags TABLE_FLAGS =
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_NoHostExtendX;
-    if (!ImGui::BeginTable("##CpuDetails", static_cast<int>(layout.pairs * 2), TABLE_FLAGS))
+    if (!ImGui::BeginTable(tableId, static_cast<int>(layout.pairs * 2), TABLE_FLAGS))
     {
-        return toggled;
+        return;
     }
     for (std::size_t pair = 0; pair < layout.pairs; ++pair)
     {
@@ -135,7 +143,6 @@ bool render(const Content& content, MeasuredRows& measured)
         }
     }
     ImGui::EndTable();
-    return toggled;
 }
 
 } // namespace App::CpuDetailsBlock

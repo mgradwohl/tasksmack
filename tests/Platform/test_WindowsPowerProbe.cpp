@@ -41,9 +41,9 @@ TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
     EXPECT_FALSE(caps.hasChargeCapacity);
     EXPECT_FALSE(caps.hasPowerRate);
     EXPECT_FALSE(caps.hasVoltage);
-    EXPECT_FALSE(caps.hasTechnology);
-    EXPECT_FALSE(caps.hasCycleCount);
-    EXPECT_FALSE(caps.hasHealthPercent);
+    // The battery device's facts (#1523) depend on the machine's battery; health needs the design
+    // capacity it is computed from (test_WindowsBatteryInfo.cpp covers each case with fakes).
+    EXPECT_FALSE(caps.hasHealthPercent && !caps.hasDesignCapacity);
 }
 
 TEST(WindowsPowerProbeTest, ReadSucceeds)
