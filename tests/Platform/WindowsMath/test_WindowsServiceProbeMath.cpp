@@ -110,6 +110,29 @@ TEST(WindowsServiceProbeMathTest, SplitProgramHandlesQuotesAndUnquotedSpaces)
     EXPECT_EQ(splitProgram("   ").first, "");
 }
 
+TEST(WindowsServiceProbeMathTest, AnUnterminatedQuoteRunsToTheEndOfTheLine)
+{
+    // No closing quote: the rest of the line is the program, and there are no arguments.
+    const auto [program, rest] = splitProgram(R"(  "C:\A B\x.exe -a)");
+    EXPECT_EQ(program, R"(C:\A B\x.exe -a)");
+    EXPECT_EQ(rest, "");
+}
+
+TEST(WindowsServiceProbeMathTest, AnUnquotedProgramWithNoSeparatorIsTheWholeLine)
+{
+    const auto [program, rest] = splitProgram("svchost");
+    EXPECT_EQ(program, "svchost");
+    EXPECT_EQ(rest, "");
+}
+
+TEST(WindowsServiceProbeMathTest, AServiceTypeWithNoProcessOrDriverBitIsOther)
+{
+    EXPECT_EQ(serviceTypeText(0x0), "Other");
+    EXPECT_EQ(serviceTypeText(0x4), "Other"); // SERVICE_ADAPTER
+    EXPECT_EQ(serviceTypeText(0x40), "Other (user template)");
+    EXPECT_EQ(serviceTypeText(0xC0), "Other (user instance)");
+}
+
 TEST(WindowsServiceProbeMathTest, ConfigIsReadOnceThenEveryRefreshWhateverTheOutcome)
 {
     using Clock = std::chrono::steady_clock;

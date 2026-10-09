@@ -133,6 +133,34 @@ TEST(SelectOverrideTest, NonAsciiNameCaseFollowsWindowsFileNames)
 #endif
 }
 
+TEST(SelectOverrideTest, NamesThatAreNotUtf8CompareExactly)
+{
+    // "\xFF" is never valid UTF-8, so Windows can't fold its case through UTF-16 and falls back to an
+    // exact comparison (#1566): the same bytes match, a case difference elsewhere in the name doesn't.
+    // Other platforms compare process names exactly anyway.
+    EXPECT_TRUE(App::SelectOverride::processNamesEqual("\xFF"
+                                                       "app.exe",
+                                                       "\xFF"
+                                                       "app.exe"));
+    EXPECT_FALSE(App::SelectOverride::processNamesEqual("\xFF"
+                                                        "app.exe",
+                                                        "\xFF"
+                                                        "APP.exe"));
+    EXPECT_FALSE(App::SelectOverride::processNamesEqual("\xFF"
+                                                        "app.exe",
+                                                        "app.exe"));
+#ifdef _WIN32
+    EXPECT_FALSE(App::SelectOverride::tabNamesEqual("\xFF"
+                                                    "gpu",
+                                                    "\xFF"
+                                                    "GPU"));
+#endif
+    EXPECT_TRUE(App::SelectOverride::tabNamesEqual("\xFF"
+                                                   "gpu",
+                                                   "\xFF"
+                                                   "gpu"));
+}
+
 TEST(SelectOverrideTest, FiredSelectionHandsOverItsDetailsTabOnce)
 {
     Pending pending(Target{.pid = 42, .name = {}, .tab = DetailsTab::Gpu});

@@ -11,6 +11,7 @@
 #include <array>
 #include <clocale>
 #include <cstdint>
+#include <ctime>
 #include <format>
 #include <limits>
 #include <locale>
@@ -142,6 +143,42 @@ TEST(FormatTest, EpochDateTimeShortOlderShowsDate)
     EXPECT_FALSE(result.empty());
     // Format is "MMM DD HH:MM" which is ~12 chars
     EXPECT_GE(result.length(), 11U);
+}
+
+TEST(FormatTest, EpochDateTimeShortYesterdayShowsYesterday)
+{
+    // Noon yesterday in local time, built by the calendar rather than by subtracting 24 hours, so a
+    // daylight-saving change can't move it to another day.
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    ASSERT_EQ(localtime_s(&local, &now), 0);
+#else
+    ASSERT_NE(localtime_r(&now, &local), nullptr);
+#endif
+    local.tm_mday -= 1;
+    local.tm_hour = 12;
+    local.tm_min = 0;
+    local.tm_sec = 0;
+    local.tm_isdst = -1;
+    const std::time_t yesterdayNoon = std::mktime(&local);
+    ASSERT_NE(yesterdayNoon, static_cast<std::time_t>(-1));
+
+    EXPECT_EQ(UI::Format::formatEpochDateTimeShort(static_cast<std::uint64_t>(yesterdayNoon)), "Yesterday 12:00");
+}
+
+TEST(FormatTest, EpochBeyondTheLocalTimeRangeFormatsLikeNoTime)
+{
+    // Year 3237. Windows' localtime_s rejects times after the year 3000, so both formatters report no
+    // time rather than garbage (#1566); glibc's localtime_r converts it.
+    constexpr std::uint64_t YEAR_3237 = 40'000'000'000ULL;
+#ifdef _WIN32
+    EXPECT_EQ(UI::Format::formatEpochDateTime(YEAR_3237), "");
+    EXPECT_EQ(UI::Format::formatEpochDateTimeShort(YEAR_3237), "-");
+#else
+    EXPECT_TRUE(UI::Format::formatEpochDateTime(YEAR_3237).starts_with("3237-"));
+    EXPECT_NE(UI::Format::formatEpochDateTimeShort(YEAR_3237), "-");
+#endif
 }
 
 // =============================================================================
