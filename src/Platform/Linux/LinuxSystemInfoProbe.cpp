@@ -4,16 +4,19 @@
 #include "LinuxFirmwareInfo.h"
 #include "LinuxOsInfo.h"
 #include "LinuxPlatformSecurity.h"
+#include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UserNameLookup.h"
 
 #include <array>
+#include <cstdint>
 // NOLINTNEXTLINE(misc-include-cleaner) - cstdlib provides secure_getenv when _GNU_SOURCE is defined
 #include <cstdlib>
 #include <ctime>
 #include <string>
 
 #include <pwd.h>
+#include <sys/statvfs.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 
@@ -98,6 +101,26 @@ CommitPagingInfo LinuxSystemInfoProbe::readCommitPaging()
 {
     CommitPagingInfo info;
     LinuxCommitPaging::readCommitPagingFacts(m_Root, info);
+    return info;
+}
+
+StorageInfo LinuxSystemInfoProbe::readStorage()
+{
+    StorageInfo info;
+    // statvfs() on the mount point as the running system sees it; free is f_bavail, what an unprivileged
+    // user can still write (df's "Avail"), matching GetDiskFreeSpaceExW's caller-available figure.
+    const LinuxStorage::VolumeSizer sizer = [](const std::string& mountPoint, std::uint64_t& sizeBytes, std::uint64_t& freeBytes)
+    {
+        struct statvfs stats{};
+        if (::statvfs(mountPoint.c_str(), &stats) != 0)
+        {
+            return false;
+        }
+        sizeBytes = static_cast<std::uint64_t>(stats.f_blocks) * stats.f_frsize;
+        freeBytes = static_cast<std::uint64_t>(stats.f_bavail) * stats.f_frsize;
+        return true;
+    };
+    LinuxStorage::readStorageFacts(m_Root, info, sizer);
     return info;
 }
 

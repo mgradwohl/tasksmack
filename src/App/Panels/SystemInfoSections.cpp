@@ -6,14 +6,12 @@
 #include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <format>
 #include <initializer_list>
-#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -480,6 +478,94 @@ Section buildCommitPagingSection(const Platform::CommitPagingInfo& paging)
     return section;
 }
 
+std::string formatDisk(const Platform::PhysicalDisk& disk)
+{
+    std::string kind = disk.bus;
+    if (disk.media != Platform::DiskMedia::Unknown)
+    {
+        kind = joinNonEmpty({kind, disk.media == Platform::DiskMedia::Ssd ? "SSD" : "HDD"}, " ");
+    }
+    const std::string firmware = disk.firmware.empty() ? std::string{} : "firmware " + disk.firmware;
+    constexpr std::string_view DEGREE = "\xC2\xB0"; // U+00B0, UTF-8
+    const std::string temperature =
+        disk.temperatureCelsius.has_value() ? std::format("{} {}C", *disk.temperatureCelsius, DEGREE) : std::string{};
+    return joinNonEmpty({disk.model, kind, formatMemoryCapacity(disk.sizeBytes), firmware, temperature}, ", ");
+}
+
+std::string formatNvmeHealth(const Platform::NvmeHealth& health)
+{
+    std::string text = health.criticalWarning != 0 ? std::format("Critical warning (0x{:02X}), ", health.criticalWarning) : std::string{};
+    text +=
+        std::format("{}% used, {}% spare left, {} media errors", health.percentageUsed, health.availableSparePercent, health.mediaErrors);
+    return text;
+}
+
+std::string formatVolume(const Platform::Volume& volume)
+{
+    std::string fileSystem = volume.fileSystem;
+    if (!volume.device.empty())
+    {
+        fileSystem = joinNonEmpty({fileSystem, volume.device}, " on ");
+    }
+    std::string space;
+    if (volume.network)
+    {
+        space = "network, size not read";
+    }
+    else if (volume.sizeRead && volume.sizeBytes != 0)
+    {
+        const std::uint64_t used = volume.sizeBytes - std::min(volume.freeBytes, volume.sizeBytes);
+        const double percent = (static_cast<double>(used) * 100.0) / static_cast<double>(volume.sizeBytes);
+        space = std::format("{} free of {} ({:.0f}% used)", sizeText(volume.freeBytes), sizeText(volume.sizeBytes), percent);
+    }
+    return joinNonEmpty({volumeLabelIsIdentifier(volume.label) ? std::string_view{} : volume.label, fileSystem, space}, ", ");
+}
+
+bool volumeLabelIsIdentifier(std::string_view label)
+{
+    return label.contains('@');
+}
+
+Section buildStorageSection(const Platform::StorageInfo& storage)
+{
+    Section section{.title = "Storage", .icon = ICON_FA_HARD_DRIVE, .rows = {}};
+    auto& rows = section.rows;
+    const bool windows = storage.family == Platform::OsFamily::Windows;
+    if (!storage.disksRead || storage.disks.empty())
+    {
+        rows.push_back(row("Disks", storage.disksRead ? "None found" : "", "/sys/block couldn't be listed"));
+    }
+    for (const Platform::PhysicalDisk& disk : storage.disks)
+    {
+        rows.push_back(row(disk.name, formatDisk(disk)));
+        rows.push_back(row(disk.name + " serial number", disk.serial, "Not reported by this drive", true));
+        if (disk.health.has_value() || !disk.healthUnavailableReason.empty())
+        {
+            rows.push_back(row(disk.name + " health",
+                               disk.health.has_value() ? formatNvmeHealth(*disk.health) : std::string{},
+                               disk.healthUnavailableReason));
+        }
+    }
+
+    if (!storage.volumesRead || storage.volumes.empty())
+    {
+        rows.push_back(row("Volumes",
+                           storage.volumesRead ? "None mounted" : "",
+                           windows ? "GetLogicalDriveStringsW failed" : "/proc/self/mountinfo couldn't be read"));
+    }
+    for (const Platform::Volume& volume : storage.volumes)
+    {
+        // "C: drive" rather than a bare "C:", which copies as "C:: ...".
+        const std::string label = windows ? volume.mountPoint + " drive" : volume.mountPoint;
+        rows.push_back(row(label, formatVolume(volume), "Its file system and size couldn't be read"));
+        if (volumeLabelIsIdentifier(volume.label))
+        {
+            rows.push_back(row(label + " label", volume.label, NOT_REPORTED, true));
+        }
+    }
+    return section;
+}
+
 std::string formatVulnerabilityName(std::string_view name)
 {
     // Acronyms the kernel's names use, written as they are in the advisories.
@@ -674,11 +760,15 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     {
         sections.push_back(buildCommitPagingSection(snapshot.paging));
     }
+    if (snapshot.storage.available)
+    {
+        sections.push_back(buildStorageSection(snapshot.storage));
+    }
     if (snapshot.security.available)
     {
         sections.push_back(buildSecuritySection(snapshot.security));
     }
-    // Further sections follow here, in the page's order.
+    // Further sections (#1514 and on) follow here, in the page's order.
     return sections;
 }
 

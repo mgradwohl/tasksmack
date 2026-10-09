@@ -28,6 +28,7 @@
 #include "WindowsCommitPaging.h"
 #include "WindowsInstalledMemory.h"
 #include "WindowsOsInfoMath.h"
+#include "WindowsStorage.h"
 
 #include <chrono>
 #include <cstddef>
@@ -277,6 +278,13 @@ CommitPagingInfo WindowsSystemInfoProbe::readCommitPaging()
 {
     CommitPagingInfo info;
     WindowsCommitPaging::readCommitPaging(info);
+    return info;
+}
+
+StorageInfo WindowsSystemInfoProbe::readStorage()
+{
+    StorageInfo info;
+    WindowsStorage::readStorage(info);
     return info;
 }
 

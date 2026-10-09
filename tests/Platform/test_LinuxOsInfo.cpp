@@ -3,8 +3,9 @@
 /// the locale choice, btime, and the file facts and container/VM hints read under a fixture root; and
 /// Platform::LinuxFirmwareInfo (#1513), the Firmware & board facts from /sys/class/dmi/id under one, and
 /// the Memory modules facts (#1515) from the raw DMI table and /proc/meminfo; and Platform::LinuxCommitPaging
-/// (#1516), the Commit & paging parsers and facts from /proc and /sys; and Platform::LinuxPlatformSecurity
-/// (#1514), the Security parsers and facts from /sys.
+/// (#1516), the Commit & paging parsers and facts from /proc and /sys; and Platform::LinuxStorage (#1517),
+/// the mountinfo parser and the volume choice, and the disks and volumes under a fixture root; and
+/// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys.
 /// The headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
@@ -12,6 +13,7 @@
 #include "Platform/Linux/LinuxFirmwareInfo.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 #include "Platform/Linux/LinuxPlatformSecurity.h"
+#include "Platform/Linux/LinuxStorage.h"
 
 #include <gtest/gtest.h>
 
@@ -19,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -474,6 +477,187 @@ TEST(LinuxCommitPagingTest, NothingReadableLeavesEverythingUnknown)
     EXPECT_FALSE(info.zswapEnabled.has_value());
     EXPECT_FALSE(info.hugePagesRead);
     EXPECT_TRUE(info.transparentHugePages.empty());
+}
+
+// --- Storage (#1517) ---
+
+/// /proc/self/mountinfo from a desktop, trimmed: the root and EFI partitions, kernel and memory file
+/// systems, a snap, an NTFS disk whose mount point has a space (\040), a bind mount of a directory on the
+/// root file system, an NFS share, and a disk whose bind mount is listed before its own mount.
+constexpr std::string_view MOUNTINFO = "22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw,errors=remount-ro\n"
+                                       "23 22 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw\n"
+                                       "24 22 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:2 - sysfs sysfs rw\n"
+                                       "25 22 0:5 / /dev rw,nosuid,relatime shared:3 - devtmpfs udev rw,size=16243500k\n"
+                                       "26 25 0:23 / /dev/shm rw,nosuid,nodev shared:4 - tmpfs tmpfs rw\n"
+                                       "27 22 0:24 / /run rw,nosuid,nodev shared:5 - tmpfs tmpfs rw,size=3254180k\n"
+                                       "28 22 0:25 / /tmp rw,nosuid,nodev shared:6 - tmpfs tmpfs rw\n"
+                                       "29 22 259:1 / /boot/efi rw,relatime shared:7 - vfat /dev/nvme0n1p1 rw,fmask=0077\n"
+                                       "30 24 0:26 / /sys/fs/cgroup rw,nosuid shared:8 - cgroup2 cgroup2 rw\n"
+                                       "31 22 7:0 / /snap/core22/1380 ro,nodev,relatime shared:9 - squashfs /dev/loop0 ro\n"
+                                       "32 22 8:17 / /mnt/My\\040Data rw,relatime shared:10 - ntfs3 /dev/sdb1 rw\n"
+                                       "33 22 259:2 /srv/data /srv/bind rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+                                       "34 22 0:40 / /mnt/nas rw,relatime shared:11 master:3 - nfs4 nas:/export rw,vers=4.2\n"
+                                       "35 27 0:41 / /run/user/1000/doc rw,nosuid shared:13 - fuse.portal portal rw\n"
+                                       "36 22 0:42 / /var/lib/docker/overlay2/abc/merged rw shared:14 - overlay overlay rw\n"
+                                       "37 22 8:33 /sub /early rw shared:15 - ext4 /dev/sdc1 rw\n"
+                                       "38 22 8:33 / /data rw shared:16 - ext4 /dev/sdc1 rw\n"
+                                       "garbage\n"
+                                       "39 22 8:49 / /no-separator rw ext4 /dev/sdd1 rw\n";
+
+TEST(LinuxStorageTest, ParsesMountInfo)
+{
+    const std::vector<LinuxStorage::MountEntry> entries = LinuxStorage::parseMountInfo(MOUNTINFO);
+    ASSERT_EQ(entries.size(), 17U); // the last two lines are skipped
+    EXPECT_EQ(entries[0].device, "259:2");
+    EXPECT_EQ(entries[0].root, "/");
+    EXPECT_EQ(entries[0].mountPoint, "/");
+    EXPECT_EQ(entries[0].fileSystem, "ext4");
+    EXPECT_EQ(entries[0].source, "/dev/nvme0n1p2");
+    EXPECT_EQ(entries[10].mountPoint, "/mnt/My Data"); // \040 undone
+    EXPECT_EQ(entries[11].root, "/srv/data");
+    EXPECT_EQ(entries[12].fileSystem, "nfs4"); // two optional fields before the separator
+    EXPECT_EQ(entries[12].source, "nas:/export");
+    EXPECT_TRUE(LinuxStorage::parseMountInfo("").empty());
+    EXPECT_TRUE(LinuxStorage::parseMountInfo("1 2 3:4 / / rw - ext4\n").empty()); // no source
+    EXPECT_TRUE(LinuxStorage::parseMountInfo("- - - - - - - -\n").empty());       // a separator with one field after it
+}
+
+TEST(LinuxStorageTest, ChoosesRealVolumesOncePerDevice)
+{
+    const std::vector<LinuxStorage::MountEntry> volumes = LinuxStorage::selectVolumes(LinuxStorage::parseMountInfo(MOUNTINFO));
+    std::vector<std::string> mountPoints;
+    mountPoints.reserve(volumes.size());
+    for (const LinuxStorage::MountEntry& volume : volumes)
+    {
+        mountPoints.push_back(volume.mountPoint);
+    }
+    // No proc, sysfs, devtmpfs, /dev/shm, /run, cgroup, the snap, the portal or overlay; /tmp is kept;
+    // the bind mount of a directory on / is dropped, and /data wins over its earlier bind mount /early.
+    EXPECT_EQ(mountPoints, (std::vector<std::string>{"/", "/tmp", "/boot/efi", "/mnt/My Data", "/mnt/nas", "/data"}));
+
+    EXPECT_TRUE(LinuxStorage::isNetworkFileSystem("nfs4"));
+    EXPECT_TRUE(LinuxStorage::isNetworkFileSystem("fuse.sshfs"));
+    EXPECT_FALSE(LinuxStorage::isNetworkFileSystem("ext4"));
+    EXPECT_FALSE(LinuxStorage::isPseudoFileSystem("fuseblk", "/media/usb")); // NTFS through FUSE is a disk
+    EXPECT_FALSE(LinuxStorage::isPseudoFileSystem("fuse.sshfs", "/mnt/remote"));
+    EXPECT_TRUE(LinuxStorage::isPseudoFileSystem("fuse.gvfsd-fuse", "/run/user/1000/gvfs"));
+    EXPECT_TRUE(LinuxStorage::isPseudoFileSystem("ext4", "/sys/kernel/x"));
+}
+
+TEST(LinuxStorageTest, ParsesUdevAndBusNames)
+{
+    constexpr std::string_view UDEV = "S:disk/by-id/ata-WDC\nE:ID_BUS=ata\nE:ID_SERIAL_SHORT=WD-WCC4M1234567\nE:ID_FS_LABEL=My Data\n";
+    EXPECT_EQ(LinuxStorage::udevProperty(UDEV, "ID_BUS"), "ata");
+    EXPECT_EQ(LinuxStorage::udevProperty(UDEV, "ID_FS_LABEL"), "My Data");
+    EXPECT_EQ(LinuxStorage::udevProperty(UDEV, "ID_SERIAL"), ""); // a prefix of a key isn't the key
+    EXPECT_EQ(LinuxStorage::udevProperty("E:ID_BUS\n", "ID_BUS"), "");
+    EXPECT_EQ(LinuxStorage::diskBus("nvme0n1", ""), "NVMe");
+    EXPECT_EQ(LinuxStorage::diskBus("sda", "ata"), "SATA");
+    EXPECT_EQ(LinuxStorage::diskBus("sdb", "usb"), "USB");
+    EXPECT_EQ(LinuxStorage::diskBus("mmcblk0", ""), "MMC");
+    EXPECT_EQ(LinuxStorage::diskBus("sdc", ""), "");
+    EXPECT_EQ(LinuxStorage::trimmed("  WDC WD20EZRZ   \n"), "WDC WD20EZRZ");
+    EXPECT_EQ(LinuxStorage::trimmed(" \n"), "");
+}
+
+/// The mount points fakeSizer() was asked about.
+std::vector<std::string>& sizedMounts()
+{
+    static std::vector<std::string> mounts;
+    return mounts;
+}
+
+/// A fake statvfs(): 100 GiB with 25 GiB free, except /boot/efi, which fails.
+bool fakeSizer(const std::string& mountPoint, std::uint64_t& sizeBytes, std::uint64_t& freeBytes)
+{
+    constexpr std::uint64_t GIB = std::uint64_t{1024} * 1024 * 1024;
+    sizedMounts().push_back(mountPoint);
+    if (mountPoint == "/boot/efi")
+    {
+        return false;
+    }
+    sizeBytes = 100 * GIB;
+    freeBytes = 25 * GIB;
+    return true;
+}
+
+TEST(LinuxStorageTest, ReadsDisksAndVolumesUnderARoot)
+{
+    const FixtureRoot root;
+    root.write("proc/self/mountinfo", MOUNTINFO);
+    root.write("sys/block/nvme0n1/size", "1953525168\n");
+    root.write("sys/block/nvme0n1/dev", "259:0\n");
+    root.write("sys/block/nvme0n1/queue/rotational", "0\n");
+    root.write("sys/block/nvme0n1/device/model", "Samsung SSD 980 PRO 1TB                 \n");
+    root.write("sys/block/nvme0n1/device/firmware_rev", "5B2QGXA7\n");
+    root.write("sys/block/nvme0n1/device/serial", "S5GXNX0R123456      \n");
+    root.write("sys/block/nvme0n1/device/hwmon2/temp1_input", "40850\n");
+    root.write("sys/block/sda/size", "3907029168\n");
+    root.write("sys/block/sda/dev", "8:0\n");
+    root.write("sys/block/sda/queue/rotational", "1\n");
+    root.write("sys/block/sda/device/model", "WDC WD20EZRZ-00Z\n");
+    root.write("sys/block/sda/device/rev", "0A80\n");
+    root.write("sys/block/sda/device/hwmon/hwmon4/temp1_input", "35000\n");
+    root.write("run/udev/data/b8:0", "E:ID_BUS=ata\nE:ID_SERIAL_SHORT=WD-WCC4M1234567\n");
+    root.write("run/udev/data/b259:2", "E:ID_FS_LABEL=root\n");
+    root.write("sys/block/loop0/size", "2048\n");    // virtual: left out
+    root.write("sys/block/zram0/size", "8388608\n"); // virtual
+    root.write("sys/block/dm-0/size", "1000\n");     // device-mapper
+    root.write("sys/block/sr0/size", "0\n");         // an optical drive with no disc
+    root.write("sys/block/sr0/device/model", "DVD-RW\n");
+    root.write("sys/block/xvda/size", "1000\n"); // no device link: not a physical disk
+
+    sizedMounts().clear();
+    StorageInfo info;
+    LinuxStorage::readStorageFacts(root.path(), info, &fakeSizer);
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.family, OsFamily::Linux);
+    EXPECT_TRUE(info.disksRead);
+    ASSERT_EQ(info.disks.size(), 2U);
+    const PhysicalDisk& nvme = info.disks[0];
+    EXPECT_EQ(nvme.name, "nvme0n1");
+    EXPECT_EQ(nvme.model, "Samsung SSD 980 PRO 1TB");
+    EXPECT_EQ(nvme.bus, "NVMe");
+    EXPECT_EQ(nvme.media, DiskMedia::Ssd);
+    EXPECT_EQ(nvme.sizeBytes, 1953525168ULL * 512);
+    EXPECT_EQ(nvme.firmware, "5B2QGXA7");
+    EXPECT_EQ(nvme.serial, "S5GXNX0R123456");
+    EXPECT_EQ(nvme.temperatureCelsius, 41);
+    EXPECT_FALSE(nvme.health.has_value());
+    EXPECT_FALSE(nvme.healthUnavailableReason.empty()); // SMART is a muted dash
+    const PhysicalDisk& sata = info.disks[1];
+    EXPECT_EQ(sata.name, "sda");
+    EXPECT_EQ(sata.bus, "SATA");
+    EXPECT_EQ(sata.media, DiskMedia::Hdd);
+    EXPECT_EQ(sata.firmware, "0A80");
+    EXPECT_EQ(sata.serial, "WD-WCC4M1234567"); // from udev
+    EXPECT_EQ(sata.temperatureCelsius, 35);    // drivetemp's hwmon/hwmonN layout
+
+    EXPECT_TRUE(info.volumesRead);
+    ASSERT_EQ(info.volumes.size(), 6U);
+    EXPECT_EQ(info.volumes[0].mountPoint, "/");
+    EXPECT_EQ(info.volumes[0].label, "root");
+    EXPECT_EQ(info.volumes[0].device, "/dev/nvme0n1p2");
+    EXPECT_TRUE(info.volumes[0].sizeRead);
+    EXPECT_EQ(info.volumes[0].freeBytes, 25ULL * 1024 * 1024 * 1024);
+    EXPECT_FALSE(info.volumes[2].sizeRead); // /boot/efi's statvfs failed
+    EXPECT_TRUE(info.volumes[4].network);
+    EXPECT_FALSE(info.volumes[4].sizeRead);
+    // The NFS share is never sized: statvfs() on it can hang.
+    EXPECT_EQ(std::ranges::count(sizedMounts(), std::string("/mnt/nas")), 0);
+    EXPECT_EQ(sizedMounts().size(), 5U);
+}
+
+TEST(LinuxStorageTest, NothingReadableLeavesEverythingUnknown)
+{
+    const FixtureRoot root;
+    StorageInfo info;
+    LinuxStorage::readStorageFacts(root.path(), info, nullptr);
+    EXPECT_TRUE(info.available);
+    EXPECT_FALSE(info.disksRead);
+    EXPECT_FALSE(info.volumesRead);
+    EXPECT_TRUE(info.disks.empty());
+    EXPECT_TRUE(info.volumes.empty());
 }
 
 TEST(LinuxPlatformSecurityTest, ParsesTheFiles)

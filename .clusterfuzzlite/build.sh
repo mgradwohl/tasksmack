@@ -45,9 +45,18 @@ build_fuzzer fuzz_smbios
 build_fuzzer fuzz_proc_maps
 seed_corpus fuzz_proc_maps tests/fuzz/corpus/fuzz_proc_maps/*
 
+# The /proc/[pid]/status security, attr/current and cgroup parsers (#1526): header-only, seeded with
+# a real-looking status file, label and cgroup line.
+build_fuzzer fuzz_proc_status_security
+seed_corpus fuzz_proc_status_security tests/fuzz/corpus/fuzz_proc_status_security/*
+
 # The Commit & paging parsers (#1516): header-only, seeded with real-looking /proc/meminfo and /proc/swaps.
 build_fuzzer fuzz_commit_paging
 seed_corpus fuzz_commit_paging tests/fuzz/corpus/fuzz_commit_paging/*
+
+# The Storage parsers (#1517): header-only, seeded with a real-looking /proc/self/mountinfo and udev file.
+build_fuzzer fuzz_mountinfo
+seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
 
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
