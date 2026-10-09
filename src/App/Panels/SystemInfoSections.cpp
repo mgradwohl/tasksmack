@@ -7,6 +7,7 @@
 #include "UI/IconsFontAwesome6.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <format>
 #include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -628,6 +630,80 @@ std::vector<std::optional<std::size_t>> matchMonitors(std::span<const Core::Disp
     return matches;
 }
 
+std::string formatVulnerabilityName(std::string_view name)
+{
+    // Acronyms the kernel's names use, written as they are in the advisories.
+    static constexpr std::array<std::string_view, 9> ACRONYMS{"mds", "srbds", "l1tf", "tsa", "tsx", "itlb", "mmio", "gds", "rfds"};
+    std::string out;
+    std::size_t start = 0;
+    while (start <= name.size())
+    {
+        const std::size_t end = std::min(name.find('_', start), name.size());
+        const std::string_view word = name.substr(start, end - start);
+        if (!out.empty())
+        {
+            out += ' ';
+        }
+        if (std::ranges::find(ACRONYMS, word) != ACRONYMS.end())
+        {
+            std::ranges::transform(
+                word, std::back_inserter(out), [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); });
+        }
+        else if (!word.empty())
+        {
+            out += (out.empty() ? static_cast<char>(std::toupper(static_cast<unsigned char>(word.front()))) : word.front());
+            out += word.substr(1);
+        }
+        start = end + 1;
+    }
+    return out;
+}
+
+std::string formatVulnerabilitySummary(std::span<const Platform::CpuVulnerability> vulnerabilities)
+{
+    std::size_t vulnerable = 0;
+    std::size_t mitigated = 0;
+    std::size_t notAffected = 0;
+    std::size_t other = 0;
+    for (const Platform::CpuVulnerability& item : vulnerabilities)
+    {
+        if (item.status.starts_with("Vulnerable"))
+        {
+            ++vulnerable;
+        }
+        else if (item.status.starts_with("Mitigation"))
+        {
+            ++mitigated;
+        }
+        else if (item.status.starts_with("Not affected"))
+        {
+            ++notAffected;
+        }
+        else
+        {
+            ++other; // "Unknown: ...", or a status a newer kernel words differently
+        }
+    }
+    std::string text;
+    const auto add = [&text](std::size_t count, std::string_view what)
+    {
+        if (count == 0)
+        {
+            return;
+        }
+        if (!text.empty())
+        {
+            text += ", ";
+        }
+        text += std::format("{} {}", count, what);
+    };
+    add(vulnerable, "vulnerable");
+    add(mitigated, "mitigated");
+    add(notAffected, "not affected");
+    add(other, "unknown");
+    return text;
+}
+
 namespace
 {
 
@@ -657,6 +733,31 @@ void appendMonitorRows(std::string label, const Platform::Monitor& monitor, std:
 {
     rows.push_back(row(label, std::move(value)));
     rows.push_back(row(std::move(label) + " serial number", monitor.serial, "Not reported by this monitor", true));
+}
+
+/// A present TPM: "Present (TPM 2.0)", "Present (TPM 1.2)", or "Present" when the version is unknown.
+[[nodiscard]] std::string tpmPresentText(std::uint32_t versionMajor)
+{
+    switch (versionMajor)
+    {
+    case 2:
+        return "Present (TPM 2.0)";
+    case 1:
+        return "Present (TPM 1.2)";
+    default:
+        return "Present";
+    }
+}
+
+/// @p whenTrue, @p whenFalse, or @p whenAbsent for an empty @p value.
+[[nodiscard]] std::string
+triStateText(std::optional<bool> value, std::string_view whenTrue, std::string_view whenFalse, std::string_view whenAbsent)
+{
+    if (!value.has_value())
+    {
+        return std::string(whenAbsent);
+    }
+    return std::string(*value ? whenTrue : whenFalse);
 }
 
 } // namespace
@@ -749,6 +850,73 @@ Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core:
     return section;
 }
 
+Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
+{
+    using Platform::SecurityFeatureState;
+    Section section{.title = "Security", .icon = ICON_FA_LOCK, .rows = {}};
+    auto& rows = section.rows;
+
+    std::string secureBoot;
+    switch (security.secureBoot)
+    {
+    case SecurityFeatureState::On:
+        secureBoot = "On";
+        break;
+    case SecurityFeatureState::Off:
+        secureBoot = "Off";
+        break;
+    case SecurityFeatureState::NotSupported:
+        secureBoot = "Not supported (not booted with UEFI)";
+        break;
+    case SecurityFeatureState::Unknown:
+        break;
+    }
+    rows.push_back(row("Secure Boot", std::move(secureBoot), "The SecureBoot EFI variable couldn't be read"));
+
+    std::string tpm;
+    switch (security.tpm)
+    {
+    case SecurityFeatureState::On:
+        tpm = tpmPresentText(security.tpmVersionMajor);
+        break;
+    case SecurityFeatureState::Off:
+    case SecurityFeatureState::NotSupported:
+        tpm = "Not detected";
+        break;
+    case SecurityFeatureState::Unknown:
+        break;
+    }
+    rows.push_back(row("TPM", std::move(tpm), "/sys/class/tpm couldn't be read"));
+
+    std::string lsms;
+    for (const std::string& name : security.lsms)
+    {
+        lsms += (lsms.empty() ? "" : ", ") + name;
+    }
+    rows.push_back(row("Security modules", std::move(lsms), "securityfs (/sys/kernel/security) isn't mounted"));
+    rows.push_back(row("SELinux", triStateText(security.selinuxEnforcing, "Enforcing", "Permissive", "Not active")));
+    rows.push_back(row("AppArmor", triStateText(security.apparmorEnabled, "Enabled", "Disabled", "Not loaded")));
+    std::string lockdown = security.lockdown;
+    if (!lockdown.empty())
+    {
+        lockdown.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(lockdown.front())));
+    }
+    rows.push_back(row(
+        "Kernel lockdown", std::move(lockdown), "securityfs (/sys/kernel/security) isn't mounted, or the lockdown module isn't built in"));
+
+    if (!security.vulnerabilitiesRead)
+    {
+        rows.push_back(row("CPU vulnerabilities", {}, "/sys/devices/system/cpu/vulnerabilities couldn't be read"));
+        return section;
+    }
+    rows.push_back(row("CPU vulnerabilities", formatVulnerabilitySummary(security.vulnerabilities), "The kernel lists none"));
+    for (const Platform::CpuVulnerability& item : security.vulnerabilities)
+    {
+        rows.push_back(row(formatVulnerabilityName(item.name), item.status));
+    }
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot, const Core::GraphicsHostInfo& host)
 {
     std::vector<Section> sections;
@@ -775,6 +943,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.storage.available)
     {
         sections.push_back(buildStorageSection(snapshot.storage));
+    }
+    if (snapshot.security.available)
+    {
+        sections.push_back(buildSecuritySection(snapshot.security));
     }
     if (snapshot.graphics.available)
     {

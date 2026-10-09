@@ -147,6 +147,17 @@ struct VisibleSection
 /// with its EDID serial as an identifier, and any monitor no display matched.
 [[nodiscard]] Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core::GraphicsHostInfo& host);
 
+/// A CPU vulnerability's name as the section labels it: the kernel's file name with its underscores as
+/// spaces and well-known acronyms capitalised ("spectre_v2" -> "Spectre v2", "mds" -> "MDS").
+[[nodiscard]] std::string formatVulnerabilityName(std::string_view name);
+
+/// "3 vulnerable, 12 mitigated, 9 not affected", the counts that are non-zero; empty for none.
+[[nodiscard]] std::string formatVulnerabilitySummary(std::span<const Platform::CpuVulnerability> vulnerabilities);
+
+/// The Security section (#1514): Secure Boot, the TPM, the security modules, SELinux and AppArmor, the
+/// kernel lockdown mode, then the CPU vulnerabilities, a summary row and one row per vulnerability.
+[[nodiscard]] Section buildSecuritySection(const Platform::PlatformSecurityInfo& security);
+
 /// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
 /// for the Graphics & displays section, captured on the UI thread.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,

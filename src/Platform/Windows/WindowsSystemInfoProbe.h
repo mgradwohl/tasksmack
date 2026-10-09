@@ -21,6 +21,12 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] CommitPagingInfo readCommitPaging() override;
     [[nodiscard]] StorageInfo readStorage() override;
     [[nodiscard]] GraphicsInfo readGraphics() override;
+    /// Not read yet: Secure Boot, the TPM, HVCI and Kernel DMA Protection are the Windows lane's
+    /// follow-up to #1514, so the section is left out on Windows.
+    [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override
+    {
+        return {};
+    }
 };
 
 } // namespace Platform

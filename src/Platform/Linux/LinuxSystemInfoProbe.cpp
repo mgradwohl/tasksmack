@@ -4,6 +4,7 @@
 #include "LinuxFirmwareInfo.h"
 #include "LinuxGraphics.h"
 #include "LinuxOsInfo.h"
+#include "LinuxPlatformSecurity.h"
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UserNameLookup.h"
@@ -130,6 +131,13 @@ GraphicsInfo LinuxSystemInfoProbe::readGraphics()
     LinuxGraphics::readGraphicsFacts(m_Root, info);
     info.displayServer = LinuxGraphics::displayServer(
         environmentString("XDG_SESSION_TYPE"), environmentString("WAYLAND_DISPLAY"), environmentString("DISPLAY"));
+    return info;
+}
+
+PlatformSecurityInfo LinuxSystemInfoProbe::readPlatformSecurity()
+{
+    PlatformSecurityInfo info;
+    LinuxPlatformSecurity::readPlatformSecurityFacts(m_Root, info);
     return info;
 }
 
