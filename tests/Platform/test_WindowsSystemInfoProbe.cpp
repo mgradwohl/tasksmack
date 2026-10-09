@@ -1,9 +1,11 @@
 /// @file test_WindowsSystemInfoProbe.cpp
 /// @brief The real WindowsSystemInfoProbe (#1512), smoke-tested: it reports an edition and a build,
-/// and the session facts any signed-in test run has; and the real SMBIOS table (#1513) parses.
+/// and the session facts any signed-in test run has; the real SMBIOS table (#1513) parses; and the
+/// memory modules and installed/usable memory (#1515), real and through a faked function table.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/SmbiosParser.h"
+#include "Platform/Windows/WindowsInstalledMemory.h"
 #include "Platform/Windows/WindowsSystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -82,6 +84,67 @@ TEST(WindowsSystemInfoProbeTest, RealSmbiosTableParses)
     EXPECT_FALSE(info.biosVersion.empty());
     EXPECT_FALSE(info.smbiosVersion.empty());
     EXPECT_NE(info.firmwareMode, FirmwareMode::Unknown);
+}
+
+TEST(WindowsSystemInfoProbeTest, ReadsMemoryModules)
+{
+    WindowsSystemInfoProbe probe;
+    const MemoryModulesInfo info = probe.readMemoryModules();
+    EXPECT_TRUE(info.available);
+    EXPECT_FALSE(info.tableNeedsAdmin);
+    EXPECT_GT(info.usableBytes, 0U);
+    // A VM's or a test runner's firmware may list no memory devices; when it lists some, they are
+    // consistent.
+    if (info.tableRead && !info.modules.empty())
+    {
+        EXPECT_GE(info.slotCount, info.modules.size());
+    }
+    if (info.installedBytes != 0)
+    {
+        EXPECT_GE(info.installedBytes, info.usableBytes);
+    }
+}
+
+BOOL WINAPI installedSixteenGib(PULONGLONG kib)
+{
+    *kib = 16ULL * 1024 * 1024;
+    return TRUE;
+}
+
+BOOL WINAPI installedFails(PULONGLONG /*kib*/)
+{
+    SetLastError(ERROR_INVALID_DATA);
+    return FALSE;
+}
+
+BOOL WINAPI statusFifteenGib(LPMEMORYSTATUSEX status)
+{
+    EXPECT_EQ(status->dwLength, sizeof(MEMORYSTATUSEX));
+    status->ullTotalPhys = 15ULL * 1024 * 1024 * 1024;
+    return TRUE;
+}
+
+BOOL WINAPI statusFails(LPMEMORYSTATUSEX /*status*/)
+{
+    return FALSE;
+}
+
+TEST(WindowsSystemInfoProbeTest, InstalledAndUsableMemoryThroughTheFunctionTable)
+{
+    MemoryModulesInfo info;
+    readInstalledMemory(info, {.getPhysicallyInstalledSystemMemory = &installedSixteenGib, .globalMemoryStatusEx = &statusFifteenGib});
+    EXPECT_EQ(info.installedBytes, 16ULL * 1024 * 1024 * 1024);
+    EXPECT_EQ(info.usableBytes, 15ULL * 1024 * 1024 * 1024);
+
+    // A failed call leaves its value unknown and doesn't touch the other.
+    MemoryModulesInfo failed;
+    readInstalledMemory(failed, {.getPhysicallyInstalledSystemMemory = &installedFails, .globalMemoryStatusEx = &statusFifteenGib});
+    EXPECT_EQ(failed.installedBytes, 0U);
+    EXPECT_EQ(failed.usableBytes, 15ULL * 1024 * 1024 * 1024);
+    MemoryModulesInfo neither;
+    readInstalledMemory(neither, {.getPhysicallyInstalledSystemMemory = &installedFails, .globalMemoryStatusEx = &statusFails});
+    EXPECT_EQ(neither.installedBytes, 0U);
+    EXPECT_EQ(neither.usableBytes, 0U);
 }
 
 } // namespace

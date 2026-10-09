@@ -2,14 +2,17 @@
 
 // The Linux Firmware & board facts (#1513), read under an injected root ("/" in the app, a fixture tree
 // in tests): /sys/class/dmi/id, UEFI from /sys/firmware/efi, and the SMBIOS version from the entry
-// point. The serials, the UUID and the entry point are root-only on most systems. Standard library only,
-// so the fixture tests build and run everywhere.
+// point. The serials, the UUID and the entry point are root-only on most systems. Also the Memory
+// modules facts (#1515): the raw SMBIOS table /sys/firmware/dmi/tables/DMI (root-only, 0400) and
+// MemTotal from /proc/meminfo. No helper or dmidecode is ever run. Standard library only, so the
+// fixture tests build and run everywhere.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 #include "Platform/SmbiosParser.h"
 
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -100,6 +103,58 @@ inline void readFirmwareFacts(const std::filesystem::path& root, FirmwareInfo& i
     {
         info.smbiosVersionNeedsAdmin = std::filesystem::exists(entryPoint, ec);
     }
+}
+
+/// MemTotal from /proc/meminfo's text, in bytes; 0 when it isn't there.
+[[nodiscard]] inline std::uint64_t parseMemTotalBytes(std::string_view meminfo)
+{
+    constexpr std::string_view KEY = "MemTotal:";
+    constexpr std::uint64_t KIB = 1024;
+    std::size_t start = 0;
+    while (start < meminfo.size())
+    {
+        std::size_t end = meminfo.find('\n', start);
+        if (end == std::string_view::npos)
+        {
+            end = meminfo.size();
+        }
+        const std::string_view line = meminfo.substr(start, end - start);
+        if (line.starts_with(KEY))
+        {
+            const std::string_view rest = line.substr(KEY.size());
+            const std::size_t digits = rest.find_first_not_of(' ');
+            if (digits == std::string_view::npos)
+            {
+                return 0;
+            }
+            std::uint64_t kib = 0;
+            const auto [ptr, error] = std::from_chars(rest.data() + digits, rest.data() + rest.size(), kib);
+            return error == std::errc{} ? kib * KIB : 0;
+        }
+        start = end + 1;
+    }
+    return 0;
+}
+
+/// The Memory modules facts under @p root into @p info. The module list needs the raw SMBIOS table, which
+/// is root-only: when it exists but can't be read, tableNeedsAdmin is set and only the usable total is
+/// filled. Linux has no installed-memory figure of its own; installedBytes stays 0 (the page totals
+/// the modules instead).
+inline void readMemoryModuleFacts(const std::filesystem::path& root, MemoryModulesInfo& info, const ReadablePredicate& readable = canOpen)
+{
+    info.available = true;
+    info.usableBytes = parseMemTotalBytes(LinuxOsInfo::readFile(root / "proc/meminfo"));
+
+    const std::filesystem::path table = root / "sys/firmware/dmi/tables/DMI";
+    if (!readable(table))
+    {
+        std::error_code ec;
+        info.tableNeedsAdmin = std::filesystem::exists(table, ec);
+        return;
+    }
+    const std::string text = LinuxOsInfo::readFile(table);
+    const std::vector<std::uint8_t> bytes(text.begin(), text.end());
+    Smbios::decodeMemoryTable(bytes, info);
 }
 
 } // namespace Platform::LinuxFirmwareInfo
