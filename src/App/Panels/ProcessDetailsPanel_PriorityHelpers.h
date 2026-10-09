@@ -423,6 +423,9 @@ struct DiscretePrioritySlider
     std::span<const PrioritySliderStop> stops;
     const PrioritySliderStop* beyondStart = nullptr;
     const char* tooltip = ""; ///< Shown while the track is hovered
+    /// Stops that begin a new band (a class, for the I/O slider's Realtime | Best-effort | Idle, #1540):
+    /// a divider is drawn across the track before each. Empty: one band.
+    std::span<const int32_t> bandStarts;
 };
 
 /// Where stop @p index of @p count sits on the track, 0 (left) to 1 (right); a lone stop sits at 0.
@@ -599,6 +602,7 @@ inline constexpr DiscretePrioritySlider WINDOWS_PRIORITY_SLIDER{
                "  Left/Right, Up/Down: One class higher or lower\n"
                "  Home/End: Highest/lowest class\n\n"
                "Note: Changing another user's or an elevated process typically requires administrator privileges",
+    .bandStarts = {},
 };
 
 /// The nice value to pass setPriority() for slider stop @p picked when @p shown is the value on show:

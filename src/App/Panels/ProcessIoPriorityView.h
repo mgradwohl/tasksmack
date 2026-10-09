@@ -19,12 +19,14 @@
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "PriorityEditTarget.h"
+#include "ProcessDetailsPanel_PriorityHelpers.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -146,6 +148,123 @@ inline constexpr std::array<Platform::IoPriorityClass, 4> SETTABLE_IO_PRIORITY_C
         .ioClass = priority.ioClass,
         .level = ioClassHasLevels(priority.ioClass) ? Domain::Priority::clampIoLevel(priority.level) : 0,
     };
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The I/O priority slider (#1540): one discrete slider, highest priority first, in class bands --
+// Realtime 0..7 | Best-effort 0..7 | Idle -- each stop named in ionice(1)'s words. Realtime needs
+// CAP_SYS_NICE, so without it the slider starts at Best-effort 0 and a process already in Realtime is
+// shown beyond the start, hollow, never picked (as Windows' Realtime class is, #1538).
+// ---------------------------------------------------------------------------------------------------
+
+/// Levels per class with levels (0 highest to 7 lowest).
+inline constexpr std::int32_t IO_LEVEL_COUNT = Domain::Priority::MAX_IO_LEVEL - Domain::Priority::MIN_IO_LEVEL + 1;
+
+/// The slider's ImGui ID, after "###" in every stop's label so it holds as the value moves.
+inline constexpr const char* IO_PRIORITY_SLIDER_ID = "###io_priority_slider";
+
+/// Every stop with Realtime, highest priority first. A stop's colour runs with the nice scale's: Realtime
+/// in the high-priority colours, Best-effort through normal, Idle the lowest.
+inline constexpr std::array<PrioritySliderStop, (2 * IO_LEVEL_COUNT) + 1> IO_PRIORITY_STOPS = {{
+    {.name = "realtime 0", .itemLabel = "I/O priority: realtime 0###io_priority_slider", .colorNice = -20},
+    {.name = "realtime 1", .itemLabel = "I/O priority: realtime 1###io_priority_slider", .colorNice = -19},
+    {.name = "realtime 2", .itemLabel = "I/O priority: realtime 2###io_priority_slider", .colorNice = -18},
+    {.name = "realtime 3", .itemLabel = "I/O priority: realtime 3###io_priority_slider", .colorNice = -17},
+    {.name = "realtime 4", .itemLabel = "I/O priority: realtime 4###io_priority_slider", .colorNice = -16},
+    {.name = "realtime 5", .itemLabel = "I/O priority: realtime 5###io_priority_slider", .colorNice = -15},
+    {.name = "realtime 6", .itemLabel = "I/O priority: realtime 6###io_priority_slider", .colorNice = -14},
+    {.name = "realtime 7", .itemLabel = "I/O priority: realtime 7###io_priority_slider", .colorNice = -13},
+    {.name = "best-effort 0", .itemLabel = "I/O priority: best-effort 0###io_priority_slider", .colorNice = -9},
+    {.name = "best-effort 1", .itemLabel = "I/O priority: best-effort 1###io_priority_slider", .colorNice = -6},
+    {.name = "best-effort 2", .itemLabel = "I/O priority: best-effort 2###io_priority_slider", .colorNice = -3},
+    {.name = "best-effort 3", .itemLabel = "I/O priority: best-effort 3###io_priority_slider", .colorNice = 0},
+    {.name = "best-effort 4", .itemLabel = "I/O priority: best-effort 4###io_priority_slider", .colorNice = 3},
+    {.name = "best-effort 5", .itemLabel = "I/O priority: best-effort 5###io_priority_slider", .colorNice = 6},
+    {.name = "best-effort 6", .itemLabel = "I/O priority: best-effort 6###io_priority_slider", .colorNice = 9},
+    {.name = "best-effort 7", .itemLabel = "I/O priority: best-effort 7###io_priority_slider", .colorNice = 12},
+    {.name = "idle", .itemLabel = "I/O priority: idle###io_priority_slider", .colorNice = 19},
+}};
+
+/// The Realtime state a process can be in without TaskSmack being able to set it: shown beyond the
+/// start of the slider without Realtime, hollow.
+inline constexpr PrioritySliderStop IO_REALTIME_BEYOND_STOP{
+    .name = "realtime", .itemLabel = "I/O priority: realtime###io_priority_slider", .colorNice = -20};
+
+/// Where the Best-effort and Idle bands begin, with Realtime's stops and without them.
+inline constexpr std::array<std::int32_t, 2> IO_BANDS_WITH_REALTIME = {IO_LEVEL_COUNT, 2 * IO_LEVEL_COUNT};
+inline constexpr std::array<std::int32_t, 1> IO_BANDS_WITHOUT_REALTIME = {IO_LEVEL_COUNT};
+
+inline constexpr const char* IO_PRIORITY_SLIDER_TOOLTIP = "I/O scheduling class and level (ionice):\n"
+                                                          "  Realtime: served before everything else; needs CAP_SYS_NICE (or root)\n"
+                                                          "  Best-effort: shares the disk by level, 0 (highest) to 7 (lowest)\n"
+                                                          "  Idle: gets the disk only when no other process wants it\n"
+                                                          "A hollow thumb is the default, derived from the nice value.\n\n"
+                                                          "Keyboard shortcuts:\n"
+                                                          "  Left/Right, Up/Down: One step higher or lower\n"
+                                                          "  Home/End: Highest/lowest";
+
+/// The slider with every class: CAP_SYS_NICE (or root) may set Realtime.
+inline constexpr DiscretePrioritySlider IO_PRIORITY_SLIDER{
+    .stops = IO_PRIORITY_STOPS,
+    .beyondStart = nullptr,
+    .tooltip = IO_PRIORITY_SLIDER_TOOLTIP,
+    .bandStarts = IO_BANDS_WITH_REALTIME,
+};
+
+/// The slider without Realtime, which needs a privilege TaskSmack lacks: Best-effort 0 first.
+inline constexpr DiscretePrioritySlider IO_PRIORITY_SLIDER_NO_REALTIME{
+    .stops = std::span<const PrioritySliderStop>(IO_PRIORITY_STOPS).subspan(IO_LEVEL_COUNT),
+    .beyondStart = &IO_REALTIME_BEYOND_STOP,
+    .tooltip = IO_PRIORITY_SLIDER_TOOLTIP,
+    .bandStarts = IO_BANDS_WITHOUT_REALTIME,
+};
+
+/// Where the slider shows @p priority, and whether that is the inherited default (drawn hollow).
+struct IoStop
+{
+    std::int32_t index = 0; ///< A stop, or PRIORITY_STOP_BEYOND_START for Realtime the slider lacks
+    bool inherited = false; ///< Never set (IoPriorityClass::None): at the Best-effort level nice derives
+};
+
+/// The stop for @p priority on the slider with Realtime (@p realtimeSettable) or without. A class never
+/// set sits at the Best-effort level the kernel derives from @p nice (ioLevelForNice()), marked inherited.
+[[nodiscard]] constexpr IoStop ioStopFor(const Platform::IoPriority& priority, std::int32_t nice, bool realtimeSettable) noexcept
+{
+    const std::int32_t bestEffortStart = realtimeSettable ? IO_LEVEL_COUNT : 0;
+    const std::int32_t level = Domain::Priority::clampIoLevel(priority.level);
+    switch (priority.ioClass)
+    {
+    case Platform::IoPriorityClass::Realtime:
+        return {.index = realtimeSettable ? level : PRIORITY_STOP_BEYOND_START, .inherited = false};
+    case Platform::IoPriorityClass::BestEffort:
+        return {.index = bestEffortStart + level, .inherited = false};
+    case Platform::IoPriorityClass::Idle:
+        return {.index = bestEffortStart + IO_LEVEL_COUNT, .inherited = false};
+    case Platform::IoPriorityClass::None:
+    default:
+        return {.index = bestEffortStart + Domain::Priority::ioLevelForNice(nice), .inherited = true};
+    }
+}
+
+/// The class and level stop @p index stands for on the slider with Realtime (@p realtimeSettable) or
+/// without: ioStopFor()'s inverse for every stop (an explicit class, never None).
+[[nodiscard]] constexpr Platform::IoPriority ioPriorityForStop(std::int32_t index, bool realtimeSettable) noexcept
+{
+    const std::int32_t stopCount = realtimeSettable ? (2 * IO_LEVEL_COUNT) + 1 : IO_LEVEL_COUNT + 1;
+    std::int32_t i = std::clamp(index, 0, stopCount - 1);
+    if (realtimeSettable)
+    {
+        if (i < IO_LEVEL_COUNT)
+        {
+            return {.ioClass = Platform::IoPriorityClass::Realtime, .level = i};
+        }
+        i -= IO_LEVEL_COUNT;
+    }
+    if (i < IO_LEVEL_COUNT)
+    {
+        return {.ioClass = Platform::IoPriorityClass::BestEffort, .level = i};
+    }
+    return {.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
 }
 
 /// The current I/O priority as the header shows it, in ionice(1)'s words: "best-effort 4", "idle",
