@@ -263,6 +263,7 @@ set(COMMON_TEST_SOURCES
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
+    App/test_GpuSectionRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
@@ -461,6 +462,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuCoresSection.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StorageSection.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/NetworkSection.cpp
+    # The GPU tab, run headless (test_GpuSectionRender.cpp, #1545)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/GpuSection.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp
