@@ -1,5 +1,7 @@
 #include "SelectOverride.h"
 
+#include "Core/ConfigDirOverride.h"
+
 #ifdef _WIN32
 #include "Platform/Windows/WinString.h"
 #endif
@@ -90,7 +92,9 @@ bool testHookActive()
     {
         return SDL_getenv(std::string(variable).c_str());
     };
-    return anyTestHookActive(read(MAIN_TAB_ENV_VAR), read(PID_ENV_VAR), read(NAME_ENV_VAR), read(TAB_ENV_VAR), read(OPEN_ENV_VAR));
+    // TASKSMACK_CONFIG_DIR (#1596) is a test hook too.
+    return Core::ConfigDirOverride::active().has_value() ||
+           anyTestHookActive(read(MAIN_TAB_ENV_VAR), read(PID_ENV_VAR), read(NAME_ENV_VAR), read(TAB_ENV_VAR), read(OPEN_ENV_VAR));
 }
 
 std::optional<StartupDialog> startupDialog()
