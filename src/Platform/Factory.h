@@ -8,6 +8,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -53,5 +54,9 @@ namespace Platform
 /// Creates the platform-appropriate IServiceProbe implementation (#800). Linux returns an
 /// UnsupportedServiceProbe (capabilities().canEnumerate false) until systemd support lands.
 [[nodiscard]] std::unique_ptr<IServiceProbe> makeServiceProbe();
+
+/// Creates the platform-appropriate IServiceActions implementation (#1577). Linux returns an
+/// UnsupportedServiceActions (every capability false) until systemd control lands.
+[[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
 
 } // namespace Platform

@@ -95,6 +95,7 @@ set(COMMON_TEST_SOURCES
     test_main.cpp
     Benchmarks/test_AllocationCounter.cpp
     Core/test_Application.cpp
+    Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
@@ -181,6 +182,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessFilterCache.cpp
     App/test_ProcessDisplayFreeze.cpp
     App/test_CpuCoreGridIds.cpp
+    App/test_CpuCoreKinds.cpp
     App/test_CpuSummaryText.cpp
     App/test_CpuDetailsText.cpp
     App/test_CpuDetailsBlockRender.cpp
@@ -192,6 +194,8 @@ set(COMMON_TEST_SOURCES
     Platform/test_ProcessEnvironment.cpp
     Platform/test_CpuAffinity.cpp
     Platform/test_ThreadName.cpp
+    Platform/test_CurrentProcess.cpp
+    Platform/test_Factory.cpp
     App/test_FpsCounter.cpp
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
@@ -224,6 +228,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessEnvironmentViewRender.cpp
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
+    App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp
     App/test_StartupViewRender.cpp
     App/test_SamplingGate.cpp
@@ -242,6 +247,7 @@ set(COMMON_TEST_SOURCES
     App/test_HelpContent.cpp
     App/test_HelpWindowRender.cpp
     App/test_KeyboardInputRender.cpp
+    App/test_MainTabSelectionRender.cpp
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
@@ -259,6 +265,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
 )
@@ -282,6 +289,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
@@ -315,7 +323,6 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxROCmGPUProbe.cpp
     Platform/test_NetlinkSocketStats.cpp
     Platform/test_DRMGPUProbe.cpp
-    Platform/test_Factory.cpp
 )
 set(LINUX_INTEGRATION_TEST_SOURCES
     Integration/test_CrossLayer.cpp
@@ -339,6 +346,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
@@ -389,6 +397,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/ConfigDirOverride.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
@@ -425,6 +434,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/NetworkSection.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServicesView.cpp
     # The Startup tab's table (#801), run headless (test_StartupViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupView.cpp
@@ -444,6 +454,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
+    ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticProbes.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/Synthetic/SyntheticWorkload.cpp
     # UI source files under test (Note: Theme.cpp excluded - requires ImGui/ImPlot runtime context)

@@ -133,7 +133,7 @@ void ShellLayer::onAttach()
     {
         spdlog::warn("{}", mainTab.warning);
     }
-    m_StartupTabIndex = mainTab.index;
+    m_StartupTab = SelectOverride::PendingMainTab(mainTab.id);
     if (const std::optional<SelectOverride::Target>& select = SelectOverride::active(); select.has_value())
     {
         m_ProcessesPanel.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
@@ -658,15 +658,19 @@ void ShellLayer::renderTabBar()
         // Track previous tab to emit change event if selection changes
         const auto* previousTab = &m_Tabs.activeTab();
 
+        // TASKSMACK_TAB's tab is found by its registered id, not its position, and asked for on every
+        // frame until BeginTabItem() reports it selected (#1575).
         std::size_t index = 0;
         for (const auto& tab : m_Tabs.tabs())
         {
             ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
-            if ((m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") || m_StartupTabIndex == index)
+            if ((m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") || m_StartupTab.wantsSelected(tab.eventName))
             {
                 tabFlags |= ImGuiTabItemFlags_SetSelected;
             }
-            if (ImGui::BeginTabItem(tab.label(), nullptr, tabFlags))
+            const bool selected = ImGui::BeginTabItem(tab.label(), nullptr, tabFlags);
+            m_StartupTab.onTabSubmitted(tab.eventName, selected);
+            if (selected)
             {
                 m_Tabs.select(index);
                 ImGui::EndTabItem();
@@ -674,7 +678,13 @@ void ShellLayer::renderTabBar()
             ++index;
         }
         m_ShowDetailsTabRequested = false;
-        m_StartupTabIndex.reset();
+        if (const std::optional<std::string> dropped = m_StartupTab.onFrameEnd(); dropped.has_value())
+        {
+            spdlog::warn("{}: tab '{}' was not selected after {} frames; ignored",
+                         SelectOverride::MAIN_TAB_ENV_VAR,
+                         *dropped,
+                         SelectOverride::MAX_MAIN_TAB_FRAMES);
+        }
 
         ImGui::EndTabBar();
 

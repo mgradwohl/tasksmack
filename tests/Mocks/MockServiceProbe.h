@@ -55,6 +55,16 @@ class MockServiceProbe : public Platform::IServiceProbe
         return m_EnumerateCount;
     }
 
+    void forgetCachedConfig() override
+    {
+        ++m_ForgetCount;
+    }
+
+    [[nodiscard]] int forgetCount() const noexcept
+    {
+        return m_ForgetCount;
+    }
+
   private:
     /// A probe that can list services (every other capability left false).
     [[nodiscard]] static Platform::ServiceCapabilities enumerable()
@@ -68,6 +78,7 @@ class MockServiceProbe : public Platform::IServiceProbe
     std::vector<Platform::ServiceInfo> m_Services;
     std::string m_FailureReason;
     int m_EnumerateCount = 0;
+    int m_ForgetCount = 0;
 };
 
 } // namespace Mocks

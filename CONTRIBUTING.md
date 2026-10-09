@@ -510,26 +510,35 @@ Agents must not inject clicks or keys, so five test-only environment variables (
 once at startup, select a process, open a tab or open the Help or About window by themselves. With `TASKSMACK_SELECT_PID` or
 `TASKSMACK_SELECT_NAME`, the process is selected when it first appears in a snapshot, exactly as a
 click and the row menu's **Details** do, and Process Details opens. If it has not appeared after 20
-snapshots, one warning is logged and nothing is selected. While any of the five variables is set,
-the startup "Limited Data" notice is not shown, since it would cover the capture. Unset, the
-variables do nothing.
+snapshots, one warning is logged and nothing is selected. While any of the five variables, or
+`TASKSMACK_CONFIG_DIR` below, is set, the startup "Limited Data" notice is not shown, since it would
+cover the capture. Unset, the variables do nothing.
 
 | Variable | Value |
 |---|---|
 | `TASKSMACK_SELECT_PID` | A PID. Wins over `TASKSMACK_SELECT_NAME`. |
 | `TASKSMACK_SELECT_NAME` | An executable name, e.g. `explorer.exe`; the first match. Case-insensitive on Windows, as Windows compares file names; exact on Linux. |
 | `TASKSMACK_DETAILS_TAB` | `overview` (default), `gpu` or `network`. |
-| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. |
+| `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `system`/`machine` and `details`. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
+| `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
+
+**Every agent and developer test launch should set `TASKSMACK_CONFIG_DIR` to a fresh directory.**
+Without it, a test instance shares the lock and `config.toml` with the TaskSmack you use every day:
+whichever starts second is told "TaskSmack is already running" and exits, and a test instance that
+saves overwrites your settings. A per-run temp directory starts each run from default settings and
+lets it run beside your own instance. (`tasksmack-debug.log` stays in the temp directory either way.)
 
 Combined with `TASKSMACK_WINDOW` for a fixed size, then captured with `PrintWindow` (no input, and it
 works while the window is covered):
 
 ```powershell
+$env:TASKSMACK_CONFIG_DIR = Join-Path $env:TEMP "tasksmack-test-$PID"
 $env:TASKSMACK_WINDOW='1900x1000'; $env:TASKSMACK_SELECT_NAME='explorer.exe'; $env:TASKSMACK_DETAILS_TAB='overview'
 $p = Start-Process .\build\win-debug\bin\TaskSmack.exe -PassThru
 # Wait a few seconds, then PrintWindow($p.MainWindowHandle, hdc, PW_RENDERFULLCONTENT = 2) into a bitmap.
-Stop-Process -Id $p.Id -Force   # not a graceful close, which would save your config.toml
+Stop-Process -Id $p.Id -Force
+Remove-Item -Recurse -Force $env:TASKSMACK_CONFIG_DIR
 ```
 
 ## VS Code
@@ -2037,7 +2046,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
-CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only the files that declare or patch dependencies (`cmake/Dependencies.cmake`, `cmake/patches/**`, `tests/CMakeLists.txt`, `benchmarks/CMakeLists.txt`). The `clang-tidy` jobs don't use ccache (clang-tidy doesn't compile through it).
+CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each CI, Sanitizers and Heavy Checks run on `main` and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The `clang-tidy` jobs don't use ccache (clang-tidy doesn't compile through it).
 
 ### Security & Fuzzing
 - **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
@@ -2046,6 +2055,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
 - **`dependency-review.yml`**: Scans PRs to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` runs TSan only, because ASan+UBSan already gates every PR in `ci.yml`; manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
+- **`cache-prune.yml`**: After each CI, Sanitizers and Heavy Checks run on `main`, deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix and each OS's FetchContent cache). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` (CI -- which includes the nightly full `clang-tidy` --, CodeQL, Sanitizers, Heavy Checks, OSV, Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates a single tracking issue labelled `ci-red-main` while any of them is red, and closes it when all are green again (#1406).
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 

@@ -20,6 +20,7 @@
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -520,6 +521,67 @@ TEST_F(SystemSectionsRenderTest, CpuCoresChartsOnlyTheCoresTheProbeReported)
     EXPECT_EQ(text.find("Core 1"), std::string::npos) << text;
     // Core 2 has no current reading: N/A, not a fake 0% (#1146).
     EXPECT_NE(text.find(UI::Format::formatPercent(NOT_A_NUMBER)), std::string::npos) << text;
+}
+
+/// The captured line that names @p core ("Core N"), or empty when none does.
+[[nodiscard]] std::string lineNaming(const std::string& text, const std::string& core)
+{
+    std::size_t start = 0;
+    while (start < text.size())
+    {
+        const std::size_t end = std::min(text.find('\n', start), text.size());
+        const std::string line = text.substr(start, end - start);
+        const std::size_t at = line.find(core);
+        // "Core 1" must not match "Core 10".
+        if (at != std::string::npos && (at + core.size() == line.size() || line[at + core.size()] < '0' || line[at + core.size()] > '9'))
+        {
+            return line;
+        }
+        start = end + 1;
+    }
+    return {};
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresMarkPerformanceEfficiencyAndLowPowerCoresOnAHybridCpu)
+{
+    // Core Ultra style (#1536): two P-cores (class 2), one E-core (class 1), one LP E-core (class 0).
+    Domain::SystemPublication publication = coresPublication({10.0, 20.0, 30.0, 40.0});
+    publication.snapshot.cpuDetails.efficiencyClassByCoreId = {2, 1, 2, 0};
+    CpuCoresSection::RenderContext ctx{.publication = &publication};
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+
+    const std::string bolt = ICON_FA_BOLT;
+    const std::string leaf = ICON_FA_LEAF;
+    for (const char* pCore : {"Core 0", "Core 2"})
+    {
+        const std::string line = lineNaming(text, pCore);
+        EXPECT_NE(line.find(bolt), std::string::npos) << pCore << ": " << line;
+        EXPECT_EQ(line.find(leaf), std::string::npos) << pCore << ": " << line;
+    }
+    const std::string eCore = lineNaming(text, "Core 1");
+    EXPECT_NE(eCore.find(leaf), std::string::npos) << eCore;
+    EXPECT_EQ(eCore.find("LP"), std::string::npos) << eCore;
+    EXPECT_EQ(eCore.find(bolt), std::string::npos) << eCore;
+    const std::string lpCore = lineNaming(text, "Core 3");
+    EXPECT_NE(lpCore.find(leaf + "LP"), std::string::npos) << lpCore;
+
+    // A homogeneous CPU's charts carry no marker at all, and the same static marker cache follows it.
+    publication.snapshot.cpuDetails.efficiencyClassByCoreId.clear();
+    const std::string plain = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    EXPECT_NE(plain.find("Core 3"), std::string::npos) << plain;
+    EXPECT_EQ(plain.find(bolt), std::string::npos) << plain;
+    EXPECT_EQ(plain.find(leaf), std::string::npos) << plain;
+}
+
+TEST_F(SystemSectionsRenderTest, CpuCoresShowNoMarkerOnAHomogeneousCpu)
+{
+    Domain::SystemPublication publication = coresPublication({10.0, 20.0});
+    publication.snapshot.cpuDetails.efficiencyClassByCoreId = {0, 0}; // One class: not hybrid
+    CpuCoresSection::RenderContext ctx{.publication = &publication};
+    const std::string text = renderAndCapture([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+    EXPECT_NE(text.find("Core 1"), std::string::npos) << text;
+    EXPECT_EQ(text.find(ICON_FA_BOLT), std::string::npos) << text;
+    EXPECT_EQ(text.find(ICON_FA_LEAF), std::string::npos) << text;
 }
 
 // ========== Disk I/O ==========

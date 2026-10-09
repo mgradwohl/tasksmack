@@ -2,16 +2,23 @@
 /// @brief Tests that Platform::Factory functions return valid non-null objects.
 ///
 /// Each make*() function is a one-liner factory. These tests ensure every factory
-/// function is exercised so coverage accounts for all factory implementations.
+/// function is exercised so coverage accounts for all factory implementations, on Linux and
+/// Windows alike (#1566).
 
 #include "Platform/Factory.h"
+// NOLINTBEGIN(misc-include-cleaner) - complete types for the returned unique_ptrs to destroy
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceProbe.h"
+#include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
+// NOLINTEND(misc-include-cleaner)
 
 #include <gtest/gtest.h>
 
@@ -24,43 +31,75 @@ namespace
 
 TEST(FactoryTest, MakeProcessProbeReturnsNonNull)
 {
-    auto probe = makeProcessProbe();
+    const auto probe = makeProcessProbe();
     EXPECT_NE(probe, nullptr);
 }
 
 TEST(FactoryTest, MakeProcessActionsReturnsNonNull)
 {
-    auto actions = makeProcessActions();
+    const auto actions = makeProcessActions();
     EXPECT_NE(actions, nullptr);
 }
 
 TEST(FactoryTest, MakeSystemProbeReturnsNonNull)
 {
-    auto probe = makeSystemProbe();
+    const auto probe = makeSystemProbe();
     EXPECT_NE(probe, nullptr);
 }
 
 TEST(FactoryTest, MakeDiskProbeReturnsNonNull)
 {
-    auto probe = makeDiskProbe();
+    const auto probe = makeDiskProbe();
     EXPECT_NE(probe, nullptr);
 }
 
 TEST(FactoryTest, MakePathProviderReturnsNonNull)
 {
-    auto provider = makePathProvider();
+    const auto provider = makePathProvider();
     EXPECT_NE(provider, nullptr);
 }
 
 TEST(FactoryTest, MakePowerProbeReturnsNonNull)
 {
-    auto probe = makePowerProbe();
+    const auto probe = makePowerProbe();
     EXPECT_NE(probe, nullptr);
 }
 
 TEST(FactoryTest, MakeGPUProbeReturnsNonNull)
 {
-    auto probe = makeGPUProbe();
+    const auto probe = makeGPUProbe();
+    EXPECT_NE(probe, nullptr);
+}
+
+TEST(FactoryTest, MakeProcessEnvironmentReaderReturnsNonNull)
+{
+    const auto reader = makeProcessEnvironmentReader();
+    ASSERT_NE(reader, nullptr);
+#ifdef _WIN32
+    // Not implemented on Windows yet (#179): the Environment section is hidden.
+    EXPECT_NE(dynamic_cast<UnsupportedProcessEnvironmentReader*>(reader.get()), nullptr);
+#endif
+}
+
+TEST(FactoryTest, MakeProcessConnectionsReaderReturnsNonNull)
+{
+    const auto reader = makeProcessConnectionsReader();
+    ASSERT_NE(reader, nullptr);
+#ifdef _WIN32
+    // Not wired up on Windows yet (#1489): the Connections section is hidden.
+    EXPECT_NE(dynamic_cast<UnsupportedProcessConnectionsReader*>(reader.get()), nullptr);
+#endif
+}
+
+TEST(FactoryTest, MakeStartupProbeReturnsNonNull)
+{
+    const auto probe = makeStartupProbe();
+    EXPECT_NE(probe, nullptr);
+}
+
+TEST(FactoryTest, MakeServiceProbeReturnsNonNull)
+{
+    const auto probe = makeServiceProbe();
     EXPECT_NE(probe, nullptr);
 }
 

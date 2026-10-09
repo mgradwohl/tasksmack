@@ -1188,6 +1188,36 @@ TEST(WindowsPDHGPUProbeInstanceCacheTest, CacheClearsPastLimitWithoutLosingCorre
     EXPECT_EQ(reparsed.engineType, "3D");
 }
 
+// #1166: with no GPU Engine instances at all, PDH answers the first (zero-byte) array read with
+// PDH_MORE_DATA and a required size of zero rather than ERROR_SUCCESS. That is a successful, empty
+// read: an idle GPU (current), not a failed one. (Taken as "more data" it would be retried until the
+// attempts ran out and the read failed, as AFailedUtilizationArrayReadIsNotCurrent shows.)
+TEST_F(WindowsPDHGPUProbeInjectedTest, AZeroByteMoreDataAnswerIsAnEmptySuccessfulRead)
+{
+    auto impl = makeInjectedImpl(PDHGPUProbe::Role::Adapter);
+    ASSERT_TRUE(impl->arrayBuffer.empty()); // So the first read offers, and is told it needs, zero bytes
+    m_scenario->hardFailureStatus[impl->utilizationCounter] = static_cast<PDH_STATUS>(PDH_MORE_DATA);
+    PDHGPUProbe probe(std::move(impl));
+
+    static_cast<void>(probe.readProcessGPUCounters());
+    EXPECT_TRUE(probe.adapterUtilization().empty());
+    EXPECT_TRUE(probe.adapterUtilizationCurrent());
+}
+
+TEST(AddEngineUtilizationTest, InstancesOfOneEngineAddUpAndEnginesStayApart)
+{
+    std::vector<std::pair<std::string, double>> byEngine;
+    PDHGPUProbeImplDetail::addEngineUtilization(byEngine, "phys_0_eng_0", 10.0);
+    PDHGPUProbeImplDetail::addEngineUtilization(byEngine, "phys_0_eng_1", 5.0);
+    PDHGPUProbeImplDetail::addEngineUtilization(byEngine, "phys_0_eng_0", 2.5);
+
+    ASSERT_EQ(byEngine.size(), 2U);
+    EXPECT_EQ(byEngine[0].first, "phys_0_eng_0");
+    EXPECT_DOUBLE_EQ(byEngine[0].second, 12.5);
+    EXPECT_EQ(byEngine[1].first, "phys_0_eng_1");
+    EXPECT_DOUBLE_EQ(byEngine[1].second, 5.0);
+}
+
 } // namespace
 } // namespace Platform
 

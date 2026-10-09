@@ -133,6 +133,34 @@ TEST(SelectOverrideTest, NonAsciiNameCaseFollowsWindowsFileNames)
 #endif
 }
 
+TEST(SelectOverrideTest, NamesThatAreNotUtf8CompareExactly)
+{
+    // "\xFF" is never valid UTF-8, so Windows can't fold its case through UTF-16 and falls back to an
+    // exact comparison (#1566): the same bytes match, a case difference elsewhere in the name doesn't.
+    // Other platforms compare process names exactly anyway.
+    EXPECT_TRUE(App::SelectOverride::processNamesEqual("\xFF"
+                                                       "app.exe",
+                                                       "\xFF"
+                                                       "app.exe"));
+    EXPECT_FALSE(App::SelectOverride::processNamesEqual("\xFF"
+                                                        "app.exe",
+                                                        "\xFF"
+                                                        "APP.exe"));
+    EXPECT_FALSE(App::SelectOverride::processNamesEqual("\xFF"
+                                                        "app.exe",
+                                                        "app.exe"));
+#ifdef _WIN32
+    EXPECT_FALSE(App::SelectOverride::tabNamesEqual("\xFF"
+                                                    "gpu",
+                                                    "\xFF"
+                                                    "GPU"));
+#endif
+    EXPECT_TRUE(App::SelectOverride::tabNamesEqual("\xFF"
+                                                   "gpu",
+                                                   "\xFF"
+                                                   "gpu"));
+}
+
 TEST(SelectOverrideTest, FiredSelectionHandsOverItsDetailsTabOnce)
 {
     Pending pending(Target{.pid = 42, .name = {}, .tab = DetailsTab::Gpu});
@@ -308,19 +336,19 @@ TEST(SelectOverrideTest, UnknownMainTabWarnsOnceAndStillOpensDetails)
     using App::SelectOverride::selectionShowsDetails;
 
     const auto unknown = resolveMainTab("processesx", registeredTabs());
-    EXPECT_FALSE(unknown.index.has_value());
+    EXPECT_FALSE(unknown.id.has_value());
     EXPECT_FALSE(unknown.warning.empty());
     EXPECT_TRUE(selectionShowsDetails(unknown)); // ignored: the selection still opens Process Details
 
     const auto known = resolveMainTab("processes", registeredTabs());
-    EXPECT_EQ(known.index, std::optional<std::size_t>{1});
+    EXPECT_EQ(known.id, std::optional<std::string>{"Processes"});
     EXPECT_TRUE(known.warning.empty());
     EXPECT_FALSE(selectionShowsDetails(known)); // TASKSMACK_TAB wins
 
     for (const char* blank : {static_cast<const char*>(nullptr), "", "  "})
     {
         const auto none = resolveMainTab(blank, registeredTabs());
-        EXPECT_FALSE(none.index.has_value());
+        EXPECT_FALSE(none.id.has_value());
         EXPECT_TRUE(none.warning.empty());
         EXPECT_TRUE(selectionShowsDetails(none));
     }
@@ -368,6 +396,70 @@ TEST(SelectOverrideTest, ParsesTheStartupDialog)
         EXPECT_FALSE(none.dialog.has_value());
         EXPECT_TRUE(none.warning.empty());
     }
+}
+
+// #1575: TASKSMACK_TAB resolves to the tab's registered id, never to its position in the list.
+TEST(SelectOverrideTest, MainTabResolvesToTheRegisteredIdNotAnIndex)
+{
+    using App::SelectOverride::resolveMainTab;
+    using App::SelectOverride::TabInfo;
+    const std::vector<TabInfo> tabs{
+        {.id = "SystemOverview", .text = "MYHOST"},
+        {.id = "Services", .text = "Services"},
+        {.id = "Startup", .text = "Startup"},
+    };
+    EXPECT_EQ(resolveMainTab("startup", tabs).id, std::optional<std::string>{"Startup"});
+    EXPECT_EQ(resolveMainTab("SERVICES", tabs).id, std::optional<std::string>{"Services"});
+    EXPECT_EQ(resolveMainTab("myhost", tabs).id, std::optional<std::string>{"SystemOverview"});
+    EXPECT_EQ(resolveMainTab("machine", tabs).id, std::optional<std::string>{"SystemOverview"});
+}
+
+// #1575: the request is asked for on every frame and stays until its own tab reports selected.
+TEST(SelectOverrideTest, PendingMainTabStaysUntilItsTabReportsSelected)
+{
+    using App::SelectOverride::PendingMainTab;
+    PendingMainTab request(std::optional<std::string>{"Startup"});
+    ASSERT_TRUE(request.pending());
+    EXPECT_TRUE(request.wantsSelected("Startup"));
+    EXPECT_FALSE(request.wantsSelected("Services"));
+    EXPECT_FALSE(request.wantsSelected("startup")); // the registered id, exactly
+
+    // The first frame: ImGui shows another tab (the first one, as it does on a tab bar's first frame).
+    request.onTabSubmitted("SystemOverview", true);
+    request.onTabSubmitted("Services", false);
+    request.onTabSubmitted("Startup", false);
+    EXPECT_FALSE(request.onFrameEnd().has_value());
+    EXPECT_TRUE(request.pending());
+    EXPECT_TRUE(request.wantsSelected("Startup"));
+
+    // A neighbour reporting selected does not count.
+    request.onTabSubmitted("Services", true);
+    EXPECT_TRUE(request.pending());
+
+    // Its own tab does: the request is done and asks for nothing more.
+    request.onTabSubmitted("Startup", true);
+    EXPECT_FALSE(request.pending());
+    EXPECT_FALSE(request.wantsSelected("Startup"));
+    EXPECT_FALSE(request.onFrameEnd().has_value());
+}
+
+TEST(SelectOverrideTest, PendingMainTabIsDroppedOnceAfterTheFrameLimit)
+{
+    using App::SelectOverride::MAX_MAIN_TAB_FRAMES;
+    using App::SelectOverride::PendingMainTab;
+    PendingMainTab request(std::optional<std::string>{"Startup"});
+    for (int frame = 1; frame < MAX_MAIN_TAB_FRAMES; ++frame)
+    {
+        ASSERT_FALSE(request.onFrameEnd().has_value()) << frame;
+    }
+    EXPECT_EQ(request.onFrameEnd(), std::optional<std::string>{"Startup"});
+    EXPECT_FALSE(request.pending());
+    EXPECT_FALSE(request.onFrameEnd().has_value()); // reported once
+
+    PendingMainTab none;
+    EXPECT_FALSE(none.pending());
+    EXPECT_FALSE(none.wantsSelected(""));
+    EXPECT_FALSE(none.onFrameEnd().has_value());
 }
 
 } // namespace
