@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <initializer_list>
 #include <optional>
 #include <span>
 #include <string>
@@ -59,7 +60,124 @@ void appendRowsLinux(const Platform::OsInfo& os, std::vector<Row>& rows)
     rows.push_back(row("Virtualization", os.virtualization));
 }
 
+/// The texts joined by @p separator, empty ones skipped.
+[[nodiscard]] std::string joinNonEmpty(std::initializer_list<std::string_view> parts, std::string_view separator)
+{
+    std::string text;
+    for (const std::string_view part : parts)
+    {
+        if (part.empty())
+        {
+            continue;
+        }
+        if (!text.empty())
+        {
+            text += separator;
+        }
+        text += part;
+    }
+    return text;
+}
+
+/// The label of module @p index: its locator, or with the bank locator in front when another module has
+/// the same locator; "Module N" when the table names neither.
+[[nodiscard]] std::string moduleLabel(std::span<const Platform::MemoryModule> modules, std::size_t index)
+{
+    const Platform::MemoryModule& module = modules[index];
+    if (module.locator.empty())
+    {
+        return module.bankLocator.empty() ? std::format("Module {}", index + 1) : module.bankLocator;
+    }
+    const auto sameLocator = std::ranges::count(modules, module.locator, &Platform::MemoryModule::locator);
+    if (sameLocator > 1 && !module.bankLocator.empty())
+    {
+        return module.bankLocator + " " + module.locator;
+    }
+    return module.locator;
+}
+
+/// Every module's moduleLabel(), with labels that still collide numbered in table order ("Motherboard
+/// #1", "Motherboard #2"): soldered memory often gives every device the same locator and no bank.
+[[nodiscard]] std::vector<std::string> moduleLabels(std::span<const Platform::MemoryModule> modules)
+{
+    std::vector<std::string> labels;
+    labels.reserve(modules.size());
+    for (std::size_t i = 0; i < modules.size(); ++i)
+    {
+        labels.push_back(moduleLabel(modules, i));
+    }
+    const std::vector<std::string> plain = labels;
+    for (std::size_t i = 0; i < labels.size(); ++i)
+    {
+        if (std::ranges::count(plain, plain[i]) > 1)
+        {
+            const auto before = std::count(plain.begin(), plain.begin() + static_cast<std::ptrdiff_t>(i), plain[i]);
+            labels[i] = std::format("{} #{}", plain[i], before + 1);
+        }
+    }
+    return labels;
+}
+
 } // namespace
+
+std::string formatMemoryCapacity(std::uint64_t bytes)
+{
+    constexpr std::uint64_t MIB = std::uint64_t{1024} * 1024;
+    constexpr std::uint64_t GIB = MIB * 1024;
+    if (bytes == 0)
+    {
+        return {};
+    }
+    if (bytes % GIB == 0)
+    {
+        return std::format("{} GiB", bytes / GIB);
+    }
+    if (bytes < GIB && bytes % MIB == 0)
+    {
+        return std::format("{} MiB", bytes / MIB);
+    }
+    return UI::Format::formatBytes(static_cast<double>(bytes));
+}
+
+std::uint64_t installedMemoryBytes(const Platform::MemoryModulesInfo& memory)
+{
+    if (memory.installedBytes != 0 || !memory.tableRead || memory.modules.empty())
+    {
+        return memory.installedBytes;
+    }
+    std::uint64_t total = 0;
+    for (const Platform::MemoryModule& module : memory.modules)
+    {
+        if (module.sizeBytes == 0)
+        {
+            return 0; // an unknown size would understate the total
+        }
+        total += module.sizeBytes;
+    }
+    return total;
+}
+
+std::string formatMemorySpeed(std::uint32_t configuredMts, std::uint32_t ratedMts)
+{
+    if (configuredMts == 0)
+    {
+        return ratedMts == 0 ? std::string{} : std::format("rated {} MT/s", ratedMts);
+    }
+    if (ratedMts == 0 || ratedMts == configuredMts)
+    {
+        return std::format("{} MT/s", configuredMts);
+    }
+    return std::format("{} MT/s (rated {} MT/s)", configuredMts, ratedMts);
+}
+
+std::string formatMemoryModule(const Platform::MemoryModule& module)
+{
+    const std::string capacity = formatMemoryCapacity(module.sizeBytes);
+    const std::string kind = joinNonEmpty({capacity, module.type, module.formFactor}, " ");
+    const std::string speed = formatMemorySpeed(module.configuredSpeedMts, module.speedMts);
+    const std::string maker = joinNonEmpty({module.manufacturer, module.partNumber}, " ");
+    return joinNonEmpty({kind, speed, maker}, ", ");
+}
 
 std::string formatUtcOffset(int minutes)
 {
@@ -166,6 +284,37 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware)
     return section;
 }
 
+Section buildMemorySection(const Platform::MemoryModulesInfo& memory)
+{
+    Section section{.title = "Memory modules", .icon = ICON_FA_MEMORY, .rows = {}};
+    auto& rows = section.rows;
+    // Without the SMBIOS table there are no modules or slots to list; say why once, in their place.
+    const std::string_view tableReason = memory.tableNeedsAdmin ? NEEDS_ADMIN : NOT_REPORTED;
+    const bool hasSlots = memory.tableRead && memory.slotCount > 0;
+    rows.push_back(row("Slots used", hasSlots ? std::format("{} of {}", memory.modules.size(), memory.slotCount) : "", tableReason));
+    rows.push_back(row("Maximum capacity", formatMemoryCapacity(memory.maxCapacityBytes), tableReason));
+    const std::uint64_t installed = installedMemoryBytes(memory);
+    rows.push_back(row("Installed memory", formatMemoryCapacity(installed), tableReason));
+    std::string usable = formatMemoryCapacity(memory.usableBytes);
+    if (memory.usableBytes != 0 && installed > memory.usableBytes)
+    {
+        usable += std::format(" ({} hardware reserved)", formatMemoryCapacity(installed - memory.usableBytes));
+    }
+    rows.push_back(row("Usable memory", std::move(usable)));
+
+    if (!memory.tableRead || memory.modules.empty())
+    {
+        rows.push_back(row("Modules", "", memory.tableRead ? std::string_view{"The SMBIOS table lists no installed memory"} : tableReason));
+        return section;
+    }
+    std::vector<std::string> labels = moduleLabels(memory.modules);
+    for (std::size_t i = 0; i < memory.modules.size(); ++i)
+    {
+        rows.push_back(row(std::move(labels[i]), formatMemoryModule(memory.modules[i])));
+    }
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
 {
     std::vector<Section> sections;
@@ -180,6 +329,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.firmware.available)
     {
         sections.push_back(buildFirmwareSection(snapshot.firmware));
+    }
+    if (snapshot.memory.available)
+    {
+        sections.push_back(buildMemorySection(snapshot.memory));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

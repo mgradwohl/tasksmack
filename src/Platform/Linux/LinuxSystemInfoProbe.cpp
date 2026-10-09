@@ -85,4 +85,11 @@ FirmwareInfo LinuxSystemInfoProbe::readFirmware()
     return info;
 }
 
+MemoryModulesInfo LinuxSystemInfoProbe::readMemoryModules()
+{
+    MemoryModulesInfo info;
+    LinuxFirmwareInfo::readMemoryModuleFacts(m_Root, info);
+    return info;
+}
+
 } // namespace Platform

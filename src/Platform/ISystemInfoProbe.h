@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Platform
 {
@@ -83,6 +84,35 @@ struct FirmwareInfo
     bool smbiosVersionNeedsAdmin = false; ///< Linux: the SMBIOS entry point exists but is readable by root only.
 };
 
+/// One populated memory device (SMBIOS type 17, #1515), decoded but unformatted. A fact the table
+/// doesn't give is left empty or 0.
+struct MemoryModule
+{
+    std::string locator;                  ///< The slot or device locator ("DIMM A1", "ChannelA-DIMM0")
+    std::string bankLocator;              ///< "BANK 0", "P0 CHANNEL A"
+    std::uint64_t sizeBytes = 0;          ///< 0 when the module reports an unknown size
+    std::string type;                     ///< "DDR5", "LPDDR5", ...; empty when unknown
+    std::string formFactor;               ///< "DIMM", "SODIMM", "Row of chips", ...; empty when unknown
+    std::uint32_t speedMts = 0;           ///< The rated (maximum) speed in MT/s
+    std::uint32_t configuredSpeedMts = 0; ///< The speed it runs at, in MT/s
+    std::string manufacturer;
+    std::string partNumber;
+};
+
+/// The Memory modules facts (#1515): the populated modules and slots from SMBIOS types 16 and 17, and
+/// installed against usable memory.
+struct MemoryModulesInfo
+{
+    bool available = false;             ///< The probe read the section at all.
+    bool tableRead = false;             ///< The SMBIOS table was read: modules and slotCount are meaningful.
+    bool tableNeedsAdmin = false;       ///< Linux: the SMBIOS table exists but is readable by root only.
+    std::vector<MemoryModule> modules;  ///< Populated slots only, in table order
+    std::uint32_t slotCount = 0;        ///< Every memory device slot, empty ones included; 0 when unknown
+    std::uint64_t maxCapacityBytes = 0; ///< The system memory arrays' maximum capacity; 0 when unknown
+    std::uint64_t installedBytes = 0;   ///< Physically installed, as the OS reports it (Windows); 0 when unknown
+    std::uint64_t usableBytes = 0;      ///< What the OS can use (installed less hardware-reserved); 0 when unknown
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -110,6 +140,9 @@ class ISystemInfoProbe
 
     /// The Firmware & board facts (#1513); read when hasOs is true.
     [[nodiscard]] virtual FirmwareInfo readFirmware() = 0;
+
+    /// The Memory modules facts (#1515); read when hasOs is true.
+    [[nodiscard]] virtual MemoryModulesInfo readMemoryModules() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -127,6 +160,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] FirmwareInfo readFirmware() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] MemoryModulesInfo readMemoryModules() override
     {
         return {};
     }

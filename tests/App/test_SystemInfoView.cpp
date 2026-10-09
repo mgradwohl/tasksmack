@@ -1,7 +1,8 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
-/// Firmware & board section's rows (#1513), the filter, identifier hiding, the Copy text and unavailable values; then the view headless:
-/// the unsupported and loading states, sections drawn, the filter narrowing and the identifier toggle.
+/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the filter, identifier hiding, the Copy text and
+/// unavailable values; then the view headless: the unsupported and loading states, sections drawn, the filter narrowing and the identifier
+/// toggle.
 
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <span>
@@ -49,7 +51,11 @@ using SystemInfo::Section;
 
 [[nodiscard]] Domain::SystemInfoSnapshot snapshot()
 {
-    return {.version = 3, .readAtUnixSeconds = 1'700'000'000 + 93'784, .os = windowsOs(), .firmware = {}};
+    Domain::SystemInfoSnapshot read;
+    read.version = 3;
+    read.readAtUnixSeconds = 1'700'000'000 + 93'784;
+    read.os = windowsOs();
+    return read;
 }
 
 [[nodiscard]] const Row* findRow(const Section& section, std::string_view label)
@@ -215,6 +221,158 @@ TEST(SystemInfoSectionsTest, FirmwareSectionFollowsTheOsSection)
     ASSERT_EQ(sections.size(), 2U);
     EXPECT_EQ(sections[0].title, "Operating system");
     EXPECT_EQ(sections[1].title, "Firmware & board");
+}
+
+constexpr std::uint64_t GIB = std::uint64_t{1024} * 1024 * 1024;
+
+[[nodiscard]] Platform::MemoryModulesInfo memory()
+{
+    Platform::MemoryModulesInfo info;
+    info.available = true;
+    info.tableRead = true;
+    info.slotCount = 4;
+    info.maxCapacityBytes = 128 * GIB;
+    info.installedBytes = 32 * GIB;
+    info.usableBytes = (32 * GIB) - (std::uint64_t{312} * 1024 * 1024);
+    info.modules.push_back({
+        .locator = "DIMM A1",
+        .bankLocator = "BANK 0",
+        .sizeBytes = 16 * GIB,
+        .type = "DDR5",
+        .formFactor = "DIMM",
+        .speedMts = 6400,
+        .configuredSpeedMts = 5600,
+        .manufacturer = "Samsung",
+        .partNumber = "M323R2GA3BB0-CQKOD",
+    });
+    info.modules.push_back({
+        .locator = "DIMM B1",
+        .bankLocator = "BANK 1",
+        .sizeBytes = 16 * GIB,
+        .type = "DDR5",
+        .formFactor = "DIMM",
+        .speedMts = 5600,
+        .configuredSpeedMts = 5600,
+        .manufacturer = "",
+        .partNumber = "",
+    });
+    return info;
+}
+
+TEST(SystemInfoSectionsTest, FormatsMemoryValues)
+{
+    EXPECT_EQ(SystemInfo::formatMemoryCapacity(0), "");
+    EXPECT_EQ(SystemInfo::formatMemoryCapacity(16 * GIB), "16 GiB");
+    EXPECT_EQ(SystemInfo::formatMemoryCapacity(512ULL * 1024 * 1024), "512 MiB");
+    EXPECT_EQ(SystemInfo::formatMemorySpeed(5600, 6400), "5600 MT/s (rated 6400 MT/s)");
+    EXPECT_EQ(SystemInfo::formatMemorySpeed(5600, 5600), "5600 MT/s");
+    EXPECT_EQ(SystemInfo::formatMemorySpeed(5600, 0), "5600 MT/s");
+    EXPECT_EQ(SystemInfo::formatMemorySpeed(0, 6400), "rated 6400 MT/s");
+    EXPECT_EQ(SystemInfo::formatMemorySpeed(0, 0), "");
+    EXPECT_EQ(SystemInfo::formatMemoryModule(Platform::MemoryModule{}), "");
+}
+
+TEST(SystemInfoSectionsTest, MemorySectionRows)
+{
+    const Section section = SystemInfo::buildMemorySection(memory());
+    EXPECT_EQ(section.title, "Memory modules");
+    EXPECT_EQ(findRow(section, "Slots used")->value, "2 of 4");
+    EXPECT_EQ(findRow(section, "Maximum capacity")->value, "128 GiB");
+    EXPECT_EQ(findRow(section, "Installed memory")->value, "32 GiB");
+    EXPECT_TRUE(findRow(section, "Usable memory")->value.ends_with("(312 MiB hardware reserved)"))
+        << findRow(section, "Usable memory")->value;
+    ASSERT_NE(findRow(section, "DIMM A1"), nullptr);
+    EXPECT_EQ(findRow(section, "DIMM A1")->value, "16 GiB DDR5 DIMM, 5600 MT/s (rated 6400 MT/s), Samsung M323R2GA3BB0-CQKOD");
+    EXPECT_EQ(findRow(section, "DIMM B1")->value, "16 GiB DDR5 DIMM, 5600 MT/s");
+    EXPECT_EQ(findRow(section, "Modules"), nullptr);
+    for (const Row& item : section.rows)
+    {
+        EXPECT_FALSE(item.isIdentifier) << item.label;
+    }
+    // The filter finds a module by its part number or type.
+    EXPECT_EQ(SystemInfo::visibleSections(std::span(&section, 1), "CQKOD", false)[0].rows.size(), 1U);
+}
+
+TEST(SystemInfoSectionsTest, MemoryModuleLabels)
+{
+    // Two modules named "DIMM 0" in different banks get the bank in front; a module with no locator
+    // falls back to its bank, then to its position.
+    Platform::MemoryModulesInfo info = memory();
+    info.modules.at(0).locator = "DIMM 0";
+    info.modules.at(1).locator = "DIMM 0";
+    Platform::MemoryModule unnamed;
+    unnamed.sizeBytes = 8 * GIB;
+    info.modules.push_back(unnamed);
+    unnamed.bankLocator = "BANK 3";
+    info.modules.push_back(unnamed);
+    const Section section = SystemInfo::buildMemorySection(info);
+    EXPECT_NE(findRow(section, "BANK 0 DIMM 0"), nullptr);
+    EXPECT_NE(findRow(section, "BANK 1 DIMM 0"), nullptr);
+    EXPECT_EQ(findRow(section, "Module 3")->value, "8 GiB");
+    EXPECT_NE(findRow(section, "BANK 3"), nullptr);
+
+    // Soldered memory: every device "Motherboard", no bank. They are numbered in table order.
+    Platform::MemoryModulesInfo soldered = memory();
+    for (Platform::MemoryModule& module : soldered.modules)
+    {
+        module.locator = "Motherboard";
+        module.bankLocator.clear();
+    }
+    const Section numbered = SystemInfo::buildMemorySection(soldered);
+    EXPECT_NE(findRow(numbered, "Motherboard #1"), nullptr);
+    EXPECT_NE(findRow(numbered, "Motherboard #2"), nullptr);
+    EXPECT_EQ(findRow(numbered, "Motherboard"), nullptr);
+}
+
+TEST(SystemInfoSectionsTest, InstalledMemoryFallsBackToTheModulesTotal)
+{
+    Platform::MemoryModulesInfo info = memory();
+    EXPECT_EQ(SystemInfo::installedMemoryBytes(info), 32 * GIB); // the OS's own figure
+    info.installedBytes = 0;                                     // Linux: none of its own
+    info.modules.at(1).sizeBytes = 8 * GIB;
+    EXPECT_EQ(SystemInfo::installedMemoryBytes(info), 24 * GIB);
+    EXPECT_EQ(findRow(SystemInfo::buildMemorySection(info), "Installed memory")->value, "24 GiB");
+    info.modules.at(1).sizeBytes = 0; // an unknown size: no total
+    EXPECT_EQ(SystemInfo::installedMemoryBytes(info), 0U);
+    info.tableRead = false;
+    EXPECT_EQ(SystemInfo::installedMemoryBytes(info), 0U);
+}
+
+TEST(SystemInfoSectionsTest, MemoryWithoutTheTableSaysWhy)
+{
+    // Linux, unprivileged: the table is root-only, so only the usable total is known.
+    Platform::MemoryModulesInfo rootOnly;
+    rootOnly.available = true;
+    rootOnly.tableNeedsAdmin = true;
+    rootOnly.usableBytes = 16 * GIB;
+    const Section section = SystemInfo::buildMemorySection(rootOnly);
+    EXPECT_EQ(findRow(section, "Usable memory")->value, "16 GiB");
+    for (const std::string_view label : {"Slots used", "Maximum capacity", "Installed memory", "Modules"})
+    {
+        const Row* item = findRow(section, label);
+        ASSERT_NE(item, nullptr) << label;
+        EXPECT_FALSE(item->available());
+        EXPECT_TRUE(item->unavailableReason.contains("administrator")) << label;
+    }
+
+    // A table that lists no installed memory says so instead.
+    Platform::MemoryModulesInfo empty;
+    empty.available = true;
+    empty.tableRead = true;
+    const Section emptySection = SystemInfo::buildMemorySection(empty);
+    const Row* modules = findRow(emptySection, "Modules");
+    ASSERT_NE(modules, nullptr);
+    EXPECT_FALSE(modules->unavailableReason.contains("administrator"));
+}
+
+TEST(SystemInfoSectionsTest, MemorySectionFollowsTheFirmwareSection)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.firmware = firmware();
+    all.memory = memory();
+    const auto sections = SystemInfo::buildSystemInfoSections(all);
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[2].title, "Memory modules");
 }
 
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
