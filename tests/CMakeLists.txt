@@ -195,6 +195,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxCpuDetails.cpp
     Platform/test_LinuxOsInfo.cpp
     Platform/test_SmbiosParser.cpp
+    Platform/test_GraphicsInfo.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp

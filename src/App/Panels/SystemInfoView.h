@@ -5,6 +5,7 @@
 // runs headless in TaskSmackTests; the content itself is built in SystemInfoSections.h.
 
 #include "App/Panels/SystemInfoSections.h"
+#include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -29,6 +30,10 @@ struct SystemInfoViewState
 {
     std::string filter;
     bool showIdentifiers = false;
+
+    /// Core's graphics facts for the Graphics & displays section (#1519), set by the panel with each new
+    /// read; the sections are built from it and the snapshot together.
+    Core::GraphicsHostInfo host;
 
     std::vector<SystemInfo::Section> sections;
     std::uint64_t sectionsVersion = 0;

@@ -1,12 +1,13 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
 /// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
-/// rows (#1517), the filter,
+/// rows (#1517), the Graphics & displays rows (#1519), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
 /// filter narrowing and the identifier toggle.
 
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
+#include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -21,6 +22,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace App
 {
@@ -651,6 +654,205 @@ TEST(SystemInfoSectionsTest, StorageSectionFollowsCommitPaging)
     EXPECT_EQ(sections[2].title, "Storage");
 }
 
+[[nodiscard]] Platform::GraphicsInfo windowsGraphics()
+{
+    Platform::GraphicsInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.adaptersRead = true;
+    info.adapters.push_back({
+        .name = "NVIDIA GeForce RTX 4070",
+        .vendorId = 0x10DE,
+        .deviceId = 0x2786,
+        .dedicatedBytes = 12ULL << 30U,
+        .sharedBytes = 16ULL << 30U,
+        .location = "01:00.0",
+        .driver = "",
+        .driverVersion = "32.0.15.6094",
+        .driverDate = "2024-09-05",
+    });
+    info.monitorsRead = true;
+    Platform::Monitor monitor;
+    monitor.name = "DELL U2720Q";
+    monitor.serial = "ABC1234";
+    monitor.widthMm = 597;
+    monitor.heightMm = 336;
+    monitor.hasDesktopRect = true;
+    monitor.desktopWidth = 3840;
+    monitor.desktopHeight = 2160;
+    monitor.colorSpace = "BT.2020 PQ";
+    monitor.hdr = true;
+    monitor.bitsPerColor = 10;
+    info.monitors.push_back(monitor);
+    return info;
+}
+
+[[nodiscard]] Core::GraphicsHostInfo windowsHost()
+{
+    Core::GraphicsHostInfo host;
+    host.glVendor = "NVIDIA Corporation";
+    host.glRenderer = "NVIDIA GeForce RTX 4070/PCIe/SSE2";
+    host.glVersion = "4.6.0 NVIDIA 560.94";
+    host.videoDriver = "windows";
+    host.displays.push_back({
+        .name = "DELL U2720Q",
+        .x = 0,
+        .y = 0,
+        .width = 3840,
+        .height = 2160,
+        .pixelWidth = 3840,
+        .pixelHeight = 2160,
+        .refreshHz = 59.94,
+        .contentScale = 1.5F,
+        .primary = true,
+        .hdrEnabled = true,
+    });
+    host.displays.push_back({
+        .name = "Generic PnP Monitor",
+        .x = 3840,
+        .y = 0,
+        .width = 1920,
+        .height = 1080,
+        .pixelWidth = 1920,
+        .pixelHeight = 1080,
+        .refreshHz = 60.0,
+        .contentScale = 1.0F,
+        .primary = false,
+        .hdrEnabled = false,
+    });
+    return host;
+}
+
+/// A Linux adapter: a name, a kernel driver and its module version, a PCI slot.
+[[nodiscard]] Platform::GraphicsAdapter
+linuxAdapter(std::string name, std::string driver, std::string version = {}, std::string location = {})
+{
+    Platform::GraphicsAdapter adapter;
+    adapter.name = std::move(name);
+    adapter.driver = std::move(driver);
+    adapter.driverVersion = std::move(version);
+    adapter.location = std::move(location);
+    return adapter;
+}
+
+[[nodiscard]] Platform::Monitor linuxMonitor(std::string name, std::string connector)
+{
+    Platform::Monitor monitor;
+    monitor.name = std::move(name);
+    monitor.connector = std::move(connector);
+    return monitor;
+}
+
+TEST(SystemInfoSectionsTest, FormatsGraphicsValues)
+{
+    const Platform::GraphicsInfo graphics = windowsGraphics();
+    EXPECT_EQ(SystemInfo::formatAdapter(graphics.adapters[0]), "NVIDIA GeForce RTX 4070, 12 GiB dedicated, 16 GiB shared, PCI 01:00.0");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver(graphics.adapters[0]), "32.0.15.6094 (2024-09-05)");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver(linuxAdapter("", "nvidia", "560.35.03")), "nvidia 560.35.03");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver(linuxAdapter("", "amdgpu")), "amdgpu");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver({}), "");
+
+    const Core::GraphicsHostInfo host = windowsHost();
+    EXPECT_EQ(SystemInfo::formatDisplay(host.displays[0], graphics.monitors.data()),
+              "DELL U2720Q, 3840 \xC3\x97 2160 at 59.94 Hz, 150% scale, 27.0\" (597 \xC3\x97 336 mm), HDR (BT.2020 PQ, 10-bit), primary");
+    EXPECT_EQ(SystemInfo::formatDisplay(host.displays[1], nullptr), "Generic PnP Monitor, 1920 \xC3\x97 1080 at 60 Hz, 100% scale");
+    Core::DisplayInfo hdrOnly = host.displays[1];
+    hdrOnly.hdrEnabled = true;
+    EXPECT_TRUE(SystemInfo::formatDisplay(hdrOnly, nullptr).ends_with(", HDR"));
+}
+
+TEST(SystemInfoSectionsTest, MatchesMonitorsToDisplays)
+{
+    const Core::GraphicsHostInfo host = windowsHost();
+    std::vector<Platform::Monitor> monitors(3);
+    monitors[0].hasDesktopRect = true; // the second display's rectangle
+    monitors[0].desktopX = 3840;
+    monitors[0].desktopWidth = 1920;
+    monitors[0].desktopHeight = 1080;
+    monitors[1].name = "DELL U2720Q"; // the first display's name
+    monitors[2].name = "Elsewhere";
+    const auto matches = SystemInfo::matchMonitors(host.displays, monitors);
+    ASSERT_EQ(matches.size(), 2U);
+    EXPECT_EQ(matches[0], std::optional<std::size_t>{1});
+    EXPECT_EQ(matches[1], std::optional<std::size_t>{0});
+
+    // A lone display and a lone monitor without a rectangle (Linux) pair up; one with a rectangle doesn't.
+    const std::span<const Core::DisplayInfo> one(host.displays.data(), 1);
+    std::vector<Platform::Monitor> lone(1);
+    lone[0].connector = "eDP-1";
+    EXPECT_EQ(SystemInfo::matchMonitors(one, lone)[0], std::optional<std::size_t>{0});
+    lone[0].hasDesktopRect = true;
+    lone[0].desktopX = 99;
+    EXPECT_FALSE(SystemInfo::matchMonitors(one, lone)[0].has_value());
+}
+
+TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
+{
+    const Section section = SystemInfo::buildGraphicsSection(windowsGraphics(), windowsHost());
+    EXPECT_EQ(section.title, "Graphics & displays");
+    EXPECT_EQ(findRow(section, "GPU")->value, "NVIDIA GeForce RTX 4070, 12 GiB dedicated, 16 GiB shared, PCI 01:00.0");
+    EXPECT_EQ(findRow(section, "GPU driver")->value, "32.0.15.6094 (2024-09-05)");
+    EXPECT_EQ(findRow(section, "OpenGL")->value, "4.6.0 NVIDIA 560.94");
+    EXPECT_EQ(findRow(section, "OpenGL renderer")->value, "NVIDIA GeForce RTX 4070/PCIe/SSE2 (NVIDIA Corporation)");
+    EXPECT_EQ(findRow(section, "Display server"), nullptr);
+    ASSERT_NE(findRow(section, "Display 1"), nullptr);
+    const Row* serial = findRow(section, "Display 1 serial number");
+    ASSERT_NE(serial, nullptr);
+    EXPECT_TRUE(serial->isIdentifier);
+    EXPECT_EQ(serial->value, "ABC1234");
+    EXPECT_EQ(findRow(section, "Display 2")->value, "Generic PnP Monitor, 1920 \xC3\x97 1080 at 60 Hz, 100% scale");
+    EXPECT_EQ(findRow(section, "Display 2 serial number"), nullptr); // no monitor facts to give one
+
+    // Without Core's facts (no context, no displays) the rows say why.
+    const Section bare = SystemInfo::buildGraphicsSection(windowsGraphics(), {});
+    EXPECT_FALSE(findRow(bare, "OpenGL")->available());
+    EXPECT_FALSE(findRow(bare, "Displays")->available());
+    EXPECT_EQ(findRow(bare, "Monitor 1")->value, "DELL U2720Q, 27.0\" (597 \xC3\x97 336 mm), HDR (BT.2020 PQ, 10-bit)");
+}
+
+TEST(SystemInfoSectionsTest, GraphicsRowsLinuxAndUnreadable)
+{
+    Platform::GraphicsInfo linuxGraphics;
+    linuxGraphics.available = true;
+    linuxGraphics.family = Platform::OsFamily::Linux;
+    linuxGraphics.adaptersRead = true;
+    linuxGraphics.adapters.push_back(linuxAdapter("AMD Radeon RX 6800 XT", "amdgpu", "", "0000:03:00.0"));
+    linuxGraphics.adapters.push_back(linuxAdapter("Intel GPU (8086:A7A0)", "i915"));
+    linuxGraphics.monitorsRead = true;
+    linuxGraphics.monitors.push_back(linuxMonitor("DELL U2720Q", "DP-1"));
+    linuxGraphics.monitors.push_back(linuxMonitor("", "eDP-1"));
+    linuxGraphics.displayServer = "Wayland";
+    Core::GraphicsHostInfo host = windowsHost();
+    host.videoDriver = "x11";
+    host.displays.resize(1);
+
+    const Section section = SystemInfo::buildGraphicsSection(linuxGraphics, host);
+    EXPECT_EQ(findRow(section, "GPU 1")->value, "AMD Radeon RX 6800 XT, PCI 0000:03:00.0");
+    EXPECT_EQ(findRow(section, "GPU 2 driver")->value, "i915");
+    EXPECT_EQ(findRow(section, "Display server")->value, "Wayland (TaskSmack runs through XWayland)");
+    EXPECT_TRUE(findRow(section, "Display 1")->value.starts_with("DELL U2720Q, 3840")); // matched by name
+    EXPECT_FALSE(findRow(section, "Display 1 serial number")->available());
+    EXPECT_FALSE(findRow(section, "Monitor eDP-1")->available()); // no EDID: nothing to say
+
+    Platform::GraphicsInfo unread;
+    unread.available = true;
+    unread.family = Platform::OsFamily::Linux;
+    const Section empty = SystemInfo::buildGraphicsSection(unread, {});
+    EXPECT_EQ(findRow(empty, "GPU")->unavailableReason, "/sys/class/drm couldn't be listed");
+    EXPECT_FALSE(findRow(empty, "Display server")->available());
+}
+
+TEST(SystemInfoSectionsTest, GraphicsSectionFollowsStorage)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.storage = windowsStorage();
+    all.graphics = windowsGraphics();
+    const auto sections = SystemInfo::buildSystemInfoSections(all, windowsHost());
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[1].title, "Storage");
+    EXPECT_EQ(sections[2].title, "Graphics & displays");
+}
+
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
 {
     EXPECT_TRUE(SystemInfo::buildSystemInfoSections(Domain::SystemInfoSnapshot{}).empty());
@@ -766,6 +968,28 @@ TEST_F(SystemInfoViewRenderTest, StorageSectionRendersAndHidesSerials)
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 3U);
+}
+
+TEST_F(SystemInfoViewRenderTest, GraphicsSectionRendersAndHidesMonitorSerials)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.graphics = windowsGraphics();
+    SystemInfoViewState state;
+    state.host = windowsHost();
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+
+    state.filter = "display 1";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 1U); // the serial is hidden
+
+    state.showIdentifiers = true;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 2U);
 }
 
 } // namespace

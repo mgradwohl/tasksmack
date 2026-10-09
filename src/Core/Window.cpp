@@ -1,5 +1,6 @@
 #include "Window.h"
 
+#include "Core/GraphicsHostInfo.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowConstants.h"
@@ -17,6 +18,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -347,10 +349,13 @@ Window::Window(WindowSpecification spec) : m_Spec(std::move(spec))
         throw std::runtime_error("Failed to initialize GLAD");
     }
 
+    m_GLInfo.glVendor = glString(GL_VENDOR);
+    m_GLInfo.glRenderer = glString(GL_RENDERER);
+    m_GLInfo.glVersion = glString(GL_VERSION);
     spdlog::info("OpenGL Info:");
-    spdlog::info("  Vendor: {}", glString(GL_VENDOR));
-    spdlog::info("  Renderer: {}", glString(GL_RENDERER));
-    spdlog::info("  Version: {}", glString(GL_VERSION));
+    spdlog::info("  Vendor: {}", m_GLInfo.glVendor);
+    spdlog::info("  Renderer: {}", m_GLInfo.glRenderer);
+    spdlog::info("  Version: {}", m_GLInfo.glVersion);
 
     if (m_Spec.VSync)
     {
@@ -1016,6 +1021,49 @@ bool Window::isOccluded() const noexcept
     }
     // SDL sets the flag on SDL_EVENT_WINDOW_OCCLUDED and clears it on SDL_EVENT_WINDOW_EXPOSED.
     return (SDL_GetWindowFlags(m_Handle) & SDL_WINDOW_OCCLUDED) != 0;
+}
+
+GraphicsHostInfo Window::queryGraphicsHostInfo() const
+{
+    GraphicsHostInfo info = m_GLInfo;
+    const char* driver = SDL_GetCurrentVideoDriver();
+    info.videoDriver = driver != nullptr ? driver : "";
+    int count = 0;
+    SDL_DisplayID* ids = SDL_GetDisplays(&count);
+    if (ids == nullptr)
+    {
+        return info;
+    }
+    const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
+    for (const SDL_DisplayID id : std::span<const SDL_DisplayID>(ids, static_cast<std::size_t>(std::max(count, 0))))
+    {
+        DisplayInfo display;
+        const char* name = SDL_GetDisplayName(id);
+        display.name = name != nullptr ? name : "";
+        SDL_Rect bounds{};
+        if (SDL_GetDisplayBounds(id, &bounds))
+        {
+            display.x = bounds.x;
+            display.y = bounds.y;
+            display.width = bounds.w;
+            display.height = bounds.h;
+        }
+        if (const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(id); mode != nullptr)
+        {
+            const float density = mode->pixel_density > 0.0F ? mode->pixel_density : 1.0F;
+            display.pixelWidth = static_cast<int>(std::lround(static_cast<float>(mode->w) * density));
+            display.pixelHeight = static_cast<int>(std::lround(static_cast<float>(mode->h) * density));
+            display.refreshHz = mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0
+                                  ? static_cast<double>(mode->refresh_rate_numerator) / static_cast<double>(mode->refresh_rate_denominator)
+                                  : static_cast<double>(mode->refresh_rate);
+        }
+        display.contentScale = SDL_GetDisplayContentScale(id);
+        display.primary = id == primary;
+        display.hdrEnabled = SDL_GetBooleanProperty(SDL_GetDisplayProperties(id), SDL_PROP_DISPLAY_HDR_ENABLED_BOOLEAN, false);
+        info.displays.push_back(std::move(display));
+    }
+    SDL_free(ids);
+    return info;
 }
 
 double Window::getDisplayRefreshRate() const noexcept

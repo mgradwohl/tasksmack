@@ -71,6 +71,16 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::GraphicsInfo readGraphics() override
+    {
+        Platform::GraphicsInfo info;
+        info.available = true;
+        Platform::GraphicsAdapter adapter;
+        adapter.name = "Contoso GPU";
+        info.adapters.push_back(adapter);
+        return info;
+    }
+
   private:
     bool m_HasOs;
     int* m_Reads;
@@ -96,6 +106,8 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->paging.committedBytes, 4096U);
     ASSERT_EQ(first->storage.disks.size(), 1U);
     EXPECT_EQ(first->storage.disks[0].name, "Disk 0");
+    ASSERT_EQ(first->graphics.adapters.size(), 1U);
+    EXPECT_EQ(first->graphics.adapters[0].name, "Contoso GPU");
     EXPECT_GT(first->readAtUnixSeconds, 0U);
 
     model.read(); // Refresh
@@ -116,6 +128,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->memory.available);
     EXPECT_FALSE(model.snapshot()->paging.available);
     EXPECT_FALSE(model.snapshot()->storage.available);
+    EXPECT_FALSE(model.snapshot()->graphics.available);
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);

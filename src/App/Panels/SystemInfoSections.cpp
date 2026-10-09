@@ -1,5 +1,6 @@
 #include "SystemInfoSections.h"
 
+#include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
@@ -7,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -566,7 +568,188 @@ Section buildStorageSection(const Platform::StorageInfo& storage)
     return section;
 }
 
-std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
+std::string formatAdapter(const Platform::GraphicsAdapter& adapter)
+{
+    const std::string dedicated = adapter.dedicatedBytes == 0 ? std::string{} : formatMemoryCapacity(adapter.dedicatedBytes) + " dedicated";
+    const std::string shared = adapter.sharedBytes == 0 ? std::string{} : formatMemoryCapacity(adapter.sharedBytes) + " shared";
+    const std::string location = adapter.location.empty() ? std::string{} : "PCI " + adapter.location;
+    return joinNonEmpty({adapter.name, dedicated, shared, location}, ", ");
+}
+
+std::string formatAdapterDriver(const Platform::GraphicsAdapter& adapter)
+{
+    std::string text = joinNonEmpty({adapter.driver, adapter.driverVersion}, " ");
+    if (!adapter.driverDate.empty())
+    {
+        text = joinNonEmpty({text, "(" + adapter.driverDate + ")"}, " ");
+    }
+    return text;
+}
+
+std::vector<std::optional<std::size_t>> matchMonitors(std::span<const Core::DisplayInfo> displays,
+                                                      std::span<const Platform::Monitor> monitors)
+{
+    std::vector<std::optional<std::size_t>> matches(displays.size());
+    std::vector<bool> used(monitors.size(), false);
+    const auto claim = [&](std::size_t display, const auto& same)
+    {
+        for (std::size_t m = 0; m < monitors.size() && !matches[display].has_value(); ++m)
+        {
+            if (!used[m] && same(displays[display], monitors[m]))
+            {
+                matches[display] = m;
+                used[m] = true;
+            }
+        }
+    };
+    for (std::size_t d = 0; d < displays.size(); ++d)
+    {
+        claim(d,
+              [](const Core::DisplayInfo& display, const Platform::Monitor& monitor)
+              {
+                  return monitor.hasDesktopRect && monitor.desktopX == display.x && monitor.desktopY == display.y &&
+                         monitor.desktopWidth == display.width && monitor.desktopHeight == display.height;
+              });
+        claim(d,
+              [](const Core::DisplayInfo& display, const Platform::Monitor& monitor)
+              { return !monitor.name.empty() && monitor.name == display.name; });
+    }
+    const auto unmatchedDisplays = std::ranges::count(matches, std::optional<std::size_t>{});
+    const auto unusedMonitors = std::ranges::count(used, false);
+    if (unmatchedDisplays == 1 && unusedMonitors == 1)
+    {
+        const auto display = static_cast<std::size_t>(std::ranges::find(matches, std::optional<std::size_t>{}) - matches.begin());
+        const auto monitor = static_cast<std::size_t>(std::ranges::find(used, false) - used.begin());
+        if (!monitors[monitor].hasDesktopRect)
+        {
+            matches[display] = monitor;
+        }
+    }
+    return matches;
+}
+
+namespace
+{
+
+/// A monitor's physical size: "27.0" (597 × 336 mm)"; empty when unknown.
+[[nodiscard]] std::string monitorSize(const Platform::Monitor& monitor)
+{
+    if (monitor.widthMm == 0 || monitor.heightMm == 0)
+    {
+        return {};
+    }
+    const double inches = std::hypot(static_cast<double>(monitor.widthMm), static_cast<double>(monitor.heightMm)) / 25.4;
+    return std::format("{:.1f}\" ({} \xC3\x97 {} mm)", inches, monitor.widthMm, monitor.heightMm);
+}
+
+/// "HDR (BT.2020 PQ, 10-bit)" / "SDR (sRGB, 8-bit)"; empty without a colour space.
+[[nodiscard]] std::string monitorColor(const Platform::Monitor& monitor)
+{
+    if (monitor.colorSpace.empty())
+    {
+        return {};
+    }
+    const std::string bits = monitor.bitsPerColor == 0 ? std::string{} : std::format("{}-bit", monitor.bitsPerColor);
+    return std::format("{} ({})", monitor.hdr ? "HDR" : "SDR", joinNonEmpty({monitor.colorSpace, bits}, ", "));
+}
+
+void appendMonitorRows(std::string label, const Platform::Monitor& monitor, std::string value, std::vector<Row>& rows)
+{
+    rows.push_back(row(label, std::move(value)));
+    rows.push_back(row(std::move(label) + " serial number", monitor.serial, "Not reported by this monitor", true));
+}
+
+} // namespace
+
+std::string formatDisplay(const Core::DisplayInfo& display, const Platform::Monitor* monitor)
+{
+    const std::string_view name = monitor != nullptr && !monitor->name.empty() ? std::string_view{monitor->name} : display.name;
+    std::string mode = display.pixelWidth > 0 ? std::format("{} \xC3\x97 {}", display.pixelWidth, display.pixelHeight) : std::string{};
+    if (display.refreshHz > 0.0)
+    {
+        const bool whole = std::abs(display.refreshHz - std::round(display.refreshHz)) < 0.005;
+        mode =
+            joinNonEmpty({mode, whole ? std::format("{:.0f} Hz", display.refreshHz) : std::format("{:.2f} Hz", display.refreshHz)}, " at ");
+    }
+    const std::string scale = display.contentScale > 0.0F ? std::format("{:.0f}% scale", display.contentScale * 100.0F) : std::string{};
+    const std::string size = monitor != nullptr ? monitorSize(*monitor) : std::string{};
+    std::string color = monitor != nullptr ? monitorColor(*monitor) : std::string{};
+    if (color.empty() && display.hdrEnabled)
+    {
+        color = "HDR";
+    }
+    return joinNonEmpty({name, mode, scale, size, color, display.primary ? "primary" : ""}, ", ");
+}
+
+Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core::GraphicsHostInfo& host)
+{
+    Section section{.title = "Graphics & displays", .icon = ICON_FA_TV, .rows = {}};
+    auto& rows = section.rows;
+    const bool windows = graphics.family == Platform::OsFamily::Windows;
+    if (!graphics.adaptersRead || graphics.adapters.empty())
+    {
+        rows.push_back(row("GPU",
+                           graphics.adaptersRead ? "None found" : "",
+                           windows ? "A DXGI factory couldn't be created" : "/sys/class/drm couldn't be listed"));
+    }
+    for (std::size_t i = 0; i < graphics.adapters.size(); ++i)
+    {
+        const Platform::GraphicsAdapter& adapter = graphics.adapters[i];
+        const std::string label = graphics.adapters.size() == 1 ? std::string("GPU") : std::format("GPU {}", i + 1);
+        rows.push_back(row(label, formatAdapter(adapter)));
+        rows.push_back(row(label + " driver",
+                           formatAdapterDriver(adapter),
+                           windows ? "No display device node matched this adapter" : "No kernel driver is bound to it"));
+    }
+
+    constexpr std::string_view NO_CONTEXT = "TaskSmack's OpenGL context isn't available";
+    rows.push_back(row("OpenGL", host.glVersion, NO_CONTEXT));
+    const std::string vendor = host.glVendor.empty() ? std::string{} : "(" + host.glVendor + ")";
+    rows.push_back(row("OpenGL renderer", joinNonEmpty({host.glRenderer, vendor}, " "), NO_CONTEXT));
+    if (graphics.family == Platform::OsFamily::Linux)
+    {
+        std::string server = graphics.displayServer;
+        if (server == "Wayland" && host.videoDriver == "x11")
+        {
+            server += " (TaskSmack runs through XWayland)";
+        }
+        rows.push_back(
+            row("Display server", std::move(server), "No graphical session: XDG_SESSION_TYPE, WAYLAND_DISPLAY and DISPLAY aren't set"));
+    }
+
+    const std::vector<std::optional<std::size_t>> matches = matchMonitors(host.displays, graphics.monitors);
+    std::vector<bool> shown(graphics.monitors.size(), false);
+    if (host.displays.empty())
+    {
+        rows.push_back(row("Displays", "", "SDL reported no displays"));
+    }
+    for (std::size_t d = 0; d < host.displays.size(); ++d)
+    {
+        const std::string label = std::format("Display {}", d + 1);
+        const std::optional<std::size_t> match = matches[d];
+        if (!match.has_value())
+        {
+            rows.push_back(row(label, formatDisplay(host.displays[d], nullptr)));
+            continue;
+        }
+        const Platform::Monitor& monitor = graphics.monitors[*match];
+        shown[*match] = true;
+        appendMonitorRows(label, monitor, formatDisplay(host.displays[d], &monitor), rows);
+    }
+    for (std::size_t m = 0; m < graphics.monitors.size(); ++m)
+    {
+        if (shown[m])
+        {
+            continue;
+        }
+        const Platform::Monitor& monitor = graphics.monitors[m];
+        const std::string label = monitor.connector.empty() ? std::format("Monitor {}", m + 1) : "Monitor " + monitor.connector;
+        appendMonitorRows(label, monitor, joinNonEmpty({monitor.name, monitorSize(monitor), monitorColor(monitor)}, ", "), rows);
+    }
+    return section;
+}
+
+std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot, const Core::GraphicsHostInfo& host)
 {
     std::vector<Section> sections;
     if (snapshot.version == 0)
@@ -592,6 +775,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.storage.available)
     {
         sections.push_back(buildStorageSection(snapshot.storage));
+    }
+    if (snapshot.graphics.available)
+    {
+        sections.push_back(buildGraphicsSection(snapshot.graphics, host));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

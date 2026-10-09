@@ -58,6 +58,10 @@ seed_corpus fuzz_commit_paging tests/fuzz/corpus/fuzz_commit_paging/*
 build_fuzzer fuzz_mountinfo
 seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
 
+# The EDID parser (#1519): header-only, seeded with a real-looking 128-byte base block.
+build_fuzzer fuzz_edid
+seed_corpus fuzz_edid tests/fuzz/corpus/fuzz_edid/*
+
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
 # toml++ crash inputs (#1387, #1388, #1389) as regression seeds.

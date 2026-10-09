@@ -40,7 +40,7 @@ void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot, SystemInfoViewSt
 {
     if (state.sectionsVersion != snapshot.version)
     {
-        state.sections = SystemInfo::buildSystemInfoSections(snapshot);
+        state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host);
         state.sectionsVersion = snapshot.version;
         const std::string when = UI::Format::formatEpochDateTime(snapshot.readAtUnixSeconds);
         state.readAtText = when.empty() ? std::string{} : "Read at " + when.substr(when.find(' ') + 1);

@@ -2,6 +2,7 @@
 
 #include "LinuxCommitPaging.h"
 #include "LinuxFirmwareInfo.h"
+#include "LinuxGraphics.h"
 #include "LinuxOsInfo.h"
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -120,6 +121,15 @@ StorageInfo LinuxSystemInfoProbe::readStorage()
         return true;
     };
     LinuxStorage::readStorageFacts(m_Root, info, sizer);
+    return info;
+}
+
+GraphicsInfo LinuxSystemInfoProbe::readGraphics()
+{
+    GraphicsInfo info;
+    LinuxGraphics::readGraphicsFacts(m_Root, info);
+    info.displayServer = LinuxGraphics::displayServer(
+        environmentString("XDG_SESSION_TYPE"), environmentString("WAYLAND_DISPLAY"), environmentString("DISPLAY"));
     return info;
 }
 
