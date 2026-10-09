@@ -773,11 +773,13 @@ pthread barrier paths, while preserving any caller-provided TSAN flags.
 
 ## Fuzzing (Linux only)
 
-ClusterFuzzLite continuously exercises three parsers with libFuzzer and AddressSanitizer:
+ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressSanitizer:
 
 | Target | Entry point | Seed corpus |
 |--------|-------------|-------------|
 | `fuzz_proc_parsing` | the allocation-free `/proc` numeric parsers (`Platform/Linux/ProcParsing.h`) | none |
+| `fuzz_smbios` | the SMBIOS table parser (`Platform/SmbiosParser.h`) | none |
+| `fuzz_proc_maps` | the `/proc/[pid]/maps` module parser (`Platform/Linux/ProcMapsParser.h`) | `tests/fuzz/corpus/fuzz_proc_maps/` |
 | `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
 
