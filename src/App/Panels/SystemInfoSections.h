@@ -178,6 +178,13 @@ struct VisibleSection
 /// summary, addresses, MAC address (an identifier) and Wi-Fi signal.
 [[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network);
 
+/// A boot phase's length: "850 ms", "4.21 s", "1 min 12.3 s".
+[[nodiscard]] std::string formatBootDuration(std::uint64_t microseconds);
+
+/// The Boot performance section (#1525): the last boot's total, then each phase systemd measured
+/// (firmware, boot loader, kernel, initrd, userspace), as `systemd-analyze` prints them.
+[[nodiscard]] Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot);
+
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
                                                            const Core::GraphicsHostInfo& host = {});
 

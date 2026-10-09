@@ -2,7 +2,7 @@
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
 /// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
 /// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the Graphics & displays rows
-/// (#1519), the Network adapters rows (#1518), the filter,
+/// (#1519), the Network adapters rows (#1518), the Boot performance rows (#1525), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
 /// filter narrowing and the identifier toggle.
 
@@ -659,6 +659,50 @@ TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)
     const Section stub = SystemInfo::buildNetworkAdaptersSection(network);
     EXPECT_EQ(findRow(stub, "DNS servers")->value, "127.0.0.53 (systemd-resolved; its upstream servers couldn't be read)");
     EXPECT_EQ(findRow(stub, "Adapters")->value, "None found");
+}
+
+TEST(SystemInfoSectionsTest, BootPerformanceRows)
+{
+    EXPECT_EQ(SystemInfo::formatBootDuration(850'000), "850 ms");
+    EXPECT_EQ(SystemInfo::formatBootDuration(4'210'000), "4.21 s");
+    EXPECT_EQ(SystemInfo::formatBootDuration(72'300'000), "1 min 12.3 s");
+
+    Platform::BootPerformanceInfo boot;
+    boot.available = true;
+    boot.timingsRead = true;
+    boot.finished = true;
+    boot.kernelUs = 1'500'000;
+    boot.userspaceUs = 2'500'000;
+    boot.totalUs = 4'000'000;
+    const Section section = SystemInfo::buildBootPerformanceSection(boot);
+    EXPECT_EQ(section.title, "Boot performance");
+    EXPECT_EQ(findRow(section, "Last boot")->value, "4.00 s");
+    EXPECT_FALSE(findRow(section, "Firmware")->available());
+    EXPECT_TRUE(findRow(section, "Firmware")->unavailableReason.contains("boot loader")) << findRow(section, "Firmware")->unavailableReason;
+    EXPECT_FALSE(findRow(section, "Boot loader")->available());
+    EXPECT_EQ(findRow(section, "Kernel")->value, "1.50 s");
+    EXPECT_EQ(findRow(section, "Initrd"), nullptr); // no initramfs
+    EXPECT_EQ(findRow(section, "Userspace")->value, "2.50 s");
+    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; }));
+}
+
+TEST(SystemInfoSectionsTest, BootPerformanceUnreadAndStarting)
+{
+    Platform::BootPerformanceInfo unread;
+    unread.available = true;
+    unread.unavailableReason = "This build has no systemd support (it was built without libsystemd)";
+    const Section none = SystemInfo::buildBootPerformanceSection(unread);
+    ASSERT_EQ(none.rows.size(), 1U);
+    EXPECT_FALSE(none.rows[0].available());
+    EXPECT_EQ(none.rows[0].unavailableReason, unread.unavailableReason);
+
+    Platform::BootPerformanceInfo starting;
+    starting.available = true;
+    starting.timingsRead = true;
+    starting.kernelUs = 1'000'000;
+    const Section early = SystemInfo::buildBootPerformanceSection(starting);
+    EXPECT_EQ(findRow(early, "Last boot")->value, "Still starting up");
+    EXPECT_EQ(findRow(early, "Userspace")->unavailableReason, "Startup hasn't finished yet");
 }
 
 TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)

@@ -39,6 +39,12 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     {
         return {};
     }
+    /// Not read yet: the Diagnostics-Performance event 100 is the Windows lane's follow-up to #1525, so
+    /// the section is left out on Windows.
+    [[nodiscard]] BootPerformanceInfo readBootPerformance() override
+    {
+        return {};
+    }
 };
 
 } // namespace Platform
