@@ -33,6 +33,7 @@ void SystemInfoModel::read()
         next->memory = m_Probe->readMemoryModules();
         next->paging = m_Probe->readCommitPaging();
         next->storage = m_Probe->readStorage();
+        next->graphics = m_Probe->readGraphics();
         next->security = m_Probe->readPlatformSecurity();
         next->sensors = m_Probe->readSensors();
         next->adapters = m_Probe->readNetworkAdapters();

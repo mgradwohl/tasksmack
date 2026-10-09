@@ -2,6 +2,7 @@
 
 #include "LinuxCommitPaging.h"
 #include "LinuxFirmwareInfo.h"
+#include "LinuxGraphics.h"
 #include "LinuxNetworkAdapters.h"
 #include "LinuxOsInfo.h"
 #include "LinuxPlatformSecurity.h"
@@ -34,6 +35,25 @@ namespace Platform
 
 namespace
 {
+
+/// An environment variable, or null. secure_getenv ignores them in a setuid process, as
+/// LinuxPathProvider does.
+[[nodiscard]] const char* environment(const char* name)
+{
+#if defined(__GLIBC__) && defined(_GNU_SOURCE)
+    // NOLINTNEXTLINE(misc-include-cleaner) - secure_getenv from cstdlib with _GNU_SOURCE
+    return secure_getenv(name);
+#else
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - fallback when secure_getenv is unavailable
+    return std::getenv(name);
+#endif
+}
+
+[[nodiscard]] std::string environmentString(const char* name)
+{
+    const char* value = environment(name);
+    return value != nullptr ? std::string(value) : std::string{};
+}
 
 /// Every adapter's IPv4 and IPv6 addresses, from getifaddrs() (#1518). Empty if it fails.
 [[nodiscard]] std::vector<LinuxNetworkAdapters::ListedAddress> listAdapterAddresses()
@@ -95,25 +115,6 @@ namespace
     }
     ::freeifaddrs(list);
     return listed;
-}
-
-/// An environment variable, or null. secure_getenv ignores them in a setuid process, as
-/// LinuxPathProvider does.
-[[nodiscard]] const char* environment(const char* name)
-{
-#if defined(__GLIBC__) && defined(_GNU_SOURCE)
-    // NOLINTNEXTLINE(misc-include-cleaner) - secure_getenv from cstdlib with _GNU_SOURCE
-    return secure_getenv(name);
-#else
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - fallback when secure_getenv is unavailable
-    return std::getenv(name);
-#endif
-}
-
-[[nodiscard]] std::string environmentString(const char* name)
-{
-    const char* value = environment(name);
-    return value != nullptr ? std::string(value) : std::string{};
 }
 
 } // namespace
@@ -192,6 +193,15 @@ StorageInfo LinuxSystemInfoProbe::readStorage()
         return true;
     };
     LinuxStorage::readStorageFacts(m_Root, info, sizer);
+    return info;
+}
+
+GraphicsInfo LinuxSystemInfoProbe::readGraphics()
+{
+    GraphicsInfo info;
+    LinuxGraphics::readGraphicsFacts(m_Root, info);
+    info.displayServer = LinuxGraphics::displayServer(
+        environmentString("XDG_SESSION_TYPE"), environmentString("WAYLAND_DISPLAY"), environmentString("DISPLAY"));
     return info;
 }
 

@@ -3,11 +3,16 @@
 /// and the session facts any signed-in test run has; the real SMBIOS table (#1513) parses; and the
 /// memory modules and installed/usable memory (#1515), real and through a faked function table; and commit,
 /// page files and compressed memory (#1516), real and faked, including the NT-to-DOS path conversion; and
-/// the Storage section's disks and volumes (#1517), real and through a faked function table.
+/// the Storage section's disks and volumes (#1517), real and through a faked function table; and the
+/// Graphics & displays adapters, drivers and monitors (#1519), real and faked.
 
+#include "EdidTestData.h"
+#include "Platform/GPUTypes.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/SmbiosParser.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
+#include "Platform/Windows/WindowsGraphics.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsInstalledMemory.h"
 #include "Platform/Windows/WindowsStorage.h"
@@ -34,6 +39,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -714,6 +721,161 @@ TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
     EXPECT_FALSE(denied.disks[0].health.has_value());
     EXPECT_EQ(denied.disks[0].healthUnavailableReason, "Requires administrator");
     g_HealthDenied = false;
+}
+
+TEST(WindowsSystemInfoProbeTest, ReadsGraphics)
+{
+    WindowsSystemInfoProbe probe;
+    const GraphicsInfo info = probe.readGraphics();
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.family, OsFamily::Windows);
+    EXPECT_TRUE(info.adaptersRead); // a DXGI factory exists on every supported Windows; a CI VM may list no GPU
+    for (const GraphicsAdapter& adapter : info.adapters)
+    {
+        EXPECT_FALSE(adapter.name.empty());
+    }
+}
+
+// The fake graphics table's state: whether DXGI can be used at all.
+bool g_DxgiFails = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+[[nodiscard]] DXGI_ADAPTER_DESC1 adapterDesc(std::wstring_view name, UINT vendor, UINT device, DWORD luidLow, UINT flags)
+{
+    DXGI_ADAPTER_DESC1 desc{};
+    std::ranges::copy(name, std::begin(desc.Description));
+    desc.VendorId = vendor;
+    desc.DeviceId = device;
+    desc.AdapterLuid = LUID{.LowPart = luidLow, .HighPart = 0};
+    desc.DedicatedVideoMemory = SIZE_T{12} << 30U;
+    desc.SharedSystemMemory = SIZE_T{16} << 30U;
+    desc.Flags = flags;
+    return desc;
+}
+
+[[nodiscard]] FILETIME fileTimeOf(std::chrono::sys_days day)
+{
+    const auto days = (day - std::chrono::sys_days{std::chrono::year{1601} / 1 / 1}).count();
+    const std::uint64_t ticks = static_cast<std::uint64_t>(days) * 864'000'000'000ULL;
+    return FILETIME{.dwLowDateTime = static_cast<DWORD>(ticks), .dwHighDateTime = static_cast<DWORD>(ticks >> 32U)};
+}
+
+[[nodiscard]] std::optional<std::vector<WindowsGraphics::AdapterRecord>> fakeAdapters()
+{
+    if (g_DxgiFails)
+    {
+        return std::nullopt;
+    }
+    WindowsGraphics::AdapterRecord gpu{.desc = adapterDesc(L"NVIDIA GeForce RTX 4070", 0x10DE, 0x2786, 1, 0), .outputs = {}};
+    const WindowsGraphics::OutputRecord hdr{
+        .deviceName = L"\\\\.\\DISPLAY1",
+        .desktop = RECT{.left = 0, .top = 0, .right = 3840, .bottom = 2160},
+        .hasDesc1 = true,
+        .colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020,
+        .bitsPerColor = 10,
+    };
+    gpu.outputs.push_back(hdr);
+    gpu.outputs.push_back(hdr); // listed twice: kept once
+    const WindowsGraphics::AdapterRecord basic{
+        .desc = adapterDesc(L"Microsoft Basic Render Driver", 0x1414, 0x8C, 2, DXGI_ADAPTER_FLAG_SOFTWARE),
+        .outputs = {},
+    };
+    WindowsGraphics::AdapterRecord dock{.desc = adapterDesc(L"NVIDIA GeForce RTX 4070", 0x10DE, 0x2786, 3, 0), .outputs = {}};
+    dock.outputs.push_back({
+        .deviceName = L"\\\\.\\DISPLAY3",
+        .desktop = RECT{.left = 3840, .top = 0, .right = 5760, .bottom = 1080},
+        .hasDesc1 = false,
+        .colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709,
+        .bitsPerColor = 0,
+    });
+    return std::vector{gpu, basic, dock};
+}
+
+[[nodiscard]] std::vector<WindowsGraphics::DriverNode> fakeDriverNodes()
+{
+    using namespace std::chrono;
+    return {
+        {
+            .hardwareId = "PCI\\VEN_10DE&DEV_2786&SUBSYS_00000000",
+            .bus = 2,
+            .address = 0,
+            .driverVersion = "1.0",
+            .driverDate = std::nullopt,
+        },
+        {
+            .hardwareId = "pci\\ven_10de&dev_2786&subsys_00000000",
+            .bus = 1,
+            .address = 0,
+            .driverVersion = "32.0.15.6094",
+            .driverDate = fileTimeOf(sys_days{year{2024} / September / 5}),
+        },
+    };
+}
+
+[[nodiscard]] WindowsGraphics::Functions fakeGraphics()
+{
+    return {
+        .listAdapters = &fakeAdapters,
+        .adapterType = [](const LUID& luid) -> std::optional<AdapterTypeBits>
+        { return AdapterTypeBits{.softwareDevice = false, .indirectDisplayDevice = luid.LowPart == 3}; },
+        .pciLocation = [](const LUID& luid) -> std::optional<PciLocation>
+        { return luid.LowPart == 1 ? std::optional(PciLocation{.bus = 1, .device = 0, .function = 0}) : std::nullopt; },
+        .listDisplayDrivers = &fakeDriverNodes,
+        .readMonitorEdid = [](const std::wstring& output)
+        { return output == L"\\\\.\\DISPLAY1" ? TestSupport::makeEdid() : std::vector<std::uint8_t>{}; },
+    };
+}
+
+TEST(WindowsSystemInfoProbeTest, GraphicsThroughTheFunctionTable)
+{
+    GraphicsInfo info;
+    WindowsGraphics::readGraphics(info, fakeGraphics());
+    ASSERT_TRUE(info.adaptersRead);
+    ASSERT_EQ(info.adapters.size(), 1U); // the software and indirect-display adapters are left out
+    const GraphicsAdapter& gpu = info.adapters[0];
+    EXPECT_EQ(gpu.name, "NVIDIA GeForce RTX 4070");
+    EXPECT_EQ(gpu.location, "01:00.0");
+    EXPECT_EQ(gpu.dedicatedBytes, 12ULL << 30U);
+    EXPECT_EQ(gpu.driverVersion, "32.0.15.6094"); // the node at its PCI location, not the first with its ids
+    EXPECT_EQ(gpu.driverDate, "2024-09-05");
+
+    ASSERT_TRUE(info.monitorsRead);
+    ASSERT_EQ(info.monitors.size(), 2U); // the indirect display's monitor is kept
+    EXPECT_EQ(info.monitors[0].name, "DELL U2720Q");
+    EXPECT_EQ(info.monitors[0].serial, "ABC1234");
+    EXPECT_TRUE(info.monitors[0].hdr);
+    EXPECT_EQ(info.monitors[0].colorSpace, "BT.2020 PQ");
+    EXPECT_EQ(info.monitors[0].bitsPerColor, 10U);
+    EXPECT_EQ(info.monitors[0].desktopWidth, 3840);
+    EXPECT_TRUE(info.monitors[1].name.empty()); // no EDID
+    EXPECT_TRUE(info.monitors[1].colorSpace.empty());
+    EXPECT_EQ(info.monitors[1].desktopX, 3840);
+
+    g_DxgiFails = true;
+    GraphicsInfo failed;
+    WindowsGraphics::readGraphics(failed, fakeGraphics());
+    g_DxgiFails = false;
+    EXPECT_TRUE(failed.available);
+    EXPECT_FALSE(failed.adaptersRead);
+}
+
+TEST(WindowsSystemInfoProbeTest, GraphicsHelpers)
+{
+    using namespace std::chrono;
+    EXPECT_EQ(WindowsGraphics::fileTimeDate(fileTimeOf(sys_days{year{2024} / September / 5})), "2024-09-05");
+    EXPECT_EQ(WindowsGraphics::colorSpaceName(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709), "sRGB");
+    EXPECT_FALSE(WindowsGraphics::isHdrColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709));
+    EXPECT_TRUE(WindowsGraphics::isHdrColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020));
+
+    // Without a PCI location the first node with the ids is used; with one, only the node there.
+    const std::vector<WindowsGraphics::DriverNode> nodes{
+        {.hardwareId = "PCI\\VEN_8086&DEV_A7A0", .bus = 0, .address = 0x20000, .driverVersion = "31.0", .driverDate = std::nullopt},
+    };
+    const auto* node = WindowsGraphics::findDriverNode(nodes, 0x8086, 0xA7A0, std::nullopt);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->driverVersion, "31.0");
+    EXPECT_NE(WindowsGraphics::findDriverNode(nodes, 0x8086, 0xA7A0, PciLocation{.bus = 0, .device = 2, .function = 0}), nullptr);
+    EXPECT_EQ(WindowsGraphics::findDriverNode(nodes, 0x8086, 0xA7A0, PciLocation{.bus = 0, .device = 3, .function = 0}), nullptr);
+    EXPECT_EQ(WindowsGraphics::findDriverNode(nodes, 0x10DE, 0xA7A0, std::nullopt), nullptr);
 }
 
 } // namespace
