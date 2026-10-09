@@ -7,6 +7,7 @@
 // Adding a section: give it raw facts on the probe and the snapshot, a build*Section() here, and a
 // line in buildSystemInfoSections() (CONTRIBUTING.md, "Adding a System Information section").
 
+#include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -126,7 +127,26 @@ struct VisibleSection
 /// identifier row for a label that names someone.
 [[nodiscard]] Section buildStorageSection(const Platform::StorageInfo& storage);
 
-/// The page's sections, in display order. Empty before the first read.
+/// One adapter's value: "NVIDIA GeForce RTX 4070, 12 GiB dedicated, 15.9 GiB shared, PCI 01:00.0".
+[[nodiscard]] std::string formatAdapter(const Platform::GraphicsAdapter& adapter);
+
+/// One adapter's driver: "32.0.15.6094 (2024-09-05)" / "nvidia 560.35.03" / "amdgpu"; empty when unknown.
+[[nodiscard]] std::string formatAdapterDriver(const Platform::GraphicsAdapter& adapter);
+
+/// For each display, the index of the monitor that is it, if any: the same desktop rectangle (Windows),
+/// else the same name; a lone display left over pairs with a lone monitor that has no rectangle (Linux).
+[[nodiscard]] std::vector<std::optional<std::size_t>> matchMonitors(std::span<const Core::DisplayInfo> displays,
+                                                                    std::span<const Platform::Monitor> monitors);
+
+/// One display's value: "DELL U2720Q, 3840 × 2160 at 60 Hz, 150% scale, 27.0" (597 × 336 mm), HDR
+/// (BT.2020 PQ, 10-bit), primary", the monitor's EDID name and facts used when @p monitor is set.
+[[nodiscard]] std::string formatDisplay(const Core::DisplayInfo& display, const Platform::Monitor* monitor);
+
+/// The Graphics & displays section (#1519): each adapter and its driver, TaskSmack's OpenGL context, the
+/// display server (Linux), then each display (Core's SDL view merged with the platform's monitor facts)
+/// with its EDID serial as an identifier, and any monitor no display matched.
+[[nodiscard]] Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core::GraphicsHostInfo& host);
+
 /// A CPU vulnerability's name as the section labels it: the kernel's file name with its underscores as
 /// spaces and well-known acronyms capitalised ("spectre_v2" -> "Spectre v2", "mds" -> "MDS").
 [[nodiscard]] std::string formatVulnerabilityName(std::string_view name);
@@ -146,6 +166,8 @@ struct VisibleSection
 /// 0"), devices in the OS's order. None exposed (common in VMs and WSL) shows one muted row saying so.
 [[nodiscard]] Section buildSensorsSection(const Platform::SensorsInfo& sensors);
 
+/// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
+/// for the Graphics & displays section, captured on the UI thread.
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.
 [[nodiscard]] std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter);
 
@@ -163,7 +185,8 @@ struct VisibleSection
 /// (firmware, boot loader, kernel, initrd, userspace), as `systemd-analyze` prints them.
 [[nodiscard]] Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot);
 
-[[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot);
+[[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
+                                                           const Core::GraphicsHostInfo& host = {});
 
 /// The sections and rows to draw: hidden identifiers left out, then, with a filter, a section whose
 /// title matches keeps all its rows and otherwise only rows whose label or value matches (ASCII case-

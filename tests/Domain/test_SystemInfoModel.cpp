@@ -73,6 +73,16 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::GraphicsInfo readGraphics() override
+    {
+        Platform::GraphicsInfo info;
+        info.available = true;
+        Platform::GraphicsAdapter adapter;
+        adapter.name = "Contoso GPU";
+        info.adapters.push_back(adapter);
+        return info;
+    }
+
     [[nodiscard]] Platform::PlatformSecurityInfo readPlatformSecurity() override
     {
         Platform::PlatformSecurityInfo info;
@@ -131,6 +141,8 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->paging.committedBytes, 4096U);
     ASSERT_EQ(first->storage.disks.size(), 1U);
     EXPECT_EQ(first->storage.disks[0].name, "Disk 0");
+    ASSERT_EQ(first->graphics.adapters.size(), 1U);
+    EXPECT_EQ(first->graphics.adapters[0].name, "Contoso GPU");
     EXPECT_EQ(first->security.secureBoot, Platform::SecurityFeatureState::On);
     EXPECT_TRUE(first->sensors.listed);
     EXPECT_EQ(first->adapters.gatewayV4, "192.168.1.1");
@@ -155,6 +167,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->memory.available);
     EXPECT_FALSE(model.snapshot()->paging.available);
     EXPECT_FALSE(model.snapshot()->storage.available);
+    EXPECT_FALSE(model.snapshot()->graphics.available);
     EXPECT_FALSE(model.snapshot()->security.available);
     EXPECT_FALSE(model.snapshot()->sensors.available);
     EXPECT_FALSE(model.snapshot()->adapters.available);

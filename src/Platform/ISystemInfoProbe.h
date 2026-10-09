@@ -225,6 +225,52 @@ struct StorageInfo
     std::vector<Volume> volumes;
 };
 
+/// One graphics adapter (#1519): a GPU, or a display-only adapter. A fact the probe couldn't read is
+/// empty or 0.
+struct GraphicsAdapter
+{
+    std::string name; ///< DXGI's description / the driver's product name, else the vendor and PCI ids
+    std::uint32_t vendorId = 0;
+    std::uint32_t deviceId = 0;
+    std::uint64_t dedicatedBytes = 0; ///< Video memory of its own
+    std::uint64_t sharedBytes = 0;    ///< Windows: system memory it may borrow
+    std::string location;             ///< The PCI location, "01:00.0" / "0000:01:00.0"
+    std::string driver;               ///< Linux: the kernel driver ("amdgpu", "nvidia")
+    std::string driverVersion;        ///< Windows: the driver package's / Linux: the module's, if it has one
+    std::string driverDate;           ///< Windows: "2024-09-05"
+};
+
+/// One connected monitor (#1519), from its EDID and, on Windows, the DXGI output it is attached to.
+struct Monitor
+{
+    std::string name;          ///< The EDID monitor name, else its manufacturer and product code ("DEL 41A8")
+    std::string serial;        ///< The EDID serial: an identifier
+    std::uint32_t widthMm = 0; ///< The physical image size; 0 when the EDID doesn't give it
+    std::uint32_t heightMm = 0;
+    std::string connector;       ///< Linux: the DRM connector ("DP-1", "eDP-1")
+    bool hasDesktopRect = false; ///< Windows: where it sits on the desktop, in pixels, to match it to a display
+    int desktopX = 0;
+    int desktopY = 0;
+    int desktopWidth = 0;
+    int desktopHeight = 0;
+    std::string colorSpace; ///< Windows: "sRGB", "BT.2020 PQ", ...; empty when unknown
+    bool hdr = false;       ///< Windows: the output runs in an HDR colour space
+    std::uint32_t bitsPerColor = 0;
+};
+
+/// The Graphics & displays facts the platform reads (#1519). TaskSmack's own OpenGL context and the
+/// displays' modes and scale come from Core instead (Core/GraphicsHostInfo.h).
+struct GraphicsInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    bool adaptersRead = false; ///< The adapters were enumerated: an empty adapters means none were found.
+    std::vector<GraphicsAdapter> adapters;
+    bool monitorsRead = false; ///< The monitors were enumerated.
+    std::vector<Monitor> monitors;
+    std::string displayServer; ///< Linux: "Wayland", "X11", ...; empty without a graphical session
+};
+
 /// The state of one platform security feature (#1514).
 enum class SecurityFeatureState : std::uint8_t
 {
@@ -391,6 +437,9 @@ class ISystemInfoProbe
     /// is fine: reads run off the UI thread.
     [[nodiscard]] virtual StorageInfo readStorage() = 0;
 
+    /// The Graphics & displays facts (#1519); read when hasOs is true.
+    [[nodiscard]] virtual GraphicsInfo readGraphics() = 0;
+
     /// The Security facts (#1514); read when hasOs is true.
     [[nodiscard]] virtual PlatformSecurityInfo readPlatformSecurity() = 0;
 
@@ -434,6 +483,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] StorageInfo readStorage() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] GraphicsInfo readGraphics() override
     {
         return {};
     }

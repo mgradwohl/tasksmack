@@ -121,12 +121,13 @@ using AddressLister = std::vector<ListedAddress> (*)();
         start = (end == start) ? start + 1 : end;
     }
     std::string out;
-    for (std::size_t g = 0; g < groups.size(); ++g)
+    std::size_t g = 0;
+    while (g < groups.size())
     {
         if (g == bestStart)
         {
             out += "::";
-            g += bestLength - 1;
+            g += bestLength; // past the compressed run
             continue;
         }
         if (!out.empty() && !out.ends_with(':'))
@@ -134,6 +135,7 @@ using AddressLister = std::vector<ListedAddress> (*)();
             out += ':';
         }
         out += std::format("{:x}", groups[g]);
+        ++g;
     }
     return out;
 }

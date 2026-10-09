@@ -262,6 +262,7 @@ set(TASKSMACK_HEADERS
     src/Core/ConfigDirOverride.h
     src/Core/PathService.h
     src/Core/Window.h
+    src/Core/GraphicsHostInfo.h
     src/Core/Layer.h
     src/UI/AssetPath.h
     src/UI/TabularDigits.h
@@ -288,6 +289,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
     src/Platform/ISystemInfoProbe.h
+    src/Platform/EdidParser.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
@@ -331,6 +333,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxOsInfo.h
         src/Platform/Linux/LinuxCommitPaging.h
         src/Platform/Linux/LinuxStorage.h
+        src/Platform/Linux/LinuxGraphics.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
@@ -364,6 +367,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsInstalledMemory.h
         src/Platform/Windows/WindowsCommitPaging.h
         src/Platform/Windows/WindowsStorage.h
+        src/Platform/Windows/WindowsGraphics.h
     )
 endif()
 

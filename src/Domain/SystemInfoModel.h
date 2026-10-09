@@ -21,6 +21,7 @@ struct SystemInfoSnapshot
     Platform::MemoryModulesInfo memory;
     Platform::CommitPagingInfo paging;
     Platform::StorageInfo storage;
+    Platform::GraphicsInfo graphics;
     Platform::PlatformSecurityInfo security;
     Platform::SensorsInfo sensors;
     Platform::NetworkAdaptersInfo adapters;

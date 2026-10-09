@@ -16,9 +16,10 @@ namespace Platform
 /// /sys (LinuxCommitPaging.h, #1516); disks from /sys/block and volumes from /proc/self/mountinfo and
 /// statvfs (LinuxStorage.h, #1517); Secure Boot, the TPM, security modules, lockdown and CPU
 /// vulnerabilities from /sys (LinuxPlatformSecurity.h, #1514); hwmon and thermal-zone sensors
-/// (LinuxSensors.h, #1522); adapters, gateways and DNS from /sys, /proc and resolv.conf, addresses from
-/// getifaddrs() (LinuxNetworkAdapters.h, #1518); boot phases from systemd over D-Bus when built with
-/// libsystemd (SystemdBus.h, LinuxBootTimes.h, #1525).
+/// (LinuxSensors.h, #1522); GPUs and monitors from /sys/class/drm and the display server from the
+/// session environment (LinuxGraphics.h, #1519); adapters, gateways and DNS from /sys, /proc and
+/// resolv.conf, addresses from getifaddrs() (LinuxNetworkAdapters.h, #1518); boot phases from systemd
+/// over D-Bus when built with libsystemd (SystemdBus.h, LinuxBootTimes.h, #1525).
 class LinuxSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -33,6 +34,7 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] MemoryModulesInfo readMemoryModules() override;
     [[nodiscard]] CommitPagingInfo readCommitPaging() override;
     [[nodiscard]] StorageInfo readStorage() override;
+    [[nodiscard]] GraphicsInfo readGraphics() override;
     [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override;
     [[nodiscard]] SensorsInfo readSensors() override;
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override;

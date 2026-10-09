@@ -7,8 +7,7 @@
 /// the mountinfo parser and the volume choice, and the disks and volumes under a fixture root; and
 /// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys; and
 /// Platform::LinuxSensors (#1522), hwmon and thermal-zone sensors; and Platform::LinuxNetworkAdapters
-/// (#1518), routes, resolv.conf, Wi-Fi levels and the adapters under a fixture root; and
-/// Platform::LinuxBootTimes (#1525), boot phases from systemd's timestamps.
+/// (#1518), routes, resolv.conf, Wi-Fi levels and the adapters under a fixture root.
 /// The headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
