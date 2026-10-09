@@ -3,6 +3,7 @@
 #include "LinuxCommitPaging.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxOsInfo.h"
+#include "LinuxPlatformSecurity.h"
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UserNameLookup.h"
@@ -120,6 +121,13 @@ StorageInfo LinuxSystemInfoProbe::readStorage()
         return true;
     };
     LinuxStorage::readStorageFacts(m_Root, info, sizer);
+    return info;
+}
+
+PlatformSecurityInfo LinuxSystemInfoProbe::readPlatformSecurity()
+{
+    PlatformSecurityInfo info;
+    LinuxPlatformSecurity::readPlatformSecurityFacts(m_Root, info);
     return info;
 }
 
