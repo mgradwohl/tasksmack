@@ -145,8 +145,8 @@ TEST_F(ProcessActionConfirmPopupTest, BatchConfirmUsesTheSameModalAndStaysWithin
     // The Processes table's batch confirm (#804): the caller's title and multi-line question, in the
     // same "###ConfirmAction" modal, no wider than the dialog budget however long a listed name is.
     std::vector<ProcessBatch::BatchTarget> targets;
-    targets.push_back({.target = TARGET_A, .name = std::string(400, 'x')});
-    targets.push_back({.target = TARGET_B, .name = "b"});
+    targets.push_back({.target = TARGET_A, .name = std::string(400, 'x'), .priority = {}});
+    targets.push_back({.target = TARGET_B, .name = "b", .priority = {}});
     const std::string title = ProcessBatch::confirmTitle(ProcessAction::Kill, targets.size());
     const std::string question = ProcessBatch::confirmBody(ProcessAction::Kill, targets, 0);
 
@@ -184,7 +184,8 @@ TEST_F(ProcessActionConfirmPopupTest, ATallBatchConfirmScrollsAndKeepsItsButtons
     targets.reserve(TARGET_COUNT);
     for (int i = 0; i < TARGET_COUNT; ++i)
     {
-        targets.push_back({.target = {.pid = 100 + i, .startTimeTicks = 1}, .name = std::string(300, static_cast<char>('a' + i))});
+        targets.push_back(
+            {.target = {.pid = 100 + i, .startTimeTicks = 1}, .name = std::string(300, static_cast<char>('a' + i)), .priority = {}});
     }
     const std::string title = ProcessBatch::confirmTitle(ProcessAction::Kill, targets.size());
     const std::string question = ProcessBatch::confirmBody(ProcessAction::Kill, targets, 0);

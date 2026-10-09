@@ -45,6 +45,18 @@ inline void keepCurrentWindowInViewport()
     }
 }
 
+/// Centre the next dialog on the main viewport's work area (#1539): when it appears, and again whenever
+/// that work area has changed size since the last frame (@p lastWorkSize, the caller's, holds it), so a
+/// resize while it is open brings it back to the middle rather than leaving it off to one side. Call
+/// it before BeginPopupModal() every frame the dialog may be drawn.
+inline void centerNextDialog(ImVec2& lastWorkSize)
+{
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const bool resized = viewport->WorkSize.x != lastWorkSize.x || viewport->WorkSize.y != lastWorkSize.y;
+    lastWorkSize = viewport->WorkSize;
+    ImGui::SetNextWindowPos(viewport->GetWorkCenter(), resized ? ImGuiCond_Always : ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+}
+
 /// Minimum height in pixels for bar fill rendering.
 /// Ensures at least a 1px marker remains visible even when the value is 0%,
 /// providing visual feedback that the bar exists and is capable of showing data.

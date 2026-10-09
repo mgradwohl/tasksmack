@@ -77,8 +77,10 @@ Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructi
     // its buttons off-screen (#804 review). The question scrolls instead (below).
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float dialogMaxHeight = UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.y);
-    // Opens centred over the main window's work area, wherever the request came from (#1539).
-    ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+    // Centred over the main window's work area, wherever the request came from, and back in the
+    // middle after a resize while it is open (#1539). One confirmation is open at a time.
+    static ImVec2 lastWorkSize;
+    UI::Widgets::centerNextDialog(lastWorkSize);
     UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x), dialogMaxHeight));
     if (ImGui::BeginPopupModal(popupTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {

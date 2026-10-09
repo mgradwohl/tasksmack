@@ -2505,7 +2505,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         const std::string label = std::format("{} Set priority for {} processes...###SetPriority", ICON_FA_GAUGE_HIGH, batchCount);
         if (ImGui::MenuItem(label.c_str()))
         {
-            m_BatchPriorityDialog.open(batchCount);
+            requestSelectionPriority();
         }
     }
     if (can.canTerminate || can.canKill)
@@ -2529,10 +2529,10 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
 void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain::ProcessSnapshot& proc)
 {
     m_RowAction.action = action;
-    m_RowAction.priorityNice.reset();
     // This row's identity: the platform refuses the action if the PID has since been reused (#973).
     m_RowAction.targets.assign(
-        1, ProcessBatch::BatchTarget{.target = {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, .name = proc.name});
+        1,
+        ProcessBatch::BatchTarget{.target = {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, .name = proc.name, .priority = {}});
     m_RowAction.title = Detail::confirmTitle(action, proc.name, proc.pid);
     m_RowAction.question = Detail::confirmBody(action, proc.name, proc.pid);
     m_ShowRowActionConfirm = true;
@@ -2560,44 +2560,55 @@ void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
         m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid);
     }
     m_RowAction.action = action;
-    m_RowAction.priorityNice.reset();
     m_RowAction.targets = std::move(targets);
     m_ShowRowActionConfirm = true;
 }
 
-void ProcessesPanel::requestSelectionPriority(std::int32_t nice)
+void ProcessesPanel::requestSelectionPriority()
 {
     // As requestSelectionAction(): the selected processes still listed, each by PID and start time, so
-    // one that has exited since the dialog opened is not among them and a reused PID is refused.
+    // one that has exited is not among them and a reused PID is refused when the priority is set.
     std::vector<ProcessBatch::BatchTarget> targets = ProcessBatch::resolveTargets(
         *m_CachedRenderSnapshots, [this](const Platform::ProcessTarget& target) { return m_Selection.contains(target); });
     if (targets.empty())
     {
         return;
     }
-    m_RowAction.action = Detail::ProcessAction::None;
-    m_RowAction.priorityNice = nice;
-    m_RowAction.title = ProcessBatch::priorityConfirmTitle(targets.size());
-    m_RowAction.question = ProcessBatch::priorityConfirmBody(nice, targets, m_OwnPid);
-    m_RowAction.targets = std::move(targets);
-    m_ShowRowActionConfirm = true;
+    m_BatchPriorityDialog.open(std::move(targets), m_OwnPid);
 }
 
 void ProcessesPanel::renderBatchPriorityDialog()
 {
-    if (const std::optional<std::int32_t> nice = m_BatchPriorityDialog.render(); nice.has_value())
+    const std::optional<std::int32_t> nice = m_BatchPriorityDialog.render();
+    if (!nice.has_value())
     {
-        requestSelectionPriority(*nice);
+        return;
+    }
+    // Apply: the dialog listed these processes, so it was the confirmation (#1539). Every one in turn,
+    // by identity, TaskSmack itself last; one summary line naming the priority applied (#1484).
+    bool anySucceeded = false;
+    if (m_ProcessActions)
+    {
+        const ProcessBatch::BatchResult result =
+            ProcessBatch::runBatchPriority(*m_ProcessActions, m_BatchPriorityDialog.targets(), *nice, m_OwnPid);
+        m_RowActionResult = ProcessBatch::formatBatchPriorityResultMessage(*nice, result);
+        anySucceeded = result.succeeded > 0;
+    }
+    else
+    {
+        m_RowActionResult = {.ok = false, .text = "Process actions unavailable"};
+    }
+    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    if (anySucceeded)
+    {
+        requestRefresh(); // Show the new priorities without waiting for the next sample
     }
 }
 
 void ProcessesPanel::renderRowActionConfirm()
 {
-    const bool isPriority = m_RowAction.priorityNice.has_value();
     const ProcessActionConfirm::Outcome outcome =
-        isPriority ? ProcessActionConfirm::renderLabelled(
-                         m_ShowRowActionConfirm, ProcessBatch::PRIORITY_CONFIRM_LABEL, false, m_RowAction.title, m_RowAction.question)
-                   : ProcessActionConfirm::renderText(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.title, m_RowAction.question);
+        ProcessActionConfirm::renderText(m_ShowRowActionConfirm, m_RowAction.action, m_RowAction.title, m_RowAction.question);
     if (outcome == ProcessActionConfirm::Outcome::Cancelled)
     {
         m_RowAction = {}; // Nothing is pending any more: F9 may ask again (#170)
@@ -2608,23 +2619,7 @@ void ProcessesPanel::renderRowActionConfirm()
         return;
     }
     bool anySucceeded = false;
-    if (isPriority)
-    {
-        // Every selected process in turn, by identity, TaskSmack itself last; one summary line naming
-        // the priority applied (#1484).
-        const std::int32_t nice = *m_RowAction.priorityNice;
-        if (m_ProcessActions)
-        {
-            const ProcessBatch::BatchResult result = ProcessBatch::runBatchPriority(*m_ProcessActions, m_RowAction.targets, nice, m_OwnPid);
-            m_RowActionResult = ProcessBatch::formatBatchPriorityResultMessage(nice, result);
-            anySucceeded = result.succeeded > 0;
-        }
-        else
-        {
-            m_RowActionResult = {.ok = false, .text = "Process actions unavailable"};
-        }
-    }
-    else if (m_RowAction.targets.size() == 1)
+    if (m_RowAction.targets.size() == 1)
     {
         const Platform::ProcessTarget& target = m_RowAction.targets.front().target;
         const Platform::ProcessActionResult result = m_ProcessActions

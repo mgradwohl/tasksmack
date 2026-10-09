@@ -39,11 +39,13 @@ inline constexpr std::size_t RESULT_FAILURE_LIMIT = 3;
 /// The system's init process (systemd and the like) on Linux.
 inline constexpr std::int32_t INIT_PID = 1;
 
-/// One process a batch action is for: its identity, and its name for the dialog and the result.
+/// One process a batch action is for: its identity, its name for the dialog and the result, and its
+/// priority when it was picked (the batch priority dialog's list, #1539; empty when not known).
 struct BatchTarget
 {
     Platform::ProcessTarget target;
     std::string name;
+    std::string priority;
 };
 
 /// Whether @p pid is one the confirmation must always name, never fold into "and N more": TaskSmack's
@@ -68,7 +70,9 @@ template<typename SnapshotRange, typename SelectedPredicate>
         const Platform::ProcessTarget target{.pid = snapshot.pid, .startTimeTicks = snapshot.startTimeTicks};
         if (isSelected(target))
         {
-            targets.push_back({.target = target, .name = snapshot.name});
+            targets.push_back({.target = target,
+                               .name = snapshot.name,
+                               .priority = std::string(Domain::Priority::getProcessPriorityLabel(snapshot.priorityClass, snapshot.nice))});
         }
     }
     return targets;
@@ -149,6 +153,50 @@ inline NotableTargets appendTargetList(std::string& body, std::span<const BatchT
         std::format_to(std::back_inserter(body), "\n    and {} more", targets.size() - listed);
     }
     return notable;
+}
+
+/// The processes a list names, in order -- TaskSmack itself and PID 1 first and always, then the
+/// others up to @p limit in all -- and how many it leaves out: the batch priority dialog's list (#1539),
+/// the same choice appendTargetList() makes for a confirmation's text.
+struct ListedTargets
+{
+    std::vector<const BatchTarget*> listed;
+    std::size_t more = 0;
+    NotableTargets notable;
+};
+
+[[nodiscard]] inline ListedTargets
+listTargets(std::span<const BatchTarget> targets, std::int32_t ownPid, std::size_t limit = CONFIRM_LIST_LIMIT)
+{
+    ListedTargets out;
+    for (const BatchTarget& t : targets)
+    {
+        if (isNotableTarget(t.target.pid, ownPid))
+        {
+            out.listed.push_back(&t);
+            if (t.target.pid == INIT_PID)
+            {
+                out.notable.init = &t;
+            }
+            if (ownPid > 0 && t.target.pid == ownPid)
+            {
+                out.notable.self = &t;
+            }
+        }
+    }
+    for (const BatchTarget& t : targets)
+    {
+        if (out.listed.size() >= limit)
+        {
+            break;
+        }
+        if (!isNotableTarget(t.target.pid, ownPid))
+        {
+            out.listed.push_back(&t);
+        }
+    }
+    out.more = targets.size() - out.listed.size();
+    return out;
 }
 
 /// Appends a paragraph for each of TaskSmack itself and PID 1 that @p notable has: "This includes
@@ -291,11 +339,9 @@ inline void appendFailures(std::string& text, const BatchResult& result)
 
 // ---------------------------------------------------------------------------------------------------
 // Batch priority (#1484): one nice value -- a priority class on Windows -- set on every selected
-// process, confirmed in the same dialog and summarised in the same one line as the actions above.
+// process, picked and confirmed in one dialog that lists them (ProcessBatchPriorityDialog, #1539), and
+// summarised in the same one line as the actions above.
 // ---------------------------------------------------------------------------------------------------
-
-/// The confirm button's label for a batch priority change.
-inline constexpr const char* PRIORITY_CONFIRM_LABEL = "Set Priority";
 
 /// Whether the Processes table's row menu offers "Set priority for N processes...": only for a row of a
 /// multi-selection (@p batchCount, 0 for a single row, whose priority stays in Process Details), and only
@@ -318,31 +364,6 @@ inline constexpr const char* PRIORITY_CONFIRM_LABEL = "Set Priority";
 [[nodiscard]] inline std::string priorityValueText(std::int32_t nice, bool windowsClasses = Detail::PRIORITY_USES_WINDOWS_CLASSES)
 {
     return Detail::priorityDisplayText(Domain::Priority::clampNice(nice), windowsClasses);
-}
-
-/// "Set priority for 5 processes?"
-[[nodiscard]] inline std::string priorityConfirmTitle(std::size_t count)
-{
-    return std::format("Set priority for {}?", processCountText(count));
-}
-
-/// The batch priority confirmation's body: the priority that will be applied, the processes
-/// (appendTargetList()), TaskSmack itself and PID 1 when among them, and -- for a nice value below 0
-/// outside Windows, which only a privileged user may set -- that the processes may refuse.
-[[nodiscard]] inline std::string priorityConfirmBody(std::int32_t nice,
-                                                     std::span<const BatchTarget> targets,
-                                                     std::int32_t ownPid,
-                                                     bool windowsClasses = Detail::PRIORITY_USES_WINDOWS_CLASSES)
-{
-    std::string body =
-        std::format("The priority of {} will be set to {}.\n", processCountText(targets.size()), priorityValueText(nice, windowsClasses));
-    const NotableTargets notable = appendTargetList(body, targets, ownPid);
-    appendNotableWarnings(body, notable, "changed");
-    if (!windowsClasses && Domain::Priority::clampNice(nice) < Domain::Priority::NORMAL_NICE)
-    {
-        body += "\n\nA nice value below 0 raises the priority, which usually needs root: without it, each process will refuse.";
-    }
-    return body;
 }
 
 /// Sets @p nice, held to the nice range, on every target through @p actions (runBatch()), TaskSmack's
