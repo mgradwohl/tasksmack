@@ -63,6 +63,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -843,6 +844,10 @@ void ProcessesPanel::ensureTextSizeCacheValid()
 ProcessesPanel::ProcessesPanel() : Panel("Processes")
 {}
 
+ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform)
+    : Panel("Processes"), m_MakePlatform(std::move(makePlatform))
+{}
+
 ProcessesPanel::~ProcessesPanel()
 {
     // Order doesn't matter for safety here: BackgroundSampler observes m_ProcessModel via a
@@ -874,8 +879,12 @@ void ProcessesPanel::onAttach()
     // Create probe and transfer it to the ProcessModel. The model itself is then
     // passed to BackgroundSampler so enumeration runs off the main thread.
     // The synthetic scenario's probe when TASKSMACK_SYNTHETIC selects one (#1413), else the platform's.
-    const Synthetic::Scenario* scenario = Synthetic::activeScenario();
-    auto processProbe = Synthetic::makeProcessProbe(scenario);
+    // An injected factory (tests, #1546) replaces both, with no scenario.
+    const Synthetic::Scenario* scenario = m_MakePlatform ? nullptr : Synthetic::activeScenario();
+    ProcessesPanelPlatform platform = m_MakePlatform ? m_MakePlatform()
+                                                     : ProcessesPanelPlatform{.probe = Synthetic::makeProcessProbe(scenario),
+                                                                              .actions = Synthetic::makeProcessActions(scenario)};
+    auto processProbe = std::move(platform.probe);
 
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
     processProbe->setSocketStatsCacheTtl(std::chrono::milliseconds(socketStatsCacheTtlMs));
@@ -883,7 +892,7 @@ void ProcessesPanel::onAttach()
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(std::move(processProbe));
 
     // The row menu's actions (#1209), with what this platform can do, so it offers nothing it can't.
-    m_ProcessActions = Synthetic::makeProcessActions(scenario);
+    m_ProcessActions = std::move(platform.actions);
     m_ActionCapabilities = m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{};
     m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
@@ -2196,12 +2205,14 @@ void ProcessesPanel::syncNameWidthForViewMode()
     {
         return;
     }
-    m_NameWidthSyncPending = false;
     const ImGuiTable* table = ImGui::GetCurrentTable();
-    if (table == nullptr)
+    // A table on its first frame isn't laid out yet: ImGui sets MinColumnWidth in its first layout
+    // pass, after this, and TableSetColumnWidth asserts against a zero minimum (#1656). Wait a frame.
+    if (table == nullptr || table->MinColumnWidth <= 0.0F)
     {
         return;
     }
+    m_NameWidthSyncPending = false;
     const auto nameIdx = static_cast<int>(toIndex(ProcessColumn::Name));
     const float currentWidth = table->Columns[nameIdx].WidthGiven;
     if (m_TreeViewEnabled)

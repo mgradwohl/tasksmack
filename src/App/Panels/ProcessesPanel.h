@@ -22,12 +22,14 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -98,10 +100,23 @@ struct ProcessCellWidths
 
 /// Panel for displaying and managing the process list.
 /// Refresh cadence is driven by the main loop via onUpdate().
+/// The process probe and actions ProcessesPanel::onAttach() builds from (#1546).
+struct ProcessesPanelPlatform
+{
+    std::unique_ptr<Platform::IProcessProbe> probe;
+    std::unique_ptr<Platform::IProcessActions> actions;
+};
+
 class ProcessesPanel : public Panel
 {
   public:
+    /// The probe and actions come from the synthetic scenario when TASKSMACK_SYNTHETIC selects one,
+    /// else the platform's (Synthetic::makeProcessProbe(), makeProcessActions()).
     ProcessesPanel();
+
+    /// Test seam (#1546): onAttach() takes its probe and actions from @p makePlatform instead (tests:
+    /// mocks), with no synthetic scenario. The App layer stays the only place platform probes are made.
+    explicit ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform);
     ~ProcessesPanel() override;
 
     ProcessesPanel(const ProcessesPanel&) = delete;
@@ -266,6 +281,7 @@ class ProcessesPanel : public Panel
     }
 
   private:
+    std::function<ProcessesPanelPlatform()> m_MakePlatform; ///< Set by the test seam only
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
     // destructor ordering.

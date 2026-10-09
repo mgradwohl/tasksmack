@@ -268,6 +268,7 @@ set(COMMON_TEST_SOURCES
     App/test_SystemSectionsRender.cpp
     App/test_GpuSectionRender.cpp
     App/test_SystemMetricsPanelRender.cpp
+    App/test_ProcessesPanelRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
@@ -472,6 +473,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/GpuSection.cpp
     # The System Metrics panel as a whole, with mock probes through its seam (test_SystemMetricsPanelRender.cpp, #1546)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemMetricsPanel.cpp
+    # The Processes panel as a whole, with a mock probe through its seam (test_ProcessesPanelRender.cpp, #1546)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp
