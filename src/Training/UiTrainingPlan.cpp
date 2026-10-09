@@ -113,9 +113,12 @@ ParseResult parseArguments(std::span<const std::string_view> args)
 {
     Options options;
     ParseResult result;
-    for (std::size_t i = 0; i < args.size(); ++i)
+    // The index of the next argument to read: a key, then (for "--key value") its value.
+    std::size_t next = 0;
+    while (next < args.size())
     {
-        std::string_view key = args[i];
+        const std::string_view arg = args[next++];
+        std::string_view key = arg;
         std::optional<std::string_view> inlineValue;
         if (const std::size_t eq = key.find('='); key.starts_with("--") && eq != std::string_view::npos)
         {
@@ -136,7 +139,7 @@ ParseResult parseArguments(std::span<const std::string_view> args)
 
         if (key != "--probes" && key != "--synthetic" && key != "--frames" && key != "--fps")
         {
-            result.error = std::format("unknown argument '{}'", args[i]);
+            result.error = std::format("unknown argument '{}'", arg);
             return result;
         }
         std::string_view value;
@@ -144,9 +147,9 @@ ParseResult parseArguments(std::span<const std::string_view> args)
         {
             value = *inlineValue;
         }
-        else if (i + 1 < args.size())
+        else if (next < args.size())
         {
-            value = args[++i];
+            value = args[next++];
         }
         else
         {
