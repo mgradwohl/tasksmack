@@ -15,8 +15,9 @@ namespace Platform
 /// the usable total from /proc/meminfo (#1515); commit, swap, zram, zswap and huge pages from /proc and
 /// /sys (LinuxCommitPaging.h, #1516); disks from /sys/block and volumes from /proc/self/mountinfo and
 /// statvfs (LinuxStorage.h, #1517); Secure Boot, the TPM, security modules, lockdown and CPU
-/// vulnerabilities from /sys (LinuxPlatformSecurity.h, #1514); GPUs and monitors from /sys/class/drm
-/// and the display server from the session environment (LinuxGraphics.h, #1519).
+/// vulnerabilities from /sys (LinuxPlatformSecurity.h, #1514); hwmon and thermal-zone sensors
+/// (LinuxSensors.h, #1522); GPUs and monitors from /sys/class/drm and the display server from the
+/// session environment (LinuxGraphics.h, #1519).
 class LinuxSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -33,6 +34,7 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] StorageInfo readStorage() override;
     [[nodiscard]] GraphicsInfo readGraphics() override;
     [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override;
+    [[nodiscard]] SensorsInfo readSensors() override;
 
   private:
     std::filesystem::path m_Root;

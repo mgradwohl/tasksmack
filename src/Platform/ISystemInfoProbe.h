@@ -307,6 +307,41 @@ struct PlatformSecurityInfo
     std::vector<CpuVulnerability> vulnerabilities; ///< Sorted by name.
 };
 
+/// What a sensor measures (#1522).
+enum class SensorKind : std::uint8_t
+{
+    Temperature, ///< Degrees Celsius
+    Fan,         ///< RPM
+    Voltage,     ///< Volts
+    Current,     ///< Amperes
+    Power,       ///< Watts
+};
+
+/// One sensor reading, in the kind's unit, with the driver's label.
+struct SensorReading
+{
+    SensorKind kind = SensorKind::Temperature;
+    std::string label;              ///< The driver's label ("Package id 0", "Tctl", "fan1"); never empty.
+    double value = 0.0;             ///< In the kind's unit.
+    std::optional<double> high;     ///< The driver's high (warning) threshold, when it reports one.
+    std::optional<double> critical; ///< The driver's critical threshold, when it reports one.
+};
+
+/// One device's sensors: a hwmon chip ("coretemp", "nvme", "k10temp") or the thermal zones.
+struct SensorDevice
+{
+    std::string name; ///< The driver's device name, made unique on the page ("nvme", "nvme #2").
+    std::vector<SensorReading> readings;
+};
+
+/// The Sensors facts (#1522): every readable sensor at the time of the read, grouped by device.
+struct SensorsInfo
+{
+    bool available = false;            ///< The probe read the section at all.
+    bool listed = false;               ///< The sensor devices could be listed: an empty `devices` means none.
+    std::vector<SensorDevice> devices; ///< In the OS's device order (Linux: by hwmon index, thermal zones last).
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -350,6 +385,9 @@ class ISystemInfoProbe
 
     /// The Security facts (#1514); read when hasOs is true.
     [[nodiscard]] virtual PlatformSecurityInfo readPlatformSecurity() = 0;
+
+    /// The Sensors facts (#1522); read when hasOs is true.
+    [[nodiscard]] virtual SensorsInfo readSensors() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -392,6 +430,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] SensorsInfo readSensors() override
     {
         return {};
     }

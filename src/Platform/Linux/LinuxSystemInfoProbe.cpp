@@ -5,6 +5,7 @@
 #include "LinuxGraphics.h"
 #include "LinuxOsInfo.h"
 #include "LinuxPlatformSecurity.h"
+#include "LinuxSensors.h"
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UserNameLookup.h"
@@ -138,6 +139,13 @@ PlatformSecurityInfo LinuxSystemInfoProbe::readPlatformSecurity()
 {
     PlatformSecurityInfo info;
     LinuxPlatformSecurity::readPlatformSecurityFacts(m_Root, info);
+    return info;
+}
+
+SensorsInfo LinuxSystemInfoProbe::readSensors()
+{
+    SensorsInfo info;
+    LinuxSensors::readSensorFacts(m_Root, info);
     return info;
 }
 

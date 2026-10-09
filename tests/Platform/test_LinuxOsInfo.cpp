@@ -5,7 +5,8 @@
 /// the Memory modules facts (#1515) from the raw DMI table and /proc/meminfo; and Platform::LinuxCommitPaging
 /// (#1516), the Commit & paging parsers and facts from /proc and /sys; and Platform::LinuxStorage (#1517),
 /// the mountinfo parser and the volume choice, and the disks and volumes under a fixture root; and
-/// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys.
+/// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys; and
+/// Platform::LinuxSensors (#1522), hwmon and thermal-zone sensors.
 /// The headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
@@ -13,6 +14,7 @@
 #include "Platform/Linux/LinuxFirmwareInfo.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 #include "Platform/Linux/LinuxPlatformSecurity.h"
+#include "Platform/Linux/LinuxSensors.h"
 #include "Platform/Linux/LinuxStorage.h"
 
 #include <gtest/gtest.h>
@@ -752,6 +754,107 @@ TEST(LinuxPlatformSecurityTest, NothingReadableLeavesEverythingUnknown)
     std::filesystem::create_directories(root.path() / "sys/class"); // sysfs, but no TPM
     LinuxPlatformSecurity::readPlatformSecurityFacts(root.path(), info);
     EXPECT_EQ(info.tpm, SecurityFeatureState::NotSupported);
+}
+
+TEST(LinuxSensorsTest, ParsesValuesAndChannels)
+{
+    EXPECT_EQ(LinuxSensors::parseSysfsInteger("45000\n"), std::optional<std::int64_t>(45000));
+    EXPECT_EQ(LinuxSensors::parseSysfsInteger("-5000"), std::optional<std::int64_t>(-5000));
+    EXPECT_FALSE(LinuxSensors::parseSysfsInteger("").has_value());
+    EXPECT_FALSE(LinuxSensors::parseSysfsInteger("12a").has_value());
+    const LinuxSensors::InputFamily& temp = LinuxSensors::INPUT_FAMILIES[0];
+    EXPECT_EQ(LinuxSensors::inputChannel("temp3_input", temp), std::optional<unsigned>(3));
+    EXPECT_FALSE(LinuxSensors::inputChannel("temp3_label", temp).has_value());
+    EXPECT_FALSE(LinuxSensors::inputChannel("temp_input", temp).has_value());
+    EXPECT_FALSE(LinuxSensors::inputChannel("tempX_input", temp).has_value());
+}
+
+TEST(LinuxSensorsTest, ReadsChipsAndThermalZonesUnderARoot)
+{
+    const FixtureRoot root;
+    // A CPU package sensor with thresholds, and a core without.
+    root.write("sys/class/hwmon/hwmon2/name", "coretemp\n");
+    root.write("sys/class/hwmon/hwmon2/temp1_input", "52000\n");
+    root.write("sys/class/hwmon/hwmon2/temp1_label", "Package id 0\n");
+    root.write("sys/class/hwmon/hwmon2/temp1_max", "100000\n");
+    root.write("sys/class/hwmon/hwmon2/temp1_crit", "105000\n");
+    root.write("sys/class/hwmon/hwmon2/temp2_input", "48000\n");
+    // A board chip: a fan, a voltage, a disconnected fan (unreadable input), and power in both forms.
+    root.write("sys/class/hwmon/hwmon0/name", "nct6798\n");
+    root.write("sys/class/hwmon/hwmon0/fan1_input", "1180\n");
+    root.write("sys/class/hwmon/hwmon0/fan2_input", "");
+    root.write("sys/class/hwmon/hwmon0/in0_input", "12180\n");
+    root.write("sys/class/hwmon/hwmon0/in0_label", "+12V\n");
+    root.write("sys/class/hwmon/hwmon0/power1_input", "15200000\n");
+    root.write("sys/class/hwmon/hwmon0/power1_average", "15000000\n");
+    root.write("sys/class/hwmon/hwmon0/curr1_input", "1200\n");
+    // Two NVMe drives, numbered in hwmon order, and an AC adapter with nothing to read.
+    root.write("sys/class/hwmon/hwmon3/name", "nvme\n");
+    root.write("sys/class/hwmon/hwmon3/temp1_input", "38850\n");
+    root.write("sys/class/hwmon/hwmon4/name", "nvme\n");
+    root.write("sys/class/hwmon/hwmon4/temp1_input", "41850\n");
+    root.write("sys/class/hwmon/hwmon1/name", "AC\n");
+    // Thermal zones: acpitz is also hwmon5, so only x86_pkg_temp is added.
+    root.write("sys/class/hwmon/hwmon5/name", "acpitz\n");
+    root.write("sys/class/hwmon/hwmon5/temp1_input", "27800\n");
+    root.write("sys/class/thermal/thermal_zone0/type", "acpitz\n");
+    root.write("sys/class/thermal/thermal_zone0/temp", "27800\n");
+    root.write("sys/class/thermal/thermal_zone1/type", "x86_pkg_temp\n");
+    root.write("sys/class/thermal/thermal_zone1/temp", "52000\n");
+    root.write("sys/class/thermal/cooling_device0/type", "Processor\n");
+
+    SensorsInfo info;
+    LinuxSensors::readSensorFacts(root.path(), info);
+    EXPECT_TRUE(info.available);
+    EXPECT_TRUE(info.listed);
+    ASSERT_EQ(info.devices.size(), 6U);
+    EXPECT_EQ(info.devices[0].name, "nct6798"); // hwmon0; hwmon1 (AC) has nothing to read
+    ASSERT_EQ(info.devices[0].readings.size(), 4U);
+    EXPECT_EQ(info.devices[0].readings[0].kind, SensorKind::Fan); // kind order: temperature, fan, voltage, current, power
+    EXPECT_EQ(info.devices[0].readings[0].label, "fan1");
+    EXPECT_DOUBLE_EQ(info.devices[0].readings[0].value, 1180.0);
+    EXPECT_EQ(info.devices[0].readings[1].label, "+12V");
+    EXPECT_DOUBLE_EQ(info.devices[0].readings[1].value, 12.18);
+    EXPECT_EQ(info.devices[0].readings[2].kind, SensorKind::Current);
+    EXPECT_DOUBLE_EQ(info.devices[0].readings[2].value, 1.2);
+    EXPECT_EQ(info.devices[0].readings[3].kind, SensorKind::Power);
+    EXPECT_DOUBLE_EQ(info.devices[0].readings[3].value, 15.2); // _input preferred over _average
+
+    EXPECT_EQ(info.devices[1].name, "coretemp");
+    ASSERT_EQ(info.devices[1].readings.size(), 2U);
+    EXPECT_EQ(info.devices[1].readings[0].label, "Package id 0");
+    EXPECT_DOUBLE_EQ(info.devices[1].readings[0].value, 52.0);
+    EXPECT_EQ(info.devices[1].readings[0].high, std::optional<double>(100.0));
+    EXPECT_EQ(info.devices[1].readings[0].critical, std::optional<double>(105.0));
+    EXPECT_EQ(info.devices[1].readings[1].label, "temp2");
+    EXPECT_FALSE(info.devices[1].readings[1].high.has_value());
+
+    EXPECT_EQ(info.devices[2].name, "nvme");
+    EXPECT_EQ(info.devices[3].name, "nvme #2");
+    EXPECT_EQ(info.devices[4].name, "acpitz");
+    EXPECT_EQ(info.devices[5].name, "Thermal zones");
+    ASSERT_EQ(info.devices[5].readings.size(), 1U);
+    EXPECT_EQ(info.devices[5].readings[0].label, "x86_pkg_temp");
+}
+
+TEST(LinuxSensorsTest, NoSensorsAndNoSysfs)
+{
+    {
+        const FixtureRoot root;
+        std::filesystem::create_directories(root.path() / "sys/class/hwmon"); // listed, but empty (a VM)
+        SensorsInfo info;
+        LinuxSensors::readSensorFacts(root.path(), info);
+        EXPECT_TRUE(info.listed);
+        EXPECT_TRUE(info.devices.empty());
+    }
+    {
+        const FixtureRoot root; // no /sys at all
+        SensorsInfo info;
+        LinuxSensors::readSensorFacts(root.path(), info);
+        EXPECT_TRUE(info.available);
+        EXPECT_FALSE(info.listed);
+        EXPECT_TRUE(info.devices.empty());
+    }
 }
 
 } // namespace
