@@ -115,12 +115,6 @@ inline constexpr int PROCESS_CONNECTIONS_REFRESH_MS = 2000;
 // process loads and unloads modules rarely after startup, so a slow re-read is enough to notice one.
 inline constexpr int PROCESS_MODULES_REFRESH_MS = 3000;
 
-// How often Process Details re-reads the selected process's open files (milliseconds) (#183), on the
-// Modules section's terms: only while its Open files section is open. Files open and close more often
-// than modules load, but a read walks every descriptor (Linux) or the whole system handle table
-// (Windows), so not faster than this.
-inline constexpr int PROCESS_OPEN_FILES_REFRESH_MS = 3000;
-
 // How often Process Details re-reads the selected process's security context (milliseconds) (#1526)
 // On demand, like the modules: only for the selected process, only while its Security section is open.
 // Credentials change rarely (setuid(), a capability drop), so a slow re-read is enough to notice one.

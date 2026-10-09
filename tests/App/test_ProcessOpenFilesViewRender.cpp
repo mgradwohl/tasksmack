@@ -1,8 +1,9 @@
 /// @file test_ProcessOpenFilesViewRender.cpp
-/// @brief The Open files section (#183): its read cadence, sort and filter against a mock reader, the
-/// Domain formatting it shows, and its real ImGui render, headless (text captured with LogToBuffer()):
-/// nothing read while collapsed, the empty, denied and populated states, the Mode column only when
-/// flags were read, HANDLE in hex on Windows, and the truncation and unnamed-handle notes.
+/// @brief The Open files section (#183): scans only on request (never on opening or a timer), sort and
+/// filter against a mock reader, the Domain formatting it shows, and its real ImGui render, headless
+/// (text captured with LogToBuffer()): the idle scan button, scanning, the empty, denied, failed and
+/// populated states with Rescan and the scan time, the Mode column only when flags were read, HANDLE
+/// in hex on Windows, and the truncation and unnamed-handle notes.
 
 #include "App/Panels/ProcessOpenFilesView.h"
 #include "Domain/ProcessOpenFiles.h"
@@ -74,28 +75,60 @@ TEST(ProcessOpenFilesDomainTest, FormatsDescriptorKindAndMode)
     EXPECT_EQ(formatMode(02002), "rw append");
 }
 
-TEST(ProcessOpenFilesViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
+TEST(ProcessOpenFilesViewTest, ScansOnlyWhenAskedAndNeverOnATimer)
 {
     ProcessOpenFilesView view;
     TestMocks::MockProcessOpenFilesReader reader;
     reader.setResult(linuxFiles());
 
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F)); // never drawn open: never read
+    view.markDrawnOpen();
+    EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)); // open, but not asked: nothing read
+    view.requestScan();
+    EXPECT_TRUE(view.scanning());
     view.markDrawnOpen();
     EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
     view.finishPendingRead(TARGET);
+    EXPECT_FALSE(view.scanning());
     ASSERT_EQ(view.rows().size(), 3U);
 
+    for (int i = 0; i < 5; ++i)
+    {
+        view.markDrawnOpen();
+        EXPECT_FALSE(view.update(&reader, TARGET, 10.0F)); // no refresh, however long it stays open
+    }
+    view.requestScan(); // Rescan
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F)); // not yet due
-    view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 2.5F));
+    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
     view.finishPendingRead(TARGET);
     EXPECT_EQ(reader.readCount(), 2);
 
+    // A new selection clears back to the button.
     view.onSelectionChanged();
     EXPECT_FALSE(view.hasRead());
+    EXPECT_FALSE(view.scanning());
     EXPECT_TRUE(view.rows().empty());
+}
+
+TEST(ProcessOpenFilesViewTest, ASelectionChangeOrClosingMidScanDropsTheScan)
+{
+    ProcessOpenFilesView view;
+    TestMocks::MockProcessOpenFilesReader reader;
+    reader.setResult(linuxFiles());
+
+    view.requestScan();
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.onSelectionChanged();
+    view.finishPendingRead(TARGET);
+    EXPECT_FALSE(view.hasRead());
+
+    view.requestScan();
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)); // not drawn open this frame: closed mid-scan
+    view.finishPendingRead(TARGET);
+    EXPECT_FALSE(view.hasRead());
+    EXPECT_FALSE(view.scanning());
 }
 
 TEST(ProcessOpenFilesViewTest, SortsByDescriptorByDefaultAndFilters)
@@ -157,7 +190,7 @@ class ProcessOpenFilesViewRenderTest : public ::testing::Test
     ImGuiContext* m_Context = nullptr;
 };
 
-TEST_F(ProcessOpenFilesViewRenderTest, HiddenWithoutSupportAndNothingReadWhileCollapsed)
+TEST_F(ProcessOpenFilesViewRenderTest, HiddenWithoutSupportAndNothingReadOpenOrCollapsed)
 {
     ProcessOpenFilesView view;
     EXPECT_FALSE(renderAndCapture(view, false).contains("Open files"));
@@ -165,20 +198,35 @@ TEST_F(ProcessOpenFilesViewRenderTest, HiddenWithoutSupportAndNothingReadWhileCo
     TestMocks::MockProcessOpenFilesReader reader;
     for (int i = 0; i < 3; ++i)
     {
+        EXPECT_TRUE(renderAndCapture(view, true, i % 2 == 0).contains("Open files"));
         static_cast<void>(view.update(&reader, TARGET, 10.0F));
-        EXPECT_TRUE(renderAndCapture(view, true, false).contains("Open files"));
     }
     EXPECT_EQ(reader.readCount(), 0);
 }
 
-TEST_F(ProcessOpenFilesViewRenderTest, EmptyState)
+TEST_F(ProcessOpenFilesViewRenderTest, IdleShowsTheScanButtonAndScanningShowsProgress)
 {
     ProcessOpenFilesView view;
-    EXPECT_TRUE(renderAndCapture(view, true).contains("Reading..."));
+    std::string text = renderAndCapture(view, true);
+    EXPECT_TRUE(text.contains("Scan open files"));
+    EXPECT_TRUE(text.contains("runs only when asked"));
+    EXPECT_FALSE(text.contains("PATH"));
+
+    view.requestScan();
+    text = renderAndCapture(view, true);
+    EXPECT_TRUE(text.contains("Scanning..."));
+    EXPECT_FALSE(text.contains("Scan open files"));
+}
+
+TEST_F(ProcessOpenFilesViewRenderTest, EmptyStateHasRescanAndTheScanTime)
+{
+    ProcessOpenFilesView view;
     view.applyResult(statusOnly(OpenFilesReadStatus::Ok));
     const std::string text = renderAndCapture(view, true);
     EXPECT_TRUE(text.contains("Open files (0)"));
     EXPECT_TRUE(text.contains("No open files"));
+    EXPECT_TRUE(text.contains("Rescan"));
+    EXPECT_TRUE(text.contains("Scanned "));
 }
 
 TEST_F(ProcessOpenFilesViewRenderTest, DeniedAndFailedShowANoteNotATable)
@@ -187,6 +235,7 @@ TEST_F(ProcessOpenFilesViewRenderTest, DeniedAndFailedShowANoteNotATable)
     view.applyResult(statusOnly(OpenFilesReadStatus::PermissionDenied));
     std::string text = renderAndCapture(view, true);
     EXPECT_TRUE(text.contains("Access denied"));
+    EXPECT_TRUE(text.contains("Rescan"));
     EXPECT_FALSE(text.contains("PATH"));
     EXPECT_FALSE(text.contains("Open files ("));
 

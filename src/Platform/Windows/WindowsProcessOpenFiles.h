@@ -33,6 +33,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -124,6 +125,7 @@ class WindowsProcessOpenFilesReader final : public IProcessOpenFilesReader
 
     [[nodiscard]] bool hasOpenFiles() const override;
     [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& target) override;
+    [[nodiscard]] std::size_t handlesScanned() const noexcept override;
 
     /// Namers still waiting on a handle that did not answer (tests).
     [[nodiscard]] std::size_t stuckNamerCount();
@@ -145,6 +147,7 @@ class WindowsProcessOpenFilesReader final : public IProcessOpenFilesReader
     std::optional<USHORT> m_FileTypeIndex;
     std::vector<std::shared_ptr<NamingState>> m_StuckNamers;
     std::set<std::pair<ULONG_PTR, ULONG_PTR>> m_HungHandles; // (pid, handle) that did not answer: skipped
+    std::atomic<std::size_t> m_HandlesScanned{0};            // the read in flight's progress, read by the UI
 };
 
 } // namespace Platform::Windows

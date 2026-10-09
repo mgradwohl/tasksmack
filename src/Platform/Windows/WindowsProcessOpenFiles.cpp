@@ -6,6 +6,7 @@
 #include "WinString.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -269,6 +270,11 @@ bool WindowsProcessOpenFilesReader::hasOpenFiles() const
     return m_Api.ntQuerySystemInformation != nullptr;
 }
 
+std::size_t WindowsProcessOpenFilesReader::handlesScanned() const noexcept
+{
+    return m_HandlesScanned.load(std::memory_order_relaxed);
+}
+
 std::size_t WindowsProcessOpenFilesReader::stuckNamerCount()
 {
     std::erase_if(m_StuckNamers,
@@ -341,6 +347,7 @@ std::optional<USHORT> WindowsProcessOpenFilesReader::fileTypeIndex()
 
 OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTarget& target)
 {
+    m_HandlesScanned.store(0, std::memory_order_relaxed);
     if (!hasOpenFiles())
     {
         return resultOf(OpenFilesReadStatus::Unsupported);
@@ -462,6 +469,7 @@ OpenFilesReadResult WindowsProcessOpenFilesReader::readOpenFiles(const ProcessTa
                 break;
             }
             seen = state->files.size();
+            m_HandlesScanned.store(seen, std::memory_order_relaxed);
         }
         result.files.insert(result.files.end(), state->files.begin(), state->files.end());
         for (std::size_t i = state->files.size(); i < state->handles.size(); ++i)

@@ -322,6 +322,7 @@ TEST_F(WindowsProcessOpenFilesTest, ListsTheTargetsFileHandlesTypedAndNamed)
     EXPECT_TRUE(result.files[2].path.empty());            // a pipe is never name-queried
     EXPECT_EQ(result.files[3].kind, OpenFileKind::Other); // a hang-prone mask: listed, never touched
     EXPECT_EQ(fake().duplicates.load(), 3);
+    EXPECT_EQ(reader.handlesScanned(), 4U); // the progress the view shows while it runs
 }
 
 TEST_F(WindowsProcessOpenFilesTest, LearnsTheFileTypeOnce)

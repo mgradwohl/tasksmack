@@ -1,10 +1,9 @@
 #pragma once
 
 // On-demand read of the files one process has open (#183): the Open files section of Process
-// Details, beside Modules (IProcessModules.h) and on the same terms: read only for the process
-// Process Details shows, only while the section is open, at most every
-// Domain::Sampling::PROCESS_OPEN_FILES_REFRESH_MS, on a worker. The App composition root creates the
-// reader (Platform::makeProcessOpenFilesReader()) and hands it to the panel.
+// Details, beside Modules (IProcessModules.h). Read only for the process Process Details shows, only
+// when the user clicks Scan, on a worker. The App composition root creates the reader
+// (Platform::makeProcessOpenFilesReader()) and hands it to the panel.
 //
 // Linux reads /proc/[pid]/fd (ProcFdParser.h); Windows enumerates the system handle table filtered
 // to the process and names its File handles (WindowsProcessOpenFiles.h). Neither spawns lsof.
@@ -86,6 +85,13 @@ class IProcessOpenFilesReader
     /// Read @p target's open files now. Synchronous and possibly slow: the view runs it on a worker.
     /// A reused PID reports ProcessExited; an unknown start time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual OpenFilesReadResult readOpenFiles(const ProcessTarget& target) = 0;
+
+    /// How many handles the read in flight has typed so far, for a progress line; 0 when the reader
+    /// does not count (Linux). The one call safe from another thread while readOpenFiles() runs.
+    [[nodiscard]] virtual std::size_t handlesScanned() const noexcept
+    {
+        return 0;
+    }
 };
 
 /// The reader for a run that cannot list another process's open files (synthetic scenarios).

@@ -6,15 +6,17 @@
 // descriptor by default), filterable by path or type, with the count in the section's header.
 //
 // The panel owns the IProcessOpenFilesReader (Platform::makeProcessOpenFilesReader()) and passes it to
-// update() from its per-frame update path. Reads run lazily on a worker (Detail::LazyBackgroundRead):
-// only while the section was drawn open, once when it opens or the selection changes and then every
-// Domain::Sampling::PROCESS_OPEN_FILES_REFRESH_MS. render() only draws the last read, formatted once.
+// update() from its per-frame update path. Unlike Modules and Connections, nothing is read on a timer
+// or on opening: a scan walks every descriptor (Linux) or the system handle table (Windows), so it runs
+// only when the "Scan open files" / "Rescan" button is clicked, on a worker
+// (Detail::LazyBackgroundRead::ON_DEMAND), with a progress bar meanwhile. The results stay until the
+// next scan or a different process is selected; closing the section mid-scan drops that scan.
+// render() only draws the last scan, formatted once.
 //
 // Everything but render() is defined here, free of ImGui; render() is run headless in
 // tests/App/test_ProcessOpenFilesViewRender.cpp.
 
 #include "Domain/ProcessOpenFiles.h"
-#include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -22,6 +24,7 @@
 #include "ProcessEnvironmentView.h"
 
 #include <algorithm>
+#include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -86,16 +89,19 @@ class ProcessOpenFilesView
         std::string path;       ///< the path, "socket:[1234]", "/tmp/x (deleted)", or "(name not read)"
     };
 
-    /// Draws the section: a collapsing "Open files (N)" header and, while it is open, the filter box and
-    /// table, or the last read's status line. Draws nothing when @p hasOpenFiles is false.
+    /// Draws the section: a collapsing "Open files (N)" header and, while it is open, the scan button
+    /// (nothing scanned yet), the progress bar (scanning), or the Rescan button with the last scan's
+    /// time over its filter box and table or status line. Draws nothing when @p hasOpenFiles is false.
     void render(bool hasOpenFiles);
 
-    /// The panel's per-frame update; as ProcessModulesView::update(). Never blocks. The caller keeps
-    /// @p reader alive until a read in flight finishes (the destructor waits for it).
-    /// @return Whether it started a read.
+    /// The panel's per-frame update. Never blocks: takes in a finished scan, notes a running one's
+    /// progress, and starts the scan the button asked for. The caller keeps @p reader alive until a scan
+    /// in flight finishes (the destructor waits for it).
+    /// @return Whether it started a scan.
     bool update(Platform::IProcessOpenFilesReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
+        m_ScanProgress = (reader != nullptr && m_Read.inFlight()) ? reader->handlesScanned() : 0;
         if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasOpenFiles())
         {
             return false;
@@ -107,14 +113,26 @@ class ProcessOpenFilesView
         return true;
     }
 
+    /// Asks for a scan, as clicking "Scan open files" or "Rescan" does; update() starts it.
+    void requestScan() noexcept
+    {
+        m_Read.request();
+    }
+
+    /// A scan was asked for and its result has not arrived (the progress bar shows).
+    [[nodiscard]] bool scanning() const noexcept
+    {
+        return m_Read.requestOutstanding();
+    }
+
     /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
     void finishPendingRead(const Platform::ProcessTarget& target)
     {
         takeFinishedRead(target, true);
     }
 
-    /// A different process was selected: drop its files and read afresh when next shown. The sort and
-    /// the filter are viewing preferences and stay.
+    /// A different process was selected: drop its files (and a scan in flight) and go back to the scan
+    /// button. The sort and the filter are viewing preferences and stay.
     void onSelectionChanged() noexcept
     {
         m_Read.reset();
@@ -123,6 +141,7 @@ class ProcessOpenFilesView
         m_Detail.clear();
         m_Truncated = false;
         m_NamesIncomplete = false;
+        m_ScanProgress = 0;
         m_Rows.clear();
         m_FilteredRows.clear();
         m_FilterDirty = true;
@@ -132,6 +151,8 @@ class ProcessOpenFilesView
     void applyResult(Platform::OpenFilesReadResult result)
     {
         m_HasRead = true;
+        m_ScannedAtEpochSeconds = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
         m_Status = result.status;
         m_Detail = std::move(result.detail);
         m_Truncated = result.truncated;
@@ -277,9 +298,11 @@ class ProcessOpenFilesView
     bool m_HasRead = false;
     Platform::OpenFilesReadStatus m_Status = Platform::OpenFilesReadStatus::Ok;
     std::string m_Detail;
-    bool m_Truncated = false;       // the read listed only the first MAX_OPEN_FILES
-    bool m_NamesIncomplete = false; // some handles were not named (Windows)
-    bool m_HexDescriptors = false;  // Windows handles: the column is HANDLE, not FD
+    bool m_Truncated = false;                  // the read listed only the first MAX_OPEN_FILES
+    bool m_NamesIncomplete = false;            // some handles were not named (Windows)
+    bool m_HexDescriptors = false;             // Windows handles: the column is HANDLE, not FD
+    std::uint64_t m_ScannedAtEpochSeconds = 0; // when the last scan was taken in ("Scanned 12:04:31")
+    std::size_t m_ScanProgress = 0;            // handles typed so far by the scan in flight (Windows; 0 on Linux)
     std::vector<Row> m_Rows;
     Detail::OpenFilesColumn m_SortColumn = Detail::OpenFilesColumn::Descriptor;
     bool m_SortAscending = true;
@@ -292,7 +315,7 @@ class ProcessOpenFilesView
 
     // The read in flight and its cadence. Destroying the view waits for at most one read.
     Detail::LazyBackgroundRead<Platform::OpenFilesReadResult> m_Read{
-        Domain::Sampling::PROCESS_OPEN_FILES_REFRESH_MS, Platform::OPEN_FILES_READ_THREAD_NAME, &failedRead};
+        Detail::LazyBackgroundRead<Platform::OpenFilesReadResult>::ON_DEMAND, Platform::OPEN_FILES_READ_THREAD_NAME, &failedRead};
 };
 
 } // namespace App

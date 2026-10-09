@@ -1,6 +1,7 @@
 #include "ProcessOpenFilesView.h"
 
 #include "Platform/IProcessOpenFiles.h"
+#include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -54,18 +55,45 @@ void ProcessOpenFilesView::render(bool hasOpenFiles)
         m_LabelCount = m_Rows.size();
         m_CountLabel = std::format(ICON_FA_FILE "  Open files ({})###ProcessOpenFiles", m_LabelCount);
     }
-    // Collapsed by default: nothing is read until it is opened.
+    // Collapsed by default, and nothing is read on opening either: only the scan button reads.
     if (!ImGui::CollapsingHeader(listed ? m_CountLabel.c_str() : ICON_FA_FILE "  Open files###ProcessOpenFiles"))
     {
         return;
     }
     markDrawnOpen();
 
-    if (!m_HasRead)
+    if (scanning())
     {
-        ImGui::TextColored(UI::Theme::get().scheme().textMuted, "Reading...");
+        // Indeterminate: how many handles a scan will type is not known until it ends.
+        ImGui::ProgressBar(-1.0F * static_cast<float>(ImGui::GetTime()), ImVec2(-1.0F, 0.0F), "");
+        mutedWrapped(m_ScanProgress > 0 ? std::format("Scanning... {} handles", m_ScanProgress) : std::string("Scanning..."));
+        if (!m_HasRead)
+        {
+            return;
+        }
+    }
+    else if (!m_HasRead)
+    {
+        mutedWrapped("Lists every file, socket and pipe the process has open. Scanning walks all of its "
+                     "descriptors (Linux) or the system's handle table (Windows), so it runs only when asked.");
+        if (ImGui::Button(ICON_FA_MAGNIFYING_GLASS "  Scan open files"))
+        {
+            requestScan();
+        }
         return;
     }
+    else
+    {
+        if (ImGui::Button(ICON_FA_ARROWS_ROTATE "  Rescan"))
+        {
+            requestScan();
+        }
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(
+            UI::Theme::get().scheme().textMuted, "Scanned %s", UI::Format::formatEpochDateTimeShort(m_ScannedAtEpochSeconds).c_str());
+    }
+
     if (m_Status != Platform::OpenFilesReadStatus::Ok)
     {
         // A muted note, not an empty table (which would read as "no files open") and not an error.

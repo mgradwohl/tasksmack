@@ -3,8 +3,9 @@
 // The lazy background read shared by Process Details' on-demand sections (Connections #799, Modules
 // #802, Open files #183): one read at a time on a worker thread, started only while the section was
 // drawn open on the last frame, once when it opens or the selection changes and then every refresh
-// interval. The view keeps its rows, sort and filter; this keeps the cadence, the worker and the
-// staleness checks, so each section's update() is the same few lines:
+// interval -- or, constructed ON_DEMAND (Open files), only after request() (a button), with no refresh.
+// The view keeps its rows, sort and filter; this keeps the cadence, the worker and the staleness
+// checks, so each section's update() is the same few lines:
 //
 //     if (auto result = m_Read.takeFinished(target, false)) applyResult(*result);
 //     if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasX()) return false;
@@ -35,7 +36,10 @@ template<typename Result> class LazyBackgroundRead
     /// Builds the Failed result shown for a read that threw, or one no thread could be started for.
     using FailedResultFn = Result (*)(std::string detail);
 
-    /// @param refreshMs   The re-read interval while the section stays open.
+    /// The refreshMs that reads only on request(): once per request, never on a timer.
+    static constexpr int ON_DEMAND = -1;
+
+    /// @param refreshMs   The re-read interval while the section stays open, or ON_DEMAND.
     /// @param threadName  The worker's name (Platform/ThreadName.h).
     /// @param failed      Builds a Failed result from an exception's message.
     LazyBackgroundRead(int refreshMs, std::string_view threadName, FailedResultFn failed) noexcept
@@ -54,12 +58,25 @@ template<typename Result> class LazyBackgroundRead
         return m_Pending.valid();
     }
 
+    /// ON_DEMAND: asks for one read, started by the next due() that finds the section drawn open.
+    void request() noexcept
+    {
+        m_RequestPending = true;
+    }
+
+    /// ON_DEMAND: a read was asked for and has not been taken in or dropped yet (the view's "Scanning").
+    [[nodiscard]] bool requestOutstanding() const noexcept
+    {
+        return m_RequestPending || (m_Pending.valid() && m_PendingGeneration == m_Generation);
+    }
+
     /// A different process was selected: a read in flight is dropped when it arrives, and the next
     /// one is due as soon as the section is drawn open again.
     void reset() noexcept
     {
         ++m_Generation;
         m_HasRequested = false;
+        m_RequestPending = false;
         m_SecondsSinceRequest = 0.0F;
         m_DrawnOpen = false; // the open frame was the previous process's
     }
@@ -89,6 +106,7 @@ template<typename Result> class LazyBackgroundRead
         if (m_PendingTarget != target)
         {
             m_HasRequested = false;
+            m_RequestPending = m_RefreshMs == ON_DEMAND; // the scan asked for was of another target: run it again
             return std::nullopt;
         }
         return result;
@@ -102,6 +120,17 @@ template<typename Result> class LazyBackgroundRead
     {
         m_SecondsSinceRequest += deltaSeconds;
         const bool shownOpen = std::exchange(m_DrawnOpen, false);
+        if (m_RefreshMs == ON_DEMAND)
+        {
+            if (!shownOpen)
+            {
+                // Closed: a request not started yet is withdrawn, and a read in flight is dropped when it arrives.
+                m_RequestPending = false;
+                m_Generation += m_Pending.valid() ? 1U : 0U;
+                return false;
+            }
+            return !m_Pending.valid() && std::exchange(m_RequestPending, false);
+        }
         if (!shownOpen || m_Pending.valid())
         {
             return false;
@@ -139,8 +168,9 @@ template<typename Result> class LazyBackgroundRead
     int m_RefreshMs;
     std::string_view m_ThreadName;
     FailedResultFn m_Failed;
-    bool m_DrawnOpen = false;    // render() drew the section open since the last due()
-    bool m_HasRequested = false; // a read was started since the selection changed
+    bool m_DrawnOpen = false;      // render() drew the section open since the last due()
+    bool m_HasRequested = false;   // a read was started since the selection changed
+    bool m_RequestPending = false; // ON_DEMAND: request() was called and no read started for it yet
     float m_SecondsSinceRequest = 0.0F;
 
     // A future from std::async waits for its thread when destroyed: destroying this waits for one read.

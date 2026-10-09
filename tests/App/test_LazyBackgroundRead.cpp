@@ -1,8 +1,8 @@
 /// @file test_LazyBackgroundRead.cpp
 /// @brief App::Detail::LazyBackgroundRead, the lazy worker read shared by Process Details' Connections,
-/// Modules and Open files sections: due only while drawn open and at the refresh interval, one read at
-/// a time, a read for a previous selection or another target dropped, and a read that throws turned
-/// into the Failed result.
+/// Modules and Open files sections: due only while drawn open and at the refresh interval (or, on
+/// demand, once per request), one read at a time, a read for a previous selection, another target or a
+/// closed on-demand section dropped, and a read that throws turned into the Failed result.
 
 #include "App/Panels/LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
@@ -114,6 +114,39 @@ TEST(LazyBackgroundReadTest, DoesNotWaitForAReadStillRunning)
     EXPECT_TRUE(read.inFlight());
     gate.set_value();
     EXPECT_EQ(read.takeFinished(TARGET, true).value_or(FakeResult{}).value, 7);
+}
+
+TEST(LazyBackgroundReadTest, OnDemandReadsOncePerRequestOnlyWhileOpen)
+{
+    Read read(Read::ON_DEMAND, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    EXPECT_FALSE(read.due(100.0F)); // open, but nothing asked: never on a timer
+    read.request();
+    EXPECT_TRUE(read.requestOutstanding());
+    EXPECT_FALSE(read.due(0.0F)); // asked, but not drawn open this frame: withdrawn
+    EXPECT_FALSE(read.requestOutstanding());
+
+    read.request();
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET, [](const Platform::ProcessTarget&) { return FakeResult{.value = 3, .error = {}}; }));
+    EXPECT_TRUE(read.requestOutstanding());
+    EXPECT_EQ(read.takeFinished(TARGET, true).value_or(FakeResult{}).value, 3);
+    EXPECT_FALSE(read.requestOutstanding());
+    read.markDrawnOpen();
+    EXPECT_FALSE(read.due(100.0F)); // one read per request
+}
+
+TEST(LazyBackgroundReadTest, OnDemandClosingMidReadDropsIt)
+{
+    Read read(Read::ON_DEMAND, "ts-test-read", &failed);
+    read.request();
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET, [](const Platform::ProcessTarget&) { return FakeResult{.value = 4, .error = {}}; }));
+    EXPECT_FALSE(read.due(0.0F)); // not drawn open: closed
+    EXPECT_FALSE(read.requestOutstanding());
+    EXPECT_FALSE(read.takeFinished(TARGET, true).has_value());
 }
 
 } // namespace
