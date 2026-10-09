@@ -114,6 +114,11 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 # NVIDIA drivers (download from nvidia.com)
 # ROCm SMI (download from amd.com/rocm)
 # Intel: no package needed (reads /sys/class/drm via sysfs)
+
+# Optional: for the System Information page's Boot performance section (#1525), which reads systemd
+# over D-Bus with sd-bus. Found with pkg-config at configure time; without it the section says it is
+# unavailable. -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
+sudo apt install libsystemd-dev pkg-config
 ```
 
 ### Windows Pre-Requisites

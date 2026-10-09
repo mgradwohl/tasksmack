@@ -18,8 +18,9 @@ namespace Platform
 /// vulnerabilities from /sys (LinuxPlatformSecurity.h, #1514); hwmon and thermal-zone sensors
 /// (LinuxSensors.h, #1522); GPUs and monitors from /sys/class/drm and the display server from the
 /// session environment (LinuxGraphics.h, #1519); adapters, gateways and DNS from /sys, /proc and
-/// resolv.conf, addresses from getifaddrs() (LinuxNetworkAdapters.h, #1518); PCI and USB devices from
-/// /sys/bus and audio from /proc/asound (LinuxDevices.h, #1520).
+/// resolv.conf, addresses from getifaddrs() (LinuxNetworkAdapters.h, #1518); boot phases from systemd
+/// over D-Bus when built with libsystemd (SystemdBus.h, LinuxBootTimes.h, #1525); PCI and USB devices
+/// from /sys/bus and audio from /proc/asound (LinuxDevices.h, #1520).
 class LinuxSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -39,6 +40,7 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] SensorsInfo readSensors() override;
     [[nodiscard]] DevicesInfo readDevices() override;
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override;
+    [[nodiscard]] BootPerformanceInfo readBootPerformance() override;
 
   private:
     std::filesystem::path m_Root;

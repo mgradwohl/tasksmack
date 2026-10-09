@@ -7,7 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -113,6 +115,15 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::BootPerformanceInfo readBootPerformance() override
+    {
+        Platform::BootPerformanceInfo info;
+        info.available = true;
+        info.timingsRead = true;
+        info.totalUs = 12'000'000;
+        return info;
+    }
+
   private:
     bool m_HasOs;
     int* m_Reads;
@@ -144,6 +155,7 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_TRUE(first->sensors.listed);
     EXPECT_TRUE(first->devices.pciRead);
     EXPECT_EQ(first->adapters.gatewayV4, "192.168.1.1");
+    EXPECT_EQ(first->boot.totalUs, std::optional<std::uint64_t>(12'000'000));
     EXPECT_GT(first->readAtUnixSeconds, 0U);
 
     model.read(); // Refresh
@@ -169,6 +181,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->sensors.available);
     EXPECT_FALSE(model.snapshot()->devices.available);
     EXPECT_FALSE(model.snapshot()->adapters.available);
+    EXPECT_FALSE(model.snapshot()->boot.available);
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);

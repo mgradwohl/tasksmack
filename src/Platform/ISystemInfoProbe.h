@@ -430,6 +430,23 @@ struct NetworkAdaptersInfo
     bool dnsIsLocalStub = false; ///< Linux: only systemd-resolved's local stub (127.0.0.53) was found.
 };
 
+/// How long the last boot took and where the time went (#1525), in microseconds. A phase the
+/// platform doesn't measure (firmware and loader without UEFI's boot-time variables, initrd without
+/// an initramfs) is nullopt.
+struct BootPerformanceInfo
+{
+    bool available = false;        ///< The probe read the section at all.
+    bool timingsRead = false;      ///< The timings could be read; else unavailableReason says why.
+    std::string unavailableReason; ///< Why they couldn't be, for the UI.
+    bool finished = false;         ///< Startup has finished (systemd: FinishTimestamp is set).
+    std::optional<std::uint64_t> firmwareUs;
+    std::optional<std::uint64_t> loaderUs;
+    std::optional<std::uint64_t> kernelUs;
+    std::optional<std::uint64_t> initrdUs;
+    std::optional<std::uint64_t> userspaceUs;
+    std::optional<std::uint64_t> totalUs; ///< The sum of the phases measured; nullopt until startup finishes.
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -482,6 +499,9 @@ class ISystemInfoProbe
 
     /// The Network adapters facts (#1518); read when hasOs is true.
     [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters() = 0;
+
+    /// The Boot performance facts (#1525); read when hasOs is true.
+    [[nodiscard]] virtual BootPerformanceInfo readBootPerformance() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -539,6 +559,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] BootPerformanceInfo readBootPerformance() override
     {
         return {};
     }
