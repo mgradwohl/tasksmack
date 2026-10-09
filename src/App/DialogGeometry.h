@@ -36,9 +36,10 @@ inline constexpr float ABOUT_HEADER_GAP_EM = 1.5F; // 16px
 /// stacks the icon above the text instead (#1490 review).
 inline constexpr float ABOUT_HEADER_MIN_TEXT_EM = 12.0F; // 128px
 
-/// Authored width of the dialog, applied every frame so the wrapped shortcut table has a fixed width
-/// to wrap to. It used to auto-fit, and the table's wrapped text fed back into the fit, widening the
-/// dialog a little every frame until it filled most of the window (#1490).
+/// Authored width of the dialog, applied every frame so its wrapped text has a fixed width to wrap
+/// to. It used to auto-fit, and the shortcut table's wrapped text (since moved to Help, #172) fed
+/// back into the fit, widening the dialog a little every frame until it filled most of the window
+/// (#1490).
 inline constexpr float ABOUT_WIDTH_EM = 36.0F; // 384px
 
 /// Tallest the dialog may be, as a share of the window's height. Its contents scroll inside it past
@@ -47,6 +48,18 @@ inline constexpr float ABOUT_MAX_HEIGHT_FRACTION = 0.7F;
 
 /// Floor on the OK button's width.
 inline constexpr float ABOUT_BUTTON_MIN_EM = 11.25F; // 120px
+
+// ---- Help window (#172) ----
+
+/// Width the Help window first opens at; the user may resize it, and it keeps that for the session.
+inline constexpr float HELP_WIDTH_EM = 60.0F; // 640px
+
+/// Height it first opens at, as a share of the window's height.
+inline constexpr float HELP_HEIGHT_FRACTION = 0.75F;
+
+/// Smallest the user may make it.
+inline constexpr float HELP_MIN_WIDTH_EM = 24.0F;  // 256px
+inline constexpr float HELP_MIN_HEIGHT_EM = 16.0F; // 171px
 
 // ---- Elevation notice (#937) ----
 

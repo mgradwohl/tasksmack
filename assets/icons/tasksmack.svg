@@ -1,128 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- TaskSmack app icon, "Impact" (#1508): a comic-book impact burst ("SMACK!") around a small bar chart.
+       Master art for 48 px and up; tasksmack-small.svg is the simplified variant for the smallest renders
+       (see tools/generate-icons.sh). Original work, MIT (REUSE.toml). -->
   <defs>
-    <!-- Gradient for the monitor screen -->
-    <linearGradient id="screenGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#1a1a2e"/>
-      <stop offset="100%" style="stop-color:#16213e"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f43f5e"/>
+      <stop offset="1" stop-color="#f97316"/>
     </linearGradient>
-    <!-- Gradient for the monitor frame -->
-    <linearGradient id="frameGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#4a4a5a"/>
-      <stop offset="100%" style="stop-color:#2a2a3a"/>
-    </linearGradient>
-    <!-- CPU usage gradient (green to cyan) -->
-    <linearGradient id="cpuGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#00ff88"/>
-      <stop offset="100%" style="stop-color:#00d4ff"/>
-    </linearGradient>
-    <!-- Memory usage gradient (orange to red) -->
-    <linearGradient id="memGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#ff8800"/>
-      <stop offset="100%" style="stop-color:#ff4444"/>
-    </linearGradient>
-    <!-- Glow effect -->
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
-      <feMerge>
-        <feMergeNode in="coloredBlur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
   </defs>
-
-  <!-- Monitor frame (outer) -->
-  <rect x="56" y="48" width="400" height="320" rx="20" ry="20" fill="url(#frameGrad)"/>
-
-  <!-- Monitor screen (inner) -->
-  <rect x="72" y="64" width="368" height="288" rx="8" ry="8" fill="url(#screenGrad)"/>
-
-  <!-- Monitor stand base -->
-  <path d="M206 368 L306 368 L326 416 L186 416 Z" fill="url(#frameGrad)"/>
-  <ellipse cx="256" cy="432" rx="100" ry="20" fill="url(#frameGrad)"/>
-
-  <!-- CPU Activity Graph (top section) -->
-  <g filter="url(#glow)">
-    <!-- Graph background -->
-    <rect x="96" y="88" width="160" height="80" rx="4" fill="#0a0a14" opacity="0.8"/>
-
-    <!-- CPU line graph -->
-    <polyline
-      points="100,156 120,148 140,136 160,144 180,120 200,104 220,112 240,96 248,100"
-      fill="none"
-      stroke="url(#cpuGrad)"
-      stroke-width="3"
-      stroke-linecap="round"
-      stroke-linejoin="round"/>
-
-    <!-- CPU fill area -->
-    <path
-      d="M100,156 L100,156 L120,148 L140,136 L160,144 L180,120 L200,104 L220,112 L240,96 L248,100 L248,164 L100,164 Z"
-      fill="url(#cpuGrad)"
-      opacity="0.3"/>
-  </g>
-
-  <!-- Memory Bar (middle section) -->
-  <g filter="url(#glow)">
-    <!-- Bar background -->
-    <rect x="96" y="184" width="320" height="24" rx="4" fill="#0a0a14" opacity="0.8"/>
-
-    <!-- Memory usage bar -->
-    <rect x="100" y="188" width="200" height="16" rx="2" fill="url(#memGrad)"/>
-  </g>
-
-  <!-- Process list (bottom section) -->
-  <g opacity="0.9">
-    <!-- List background -->
-    <rect x="96" y="224" width="320" height="112" rx="4" fill="#0a0a14" opacity="0.6"/>
-
-    <!-- Process rows -->
-    <rect x="100" y="232" width="312" height="20" rx="2" fill="#00ff88" opacity="0.4"/>
-    <rect x="100" y="256" width="312" height="20" rx="2" fill="#1a1a2e"/>
-    <rect x="100" y="280" width="312" height="20" rx="2" fill="#00d4ff" opacity="0.2"/>
-    <rect x="100" y="304" width="312" height="20" rx="2" fill="#1a1a2e"/>
-
-    <!-- CPU bars in process list -->
-    <rect x="340" y="236" width="60" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.8"/>
-    <rect x="340" y="260" width="35" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.5"/>
-    <rect x="340" y="284" width="48" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.6"/>
-    <rect x="340" y="308" width="20" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.4"/>
-  </g>
-
-  <!-- Per-core indicators (right side) -->
-  <g filter="url(#glow)">
-    <rect x="272" y="88" width="140" height="80" rx="4" fill="#0a0a14" opacity="0.8"/>
-
-    <!-- Core bars (4x4 grid representing cores) -->
-    <!-- Row 1 -->
-    <rect x="280" y="96" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.9"/>
-    <rect x="312" y="96" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.7"/>
-    <rect x="344" y="96" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.5"/>
-    <rect x="376" y="96" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.8"/>
-
-    <!-- Row 2 -->
-    <rect x="280" y="112" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.6"/>
-    <rect x="312" y="112" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.9"/>
-    <rect x="344" y="112" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.4"/>
-    <rect x="376" y="112" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.7"/>
-
-    <!-- Row 3 -->
-    <rect x="280" y="128" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.8"/>
-    <rect x="312" y="128" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.5"/>
-    <rect x="344" y="128" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.9"/>
-    <rect x="376" y="128" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.6"/>
-
-    <!-- Row 4 -->
-    <rect x="280" y="144" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.7"/>
-    <rect x="312" y="144" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.4"/>
-    <rect x="344" y="144" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.8"/>
-    <rect x="376" y="144" width="28" height="12" rx="2" fill="url(#cpuGrad)" opacity="0.5"/>
-  </g>
-
-  <!-- Lightning bolt accent (representing "Smack" / speed) -->
-  <g filter="url(#glow)">
-    <path
-      d="M448 72 L424 136 L448 136 L416 192 L456 112 L432 112 L464 72 Z"
-      fill="#ffdd00"
-      opacity="0.9"/>
-  </g>
+  <rect x="12" y="12" width="232" height="232" rx="58" fill="url(#bg)"/>
+  <!-- 12-point burst centred on (128,128): outer radius 98, inner radius 64. -->
+  <polygon points="128,30 144.6,66.2 177,43.1 173.3,82.7 212.9,79 189.8,111.4 226,128 189.8,144.6 212.9,177 173.3,173.3 177,212.9 144.6,189.8 128,226 111.4,189.8 79,212.9 82.7,173.3 43.1,177 66.2,144.6 30,128 66.2,111.4 43.1,79 82.7,82.7 79,43.1 111.4,66.2"
+           fill="#fde047" stroke="#7f1d1d" stroke-width="7" stroke-linejoin="round"/>
+  <!-- Rising bars, 18 wide with 6 gaps, bounding box centred on (128,128). -->
+  <rect x="95" y="133" width="18" height="30" rx="5" fill="#7f1d1d"/>
+  <rect x="119" y="113" width="18" height="50" rx="5" fill="#7f1d1d"/>
+  <rect x="143" y="93" width="18" height="70" rx="5" fill="#7f1d1d"/>
 </svg>

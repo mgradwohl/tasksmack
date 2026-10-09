@@ -1,0 +1,96 @@
+name: Cache Prune
+
+# Deletes superseded Actions cache entries on main (#1583). ccache-action saves a new timestamped
+# entry (ccache-<key>-<ISO timestamp>) on every main run, and the FetchContent cache saves
+# <OS>-fetchcontent-<hash> whenever its key changes. Restores only ever use the newest entry of each
+# family, but the old ones stayed until GitHub's quota eviction removed them: main alone reached
+# 12.4 GB of the 10 GB quota (2026-10-09). Keeping only the newest entry per family keeps usage under
+# quota, so least-recently-used eviction never has to touch a live entry (such as the Windows LLVM
+# cache). Other entries (LLVM, CodeQL TRAP, setup-python) have a single live key and are left alone.
+# workflow_run always runs this file from the default branch, with this file's permissions.
+on:
+  workflow_run:
+    # The workflows that save caches on main.
+    workflows: [CI, Sanitizers, Heavy Checks]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'List what would be deleted without deleting it'
+        type: boolean
+        default: true
+
+# The newest run sees every entry, so a queued one replaces an older one.
+concurrency:
+  group: cache-prune
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  prune:
+    name: Prune superseded caches
+    # Only main's own runs; a PR from a fork's branch named "main" would also match `branches`.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.event != 'pull_request')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete all but the newest entry of each cache family
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$REPO/actions/caches?ref=refs/heads/main&per_page=100" \
+            --jq '.actions_caches[] | [.id, .key, .created_at, .size_in_bytes] | @tsv' > caches.tsv
+
+          # family <TAB> created_at <TAB> id <TAB> bytes <TAB> key, newest first within a family.
+          # (No {n} intervals: the runner's default awk is mawk.)
+          awk -F'\t' '{
+            family = $2
+            if (family ~ /^ccache-/) {
+              sub(/-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9:.]*Z$/, "", family)
+            } else if (family ~ /-fetchcontent-/) {
+              sub(/-fetchcontent-.*$/, "-fetchcontent", family)
+            } else {
+              next
+            }
+            if (family == $2) next  # not a timestamped/hashed key after all: leave it alone
+            print family "\t" $3 "\t" $1 "\t" $4 "\t" $2
+          }' caches.tsv | LC_ALL=C sort -t$'\t' -k1,1 -k2,2r > families.tsv
+
+          # Everything after the first (newest) row of each family is superseded.
+          awk -F'\t' '$1 == previous { print } { previous = $1 }' families.tsv > stale.tsv
+
+          count=$(wc -l < stale.tsv)
+          bytes=$(awk -F'\t' '{ total += $4 } END { printf "%.0f", total }' stale.tsv)
+          {
+            echo "## Cache prune"
+            echo ""
+            echo "Superseded entries on main: **$count** ($(awk -v b="$bytes" 'BEGIN { printf "%.2f", b / 1e9 }') GB); dry run: $DRY_RUN"
+            echo ""
+            awk -F'\t' '{ printf "- `%s` (%.0f MB, %s)\n", $5, $4 / 1e6, $2 }' stale.tsv
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "$DRY_RUN" == 'true' ]]; then
+            cat stale.tsv
+            exit 0
+          fi
+          failed=0
+          while IFS=$'\t' read -r _family _created id _bytes key; do
+            if gh api -X DELETE "repos/$REPO/actions/caches/$id" > /dev/null 2>&1; then
+              echo "deleted $key"
+            else
+              # Another run may have deleted it already; that's fine.
+              echo "::warning title=Cache prune::could not delete $key (id $id)"
+              failed=$((failed + 1))
+            fi
+          done < stale.tsv
+          echo "Deleted $((count - failed)) of $count superseded entries."

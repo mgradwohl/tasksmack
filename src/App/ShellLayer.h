@@ -11,6 +11,7 @@
 #include "Panels/StartupPanel.h"
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "SelectOverride.h"
 #include "TabLabel.h"
 
 #include <SDL3/SDL_video.h>
@@ -53,8 +54,8 @@ class ShellLayer : public Core::Layer
     }
 
   private:
-    /// The htop-style function keys (#170) that do not depend on the tab: F1 About (with the shortcut
-    /// list), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
+    /// The htop-style function keys (#170) that do not depend on the tab: F1 Help (with the shortcut
+    /// list, #172), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
     static void handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action);
     /// F5 (tree view) and F9 (Kill, confirm dialog only), to the tab drawn this frame: called after
     /// renderTabBar() and before the tabs draw, whose render takes the request this frame.
@@ -119,8 +120,9 @@ class ShellLayer : public Core::Layer
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;
-    // TASKSMACK_TAB (#1559): the tab the first tab bar selects, resolved once in onAttach().
-    std::optional<std::size_t> m_StartupTabIndex;
+    // TASKSMACK_TAB (#1559): the tab the tab bar selects at startup, resolved once in onAttach() to the
+    // tab's registered id and kept until that tab reports selected (#1575).
+    SelectOverride::PendingMainTab m_StartupTab;
 
     // Cached tab labels — rebuilt only when the underlying data changes, not every frame.
     // Avoids per-frame heap allocations from string concatenation in renderTabBar().

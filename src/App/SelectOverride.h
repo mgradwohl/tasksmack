@@ -6,6 +6,7 @@
 //   TASKSMACK_SELECT_PID=1234 ./TaskSmack                 the process with PID 1234
 //   TASKSMACK_SELECT_NAME=explorer.exe ./TaskSmack        the first process with that name
 //   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|network)
+//   TASKSMACK_OPEN=help                                   the Help window (help|about, #172)
 //
 // The variables are read once, at startup (ShellLayer::onAttach() calls active()). When the PID or
 // name first appears in a process snapshot, ProcessesPanel selects that process exactly as a click
@@ -317,8 +318,10 @@ inline constexpr std::array<std::pair<std::string_view, std::string_view>, 3> TA
 /// What TASKSMACK_TAB resolved to.
 struct MainTabChoice
 {
-    std::optional<std::size_t> index; ///< the tab to select; nullopt when unset, blank or unknown
-    std::string warning;              ///< set when a nonblank value names no tab
+    /// The registered id (TabInfo::id) of the tab to select; nullopt when unset, blank or unknown. An
+    /// id, not an index (#1575): the tab bar finds the tab by it wherever the tab is drawn.
+    std::optional<std::string> id;
+    std::string warning; ///< set when a nonblank value names no tab
 };
 
 /// Resolves a TASKSMACK_TAB value (nullptr when unset) against the registered tabs.
@@ -330,8 +333,11 @@ struct MainTabChoice
     {
         return choice;
     }
-    choice.index = findTab(name, tabs);
-    if (!choice.index)
+    if (const auto index = findTab(name, tabs); index.has_value())
+    {
+        choice.id = std::string(tabs[*index].id);
+    }
+    else
     {
         choice.warning = std::format("{}: '{}' names no tab; ignored", MAIN_TAB_ENV_VAR, name);
     }
@@ -340,23 +346,129 @@ struct MainTabChoice
 
 /// Whether a startup selection opens Process Details: yes, unless TASKSMACK_TAB named a real tab,
 /// which then wins. An unknown TASKSMACK_TAB is ignored and changes nothing.
-[[nodiscard]] constexpr bool selectionShowsDetails(const MainTabChoice& choice) noexcept
+[[nodiscard]] inline bool selectionShowsDetails(const MainTabChoice& choice) noexcept
 {
-    return !choice.index.has_value();
+    return !choice.id.has_value();
 }
 
-/// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME or
-/// TASKSMACK_DETAILS_TAB, each nullptr when unset. A blank value counts as unset, as it does everywhere
-/// else. While one is set, the startup "Limited Data" notice is not queued: the hooks exist for
-/// unattended captures, and dismissing the modal needs input.
-[[nodiscard]] inline bool anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab) noexcept
+/// Tab-bar frames a TASKSMACK_TAB request may wait for its tab to be selected before it is dropped
+/// (about 2 s at 60 fps). ImGui selects it on the second frame; this only bounds a request that can
+/// never be met, so it cannot hold the tab bar on one tab for good.
+inline constexpr int MAX_MAIN_TAB_FRAMES = 120;
+
+/// The TASKSMACK_TAB selection waiting to take effect (#1575). It names the tab by its registered id
+/// (PanelTabs::Tab::eventName), never by position, so it follows the tab wherever the tab bar draws
+/// it. The shell submits that tab with ImGuiTabItemFlags_SetSelected on every tab-bar frame until
+/// ImGui::BeginTabItem() returns true for it, and only then is the request done: ImGui applies
+/// SetSelected a frame late, at the next BeginTabBar(), so a request cleared after one submission had
+/// nothing to show that it took.
+class PendingMainTab
 {
-    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab},
+  public:
+    PendingMainTab() = default;
+    explicit PendingMainTab(std::optional<std::string> id) : m_Id(std::move(id))
+    {}
+
+    /// Whether a request is still waiting.
+    [[nodiscard]] bool pending() const noexcept
+    {
+        return m_Id.has_value();
+    }
+
+    /// The requested tab's id; nullopt once the request is done or dropped (or there was none).
+    [[nodiscard]] const std::optional<std::string>& id() const noexcept
+    {
+        return m_Id;
+    }
+
+    /// Whether the tab registered as @p tabId is submitted with ImGuiTabItemFlags_SetSelected this frame.
+    [[nodiscard]] bool wantsSelected(const std::string_view tabId) const noexcept
+    {
+        return m_Id.has_value() && *m_Id == tabId;
+    }
+
+    /// Reports what ImGui::BeginTabItem() returned for the tab registered as @p tabId. The request is
+    /// done when its own tab reports selected; any other tab's report changes nothing.
+    void onTabSubmitted(const std::string_view tabId, const bool selected) noexcept
+    {
+        if (selected && wantsSelected(tabId))
+        {
+            m_Id.reset();
+        }
+    }
+
+    /// Ends one tab-bar frame. Returns the requested id once, when the request is dropped after
+    /// MAX_MAIN_TAB_FRAMES frames without its tab being selected; nullopt otherwise.
+    [[nodiscard]] std::optional<std::string> onFrameEnd() noexcept
+    {
+        if (!m_Id.has_value() || ++m_Frames < MAX_MAIN_TAB_FRAMES)
+        {
+            return std::nullopt;
+        }
+        return std::exchange(m_Id, std::nullopt);
+    }
+
+  private:
+    std::optional<std::string> m_Id;
+    int m_Frames = 0;
+};
+
+/// The dialog to open at startup (#172): "help" the Help window, "about" the About dialog.
+inline constexpr std::string_view OPEN_ENV_VAR = "TASKSMACK_OPEN";
+
+enum class StartupDialog : std::uint8_t
+{
+    Help,
+    About,
+};
+
+/// What TASKSMACK_OPEN asked for.
+struct StartupDialogChoice
+{
+    std::optional<StartupDialog> dialog; ///< nullopt when unset, blank or unknown
+    std::string warning;                 ///< set when a nonblank value names no dialog
+};
+
+/// Parses a TASKSMACK_OPEN value (nullptr when unset): "help" or "about", in any case.
+[[nodiscard]] inline StartupDialogChoice parseStartupDialog(const char* value)
+{
+    StartupDialogChoice choice;
+    const std::string_view text = Detail::trim(value != nullptr ? value : "");
+    if (text.empty())
+    {
+        return choice;
+    }
+    if (Detail::equalsIgnoreCase(text, "help"))
+    {
+        choice.dialog = StartupDialog::Help;
+    }
+    else if (Detail::equalsIgnoreCase(text, "about"))
+    {
+        choice.dialog = StartupDialog::About;
+    }
+    else
+    {
+        choice.warning = std::format("{}: '{}' is not help or about; ignored", OPEN_ENV_VAR, text);
+    }
+    return choice;
+}
+
+/// Whether any test hook is set (#1569): TASKSMACK_TAB, TASKSMACK_SELECT_PID, TASKSMACK_SELECT_NAME,
+/// TASKSMACK_DETAILS_TAB or TASKSMACK_OPEN, each nullptr when unset. A blank value counts as unset, as
+/// it does everywhere else. While one is set, the startup "Limited Data" notice is not queued: the
+/// hooks exist for unattended captures, and dismissing the modal needs input.
+[[nodiscard]] inline bool
+anyTestHookActive(const char* mainTab, const char* pid, const char* name, const char* detailsTab, const char* open) noexcept
+{
+    return std::ranges::any_of(std::array{mainTab, pid, name, detailsTab, open},
                                [](const char* value) { return value != nullptr && !Detail::trim(value).empty(); });
 }
 
 /// anyTestHookActive() for the process environment.
 [[nodiscard]] bool testHookActive();
+
+/// The dialog TASKSMACK_OPEN asks for, read and logged on the first call. Thread-safe.
+[[nodiscard]] std::optional<StartupDialog> startupDialog();
 
 /// The selection the variables ask for, read and logged on the first call; nullopt when they are
 /// unset or invalid. Thread-safe.
