@@ -26,6 +26,8 @@ inline constexpr std::string_view SERVICE_SAMPLER_THREAD_NAME = "ts-sampler-svc"
 inline constexpr std::string_view STARTUP_SAMPLER_THREAD_NAME = "ts-sampler-auto";
 /// The worker that runs one Process Details Connections read at a time (#799).
 inline constexpr std::string_view CONNECTIONS_READ_THREAD_NAME = "ts-conn-read";
+/// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).
+inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 
 /// `name` cut to at most `maxLength` bytes, never in the middle of a UTF-8 sequence.
 [[nodiscard]] inline std::string truncateThreadName(std::string_view name, std::size_t maxLength = MAX_LINUX_THREAD_NAME_LENGTH)

@@ -151,6 +151,21 @@ struct ServiceHandleTraits
 /// An owned SC_HANDLE.
 using UniqueServiceHandle = UniqueResource<ServiceHandleTraits>;
 
+/// Closes an SC_HANDLE through an injected CloseServiceHandle: advapi32's, or a test's fake for the
+/// handles its fake OpenServiceW hands out (WindowsServiceConfig.h, WindowsServiceActions.h).
+struct InjectedServiceHandleCloser
+{
+    BOOL(WINAPI* close)(SC_HANDLE) = &::CloseServiceHandle;
+
+    void operator()(SC_HANDLE handle) const noexcept
+    {
+        close(handle);
+    }
+};
+
+/// An owned SC_HANDLE closed through InjectedServiceHandleCloser.
+using InjectableServiceHandle = std::unique_ptr<std::remove_pointer_t<SC_HANDLE>, InjectedServiceHandleCloser>;
+
 /// Calls FreeLibrary on a module LoadLibrary returned.
 struct ModuleDeleter
 {

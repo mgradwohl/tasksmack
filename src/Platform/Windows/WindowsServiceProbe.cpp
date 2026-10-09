@@ -26,7 +26,6 @@
 #include <memory>
 #include <span>
 #include <string>
-#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -73,17 +72,6 @@ struct CachedConfig
 /// requires it on the manager handle).
 constexpr DWORD SCM_ACCESS = SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE;
 
-/// Closes a service handle through the injected CloseServiceHandle.
-struct ServiceHandleCloser
-{
-    Windows::ServiceConfigFunctions::CloseServiceHandleFn close = nullptr;
-
-    void operator()(SC_HANDLE handle) const noexcept
-    {
-        close(handle);
-    }
-};
-
 } // namespace
 
 namespace Windows
@@ -92,8 +80,8 @@ namespace Windows
 ServiceConfig readServiceConfig(const ServiceConfigFunctions& api, SC_HANDLE scm, const wchar_t* serviceName)
 {
     ServiceConfig config;
-    const std::unique_ptr<std::remove_pointer_t<SC_HANDLE>, ServiceHandleCloser> service(
-        api.openService(scm, serviceName, SERVICE_QUERY_CONFIG), ServiceHandleCloser{.close = api.closeServiceHandle});
+    const InjectableServiceHandle service(api.openService(scm, serviceName, SERVICE_QUERY_CONFIG),
+                                          InjectedServiceHandleCloser{.close = api.closeServiceHandle});
     if (!service)
     {
         return config;
@@ -157,6 +145,11 @@ WindowsServiceProbe::~WindowsServiceProbe() = default;
 ServiceCapabilities WindowsServiceProbe::capabilities() const
 {
     return Windows::ServiceMath::capabilitiesForScmOpen(m_Impl->scmOpenError);
+}
+
+void WindowsServiceProbe::forgetCachedConfig()
+{
+    m_Impl->configs.clear();
 }
 
 ServiceEnumeration WindowsServiceProbe::enumerate()

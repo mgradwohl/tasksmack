@@ -224,6 +224,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessEnvironmentViewRender.cpp
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
+    App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp
     App/test_StartupViewRender.cpp
     App/test_SamplingGate.cpp
@@ -260,6 +261,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
 )
@@ -283,6 +285,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
@@ -340,6 +343,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )
@@ -426,6 +430,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/NetworkSection.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServicesView.cpp
     # The Startup tab's table (#801), run headless (test_StartupViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupView.cpp

@@ -8,6 +8,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -17,6 +18,7 @@
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
 #include "WindowsProcessProbe.h"
+#include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemProbe.h"
@@ -83,6 +85,11 @@ std::unique_ptr<IGPUProbe> makeGPUProbe()
 std::unique_ptr<IServiceProbe> makeServiceProbe()
 {
     return std::make_unique<WindowsServiceProbe>();
+}
+
+std::unique_ptr<IServiceActions> makeServiceActions()
+{
+    return std::make_unique<WindowsServiceActions>(WindowsServiceActions::isCurrentProcessElevated());
 }
 
 } // namespace Platform
