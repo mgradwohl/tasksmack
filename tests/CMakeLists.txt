@@ -109,6 +109,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_History.cpp
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp
+    Domain/test_ProcessSecurity.cpp
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessEnergyAttribution.cpp
@@ -194,8 +195,10 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxCpuDetails.cpp
     Platform/test_LinuxOsInfo.cpp
     Platform/test_SmbiosParser.cpp
+    Platform/test_GraphicsInfo.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcFdParser.cpp
+    Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
     Platform/test_ProcessEnvironment.cpp
@@ -238,6 +241,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessModulesViewRender.cpp
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_LazyBackgroundRead.cpp
+    App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp
     App/test_StartupViewRender.cpp
@@ -263,6 +267,7 @@ set(COMMON_TEST_SOURCES
     App/test_SelectOverride.cpp
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
+    App/test_GpuSectionRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
@@ -333,6 +338,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
     Platform/test_LinuxProcessOpenFilesReader.cpp
+    Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
     Platform/test_LinuxDiskProbe.cpp
@@ -388,6 +394,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessModulesReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessSecurityReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
@@ -442,8 +449,8 @@ add_executable(TaskSmackTests
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
     # test_ProcessDetailsChartsRender.cpp, test_ProcessEnvironmentViewRender.cpp,
     # test_ProcessConnectionsViewRender.cpp), the Modules section (test_ProcessModulesViewRender.cpp, #802),
-    # the Open files section (test_ProcessOpenFilesViewRender.cpp, #183),
-    # and the batch priority dialog (#1484,
+    # the Open files section (test_ProcessOpenFilesViewRender.cpp, #183), the Security section
+    # (test_ProcessSecurityViewRender.cpp, #1526), and the batch priority dialog (#1484,
     # test_ProcessBatchPriorityDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
@@ -456,6 +463,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessModulesView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessOpenFilesView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessSecurityView.cpp
     # The Overview's CPU Details block, run headless (test_CpuDetailsBlockRender.cpp, #809)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuDetailsBlock.cpp
     # The System Metrics tab's Memory & Swap, CPU Cores, Disk I/O and Network sections and the render-metrics
@@ -464,6 +472,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuCoresSection.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StorageSection.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/NetworkSection.cpp
+    # The GPU tab, run headless (test_GpuSectionRender.cpp, #1545)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/GpuSection.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp

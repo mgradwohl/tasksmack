@@ -15,6 +15,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/Synthetic/SyntheticProbes.h"
@@ -374,6 +375,15 @@ std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(co
         return std::make_unique<Platform::UnsupportedProcessOpenFilesReader>();
     }
     return Platform::makeProcessOpenFilesReader();
+}
+
+std::unique_ptr<Platform::IProcessSecurityReader> makeProcessSecurityReader(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessSecurityReader>();
+    }
+    return Platform::makeProcessSecurityReader();
 }
 
 std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario)

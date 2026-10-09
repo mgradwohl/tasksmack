@@ -10,6 +10,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -68,6 +69,13 @@ std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
 std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()
 {
     return std::make_unique<Windows::WindowsProcessOpenFilesReader>();
+}
+
+std::unique_ptr<IProcessSecurityReader> makeProcessSecurityReader()
+{
+    // The token reader (OpenProcessToken/GetTokenInformation: integrity, elevation, privileges, groups)
+    // is the Windows lane's follow-up to #1526, so the Security section is hidden.
+    return std::make_unique<UnsupportedProcessSecurityReader>();
 }
 
 std::unique_ptr<IStartupProbe> makeStartupProbe()

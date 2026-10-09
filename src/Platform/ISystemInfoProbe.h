@@ -169,6 +169,219 @@ struct CommitPagingInfo
     std::string transparentHugePages; ///< Linux: the bracketed mode ("always", "madvise", "never")
 };
 
+/// Whether a disk spins (#1517): Windows' seek-penalty property / Linux's queue/rotational.
+enum class DiskMedia : std::uint8_t
+{
+    Unknown,
+    Ssd,
+    Hdd,
+};
+
+/// An NVMe drive's health log page (#1517), the fields the page shows.
+struct NvmeHealth
+{
+    std::uint8_t criticalWarning = 0;       ///< The critical warning bits; 0 is healthy
+    std::uint8_t availableSparePercent = 0; ///< Spare capacity left
+    std::uint8_t percentageUsed = 0;        ///< Life used, by the vendor's estimate; can pass 100
+    std::uint64_t mediaErrors = 0;          ///< Unrecovered data integrity errors (the low 64 bits)
+};
+
+/// One physical disk (#1517). A string the probe couldn't read is empty and a size 0.
+struct PhysicalDisk
+{
+    std::string name;  ///< "Disk 0" (\\.\PhysicalDrive0) / "nvme0n1"
+    std::string model; ///< "Samsung SSD 980 PRO 1TB"
+    std::string bus;   ///< "NVMe", "SATA", "USB", ...
+    DiskMedia media = DiskMedia::Unknown;
+    std::uint64_t sizeBytes = 0;
+    std::string firmware; ///< The firmware revision
+    std::string serial;   ///< An identifier
+    std::optional<int> temperatureCelsius;
+    std::optional<NvmeHealth> health;    ///< Windows: NVMe drives, when the health log could be read
+    std::string healthUnavailableReason; ///< Why health is missing; empty when it isn't read for this disk at all
+};
+
+/// One mounted volume (#1517): a drive letter or a mount point.
+struct Volume
+{
+    std::string mountPoint; ///< "C:" / "/home"
+    std::string label;
+    std::string fileSystem; ///< "NTFS" / "ext4"
+    std::string device;     ///< Linux: the mount source ("/dev/nvme0n1p2"); empty on Windows
+    bool network = false;   ///< A network drive or file system: never queried, as the calls can hang
+    bool sizeRead = false;  ///< sizeBytes and freeBytes were read
+    std::uint64_t sizeBytes = 0;
+    std::uint64_t freeBytes = 0;
+};
+
+/// The Storage facts (#1517): physical disks and mounted volumes.
+struct StorageInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    bool disksRead = false; ///< The disks were enumerated: an empty disks means none were found.
+    std::vector<PhysicalDisk> disks;
+    bool volumesRead = false; ///< The volumes were enumerated.
+    std::vector<Volume> volumes;
+};
+
+/// One graphics adapter (#1519): a GPU, or a display-only adapter. A fact the probe couldn't read is
+/// empty or 0.
+struct GraphicsAdapter
+{
+    std::string name; ///< DXGI's description / the driver's product name, else the vendor and PCI ids
+    std::uint32_t vendorId = 0;
+    std::uint32_t deviceId = 0;
+    std::uint64_t dedicatedBytes = 0; ///< Video memory of its own
+    std::uint64_t sharedBytes = 0;    ///< Windows: system memory it may borrow
+    std::string location;             ///< The PCI location, "01:00.0" / "0000:01:00.0"
+    std::string driver;               ///< Linux: the kernel driver ("amdgpu", "nvidia")
+    std::string driverVersion;        ///< Windows: the driver package's / Linux: the module's, if it has one
+    std::string driverDate;           ///< Windows: "2024-09-05"
+};
+
+/// One connected monitor (#1519), from its EDID and, on Windows, the DXGI output it is attached to.
+struct Monitor
+{
+    std::string name;          ///< The EDID monitor name, else its manufacturer and product code ("DEL 41A8")
+    std::string serial;        ///< The EDID serial: an identifier
+    std::uint32_t widthMm = 0; ///< The physical image size; 0 when the EDID doesn't give it
+    std::uint32_t heightMm = 0;
+    std::string connector;       ///< Linux: the DRM connector ("DP-1", "eDP-1")
+    bool hasDesktopRect = false; ///< Windows: where it sits on the desktop, in pixels, to match it to a display
+    int desktopX = 0;
+    int desktopY = 0;
+    int desktopWidth = 0;
+    int desktopHeight = 0;
+    std::string colorSpace; ///< Windows: "sRGB", "BT.2020 PQ", ...; empty when unknown
+    bool hdr = false;       ///< Windows: the output runs in an HDR colour space
+    std::uint32_t bitsPerColor = 0;
+};
+
+/// The Graphics & displays facts the platform reads (#1519). TaskSmack's own OpenGL context and the
+/// displays' modes and scale come from Core instead (Core/GraphicsHostInfo.h).
+struct GraphicsInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    bool adaptersRead = false; ///< The adapters were enumerated: an empty adapters means none were found.
+    std::vector<GraphicsAdapter> adapters;
+    bool monitorsRead = false; ///< The monitors were enumerated.
+    std::vector<Monitor> monitors;
+    std::string displayServer; ///< Linux: "Wayland", "X11", ...; empty without a graphical session
+};
+
+/// The state of one platform security feature (#1514).
+enum class SecurityFeatureState : std::uint8_t
+{
+    Unknown,      ///< It couldn't be read.
+    On,           ///< Enabled, or present (a TPM).
+    Off,          ///< Supported but disabled.
+    NotSupported, ///< The machine can't have it (Secure Boot on a legacy BIOS boot, no TPM).
+};
+
+/// One CPU vulnerability as the kernel reports it: the file name under
+/// /sys/devices/system/cpu/vulnerabilities and its one-line status.
+struct CpuVulnerability
+{
+    std::string name;   ///< "spectre_v2", "meltdown"
+    std::string status; ///< "Not affected", "Vulnerable", "Mitigation: Retpolines; ..."
+};
+
+/// The Security facts (#1514): read-only status of the platform's security features. A fact that
+/// couldn't be read is Unknown, empty or nullopt rather than a guess.
+struct PlatformSecurityInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    SecurityFeatureState secureBoot = SecurityFeatureState::Unknown;
+    SecurityFeatureState tpm = SecurityFeatureState::Unknown;
+    std::uint32_t tpmVersionMajor = 0; ///< 1 or 2 when known; 0 otherwise.
+
+    bool lsmRead = false;                 ///< Linux: /sys/kernel/security/lsm was read.
+    std::vector<std::string> lsms;        ///< Linux: the active security modules, in load order.
+    std::optional<bool> selinuxEnforcing; ///< Linux: nullopt when SELinux isn't active.
+    std::optional<bool> apparmorEnabled;  ///< Linux: nullopt when the AppArmor module isn't loaded.
+    std::string lockdown;                 ///< Linux: "none", "integrity" or "confidentiality"; empty when unknown.
+
+    bool vulnerabilitiesRead = false;              ///< The kernel's list was read.
+    std::vector<CpuVulnerability> vulnerabilities; ///< Sorted by name.
+};
+
+/// What a sensor measures (#1522).
+enum class SensorKind : std::uint8_t
+{
+    Temperature, ///< Degrees Celsius
+    Fan,         ///< RPM
+    Voltage,     ///< Volts
+    Current,     ///< Amperes
+    Power,       ///< Watts
+};
+
+/// One sensor reading, in the kind's unit, with the driver's label.
+struct SensorReading
+{
+    SensorKind kind = SensorKind::Temperature;
+    std::string label;              ///< The driver's label ("Package id 0", "Tctl", "fan1"); never empty.
+    double value = 0.0;             ///< In the kind's unit.
+    std::optional<double> high;     ///< The driver's high (warning) threshold, when it reports one.
+    std::optional<double> critical; ///< The driver's critical threshold, when it reports one.
+};
+
+/// One device's sensors: a hwmon chip ("coretemp", "nvme", "k10temp") or the thermal zones.
+struct SensorDevice
+{
+    std::string name; ///< The driver's device name, made unique on the page ("nvme", "nvme #2").
+    std::vector<SensorReading> readings;
+};
+
+/// The Sensors facts (#1522): every readable sensor at the time of the read, grouped by device.
+struct SensorsInfo
+{
+    bool available = false;            ///< The probe read the section at all.
+    bool listed = false;               ///< The sensor devices could be listed: an empty `devices` means none.
+    std::vector<SensorDevice> devices; ///< In the OS's device order (Linux: by hwmon index, thermal zones last).
+};
+
+/// One IP address on an adapter (#1518).
+struct AdapterAddress
+{
+    std::string address;      ///< "192.168.1.20", "fe80::1c2a:3bff:fe4d:5e6f"
+    std::uint32_t prefix = 0; ///< The prefix length ("/24", "/64")
+    bool v6 = false;
+
+    [[nodiscard]] friend bool operator==(const AdapterAddress&, const AdapterAddress&) = default;
+};
+
+/// One network adapter's configuration (#1518). A fact the probe couldn't read is empty or 0.
+struct NetworkAdapter
+{
+    std::string name; ///< "eth0", "wlp3s0"
+    std::string mac;  ///< "a4:5e:60:12:34:56"; an identifier
+    std::uint32_t mtu = 0;
+    std::string driver; ///< "e1000e", "iwlwifi"
+    bool up = false;    ///< The OS reports the link up.
+    bool wireless = false;
+    std::vector<AdapterAddress> addresses;
+    std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
+};
+
+/// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways
+/// and the DNS servers.
+struct NetworkAdaptersInfo
+{
+    bool available = false;               ///< The probe read the section at all.
+    bool listed = false;                  ///< The adapters could be listed: an empty `adapters` means none.
+    std::vector<NetworkAdapter> adapters; ///< By name; the loopback adapter is left out.
+    std::string gatewayV4;                ///< The IPv4 default gateway; empty when there is none or it is unknown.
+    std::string gatewayV4Adapter;
+    std::string gatewayV6; ///< The IPv6 default gateway.
+    std::string gatewayV6Adapter;
+    bool dnsRead = false; ///< The resolver configuration was read.
+    std::vector<std::string> dnsServers;
+    std::vector<std::string> searchDomains;
+    bool dnsIsLocalStub = false; ///< Linux: only systemd-resolved's local stub (127.0.0.53) was found.
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
@@ -202,6 +415,22 @@ class ISystemInfoProbe
 
     /// The Commit & paging facts (#1516); read when hasOs is true.
     [[nodiscard]] virtual CommitPagingInfo readCommitPaging() = 0;
+
+    /// The Storage facts (#1517); read when hasOs is true. A slow disk can make this take a while, which
+    /// is fine: reads run off the UI thread.
+    [[nodiscard]] virtual StorageInfo readStorage() = 0;
+
+    /// The Graphics & displays facts (#1519); read when hasOs is true.
+    [[nodiscard]] virtual GraphicsInfo readGraphics() = 0;
+
+    /// The Security facts (#1514); read when hasOs is true.
+    [[nodiscard]] virtual PlatformSecurityInfo readPlatformSecurity() = 0;
+
+    /// The Sensors facts (#1522); read when hasOs is true.
+    [[nodiscard]] virtual SensorsInfo readSensors() = 0;
+
+    /// The Network adapters facts (#1518); read when hasOs is true.
+    [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -229,6 +458,31 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] CommitPagingInfo readCommitPaging() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] StorageInfo readStorage() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] GraphicsInfo readGraphics() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] SensorsInfo readSensors() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override
     {
         return {};
     }

@@ -20,6 +20,11 @@ struct SystemInfoSnapshot
     Platform::FirmwareInfo firmware;
     Platform::MemoryModulesInfo memory;
     Platform::CommitPagingInfo paging;
+    Platform::StorageInfo storage;
+    Platform::GraphicsInfo graphics;
+    Platform::PlatformSecurityInfo security;
+    Platform::SensorsInfo sensors;
+    Platform::NetworkAdaptersInfo adapters;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,

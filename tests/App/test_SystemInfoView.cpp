@@ -1,11 +1,14 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
-/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the filter,
+/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
+/// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the Graphics & displays rows
+/// (#1519), the Network adapters rows (#1518), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
 /// filter narrowing and the identifier toggle.
 
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
+#include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -20,6 +23,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace App
 {
@@ -472,6 +477,190 @@ TEST(SystemInfoSectionsTest, CommitPagingRowsLinux)
     EXPECT_EQ(findRow(section, "zram"), nullptr);        // devices listed instead
 }
 
+TEST(SystemInfoSectionsTest, SecurityRows)
+{
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.secureBoot = Platform::SecurityFeatureState::On;
+    security.tpm = Platform::SecurityFeatureState::On;
+    security.tpmVersionMajor = 2;
+    security.lsmRead = true;
+    security.lsms = {"lockdown", "capability", "apparmor"};
+    security.selinuxEnforcing = std::nullopt;
+    security.apparmorEnabled = true;
+    security.lockdown = "integrity";
+    security.vulnerabilitiesRead = true;
+    security.vulnerabilities = {{.name = "meltdown", .status = "Not affected"},
+                                {.name = "spectre_v2", .status = "Mitigation: Enhanced / Automatic IBRS"},
+                                {.name = "mds", .status = "Vulnerable: Clear CPU buffers attempted, no microcode"}};
+    const Section section = SystemInfo::buildSecuritySection(security);
+    EXPECT_EQ(section.title, "Security");
+    EXPECT_EQ(findRow(section, "Secure Boot")->value, "On");
+    EXPECT_EQ(findRow(section, "TPM")->value, "Present (TPM 2.0)");
+    EXPECT_EQ(findRow(section, "Security modules")->value, "lockdown, capability, apparmor");
+    EXPECT_EQ(findRow(section, "SELinux")->value, "Not active");
+    EXPECT_EQ(findRow(section, "AppArmor")->value, "Enabled");
+    EXPECT_EQ(findRow(section, "Kernel lockdown")->value, "Integrity");
+    EXPECT_EQ(findRow(section, "CPU vulnerabilities")->value, "1 vulnerable, 1 mitigated, 1 not affected");
+    EXPECT_EQ(findRow(section, "Meltdown")->value, "Not affected");
+    EXPECT_EQ(findRow(section, "Spectre v2")->value, "Mitigation: Enhanced / Automatic IBRS");
+    EXPECT_EQ(findRow(section, "MDS")->value, "Vulnerable: Clear CPU buffers attempted, no microcode");
+    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; })); // nothing names the machine
+}
+
+TEST(SystemInfoSectionsTest, SecurityUnknownsAreMutedAndNotSupportedSaysSo)
+{
+    Platform::PlatformSecurityInfo unread;
+    unread.available = true;
+    const Section section = SystemInfo::buildSecuritySection(unread);
+    for (const std::string_view label : {"Secure Boot", "TPM", "Security modules", "Kernel lockdown", "CPU vulnerabilities"})
+    {
+        const Row* item = findRow(section, label);
+        ASSERT_NE(item, nullptr) << label;
+        EXPECT_FALSE(item->available()) << label;
+        EXPECT_FALSE(item->unavailableReason.empty()) << label;
+    }
+    EXPECT_EQ(findRow(section, "SELinux")->value, "Not active");
+    EXPECT_EQ(findRow(section, "AppArmor")->value, "Not loaded");
+
+    unread.secureBoot = Platform::SecurityFeatureState::NotSupported;
+    unread.tpm = Platform::SecurityFeatureState::NotSupported;
+    unread.selinuxEnforcing = false;
+    const Section legacy = SystemInfo::buildSecuritySection(unread);
+    EXPECT_EQ(findRow(legacy, "Secure Boot")->value, "Not supported (not booted with UEFI)");
+    EXPECT_EQ(findRow(legacy, "TPM")->value, "Not detected");
+    EXPECT_EQ(findRow(legacy, "SELinux")->value, "Permissive");
+}
+
+TEST(SystemInfoSectionsTest, VulnerabilityNamesAndSummary)
+{
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("spectre_v2"), "Spectre v2");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("spec_store_bypass"), "Spec store bypass");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("mds"), "MDS");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("tsx_async_abort"), "TSX async abort");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("itlb_multihit"), "ITLB multihit");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("mmio_stale_data"), "MMIO stale data");
+    EXPECT_EQ(SystemInfo::formatVulnerabilityName("l1tf"), "L1TF");
+    EXPECT_EQ(SystemInfo::formatVulnerabilitySummary({}), "");
+    const std::vector<Platform::CpuVulnerability> odd{{.name = "x", .status = "Unknown: no microcode"},
+                                                      {.name = "y", .status = "Not affected"}};
+    EXPECT_EQ(SystemInfo::formatVulnerabilitySummary(odd), "1 not affected, 1 unknown");
+}
+
+TEST(SystemInfoSectionsTest, SensorRows)
+{
+    using Platform::SensorKind;
+    using Platform::SensorReading;
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Temperature, .label = "t", .value = 52.0, .high = 100.0, .critical = 105.0}),
+        "52.0 \u00B0C (high 100.0 \u00B0C, critical 105.0 \u00B0C)");
+    EXPECT_EQ(SystemInfo::formatSensorReading(
+                  {.kind = SensorKind::Temperature, .label = "t", .value = 38.86, .high = std::nullopt, .critical = 85.0}),
+              "38.9 \u00B0C (critical 85.0 \u00B0C)");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Fan, .label = "f", .value = 1180.0, .high = {}, .critical = {}}),
+              "1180 RPM");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Voltage, .label = "v", .value = 12.18, .high = {}, .critical = {}}),
+              "12.18 V");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Current, .label = "c", .value = 1.2, .high = {}, .critical = {}}),
+              "1.20 A");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Power, .label = "p", .value = 15.24, .high = {}, .critical = {}}),
+              "15.2 W");
+
+    Platform::SensorsInfo sensors;
+    sensors.available = true;
+    sensors.listed = true;
+    sensors.devices = {
+        {.name = "coretemp",
+         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Package id 0", .value = 52.0, .high = {}, .critical = {}}}},
+        {.name = "nvme #2",
+         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Composite", .value = 41.0, .high = {}, .critical = {}}}},
+    };
+    const Section section = SystemInfo::buildSensorsSection(sensors);
+    EXPECT_EQ(section.title, "Sensors");
+    ASSERT_EQ(section.rows.size(), 2U);
+    EXPECT_EQ(section.rows[0].label, "coretemp: Package id 0");
+    EXPECT_EQ(section.rows[0].value, "52.0 \u00B0C");
+    EXPECT_EQ(section.rows[1].label, "nvme #2: Composite");
+    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; }));
+}
+
+TEST(SystemInfoSectionsTest, NoSensorsIsOneMutedRow)
+{
+    Platform::SensorsInfo none;
+    none.available = true;
+    none.listed = true;
+    const Section empty = SystemInfo::buildSensorsSection(none);
+    ASSERT_EQ(empty.rows.size(), 1U);
+    EXPECT_FALSE(empty.rows[0].available());
+    EXPECT_TRUE(empty.rows[0].unavailableReason.contains("No hwmon sensors")) << empty.rows[0].unavailableReason;
+
+    none.listed = false;
+    const Section unread = SystemInfo::buildSensorsSection(none);
+    ASSERT_EQ(unread.rows.size(), 1U);
+    EXPECT_TRUE(unread.rows[0].unavailableReason.contains("couldn't be read")) << unread.rows[0].unavailableReason;
+}
+
+TEST(SystemInfoSectionsTest, NetworkAdapterRows)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    network.gatewayV4 = "192.168.0.1";
+    network.gatewayV4Adapter = "eth0";
+    network.gatewayV6 = "fe80::1";
+    network.gatewayV6Adapter = "eth0";
+    network.dnsRead = true;
+    network.dnsServers = {"192.168.0.1", "1.1.1.1"};
+    network.searchDomains = {"corp.example.com"};
+    Platform::NetworkAdapter eth0;
+    eth0.name = "eth0";
+    eth0.mac = "a4:5e:60:12:34:56";
+    eth0.mtu = 1500;
+    eth0.driver = "e1000e";
+    eth0.up = true;
+    eth0.addresses = {{.address = "fe80::1c2a:3bff:fe4d:5e6f", .prefix = 64, .v6 = true},
+                      {.address = "192.168.0.20", .prefix = 24, .v6 = false}};
+    Platform::NetworkAdapter wifi;
+    wifi.name = "wlp3s0";
+    wifi.wireless = true;
+    wifi.wifiSignalDbm = -61;
+    network.adapters = {eth0, wifi};
+
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(section.title, "Network adapters");
+    EXPECT_EQ(findRow(section, "Default gateway")->value, "192.168.0.1 (eth0)");
+    EXPECT_EQ(findRow(section, "IPv6 gateway")->value, "fe80::1 (eth0)");
+    EXPECT_EQ(findRow(section, "DNS servers")->value, "192.168.0.1, 1.1.1.1");
+    EXPECT_TRUE(findRow(section, "Search domains")->isIdentifier);
+    EXPECT_EQ(findRow(section, "eth0")->value, "Up, MTU 1500, driver e1000e");
+    EXPECT_EQ(findRow(section, "eth0 addresses")->value, "192.168.0.20/24, fe80::1c2a:3bff:fe4d:5e6f/64"); // IPv4 first
+    EXPECT_TRUE(findRow(section, "eth0 MAC address")->isIdentifier);
+    EXPECT_EQ(findRow(section, "wlp3s0")->value, "Down, Wi-Fi");
+    EXPECT_FALSE(findRow(section, "wlp3s0 addresses")->available());
+    EXPECT_EQ(findRow(section, "wlp3s0 MAC address"), nullptr); // none reported
+    EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi signal")->value, "-61 dBm");
+    EXPECT_EQ(findRow(section, "eth0 Wi-Fi signal"), nullptr);
+}
+
+TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    const Section unread = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_FALSE(findRow(unread, "Default gateway")->available());
+    EXPECT_FALSE(findRow(unread, "DNS servers")->available());
+    EXPECT_EQ(findRow(unread, "IPv6 gateway"), nullptr);
+    EXPECT_FALSE(findRow(unread, "Adapters")->available());
+
+    network.listed = true;
+    network.dnsRead = true;
+    network.dnsServers = {"127.0.0.53"};
+    network.dnsIsLocalStub = true;
+    const Section stub = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(stub, "DNS servers")->value, "127.0.0.53 (systemd-resolved; its upstream servers couldn't be read)");
+    EXPECT_EQ(findRow(stub, "Adapters")->value, "None found");
+}
+
 TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)
 {
     Platform::CommitPagingInfo unread;
@@ -508,6 +697,345 @@ TEST(SystemInfoSectionsTest, CommitPagingSectionFollowsMemoryModules)
     ASSERT_EQ(sections.size(), 4U);
     EXPECT_EQ(sections[2].title, "Memory modules");
     EXPECT_EQ(sections[3].title, "Commit & paging");
+}
+
+[[nodiscard]] Platform::StorageInfo windowsStorage()
+{
+    Platform::StorageInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.disksRead = true;
+    Platform::PhysicalDisk nvme;
+    nvme.name = "Disk 0";
+    nvme.model = "Samsung SSD 980 PRO 1TB";
+    nvme.bus = "NVMe";
+    nvme.media = Platform::DiskMedia::Ssd;
+    nvme.sizeBytes = 931 * GIB;
+    nvme.firmware = "5B2QGXA7";
+    nvme.serial = "S5GXNX0R123456";
+    nvme.temperatureCelsius = 41;
+    nvme.health = Platform::NvmeHealth{.criticalWarning = 0, .availableSparePercent = 100, .percentageUsed = 3, .mediaErrors = 0};
+    info.disks.push_back(nvme);
+    Platform::PhysicalDisk usb;
+    usb.name = "Disk 1";
+    usb.model = "SanDisk Ultra";
+    usb.bus = "USB";
+    usb.sizeBytes = 64 * GIB;
+    info.disks.push_back(usb);
+    info.volumesRead = true;
+    info.volumes.push_back({
+        .mountPoint = "C:",
+        .label = "Windows",
+        .fileSystem = "NTFS",
+        .device = {},
+        .network = false,
+        .sizeRead = true,
+        .sizeBytes = 400 * GIB,
+        .freeBytes = 100 * GIB,
+    });
+    info.volumes.push_back({
+        .mountPoint = "Z:",
+        .label = {},
+        .fileSystem = {},
+        .device = {},
+        .network = true,
+        .sizeRead = false,
+        .sizeBytes = 0,
+        .freeBytes = 0,
+    });
+    return info;
+}
+
+TEST(SystemInfoSectionsTest, FormatsStorageValues)
+{
+    const Platform::StorageInfo storage = windowsStorage();
+    EXPECT_EQ(SystemInfo::formatDisk(storage.disks[0]),
+              "Samsung SSD 980 PRO 1TB, NVMe SSD, 931 GiB, firmware 5B2QGXA7, 41 \xC2\xB0"
+              "C");
+    EXPECT_EQ(SystemInfo::formatDisk(storage.disks[1]), "SanDisk Ultra, USB, 64 GiB"); // media unknown
+    EXPECT_EQ(SystemInfo::formatDisk(Platform::PhysicalDisk{}), "");
+    EXPECT_EQ(SystemInfo::formatNvmeHealth({.criticalWarning = 0, .availableSparePercent = 100, .percentageUsed = 3, .mediaErrors = 0}),
+              "3% used, 100% spare left, 0 media errors");
+    EXPECT_EQ(SystemInfo::formatNvmeHealth({.criticalWarning = 4, .availableSparePercent = 9, .percentageUsed = 101, .mediaErrors = 2}),
+              "Critical warning (0x04), 101% used, 9% spare left, 2 media errors");
+    EXPECT_EQ(SystemInfo::formatVolume(storage.volumes[0]), "Windows, NTFS, 100 GiB free of 400 GiB (75% used)");
+    EXPECT_EQ(SystemInfo::formatVolume(storage.volumes[1]), "network, size not read");
+    EXPECT_EQ(SystemInfo::formatVolume({.mountPoint = "/home",
+                                        .label = {},
+                                        .fileSystem = "ext4",
+                                        .device = "/dev/sda2",
+                                        .network = false,
+                                        .sizeRead = true,
+                                        .sizeBytes = 8 * GIB,
+                                        .freeBytes = 8 * GIB}),
+              "ext4 on /dev/sda2, 8 GiB free of 8 GiB (0% used)");
+}
+
+TEST(SystemInfoSectionsTest, StorageRowsWindows)
+{
+    const Section section = SystemInfo::buildStorageSection(windowsStorage());
+    EXPECT_EQ(section.title, "Storage");
+    ASSERT_NE(findRow(section, "Disk 0"), nullptr);
+    EXPECT_EQ(findRow(section, "Disk 0 health")->value, "3% used, 100% spare left, 0 media errors");
+    EXPECT_EQ(findRow(section, "Disk 1 health"), nullptr); // not read for a USB drive: no row
+    ASSERT_NE(findRow(section, "Disk 0 serial number"), nullptr);
+    EXPECT_TRUE(findRow(section, "Disk 0 serial number")->isIdentifier);
+    EXPECT_FALSE(findRow(section, "Disk 1 serial number")->available());
+    EXPECT_EQ(findRow(section, "C: drive")->value, "Windows, NTFS, 100 GiB free of 400 GiB (75% used)");
+    EXPECT_EQ(findRow(section, "Z: drive")->value, "network, size not read");
+    for (const Row& item : section.rows)
+    {
+        EXPECT_EQ(item.isIdentifier, item.label.ends_with("serial number")) << item.label;
+    }
+    // Serials stay out of Copy until identifiers are shown.
+    EXPECT_EQ(SystemInfo::sectionText(section, false).find("S5GXNX0R123456"), std::string::npos);
+    EXPECT_NE(SystemInfo::sectionText(section, true).find("S5GXNX0R123456"), std::string::npos);
+
+    // A cloud drive labelled with the account's e-mail: the label moves to its own identifier row.
+    Platform::StorageInfo cloud = windowsStorage();
+    cloud.volumes[0].label = "someone@example.com - Google Drive";
+    const Section withCloud = SystemInfo::buildStorageSection(cloud);
+    EXPECT_EQ(findRow(withCloud, "C: drive")->value, "NTFS, 100 GiB free of 400 GiB (75% used)");
+    ASSERT_NE(findRow(withCloud, "C: drive label"), nullptr);
+    EXPECT_TRUE(findRow(withCloud, "C: drive label")->isIdentifier);
+    EXPECT_EQ(SystemInfo::sectionText(withCloud, false).find("someone@"), std::string::npos);
+}
+
+TEST(SystemInfoSectionsTest, StorageRowsLinuxAndUnreadable)
+{
+    Platform::StorageInfo linuxStorage;
+    linuxStorage.available = true;
+    linuxStorage.family = Platform::OsFamily::Linux;
+    linuxStorage.disksRead = true;
+    Platform::PhysicalDisk sda;
+    sda.name = "sda";
+    sda.healthUnavailableReason = "SMART status needs udisks2";
+    linuxStorage.disks.push_back(sda);
+    const Section section = SystemInfo::buildStorageSection(linuxStorage);
+    ASSERT_NE(findRow(section, "sda health"), nullptr);
+    EXPECT_FALSE(findRow(section, "sda health")->available());
+    EXPECT_EQ(findRow(section, "sda health")->unavailableReason, "SMART status needs udisks2");
+    EXPECT_FALSE(findRow(section, "sda")->available()); // nothing known about it
+    EXPECT_FALSE(findRow(section, "Volumes")->available());
+    EXPECT_EQ(findRow(section, "Volumes")->unavailableReason, "/proc/self/mountinfo couldn't be read");
+
+    Platform::StorageInfo none;
+    none.available = true;
+    none.family = Platform::OsFamily::Linux;
+    none.volumesRead = true;
+    const Section empty = SystemInfo::buildStorageSection(none);
+    EXPECT_FALSE(findRow(empty, "Disks")->available());
+    EXPECT_EQ(findRow(empty, "Volumes")->value, "None mounted");
+}
+
+TEST(SystemInfoSectionsTest, StorageSectionFollowsCommitPaging)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.paging = windowsPaging();
+    all.storage = windowsStorage();
+    const auto sections = SystemInfo::buildSystemInfoSections(all);
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[1].title, "Commit & paging");
+    EXPECT_EQ(sections[2].title, "Storage");
+}
+
+[[nodiscard]] Platform::GraphicsInfo windowsGraphics()
+{
+    Platform::GraphicsInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.adaptersRead = true;
+    info.adapters.push_back({
+        .name = "NVIDIA GeForce RTX 4070",
+        .vendorId = 0x10DE,
+        .deviceId = 0x2786,
+        .dedicatedBytes = 12ULL << 30U,
+        .sharedBytes = 16ULL << 30U,
+        .location = "01:00.0",
+        .driver = "",
+        .driverVersion = "32.0.15.6094",
+        .driverDate = "2024-09-05",
+    });
+    info.monitorsRead = true;
+    Platform::Monitor monitor;
+    monitor.name = "DELL U2720Q";
+    monitor.serial = "ABC1234";
+    monitor.widthMm = 597;
+    monitor.heightMm = 336;
+    monitor.hasDesktopRect = true;
+    monitor.desktopWidth = 3840;
+    monitor.desktopHeight = 2160;
+    monitor.colorSpace = "BT.2020 PQ";
+    monitor.hdr = true;
+    monitor.bitsPerColor = 10;
+    info.monitors.push_back(monitor);
+    return info;
+}
+
+[[nodiscard]] Core::GraphicsHostInfo windowsHost()
+{
+    Core::GraphicsHostInfo host;
+    host.glVendor = "NVIDIA Corporation";
+    host.glRenderer = "NVIDIA GeForce RTX 4070/PCIe/SSE2";
+    host.glVersion = "4.6.0 NVIDIA 560.94";
+    host.videoDriver = "windows";
+    host.displays.push_back({
+        .name = "DELL U2720Q",
+        .x = 0,
+        .y = 0,
+        .width = 3840,
+        .height = 2160,
+        .pixelWidth = 3840,
+        .pixelHeight = 2160,
+        .refreshHz = 59.94,
+        .contentScale = 1.5F,
+        .primary = true,
+        .hdrEnabled = true,
+    });
+    host.displays.push_back({
+        .name = "Generic PnP Monitor",
+        .x = 3840,
+        .y = 0,
+        .width = 1920,
+        .height = 1080,
+        .pixelWidth = 1920,
+        .pixelHeight = 1080,
+        .refreshHz = 60.0,
+        .contentScale = 1.0F,
+        .primary = false,
+        .hdrEnabled = false,
+    });
+    return host;
+}
+
+/// A Linux adapter: a name, a kernel driver and its module version, a PCI slot.
+[[nodiscard]] Platform::GraphicsAdapter
+linuxAdapter(std::string name, std::string driver, std::string version = {}, std::string location = {})
+{
+    Platform::GraphicsAdapter adapter;
+    adapter.name = std::move(name);
+    adapter.driver = std::move(driver);
+    adapter.driverVersion = std::move(version);
+    adapter.location = std::move(location);
+    return adapter;
+}
+
+[[nodiscard]] Platform::Monitor linuxMonitor(std::string name, std::string connector)
+{
+    Platform::Monitor monitor;
+    monitor.name = std::move(name);
+    monitor.connector = std::move(connector);
+    return monitor;
+}
+
+TEST(SystemInfoSectionsTest, FormatsGraphicsValues)
+{
+    const Platform::GraphicsInfo graphics = windowsGraphics();
+    EXPECT_EQ(SystemInfo::formatAdapter(graphics.adapters[0]), "NVIDIA GeForce RTX 4070, 12 GiB dedicated, 16 GiB shared, PCI 01:00.0");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver(graphics.adapters[0]), "32.0.15.6094 (2024-09-05)");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver(linuxAdapter("", "nvidia", "560.35.03")), "nvidia 560.35.03");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver(linuxAdapter("", "amdgpu")), "amdgpu");
+    EXPECT_EQ(SystemInfo::formatAdapterDriver({}), "");
+
+    const Core::GraphicsHostInfo host = windowsHost();
+    EXPECT_EQ(SystemInfo::formatDisplay(host.displays[0], graphics.monitors.data()),
+              "DELL U2720Q, 3840 \xC3\x97 2160 at 59.94 Hz, 150% scale, 27.0\" (597 \xC3\x97 336 mm), HDR (BT.2020 PQ, 10-bit), primary");
+    EXPECT_EQ(SystemInfo::formatDisplay(host.displays[1], nullptr), "Generic PnP Monitor, 1920 \xC3\x97 1080 at 60 Hz, 100% scale");
+    Core::DisplayInfo hdrOnly = host.displays[1];
+    hdrOnly.hdrEnabled = true;
+    EXPECT_TRUE(SystemInfo::formatDisplay(hdrOnly, nullptr).ends_with(", HDR"));
+}
+
+TEST(SystemInfoSectionsTest, MatchesMonitorsToDisplays)
+{
+    const Core::GraphicsHostInfo host = windowsHost();
+    std::vector<Platform::Monitor> monitors(3);
+    monitors[0].hasDesktopRect = true; // the second display's rectangle
+    monitors[0].desktopX = 3840;
+    monitors[0].desktopWidth = 1920;
+    monitors[0].desktopHeight = 1080;
+    monitors[1].name = "DELL U2720Q"; // the first display's name
+    monitors[2].name = "Elsewhere";
+    const auto matches = SystemInfo::matchMonitors(host.displays, monitors);
+    ASSERT_EQ(matches.size(), 2U);
+    EXPECT_EQ(matches[0], std::optional<std::size_t>{1});
+    EXPECT_EQ(matches[1], std::optional<std::size_t>{0});
+
+    // A lone display and a lone monitor without a rectangle (Linux) pair up; one with a rectangle doesn't.
+    const std::span<const Core::DisplayInfo> one(host.displays.data(), 1);
+    std::vector<Platform::Monitor> lone(1);
+    lone[0].connector = "eDP-1";
+    EXPECT_EQ(SystemInfo::matchMonitors(one, lone)[0], std::optional<std::size_t>{0});
+    lone[0].hasDesktopRect = true;
+    lone[0].desktopX = 99;
+    EXPECT_FALSE(SystemInfo::matchMonitors(one, lone)[0].has_value());
+}
+
+TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
+{
+    const Section section = SystemInfo::buildGraphicsSection(windowsGraphics(), windowsHost());
+    EXPECT_EQ(section.title, "Graphics & displays");
+    EXPECT_EQ(findRow(section, "GPU")->value, "NVIDIA GeForce RTX 4070, 12 GiB dedicated, 16 GiB shared, PCI 01:00.0");
+    EXPECT_EQ(findRow(section, "GPU driver")->value, "32.0.15.6094 (2024-09-05)");
+    EXPECT_EQ(findRow(section, "OpenGL")->value, "4.6.0 NVIDIA 560.94");
+    EXPECT_EQ(findRow(section, "OpenGL renderer")->value, "NVIDIA GeForce RTX 4070/PCIe/SSE2 (NVIDIA Corporation)");
+    EXPECT_EQ(findRow(section, "Display server"), nullptr);
+    ASSERT_NE(findRow(section, "Display 1"), nullptr);
+    const Row* serial = findRow(section, "Display 1 serial number");
+    ASSERT_NE(serial, nullptr);
+    EXPECT_TRUE(serial->isIdentifier);
+    EXPECT_EQ(serial->value, "ABC1234");
+    EXPECT_EQ(findRow(section, "Display 2")->value, "Generic PnP Monitor, 1920 \xC3\x97 1080 at 60 Hz, 100% scale");
+    EXPECT_EQ(findRow(section, "Display 2 serial number"), nullptr); // no monitor facts to give one
+
+    // Without Core's facts (no context, no displays) the rows say why.
+    const Section bare = SystemInfo::buildGraphicsSection(windowsGraphics(), {});
+    EXPECT_FALSE(findRow(bare, "OpenGL")->available());
+    EXPECT_FALSE(findRow(bare, "Displays")->available());
+    EXPECT_EQ(findRow(bare, "Monitor 1")->value, "DELL U2720Q, 27.0\" (597 \xC3\x97 336 mm), HDR (BT.2020 PQ, 10-bit)");
+}
+
+TEST(SystemInfoSectionsTest, GraphicsRowsLinuxAndUnreadable)
+{
+    Platform::GraphicsInfo linuxGraphics;
+    linuxGraphics.available = true;
+    linuxGraphics.family = Platform::OsFamily::Linux;
+    linuxGraphics.adaptersRead = true;
+    linuxGraphics.adapters.push_back(linuxAdapter("AMD Radeon RX 6800 XT", "amdgpu", "", "0000:03:00.0"));
+    linuxGraphics.adapters.push_back(linuxAdapter("Intel GPU (8086:A7A0)", "i915"));
+    linuxGraphics.monitorsRead = true;
+    linuxGraphics.monitors.push_back(linuxMonitor("DELL U2720Q", "DP-1"));
+    linuxGraphics.monitors.push_back(linuxMonitor("", "eDP-1"));
+    linuxGraphics.displayServer = "Wayland";
+    Core::GraphicsHostInfo host = windowsHost();
+    host.videoDriver = "x11";
+    host.displays.resize(1);
+
+    const Section section = SystemInfo::buildGraphicsSection(linuxGraphics, host);
+    EXPECT_EQ(findRow(section, "GPU 1")->value, "AMD Radeon RX 6800 XT, PCI 0000:03:00.0");
+    EXPECT_EQ(findRow(section, "GPU 2 driver")->value, "i915");
+    EXPECT_EQ(findRow(section, "Display server")->value, "Wayland (TaskSmack runs through XWayland)");
+    EXPECT_TRUE(findRow(section, "Display 1")->value.starts_with("DELL U2720Q, 3840")); // matched by name
+    EXPECT_FALSE(findRow(section, "Display 1 serial number")->available());
+    EXPECT_FALSE(findRow(section, "Monitor eDP-1")->available()); // no EDID: nothing to say
+
+    Platform::GraphicsInfo unread;
+    unread.available = true;
+    unread.family = Platform::OsFamily::Linux;
+    const Section empty = SystemInfo::buildGraphicsSection(unread, {});
+    EXPECT_EQ(findRow(empty, "GPU")->unavailableReason, "/sys/class/drm couldn't be listed");
+    EXPECT_FALSE(findRow(empty, "Display server")->available());
+}
+
+TEST(SystemInfoSectionsTest, GraphicsSectionFollowsStorage)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.storage = windowsStorage();
+    all.graphics = windowsGraphics();
+    const auto sections = SystemInfo::buildSystemInfoSections(all, windowsHost());
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[1].title, "Storage");
+    EXPECT_EQ(sections[2].title, "Graphics & displays");
 }
 
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
@@ -604,6 +1132,49 @@ TEST_F(SystemInfoViewRenderTest, CommitPagingSectionRendersAndFilters)
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 1U);
+}
+
+TEST_F(SystemInfoViewRenderTest, StorageSectionRendersAndHidesSerials)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.storage = windowsStorage();
+    SystemInfoViewState state;
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+
+    state.filter = "disk 0";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 2U); // the disk and its health; the serial is hidden
+
+    state.showIdentifiers = true;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 3U);
+}
+
+TEST_F(SystemInfoViewRenderTest, GraphicsSectionRendersAndHidesMonitorSerials)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.graphics = windowsGraphics();
+    SystemInfoViewState state;
+    state.host = windowsHost();
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+
+    state.filter = "display 1";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 1U); // the serial is hidden
+
+    state.showIdentifiers = true;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 2U);
 }
 
 } // namespace

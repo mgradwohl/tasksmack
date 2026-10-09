@@ -2,17 +2,31 @@
 
 #include "LinuxCommitPaging.h"
 #include "LinuxFirmwareInfo.h"
+#include "LinuxGraphics.h"
+#include "LinuxNetworkAdapters.h"
 #include "LinuxOsInfo.h"
+#include "LinuxPlatformSecurity.h"
+#include "LinuxSensors.h"
+#include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UserNameLookup.h"
 
 #include <array>
+#include <bit>
+#include <cstdint>
 // NOLINTNEXTLINE(misc-include-cleaner) - cstdlib provides secure_getenv when _GNU_SOURCE is defined
 #include <cstdlib>
 #include <ctime>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
 #include <pwd.h>
+#include <sys/socket.h>
+#include <sys/statvfs.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 
@@ -39,6 +53,68 @@ namespace
 {
     const char* value = environment(name);
     return value != nullptr ? std::string(value) : std::string{};
+}
+
+/// Every adapter's IPv4 and IPv6 addresses, from getifaddrs() (#1518). Empty if it fails.
+[[nodiscard]] std::vector<LinuxNetworkAdapters::ListedAddress> listAdapterAddresses()
+{
+    std::vector<LinuxNetworkAdapters::ListedAddress> listed;
+    ifaddrs* list = nullptr;
+    if (::getifaddrs(&list) != 0)
+    {
+        return listed;
+    }
+    for (const ifaddrs* entry = list; entry != nullptr; entry = entry->ifa_next)
+    {
+        if (entry->ifa_addr == nullptr || entry->ifa_name == nullptr)
+        {
+            continue;
+        }
+        std::array<char, INET6_ADDRSTRLEN> text{};
+        AdapterAddress address;
+        if (entry->ifa_addr->sa_family == AF_INET)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - getifaddrs() hands sockaddr_in as sockaddr
+            const auto* in = reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
+            if (::inet_ntop(AF_INET, &in->sin_addr, text.data(), text.size()) == nullptr)
+            {
+                continue;
+            }
+            if (entry->ifa_netmask != nullptr)
+            {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - as above
+                const auto* mask = reinterpret_cast<const sockaddr_in*>(entry->ifa_netmask);
+                address.prefix = static_cast<std::uint32_t>(std::popcount(mask->sin_addr.s_addr));
+            }
+        }
+        else if (entry->ifa_addr->sa_family == AF_INET6)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - getifaddrs() hands sockaddr_in6 as sockaddr
+            const auto* in6 = reinterpret_cast<const sockaddr_in6*>(entry->ifa_addr);
+            if (::inet_ntop(AF_INET6, &in6->sin6_addr, text.data(), text.size()) == nullptr)
+            {
+                continue;
+            }
+            address.v6 = true;
+            if (entry->ifa_netmask != nullptr)
+            {
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - as above
+                const auto* mask = reinterpret_cast<const sockaddr_in6*>(entry->ifa_netmask);
+                for (const std::uint8_t byte : mask->sin6_addr.s6_addr)
+                {
+                    address.prefix += static_cast<std::uint32_t>(std::popcount(byte));
+                }
+            }
+        }
+        else
+        {
+            continue; // AF_PACKET and the like: the MAC is read from /sys
+        }
+        address.address = text.data();
+        listed.push_back({.adapter = entry->ifa_name, .address = std::move(address)});
+    }
+    ::freeifaddrs(list);
+    return listed;
 }
 
 } // namespace
@@ -97,6 +173,58 @@ CommitPagingInfo LinuxSystemInfoProbe::readCommitPaging()
 {
     CommitPagingInfo info;
     LinuxCommitPaging::readCommitPagingFacts(m_Root, info);
+    return info;
+}
+
+StorageInfo LinuxSystemInfoProbe::readStorage()
+{
+    StorageInfo info;
+    // statvfs() on the mount point as the running system sees it; free is f_bavail, what an unprivileged
+    // user can still write (df's "Avail"), matching GetDiskFreeSpaceExW's caller-available figure.
+    const LinuxStorage::VolumeSizer sizer = [](const std::string& mountPoint, std::uint64_t& sizeBytes, std::uint64_t& freeBytes)
+    {
+        struct statvfs stats{};
+        if (::statvfs(mountPoint.c_str(), &stats) != 0)
+        {
+            return false;
+        }
+        sizeBytes = static_cast<std::uint64_t>(stats.f_blocks) * stats.f_frsize;
+        freeBytes = static_cast<std::uint64_t>(stats.f_bavail) * stats.f_frsize;
+        return true;
+    };
+    LinuxStorage::readStorageFacts(m_Root, info, sizer);
+    return info;
+}
+
+GraphicsInfo LinuxSystemInfoProbe::readGraphics()
+{
+    GraphicsInfo info;
+    LinuxGraphics::readGraphicsFacts(m_Root, info);
+    info.displayServer = LinuxGraphics::displayServer(
+        environmentString("XDG_SESSION_TYPE"), environmentString("WAYLAND_DISPLAY"), environmentString("DISPLAY"));
+    return info;
+}
+
+PlatformSecurityInfo LinuxSystemInfoProbe::readPlatformSecurity()
+{
+    PlatformSecurityInfo info;
+    LinuxPlatformSecurity::readPlatformSecurityFacts(m_Root, info);
+    return info;
+}
+
+SensorsInfo LinuxSystemInfoProbe::readSensors()
+{
+    SensorsInfo info;
+    LinuxSensors::readSensorFacts(m_Root, info);
+    return info;
+}
+
+NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters()
+{
+    NetworkAdaptersInfo info;
+    // The addresses are this system's own (getifaddrs()); the rest is read under m_Root, so a fixture
+    // root in a test still gets this machine's addresses for adapters of the same name, if any.
+    LinuxNetworkAdapters::readNetworkAdapterFacts(m_Root, info, m_Root == "/" ? &listAdapterAddresses : nullptr);
     return info;
 }
 

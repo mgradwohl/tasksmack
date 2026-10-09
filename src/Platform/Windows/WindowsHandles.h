@@ -15,6 +15,7 @@
 // clang-format on
 
 #include <memory>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -125,6 +126,16 @@ template<typename Traits> class UniqueResource
 
 /// An owned kernel object handle. Null and INVALID_HANDLE_VALUE are both "no handle".
 using UniqueHandle = UniqueResource<KernelHandleTraits>;
+
+/// Opens \\.\PhysicalDrive@p index query-only (#763): desired access 0, so no administrator rights are
+/// needed and the handle can't read or write the disk, only answer IOCTLs that need no access
+/// (IOCTL_DISK_PERFORMANCE, IOCTL_STORAGE_QUERY_PROPERTY, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX). Empty when
+/// there is no such drive or it can't be opened; GetLastError() says why.
+[[nodiscard]] inline UniqueHandle openPhysicalDriveQueryOnly(int index)
+{
+    const std::wstring path = L"\\\\.\\PhysicalDrive" + std::to_wstring(index);
+    return UniqueHandle(CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
+}
 
 /// Closes Service Control Manager and service handles (OpenSCManagerW, OpenServiceW) with
 /// CloseServiceHandle (#800). Both report failure as null.

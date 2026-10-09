@@ -179,12 +179,16 @@ void renderDiskCell(const std::string& deviceName,
     };
 
     const float cellContentTop = ImGui::GetCursorPosY();
+    // The disk's name centred at the top of its card, as CPU Cores centres each core's (#1588).
+    const float nameWidth = ImGui::CalcTextSize(deviceName.data(), deviceName.data() + deviceName.size()).x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::floor(std::max(0.0F, ImGui::GetContentRegionAvail().x - nameWidth) * 0.5F));
     ImGui::TextColored(theme.scheme().textPrimary, "%.*s", static_cast<int>(deviceName.size()), deviceName.data());
-    // The disk's current rates, readable without hovering (#1193), on their own line under its name.
-    // Compact: exactly one line of "Read: 1.2 MiB/s" / "Read: N/A", never wrapped -- the overhead below
-    // is measured once and the grid budgets one strip line per cell, and the longer "not reported
-    // this sample" tooltip text would not fit a minimum-width cell. Hovering a bar still shows it.
-    UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::Compact);
+    // The disk's current rates, readable without hovering (#1193), on their own line under its name
+    // and centred under it. Compact: exactly one line of "Read: 1.2 MiB/s" / "Read: N/A", never
+    // wrapped -- the overhead below is measured once and the grid budgets one strip line per cell, and
+    // the longer "not reported this sample" tooltip text would not fit a minimum-width cell. Hovering
+    // a bar still shows it. The cell is its own child window, so the layout id is the disk's own.
+    UI::Widgets::renderNowBarValueStrip(diskBars, {}, UI::Widgets::ValueStripLayout::CompactCentered, "##DiskValueStrip");
     float measuredOverhead = 0.0F;
     if (const auto cached = overheadCache.get(styleMetrics))
     {

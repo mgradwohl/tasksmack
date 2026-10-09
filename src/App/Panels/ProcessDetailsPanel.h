@@ -12,6 +12,7 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -22,6 +23,7 @@
 #include "ProcessModulesView.h"
 #include "ProcessOpenFilesView.h"
 #include "ProcessPriorityView.h"
+#include "ProcessSecurityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
 
@@ -61,12 +63,20 @@ class ProcessDetailsPanel : public Panel
                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader);
 
-    /// As above, with an injected IProcessModulesReader and IProcessOpenFilesReader too (tests: mocks).
-    /// A null reader, like the shorter constructors', hides its section (Modules #802, Open files #183).
+    /// As above, with an injected IProcessModulesReader too (tests: mocks). A null modules reader, like
+    /// the shorter constructors', hides the Modules section (#802).
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                        std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                        std::unique_ptr<Platform::IProcessModulesReader> modulesReader);
+
+    /// As above, with an injected IProcessSecurityReader and IProcessOpenFilesReader too (tests: mocks). A
+    /// null reader, like the shorter constructors', hides its section (Security #1526, Open files #183).
     ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
                         std::unique_ptr<Platform::IProcessModulesReader> modulesReader,
+                        std::unique_ptr<Platform::IProcessSecurityReader> securityReader,
                         std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader = nullptr);
 
     ~ProcessDetailsPanel() override = default;
@@ -258,6 +268,11 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
     bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
     ProcessModulesView m_ModulesView;
+
+    // The Overview's Security section (#1526), on the same terms, its reader declared before its view.
+    std::unique_ptr<Platform::IProcessSecurityReader> m_SecurityReader;
+    bool m_HasSecurity = false; // m_SecurityReader can read security contexts here (Linux; not Windows yet, not synthetic runs)
+    ProcessSecurityView m_SecurityView;
 
     // The Overview's Open files section (#183), on the same terms; its reader declared before its view.
     std::unique_ptr<Platform::IProcessOpenFilesReader> m_OpenFilesReader;

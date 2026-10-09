@@ -17,6 +17,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IProcessSecurity.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
@@ -105,6 +106,17 @@ TEST(FactoryTest, MakeProcessOpenFilesReaderListsOpenFiles)
     const auto reader = makeProcessOpenFilesReader();
     ASSERT_NE(reader, nullptr);
     EXPECT_TRUE(reader->hasOpenFiles()); // both platforms (#183)
+}
+
+TEST(FactoryTest, MakeProcessSecurityReaderMatchesThePlatform)
+{
+    const auto reader = makeProcessSecurityReader();
+    ASSERT_NE(reader, nullptr);
+#ifdef _WIN32
+    EXPECT_FALSE(reader->hasSecurity()); // the token reader is the Windows lane's follow-up (#1526)
+#else
+    EXPECT_TRUE(reader->hasSecurity());
+#endif
 }
 
 TEST(FactoryTest, MakeStartupProbeReturnsNonNull)

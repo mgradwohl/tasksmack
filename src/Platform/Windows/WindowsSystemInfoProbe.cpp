@@ -16,6 +16,8 @@
 #include <lm.h>
 #include <security.h>
 #include <powerbase.h> // PowerDeterminePlatformRoleEx (powrprof)
+#include <setupapi.h>
+#include <devpropdef.h>
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
@@ -23,18 +25,25 @@
 #pragma comment(lib, "powrprof.lib")
 #pragma comment(lib, "secur32.lib")
 
+#include "ComPtr.h"
+#include "DXGIAdapterLocation.h"
 #include "Platform/SmbiosParser.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "WinString.h"
 #include "WindowsCommitPaging.h"
+#include "WindowsGraphics.h"
 #include "WindowsInstalledMemory.h"
 #include "WindowsOsInfoMath.h"
+#include "WindowsStorage.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -179,6 +188,182 @@ void readTimeZone(OsInfo& info)
     return table;
 }
 
+// DEVPKEY_Device_DriverDate and _DriverVersion (devpkey.h), GUID_DEVCLASS_DISPLAY (devguid.h) and
+// GUID_DEVINTERFACE_MONITOR (ntddvdeo.h), spelled out so no translation unit needs <initguid.h>.
+constexpr GUID DRIVER_PROPERTY_GUID{
+    .Data1 = 0xa8b865dd,
+    .Data2 = 0x2e3d,
+    .Data3 = 0x4094,
+    .Data4 = {0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6},
+};
+constexpr DEVPROPKEY DRIVER_DATE_KEY{.fmtid = DRIVER_PROPERTY_GUID, .pid = 2};
+constexpr DEVPROPKEY DRIVER_VERSION_KEY{.fmtid = DRIVER_PROPERTY_GUID, .pid = 3};
+constexpr GUID DISPLAY_CLASS_GUID{
+    .Data1 = 0x4d36e968,
+    .Data2 = 0xe325,
+    .Data3 = 0x11ce,
+    .Data4 = {0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18},
+};
+constexpr GUID MONITOR_INTERFACE_GUID{
+    .Data1 = 0xe6f07b5f,
+    .Data2 = 0xee97,
+    .Data3 = 0x4a90,
+    .Data4 = {0xb0, 0x76, 0x33, 0xf5, 0x7b, 0xf4, 0xea, 0xa7},
+};
+
+// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - COM out-parameters and SetupAPI byte buffers
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token" // __uuidof
+
+/// Every DXGI adapter with its outputs; nullopt when no DXGI factory can be made. No device is created.
+[[nodiscard]] std::optional<std::vector<WindowsGraphics::AdapterRecord>> listDxgiAdapters()
+{
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.releaseAndGetAddressOf()))) || !factory)
+    {
+        return std::nullopt;
+    }
+    std::vector<WindowsGraphics::AdapterRecord> records;
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT index = 0; SUCCEEDED(factory->EnumAdapters1(index, adapter.releaseAndGetAddressOf())) && adapter; ++index)
+    {
+        WindowsGraphics::AdapterRecord record;
+        if (FAILED(adapter->GetDesc1(&record.desc)))
+        {
+            continue;
+        }
+        ComPtr<IDXGIOutput> output;
+        for (UINT o = 0; SUCCEEDED(adapter->EnumOutputs(o, output.releaseAndGetAddressOf())) && output; ++o)
+        {
+            DXGI_OUTPUT_DESC desc{};
+            if (FAILED(output->GetDesc(&desc)))
+            {
+                continue;
+            }
+            WindowsGraphics::OutputRecord out;
+            out.deviceName = static_cast<const wchar_t*>(desc.DeviceName);
+            out.desktop = desc.DesktopCoordinates;
+            ComPtr<IDXGIOutput6> output6;
+            DXGI_OUTPUT_DESC1 desc1{};
+            if (SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(output6.releaseAndGetAddressOf()))) &&
+                output6 && SUCCEEDED(output6->GetDesc1(&desc1)))
+            {
+                out.hasDesc1 = true;
+                out.colorSpace = desc1.ColorSpace;
+                out.bitsPerColor = desc1.BitsPerColor;
+            }
+            record.outputs.push_back(std::move(out));
+        }
+        records.push_back(std::move(record));
+    }
+    return records;
+}
+
+/// Every present display-class device node's hardware id, PCI location and driver version and date.
+[[nodiscard]] std::vector<WindowsGraphics::DriverNode> listDisplayDriverNodes()
+{
+    std::vector<WindowsGraphics::DriverNode> nodes;
+    HDEVINFO devices = SetupDiGetClassDevsW(&DISPLAY_CLASS_GUID, nullptr, nullptr, DIGCF_PRESENT);
+    if (devices == INVALID_HANDLE_VALUE)
+    {
+        return nodes;
+    }
+    SP_DEVINFO_DATA device{};
+    device.cbSize = sizeof(device);
+    for (DWORD index = 0; SetupDiEnumDeviceInfo(devices, index, &device) != FALSE; ++index)
+    {
+        WindowsGraphics::DriverNode node;
+        std::array<wchar_t, 512> text{}; // the last element stays 0
+        constexpr auto TEXT_BYTES = static_cast<DWORD>((512 - 1) * sizeof(wchar_t));
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr) != FALSE)
+        {
+            node.hardwareId = WinString::wideToUtf8(text.data()); // a REG_MULTI_SZ's first string
+        }
+        DWORD value = 0;
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_BUSNUMBER, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
+        {
+            node.bus = value;
+        }
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_ADDRESS, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
+        {
+            node.address = value;
+        }
+        DEVPROPTYPE type = 0;
+        text.fill(L'\0');
+        if (SetupDiGetDevicePropertyW(
+                devices, &device, &DRIVER_VERSION_KEY, &type, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr, 0) != FALSE &&
+            type == DEVPROP_TYPE_STRING)
+        {
+            node.driverVersion = WinString::wideToUtf8(text.data());
+        }
+        FILETIME date{};
+        if (SetupDiGetDevicePropertyW(
+                devices, &device, &DRIVER_DATE_KEY, &type, reinterpret_cast<PBYTE>(&date), sizeof(date), nullptr, 0) != FALSE &&
+            type == DEVPROP_TYPE_FILETIME)
+        {
+            node.driverDate = date;
+        }
+        nodes.push_back(std::move(node));
+    }
+    SetupDiDestroyDeviceInfoList(devices);
+    return nodes;
+}
+
+/// The EDID of the monitor on DXGI output @p outputDeviceName ("\\.\DISPLAY1"): the monitor's device
+/// interface from EnumDisplayDevicesW, then the EDID value of its device registry key. Empty when any
+/// step fails.
+[[nodiscard]] std::vector<std::uint8_t> readMonitorEdid(const std::wstring& outputDeviceName)
+{
+    DISPLAY_DEVICEW display{};
+    display.cb = sizeof(display);
+    if (EnumDisplayDevicesW(outputDeviceName.c_str(), 0, &display, EDD_GET_DEVICE_INTERFACE_NAME) == FALSE)
+    {
+        return {};
+    }
+    HDEVINFO devices = SetupDiGetClassDevsW(&MONITOR_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+    if (devices == INVALID_HANDLE_VALUE)
+    {
+        return {};
+    }
+    std::vector<std::uint8_t> edid;
+    SP_DEVICE_INTERFACE_DATA iface{};
+    iface.cbSize = sizeof(iface);
+    SP_DEVINFO_DATA device{};
+    device.cbSize = sizeof(device);
+    if (SetupDiOpenDeviceInterfaceW(devices, static_cast<const wchar_t*>(display.DeviceID), 0, &iface) != FALSE &&
+        (SetupDiGetDeviceInterfaceDetailW(devices, &iface, nullptr, 0, nullptr, &device) != FALSE ||
+         GetLastError() == ERROR_INSUFFICIENT_BUFFER))
+    {
+        HKEY key = SetupDiOpenDevRegKey(devices, &device, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+        if (key != INVALID_HANDLE_VALUE)
+        {
+            constexpr DWORD MAX_EDID_BYTES = 32768;
+            DWORD size = 0;
+            if (RegQueryValueExW(key, L"EDID", nullptr, nullptr, nullptr, &size) == ERROR_SUCCESS && size > 0 && size <= MAX_EDID_BYTES)
+            {
+                edid.resize(size);
+                if (RegQueryValueExW(key, L"EDID", nullptr, nullptr, edid.data(), &size) == ERROR_SUCCESS)
+                {
+                    edid.resize(size);
+                }
+                else
+                {
+                    edid.clear();
+                }
+            }
+            RegCloseKey(key);
+        }
+    }
+    SetupDiDestroyDeviceInfoList(devices);
+    return edid;
+}
+
+#pragma clang diagnostic pop
+// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+
 } // namespace
 
 SystemInfoCapabilities WindowsSystemInfoProbe::capabilities() const
@@ -277,6 +462,31 @@ CommitPagingInfo WindowsSystemInfoProbe::readCommitPaging()
 {
     CommitPagingInfo info;
     WindowsCommitPaging::readCommitPaging(info);
+    return info;
+}
+
+StorageInfo WindowsSystemInfoProbe::readStorage()
+{
+    StorageInfo info;
+    WindowsStorage::readStorage(info);
+    return info;
+}
+
+GraphicsInfo WindowsSystemInfoProbe::readGraphics()
+{
+    const WindowsGraphics::Functions fns{
+        .listAdapters = &listDxgiAdapters,
+        .adapterType = [](const LUID& luid) -> std::optional<AdapterTypeBits>
+        {
+            const auto kind = adapterKind(luid);
+            return kind.has_value() ? std::optional(adapterTypeBits(*kind)) : std::nullopt;
+        },
+        .pciLocation = [](const LUID& luid) { return adapterPciLocation(luid); },
+        .listDisplayDrivers = &listDisplayDriverNodes,
+        .readMonitorEdid = &readMonitorEdid,
+    };
+    GraphicsInfo info;
+    WindowsGraphics::readGraphics(info, fns);
     return info;
 }
 
