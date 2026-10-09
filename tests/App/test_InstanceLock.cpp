@@ -91,6 +91,18 @@ TEST_F(InstanceLockTest, UnusableLockPathIsUnavailableNotAlreadyRunning)
     EXPECT_FALSE(lock.error().empty());
 }
 
+TEST_F(InstanceLockTest, ADirectoryAtTheLockPathIsUnavailableNotAlreadyRunning)
+{
+    // The lock file's directory exists, but a directory sits where the file should be: the open
+    // itself fails (CreateFileW on Windows, open() elsewhere, #1566), which is Unavailable.
+    const auto occupied = m_Dir / "tasksmack.lock";
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::create_directory(occupied, ec)) << ec.message();
+    const InstanceLock lock(occupied);
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Unavailable);
+    EXPECT_FALSE(lock.error().empty());
+}
+
 #ifndef _WIN32
 TEST_F(InstanceLockTest, AnotherProcessIsToldTaskSmackIsAlreadyRunning)
 {
