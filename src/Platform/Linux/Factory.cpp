@@ -8,6 +8,7 @@
 #include "LinuxProcessConnectionsReader.h"
 #include "LinuxProcessEnvironmentReader.h"
 #include "LinuxProcessProbe.h"
+#include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IGPUProbe.h"
@@ -55,8 +56,7 @@ std::unique_ptr<IStartupProbe> makeStartupProbe()
 
 std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
 {
-    // The Operating system probes land with the next commit (#1512).
-    return std::make_unique<UnsupportedSystemInfoProbe>();
+    return std::make_unique<LinuxSystemInfoProbe>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

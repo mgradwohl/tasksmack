@@ -184,6 +184,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
+    src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/LinuxPowerProbe.cpp
@@ -199,6 +200,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
+    src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsPowerProbe.cpp
@@ -279,6 +281,8 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxGPUProbe.h
         src/Platform/Linux/NVMLGPUProbe.h
         src/Platform/Linux/DRMGPUProbe.h
+        src/Platform/Linux/LinuxSystemInfoProbe.h
+        src/Platform/Linux/LinuxOsInfo.h
     )
 elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
@@ -298,6 +302,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsServiceProbe.h
         src/Platform/Windows/WindowsServiceConfig.h
         src/Platform/Windows/WinString.h
+        src/Platform/Windows/WindowsSystemInfoProbe.h
+        src/Platform/Windows/WindowsOsInfoMath.h
     )
 endif()
 

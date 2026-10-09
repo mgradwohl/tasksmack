@@ -20,6 +20,7 @@
 #include "WindowsProcessProbe.h"
 #include "WindowsServiceProbe.h"
 #include "WindowsStartupProbe.h"
+#include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
 
 #include <memory>
@@ -58,8 +59,7 @@ std::unique_ptr<IStartupProbe> makeStartupProbe()
 
 std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
 {
-    // The Operating system probes land with the next commit (#1512).
-    return std::make_unique<UnsupportedSystemInfoProbe>();
+    return std::make_unique<WindowsSystemInfoProbe>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()
