@@ -3,6 +3,7 @@
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
 #include "Domain/SharedHistory.h"
+#include "UI/Card.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -162,6 +164,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         }
     }
     float dropdownWidth = interfaceNames.empty() ? 0.0F : cache.dropdownTextWidth + comboExtraWidth;
+
+    // The interface selector, the heading and the chart are one card, as every section on the tab is
+    // (#1587), sized to the chart that shares the tab's height with the disk chart or grid below it
+    // (#959). Its contents are submitted whether or not it is visible; ImGui skips them when it isn't.
+    const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
+    (void) UI::Widgets::beginChartCard("##NetThroughputCard", plotHeight);
 
     // Never wider than the pane. Interface names are long ("Realtek Gaming USB 2.5GbE Family
     // Controller"), and a combo measured from the longest one ran under the scrollbar on a narrow
@@ -426,8 +434,6 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         plotTitle = cache.unavailableTitle.c_str();
     }
 
-    // Shares the tab's height with the disk chart or grid below it (#959).
-    const float plotHeight = (ctx.fill != nullptr) ? ctx.fill->plotHeight() : HISTORY_PLOT_HEIGHT_DEFAULT;
     auto plot = [&]()
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
@@ -548,11 +554,11 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         UI::Widgets::nowBarsReservedWidth(netBars.size(), NETWORK_NOW_BAR_COLUMNS, false, ImGui::GetContentRegionAvail().x));
     renderHistoryWithNowBars(
         "SystemNetHistoryLayout", plotHeight, plot, netBars, false, NETWORK_NOW_BAR_COLUMNS, false, UI::Widgets::NowBarValues::None);
+    UI::Widgets::endChartCard("##NetThroughputCard", plotHeight);
     if (ctx.fill != nullptr)
     {
-        ctx.fill->addPlot();
+        ctx.fill->addPlot(); // After the card: the fill layout counts its chrome as non-chart height
     }
-    ImGui::Spacing();
 
     // Interface status table: down, virtual and Bluetooth interfaces are hidden unless "Show all" is
     // on, but a down interface that moved traffic this session stays listed (#1211).
@@ -589,8 +595,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     const auto& sortedInterfaces = cache.statusRows;
     if (!interfaces.empty())
     {
-        ImGui::Separator();
-        ImGui::Spacing();
+        // A card as tall as the table, which does not depend on the chart's height (#1587).
+        (void) UI::Widgets::beginCompactCard("##InterfaceStatusCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY);
         ImGui::AlignTextToFramePadding();
         (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Interface Status");
         const std::size_t hiddenCount = cache.hiddenCount;
@@ -722,6 +728,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
             ImGui::EndTable();
         }
+        UI::Widgets::endCard();
     }
 }
 } // namespace
@@ -767,8 +774,7 @@ void renderNetworkSection(RenderContext& ctx)
             renderNetworkChartAndTable(ctx, theme, nowSeconds);
         }
 
-        ImGui::Separator();
-        ImGui::Spacing();
+        // No rule between the sections: each is a card (#1587).
         if (!diskGrid)
         {
             renderDiskIOSection(ctx);
