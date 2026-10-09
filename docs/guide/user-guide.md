@@ -177,6 +177,9 @@ On systems with a battery, TaskSmack shows:
 - Current power consumption in watts
 - Estimated time remaining (discharge) or time to full (charging)
 - Battery health percentage
+- Battery details beneath the chart: design and full-charge capacity, wear (the share of the design capacity
+  the battery can no longer hold), cycle count, chemistry, manufacturer and model. A value the battery doesn't
+  report shows a muted "—"; hover it for the reason. The serial number is never shown.
 
 Power readings follow the convention: **positive watts = discharging/consuming**, negative watts = battery charging.
 

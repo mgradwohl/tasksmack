@@ -39,4 +39,9 @@ struct Content
 /// clicked: the caller flips `expanded` and keeps it.
 [[nodiscard]] bool render(const Content& content, MeasuredRows& measured);
 
+/// The rows alone, as render() lays them out, in the table `tableId`: shared with the Battery
+/// details beneath the Overview's Battery chart (#1523). `rowsGeneration` changes whenever `rows`
+/// do (never 0), so they are measured only then.
+void renderRows(const char* tableId, std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGeneration, MeasuredRows& measured);
+
 } // namespace App::CpuDetailsBlock

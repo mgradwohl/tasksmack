@@ -201,6 +201,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
+    src/Platform/Windows/WindowsBatteryInfo.cpp
     src/Platform/Windows/WindowsPowerProbe.cpp
     src/Platform/Windows/WindowsGPUProbe.cpp
     src/Platform/Windows/DXGIGPUProbe.cpp
@@ -291,6 +292,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsHandles.h
         src/Platform/Windows/WindowsNtQuery.h
         src/Platform/Windows/WindowsDiskProbe.h
+        src/Platform/Windows/WindowsBatteryInfo.h
         src/Platform/Windows/WindowsPowerProbe.h
         src/Platform/Windows/WindowsGPUProbe.h
         src/Platform/Windows/DXGIGPUProbe.h
@@ -449,6 +451,7 @@ if(WIN32)
         cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
+        setupapi # WindowsBatteryInfo: the battery devices (#1523)
     )
 
     target_link_libraries(TaskSmack PRIVATE ${TASKSMACK_WINDOWS_SYSTEM_LIBS})

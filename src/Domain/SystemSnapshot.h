@@ -57,6 +57,17 @@ struct PowerStatus
     // Battery details
     std::string technology;
     std::string model;
+    std::string manufacturer;
+
+    // Battery capacity and wear (#1523). Each value is 0 when the battery did not report it; the
+    // reports* flags are the probe's capabilities, so "this system never reports it" and "the
+    // battery gave no value" read differently.
+    double designCapacityWh = 0.0;
+    double fullChargeCapacityWh = 0.0;
+    std::uint64_t cycleCount = 0;
+    bool reportsCapacity = false;   ///< Platform::PowerCapabilities::hasDesignCapacity
+    bool reportsCycleCount = false; ///< Platform::PowerCapabilities::hasCycleCount
+    bool reportsTechnology = false; ///< Platform::PowerCapabilities::hasTechnology
 };
 
 /// Immutable, UI-ready system metrics snapshot.

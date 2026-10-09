@@ -186,6 +186,7 @@ set(COMMON_TEST_SOURCES
     App/test_CpuSummaryText.cpp
     App/test_CpuDetailsText.cpp
     App/test_CpuDetailsBlockRender.cpp
+    App/test_BatteryDetails.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
@@ -281,6 +282,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsDiskProbe.cpp
     Platform/test_WindowsPathProvider.cpp
+    Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
     Platform/test_WindowsNVMLGPUProbe.cpp
     Platform/test_WindowsPDHGPUProbe.cpp
@@ -340,6 +342,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
@@ -583,6 +586,7 @@ if(WIN32)
         cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
+        setupapi # WindowsBatteryInfo: the battery devices (#1523)
     )
 endif()
 

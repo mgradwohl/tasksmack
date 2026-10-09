@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/BatteryDetailsText.h"
 #include "App/Panels/CpuCoreGridIds.h"
 #include "App/Panels/CpuCoresSection.h"
 #include "App/Panels/CpuDetailsBlock.h"
@@ -1022,14 +1023,6 @@ void SystemMetricsPanel::renderOverview()
                     {
                         ImGui::Text("Health: %s", UI::Format::formatPercent(snap.power.healthPercent).c_str());
                     }
-                    if (!snap.power.technology.empty())
-                    {
-                        ImGui::Text("Technology: %s", snap.power.technology.c_str());
-                    }
-                    if (!snap.power.model.empty())
-                    {
-                        ImGui::Text("Model: %s", snap.power.model.c_str());
-                    }
                 }
                 std::array<char, 64> samplesText{};
                 const std::string_view samples = UI::ChromeLayout::formatSampleCount(samplesText, alignedCount);
@@ -1037,6 +1030,24 @@ void SystemMetricsPanel::renderOverview()
                 ImGui::EndTooltip();
             }
             fill.addPlot();
+            if (snap.power.hasBattery)
+            {
+                // Battery details beneath the chart (#1523), inside the fill scope so the charts'
+                // shared height accounts for them.
+                const std::uint64_t version = m_SystemPublication->version;
+                if (m_BatteryDetails.generation == 0 || m_BatteryDetails.systemVersion != version)
+                {
+                    std::vector<CpuDetailsText::Row> rows = BatteryDetailsText::buildRows(snap.power);
+                    if (m_BatteryDetails.generation == 0 || rows != m_BatteryDetails.rows)
+                    {
+                        m_BatteryDetails.rows = std::move(rows);
+                        ++m_BatteryDetails.generation;
+                    }
+                    m_BatteryDetails.systemVersion = version;
+                }
+                CpuDetailsBlock::renderRows(
+                    "##BatteryDetails", m_BatteryDetails.rows, m_BatteryDetails.generation, m_BatteryDetailsMeasured);
+            }
             ImGui::Spacing();
         }
     }
