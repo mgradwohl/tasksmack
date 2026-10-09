@@ -241,6 +241,47 @@ TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
     // As before the move out of the panel, an edit back to the process's own value stays pending.
     EXPECT_TRUE(view.hasPendingEdit());
 }
+
+// In a pane narrower than the slider's authored width (the Overview Actions block is sized to its
+// content, #1511) the track is shortened until "Low" ends flush with the content edge. A container
+// that pushes a wrap position for its own lines used to split it into "Lo" / "w" once rounding put
+// that edge a fraction short (#1560). The scale labels must ignore an inherited wrap position:
+// pushed just short of the edge, the control is exactly as tall as without one.
+TEST_F(ProcessPriorityViewRenderTest, TheScaleLabelsIgnoreAnInheritedWrapPosition)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const auto heightOf = [&](bool pushWrap)
+    {
+        float height = 0.0F;
+        const auto body = [&]
+        {
+            // Narrow enough that the track fills it and "Low" ends at the edge.
+            if (ImGui::BeginChild("Narrow", ImVec2(260.0F, 400.0F)))
+            {
+                const float top = ImGui::GetCursorPosY();
+                if (pushWrap)
+                {
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 2.0F);
+                }
+                view.render(&mock, CAN_SET_PRIORITY, std::optional<std::int32_t>{0}, TARGET_A);
+                if (pushWrap)
+                {
+                    ImGui::PopTextWrapPos();
+                }
+                height = ImGui::GetCursorPosY() - top;
+            }
+            ImGui::EndChild();
+        };
+        runFrame(body);
+        runFrame(body);
+        return height;
+    };
+
+    const float unwrapped = heightOf(false);
+    ASSERT_GT(unwrapped, 0.0F);
+    EXPECT_FLOAT_EQ(heightOf(true), unwrapped);
+}
 #endif
 
 } // namespace
