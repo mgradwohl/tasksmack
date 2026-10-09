@@ -4,6 +4,7 @@
 // thread. Each section of the page has a raw struct here and a read*() method on the probe; the App
 // layer turns them into labelled rows (App/Panels/SystemInfoSections.h).
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -342,6 +343,53 @@ struct SensorsInfo
     std::vector<SensorDevice> devices; ///< In the OS's device order (Linux: by hwmon index, thermal zones last).
 };
 
+/// One device (#1520): a PCI function or a USB device. A fact the probe couldn't read is empty or 0.
+struct Device
+{
+    std::string name;                  ///< Windows' friendly name / pci.ids, the USB product string, usb.ids
+    std::string vendor;                ///< Empty when unknown; Windows: only for a device without a name
+    std::uint16_t vendorId = 0;        ///< The PCI vendor / USB idVendor; 0 when unknown
+    std::uint16_t productId = 0;       ///< The PCI device / USB idProduct
+    std::string className;             ///< PCI: the setup class ("Display adapters") / pci.ids ("VGA compatible controller")
+    std::string location;              ///< PCI: "01:00.0" / "0000:01:00.0"; Linux USB: the port path ("1-1.2")
+    std::string driver;                ///< The bound driver: Windows' service / Linux's module; empty without one
+    double speedMbps = 0.0;            ///< Linux USB: the link speed; 0 when unknown
+    std::uint32_t depth = 0;           ///< USB: 1 for a device on a root hub, 2 behind one more hub, ...
+    std::optional<std::size_t> parent; ///< USB: the hub it is plugged into, as an index into DevicesInfo::usb
+    std::string serial;                ///< USB: the device's serial number, an identifier
+    std::string problem;               ///< Why it isn't working ("No driver"); empty when it is fine
+};
+
+/// Which way an audio endpoint carries sound.
+enum class AudioFlow : std::uint8_t
+{
+    Unknown,
+    Output, ///< Speakers, headphones, HDMI (render / playback)
+    Input,  ///< Microphones, line in (capture)
+};
+
+/// One active audio endpoint (Windows) or ALSA PCM device (Linux).
+struct AudioEndpoint
+{
+    std::string name; ///< "Speakers (Realtek(R) Audio)" / "HDA Intel PCH: ALC892 Analog"
+    AudioFlow flow = AudioFlow::Unknown;
+};
+
+/// The Devices facts (#1520): PCI and USB devices, audio endpoints and the devices in an error state.
+struct DevicesInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    bool pciRead = false; ///< The PCI devices were enumerated: an empty pci means none were found.
+    std::vector<Device> pci;
+    bool usbRead = false;
+    std::vector<Device> usb; ///< Parents before their children; root hubs and host controllers left out
+    bool audioRead = false;
+    std::vector<AudioEndpoint> audio;
+    bool problemsRead = false;    ///< Windows: every present device's status was read; Linux: as pciRead
+    std::vector<Device> problems; ///< Windows: every present device with a problem; Linux: PCI devices without a driver
+};
+
 /// One IP address on an adapter (#1518).
 struct AdapterAddress
 {
@@ -446,6 +494,9 @@ class ISystemInfoProbe
     /// The Sensors facts (#1522); read when hasOs is true.
     [[nodiscard]] virtual SensorsInfo readSensors() = 0;
 
+    /// The Devices facts (#1520); read when hasOs is true. Enumeration only: no device state changes.
+    [[nodiscard]] virtual DevicesInfo readDevices() = 0;
+
     /// The Network adapters facts (#1518); read when hasOs is true.
     [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters() = 0;
 
@@ -498,6 +549,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] SensorsInfo readSensors() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] DevicesInfo readDevices() override
     {
         return {};
     }

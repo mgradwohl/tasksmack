@@ -166,6 +166,18 @@ struct VisibleSection
 /// 0"), devices in the OS's order. None exposed (common in VMs and WSL) shows one muted row saying so.
 [[nodiscard]] Section buildSensorsSection(const Platform::SensorsInfo& sensors);
 
+/// A device's name: its vendor (unless the name already starts with it) and name, then its ids,
+/// "Intel Corporation Wi-Fi 6E AX211 (8086:51F0)"; "Unknown device (8086:51F0)" without names.
+[[nodiscard]] std::string formatDeviceName(const Platform::Device& device);
+
+/// A USB link speed: "1.5 Mbps", "480 Mbps", "5 Gbps", "10 Gbps"; empty for 0 (unknown).
+[[nodiscard]] std::string formatUsbSpeed(double mbps);
+
+/// The Devices section (#1520): the problem devices with their reasons, then the PCI devices grouped by
+/// class, the USB devices (with the hub each hangs off, and their serial numbers as identifiers) and
+/// the active audio endpoints.
+[[nodiscard]] Section buildDevicesSection(const Platform::DevicesInfo& devices);
+
 /// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
 /// for the Graphics & displays section, captured on the UI thread.
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.

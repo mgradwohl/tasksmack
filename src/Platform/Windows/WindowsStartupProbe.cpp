@@ -26,6 +26,7 @@
 #pragma comment(lib, "version.lib")
 
 #include "ComPtr.h"
+#include "ComScope.h"
 #include "WinString.h"
 #include "WindowsHandles.h"
 #include "WindowsStartupProbeMath.h"
@@ -181,34 +182,6 @@ void applyApproved(StartupEntry& entry, const ApprovedMap& approved, const std::
         entry.disabledAtUnixSeconds = it->second.disabledAtUnixSeconds;
     }
 }
-
-/// COM on the calling thread for one enumerate(): IShellLinkW needs it. A thread that already has
-/// another apartment (RPC_E_CHANGED_MODE) can still use COM; only the scope's own init is undone.
-class ComScope
-{
-  public:
-    ComScope() noexcept : m_Result(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))
-    {}
-    ~ComScope()
-    {
-        if (SUCCEEDED(m_Result))
-        {
-            CoUninitialize();
-        }
-    }
-    ComScope(const ComScope&) = delete;
-    ComScope& operator=(const ComScope&) = delete;
-    ComScope(ComScope&&) = delete;
-    ComScope& operator=(ComScope&&) = delete;
-
-    [[nodiscard]] bool usable() const noexcept
-    {
-        return SUCCEEDED(m_Result) || m_Result == RPC_E_CHANGED_MODE;
-    }
-
-  private:
-    HRESULT m_Result;
-};
 
 /// A shortcut's target and arguments, raw (environment variables unexpanded); nullopt when the
 /// shortcut can't be loaded or has no file-system target (e.g. an advertised installer shortcut).
