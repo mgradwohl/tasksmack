@@ -113,6 +113,23 @@ if (-not (Test-Path $CompileCommandsTidy)) {
     Set-Content $CompileCommandsTidy -Value $content -NoNewline
 }
 
+# Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
+# clang-tidy analyzes a file once per database entry. Keep one entry per file, the app's (#1626).
+# Not fatal: without it every file is still analyzed, just once per target that compiles it.
+# "python" first: on Windows a bare "python3" is often the Microsoft Store stub.
+$Python = @("python", "python3") | ForEach-Object { Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue } |
+    Select-Object -First 1
+if (-not $Python) {
+    Write-Warning "python not found; compile database not de-duplicated (files may be analyzed more than once)."
+} else {
+    $dedupeOutput = & $Python.Source -I (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "compile database not de-duplicated (files may be analyzed more than once): $dedupeOutput"
+    } elseif ($ShowDetails) {
+        Write-Host $dedupeOutput
+    }
+}
+
 # Determine files to analyze
 if ($ChangedOnly) {
     # Get changed files from git
