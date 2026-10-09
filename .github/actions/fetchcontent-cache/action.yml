@@ -22,9 +22,23 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    # The key hashes only the files that declare or patch FetchContent dependencies. It used to hash
-    # the top-level CMakeLists.txt as well, which declares none and changes often, so most merges
-    # minted a new 440 MB entry with identical contents.
+    # The key hashes only what declares or patches FetchContent dependencies: cmake/Dependencies.cmake,
+    # cmake/patches/**, and the FetchContent_Declare(...) blocks of tests/ and benchmarks/CMakeLists.txt
+    # (googletest, Google Benchmark). Hashing those two files whole minted a new ~460 MB entry per OS
+    # on every merge that added a test (#1582), as hashing the top-level CMakeLists.txt once did.
+    - name: FetchContent cache key
+      id: key
+      shell: bash
+      run: |
+        hash=$( {
+          cat cmake/Dependencies.cmake
+          find cmake/patches -type f | LC_ALL=C sort | while IFS= read -r f; do printf '%s\n' "$f"; cat "$f"; done
+          awk '/^FetchContent_Declare\(/ { declare = 1 } declare { print } declare && /^\)/ { declare = 0 }' \
+            tests/CMakeLists.txt benchmarks/CMakeLists.txt
+        } | sha256sum | cut -c1-64 )
+        echo "hash=$hash" >> "$GITHUB_OUTPUT"
+        echo "FetchContent cache key hash: $hash"
+
     - name: Restore FetchContent dependencies
       id: restore
       if: inputs.mode == 'restore'
@@ -35,7 +49,7 @@ runs:
         path: |
           .cache/fetchcontent/*
           !.cache/fetchcontent/*-build
-        key: ${{ runner.os }}-fetchcontent-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/patches/**', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+        key: ${{ runner.os }}-fetchcontent-${{ steps.key.outputs.hash }}
         restore-keys: ${{ runner.os }}-fetchcontent-
 
     - name: Save FetchContent dependencies (main only)
@@ -47,4 +61,4 @@ runs:
         path: |
           .cache/fetchcontent/*
           !.cache/fetchcontent/*-build
-        key: ${{ runner.os }}-fetchcontent-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/patches/**', 'tests/CMakeLists.txt', 'benchmarks/CMakeLists.txt') }}
+        key: ${{ runner.os }}-fetchcontent-${{ steps.key.outputs.hash }}
