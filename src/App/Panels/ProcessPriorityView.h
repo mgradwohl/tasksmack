@@ -1,7 +1,8 @@
 #pragma once
 
 // Process Details' priority control, under the buttons of the Overview's Actions block (#1179, slice 4;
-// #1493): the nice-value slider on Linux, the priority-class combo on Windows (#1204), the Apply
+// #1493): the nice-value slider on Linux, the same slider with a stop per priority class on Windows
+// (#1204, #1538), the Apply
 // button, and the error line under it; and under those, on Linux, the I/O priority control (#803,
 // ProcessIoPriorityView).
 //
@@ -15,6 +16,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "PriorityEditTarget.h"
+#include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessIoPriorityView.h"
 
 #include <cstdint>
@@ -42,10 +44,30 @@ struct PriorityPick
 };
 
 /// Draws the priority picker showing @p shown, without a header: the gradient nice slider and its
-/// keyboard shortcuts, or on Windows the priority-class combo (#1204). Shared by Process Details'
-/// control and the Processes table's batch priority dialog (#1484), so both pick a priority the same
-/// way and Windows offers the same settable classes in each.
+/// keyboard shortcuts, or on Windows the same slider with a stop per settable priority class
+/// (WINDOWS_PRIORITY_SLIDER, #1204, #1538). Shared by Process Details' control and the Processes
+/// table's batch priority dialog (#1484), so both pick a priority the same way.
 [[nodiscard]] PriorityPick renderPriorityPicker(std::int32_t shown);
+
+/// What renderDiscretePrioritySlider() drew this frame.
+struct DiscretePick
+{
+    std::int32_t index = 0; ///< The stop picked this frame, or @p shown when nothing was picked
+    float rightEdge = 0.0F; ///< Where the control ends, from the cursor's x, for right-aligning a button under it
+};
+
+/// Draws @p slider's discrete mode (#1538) showing stop @p shown (PRIORITY_STOP_BEYOND_START for its
+/// beyondStart state), as wide as the content region allows up to the slider's authored width: the
+/// stop's name on the badge, the shared gradient through the stops' colours, a tick and a scale label
+/// under each stop (the labels only when the track has room for them all), and the thumb, hollow in
+/// the beyond-start state. A drag snaps to the nearest stop; while the track is focused Left/Up step one
+/// stop toward the high end, Right/Down one toward the low end, and Home/End jump to the ends
+/// (stepDiscreteStop()).
+[[nodiscard]] DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, std::int32_t shown);
+
+/// The narrowest width renderDiscretePrioritySlider() needs for @p slider's scale labels to show, at
+/// the current font: the beyond-start lead and discreteStopLabelsMinWidth(). For measuring a container.
+[[nodiscard]] float discretePrioritySliderMinWidth(const DiscretePrioritySlider& slider);
 
 } // namespace Detail
 
@@ -210,14 +232,9 @@ class ProcessPriorityView
   private:
     static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
 
-#ifdef _WIN32
-    /// Draws the Windows priority-class combo; returns where it ends, for right-aligning Apply.
-    float renderClassCombo(std::int32_t currentNice, const Platform::ProcessTarget& target);
-#else
-    /// Draws the nice-value slider; returns where it ends, for right-aligning Apply.
-    float renderSlider(std::int32_t currentNice, const Platform::ProcessTarget& target);
-#endif
-    /// Draws the nice control (or the Windows class combo), its Apply button and its error line.
+    /// Draws the priority slider (a stop per class on Windows); returns where it ends, for right-aligning Apply.
+    float renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
+    /// Draws the priority slider, its Apply button and its error line.
     void
     renderNiceControl(Platform::IProcessActions* actions, std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
     void renderApplyButton(Platform::IProcessActions* actions,

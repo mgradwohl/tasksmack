@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/SamplingGate.h"
+#include "App/Panels/StartupActionsView.h"
 #include "App/Panels/StartupView.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -10,6 +11,8 @@
 #include "Domain/StartupModel.h"
 #include "Platform/Factory.h"
 #include "Platform/ThreadName.h"
+
+#include <imgui.h>
 
 #include <chrono>
 #include <memory>
@@ -32,10 +35,12 @@ void StartupPanel::onAttach()
     // The composition root's one probe creation for this panel; sampling waits for the tab to show.
     m_Model = std::make_shared<Domain::StartupModel>(Platform::makeStartupProbe());
     m_Gate = std::make_shared<SamplingGate>(m_Model);
+    m_Actions = std::make_unique<StartupActionsView>(Platform::makeStartupActions());
 }
 
 void StartupPanel::onDetach()
 {
+    m_Actions.reset(); // waits for an action still running (one registry write)
     m_Sampler.reset(); // joins the sampler thread: the one place it is waited for
     m_Gate.reset();
     m_Publication.reset();
@@ -90,7 +95,14 @@ void StartupPanel::renderContent()
     {
         m_Publication = m_Model->publication();
     }
-    static_cast<void>(renderStartupView(m_Publication.get(), m_Model->capabilities(), m_ViewState));
+    m_Actions->tick(ImGui::GetIO().DeltaTime);
+    if (m_Actions->takeFinished() && m_Sampler)
+    {
+        // The action changed an entry's state: re-read now, so its Enabled column updates.
+        m_Sampler->requestRefresh();
+    }
+    static_cast<void>(renderStartupView(m_Publication.get(), m_Model->capabilities(), m_ViewState, m_Actions.get()));
+    m_Actions->renderConfirmation();
 }
 
 } // namespace App

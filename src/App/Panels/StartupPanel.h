@@ -2,6 +2,7 @@
 
 #include "App/Panel.h"
 #include "App/Panels/SamplingGate.h"
+#include "App/Panels/StartupActionsView.h"
 #include "App/Panels/StartupView.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/StartupModel.h"
@@ -11,7 +12,7 @@
 namespace App
 {
 
-/// The Startup tab (#801, phase 1: read-only). Owns the StartupModel and samples it on its own
+/// The Startup tab (#801; enable / disable in phase 2). Owns the StartupModel and samples it on its own
 /// BackgroundSampler at Sampling::STARTUP_REFRESH_MS, only while the tab is shown. As in the Services
 /// tab, the sampler is started the first time the tab shows; hidden, a SamplingGate keeps it from
 /// reading anything, so switching tabs never joins the sampler thread on the UI thread (only
@@ -40,6 +41,7 @@ class StartupPanel : public Panel
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler; // created when the tab first shows
     std::shared_ptr<const Domain::StartupPublication> m_Publication;
     StartupViewState m_ViewState;
+    std::unique_ptr<StartupActionsView> m_Actions; // the row actions and their worker (#801, phase 2)
 };
 
 } // namespace App

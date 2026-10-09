@@ -13,6 +13,7 @@
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
+#include "Core/Event.h"
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
@@ -337,20 +338,19 @@ class ProcessesPanel : public Panel
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     // The action awaiting confirmation: one target from a row (or F9), several from the selection
     // (#804). Each target is a PID and start time, so a reused PID is refused (#973). The dialog's
-    // text is built once, here, when the action is requested. A batch priority change (#1484) has no
-    // ProcessAction; it carries the nice value to set instead.
+    // text is built once, here, when the action is requested. A batch priority change (#1484) is
+    // confirmed in its own dialog (m_BatchPriorityDialog, #1539), not here.
     struct RowAction
     {
         Detail::ProcessAction action = Detail::ProcessAction::None;
-        std::optional<std::int32_t> priorityNice;
         std::vector<ProcessBatch::BatchTarget> targets;
         std::string title;
         std::string question;
 
-        /// Whether an action or a priority change is awaiting confirmation.
+        /// Whether an action is awaiting confirmation.
         [[nodiscard]] bool pending() const noexcept
         {
-            return action != Detail::ProcessAction::None || priorityNice.has_value();
+            return action != Detail::ProcessAction::None;
         }
     } m_RowAction;
     bool m_ShowRowActionConfirm = false;
@@ -558,11 +558,12 @@ class ProcessesPanel : public Panel
     /// (#804). One process left: the single-process dialog. None: nothing happens.
     void requestSelectionAction(Detail::ProcessAction action);
 
-    /// Asks to set @p nice on every selected process still listed, through the batch confirmation
-    /// (#1484). None left: nothing happens.
-    void requestSelectionPriority(std::int32_t nice);
+    /// Opens the batch priority dialog for every selected process still listed (#1484). None left:
+    /// nothing happens.
+    void requestSelectionPriority();
 
-    /// The batch priority dialog (#1484); its picked value goes on to requestSelectionPriority().
+    /// The batch priority dialog (#1484), which lists the processes and is its own confirmation
+    /// (#1539); on Apply, sets the picked value on each of them by identity.
     void renderBatchPriorityDialog();
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
