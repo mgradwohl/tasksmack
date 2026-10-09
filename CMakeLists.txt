@@ -206,6 +206,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp
     src/Platform/Windows/WindowsStartupProbe.cpp
+    src/Platform/Windows/WindowsStartupActions.cpp
     src/Platform/Windows/WindowsServiceActions.cpp
     src/Platform/Windows/WindowsServiceProbe.cpp
     src/Platform/Windows/WinString.cpp
@@ -243,6 +244,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
     src/Platform/IStartupProbe.h
+    src/Platform/IStartupActions.h
     src/Platform/IServiceActions.h
     src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
@@ -294,6 +296,7 @@ elseif(WIN32)
         src/Platform/Windows/DXGIGPUProbe.h
         src/Platform/Windows/NVMLGPUProbe.h
         src/Platform/Windows/WindowsStartupProbe.h
+        src/Platform/Windows/WindowsStartupActions.h
         src/Platform/Windows/WindowsServiceProbe.h
         src/Platform/Windows/WindowsServiceConfig.h
         src/Platform/Windows/WindowsServiceActions.h

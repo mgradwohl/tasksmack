@@ -285,6 +285,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsStartupActions.cpp
     Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
@@ -343,6 +344,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp

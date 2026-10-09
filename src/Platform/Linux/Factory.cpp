@@ -19,6 +19,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
 
@@ -51,6 +52,12 @@ std::unique_ptr<IStartupProbe> makeStartupProbe()
 {
     // XDG autostart (~/.config/autostart, /etc/xdg/autostart) is the Linux lane's follow-up to #801.
     return std::make_unique<UnsupportedStartupProbe>();
+}
+
+std::unique_ptr<IStartupActions> makeStartupActions()
+{
+    // Toggling XDG autostart entries (Hidden=true) is the Linux lane's follow-up to #801.
+    return std::make_unique<UnsupportedStartupActions>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

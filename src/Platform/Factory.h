@@ -10,6 +10,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
 
@@ -35,6 +36,10 @@ namespace Platform
 /// Creates the platform-appropriate IStartupProbe implementation (#801). Linux returns an
 /// UnsupportedStartupProbe (capabilities().canEnumerate false) until XDG autostart support lands.
 [[nodiscard]] std::unique_ptr<IStartupProbe> makeStartupProbe();
+
+/// Creates the platform-appropriate IStartupActions implementation (#801, phase 2). Linux returns an
+/// UnsupportedStartupActions (every capability false) until XDG autostart support lands.
+[[nodiscard]] std::unique_ptr<IStartupActions> makeStartupActions();
 
 /// Creates the platform-appropriate ISystemProbe implementation.
 [[nodiscard]] std::unique_ptr<ISystemProbe> makeSystemProbe();

@@ -10,6 +10,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "WindowsDiskProbe.h"
@@ -20,6 +21,7 @@
 #include "WindowsProcessProbe.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
+#include "WindowsStartupActions.h"
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemProbe.h"
 
@@ -55,6 +57,11 @@ std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 std::unique_ptr<IStartupProbe> makeStartupProbe()
 {
     return std::make_unique<WindowsStartupProbe>();
+}
+
+std::unique_ptr<IStartupActions> makeStartupActions()
+{
+    return std::make_unique<WindowsStartupActions>(WindowsServiceActions::isCurrentProcessElevated());
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()
