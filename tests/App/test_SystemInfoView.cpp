@@ -1,8 +1,8 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
-/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the filter, identifier hiding, the Copy text and
-/// unavailable values; then the view headless: the unsupported and loading states, sections drawn, the filter narrowing and the identifier
-/// toggle.
+/// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the filter,
+/// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
+/// filter narrowing and the identifier toggle.
 
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
@@ -375,6 +375,141 @@ TEST(SystemInfoSectionsTest, MemorySectionFollowsTheFirmwareSection)
     EXPECT_EQ(sections[2].title, "Memory modules");
 }
 
+constexpr std::uint64_t MIB = std::uint64_t{1024} * 1024;
+
+[[nodiscard]] Platform::CommitPagingInfo windowsPaging()
+{
+    Platform::CommitPagingInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.committedBytes = 12 * GIB;
+    info.commitLimitBytes = 48 * GIB;
+    info.commitPeakBytes = 20 * GIB;
+    info.pageSizeBytes = 4096;
+    info.pageFilesRead = true;
+    info.pageFiles.push_back(
+        {.path = "C:\\pagefile.sys", .kind = {}, .sizeBytes = 16 * GIB, .usedBytes = 512 * MIB, .peakBytes = 2 * GIB, .priority = 0});
+    info.compressedBytes = 300 * MIB;
+    return info;
+}
+
+[[nodiscard]] Platform::CommitPagingInfo linuxPaging()
+{
+    Platform::CommitPagingInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Linux;
+    info.committedBytes = 8 * GIB;
+    info.commitLimitBytes = 32 * GIB;
+    info.overcommit = Platform::OvercommitMode::Heuristic;
+    info.pageFilesRead = true;
+    info.pageFiles.push_back(
+        {.path = "/dev/nvme0n1p3", .kind = "partition", .sizeBytes = 8 * GIB, .usedBytes = 0, .peakBytes = 0, .priority = -2});
+    info.zramRead = true;
+    info.zram.push_back({.name = "zram0", .originalBytes = 4 * GIB, .compressedBytes = 1 * GIB, .memoryUsedBytes = 1100 * MIB});
+    info.zswapEnabled = true;
+    info.hugePagesRead = true;
+    info.hugePagesTotal = 4;
+    info.hugePagesFree = 3;
+    info.hugePagesReserved = 1;
+    info.hugePageSizeBytes = 2 * MIB;
+    info.transparentHugePages = "madvise";
+    return info;
+}
+
+TEST(SystemInfoSectionsTest, FormatsCommitAndPagingValues)
+{
+    EXPECT_EQ(SystemInfo::formatCommitCharge(12 * GIB, 48 * GIB), "12 GiB / 48 GiB (25%)");
+    EXPECT_EQ(SystemInfo::formatCommitCharge(12 * GIB, 0), "12 GiB");
+    EXPECT_EQ(SystemInfo::formatCommitCharge(0, 48 * GIB), "");
+    EXPECT_EQ(
+        SystemInfo::formatZramDevice({.name = "zram0", .originalBytes = 4 * GIB, .compressedBytes = 1 * GIB, .memoryUsedBytes = 1 * GIB}),
+        "4 GiB stored in 1 GiB (4.0:1), 1 GiB of RAM");
+    EXPECT_EQ(SystemInfo::formatZramDevice({}), "Empty");
+}
+
+TEST(SystemInfoSectionsTest, CommitPagingRowsWindows)
+{
+    const Section section = SystemInfo::buildCommitPagingSection(windowsPaging());
+    EXPECT_EQ(section.title, "Commit & paging");
+    EXPECT_EQ(findRow(section, "Commit charge")->value, "12 GiB / 48 GiB (25%)");
+    EXPECT_EQ(findRow(section, "Peak commit")->value, "20 GiB");
+    ASSERT_NE(findRow(section, "C:\\pagefile.sys"), nullptr);
+    EXPECT_EQ(findRow(section, "C:\\pagefile.sys")->value, "512 MiB used of 16 GiB, peak 2 GiB");
+    EXPECT_EQ(findRow(section, "Compressed memory")->value, "300 MiB");
+    EXPECT_EQ(findRow(section, "Page size")->value, "4 KiB");
+    EXPECT_EQ(findRow(section, "Overcommit mode"), nullptr); // Linux only
+    for (const Row& item : section.rows)
+    {
+        EXPECT_FALSE(item.isIdentifier) << item.label;
+    }
+
+    // No page file, no compression process, GetPerformanceInfo failing.
+    Platform::CommitPagingInfo bare;
+    bare.available = true;
+    bare.family = Platform::OsFamily::Windows;
+    bare.pageFilesRead = true;
+    const Section none = SystemInfo::buildCommitPagingSection(bare);
+    EXPECT_EQ(findRow(none, "Page files")->value, "None (paging is off)");
+    for (const std::string_view label : {"Commit charge", "Peak commit", "Compressed memory", "Page size"})
+    {
+        ASSERT_NE(findRow(none, label), nullptr) << label;
+        EXPECT_FALSE(findRow(none, label)->available()) << label;
+        EXPECT_FALSE(findRow(none, label)->unavailableReason.empty()) << label;
+    }
+}
+
+TEST(SystemInfoSectionsTest, CommitPagingRowsLinux)
+{
+    const Section section = SystemInfo::buildCommitPagingSection(linuxPaging());
+    EXPECT_EQ(findRow(section, "Commit charge")->value, "8 GiB / 32 GiB (25%)");
+    EXPECT_EQ(findRow(section, "Overcommit mode")->value, "Heuristic (0)");
+    EXPECT_EQ(findRow(section, "/dev/nvme0n1p3")->value, "0 B used of 8 GiB, partition, priority -2");
+    EXPECT_EQ(findRow(section, "zram0")->value, "4 GiB stored in 1 GiB (4.0:1), 1.1 GiB of RAM");
+    EXPECT_EQ(findRow(section, "zswap")->value, "Enabled");
+    EXPECT_EQ(findRow(section, "Huge pages")->value, "3 of 4 free, 1 reserved, 0 surplus (2 MiB pages)");
+    EXPECT_EQ(findRow(section, "Transparent huge pages")->value, "madvise");
+    EXPECT_EQ(findRow(section, "Peak commit"), nullptr); // Windows only
+    EXPECT_EQ(findRow(section, "zram"), nullptr);        // devices listed instead
+}
+
+TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)
+{
+    Platform::CommitPagingInfo unread;
+    unread.available = true;
+    unread.family = Platform::OsFamily::Linux;
+    const Section section = SystemInfo::buildCommitPagingSection(unread);
+    for (const std::string_view label :
+         {"Commit charge", "Overcommit mode", "Swap", "zram", "zswap", "Huge pages", "Transparent huge pages"})
+    {
+        const Row* item = findRow(section, label);
+        ASSERT_NE(item, nullptr) << label;
+        EXPECT_FALSE(item->available()) << label;
+        EXPECT_FALSE(item->unavailableReason.empty()) << label;
+    }
+
+    // Read, but nothing configured, says so.
+    unread.pageFilesRead = true;
+    unread.zramRead = true;
+    unread.hugePagesRead = true;
+    unread.hugePageSizeBytes = 2 * MIB;
+    const Section empty = SystemInfo::buildCommitPagingSection(unread);
+    EXPECT_EQ(findRow(empty, "Swap")->value, "None configured");
+    EXPECT_EQ(findRow(empty, "zram")->value, "None");
+    EXPECT_EQ(findRow(empty, "Huge pages")->value, "None reserved (2 MiB pages)");
+}
+
+TEST(SystemInfoSectionsTest, CommitPagingSectionFollowsMemoryModules)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.firmware = firmware();
+    all.memory = memory();
+    all.paging = windowsPaging();
+    const auto sections = SystemInfo::buildSystemInfoSections(all);
+    ASSERT_EQ(sections.size(), 4U);
+    EXPECT_EQ(sections[2].title, "Memory modules");
+    EXPECT_EQ(sections[3].title, "Commit & paging");
+}
+
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
 {
     EXPECT_TRUE(SystemInfo::buildSystemInfoSections(Domain::SystemInfoSnapshot{}).empty());
@@ -452,6 +587,23 @@ TEST_F(SystemInfoViewRenderTest, SectionsRenderFilterAndToggleIdentifiers)
     state.filter = "nothing matches this";
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     EXPECT_TRUE(state.visible.empty());
+}
+
+TEST_F(SystemInfoViewRenderTest, CommitPagingSectionRendersAndFilters)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.paging = windowsPaging();
+    snap.paging.compressedBytes.reset(); // an unavailable value draws muted
+    SystemInfoViewState state;
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+
+    state.filter = "pagefile";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 1U);
 }
 
 } // namespace

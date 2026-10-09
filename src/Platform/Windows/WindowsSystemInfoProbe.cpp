@@ -25,6 +25,7 @@
 
 #include "Platform/SmbiosParser.h"
 #include "WinString.h"
+#include "WindowsCommitPaging.h"
 #include "WindowsInstalledMemory.h"
 #include "WindowsOsInfoMath.h"
 
@@ -269,6 +270,13 @@ MemoryModulesInfo WindowsSystemInfoProbe::readMemoryModules()
         Smbios::decodeMemoryModules(table, info);
     }
     readInstalledMemory(info);
+    return info;
+}
+
+CommitPagingInfo WindowsSystemInfoProbe::readCommitPaging()
+{
+    CommitPagingInfo info;
+    WindowsCommitPaging::readCommitPaging(info);
     return info;
 }
 

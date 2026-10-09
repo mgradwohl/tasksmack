@@ -88,6 +88,22 @@ struct VisibleSection
 /// locator. Without the SMBIOS table (Linux, unprivileged) a "Modules" row says it needs administrator.
 [[nodiscard]] Section buildMemorySection(const Platform::MemoryModulesInfo& memory);
 
+/// A commit charge: "12.3 GiB / 31.7 GiB (39%)"; the used figure alone without a limit, empty when
+/// the charge is unknown (0).
+[[nodiscard]] std::string formatCommitCharge(std::uint64_t committedBytes, std::uint64_t limitBytes);
+
+/// One page file or swap device: "1.2 GiB used of 16 GiB, peak 3.4 GiB" (Windows) / "512 MiB used of
+/// 8 GiB, partition, priority -2" (Linux).
+[[nodiscard]] std::string formatPageFile(const Platform::PageFile& file, Platform::OsFamily family);
+
+/// One zram device: "3.2 GiB stored in 812 MiB (4.0:1), 840 MiB of RAM"; "Empty" before it holds data.
+[[nodiscard]] std::string formatZramDevice(const Platform::ZramDevice& device);
+
+/// The Commit & paging section (#1516): the commit charge against its limit, then per platform the
+/// peak commit, each page file, compressed memory and the page size (Windows), or the overcommit mode,
+/// each swap device, zram, zswap and huge pages (Linux).
+[[nodiscard]] Section buildCommitPagingSection(const Platform::CommitPagingInfo& paging);
+
 /// The page's sections, in display order. Empty before the first read.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot);
 
