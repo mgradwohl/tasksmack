@@ -23,6 +23,7 @@
 #include "Domain/SystemModel.h"
 #include "Platform/ThreadName.h"
 #include "PowerStatusText.h"
+#include "UI/Card.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
@@ -40,6 +41,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -584,19 +586,30 @@ void SystemMetricsPanel::renderOverview()
     }
     // Expanded or collapsed, as the user left it (UserConfig, #809). The block renders inside the fill
     // layout's scope, so the charts share whatever height it leaves, at either size.
+    // Each Overview section is a card, as the CPU Cores grid draws its cells (#1586), with the frame
+    // padding above and below instead of the window padding: the charts already sit at their minimum
+    // height at large fonts in a short window, so the cards' chrome must not push the last one off.
+    const auto overviewCard = [](const char* id, const ImVec2& size, ImGuiChildFlags flags)
+    {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(style.WindowPadding.x, style.FramePadding.y));
+        const bool visible = UI::Widgets::beginCard(id, size, flags);
+        ImGui::PopStyleVar(); // The child keeps the padding it was begun with
+        return visible;
+    };
     auto& userSettings = UserConfig::get().settings();
-    if (CpuDetailsBlock::render({.cpuModel = snap.cpuModel,
-                                 .collapsedSummary = m_CpuDetails.collapsedSummary,
-                                 .rows = m_CpuDetails.rows,
-                                 .rowsGeneration = m_CpuDetails.generation,
-                                 .expanded = userSettings.cpuDetailsExpanded},
-                                m_CpuDetailsMeasured))
+    const bool cpuDetailsVisible = overviewCard("##CpuDetailsCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY);
+    if (cpuDetailsVisible && CpuDetailsBlock::render({.cpuModel = snap.cpuModel,
+                                                      .collapsedSummary = m_CpuDetails.collapsedSummary,
+                                                      .rows = m_CpuDetails.rows,
+                                                      .rowsGeneration = m_CpuDetails.generation,
+                                                      .expanded = userSettings.cpuDetailsExpanded},
+                                                     m_CpuDetailsMeasured))
     {
         userSettings.cpuDetailsExpanded = !userSettings.cpuDetailsExpanded;
         UserConfig::get().save();
     }
-
-    ImGui::Spacing();
+    UI::Widgets::endCard();
 
     // Get theme for colored progress bars
     auto& theme = UI::Theme::get();
@@ -613,6 +626,7 @@ void SystemMetricsPanel::renderOverview()
     const size_t cpuCount = std::min(cpuHist.size(), timestamps.size());
     const auto cpuData = UI::Widgets::tailAlignedSpan(cpuHist, cpuCount).values;
     // CPU history with vertical now bars (total + breakdown)
+    const bool cpuCardVisible = overviewCard("##CpuUsageCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY);
     (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "CPU Usage", {}, cpuCount);
 
     const auto cpuTimeData = frameTimeAxis(timestamps, cpuCount, nowSeconds);
@@ -790,10 +804,12 @@ void SystemMetricsPanel::renderOverview()
         });
     }
 
-    renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, overviewNowBarColumns());
-    fill.addPlot();
-
-    ImGui::Spacing();
+    if (cpuCardVisible)
+    {
+        renderHistoryWithNowBars("OverviewCPUHistoryLayout", plotHeight, cpuPlot, cpuBars, false, overviewNowBarColumns());
+    }
+    UI::Widgets::endCard();
+    fill.addPlot(); // After the card, in the panel's coordinates: the fill layout counts its padding as non-chart height
 
     // Memory & Swap history section
     {
@@ -806,9 +822,12 @@ void SystemMetricsPanel::renderOverview()
             .smoothedMemory = &m_SmoothedMemory,
             .plotHeight = plotHeight,
         };
-        MemorySection::renderMemorySection(memCtx, timestamps, nowSeconds, static_cast<int>(overviewNowBarColumns()));
+        if (overviewCard("##MemoryCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY))
+        {
+            MemorySection::renderMemorySection(memCtx, timestamps, nowSeconds, static_cast<int>(overviewNowBarColumns()));
+        }
+        UI::Widgets::endCard();
         fill.addPlot();
-        ImGui::Spacing();
     }
 
     // Power & Battery history chart (combines per-process power aggregation with battery charge %).
@@ -1004,8 +1023,12 @@ void SystemMetricsPanel::renderOverview()
 
             // The heading's tooltip is shown after the chart: its value strip is placed beside the
             // heading, the item drawn just before it, so nothing else is submitted between the two.
-            const bool headingHovered = UI::Widgets::sectionHeader(ICON_FA_BOLT, headingTitle);
-            renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, overviewNowBarColumns());
+            const bool powerCardVisible = overviewCard("##PowerCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY);
+            const bool headingHovered = powerCardVisible && UI::Widgets::sectionHeader(ICON_FA_BOLT, headingTitle);
+            if (powerCardVisible)
+            {
+                renderHistoryWithNowBars("PowerBatteryHistoryLayout", plotHeight, plot, bars, false, overviewNowBarColumns());
+            }
             // Tooltip with detailed info
             if (headingHovered)
             {
@@ -1036,8 +1059,8 @@ void SystemMetricsPanel::renderOverview()
                 ImGui::TextUnformatted(samples.data(), samples.data() + samples.size());
                 ImGui::EndTooltip();
             }
+            UI::Widgets::endCard();
             fill.addPlot();
-            ImGui::Spacing();
         }
     }
 
@@ -1172,11 +1195,14 @@ void SystemMetricsPanel::renderOverview()
             }
         };
 
-        (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, resourcesTitle, {}, alignedCount);
-        renderHistoryWithNowBars(
-            "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, overviewNowBarColumns());
+        if (overviewCard("##ResourcesCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY))
+        {
+            (void) UI::Widgets::sectionHeader(ICON_FA_GEARS, resourcesTitle, {}, alignedCount);
+            renderHistoryWithNowBars(
+                "ResourcesHistoryLayout", plotHeight, plot, {threadsBar, faultsBar, handlesBar}, false, overviewNowBarColumns());
+        }
+        UI::Widgets::endCard();
         fill.addPlot();
-        ImGui::Spacing();
     }
 }
 
