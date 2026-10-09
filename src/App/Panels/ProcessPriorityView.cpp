@@ -196,6 +196,11 @@ void drawPriorityScaleLabels(const PrioritySliderContext& ctx)
 {
     const auto& theme = UI::Theme::get();
 
+    // The track is sized to leave exactly "Low"'s width before the edge, so a wrap position pushed by
+    // an enclosing container (the Actions block wraps its result lines, #1511) would split it into
+    // "Lo" / "w" (#1560). The scale labels never wrap.
+    ImGui::PushTextWrapPos(-1.0F);
+
     // "Low" label (right of slider, colored blue)
     // Position it after the slider with padding (sliderLocalX + width = right edge)
     const float lowLabelX = ctx.sliderLocalX + ctx.metrics.sliderWidth + ctx.metrics.labelPadding;
@@ -213,6 +218,7 @@ void drawPriorityScaleLabels(const PrioritySliderContext& ctx)
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textMuted);
     ImGui::TextUnformatted("Default");
     ImGui::PopStyleColor();
+    ImGui::PopTextWrapPos();
 }
 #endif
 
