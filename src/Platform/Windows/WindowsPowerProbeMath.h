@@ -2,7 +2,12 @@
 
 #include "Platform/PowerTypes.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 namespace Platform
 {
@@ -107,6 +112,61 @@ parsePowerStatus(std::uint8_t acLineStatus, std::uint8_t batteryFlag, std::uint8
     }
 
     return counters;
+}
+
+// ---- Battery details (#1523): IOCTL_BATTERY_QUERY_INFORMATION's BATTERY_INFORMATION fields ----
+
+/// BATTERY_CAPACITY_RELATIVE (poclass.h): the capacities are relative units, not mWh.
+inline constexpr std::uint32_t BATTERY_CAPACITY_RELATIVE_BIT = 0x40000000U;
+/// BATTERY_UNKNOWN_CAPACITY (poclass.h)
+inline constexpr std::uint32_t BATTERY_CAPACITY_UNKNOWN_VALUE = 0xFFFFFFFFU;
+
+/// BATTERY_INFORMATION::Chemistry, four bytes and not NUL-terminated, as the text Linux's
+/// power_supply "technology" uses ("LION" -> "Li-ion"), ignoring case. An unlisted code is returned
+/// as reported; one that is blank or not printable ASCII is empty (unknown).
+[[nodiscard]] inline std::string chemistryText(std::string_view code)
+{
+    while (!code.empty() && (code.back() == '\0' || code.back() == ' '))
+    {
+        code.remove_suffix(1);
+    }
+    if (code.empty() || !std::ranges::all_of(code, [](char c) { return c > ' ' && c < 0x7F; }))
+    {
+        return {};
+    }
+    std::string upper(code);
+    std::ranges::transform(upper, upper.begin(), [](char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; });
+    constexpr std::array<std::array<std::string_view, 2>, 8> NAMES{{{"LION", "Li-ion"},
+                                                                    {"LI-I", "Li-ion"},
+                                                                    {"LIP", "Li-poly"},
+                                                                    {"PBAC", "Lead-acid"},
+                                                                    {"NICD", "NiCd"},
+                                                                    {"NIMH", "NiMH"},
+                                                                    {"NIZN", "NiZn"},
+                                                                    {"RAM", "Alkaline-manganese"}}};
+    const auto known = std::ranges::find(NAMES, std::string_view(upper), [](const auto& name) { return name[0]; });
+    return known != NAMES.end() ? std::string((*known)[1]) : std::string(code);
+}
+
+/// A BATTERY_INFORMATION capacity (mWh) as Wh; 0 when it is not a known mWh figure: relative units
+/// (whose scale is the driver's own), zero or BATTERY_UNKNOWN_CAPACITY.
+[[nodiscard]] constexpr double capacityWh(std::uint32_t capacity, std::uint32_t capabilities) noexcept
+{
+    const bool known = (capabilities & BATTERY_CAPACITY_RELATIVE_BIT) == 0 && capacity != BATTERY_CAPACITY_UNKNOWN_VALUE;
+    return known ? static_cast<double>(capacity) / 1000.0 : 0.0;
+}
+
+/// PowerCounters::healthPercent: full-charge over design capacity, rounded and capped at 100 (a new
+/// battery can hold a little more than its design). -1 unless both are known (capacityWh() > 0).
+[[nodiscard]] inline int healthPercentFromCapacity(std::uint32_t designed, std::uint32_t fullCharged, std::uint32_t capabilities) noexcept
+{
+    const double design = capacityWh(designed, capabilities);
+    const double full = capacityWh(fullCharged, capabilities);
+    if (design <= 0.0 || full <= 0.0)
+    {
+        return -1;
+    }
+    return static_cast<int>(std::lround(std::min(full / design, 1.0) * 100.0));
 }
 
 } // namespace Platform

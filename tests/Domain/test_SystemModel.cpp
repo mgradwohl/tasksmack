@@ -2592,6 +2592,39 @@ TEST(SystemModelTest, PowerStatus_HasBattery_WhenPowerProbeReportsIt)
     EXPECT_EQ(power.timeToEmptySec, 7200ULL);
 }
 
+TEST(SystemModelTest, PowerStatus_BatteryDetailsFollowTheProbesCapabilities)
+{
+    // #1523: capacities and cycle count pass through only when the probe says it reports them
+    const auto powerFor = [](bool reported)
+    {
+        auto sysProbe = std::make_unique<MockSystemProbe>();
+        sysProbe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), makeMemoryCounters(1024, 512)));
+        auto powerProbe = std::make_unique<MockPowerProbe>();
+        powerProbe->setCapabilities(
+            {.hasBattery = true, .hasTechnology = reported, .hasCycleCount = reported, .hasDesignCapacity = reported});
+        Platform::PowerCounters counters;
+        counters.chargeDesignWh = 52.6;
+        counters.chargeFullWh = 47.3;
+        counters.cycleCount = 123;
+        counters.manufacturer = "Contoso";
+        powerProbe->setCounters(counters);
+        Domain::SystemModel model(std::move(sysProbe), std::move(powerProbe));
+        model.refresh();
+        return model.snapshot().power;
+    };
+    const Domain::PowerStatus reported = powerFor(true);
+    EXPECT_TRUE(reported.reportsCapacity && reported.reportsCycleCount && reported.reportsTechnology);
+    EXPECT_DOUBLE_EQ(reported.designCapacityWh, 52.6);
+    EXPECT_DOUBLE_EQ(reported.fullChargeCapacityWh, 47.3);
+    EXPECT_EQ(reported.cycleCount, 123U);
+    EXPECT_EQ(reported.manufacturer, "Contoso");
+
+    const Domain::PowerStatus unreported = powerFor(false);
+    EXPECT_FALSE(unreported.reportsCapacity || unreported.reportsCycleCount || unreported.reportsTechnology);
+    EXPECT_DOUBLE_EQ(unreported.designCapacityWh, 0.0);
+    EXPECT_EQ(unreported.cycleCount, 0U);
+}
+
 TEST(SystemModelTest, PowerStatus_Charging)
 {
     auto sysProbe = std::make_unique<MockSystemProbe>();

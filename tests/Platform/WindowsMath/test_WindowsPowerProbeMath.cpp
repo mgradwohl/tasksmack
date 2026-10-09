@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <string_view>
 
 namespace Platform
 {
@@ -134,6 +135,46 @@ TEST(ParsePowerStatusTest, KnownTimeRemainingIsIgnoredWhenNotDischarging)
     EXPECT_EQ(counters.state, BatteryState::Charging);
     EXPECT_EQ(counters.timeToEmptySec, 0U);
     EXPECT_EQ(counters.timeToFullSec, 0U);
+}
+
+// ---- Battery details (#1523) ----
+
+TEST(BatteryChemistryTest, KnownCodesReadAsLinuxTechnologyNames)
+{
+    EXPECT_EQ(chemistryText("LION"), "Li-ion");
+    EXPECT_EQ(chemistryText("LiOn"), "Li-ion"); // Case-insensitive: drivers vary
+    EXPECT_EQ(chemistryText("Li-I"), "Li-ion");
+    EXPECT_EQ(chemistryText(std::string_view("LiP\0", 4)), "Li-poly"); // A three-letter code, NUL-padded
+    EXPECT_EQ(chemistryText("PbAc"), "Lead-acid");
+    EXPECT_EQ(chemistryText("NiCd"), "NiCd");
+    EXPECT_EQ(chemistryText("NiMH"), "NiMH");
+    EXPECT_EQ(chemistryText("NiZn"), "NiZn");
+    EXPECT_EQ(chemistryText("RAM "), "Alkaline-manganese"); // Space-padded
+}
+
+TEST(BatteryChemistryTest, UnlistedCodeIsShownAsReportedAndGarbageIsUnknown)
+{
+    EXPECT_EQ(chemistryText("LiFe"), "LiFe");
+    EXPECT_EQ(chemistryText(std::string_view("\0\0\0\0", 4)), "");
+    EXPECT_EQ(chemistryText("    "), "");
+    EXPECT_EQ(chemistryText("\x01\x02"), "");
+}
+
+TEST(BatteryCapacityTest, MilliwattHoursAreWattHoursUnlessUnknownOrRelative)
+{
+    EXPECT_DOUBLE_EQ(capacityWh(52'600U, 0U), 52.6);
+    EXPECT_DOUBLE_EQ(capacityWh(0U, 0U), 0.0);
+    EXPECT_DOUBLE_EQ(capacityWh(BATTERY_CAPACITY_UNKNOWN_VALUE, 0U), 0.0);
+    EXPECT_DOUBLE_EQ(capacityWh(100U, BATTERY_CAPACITY_RELATIVE_BIT), 0.0);
+}
+
+TEST(BatteryCapacityTest, HealthIsFullOverDesignRoundedAndCapped)
+{
+    EXPECT_EQ(healthPercentFromCapacity(50'000U, 45'000U, 0U), 90);
+    EXPECT_EQ(healthPercentFromCapacity(50'000U, 52'000U, 0U), 100); // Above design: capped
+    EXPECT_EQ(healthPercentFromCapacity(0U, 45'000U, 0U), -1);       // No design: unknown, no division
+    EXPECT_EQ(healthPercentFromCapacity(50'000U, 0U, 0U), -1);
+    EXPECT_EQ(healthPercentFromCapacity(100U, 90U, BATTERY_CAPACITY_RELATIVE_BIT), -1); // Relative units
 }
 
 } // namespace
