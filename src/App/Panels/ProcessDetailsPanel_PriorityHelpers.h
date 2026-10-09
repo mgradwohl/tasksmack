@@ -42,7 +42,6 @@ inline constexpr float PRIORITY_SLIDER_CORNER_RADIUS_EM = 0.1875F;    // 2px, bo
 inline constexpr float PRIORITY_BADGE_CORNER_RADIUS_EM = 0.375F;      // 4px, border rounding for value badge
 inline constexpr float PRIORITY_THUMB_OUTLINE_THICKNESS_EM = 0.1875F; // 2px, outline width for slider thumb
 inline constexpr float PRIORITY_LABEL_PADDING_EM = 0.75F;             // 8px, between High/Low labels and slider
-inline constexpr float PRIORITY_APPLY_BUTTON_MIN_EM = 11.25F;         // 120px, floor on the Apply button
 
 /// Thumb radius as a fraction of the track height, so the thumb overhangs the track slightly.
 inline constexpr float PRIORITY_THUMB_RADIUS_FRACTION = 0.6F;

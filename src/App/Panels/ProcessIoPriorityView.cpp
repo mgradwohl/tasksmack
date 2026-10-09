@@ -2,9 +2,8 @@
 
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
-#include "ProcessDetailsPanel_PriorityHelpers.h"
+#include "ProcessDetailsLayout.h"
 #include "UI/ChromeWidgets.h"
-#include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -70,7 +69,8 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         ImGui::GetContentRegionAvail().x,
         emPx,
         spacing,
-        UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, emPx, Detail::PRIORITY_APPLY_BUTTON_MIN_EM),
+        // As wide as its label, as the nice control's Apply and Terminate and Kill are (#1537).
+        ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize("Apply").x, ImGui::GetStyle().FramePadding.x),
         Detail::ioClassHasLevels(m_Edit.ioClass));
 
     renderControls(currentNice, target, layout);

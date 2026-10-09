@@ -3,22 +3,25 @@
 /// without the capability, Apply is disabled until an edit, a click on Apply sets the edit on the
 /// selected process only, an edit made for another process is dropped before it can be applied, and
 /// the slider's keyboard shortcuts move the value as before (Linux only: the slider is the Linux control).
-/// There is no popup or modal on Linux. The Windows priority-class combo has no render test.
+/// There is no popup or modal on Linux. The Windows priority-class combo has no render test of its
+/// own, but Apply is as wide as its label and the row repeats no "current" value on both (#1537).
 
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h> // The frame's text log and the window's draw list
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 
 #ifndef _WIN32
-#include <imgui_internal.h>
-
 #include <array>
 #endif
 
@@ -191,6 +194,64 @@ TEST_F(ProcessPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     EXPECT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(view.error(), "Permission denied");
     EXPECT_EQ(view.niceValue(), 0);
+}
+
+// The maintainer's #1511 check: Apply was an em floor wide, wider than the class combo beside it and
+// a large muted bar while disabled. It is as wide as its label, as Terminate and Kill are (#1537).
+TEST_F(ProcessPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    float applyWidth = 0.0F;
+    float labelWidth = 0.0F;
+    runFrame(
+        [&]
+        {
+            view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+            applyWidth = ImGui::GetItemRectSize().x; // Apply is the last item while there is no error line
+            labelWidth = ImGui::CalcTextSize(ICON_FA_CHECK "  Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
+        });
+    EXPECT_GT(applyWidth, 0.0F);
+    EXPECT_LE(applyWidth, std::ceil(labelWidth));
+}
+
+// Runtime's Priority row shows the current priority ("Normal (nice: 0)" on Linux, the class on
+// Windows), and the combo or slider opens on it, so the row does not repeat it (#1537): no
+// "current: <class>" after Apply on Windows, no "current nice: N" beside the label on Linux.
+TEST_F(ProcessPriorityViewRenderTest, TheRowRepeatsNoCurrentValue)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    std::string logged;
+    ImVec2 applyMin;
+    ImVec2 applyMax;
+    const ImDrawList* drawList = nullptr;
+    runFrame(
+        [&]
+        {
+            ImGui::LogToBuffer();
+            view.render(&mock, CAN_SET_PRIORITY, 7, TARGET_A);
+            applyMin = ImGui::GetItemRectMin();
+            applyMax = ImGui::GetItemRectMax();
+            logged = ImGui::GetCurrentContext()->LogBuffer.c_str();
+            ImGui::LogFinish();
+            drawList = ImGui::GetWindowDrawList();
+        });
+    // Text drawn as an item (Linux's label line) is in the frame's log.
+    EXPECT_TRUE(logged.contains("Priority")) << logged;
+    EXPECT_FALSE(logged.contains("current")) << logged;
+    // Text drawn straight into the window after Apply, as Windows' class note was, is not an item:
+    // nothing at all is drawn to the right of Apply on its row.
+    ASSERT_NE(drawList, nullptr);
+    int beyondApply = 0;
+    for (const ImDrawVert& vertex : drawList->VtxBuffer)
+    {
+        if (vertex.pos.x > applyMax.x + 1.0F && vertex.pos.y >= applyMin.y && vertex.pos.y <= applyMax.y)
+        {
+            ++beyondApply;
+        }
+    }
+    EXPECT_EQ(beyondApply, 0);
 }
 
 // The nice slider is the Linux control; Windows draws the priority-class combo instead (#1204), which

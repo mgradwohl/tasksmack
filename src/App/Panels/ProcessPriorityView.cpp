@@ -1,15 +1,13 @@
 #include "ProcessPriorityView.h"
 
 #include "Platform/IProcessActions.h"
+#include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
-#include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
-#ifdef _WIN32
-#include "UI/ChromeWidgets.h" // trailingNote() for the current class after Apply; the nice slider row has none
-#else
+#ifndef _WIN32
 #include "Domain/PriorityConfig.h" // NORMAL_NICE for the nice slider's 0 key; the Windows class combo has no slider
 #endif
 
@@ -25,8 +23,6 @@ namespace App
 
 namespace
 {
-
-using Detail::PRIORITY_APPLY_BUTTON_MIN_EM;
 
 // The Apply button's label, named once so its width is measured from what is drawn (icon included).
 constexpr const char* APPLY_LABEL = ICON_FA_CHECK "  Apply";
@@ -261,14 +257,11 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     syncToProcess(currentNice);
 
 #ifdef _WIN32
-    // One line (#1493): Priority [class] [Apply] current: <class>.
-    const std::int32_t shownNice = currentNice.value_or(0);
-    (void) renderClassCombo(shownNice, target);
+    // One line (#1493): Priority [class] [Apply]. The current class is Runtime's Priority row, and
+    // the label's tooltip, not repeated after Apply (#1537).
+    (void) renderClassCombo(currentNice.value_or(0), target);
     ImGui::SameLine();
     renderApplyButton(actions, currentNice, target, 0.0F);
-    const std::string currentDetail =
-        "current: " + std::string(Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(shownNice)));
-    (void) UI::Widgets::trailingNote(currentDetail);
 #else
     const float controlRightEdge = renderSlider(currentNice.value_or(0), target);
     ImGui::Spacing();
@@ -293,7 +286,7 @@ float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Plat
     const auto& theme = UI::Theme::get();
     const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
     // A row label, level with the combo, rather than a header: the Actions block's row (#1493). The
-    // current class follows Apply when the row has room, and is on the label's tooltip always.
+    // current class is on its tooltip; Runtime's Priority row shows it too.
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Priority");
     ImGui::SetItemTooltip("Current priority class: %s", currentClassName.c_str());
@@ -352,14 +345,11 @@ PriorityPick renderPriorityPicker(std::int32_t shown)
 #else
 float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform::ProcessTarget& target)
 {
-    const auto& theme = UI::Theme::get();
-
-    // A row label and the current nice value, quieter, rather than a header: the Actions block's
-    // row (#1493).
-    const std::string currentDetail = "current nice: " + std::to_string(currentNice);
+    // A row label rather than a header: the Actions block's row (#1493). The current nice value is
+    // Runtime's Priority row ("Normal (nice: 0)") and the label's tooltip, not repeated beside it
+    // (#1537); the slider's badge shows the value picked.
     ImGui::TextUnformatted("Priority");
-    ImGui::SameLine();
-    ImGui::TextColored(theme.scheme().textMuted, "%s", currentDetail.c_str());
+    ImGui::SetItemTooltip("Current nice value: %d", currentNice);
 
     const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
     editNice(pick.nice, target);
@@ -471,17 +461,17 @@ void ProcessPriorityView::renderApplyButton(Platform::IProcessActions* actions,
                                             float controlRightEdge)
 {
     const auto& theme = UI::Theme::get();
-    const float emPx = ImGui::GetFontSize();
     // Disabled without an edit, and also until a snapshot has confirmed the start time: no platform
     // acts on an unknown one (IProcessActions' checkProcessIdentity()).
     const bool enabled = canApply(currentNice, target);
     const bool waiting = waitingForProcessDetails(currentNice, target);
 
-    // Right-align the Apply button
+    // Right-align the Apply button. As wide as its label, the same rule as Terminate's and Kill's
+    // (#1537): its old em floor made it wider than the class combo beside it.
     // Capped to the panel for the same reason the track is: the content area does not scroll
     // horizontally, so a button wider than the space available would be clipped.
     const float applyButtonWidth =
-        std::min(UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, emPx, PRIORITY_APPLY_BUTTON_MIN_EM),
+        std::min(ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, ImGui::GetStyle().FramePadding.x),
                  std::max(ImGui::GetContentRegionAvail().x, 1.0F));
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, controlRightEdge - applyButtonWidth));
 
