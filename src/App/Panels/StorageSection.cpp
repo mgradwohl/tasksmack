@@ -306,8 +306,20 @@ void renderStorageSection(RenderContext& ctx)
 
     if (ctx.publication == nullptr)
     {
-        UI::Widgets::renderEmptyState(ICON_FA_HARD_DRIVE "  Disk data unavailable",
-                                      "The storage model is not available, so there is no disk activity to show.");
+        constexpr const char* HEADING = ICON_FA_HARD_DRIVE "  Disk data unavailable";
+        constexpr const char* DETAIL = "The storage model is not available, so there is no disk activity to show.";
+        if (ctx.fill != nullptr)
+        {
+            // Inside the Network tab's fill layout, below its chart: a band of fixed height. Centred in
+            // whatever height was left, its height followed the chart's, the fill layout counted part
+            // of every change as non-chart height, and the chart crept to its height over several
+            // frames instead of settling in one (#1620).
+            UI::Widgets::renderEmptyStateBand(HEADING, DETAIL);
+        }
+        else
+        {
+            UI::Widgets::renderEmptyState(HEADING, DETAIL);
+        }
         return;
     }
 
