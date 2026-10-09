@@ -1,6 +1,6 @@
 #pragma once
 
-// The Startup tab's table (#801, phase 1: read-only). Split from StartupPanel, which owns the model
+// The Startup tab's table (#801; enable / disable in phase 2). Split from StartupPanel, which owns the model
 // and its sampler, so the drawing runs headless in TaskSmackTests without a Platform probe. The pure
 // helpers (labels, row order) make no ImGui calls.
 
@@ -64,12 +64,21 @@ struct StartupViewState
     bool rowsAscending = true;
 
     std::string unavailableHeading; ///< The empty state's heading when there is no startup list.
+
+    /// The selected row (phase 2): its name and location together, since one name can be registered
+    /// in more than one place. Empty name when none.
+    std::string selectedName;
+    Platform::StartupLocation selectedLocation = Platform::StartupLocation::RunUser;
 };
 
-/// Draws the filter box and the table (or an empty state) into the current window.
+class StartupActionsView;
+
+/// Draws the filter box and the table (or an empty state) into the current window, with @p actions'
+/// action bar, result line and row menus when it is given (#801, phase 2).
 /// @param publication Null is treated as no sample yet.
 StartupViewContent renderStartupView(const Domain::StartupPublication* publication,
                                      const Platform::StartupCapabilities& capabilities,
-                                     StartupViewState& state);
+                                     StartupViewState& state,
+                                     StartupActionsView* actions = nullptr);
 
 } // namespace App

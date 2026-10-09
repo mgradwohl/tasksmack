@@ -1,8 +1,8 @@
 #pragma once
 
-// Pure helpers behind WindowsStartupProbe (#801): the StartupApproved value format, FILETIME to Unix
-// time, and the executable a Run command line starts. No Windows header, so the tests build on every
-// platform (tests/Platform/WindowsMath/).
+// Pure helpers behind WindowsStartupProbe and WindowsStartupActions (#801): the StartupApproved value
+// format (parse and encode), its keys, FILETIME to Unix time, and the executable a Run command line
+// starts. No Windows header, so the tests build on every platform (tests/Platform/WindowsMath/).
 
 #include "Platform/IStartupProbe.h"
 
@@ -10,10 +10,12 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Platform::Windows::StartupMath
 {
@@ -62,6 +64,91 @@ inline constexpr std::uint64_t FILETIME_TICKS_PER_SECOND = 10000000ULL;
         state.disabledAtUnixSeconds = fileTimeToUnixSeconds(fileTime);
     }
     return state;
+}
+
+/// The StartupApproved keys (under HKCU or HKLM) that record the Run, 32-bit Run and Startup folder
+/// entries' state.
+inline constexpr const wchar_t* APPROVED_RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
+inline constexpr const wchar_t* APPROVED_RUN32_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32";
+inline constexpr const wchar_t* APPROVED_FOLDER_KEY =
+    L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder";
+
+/// Where one entry's StartupApproved value lives: the root (HKLM when `machine`) and the subkey.
+struct ApprovedKey
+{
+    bool machine = false;
+    const wchar_t* subkey = nullptr;
+
+    friend constexpr bool operator==(const ApprovedKey&, const ApprovedKey&) noexcept = default;
+};
+
+/// The StartupApproved key for an entry at @p location; nullopt for RunOnce, which has none.
+[[nodiscard]] constexpr std::optional<ApprovedKey> approvedKeyFor(StartupLocation location) noexcept
+{
+    switch (location)
+    {
+    case StartupLocation::RunUser:
+        return ApprovedKey{.machine = false, .subkey = APPROVED_RUN_KEY};
+    case StartupLocation::RunMachine:
+        return ApprovedKey{.machine = true, .subkey = APPROVED_RUN_KEY};
+    case StartupLocation::RunMachine32:
+        return ApprovedKey{.machine = true, .subkey = APPROVED_RUN32_KEY};
+    case StartupLocation::StartupFolderUser:
+        return ApprovedKey{.machine = false, .subkey = APPROVED_FOLDER_KEY};
+    case StartupLocation::StartupFolderCommon:
+        return ApprovedKey{.machine = true, .subkey = APPROVED_FOLDER_KEY};
+    case StartupLocation::RunOnceUser:
+    case StartupLocation::RunOnceMachine:
+        break;
+    }
+    return std::nullopt;
+}
+
+/// The StartupApproved value name for @p entry: a Run entry's value name, or a Startup folder entry's
+/// file name with its extension ("Tool.lnk"), as the probe matches them.
+[[nodiscard]] inline std::string approvedValueName(const StartupEntry& entry)
+{
+    if (entry.location != StartupLocation::StartupFolderUser && entry.location != StartupLocation::StartupFolderCommon)
+    {
+        return entry.name;
+    }
+    const auto slash = entry.sourcePath.find_last_of("\\/");
+    return (slash == std::string::npos) ? entry.sourcePath : entry.sourcePath.substr(slash + 1);
+}
+
+/// The StartupApproved value that records @p enabled, built on @p existing (the current value; empty
+/// when there is none). Byte 0 gets bit 0 cleared when enabled and set when disabled, with bit 1 set
+/// (0x02 / 0x03, as Task Manager writes); its other bits, bytes 1-3 and anything past byte 11 are kept.
+/// Bytes 4-11 become @p disabledAtFileTime little-endian when disabling, zero when enabling. A value
+/// shorter than 12 bytes is padded with zeros to the standard 12.
+[[nodiscard]] inline std::vector<std::uint8_t>
+encodeStartupApproved(std::span<const std::uint8_t> existing, bool enabled, std::uint64_t disabledAtFileTime)
+{
+    constexpr std::size_t STANDARD_SIZE = 12;
+    constexpr std::size_t TIME_OFFSET = 4;
+    constexpr std::size_t TIME_BYTES = 8;
+    std::vector<std::uint8_t> value(existing.begin(), existing.end());
+    if (value.size() < STANDARD_SIZE)
+    {
+        value.resize(STANDARD_SIZE, 0);
+    }
+    value[0] = static_cast<std::uint8_t>((value[0] & 0xFEU) | 0x02U | (enabled ? 0U : 1U));
+    const std::uint64_t time = enabled ? 0 : disabledAtFileTime;
+    for (std::size_t i = 0; i < TIME_BYTES; ++i)
+    {
+        value[TIME_OFFSET + i] = static_cast<std::uint8_t>(time >> (8U * i));
+    }
+    return value;
+}
+
+/// A Win32 error from a StartupApproved write, in words the result line shows as they stand.
+[[nodiscard]] inline std::string approvedErrorText(std::uint32_t code)
+{
+    if (code == 5) // ERROR_ACCESS_DENIED: an all-users entry, not elevated
+    {
+        return "Requires administrator";
+    }
+    return std::format("Windows error {}", code);
 }
 
 /// Whether the location is per user or machine-wide.

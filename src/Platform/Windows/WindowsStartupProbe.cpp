@@ -56,9 +56,9 @@ namespace
 
 constexpr const wchar_t* RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr const wchar_t* RUN_ONCE_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce";
-constexpr const wchar_t* APPROVED_RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
-constexpr const wchar_t* APPROVED_RUN32_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32";
-constexpr const wchar_t* APPROVED_FOLDER_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder";
+using Windows::StartupMath::APPROVED_FOLDER_KEY;
+using Windows::StartupMath::APPROVED_RUN32_KEY;
+using Windows::StartupMath::APPROVED_RUN_KEY;
 
 /// One Run/RunOnce key and the StartupApproved key that records its entries' state (none for RunOnce).
 struct RunSource

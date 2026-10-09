@@ -30,6 +30,8 @@ inline constexpr std::string_view CONNECTIONS_READ_THREAD_NAME = "ts-conn-read";
 inline constexpr std::string_view SYSTEM_INFO_READ_THREAD_NAME = "ts-sysinfo-read";
 /// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
+/// The worker that runs one Startup tab action (enable, disable) at a time (#801).
+inline constexpr std::string_view STARTUP_ACTION_THREAD_NAME = "ts-auto-action";
 
 /// `name` cut to at most `maxLength` bytes, never in the middle of a UTF-8 sequence.
 [[nodiscard]] inline std::string truncateThreadName(std::string_view name, std::size_t maxLength = MAX_LINUX_THREAD_NAME_LENGTH)
