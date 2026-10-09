@@ -203,6 +203,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp
     src/Platform/Windows/WindowsStartupProbe.cpp
+    src/Platform/Windows/WindowsServiceActions.cpp
     src/Platform/Windows/WindowsServiceProbe.cpp
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
@@ -239,6 +240,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
     src/Platform/IStartupProbe.h
+    src/Platform/IServiceActions.h
     src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
     src/Platform/GPUTypes.h
@@ -291,6 +293,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsStartupProbe.h
         src/Platform/Windows/WindowsServiceProbe.h
         src/Platform/Windows/WindowsServiceConfig.h
+        src/Platform/Windows/WindowsServiceActions.h
         src/Platform/Windows/WinString.h
     )
 endif()

@@ -257,6 +257,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
+    Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
 )
@@ -280,6 +281,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
@@ -337,6 +339,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
     )

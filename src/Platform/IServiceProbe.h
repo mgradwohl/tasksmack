@@ -104,6 +104,11 @@ class IServiceProbe
 
     /// Every service with its current state, or the reason the list could not be read.
     [[nodiscard]] virtual ServiceEnumeration enumerate() = 0;
+
+    /// Drops any cached configuration, so the next enumerate() reads every service's afresh: after a
+    /// service action changed one (#1577). Called on the sampling thread, like enumerate().
+    virtual void forgetCachedConfig()
+    {}
 };
 
 /// The probe for a platform without a service implementation yet (Linux until systemd support
