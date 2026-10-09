@@ -332,6 +332,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
+    Platform/test_SystemdBus.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
     Platform/test_LinuxDiskProbe.cpp
@@ -389,6 +390,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/SystemdBus.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
@@ -555,7 +557,8 @@ tasksmack_apply_linux_toolchain(TaskSmackTests)
 if(UNIX AND NOT APPLE)
     # Linux needs X11 for platform tests
     find_package(X11 REQUIRED)
-    target_link_libraries(TaskSmackTests PRIVATE X11::X11 ${CMAKE_DL_LIBS})
+    # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525)
+    target_link_libraries(TaskSmackTests PRIVATE X11::X11 ${CMAKE_DL_LIBS} tasksmack_sdbus)
 
     add_library(TaskSmackNVMLMock SHARED
         Mocks/NVMLMock.cpp

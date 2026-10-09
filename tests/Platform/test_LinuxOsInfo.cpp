@@ -7,10 +7,12 @@
 /// the mountinfo parser and the volume choice, and the disks and volumes under a fixture root; and
 /// Platform::LinuxPlatformSecurity (#1514), the Security parsers and facts from /sys; and
 /// Platform::LinuxSensors (#1522), hwmon and thermal-zone sensors; and Platform::LinuxNetworkAdapters
-/// (#1518), routes, resolv.conf, Wi-Fi levels and the adapters under a fixture root.
+/// (#1518), routes, resolv.conf, Wi-Fi levels and the adapters under a fixture root; and
+/// Platform::LinuxBootTimes (#1525), boot phases from systemd's timestamps.
 /// The headers use only the standard library, so these build and run on every platform.
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Linux/LinuxBootTimes.h"
 #include "Platform/Linux/LinuxCommitPaging.h"
 #include "Platform/Linux/LinuxFirmwareInfo.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
@@ -977,6 +979,38 @@ TEST(LinuxNetworkAdaptersTest, OnlyTheStubAndNothingReadable)
         EXPECT_TRUE(info.adapters.empty());
         EXPECT_TRUE(info.gatewayV4.empty());
     }
+}
+
+TEST(LinuxBootTimesTest, PhasesAsSystemdAnalyzeComputesThem)
+{
+    // systemd-boot on UEFI with an initramfs: every phase.
+    BootPerformanceInfo full;
+    LinuxBootTimes::computePhases(
+        {.firmware = 5'200'000, .loader = 1'100'000, .initrd = 900'000, .userspace = 3'400'000, .finish = 9'400'000}, full);
+    EXPECT_TRUE(full.finished);
+    EXPECT_EQ(full.firmwareUs, std::optional<std::uint64_t>(4'100'000));
+    EXPECT_EQ(full.loaderUs, std::optional<std::uint64_t>(1'100'000));
+    EXPECT_EQ(full.kernelUs, std::optional<std::uint64_t>(900'000));
+    EXPECT_EQ(full.initrdUs, std::optional<std::uint64_t>(2'500'000));
+    EXPECT_EQ(full.userspaceUs, std::optional<std::uint64_t>(6'000'000));
+    EXPECT_EQ(full.totalUs, std::optional<std::uint64_t>(14'600'000));
+
+    // GRUB or a VM: no firmware or loader time; no initramfs: the kernel runs up to userspace.
+    BootPerformanceInfo plain;
+    LinuxBootTimes::computePhases({.firmware = 0, .loader = 0, .initrd = 0, .userspace = 1'500'000, .finish = 4'000'000}, plain);
+    EXPECT_FALSE(plain.firmwareUs.has_value());
+    EXPECT_FALSE(plain.loaderUs.has_value());
+    EXPECT_EQ(plain.kernelUs, std::optional<std::uint64_t>(1'500'000));
+    EXPECT_FALSE(plain.initrdUs.has_value());
+    EXPECT_EQ(plain.userspaceUs, std::optional<std::uint64_t>(2'500'000));
+    EXPECT_EQ(plain.totalUs, std::optional<std::uint64_t>(4'000'000));
+
+    // Still starting: no userspace time and no total yet.
+    BootPerformanceInfo starting;
+    LinuxBootTimes::computePhases({.firmware = 0, .loader = 0, .initrd = 0, .userspace = 1'500'000, .finish = 0}, starting);
+    EXPECT_FALSE(starting.finished);
+    EXPECT_FALSE(starting.userspaceUs.has_value());
+    EXPECT_FALSE(starting.totalUs.has_value());
 }
 
 } // namespace

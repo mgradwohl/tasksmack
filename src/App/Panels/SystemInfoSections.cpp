@@ -891,6 +891,56 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
     return section;
 }
 
+std::string formatBootDuration(std::uint64_t microseconds)
+{
+    constexpr std::uint64_t MS = 1000;
+    constexpr std::uint64_t SECOND = 1000 * MS;
+    constexpr std::uint64_t MINUTE = 60 * SECOND;
+    if (microseconds < SECOND)
+    {
+        return std::format("{} ms", microseconds / MS);
+    }
+    if (microseconds < MINUTE)
+    {
+        return std::format("{:.2f} s", static_cast<double>(microseconds) / static_cast<double>(SECOND));
+    }
+    return std::format("{} min {:.1f} s", microseconds / MINUTE, static_cast<double>(microseconds % MINUTE) / static_cast<double>(SECOND));
+}
+
+Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot)
+{
+    Section section{.title = "Boot performance", .icon = ICON_FA_POWER_OFF, .rows = {}};
+    auto& rows = section.rows;
+    if (!boot.timingsRead)
+    {
+        rows.push_back(row("Last boot", {}, boot.unavailableReason.empty() ? std::string(NOT_REPORTED) : boot.unavailableReason));
+        return section;
+    }
+    if (!boot.finished)
+    {
+        rows.push_back(row("Last boot", "Still starting up"));
+    }
+    else
+    {
+        rows.push_back(row("Last boot", boot.totalUs.has_value() ? formatBootDuration(*boot.totalUs) : std::string{}));
+    }
+    const auto phase = [&rows](const char* label, const std::optional<std::uint64_t>& microseconds, std::string_view reason)
+    {
+        rows.push_back(row(label, microseconds.has_value() ? formatBootDuration(*microseconds) : std::string{}, reason));
+    };
+    constexpr std::string_view NOT_MEASURED_BY_LOADER =
+        "Not measured: the boot loader didn't record it (systemd-boot does), or not booted with UEFI";
+    phase("Firmware", boot.firmwareUs, NOT_MEASURED_BY_LOADER);
+    phase("Boot loader", boot.loaderUs, NOT_MEASURED_BY_LOADER);
+    phase("Kernel", boot.kernelUs, NOT_REPORTED);
+    if (boot.initrdUs.has_value())
+    {
+        phase("Initrd", boot.initrdUs, NOT_REPORTED); // left out entirely without an initramfs
+    }
+    phase("Userspace", boot.userspaceUs, boot.finished ? NOT_REPORTED : std::string_view("Startup hasn't finished yet"));
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot)
 {
     std::vector<Section> sections;
@@ -929,6 +979,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.adapters.available)
     {
         sections.push_back(buildNetworkAdaptersSection(snapshot.adapters));
+    }
+    if (snapshot.boot.available)
+    {
+        sections.push_back(buildBootPerformanceSection(snapshot.boot));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;
