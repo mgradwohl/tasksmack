@@ -13,6 +13,9 @@ option(TASKSMACK_ENABLE_WARNINGS "Enable extra compiler warnings" ON)
 option(TASKSMACK_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(TASKSMACK_BUILD_TESTS "Build tests" ON)
 option(TASKSMACK_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
+# The headless PGO UI training driver, TaskSmackUiTraining (#880). Cheap: it links the app's own
+# objects (TaskSmackApp) and compiles only its few sources; ON so its ctest smoke test runs everywhere.
+option(TASKSMACK_BUILD_UI_TRAINING "Build the headless PGO UI training driver" ON)
 option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)

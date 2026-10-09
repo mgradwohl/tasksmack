@@ -6,8 +6,19 @@
 #   ./tools/pgo.sh generate    # Phase 1 only: instrumented build + run to collect data
 #   ./tools/pgo.sh merge       # Phase 2 only: merge *.profraw → profiles/tasksmack.profdata
 #   ./tools/pgo.sh use         # Phase 3 only: build PGO-optimized binary
+#   ./tools/pgo.sh baseline    # The pgo-use build without profile data, to measure PGO against
 #
 # The resulting binary is at: build/pgo-use/bin/TaskSmack
+#
+# Training (phase 1) runs two workloads on the instrumented build:
+#   1. the benchmark suite (TaskSmackBenchmarks), for the Domain/Platform hot paths;
+#   2. the headless UI training driver (TaskSmackUiTraining, #880): the real panels, every main tab,
+#      by the weights in src/Training/UiTrainingPlan.h, once on the real probes and once on the
+#      synthetic large-UI machine (#1413). No window, no input: it never takes a process action.
+#
+# PGO builds are not profiling builds. pgo-generate is instrumented (slow, counts branches) and is
+# only for collecting training data; for perf/flamegraphs use the profile preset (build/profile).
+# To measure what PGO alone buys, compare pgo-use with pgo-baseline: the same flags, no profile data.
 #
 # Requirements:
 #   - clang++-22 (project Clang version, see CONTRIBUTING.md)
@@ -32,6 +43,7 @@ PROFRAW_PATTERN="${PROFILES_DIR}/tasksmack-%p.profraw"
 PROFDATA="${PROFILES_DIR}/tasksmack.profdata"
 BENCH_BIN="${ROOT}/build/pgo-generate/bin/TaskSmackBenchmarks"
 APP_BIN="${ROOT}/build/pgo-generate/bin/TaskSmack"
+UI_TRAINING_BIN="${ROOT}/build/pgo-generate/bin/TaskSmackUiTraining"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -93,7 +105,7 @@ validate_pgo_prereqs() {
 # ── phase 1: instrumented build and profiling run ─────────────────────────────
 
 phase_generate() {
-    print_step "Phase 1 – Instrumented build (pgo-generate preset)"
+    print_step "Phase 1 – Instrumented PGO training build (pgo-generate preset; not a profiling build)"
 
     validate_pgo_prereqs || die "Missing build prerequisites. See CONTRIBUTING.md."
     # Validate llvm-profdata (LLVM 22) early so the generate phase fails before
@@ -121,12 +133,26 @@ phase_generate() {
     LLVM_PROFILE_FILE="${PROFRAW_PATTERN}" \
         "${BENCH_BIN}" --benchmark_min_time=0.5 2>&1
 
-    # Optionally also run the main application briefly to capture real UI paths
+    print_step "Phase 1 – UI training: the real panels, headless (TaskSmackUiTraining, #880)"
+
+    if [[ ! -x "${UI_TRAINING_BIN}" ]]; then
+        die "UI training binary not found: ${UI_TRAINING_BIN}"
+    fi
+
+    # Every main tab, by the weights in src/Training/UiTrainingPlan.h, for a fixed number of frames;
+    # once per probe set (TASKSMACK_SYNTHETIC is read once per process). Each run writes its own
+    # .profraw (%p) when it exits.
+    local probes
+    for probes in real synthetic; do
+        LLVM_PROFILE_FILE="${PROFRAW_PATTERN}" \
+            "${UI_TRAINING_BIN}" --probes "${probes}" 2>&1
+    done
+
+    # Interactive use adds to the automated training; it does not replace it.
     if [[ -x "${APP_BIN}" ]]; then
         echo
-        echo "Tip: You can run the main application to capture additional UI profile data:"
+        echo "Optional: add an interactive session's profile before merging:"
         echo "  LLVM_PROFILE_FILE='${PROFRAW_PATTERN}' ${APP_BIN}"
-        echo "  (Use it for a few seconds, then exit.)"
     fi
 
     echo
@@ -185,6 +211,21 @@ phase_use() {
     fi
 }
 
+# ── baseline: the pgo-use build without profile data ─────────────────────────
+
+phase_baseline() {
+    print_step "Baseline – pgo-use flags without profile data (pgo-baseline preset)"
+
+    validate_pgo_prereqs || die "Missing build prerequisites. See CONTRIBUTING.md."
+
+    cmake --preset pgo-baseline -S "${ROOT}" 2>&1
+    cmake --build --preset pgo-baseline 2>&1
+
+    echo
+    echo "Baseline binary: ${ROOT}/build/pgo-baseline/bin/TaskSmack"
+    echo "Compare it with build/pgo-use: the two differ only in the profile data."
+}
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 main() {
@@ -194,6 +235,7 @@ main() {
         generate) phase_generate ;;
         merge)    phase_merge ;;
         use)      phase_use ;;
+        baseline) phase_baseline ;;
         all)
             phase_generate
             phase_merge
@@ -204,11 +246,12 @@ main() {
             echo "  Optimized binary    : build/pgo-use/bin/TaskSmack"
             ;;
         *)
-            echo "Usage: $0 [generate|merge|use|all]"
-            echo "  generate  – instrumented build + collect profile data"
+            echo "Usage: $0 [generate|merge|use|baseline|all]"
+            echo "  generate  – instrumented build + collect profile data (benchmarks + headless UI training)"
             echo "  merge     – merge *.profraw files into tasksmack.profdata"
             echo "  use       – build PGO-optimized binary from tasksmack.profdata"
-            echo "  all       – run all three phases in order (default)"
+            echo "  baseline  – build pgo-use's flags without profile data, to compare against"
+            echo "  all       – run generate, merge and use in order (default)"
             exit 1
             ;;
     esac

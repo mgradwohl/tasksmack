@@ -205,8 +205,8 @@
         },
         {
             "name": "profile",
-            "displayName": "Profile",
-            "description": "Release build optimized for profiling with perf/Instruments (frame pointers preserved)",
+            "displayName": "Profile (sampling profiler, not PGO)",
+            "description": "Release build optimized for profiling with perf/Instruments (frame pointers preserved). A plain profiling build: no PGO instrumentation or profile data (for PGO see pgo-generate / pgo-use / pgo-baseline)",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
@@ -227,8 +227,8 @@
         },
         {
             "name": "pgo-generate",
-            "displayName": "PGO Generate",
-            "description": "Instrumented build to collect profiling data for PGO (run ./tools/pgo.sh generate, or ./tools/pgo.sh for the full workflow)",
+            "displayName": "PGO Training (instrumented)",
+            "description": "PGO training build: instrumented (-fprofile-instr-generate) to collect profile data, not for timing or sampling profilers. Run ./tools/pgo.sh generate (benchmarks + headless UI training), or ./tools/pgo.sh for the full workflow",
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
@@ -246,6 +246,19 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date",
+                "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread",
+                "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "pgo-baseline",
+            "displayName": "PGO Baseline (pgo-use without profile data)",
+            "description": "The pgo-use build with no profile data: the same compiler, flags and options except -fprofile-instr-use, so comparing it with pgo-use measures PGO alone (#880). Requires x86-64-v3 capable CPU (Haswell/2013 or newer).",
+            "inherits": "linux-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3",
                 "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread",
                 "CMAKE_SHARED_LINKER_FLAGS_RELEASE": "-stdlib=libc++ -pthread",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
@@ -322,8 +335,8 @@
         },
         {
             "name": "win-profile",
-            "displayName": "Windows Profile",
-            "description": "Release build optimized for profiling with ETW/VTune (frame pointers preserved)",
+            "displayName": "Windows Profile (sampling profiler, not PGO)",
+            "description": "Release build optimized for profiling with ETW/VTune (frame pointers preserved). A plain profiling build: no PGO instrumentation or profile data (for PGO see win-pgo-generate / win-pgo-use / win-pgo-baseline)",
             "inherits": "windows-base",
             "binaryDir": "${sourceDir}/build/win-profile",
             "cacheVariables": {
@@ -346,8 +359,8 @@
         },
         {
             "name": "win-pgo-generate",
-            "displayName": "Windows PGO Generate",
-            "description": "Instrumented build to collect profiling data for PGO on Windows (run pwsh tools/pgo.ps1 generate, or pwsh tools/pgo.ps1 for the full workflow)",
+            "displayName": "Windows PGO Training (instrumented)",
+            "description": "PGO training build on Windows: instrumented (-fprofile-instr-generate) to collect profile data, not for timing or sampling profilers. Run pwsh tools/pgo.ps1 generate (benchmarks + headless UI training), or pwsh tools/pgo.ps1 for the full workflow",
             "inherits": "windows-base",
             "binaryDir": "${sourceDir}/build/win-pgo-generate",
             "cacheVariables": {
@@ -367,6 +380,18 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3 -fprofile-instr-use=\"${sourceDir}/profiles/tasksmack.profdata\" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date",
+                "TASKSMACK_BUILD_BENCHMARKS": "ON"
+            }
+        },
+        {
+            "name": "win-pgo-baseline",
+            "displayName": "Windows PGO Baseline (win-pgo-use without profile data)",
+            "description": "The win-pgo-use build with no profile data: the same compiler, flags and options except -fprofile-instr-use, so comparing it with win-pgo-use measures PGO alone (#880). Requires x86-64-v3 capable CPU (Haswell/2013 or newer).",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-pgo-baseline",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=x86-64-v3",
                 "TASKSMACK_BUILD_BENCHMARKS": "ON"
             }
         }
@@ -414,7 +439,7 @@
         },
         {
             "name": "profile",
-            "displayName": "Profile",
+            "displayName": "Profile (sampling profiler, not PGO)",
             "configurePreset": "profile"
         },
         {
@@ -424,13 +449,18 @@
         },
         {
             "name": "pgo-generate",
-            "displayName": "PGO Generate",
+            "displayName": "PGO Training (instrumented)",
             "configurePreset": "pgo-generate"
         },
         {
             "name": "pgo-use",
             "displayName": "PGO Use",
             "configurePreset": "pgo-use"
+        },
+        {
+            "name": "pgo-baseline",
+            "displayName": "PGO Baseline (pgo-use without profile data)",
+            "configurePreset": "pgo-baseline"
         },
         {
             "name": "win-debug",
@@ -464,7 +494,7 @@
         },
         {
             "name": "win-profile",
-            "displayName": "Windows Profile",
+            "displayName": "Windows Profile (sampling profiler, not PGO)",
             "configurePreset": "win-profile"
         },
         {
@@ -474,13 +504,18 @@
         },
         {
             "name": "win-pgo-generate",
-            "displayName": "Windows PGO Generate",
+            "displayName": "Windows PGO Training (instrumented)",
             "configurePreset": "win-pgo-generate"
         },
         {
             "name": "win-pgo-use",
             "displayName": "Windows PGO Use",
             "configurePreset": "win-pgo-use"
+        },
+        {
+            "name": "win-pgo-baseline",
+            "displayName": "Windows PGO Baseline (win-pgo-use without profile data)",
+            "configurePreset": "win-pgo-baseline"
         },
         {
             "name": "msan",

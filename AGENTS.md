@@ -34,7 +34,7 @@ cmake --workflow --preset dev        # Linux: configure+build+test
 cmake --workflow --preset win-dev    # Windows equivalent
 ```
 Common presets have a `win-` twin: `debug`, `release`, `release-compatible`, `optimized`, `relwithdebinfo`,
-`coverage`, `unity`, `pgo-generate`/`pgo-use`, `profile`. Linux-only: `asan-ubsan`, `tsan`, `msan`.
+`coverage`, `unity`, `pgo-generate`/`pgo-use`/`pgo-baseline`, `profile`. Linux-only: `asan-ubsan`, `tsan`, `msan`.
 
 Format/lint (required before a PR is ready):
 ```bash

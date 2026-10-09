@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -26,6 +27,11 @@ struct ApplicationSpecification
     /// Platform/Domain/Core/UI/App layering: Core must not depend on App. Only has an effect
     /// combined with VideoBackend::isWayland() at window-creation time (see #745).
     bool ForceNativeDecorationsOnWayland = false;
+    /// No window, no OpenGL context and no SDL video subsystem: an event hub and clock for code that
+    /// drives the App layer's panels itself, without run() (#880: the headless PGO UI training
+    /// driver, training/). getWindow() and run() throw in this mode; hasWindow() says which it is.
+    /// The shipping app never sets it.
+    bool Headless = false;
 };
 
 class Application
@@ -80,7 +86,17 @@ class Application
 
     [[nodiscard]] Window& getWindow() const
     {
+        if (!m_Window)
+        {
+            throw std::logic_error("Application has no window (ApplicationSpecification::Headless)");
+        }
         return *m_Window;
+    }
+
+    /// False only for a headless application (ApplicationSpecification::Headless, #880).
+    [[nodiscard]] bool hasWindow() const noexcept
+    {
+        return m_Window != nullptr;
     }
 
     [[nodiscard]] const PathService& paths() const noexcept

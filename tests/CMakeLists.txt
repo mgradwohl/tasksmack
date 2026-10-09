@@ -248,6 +248,8 @@ set(COMMON_TEST_SOURCES
     App/test_KeyboardShortcuts.cpp
     App/test_ProcessTableNavigation.cpp
     App/test_ProcessSelection.cpp
+    # The PGO UI training plan (#880): workload weights, frame allocation, the driver's command line
+    Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_AboutDialogRender.cpp
@@ -464,6 +466,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
+    # The PGO UI training plan (#880), pure: test_UiTrainingPlan.cpp
+    ${CMAKE_SOURCE_DIR}/src/Training/UiTrainingPlan.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
@@ -633,4 +637,15 @@ else()
         PROPERTIES
             ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
+endif()
+
+# The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
+# main tab drawn by the real panels, with no window, once on the real probes and once on a small
+# synthetic machine. It fails if a workload never brought its tab forward. No PGO toolchain needed.
+if(TARGET TaskSmackUiTraining)
+    add_test(NAME UiTrainingSmokeReal
+        COMMAND $<TARGET_FILE:TaskSmackUiTraining> --probes real --frames 100 --fps 0)
+    add_test(NAME UiTrainingSmokeSynthetic
+        COMMAND $<TARGET_FILE:TaskSmackUiTraining> --synthetic processes=300,history=60 --frames 100 --fps 0)
+    set_tests_properties(UiTrainingSmokeReal UiTrainingSmokeSynthetic PROPERTIES TIMEOUT 180 LABELS "ui-training")
 endif()
