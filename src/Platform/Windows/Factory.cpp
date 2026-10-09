@@ -7,6 +7,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
@@ -19,6 +20,7 @@
 #include "WindowsPathProvider.h"
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
+#include "WindowsProcessModules.h"
 #include "WindowsProcessProbe.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
@@ -54,6 +56,11 @@ std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
     // GetExtendedTcpTable/GetExtendedUdpTable rows are not wired up yet (#1489), so the Connections
     // section (#799) is hidden.
     return std::make_unique<UnsupportedProcessConnectionsReader>();
+}
+
+std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
+{
+    return std::make_unique<Windows::WindowsProcessModulesReader>();
 }
 
 std::unique_ptr<IStartupProbe> makeStartupProbe()

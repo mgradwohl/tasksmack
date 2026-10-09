@@ -10,6 +10,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessModules.h"
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -17,6 +18,7 @@
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessEnvironmentView.h"
+#include "ProcessModulesView.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
@@ -56,6 +58,13 @@ class ProcessDetailsPanel : public Panel
     ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
                         std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                         std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader);
+
+    /// As above, with an injected IProcessModulesReader too (tests: mocks). A null modules reader, like
+    /// the shorter constructors', hides the Modules section (#802).
+    ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions,
+                        std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
+                        std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
+                        std::unique_ptr<Platform::IProcessModulesReader> modulesReader);
 
     ~ProcessDetailsPanel() override = default;
 
@@ -240,6 +249,12 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessConnectionsReader> m_ConnectionsReader;
     bool m_HasConnections = false; // m_ConnectionsReader can list sockets here (Linux)
     ProcessConnectionsView m_ConnectionsView;
+
+    // The Overview's Modules section (#802), on the same terms as the Connections section, and for the
+    // same reason its reader is declared before its view.
+    std::unique_ptr<Platform::IProcessModulesReader> m_ModulesReader;
+    bool m_HasModules = false; // m_ModulesReader can list modules here (Windows, Linux; not synthetic runs)
+    ProcessModulesView m_ModulesView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;
