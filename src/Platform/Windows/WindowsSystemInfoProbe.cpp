@@ -15,12 +15,15 @@
 #include <windows.h>
 #include <lm.h>
 #include <security.h>
+#include <powerbase.h> // PowerDeterminePlatformRoleEx (powrprof)
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "netapi32.lib")
+#pragma comment(lib, "powrprof.lib")
 #pragma comment(lib, "secur32.lib")
 
+#include "Platform/SmbiosParser.h"
 #include "WinString.h"
 #include "WindowsOsInfoMath.h"
 
@@ -29,6 +32,8 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace Platform
 {
@@ -196,6 +201,49 @@ OsInfo WindowsSystemInfoProbe::readOs()
 
     info.systemDirectory = readDirectory([](wchar_t* buffer, UINT size) { return GetSystemDirectoryW(buffer, size); });
     info.windowsDirectory = readDirectory([](wchar_t* buffer, UINT size) { return GetSystemWindowsDirectoryW(buffer, size); });
+    return info;
+}
+
+FirmwareInfo WindowsSystemInfoProbe::readFirmware()
+{
+    FirmwareInfo info;
+    info.available = true;
+
+    FIRMWARE_TYPE type = FirmwareTypeUnknown;
+    if (GetFirmwareType(&type) != FALSE)
+    {
+        if (type == FirmwareTypeUefi)
+        {
+            info.firmwareMode = FirmwareMode::Uefi;
+        }
+        else if (type == FirmwareTypeBios)
+        {
+            info.firmwareMode = FirmwareMode::Legacy;
+        }
+    }
+
+    // 'RSMB': the raw SMBIOS table; no administrator rights needed. The size can change between the two
+    // calls (it doesn't in practice), so a second call that wants more room leaves the facts empty.
+    constexpr DWORD RSMB = 0x52534D42;
+    if (const UINT size = GetSystemFirmwareTable(RSMB, 0, nullptr, 0); size > 0)
+    {
+        std::vector<std::uint8_t> table(size);
+        const UINT written = GetSystemFirmwareTable(RSMB, 0, table.data(), size);
+        if (written > 0 && written <= size)
+        {
+            table.resize(written);
+            Smbios::decodeFirmware(table, info);
+        }
+    }
+
+    // The power manager's role (from the ACPI FADT preferred profile) is what msinfo32 shows; the
+    // chassis-derived role from the SMBIOS table stands in when it is unspecified.
+    if (const std::string_view role =
+            WindowsOsInfo::platformRoleName(static_cast<std::uint32_t>(PowerDeterminePlatformRoleEx(POWER_PLATFORM_ROLE_V2)));
+        !role.empty())
+    {
+        info.platformRole = std::string(role);
+    }
     return info;
 }
 

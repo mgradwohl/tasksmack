@@ -37,6 +37,14 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::FirmwareInfo readFirmware() override
+    {
+        Platform::FirmwareInfo info;
+        info.available = true;
+        info.systemManufacturer = "Contoso";
+        return info;
+    }
+
   private:
     bool m_HasOs;
     int* m_Reads;
@@ -57,6 +65,7 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->version, 1U);
     EXPECT_EQ(first->os.name, "Windows 11 Pro");
     EXPECT_EQ(first->os.build, "26100.1");
+    EXPECT_EQ(first->firmware.systemManufacturer, "Contoso");
     EXPECT_GT(first->readAtUnixSeconds, 0U);
 
     model.read(); // Refresh
@@ -73,6 +82,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     model.read();
     EXPECT_EQ(reads, 0);
     EXPECT_EQ(model.snapshot()->os.family, Platform::OsFamily::Unknown);
+    EXPECT_FALSE(model.snapshot()->firmware.available);
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);

@@ -278,14 +278,17 @@ The **Startup** tab lists the programs Windows starts when you sign in, and enab
 
 ### System Information
 
-The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (firmware, memory modules, disks, adapters, GPUs and displays, security) are planned.
+The **System** tab shows what this machine is, in titled sections of label/value rows (#1399). More sections (memory modules, disks, adapters, GPUs and displays, security) are planned.
 
 - **Operating system:**
   - **Windows:** edition and version (for example "Windows 11 Home", "25H2"), build with its update revision, architecture, install date, boot time and uptime, computer name, workgroup or domain, user, locale, time zone with its current UTC offset, and the system and Windows directories.
   - **Linux:** distribution and version (`/etc/os-release`), kernel and architecture, init system, desktop and session type (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`), boot time and uptime, host name, user, locale, time zone, and whether TaskSmack is running in a container or a virtual machine.
+- **Firmware & board:** the system's manufacturer, model, version, SKU and family; the BIOS vendor, version and release date; the firmware mode (UEFI or legacy BIOS); the SMBIOS version; the embedded controller's version, when there is one; the board's manufacturer, product and version; the chassis type (Desktop, Notebook, Convertible, ...) and manufacturer; and the platform role (desktop, mobile, server). The system serial number, UUID and board serial number are identifiers.
+  - **Windows:** read from the SMBIOS table (`GetSystemFirmwareTable`), and the firmware mode from `GetFirmwareType`; no administrator rights needed.
+  - **Linux:** read from `/sys/class/dmi/id`, UEFI when `/sys/firmware/efi` exists. The serial numbers, the UUID and the SMBIOS version are readable by root only on most systems, so they show "—" with "requires administrator" otherwise.
 - **Read once:** the facts are read in the background the first time you open the tab, never while sampling. **Refresh** reads them again; the uptime is as of that read ("Read at" beside the button).
 - **Unavailable values** show a muted "—"; hover it for the reason.
-- **Identifiers hidden:** the user name, the computer name and a domain name are hidden until you tick **Show identifiers**, and are left out of copies until then.
+- **Identifiers hidden:** the user name, the computer name, a domain name, serial numbers and the system UUID are hidden until you tick **Show identifiers**, and are left out of copies until then.
 - **Filter:** type to show only rows whose label or value contains the text, or every row of a section whose title does (case doesn't matter).
 - **Copy:** each section's **Copy** button, or **Copy all**, puts the section(s) on the clipboard as plain `Label: Value` lines, ready for a bug report. Copies include every row (not just the filtered ones), less hidden identifiers.
 - No administrator rights or network access are needed.
@@ -385,6 +388,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
 | Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
 | System Information: Operating system section | ✅ (os-release, uname, `/proc`, XDG session, container/VM hints) | ✅ (CurrentVersion registry key, session APIs) |
+| System Information: Firmware & board section | ✅ (`/sys/class/dmi/id`; serials, UUID and SMBIOS version need root) | ✅ (SMBIOS table, `GetFirmwareType`) |
 | Startup apps tab | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders; enable / disable through StartupApproved, all-users entries need administrator) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |

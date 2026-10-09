@@ -46,10 +46,47 @@ struct OsInfo
     std::string virtualization;          ///< Linux: a container or VM hint, or "None detected"
 };
 
+/// How the firmware booted the OS.
+enum class FirmwareMode : std::uint8_t
+{
+    Unknown,
+    Uefi,
+    Legacy, ///< BIOS / CSM
+};
+
+/// The Firmware & board facts (#1513), from SMBIOS types 0-3 (Windows) or /sys/class/dmi/id (Linux).
+/// A string the probe could not read is left empty.
+struct FirmwareInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    std::string systemManufacturer;
+    std::string systemModel;
+    std::string systemVersion;
+    std::string systemSku;
+    std::string systemFamily;
+    std::string systemSerial; ///< An identifier
+    std::string systemUuid;   ///< An identifier
+    std::string biosVendor;
+    std::string biosVersion;
+    std::string biosReleaseDate; ///< As the firmware writes it ("05/14/2024")
+    FirmwareMode firmwareMode = FirmwareMode::Unknown;
+    std::string smbiosVersion;             ///< "3.4"
+    std::string embeddedControllerVersion; ///< "1.23"; empty without an embedded controller
+    std::string boardManufacturer;
+    std::string boardProduct;
+    std::string boardVersion;
+    std::string boardSerial; ///< An identifier
+    std::string chassisManufacturer;
+    std::string chassisType;              ///< Decoded: "Desktop", "Notebook", ...
+    std::string platformRole;             ///< "Desktop", "Mobile", "Server", ...
+    bool identifiersNeedAdmin = false;    ///< Linux: the serials and UUID exist but are readable by root only.
+    bool smbiosVersionNeedsAdmin = false; ///< Linux: the SMBIOS entry point exists but is readable by root only.
+};
+
 /// What the platform can read at all.
 struct SystemInfoCapabilities
 {
-    bool hasOs = false;            ///< readOs() returns facts.
+    bool hasOs = false;            ///< readOs() and readFirmware() return facts.
     std::string unavailableReason; ///< Why hasOs is false, for the UI. Empty when it is true.
 };
 
@@ -70,6 +107,9 @@ class ISystemInfoProbe
 
     /// The Operating system & session facts; a fact that can't be read is left empty.
     [[nodiscard]] virtual OsInfo readOs() = 0;
+
+    /// The Firmware & board facts (#1513); read when hasOs is true.
+    [[nodiscard]] virtual FirmwareInfo readFirmware() = 0;
 };
 
 /// The probe for a platform without an implementation: no facts, and hasOs false so the UI says so.
@@ -82,6 +122,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] OsInfo readOs() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] FirmwareInfo readFirmware() override
     {
         return {};
     }

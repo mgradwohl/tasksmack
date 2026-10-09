@@ -63,6 +63,10 @@ struct VisibleSection
 /// The Operating system section (#1512). The rows depend on os.family; uptime is as of the read.
 [[nodiscard]] Section buildOsSection(const Platform::OsInfo& os, std::uint64_t readAtUnixSeconds);
 
+/// The Firmware & board section (#1513). Serials and the UUID are identifiers; the embedded controller
+/// row is left out when there is none.
+[[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware);
+
 /// The page's sections, in display order. Empty before the first read.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot);
 
