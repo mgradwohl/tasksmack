@@ -9,7 +9,7 @@
 #include "UI/IconsFontAwesome6.h"
 
 #ifdef _WIN32
-#include "ProcessDetailsPanel_PriorityHelpers.h" // PRIORITY_CLASS_COMBO_WIDTH_EM for the Windows class combo
+#include "ProcessDetailsPanel_PriorityHelpers.h" // WINDOWS_PRIORITY_SLIDER for the Windows class slider (#1538)
 #endif
 
 #include <imgui.h>
@@ -38,9 +38,11 @@ namespace
     if (capabilities.canSetPriority)
     {
 #ifdef _WIN32
-        // Priority [class combo] [Apply]. Runtime's Priority row shows the current class (#1537).
-        width = ImGui::CalcTextSize("Priority").x + spacing + (Detail::PRIORITY_CLASS_COMBO_WIDTH_EM * emPx) + spacing +
-                applyButtonWidth(ICON_FA_CHECK "  Apply");
+        // Priority, over the class slider at the narrowest that shows all five stop names (#1538), and
+        // Apply under it. Runtime's Priority row shows the current class, not this row (#1537).
+        width = std::max({ImGui::CalcTextSize("Priority").x,
+                          Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER),
+                          applyButtonWidth(ICON_FA_CHECK "  Apply")});
 #else
         // The gradient slider row, which fits itself to the width it is given.
         width = ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx;

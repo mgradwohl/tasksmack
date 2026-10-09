@@ -8,15 +8,18 @@
 #include "UI/Widgets.h"
 
 #ifndef _WIN32
-#include "Domain/PriorityConfig.h" // NORMAL_NICE for the nice slider's 0 key; the Windows class combo has no slider
+#include "Domain/PriorityConfig.h" // NORMAL_NICE for the nice slider's 0 key; the Windows stops have none
 #endif
 
 #include <imgui.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 
 namespace App
 {
@@ -27,14 +30,15 @@ namespace
 // The Apply button's label, named once so its width is measured from what is drawn (icon included).
 constexpr const char* APPLY_LABEL = ICON_FA_CHECK "  Apply";
 
-#ifndef _WIN32
 using Detail::getNiceColor;
-using Detail::getNiceFromPosition;
-using Detail::getNicePosition;
-using Detail::NICE_MAX;
 using Detail::NICE_MIN;
 using Detail::NICE_RANGE;
 using Detail::PRIORITY_GRADIENT_SEGMENTS;
+#ifndef _WIN32
+using Detail::getNiceFromPosition;
+using Detail::getNicePosition;
+using Detail::NICE_MAX;
+#endif
 
 /// Captures all computed layout values in one place for the slider's drawing helpers
 struct PrioritySliderContext
@@ -44,8 +48,12 @@ struct PrioritySliderContext
     ImVec2 sliderMin;           // Top-left of slider bar (screen coords)
     ImVec2 sliderMax;           // Bottom-right of slider bar (screen coords)
     float sliderLocalX = 0.0F;  // Slider X position in window-local coords (for cursor positioning)
-    float normalizedPos = 0.0F; // 0.0 = nice -20, 1.0 = nice 19
-    int32_t niceValue = 0;      // Current nice value
+    float normalizedPos = 0.0F; // 0.0 = nice -20 (the first stop), 1.0 = nice 19 (the last); below 0 beyond the start
+    int32_t niceValue = 0;      // Current nice value (a stop's colour value)
+    float badgeTrackX = 0.0F;   // Screen x span the badge is held over: the track, and a discrete slider's lead
+    float badgeTrackWidth = 0.0F;
+    std::span<const Detail::PrioritySliderStop> stops; // A discrete slider's stops (#1538); empty for the nice slider
+    bool hollowThumb = false;                          // A discrete slider's beyond-start state: shown, not pickable
     const ImGuiStyle* style = nullptr;
     ImVec4 priorityHighColor;              // Theme color for high-priority end
     ImVec4 priorityNormalColor;            // Theme color for normal priority
@@ -53,19 +61,19 @@ struct PrioritySliderContext
     Detail::PrioritySliderMetrics metrics; // Font-derived pixel geometry for this frame
 };
 
-void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx)
+/// Draws the badge, reading @p text: the nice value, or a discrete slider's stop name.
+void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx, std::string_view text)
 {
     const float badgeX = ctx.cursorStart.x + (ctx.normalizedPos * ctx.metrics.sliderWidth);
     const float badgeY = ctx.cursorStart.y;
 
     // Badge text
-    const std::string valueText = std::to_string(ctx.niceValue);
-    const ImVec2 textSize = ImGui::CalcTextSize(valueText.c_str());
+    const ImVec2 textSize = ImGui::CalcTextSize(text.data(), text.data() + text.size());
     const float badgeWidth = textSize.x + (ctx.style->FramePadding.x * 2.0F);
     const float badgeHalfWidth = badgeWidth * 0.5F;
 
     // Keep the badge over the slider rather than hanging off either end
-    const float clampedBadgeX = Detail::computeBadgeCenterX(badgeX, ctx.cursorStart.x, ctx.metrics.sliderWidth, badgeHalfWidth);
+    const float clampedBadgeX = Detail::computeBadgeCenterX(badgeX, ctx.badgeTrackX, ctx.badgeTrackWidth, badgeHalfWidth);
 
     // Badge rectangle
     const ImVec2 badgeMin(clampedBadgeX - badgeHalfWidth, badgeY);
@@ -95,7 +103,7 @@ void drawPriorityBadge(ImDrawList* drawList, const PrioritySliderContext& ctx)
 
     // Draw badge text
     const ImVec2 textPos(clampedBadgeX - (textSize.x * 0.5F), badgeY + ((ctx.metrics.badgeHeight - textSize.y) * 0.5F));
-    drawList->AddText(textPos, badgeTextColorU32, valueText.c_str());
+    drawList->AddText(textPos, badgeTextColorU32, text.data(), text.data() + text.size());
 }
 
 void drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx)
@@ -107,8 +115,11 @@ void drawPriorityGradient(ImDrawList* drawList, const PrioritySliderContext& ctx
     {
         const float t1 = static_cast<float>(i) / PRIORITY_GRADIENT_SEGMENTS;
         const float t2 = static_cast<float>(i + 1) / PRIORITY_GRADIENT_SEGMENTS;
-        const int nice1 = NICE_MIN + static_cast<int>(t1 * static_cast<float>(NICE_RANGE));
-        const int nice2 = NICE_MIN + static_cast<int>(t2 * static_cast<float>(NICE_RANGE));
+        // A discrete slider's track runs through its stops' colours instead of the whole nice range.
+        const int nice1 = ctx.stops.empty() ? NICE_MIN + static_cast<int>(t1 * static_cast<float>(NICE_RANGE))
+                                            : Detail::discreteTrackColorNice(t1, ctx.stops);
+        const int nice2 = ctx.stops.empty() ? NICE_MIN + static_cast<int>(t2 * static_cast<float>(NICE_RANGE))
+                                            : Detail::discreteTrackColorNice(t2, ctx.stops);
         const ImU32 col1 = getNiceColor(nice1, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
         const ImU32 col2 = getNiceColor(nice2, ctx.priorityHighColor, ctx.priorityNormalColor, ctx.priorityLowColor);
 
@@ -135,9 +146,81 @@ void drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx)
 
     // Thumb outline
     drawList->AddCircleFilled(thumbCenter, thumbRadius + ctx.metrics.thumbOutlineThickness, ImGui::GetColorU32(ImGuiCol_Border));
+    if (ctx.hollowThumb)
+    {
+        // Beyond the start (Windows' Realtime): a ring of the state's colour, off the track, so it
+        // reads as a state shown rather than a stop to pick.
+        const float ringThickness = ctx.metrics.thumbOutlineThickness * 2.0F;
+        drawList->AddCircleFilled(thumbCenter, thumbRadius, ImGui::ColorConvertFloat4ToU32(scheme.windowBg));
+        drawList->AddCircle(thumbCenter, thumbRadius - (ringThickness * 0.5F), trackColorU32, 0, ringThickness);
+        return;
+    }
     // Thumb fill
     drawList->AddCircleFilled(thumbCenter, thumbRadius, thumbFillColorU32);
 }
+
+/// A discrete slider's ticks under its stops and, when @p showLabels, each stop's name under its tick
+/// (discreteStopLabelX()), the shown stop's in the text colour and the rest muted. The labels' line is
+/// reserved either way, so the control's height does not change with its width.
+void drawDiscreteScale(ImDrawList* drawList, const PrioritySliderContext& ctx, std::int32_t shown, bool showLabels)
+{
+    const UI::ColorScheme& scheme = UI::Theme::get().scheme();
+    const auto count = static_cast<std::int32_t>(ctx.stops.size());
+    const ImU32 tickColor = ImGui::GetColorU32(ImGuiCol_Border);
+    const ImU32 labelColor = ImGui::ColorConvertFloat4ToU32(scheme.textMuted);
+    const ImU32 shownLabelColor = ImGui::GetColorU32(ImGuiCol_Text);
+    const float tickLength = std::max(ctx.style->ItemSpacing.y, 1.0F);
+    const ImVec2 labelRow = ImGui::GetCursorScreenPos();
+    for (std::int32_t i = 0; i < count; ++i)
+    {
+        const float stopX = ctx.sliderMin.x + (Detail::discreteStopPosition(i, count) * ctx.metrics.sliderWidth);
+        drawList->AddLine(ImVec2(stopX, ctx.sliderMax.y), ImVec2(stopX, ctx.sliderMax.y + tickLength), tickColor, 1.0F);
+        if (showLabels)
+        {
+            const std::string_view name = ctx.stops[static_cast<std::size_t>(i)].name;
+            const float labelX = Detail::discreteStopLabelX(stopX, ImGui::CalcTextSize(name.data(), name.data() + name.size()).x, i, count);
+            drawList->AddText(
+                ImVec2(labelX, labelRow.y), (i == shown) ? shownLabelColor : labelColor, name.data(), name.data() + name.size());
+        }
+    }
+    ImGui::Dummy(ImVec2(ctx.metrics.sliderWidth, ImGui::GetTextLineHeight()));
+}
+
+/// The stop a discrete slider's input picks this frame, starting from @p current: a drag snaps to the
+/// stop nearest the pointer, and while the track is focused Left/Up and Right/Down step one stop and
+/// Home/End jump to the ends (Detail::stepDiscreteStop()).
+[[nodiscard]] std::int32_t sliderInputStop(const PrioritySliderContext& ctx, std::int32_t current)
+{
+    const auto count = static_cast<std::int32_t>(ctx.stops.size());
+    if (ImGui::IsItemActive())
+    {
+        const float relX = (ImGui::GetIO().MousePos.x - ctx.sliderMin.x) / ctx.metrics.sliderWidth;
+        current = Detail::discreteStopFromPosition(relX, count);
+    }
+    if (!ImGui::IsItemFocused())
+    {
+        return current;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+    {
+        return Detail::stepDiscreteStop(current, -1, count); // Toward the high-priority end
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+    {
+        return Detail::stepDiscreteStop(current, 1, count);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Home))
+    {
+        return Detail::stepDiscreteStop(current, -count, count);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_End))
+    {
+        return Detail::stepDiscreteStop(current, count, count);
+    }
+    return current;
+}
+
+#ifndef _WIN32
 
 /// The nice value the slider's input picks this frame, starting from @p current: dragging sets it from
 /// the pointer's position on the track, and while the slider is focused,
@@ -256,17 +339,9 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     // Initialize the control from the current process nice value if not changed
     syncToProcess(currentNice);
 
-#ifdef _WIN32
-    // One line (#1493): Priority [class] [Apply]. The current class is Runtime's Priority row, and
-    // the label's tooltip, not repeated after Apply (#1537).
-    (void) renderClassCombo(currentNice.value_or(0), target);
-    ImGui::SameLine();
-    renderApplyButton(actions, currentNice, target, 0.0F);
-#else
-    const float controlRightEdge = renderSlider(currentNice.value_or(0), target);
+    const float controlRightEdge = renderSlider(currentNice, target);
     ImGui::Spacing();
     renderApplyButton(actions, currentNice, target, controlRightEdge);
-#endif
 
     // Display persistent error message if priority change failed
     if (!m_Error.empty())
@@ -277,85 +352,133 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     }
 }
 
-#ifdef _WIN32
-float ProcessPriorityView::renderClassCombo(std::int32_t currentNice, const Platform::ProcessTarget& target)
+float ProcessPriorityView::renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target)
 {
-    // Windows has priority classes, not nice values (#1204): name the current class and offer the five
-    // settable ones in a combo (Detail::renderPriorityPicker()). Each writes its representative nice
-    // value through setPriority(), which maps it back to that class; Realtime can only be shown.
-    const auto& theme = UI::Theme::get();
-    const std::string currentClassName{Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice))};
-    // A row label, level with the combo, rather than a header: the Actions block's row (#1493). The
-    // current class is on its tooltip; Runtime's Priority row shows it too.
-    ImGui::AlignTextToFramePadding();
+    // A row label rather than a header: the Actions block's row (#1493). The process's current priority
+    // is Runtime's Priority row and this label's tooltip, not repeated beside it (#1537); the slider's
+    // badge shows the value picked.
     ImGui::TextUnformatted("Priority");
-    ImGui::SetItemTooltip("Current priority class: %s", currentClassName.c_str());
-    ImGui::SameLine();
+#ifdef _WIN32
+    const std::string_view currentClass = Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice.value_or(0)));
+    ImGui::SetItemTooltip("Current priority class: %.*s", static_cast<int>(currentClass.size()), currentClass.data());
+#else
+    ImGui::SetItemTooltip("Current nice value: %d", currentNice.value_or(0));
+#endif
 
-    const Detail::WindowsPriorityClass selectedClass = Detail::windowsPriorityClassFromNice(m_NiceValue);
     const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
     editNice(pick.nice, target);
-    if (selectedClass == Detail::WindowsPriorityClass::Realtime)
+#ifdef _WIN32
+    // Apply is for a class other than the process's own (#1538): back on its class, there is no edit.
+    if (m_Changed && currentNice.has_value() &&
+        Detail::windowsPriorityClassFromNice(m_NiceValue) == Detail::windowsPriorityClassFromNice(*currentNice))
     {
-        ImGui::TextColored(theme.scheme().textWarning,
+        m_NiceValue = *currentNice;
+        m_Changed = false;
+        m_EditTarget = NO_TARGET;
+    }
+    if (Detail::windowsPriorityClassFromNice(m_NiceValue) == Detail::WindowsPriorityClass::Realtime)
+    {
+        ImGui::TextColored(UI::Theme::get().scheme().textWarning,
                            ICON_FA_TRIANGLE_EXCLAMATION "  Realtime was set outside TaskSmack; it can be lowered here, not set");
     }
+#endif
     return pick.rightEdge;
 }
 
 namespace Detail
 {
 
-PriorityPick renderPriorityPicker(std::int32_t shown)
+float discretePrioritySliderMinWidth(const DiscretePrioritySlider& slider)
 {
     const float emPx = ImGui::GetFontSize();
-    PriorityPick pick{.nice = shown, .rightEdge = 0.0F};
-    const WindowsPriorityClass selectedClass = windowsPriorityClassFromNice(shown);
-    const std::string selectedClassName{windowsPriorityClassName(selectedClass)};
-    const float comboWidth = std::min(PRIORITY_CLASS_COMBO_WIDTH_EM * emPx, std::max(ImGui::GetContentRegionAvail().x, 1.0F));
-    ImGui::SetNextItemWidth(comboWidth);
-    if (ImGui::BeginCombo("##priority_class", selectedClassName.c_str()))
+    const float lead = (slider.beyondStart != nullptr) ? PRIORITY_DISCRETE_LEAD_EM * emPx : 0.0F;
+    const auto labelWidth = [&slider](std::size_t i)
     {
-        for (const WindowsPriorityClass priorityClass : SETTABLE_WINDOWS_PRIORITY_CLASSES)
-        {
-            const std::string optionName{windowsPriorityClassName(priorityClass)};
-            const bool isSelected = priorityClass == selectedClass;
-            if (ImGui::Selectable(optionName.c_str(), isSelected) && !isSelected)
-            {
-                pick.nice = windowsPriorityClassNice(priorityClass);
-            }
-            if (isSelected)
-            {
-                ImGui::SetItemDefaultFocus();
-            }
-        }
-        ImGui::EndCombo();
+        const std::string_view name = slider.stops[i].name;
+        return ImGui::CalcTextSize(name.data(), name.data() + name.size()).x;
+    };
+    return lead + discreteStopLabelsMinWidth(slider.stops.size(), labelWidth, PRIORITY_LABEL_PADDING_EM * emPx);
+}
+
+DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, std::int32_t shown)
+{
+    const auto count = static_cast<std::int32_t>(slider.stops.size());
+    if (count == 0)
+    {
+        return {.index = shown, .rightEdge = 0.0F};
     }
+    const bool beyond = shown < 0 && slider.beyondStart != nullptr;
+    const std::int32_t shownIndex = beyond ? PRIORITY_STOP_BEYOND_START : std::clamp(shown, 0, count - 1);
+    const PrioritySliderStop& shownStop = beyond ? *slider.beyondStart : slider.stops[static_cast<std::size_t>(shownIndex)];
+
+    const auto& theme = UI::Theme::get();
+    const float emPx = ImGui::GetFontSize();
+    // Room before the first stop for a state shown beyond it (Windows' Realtime), kept whether or not
+    // it is shown so the track does not move between processes.
+    const float lead = (slider.beyondStart != nullptr) ? PRIORITY_DISCRETE_LEAD_EM * emPx : 0.0F;
+
+    PrioritySliderContext ctx;
+    ctx.drawList = ImGui::GetWindowDrawList();
+    ctx.style = &ImGui::GetStyle();
+    ctx.priorityHighColor = theme.scheme().priorityHighColor;
+    ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
+    ctx.priorityLowColor = theme.scheme().priorityLowColor;
+    // As the nice slider: never wider than the space there is, never clipped.
+    ctx.metrics = computePrioritySliderMetrics(emPx, std::max(ImGui::GetContentRegionAvail().x - lead, 1.0F));
+    const PrioritySliderMetrics& metrics = ctx.metrics;
+    ctx.stops = slider.stops;
+    ctx.niceValue = shownStop.colorNice;
+    ctx.hollowThumb = beyond;
+    // Beyond the start the thumb sits in the middle of the lead, off the track.
+    ctx.normalizedPos = beyond ? -(lead * 0.5F) / metrics.sliderWidth : discreteStopPosition(shownIndex, count);
+
+    // The badge, naming the stop, over the lead and the track
+    const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+    ctx.cursorStart = ImVec2(rowStart.x + lead, rowStart.y);
+    ctx.badgeTrackX = rowStart.x;
+    ctx.badgeTrackWidth = lead + metrics.sliderWidth;
+    ImGui::Dummy(ImVec2(lead + metrics.sliderWidth, metrics.badgeHeight + metrics.badgeArrowSize));
+    drawPriorityBadge(ctx.drawList, ctx, shownStop.name);
+
+    // The track, after the lead: the stops' gradient, its border and the thumb
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + lead);
+    ctx.sliderMin = ImGui::GetCursorScreenPos();
+    ctx.sliderMax = ImVec2(ctx.sliderMin.x + metrics.sliderWidth, ctx.sliderMin.y + metrics.sliderHeight);
+    drawPriorityGradient(ctx.drawList, ctx);
+    ctx.drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), metrics.sliderCornerRadius);
+    drawPriorityThumb(ctx.drawList, ctx);
+
+    // Interactive through an invisible button whose label names the stop shown (its ID stays put)
+    ImGui::InvisibleButton(shownStop.itemLabel, ImVec2(metrics.sliderWidth, metrics.sliderHeight));
+    const std::int32_t picked = sliderInputStop(ctx, shownIndex);
     if (ImGui::IsItemHovered())
     {
-        ImGui::SetTooltip("Windows priority class: higher classes get CPU time first.\n"
-                          "Realtime cannot be set here.\n\n"
-                          "Note: Changing another user's or an elevated process typically requires administrator privileges");
+        ImGui::SetTooltip("%s", slider.tooltip);
     }
-    pick.rightEdge = comboWidth;
-    return pick;
+
+    // Ticks, and the stops' names under them where there is room for all of them
+    drawDiscreteScale(ctx.drawList, ctx, shownIndex, lead + metrics.sliderWidth + 0.5F >= discretePrioritySliderMinWidth(slider));
+    return {.index = picked, .rightEdge = lead + metrics.sliderWidth};
+}
+
+} // namespace Detail
+
+#ifdef _WIN32
+namespace Detail
+{
+
+PriorityPick renderPriorityPicker(std::int32_t shown)
+{
+    // Windows has priority classes, not nice values (#1204): a stop per settable class (#1538). Each
+    // writes its representative nice value through setPriority(), which maps it back to that class;
+    // Realtime can only be shown.
+    const DiscretePick pick =
+        renderDiscretePrioritySlider(WINDOWS_PRIORITY_SLIDER, windowsPriorityStopIndex(windowsPriorityClassFromNice(shown)));
+    return {.nice = windowsPriorityNiceForStop(pick.index, shown), .rightEdge = pick.rightEdge};
 }
 
 } // namespace Detail
 #else
-float ProcessPriorityView::renderSlider(std::int32_t currentNice, const Platform::ProcessTarget& target)
-{
-    // A row label rather than a header: the Actions block's row (#1493). The current nice value is
-    // Runtime's Priority row ("Normal (nice: 0)") and the label's tooltip, not repeated beside it
-    // (#1537); the slider's badge shows the value picked.
-    ImGui::TextUnformatted("Priority");
-    ImGui::SetItemTooltip("Current nice value: %d", currentNice);
-
-    const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
-    editNice(pick.nice, target);
-    return pick.rightEdge;
-}
-
 namespace Detail
 {
 
@@ -399,10 +522,12 @@ PriorityPick renderPriorityPicker(std::int32_t shown)
     // Reserve space for badge above slider (offset by High label width)
     const ImVec2 rowStart = ImGui::GetCursorScreenPos();
     ctx.cursorStart = ImVec2(rowStart.x + highLabelOffset, rowStart.y);
+    ctx.badgeTrackX = ctx.cursorStart.x;
+    ctx.badgeTrackWidth = metrics.sliderWidth;
     ImGui::Dummy(ImVec2(highLabelOffset + metrics.sliderWidth, metrics.badgeHeight + metrics.badgeArrowSize));
 
     // Draw the value badge/callout above the slider position
-    drawPriorityBadge(drawList, ctx);
+    drawPriorityBadge(drawList, ctx, std::to_string(shown));
 
     // Draw "High" label (left of slider, vertically centered with slider)
     const float sliderRowY = ImGui::GetCursorPosY();
