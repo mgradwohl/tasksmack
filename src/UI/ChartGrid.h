@@ -5,16 +5,15 @@
 // duplicate for their "grid of N small charts" panels (per-core CPU, per-disk I/O), so a new
 // consumer only has to supply a per-cell render callback.
 
+#include "UI/Card.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/Format.h"
-#include "UI/Theme.h"
 
 #include <imgui.h>
 
 #include <cfloat>
 #include <concepts>
 #include <cstddef>
-#include <string_view>
 
 namespace UI::Widgets
 {
@@ -105,7 +104,6 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
         return;
     }
 
-    const auto& theme = UI::Theme::get();
     for (size_t row = 0; row < grid.rows; ++row)
     {
         ImGui::TableNextRow();
@@ -131,25 +129,19 @@ inline void renderChartGrid(const char* tableId, size_t itemCount, ChartGridConf
                 const auto id = cellId(index);
                 ImGui::PushID(id.data(), id.data() + id.size());
             }
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
-            ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
-            // NoScrollbar/NoScrollWithMouse: these cells are sized to fit their content exactly
-            // (see the cellWidth/cellHeight doc above), but renderCell's content nests several
-            // more ImGui/ImPlot widgets (a table with its own CellPadding, a plot, a NowBar),
-            // each contributing a little more layout overhead that isn't practical to hand-sum
-            // here. A cell is never meant to scroll -- any few-pixel residual from that nesting
-            // should clip invisibly, not surface a scrollbar (#823 review: reported as a visible
-            // scrollbar on every chart cell even after cellHeight was padding-corrected).
-            if (ImGui::BeginChild("GridCell",
-                                  ImVec2(-FLT_MIN, grid.cellHeight),
-                                  ImGuiChildFlags_Borders,
-                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse))
+            // A card (UI/Card.h): bordered, and never scrolling. These cells are sized to fit their
+            // content exactly (see the cellWidth/cellHeight doc above), but renderCell's content nests
+            // several more ImGui/ImPlot widgets (a table with its own CellPadding, a plot, a NowBar),
+            // each contributing a little more layout overhead that isn't practical to hand-sum here.
+            // Any few-pixel residual from that nesting should clip invisibly, not surface a scrollbar
+            // (#823 review: reported as a visible scrollbar on every chart cell even after cellHeight
+            // was padding-corrected).
+            if (beginCard("GridCell", ImVec2(-FLT_MIN, grid.cellHeight)))
             {
                 const ImVec2 innerAvail = ImGui::GetContentRegionAvail();
                 renderCell(index, innerAvail.x, innerAvail.y);
             }
-            ImGui::EndChild();
-            ImGui::PopStyleColor(2);
+            endCard();
             ImGui::PopID();
         }
     }

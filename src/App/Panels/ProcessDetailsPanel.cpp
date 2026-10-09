@@ -24,10 +24,10 @@
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessEnvironmentView.h"
+#include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
-#include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
@@ -441,7 +441,6 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const float halfWidth = (contentWidth - spacing) * 0.5F;
 
     const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
-    const float basePadding = ImGui::GetStyle().WindowPadding.y * 2.0F;
 
     auto rightAlignedText = [](std::string_view text, const ImVec4& color)
     {
@@ -555,8 +554,6 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     {
         identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
     }
-    const auto identityRowCount = static_cast<float>(identityRows.count);
-    const float leftHeight = (rowHeight * identityRowCount) + basePadding;
 
     // Build runtime rows (conditionally include Type if available)
     InfoRows runtimeRows;
@@ -571,8 +568,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         // The same colour as the table's Type column (#1180)
         runtimeRows.add({.label = "Type", .value = proc.processType, .color = processTypeColor(proc.processType, theme.scheme())});
     }
-    const auto runtimeRowCount = static_cast<float>(runtimeRows.count);
-    const float rightHeight = (rowHeight * runtimeRowCount) + basePadding;
+    // Identity and Runtime are cards with their header inside (#1537), both as tall as the taller of
+    // the two, so their edges line up -- and Actions' too, beside them.
+    const auto tallerRowCount = static_cast<float>(std::max(identityRows.count, runtimeRows.count));
+    const float cardHeight = ProcessDetailsLayout::computeInfoCardHeight(tallerRowCount, rowHeight, ImGui::GetStyle().WindowPadding.y);
 
     // Each block is capped at a readable width instead of taking half the pane, so a label and its
     // value stay together however wide the window is (#925). The blocks pack to the left and the
@@ -592,23 +591,22 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const float rightWidth = blockWidthFor(runtimeRows.view());
 
     // Identity section: Who is this process?
-    ImGui::BeginGroup();
-    (void) UI::Widgets::sectionHeader(ICON_FA_ID_CARD, "Identity");
-    ImGui::BeginChild("BasicInfoLeft", ImVec2(leftWidth, leftHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
-    renderInfoTable("BasicInfoLeftTable", identityRows.view());
-    ImGui::EndChild();
-    ImGui::EndGroup();
+    (void) ProcessOverviewCard::render("BasicInfoLeft",
+                                       ICON_FA_ID_CARD,
+                                       "Identity",
+                                       ImVec2(leftWidth, cardHeight),
+                                       ImGuiChildFlags_None,
+                                       [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); });
 
     ImGui::SameLine();
 
     // Runtime section: What is this process doing?
-    ImGui::BeginGroup();
-    (void) UI::Widgets::sectionHeader(ICON_FA_CLOCK, "Runtime");
-    ImGui::BeginChild("BasicInfoRight", ImVec2(rightWidth, rightHeight), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None);
-
-    renderInfoTable("BasicInfoRightTable", runtimeRows.view());
-    ImGui::EndChild();
-    ImGui::EndGroup();
+    (void) ProcessOverviewCard::render("BasicInfoRight",
+                                       ICON_FA_CLOCK,
+                                       "Runtime",
+                                       ImVec2(rightWidth, cardHeight),
+                                       ImGuiChildFlags_None,
+                                       [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); });
 
     // Actions section: What can be done to this process? The buttons, confirm dialog and result line
     // are ProcessActionsView's, the priority rows ProcessPriorityView's (#1179); both act through
@@ -618,13 +616,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (ProcessActionsBlock::hasAnyAction(m_ActionCapabilities))
     {
         const ProcessActionsBlock::Widths actionWidths = ProcessActionsBlock::measure(m_ActionCapabilities);
-        const ProcessDetailsLayout::ActionsBlockLayout actionsLayout =
-            ProcessDetailsLayout::computeActionsBlockLayout(contentWidth,
-                                                            leftWidth + spacing + rightWidth,
-                                                            spacing,
-                                                            actionWidths.content(),
-                                                            m_ActionsBlockHeight,
-                                                            std::max(leftHeight, rightHeight));
+        const ProcessDetailsLayout::ActionsBlockLayout actionsLayout = ProcessDetailsLayout::computeActionsBlockLayout(
+            contentWidth, leftWidth + spacing + rightWidth, spacing, actionWidths.content(), m_ActionsBlockHeight, cardHeight);
         if (actionsLayout.besideInfo)
         {
             ImGui::SameLine();
@@ -639,7 +632,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
         };
         // Kept for the next frame's placement: a block taller than the row wraps below it.
-        if (const float needed = ProcessActionsBlock::render(actions, actionsLayout, std::max(leftHeight, rightHeight)); needed > 0.0F)
+        if (const float needed = ProcessActionsBlock::render(actions, actionsLayout, cardHeight); needed > 0.0F)
         {
             m_ActionsBlockHeight = needed;
         }

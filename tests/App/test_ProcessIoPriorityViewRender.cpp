@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 #include <imgui.h>
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -181,6 +182,26 @@ TEST_F(ProcessIoPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     EXPECT_EQ(view.ioPriorityView().error(), "Permission denied");
     EXPECT_EQ(view.ioPriorityView().shownIoPriority(), BEST_EFFORT_4);
     EXPECT_TRUE(view.error().empty()); // The nice control's error line is its own
+}
+
+// As wide as its label, as the nice control's Apply and Terminate and Kill are (#1537): its old em
+// floor made it a wide muted bar while disabled.
+TEST_F(ProcessIoPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setIoPriorityReadResult(BEST_EFFORT_4);
+    ProcessPriorityView view;
+    float applyWidth = 0.0F;
+    float labelWidth = 0.0F;
+    runFrame(
+        [&]
+        {
+            view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
+            applyWidth = ImGui::GetItemRectSize().x; // The I/O Apply is the last item while no error line shows
+            labelWidth = ImGui::CalcTextSize("Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
+        });
+    EXPECT_GT(applyWidth, 0.0F);
+    EXPECT_LE(applyWidth, std::ceil(labelWidth));
 }
 
 TEST_F(ProcessIoPriorityViewRenderTest, ApplyStaysInsideANarrowPanel)
