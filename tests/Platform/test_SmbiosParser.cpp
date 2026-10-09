@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -46,7 +47,7 @@ using ByteVector = std::vector<std::uint8_t>;
         bytes.push_back(0);
     }
     bytes.push_back(0);
-    if (strings.empty())
+    if (std::empty(strings)) // initializer_list has no empty() member
     {
         bytes.push_back(0);
     }
