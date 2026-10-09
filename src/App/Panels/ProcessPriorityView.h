@@ -63,7 +63,10 @@ struct DiscretePick
 /// the beyond-start state. A drag snaps to the nearest stop; while the track is focused Left/Up step one
 /// stop toward the high end, Right/Down one toward the low end, and Home/End jump to the ends
 /// (stepDiscreteStop()).
-[[nodiscard]] DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, std::int32_t shown);
+/// @p inherited draws the thumb hollow at a stop the value was not set to but follows (the I/O slider's
+/// default, derived from nice, #1540); picking any stop makes it explicit. A divider is drawn across the
+/// track before each of @p slider's bandStarts.
+[[nodiscard]] DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, std::int32_t shown, bool inherited = false);
 
 /// The narrowest width renderDiscretePrioritySlider() needs for @p slider's scale labels to show, at
 /// the current font: the beyond-start lead and discreteStopLabelsMinWidth(). For measuring a container.

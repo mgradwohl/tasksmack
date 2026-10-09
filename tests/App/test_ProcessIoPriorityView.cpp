@@ -12,9 +12,12 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -78,74 +81,69 @@ TEST(ProcessIoPriorityViewTest, DescribeUsesIoniceWords)
     EXPECT_EQ(Detail::describeIoPriority({}, std::nullopt), "default (from nice)");
 }
 
-// --- Row layout (the panel does not scroll horizontally) ------------------------------------------
+// ========== The I/O priority slider's scale (#1540) ==========
 
-constexpr float EM = 16.0F;
-constexpr float GAP = 8.0F;
-constexpr float APPLY = 180.0F; // 11.25 em, the Apply floor
-
-TEST(ProcessIoPriorityViewTest, AWideRowKeepsTheAuthoredWidthsOnOneLine)
+TEST(ProcessIoPriorityViewTest, EveryStopRoundTripsThroughItsClassAndLevel)
 {
-    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(1000.0F, EM, GAP, APPLY, true);
-    EXPECT_FLOAT_EQ(layout.comboWidth, Detail::IO_PRIORITY_CLASS_COMBO_WIDTH_EM * EM);
-    EXPECT_FLOAT_EQ(layout.sliderWidth, Detail::IO_PRIORITY_LEVEL_SLIDER_WIDTH_EM * EM);
-    EXPECT_FLOAT_EQ(layout.applyWidth, APPLY);
-    EXPECT_FALSE(layout.applyOnNewLine);
-    EXPECT_FALSE(layout.sliderOnNewLine);
-}
-
-TEST(ProcessIoPriorityViewTest, ANarrowRowShrinksTheControlsBesideApply)
-{
-    // 400 px: Apply reserved first, the combo and slider shrink proportionally into the remaining 212 px.
-    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(400.0F, EM, GAP, APPLY, true);
-    EXPECT_FALSE(layout.applyOnNewLine);
-    EXPECT_FALSE(layout.sliderOnNewLine);
-    EXPECT_FLOAT_EQ(layout.applyWidth, APPLY);
-    EXPECT_LT(layout.comboWidth, Detail::IO_PRIORITY_CLASS_COMBO_WIDTH_EM * EM);
-    EXPECT_FLOAT_EQ(layout.comboWidth, layout.sliderWidth);
-    EXPECT_GE(layout.comboWidth, Detail::IO_PRIORITY_CLASS_COMBO_WIDTH_EM * EM * Detail::IO_PRIORITY_MIN_WIDTH_FRACTION);
-    EXPECT_LE(layout.comboWidth + GAP + layout.sliderWidth + GAP + layout.applyWidth, 400.0F + 0.001F);
-}
-
-TEST(ProcessIoPriorityViewTest, BelowTheMinimumApplyWrapsOntoItsOwnLine)
-{
-    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(300.0F, EM, GAP, APPLY, true);
-    EXPECT_TRUE(layout.applyOnNewLine);
-    EXPECT_FALSE(layout.sliderOnNewLine);
-    EXPECT_LE(layout.comboWidth + GAP + layout.sliderWidth, 300.0F + 0.001F);
-
-    // Without a slider the combo alone needs less, but Apply still wraps once even that cannot fit.
-    const Detail::IoPriorityRowLayout idle = Detail::computeIoPriorityRowLayout(250.0F, EM, GAP, APPLY, false);
-    EXPECT_TRUE(idle.applyOnNewLine);
-    EXPECT_FLOAT_EQ(idle.sliderWidth, 0.0F);
-}
-
-TEST(ProcessIoPriorityViewTest, AVeryNarrowRowStacksEverythingWithinThePanel)
-{
-    const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(100.0F, EM, GAP, APPLY, true);
-    EXPECT_TRUE(layout.applyOnNewLine);
-    EXPECT_TRUE(layout.sliderOnNewLine);
-    EXPECT_FLOAT_EQ(layout.comboWidth, 100.0F);
-    EXPECT_FLOAT_EQ(layout.sliderWidth, 100.0F);
-    EXPECT_FLOAT_EQ(layout.applyWidth, 100.0F);
-}
-
-TEST(ProcessIoPriorityViewTest, NoLineIsEverWiderThanThePanel)
-{
-    for (const bool hasSlider : {true, false})
+    for (const bool realtime : {true, false})
     {
-        for (int pixels = 20; pixels <= 1200; pixels += 10)
+        const auto count = static_cast<std::int32_t>(realtime ? Detail::IO_PRIORITY_SLIDER.stops.size()
+                                                              : Detail::IO_PRIORITY_SLIDER_NO_REALTIME.stops.size());
+        EXPECT_EQ(count, realtime ? 17 : 9);
+        for (std::int32_t i = 0; i < count; ++i)
         {
-            SCOPED_TRACE(pixels);
-            const auto width = static_cast<float>(pixels);
-            const Detail::IoPriorityRowLayout layout = Detail::computeIoPriorityRowLayout(width, EM, GAP, APPLY, hasSlider);
-            const float slider = (hasSlider && !layout.sliderOnNewLine) ? GAP + layout.sliderWidth : 0.0F;
-            const float apply = layout.applyOnNewLine ? 0.0F : GAP + layout.applyWidth;
-            EXPECT_LE(layout.comboWidth + slider + apply, width + 0.001F);
-            EXPECT_LE(layout.sliderWidth, width + 0.001F);
-            EXPECT_LE(layout.applyWidth, width + 0.001F);
+            const Platform::IoPriority priority = Detail::ioPriorityForStop(i, realtime);
+            const Detail::IoStop stop = Detail::ioStopFor(priority, 0, realtime);
+            EXPECT_EQ(stop.index, i) << "realtime " << realtime;
+            EXPECT_FALSE(stop.inherited);
+            // The stop's own name is what the badge shows for that class and level.
+            const auto& stops = realtime ? Detail::IO_PRIORITY_SLIDER.stops : Detail::IO_PRIORITY_SLIDER_NO_REALTIME.stops;
+            EXPECT_EQ(stops[static_cast<std::size_t>(i)].name, Detail::describeIoPriority(priority, std::nullopt));
         }
     }
+}
+
+TEST(ProcessIoPriorityViewTest, TheScaleRunsFromRealtimeZeroToIdle)
+{
+    EXPECT_EQ(Detail::ioPriorityForStop(0, true).ioClass, Platform::IoPriorityClass::Realtime);
+    EXPECT_EQ(Detail::ioPriorityForStop(0, true).level, 0);
+    EXPECT_EQ(Detail::ioPriorityForStop(8, true).ioClass, Platform::IoPriorityClass::BestEffort);
+    EXPECT_EQ(Detail::ioPriorityForStop(16, true).ioClass, Platform::IoPriorityClass::Idle);
+    // Without Realtime the slider starts at Best-effort 0.
+    EXPECT_EQ(Detail::ioPriorityForStop(0, false).ioClass, Platform::IoPriorityClass::BestEffort);
+    EXPECT_EQ(Detail::ioPriorityForStop(8, false).ioClass, Platform::IoPriorityClass::Idle);
+    // Held to the scale.
+    EXPECT_EQ(Detail::ioPriorityForStop(99, false).ioClass, Platform::IoPriorityClass::Idle);
+    EXPECT_EQ(Detail::ioPriorityForStop(-3, true).level, 0);
+    // The bands begin at Best-effort and Idle.
+    EXPECT_EQ(Detail::IO_PRIORITY_SLIDER.bandStarts.size(), 2U);
+    EXPECT_EQ(Detail::IO_PRIORITY_SLIDER.bandStarts[0], 8);
+    EXPECT_EQ(Detail::IO_PRIORITY_SLIDER.bandStarts[1], 16);
+    EXPECT_EQ(Detail::IO_PRIORITY_SLIDER_NO_REALTIME.bandStarts[0], 8);
+}
+
+TEST(ProcessIoPriorityViewTest, TheDefaultSitsAtTheNiceDerivedLevelInherited)
+{
+    const Platform::IoPriority none{.ioClass = Platform::IoPriorityClass::None, .level = 0};
+    // (nice + 20) / 5: nice -20 is level 0, 0 is level 4, 19 is level 7.
+    for (const auto& [nice, level] : {std::pair{-20, 0}, std::pair{0, 4}, std::pair{19, 7}})
+    {
+        const Detail::IoStop withRealtime = Detail::ioStopFor(none, nice, true);
+        EXPECT_EQ(withRealtime.index, Detail::IO_LEVEL_COUNT + level) << "nice " << nice;
+        EXPECT_TRUE(withRealtime.inherited);
+        const Detail::IoStop without = Detail::ioStopFor(none, nice, false);
+        EXPECT_EQ(without.index, level) << "nice " << nice;
+        EXPECT_TRUE(without.inherited);
+    }
+}
+
+TEST(ProcessIoPriorityViewTest, RealtimeWithoutThePrivilegeIsShownBeyondTheStart)
+{
+    const Platform::IoPriority realtime{.ioClass = Platform::IoPriorityClass::Realtime, .level = 3};
+    EXPECT_EQ(Detail::ioStopFor(realtime, 0, false).index, Detail::PRIORITY_STOP_BEYOND_START);
+    EXPECT_NE(Detail::IO_PRIORITY_SLIDER_NO_REALTIME.beyondStart, nullptr);
+    EXPECT_EQ(Detail::IO_PRIORITY_SLIDER.beyondStart, nullptr); // With the privilege Realtime is on the track
+    EXPECT_EQ(Detail::ioStopFor(realtime, 0, true).index, 3);
 }
 
 // --- The on-demand read --------------------------------------------------------------------------

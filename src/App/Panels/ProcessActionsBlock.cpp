@@ -3,7 +3,6 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessActionsView.h"
 #include "ProcessDetailsLayout.h"
-#include "ProcessIoPriorityView.h"
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
 #include "UI/IconsFontAwesome6.h"
@@ -50,10 +49,12 @@ namespace
     }
     if (capabilities.canSetIoPriority)
     {
-        // I/O priority [class combo] [level] [Apply], at the controls' authored widths.
-        width = std::max(width,
-                         ImGui::CalcTextSize("I/O priority").x + spacing + Detail::ioControlsWidth(emPx, spacing, true, 1.0F) + spacing +
-                             applyButtonWidth("Apply"));
+        // "I/O priority", its slider under it at the nice slider's row width (it fits itself to the width
+        // it is given, as that one does), and [Reset to default] [Apply] under the slider (#1540).
+        width = std::max({width,
+                          ImGui::CalcTextSize("I/O priority").x,
+                          ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx,
+                          applyButtonWidth("Reset to default") + spacing + applyButtonWidth("Apply")});
     }
     return width;
 }

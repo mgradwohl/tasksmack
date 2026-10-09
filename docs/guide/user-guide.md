@@ -319,14 +319,12 @@ Destructive actions require confirmation. In Process Details, Terminate and Kill
 
 #### I/O Priority (Linux)
 
-On Linux, the Actions block of Process Details has an **I/O Priority** control under the nice slider. Its header shows the process's current setting in `ionice` terms, for example `best-effort 4`, `idle`, or `default (best-effort 4 from nice)`.
+On Linux, the Actions block of Process Details has an **I/O priority** control under the nice slider: one slider in the same style, through every `ionice` class and level, highest priority at the left. Hover the **I/O priority** label for the process's current setting, for example `best-effort 4`, `idle`, or `default (best-effort 4 from nice)`.
 
-- **Class:**
-  - **Default** follows the nice value. The kernel uses best-effort at level (nice + 20) / 5.
-  - **Best-effort** shares the disk by level.
-  - **Idle** gets the disk only when no other process wants it.
-  - **Realtime** is served before everything else.
-- **Level** (Best-effort and Realtime only): 0 is the highest priority and 7 the lowest.
+- **The scale**, in bands with a divider between them: **Realtime** 0 to 7 (served before everything else), **Best-effort** 0 to 7 (shares the disk by level), then **Idle** (gets the disk only when no other process wants it). Within a class, level 0 is the highest priority. The badge names the stop, for example `best-effort 4`.
+- **Default.** A process whose I/O priority was never set follows its nice value: the kernel uses best-effort at level (nice + 20) / 5. The thumb then sits at that level, **hollow**. Picking any stop sets it explicitly; **Reset to default**, shown while the setting is explicit, goes back to following the nice value.
+- **Realtime** is on the slider only when TaskSmack has `CAP_SYS_NICE` (or `CAP_SYS_ADMIN`), checked once at start. Without it the slider starts at best-effort 0, and a process already in Realtime is shown beyond its start, hollow, and can be lowered but not set back.
+- **Keys**, with the slider focused: Left/Right or Up/Down one step (across the class bands), Home/End either end. Drag snaps to the nearest stop.
 - **Apply** sets the class and level on every thread of the process. Like the nice control, it applies only to the process the edit was made for. Selecting another process discards an unapplied edit.
 
 Lowering a process you own (Idle, or a higher best-effort level) needs no privilege. Two changes need `CAP_SYS_NICE` (or root): setting **Realtime**, and changing **another user's process**. Without that privilege the change is refused with an error saying so. Windows has no equivalent, so the control is not shown there.

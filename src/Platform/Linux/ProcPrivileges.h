@@ -14,6 +14,8 @@ namespace Platform::ProcPrivileges
 inline constexpr unsigned CAP_DAC_OVERRIDE_BIT = 1;    // a superset of CAP_DAC_READ_SEARCH for these reads
 inline constexpr unsigned CAP_DAC_READ_SEARCH_BIT = 2; // list another user's /proc/[pid]/fd, open its io
 inline constexpr unsigned CAP_SYS_PTRACE_BIT = 19;     // ptrace read access: /proc/[pid]/io, /proc/[pid]/fd/* links
+inline constexpr unsigned CAP_SYS_ADMIN_BIT = 21;      // also lets ioprio_set() use the Realtime class
+inline constexpr unsigned CAP_SYS_NICE_BIT = 23;       // ioprio_set(IOPRIO_CLASS_RT), raising priority
 
 /// The effective capability set from /proc/[pid]/status ("CapEff:\t000001ffffffffff"), or nullopt
 /// when the line is missing or its value isn't hex. Deliberately free of platform APIs so it is
@@ -78,6 +80,14 @@ inline constexpr unsigned CAP_SYS_PTRACE_BIT = 19;     // ptrace read access: /p
     const bool dacAccess = (*capEff & DAC_MASK) != 0;
     const bool ptraceAccess = (*capEff & (std::uint64_t{1} << CAP_SYS_PTRACE_BIT)) != 0;
     return !(dacAccess && ptraceAccess);
+}
+
+/// Whether @p capEff (parseCapEff() of TaskSmack's own status) lets ioprio_set() use the Realtime
+/// class: CAP_SYS_NICE or CAP_SYS_ADMIN (ioprio_set(2)). Unknown is no: the slider then leaves Realtime
+/// out rather than offer a class every attempt would refuse (#1540).
+[[nodiscard]] constexpr bool canSetRealtimeIoPriority(std::optional<std::uint64_t> capEff) noexcept
+{
+    return capEff.has_value() && (((*capEff >> CAP_SYS_NICE_BIT) & 1U) != 0 || ((*capEff >> CAP_SYS_ADMIN_BIT) & 1U) != 0);
 }
 
 } // namespace Platform::ProcPrivileges

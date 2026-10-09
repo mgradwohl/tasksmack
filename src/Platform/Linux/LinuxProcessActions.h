@@ -53,6 +53,7 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] static ProcessActionResult sendSignal(const ProcessTarget& target, int signal, std::string_view signalName);
 
     SyscallTrace::Tools m_TraceTools;
+    bool m_CanSetRealtimeIoPriority = false; // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)
 };
 
 } // namespace Platform

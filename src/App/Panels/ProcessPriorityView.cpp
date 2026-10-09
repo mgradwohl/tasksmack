@@ -162,6 +162,26 @@ void drawPriorityThumb(ImDrawList* drawList, const PrioritySliderContext& ctx)
 /// A discrete slider's ticks under its stops and, when @p showLabels, each stop's name under its tick
 /// (discreteStopLabelX()), the shown stop's in the text colour and the rest muted. The labels' line is
 /// reserved either way, so the control's height does not change with its width.
+/// A divider across the track halfway between the stop before each of @p bandStarts and that stop: the
+/// I/O slider's Realtime | Best-effort | Idle bands (#1540). In the window background colour, so it
+/// reads as a gap in the gradient in any theme.
+void drawBandDividers(ImDrawList* drawList, const PrioritySliderContext& ctx, std::span<const std::int32_t> bandStarts)
+{
+    const auto count = static_cast<std::int32_t>(ctx.stops.size());
+    const ImU32 color = ImGui::GetColorU32(ImGuiCol_WindowBg);
+    const float thickness = std::max(ctx.metrics.thumbOutlineThickness, 1.0F);
+    for (const std::int32_t start : bandStarts)
+    {
+        if (start <= 0 || start >= count)
+        {
+            continue;
+        }
+        const float position = (Detail::discreteStopPosition(start - 1, count) + Detail::discreteStopPosition(start, count)) * 0.5F;
+        const float x = ctx.sliderMin.x + (position * ctx.metrics.sliderWidth);
+        drawList->AddLine(ImVec2(x, ctx.sliderMin.y), ImVec2(x, ctx.sliderMax.y), color, thickness);
+    }
+}
+
 void drawDiscreteScale(ImDrawList* drawList, const PrioritySliderContext& ctx, std::int32_t shown, bool showLabels)
 {
     const UI::ColorScheme& scheme = UI::Theme::get().scheme();
@@ -325,7 +345,7 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
     // The I/O priority (#803) under the nice control, with its own edit and Apply; Linux only.
     if (capabilities.canSetIoPriority)
     {
-        m_IoPriorityView.render(actions, currentNice, target);
+        m_IoPriorityView.render(actions, currentNice, target, capabilities.canSetRealtimeIoPriority);
     }
 }
 
@@ -400,7 +420,7 @@ float discretePrioritySliderMinWidth(const DiscretePrioritySlider& slider)
     return lead + discreteStopLabelsMinWidth(slider.stops.size(), labelWidth, PRIORITY_LABEL_PADDING_EM * emPx);
 }
 
-DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, std::int32_t shown)
+DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, std::int32_t shown, bool inherited)
 {
     const auto count = static_cast<std::int32_t>(slider.stops.size());
     if (count == 0)
@@ -428,7 +448,7 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
     const PrioritySliderMetrics& metrics = ctx.metrics;
     ctx.stops = slider.stops;
     ctx.niceValue = shownStop.colorNice;
-    ctx.hollowThumb = beyond;
+    ctx.hollowThumb = beyond || inherited;
     // Beyond the start the thumb sits in the middle of the lead, off the track.
     ctx.normalizedPos = beyond ? -(lead * 0.5F) / metrics.sliderWidth : discreteStopPosition(shownIndex, count);
 
@@ -446,6 +466,7 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
     ctx.sliderMax = ImVec2(ctx.sliderMin.x + metrics.sliderWidth, ctx.sliderMin.y + metrics.sliderHeight);
     drawPriorityGradient(ctx.drawList, ctx);
     ctx.drawList->AddRect(ctx.sliderMin, ctx.sliderMax, ImGui::GetColorU32(ImGuiCol_Border), metrics.sliderCornerRadius);
+    drawBandDividers(ctx.drawList, ctx, slider.bandStarts);
     drawPriorityThumb(ctx.drawList, ctx);
 
     // Interactive through an invisible button whose label names the stop shown (its ID stays put)

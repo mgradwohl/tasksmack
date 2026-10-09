@@ -125,6 +125,9 @@ struct ProcessActionCapabilities
     bool canContinue = false;      // SIGCONT
     bool canSetPriority = false;   // setpriority/SetPriorityClass
     bool canSetIoPriority = false; // ioprio_set (Linux only)
+    /// The Realtime I/O class too: ioprio_set(IOPRIO_CLASS_RT) needs CAP_SYS_NICE (or CAP_SYS_ADMIN) in
+    /// TaskSmack's own effective set, read once at construction (Linux only, #1540).
+    bool canSetRealtimeIoPriority = false;
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
 };
