@@ -1848,25 +1848,74 @@ What it changes, and what it doesn't:
 
 PGO uses real runtime behavior to guide the compiler's optimization decisions — inlining, branch prediction hints, layout — resulting in measurable throughput gains (typically 5–15% on hot paths). TaskSmack uses Clang's instrumentation-based PGO.
 
+### PGO builds are not profiling builds
+
+Two families of presets have "profile" in their purpose; keep them apart, and never time one as the other:
+
+| Preset (Linux / Windows) | Output dir | What it is for |
+|---|---|---|
+| `pgo-generate` / `win-pgo-generate` ("PGO Training") | `build/<preset>` | **Instrumented** (`-fprofile-instr-generate`): counts branches to write `.profraw` training data. Slow; never use it for timing or flamegraphs. |
+| `pgo-use` / `win-pgo-use` | `build/<preset>` | The PGO-optimized build: `-O3 -march=x86-64-v3 -fprofile-instr-use=profiles/tasksmack.profdata`. |
+| `pgo-baseline` / `win-pgo-baseline` | `build/<preset>` | `pgo-use`'s flags **without** profile data: the build to measure PGO against. |
+| `profile` / `win-profile` ("sampling profiler, not PGO") | `build/<preset>` | A plain profiling build (`-O2 -g`, frame pointers) for perf, ETW and VTune. No PGO instrumentation or profile data. |
+
+The scripts' banners say which kind each phase builds.
+
 ### How it works
 
 1. **Build an instrumented binary** (`pgo-generate`/`win-pgo-generate` preset) with `-fprofile-instr-generate`
-2. **Run the binary** (benchmarks and/or the app itself) to collect branch-count data into `.profraw` files
+2. **Run the training workloads** to collect branch-count data into `.profraw` files (one per process, `%p`):
+   - the benchmark suite (`TaskSmackBenchmarks`), for the Domain and Platform hot paths;
+   - the **headless UI training driver** (`TaskSmackUiTraining`, #880), for the rendering paths: TaskSmack's real panels, every main tab, drawn by ImGui/ImPlot for a fixed number of frames with no window and no GPU, once on the real probes and once on the synthetic large-UI machine (#1413).
 3. **Merge** the `.profraw` files into a single `.profdata` with `llvm-profdata`
 4. **Build the optimized binary** (`pgo-use`/`win-pgo-use` preset) with `-fprofile-instr-use=<path>.profdata`
+
+### The UI training workload
+
+`TaskSmackUiTraining` (`src/Training/`) builds the same six panels `ShellLayer` does, on the app's own object files (the `TaskSmackApp` object library, so its profile is for exactly the code `TaskSmack` links), and draws them in the same tab bar. It is a separate executable: the shipping app has no training switch. Each run:
+
+- renders every workload below, in order, each for its share of the frames (default 1800 frames, paced at 60 fps: about 30 s per run, so about a minute for both probe sets);
+- starts from the default settings in a fresh temporary `TASKSMACK_CONFIG_DIR`, removed at exit, so it never reads or writes your `config.toml`;
+- gives ImGui no input at all, so no button is ever pressed: it never ends, kills, suspends or re-prioritizes a process, or touches a service or startup item;
+- checks that every workload brought its tab forward, logs the frames and vertices it drew per workload, and exits 0 so the instrumented build writes its profile.
+
+The weights are percentages of a run's frames, in `src/Training/UiTrainingPlan.h`:
+
+| Workload | Tab | Weight | Why |
+|---|---|---:|---|
+| `overview` | System Overview | 25 | The default tab: every history chart and the NowBars |
+| `processes` | Processes (flat list) | 18 | The biggest table, sorted, with row meters |
+| `processes-tree` | Processes (tree view) | 10 | The tree flatten and indent paths |
+| `details-overview` | Process Details, Overview | 14 | The selected process's charts and actions block |
+| `details-gpu` | Process Details, GPU | 4 | The per-process GPU charts |
+| `details-network` | Process Details, Network | 6 | The connections table |
+| `services` | Services | 8 | The services table (sampled only while shown) |
+| `startup` | Startup | 7 | The startup items table |
+| `system` | System (information) | 8 | The static facts page |
+
+Process Details shows the driver's own process with the real probes, and the synthetic machine's busiest process with the synthetic ones. Run it by hand to see the plan or to train with other settings:
+
+```bash
+./build/pgo-generate/bin/TaskSmackUiTraining --list                       # the plan, then exit
+LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
+    ./build/pgo-generate/bin/TaskSmackUiTraining --synthetic processes=10000,history=full --frames 3600
+```
+
+`--probes real|synthetic`, `--synthetic SPEC` (the `TASKSMACK_SYNTHETIC` syntax), `--frames N` and `--fps N` (0 renders back to back) are its options. It is built by every preset (`TASKSMACK_BUILD_UI_TRAINING`, ON by default), and the `UiTrainingSmokeReal` and `UiTrainingSmokeSynthetic` ctest tests run it for 100 unpaced frames, without the PGO toolchain.
 
 ### Automated workflow (recommended)
 
 Use the provided helper scripts to run all three phases:
 
 ```bash
-# Linux – full workflow (build instrumented, run benchmarks, merge, build optimized)
+# Linux – full workflow (build instrumented, run benchmarks + UI training, merge, build optimized)
 ./tools/pgo.sh
 
 # Run individual phases
-./tools/pgo.sh generate   # Phase 1: instrumented build + profile collection
+./tools/pgo.sh generate   # Phase 1: instrumented build + profile collection (benchmarks + UI training)
 ./tools/pgo.sh merge      # Phase 2: merge *.profraw → profiles/tasksmack.profdata
 ./tools/pgo.sh use        # Phase 3: build PGO-optimized binary
+./tools/pgo.sh baseline   # pgo-use's flags without profile data, to compare against
 
 # Optimized binary ends up at:
 build/pgo-use/bin/TaskSmack
@@ -1882,6 +1931,7 @@ pwsh tools/pgo.ps1
 pwsh tools/pgo.ps1 generate
 pwsh tools/pgo.ps1 merge
 pwsh tools/pgo.ps1 use
+pwsh tools/pgo.ps1 baseline
 
 # Optimized binary ends up at:
 build\win-pgo-use\bin\TaskSmack.exe
@@ -1900,10 +1950,15 @@ mkdir -p profiles
 LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
     ./build/pgo-generate/bin/TaskSmackBenchmarks --benchmark_min_time=0.5
 
-# Optionally run the app too (more representative sample of UI paths)
+# The UI training workload: once per probe set
+for probes in real synthetic; do
+    LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
+        ./build/pgo-generate/bin/TaskSmackUiTraining --probes "$probes"
+done
+
+# Optionally add an interactive session on top (it does not replace the training above)
 LLVM_PROFILE_FILE="profiles/tasksmack-%p.profraw" \
     ./build/pgo-generate/bin/TaskSmack
-# (exit after a few seconds of normal use)
 
 # Phase 2 – merge profraw files
 # Use llvm-profdata from your LLVM 22 install (llvm-profdata-22 on Debian/Ubuntu,
@@ -1925,24 +1980,31 @@ The `profiles/` directory stores collected `.profraw` and merged `.profdata` fil
 
 These files are `.gitignore`-d and should not be committed. Re-generate them whenever significant code changes are made to keep the profile representative.
 
-### Tips
+### Measuring PGO
 
-- **Run real workloads, not just benchmarks.** The benchmarks cover hot paths well, but briefly running the app with a few hundred processes visible gives the compiler more signal for UI and rendering code.
-- **Re-profile after large refactors.** Stale profile data still improves performance, but fresh data gives the best results.
-- **Combine with the `optimized` preset flags.** The `pgo-use` preset already includes `-O3 -march=x86-64-v3` for maximum effect.
-- **Verify end-to-end improvement.** Comparing `benchmark` to `pgo-use` measures the combined effect of PGO and the extra `-march=x86-64-v3` tuning enabled by `pgo-use`, not PGO in isolation. To isolate pure PGO gains, use a baseline build with the same non-PGO flags as `pgo-use`.
+Judge a PGO claim, especially a rendering one, only between builds that differ in nothing but the profile data and its flag: `pgo-use` against `pgo-baseline` (`win-pgo-use` against `win-pgo-baseline`). Both are `Release` with `-O3 -DNDEBUG -march=x86-64-v3` and the same options, from the same commit; only `-fprofile-instr-use` differs. Comparing `benchmark` (or `release`) with `pgo-use` measures PGO and `-march=x86-64-v3` together, and anything timed on `pgo-generate` measures the instrumentation.
+
+To compare two sets of training data (say, benchmarks only against benchmarks plus UI training), build `pgo-use` from each `.profdata` in turn, from the same commit, and compare those two builds the same way.
 
 ```bash
-# Baseline (generic optimized benchmark build; no PGO)
-cmake --preset benchmark && cmake --build --preset benchmark
-./build/benchmark/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/baseline.json
+# Baseline: pgo-use's flags, no profile data
+./tools/pgo.sh baseline
+./build/pgo-baseline/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/baseline.json
 
-# PGO + architecture-tuned build (after running tools/pgo.sh)
+# PGO (after ./tools/pgo.sh)
 ./build/pgo-use/bin/TaskSmackBenchmarks --benchmark_format=json > /tmp/pgo.json
 
 # Compare (requires: pip install google-benchmark)
 python -m google_benchmark.compare /tmp/baseline.json /tmp/pgo.json
 ```
+
+For rendering, run the same UI scenario on both builds: the synthetic large-UI machine (`TASKSMACK_SYNTHETIC=processes=5000,history=full`) with a fixed `TASKSMACK_WINDOW` and `TASKSMACK_TAB`, compared through the frame-time tooling (`tools/profile-etw.ps1` on Windows).
+
+### Tips
+
+- **Re-profile after large refactors.** Stale profile data still improves performance, but fresh data gives the best results.
+- **Change the UI weights in one place.** `src/Training/UiTrainingPlan.h` holds the table above; its unit tests check the weights add up to 100 and that every main tab is trained.
+- **Keep the driver in step with the shell.** `TrainingShell` (`src/Training/UiTrainingDriver.cpp`) mirrors `ShellLayer`'s attach, update and tab rendering; a new main tab or a new per-frame shell step belongs in both.
 
 ## Packaging (CPack)
 

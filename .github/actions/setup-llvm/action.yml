@@ -110,7 +110,7 @@ runs:
         rm -f llvm.sh
 
         # Build package list - always include GUI dependencies
-        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype6-dev"
+        PACKAGES="libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev libc++-${LLVM_VER}-dev libc++abi-${LLVM_VER}-dev libfreetype6-dev libsystemd-dev pkg-config"
 
         if [[ "$INSTALL_NINJA" == "true" ]]; then
           PACKAGES="$PACKAGES ninja-build"

@@ -193,7 +193,7 @@ fi
 
 # ── Step 2: Base build tools ──────────────────────────────────────────────────
 echo "==> Installing base build tools (CMake, Ninja, Python $PYTHON_VERSION, ccache)..."
-run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libfreetype6-dev
+run_apt cmake ninja-build "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-venv" ccache libfreetype6-dev libsystemd-dev pkg-config
 
 PYTHON_ENV="${REPO_ROOT}/.venv"
 run_cmd "python${PYTHON_VERSION}" -m venv "$PYTHON_ENV"
