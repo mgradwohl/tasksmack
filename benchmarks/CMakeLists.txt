@@ -34,58 +34,21 @@ if(WIN32)
     set(PLATFORM_BENCH_SOURCES
         bench_WindowsPDHGPUProbe.cpp
     )
-    set(PLATFORM_SRC_UNDER_BENCH
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp  # Factory.cpp makes the readers
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp  # WindowsPowerProbe.cpp reads the battery through it
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
-
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp  # Factory.cpp makes the crash-event reader (#1524)
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp  # Factory.cpp makes it (#1577)
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
-    )
 else()
     set(PLATFORM_BENCH_SOURCES
         # Linux-specific benchmarks
         bench_NetlinkSocketStats.cpp
         bench_LinuxProcessProbe.cpp
     )
-    set(PLATFORM_SRC_UNDER_BENCH
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DetachedSpawn.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessConnectionsReader.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemInfoProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/ROCmGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NetlinkSocketStats.cpp
-    )
 endif()
 
-# Benchmark executable
+# Benchmark executable. The code under benchmark is the app's own objects (TaskSmackApp: everything
+# but main(), see the root CMakeLists.txt), linked the way TaskSmack and TaskSmackUiTraining link
+# them, so a source added to the app is in the benchmarks too. A hand-kept copy of the platform
+# sources and libraries here stopped linking each time the app gained one (#1528, #1673, #1677, #1691).
+# The objects include the real UI/Theme.cpp: its constructor installs the built-in fallback theme
+# (Arctic Fire, embedded at build time) without a renderer, so bench_ChartGeometry.cpp's headless
+# charts draw in that theme's visible colours and no fonts (#1421).
 add_executable(TaskSmackBenchmarks
     bench_main.cpp
     bench_History.cpp
@@ -101,69 +64,20 @@ add_executable(TaskSmackBenchmarks
     bench_ProcessDetailsHistory.cpp
     bench_ProcessRowMeter.cpp
     ${PLATFORM_BENCH_SOURCES}
-    # Source files under benchmark
-    ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
-    ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
-    # bench_ChartGeometry.cpp draws the real charts under a headless ImGui/ImPlot context (#1421):
-    # ChartLegend.cpp for the series marker glyphs, and the test binary's Theme stub (a visible colour
-    # scheme, no fonts) in place of Theme.cpp, which needs a renderer to load its fonts.
-    ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
-    ${CMAKE_SOURCE_DIR}/tests/Mocks/ThemeStub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
-    ${PLATFORM_SRC_UNDER_BENCH}
+    $<TARGET_OBJECTS:TaskSmackApp>
 )
 
+# The app's compile features, definitions (SPDLOG_WCHAR_FILENAMES and the Windows SDK version must
+# match the objects'), include directories, warnings, text encoding, toolchain and libraries.
+tasksmack_configure_app_target(TaskSmackBenchmarks)
+
 target_include_directories(TaskSmackBenchmarks PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/tests  # Mocks/MockProbes.h, Mocks/MockDiskProbe.h (bench_ModelLimits.cpp, #1422)
-    ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends
-    ${imgui_SOURCE_DIR}/misc/cpp
-    ${implot_SOURCE_DIR}
 )
 
 target_link_libraries(TaskSmackBenchmarks PRIVATE
     benchmark::benchmark
-    spdlog::spdlog_header_only
-    implot_lib  # And imgui_lib through it: bench_ChartGeometry.cpp renders headless frames (#1421)
 )
-tasksmack_apply_linux_toolchain(TaskSmackBenchmarks)
-
-# Platform-specific library linking
-if(UNIX AND NOT APPLE)
-    find_package(X11 REQUIRED)
-    target_link_libraries(TaskSmackBenchmarks PRIVATE X11::X11 ${CMAKE_DL_LIBS})
-endif()
-
-if(WIN32)
-    target_compile_definitions(TaskSmackBenchmarks PRIVATE
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
-        _WIN32_WINNT=0x0A00
-        WINVER=0x0A00
-        NTDDI_VERSION=0x0A000000
-    )
-    target_link_libraries(TaskSmackBenchmarks PRIVATE
-        pdh
-        psapi
-        iphlpapi
-        ws2_32
-        userenv
-        dxgi
-        gdi32
-        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
-        version
-        powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
-        wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
-    )
-endif()
-
-# Apply project warnings (benchmarks should compile clean too)
-tasksmack_apply_default_warnings(TaskSmackBenchmarks)
-tasksmack_apply_text_encoding(TaskSmackBenchmarks)
 
 # Disable warnings that conflict with Google Benchmark's use of __COUNTER__ and DoNotOptimize
 # These are from the benchmark library's macros, not our code

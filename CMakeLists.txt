@@ -456,7 +456,9 @@ if(TASKSMACK_ENABLE_UNITY_BUILD)
 endif()
 
 # The settings every target built from the app's sources shares: TaskSmackApp (the objects),
-# TaskSmack (main() and the Windows resources) and TaskSmackUiTraining (src/Training/, #880).
+# TaskSmack (main() and the Windows resources), TaskSmackUiTraining (src/Training/, #880) and
+# TaskSmackBenchmarks (benchmarks/, #1691). Paths name the project's own directories, not
+# CMAKE_CURRENT_*, since benchmarks/CMakeLists.txt calls it from a subdirectory.
 function(tasksmack_configure_app_target target)
     target_compile_features(${target} PRIVATE cxx_std_23)
 
@@ -503,8 +505,8 @@ function(tasksmack_configure_app_target target)
     endif()
 
     target_include_directories(${target} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_CURRENT_BINARY_DIR}/generated
+        ${TaskSmack_SOURCE_DIR}/src
+        ${TaskSmack_BINARY_DIR}/generated
     )
 
     # SYSTEM (not PRIVATE above): stb is third-party, and the FetchContent_Declare(SYSTEM)
