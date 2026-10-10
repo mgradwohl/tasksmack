@@ -492,6 +492,8 @@ TEST_F(CoredumpsFixture, TheJournalAddsDetailsAndCrashesWithoutACore)
     EXPECT_TRUE(info.events[1].signal.empty());
     EXPECT_EQ(info.events[2].application, "nocore");
     EXPECT_FALSE(info.events[2].coreKept);
+    EXPECT_TRUE(info.journalRead);
+    EXPECT_TRUE(info.journalUnavailableReason.empty());
 }
 
 TEST_F(CoredumpsFixture, TheJournalListsCrashesWhenTheDirectoryIsMissing)
@@ -514,6 +516,8 @@ TEST_F(CoredumpsFixture, WithoutAJournalTheDirectoryAlone)
     LinuxCoredumps::readCrashFacts(m_Root, NOW, info, closed.reader());
     ASSERT_EQ(info.events.size(), 1U);
     EXPECT_TRUE(info.events[0].coreKept);
+    EXPECT_FALSE(info.journalRead);
+    EXPECT_EQ(info.journalUnavailableReason, "no journal"); // the reader's reason, for the Source row (#1697)
 
     CrashesInfo none;
     LinuxCoredumps::readCrashFacts(m_Root / "missing", NOW, none, closed.reader());

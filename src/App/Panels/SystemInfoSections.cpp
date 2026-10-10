@@ -1296,12 +1296,26 @@ Section buildCrashesSection(const Platform::CrashesInfo& crashes)
         const std::size_t crashed = crashes.events.size() - hangs;
         if (crashes.events.empty())
         {
-            count = windows ? "No crashes or hangs" : "No core dumps";
+            if (windows)
+            {
+                count = "No crashes or hangs";
+            }
+            else
+            {
+                count = crashes.journalRead ? "No crashes" : "No core dumps";
+            }
         }
         else
         {
-            count = windows ? std::format("{}, {}", plural(crashed, "crash", "crashes"), plural(hangs, "hang", "hangs"))
-                            : plural(crashed, "core dump", "core dumps");
+            // With the journal read, a crash may be one whose core wasn't kept (#1697).
+            if (windows)
+            {
+                count = std::format("{}, {}", plural(crashed, "crash", "crashes"), plural(hangs, "hang", "hangs"));
+            }
+            else
+            {
+                count = crashes.journalRead ? plural(crashed, "crash", "crashes") : plural(crashed, "core dump", "core dumps");
+            }
         }
     }
     rows.push_back(
@@ -1312,7 +1326,15 @@ Section buildCrashesSection(const Platform::CrashesInfo& crashes)
     }
     if (!windows && crashes.listed)
     {
-        rows.push_back(row("Source", "systemd-coredump's core files; the journal's details (signal, executable) aren't read"));
+        // What was read, and why the journal's details are missing when they are (#1697).
+        std::string source = "systemd-coredump's journal entries and core files";
+        if (!crashes.journalRead)
+        {
+            source = crashes.journalUnavailableReason.empty()
+                       ? "systemd-coredump's core files; the journal's details (signal, executable) weren't read"
+                       : "systemd-coredump's core files; the journal's details weren't read: " + crashes.journalUnavailableReason;
+        }
+        rows.push_back(row("Source", std::move(source)));
     }
     for (const Platform::CrashEvent& event : crashes.events)
     {

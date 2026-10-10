@@ -344,9 +344,11 @@ inline void readCrashFacts(const std::filesystem::path& root,
     const JournalRead read = journal(oldestKeptSeconds(nowUnixSeconds) * USEC_PER_SECOND, maxEvents + 1);
     if (!read.opened)
     {
+        info.journalUnavailableReason = read.error;
         sortAndCap(info, maxEvents);
         return;
     }
+    info.journalRead = true;
 
     std::vector<CrashEvent> merged;
     for (const JournalFields& fields : read.entries)
