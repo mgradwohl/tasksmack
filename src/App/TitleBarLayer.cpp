@@ -6,6 +6,7 @@
 #include "Core/EnvUtils.h"
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
+#include "Core/Utf8Path.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
@@ -299,7 +300,7 @@ void TitleBarLayer::loadIconTexture(const int pixelSize)
     }
     else
     {
-        spdlog::warn("Failed to load title bar icon from {}", iconPath.string());
+        spdlog::warn("Failed to load title bar icon from {}", Core::pathToUtf8(iconPath));
     }
 }
 

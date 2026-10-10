@@ -8,6 +8,8 @@
 // primitives as injectable function parameters lets tests fabricate that failure directly instead
 // of needing a genuinely broken filesystem.
 
+#include "Core/Utf8Path.h"
+
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
@@ -68,13 +70,12 @@ resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteCallable&& absolut
     // violating the normal contract of PathService. Log a warning so this degenerate
     // condition is visible; the caller should not rely on the result being absolute.
     //
-    // All logging below is best-effort: raw.string() can throw when the path contains
-    // characters that cannot be represented in the current locale encoding, and spdlog::warn
-    // itself can throw. Each warn call is wrapped in its own try/catch so that no exception can
-    // escape from this fallback path.
+    // All logging below is best-effort: building the path's UTF-8 text can throw (allocation),
+    // and spdlog::warn itself can throw. Each warn call is wrapped in its own try/catch so that
+    // no exception can escape from this fallback path.
     try
     {
-        const std::string rawStr = raw.empty() ? "<empty>" : raw.string();
+        const std::string rawStr = raw.empty() ? "<empty>" : pathToUtf8(raw);
         try
         {
             spdlog::warn("PathService: could not resolve absolute path for '{}'; "
@@ -89,8 +90,8 @@ resolveAbsolutePath(const std::filesystem::path& raw, AbsoluteCallable&& absolut
     {
         try
         {
-            spdlog::warn("PathService: could not resolve absolute path (path contains "
-                         "non-representable characters); both absolute() and current_path() failed. "
+            spdlog::warn("PathService: could not resolve absolute path (its text could not be "
+                         "built); both absolute() and current_path() failed. "
                          "Returning lexically-normalized raw path.");
         }
         catch (...) // NOLINT(bugprone-empty-catch)

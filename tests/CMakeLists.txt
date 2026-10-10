@@ -230,6 +230,7 @@ set(COMMON_TEST_SOURCES
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
+    App/test_NonAsciiRoundTrips.cpp
     App/test_InstanceLock.cpp
     App/test_PanelTabs.cpp
     App/test_TabLabel.cpp
@@ -668,6 +669,9 @@ if(WIN32)
         _WIN32_WINNT=0x0A00
         WINVER=0x0A00
         NTDDI_VERSION=0x0A000000
+        # As for the app's targets (CMakeLists.txt): the log file is opened by its UTF-16 path, and
+        # Core/LogFileSink.h, which test_NonAsciiRoundTrips.cpp exercises, static_asserts it (#1648).
+        SPDLOG_WCHAR_FILENAMES
     )
     # Windows needs additional system libraries
     target_link_libraries(TaskSmackTests PRIVATE

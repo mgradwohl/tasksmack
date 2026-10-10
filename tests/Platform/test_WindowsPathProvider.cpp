@@ -5,12 +5,17 @@
 /// (WindowsPathProviderMath.h) is tested on every platform in
 /// WindowsMath/test_WindowsPathProviderMath.cpp.
 
+#include "Core/Utf8Path.h"
+#include "NonAsciiTestNames.h"
 #include "Platform/Windows/WindowsPathProvider.h"
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
+#include <memory>
 #include <string>
 
 namespace Platform
@@ -175,6 +180,27 @@ TEST(WindowsPathProviderTest, GetUserConfigDirHandlesMissingAPPDATA)
 
     EXPECT_EQ(dir, cwd) << "Missing APPDATA should fall back to the current directory";
     EXPECT_TRUE(dir.is_absolute());
+}
+
+TEST(WindowsPathProviderTest, GetUserConfigDirKeepsANonAsciiAPPDATA)
+{
+    // A user name outside the code page (#1648): this binary has no UTF-8 manifest, so a narrow
+    // read of APPDATA would lose the CJK and emoji characters. Nothing is created or written.
+    const std::filesystem::path appData =
+        std::filesystem::temp_directory_path() / Core::utf8ToPath(std::format("{}-AppData-Roaming", TestSupport::allNonAsciiNames()));
+
+    wchar_t* original = nullptr;
+    std::size_t originalLength = 0;
+    const bool hadOriginal = _wdupenv_s(&original, &originalLength, L"APPDATA") == 0 && original != nullptr;
+    const std::unique_ptr<wchar_t, decltype(&std::free)> holder(original, &std::free);
+    const std::wstring originalValue = hadOriginal ? std::wstring(original) : std::wstring();
+
+    ASSERT_EQ(_wputenv_s(L"APPDATA", appData.c_str()), 0);
+    const WindowsPathProvider provider;
+    const std::filesystem::path dir = provider.getUserConfigDir();
+    _wputenv_s(L"APPDATA", originalValue.c_str()); // restore before any assertion can return
+
+    EXPECT_EQ(dir, appData / "TaskSmack");
 }
 
 TEST(WindowsPathProviderTest, GetUserConfigDirHasValidWindowsPath)

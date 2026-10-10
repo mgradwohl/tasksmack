@@ -16,7 +16,9 @@
 /// offscreen SDL driver happens to support a GL 3.3 core context, which it does not).
 
 #include "Core/HeadlessVideoDriverTestUtils.h"
+#include "Core/Utf8Path.h"
 #include "Core/Window.h"
+#include "NonAsciiTestNames.h"
 #include "UI/IconLoader.h"
 
 #include <SDL3/SDL.h>
@@ -327,6 +329,44 @@ TEST_F(IconLoaderGLTest, LoadTextureWithRealImageAndRealGLContextSucceeds)
         // Texture's destructor calls glDeleteTextures(); it must run while window's GL
         // context is still current, so destroy it explicitly before window goes out of scope.
         tex = Texture{};
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << "Window creation failed unexpectedly: " << e.what();
+    }
+}
+
+TEST_F(IconLoaderGLTest, LoadTextureFromANonAsciiDirectorySucceeds)
+{
+    // An install under a non-ASCII directory (#1648): the image is read by its path, not a narrowed
+    // file name, so it loads without the UTF-8 manifest this binary lacks.
+    const TestSupport::NonAsciiTempDir dir;
+    if (!dir.created())
+    {
+        GTEST_SKIP() << "The filesystem refused a non-ASCII directory name under the temp directory";
+    }
+    try
+    {
+        const Core::Window window(
+            Core::WindowSpecification{.Title = "IconLoaderGLTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+
+        const std::filesystem::path bmpPath = dir.path() / Core::utf8ToPath(std::format("{}.bmp", TestSupport::allNonAsciiNames()));
+        {
+            const auto bytes = makeMinimalRedBmp();
+            std::ofstream out(bmpPath, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(bytes.data()),
+                      static_cast<std::streamsize>(bytes.size())); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        }
+        ASSERT_TRUE(std::filesystem::exists(bmpPath));
+
+        Texture tex = loadTexture(bmpPath);
+        EXPECT_TRUE(tex.valid());
+        EXPECT_FLOAT_EQ(tex.size().x, 1.0F);
+        tex = Texture{}; // glDeleteTextures() while the window's context is current
     }
     catch (const std::exception& e)
     {

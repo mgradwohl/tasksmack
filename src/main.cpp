@@ -17,6 +17,8 @@
 // NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
 #include "Core/EnvUtils.h"
 #include "Core/LocaleSetup.h"
+#include "Core/LogFileSink.h"
+#include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "UI/UILayer.h"
 #include "version.h"
@@ -24,7 +26,6 @@
 #include <SDL3/SDL.h>
 #include <spdlog/common.h>
 #include <spdlog/logger.h>
-#include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -110,7 +111,7 @@ auto runApp() -> int
     const App::InstanceLock instanceLock(instanceLockPath);
     if (instanceLock.status() == App::InstanceLock::Status::HeldByAnotherInstance)
     {
-        spdlog::warn("TaskSmack is already running with the settings in {}; exiting", instanceLockPath.parent_path().string());
+        spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
                                  "TaskSmack",
                                  "TaskSmack is already running.\n\nOnly one TaskSmack can run at a time, so that two can't overwrite "
@@ -138,14 +139,9 @@ auto runApp() -> int
     try
     {
         logPath = std::filesystem::temp_directory_path() / "tasksmack-debug.log";
-#ifdef _WIN32
-        // Native wide path: the target defines SPDLOG_WCHAR_FILENAMES, so spdlog's filename_t is
-        // std::wstring here. Passing a narrowed path would route through the active ANSI code
-        // page and fail, or open the wrong file, whenever %TEMP% contains characters outside it.
-        sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath.wstring(), true));
-#else
-        sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(logPath.string(), true));
-#endif
+        // Opened by its native path (UTF-16 on Windows, SPDLOG_WCHAR_FILENAMES), never a narrowed
+        // one, so a %TEMP% with any characters works with or without the manifest (#1648).
+        sinks.push_back(Core::makeLogFileSink(logPath, true));
     }
     catch (const std::exception& e)
     {
@@ -164,18 +160,16 @@ auto runApp() -> int
 
     if (!logPath.empty())
     {
-        // u8string(), not string(): std::filesystem::path::string() performs a narrowing
+        // pathToUtf8(), not string(): std::filesystem::path::string() performs a narrowing
         // conversion that can throw for a path the active code page cannot represent, and this
-        // sits outside the try block above. UTF-8 bytes are lossless and cannot throw.
-        const auto utf8Path = logPath.u8string();
-        spdlog::info("Debug log file: {}", std::string(utf8Path.begin(), utf8Path.end()));
+        // sits outside the try block above.
+        spdlog::info("Debug log file: {}", Core::pathToUtf8(logPath));
     }
 
     // Logged here rather than when it is read (UserConfig::get() above), so it reaches the log file.
     if (const auto& configDir = Core::ConfigDirOverride::active(); configDir.has_value())
     {
-        const auto utf8Dir = configDir->u8string();
-        spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, std::string(utf8Dir.begin(), utf8Dir.end()));
+        spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, Core::pathToUtf8(*configDir));
     }
 
 #ifndef NDEBUG
@@ -220,7 +214,8 @@ auto runApp() -> int
 
     if (instanceLock.status() == App::InstanceLock::Status::Unavailable)
     {
-        spdlog::warn("Can't take the single-instance lock {}: {}; starting anyway", instanceLockPath.string(), instanceLock.error());
+        spdlog::warn(
+            "Can't take the single-instance lock {}: {}; starting anyway", Core::pathToUtf8(instanceLockPath), instanceLock.error());
     }
 
     userConfig.load();

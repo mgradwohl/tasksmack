@@ -34,10 +34,24 @@
 namespace App::PlatformOpen
 {
 
+NativeTarget nativeTargetFromUtf8(std::string_view target)
+{
+#ifdef _WIN32
+    return Platform::WinString::utf8ToWide(target);
+#else
+    return NativeTarget{target};
+#endif
+}
+
+NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
+{
+    return path.native();
+}
+
 [[nodiscard]] bool openWithSystemHandler(std::string_view target)
 {
 #ifdef _WIN32
-    const std::wstring wideTarget = Platform::WinString::utf8ToWide(target);
+    const std::wstring wideTarget = nativeTargetFromUtf8(target);
     if (wideTarget.empty())
     {
         spdlog::warn("Failed to convert UTF-8 target to UTF-16: {}", std::string{target});
@@ -56,7 +70,7 @@ namespace App::PlatformOpen
     return true;
 #elif defined(__linux__)
     // Linux: Use double-fork to safely spawn xdg-open without creating zombies
-    const std::string targetStr{target};
+    const std::string targetStr = nativeTargetFromUtf8(target);
     // NOLINTNEXTLINE(misc-include-cleaner) - pid_t from sys/types.h, include-cleaner false positive
     const pid_t pid = ::fork();
     if (pid == -1)
@@ -125,8 +139,8 @@ namespace App::PlatformOpen
 [[nodiscard]] bool openWithSystemHandler(const std::filesystem::path& path)
 {
 #ifdef _WIN32
-    // Use the native wide path directly to avoid ANSI/UTF-8 encoding issues.
-    const std::wstring widePath = path.wstring();
+    // The native wide path directly, never a narrowed one (#1648).
+    const std::wstring widePath = nativeTargetFromPath(path);
 
     // ShellExecuteW returns > 32 on success
     auto* const shellResult = ::ShellExecuteW(nullptr, L"open", widePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -139,11 +153,11 @@ namespace App::PlatformOpen
     }
     return true;
 #elif defined(__linux__)
-    // On Linux, std::filesystem::path::string() typically returns a UTF-8 string
-    // (the encoding is locale-dependent, but virtually all Linux distros use UTF-8).
-    return openWithSystemHandler(std::string_view{path.string()});
+    // A Linux path is bytes, and xdg-open takes them as they are (valid UTF-8 or not).
+    const std::string nativePath = nativeTargetFromPath(path);
+    return openWithSystemHandler(std::string_view{nativePath});
 #else
-    spdlog::warn("openWithSystemHandler: not supported on this platform for path: {}", path.string());
+    spdlog::warn("openWithSystemHandler: not supported on this platform for path: {}", nativeTargetFromPath(path));
     return false;
 #endif
 }

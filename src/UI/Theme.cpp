@@ -1,6 +1,7 @@
 #include "Theme.h"
 
 #include "ColorContrast.h"
+#include "Core/Utf8Path.h"
 #include "DpiScale.h"
 #include "FallbackTheme.h"
 #include "StyleScale.h"
@@ -66,13 +67,13 @@ void Theme::loadDefaultFallbackTheme()
 
 void Theme::loadThemes(const std::filesystem::path& themesDir)
 {
-    spdlog::info("Loading themes from: {}", themesDir.string());
+    spdlog::info("Loading themes from: {}", Core::pathToUtf8(themesDir));
 
     auto discovered = ThemeLoader::discoverThemes(themesDir);
 
     if (discovered.empty())
     {
-        spdlog::warn("No themes found in {}, using fallback", themesDir.string());
+        spdlog::warn("No themes found in {}, using fallback", Core::pathToUtf8(themesDir));
         return; // Keep the fallback theme
     }
 
@@ -102,7 +103,7 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
         // Keep whatever is already loaded: the built-in fallback from the constructor, or the
         // built-in themes when this was the user directory. Appending another fallback here
         // produced a duplicate "Fallback" entry (#1127).
-        spdlog::error("Failed to load any themes from {}", themesDir.string());
+        spdlog::error("Failed to load any themes from {}", Core::pathToUtf8(themesDir));
         return;
     }
 

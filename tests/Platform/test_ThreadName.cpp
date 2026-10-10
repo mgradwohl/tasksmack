@@ -4,6 +4,7 @@
 /// fitting the limit, and the name actually reaching the OS (Linux: the kernel's thread name;
 /// Windows: the thread description).
 
+#include "NonAsciiTestNames.h"
 #include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
@@ -25,6 +26,9 @@
 #include <processthreadsapi.h>
 // clang-format on
 #else
+#include <format>
+#include <utility>
+
 #include <pthread.h>
 #endif
 
@@ -98,6 +102,31 @@ TEST(ThreadNameTest, SetCurrentThreadNameReachesKernelTruncated)
     EXPECT_EQ(observed, "ts-a-very-long-");
 }
 
+TEST(ThreadNameTest, NonAsciiNameReachesKernelCutOnACodePointBoundary)
+{
+    // The kernel takes the name as bytes. "任务管理器" is exactly 15 bytes, so the emoji after it is
+    // dropped whole rather than split; the shorter names fit as they are.
+    const std::string longName = std::format("{}{}", TestSupport::CJK_NAME, TestSupport::EMOJI_NAME);
+    for (const auto& [name, expected] : std::array<std::pair<std::string, std::string>, 3>{{
+             {longName, std::string(TestSupport::CJK_NAME)},
+             {std::string(TestSupport::LATIN_NAME), std::string(TestSupport::LATIN_NAME)},
+             {std::string(TestSupport::RTL_NAME), std::string(TestSupport::RTL_NAME)},
+         }})
+    {
+        bool named = false;
+        std::string observed;
+        std::thread worker(
+            [&]
+            {
+                named = Platform::setCurrentThreadName(name);
+                observed = currentThreadName();
+            });
+        worker.join();
+        EXPECT_TRUE(named) << name;
+        EXPECT_EQ(observed, expected);
+    }
+}
+
 TEST(ThreadNameTest, MainThreadNameLeavesProcessNameAlone)
 {
     const std::string before = currentThreadName();
@@ -130,6 +159,22 @@ TEST(ThreadNameTest, SetCurrentThreadNameSetsWindowsDescriptionUntruncated)
     EXPECT_TRUE(named);
     // Windows has no 15-byte limit, so the whole name is kept.
     EXPECT_EQ(observed, L"ts-a-very-long-thread-name");
+}
+
+TEST(ThreadNameTest, NonAsciiNameReachesWindowsDescriptionIntact)
+{
+    // The description is UTF-16: every script, the emoji's surrogate pair included, comes back whole.
+    bool named = false;
+    std::wstring observed;
+    std::thread worker(
+        [&]
+        {
+            named = Platform::setCurrentThreadName(TestSupport::allNonAsciiNames());
+            observed = currentThreadDescription();
+        });
+    worker.join();
+    EXPECT_TRUE(named);
+    EXPECT_EQ(observed, L"任务管理器🔥Ünïcödéمدير");
 }
 
 TEST(ThreadNameTest, MainThreadNameSetsWindowsDescription)

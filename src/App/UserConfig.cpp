@@ -4,6 +4,7 @@
 #include "App/Panels/ProcessTableSettings.h"
 #include "App/UserConfigHelpers.h"
 #include "Core/ConfigDirOverride.h"
+#include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 #include "Domain/Numeric.h"
@@ -148,7 +149,7 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
     auto normalized = candidate.lexically_normal();
     if (!UserConfigHelpers::isValidConfigDir(normalized))
     {
-        spdlog::warn("Ignoring unsafe config directory {}; using {}", normalized.string(), fallback.string());
+        spdlog::warn("Ignoring unsafe config directory {}; using {}", Core::pathToUtf8(normalized), Core::pathToUtf8(fallback));
         return fallback;
     }
 
@@ -492,7 +493,7 @@ auto UserConfig::get() -> UserConfig&
 UserConfig::UserConfig()
 {
     m_ConfigPath = getConfigDirectory() / "config.toml";
-    spdlog::debug("Config path: {}", m_ConfigPath.string());
+    spdlog::debug("Config path: {}", Core::pathToUtf8(m_ConfigPath));
 }
 
 auto UserConfig::getConfigDirectory() -> std::filesystem::path
@@ -519,7 +520,7 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     auto fallback = resolveHomeConfigDir();
     if (!fallback.is_absolute())
     {
-        spdlog::error("Fallback config directory is not absolute: {}", fallback.string());
+        spdlog::error("Fallback config directory is not absolute: {}", Core::pathToUtf8(fallback));
         return std::filesystem::current_path();
     }
 
@@ -656,21 +657,21 @@ void UserConfig::load()
     {
         if (ec)
         {
-            spdlog::warn("Can't check config file {}: {}; using defaults", m_ConfigPath.string(), ec.message());
+            spdlog::warn("Can't check config file {}: {}; using defaults", Core::pathToUtf8(m_ConfigPath), ec.message());
         }
         else
         {
-            spdlog::info("No config file found at {}, using defaults", m_ConfigPath.string());
+            spdlog::info("No config file found at {}, using defaults", Core::pathToUtf8(m_ConfigPath));
         }
         return;
     }
 
     try
     {
-        const auto config = toml::parse_file(m_ConfigPath.string());
+        const auto config = toml::parse_file(Core::pathToUtf8(m_ConfigPath));
         readSettings(config, m_Settings);
         m_Synced = m_Settings;
-        spdlog::info("Loaded config from {}", m_ConfigPath.string());
+        spdlog::info("Loaded config from {}", Core::pathToUtf8(m_ConfigPath));
     }
     catch (const toml::parse_error& err)
     {
@@ -703,7 +704,7 @@ void UserConfig::save()
         std::filesystem::create_directories(configDir, ec);
         if (ec)
         {
-            spdlog::error("Failed to create config directory {}: {}", configDir.string(), ec.message());
+            spdlog::error("Failed to create config directory {}: {}", Core::pathToUtf8(configDir), ec.message());
             return;
         }
     }
@@ -730,7 +731,7 @@ void UserConfig::save()
         }
         if (++linkHops > MAX_LINK_HOPS)
         {
-            spdlog::error("Not saving settings: {} is a loop of links", m_ConfigPath.string());
+            spdlog::error("Not saving settings: {} is a loop of links", Core::pathToUtf8(m_ConfigPath));
             return;
         }
         const std::filesystem::path target = std::filesystem::read_symlink(destination, ec);
@@ -742,7 +743,7 @@ void UserConfig::save()
     }
     if (ec)
     {
-        spdlog::error("Not saving settings: can't resolve the link {}: {}", m_ConfigPath.string(), ec.message());
+        spdlog::error("Not saving settings: can't resolve the link {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
         return;
     }
 
@@ -754,18 +755,19 @@ void UserConfig::save()
     const bool fileExists = std::filesystem::exists(destination, ec);
     if (ec)
     {
-        spdlog::error("Not saving settings: can't check {}: {}", m_ConfigPath.string(), ec.message());
+        spdlog::error("Not saving settings: can't check {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
         return;
     }
     if (fileExists)
     {
         try
         {
-            document = toml::parse_file(destination.string());
+            document = toml::parse_file(Core::pathToUtf8(destination));
         }
         catch (const toml::parse_error& err)
         {
-            spdlog::error("Not saving settings: {} can't be read or parsed ({}); fix or remove it", m_ConfigPath.string(), err.what());
+            spdlog::error(
+                "Not saving settings: {} can't be read or parsed ({}); fix or remove it", Core::pathToUtf8(m_ConfigPath), err.what());
             return;
         }
         // Fail closed: a file whose permissions can't be read must not be replaced by one with the
@@ -773,7 +775,7 @@ void UserConfig::save()
         const std::filesystem::file_status status = std::filesystem::status(destination, ec);
         if (ec)
         {
-            spdlog::error("Not saving settings: can't read the permissions of {}: {}", m_ConfigPath.string(), ec.message());
+            spdlog::error("Not saving settings: can't read the permissions of {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
             return;
         }
         originalPermissions = status.permissions();
@@ -904,8 +906,9 @@ void UserConfig::save()
         struct stat original = {};
         if (::stat(destination.c_str(), &original) != 0)
         {
-            spdlog::error(
-                "Not saving settings: can't read the owner of {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
+            spdlog::error("Not saving settings: can't read the owner of {}: {}",
+                          Core::pathToUtf8(m_ConfigPath),
+                          std::system_category().message(errno));
             return;
         }
         owner = FileOwner{.uid = original.st_uid, .gid = original.st_gid};
@@ -927,7 +930,7 @@ void UserConfig::save()
         if (!acl.has_value())
         {
             spdlog::error("Not saving settings: can't read the access control list of {}: {}",
-                          m_ConfigPath.string(),
+                          Core::pathToUtf8(m_ConfigPath),
                           std::system_category().message(errno));
             return;
         }
@@ -947,7 +950,8 @@ void UserConfig::save()
     }
     if (fd < 0)
     {
-        spdlog::error("Failed to create a temporary file beside {}: {}", m_ConfigPath.string(), std::system_category().message(errno));
+        spdlog::error(
+            "Failed to create a temporary file beside {}: {}", Core::pathToUtf8(m_ConfigPath), std::system_category().message(errno));
         return;
     }
     stagingGuard.created(tempPath);
@@ -969,7 +973,7 @@ void UserConfig::save()
     }
     if (!file.is_open())
     {
-        spdlog::error("Failed to create a temporary file beside {}", m_ConfigPath.string());
+        spdlog::error("Failed to create a temporary file beside {}", Core::pathToUtf8(m_ConfigPath));
         return;
     }
     stagingGuard.created(tempPath);
@@ -985,19 +989,21 @@ void UserConfig::save()
 #endif
     if (!written)
     {
-        spdlog::error("Not saving settings: couldn't write {} or give it the permissions of {}", tempPath.string(), m_ConfigPath.string());
+        spdlog::error("Not saving settings: couldn't write {} or give it the permissions of {}",
+                      Core::pathToUtf8(tempPath),
+                      Core::pathToUtf8(m_ConfigPath));
         return;
     }
 
     std::filesystem::rename(tempPath, destination, ec);
     if (ec)
     {
-        spdlog::error("Failed to replace {} with the new config: {}", m_ConfigPath.string(), ec.message());
+        spdlog::error("Failed to replace {} with the new config: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
         return;
     }
 
     stagingGuard.published();
-    spdlog::info("Saved config to {}", m_ConfigPath.string());
+    spdlog::info("Saved config to {}", Core::pathToUtf8(m_ConfigPath));
     m_Synced = m_Settings;
 
     // Reset so that the next load() call re-reads from disk (e.g., for test round-trips

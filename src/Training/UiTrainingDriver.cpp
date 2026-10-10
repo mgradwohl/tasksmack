@@ -17,6 +17,7 @@
 #include "Core/ConfigDirOverride.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/Utf8Path.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/CurrentProcess.h"
 #include "Training/UiTrainingPlan.h"
@@ -501,7 +502,7 @@ int run(const Options& options)
 
     // Before anything reads them: both are read once, on first use.
     const ScratchConfigDir configDir;
-    setEnvironment(std::string(Core::ConfigDirOverride::ENV_VAR).c_str(), configDir.path().string());
+    setEnvironment(std::string(Core::ConfigDirOverride::ENV_VAR).c_str(), Core::pathToUtf8(configDir.path()));
     setEnvironment(std::string(App::Synthetic::ENV_VAR).c_str(),
                    options.probes == Probes::Synthetic ? options.syntheticSpec : std::string());
     if ((App::Synthetic::activeScenario() != nullptr) != (options.probes == Probes::Synthetic))
