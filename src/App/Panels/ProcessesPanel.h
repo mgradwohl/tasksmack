@@ -117,6 +117,10 @@ class ProcessesPanel : public Panel
     /// Test seam (#1546): onAttach() takes its probe and actions from @p makePlatform instead (tests:
     /// mocks), with no synthetic scenario. The App layer stays the only place platform probes are made.
     explicit ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform);
+
+    /// Test seam (#1546): as above, and the events the panel raises (a selection, Details) go to
+    /// @p raiseEvent instead of Core::Application, so selection can be driven without an Application.
+    ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent);
     ~ProcessesPanel() override;
 
     ProcessesPanel(const ProcessesPanel&) = delete;
@@ -282,6 +286,7 @@ class ProcessesPanel : public Panel
 
   private:
     std::function<ProcessesPanelPlatform()> m_MakePlatform; ///< Set by the test seam only
+    std::function<void(Core::Event&)> m_RaiseEvent;         ///< Set by the test seam only; else the Application
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
     // destructor ordering.
@@ -582,6 +587,8 @@ class ProcessesPanel : public Panel
     /// Leaves the multi-selection alone.
     void selectProcess(const Domain::ProcessSnapshot& proc);
     void selectProcess(const ProcessSelection::Identity& id);
+    /// Raise @p event to the other panels: through the test seam's sink, else Core::Application.
+    void raiseEvent(Core::Event& event);
 
     /// The right-click menu of a process row (#1209): Details, Copy, and the actions the platform has.
     void renderRowContextMenu(const Domain::ProcessSnapshot& proc);

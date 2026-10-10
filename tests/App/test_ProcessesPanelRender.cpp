@@ -2,11 +2,12 @@
 /// @brief The Processes panel as a whole (#1546), run headless with a mock process probe and mock
 /// actions through its probe-factory seam: the table lists the probe's processes, the tree view nests
 /// a child under its parent (and toggling it before the table's first frame no longer asserts, #1656),
-/// and an inactive panel draws nothing. Selecting a row raises application events, which these tests
-/// can't (no Application); that path needs its own seam.
+/// and an inactive panel draws nothing. Selection raises application events, which go to the test's
+/// event sink through the panel's second seam: keyboard selection announces the selected process.
 
 #include "App/Panels/ProcessesPanel.h"
 #include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Mocks/MockProbes.h"
 
 #include <gtest/gtest.h>
@@ -14,10 +15,14 @@
 #include <imgui_internal.h>
 #include <implot.h>
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -50,8 +55,9 @@ class ProcessesPanelRenderTest : public ::testing::Test
         ImGui::DestroyContext(m_ImGui);
     }
 
-    /// An attached panel reading three processes: init (1), server (100) and its child worker (101).
-    [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanel()
+    /// An attached panel reading three processes: init (1), server (100) and its child worker (101). The
+    /// events it raises go to @p raiseEvent, when given.
+    [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanel(std::function<void(Core::Event&)> raiseEvent = {})
     {
         auto panel = std::make_unique<ProcessesPanel>(
             []
@@ -61,7 +67,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
                     .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
                     .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
                 return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
-            });
+            },
+            std::move(raiseEvent));
         panel->onAttach();
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
@@ -84,6 +91,30 @@ class ProcessesPanelRenderTest : public ::testing::Test
         ImGui::Render();
         return captured;
     }
+
+    /// Renders until the panel has read all three processes (the sampler runs on its own thread).
+    static void renderUntilLoaded(ProcessesPanel& panel)
+    {
+        for (int frame = 0; frame < LOAD_FRAMES && panel.processCount() < 3; ++frame)
+        {
+            static_cast<void>(renderAndCapture(panel));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        static_cast<void>(renderAndCapture(panel)); // the table draws the rows it now has
+    }
+
+    /// Presses and releases @p key over the panel, one frame each.
+    static void pressKey(ProcessesPanel& panel, ImGuiKey key)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: navigation is armed
+        io.AddKeyEvent(key, true);
+        static_cast<void>(renderAndCapture(panel));
+        io.AddKeyEvent(key, false);
+        static_cast<void>(renderAndCapture(panel));
+    }
+
+    static constexpr int LOAD_FRAMES = 200;
 
   private:
     ImGuiContext* m_ImGui = nullptr;
@@ -123,6 +154,66 @@ TEST_F(ProcessesPanelRenderTest, AnInactivePanelDrawsNothing)
     Core::ActiveTabChangedEvent away("SystemOverview");
     panel->onEvent(away);
     EXPECT_TRUE(renderAndCapture(*panel).empty());
+    panel->onDetach();
+}
+
+/// The process ids of the ProcessSelectedEvents raised, in order.
+struct SelectionSink
+{
+    std::vector<std::int32_t> selected;
+    int showDetails = 0;
+
+    [[nodiscard]] std::function<void(Core::Event&)> sink()
+    {
+        return [this](Core::Event& event)
+        {
+            if (const auto* selection = dynamic_cast<const Core::ProcessSelectedEvent*>(&event); selection != nullptr)
+            {
+                selected.push_back(selection->getPid());
+            }
+            else if (dynamic_cast<const Core::ShowProcessDetailsEvent*>(&event) != nullptr)
+            {
+                ++showDetails;
+            }
+        };
+    }
+};
+
+TEST_F(ProcessesPanelRenderTest, TheKeyboardSelectsARowAndAnnouncesIt)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    ASSERT_EQ(panel->processCount(), 3U);
+    ASSERT_TRUE(events.selected.empty());
+
+    pressKey(*panel, ImGuiKey_DownArrow);
+    ASSERT_EQ(events.selected.size(), 1U);
+    EXPECT_EQ(events.selected.back(), panel->selectedPid()); // the event names the process now selected
+    EXPECT_EQ(panel->selectionCount(), 1U);
+    EXPECT_EQ(events.showDetails, 0); // selecting doesn't open Details
+
+    // The next row is another process, announced in turn.
+    pressKey(*panel, ImGuiKey_DownArrow);
+    ASSERT_EQ(events.selected.size(), 2U);
+    EXPECT_NE(events.selected[1], events.selected[0]);
+    EXPECT_EQ(events.selected[1], panel->selectedPid());
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, EndSelectsTheLastRow)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    ASSERT_EQ(panel->processCount(), 3U);
+    pressKey(*panel, ImGuiKey_Home);
+    ASSERT_FALSE(events.selected.empty());
+    const std::int32_t first = events.selected.back();
+    pressKey(*panel, ImGuiKey_End);
+    ASSERT_GE(events.selected.size(), 2U);
+    EXPECT_NE(events.selected.back(), first);
+    EXPECT_EQ(events.selected.back(), panel->selectedPid());
     panel->onDetach();
 }
 
