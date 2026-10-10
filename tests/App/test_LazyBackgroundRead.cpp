@@ -2,7 +2,8 @@
 /// @brief App::Detail::LazyBackgroundRead, the lazy worker read shared by Process Details' Connections,
 /// Modules and Open files sections: due only while drawn open and at the refresh interval (or, on
 /// demand, once per request), one read at a time, a read for a previous selection, another target or a
-/// closed on-demand section dropped, and a read that throws turned into the Failed result.
+/// closed on-demand section dropped, and a read that throws (a std::exception or anything else) turned
+/// into the Failed result on the worker.
 
 #include "App/Panels/LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
@@ -95,6 +96,20 @@ TEST(LazyBackgroundReadTest, AThrowingReadIsTheFailedResult)
     const FakeResult failure = result.value_or(FakeResult{});
     EXPECT_EQ(failure.value, -1);
     EXPECT_EQ(failure.error, "boom");
+}
+
+TEST(LazyBackgroundReadTest, AReadThrowingANonStdExceptionIsTheFailedResult)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    // NOLINTNEXTLINE(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - intentionally non-std: the catch-all path
+    static_cast<void>(read.start(TARGET, [](const Platform::ProcessTarget&) -> FakeResult { throw 42; }));
+    const std::optional<FakeResult> result = read.takeFinished(TARGET, true);
+    ASSERT_TRUE(result.has_value());
+    const FakeResult failure = result.value_or(FakeResult{});
+    EXPECT_EQ(failure.value, -1);
+    EXPECT_EQ(failure.error, "unknown error");
 }
 
 TEST(LazyBackgroundReadTest, DoesNotWaitForAReadStillRunning)

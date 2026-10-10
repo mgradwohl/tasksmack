@@ -95,9 +95,12 @@ template<typename Result> class LazyBackgroundRead
         {
             result = m_Pending.get();
         }
-        catch (const std::exception& e)
+        catch (...)
         {
-            result = m_Failed(e.what());
+            // The worker turns a throwing read into the Failed result itself (start()), so only building
+            // that result can land here (bad_alloc). The exception object is not read: it was thrown on
+            // the worker, and its message must not be shared across threads (#1685).
+            result = m_Failed(std::string(UNKNOWN_FAILURE));
         }
         if (m_PendingGeneration != m_Generation)
         {
@@ -150,11 +153,11 @@ template<typename Result> class LazyBackgroundRead
         try
         {
             m_Pending = std::async(std::launch::async,
-                                   [read = std::move(read), target, name = m_ThreadName]
+                                   [read = std::move(read), target, name = m_ThreadName, failed = m_Failed]
                                    {
                                        // Best effort: a std::async thread may come from a pool (MSVC) and keep the name.
                                        static_cast<void>(Platform::setCurrentThreadName(name));
-                                       return read(target);
+                                       return readOrFailed(read, target, failed);
                                    });
         }
         catch (const std::system_error& e)
@@ -165,6 +168,31 @@ template<typename Result> class LazyBackgroundRead
     }
 
   private:
+    /// The detail of a read that threw something other than a std::exception.
+    static constexpr std::string_view UNKNOWN_FAILURE = "unknown error";
+
+    /// Runs on the worker: @p read(target), or the Failed result for a read that threw. The exception
+    /// is caught and its message copied here, on the thread that threw it, so the UI thread gets a
+    /// plain Result through the future and never an exception object (#1685: the message buffer of a
+    /// std::runtime_error is reference-counted inside the C++ runtime, invisibly to ThreadSanitizer).
+    /// Only building the Failed result itself (bad_alloc) can still escape, to takeFinished().
+    template<typename ReadFn>
+    [[nodiscard]] static Result readOrFailed(const ReadFn& read, const Platform::ProcessTarget& target, FailedResultFn failed)
+    {
+        try
+        {
+            return read(target);
+        }
+        catch (const std::exception& e)
+        {
+            return failed(std::string(e.what()));
+        }
+        catch (...)
+        {
+            return failed(std::string(UNKNOWN_FAILURE));
+        }
+    }
+
     int m_RefreshMs;
     std::string_view m_ThreadName;
     FailedResultFn m_Failed;
