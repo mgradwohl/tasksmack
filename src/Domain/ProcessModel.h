@@ -6,6 +6,7 @@
 #include "ProcessEnergyAttribution.h"
 #include "ProcessSnapshot.h"
 #include "SamplingConfig.h"
+#include "SingleLineText.h"
 #include "SocketTrafficAccumulator.h"
 
 #include <atomic>
@@ -226,6 +227,9 @@ class ProcessModel : public ISamplable
         double netReceivedBytesPerSec = 0.0;
         std::uint64_t generation = 0; // refresh generation when last seen
         Clock::time_point firstSeen;  // sample time of the generation that first listed it (#1417)
+        // Single-line forms of counters.name / counters.command, re-derived only when those change (#1624).
+        SingleLineMemo name;
+        SingleLineMemo command;
     };
 
     // Key for m_PerProcessState: the exact (pid, startTime) identity, distinct from the
@@ -253,6 +257,10 @@ class ProcessModel : public ISamplable
     // Monotonically increasing counter; bumped each computeSnapshotsLocked() call.
     // Entries with generation != m_CurrentGeneration belong to dead processes.
     std::uint64_t m_CurrentGeneration = 0;
+    // Set while computeSnapshotsLocked() walks the processes. Still set at the next call means the
+    // last one threw part way, possibly between a process's SingleLineMemo update and its counters
+    // being stored, so that call re-derives every single-line form rather than trust them (#1624).
+    bool m_SnapshotBuildInterrupted = false;
 
     std::uint64_t m_PrevTotalCpuTime = 0;
     std::uint64_t m_SystemTotalMemory = 0; // For memoryPercent calculation

@@ -147,6 +147,58 @@ TEST(ProcessModelTest, ProbeSuppliedControlCharactersNeverReachASnapshot)
     EXPECT_EQ(snapshots[0].name.find('\n'), std::string::npos);
 }
 
+TEST(ProcessModelTest, ASingleLineFormFollowsItsProcessAcrossRefreshes)
+{
+    // The single-line form is kept per process and re-derived only when the raw string changes
+    // (#1624): a process that renames itself, or rewrites its argv, must still show the new text,
+    // sanitized, and an unchanged one its old sanitized form.
+    Domain::ProcessModel model(nullptr);
+    auto counter = makeCounter(100, "na\nme", 'R', 1000, 500);
+    counter.command = "plain command";
+    auto other = makeCounter(200, "steady", 'R', 1000, 500);
+    other.command = "steady\tcommand";
+
+    std::uint64_t totalCpuTime = 100000;
+    const auto refresh = [&]
+    {
+        model.updateFromCounters({counter, other}, totalCpuTime);
+        totalCpuTime += 1000;
+        return model.snapshots();
+    };
+    const auto find = [](const std::vector<Domain::ProcessSnapshot>& snapshots, std::int32_t pid)
+    {
+        return *std::ranges::find_if(snapshots, [pid](const auto& snapshot) { return snapshot.pid == pid; });
+    };
+
+    auto snapshots = refresh();
+    EXPECT_EQ(find(snapshots, 100).name, "na me");
+    EXPECT_EQ(find(snapshots, 100).command, "plain command");
+
+    snapshots = refresh(); // Unchanged: the kept forms.
+    EXPECT_EQ(find(snapshots, 100).name, "na me");
+    EXPECT_EQ(find(snapshots, 100).command, "plain command");
+    EXPECT_EQ(find(snapshots, 200).command, "steady command");
+
+    counter.name = "renamed";
+    counter.command = "now\r\nmulti-line";
+    snapshots = refresh(); // Both changed: derived again, the dirty one sanitized and the clean one as is.
+    EXPECT_EQ(find(snapshots, 100).name, "renamed");
+    EXPECT_EQ(find(snapshots, 100).command, "now  multi-line");
+    EXPECT_EQ(find(snapshots, 200).name, "steady");
+    EXPECT_EQ(find(snapshots, 200).command, "steady command");
+
+    counter.name = "na\nme"; // Back to the first name, which the memo no longer holds.
+    snapshots = refresh();
+    EXPECT_EQ(find(snapshots, 100).name, "na me");
+    EXPECT_EQ(find(snapshots, 100).command, "now  multi-line");
+
+    // The same PID with another start time is another process: nothing carries over.
+    counter = makeCounter(100, "fresh\x7F", 'R', 1000, 500, 2000);
+    snapshots = refresh();
+    EXPECT_EQ(find(snapshots, 100).name, "fresh ");
+    EXPECT_EQ(find(snapshots, 100).command, "");
+}
+
 TEST(ProcessModelTest, WhenProbeReportsCapabilities_ThenCapabilitiesAreExposed)
 {
     auto probe = std::make_unique<MockProcessProbe>();
