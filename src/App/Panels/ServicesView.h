@@ -34,12 +34,20 @@ enum class ServiceColumn : std::uint8_t
 [[nodiscard]] std::string_view serviceStateLabel(Platform::ServiceState state) noexcept;
 [[nodiscard]] std::string_view serviceStartTypeLabel(Platform::ServiceStartType startType) noexcept;
 
+/// Where a state sorts in the State column (#1599), lowest first: running, then the states on the
+/// way to or from running (starting, resuming, pausing), paused, stopping, stopped, and unknown last.
+/// Ascending, a service that is up (or coming up) lists above one that is down (or going down).
+[[nodiscard]] std::uint8_t serviceStateSortRank(Platform::ServiceState state) noexcept;
+
 /// The theme's status colour for a state: running green, pending amber, paused as stopped
 /// processes, stopped and unknown muted.
 [[nodiscard]] ImVec4 serviceStateColor(Platform::ServiceState state, const UI::ColorScheme& scheme) noexcept;
 
 /// Indices into `services` of those whose name or display name contains `filter` (ASCII case-
-/// insensitive; empty matches all), ordered by `column`. Ties keep the name order the model sorted.
+/// insensitive; empty matches all), ordered by `column`. By State, the states are grouped in
+/// serviceStateSortRank() order (reversed when descending) and, within a state, sorted A to Z by
+/// display name (case-insensitively; the service name breaks ties) in either direction. Other
+/// columns' ties keep the name order the model sorted.
 [[nodiscard]] std::vector<std::size_t>
 buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_view filter, ServiceColumn column, bool ascending);
 
@@ -58,13 +66,13 @@ enum class ServicesViewContent : std::uint8_t
 struct ServicesViewState
 {
     std::string filter;
-    ServiceColumn sortColumn = ServiceColumn::Name;
+    ServiceColumn sortColumn = ServiceColumn::State; ///< The default (#1599): running services first.
     bool ascending = true;
 
     std::vector<std::size_t> rows;
     std::uint64_t rowsVersion = 0;
     std::string rowsFilter;
-    ServiceColumn rowsColumn = ServiceColumn::Name;
+    ServiceColumn rowsColumn = ServiceColumn::State;
     bool rowsAscending = true;
 
     std::string unavailableHeading; ///< The empty state's heading when the list can't be read.

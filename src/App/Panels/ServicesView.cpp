@@ -14,6 +14,7 @@
 #include <cctype>
 #include <compare>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -52,7 +53,7 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services.
     case ServiceColumn::DisplayName:
         return compareIgnoringCase(a.displayName, b.displayName);
     case ServiceColumn::State:
-        return compareIgnoringCase(serviceStateLabel(a.state), serviceStateLabel(b.state));
+        return serviceStateSortRank(a.state) <=> serviceStateSortRank(b.state);
     case ServiceColumn::StartType:
         return compareIgnoringCase(serviceStartTypeLabel(a.startType), serviceStartTypeLabel(b.startType));
     case ServiceColumn::Pid:
@@ -63,6 +64,27 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services.
     default:
         return compareIgnoringCase(a.name, b.name);
     }
+}
+
+/// The name a service is listed by: its display name, or its service name when it has none.
+[[nodiscard]] std::string_view listedName(const Platform::ServiceInfo& service) noexcept
+{
+    return service.displayName.empty() ? std::string_view(service.name) : std::string_view(service.displayName);
+}
+
+/// The State column's order within a state (#1599): by display name, case-insensitively, then by the
+/// service name (case-insensitive, then exact), so two services never compare equal by name alone.
+[[nodiscard]] std::strong_ordering compareByListedName(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b)
+{
+    if (const std::strong_ordering order = compareIgnoringCase(listedName(a), listedName(b)); order != 0)
+    {
+        return order;
+    }
+    if (const std::strong_ordering order = compareIgnoringCase(a.name, b.name); order != 0)
+    {
+        return order;
+    }
+    return a.name <=> b.name;
 }
 
 /// The description, command line and group, as the row's tooltip.
@@ -135,6 +157,31 @@ std::string_view serviceStateLabel(Platform::ServiceState state) noexcept
     }
 }
 
+std::uint8_t serviceStateSortRank(Platform::ServiceState state) noexcept
+{
+    using enum Platform::ServiceState;
+    switch (state)
+    {
+    case Running:
+        return 0;
+    case StartPending:
+        return 1;
+    case ContinuePending:
+        return 2;
+    case PausePending:
+        return 3;
+    case Paused:
+        return 4;
+    case StopPending:
+        return 5;
+    case Stopped:
+        return 6;
+    case Unknown:
+    default:
+        return 7;
+    }
+}
+
 std::string_view serviceStartTypeLabel(Platform::ServiceStartType startType) noexcept
 {
     using enum Platform::ServiceStartType;
@@ -195,7 +242,13 @@ buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_vi
                              [&](std::size_t a, std::size_t b)
                              {
                                  const std::strong_ordering order = compareBy(services[a], services[b], column);
-                                 return ascending ? (order < 0) : (order > 0);
+                                 if (order != 0)
+                                 {
+                                     return ascending ? (order < 0) : (order > 0);
+                                 }
+                                 // Within one state the names stay A to Z in either direction (#1599);
+                                 // only the order of the states reverses.
+                                 return column == ServiceColumn::State && compareByListedName(services[a], services[b]) < 0;
                              });
     return rows;
 }
@@ -269,9 +322,9 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     }
     const float em = ImGui::GetFontSize();
     ImGui::TableSetupScrollFreeze(1, 1);
-    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort, em * 12.0F, static_cast<ImGuiID>(ServiceColumn::Name));
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, em * 12.0F, static_cast<ImGuiID>(ServiceColumn::Name));
     ImGui::TableSetupColumn("Display name", ImGuiTableColumnFlags_None, em * 20.0F, static_cast<ImGuiID>(ServiceColumn::DisplayName));
-    ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_None, em * 6.0F, static_cast<ImGuiID>(ServiceColumn::State));
+    ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_DefaultSort, em * 6.0F, static_cast<ImGuiID>(ServiceColumn::State));
     ImGui::TableSetupColumn("Start type", ImGuiTableColumnFlags_None, em * 9.0F, static_cast<ImGuiID>(ServiceColumn::StartType));
     ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_None, em * 4.0F, static_cast<ImGuiID>(ServiceColumn::Pid));
     ImGui::TableSetupColumn("Account", ImGuiTableColumnFlags_None, em * 14.0F, static_cast<ImGuiID>(ServiceColumn::Account));

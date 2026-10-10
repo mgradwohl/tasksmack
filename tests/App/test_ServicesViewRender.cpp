@@ -157,6 +157,69 @@ TEST(ServicesViewTest, RowsSortByColumnAndDirection)
     EXPECT_EQ(buildServiceRows(publication.services, "spool", ServiceColumn::Name, true), (std::vector<std::size_t>{1}));
 }
 
+TEST_F(ServicesViewRenderTest, DefaultSortIsStateThenDisplayName)
+{
+    // #1599: with no header clicked, the table is sorted by State -- running services A to Z by display
+    // name, then the stopped ones -- and the table's own default sort spec agrees, so it stays.
+    const auto publication = makePublication();
+    ServicesViewState state;
+    EXPECT_EQ(state.sortColumn, ServiceColumn::State);
+    EXPECT_TRUE(state.ascending);
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    EXPECT_EQ(state.sortColumn, ServiceColumn::State);
+    EXPECT_TRUE(state.ascending);
+    EXPECT_EQ(state.rows, (std::vector<std::size_t>{0, 2, 1}));
+}
+
+TEST(ServicesViewTest, StateRanksRunningFirstAndUnknownLast)
+{
+    using enum ServiceState;
+    const std::vector<ServiceState> order = {Running, StartPending, ContinuePending, PausePending, Paused, StopPending, Stopped, Unknown};
+    for (std::size_t i = 0; i + 1 < order.size(); ++i)
+    {
+        EXPECT_LT(serviceStateSortRank(order[i]), serviceStateSortRank(order[i + 1])) << serviceStateLabel(order[i]);
+    }
+}
+
+TEST(ServicesViewTest, StateSortCoversEveryStateThenDisplayName)
+{
+    // Listed in the opposite of the expected order, with names that would sort differently.
+    const std::vector<Platform::ServiceInfo> services = {
+        service("a", "Alpha", ServiceState::Unknown, 0),
+        service("b", "bravo", ServiceState::Stopped, 0),
+        service("c", "Charlie", ServiceState::StopPending, 10),
+        service("d", "delta", ServiceState::Paused, 11),
+        service("e", "Echo", ServiceState::PausePending, 12),
+        service("f", "foxtrot", ServiceState::ContinuePending, 13),
+        service("g", "Golf", ServiceState::StartPending, 14),
+        service("h", "zulu", ServiceState::Running, 15),
+        service("i", "Hotel", ServiceState::Running, 16),
+        service("j", "apple", ServiceState::Stopped, 0),
+    };
+    EXPECT_EQ(buildServiceRows(services, "", ServiceColumn::State, true), (std::vector<std::size_t>{8, 7, 6, 5, 4, 3, 2, 9, 1, 0}));
+    // Descending reverses the states only: the names stay A to Z within each.
+    EXPECT_EQ(buildServiceRows(services, "", ServiceColumn::State, false), (std::vector<std::size_t>{0, 9, 1, 2, 3, 4, 5, 6, 8, 7}));
+}
+
+TEST(ServicesViewTest, StateSortNamesIgnoreCaseAndBreakTiesDeterministically)
+{
+    const std::vector<Platform::ServiceInfo> services = {
+        service("svcB", "Shared Name", ServiceState::Running, 1),
+        service("Zed", "", ServiceState::Running, 2), // no display name: listed by its service name
+        service("svcA", "shared name", ServiceState::Running, 3),
+        service("Mid", "MIDDLE", ServiceState::Running, 4),
+        service("low", "aardvark", ServiceState::Stopped, 0),
+        service("svca", "Shared Name", ServiceState::Running, 5),
+    };
+    // Display names compared without case; equal ones by service name (case ignored, then exact:
+    // "svcA" before "svca"), so the order never depends on the order the services arrive in.
+    const std::vector<std::size_t> expected = {3, 2, 5, 0, 1, 4};
+    EXPECT_EQ(buildServiceRows(services, "", ServiceColumn::State, true), expected);
+    const std::vector<Platform::ServiceInfo> reversed(services.rbegin(), services.rend());
+    EXPECT_EQ(buildServiceRows(reversed, "", ServiceColumn::State, true), (std::vector<std::size_t>{2, 3, 0, 5, 4, 1}));
+}
+
 TEST(ServicesViewTest, LabelsAndColours)
 {
     EXPECT_EQ(serviceStateLabel(ServiceState::StartPending), "Starting");
