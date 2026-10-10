@@ -848,6 +848,20 @@ ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatf
     : Panel("Processes"), m_MakePlatform(std::move(makePlatform))
 {}
 
+ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent)
+    : Panel("Processes"), m_MakePlatform(std::move(makePlatform)), m_RaiseEvent(std::move(raiseEvent))
+{}
+
+void ProcessesPanel::raiseEvent(Core::Event& event)
+{
+    if (m_RaiseEvent)
+    {
+        m_RaiseEvent(event);
+        return;
+    }
+    Core::Application::get().raiseEvent(event);
+}
+
 ProcessesPanel::~ProcessesPanel()
 {
     // Order doesn't matter for safety here: BackgroundSampler observes m_ProcessModel via a
@@ -1087,7 +1101,7 @@ void ProcessesPanel::applyStartupSelection()
         if (m_StartupSelectionShowsDetails)
         {
             Core::ShowProcessDetailsEvent event;
-            Core::Application::get().raiseEvent(event);
+            raiseEvent(event);
         }
     }
     else if (step.gaveUp)
@@ -2488,7 +2502,7 @@ void ProcessesPanel::selectProcess(const ProcessSelection::Identity& id)
 
     // Emit process selection event for other panels to react, with the exact identity (#1503)
     Core::ProcessSelectedEvent event(id.pid, id.startTimeTicks);
-    Core::Application::get().raiseEvent(event);
+    raiseEvent(event);
 }
 
 void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
@@ -2510,7 +2524,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     {
         selectProcess(proc);
         Core::ShowProcessDetailsEvent event;
-        Core::Application::get().raiseEvent(event);
+        raiseEvent(event);
     }
 
     ImGui::Separator();
