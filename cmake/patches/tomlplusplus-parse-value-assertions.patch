@@ -1,0 +1,88 @@
+toml++: report malformed values that reach parse_value()'s assertions instead of assuming they can't happen
+
+Each hunk pair replaces a TOML_ASSERT_ASSUME in parse_value() that malformed input can break. Debug
+builds abort on the assert(); NDEBUG builds turn it into __builtin_assume(), which is undefined
+behaviour. With the patch, toml::parse throws toml::parse_error (or returns a failed parse_result
+without exceptions), as it does for any other malformed input.
+
+1. TaskSmack #1388: parse_value() opened with TOML_ASSERT_ASSUME(!is_value_terminator(*cp)), but
+   the cursor can sit on a terminator there: the '}' in 'm=[}' (an array closed with the wrong
+   bracket). This raises the parser's normal error instead, with the same message the key-value
+   path already uses ("expected value, saw '}'").
+
+2. TaskSmack #1659: parse_value()'s scan() lambda asserted the same thing on entry. A date
+   followed by a space and a digit ('YYYY-MM-DD 1', possibly a space-separated date-time) re-runs
+   scan() one character past that digit, which can be a terminator: the second ' ' in
+   'h=2000-02-1a 1 1', the newline in 'h=2000-02-01 1\n', the ']' in 'h=[2000-02-01 1]'. scan()
+   now returns without scanning, as it already did at end-of-file, so the caller backs up to the
+   10-character date and parses only that. The date parser rejects '2000-02-1a', and a valid date
+   leaves ' 1 ...' behind, which the key-value and array paths reject.
+
+Base: marzer/tomlplusplus 1e8829b793b66ad17011732a146b8077d379b011 (the GIT_TAG in
+cmake/Dependencies.cmake). Patches the split headers under include/ (what TaskSmack compiles
+against) and the generated single header toml.hpp alike. Applied by FetchContent's PATCH_COMMAND
+through cmake/patches/ApplyPatch.cmake, which skips it when it is already applied. Drop this file
+once upstream fixes both assertions (still present in upstream master, 1e8829b, as of 2026-10-09).
+
+diff --git a/include/toml++/impl/parser.inl b/include/toml++/impl/parser.inl
+--- a/include/toml++/impl/parser.inl
++++ b/include/toml++/impl/parser.inl
+@@ -2552,9 +2552,13 @@
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 			push_parse_scope("value"sv);
+ 
++			// a value terminator here (e.g. the '}' in 'a=[}') is malformed input, not a broken precondition:
++			// report it instead of assuming it can't happen (TOML_ASSERT_ASSUME is UB under NDEBUG)
++			if TOML_UNLIKELY(is_value_terminator(*cp))
++				set_error_and_return_default("expected value, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			const depth_counter_scope depth_counter{ nested_values };
+ 			if TOML_UNLIKELY(nested_values > max_nested_values)
+ 				set_error_and_return_default("exceeded maximum nested value depth of "sv,
+@@ -2637,9 +2641,10 @@
+ 				bool eof_while_scanning = false;
+ 				const auto scan			= [&]() noexcept(!TOML_COMPILER_HAS_EXCEPTIONS)
+ 				{
+-					if (is_eof())
++					// the date-time rescan below can start on a terminator (the second ' ' in 'a=2000-02-01 1 1'):
++					// nothing to scan, so stop instead of assuming it can't happen (UB under NDEBUG)
++					if (is_eof() || is_value_terminator(*cp))
+ 						return;
+-					TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 
+ 					do
+ 					{
+diff --git a/toml.hpp b/toml.hpp
+--- a/toml.hpp
++++ b/toml.hpp
+@@ -15135,9 +15135,13 @@
+ 		{
+ 			return_if_error({});
+ 			assert_not_eof();
+-			TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 			push_parse_scope("value"sv);
+ 
++			// a value terminator here (e.g. the '}' in 'a=[}') is malformed input, not a broken precondition:
++			// report it instead of assuming it can't happen (TOML_ASSERT_ASSUME is UB under NDEBUG)
++			if TOML_UNLIKELY(is_value_terminator(*cp))
++				set_error_and_return_default("expected value, saw '"sv, to_sv(*cp), "'"sv);
++
+ 			const depth_counter_scope depth_counter{ nested_values };
+ 			if TOML_UNLIKELY(nested_values > max_nested_values)
+ 				set_error_and_return_default("exceeded maximum nested value depth of "sv,
+@@ -15219,9 +15223,10 @@
+ 				bool eof_while_scanning = false;
+ 				const auto scan			= [&]() noexcept(!TOML_COMPILER_HAS_EXCEPTIONS)
+ 				{
+-					if (is_eof())
++					// the date-time rescan below can start on a terminator (the second ' ' in 'a=2000-02-01 1 1'):
++					// nothing to scan, so stop instead of assuming it can't happen (UB under NDEBUG)
++					if (is_eof() || is_value_terminator(*cp))
+ 						return;
+-					TOML_ASSERT_ASSUME(!is_value_terminator(*cp));
+ 
+ 					do
+ 					{

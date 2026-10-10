@@ -686,14 +686,17 @@ class ThemeLoaderMalformedTomlTest : public ThemeLoaderDiscoveryTest
         std::string_view content;
     };
 
-    // Each input crashed toml++ before #1387/#1388/#1389 were fixed.
-    static constexpr std::array<MalformedTheme, 6> kTomlppCrashInputs = {{
-        {.name = "TableHeaderThenNewline", .content = "[\n"}, // #1387
-        {.name = "TableHeaderThenEquals", .content = "[="},   // #1387
-        {.name = "ArrayClosedWithBrace", .content = "m=[}"},  // #1388
-        {.name = "CommaThenBrace", .content = "m=[1,}"},      // #1388
-        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"}, // #1389
-        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"}, // #1389
+    // Each input crashed toml++ before #1387/#1388/#1389/#1659 were fixed.
+    static constexpr std::array<MalformedTheme, 9> kTomlppCrashInputs = {{
+        {.name = "TableHeaderThenNewline", .content = "[\n"},             // #1387
+        {.name = "TableHeaderThenEquals", .content = "[="},               // #1387
+        {.name = "ArrayClosedWithBrace", .content = "m=[}"},              // #1388
+        {.name = "CommaThenBrace", .content = "m=[1,}"},                  // #1388
+        {.name = "CodePointFEBF", .content = "\xEF\xBA\xBF"},             // #1389
+        {.name = "CodePointFEFB", .content = "\xEF\xBB\xBB"},             // #1389
+        {.name = "DateBadDayThenValues", .content = "h=2000-02-1a 1 1"},  // #1659
+        {.name = "DateSpaceDigitNewline", .content = "h=2000-02-01 1\n"}, // #1659
+        {.name = "DateSpaceDigitInArray", .content = "h=[2000-02-01 1]"}, // #1659
     }};
 
     void SetUp() override
