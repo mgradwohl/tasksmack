@@ -9,12 +9,18 @@
 //            with ".UTF-8", else "C.UTF-8", else "en_US.UTF-8"
 //   Both     then setlocale(LC_NUMERIC, "C")
 //
-// The C++ side builds userLocale(), the user's locale for display (slice E formats numbers with
-// it), and installs a global locale built from it. With NumericFacets::Classic the global locale
-// keeps the user's collation, ctype and time facets but the classic numpunct/num_get/num_put, so
-// streams and parsing stay locale-independent. NumericFacets::User keeps the user's numeric facets
-// in the global locale too: UI::Format and the "{:L}" format specs read the global locale today, so
-// TaskSmack installs User until slice E moves display formatting onto userLocale().
+// The C++ side builds userLocale(), the user's locale for display, and its userNumberPunctuation()
+// (the decimal mark, digit grouping and thousands separator UI::Format prints numbers with, #1648
+// slice E), and installs a global locale built from it. TaskSmack uses NumericFacets::Classic: the
+// global locale keeps the user's collation, ctype and time facets but the classic
+// numpunct/num_get/num_put, so streams, "{:L}" and parsing stay locale-independent and display
+// formatting never reads the global locale. NumericFacets::User keeps the user's numeric facets in
+// the global locale too; nothing in TaskSmack uses it now.
+//
+// TASKSMACK_LOCALE (a test hook, read only when set) replaces the locale userLocale() and
+// userNumberPunctuation() are built from, e.g. "de-DE" (Windows) or "de_DE" (Linux), so a
+// screenshot on an en-US machine can show decimal commas. The C locale and the global C++ locale
+// are not changed by it.
 //
 // The selection logic takes its C runtime calls through CRuntime, so the fallback order is
 // unit-tested (tests/Core/test_LocaleSetup.cpp) without changing the test process's locale.
@@ -80,21 +86,55 @@ makeFirstLocale(const std::vector<std::string>& names, std::string& chosenName, 
 /// Which numeric facets (numpunct, num_get, num_put) the global C++ locale takes.
 enum class NumericFacets : std::uint8_t
 {
-    User,    ///< The user's, so "{:L}" and UI::Format follow them (until slice E)
-    Classic, ///< The classic locale's, so streams and parsing are locale-independent
+    User,    ///< The user's, so "{:L}" and streams follow them
+    Classic, ///< The classic locale's, so streams and parsing are locale-independent (TaskSmack's choice)
 };
 
 /// The global locale built from @p user: @p user itself for NumericFacets::User, or @p user with the
 /// classic locale's numeric facets for NumericFacets::Classic.
 [[nodiscard]] std::locale makeGlobalLocale(const std::locale& user, NumericFacets numerics);
 
+/// How a locale writes numbers for display: what std::format("{:L}") puts between the digits, except
+/// that the thousands separator is the whole UTF-8 sequence. numpunct<char>::thousands_sep() is one
+/// byte, so a locale whose separator is not ASCII -- fr-FR's narrow no-break space U+202F, de-CH's
+/// U+2019 -- gets its first byte from the C++ library, half a UTF-8 character that ImGui shows as "?".
+struct NumberPunctuation
+{
+    char decimalPoint = '.';  ///< Always one ASCII character
+    std::string thousandsSep; ///< UTF-8, one or more bytes; empty when the locale does not group digits
+    std::string grouping;     ///< numpunct::grouping(): group sizes from the right; empty for no grouping
+
+    bool operator==(const NumberPunctuation&) const = default;
+};
+
+/// @p locale's numpunct facet as NumberPunctuation. A non-ASCII separator byte (see above) becomes a
+/// no-break space U+00A0 and a non-ASCII decimal mark becomes '.' (',' when '.' groups the digits),
+/// so the result is always valid UTF-8.
+[[nodiscard]] NumberPunctuation numberPunctuation(const std::locale& locale);
+
+/// numberPunctuation(@p locale), with the separators the OS gives for @p osLocaleName in full: on
+/// Windows GetLocaleInfoEx(LOCALE_STHOUSAND/LOCALE_SDECIMAL) for the name up to its '.' ("fr-FR" for
+/// "fr-FR.UTF-8"; "" or ".UTF-8" is the user's default locale), with the user's Regional format
+/// customizations; on Linux nl_langinfo_l(THOUSEP/RADIXCHAR) for newlocale(LC_NUMERIC_MASK, name)
+/// ("" is the environment's LC_NUMERIC). @p osLocaleName "C" or "POSIX", or a name the OS does not
+/// know, gives numberPunctuation(@p locale).
+[[nodiscard]] NumberPunctuation numberPunctuation(const std::locale& locale, std::string_view osLocaleName);
+
+/// The test hook's environment variable: see the top of this file.
+inline constexpr const char* LOCALE_OVERRIDE_ENV = "TASKSMACK_LOCALE";
+
+/// The names to try for a TASKSMACK_LOCALE value, in order: "<value>.UTF-8" (unless it already names
+/// a codeset), then the value itself. Empty for an empty value.
+[[nodiscard]] std::vector<std::string> localeOverrideCandidates(std::string_view value);
+
 /// The locale state after initialize(), for the startup log line.
 struct Summary
 {
-    unsigned activeCodePage = 0;  ///< GetACP() on Windows (65001 = UTF-8); 0 elsewhere
-    std::string cLocale;          ///< setlocale(LC_ALL, nullptr)
-    std::string globalLocaleName; ///< std::locale().name()
-    std::string userLocaleName;   ///< userLocale().name()
+    unsigned activeCodePage = 0;       ///< GetACP() on Windows (65001 = UTF-8); 0 elsewhere
+    std::string cLocale;               ///< setlocale(LC_ALL, nullptr)
+    std::string globalLocaleName;      ///< std::locale().name()
+    std::string userLocaleName;        ///< userLocale().name()
+    bool userLocaleOverridden = false; ///< userLocale() came from TASKSMACK_LOCALE
     std::vector<std::string> warnings;
 };
 
@@ -105,6 +145,10 @@ const Summary& initialize(NumericFacets numerics);
 
 /// The user's locale with a UTF-8 codeset, for display; the classic locale before initialize().
 [[nodiscard]] const std::locale& userLocale() noexcept;
+
+/// userLocale()'s numberPunctuation() with the OS's separators, read once by initialize(): what
+/// UI::Format prints displayed numbers with. The classic locale's ('.', no grouping) before it.
+[[nodiscard]] const NumberPunctuation& userNumberPunctuation() noexcept;
 
 /// The one-line description of @p summary the startup log records.
 [[nodiscard]] std::string describe(const Summary& summary);

@@ -587,6 +587,37 @@ TEST(SystemInfoSectionsTest, SensorRows)
     EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; }));
 }
 
+// #1648, slice E: System Information's values, and the text Copy puts on the clipboard, use the
+// display locale's punctuation (here de-DE's), so what is copied reads as what is shown.
+TEST(SystemInfoSectionsTest, ValuesAndCopyTextUseTheDisplayLocale)
+{
+    using Platform::SensorKind;
+    using Platform::SensorReading;
+    const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
+    EXPECT_EQ(
+        SystemInfo::formatSensorReading({.kind = SensorKind::Temperature, .label = "t", .value = 52.0, .high = 100.0, .critical = 105.0}),
+        "52,0 °C (high 100,0 °C, critical 105,0 °C)");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Voltage, .label = "v", .value = 12.18, .high = {}, .critical = {}}),
+              "12,18 V");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Current, .label = "c", .value = 1.2, .high = {}, .critical = {}}),
+              "1,20 A");
+    EXPECT_EQ(SystemInfo::formatSensorReading({.kind = SensorKind::Power, .label = "p", .value = 15.24, .high = {}, .critical = {}}),
+              "15,2 W");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(480.0), "480 Mbps");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(2500.0), "2,5 Gbps");
+
+    Platform::SensorsInfo sensors;
+    sensors.available = true;
+    sensors.listed = true;
+    sensors.devices = {
+        {.name = "coretemp",
+         .readings = {SensorReading{.kind = SensorKind::Temperature, .label = "Package id 0", .value = 52.5, .high = {}, .critical = {}}}},
+    };
+    const std::vector<Section> sections{SystemInfo::buildSensorsSection(sensors)};
+    EXPECT_TRUE(SystemInfo::allSectionsText(sections, false).contains("coretemp: Package id 0: 52,5 °C"))
+        << SystemInfo::allSectionsText(sections, false);
+}
+
 TEST(SystemInfoSectionsTest, NoSensorsIsOneMutedRow)
 {
     Platform::SensorsInfo none;

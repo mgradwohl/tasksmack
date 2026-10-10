@@ -53,7 +53,6 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp  # Factory.cpp makes the crash-event reader (#1524)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp

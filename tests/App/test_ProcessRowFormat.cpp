@@ -6,7 +6,6 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
-#include <locale>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -95,44 +94,12 @@ TEST(ProcessRowFormatTest, ProcessDetailsPercentMatchesTheTableEverywhere)
     }
 }
 
-/// A decimal comma and no digit grouping, as in de_DE, without depending on an OS locale name.
-class CommaDecimalNumpunct : public std::numpunct<char>
-{
-  protected:
-    [[nodiscard]] char do_decimal_point() const override
-    {
-        return ',';
-    }
-};
-
-/// Makes a comma-decimal locale global for one test and restores the previous one after it.
-class ScopedCommaDecimalLocale
-{
-  public:
-    // std::locale takes ownership of the facet and deletes it with its last copy, which the analyzer
-    // does not see.
-    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
-    ScopedCommaDecimalLocale() : m_Previous(std::locale::global(std::locale(std::locale::classic(), new CommaDecimalNumpunct)))
-    {}
-    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
-    ~ScopedCommaDecimalLocale()
-    {
-        std::locale::global(m_Previous);
-    }
-    ScopedCommaDecimalLocale(const ScopedCommaDecimalLocale&) = delete;
-    ScopedCommaDecimalLocale& operator=(const ScopedCommaDecimalLocale&) = delete;
-    ScopedCommaDecimalLocale(ScopedCommaDecimalLocale&&) = delete;
-    ScopedCommaDecimalLocale& operator=(ScopedCommaDecimalLocale&&) = delete;
-
-  private:
-    std::locale m_Previous;
-};
-
 // #1202: the table's aligned cells and the shared value formatters (tooltips, Process Details, chart
 // axes) print the same decimal separator in a comma-decimal locale, not "1.5 MiB" beside "1,5 MiB".
 TEST(ProcessRowFormatTest, TableCellsUseTheLocaleDecimalPointLikeTheValueFormatters)
 {
-    const ScopedCommaDecimalLocale commaLocale;
+    // A decimal comma and no digit grouping, as in de_DE, as the display punctuation (#1648).
+    const UI::Format::ScopedDisplayPunctuation commaDecimal({.decimalPoint = ',', .thousandsSep = {}, .grouping = {}});
     const double bytes = 1.5 * 1024.0 * 1024.0;
 
     EXPECT_EQ(formatAlignedBytesString(bytes, UI::Format::BYTE_UNIT_MB), "1,5 MiB");

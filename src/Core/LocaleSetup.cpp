@@ -1,5 +1,7 @@
 #include "LocaleSetup.h"
 
+#include <SDL3/SDL_stdinc.h>
+
 #ifdef _WIN32
 #include "Platform/Windows/WinString.h"
 
@@ -11,13 +13,16 @@
 #include <windows.h>
 #else
 #include <langinfo.h>
+#include <locale.h> // NOLINT(modernize-deprecated-headers,hicpp-deprecated-headers) - newlocale/freelocale are POSIX, not in <clocale>
 #endif
 
+#include <algorithm>
 #include <clocale>
 #include <cstddef>
 #include <exception>
 #include <format>
 #include <locale>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,6 +39,101 @@ std::locale& userLocaleStorage()
 {
     static std::locale locale = std::locale::classic();
     return locale;
+}
+
+/// The storage behind userNumberPunctuation(), written with userLocaleStorage().
+NumberPunctuation& userPunctuationStorage()
+{
+    static NumberPunctuation punctuation;
+    return punctuation;
+}
+
+[[nodiscard]] bool isAscii(const char c) noexcept
+{
+    return static_cast<unsigned char>(c) < 0x80U;
+}
+
+/// The separators an OS locale database gives, as UTF-8; empty strings for what it does not say.
+struct OsPunctuation
+{
+    std::string decimalPoint;
+    std::string thousandsSep;
+    std::string grouping; ///< numpunct::grouping() form; Linux only
+};
+
+/// The OS's punctuation for @p name (see numberPunctuation()); nullopt for "C"/"POSIX" or a name the
+/// OS does not know.
+std::optional<OsPunctuation> osPunctuation(const std::string_view name)
+{
+    // "language-REGION.codeset" / "language_TERRITORY.codeset@modifier": the OS lookups want the
+    // locale, not the codeset.
+    const std::string_view base = name.substr(0, name.find('.'));
+    if (base == "C" || base == "POSIX")
+    {
+        return std::nullopt;
+    }
+#ifdef _WIN32
+    const std::wstring wideName = Platform::WinString::utf8ToWide(base);
+    const wchar_t* localeName = base.empty() ? LOCALE_NAME_USER_DEFAULT : wideName.c_str();
+    const auto read = [localeName](const LCTYPE type) -> std::optional<std::string>
+    {
+        // LOCALE_SDECIMAL and LOCALE_STHOUSAND are at most three characters plus the terminator.
+        std::array<wchar_t, 16> text{};
+        if (GetLocaleInfoEx(localeName, type, text.data(), static_cast<int>(text.size())) == 0)
+        {
+            return std::nullopt;
+        }
+        return Platform::WinString::wideToUtf8(text.data());
+    };
+    std::optional<std::string> decimalPoint = read(LOCALE_SDECIMAL);
+    std::optional<std::string> thousandsSep = read(LOCALE_STHOUSAND);
+    if (!decimalPoint || !thousandsSep)
+    {
+        return std::nullopt;
+    }
+    return OsPunctuation{.decimalPoint = std::move(*decimalPoint), .thousandsSep = std::move(*thousandsSep), .grouping = {}};
+#else
+    // newlocale() reads "" from the environment, as setlocale() does.
+    const std::string localeName(name);
+    // NOLINTNEXTLINE(misc-include-cleaner) - locale_t comes from <locale.h> (POSIX) through glibc's internal headers
+    locale_t locale = newlocale(LC_NUMERIC_MASK, localeName.c_str(), static_cast<locale_t>(nullptr));
+    if (locale == static_cast<locale_t>(nullptr))
+    {
+        return std::nullopt;
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner) - nl_item comes from <langinfo.h> (POSIX) through glibc's <nl_types.h>
+    const auto read = [locale](const nl_item item) -> std::string
+    {
+        const char* text = nl_langinfo_l(item, locale);
+        return text != nullptr ? std::string(text) : std::string();
+    };
+    OsPunctuation punctuation{.decimalPoint = read(RADIXCHAR), .thousandsSep = read(THOUSEP), .grouping = {}};
+#ifdef GROUPING
+    punctuation.grouping = read(GROUPING);
+#endif
+    freelocale(locale);
+    return punctuation;
+#endif
+}
+
+/// Makes @p punctuation valid UTF-8 and self-consistent: a lone non-ASCII separator byte (the
+/// first byte of a multibyte character, or a legacy code page's no-break space) becomes U+00A0, a
+/// non-ASCII decimal mark becomes '.' (',' when '.' groups), and no separator means no grouping.
+void sanitize(NumberPunctuation& punctuation)
+{
+    if (punctuation.thousandsSep.size() == 1 && !isAscii(punctuation.thousandsSep.front()))
+    {
+        punctuation.thousandsSep = "\u00A0";
+    }
+    if (!isAscii(punctuation.decimalPoint) || punctuation.decimalPoint == '\0')
+    {
+        punctuation.decimalPoint = (punctuation.thousandsSep == ".") ? ',' : '.';
+    }
+    if (punctuation.thousandsSep.empty() || punctuation.thousandsSep.front() == '\0' || punctuation.grouping.empty())
+    {
+        punctuation.thousandsSep.clear();
+        punctuation.grouping.clear();
+    }
 }
 
 /// Tries @p names in order with setlocale(@p category); the first one accepted, or empty.
@@ -243,12 +343,14 @@ std::locale makeGlobalLocale(const std::locale& user, const NumericFacets numeri
 namespace
 {
 
-/// The user's C++ locale with a UTF-8 codeset. Windows: the same names the C locale tries. Linux:
-/// the environment's locale, with the UTF-8 ctype the C locale settled on when it replaced one.
-std::locale
-buildUserLocale([[maybe_unused]] const CRuntime& crt, [[maybe_unused]] const CLocaleOutcome& cOutcome, std::vector<std::string>& warnings)
+/// The user's C++ locale with a UTF-8 codeset, and in @p userName the name it was made from. Windows:
+/// the same names the C locale tries. Linux: the environment's locale (""), with the UTF-8 ctype the
+/// C locale settled on when it replaced one.
+std::locale buildUserLocale([[maybe_unused]] const CRuntime& crt,
+                            [[maybe_unused]] const CLocaleOutcome& cOutcome,
+                            std::string& userName,
+                            std::vector<std::string>& warnings)
 {
-    std::string userName;
 #ifdef _WIN32
     return makeFirstLocale(windowsCLocaleCandidates(crt.userLocaleName()), userName, warnings);
 #else
@@ -285,8 +387,32 @@ const Summary& initialize(const NumericFacets numerics)
 #endif
     summary.warnings = std::move(cOutcome.warnings);
 
-    const std::locale user = buildUserLocale(crt, cOutcome, summary.warnings);
-    userLocaleStorage() = user;
+    std::string userName;
+    const std::locale user = buildUserLocale(crt, cOutcome, userName, summary.warnings);
+
+    // The display locale: the user's, or the TASKSMACK_LOCALE test hook's when it is set.
+    std::locale display = user;
+    std::string displayName = userName;
+    // SDL_getenv: UTF-8 on Windows too, and no CRT deprecation; it needs no SDL_Init.
+    if (const char* overrideValue = SDL_getenv(LOCALE_OVERRIDE_ENV); overrideValue != nullptr && *overrideValue != '\0')
+    {
+        std::string overrideName;
+        std::vector<std::string> overrideWarnings;
+        const std::vector<std::string> names = localeOverrideCandidates(overrideValue);
+        const std::locale overridden = makeFirstLocale(names, overrideName, overrideWarnings);
+        if (overrideName != "C" || std::ranges::find(names, "C") != names.end())
+        {
+            display = overridden;
+            displayName = overrideName;
+            summary.userLocaleOverridden = true;
+        }
+        else
+        {
+            summary.warnings.emplace_back(std::format(R"({}="{}" names no available locale; ignored)", LOCALE_OVERRIDE_ENV, overrideValue));
+        }
+    }
+    userLocaleStorage() = display;
+    userPunctuationStorage() = numberPunctuation(display, displayName);
 
     // std::locale::global() also calls setlocale(LC_ALL, name) when the locale has a name, which
     // would undo LC_NUMERIC "C": put the C locale back as it was.
@@ -313,11 +439,81 @@ const std::locale& userLocale() noexcept
     return userLocaleStorage();
 }
 
+const NumberPunctuation& userNumberPunctuation() noexcept
+{
+    return userPunctuationStorage();
+}
+
+NumberPunctuation numberPunctuation(const std::locale& locale)
+{
+    NumberPunctuation punctuation;
+    try
+    {
+        const auto& facet = std::use_facet<std::numpunct<char>>(locale);
+        punctuation.decimalPoint = facet.decimal_point();
+        punctuation.thousandsSep = std::string(1, facet.thousands_sep());
+        punctuation.grouping = facet.grouping();
+    }
+    catch (const std::exception&)
+    {
+        return {}; // No numpunct facet: the classic punctuation
+    }
+    sanitize(punctuation);
+    return punctuation;
+}
+
+NumberPunctuation numberPunctuation(const std::locale& locale, const std::string_view osLocaleName)
+{
+    NumberPunctuation punctuation = numberPunctuation(locale);
+    const std::optional<OsPunctuation> os = osPunctuation(osLocaleName);
+    if (!os)
+    {
+        return punctuation;
+    }
+    if (os->decimalPoint.size() == 1 && isAscii(os->decimalPoint.front()))
+    {
+        punctuation.decimalPoint = os->decimalPoint.front();
+    }
+    // The facet decides whether and how digits are grouped; the OS spells the separator. A C++
+    // library that could not narrow a multibyte separator may have dropped grouping (libstdc++):
+    // the OS's grouping stands in then.
+    if (punctuation.grouping.empty() && !os->grouping.empty() && !os->thousandsSep.empty())
+    {
+        punctuation.grouping = os->grouping;
+        punctuation.thousandsSep = os->thousandsSep;
+    }
+    else if (!punctuation.grouping.empty() && !os->thousandsSep.empty())
+    {
+        punctuation.thousandsSep = os->thousandsSep;
+    }
+    sanitize(punctuation);
+    return punctuation;
+}
+
+std::vector<std::string> localeOverrideCandidates(const std::string_view value)
+{
+    std::vector<std::string> names;
+    if (value.empty())
+    {
+        return names;
+    }
+    if (!value.contains('.'))
+    {
+        names.emplace_back(std::string(value) + ".UTF-8");
+    }
+    names.emplace_back(value);
+    return names;
+}
+
 std::string describe(const Summary& summary)
 {
     const std::string acp = summary.activeCodePage != 0 ? std::to_string(summary.activeCodePage) : std::string("n/a");
-    return std::format(
-        R"(Locale: GetACP()={} C="{}" C++ global="{}" user="{}")", acp, summary.cLocale, summary.globalLocaleName, summary.userLocaleName);
+    return std::format(R"(Locale: GetACP()={} C="{}" C++ global="{}" user="{}"{})",
+                       acp,
+                       summary.cLocale,
+                       summary.globalLocaleName,
+                       summary.userLocaleName,
+                       summary.userLocaleOverridden ? " (TASKSMACK_LOCALE)" : "");
 }
 
 } // namespace Core::LocaleSetup
