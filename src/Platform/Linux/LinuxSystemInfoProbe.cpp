@@ -14,6 +14,7 @@
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "SystemdBus.h"
+#include "SystemdJournal.h"
 #include "UserNameLookup.h"
 
 #include <array>
@@ -243,7 +244,12 @@ CrashesInfo LinuxSystemInfoProbe::readCrashes()
 {
     CrashesInfo info;
     const std::time_t now = std::time(nullptr);
-    LinuxCoredumps::readCoredumps(m_Root, now > 0 ? static_cast<std::uint64_t>(now) : 0, info);
+    // The journal's entries add the signal and the executable, and crashes whose core wasn't kept (#1674);
+    // only this system's journal, never under a fixture root.
+    LinuxCoredumps::readCrashFacts(m_Root,
+                                   now > 0 ? static_cast<std::uint64_t>(now) : 0,
+                                   info,
+                                   m_Root == "/" ? SystemdJournal::makeCoredumpJournalReader() : LinuxCoredumps::JournalReader{});
     return info;
 }
 

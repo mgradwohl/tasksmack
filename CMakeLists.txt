@@ -199,6 +199,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdBus.cpp
+    src/Platform/Linux/SystemdJournal.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
@@ -355,6 +356,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
+        src/Platform/Linux/SystemdJournal.h
         src/Platform/Linux/LinuxSensors.h
         src/Platform/Linux/LinuxNetworkAdapters.h
     )
