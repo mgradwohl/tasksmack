@@ -332,6 +332,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
     Platform/test_WindowsNVMLGPUProbe.cpp
+    Platform/test_WindowsNVMLLoader.cpp
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbe.cpp

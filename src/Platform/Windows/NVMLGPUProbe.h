@@ -20,6 +20,22 @@ namespace Platform
 
 class DisplayDevicePower;
 
+/// The DLL calls NVMLGPUProbe makes to load nvml.dll (#1720): the system's by default
+/// (NVMLGPUProbe::systemLibrary()), fakes in tests, so loading and its failures can be tested
+/// without an NVIDIA driver. Every member must be set.
+struct NVMLLibraryFunctions
+{
+    /// An export's address as GetProcAddress returns it, before it is cast to its own type.
+    using Proc = void (*)();
+
+    /// Load nvml.dll; nullptr when it isn't installed.
+    void* (*loadLibrary)() = nullptr;
+    /// The export @p name of @p module (a loadLibrary() result); nullptr when it has none.
+    Proc (*getProcAddress)(void* module, const char* name) = nullptr;
+    /// Release a loadLibrary() result.
+    void (*freeLibrary)(void* module) = nullptr;
+};
+
 /// NVIDIA GPU probe using NVML (NVIDIA Management Library).
 /// Provides enhanced metrics for NVIDIA GPUs: temperature, power, clock speeds, etc.
 /// Requires NVIDIA driver 450+ and NVML 11+.
@@ -38,7 +54,13 @@ class NVMLGPUProbe : public IGPUProbe
 {
   public:
     NVMLGPUProbe();
+    /// Load nvml.dll through @p library rather than the system's (tests).
+    explicit NVMLGPUProbe(NVMLLibraryFunctions library);
     ~NVMLGPUProbe() override;
+
+    /// The real loader: nvml.dll from System32 only (LOAD_LIBRARY_SEARCH_SYSTEM32), so a portable
+    /// installation can't load an adjacent DLL; GetProcAddress; FreeLibrary.
+    [[nodiscard]] static NVMLLibraryFunctions systemLibrary();
 
     // Rule of 5
     NVMLGPUProbe(const NVMLGPUProbe&) = delete;
@@ -100,7 +122,8 @@ class NVMLGPUProbe : public IGPUProbe
     // The constructor's loadNVML()/initializeNVML() still run as normal before the accessor
     // substitutes the backend; this does not change or bypass loadNVML()'s
     // LOAD_LIBRARY_SEARCH_SYSTEM32 hardening in any way. Production code never touches this -
-    // only test_WindowsNVMLGPUProbe.cpp uses it.
+    // only the tests use it. Loading itself is tested through the NVMLLibraryFunctions
+    // constructor (test_WindowsNVMLLoader.cpp, #1720).
     friend struct NVMLGPUProbeTestAccessor;
 
     bool loadNVML();
@@ -149,6 +172,8 @@ class NVMLGPUProbe : public IGPUProbe
         NVMLEngineUtilization::EngineUtilizationFn DeviceGetDecoderUtilization = nullptr;
     };
 
+    // Declared before m_Initialized, whose initializer loads nvml.dll through it.
+    NVMLLibraryFunctions m_Library{};
     void* m_NVMLHandle{nullptr};
     NVMLFunctions m_NVML{};
     bool m_Initialized{false};

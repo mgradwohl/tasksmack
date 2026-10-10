@@ -41,8 +41,29 @@ namespace
 constexpr std::string_view INDEX_ID_PREFIX = "NVML_GPU";
 } // namespace
 
-NVMLGPUProbe::NVMLGPUProbe()
-    : m_Initialized(loadNVML() && initializeNVML()),
+NVMLLibraryFunctions NVMLGPUProbe::systemLibrary()
+{
+    return {
+        // NVIDIA installs NVML in System32. Restrict the search to that trusted directory so a
+        // portable installation cannot load an adjacent DLL.
+        .loadLibrary = [] -> void* { return LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32); },
+        .getProcAddress =
+            [](void* module, const char* name)
+        {
+            // FARPROC to the untyped Proc: both are function pointers, cast to the export's own type by
+            // loadNVML().
+            return reinterpret_cast<NVMLLibraryFunctions::Proc>(GetProcAddress(static_cast<HMODULE>(module), name));
+        },
+        .freeLibrary = [](void* module) { static_cast<void>(FreeLibrary(static_cast<HMODULE>(module))); },
+    };
+}
+
+NVMLGPUProbe::NVMLGPUProbe() : NVMLGPUProbe(systemLibrary())
+{}
+
+NVMLGPUProbe::NVMLGPUProbe(NVMLLibraryFunctions library)
+    : m_Library(library),
+      m_Initialized(loadNVML() && initializeNVML()),
       m_DevicePower(std::make_shared<DisplayDevicePower>()),
       m_IsAsleep([power = m_DevicePower](const PciLocation& location) { return power->isAsleep(location); })
 {
@@ -60,18 +81,16 @@ NVMLGPUProbe::~NVMLGPUProbe()
 
 bool NVMLGPUProbe::loadNVML()
 {
-    // Defensive guard: today loadNVML() is only ever called once (from the constructor), so
-    // m_NVMLHandle is always null here, but a future retry-on-failure/hot-reload path calling
-    // this twice would otherwise overwrite the handle without a matching FreeLibrary, leaking
-    // one DLL reference count (#781).
+    // Defensive guard: the constructor and restart() (only when !isLoaded()) call this with
+    // m_NVMLHandle null, but a future caller loading twice would otherwise overwrite the handle
+    // without a matching FreeLibrary, leaking one DLL reference count (#781).
     if (m_NVMLHandle != nullptr)
     {
         return true;
     }
 
-    // NVIDIA installs NVML in System32. Restrict the search to that trusted
-    // directory so a portable installation cannot load an adjacent DLL.
-    m_NVMLHandle = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // systemLibrary() in production: nvml.dll from System32 only.
+    m_NVMLHandle = m_Library.loadLibrary();
     if (m_NVMLHandle == nullptr)
     {
         spdlog::debug("NVMLGPUProbe: Failed to load nvml.dll (NVIDIA driver not installed)");
@@ -83,7 +102,7 @@ bool NVMLGPUProbe::loadNVML()
     // "already loaded" guard above would then report success on a later retry despite this
     // function's pointers never having been fully resolved.
 #define LOAD_NVML_FUNC(name)                                                                                                               \
-    m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvml" #name));               \
+    m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(m_Library.getProcAddress(m_NVMLHandle, "nvml" #name));                           \
     if (m_NVML.name == nullptr)                                                                                                            \
     {                                                                                                                                      \
         spdlog::warn("NVMLGPUProbe: Failed to load nvml" #name);                                                                           \
@@ -105,21 +124,14 @@ bool NVMLGPUProbe::loadNVML()
     LOAD_NVML_FUNC(DeviceGetMaxClockInfo)
     LOAD_NVML_FUNC(DeviceGetUtilizationRates)
     // Note: SystemGetDriverVersion (not DeviceGet*) - system-wide, not per-device
-    m_NVML.SystemGetDriverVersion = reinterpret_cast<decltype(m_NVML.SystemGetDriverVersion)>(
-        GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlSystemGetDriverVersion"));
-    if (m_NVML.SystemGetDriverVersion == nullptr)
-    {
-        spdlog::warn("NVMLGPUProbe: Failed to load nvmlSystemGetDriverVersion");
-        unloadNVML();
-        return false;
-    }
+    LOAD_NVML_FUNC(SystemGetDriverVersion)
     LOAD_NVML_FUNC(DeviceGetVbiosVersion)
     LOAD_NVML_FUNC(DeviceGetFanSpeed)
 
     // Optional functions (may not be available in older NVML versions): a separate macro that
     // doesn't fail on a missing one
 #define LOAD_NVML_FUNC_OPTIONAL(name)                                                                                                      \
-    m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvml" #name));               \
+    m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(m_Library.getProcAddress(m_NVMLHandle, "nvml" #name));                           \
     if (m_NVML.name == nullptr)                                                                                                            \
     {                                                                                                                                      \
         spdlog::debug("NVMLGPUProbe: nvml" #name " not available (optional)");                                                             \
@@ -131,11 +143,11 @@ bool NVMLGPUProbe::loadNVML()
     LOAD_NVML_FUNC_OPTIONAL(DeviceGetDecoderUtilization)
     // nvml.h maps nvmlDeviceGetPciInfo to the _v3 export; older drivers have only _v2 (same struct).
     m_NVML.DeviceGetPciInfo =
-        reinterpret_cast<decltype(m_NVML.DeviceGetPciInfo)>(GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlDeviceGetPciInfo_v3"));
+        reinterpret_cast<decltype(m_NVML.DeviceGetPciInfo)>(m_Library.getProcAddress(m_NVMLHandle, "nvmlDeviceGetPciInfo_v3"));
     if (m_NVML.DeviceGetPciInfo == nullptr)
     {
-        m_NVML.DeviceGetPciInfo = reinterpret_cast<decltype(m_NVML.DeviceGetPciInfo)>(
-            GetProcAddress(static_cast<HMODULE>(m_NVMLHandle), "nvmlDeviceGetPciInfo_v2"));
+        m_NVML.DeviceGetPciInfo =
+            reinterpret_cast<decltype(m_NVML.DeviceGetPciInfo)>(m_Library.getProcAddress(m_NVMLHandle, "nvmlDeviceGetPciInfo_v2"));
     }
 
 #undef LOAD_NVML_FUNC_OPTIONAL
@@ -149,7 +161,7 @@ void NVMLGPUProbe::unloadNVML()
 {
     if (m_NVMLHandle != nullptr)
     {
-        FreeLibrary(static_cast<HMODULE>(m_NVMLHandle));
+        m_Library.freeLibrary(m_NVMLHandle);
         m_NVMLHandle = nullptr;
     }
     // The pointers lead into the freed module: clear them, so isLoaded() is false and nothing calls
