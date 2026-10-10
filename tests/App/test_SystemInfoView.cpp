@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <span>
 #include <string>
@@ -1392,11 +1393,66 @@ TEST(SystemInfoSectionsTest, DriversRowsWindows)
     EXPECT_EQ(findRow(section, "Ntfs")->value, "file system driver, Boot start, Stopping"); // same name in another case: not repeated
     EXPECT_EQ(findRow(section, "beep")->value, "System start");
     EXPECT_EQ(findRow(section, "Built-in modules"), nullptr);
-    // By name, ignoring case, after the count.
-    ASSERT_EQ(section.rows.size(), 4U);
-    EXPECT_EQ(section.rows[1].label, "ACPI");
-    EXPECT_EQ(section.rows[2].label, "beep");
-    EXPECT_EQ(section.rows[3].label, "Ntfs");
+    EXPECT_EQ(findRow(section, "Problem drivers")->value, "None");
+    // By name, ignoring case, after the counts.
+    ASSERT_EQ(section.rows.size(), 5U);
+    EXPECT_EQ(section.rows[1].label, "Problem drivers");
+    EXPECT_EQ(section.rows[2].label, "ACPI");
+    EXPECT_EQ(section.rows[3].label, "beep");
+    EXPECT_EQ(section.rows[4].label, "Ntfs");
+}
+
+TEST(SystemInfoSectionsTest, DriversProblemRowsWindows)
+{
+    Platform::DriversInfo info = windowsDrivers();
+    info.drivers[0].signature = Platform::DriverSignature::Catalog;  // Ntfs
+    info.drivers[1].signature = Platform::DriverSignature::Unsigned; // beep
+    info.drivers[1].path = R"(C:\Windows\System32\drivers\beep.sys)";
+    info.drivers[2].signature = Platform::DriverSignature::Embedded; // ACPI
+    Platform::KernelDriver failed;
+    failed.name = "hwbad";
+    failed.displayName = "hwbad";
+    failed.state = Platform::ServiceState::Stopped;
+    failed.startType = Platform::ServiceStartType::Boot;
+    failed.startError = "A device attached to the system is not functioning";
+    failed.signature = Platform::DriverSignature::Untrusted;
+    failed.signatureNote = "A required certificate is not within its validity period";
+    Platform::KernelDriver locked;
+    locked.name = "locked";
+    locked.state = Platform::ServiceState::Running;
+    locked.signature = Platform::DriverSignature::Unknown;
+    locked.signatureNote = "Access is denied";
+    info.drivers.push_back(failed);
+    info.drivers.push_back(locked);
+
+    const Section section = SystemInfo::buildDriversSection(info);
+    EXPECT_EQ(findRow(section, "Loaded drivers")->value, "4");  // the driver that failed to start isn't loaded
+    EXPECT_EQ(findRow(section, "Problem drivers")->value, "2"); // hwbad (twice over) and beep; not the unchecked one
+    ASSERT_GE(section.rows.size(), 5U);
+    EXPECT_EQ(section.rows[2].label, "Problem driver");
+    EXPECT_EQ(section.rows[2].value, "Failed to start: hwbad (A device attached to the system is not functioning)");
+    EXPECT_EQ(section.rows[3].value, "Unsigned: beep (C:\\Windows\\System32\\drivers\\beep.sys)");
+    EXPECT_EQ(section.rows[4].value, "Untrusted signature: hwbad (A required certificate is not within its validity period)");
+    EXPECT_EQ(findRow(section, "beep")->value, "System start, Unsigned, C:\\Windows\\System32\\drivers\\beep.sys");
+    EXPECT_EQ(findRow(section, "hwbad")->value,
+              "Boot start, Stopped, failed to start (A device attached to the system is not functioning), Untrusted signature");
+    EXPECT_EQ(findRow(section, "ACPI")->value,
+              "Microsoft ACPI Driver, Boot start, 10.0.26100.1, Microsoft Corporation, C:\\Windows\\System32\\drivers\\ACPI.sys");
+
+    // A signature that couldn't be checked: an em dash whose tooltip says why, right after the driver.
+    const Row* unknown = findRow(section, "locked signature");
+    ASSERT_NE(unknown, nullptr);
+    EXPECT_FALSE(unknown->available());
+    EXPECT_EQ(unknown->unavailableReason, "The signature couldn't be checked: Access is denied");
+    const auto lockedRow = std::ranges::find(section.rows, std::string("locked"), &Row::label);
+    ASSERT_NE(lockedRow, section.rows.end());
+    ASSERT_NE(std::next(lockedRow), section.rows.end());
+    EXPECT_EQ(std::next(lockedRow)->label, "locked signature");
+    EXPECT_EQ(findRow(section, "Ntfs signature"), nullptr);
+
+    // The SCM couldn't list them: no problem count either.
+    info.listed = false;
+    EXPECT_FALSE(findRow(SystemInfo::buildDriversSection(info), "Problem drivers")->available());
 }
 
 TEST(SystemInfoSectionsTest, DriversRowsLinux)

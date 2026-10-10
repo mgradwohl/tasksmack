@@ -426,7 +426,20 @@ struct DevicesInfo
     std::vector<Device> problems; ///< Windows: every present device with a problem; Linux: PCI devices without a driver
 };
 
-/// One kernel driver (#1521): a Windows driver service that is running, or a loaded Linux kernel module.
+/// A Windows driver image's signature (#1661), from WinVerifyTrust: embedded in the file, or its hash in a
+/// signed catalog. Checked without the network: no revocation check, cached URLs only.
+enum class DriverSignature : std::uint8_t
+{
+    NotChecked, ///< Not read: Linux, no image path, or the check was skipped
+    Embedded,   ///< A trusted signature in the file itself
+    Catalog,    ///< A trusted catalog holds the file's hash (most inbox drivers)
+    Unsigned,   ///< No signature, embedded or in a catalog
+    Untrusted,  ///< Signed, but the signature doesn't verify (bad digest, distrusted, expired...)
+    Unknown,    ///< The check itself failed; signatureNote says why
+};
+
+/// One kernel driver (#1521): a Windows driver service that is running (or, #1661, one that should have
+/// started and didn't), or a loaded Linux kernel module.
 /// A fact the probe couldn't read, or the other platform's, is empty, 0 or Unknown.
 struct KernelDriver
 {
@@ -444,6 +457,9 @@ struct KernelDriver
     std::vector<std::string> usedBy;                        ///< Linux: the modules that depend on it
     bool permanent = false;                                 ///< Linux: it can't be unloaded ("[permanent]")
     std::string taints;                                     ///< Linux: its taint flags ("POE"); empty when none
+    std::string startError; ///< Windows: a Boot, System or Automatic start driver stopped with an error: the error's text (#1661)
+    DriverSignature signature = DriverSignature::NotChecked; ///< Windows: the image's signature (#1661)
+    std::string signatureNote;                               ///< Windows: why it is Untrusted or Unknown
 };
 
 /// The Drivers facts (#1521): Windows' running driver services, or Linux's loaded kernel modules.

@@ -654,6 +654,7 @@ if(WIN32)
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
         setupapi # WindowsBatteryInfo: the battery devices (#1523)
         wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
+        wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
     )
 endif()
 

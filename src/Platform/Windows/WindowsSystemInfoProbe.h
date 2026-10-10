@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Windows/WindowsDrivers.h"
 
 namespace Platform
 {
@@ -12,7 +13,8 @@ namespace Platform
 /// (WindowsCommitPaging.h, #1516), and physical disks and volumes (WindowsStorage.h, #1517), and GPUs,
 /// drivers and monitors from DXGI, SetupAPI and EDID (WindowsGraphics.h, #1519), and device nodes, their
 /// problems and audio endpoints from SetupAPI, CfgMgr32 and MMDevice (WindowsDevices.h, #1520), and the running
-/// driver services from the Service Control Manager with their images' versions (WindowsDrivers.h, #1521), and
+/// driver services from the Service Control Manager with their images' versions (WindowsDrivers.h, #1521), the
+/// drivers that failed to start and the images' signatures (#1661), and
 /// the Application log's crash and hang events (WindowsCrashEvents.h, #1524).
 class WindowsSystemInfoProbe final : public ISystemInfoProbe
 {
@@ -51,6 +53,9 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     {
         return {};
     }
+
+  private:
+    WindowsDrivers::SignatureCache m_SignatureCache; ///< Driver images' signatures by path and file time (#1661)
 };
 
 } // namespace Platform

@@ -5,7 +5,8 @@
 /// page files and compressed memory (#1516), real and faked, including the NT-to-DOS path conversion; and
 /// the Storage section's disks and volumes (#1517), real and through a faked function table, with each
 /// disk's partitions and the drive letters on them (#1632); and the Graphics & displays adapters, drivers
-/// and monitors (#1519), real and faked; and the Devices section's USB link speeds from faked hubs (#1642).
+/// and monitors (#1519), real and faked; and the Devices section's USB link speeds from faked hubs (#1642);
+/// and the driver images' signatures (#1661).
 
 #include "EdidTestData.h"
 #include "PartitionLayoutTestData.h"
@@ -1399,6 +1400,23 @@ TEST(WindowsSystemInfoProbeTest, DeviceHelpers)
     EXPECT_TRUE(WindowsDevices::isListedUsbDevice("USB\\VID_046D&PID_C52B\\5&3"));
     EXPECT_FALSE(WindowsDevices::isListedUsbDevice("USB\\ROOT_HUB30\\4&6"));
     EXPECT_FALSE(WindowsDevices::isListedUsbDevice("USB\\VID_046D&PID_C52B&MI_01\\6&5"));
+}
+
+TEST(WindowsSystemInfoProbeTest, DriversSignaturesAreCheckedOfflineAndCached)
+{
+    // The real SCM and WinVerifyTrust (#1661): every machine runs signed inbox drivers, and a second read
+    // answers from the probe's cache.
+    WindowsSystemInfoProbe probe;
+    const DriversInfo first = probe.readDrivers();
+    ASSERT_TRUE(first.listed);
+    ASSERT_FALSE(first.drivers.empty());
+    const auto isSigned = [](const KernelDriver& driver)
+    {
+        return driver.signature == DriverSignature::Embedded || driver.signature == DriverSignature::Catalog;
+    };
+    EXPECT_GT(std::ranges::count_if(first.drivers, isSigned), 0);
+    const DriversInfo second = probe.readDrivers();
+    EXPECT_GT(std::ranges::count_if(second.drivers, isSigned), 0);
 }
 
 } // namespace
