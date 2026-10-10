@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace App
 {
 namespace
@@ -17,6 +19,7 @@ namespace
 
 using UI::DialogMetrics::computeActionButtonWidth;
 using UI::DialogMetrics::computeDialogWidth;
+using UI::DialogMetrics::computeFittedDialogWidth;
 
 constexpr float UNCONSTRAINED_VIEWPORT = 100000.0F;
 
@@ -62,6 +65,45 @@ TEST(DialogGeometryTest, AboutButtonReproducesItsFormerPixelSize)
 TEST(DialogGeometryTest, ElevationNoticeReproducesItsFormerPixelWidth)
 {
     EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM_PX, ELEVATION_WIDTH_EM, UNCONSTRAINED_VIEWPORT), 480.0F);
+}
+
+TEST(DialogGeometryTest, ElevationNoticeFloorIsItsDesignedPixelWidth)
+{
+    EXPECT_FLOAT_EQ(computeDialogWidth(REFERENCE_EM_PX, ELEVATION_MIN_WIDTH_EM, UNCONSTRAINED_VIEWPORT), 240.0F);
+}
+
+// #1601: the notice fits its text between the floor and its authored 480px.
+TEST(DialogGeometryTest, ElevationNoticeShrinksToShortText)
+{
+    // The Windows text's widest line is roughly 300px at the reference em.
+    EXPECT_FLOAT_EQ(computeFittedDialogWidth(316.0F, REFERENCE_EM_PX, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, UNCONSTRAINED_VIEWPORT),
+                    316.0F);
+}
+
+TEST(DialogGeometryTest, ElevationNoticeWrapsLongTextAtItsAuthoredWidth)
+{
+    // The Linux text's paragraphs run to well over 480px unwrapped.
+    EXPECT_FLOAT_EQ(computeFittedDialogWidth(900.0F, REFERENCE_EM_PX, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, UNCONSTRAINED_VIEWPORT),
+                    480.0F);
+}
+
+TEST(DialogGeometryTest, ElevationNoticeNeverFitsBelowItsFloor)
+{
+    EXPECT_FLOAT_EQ(computeFittedDialogWidth(50.0F, REFERENCE_EM_PX, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, UNCONSTRAINED_VIEWPORT),
+                    240.0F);
+    // A width that could not be measured counts as none: the floor.
+    EXPECT_FLOAT_EQ(
+        computeFittedDialogWidth(
+            std::numeric_limits<float>::quiet_NaN(), REFERENCE_EM_PX, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, UNCONSTRAINED_VIEWPORT),
+        240.0F);
+}
+
+TEST(DialogGeometryTest, FittedWidthStillFitsANarrowViewport)
+{
+    // 90% of a 200px viewport is below both the floor and the content: the viewport wins.
+    EXPECT_FLOAT_EQ(computeFittedDialogWidth(316.0F, REFERENCE_EM_PX, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, 200.0F), 180.0F);
+    // 90% of 400px caps the long text below its authored 480px.
+    EXPECT_FLOAT_EQ(computeFittedDialogWidth(900.0F, REFERENCE_EM_PX, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, 400.0F), 360.0F);
 }
 
 TEST(DialogGeometryTest, ElevationButtonReproducesItsFormerPixelSize)

@@ -15,6 +15,9 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cmath>
+#include <ranges>
 #include <string_view>
 
 namespace App
@@ -53,6 +56,25 @@ void ElevationNoticeLayer::requestOpen()
     m_DontShowAgain = false;
 }
 
+float ElevationNoticeLayer::measureContentWidth()
+{
+    // Everything the dialog shows on one line, unwrapped: its widest is the width the text needs.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float widest = ImGui::CalcTextSize(ICON_FA_LOCK "  Limited Data").x;
+    constexpr std::string_view bodyText = ElevationNoticeText::forCurrentPlatform();
+    for (const auto paragraph : std::views::split(bodyText, '\n'))
+    {
+        const std::string_view line(paragraph.begin(), paragraph.end());
+        widest = std::max(widest, ImGui::CalcTextSize(line.data(), line.data() + line.size()).x);
+    }
+    widest = std::max(widest, ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Don't show again").x);
+    widest = std::max(
+        widest, UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, ImGui::GetFontSize(), ELEVATION_BUTTON_MIN_EM));
+    // The title bar holds the popup's name between its frame padding rather than the window padding.
+    const float titleWidth = ImGui::CalcTextSize("Limited Data Available").x + (style.FramePadding.x * 2.0F);
+    return std::max(widest + (style.WindowPadding.x * 2.0F), titleWidth);
+}
+
 void ElevationNoticeLayer::renderDialog()
 {
     const bool isOpen = ImGui::IsPopupOpen("Limited Data Available");
@@ -63,14 +85,14 @@ void ElevationNoticeLayer::renderDialog()
 
     if (m_OpenRequested)
     {
-        const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
         ImGui::OpenPopup("Limited Data Available");
         m_OpenRequested = false;
+        m_CentredDialogWidth = 0.0F; // Centre it afresh below
     }
 
-    // 45 em is exactly the former fixed 480px at the reference configuration, clamped so a large
-    // font on a small window cannot push the dialog off-screen. This modal is the first thing a user
+    // As wide as its text needs, between ELEVATION_MIN_WIDTH_EM and 45 em -- exactly the former fixed
+    // 480px at the reference configuration, which the long Linux text still fills (#1601) -- clamped
+    // so a large font on a small window cannot push the dialog off-screen. This modal is the first thing a user
     // sees when running unelevated and it blocks input until dismissed, so its proportions matter
     // more than the usual cosmetic case (#937).
     //
@@ -82,8 +104,27 @@ void ElevationNoticeLayer::renderDialog()
     if (ImGui::IsPopupOpen("Limited Data Available"))
     {
         const ImGuiViewport* sizingViewport = ImGui::GetMainViewport();
-        const float widthPx = UI::DialogMetrics::computeDialogWidth(ImGui::GetFontSize(), ELEVATION_WIDTH_EM, sizingViewport->WorkSize.x);
+        const float widthPx = UI::DialogMetrics::computeFittedDialogWidth(
+            measureContentWidth(), ImGui::GetFontSize(), ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, sizingViewport->WorkSize.x);
         ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F));
+
+        // Centred on the TaskSmack window when it opens, and again whenever the window is resized or
+        // the dialog's width changes (a font preset or display scale change) while it is open, so it
+        // does not stay pinned to a corner of the old layout (#1601).
+        // Sizes are compared to half a pixel: anything less doesn't move the centre visibly.
+        constexpr float RECENTRE_THRESHOLD_PX = 0.5F;
+        const auto moved = [](float now, float centredFor)
+        {
+            return std::abs(now - centredFor) > RECENTRE_THRESHOLD_PX;
+        };
+        if (moved(widthPx, m_CentredDialogWidth) || moved(sizingViewport->WorkSize.x, m_CentredViewportWidth) ||
+            moved(sizingViewport->WorkSize.y, m_CentredViewportHeight))
+        {
+            ImGui::SetNextWindowPos(sizingViewport->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
+            m_CentredDialogWidth = widthPx;
+            m_CentredViewportWidth = sizingViewport->WorkSize.x;
+            m_CentredViewportHeight = sizingViewport->WorkSize.y;
+        }
         // The height is held to the viewport too, every frame: the auto-fitted height grows with
         // the font and display scale, and without a cap the OK button could fall below the window
         // with this modal blocking everything else. Content that no longer fits scrolls (#1129).
