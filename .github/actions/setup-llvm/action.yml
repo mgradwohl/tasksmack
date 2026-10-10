@@ -38,10 +38,31 @@ inputs:
       change. Leave empty (the default) to skip the check.
     required: false
     default: ''
+  generate-test-locales:
+    description: >
+      Generate the de_DE, fr_FR and en_US UTF-8 locales, so the locale-display tests (#1648) run
+      instead of skipping. Only the jobs that run those tests need them.
+    required: false
+    default: 'false'
 
 runs:
   using: 'composite'
   steps:
+    - name: Use a UTF-8 locale
+      shell: bash
+      run: |
+        # Every later step in the job runs in C.UTF-8, so tools and tests see UTF-8 text the
+        # same way a developer's machine does, not the runner's POSIX default (#1648).
+        echo "LANG=C.UTF-8" >> "$GITHUB_ENV"
+        echo "LC_ALL=C.UTF-8" >> "$GITHUB_ENV"
+
+    - name: Generate the test locales
+      if: inputs.generate-test-locales == 'true'
+      shell: bash
+      run: |
+        sudo locale-gen de_DE.UTF-8 fr_FR.UTF-8 en_US.UTF-8
+        locale -a | grep -iE '^(de_DE|fr_FR|en_US)\.utf-?8$'
+
     - name: Remove stale Microsoft apt sources
       shell: bash
       run: |
