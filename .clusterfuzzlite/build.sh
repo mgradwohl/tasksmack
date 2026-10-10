@@ -45,6 +45,10 @@ build_fuzzer fuzz_smbios
 build_fuzzer fuzz_proc_maps
 seed_corpus fuzz_proc_maps tests/fuzz/corpus/fuzz_proc_maps/*
 
+# The /proc/[pid]/fd link classifier and fdinfo parser (#183): header-only.
+build_fuzzer fuzz_proc_fd
+seed_corpus fuzz_proc_fd tests/fuzz/corpus/fuzz_proc_fd/*
+
 # The /proc/[pid]/status security, attr/current and cgroup parsers (#1526): header-only, seeded with
 # a real-looking status file, label and cgroup line.
 build_fuzzer fuzz_proc_status_security

@@ -205,6 +205,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_DevicesInfo.cpp
     Platform/test_DriversInfo.cpp
     Platform/test_ProcMapsParser.cpp
+    Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
@@ -246,6 +247,8 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
     App/test_ProcessModulesViewRender.cpp
+    App/test_ProcessOpenFilesViewRender.cpp
+    App/test_LazyBackgroundRead.cpp
     App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp
@@ -277,6 +280,7 @@ set(COMMON_TEST_SOURCES
     App/test_GpuSectionRender.cpp
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
+    App/test_ProcessesPanelRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
@@ -307,6 +311,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSystemProbe.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessModules.cpp
+    Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsDiskProbe.cpp
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
@@ -345,6 +350,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
+    Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_SystemdBus.cpp
     Platform/test_InetSocketTable.cpp
@@ -373,6 +379,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -400,6 +407,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessModulesReader.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessSecurityReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
@@ -417,12 +425,17 @@ endif()
 # Every tests/**/test_*.cpp must be in one of the lists above; otherwise it is never built and its
 # tests silently never run, as test_Numeric.cpp wasn't for months (#1135). Compared against the
 # lists themselves, not the text of this file, so a mention in a comment doesn't count.
+# The real UI::Theme's tests, built into TaskSmackThemeTests below rather than TaskSmackTests (#1547)
+set(THEME_REAL_TEST_SOURCES
+    UI/test_ThemeReal.cpp
+)
 set(TASKSMACK_REGISTERED_TEST_SOURCES
     ${COMMON_TEST_SOURCES}
     ${WINDOWS_PLATFORM_TEST_SOURCES}
     ${WINDOWS_INTEGRATION_TEST_SOURCES}
     ${LINUX_PLATFORM_TEST_SOURCES}
     ${LINUX_INTEGRATION_TEST_SOURCES}
+    ${THEME_REAL_TEST_SOURCES}
 )
 file(GLOB_RECURSE TASKSMACK_TEST_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp")
@@ -456,7 +469,8 @@ add_executable(TaskSmackTests
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
     # test_ProcessDetailsChartsRender.cpp, test_ProcessEnvironmentViewRender.cpp,
     # test_ProcessConnectionsViewRender.cpp), the Modules section (test_ProcessModulesViewRender.cpp, #802),
-    # the Security section (test_ProcessSecurityViewRender.cpp, #1526), and the batch priority dialog (#1484,
+    # the Open files section (test_ProcessOpenFilesViewRender.cpp, #183), the Security section
+    # (test_ProcessSecurityViewRender.cpp, #1526), and the batch priority dialog (#1484,
     # test_ProcessBatchPriorityDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
@@ -468,6 +482,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessModulesView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessOpenFilesView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessSecurityView.cpp
     # The Overview's CPU Details block, run headless (test_CpuDetailsBlockRender.cpp, #809)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuDetailsBlock.cpp
@@ -483,6 +498,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemMetricsPanel.cpp
     # The Process Details panel as a whole, with mock actions and readers (test_ProcessDetailsPanelRender.cpp, #1546)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsPanel.cpp
+    # The Processes panel as a whole, with a mock probe through its seam (test_ProcessesPanelRender.cpp, #1546)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp
@@ -673,6 +690,20 @@ else()
             ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
 endif()
+
+# The real UI::Theme (#1547), in its own executable: TaskSmackTests links Mocks/ThemeStub.cpp, which
+# defines the same symbols, so Theme.cpp can't be linked there. Headless ImGui/ImPlot, no SDL or GL.
+add_executable(TaskSmackThemeTests
+    ${THEME_REAL_TEST_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/UI/Theme.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
+)
+target_include_directories(TaskSmackThemeTests PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)  # FallbackTheme.h
+target_link_libraries(TaskSmackThemeTests PRIVATE gtest gtest_main spdlog::spdlog_header_only tomlplusplus::tomlplusplus imgui_lib implot_lib)
+target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
+tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
+tasksmack_apply_default_warnings(TaskSmackThemeTests)
+gtest_discover_tests(TaskSmackThemeTests DISCOVERY_TIMEOUT 30)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small

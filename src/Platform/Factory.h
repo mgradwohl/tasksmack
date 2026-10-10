@@ -8,6 +8,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
 #include "Platform/IServiceActions.h"
@@ -38,6 +39,9 @@ namespace Platform
 
 /// Creates the platform-appropriate IProcessModulesReader implementation (#802).
 [[nodiscard]] std::unique_ptr<IProcessModulesReader> makeProcessModulesReader();
+
+/// Creates the platform-appropriate IProcessOpenFilesReader implementation (#183).
+[[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader();
 
 /// Creates the platform-appropriate IProcessSecurityReader implementation (#1526). Windows returns an
 /// UnsupportedProcessSecurityReader until its token reader lands.
