@@ -1,3 +1,4 @@
+#include "NonAsciiTestNames.h"
 #include "Platform/Windows/WinString.h"
 
 #include <gtest/gtest.h>
@@ -149,6 +150,61 @@ TEST(WinStringTest, RoundTripPreservesWindowsPaths)
 {
     const std::string original = "C:\\Users\\Günther\\Documents\\日本語フォルダ\\file.txt";
     EXPECT_EQ(wideToUtf8(utf8ToWide(original)), original);
+}
+
+// ========== Non-ASCII round trips (#1648, slice C) ==========
+
+TEST(WinStringTest, NonBmpCharacterIsASurrogatePair)
+{
+    // U+1F525 FIRE: four UTF-8 bytes, two UTF-16 units (a surrogate pair), and back.
+    const std::wstring wide = utf8ToWide(TestSupport::EMOJI_NAME);
+    ASSERT_EQ(wide.size(), 2U);
+    EXPECT_EQ(wide[0], static_cast<wchar_t>(0xD83D));
+    EXPECT_EQ(wide[1], static_cast<wchar_t>(0xDD25));
+    EXPECT_EQ(wideToUtf8(wide), TestSupport::EMOJI_NAME);
+    EXPECT_EQ(wideToUtf8(std::wstring_view{wide}), TestSupport::EMOJI_NAME);
+}
+
+TEST(WinStringTest, EveryTestScriptRoundTrips)
+{
+    for (const std::string_view name : TestSupport::NON_ASCII_NAMES)
+    {
+        EXPECT_EQ(wideToUtf8(utf8ToWide(name)), name);
+    }
+    const std::string all = TestSupport::allNonAsciiNames();
+    EXPECT_EQ(utf8ToWide(all), L"任务管理器🔥Ünïcödéمدير");
+    EXPECT_EQ(wideToUtf8(utf8ToWide(all)), all);
+}
+
+TEST(WinStringTest, UnpairedSurrogateBecomesReplacementCharacter)
+{
+    // NTFS and process names can hold an unpaired surrogate. It has no UTF-8 form, so it comes out
+    // as U+FFFD (EF BF BD) rather than failing the whole string or crashing.
+    const std::wstring loneHigh{L'a', static_cast<wchar_t>(0xD83D), L'b'};
+    const std::wstring loneLow{L'a', static_cast<wchar_t>(0xDD25), L'b'};
+    const std::string expected = "a\xEF\xBF\xBD"
+                                 "b";
+    EXPECT_EQ(wideToUtf8(loneHigh), expected);
+    EXPECT_EQ(wideToUtf8(std::wstring_view{loneLow}), expected);
+}
+
+TEST(WinStringTest, Utf8ToWideRejectsEveryKindOfInvalidUtf8)
+{
+    // Strict on purpose: the result names a file, service or registry value for a W API, and a
+    // guessed one could name a different object. Empty, never a crash or a partial string.
+    const std::string_view overlongSlash = "\xC0\xAF";
+    const std::string_view encodedSurrogate = "\xED\xA0\x80";
+    const std::string_view aboveMaxCodePoint = "\xF4\x90\x80\x80";
+    const std::string_view cutEmoji = "\xF0\x9F\x94";
+    const std::string_view codePage1252 = "\xDC"
+                                          "n\xEF"
+                                          "c\xF6"
+                                          "d\xE9"; // "Ünïcödé" as code page 1252 bytes
+    const std::string_view trailingFF = "ok\xFF";
+    for (const std::string_view invalid : {overlongSlash, encodedSurrogate, aboveMaxCodePoint, cutEmoji, codePage1252, trailingFF})
+    {
+        EXPECT_EQ(utf8ToWide(invalid), L"");
+    }
 }
 
 // ========== Edge Cases ==========

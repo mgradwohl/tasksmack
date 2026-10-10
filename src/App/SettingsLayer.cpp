@@ -9,6 +9,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/Utf8Path.h"
 #include "UI/Theme.h"
 
 #include <spdlog/spdlog.h>
@@ -40,7 +41,7 @@ namespace
     std::filesystem::create_directories(dir, ec);
     if (ec)
     {
-        spdlog::warn("Couldn't create user themes directory {}: {}", dir.string(), ec.message());
+        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
     }
     return dir;
 }

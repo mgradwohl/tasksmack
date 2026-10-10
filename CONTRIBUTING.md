@@ -282,6 +282,20 @@ it on any new target. Third-party dependencies keep their own settings.
   to UTF-8 (`activeCodePage`, Windows 10 1903+), so `GetACP()` is 65001 and narrow CRT calls,
   `std::filesystem::path` and `getenv` take UTF-8. The test binaries have no manifest, so code
   under test must not depend on it: convert explicitly rather than relying on the code page.
+- **Paths meet UTF-8 text only through `Core/Utf8Path.h`.** `Core::pathToUtf8(path)` for a log
+  line or a library that takes a UTF-8 file name (toml++'s `parse_file`, SDL), and
+  `Core::utf8ToPath(text)` for a path read from UTF-8. Never `path.string()` or
+  `std::filesystem::path(std::string)`: on Windows both go through the code page, so in a binary
+  without the manifest (the tests, `TaskSmackUiTraining`) they throw for CJK or emoji and turn
+  accented Latin into bytes that aren't UTF-8. To open a file, pass the path itself (`std::ifstream`,
+  `std::filesystem`) or `path.native()`/`wstring()` to a `W` API, never a narrowed name to `fopen`
+  or an `A` API. `tests/App/test_NonAsciiRoundTrips.cpp` covers the config, themes, log, selection,
+  process names and opener with CJK, emoji, accented Latin and Arabic names.
+- **The log file keeps `SPDLOG_WCHAR_FILENAMES`** (#1648): spdlog then opens it by its UTF-16 path
+  (`Core::makeLogFileSink`, which static_asserts the macro on Windows). Without it spdlog takes a
+  narrow name and `_fsopen`s it through the code page, which writes the log into a mojibake
+  directory in any binary without the manifest. Define it on every Windows target that logs to a
+  file.
 - **Locales are set once, at startup** (`Core/LocaleSetup.h`, first thing in `main`): the C and
   C++ locales follow the user's regional settings with a UTF-8 codeset, and the C runtime's
   `LC_NUMERIC` stays `"C"`. Don't call `setlocale` or `std::locale::global` anywhere else. The

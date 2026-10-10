@@ -270,7 +270,9 @@ set(TASKSMACK_HEADERS
     src/Core/Application.h
     src/Core/ConfigDirOverride.h
     src/Core/LocaleSetup.h
+    src/Core/LogFileSink.h
     src/Core/PathService.h
+    src/Core/Utf8Path.h
     src/Core/Window.h
     src/Core/GraphicsHostInfo.h
     src/Core/Layer.h
@@ -490,14 +492,15 @@ function(tasksmack_configure_app_target target)
             _WIN32_WINNT=0x0A00
             WINVER=0x0A00
             NTDDI_VERSION=0x0A000000
-            # Make spdlog's filename_t std::wstring on Windows so the log path is opened as the
-            # native wide path. Without this spdlog uses std::string + _fsopen, so a %TEMP% path
-            # containing characters outside the active ANSI code page (a non-ASCII user name, say)
-            # fails or resolves to the wrong file -- and the app.manifest does not opt into
-            # activeCodePage=UTF-8, so narrow paths really do go through the ANSI code page.
-            # The same on every target built from the app's sources, so spdlog's templates agree
-            # across them; spdlog is consumed header-only (spdlog::spdlog_header_only), so there
-            # is no prebuilt library whose ABI could disagree.
+            # Make spdlog's filename_t std::wstring on Windows so the log file is opened by its
+            # native UTF-16 path (Core/LogFileSink.h, which static_asserts it). Kept after the
+            # manifest's activeCodePage=UTF-8 (#1648): without it spdlog uses std::string +
+            # _fsopen, which goes through the active code page -- UTF-8 only in TaskSmack.exe.
+            # TaskSmackUiTraining and the tests have no manifest, so there a %TEMP% under a
+            # non-ASCII user name fails or names another file; tests/App/test_NonAsciiRoundTrips.cpp
+            # shows it. The same on every target built from the app's sources and on TaskSmackTests,
+            # so spdlog's templates agree across them; spdlog is consumed header-only
+            # (spdlog::spdlog_header_only), so there is no prebuilt library whose ABI could disagree.
             SPDLOG_WCHAR_FILENAMES
         )
     endif()

@@ -1,5 +1,6 @@
 #include "ThemeLoader.h"
 
+#include "Core/Utf8Path.h"
 #include "Theme.h"
 #include "UI/ColorContrast.h"
 #include "UI/Format.h"
@@ -504,14 +505,14 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     std::error_code ec;
     if (!std::filesystem::is_directory(themesDir, ec))
     {
-        spdlog::warn("Themes directory does not exist or can't be read: {}", themesDir.string());
+        spdlog::warn("Themes directory does not exist or can't be read: {}", Core::pathToUtf8(themesDir));
         return themes;
     }
 
     std::filesystem::directory_iterator it(themesDir, ec);
     if (ec)
     {
-        spdlog::warn("Can't list themes directory {}: {}", themesDir.string(), ec.message());
+        spdlog::warn("Can't list themes directory {}: {}", Core::pathToUtf8(themesDir), ec.message());
         return themes;
     }
     for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
@@ -527,7 +528,7 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     }
     if (ec)
     {
-        spdlog::warn("Stopped listing themes directory {}: {}", themesDir.string(), ec.message());
+        spdlog::warn("Stopped listing themes directory {}: {}", Core::pathToUtf8(themesDir), ec.message());
     }
 
     // Sort by name for consistent UI ordering
@@ -540,11 +541,11 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optio
 {
     try
     {
-        auto tbl = toml::parse_file(path.string());
+        auto tbl = toml::parse_file(Core::pathToUtf8(path));
 
         ThemeInfo info;
         info.path = path;
-        info.id = path.stem().string(); // filename without extension
+        info.id = Core::pathToUtf8(path.stem()); // filename without extension
 
         // Read meta section. Index through node_view, which is null-safe: table::get() returns
         // nullptr for a missing key, and calling value_or() on that crashed at startup (#1095).
@@ -562,7 +563,7 @@ auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optio
     }
     catch (const toml::parse_error& err)
     {
-        spdlog::error("Failed to parse theme {}: {}", path.string(), err.description());
+        spdlog::error("Failed to parse theme {}: {}", Core::pathToUtf8(path), err.description());
         return std::nullopt;
     }
 }
@@ -571,18 +572,18 @@ auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<
 {
     try
     {
-        ColorScheme scheme = schemeFromTable(toml::parse_file(path.string()));
-        spdlog::info("Loaded theme: {} from {}", scheme.name, path.string());
+        ColorScheme scheme = schemeFromTable(toml::parse_file(Core::pathToUtf8(path)));
+        spdlog::info("Loaded theme: {} from {}", scheme.name, Core::pathToUtf8(path));
         return scheme;
     }
     catch (const toml::parse_error& err)
     {
-        spdlog::error("Failed to parse theme {}: {}", path.string(), err.description());
+        spdlog::error("Failed to parse theme {}: {}", Core::pathToUtf8(path), err.description());
         return std::nullopt;
     }
     catch (const std::exception& ex)
     {
-        spdlog::error("Failed to load theme {}: {}", path.string(), ex.what());
+        spdlog::error("Failed to load theme {}: {}", Core::pathToUtf8(path), ex.what());
         return std::nullopt;
     }
 }

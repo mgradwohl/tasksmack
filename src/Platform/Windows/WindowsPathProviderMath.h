@@ -77,14 +77,15 @@ resolveExecutableDir(const std::function<std::uint32_t(wchar_t* buffer, std::uin
 /// Pure fallback logic extracted from WindowsPathProvider::getUserConfigDir(): if @p appDataEnv
 /// returns a non-empty value, appends "TaskSmack" to it; otherwise falls back to @p
 /// currentPathFn (same last-resort-empty-path contract as resolveExecutableDir() above).
-/// @param appDataEnv Mimics reading the APPDATA environment variable: nullopt or an empty string
-/// both count as "not found".
-[[nodiscard]] inline std::filesystem::path resolveUserConfigDir(const std::function<std::optional<std::string>()>& appDataEnv,
+/// @param appDataEnv Mimics reading the APPDATA environment variable: nullopt or an empty path
+/// both count as "not found". A path, not a std::string, so the real reader can hand over the
+/// variable's UTF-16 value without a narrow conversion through the code page (#1648).
+[[nodiscard]] inline std::filesystem::path resolveUserConfigDir(const std::function<std::optional<std::filesystem::path>()>& appDataEnv,
                                                                 const PathProviderCurrentPathFn& currentPathFn)
 {
     if (const auto appData = appDataEnv(); appData.has_value() && !appData->empty())
     {
-        return std::filesystem::path(*appData) / "TaskSmack";
+        return *appData / "TaskSmack";
     }
 
     std::error_code cwdEc;

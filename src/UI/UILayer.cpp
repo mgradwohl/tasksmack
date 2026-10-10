@@ -4,6 +4,7 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
+#include "Core/Utf8Path.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/ChartWidgets.h"
@@ -65,7 +66,7 @@ ImFont* addFontFromFile(UI::FontFileCache& fontFiles,
     if (config.Name[0] == '\0')
     {
         // The file name, as AddFontFromFileTTF() names its fonts (shown in ImGui's Metrics window).
-        const std::string name = path.filename().string();
+        const std::string name = Core::pathToUtf8(path.filename());
         const std::span<char> dest(config.Name);
         const std::size_t length = std::min(name.size(), dest.size() - 1);
         std::copy_n(name.begin(), length, dest.begin());
@@ -144,9 +145,9 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
     // LightHinting provides better quality for UI fonts at typical screen sizes
     imguiIO.Fonts->FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 
-    auto fontPath = (assetsDir / "fonts" / "Inter-Regular.ttf").string();
-    const auto boldFontPath = (assetsDir / "fonts" / "Inter-Bold.ttf").string();
-    auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
+    const auto fontPath = assetsDir / "fonts" / "Inter-Regular.ttf";
+    const auto boldFontPath = assetsDir / "fonts" / "Inter-Bold.ttf";
+    const auto iconFontPath = assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS;
     const auto monospaceFontPath = findMonospaceFontPath();
 
     // Check if icon font exists. The error_code overloads here and below: this also runs when the
@@ -159,11 +160,11 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
     const bool hasIconFont = std::filesystem::exists(iconFontPath, existsError);
     if (!hasIconFont)
     {
-        spdlog::warn("Icon font not found at {}, icons will not be available", iconFontPath);
+        spdlog::warn("Icon font not found at {}, icons will not be available", Core::pathToUtf8(iconFontPath));
     }
     else
     {
-        spdlog::info("Found icon font: {}", iconFontPath);
+        spdlog::info("Found icon font: {}", Core::pathToUtf8(iconFontPath));
     }
 
     // Icon font glyph range (Font Awesome 6)
@@ -177,7 +178,7 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
     const std::optional<float> digitRatio = widestDigitAdvanceRatio(fontFiles.get(fontPath));
     if (!digitRatio.has_value())
     {
-        spdlog::warn("Could not measure the digits of {}; numbers will use proportional digits", fontPath);
+        spdlog::warn("Could not measure the digits of {}; numbers will use proportional digits", Core::pathToUtf8(fontPath));
     }
 
     // Load fonts for all size presets into a single atlas
@@ -198,7 +199,7 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
         ImFont* fontRegular = addBodyFont(fontFiles, fontPath, fontSizeRegular, digitRatio);
         if (fontRegular == nullptr)
         {
-            spdlog::warn("Could not load Inter font from {}, using default", fontPath);
+            spdlog::warn("Could not load Inter font from {}, using default", Core::pathToUtf8(fontPath));
             ImFontConfig defaultFontConfig;
             defaultFontConfig.SizePixels = fontSizeRegular;
             fontRegular = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
@@ -262,7 +263,7 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
             fontMonospace = addFontFromFile(fontFiles, monospaceFontPath, fontSizeRegular, &monoConfig);
             if (fontMonospace == nullptr)
             {
-                spdlog::warn("Could not load monospace font from {}, falling back to default", monospaceFontPath.string());
+                spdlog::warn("Could not load monospace font from {}, falling back to default", Core::pathToUtf8(monospaceFontPath));
             }
         }
 
@@ -299,7 +300,7 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
     const float titleBarPx = computeTitleBarHeightPx(displayScale);
     theme.setTitleBarHeightPx(titleBarPx);
     spdlog::info("Title bar {}pt -> {}px (title font {}pt -> {}px)", TITLE_BAR_PT, titleBarPx, TITLE_FONT_PT, titleFontPx);
-    auto titleFontPath = (assetsDir / "fonts" / "Sixtyfour.ttf").string();
+    const auto titleFontPath = assetsDir / "fonts" / "Sixtyfour.ttf";
     if (std::filesystem::exists(titleFontPath, existsError))
     {
         ImFontConfig titleConfig;
@@ -313,12 +314,12 @@ void UILayer::loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path
         }
         else
         {
-            spdlog::warn("Failed to load Sixtyfour title font from {}", titleFontPath);
+            spdlog::warn("Failed to load Sixtyfour title font from {}", Core::pathToUtf8(titleFontPath));
         }
     }
     else
     {
-        spdlog::warn("Sixtyfour title font not found at {}", titleFontPath);
+        spdlog::warn("Sixtyfour title font not found at {}", Core::pathToUtf8(titleFontPath));
     }
 
     // Chrome icon font: Font Awesome at a fixed size for the title bar's window and app controls.
@@ -367,7 +368,7 @@ void UILayer::loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem:
     const float titleBarPx = computeTitleBarHeightPx(displayScale);
     theme.setTitleBarHeightPx(titleBarPx);
 
-    const auto iconFontPath = (assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS).string();
+    const auto iconFontPath = assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS;
     std::error_code existsError;
     const bool hasIconFont = !assetsDir.empty() && std::filesystem::exists(iconFontPath, existsError);
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires a null-terminated C array

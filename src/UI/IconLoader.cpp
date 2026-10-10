@@ -1,5 +1,7 @@
 #include "UI/IconLoader.h"
 
+#include "Core/Utf8Path.h"
+
 #include <glad/gl.h>
 #include <spdlog/spdlog.h>
 
@@ -13,6 +15,10 @@
 #endif
 
 #define STB_IMAGE_IMPLEMENTATION
+#ifdef _WIN32
+// stbi_load() takes a UTF-8 file name and opens it with _wfopen, never through the code page (#1648).
+#define STBI_WINDOWS_UTF8
+#endif
 // NOLINTNEXTLINE(misc-include-cleaner) - stb_image.h macros generate scanner errors
 #include <stb_image.h>
 
@@ -81,10 +87,13 @@ auto loadTexture(const std::filesystem::path& path) -> Texture
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_uc* pixels = stbi_load(path.string().c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    // UTF-8, not path.string(): with STBI_WINDOWS_UTF8 (above) stb_image converts the name from
+    // UTF-8 and opens it with _wfopen. A narrowed name went through the active code page, so an
+    // install under a non-ASCII directory failed in every binary without the UTF-8 manifest (#1648).
+    stbi_uc* pixels = stbi_load(Core::pathToUtf8(path).c_str(), &width, &height, &channels, STBI_rgb_alpha);
     if (pixels == nullptr)
     {
-        spdlog::warn("Failed to load icon: {}", stbi_failure_reason());
+        spdlog::warn("Failed to load icon {}: {}", Core::pathToUtf8(path), stbi_failure_reason());
         return {};
     }
 

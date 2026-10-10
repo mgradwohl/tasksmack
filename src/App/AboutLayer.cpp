@@ -5,6 +5,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
+#include "Core/Utf8Path.h"
 #include "UI/AssetPath.h"
 #include "UI/IconLoader.h"
 
@@ -78,7 +79,7 @@ void AboutLayer::loadIcon()
         if (m_Icon.valid())
         {
             spdlog::info("Loaded About dialog icon: {} ({}x{})",
-                         iconPath.string(),
+                         Core::pathToUtf8(iconPath),
                          static_cast<int>(m_Icon.size().x),
                          static_cast<int>(m_Icon.size().y));
             return;
