@@ -166,7 +166,7 @@ jobs:
         with:
           name: linux-${{ inputs.build_type }}-test-results
           path: build/${{ inputs.build_type }}/test-results.xml
-          retention-days: 30
+          retention-days: 5
 
       - name: Upload test results (Windows)
         if: always() && runner.os == 'Windows'
@@ -174,7 +174,7 @@ jobs:
         with:
           name: windows-${{ inputs.build_type }}-test-results
           path: build/win-${{ inputs.build_type }}/test-results.xml
-          retention-days: 30
+          retention-days: 5
 
       - name: Publish test results to Job Summary
         if: >-

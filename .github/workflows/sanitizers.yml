@@ -209,7 +209,7 @@ jobs:
           path: |
             sanitizer-logs/${{ matrix.preset }}.log
             sanitizer-reports/${{ matrix.preset }}.html
-          retention-days: 14
+          retention-days: 5
 
       - name: Fail job if sanitizer found issues
         if: steps.sanitizer-test.outputs.test_result != '0'
