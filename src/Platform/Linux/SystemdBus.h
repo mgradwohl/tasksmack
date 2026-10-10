@@ -26,6 +26,11 @@ struct BootTimestampsRead
     std::uint64_t finish = 0;
 };
 
+/// Longest any one call on the system bus may take before it is abandoned (#1689): sd-bus's own default
+/// is 25 s, and a read makes several calls -- a few per disk -- so a hung service would hold the page's
+/// worker read for minutes.
+inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
+
 /// Whether this build was linked with libsystemd.
 [[nodiscard]] bool built() noexcept;
 
