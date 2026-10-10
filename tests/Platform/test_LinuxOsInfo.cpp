@@ -654,6 +654,85 @@ TEST(LinuxStorageTest, ReadsDisksAndVolumesUnderARoot)
     EXPECT_EQ(sizedMounts().size(), 5U);
 }
 
+TEST(LinuxStorageTest, ReadsPartitionsUnderARoot)
+{
+    // nvme0n1: GPT, with udev's database: EFI at /boot/efi, root at / (and bind-mounted at /srv/bind),
+    // swap. sda: MBR, its partitions without udev files, so no type; sda1 at /data.
+    const FixtureRoot root;
+    root.write("proc/self/mountinfo",
+               "22 1 259:2 / / rw shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+               "29 22 259:1 / /boot/efi rw shared:7 - vfat /dev/nvme0n1p1 rw\n"
+               "33 22 259:2 /srv/data /srv/bind rw shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+               "38 22 8:1 / /data rw shared:16 - ext4 /dev/sda1 rw\n");
+    root.write("sys/block/nvme0n1/size", "1953525168\n");
+    root.write("sys/block/nvme0n1/dev", "259:0\n");
+    root.write("sys/block/nvme0n1/device/model", "Samsung SSD 980 PRO 1TB\n");
+    root.write("sys/block/nvme0n1/queue/rotational", "0\n"); // a directory without a partition file
+    root.write("sys/block/nvme0n1/nvme0n1p1/partition", "1\n");
+    root.write("sys/block/nvme0n1/nvme0n1p1/start", "2048\n");
+    root.write("sys/block/nvme0n1/nvme0n1p1/size", "1048576\n");
+    root.write("sys/block/nvme0n1/nvme0n1p1/dev", "259:1\n");
+    root.write("sys/block/nvme0n1/nvme0n1p3/partition", "3\n"); // listed out of order: sorted by number
+    root.write("sys/block/nvme0n1/nvme0n1p3/start", "1936746496\n");
+    root.write("sys/block/nvme0n1/nvme0n1p3/size", "16777216\n");
+    root.write("sys/block/nvme0n1/nvme0n1p3/dev", "259:3\n");
+    root.write("sys/block/nvme0n1/nvme0n1p2/partition", "2\n");
+    root.write("sys/block/nvme0n1/nvme0n1p2/start", "1050624\n");
+    root.write("sys/block/nvme0n1/nvme0n1p2/size", "1935695872\n");
+    root.write("sys/block/nvme0n1/nvme0n1p2/dev", "259:2\n");
+    root.write("run/udev/data/b259:0", "E:ID_PART_TABLE_TYPE=gpt\n");
+    root.write("run/udev/data/b259:1", "E:ID_PART_ENTRY_SCHEME=gpt\nE:ID_PART_ENTRY_TYPE=c12a7328-f81f-11d2-ba4b-00a0c93ec93b\n");
+    root.write("run/udev/data/b259:2", "E:ID_PART_ENTRY_TYPE=0fc63daf-8483-4772-8e79-3d69d8477de4\n");
+    root.write("run/udev/data/b259:3", "E:ID_PART_ENTRY_TYPE=0657fd6d-a4ab-43c4-84e5-0933c84b4f4f\n");
+    root.write("sys/block/sda/size", "3907029168\n");
+    root.write("sys/block/sda/dev", "8:0\n");
+    root.write("sys/block/sda/device/model", "WDC WD20EZRZ-00Z\n");
+    root.write("sys/block/sda/sda1/partition", "1\n");
+    root.write("sys/block/sda/sda1/start", "2048\n");
+    root.write("sys/block/sda/sda1/size", "3907026944\n");
+    root.write("sys/block/sda/sda1/dev", "8:1\n");
+    root.write("sys/block/sdb/size", "1000\n"); // a whole-disk file system: no partitions
+    root.write("sys/block/sdb/dev", "8:16\n");
+    root.write("sys/block/sdb/device/model", "USB\n");
+    root.write("run/udev/data/b8:16", "E:ID_PART_TABLE_TYPE=dos\n");
+
+    StorageInfo info;
+    LinuxStorage::readStorageFacts(root.path(), info, nullptr);
+    ASSERT_EQ(info.disks.size(), 3U);
+    const PhysicalDisk& nvme = info.disks[0];
+    EXPECT_TRUE(nvme.partitionsRead);
+    EXPECT_EQ(nvme.partitionStyle, PartitionStyle::Gpt);
+    ASSERT_EQ(nvme.partitions.size(), 3U);
+    EXPECT_EQ(nvme.partitions[0].number, 1U);
+    EXPECT_EQ(nvme.partitions[0].device, "nvme0n1p1");
+    EXPECT_EQ(nvme.partitions[0].typeName, "EFI System");
+    EXPECT_EQ(nvme.partitions[0].offsetBytes, 2048ULL * 512);
+    EXPECT_EQ(nvme.partitions[0].sizeBytes, 1048576ULL * 512);
+    EXPECT_EQ(nvme.partitions[0].mountPoint, "/boot/efi");
+    EXPECT_EQ(nvme.partitions[1].typeName, "Linux filesystem");
+    EXPECT_EQ(nvme.partitions[1].mountPoint, "/"); // not the bind mount
+    EXPECT_EQ(nvme.partitions[2].number, 3U);
+    EXPECT_EQ(nvme.partitions[2].typeName, "Linux swap");
+    EXPECT_EQ(nvme.partitions[2].mountPoint, "");
+
+    const PhysicalDisk& sata = info.disks[1];
+    EXPECT_TRUE(sata.partitionsRead);
+    EXPECT_EQ(sata.partitionStyle, PartitionStyle::Unknown); // no udev database
+    ASSERT_EQ(sata.partitions.size(), 1U);
+    EXPECT_EQ(sata.partitions[0].typeId, "");
+    EXPECT_EQ(sata.partitions[0].typeName, "");
+    EXPECT_EQ(sata.partitions[0].mountPoint, "/data");
+
+    const PhysicalDisk& whole = info.disks[2];
+    EXPECT_TRUE(whole.partitionsRead);
+    EXPECT_EQ(whole.partitionStyle, PartitionStyle::Mbr);
+    EXPECT_TRUE(whole.partitions.empty());
+
+    EXPECT_EQ(LinuxStorage::partitionStyle("gpt"), PartitionStyle::Gpt);
+    EXPECT_EQ(LinuxStorage::partitionStyle("dos"), PartitionStyle::Mbr);
+    EXPECT_EQ(LinuxStorage::partitionStyle("atari"), PartitionStyle::Unknown);
+}
+
 TEST(LinuxStorageTest, NothingReadableLeavesEverythingUnknown)
 {
     const FixtureRoot root;

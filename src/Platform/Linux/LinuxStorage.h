@@ -9,18 +9,23 @@
 //   (a bind mount repeats its device and is left out), each sized by an injected statvfs() so the parsers
 //   stay standard library only and the fixture tests and the fuzz target (tests/fuzz/fuzz_mountinfo.cpp)
 //   run everywhere. Network file systems are listed but never sized: statvfs() on a dead server hangs.
+// - Partitions (#1632): each /sys/block/<disk>/<partition>/{partition,start,size} (512-byte sectors), the
+//   type from udev's ID_PART_ENTRY_TYPE (a GPT type GUID or an MBR "0x83", named by PartitionTable.h) and
+//   the disk's ID_PART_TABLE_TYPE, and the mount point from the mountinfo volumes, matched by major:minor.
 // All unprivileged; nothing is spawned.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxCommitPaging.h"
 #include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxOsInfo.h"
+#include "Platform/PartitionTable.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -253,6 +258,60 @@ struct MountEntry
     return std::nullopt;
 }
 
+/// udev's ID_PART_TABLE_TYPE / ID_PART_ENTRY_SCHEME ("gpt", "dos") as a style; Unknown for anything else.
+[[nodiscard]] inline PartitionStyle partitionStyle(std::string_view scheme)
+{
+    if (scheme == "gpt")
+    {
+        return PartitionStyle::Gpt;
+    }
+    if (scheme == "dos")
+    {
+        return PartitionStyle::Mbr;
+    }
+    return PartitionStyle::Unknown;
+}
+
+/// @p block's (/sys/block/<disk>) partitions into @p disk, by number: its subdirectories with a
+/// "partition" file. The type comes from each partition's udev file under @p root, when readable; the
+/// style from the disk's @p diskUdev, else from a partition's.
+inline void
+readPartitions(const std::filesystem::path& root, const std::filesystem::path& block, std::string_view diskUdev, PhysicalDisk& disk)
+{
+    constexpr std::uint64_t SECTOR = 512; // start and size are always in 512-byte sectors
+    disk.partitionStyle = partitionStyle(udevProperty(diskUdev, "ID_PART_TABLE_TYPE"));
+    std::error_code ec;
+    std::filesystem::directory_iterator entries(block, ec);
+    if (ec)
+    {
+        disk.partitionsUnavailableReason = "/sys/block couldn't be listed";
+        return;
+    }
+    disk.partitionsRead = true;
+    for (; !ec && entries != std::filesystem::directory_iterator{}; entries.increment(ec))
+    {
+        const std::filesystem::path& entry = entries->path();
+        const std::optional<std::uint64_t> number = LinuxCommitPaging::parseUnsigned(LinuxOsInfo::readLine(entry / "partition"));
+        if (!number.has_value() || *number == 0 || *number > std::numeric_limits<std::uint32_t>::max())
+        {
+            continue; // not a partition (queue, device, holders, ...)
+        }
+        Partition partition;
+        partition.number = static_cast<std::uint32_t>(*number);
+        partition.device = entry.filename().string();
+        partition.offsetBytes = LinuxCommitPaging::parseUnsigned(LinuxOsInfo::readLine(entry / "start")).value_or(0) * SECTOR;
+        partition.sizeBytes = LinuxCommitPaging::parseUnsigned(LinuxOsInfo::readLine(entry / "size")).value_or(0) * SECTOR;
+        const std::string udev = LinuxOsInfo::readFile(root / "run/udev/data" / ("b" + LinuxOsInfo::readLine(entry / "dev")));
+        PartitionTable::setType(partition, udevProperty(udev, "ID_PART_ENTRY_TYPE"));
+        if (disk.partitionStyle == PartitionStyle::Unknown)
+        {
+            disk.partitionStyle = partitionStyle(udevProperty(udev, "ID_PART_ENTRY_SCHEME"));
+        }
+        disk.partitions.push_back(std::move(partition));
+    }
+    std::ranges::sort(disk.partitions, {}, &Partition::number);
+}
+
 /// The physical disks under @p root's /sys/block, sorted by name; nullopt when it can't be listed.
 [[nodiscard]] inline std::optional<std::vector<PhysicalDisk>> readDisks(const std::filesystem::path& root)
 {
@@ -313,10 +372,29 @@ struct MountEntry
         }
         disk.temperatureCelsius = hwmonTemperature(device);
         disk.healthUnavailableReason = "SMART status wasn't read"; // readStorageFacts() reads it through udisks2
+        readPartitions(root, block, udev, disk);
         disks.push_back(std::move(disk));
     }
     std::ranges::sort(disks, {}, &PhysicalDisk::name);
     return disks;
+}
+
+/// Sets each partition's mountPoint from @p mounts (the volumes selectVolumes() chose), matching the
+/// partition's major:minor under @p root's /sys/block to the mount's.
+inline void assignMountPoints(const std::filesystem::path& root, std::vector<PhysicalDisk>& disks, const std::vector<MountEntry>& mounts)
+{
+    for (PhysicalDisk& disk : disks)
+    {
+        for (Partition& partition : disk.partitions)
+        {
+            const std::string device = LinuxOsInfo::readLine(root / "sys/block" / disk.name / partition.device / "dev");
+            const auto mount = std::ranges::find(mounts, device, &MountEntry::device);
+            if (!device.empty() && mount != mounts.end())
+            {
+                partition.mountPoint = mount->mountPoint;
+            }
+        }
+    }
 }
 
 /// Sizes one mounted file system: its total and the bytes free to an unprivileged user; false when
@@ -350,7 +428,9 @@ readStorageFacts(const std::filesystem::path& root, StorageInfo& info, VolumeSiz
         return;
     }
     info.volumesRead = true;
-    for (const MountEntry& entry : selectVolumes(parseMountInfo(mountInfo)))
+    const std::vector<MountEntry> mounts = selectVolumes(parseMountInfo(mountInfo));
+    assignMountPoints(root, info.disks, mounts);
+    for (const MountEntry& entry : mounts)
     {
         Volume volume;
         volume.mountPoint = entry.mountPoint;

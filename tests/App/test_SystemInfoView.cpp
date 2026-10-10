@@ -919,6 +919,82 @@ TEST(SystemInfoSectionsTest, StorageRowsLinuxAndUnreadable)
     EXPECT_EQ(findRow(empty, "Volumes")->value, "None mounted");
 }
 
+TEST(SystemInfoSectionsTest, StoragePartitionRows)
+{
+    // #1632: Disk 0 is GPT with C: on its third partition; Disk 1's layout was refused.
+    Platform::StorageInfo storage = windowsStorage();
+    Platform::PhysicalDisk& nvme = storage.disks[0];
+    nvme.partitionsRead = true;
+    nvme.partitionStyle = Platform::PartitionStyle::Gpt;
+    const auto partition =
+        [](std::uint32_t number, std::string_view typeName, std::uint64_t offset, std::uint64_t size, std::string_view mount)
+    {
+        Platform::Partition result;
+        result.number = number;
+        result.typeName = std::string(typeName);
+        result.offsetBytes = offset;
+        result.sizeBytes = size;
+        result.mountPoint = std::string(mount);
+        return result;
+    };
+    nvme.partitions = {
+        partition(1, "EFI System", MIB, 260 * MIB, ""),
+        partition(2, "Microsoft reserved", 261 * MIB, 16 * MIB, ""),
+        partition(3, "Basic data", 277 * MIB, 930 * GIB, "C:"),
+    };
+    storage.disks[1].partitionsUnavailableReason = "Requires administrator";
+
+    const Section section = SystemInfo::buildStorageSection(storage);
+    ASSERT_NE(findRow(section, "Disk 0 partitions"), nullptr);
+    EXPECT_EQ(findRow(section, "Disk 0 partitions")->value, "GPT, 3 partitions");
+    EXPECT_EQ(findRow(section, "Disk 0 partition 1")->value, "EFI System, 260 MiB, offset 1 MiB");
+    EXPECT_EQ(findRow(section, "Disk 0 partition 3")->value, "Basic data, 930 GiB, offset 277 MiB \xE2\x86\x92 C:");
+    ASSERT_NE(findRow(section, "Disk 1 partitions"), nullptr);
+    EXPECT_FALSE(findRow(section, "Disk 1 partitions")->available());
+    EXPECT_EQ(findRow(section, "Disk 1 partitions")->unavailableReason, "Requires administrator");
+    EXPECT_EQ(findRow(section, "Disk 1 partition 1"), nullptr);
+    // The partition rows follow their disk's rows, before the volumes.
+    const auto at = [&section](std::string_view label)
+    {
+        return std::ranges::find(section.rows, label, &Row::label) - section.rows.begin();
+    };
+    EXPECT_LT(at("Disk 0 health"), at("Disk 0 partitions"));
+    EXPECT_LT(at("Disk 0 partition 3"), at("Disk 1"));
+    EXPECT_LT(at("Disk 1 partitions"), at("C: drive"));
+    // No layout facts at all (an older snapshot): no partition rows.
+    EXPECT_EQ(findRow(SystemInfo::buildStorageSection(windowsStorage()), "Disk 0 partitions"), nullptr);
+
+    // The summary's other forms.
+    Platform::PhysicalDisk disk;
+    EXPECT_EQ(SystemInfo::formatPartitionLayout(disk), "");
+    disk.partitionsRead = true;
+    EXPECT_EQ(SystemInfo::formatPartitionLayout(disk), "No partitions");
+    disk.partitionStyle = Platform::PartitionStyle::Raw;
+    EXPECT_EQ(SystemInfo::formatPartitionLayout(disk), "Not partitioned");
+    disk.partitionStyle = Platform::PartitionStyle::Mbr;
+    disk.partitions.push_back(partition(1, "NTFS/exFAT", MIB, GIB, "E:"));
+    EXPECT_EQ(SystemInfo::formatPartitionLayout(disk), "MBR, 1 partition");
+    disk.partitionStyle = Platform::PartitionStyle::Unknown;
+    EXPECT_EQ(SystemInfo::formatPartitionLayout(disk), "1 partition");
+
+    // Linux: the kernel name first; an unnamed type shows its id, an unread one a dash.
+    Platform::Partition linuxPartition = partition(2, "", 513 * MIB, 8 * GIB, "/home");
+    linuxPartition.device = "sda2";
+    EXPECT_EQ(SystemInfo::formatPartition(linuxPartition), "sda2, \xE2\x80\x94, 8 GiB, offset 513 MiB \xE2\x86\x92 /home");
+    linuxPartition.typeId = "0x99";
+    EXPECT_EQ(SystemInfo::formatPartition(linuxPartition), "sda2, 0x99, 8 GiB, offset 513 MiB \xE2\x86\x92 /home");
+    EXPECT_EQ(SystemInfo::formatPartition(partition(1, "EFI System", 0, 100 * MIB, "")), "EFI System, 100 MiB, offset 0 B");
+
+    // User-locale numbers: a partition count past a thousand is grouped.
+    const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
+    Platform::PhysicalDisk many;
+    many.partitionsRead = true;
+    many.partitionStyle = Platform::PartitionStyle::Gpt;
+    many.partitions.resize(1200);
+    EXPECT_EQ(SystemInfo::formatPartitionLayout(many), "GPT, 1.200 partitions");
+    EXPECT_EQ(SystemInfo::formatPartition(partition(1, "Basic data", MIB, (3 * GIB) / 2, "")), "Basic data, 1,5 GiB, offset 1 MiB");
+}
+
 TEST(SystemInfoSectionsTest, StorageSectionFollowsCommitPaging)
 {
     Domain::SystemInfoSnapshot all = snapshot();

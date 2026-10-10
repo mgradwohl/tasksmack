@@ -67,6 +67,11 @@ seed_corpus fuzz_commit_paging tests/fuzz/corpus/fuzz_commit_paging/*
 build_fuzzer fuzz_mountinfo
 seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
 
+# The partition layout parsers (#1632): header-only, seeded with GPT and MBR DRIVE_LAYOUT_INFORMATION_EX
+# buffers and udev partition type strings.
+build_fuzzer fuzz_partition_layout
+seed_corpus fuzz_partition_layout tests/fuzz/corpus/fuzz_partition_layout/*
+
 # The EDID parser (#1519): header-only, seeded with a real-looking 128-byte base block.
 build_fuzzer fuzz_edid
 seed_corpus fuzz_edid tests/fuzz/corpus/fuzz_edid/*

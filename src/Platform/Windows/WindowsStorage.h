@@ -11,9 +11,14 @@
 //   so an empty card reader or optical drive fails at once instead of prompting; those are left out.
 //   Network drives are listed but never queried: both calls block for the SMB timeout (tens of seconds)
 //   while the server is unreachable, and they can't be cancelled.
+// - Partitions (#1632): IOCTL_DISK_GET_DRIVE_LAYOUT_EX on the same query-only handle (it needs no access;
+//   when a driver refuses it anyway the row says it requires administrator, never opens for read), parsed
+//   by PartitionTable.h, and each drive letter tied to its disk and partition by
+//   IOCTL_STORAGE_GET_DEVICE_NUMBER on its volume (\\.\C:), opened query-only too.
 // Every call goes through an injectable table so tests drive the buffers and the failures.
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/PartitionTable.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -54,6 +59,7 @@ struct Functions
     decltype(&GetVolumeInformationW) getVolumeInformation = &GetVolumeInformationW;
     decltype(&GetDiskFreeSpaceExW) getDiskFreeSpaceEx = &GetDiskFreeSpaceExW;
     decltype(&SetThreadErrorMode) setThreadErrorMode = &SetThreadErrorMode;
+    Windows::UniqueHandle (*openVolume)(wchar_t letter) = &Windows::openVolumeQueryOnly;
 };
 
 /// \\.\PhysicalDrive0 through 63 are tried: drive numbers can have gaps after a disk is removed, and a
@@ -235,6 +241,41 @@ queryProperty(const Functions& fns, HANDLE disk, STORAGE_PROPERTY_ID property, s
     return health;
 }
 
+/// DRIVE_LAYOUT_INFORMATION_EX's first try holds this many entries (a GPT disk has room for 128, but
+/// few use more than a handful); the buffer doubles while the drive says it's too small, up to the cap.
+inline constexpr std::size_t LAYOUT_FIRST_ENTRIES = 16;
+inline constexpr std::size_t LAYOUT_MAX_BYTES = std::size_t{1} << 20U;
+
+/// The disk's partition style and partitions into @p info, or why they couldn't be read.
+inline void readPartitions(const Functions& fns, HANDLE disk, PhysicalDisk& info)
+{
+    std::vector<std::byte> buffer(PartitionTable::LAYOUT_HEADER_BYTES + (LAYOUT_FIRST_ENTRIES * PartitionTable::LAYOUT_ENTRY_BYTES));
+    DWORD returned = 0;
+    while (fns.deviceIoControl(
+               disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, nullptr, 0, buffer.data(), static_cast<DWORD>(buffer.size()), &returned, nullptr) ==
+           FALSE)
+    {
+        const DWORD error = GetLastError();
+        if ((error != ERROR_INSUFFICIENT_BUFFER && error != ERROR_MORE_DATA) || buffer.size() * 2 > LAYOUT_MAX_BYTES)
+        {
+            info.partitionsUnavailableReason =
+                error == ERROR_ACCESS_DENIED ? "Requires administrator" : "The drive didn't return its partition layout";
+            return;
+        }
+        buffer.resize(buffer.size() * 2);
+    }
+    buffer.resize(std::min<std::size_t>(returned, buffer.size()));
+    std::optional<PartitionTable::DriveLayout> layout = PartitionTable::parseDriveLayout(buffer);
+    if (!layout.has_value())
+    {
+        info.partitionsUnavailableReason = "The drive's partition layout was malformed";
+        return;
+    }
+    info.partitionsRead = true;
+    info.partitionStyle = layout->style;
+    info.partitions = std::move(layout->partitions);
+}
+
 /// One opened disk's facts.
 [[nodiscard]] inline PhysicalDisk readDisk(const Functions& fns, HANDLE disk, int index)
 {
@@ -285,6 +326,7 @@ queryProperty(const Functions& fns, HANDLE disk, STORAGE_PROPERTY_ID property, s
     {
         info.health = queryNvmeHealth(fns, disk, info.healthUnavailableReason);
     }
+    readPartitions(fns, disk, info);
     return info;
 }
 
@@ -401,23 +443,90 @@ class ErrorModeScope
     return volumes;
 }
 
+/// Where a drive letter's volume lives: IOCTL_STORAGE_GET_DEVICE_NUMBER's disk and partition numbers.
+struct VolumeLocation
+{
+    std::string mountPoint; ///< "C:"
+    DWORD disk = 0;
+    DWORD partition = 0;
+};
+
+/// The disk and partition of each local drive letter in @p volumes. A volume that can't be opened or
+/// spans disks (a dynamic or Storage Spaces volume names no single disk and partition) is left out. The
+/// calls run under an ErrorModeScope.
+[[nodiscard]] inline std::vector<VolumeLocation> locateVolumes(const Functions& fns, std::span<const Volume> volumes)
+{
+    const ErrorModeScope failCriticalErrors(fns.setThreadErrorMode);
+    std::vector<VolumeLocation> locations;
+    for (const Volume& volume : volumes)
+    {
+        const std::string& mountPoint = volume.mountPoint;
+        if (volume.network || mountPoint.size() != 2 || mountPoint[1] != ':')
+        {
+            continue;
+        }
+        const Windows::UniqueHandle handle = fns.openVolume(static_cast<wchar_t>(static_cast<unsigned char>(mountPoint[0])));
+        if (!handle)
+        {
+            continue;
+        }
+        STORAGE_DEVICE_NUMBER number{};
+        DWORD returned = 0;
+        if (fns.deviceIoControl(handle.get(), IOCTL_STORAGE_GET_DEVICE_NUMBER, nullptr, 0, &number, sizeof(number), &returned, nullptr) !=
+                FALSE &&
+            returned >= sizeof(number))
+        {
+            locations.push_back({.mountPoint = mountPoint, .disk = number.DeviceNumber, .partition = number.PartitionNumber});
+        }
+    }
+    return locations;
+}
+
+/// Sets each partition's mountPoint from @p locations; @p diskNumbers[i] is disks[i]'s PhysicalDrive
+/// number. A partition with several drive letters (rare) lists them all ("D:, E:").
+inline void assignMountPoints(std::span<PhysicalDisk> disks, std::span<const int> diskNumbers, std::span<const VolumeLocation> locations)
+{
+    for (const VolumeLocation& location : locations)
+    {
+        std::size_t index = 0;
+        while (index < disks.size() && index < diskNumbers.size())
+        {
+            if (std::cmp_equal(diskNumbers[index], location.disk))
+            {
+                for (Partition& partition : disks[index].partitions)
+                {
+                    if (partition.number == location.partition)
+                    {
+                        partition.mountPoint =
+                            partition.mountPoint.empty() ? location.mountPoint : partition.mountPoint + ", " + location.mountPoint;
+                    }
+                }
+            }
+            ++index;
+        }
+    }
+}
+
 /// Fills @p info's Windows facts; a call that fails leaves its facts unknown.
 inline void readStorage(StorageInfo& info, const Functions& fns = {})
 {
     info.available = true;
     info.family = OsFamily::Windows;
     info.disksRead = true;
+    std::vector<int> diskNumbers;
     for (int index = 0; index < MAX_PHYSICAL_DRIVES; ++index)
     {
         if (const Windows::UniqueHandle disk = fns.openPhysicalDrive(index); disk)
         {
             info.disks.push_back(readDisk(fns, disk.get(), index));
+            diskNumbers.push_back(index);
         }
     }
     if (std::optional<std::vector<Volume>> volumes = readVolumes(fns); volumes.has_value())
     {
         info.volumesRead = true;
         info.volumes = std::move(*volumes);
+        assignMountPoints(info.disks, diskNumbers, locateVolumes(fns, info.volumes));
     }
 }
 
