@@ -18,19 +18,26 @@
 #include <powerbase.h> // PowerDeterminePlatformRoleEx (powrprof)
 #include <setupapi.h>
 #include <devpropdef.h>
+#include <cfgmgr32.h>
+#include <objbase.h>
+#include <mmdeviceapi.h>
+#include <propsys.h>
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "netapi32.lib")
+#pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "powrprof.lib")
 #pragma comment(lib, "secur32.lib")
 
 #include "ComPtr.h"
+#include "ComScope.h"
 #include "DXGIAdapterLocation.h"
 #include "Platform/SmbiosParser.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "WinString.h"
 #include "WindowsCommitPaging.h"
+#include "WindowsDevices.h"
 #include "WindowsGraphics.h"
 #include "WindowsInstalledMemory.h"
 #include "WindowsOsInfoMath.h"
@@ -361,6 +368,131 @@ constexpr GUID MONITOR_INTERFACE_GUID{
     return edid;
 }
 
+/// A device's string registry property (a REG_MULTI_SZ's first string), UTF-8; empty when absent.
+[[nodiscard]] std::string deviceRegistryString(HDEVINFO devices, SP_DEVINFO_DATA& device, DWORD property)
+{
+    std::array<wchar_t, 512> text{}; // the last element stays 0
+    constexpr auto TEXT_BYTES = static_cast<DWORD>((512 - 1) * sizeof(wchar_t));
+    if (SetupDiGetDeviceRegistryPropertyW(devices, &device, property, nullptr, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr) ==
+        FALSE)
+    {
+        return {};
+    }
+    return WinString::wideToUtf8(text.data());
+}
+
+/// A device node's instance id, UTF-8; empty when it can't be read.
+[[nodiscard]] std::string devNodeId(DEVINST node)
+{
+    std::array<wchar_t, MAX_DEVICE_ID_LEN + 1> id{};
+    return CM_Get_Device_IDW(node, id.data(), MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS ? WinString::wideToUtf8(id.data()) : std::string{};
+}
+
+/// Every present device node (all classes) with its status. Reads only: no node is changed.
+[[nodiscard]] std::optional<std::vector<WindowsDevices::DevNodeRecord>> listDevNodes()
+{
+    HDEVINFO devices = SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT);
+    if (devices == INVALID_HANDLE_VALUE)
+    {
+        return std::nullopt;
+    }
+    std::vector<WindowsDevices::DevNodeRecord> nodes;
+    SP_DEVINFO_DATA device{};
+    device.cbSize = sizeof(device);
+    for (DWORD index = 0; SetupDiEnumDeviceInfo(devices, index, &device) != FALSE; ++index)
+    {
+        WindowsDevices::DevNodeRecord node;
+        node.instanceId = devNodeId(device.DevInst);
+        if (DEVINST parent = 0; CM_Get_Parent(&parent, device.DevInst, 0) == CR_SUCCESS)
+        {
+            node.parentId = devNodeId(parent);
+        }
+        node.name = deviceRegistryString(devices, device, SPDRP_FRIENDLYNAME);
+        node.name = node.name.empty() ? deviceRegistryString(devices, device, SPDRP_DEVICEDESC) : node.name;
+        node.manufacturer = deviceRegistryString(devices, device, SPDRP_MFG);
+        node.service = deviceRegistryString(devices, device, SPDRP_SERVICE);
+        std::array<wchar_t, 256> className{};
+        if (SetupDiGetClassDescriptionW(&device.ClassGuid, className.data(), static_cast<DWORD>(className.size() - 1), nullptr) != FALSE)
+        {
+            node.className = WinString::wideToUtf8(className.data());
+        }
+        DWORD value = 0;
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_BUSNUMBER, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
+        {
+            node.bus = value;
+        }
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_ADDRESS, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
+        {
+            node.address = value;
+        }
+        node.statusRead = CM_Get_DevNode_Status(&node.status, &node.problem, device.DevInst, 0) == CR_SUCCESS;
+        nodes.push_back(std::move(node));
+    }
+    SetupDiDestroyDeviceInfoList(devices);
+    return nodes;
+}
+
+// PKEY_Device_FriendlyName (functiondiscoverykeys_devpkey.h), spelled out so no <initguid.h> is needed.
+constexpr PROPERTYKEY FRIENDLY_NAME_KEY{
+    .fmtid = {.Data1 = 0xa45c254e, .Data2 = 0xdf1c, .Data3 = 0x4efd, .Data4 = {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}},
+    .pid = 14,
+};
+
+/// The active audio endpoints, render and capture, from the MMDevice API; nullopt when it can't be used.
+/// COM is initialised (multithreaded) for the call, on the reading thread.
+[[nodiscard]] std::optional<std::vector<WindowsDevices::AudioRecord>> listAudioEndpoints()
+{
+    const ComScope com(COINIT_MULTITHREADED);
+    if (!com.usable())
+    {
+        return std::nullopt;
+    }
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    ComPtr<IMMDeviceCollection> collection;
+    UINT count = 0;
+    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator),
+                                nullptr,
+                                CLSCTX_INPROC_SERVER,
+                                __uuidof(IMMDeviceEnumerator),
+                                reinterpret_cast<void**>(enumerator.releaseAndGetAddressOf()))) ||
+        !enumerator || FAILED(enumerator->EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE, collection.releaseAndGetAddressOf())) ||
+        !collection || FAILED(collection->GetCount(&count)))
+    {
+        return std::nullopt;
+    }
+    std::vector<WindowsDevices::AudioRecord> endpoints;
+    for (UINT i = 0; i < count; ++i)
+    {
+        ComPtr<IMMDevice> device;
+        ComPtr<IMMEndpoint> endpoint;
+        EDataFlow flow = eRender;
+        if (FAILED(collection->Item(i, device.releaseAndGetAddressOf())) || !device ||
+            FAILED(device->QueryInterface(__uuidof(IMMEndpoint), reinterpret_cast<void**>(endpoint.releaseAndGetAddressOf()))) ||
+            !endpoint || FAILED(endpoint->GetDataFlow(&flow)))
+        {
+            continue;
+        }
+        WindowsDevices::AudioRecord record{.name = {}, .capture = flow == eCapture};
+        ComPtr<IPropertyStore> store;
+        if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, store.releaseAndGetAddressOf())) && store)
+        {
+            PROPVARIANT name;
+            PropVariantInit(&name);
+            // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - PROPVARIANT is a tagged union; vt is checked first
+            if (SUCCEEDED(store->GetValue(FRIENDLY_NAME_KEY, &name)) && name.vt == VT_LPWSTR && name.pwszVal != nullptr)
+            {
+                record.name = WinString::wideToUtf8(name.pwszVal);
+            }
+            // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+            PropVariantClear(&name);
+        }
+        endpoints.push_back(std::move(record));
+    }
+    return endpoints;
+}
+
 #pragma clang diagnostic pop
 // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
@@ -487,6 +619,13 @@ GraphicsInfo WindowsSystemInfoProbe::readGraphics()
     };
     GraphicsInfo info;
     WindowsGraphics::readGraphics(info, fns);
+    return info;
+}
+
+DevicesInfo WindowsSystemInfoProbe::readDevices()
+{
+    DevicesInfo info;
+    WindowsDevices::readDevices(info, {.listDevNodes = &listDevNodes, .listAudioEndpoints = &listAudioEndpoints});
     return info;
 }
 

@@ -1,0 +1,22 @@
+#	List of PCI ID's (excerpt for the fuzz_hwids seed corpus)
+#	Syntax:
+#	vendor  vendor_name
+#		device  device_name				<-- single tab
+#			subvendor subdevice  subsystem_name	<-- two tabs
+10de  NVIDIA Corporation
+	2786  AD104 [GeForce RTX 4070]
+		1043 8901  ProArt GeForce RTX 4070
+8086  Intel Corporation
+	46a6  Alder Lake-P GT2 [Iris Xe Graphics]
+		1028 0b19  Iris Xe Graphics
+	51f0  Alder Lake-P PCH CNVi WiFi
+
+# List of known device classes, subclasses and programming interfaces
+C 03  Display controller
+	00  VGA compatible controller
+		00  VGA controller
+		01  8514 controller
+	80  Display controller
+C 06  Bridge
+	00  Host bridge
+	04  PCI bridge

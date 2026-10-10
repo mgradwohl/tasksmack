@@ -2,6 +2,7 @@
 
 #include "LinuxBootTimes.h"
 #include "LinuxCommitPaging.h"
+#include "LinuxDevices.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxGraphics.h"
 #include "LinuxNetworkAdapters.h"
@@ -218,6 +219,13 @@ SensorsInfo LinuxSystemInfoProbe::readSensors()
 {
     SensorsInfo info;
     LinuxSensors::readSensorFacts(m_Root, info);
+    return info;
+}
+
+DevicesInfo LinuxSystemInfoProbe::readDevices()
+{
+    DevicesInfo info;
+    LinuxDevices::readDeviceFacts(m_Root, info);
     return info;
 }
 

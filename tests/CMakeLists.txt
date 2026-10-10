@@ -89,6 +89,12 @@ endif()
 add_test(NAME BenchmarkRegressionGateScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
 
+# tools/tidy-changed-files.py picks the PR clang-tidy jobs' translation units (#1406, #1626). The tests
+# build throwaway git repositories (about 10 s); the 180 s limit keeps them clear of the CI --timeout.
+add_test(NAME TidyChangedFilesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_changed_files.py)
+set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 180)
+
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES
@@ -196,6 +202,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxOsInfo.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_GraphicsInfo.cpp
+    Platform/test_DevicesInfo.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp
@@ -268,6 +275,7 @@ set(COMMON_TEST_SOURCES
     App/test_SystemSectionsRender.cpp
     App/test_GpuSectionRender.cpp
     App/test_SystemMetricsPanelRender.cpp
+    App/test_ProcessDetailsPanelRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
@@ -472,6 +480,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/GpuSection.cpp
     # The System Metrics panel as a whole, with mock probes through its seam (test_SystemMetricsPanelRender.cpp, #1546)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemMetricsPanel.cpp
+    # The Process Details panel as a whole, with mock actions and readers (test_ProcessDetailsPanelRender.cpp, #1546)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp
