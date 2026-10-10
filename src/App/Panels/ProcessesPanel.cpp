@@ -1304,15 +1304,15 @@ void ProcessesPanel::renderContent()
 
         if (searchTerm.empty())
         {
-            m_CachedSummaryStr = std::format("{:L} processes, {:L} running",
-                                             static_cast<long long>(currentSnapshots.size()),
-                                             static_cast<long long>(m_CachedRunningCount));
+            m_CachedSummaryStr = std::format("{} processes, {} running",
+                                             UI::Format::formatIntLocalized(currentSnapshots.size()),
+                                             UI::Format::formatIntLocalized(m_CachedRunningCount));
         }
         else
         {
-            m_CachedSummaryStr = std::format("{:L} / {:L} processes",
-                                             static_cast<long long>(m_CachedFilteredIndices.size()),
-                                             static_cast<long long>(currentSnapshots.size()));
+            m_CachedSummaryStr = std::format("{} / {} processes",
+                                             UI::Format::formatIntLocalized(m_CachedFilteredIndices.size()),
+                                             UI::Format::formatIntLocalized(currentSnapshots.size()));
         }
 
         m_CachedFilterVersion = adoptedVersion;

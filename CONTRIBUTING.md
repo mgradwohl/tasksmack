@@ -283,12 +283,23 @@ it on any new target. Third-party dependencies keep their own settings.
   C++ locales follow the user's regional settings with a UTF-8 codeset, and the C runtime's
   `LC_NUMERIC` stays `"C"`. Don't call `setlocale` or `std::locale::global` anywhere else. The
   startup log records the result (`Locale: GetACP()=... C="..." C++ global="..." user="..."`).
-- **Displayed numbers use the user's locale** (decimal mark, digit grouping):
-  `Core::LocaleSetup::userLocale()`, with `std::format(loc, "{:L}", ...)`. Display formatting is
-  moving onto it (#1648, slice E); until then `UI::Format` reads the global locale.
+- **Displayed numbers use the user's locale, never the global one** (#1648, slice E): format them
+  with `UI::Format` (`formatIntLocalized`, `formatFixedLocalized`/`formatFixedLocalizedTo`,
+  `formatBytes`, `formatPercent`, the axis formatters). It reads the display punctuation (decimal
+  mark, grouping, and the thousands separator as whole UTF-8, e.g. fr-FR's U+202F) that `main`
+  takes once from `Core::LocaleSetup::userNumberPunctuation()`: a plain struct, no `std::locale`
+  per call. Don't use `std::format("{:L}")`, `{:.1f}`, `%f` or a hard-coded `.`/`,` for a number
+  the user sees; the global C++ locale has the classic numeric facets, so `"{:L}"` prints classic
+  text, and `numpunct<char>` can't hold a multibyte separator anyway. Units and SI/IEC prefixes
+  don't change. Tests pin the punctuation with `UI::Format::ScopedDisplayPunctuation` (classic
+  by default); `tests/TestLocales.h` gives the real en-US/de-DE/fr-FR punctuation, skipping a
+  locale the machine lacks.
+- **Copy follows the display:** text the user copies from the UI (System Information's Copy) is
+  the shown text, in the user's locale.
 - **Parsing and machine-readable output use the classic locale:** `std::from_chars`/`std::to_chars`,
   `std::format` without `L`, or a stream imbued with `std::locale::classic()`. This covers config
-  and theme TOML, `/proc` and `/sys`, command-line values and structured log fields. Never use
+  and theme TOML, `/proc` and `/sys`, command-line values, structured log fields and the Render
+  Metrics overlay's "Copy CSV" (profiling data for scripts, not a user export). Never use
   `std::stod`/`strtod`/`atof`/`sscanf` or a default-locale stream on text you read back.
 
 ### Cleaning Build Artifacts
@@ -584,6 +595,7 @@ cover the capture. Unset, the variables do nothing.
 | `TASKSMACK_TAB` | The top-level tab to open: a tab's registered id (e.g. `Processes`, `ProcessDetails`) or its visible label (e.g. the hostname), else one of the aliases `machine`/`overview` (the hostname tab) and `details`. `system` is the System Information tab's label. Case-insensitive (for ASCII only on Linux). Wins over the Details tab a selection opens; an unknown name logs one warning. The tab is selected by its id, not its position, and asked for until it shows (#1575). |
 | `TASKSMACK_OPEN` | `help` (the Help window) or `about` (the About dialog), opened at startup. Case-insensitive; any other value logs one warning. |
 | `TASKSMACK_CONFIG_DIR` | A directory (#1596) that replaces the config directory (`%APPDATA%\TaskSmack`, `$XDG_CONFIG_HOME/tasksmack` or `~/.config/tasksmack`) for `config.toml`, the single-instance lock beside it and the `themes` folder. Created if missing; a relative path is taken from the working directory. Logs one info line naming it. |
+| `TASKSMACK_LOCALE` | A locale name (#1648), `de-DE` / `fr-FR` on Windows, `de_DE` / `fr_FR` on Linux (`.UTF-8` is tried first), that displayed numbers use instead of the user's regional format, so a capture on an en-US machine can show decimal commas. It changes only `LocaleSetup::userLocale()` and the display punctuation, not the C locale or the global C++ locale. The startup log line ends in `(TASKSMACK_LOCALE)`; an unknown name logs one warning and is ignored. Unlike the variables above, it does not hide the "Limited Data" notice. |
 
 **Every agent and developer test launch should set `TASKSMACK_CONFIG_DIR` to a fresh directory.**
 Without it, a test instance shares the lock and `config.toml` with the TaskSmack you use every day:

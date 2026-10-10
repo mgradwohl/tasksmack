@@ -274,7 +274,7 @@ inline std::string formatAgeSeconds(double relativeSeconds)
     const double ageSeconds = std::abs(relativeSeconds);
     if (ageSeconds < 59.95) // Shown to a tenth: from 59.95 it would print as "60.0s"
     {
-        return std::format("Age: {:.1Lf}s", ageSeconds);
+        return "Age: " + Format::formatFixedLocalized(ageSeconds, 1, "s");
     }
     return "Age: " + Format::formatDuration(ageSeconds);
 }
@@ -1880,7 +1880,7 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
         }
         buff[0] = '\0'; // A partial label never reaches ImPlot, which reads the buffer up to its NUL
     }
-    return Detail::copyAxisLabel(std::format("{:.1Lf}{}", scaled, suffix), buff, size);
+    return Detail::copyAxisLabel(Format::formatFixedLocalized(scaled, 1, suffix), buff, size);
 }
 
 /// The unit a byte axis is labelled in, as ImPlot formatter user data: a pointer to one of the

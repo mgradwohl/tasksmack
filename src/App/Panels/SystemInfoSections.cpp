@@ -474,7 +474,8 @@ std::string formatZramDevice(const Platform::ZramDevice& device)
     std::string text = std::format("{} stored in {}", sizeText(device.originalBytes), sizeText(device.compressedBytes));
     if (device.compressedBytes != 0)
     {
-        text += std::format(" ({:.1f}:1)", static_cast<double>(device.originalBytes) / static_cast<double>(device.compressedBytes));
+        text += " (" + UI::Format::formatFixedLocalized(
+                           static_cast<double>(device.originalBytes) / static_cast<double>(device.compressedBytes), 1, ":1)");
     }
     text += std::format(", {} of RAM", sizeText(device.memoryUsedBytes));
     return text;
@@ -753,7 +754,7 @@ namespace
         return {};
     }
     const double inches = std::hypot(static_cast<double>(monitor.widthMm), static_cast<double>(monitor.heightMm)) / 25.4;
-    return std::format("{:.1f}\" ({} \xC3\x97 {} mm)", inches, monitor.widthMm, monitor.heightMm);
+    return std::format("{} ({} \xC3\x97 {} mm)", UI::Format::formatFixedLocalized(inches, 1, "\""), monitor.widthMm, monitor.heightMm);
 }
 
 /// "HDR (BT.2020 PQ, 10-bit)" / "SDR (sRGB, 8-bit)"; empty without a colour space.
@@ -807,8 +808,9 @@ std::string formatDisplay(const Core::DisplayInfo& display, const Platform::Moni
     if (display.refreshHz > 0.0)
     {
         const bool whole = std::abs(display.refreshHz - std::round(display.refreshHz)) < 0.005;
-        mode =
-            joinNonEmpty({mode, whole ? std::format("{:.0f} Hz", display.refreshHz) : std::format("{:.2f} Hz", display.refreshHz)}, " at ");
+        mode = joinNonEmpty(
+            {mode, whole ? std::format("{:.0f} Hz", display.refreshHz) : UI::Format::formatFixedLocalized(display.refreshHz, 2, " Hz")},
+            " at ");
     }
     const std::string scale = display.contentScale > 0.0F ? std::format("{:.0f}% scale", display.contentScale * 100.0F) : std::string{};
     const std::string size = monitor != nullptr ? monitorSize(*monitor) : std::string{};
@@ -962,15 +964,16 @@ std::string formatSensorReading(const Platform::SensorReading& reading)
     {
     case SensorKind::Temperature:
     {
-        std::string text = std::format("{:.1f} \u00B0C", reading.value);
+        std::string text = UI::Format::formatFixedLocalized(reading.value, 1, " \u00B0C");
         std::string limits;
         if (reading.high.has_value())
         {
-            limits = std::format("high {:.1f} \u00B0C", *reading.high);
+            limits = "high " + UI::Format::formatFixedLocalized(*reading.high, 1, " \u00B0C");
         }
         if (reading.critical.has_value())
         {
-            limits += std::format("{}critical {:.1f} \u00B0C", limits.empty() ? "" : ", ", *reading.critical);
+            limits += std::format(
+                "{}critical {}", limits.empty() ? "" : ", ", UI::Format::formatFixedLocalized(*reading.critical, 1, " \u00B0C"));
         }
         if (!limits.empty())
         {
@@ -981,11 +984,11 @@ std::string formatSensorReading(const Platform::SensorReading& reading)
     case SensorKind::Fan:
         return std::format("{:.0f} RPM", reading.value);
     case SensorKind::Voltage:
-        return std::format("{:.2f} V", reading.value);
+        return UI::Format::formatFixedLocalized(reading.value, 2, " V");
     case SensorKind::Current:
-        return std::format("{:.2f} A", reading.value);
+        return UI::Format::formatFixedLocalized(reading.value, 2, " A");
     case SensorKind::Power:
-        return std::format("{:.1f} W", reading.value);
+        return UI::Format::formatFixedLocalized(reading.value, 1, " W");
     }
     return {};
 }
@@ -1058,9 +1061,9 @@ std::string formatUsbSpeed(double mbps)
     }
     if (mbps >= 1000.0)
     {
-        return std::format("{:g} Gbps", mbps / 1000.0);
+        return UI::Format::withLocaleDecimalPoint(std::format("{:g} Gbps", mbps / 1000.0));
     }
-    return std::format("{:g} Mbps", mbps);
+    return UI::Format::withLocaleDecimalPoint(std::format("{:g} Mbps", mbps));
 }
 
 Section buildDevicesSection(const Platform::DevicesInfo& devices)
@@ -1402,9 +1405,11 @@ std::string formatBootDuration(std::uint64_t microseconds)
     }
     if (microseconds < MINUTE)
     {
-        return std::format("{:.2f} s", static_cast<double>(microseconds) / static_cast<double>(SECOND));
+        return UI::Format::formatFixedLocalized(static_cast<double>(microseconds) / static_cast<double>(SECOND), 2, " s");
     }
-    return std::format("{} min {:.1f} s", microseconds / MINUTE, static_cast<double>(microseconds % MINUTE) / static_cast<double>(SECOND));
+    return std::format("{} min {}",
+                       microseconds / MINUTE,
+                       UI::Format::formatFixedLocalized(static_cast<double>(microseconds % MINUTE) / static_cast<double>(SECOND), 1, " s"));
 }
 
 Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot)

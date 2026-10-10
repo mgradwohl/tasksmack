@@ -4,12 +4,13 @@
 /// Tests cover:
 /// - CPU affinity mask formatting
 
+#include "Core/LocaleSetup.h"
+#include "TestLocales.h"
 #include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
-#include <clocale>
 #include <cstdint>
 #include <ctime>
 #include <format>
@@ -797,61 +798,13 @@ TEST(FormatTest, SplitBytesForAlignmentFractionalRounding)
 // splitBytesForAlignmentFast vs splitBytesForAlignment comparison tests
 // =============================================================================
 
-/// Test fixture that sets up the user's locale (like the app does)
-/// This ensures std::format("{:L}", ...) uses thousand separators
+/// Test fixture that formats with en-US's punctuation ("1,234.5"), as the app would in that locale,
+/// so the fast and slow paths are compared with digit grouping on. The display punctuation, not the
+/// global locale, is what the formatters read (#1648, slice E).
 class FormatLocaleTest : public ::testing::Test
 {
-  protected:
-    void SetUp() override
-    {
-        // Save original locale
-        m_OriginalLocale = std::locale();
-
-        // Set up locale like main.cpp does
-        try
-        {
-            const std::locale userLocale("");
-            std::locale::global(userLocale);
-        }
-        catch (const std::exception&)
-        {
-            // If user's locale fails, try common locales with grouping
-            const char* fallbackLocales[] = {"en_US.UTF-8", "en_GB.UTF-8", "C.UTF-8", nullptr};
-            bool localeSet = false;
-            for (const char** loc = fallbackLocales; *loc != nullptr; ++loc)
-            {
-                try
-                {
-                    std::locale::global(std::locale(*loc));
-                    localeSet = true;
-                    break;
-                }
-                catch (...)
-                {
-                    // Try next
-                }
-            }
-            if (!localeSet)
-            {
-                GTEST_SKIP() << "No locale with thousand separators available";
-            }
-        }
-
-        // Also set C locale for consistency
-        // NOLINTNEXTLINE(concurrency-mt-unsafe)
-        setlocale(LC_ALL, "");
-    }
-
-    void TearDown() override
-    {
-        // Restore original locale
-        std::locale::global(m_OriginalLocale);
-        // NOLINTNEXTLINE(concurrency-mt-unsafe)
-        setlocale(LC_ALL, "C");
-    }
-
   private:
-    std::locale m_OriginalLocale;
+    UI::Format::ScopedDisplayPunctuation m_EnUs{{.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"}};
 };
 
 namespace
@@ -1739,7 +1692,9 @@ class TestNumpunct : public std::numpunct<char>
     std::string m_Grouping;
 };
 
-/// Makes a locale with TestNumpunct global for one scope and restores the previous one after it.
+/// Makes a locale with TestNumpunct global for one scope, so std::format("{:L}") gives the expected
+/// text, and its punctuation the display punctuation the formatters under test read (#1648); restores
+/// both after it.
 class ScopedTestNumpunct
 {
   public:
@@ -1748,7 +1703,8 @@ class ScopedTestNumpunct
     // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
     ScopedTestNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
         : m_Previous(
-              std::locale::global(std::locale(std::locale::classic(), new TestNumpunct(decimalPoint, thousandsSep, std::move(grouping)))))
+              std::locale::global(std::locale(std::locale::classic(), new TestNumpunct(decimalPoint, thousandsSep, std::move(grouping))))),
+          m_Display(Core::LocaleSetup::numberPunctuation(std::locale()))
     {}
     // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks,cppcoreguidelines-owning-memory)
     ~ScopedTestNumpunct()
@@ -1762,6 +1718,7 @@ class ScopedTestNumpunct
 
   private:
     std::locale m_Previous;
+    UI::Format::ScopedDisplayPunctuation m_Display;
 };
 
 [[nodiscard]] std::string fastFixed(double value, int decimals)
@@ -1864,9 +1821,9 @@ TEST(FormatFixedLocalizedTest, GroupingEndsAtCharMax)
     EXPECT_EQ(fastFixed(123456789.0, 0), std::format("{:.0Lf}", 123456789.0));
 }
 
-TEST(FormatFixedLocalizedTest, FollowsAGlobalLocaleChange)
+TEST(FormatFixedLocalizedTest, FollowsADisplayPunctuationChange)
 {
-    // The punctuation is cached; replacing the global locale must be noticed on the next call.
+    // A new display punctuation is used from the next call.
     {
         const ScopedTestNumpunct comma(',', '.', "\3");
         EXPECT_EQ(fastFixed(1234.5, 1), "1.234,5");
@@ -1924,7 +1881,8 @@ TEST(FormatFixedLocalizedTest, ByteFormattersMatchTheirStdFormatDefinition)
 // #1366: splitBytesForAlignmentFast() took its thousands separator from a per-thread cache that was
 // filled on first use and never refreshed, so a thread that formatted under the "C" locale kept
 // printing "8658." after a grouping locale was made global, while the slow path printed "8,658.".
-TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsAGlobalLocaleChange)
+// Both now read the display punctuation (#1648).
+TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsADisplayPunctuationChange)
 {
     const UI::Format::ByteUnit bytesUnit{.suffix = "B", .scale = 1.0, .decimals = 1};
     constexpr double BYTES = 8658.36;
@@ -1949,4 +1907,130 @@ TEST(FormatFixedLocalizedTest, FastByteAlignmentFollowsAGlobalLocaleChange)
     const ScopedTestNumpunct classic('.', ',', "");
     EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(BYTES, bytesUnit).wholePart(), "8658.");
     EXPECT_TRUE(compareBytesAlignment(BYTES, bytesUnit));
+}
+
+// =============================================================================
+// Displayed numbers in the user's locale (#1648, slice E): the real en-US, de-DE and fr-FR
+// punctuation, as TaskSmack reads it at startup, for sizes, rates, percentages, temperatures and
+// counts. Only the separators change; units and IEC prefixes stay as they are.
+// =============================================================================
+
+namespace
+{
+
+/// The texts one locale gives the same values.
+struct LocaleExpectations
+{
+    std::string size;        // formatBytesWithUnit(1234.5 MiB, MiB)
+    std::string rate;        // formatBytesPerSecWithUnit(1234.5 MiB/s, MiB)
+    std::string percent;     // formatPercent(4.25)
+    std::string count;       // formatIntLocalized(1234567)
+    std::string celsius;     // formatFixedLocalized(65.5, 1, " °C"), as System Information's sensors
+    std::string alignedCell; // a Processes cell: splitBytesForAlignmentFast(1234.5 KiB) whole part
+};
+
+void expectLocale(const UI::Format::NumericPunctuation& punctuation, const LocaleExpectations& expected)
+{
+    const UI::Format::ScopedDisplayPunctuation scope(punctuation);
+    constexpr double MIB = 1024.0 * 1024.0;
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(1234.5 * MIB, UI::Format::BYTE_UNIT_MB), expected.size);
+    EXPECT_EQ(UI::Format::formatBytesPerSecWithUnit(1234.5 * MIB, UI::Format::BYTE_UNIT_MB), expected.rate);
+    EXPECT_EQ(UI::Format::formatPercent(4.25), expected.percent);
+    EXPECT_EQ(UI::Format::formatIntLocalized(1234567), expected.count);
+    EXPECT_EQ(UI::Format::formatFixedLocalized(65.5, 1, " °C"), expected.celsius);
+    EXPECT_EQ(UI::Format::splitBytesForAlignmentFast(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB).wholePart(), expected.alignedCell);
+    // The table's fast path and its allocating slow path agree.
+    const auto slow = UI::Format::splitBytesForAlignment(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB);
+    EXPECT_EQ(slow.wholePart, expected.alignedCell);
+}
+
+} // namespace
+
+TEST(FormatDisplayLocaleTest, EnUsGroupsWithCommasAndUsesADecimalPoint)
+{
+    const auto enUs = TestLocales::punctuation("en", "US");
+    if (!enUs)
+    {
+        GTEST_SKIP() << TestLocales::osName("en", "US") << " is not available on this machine";
+    }
+    EXPECT_EQ(enUs->decimalPoint, '.');
+    EXPECT_EQ(enUs->thousandsSep, ",");
+    expectLocale(*enUs,
+                 {.size = "1,234.5 MiB",
+                  .rate = "1,234.5 MiB/s",
+                  .percent = "4.3%",
+                  .count = "1,234,567",
+                  .celsius = "65.5 °C",
+                  .alignedCell = "1,234."});
+}
+
+TEST(FormatDisplayLocaleTest, DeDeGroupsWithDotsAndUsesADecimalComma)
+{
+    const auto deDe = TestLocales::punctuation("de", "DE");
+    if (!deDe)
+    {
+        GTEST_SKIP() << TestLocales::osName("de", "DE") << " is not available on this machine";
+    }
+    EXPECT_EQ(deDe->decimalPoint, ',');
+    EXPECT_EQ(deDe->thousandsSep, ".");
+    expectLocale(*deDe,
+                 {.size = "1.234,5 MiB",
+                  .rate = "1.234,5 MiB/s",
+                  .percent = "4,3%",
+                  .count = "1.234.567",
+                  .celsius = "65,5 °C",
+                  .alignedCell = "1.234,"});
+}
+
+// fr-FR groups with a no-break space: U+202F (narrow) on Windows and current glibc, U+00A0 on older
+// glibc. The C++ library's numpunct<char> holds one byte of it, which used to reach the screen as
+// half a UTF-8 character; the display punctuation keeps the whole sequence.
+TEST(FormatDisplayLocaleTest, FrFrGroupsWithAWholeNoBreakSpace)
+{
+    const auto frFr = TestLocales::punctuation("fr", "FR");
+    if (!frFr)
+    {
+        GTEST_SKIP() << TestLocales::osName("fr", "FR") << " is not available on this machine";
+    }
+    EXPECT_EQ(frFr->decimalPoint, ',');
+#ifdef _WIN32
+    EXPECT_EQ(frFr->thousandsSep, TestLocales::NARROW_NBSP);
+#else
+    EXPECT_TRUE(frFr->thousandsSep == TestLocales::NARROW_NBSP || frFr->thousandsSep == TestLocales::NBSP)
+        << "unexpected fr_FR separator bytes";
+#endif
+    const std::string sep = frFr->thousandsSep;
+    expectLocale(*frFr,
+                 {.size = "1" + sep + "234,5 MiB",
+                  .rate = "1" + sep + "234,5 MiB/s",
+                  .percent = "4,3%",
+                  .count = "1" + sep + "234" + sep + "567",
+                  .celsius = "65,5 °C",
+                  .alignedCell = "1" + sep + "234,"});
+}
+
+// The global C++ locale keeps the classic numeric facets in TaskSmack; display formatting must not
+// read it. A comma-decimal global locale with the classic display punctuation still prints '.'.
+TEST(FormatDisplayLocaleTest, DisplayIgnoresTheGlobalLocale)
+{
+    const ScopedTestNumpunct globalGerman(',', '.', "\3");
+    const UI::Format::ScopedDisplayPunctuation classic(UI::Format::NumericPunctuation{});
+    EXPECT_EQ(UI::Format::formatBytesWithUnit(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB), "1234.5 KiB");
+    EXPECT_EQ(UI::Format::formatIntLocalized(1234567), "1234567");
+    EXPECT_EQ(UI::Format::percentCompact(42.0), "42%");
+}
+
+TEST(FormatDisplayLocaleTest, OtherFormattersTakeTheDecimalMark)
+{
+    const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
+    EXPECT_EQ(UI::Format::formatCountPerSecond(1500.0), "1,5K/s");
+    EXPECT_EQ(UI::Format::formatLogicalProcessorSummary(16, 3700.0), " (16 logical processors @ 3,70 GHz)");
+    EXPECT_EQ(UI::Format::withLocaleDecimalPoint(std::format("{:g} Gbps", 2.5)), "2,5 Gbps");
+    EXPECT_EQ(UI::Format::formatDoubleLocalized(1234567.891, 2), "1.234.567,89");
+    EXPECT_EQ(UI::Format::formatPercent(87), "87%");
+    EXPECT_EQ(UI::Format::percentCompact(1234), "1.234%");
+    // A value too long for the stack buffer still gets the punctuation.
+    const std::string huge = UI::Format::formatFixedLocalized(1.0e70, 1, " B");
+    EXPECT_TRUE(huge.ends_with(",0 B")) << huge;
+    EXPECT_TRUE(huge.starts_with("10.000.000.")) << huge;
 }

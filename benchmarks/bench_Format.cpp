@@ -389,4 +389,100 @@ static void BM_Format_FullProcessRow_FastPath(benchmark::State& state)
 }
 BENCHMARK(BM_Format_FullProcessRow_FastPath);
 
+// ============================================================================
+// Under a grouping, comma-decimal display locale (#1648, slice E): the separators every
+// formatter above inserts in de-DE ("1.234,5 MiB"). The benchmarks above run with the classic
+// punctuation, which groups nothing.
+// ============================================================================
+
+/// Formats with de-DE's display punctuation for one benchmark, and restores the previous after it.
+class GroupedPunctuation
+{
+  public:
+    GroupedPunctuation() : m_Scope({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"})
+    {}
+
+  private:
+    UI::Format::ScopedDisplayPunctuation m_Scope;
+};
+
+static void BM_Format_Grouped_FormatIntLocalized(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937>(std::uniform_int_distribution<int64_t>(0, 10000000));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        auto result = UI::Format::formatIntLocalized(pool[idx & kPoolMask]);
+        benchmark::DoNotOptimize(result.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_FormatIntLocalized);
+
+static void BM_Format_Grouped_FormatBytes(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, (1ULL << 40)));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        auto result = UI::Format::formatBytes(static_cast<double>(pool[idx & kPoolMask]));
+        benchmark::DoNotOptimize(result.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_FormatBytes);
+
+static void BM_Format_Grouped_SplitBytesForAlignmentFast(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_int_distribution<uint64_t>(0, (1ULL << 40)));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        const auto bytes = static_cast<double>(pool[idx & kPoolMask]);
+        const auto parts = UI::Format::splitBytesForAlignmentFast(bytes, UI::Format::BYTE_UNIT_KB);
+        benchmark::DoNotOptimize(parts.wholePart().data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_SplitBytesForAlignmentFast);
+
+/// A chart axis tick: formatFixedLocalizedTo() into a stack buffer, as formatAxisLocalized() does.
+static void BM_Format_Grouped_AxisTick(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_real_distribution<double>(0.0, 5'000'000.0));
+    std::array<char, 32> buffer{};
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        const std::size_t length = UI::Format::formatFixedLocalizedTo(buffer.data(), buffer.size(), pool[idx & kPoolMask], 1);
+        benchmark::DoNotOptimize(length);
+        benchmark::DoNotOptimize(buffer.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_AxisTick);
+
+static void BM_Format_Grouped_FormatPercent(benchmark::State& state)
+{
+    const GroupedPunctuation grouped;
+    const auto pool = makePool<std::mt19937_64>(std::uniform_real_distribution<double>(0.0, 100.0));
+    std::size_t idx = 0;
+    for (auto _ : state)
+    {
+        auto result = UI::Format::formatPercent(pool[idx & kPoolMask]);
+        benchmark::DoNotOptimize(result.data());
+        ++idx;
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_Format_Grouped_FormatPercent);
+
 } // namespace

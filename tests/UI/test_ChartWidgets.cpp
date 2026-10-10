@@ -1,8 +1,10 @@
+#include "TestLocales.h"
 #include "UI/ChartWidgets.h"
 #include "UI/Format.h"
 #include "UI/RateAxis.h"
 
 #include <gtest/gtest.h>
+#include <implot.h>
 
 #include <algorithm>
 #include <array>
@@ -16,6 +18,7 @@
 #include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -1427,6 +1430,52 @@ TEST(ChartWidgetsFormattersTest, FormatAxisBytesUsesBinaryUnitsWithoutRateSuffix
     len = formatAxisBytes(-0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
     EXPECT_EQ(std::string(buf), "0.0 B");
+}
+
+namespace
+{
+/// One axis label from @p formatter, as ImPlot asks for it.
+[[nodiscard]] std::string axisLabel(ImPlotFormatter formatter, double value)
+{
+    std::array<char, 64> buf{};
+    const int len = formatter(value, buf.data(), static_cast<int>(buf.size()), nullptr);
+    return {buf.data(), static_cast<std::size_t>(std::max(len, 0))};
+}
+} // namespace
+
+// #1648, slice E: chart axis labels take the user's decimal mark and digit grouping, and keep their
+// units and SI/IEC prefixes. The real locales' punctuation, skipped where the machine lacks one.
+TEST(ChartWidgetsFormattersTest, AxisLabelsFollowTheDisplayLocale)
+{
+    struct Case
+    {
+        const char* language;
+        const char* region;
+        const char* thousands; // "%" stands for the locale's own separator (fr-FR's no-break space)
+        const char* decimal;
+    };
+    for (const Case& c : {Case{.language = "en", .region = "US", .thousands = ",", .decimal = "."},
+                          Case{.language = "de", .region = "DE", .thousands = ".", .decimal = ","},
+                          Case{.language = "fr", .region = "FR", .thousands = "%", .decimal = ","}})
+    {
+        const auto punctuation = TestLocales::punctuation(c.language, c.region);
+        if (!punctuation)
+        {
+            continue; // Not installed here
+        }
+        SCOPED_TRACE(TestLocales::osName(c.language, c.region));
+        const UI::Format::ScopedDisplayPunctuation scope(*punctuation);
+        const std::string sep = std::string_view{c.thousands} == "%" ? punctuation->thousandsSep : std::string{c.thousands};
+        const std::string dp = c.decimal;
+        EXPECT_EQ(axisLabel(formatAxisLocalized, 1500.0), "1" + dp + "5K");
+        EXPECT_EQ(axisLabel(formatAxisLocalized, 2'500'000.0), "2" + dp + "5M");
+        EXPECT_EQ(axisLabel(formatAxisLocalized, 1.5e12), std::format("1{}500{}0G", sep, dp));
+        EXPECT_EQ(axisLabel(formatAxisBytes, 1.5 * 1024.0 * 1024.0 * 1024.0), "1" + dp + "5 GiB");
+        EXPECT_EQ(axisLabel(formatAxisBytesPerSec, 2048.0), "2" + dp + "0 KiB/s");
+        EXPECT_EQ(axisLabel(formatAxisPercent, 2.5), "2" + dp + "5%");
+        EXPECT_EQ(axisLabel(formatAxisWatts, 45.0), "45" + dp + "0 W");
+        EXPECT_EQ(formatAgeSeconds(2.5), "Age: 2" + dp + "5s");
+    }
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecClampsTinyNegativeToZero)
