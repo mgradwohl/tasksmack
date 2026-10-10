@@ -196,7 +196,8 @@ StorageInfo LinuxSystemInfoProbe::readStorage()
         freeBytes = static_cast<std::uint64_t>(stats.f_bavail) * stats.f_frsize;
         return true;
     };
-    LinuxStorage::readStorageFacts(m_Root, info, sizer);
+    // SMART status through udisks2 (#1631): only this system's, never under a fixture root.
+    LinuxStorage::readStorageFacts(m_Root, info, sizer, m_Root == "/" ? SystemdBus::makeDriveSmartReader() : LinuxDiskSmart::SmartReader{});
     return info;
 }
 

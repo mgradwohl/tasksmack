@@ -113,6 +113,9 @@ struct VisibleSection
 /// front when any warning bit is set.
 [[nodiscard]] std::string formatNvmeHealth(const Platform::NvmeHealth& health);
 
+/// An ATA drive's SMART health (#1631): "SMART OK, 0 bad sectors, 12345 power-on hours".
+[[nodiscard]] std::string formatAtaHealth(const Platform::AtaHealth& health);
+
 /// One volume's value: "Windows, NTFS, 120 GiB free of 476 GiB (75% used)" / "ext4 on /dev/sda2, ...";
 /// a network one isn't sized ("nfs4 on server:/export, network, size not read"). A label that is an
 /// identifier is left out.

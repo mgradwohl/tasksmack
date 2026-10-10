@@ -521,6 +521,20 @@ std::string formatNvmeHealth(const Platform::NvmeHealth& health)
     return text;
 }
 
+std::string formatAtaHealth(const Platform::AtaHealth& health)
+{
+    std::string text = health.failing ? "Failing (the drive's SMART assessment predicts failure)" : "SMART OK";
+    if (health.badSectors.has_value())
+    {
+        text += std::format(", {} bad sector{}", *health.badSectors, *health.badSectors == 1 ? "" : "s");
+    }
+    if (health.powerOnHours.has_value())
+    {
+        text += std::format(", {} power-on hours", *health.powerOnHours);
+    }
+    return text;
+}
+
 std::string formatVolume(const Platform::Volume& volume)
 {
     std::string fileSystem = volume.fileSystem;
@@ -560,11 +574,18 @@ Section buildStorageSection(const Platform::StorageInfo& storage)
     {
         rows.push_back(row(disk.name, formatDisk(disk)));
         rows.push_back(row(disk.name + " serial number", disk.serial, "Not reported by this drive", true));
-        if (disk.health.has_value() || !disk.healthUnavailableReason.empty())
+        if (disk.health.has_value() || disk.ataHealth.has_value() || !disk.healthUnavailableReason.empty())
         {
-            rows.push_back(row(disk.name + " health",
-                               disk.health.has_value() ? formatNvmeHealth(*disk.health) : std::string{},
-                               disk.healthUnavailableReason));
+            std::string health;
+            if (disk.health.has_value())
+            {
+                health = formatNvmeHealth(*disk.health);
+            }
+            else if (disk.ataHealth.has_value())
+            {
+                health = formatAtaHealth(*disk.ataHealth);
+            }
+            rows.push_back(row(disk.name + " health", health, disk.healthUnavailableReason));
         }
     }
 

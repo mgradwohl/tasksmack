@@ -1,9 +1,12 @@
 #pragma once
 
-// A minimal client for systemd's D-Bus API on the system bus (#1525), through sd-bus (libsystemd).
+// A minimal client for system-bus services through sd-bus (libsystemd): systemd's boot timestamps
+// (#1525) and udisks2's drive SMART data (#1631).
 // Optional at build time: without libsystemd (TASKSMACK_HAS_SDBUS undefined) every read reports that
 // the build can't, so callers say "unavailable" rather than guess. Reads are synchronous and quick;
 // the System Information page makes them on its worker thread, never per frame.
+
+#include "Platform/Linux/LinuxDiskSmart.h"
 
 #include <cstdint>
 #include <string>
@@ -29,5 +32,9 @@ struct BootTimestampsRead
 /// Reads org.freedesktop.systemd1.Manager's Firmware/Loader/InitRD/Userspace/FinishTimestampMonotonic
 /// from the system bus. Unprivileged.
 [[nodiscard]] BootTimestampsRead readBootTimestamps();
+
+/// A reader of each disk's SMART data from udisks2 (org.freedesktop.UDisks2), sharing one system-bus
+/// connection, opened on its first call. Unprivileged: udisks2 serves its cached data to anyone.
+[[nodiscard]] LinuxDiskSmart::SmartReader makeDriveSmartReader();
 
 } // namespace Platform::SystemdBus
