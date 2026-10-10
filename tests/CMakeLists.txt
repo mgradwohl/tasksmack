@@ -389,56 +389,15 @@ set(LINUX_INTEGRATION_TEST_SOURCES
 if(WIN32)
     set(PLATFORM_TEST_SOURCES ${WINDOWS_PLATFORM_TEST_SOURCES})
     set(INTEGRATION_TEST_SOURCES ${WINDOWS_INTEGRATION_TEST_SOURCES})
-    set(PLATFORM_SRC_UNDER_TEST
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/Factory.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/NVMLGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
-    )
+    # The platform sources come from the app's own list (root CMakeLists.txt), so a new platform .cpp is
+    # added in one place (#1702). Only the list is shared: the tests still compile their own selection
+    # of sources (Mocks/ThemeStub.cpp for UI/Theme.cpp, no panels or layers), so they can't link
+    # TaskSmackApp the way the benchmarks do (#1703).
+    list(TRANSFORM PLATFORM_SOURCES_WINDOWS PREPEND "${CMAKE_SOURCE_DIR}/" OUTPUT_VARIABLE PLATFORM_SRC_UNDER_TEST)
 else()
     set(PLATFORM_TEST_SOURCES ${LINUX_PLATFORM_TEST_SOURCES})
     set(INTEGRATION_TEST_SOURCES ${LINUX_INTEGRATION_TEST_SOURCES})
-    set(PLATFORM_SRC_UNDER_TEST
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/Factory.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DetachedSpawn.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessConnectionsReader.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessModulesReader.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessSecurityReader.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/SystemdBus.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/SystemdJournal.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemInfoProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/DRMGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/ROCmGPUProbe.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NetlinkSocketStats.cpp
-    )
+    list(TRANSFORM PLATFORM_SOURCES_LINUX PREPEND "${CMAKE_SOURCE_DIR}/" OUTPUT_VARIABLE PLATFORM_SRC_UNDER_TEST)
 endif()
 
 # Every tests/**/test_*.cpp must be in one of the lists above; otherwise it is never built and its
@@ -623,10 +582,9 @@ tasksmack_apply_linux_toolchain(TaskSmackTests)
 
 # Platform-specific library linking
 if(UNIX AND NOT APPLE)
-    # Linux needs X11 for platform tests
-    find_package(X11 REQUIRED)
-    # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525)
-    target_link_libraries(TaskSmackTests PRIVATE X11::X11 ${CMAKE_DL_LIBS} tasksmack_sdbus)
+    # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found, as for the app (#1525). No X11:
+    # Core/X11WindowManager.cpp dlopen()s libX11, as for the app and the benchmarks (#1702).
+    target_link_libraries(TaskSmackTests PRIVATE ${CMAKE_DL_LIBS} tasksmack_sdbus)
 
     add_library(TaskSmackNVMLMock SHARED
         Mocks/NVMLMock.cpp
