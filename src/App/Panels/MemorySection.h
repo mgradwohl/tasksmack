@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <span>
+#include <string>
 
 namespace App::MemorySection
 {
@@ -48,6 +49,14 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
                           const Domain::SystemSnapshot& snap,
                           float deltaTimeSeconds,
                           std::chrono::milliseconds refreshInterval);
+
+/// The value strip's Commit entry (#1627): "35.0 GiB / 73.7 GiB (48%)", commit charge against the
+/// commit limit; empty when the snapshot has no commit charge.
+[[nodiscard]] std::string commitStripValue(const Domain::SystemSnapshot& snap);
+
+/// The Commit entry's hover text: what it measures, and the peak commit when the platform keeps one
+/// (Windows); empty when the snapshot has no commit charge.
+[[nodiscard]] std::string commitStripTooltip(const Domain::SystemSnapshot& snap);
 
 /// Render the Memory & Swap history chart with now bars
 /// @param ctx Render context with model, history config, and smoothed values

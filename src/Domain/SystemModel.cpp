@@ -657,6 +657,16 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
         snap.swapUsedPercent = 100.0 * (Numeric::toDouble(snap.swapUsedBytes) / totalSwapBytes);
     }
 
+    // Commit charge (#1627): only when the probe supports it and read it this sample. A limit of 0
+    // has no percentage to show, so it reads as not available too.
+    if (m_Capabilities.hasCommitCharge && counters.memory.hasCommitCharge && counters.memory.commitLimitBytes > 0)
+    {
+        snap.hasCommitCharge = true;
+        snap.commitChargeBytes = counters.memory.commitChargeBytes;
+        snap.commitLimitBytes = counters.memory.commitLimitBytes;
+        snap.commitPeakBytes = counters.memory.commitPeakBytes;
+    }
+
     // Uptime
     snap.uptimeSeconds = counters.uptimeSeconds;
 

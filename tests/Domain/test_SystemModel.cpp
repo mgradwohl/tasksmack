@@ -434,6 +434,62 @@ TEST(SystemModelTest, SwapFreeAboveTotalReadsAsZeroUsed)
     EXPECT_DOUBLE_EQ(snap.swapUsedPercent, 0.0);
 }
 
+// =============================================================================
+// Commit Charge Tests (#1627)
+// =============================================================================
+
+namespace
+{
+[[nodiscard]] Platform::MemoryCounters commitMemory(bool hasCommit, std::uint64_t charge, std::uint64_t limit, std::uint64_t peak)
+{
+    auto mem = makeMemoryCounters(16ULL << 30U, 8ULL << 30U);
+    mem.hasCommitCharge = hasCommit;
+    mem.commitChargeBytes = charge;
+    mem.commitLimitBytes = limit;
+    mem.commitPeakBytes = peak;
+    return mem;
+}
+
+[[nodiscard]] Domain::SystemSnapshot snapshotWithCommit(bool capability, const Platform::MemoryCounters& mem)
+{
+    auto probe = std::make_unique<MockSystemProbe>();
+    Platform::SystemCapabilities caps;
+    caps.hasCommitCharge = capability;
+    probe->setCapabilities(caps);
+    probe->setCounters(makeSystemCounters(makeCpuCounters(0, 0, 0, 1000), mem));
+    Domain::SystemModel model(std::move(probe));
+    model.refresh();
+    return model.snapshot();
+}
+} // namespace
+
+TEST(SystemModelTest, CommitChargePassesThroughWhenSupportedAndRead)
+{
+    const auto snap = snapshotWithCommit(true, commitMemory(true, 35ULL << 30U, 73ULL << 30U, 40ULL << 30U));
+    EXPECT_TRUE(snap.hasCommitCharge);
+    EXPECT_EQ(snap.commitChargeBytes, 35ULL << 30U);
+    EXPECT_EQ(snap.commitLimitBytes, 73ULL << 30U);
+    EXPECT_EQ(snap.commitPeakBytes, 40ULL << 30U);
+}
+
+TEST(SystemModelTest, CommitChargeIsLeftOutWithoutTheCapabilityOrAReading)
+{
+    // A probe without the capability: the counters are ignored even if set.
+    const auto unsupported = snapshotWithCommit(false, commitMemory(true, 35ULL << 30U, 73ULL << 30U, 0));
+    EXPECT_FALSE(unsupported.hasCommitCharge);
+    EXPECT_EQ(unsupported.commitChargeBytes, 0ULL);
+    EXPECT_EQ(unsupported.commitLimitBytes, 0ULL);
+
+    // Supported, but this sample's read failed (GetPerformanceInfo, or no Committed_AS line).
+    const auto unread = snapshotWithCommit(true, commitMemory(false, 35ULL << 30U, 73ULL << 30U, 0));
+    EXPECT_FALSE(unread.hasCommitCharge);
+    EXPECT_EQ(unread.commitChargeBytes, 0ULL);
+
+    // A zero limit has no percentage to show.
+    const auto noLimit = snapshotWithCommit(true, commitMemory(true, 35ULL << 30U, 0, 0));
+    EXPECT_FALSE(noLimit.hasCommitCharge);
+}
+
 TEST(SystemModelTest, SwapZeroWhenNoSwap)
 {
     auto probe = std::make_unique<MockSystemProbe>();

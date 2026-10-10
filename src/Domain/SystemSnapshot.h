@@ -98,6 +98,14 @@ struct SystemSnapshot
     std::uint64_t swapTotalBytes = 0;
     std::uint64_t swapUsedBytes = 0;
 
+    // Commit charge (bytes, #1627). hasCommitCharge: the probe supports it and read it this sample;
+    // otherwise the fields are 0 and the Memory chart's value strip leaves Commit out. commitPeakBytes
+    // is 0 where the platform keeps no peak (Linux).
+    bool hasCommitCharge = false;
+    std::uint64_t commitChargeBytes = 0;
+    std::uint64_t commitLimitBytes = 0;
+    std::uint64_t commitPeakBytes = 0;
+
     // Computed percentages
     double memoryUsedPercent = 0.0;
     double memoryCachedPercent = 0.0;

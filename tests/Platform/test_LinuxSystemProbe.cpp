@@ -601,6 +601,33 @@ TEST(LinuxSystemProbeTest, MemAvailableIsReportedOnlyWhenTheKernelHasIt)
     EXPECT_FALSE(LinuxSystemProbe(without.path).read().memory.hasAvailableBytes);
 }
 
+TEST(LinuxSystemProbeTest, CommitChargeComesFromTheMeminfoAlreadyRead)
+{
+    // Committed_AS and CommitLimit come from the same /proc/meminfo pass as the rest of memory (#1627);
+    // the kernel keeps no peak. Committed_AS above CommitLimit is normal outside strict overcommit.
+    EXPECT_TRUE(LinuxSystemProbe().capabilities().hasCommitCharge);
+
+    ScopedTempDir both("ts_test_sys_commit");
+    std::ofstream(both.path / "meminfo") << "MemTotal: 16000000 kB\nMemFree: 1000000 kB\nMemAvailable: 8000000 kB\n"
+                                            "SwapTotal: 2000000 kB\nSwapFree: 2000000 kB\n"
+                                            "CommitLimit:    10000000 kB\nCommitted_AS:   12345678 kB\n";
+    const MemoryCounters memory = LinuxSystemProbe(both.path).read().memory;
+    EXPECT_TRUE(memory.hasCommitCharge);
+    EXPECT_EQ(memory.commitChargeBytes, 12'345'678ULL * 1024);
+    EXPECT_EQ(memory.commitLimitBytes, 10'000'000ULL * 1024);
+    EXPECT_EQ(memory.commitPeakBytes, 0ULL);
+    EXPECT_EQ(memory.totalBytes, 16'000'000ULL * 1024); // the other lines are still read
+
+    // Either line missing, or unparsable, and there is no commit charge this sample.
+    ScopedTempDir noLimit("ts_test_sys_commit_nolimit");
+    std::ofstream(noLimit.path / "meminfo") << "MemTotal: 1000 kB\nCommitted_AS: 500 kB\n";
+    EXPECT_FALSE(LinuxSystemProbe(noLimit.path).read().memory.hasCommitCharge);
+
+    ScopedTempDir garbled("ts_test_sys_commit_garbled");
+    std::ofstream(garbled.path / "meminfo") << "MemTotal: 1000 kB\nCommitLimit: x kB\nCommitted_AS: 500 kB\n";
+    EXPECT_FALSE(LinuxSystemProbe(garbled.path).read().memory.hasCommitCharge);
+}
+
 TEST(LinuxSystemProbeTest, CpuDetailsComeFromTheInjectedProcAndCpuSysfsRoots)
 {
     // The CPU Details block's facts are read from the roots the probe was given (#809, #1351)
