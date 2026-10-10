@@ -18,6 +18,49 @@ env:
 permissions: {}
 
 jobs:
+  # Keeps the PR ASan+UBSan job's ccache fresh (#1584). That job (ci.yml) restores this key but
+  # never saves, and only Heavy Checks' nightly asan-ubsan run used to save it, so by afternoon the
+  # entry was a day of merges stale (66% hits, 12.8 min on #1581). A build on every push to main,
+  # no tests -- the PR job already runs them -- saves the cache for the next PR.
+  asan-ubsan-cache:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ env.LLVM_VERSION }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          install: binary
+          # The key ci.yml's PR asan-ubsan job restores.
+          key: linux-asan-ubsan-llvm${{ env.LLVM_VERSION }}
+          max-size: 500M
+          save: true
+          evict-old-files: job
+
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
+        with:
+          mode: restore
+
+      - name: Configure
+        run: cmake --preset asan-ubsan -DPython3_EXECUTABLE="$(which python)"
+
+      - name: Build (cache only, no tests)
+        run: cmake --build --preset asan-ubsan
+
   sanitizers:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -209,7 +252,7 @@ jobs:
           path: |
             sanitizer-logs/${{ matrix.preset }}.log
             sanitizer-reports/${{ matrix.preset }}.html
-          retention-days: 14
+          retention-days: 5
 
       - name: Fail job if sanitizer found issues
         if: steps.sanitizer-test.outputs.test_result != '0'

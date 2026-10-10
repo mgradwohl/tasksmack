@@ -3,7 +3,21 @@ name: ClusterFuzzLite Batch Fuzzing
 on:
   schedule:
     - cron: '30 7 * * 0'
+  # Also run when a merge adds or changes fuzz targets (#1650), so a new target gets a seed
+  # corpus artifact right away instead of waiting up to a week for the Sunday run. Until then,
+  # PR fuzzing (cflite_pr.yml) has no corpus for it.
+  push:
+    branches: [main]
+    paths:
+      - 'tests/fuzz/**'
+      - '.clusterfuzzlite/build.sh'
   workflow_dispatch:
+
+# One batch run at a time, never cancelled: an overlapping run would download the same corpus and
+# race to upload it. A push that lands while a run is in progress queues behind it.
+concurrency:
+  group: cflite-batch
+  cancel-in-progress: false
 
 permissions:
   actions: read
