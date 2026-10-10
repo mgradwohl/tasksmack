@@ -20,6 +20,7 @@
 #include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
+#include "ProcessCrashHistoryView.h"
 #include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsLayout.h"
@@ -196,6 +197,10 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     // The Open files section's on-demand read (#183), on the same terms.
     const bool canReadOpenFiles = m_HasOpenFiles && m_HasSnapshot && !m_ProcessExited;
     static_cast<void>(m_OpenFilesView.update(canReadOpenFiles ? m_OpenFilesReader.get() : nullptr, selectedTarget(), deltaTime));
+
+    // The Recent crashes line's shared cache (#1675): read on a worker only while the line was drawn and
+    // the cache is stale, whatever the selection; matching it to the process is done per read, not here.
+    static_cast<void>(m_CrashHistoryView.update(deltaTime));
 }
 
 void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
@@ -461,6 +466,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     // Note: ImGui requires null-terminated const char*; .c_str() is the correct approach here.
     const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
     ImGui::TextWrapped("Command Line: %s", titleCommand);
+    // Beside the command line, which names the executable, rather than as a row of the Identity card:
+    // the card is full with a Publisher, and the line's value is wider than a card's (#1675).
+    m_CrashHistoryView.render(proc.name);
     ImGui::Spacing();
 
     const auto computeLabelColumnWidth = []() -> float

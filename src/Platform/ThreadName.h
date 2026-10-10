@@ -34,6 +34,8 @@ inline constexpr std::string_view OPEN_FILES_READ_THREAD_NAME = "ts-files-read";
 inline constexpr std::string_view OPEN_FILES_NAMER_THREAD_NAME = "ts-files-name";
 /// The worker that reads the System Information page's static facts (#1399), once or on Refresh.
 inline constexpr std::string_view SYSTEM_INFO_READ_THREAD_NAME = "ts-sysinfo-read";
+/// The worker that reads the crash history Process Details shows (#1675), at most once a minute.
+inline constexpr std::string_view CRASH_HISTORY_READ_THREAD_NAME = "ts-crash-read";
 /// The worker that runs one Services tab action (start, stop, ...) at a time (#1577).
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 /// The worker that runs one Startup tab action (enable, disable) at a time (#801).

@@ -136,6 +136,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
     Domain/test_SystemInfoModel.cpp
+    Domain/test_CrashHistory.cpp
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
     Domain/test_BackgroundSampler.cpp
@@ -257,6 +258,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
     App/test_ProcessModulesViewRender.cpp
+    App/test_ProcessCrashHistoryView.cpp
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_LazyBackgroundRead.cpp
     App/test_ProcessSecurityViewRender.cpp
@@ -500,6 +502,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessModulesView.cpp
+    # Process Details' Recent crashes line (#1675), run headless (test_ProcessCrashHistoryView.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessCrashHistoryView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessOpenFilesView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessSecurityView.cpp
     # The Overview's CPU Details block, run headless (test_CpuDetailsBlockRender.cpp, #809)
@@ -550,6 +554,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/BackgroundSampler.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
