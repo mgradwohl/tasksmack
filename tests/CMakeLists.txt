@@ -208,6 +208,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxOsInfo.cpp
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
+    Platform/test_PartitionTable.cpp
     Platform/test_GraphicsInfo.cpp
     Platform/test_DevicesInfo.cpp
     Platform/test_DriversInfo.cpp

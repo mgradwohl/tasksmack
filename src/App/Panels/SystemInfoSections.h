@@ -121,13 +121,21 @@ struct VisibleSection
 /// identifier is left out.
 [[nodiscard]] std::string formatVolume(const Platform::Volume& volume);
 
+/// A disk's partition layout (#1632): "GPT, 6 partitions" / "MBR, 1 partition" / "Not partitioned";
+/// the count alone when the style is unknown (Linux without udev), empty when the layout wasn't read.
+[[nodiscard]] std::string formatPartitionLayout(const Platform::PhysicalDisk& disk);
+
+/// One partition (#1632): "Basic data, 930 GiB, offset 117 MiB \→ C:" / "nvme0n1p1, EFI System, 512 MiB,
+/// offset 1 MiB \→ /boot/efi". An unknown type shows its GUID or MBR type byte, an unread one a dash.
+[[nodiscard]] std::string formatPartition(const Platform::Partition& partition);
+
 /// Whether a volume label names someone: cloud drives label theirs with the account's e-mail address
 /// ("someone@example.com - Google Drive"), so a label with an '@' gets its own identifier row.
 [[nodiscard]] bool volumeLabelIsIdentifier(std::string_view label);
 
-/// The Storage section (#1517): one row per physical disk, its serial number (an identifier) and, where
-/// read, its health; then one row per volume, labelled by its mount point or "C: drive", plus an
-/// identifier row for a label that names someone.
+/// The Storage section (#1517): one row per physical disk, its serial number (an identifier), where
+/// read its health, and its partition layout with a row per partition (#1632); then one row per volume,
+/// labelled by its mount point or "C: drive", plus an identifier row for a label that names someone.
 [[nodiscard]] Section buildStorageSection(const Platform::StorageInfo& storage);
 
 /// One adapter's value: "NVIDIA GeForce RTX 4070, 12 GiB dedicated, 15.9 GiB shared, PCI 01:00.0".

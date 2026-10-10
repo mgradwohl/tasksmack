@@ -129,11 +129,20 @@ using UniqueHandle = UniqueResource<KernelHandleTraits>;
 
 /// Opens \\.\PhysicalDrive@p index query-only (#763): desired access 0, so no administrator rights are
 /// needed and the handle can't read or write the disk, only answer IOCTLs that need no access
-/// (IOCTL_DISK_PERFORMANCE, IOCTL_STORAGE_QUERY_PROPERTY, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX). Empty when
+/// (IOCTL_DISK_PERFORMANCE, IOCTL_STORAGE_QUERY_PROPERTY, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+/// IOCTL_DISK_GET_DRIVE_LAYOUT_EX). Empty when
 /// there is no such drive or it can't be opened; GetLastError() says why.
 [[nodiscard]] inline UniqueHandle openPhysicalDriveQueryOnly(int index)
 {
     const std::wstring path = L"\\\\.\\PhysicalDrive" + std::to_wstring(index);
+    return UniqueHandle(CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
+}
+
+/// Opens the volume on drive @p letter (\\.\C:) query-only (#1632), like openPhysicalDriveQueryOnly():
+/// desired access 0, for IOCTL_STORAGE_GET_DEVICE_NUMBER. Empty when it can't be opened.
+[[nodiscard]] inline UniqueHandle openVolumeQueryOnly(wchar_t letter)
+{
+    const std::wstring path = std::wstring(L"\\\\.\\") + letter + L':';
     return UniqueHandle(CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
 }
 

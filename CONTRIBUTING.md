@@ -888,6 +888,7 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_proc_status_security` | the `/proc/[pid]/status` security, `attr/current` and `cgroup` parsers (`Platform/Linux/ProcStatusSecurityParser.h`) | `tests/fuzz/corpus/fuzz_proc_status_security/` |
 | `fuzz_commit_paging` | the Commit & paging parsers: `/proc/meminfo`, `/proc/swaps`, zram `mm_stat`, sysfs flags (`Platform/Linux/LinuxCommitPaging.h`) | `tests/fuzz/corpus/fuzz_commit_paging/` |
 | `fuzz_mountinfo` | the Storage parsers: `/proc/self/mountinfo`, the volume choice, udev database files (`Platform/Linux/LinuxStorage.h`) | `tests/fuzz/corpus/fuzz_mountinfo/` |
+| `fuzz_partition_layout` | the partition layout parsers: `DRIVE_LAYOUT_INFORMATION_EX` buffers, GPT type GUIDs and udev partition types (`Platform/PartitionTable.h`) | `tests/fuzz/corpus/fuzz_partition_layout/` |
 | `fuzz_edid` | the monitor EDID parser: manufacturer, name and serial descriptors, image size (`Platform/EdidParser.h`) | `tests/fuzz/corpus/fuzz_edid/` |
 | `fuzz_hwids` | the hwdata `pci.ids` / `usb.ids` parser: vendor, device and class lines (`Platform/HwIdsParser.h`) | `tests/fuzz/corpus/fuzz_hwids/` |
 | `fuzz_proc_modules` | the `/proc/modules` parser: size, use count, dependents, `[permanent]`, state and taint flags (`Platform/Linux/LinuxKernelModules.h`) | `tests/fuzz/corpus/fuzz_proc_modules/` |

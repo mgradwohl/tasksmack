@@ -557,6 +557,45 @@ std::string formatVolume(const Platform::Volume& volume)
     return joinNonEmpty({volumeLabelIsIdentifier(volume.label) ? std::string_view{} : volume.label, fileSystem, space}, ", ");
 }
 
+std::string formatPartitionLayout(const Platform::PhysicalDisk& disk)
+{
+    if (!disk.partitionsRead)
+    {
+        return {};
+    }
+    if (disk.partitionStyle == Platform::PartitionStyle::Raw)
+    {
+        return "Not partitioned";
+    }
+    const std::size_t count = disk.partitions.size();
+    const std::string partitions = UI::Format::formatCountWithLabel(count, count == 1 ? "partition" : "partitions");
+    switch (disk.partitionStyle)
+    {
+    case Platform::PartitionStyle::Gpt:
+        return "GPT, " + partitions;
+    case Platform::PartitionStyle::Mbr:
+        return "MBR, " + partitions;
+    default:
+        return count == 0 ? std::string("No partitions") : partitions;
+    }
+}
+
+std::string formatPartition(const Platform::Partition& partition)
+{
+    std::string type = partition.typeName.empty() ? partition.typeId : partition.typeName;
+    if (type.empty())
+    {
+        type = std::string(UNAVAILABLE_TEXT);
+    }
+    const std::string offset = "offset " + sizeText(partition.offsetBytes);
+    std::string text = joinNonEmpty({partition.device, type, formatMemoryCapacity(partition.sizeBytes), offset}, ", ");
+    if (!partition.mountPoint.empty())
+    {
+        text += " \xE2\x86\x92 " + partition.mountPoint; // U+2192, UTF-8
+    }
+    return text;
+}
+
 bool volumeLabelIsIdentifier(std::string_view label)
 {
     return label.contains('@');
@@ -587,6 +626,16 @@ Section buildStorageSection(const Platform::StorageInfo& storage)
                 health = formatAtaHealth(*disk.ataHealth);
             }
             rows.push_back(row(disk.name + " health", health, disk.healthUnavailableReason));
+        }
+        // The layout (#1632): a summary row, then one row per partition, so a filter on the disk's name
+        // keeps them together.
+        if (disk.partitionsRead || !disk.partitionsUnavailableReason.empty())
+        {
+            rows.push_back(row(disk.name + " partitions", formatPartitionLayout(disk), disk.partitionsUnavailableReason));
+        }
+        for (const Platform::Partition& partition : disk.partitions)
+        {
+            rows.push_back(row(std::format("{} partition {}", disk.name, partition.number), formatPartition(partition)));
         }
     }
 
