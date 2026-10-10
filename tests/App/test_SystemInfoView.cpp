@@ -11,6 +11,7 @@
 #include "App/Panels/SystemInfoView.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -1200,6 +1201,119 @@ TEST(SystemInfoSectionsTest, DevicesSectionComesLast)
     EXPECT_EQ(sections[2].title, "Devices");
 }
 
+[[nodiscard]] Platform::DriversInfo windowsDrivers()
+{
+    Platform::DriversInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.listed = true;
+    Platform::KernelDriver acpi;
+    acpi.name = "ACPI";
+    acpi.displayName = "Microsoft ACPI Driver";
+    acpi.state = Platform::ServiceState::Running;
+    acpi.startType = Platform::ServiceStartType::Boot;
+    acpi.version = "10.0.26100.1";
+    acpi.company = "Microsoft Corporation";
+    acpi.path = R"(C:\Windows\System32\drivers\ACPI.sys)";
+    Platform::KernelDriver ntfs;
+    ntfs.name = "Ntfs";
+    ntfs.displayName = "NTFS";
+    ntfs.fileSystem = true;
+    ntfs.state = Platform::ServiceState::StopPending;
+    ntfs.startType = Platform::ServiceStartType::Boot;
+    Platform::KernelDriver beep;
+    beep.name = "beep";
+    beep.displayName = "Beep";
+    beep.state = Platform::ServiceState::Running;
+    beep.startType = Platform::ServiceStartType::System;
+    info.drivers = {ntfs, beep, acpi};
+    return info;
+}
+
+[[nodiscard]] Platform::DriversInfo linuxModules()
+{
+    Platform::DriversInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Linux;
+    info.listed = true;
+    Platform::KernelDriver nvidia;
+    nvidia.name = "nvidia";
+    nvidia.moduleState = "Live";
+    nvidia.sizeBytes = 2048;
+    nvidia.useCount = 49;
+    nvidia.usedBy = {"nvidia_uvm", "nvidia_modeset"};
+    nvidia.version = "550.54.14";
+    nvidia.taints = "POE";
+    Platform::KernelDriver vfio;
+    vfio.name = "vfio";
+    vfio.moduleState = "Loading";
+    vfio.useCount = 2;
+    vfio.permanent = true;
+    Platform::KernelDriver kvm;
+    kvm.name = "kvm";
+    kvm.moduleState = "Live";
+    kvm.useCount = 0;
+    info.drivers = {vfio, nvidia, kvm};
+    return info;
+}
+
+TEST(SystemInfoSectionsTest, DriversRowsWindows)
+{
+    const Section section = SystemInfo::buildDriversSection(windowsDrivers());
+    EXPECT_EQ(section.title, "Drivers");
+    EXPECT_EQ(findRow(section, "Loaded drivers")->value, "3");
+    EXPECT_EQ(findRow(section, "ACPI")->value,
+              "Microsoft ACPI Driver, Boot start, 10.0.26100.1, Microsoft Corporation, C:\\Windows\\System32\\drivers\\ACPI.sys");
+    EXPECT_EQ(findRow(section, "Ntfs")->value, "file system driver, Boot start, Stopping"); // same name in another case: not repeated
+    EXPECT_EQ(findRow(section, "beep")->value, "System start");
+    EXPECT_EQ(findRow(section, "Built-in modules"), nullptr);
+    // By name, ignoring case, after the count.
+    ASSERT_EQ(section.rows.size(), 4U);
+    EXPECT_EQ(section.rows[1].label, "ACPI");
+    EXPECT_EQ(section.rows[2].label, "beep");
+    EXPECT_EQ(section.rows[3].label, "Ntfs");
+}
+
+TEST(SystemInfoSectionsTest, DriversRowsLinux)
+{
+    const Section section = SystemInfo::buildDriversSection(linuxModules());
+    EXPECT_EQ(section.title, "Kernel modules");
+    EXPECT_EQ(findRow(section, "Loaded modules")->value, "3");
+    EXPECT_EQ(findRow(section, "Tainted modules")->value, "1");
+    EXPECT_TRUE(findRow(section, "Built-in modules")->available());
+    EXPECT_EQ(findRow(section, "nvidia")->value, "2.0 KiB, used by nvidia_uvm, nvidia_modeset, version 550.54.14, tainted (POE)");
+    EXPECT_EQ(findRow(section, "vfio")->value, "2 references, Loading, permanent");
+    EXPECT_EQ(findRow(section, "kvm")->value, "not in use");
+}
+
+TEST(SystemInfoSectionsTest, DriversRowsEmptyAndUnreadable)
+{
+    Platform::DriversInfo none;
+    none.available = true;
+    none.family = Platform::OsFamily::Windows;
+    none.listed = true;
+    EXPECT_EQ(findRow(SystemInfo::buildDriversSection(none), "Loaded drivers")->value, "None found");
+    none.listed = false;
+    EXPECT_EQ(findRow(SystemInfo::buildDriversSection(none), "Loaded drivers")->unavailableReason,
+              "The Service Control Manager couldn't list the drivers");
+    none.family = Platform::OsFamily::Linux;
+    const Section linux = SystemInfo::buildDriversSection(none);
+    EXPECT_FALSE(findRow(linux, "Loaded modules")->available());
+    EXPECT_EQ(findRow(linux, "Tainted modules"), nullptr);
+}
+
+TEST(SystemInfoSectionsTest, DriversSectionComesLast)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.devices = windowsDevices();
+    all.drivers = windowsDrivers();
+    const auto sections = SystemInfo::buildSystemInfoSections(all, windowsHost());
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[1].title, "Devices");
+    EXPECT_EQ(sections[2].title, "Drivers");
+    EXPECT_NE(SystemInfo::sectionText(sections[2], false).find("ACPI: Microsoft ACPI Driver, Boot start"), std::string::npos);
+}
+
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
 {
     EXPECT_TRUE(SystemInfo::buildSystemInfoSections(Domain::SystemInfoSnapshot{}).empty());
@@ -1358,6 +1472,23 @@ TEST_F(SystemInfoViewRenderTest, DevicesSectionRendersAndHidesUsbSerials)
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 2U);
+}
+
+TEST_F(SystemInfoViewRenderTest, DriversSectionRendersAndFilters)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.drivers = linuxModules();
+    SystemInfoViewState state;
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+    EXPECT_EQ(state.visible[1].rows.size(), 6U);
+
+    state.filter = "tainted";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 2U); // the count and nvidia
 }
 
 } // namespace

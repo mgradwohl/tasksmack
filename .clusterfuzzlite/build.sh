@@ -66,6 +66,10 @@ seed_corpus fuzz_edid tests/fuzz/corpus/fuzz_edid/*
 build_fuzzer fuzz_hwids
 seed_corpus fuzz_hwids tests/fuzz/corpus/fuzz_hwids/*
 
+# The /proc/modules parser (#1521): header-only, seeded with a real-looking /proc/modules.
+build_fuzzer fuzz_proc_modules
+seed_corpus fuzz_proc_modules tests/fuzz/corpus/fuzz_proc_modules/*
+
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
 # toml++ crash inputs (#1387, #1388, #1389) as regression seeds.

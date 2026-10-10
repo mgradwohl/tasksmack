@@ -1,0 +1,9 @@
+nvidia_uvm 4956160 0 - Live 0x0000000000000000 (POE)
+nvidia_drm 126976 4 - Live 0x0000000000000000 (POE)
+nvidia 60620800 49 nvidia_uvm,nvidia_modeset, Live 0x0000000000000000 (POE)
+snd_hda_intel 61440 3 - Live 0x0000000000000000
+kvm_intel 487424 0 - Live 0x0000000000000000
+kvm 1404928 1 kvm_intel, Live 0x0000000000000000
+vfio 69632 2 vfio_pci_core,vfio_iommu_type1,[permanent], Live 0x0000000000000000
+zfs 6418432 3 - Loading 0xffffffffc1a00000 (POE+)
+e1000e 344064 - - Live 0x0000000000000000

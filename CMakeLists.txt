@@ -336,6 +336,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h
         src/Platform/Linux/LinuxDevices.h
+        src/Platform/Linux/LinuxKernelModules.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
@@ -371,6 +372,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsStorage.h
         src/Platform/Windows/WindowsGraphics.h
         src/Platform/Windows/WindowsDevices.h
+        src/Platform/Windows/WindowsDrivers.h
         src/Platform/Windows/ComScope.h
     )
 endif()

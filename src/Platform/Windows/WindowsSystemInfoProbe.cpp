@@ -22,6 +22,8 @@
 #include <objbase.h>
 #include <mmdeviceapi.h>
 #include <propsys.h>
+#include <winsvc.h>
+#include <winver.h>
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
@@ -29,6 +31,7 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "powrprof.lib")
 #pragma comment(lib, "secur32.lib")
+#pragma comment(lib, "version.lib")
 
 #include "ComPtr.h"
 #include "ComScope.h"
@@ -38,16 +41,22 @@
 #include "WinString.h"
 #include "WindowsCommitPaging.h"
 #include "WindowsDevices.h"
+#include "WindowsDrivers.h"
 #include "WindowsGraphics.h"
+#include "WindowsHandles.h"
 #include "WindowsInstalledMemory.h"
 #include "WindowsOsInfoMath.h"
+#include "WindowsServiceConfig.h"
 #include "WindowsStorage.h"
 
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cwchar>
+#include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -493,6 +502,105 @@ constexpr PROPERTYKEY FRIENDLY_NAME_KEY{
     return endpoints;
 }
 
+/// The running kernel and file system driver services, with each one's start type and image path from
+/// its configuration (the Services tab's reader). Reads only: no driver is started, stopped or changed.
+[[nodiscard]] std::optional<std::vector<WindowsDrivers::DriverServiceRecord>> listDriverServices()
+{
+    const Windows::UniqueServiceHandle scm(OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE));
+    if (!scm)
+    {
+        return std::nullopt;
+    }
+    const Windows::ServiceConfigFunctions api;
+    std::vector<WindowsDrivers::DriverServiceRecord> records;
+    std::vector<ENUM_SERVICE_STATUS_PROCESSW> buffer;
+    DWORD resume = 0;
+    for (;;)
+    {
+        DWORD needed = 0;
+        DWORD count = 0;
+        const BOOL ok = EnumServicesStatusExW(scm.get(),
+                                              SC_ENUM_PROCESS_INFO,
+                                              SERVICE_DRIVER,
+                                              SERVICE_ACTIVE,
+                                              reinterpret_cast<LPBYTE>(buffer.data()),
+                                              static_cast<DWORD>(buffer.size() * sizeof(ENUM_SERVICE_STATUS_PROCESSW)),
+                                              &needed,
+                                              &count,
+                                              &resume,
+                                              nullptr);
+        const DWORD error = ok != FALSE ? ERROR_SUCCESS : GetLastError();
+        if (error != ERROR_SUCCESS && error != ERROR_MORE_DATA)
+        {
+            return std::nullopt;
+        }
+        for (const ENUM_SERVICE_STATUS_PROCESSW& entry : std::span(buffer.data(), count))
+        {
+            const Windows::ServiceConfig config = Windows::readServiceConfig(api, scm.get(), entry.lpServiceName);
+            records.push_back({
+                .name = entry.lpServiceName != nullptr ? WinString::wideToUtf8(entry.lpServiceName) : std::string{},
+                .displayName = entry.lpDisplayName != nullptr ? WinString::wideToUtf8(entry.lpDisplayName) : std::string{},
+                .serviceType = entry.ServiceStatusProcess.dwServiceType,
+                .currentState = entry.ServiceStatusProcess.dwCurrentState,
+                .startType = config.startType,
+                .binaryPath = config.binaryPath,
+            });
+        }
+        if (error == ERROR_SUCCESS || needed == 0)
+        {
+            break;
+        }
+        buffer.resize((needed + sizeof(ENUM_SERVICE_STATUS_PROCESSW) - 1) / sizeof(ENUM_SERVICE_STATUS_PROCESSW));
+    }
+    return records;
+}
+
+[[nodiscard]] std::string windowsDirectory()
+{
+    return readDirectory([](wchar_t* buffer, UINT size) { return GetSystemWindowsDirectoryW(buffer, size); });
+}
+
+/// A file's version resource: its fixed file version and its first translation's CompanyName.
+[[nodiscard]] WindowsDrivers::FileVersionRecord readFileVersion(const std::string& path)
+{
+    WindowsDrivers::FileVersionRecord record;
+    const std::wstring wide = WinString::utf8ToWide(path);
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeExW(FILE_VER_GET_NEUTRAL, wide.c_str(), &ignored);
+    if (size == 0)
+    {
+        return record;
+    }
+    std::vector<std::byte> data(size);
+    if (GetFileVersionInfoExW(FILE_VER_GET_NEUTRAL, wide.c_str(), 0, size, data.data()) == FALSE)
+    {
+        return record;
+    }
+    void* value = nullptr;
+    UINT length = 0;
+    if (VerQueryValueW(data.data(), L"\\", &value, &length) != FALSE && length >= sizeof(VS_FIXEDFILEINFO))
+    {
+        const auto* fixed = static_cast<const VS_FIXEDFILEINFO*>(value);
+        record.version = WindowsDrivers::formatFileVersion(fixed->dwFileVersionMS, fixed->dwFileVersionLS);
+    }
+    struct Translation
+    {
+        WORD language;
+        WORD codePage;
+    };
+    if (VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation", &value, &length) != FALSE && length >= sizeof(Translation))
+    {
+        const auto* translation = static_cast<const Translation*>(value);
+        const std::wstring key = std::format(L"\\StringFileInfo\\{:04x}{:04x}\\CompanyName", translation->language, translation->codePage);
+        if (VerQueryValueW(data.data(), key.c_str(), &value, &length) != FALSE && length > 0)
+        {
+            const auto* company = static_cast<const wchar_t*>(value); // length is in characters, with or without the NUL
+            record.company = WinString::wideToUtf8(std::wstring_view(company, wcsnlen(company, length)));
+        }
+    }
+    return record;
+}
+
 #pragma clang diagnostic pop
 // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
@@ -626,6 +734,14 @@ DevicesInfo WindowsSystemInfoProbe::readDevices()
 {
     DevicesInfo info;
     WindowsDevices::readDevices(info, {.listDevNodes = &listDevNodes, .listAudioEndpoints = &listAudioEndpoints});
+    return info;
+}
+
+DriversInfo WindowsSystemInfoProbe::readDrivers()
+{
+    DriversInfo info;
+    WindowsDrivers::readDrivers(
+        info, {.listDriverServices = &listDriverServices, .windowsDirectory = &windowsDirectory, .readFileVersion = &readFileVersion});
     return info;
 }
 
