@@ -8,6 +8,9 @@
 /// a fake NVMLFunctions table and device handles after construction. Shared by
 /// test_WindowsNVMLGPUProbe.cpp and test_WindowsGPURescan.cpp, so everything here is inline: the
 /// accessor must be one type across the test binary.
+///
+/// fakeLibraryFunctions() is a fake nvml.dll loader for NVMLGPUProbe(NVMLLibraryFunctions) (#1720):
+/// it resolves each NVML export to the fakes below, so loadNVML() itself can be tested.
 
 #pragma once
 
@@ -24,9 +27,11 @@
 #include <functional>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -93,6 +98,8 @@ struct FakeNvmlState
     // nvmlInit's answer and how often it was called, for restart() (#1294)
     nvmlReturn_t initResult = NVML_SUCCESS;
     int initCallCount = 0;
+    // nvmlSystemGetDriverVersion's answer (#1720)
+    nvmlReturn_t driverVersionResult = NVML_SUCCESS;
     // Devices whose readings (memory, sensors, VBIOS) report
     // NVML_ERROR_GPU_IS_LOST (a driver reset, say) (#1294); identity reads still answer
     std::unordered_set<unsigned int> lostDevices;
@@ -381,8 +388,112 @@ inline nvmlReturn_t fakeInit()
 
 inline nvmlReturn_t fakeSystemGetDriverVersion(char* buf, unsigned int size)
 {
+    if (fakeState().driverVersionResult != NVML_SUCCESS)
+    {
+        return fakeState().driverVersionResult;
+    }
     copyToBuffer(buf, size, "999.99");
     return NVML_SUCCESS;
+}
+
+inline nvmlReturn_t fakeDeviceGetMaxClockInfo(nvmlDevice_t device, int clockType, unsigned int* mhz)
+{
+    return fakeDeviceGetClockInfo(device, clockType, mhz);
+}
+
+inline nvmlReturn_t fakeDeviceGetPcieThroughput(nvmlDevice_t /*device*/, int /*counter*/, unsigned int* /*value*/)
+{
+    return NVML_ERROR_NOT_SUPPORTED;
+}
+
+// ---- Fake nvml.dll loader (#1720) ----------------------------------------
+
+/// What the fake loader (fakeLibraryFunctions()) finds, and what it was asked.
+struct FakeLibraryState
+{
+    bool present = true;                            ///< Whether loadLibrary finds nvml.dll
+    std::unordered_set<std::string> missingExports; ///< Exports getProcAddress doesn't find
+    std::vector<std::string> lookups;               ///< Every export asked for, in order
+    int loadCount = 0;
+    int freeCount = 0;
+    void* lastFreed = nullptr;
+};
+
+inline FakeLibraryState& fakeLibrary()
+{
+    static FakeLibraryState state;
+    return state;
+}
+
+/// The fake module handle: never dereferenced, only compared.
+inline void* fakeModule()
+{
+    static int module = 0;
+    return &module;
+}
+
+/// A fake as the untyped procedure GetProcAddress returns.
+template<typename Fn> NVMLLibraryFunctions::Proc asProc(Fn fn)
+{
+    return reinterpret_cast<NVMLLibraryFunctions::Proc>(fn); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - as GetProcAddress does
+}
+
+/// The fake each NVML export resolves to.
+inline NVMLLibraryFunctions::Proc fakeExport(std::string_view name)
+{
+    static const std::unordered_map<std::string_view, NVMLLibraryFunctions::Proc> exports = {
+        {"nvmlInit", asProc(&fakeInit)},
+        {"nvmlShutdown", asProc(&fakeShutdown)},
+        {"nvmlDeviceGetCount", asProc(&fakeDeviceGetCount)},
+        {"nvmlDeviceGetHandleByIndex", asProc(&fakeDeviceGetHandleByIndex)},
+        {"nvmlDeviceGetName", asProc(&fakeDeviceGetName)},
+        {"nvmlDeviceGetUUID", asProc(&fakeDeviceGetUUID)},
+        {"nvmlDeviceGetMemoryInfo", asProc(&fakeDeviceGetMemoryInfo)},
+        {"nvmlDeviceGetTemperature", asProc(&fakeDeviceGetTemperature)},
+        {"nvmlDeviceGetPowerUsage", asProc(&fakeDeviceGetPowerUsage)},
+        {"nvmlDeviceGetPowerManagementLimit", asProc(&fakeDeviceGetPowerManagementLimit)},
+        {"nvmlDeviceGetClockInfo", asProc(&fakeDeviceGetClockInfo)},
+        {"nvmlDeviceGetMaxClockInfo", asProc(&fakeDeviceGetMaxClockInfo)},
+        {"nvmlDeviceGetUtilizationRates", asProc(&fakeDeviceGetUtilizationRates)},
+        {"nvmlSystemGetDriverVersion", asProc(&fakeSystemGetDriverVersion)},
+        {"nvmlDeviceGetVbiosVersion", asProc(&fakeDeviceGetVbiosVersion)},
+        {"nvmlDeviceGetFanSpeed", asProc(&fakeDeviceGetFanSpeed)},
+        {"nvmlDeviceGetPcieThroughput", asProc(&fakeDeviceGetPcieThroughput)},
+        {"nvmlDeviceGetEncoderUtilization", asProc(&fakeDeviceGetEncoderUtilization)},
+        {"nvmlDeviceGetDecoderUtilization", asProc(&fakeDeviceGetDecoderUtilization)},
+        {"nvmlDeviceGetPciInfo_v3", asProc(&fakeDeviceGetPciInfo)},
+        {"nvmlDeviceGetPciInfo_v2", asProc(&fakeDeviceGetPciInfo)},
+    };
+    const auto found = exports.find(name);
+    return found == exports.end() ? nullptr : found->second;
+}
+
+inline void* fakeLoadLibrary()
+{
+    ++fakeLibrary().loadCount;
+    return fakeLibrary().present ? fakeModule() : nullptr;
+}
+
+inline NVMLLibraryFunctions::Proc fakeGetProcAddress(void* module, const char* name)
+{
+    fakeLibrary().lookups.emplace_back(name);
+    if (module != fakeModule() || fakeLibrary().missingExports.contains(name))
+    {
+        return nullptr;
+    }
+    return fakeExport(name);
+}
+
+inline void fakeFreeLibrary(void* module)
+{
+    ++fakeLibrary().freeCount;
+    fakeLibrary().lastFreed = module;
+}
+
+/// A loader whose nvml.dll is the fakes above, as fakeLibrary() configures it.
+inline NVMLLibraryFunctions fakeLibraryFunctions()
+{
+    return {.loadLibrary = fakeLoadLibrary, .getProcAddress = fakeGetProcAddress, .freeLibrary = fakeFreeLibrary};
 }
 
 } // namespace NVMLFake
