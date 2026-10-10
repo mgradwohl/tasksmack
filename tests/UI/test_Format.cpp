@@ -17,7 +17,6 @@
 #include <locale>
 #include <random>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -1481,20 +1480,6 @@ TEST(FormatTest, FormatCelsiusRoundsHalfAwayFromZero)
     EXPECT_EQ(UI::Format::formatCelsius(64.5), "65°C"); // and std::format rounded this half to even, 64
     EXPECT_EQ(UI::Format::formatCelsius(-0.2), "0°C");
     EXPECT_EQ(UI::Format::formatCelsius(std::numeric_limits<double>::quiet_NaN()), "N/A");
-}
-
-// The sources are compiled as UTF-8 (/utf-8, -finput-charset=UTF-8, #1648): a non-ASCII narrow literal
-// holds its UTF-8 bytes whatever the build machine's code page, so the glyphs ImGui draws are right.
-// The expectations are escapes, not literals, so they can't drift with the source charset.
-TEST(FormatTest, NonAsciiLiteralsAreUtf8)
-{
-    EXPECT_EQ(std::string_view{"°"}, std::string_view{"\xC2\xB0"});
-    EXPECT_EQ(std::string_view{"×"}, std::string_view{"\xC3\x97"});
-    EXPECT_EQ(std::string_view{"≈"}, std::string_view{"\xE2\x89\x88"});
-    EXPECT_EQ(std::string_view{"—"}, std::string_view{"\xE2\x80\x94"});
-    EXPECT_EQ(UI::Format::formatCelsius(65.0),
-              "65\xC2\xB0"
-              "C");
 }
 
 TEST(FormatTest, FormatMegahertzIsWholeMegahertz)

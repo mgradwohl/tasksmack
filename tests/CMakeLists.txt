@@ -144,6 +144,7 @@ set(COMMON_TEST_SOURCES
     UI/test_ChartGeometryBudget.cpp
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
+    UI/test_SourceEncoding.cpp
     UI/test_RenderMetrics.cpp
     UI/test_RenderMetricsOverlay.cpp
     UI/test_RateAxis.cpp
