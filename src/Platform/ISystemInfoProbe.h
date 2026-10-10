@@ -189,6 +189,14 @@ struct NvmeHealth
     std::uint64_t mediaErrors = 0;          ///< Unrecovered data integrity errors (the low 64 bits)
 };
 
+/// An ATA drive's SMART health (#1631): Linux, through udisks2.
+struct AtaHealth
+{
+    bool failing = false;                      ///< The drive's own SMART assessment predicts failure
+    std::optional<std::uint64_t> badSectors;   ///< Reallocated plus pending sectors, when reported
+    std::optional<std::uint64_t> powerOnHours; ///< When reported
+};
+
 /// One physical disk (#1517). A string the probe couldn't read is empty and a size 0.
 struct PhysicalDisk
 {
@@ -200,7 +208,8 @@ struct PhysicalDisk
     std::string firmware; ///< The firmware revision
     std::string serial;   ///< An identifier
     std::optional<int> temperatureCelsius;
-    std::optional<NvmeHealth> health;    ///< Windows: NVMe drives, when the health log could be read
+    std::optional<NvmeHealth> health;    ///< NVMe drives, when the health log could be read (Linux: through udisks2, #1631)
+    std::optional<AtaHealth> ataHealth;  ///< Linux: ATA drives' SMART status, through udisks2 (#1631)
     std::string healthUnavailableReason; ///< Why health is missing; empty when it isn't read for this disk at all
 };
 

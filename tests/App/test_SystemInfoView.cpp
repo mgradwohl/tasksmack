@@ -804,6 +804,11 @@ TEST(SystemInfoSectionsTest, FormatsStorageValues)
               "3% used, 100% spare left, 0 media errors");
     EXPECT_EQ(SystemInfo::formatNvmeHealth({.criticalWarning = 4, .availableSparePercent = 9, .percentageUsed = 101, .mediaErrors = 2}),
               "Critical warning (0x04), 101% used, 9% spare left, 2 media errors");
+    EXPECT_EQ(SystemInfo::formatAtaHealth({.failing = false, .badSectors = 0, .powerOnHours = 12345}),
+              "SMART OK, 0 bad sectors, 12345 power-on hours");
+    EXPECT_EQ(SystemInfo::formatAtaHealth({.failing = true, .badSectors = 1, .powerOnHours = std::nullopt}),
+              "Failing (the drive's SMART assessment predicts failure), 1 bad sector");
+    EXPECT_EQ(SystemInfo::formatAtaHealth({}), "SMART OK");
     EXPECT_EQ(SystemInfo::formatVolume(storage.volumes[0]), "Windows, NTFS, 100 GiB free of 400 GiB (75% used)");
     EXPECT_EQ(SystemInfo::formatVolume(storage.volumes[1]), "network, size not read");
     EXPECT_EQ(SystemInfo::formatVolume({.mountPoint = "/home",
@@ -861,6 +866,14 @@ TEST(SystemInfoSectionsTest, StorageRowsLinuxAndUnreadable)
     ASSERT_NE(findRow(section, "sda health"), nullptr);
     EXPECT_FALSE(findRow(section, "sda health")->available());
     EXPECT_EQ(findRow(section, "sda health")->unavailableReason, "SMART status needs udisks2");
+
+    // An ATA drive's SMART status through udisks2 (#1631).
+    Platform::StorageInfo smartStorage = linuxStorage;
+    smartStorage.disks[0].healthUnavailableReason.clear();
+    smartStorage.disks[0].ataHealth = Platform::AtaHealth{.failing = false, .badSectors = 0, .powerOnHours = 100};
+    const Section smart = SystemInfo::buildStorageSection(smartStorage);
+    ASSERT_NE(findRow(smart, "sda health"), nullptr);
+    EXPECT_EQ(findRow(smart, "sda health")->value, "SMART OK, 0 bad sectors, 100 power-on hours");
     EXPECT_FALSE(findRow(section, "sda")->available()); // nothing known about it
     EXPECT_FALSE(findRow(section, "Volumes")->available());
     EXPECT_EQ(findRow(section, "Volumes")->unavailableReason, "/proc/self/mountinfo couldn't be read");
