@@ -4,10 +4,12 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #ifdef TASKSMACK_HAS_SDBUS
 #include <array>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
@@ -66,6 +68,27 @@ class Bus
     sd_bus* m_Bus = nullptr;
 };
 
+/// Opens @p bus on the system bus with CALL_TIMEOUT_USEC on every call; sd_bus_open_system()'s result.
+[[nodiscard]] int openSystemBus(Bus& bus)
+{
+    const int result = sd_bus_open_system(bus.out());
+    if (result >= 0)
+    {
+        (void) sd_bus_set_method_call_timeout(bus.get(), CALL_TIMEOUT_USEC);
+    }
+    return result;
+}
+
+/// Whether a call failed by running out of time rather than with an answer.
+[[nodiscard]] bool timedOut(const sd_bus_error& error, int result) noexcept
+{
+    const auto named = [&error](std::string_view name)
+    {
+        return error.name != nullptr && name == error.name;
+    };
+    return result == -ETIMEDOUT || named("org.freedesktop.DBus.Error.Timeout") || named("org.freedesktop.DBus.Error.NoReply");
+}
+
 /// The Manager's unsigned 64-bit property @p name into @p value; the error text when it fails.
 [[nodiscard]] std::string readManagerUint64(sd_bus* bus, const char* name, std::uint64_t& value)
 {
@@ -73,7 +96,11 @@ class Bus
     const int result = sd_bus_get_property_trivial(
         bus, "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", name, &error, 't', &value);
     std::string text;
-    if (result < 0)
+    if (result < 0 && timedOut(error, result))
+    {
+        text = "systemd didn't answer in time";
+    }
+    else if (result < 0)
     {
         text = (error.message != nullptr) ? error.message
                                           : std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - read on one worker thread
@@ -88,7 +115,7 @@ BootTimestampsRead readBootTimestamps()
 {
     BootTimestampsRead read;
     Bus bus;
-    if (const int result = sd_bus_open_system(bus.out()); result < 0)
+    if (const int result = openSystemBus(bus); result < 0)
     {
         read.error =
             std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - as above
@@ -144,6 +171,11 @@ class BusError
         return &m_Error;
     }
 
+    [[nodiscard]] const sd_bus_error& raw() const noexcept
+    {
+        return m_Error;
+    }
+
     [[nodiscard]] bool is(const char* name) const noexcept
     {
         return m_Error.name != nullptr && std::string_view(m_Error.name) == name;
@@ -194,7 +226,11 @@ struct UDisksSession
     Bus bus;
     bool opened = false;
     int openResult = 0;
+    bool timedOut = false; ///< A call ran out of time: the rest of this read doesn't ask again (#1689)
 };
+
+/// What a disk says once udisks2 has stopped answering.
+constexpr const char* UDISKS_TIMED_OUT = "udisks2 didn't answer in time, so SMART status wasn't read";
 
 /// A trivial-typed udisks2 property into @p value.
 template<typename T>
@@ -207,6 +243,10 @@ getTrivial(sd_bus* bus, const std::string& path, const char* interface, const ch
 /// Why udisks2 couldn't answer for a disk, in the user's terms.
 [[nodiscard]] std::string udisksError(const BusError& error, int result)
 {
+    if (timedOut(error.raw(), result))
+    {
+        return UDISKS_TIMED_OUT;
+    }
     if (error.is("org.freedesktop.DBus.Error.ServiceUnknown") || error.is("org.freedesktop.DBus.Error.NameHasNoOwner"))
     {
         return "udisks2 isn't running, so SMART status can't be read";
@@ -263,7 +303,7 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
     int result = sd_bus_call_method(bus, UDISKS, drive.c_str(), UDISKS_NVME, "SmartGetAttributes", error.get(), reply.out(), "a{sv}", 0);
     if (result < 0)
     {
-        smart.attributesError = error.text(result);
+        smart.attributesError = timedOut(error.raw(), result) ? std::string("it didn't answer in time") : error.text(result);
         return;
     }
     result = sd_bus_message_enter_container(reply.get(), 'a', "{sv}");
@@ -329,13 +369,13 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
     return true;
 }
 
-[[nodiscard]] LinuxDiskSmart::DriveSmartRead readDriveSmart(UDisksSession& session, const std::string& blockName)
+[[nodiscard]] LinuxDiskSmart::DriveSmartRead readDriveSmartOnce(UDisksSession& session, const std::string& blockName)
 {
     LinuxDiskSmart::DriveSmartRead read;
     if (!session.opened)
     {
         session.opened = true;
-        session.openResult = sd_bus_open_system(session.bus.out());
+        session.openResult = openSystemBus(session.bus);
     }
     if (session.openResult < 0)
     {
@@ -384,6 +424,16 @@ void readNvmeAttributes(sd_bus* bus, const std::string& drive, LinuxDiskSmart::D
         smart.kind = LinuxDiskSmart::DriveSmart::Kind::Nvme;
     }
     read.smart = std::move(smart);
+    return read;
+}
+[[nodiscard]] LinuxDiskSmart::DriveSmartRead readDriveSmart(UDisksSession& session, const std::string& blockName)
+{
+    if (session.timedOut)
+    {
+        return {.smart = std::nullopt, .error = UDISKS_TIMED_OUT};
+    }
+    LinuxDiskSmart::DriveSmartRead read = readDriveSmartOnce(session, blockName);
+    session.timedOut = read.error == UDISKS_TIMED_OUT;
     return read;
 }
 } // namespace

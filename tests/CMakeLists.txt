@@ -265,6 +265,7 @@ set(COMMON_TEST_SOURCES
     App/test_SystemInfoView.cpp
     App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
+    App/test_SettingsDialogRender.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
@@ -363,6 +364,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_SystemdBus.cpp
+    Platform/test_SystemdJournal.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
     Platform/test_LinuxDiskProbe.cpp
@@ -425,6 +427,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/SystemdBus.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/SystemdJournal.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
@@ -525,6 +528,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp

@@ -29,6 +29,14 @@ TEST(SystemdBusTest, ReadsThisMachinesBootTimestampsOrSaysWhyNot)
     }
 }
 
+// #1689: every system-bus call gives up well before sd-bus's own 25 s default, so a hung service can't
+// hold the System Information read for minutes (several calls per disk).
+TEST(SystemdBusTest, CallsGiveUpWithinSeconds)
+{
+    EXPECT_GT(SystemdBus::CALL_TIMEOUT_USEC, 0U);
+    EXPECT_LE(SystemdBus::CALL_TIMEOUT_USEC, 5'000'000U);
+}
+
 // udisks2 (#1631): this machine's disks' SMART data, or why not (no udisks2 under WSL or in CI).
 TEST(SystemdBusTest, ReadsAThisMachineDisksSmartDataOrSaysWhyNot)
 {

@@ -214,6 +214,9 @@ The hooks (configured in `.pre-commit-config.yaml`) include:
 - **check-json**: Validate JSON syntax
 - **check-added-large-files**: Prevent large files (>500KB)
 - **check-merge-conflict**: Detect merge conflict markers
+- **fix-byte-order-marker**: Remove UTF-8 byte-order marks
+- **check-utf8**: Fail on text files that aren't valid UTF-8 (`tools/check-utf8.py`) -- see
+  [Text encoding and locale](#text-encoding-and-locale)
 - **shellcheck**: Lint shell scripts
 - **actionlint**: Lint GitHub Actions workflows (expressions, contexts, `needs:`, inputs, and warning-level
   shellcheck findings in `run:` blocks when shellcheck is installed; configured in `.github/actionlint.yaml`)
@@ -301,6 +304,35 @@ it on any new target. Third-party dependencies keep their own settings.
   and theme TOML, `/proc` and `/sys`, command-line values, structured log fields and the Render
   Metrics overlay's "Copy CSV" (profiling data for scripts, not a user export). Never use
   `std::stod`/`strtod`/`atof`/`sscanf` or a default-locale stream on text you read back.
+
+**Files and tooling:**
+
+- **Every text file in the repository is UTF-8 without a BOM**, with LF line endings
+  (`.editorconfig`, `.gitattributes`). No UTF-16 files, `.rc` resources included:
+  `assets/tasksmack.rc.in` is ASCII. llvm-rc rejects non-ASCII string literals unless it's given
+  `/C 65001`, so add that flag if a resource ever needs non-ASCII text.
+- **pre-commit enforces it.** `fix-byte-order-marker` strips UTF-8 BOMs, and the local `check-utf8`
+  hook (`tools/check-utf8.py`) fails on any staged text file that doesn't decode as strict UTF-8,
+  reporting `file:line:column`. Binary files (the types `.gitattributes` marks binary) and the fuzz
+  corpora under `tests/fuzz/corpus/` are skipped.
+- **PowerShell scripts need PowerShell 7 (`pwsh`)** and name the encoding on every write:
+  `Set-Content`/`Add-Content`/`Out-File -Encoding utf8`, which in PowerShell 7 means UTF-8
+  without a BOM (`utf8NoBOM` is the same thing). Use `-Encoding ascii` only for `.cmd` stubs that
+  `cmd.exe` reads. A script that parses a native tool's output (git, cmake, clang-tidy, llvm-cov)
+  sets the console encoding to UTF-8 first, so PowerShell decodes that output as UTF-8 rather
+  than the OEM code page:
+
+  ```powershell
+  $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
+  ```
+
+  Pass `-c core.quotePath=false` to git commands that list paths, so non-ASCII names come out as
+  UTF-8 rather than quoted octal escapes.
+- **Python tools** pass `encoding="utf-8"` to every `open()`/`read_text()`/`write_text()` and to
+  every `subprocess` call that reads text (add `errors="replace"` for output from tools outside the
+  repository). Wrappers that start them run Python in UTF-8 mode: `python -I -X utf8 ...` (`-I`
+  ignores `PYTHONUTF8`), or `export PYTHONUTF8="${PYTHONUTF8:-1}"` where Python isn't isolated.
 
 ### Cleaning Build Artifacts
 

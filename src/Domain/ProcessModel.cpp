@@ -387,6 +387,9 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     double aggHandles = 0.0;
     double aggPower = 0.0;
 
+    const bool singleLineMemosTrusted = !m_SnapshotBuildInterrupted;
+    m_SnapshotBuildInterrupted = true;
+
     for (const auto& current : counters)
     {
         const ProcessIdentity key{.pid = current.pid, .startTime = current.startTimeTicks};
@@ -429,6 +432,19 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                                         timeDeltaUs,
                                         m_Capabilities.pageFaultCountBits);
         snapshot.peakMemoryBytes = state.peakRss;
+
+        // Sanitized here rather than in each platform probe: both /proc/[pid]/cmdline (which uses NUL
+        // only as the argument *separator*) and the Windows PEB command line can carry a newline inside
+        // an argument, and a process controls its own argv. See SingleLineText.h for why that breaks the
+        // process table (#919). Each refresh lists every process, so the single-line form is kept per
+        // process and derived again only when the raw string differs from the last refresh's (#1624).
+        // previous (state.counters) holds the raw strings the memos last saw -- unless the last refresh
+        // threw part way (m_SnapshotBuildInterrupted).
+        const bool comparable = previous != nullptr && singleLineMemosTrusted;
+        state.name.update(current.name, comparable && previous->name == current.name);
+        state.command.update(current.command, comparable && previous->command == current.command);
+        snapshot.name = state.name.value(current.name);
+        snapshot.command = state.command.value(current.command);
 
         // Network rates are the byte delta over the last interval (#1036). They were (bytes now -
         // bytes when first seen) / time since first seen: a lifetime average, so a burst decayed
@@ -485,6 +501,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // Store current counters so next refresh can compute deltas.
         state.counters = current;
     }
+    m_SnapshotBuildInterrupted = false;
 
     // Prune dead processes: a single erase_if on one map instead of the previous
     // two separate erase_if calls on m_PrevCounters and m_PeakRss.
@@ -1048,12 +1065,7 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     ProcessSnapshot snapshot;
     snapshot.pid = current.pid;
     snapshot.parentPid = current.parentPid;
-    // Sanitized here rather than in each platform probe: both /proc/[pid]/cmdline (which uses NUL
-    // only as the argument *separator*) and the Windows PEB command line can carry a newline inside
-    // an argument, and a process controls its own argv. See SingleLineText.h for why that breaks the
-    // process table (#919).
-    snapshot.name = toSingleLine(current.name);
-    snapshot.command = toSingleLine(current.command);
+    // name and command are set by computeSnapshotsLocked(), from the process's SingleLineMemos.
     snapshot.user = current.user;
     snapshot.displayState = translateState(current.state);
     snapshot.status = current.status;                 // Pass through status from platform probe

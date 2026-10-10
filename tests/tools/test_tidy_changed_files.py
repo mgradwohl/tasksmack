@@ -77,7 +77,7 @@ class TidyChangedFilesTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def git(self, *args: str) -> str:
-        return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True, text=True).stdout
+        return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True, encoding="utf-8").stdout
 
     def write(self, path: str, text: str) -> None:
         target = self.repo / path

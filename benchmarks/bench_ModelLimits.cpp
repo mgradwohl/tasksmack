@@ -25,6 +25,7 @@
 #include "Domain/GPUModel.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/SingleLineText.h"
 #include "Domain/StorageModel.h"
 #include "Domain/SystemModel.h"
 #include "Mocks/MockDiskProbe.h"
@@ -785,15 +786,29 @@ struct ProcessFixture
     std::uint64_t totalCpuTime = 0;
     std::uint64_t step = 0;
 
-    explicit ProcessFixture(std::size_t processes)
+    /// With @p withCommands, each process gets a heap-sized name and a browser-style command line, as
+    /// a real process table has (#1624); every 100th command carries a newline for toSingleLine() to
+    /// collapse. Without it, names are short and commands empty.
+    explicit ProcessFixture(std::size_t processes, bool withCommands = false)
     {
         model = std::make_unique<Domain::ProcessModel>(std::make_unique<TestMocks::MockProcessProbe>(), [clock = now] { return *clock; });
         counters.reserve(processes);
         for (std::size_t i = 0; i < processes; ++i)
         {
             const auto pid = static_cast<std::int32_t>(100 + i);
-            counters.push_back(
-                TestMocks::makeProcessCounters(pid, "proc" + std::to_string(i), 'S', 0, 0, 1000 + i, (4ULL + (i % 64)) << 20U));
+            const std::string name = withCommands ? "firefox-contentproc-" + std::to_string(i) : "proc" + std::to_string(i);
+            auto process = TestMocks::makeProcessCounters(pid, name, 'S', 0, 0, 1000 + i, (4ULL + (i % 64)) << 20U);
+            if (withCommands)
+            {
+                process.command = "/usr/lib/firefox/firefox -contentproc -childID " + std::to_string(i) +
+                                  " -isForBrowser -prefsLen 31337 -prefMapSize 244787 -jsInitLen 277276"
+                                  " -parentBuildID 20260901000000 -appDir /usr/lib/firefox/browser 4242 true tab";
+                if (i % 100 == 0)
+                {
+                    process.command += "\n--injected-line";
+                }
+            }
+            counters.push_back(std::move(process));
         }
         sampleOnce(); // Seeds the previous counters, so later samples compute deltas
     }
@@ -826,5 +841,38 @@ void BM_ProcessModel_Cardinality_Publish(benchmark::State& state)
     state.counters["processes"] = benchmark::Counter(static_cast<double>(fixture.model->snapshots().size()));
 }
 BENCHMARK(BM_ProcessModel_Cardinality_Publish)->ArgName("processes")->Arg(500)->Arg(2'000)->Arg(10'000)->Unit(benchmark::kMicrosecond);
+
+// One ProcessModel refresh with range(0) processes that have realistic names and command lines
+// (#1624): the snapshot build sanitizes both for every process on every refresh, so this is the
+// figure that moves with Domain::toSingleLine and the per-process reuse of its result.
+void BM_ProcessModel_Snapshot_NamesAndCommands(benchmark::State& state)
+{
+    auto& fixture = cachedFixture<ProcessFixture>(
+        std::pair{state.range(0), true}, [&] { return std::make_unique<ProcessFixture>(static_cast<std::size_t>(state.range(0)), true); });
+    for (auto _ : state)
+    {
+        fixture.sampleOnce();
+    }
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(fixture.model->snapshots().size()));
+}
+BENCHMARK(BM_ProcessModel_Snapshot_NamesAndCommands)->ArgName("processes")->Arg(1'000)->Arg(5'000)->Unit(benchmark::kMicrosecond);
+
+// Domain::toSingleLine on one browser-style command line, as typed (range(0) == 0, the common case)
+// and with a newline in it (range(0) == 1) (#1624).
+void BM_ToSingleLine(benchmark::State& state)
+{
+    std::string command = "/usr/lib/firefox/firefox -contentproc -childID 42 -isForBrowser -prefsLen 31337"
+                          " -prefMapSize 244787 -jsInitLen 277276 -parentBuildID 20260901000000 -appDir /usr/lib/firefox/browser";
+    if (state.range(0) != 0)
+    {
+        command += "\n--injected-line";
+    }
+    for (auto _ : state)
+    {
+        auto single = Domain::toSingleLine(command);
+        benchmark::DoNotOptimize(single.data());
+    }
+}
+BENCHMARK(BM_ToSingleLine)->ArgName("control")->Arg(0)->Arg(1);
 
 } // namespace

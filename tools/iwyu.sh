@@ -186,6 +186,9 @@ fi
 if $VERBOSE; then
     echo "Python 3 found."
 fi
+# The embedded helpers read compile_commands.json as UTF-8 whatever the locale (#1648); an explicit
+# PYTHONUTF8 wins.
+export PYTHONUTF8="${PYTHONUTF8:-1}"
 
 # Version check: warn if IWYU and Clang versions are mismatched
 check_version_compatibility() {
@@ -404,7 +407,7 @@ compile_commands_path = sys.argv[1]
 target_file = sys.argv[2]
 
 try:
-    with open(compile_commands_path) as f:
+    with open(compile_commands_path, encoding='utf-8') as f:
         commands = json.load(f)
 except (FileNotFoundError, json.JSONDecodeError) as e:
     sys.stderr.write(f'Error reading compile_commands.json: {e}\n')

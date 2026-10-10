@@ -356,7 +356,11 @@ def cpu_model() -> str | None:
     if sys.platform == "darwin":
         try:
             result = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=False
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()

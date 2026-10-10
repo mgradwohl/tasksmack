@@ -108,7 +108,7 @@ try {
     $controlDir = Join-Path $root 'control'
     New-Item -ItemType Directory -Path $controlDir | Out-Null
     Assert-True ((Get-CollectorErrorDetail -ControlDirectory $controlDir) -eq '') 'No error file means no detail'
-    Set-Content -LiteralPath (Join-Path $controlDir 'collector-error.txt') -Value 'wpr -stop failed'
+    Set-Content -LiteralPath (Join-Path $controlDir 'collector-error.txt') -Encoding utf8 -Value 'wpr -stop failed'
     Assert-True ((Get-CollectorErrorDetail -ControlDirectory $controlDir) -eq ' Collector error: wpr -stop failed') 'Recorded error detail'
 
     # The orchestrator fails fast when the collector exits before it starts recording.
@@ -117,11 +117,11 @@ try {
     $exited.WaitForExit()
     Assert-Throws { Wait-CollectorMarker -Path (Join-Path $root 'never') -TimeoutSeconds 30 -Collector $exited } 'exited (code 5)'
     # A collector that recorded why it failed has that reason reported.
-    Set-Content -LiteralPath (Join-Path $root 'collector-error.txt') -Value 'wpr: profile not found'
+    Set-Content -LiteralPath (Join-Path $root 'collector-error.txt') -Encoding utf8 -Value 'wpr: profile not found'
     Assert-Throws { Wait-CollectorMarker -Path (Join-Path $root 'never') -TimeoutSeconds 30 -Collector $exited } 'Collector error: wpr: profile not found'
     Assert-Throws { Wait-CollectorMarker -Path (Join-Path $root 'never') -TimeoutSeconds 1 } 'Timed out'
     $marker = Join-Path $root 'started'
-    Set-Content -LiteralPath $marker -Value '{}'
+    Set-Content -LiteralPath $marker -Encoding utf8 -Value '{}'
     Wait-CollectorMarker -Path $marker -TimeoutSeconds 1
 
     # An app still running at the end names the wait that actually ran: 30 s after a forced stop
@@ -227,7 +227,7 @@ try {
             param([Parameter(Position = 0)][object]$Object)
             $text = "$Object"
             if ($text -like 'Recording for *' -or $text -like 'Exercise the application*') {
-                Set-Content -LiteralPath $releaseFile -Value 'go'
+                Set-Content -LiteralPath $releaseFile -Encoding utf8 -Value 'go'
             }
             Microsoft.PowerShell.Utility\Write-Host $text
         }
@@ -306,7 +306,7 @@ try {
     }
     # The script's own dry-run trace start does not release the "exits later" stub, so release it
     # up front: it then exits with 3 during the warm-up or the window, and either is a failed capture.
-    Set-Content -LiteralPath $releaseFile -Value 'go'
+    Set-Content -LiteralPath $releaseFile -Encoding utf8 -Value 'go'
     foreach ($case in @(@{ App = $exitNow0; Name = 'now0' }, @{ App = $exitNow3; Name = 'now3' }, @{ App = $exitLater3; Name = 'later3' })) {
         $run = Invoke-DryRun -App $case.App -Name $case.Name -DurationSeconds 30
         Assert-True ($run.ExitCode -ne 0) "A crashing app ($($case.Name)) must fail the script: $($run.Output)"
@@ -365,7 +365,7 @@ try {
             Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
             $normal = Start-StubCollector -Name 'normal' -TimeoutSeconds 120 -StartExit 0
             Wait-CollectorMarker -Path (Join-Path $normal.Control 'collector-started.json') -TimeoutSeconds 60 -Collector $normal.Process
-            Set-Content -LiteralPath (Join-Path $normal.Control 'stop-requested') -Value 'now'
+            Set-Content -LiteralPath (Join-Path $normal.Control 'stop-requested') -Encoding utf8 -Value 'now'
             Assert-True ($normal.Process.WaitForExit(60000)) 'Collector did not exit after the stop request'
             Assert-True ($normal.Process.ExitCode -eq 0) "Collector exit code $($normal.Process.ExitCode)"
             Assert-True (Test-Path -LiteralPath (Join-Path $normal.Control 'collector-done.json')) 'No done marker'
@@ -406,11 +406,11 @@ try {
                 Assert-True (-not (Test-Path -LiteralPath $failFlag)) "${What}: the failing stop was never attempted"
             }
             Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
-            Set-Content -LiteralPath $failFlag -Value 'fail'
+            Set-Content -LiteralPath $failFlag -Encoding utf8 -Value 'fail'
             $env:WPR_STUB_START_EXIT = '0'
             $retried = Start-StubCollector -Name 'stopfail' -TimeoutSeconds 120 -StartExit 0
             Wait-CollectorMarker -Path (Join-Path $retried.Control 'collector-started.json') -TimeoutSeconds 60 -Collector $retried.Process
-            Set-Content -LiteralPath (Join-Path $retried.Control 'stop-requested') -Value 'now'
+            Set-Content -LiteralPath (Join-Path $retried.Control 'stop-requested') -Encoding utf8 -Value 'now'
             Assert-True ($retried.Process.WaitForExit(60000)) 'Collector hung after a failed stop'
             Assert-True ($retried.Process.ExitCode -ne 0) 'A failed wpr -stop must fail the collector'
             Assert-StopRetried 'collector'
@@ -434,7 +434,7 @@ try {
 
             foreach ($case in @(@{ Mode = 'app'; App = $runForever }, @{ Mode = 'bench'; App = $exitNow0 })) {
                 Remove-Item -LiteralPath $stubLog -ErrorAction SilentlyContinue
-                Set-Content -LiteralPath $failFlag -Value 'fail'
+                Set-Content -LiteralPath $failFlag -Encoding utf8 -Value 'fail'
                 $run = Invoke-ElevatedRun -Mode $case.Mode -App $case.App -Name "er-stopfail-$($case.Mode)"
                 Assert-True ($run.ExitCode -ne 0 -and $run.Output -like '*exit code 7*') "Elevated $($case.Mode) run with a failed stop must fail: $($run.Output)"
                 Assert-True ($run.Output -notmatch 'ETW_TRACE=') "Elevated $($case.Mode) run with a failed stop must not report a trace"

@@ -39,6 +39,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# clang-tidy, git and cmake write UTF-8 (paths, diagnostics); decode their output as UTF-8 (#1648).
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
@@ -104,13 +108,13 @@ if ($LASTEXITCODE -ne 0 -and $ShowDetails) {
 }
 if (-not (Test-Path $CompileCommandsTidy)) {
     $null = New-Item -ItemType Directory -Path $TidyCompdbDir -Force
-    $content = Get-Content $CompileCommandsJson -Raw
+    $content = Get-Content $CompileCommandsJson -Raw -Encoding utf8
     $content = $content -replace '@[^ ]*\.modmap', ''
     $content = $content -replace '-fmodule-output=[^ ]*', ''
     $content = $content -replace '-Xclang -include-pch -Xclang [^ ]*', ''
     $content = $content -replace '-Xclang -include -Xclang [^ ]*cmake_pch[^ ]*', ''
     $content = $content -replace '-Xclang -fno-pch-timestamp', ''
-    Set-Content $CompileCommandsTidy -Value $content -NoNewline
+    Set-Content $CompileCommandsTidy -Value $content -NoNewline -Encoding utf8
 }
 
 # Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
@@ -122,7 +126,7 @@ $Python = @("python", "python3") | ForEach-Object { Get-Command $_ -CommandType 
 if (-not $Python) {
     Write-Warning "python not found; compile database not de-duplicated (files may be analyzed more than once)."
 } else {
-    $dedupeOutput = & $Python.Source -I (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
+    $dedupeOutput = & $Python.Source -I -X utf8 (Join-Path $ScriptDir "dedupe-compile-commands.py") $CompileCommandsTidy 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "compile database not de-duplicated (files may be analyzed more than once): $dedupeOutput"
     } elseif ($ShowDetails) {
@@ -136,7 +140,8 @@ if ($ChangedOnly) {
     if ($ShowDetails) {
         Write-Host "Getting changed files from git..."
     }
-    $gitOutput = & git diff --name-only HEAD 2>&1
+    # core.quotePath=false: non-ASCII paths come out as UTF-8 rather than quoted octal escapes.
+    $gitOutput = & git -c core.quotePath=false diff --name-only HEAD 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "Failed to get changed files from git. Falling back to all files."
         $ChangedOnly = $false

@@ -30,6 +30,23 @@ repos:
         args: [--maxkb=500]
       - id: check-merge-conflict
         name: Check for merge conflicts
+      # Text is UTF-8 without a BOM (#1648; CONTRIBUTING.md "Text encoding and locale").
+      - id: fix-byte-order-marker
+        name: Remove UTF-8 byte-order marks
+        exclude: '^CHANGELOG\.md$|^tests/fuzz/corpus/'
+
+  # UTF-8 decode check (#1648): every staged text file must decode as strict UTF-8; failures are
+  # reported as file:line. pre-commit-hooks has no such hook, so it's a local script. `types: [text]`
+  # leaves out binary assets (the same set .gitattributes marks binary); fuzz corpora are raw bytes.
+  - repo: local
+    hooks:
+      - id: check-utf8
+        name: Check text files are UTF-8
+        # language: python gives the hook its own interpreter, so 'python' resolves on every OS.
+        entry: python -I -X utf8 tools/check-utf8.py
+        language: python
+        types: [text]
+        exclude: '^tests/fuzz/corpus/'
 
   # C++ formatting with clang-format
   - repo: https://github.com/pre-commit/mirrors-clang-format

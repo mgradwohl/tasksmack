@@ -15,6 +15,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <atomic>
+#include <latch>
 #include <optional>
 #include <string>
 #include <utility>
@@ -109,26 +111,98 @@ TEST(ProcessOpenFilesViewTest, ScansOnlyWhenAskedAndNeverOnATimer)
     EXPECT_TRUE(view.rows().empty());
 }
 
+/// A reader whose scan says when it has begun and then waits until the test releases it, so the test
+/// acts while a scan really is in flight (#1683). It must outlive the view using it.
+class GatedOpenFilesReader final : public Platform::IProcessOpenFilesReader
+{
+  public:
+    [[nodiscard]] bool hasOpenFiles() const override
+    {
+        return true;
+    }
+
+    [[nodiscard]] OpenFilesReadResult readOpenFiles(const Platform::ProcessTarget& /*target*/) override
+    {
+        m_Entered.count_down();
+        m_Release.wait();
+        return linuxFiles();
+    }
+
+    /// Blocks until the worker is inside readOpenFiles().
+    void waitUntilEntered()
+    {
+        m_Entered.wait();
+    }
+
+    /// Lets the scan finish. Safe to call more than once.
+    void release()
+    {
+        if (!m_Released.exchange(true))
+        {
+            m_Release.count_down();
+        }
+    }
+
+  private:
+    std::latch m_Entered{1};
+    std::latch m_Release{1};
+    std::atomic<bool> m_Released{false};
+};
+
+/// Releases the reader when a test returns early on a failed ASSERT, so the view's destructor (which
+/// waits for the scan) cannot hang. Declared after the view, so it is destroyed before it.
+class ReleaseOnExit
+{
+  public:
+    explicit ReleaseOnExit(GatedOpenFilesReader& reader) noexcept : m_Reader(&reader)
+    {}
+    ReleaseOnExit(const ReleaseOnExit&) = delete;
+    ReleaseOnExit& operator=(const ReleaseOnExit&) = delete;
+    ReleaseOnExit(ReleaseOnExit&&) = delete;
+    ReleaseOnExit& operator=(ReleaseOnExit&&) = delete;
+    ~ReleaseOnExit()
+    {
+        m_Reader->release();
+    }
+
+  private:
+    GatedOpenFilesReader* m_Reader;
+};
+
 TEST(ProcessOpenFilesViewTest, ASelectionChangeOrClosingMidScanDropsTheScan)
 {
-    ProcessOpenFilesView view;
-    TestMocks::MockProcessOpenFilesReader reader;
-    reader.setResult(linuxFiles());
-
-    view.requestScan();
-    view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.onSelectionChanged();
-    view.finishPendingRead(TARGET);
-    EXPECT_FALSE(view.hasRead());
-
-    view.requestScan();
-    view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)); // not drawn open this frame: closed mid-scan
-    view.finishPendingRead(TARGET);
-    EXPECT_FALSE(view.hasRead());
-    EXPECT_FALSE(view.scanning());
+    {
+        // Another process is selected while the scan is blocked inside the reader.
+        GatedOpenFilesReader reader;
+        ProcessOpenFilesView view;
+        const ReleaseOnExit releaser(reader);
+        view.requestScan();
+        view.markDrawnOpen();
+        ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+        reader.waitUntilEntered(); // mid-scan for certain
+        view.onSelectionChanged();
+        reader.release();
+        view.finishPendingRead(TARGET); // waits for the worker
+        EXPECT_FALSE(view.hasRead());
+        EXPECT_FALSE(view.scanning()); // back to the scan button
+        EXPECT_TRUE(view.rows().empty());
+    }
+    {
+        // The section is closed (a frame not drawn open) while the scan is blocked inside the reader.
+        GatedOpenFilesReader reader;
+        ProcessOpenFilesView view;
+        const ReleaseOnExit releaser(reader);
+        view.requestScan();
+        view.markDrawnOpen();
+        ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+        reader.waitUntilEntered();
+        EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)); // not drawn open this frame: closed mid-scan
+        reader.release();
+        view.finishPendingRead(TARGET);
+        EXPECT_FALSE(view.hasRead());
+        EXPECT_FALSE(view.scanning());
+        EXPECT_TRUE(view.rows().empty());
+    }
 }
 
 TEST(ProcessOpenFilesViewTest, SortsByDescriptorByDefaultAndFilters)

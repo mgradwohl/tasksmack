@@ -81,7 +81,7 @@ $pe = Get-PeCodeViewInfo -Path $hostExe
 Assert-True ($null -ne $pe -and $pe.Guid -match '^[0-9a-f]{8}-' -and $pe.Age -ge 1 -and $pe.PdbLeaf -like '*.pdb') "No CodeView record read from $hostExe"
 $notPe = [IO.Path]::GetTempFileName()
 try {
-    Set-Content -LiteralPath $notPe -Value 'not a PE file'
+    Set-Content -LiteralPath $notPe -Encoding utf8 -Value 'not a PE file'
     Assert-True ($null -eq (Get-PeCodeViewInfo -Path $notPe)) 'A non-PE file must give no record'
 }
 finally { Remove-Item -LiteralPath $notPe -Force -ErrorAction SilentlyContinue }
@@ -219,7 +219,7 @@ $store = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-symstore-$([guid]::NewG
 try {
     $cached = Join-Path $store 'ntkrnlmp.pdb\0B3439338F40DDCD568A30E465A9576B1\ntkrnlmp.pdb'
     New-Item -ItemType Directory -Path (Split-Path -Parent $cached) -Force | Out-Null
-    Set-Content -LiteralPath $cached -Value 'pdb'
+    Set-Content -LiteralPath $cached -Encoding utf8 -Value 'pdb'
     # Only the kernel's PDB is considered; an already-cached one is not fetched again.
     $saved = @(Save-KernelSymbols -TraceIds @($ids[0], $kernelId) -StoreDirectory $store -ServerUrl 'https://invalid.example')
     Assert-True ($saved.Count -eq 1 -and $saved[0].Pdb -eq 'ntkrnlmp.pdb' -and $saved[0].Status -eq 'cached') "Kernel-only fetch: $($saved | Out-String)"

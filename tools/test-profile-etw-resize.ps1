@@ -62,7 +62,7 @@ try {
         param([string]$Exe, [string[]]$Arguments, [string]$Log)
         $script:calls.Add(@{ Exe = $Exe; Arguments = $Arguments })
         if ($script:failOn -and $Arguments -contains $script:failOn) { throw "simulated $script:failOn failure" }
-        'mock diagnostic output' | Set-Content -LiteralPath $Log
+        'mock diagnostic output' | Set-Content -LiteralPath $Log -Encoding utf8
     }
     function Get-Command { param($Name, $ErrorAction) @{ Source = "mock-$Name.exe" } }
     function Start-Sleep { param($Seconds) }
@@ -117,10 +117,10 @@ try {
     $script:elevated = $false
     $script:failOn = ''
     $file = Join-Path $run 'sample.exe'
-    'original' | Set-Content -LiteralPath $file
+    'original' | Set-Content -LiteralPath $file -Encoding utf8
     $manifest = @{ Files = @(@{ RelativePath = 'sample.exe'; Sha256 = (Get-FileHash $file).Hash }) }
     Assert-ResizeCaptureFiles $run $manifest
-    'changed' | Set-Content -LiteralPath $file
+    'changed' | Set-Content -LiteralPath $file -Encoding utf8
     Assert-Throws { Assert-ResizeCaptureFiles $run $manifest } 'artifact changed'
 
     # App launcher error must restore environment, preserve error and never claim completion.
@@ -145,8 +145,8 @@ try {
             'ResizePerfAnchor: pid=42 uiTid=7 clock=QPC frequency=10000000'
             'ResizePerfWallSummary: loops=10'
             'ResizePerfAnchor: pid=42 uiTid=7 clock=QPC frequency=10000000'
-        ) | Set-Content -LiteralPath $RedirectStandardOutput
-        'retained stderr' | Set-Content -LiteralPath $RedirectStandardError
+        ) | Set-Content -LiteralPath $RedirectStandardOutput -Encoding utf8
+        'retained stderr' | Set-Content -LiteralPath $RedirectStandardError -Encoding utf8
         $process = [pscustomobject]@{ Id = 42; ExitCode = 0 }
         $process | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($Timeout) return $true }
         return $process
@@ -162,7 +162,7 @@ try {
     Write-ResizeCaptureJson (Join-Path $run 'collector.json') @{
         State = 'saved'; StartUtc = $startUtc; StopRequestedUtc = [DateTimeOffset]::UtcNow.AddSeconds(1).ToString('o')
     }
-    'mock ETL' | Set-Content -LiteralPath (Join-Path $run 'trace.etl')
+    'mock ETL' | Set-Content -LiteralPath (Join-Path $run 'trace.etl') -Encoding utf8
     Invoke-ResizeCapture -Phase Check -RunDirectory $run
     Assert-True ((Get-Content (Join-Path $run 'check.json') -Raw | ConvertFrom-Json).SameRun) 'Check did not persist'
     Assert-True (@($script:calls | Where-Object { $_.Arguments -contains '-tle' }).Count -eq 0) 'Trace loss suppression requested'
@@ -170,7 +170,7 @@ try {
     Assert-Throws { Invoke-ResizeCapture -Phase Check -RunDirectory $run } 'simulated'
     Assert-True (-not (Get-Content (Join-Path $run 'check.json') -Raw | ConvertFrom-Json).SameRun) 'Stale successful Check survived decoder failure'
     $script:failOn = ''
-    'missing anchors' | Set-Content -LiteralPath (Join-Path $run 'stdout.log')
+    'missing anchors' | Set-Content -LiteralPath (Join-Path $run 'stdout.log') -Encoding utf8
     Assert-Throws { Invoke-ResizeCapture -Phase Check -RunDirectory $run } 'expected startup/shutdown'
 
     function Start-Process {
@@ -222,7 +222,7 @@ try {
     # Save request signalling, exercised directly so the bounded wait stays fast.
     $waitRun = New-TestRun
     Assert-True (-not (Wait-ResizeSaveRequest -RunDirectory $waitRun -TimeoutSeconds 1)) 'Wait reported a save nobody requested'
-    'now' | Set-Content -LiteralPath (Join-Path $waitRun 'save.request')
+    'now' | Set-Content -LiteralPath (Join-Path $waitRun 'save.request') -Encoding utf8
     Assert-True (Wait-ResizeSaveRequest -RunDirectory $waitRun -TimeoutSeconds 1) 'Wait missed an existing save request'
 
     # Collect -Buffering Ring must omit -filemode (that is what selects WPR's memory buffer)
@@ -284,8 +284,8 @@ try {
         'ResizePerfAnchor: pid=4242 uiTid=99 clock=QPC frequency=10000000'
         'ResizePerfAnchor: pid=4242 uiTid=99 clock=QPC frequency=10000000'
         'ResizePerfWallSummary: loops=10 loopMax=1.0 ms'
-    ) | Set-Content -LiteralPath (Join-Path $checkRun 'stdout.log')
-    'mock ETL' | Set-Content -LiteralPath (Join-Path $checkRun 'trace.etl')
+    ) | Set-Content -LiteralPath (Join-Path $checkRun 'stdout.log') -Encoding utf8
+    'mock ETL' | Set-Content -LiteralPath (Join-Path $checkRun 'trace.etl') -Encoding utf8
     Invoke-ResizeCapture -Phase Check -RunDirectory $checkRun
     $ringCheck = Get-Content -LiteralPath (Join-Path $checkRun 'check.json') -Raw | ConvertFrom-Json
     Assert-True $ringCheck.SameRun 'Ring Check rejected a valid ring run'

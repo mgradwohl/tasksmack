@@ -138,7 +138,8 @@ list_changed_files() {
         fi
     done
     {
-        git -C "$root" diff --name-only --diff-filter=d "$base" 2>/dev/null || true
-        git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true
+        # core.quotePath=false: non-ASCII paths come out as UTF-8 rather than quoted octal escapes.
+        git -C "$root" -c core.quotePath=false diff --name-only --diff-filter=d "$base" 2>/dev/null || true
+        git -C "$root" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null || true
     } | sort -u
 }

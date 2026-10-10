@@ -39,6 +39,10 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# git writes UTF-8 ref names, recorded in the manifest; decode its output as UTF-8 (#1648).
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
 # Native exit codes are read from $LASTEXITCODE (the benchmark's and git's). A session or profile
 # that enables native-command error promotion would otherwise make a failing benchmark throw before
 # its exit code is captured, skipping the manifest and the redaction of its partial output (#1423).

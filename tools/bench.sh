@@ -79,6 +79,9 @@ done
 
 mkdir -p "${OUT_DIR}"
 
+# The Python helpers read and write UTF-8 whatever the locale (#1648); an explicit PYTHONUTF8 wins.
+export PYTHONUTF8="${PYTHONUTF8:-1}"
+
 # The preset part of the output file names (#1445 review): a user or host name in the preset
 # becomes "user" / "host", so neither the files nor the manifest's result_file and --benchmark_out
 # carry it (tools/bench-manifest.py hide_name_identity). python3 is required anyway (see below).

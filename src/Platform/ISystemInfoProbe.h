@@ -448,7 +448,10 @@ struct CrashEvent
     std::string hangType;          ///< Windows 1002: "Quiesce", "Cross-thread", ...
     std::optional<std::uint32_t> pid;
     std::optional<std::uint32_t> uid; ///< Linux: the crashed process's user id
-    std::uint64_t coreBytes = 0;      ///< Linux: the core file's size on disk
+    std::uint64_t coreBytes = 0;      ///< Linux: the core file's size on disk, when it could be read
+    bool coreKept = false;            ///< Linux: systemd-coredump kept a core file
+    std::string signal;               ///< Linux: the signal that killed it ("SIGSEGV"), from the journal (#1674)
+    std::string executable;           ///< Linux: its executable's path, from the journal (#1674)
 };
 
 /// The Recent crashes & hangs facts (#1524), newest first, at most CRASH_LIST_MAX of the last

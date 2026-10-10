@@ -156,13 +156,13 @@ if ($Overhead) {
 }
 
 # ── Sampled CPU reports ──────────────────────────────────────────────────────────────────────
-& xperf -i $traceFile -quiet -tle -a profile -detail @rangeArgs 2>&1 | Set-Content -Path $moduleReport
+& xperf -i $traceFile -quiet -tle -a profile -detail @rangeArgs 2>&1 | Set-Content -Path $moduleReport -Encoding utf8
 if ($LASTEXITCODE -ne 0) {
     throw "xperf module export failed with exit code $LASTEXITCODE"
 }
 
 if (-not $SkipFunctions) {
-    & xperf -i $traceFile -quiet -tle -symbols -a profile -detail @rangeArgs 2>&1 | Set-Content -Path $functionReport
+    & xperf -i $traceFile -quiet -tle -symbols -a profile -detail @rangeArgs 2>&1 | Set-Content -Path $functionReport -Encoding utf8
     if ($LASTEXITCODE -ne 0) {
         throw "xperf function export failed with exit code $LASTEXITCODE"
     }
@@ -294,7 +294,7 @@ $analysis = [ordered]@{
 $analysis | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $analysisPath -Encoding utf8
 
 $summaryText = $summaryLines -join [Environment]::NewLine
-$summaryText | Set-Content -Path $summaryPath
+$summaryText | Set-Content -Path $summaryPath -Encoding utf8
 Write-Host $summaryText
 Write-Host ''
 Write-Host "SUMMARY=$summaryPath"

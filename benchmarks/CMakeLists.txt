@@ -39,8 +39,12 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp  # Factory.cpp makes the readers
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp  # WindowsPowerProbe.cpp reads the battery through it
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
@@ -49,17 +53,11 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PDHGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp  # Factory.cpp makes the crash-event reader (#1524)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp  # Factory.cpp makes it (#1577)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
-        # Factory.cpp and WindowsSystemInfoProbe.cpp make or call these (#1523, #1524, #1526)
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
-        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
     )
 else()
     set(PLATFORM_BENCH_SOURCES
@@ -159,7 +157,6 @@ if(WIN32)
         cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
-        setupapi # WindowsBatteryInfo: the battery devices (#1523)
         wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
     )
 endif()
