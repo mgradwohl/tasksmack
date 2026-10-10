@@ -211,6 +211,7 @@ set(PLATFORM_SOURCES_LINUX
 set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
+    src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
@@ -353,6 +354,7 @@ elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
+        src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsSystemProbe.h

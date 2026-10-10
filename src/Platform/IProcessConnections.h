@@ -27,9 +27,9 @@ namespace Platform
 enum class ConnectionsReadStatus : std::uint8_t
 {
     Ok,               ///< Read; `connections` holds the sockets (may be empty: no TCP or UDP sockets open).
-    PermissionDenied, ///< The OS refused (Linux: EACCES/EPERM on /proc/[pid]/fd -- another user's process).
+    PermissionDenied, ///< The OS refused (Linux: EACCES/EPERM on /proc/[pid]/fd; Windows: OpenProcess, so no identity check).
     ProcessExited,    ///< The process is gone, or its PID now belongs to a different process.
-    Unsupported,      ///< This platform cannot list another process's sockets (Windows for now, synthetic runs).
+    Unsupported,      ///< This platform cannot list another process's sockets (synthetic runs).
     IdentityUnknown,  ///< The target's start time is unknown (0), so the process could not be confirmed; nothing was read.
     Failed,           ///< Any other error (no socket table could be read).
 };
@@ -116,8 +116,7 @@ class IProcessConnectionsReader
     [[nodiscard]] virtual ConnectionsReadResult readConnections(const ProcessTarget& target) = 0;
 };
 
-/// The reader for a platform (or run) that cannot list another process's sockets. Windows has
-/// GetExtendedTcpTable/GetExtendedUdpTable for it, not wired up yet (#1489).
+/// The reader for a platform (or run) that cannot list another process's sockets (synthetic runs).
 class UnsupportedProcessConnectionsReader final : public IProcessConnectionsReader
 {
   public:

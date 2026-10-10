@@ -22,6 +22,7 @@
 #include "WindowsPathProvider.h"
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
+#include "WindowsProcessConnections.h"
 #include "WindowsProcessModules.h"
 #include "WindowsProcessOpenFiles.h"
 #include "WindowsProcessProbe.h"
@@ -56,9 +57,8 @@ std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()
 
 std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader()
 {
-    // GetExtendedTcpTable/GetExtendedUdpTable rows are not wired up yet (#1489), so the Connections
-    // section (#799) is hidden.
-    return std::make_unique<UnsupportedProcessConnectionsReader>();
+    // GetExtendedTcpTable/GetExtendedUdpTable owner-PID rows (#1489).
+    return std::make_unique<Windows::WindowsProcessConnectionsReader>();
 }
 
 std::unique_ptr<IProcessModulesReader> makeProcessModulesReader()
