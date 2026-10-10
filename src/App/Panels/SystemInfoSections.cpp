@@ -1182,6 +1182,58 @@ Section buildDevicesSection(const Platform::DevicesInfo& devices)
     return section;
 }
 
+namespace
+{
+
+/// A Windows driver signature that is a problem, as a row says it; empty for a signed or unchecked image.
+[[nodiscard]] std::string_view driverSignatureProblem(Platform::DriverSignature signature)
+{
+    switch (signature)
+    {
+    case Platform::DriverSignature::Unsigned:
+        return "Unsigned";
+    case Platform::DriverSignature::Untrusted:
+        return "Untrusted signature";
+    default:
+        return {};
+    }
+}
+
+/// The "Problem drivers" count and the "Problem driver" rows (#1661): drivers that failed to start, then
+/// unsigned or untrusted images, each in name order.
+void addDriverProblemRows(std::vector<Row>& rows, bool listed, std::span<const Platform::KernelDriver* const> sorted)
+{
+    std::vector<Row> problems;
+    std::size_t problemDrivers = 0;
+    for (const Platform::KernelDriver* driver : sorted)
+    {
+        if (!driver->startError.empty())
+        {
+            problems.push_back(row("Problem driver", std::format("Failed to start: {} ({})", driver->name, driver->startError)));
+        }
+    }
+    for (const Platform::KernelDriver* driver : sorted)
+    {
+        const std::string_view signature = driverSignatureProblem(driver->signature);
+        if (!signature.empty())
+        {
+            const std::string_view why = driver->signature == Platform::DriverSignature::Untrusted ? driver->signatureNote : driver->path;
+            problems.push_back(
+                row("Problem driver", std::format("{}: {}{}", signature, driver->name, why.empty() ? "" : std::format(" ({})", why))));
+        }
+        if (!driver->startError.empty() || !signature.empty())
+        {
+            ++problemDrivers;
+        }
+    }
+    std::string count = problemDrivers == 0 ? "None" : std::format("{}", problemDrivers);
+    rows.push_back(
+        row("Problem drivers", listed ? std::move(count) : std::string{}, "The Service Control Manager couldn't list the drivers"));
+    std::ranges::move(problems, std::back_inserter(rows));
+}
+
+} // namespace
+
 std::string formatDriverValue(const Platform::KernelDriver& driver)
 {
     if (!driver.moduleState.empty()) // a Linux kernel module
@@ -1218,12 +1270,15 @@ std::string formatDriverValue(const Platform::KernelDriver& driver)
     const std::string_view startType = serviceStartTypeLabel(driver.startType);
     const std::string start = startType.empty() ? std::string{} : std::string(startType) + " start";
     const bool running = driver.state == Platform::ServiceState::Running || driver.state == Platform::ServiceState::Unknown;
+    const std::string failed = driver.startError.empty() ? std::string{} : "failed to start (" + driver.startError + ")";
     return joinNonEmpty(
         {
             sameName ? std::string_view{} : std::string_view(driver.displayName),
             driver.fileSystem ? "file system driver" : "",
             start,
             running ? std::string_view{} : serviceStateLabel(driver.state),
+            failed,
+            driverSignatureProblem(driver.signature),
             driver.version,
             driver.company,
             driver.path,
@@ -1236,7 +1291,10 @@ Section buildDriversSection(const Platform::DriversInfo& drivers)
     const bool windows = drivers.family == Platform::OsFamily::Windows;
     Section section{.title = windows ? "Drivers" : "Kernel modules", .icon = ICON_FA_GEARS, .rows = {}};
     std::vector<Row>& rows = section.rows;
-    std::string count = drivers.drivers.empty() ? "None found" : std::format("{}", drivers.drivers.size());
+    // A Windows driver that failed to start is listed, but isn't loaded.
+    const auto loaded =
+        std::ranges::count_if(drivers.drivers, [](const Platform::KernelDriver& driver) { return driver.startError.empty(); });
+    std::string count = loaded == 0 ? "None found" : std::format("{}", loaded);
     rows.push_back(row(windows ? "Loaded drivers" : "Loaded modules",
                        drivers.listed ? std::move(count) : std::string{},
                        windows ? "The Service Control Manager couldn't list the drivers"
@@ -1264,9 +1322,18 @@ Section buildDriversSection(const Platform::DriversInfo& drivers)
     std::ranges::stable_sort(sorted,
                              [&](const Platform::KernelDriver* a, const Platform::KernelDriver* b)
                              { return std::ranges::lexicographical_compare(a->name, b->name, {}, lower, lower); });
+    if (windows)
+    {
+        addDriverProblemRows(rows, drivers.listed, sorted);
+    }
     for (const Platform::KernelDriver* driver : sorted)
     {
-        rows.push_back(row(driver->name.empty() ? "Unnamed driver" : driver->name, formatDriverValue(*driver)));
+        const std::string label = driver->name.empty() ? "Unnamed driver" : driver->name;
+        rows.push_back(row(label, formatDriverValue(*driver)));
+        if (driver->signature == Platform::DriverSignature::Unknown)
+        {
+            rows.push_back(row(label + " signature", {}, "The signature couldn't be checked: " + driver->signatureNote));
+        }
     }
     return section;
 }

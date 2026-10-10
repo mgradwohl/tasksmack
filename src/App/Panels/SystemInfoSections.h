@@ -189,14 +189,17 @@ struct VisibleSection
 /// the active audio endpoints.
 [[nodiscard]] Section buildDevicesSection(const Platform::DevicesInfo& devices);
 
-/// A driver's row value. Windows: its display name, start type, state when not running, file version,
-/// company and image ("Microsoft ACPI Driver, Boot start, 10.0.26100.1, Microsoft Corporation,
-/// C:\Windows\System32\drivers\ACPI.sys"). Linux: its size, what uses it, version, state when not Live,
-/// "permanent" and taint flags ("1.2 MB, used by kvm_intel, tainted (OE)").
+/// A driver's row value. Windows: its display name, start type, state when not running, why it failed to
+/// start, "Unsigned" or "Untrusted signature", file version, company and image ("Microsoft ACPI Driver, Boot
+/// start, 10.0.26100.1, Microsoft Corporation, C:\Windows\System32\drivers\ACPI.sys"). Linux: its size, what
+/// uses it, version, state when not Live, "permanent" and taint flags ("1.2 MB, used by kvm_intel, tainted (OE)").
 [[nodiscard]] std::string formatDriverValue(const Platform::KernelDriver& driver);
 
 /// The Drivers section (#1521), titled "Kernel modules" on Linux: a count, then one row per driver or
-/// module by name; on Linux, the tainted count and a note that built-in modules aren't listed.
+/// module by name; on Linux, the tainted count and a note that built-in modules aren't listed. On Windows
+/// (#1661) the loaded count is followed by "Problem drivers" (drivers that failed to start, and unsigned or
+/// untrusted images) and one "Problem driver" row per problem; a driver whose signature couldn't be checked
+/// gets a "<name> signature" row with no value, whose tooltip says why.
 [[nodiscard]] Section buildDriversSection(const Platform::DriversInfo& drivers);
 
 /// A well-known exception code's name ("access violation" for 0xC0000005); empty for others.
