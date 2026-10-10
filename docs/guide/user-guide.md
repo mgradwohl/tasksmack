@@ -238,21 +238,23 @@ On Linux, the Process Details **Overview** tab has a collapsible **Environment**
 
 ### Connections
 
-On Linux, the Process Details **Overview** tab also has a collapsible **Connections** section, closed by default, under the Environment section. Open it to list the selected process's TCP and UDP sockets, netstat-style, in a **PROTO / LOCAL ADDRESS / REMOTE ADDRESS / STATE** table with a count above it ("3 connections"):
+The Process Details **Overview** tab also has a collapsible **Connections** section, closed by default, under the Environment section (on Windows, where Environment is hidden, it is the first one). Open it to list the selected process's TCP and UDP sockets, netstat-style, in a **PROTO / LOCAL ADDRESS / REMOTE ADDRESS / STATE** table with a count above it ("3 connections"):
 
 - **PROTO** is `TCP`, `TCP6`, `UDP` or `UDP6` (IPv4 or IPv6).
 - **Addresses** are shown as `address:port`: IPv4 dotted (`10.0.0.5:55026`), IPv6 in brackets and in its short form (`[2001:db8::1]:443`, `[::]:22`), with an IPv4 peer of an IPv6 socket as `[::ffff:192.0.2.1]:443`. A port of `*` means none: a listening or unconnected socket's remote end (`0.0.0.0:*`).
 - **STATE** is the TCP state as netstat names it: `ESTABLISHED`, `LISTEN`, `SYN_SENT`, `SYN_RECV`, `FIN_WAIT1`, `FIN_WAIT2`, `CLOSE_WAIT`, `CLOSING`, `LAST_ACK`, `TIME_WAIT`, `CLOSE`. A UDP socket that is only bound shows `UNCONN`; one that called `connect()` shows `ESTABLISHED`.
 - Rows are sorted by state (established first, then listeners, unconnected UDP sockets and the closing states), then by remote address. Click a column header to sort by that column; click it again to reverse. Addresses sort numerically (`10.0.0.9` before `10.0.0.10`), IPv4 before IPv6. The sort you choose stays when you select another process.
 - An address too long for its column is cut off at the column edge; hover it to see it whole. More than 12 rows scroll inside the section.
-- TaskSmack reads the sockets only for the selected process and only while the section is open: once when you open it or select another process, then every 2 seconds, in the background, so the window never waits on a read. It matches the process's open socket descriptors (`/proc/[pid]/fd`) against the system's TCP and UDP sockets, read over netlink (`INET_DIAG`), or from `/proc/[pid]/net/tcp`, `tcp6`, `udp` and `udp6` where netlink is unavailable or the process is in another network namespace (a container).
-- A connection in `TIME_WAIT` usually does not show: once a process closes a socket, the kernel keeps the `TIME_WAIT` entry but no process holds it any more. The same goes for other sockets no process holds.
-- **Another user's process** shows "Not permitted (another user's process)": listing a process's socket descriptors needs the same rights as debugging it (its own user, or root / `CAP_SYS_PTRACE`). A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet". A process with no TCP or UDP sockets shows "No TCP or UDP sockets". If a socket table cannot be read, the section shows "Could not be read" with the reason rather than a partial list.
-- **Windows:** not available yet (tracked in #1489); the section is hidden.
+- TaskSmack reads the sockets only for the selected process and only while the section is open: once when you open it or select another process, then every 2 seconds, in the background, so the window never waits on a read.
+  - **Linux:** it matches the process's open socket descriptors (`/proc/[pid]/fd`) against the system's TCP and UDP sockets, read over netlink (`INET_DIAG`), or from `/proc/[pid]/net/tcp`, `tcp6`, `udp` and `udp6` where netlink is unavailable or the process is in another network namespace (a container).
+  - **Windows:** it reads the system's TCP and UDP tables, IPv4 and IPv6, with each socket's owning process (`GetExtendedTcpTable` / `GetExtendedUdpTable`), and keeps the selected process's rows. Windows does not record whether a UDP socket called `connect()`, so every UDP socket shows `UNCONN` with no remote end.
+- A connection in `TIME_WAIT` usually does not show: once a process closes a socket, the system keeps the `TIME_WAIT` entry but no process holds it any more. The same goes for other sockets no process holds.
+- **Another user's process:** on Linux it shows "Not permitted (another user's process)": listing a process's socket descriptors needs the same rights as debugging it (its own user, or root / `CAP_SYS_PTRACE`). On Windows the socket tables cover every user's processes, so this shows only for the few protected system processes (`csrss.exe`, `smss.exe`, ...) that an unelevated TaskSmack may not even query: without that, it cannot confirm which process holds the PID, and shows nothing rather than risk listing another process's sockets.
+- A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet" (on Windows, always for Idle and System). A process with no TCP or UDP sockets shows "No TCP or UDP sockets". If a socket table cannot be read, the section shows "Could not be read" with the reason rather than a partial list.
 
 ### Modules
 
-The Process Details **Overview** tab also has a collapsible **Modules** section, closed by default, under the Connections section (on Windows, where Environment and Connections are hidden, it is the only one). Open it to list the code the selected process has loaded, its executable and every DLL or shared library, in a **NAME / VERSION / BASE / SIZE / PATH** table, with the count in the section's header ("Modules (87)"):
+The Process Details **Overview** tab also has a collapsible **Modules** section, closed by default, under the Connections section. Open it to list the code the selected process has loaded, its executable and every DLL or shared library, in a **NAME / VERSION / BASE / SIZE / PATH** table, with the count in the section's header ("Modules (87)"):
 
 - **NAME** is the file name; **PATH** the full path. **BASE** is the address the module is loaded at, in hex (`0x7FF8A1B20000`), and **SIZE** its size in memory.
 - **VERSION** is the file version from the module's version information (`10.0.26100.4202`), blank for a file without one. It is Windows only: Linux shared libraries carry no file version, so on Linux the column is left out.
@@ -454,7 +456,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Load average (1/5/15 min) | ✅ | ❌ |
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ❌ |
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
-| Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ (#1489) |
+| Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ✅ (`GetExtendedTcpTable` / `GetExtendedUdpTable`, every user's processes; UDP always `UNCONN`) |
 | Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
 | System Information: Operating system section | ✅ (os-release, uname, `/proc`, XDG session, container/VM hints) | ✅ (CurrentVersion registry key, session APIs) |
 | System Information: Firmware & board section | ✅ (`/sys/class/dmi/id`; serials, UUID and SMBIOS version need root) | ✅ (SMBIOS table, `GetFirmwareType`) |
