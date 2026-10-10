@@ -1434,6 +1434,21 @@ TEST(SystemInfoSectionsTest, CrashesRowsLinuxCappedAndUnreadable)
     notKept.signal = "SIGABRT";
     EXPECT_EQ(SystemInfo::formatCrashValue(notKept), "app crashed (SIGABRT), pid 7, core not kept");
 
+    // #1697: the Source row and the count say what was read.
+    EXPECT_EQ(findRow(section, "Source")->value, "systemd-coredump's core files; the journal's details (signal, executable) weren't read");
+    Platform::CrashesInfo withJournal = cores;
+    withJournal.journalRead = true;
+    withJournal.events = {detailed, notKept};
+    const Section journal = SystemInfo::buildCrashesSection(withJournal);
+    EXPECT_EQ(findRow(journal, "Source")->value, "systemd-coredump's journal entries and core files");
+    EXPECT_EQ(findRow(journal, "Last 14 days")->value, "2 crashes"); // one of them kept no core
+    withJournal.events.clear();
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(withJournal), "Last 14 days")->value, "No crashes");
+    Platform::CrashesInfo noJournal = cores;
+    noJournal.journalUnavailableReason = "The journal couldn't be opened: Permission denied";
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(noJournal), "Source")->value,
+              "systemd-coredump's core files; the journal's details weren't read: The journal couldn't be opened: Permission denied");
+
     Platform::CrashesInfo denied;
     denied.available = true;
     denied.family = Platform::OsFamily::Linux;
