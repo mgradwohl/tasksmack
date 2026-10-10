@@ -142,6 +142,10 @@ constexpr size_t OVERVIEW_NOW_BAR_COLUMNS_WITHOUT_IOWAIT = 3;
 SystemMetricsPanel::SystemMetricsPanel() : Panel("System")
 {}
 
+SystemMetricsPanel::SystemMetricsPanel(std::function<SystemMetricsProbes()> makeProbes)
+    : Panel("System"), m_MakeProbes(std::move(makeProbes))
+{}
+
 std::size_t SystemMetricsPanel::overviewNowBarColumns() const
 {
     const bool hasIoWait = (m_Model != nullptr) && m_Model->capabilities().hasIoWait;
@@ -181,18 +185,24 @@ void SystemMetricsPanel::onAttach()
     // The synthetic scenario's probes when TASKSMACK_SYNTHETIC selects one (#1413), else the
     // platform's. A scenario that preloads history starts at its window, which ShellLayer's startup
     // event then confirms rather than trims.
-    const Synthetic::Scenario* scenario = Synthetic::activeScenario();
+    // An injected probe factory (tests, #1546) replaces both, with no scenario.
+    const Synthetic::Scenario* scenario = m_MakeProbes ? nullptr : Synthetic::activeScenario();
     m_MaxHistorySeconds = static_cast<double>(Synthetic::startupHistorySeconds(scenario, static_cast<int>(m_MaxHistorySeconds)));
+    SystemMetricsProbes probes = m_MakeProbes ? m_MakeProbes()
+                                              : SystemMetricsProbes{.system = Synthetic::makeSystemProbe(scenario),
+                                                                    .power = Synthetic::makePowerProbe(scenario),
+                                                                    .disk = Synthetic::makeDiskProbe(scenario),
+                                                                    .gpu = Synthetic::makeGPUProbe(scenario)};
 
-    m_Model = std::make_shared<Domain::SystemModel>(Synthetic::makeSystemProbe(scenario), Synthetic::makePowerProbe(scenario));
+    m_Model = std::make_shared<Domain::SystemModel>(std::move(probes.system), std::move(probes.power));
     m_Model->setMaxHistorySeconds(m_MaxHistorySeconds);
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1291).
     m_Model->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
 
-    m_StorageModel = std::make_shared<Domain::StorageModel>(Synthetic::makeDiskProbe(scenario));
+    m_StorageModel = std::make_shared<Domain::StorageModel>(std::move(probes.disk));
     m_StorageModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
-    m_GPUModel = std::make_shared<Domain::GPUModel>(Synthetic::makeGPUProbe(scenario));
+    m_GPUModel = std::make_shared<Domain::GPUModel>(std::move(probes.gpu));
     m_GPUModel->setMaxHistorySeconds(m_MaxHistorySeconds);
 
     // The synthetic scenario fills the whole window before the seed below continues it; a no-op

@@ -52,12 +52,12 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup a
     case StartupColumn::Publisher:
         return compareIgnoringCase(a.publisher, b.publisher);
     case StartupColumn::Enabled:
-        // Enabled first, then disabled ones by when they were disabled.
+        // Enabled first; the names within each group are ordered by buildStartupRows (#1597).
         if (a.enabled != b.enabled)
         {
             return a.enabled ? std::strong_ordering::less : std::strong_ordering::greater;
         }
-        return a.disabledAtUnixSeconds <=> b.disabledAtUnixSeconds;
+        return std::strong_ordering::equal;
     case StartupColumn::Scope:
         return a.scope <=> b.scope;
     case StartupColumn::Location:
@@ -68,6 +68,21 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup a
     default:
         return compareIgnoringCase(a.name, b.name);
     }
+}
+
+/// The Enabled column's order within a group (#1597): by name, case-insensitively, then exactly, then
+/// by where the entry is registered, so two entries never compare equal by name alone.
+[[nodiscard]] std::strong_ordering compareByName(const Platform::StartupEntry& a, const Platform::StartupEntry& b)
+{
+    if (const std::strong_ordering order = compareIgnoringCase(a.name, b.name); order != 0)
+    {
+        return order;
+    }
+    if (const std::strong_ordering order = a.name <=> b.name; order != 0)
+    {
+        return order;
+    }
+    return a.location <=> b.location;
 }
 
 void renderText(std::string_view text)
@@ -191,7 +206,13 @@ buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_vi
                              [&](std::size_t a, std::size_t b)
                              {
                                  const std::strong_ordering order = compareBy(entries[a], entries[b], column);
-                                 return ascending ? (order < 0) : (order > 0);
+                                 if (order != 0)
+                                 {
+                                     return ascending ? (order < 0) : (order > 0);
+                                 }
+                                 // Within enabled or disabled the names stay A to Z in either direction
+                                 // (#1597); only the order of the two groups reverses.
+                                 return column == StartupColumn::Enabled && compareByName(entries[a], entries[b]) < 0;
                              });
     return rows;
 }
@@ -233,9 +254,9 @@ void setupStartupColumns()
 {
     const float em = ImGui::GetFontSize();
     ImGui::TableSetupScrollFreeze(1, 1);
-    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_DefaultSort, em * 14.0F, static_cast<ImGuiID>(StartupColumn::Name));
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_None, em * 14.0F, static_cast<ImGuiID>(StartupColumn::Name));
     ImGui::TableSetupColumn("Publisher", ImGuiTableColumnFlags_None, em * 12.0F, static_cast<ImGuiID>(StartupColumn::Publisher));
-    ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_None, em * 11.0F, static_cast<ImGuiID>(StartupColumn::Enabled));
+    ImGui::TableSetupColumn("Enabled", ImGuiTableColumnFlags_DefaultSort, em * 11.0F, static_cast<ImGuiID>(StartupColumn::Enabled));
     ImGui::TableSetupColumn("Scope", ImGuiTableColumnFlags_None, em * 6.0F, static_cast<ImGuiID>(StartupColumn::Scope));
     ImGui::TableSetupColumn("Location", ImGuiTableColumnFlags_None, em * 12.0F, static_cast<ImGuiID>(StartupColumn::Location));
     ImGui::TableSetupColumn("Command", ImGuiTableColumnFlags_None, em * 30.0F, static_cast<ImGuiID>(StartupColumn::Command));

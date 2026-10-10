@@ -18,6 +18,10 @@
 #include "Domain/StorageSnapshot.h"
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
+#include "Platform/IDiskProbe.h"
+#include "Platform/IGPUProbe.h"
+#include "Platform/IPowerProbe.h"
+#include "Platform/ISystemProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
@@ -27,6 +31,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -36,12 +41,28 @@
 namespace App
 {
 
+/// The probes SystemMetricsPanel::onAttach() builds its models from (#1546). A null disk, power or
+/// GPU probe is no disk, battery or GPU, as the models already allow.
+struct SystemMetricsProbes
+{
+    std::unique_ptr<Platform::ISystemProbe> system;
+    std::unique_ptr<Platform::IPowerProbe> power;
+    std::unique_ptr<Platform::IDiskProbe> disk;
+    std::unique_ptr<Platform::IGPUProbe> gpu;
+};
+
 /// Panel displaying system-wide metrics with ImPlot graphs.
 /// Shows CPU, memory, swap, disk I/O, and GPU usage over time.
 class SystemMetricsPanel : public Panel
 {
   public:
+    /// The models' probes come from the synthetic scenario when TASKSMACK_SYNTHETIC selects one, else
+    /// the platform's (Synthetic::make*Probe()).
     SystemMetricsPanel();
+
+    /// Test seam (#1546): onAttach() takes its probes from @p makeProbes instead (tests: mocks), with no
+    /// synthetic scenario. The App layer stays the only place the platform's probes are made.
+    explicit SystemMetricsPanel(std::function<SystemMetricsProbes()> makeProbes);
     ~SystemMetricsPanel() override;
 
     SystemMetricsPanel(const SystemMetricsPanel&) = delete;
@@ -111,6 +132,7 @@ class SystemMetricsPanel : public Panel
     }
 
   private:
+    std::function<SystemMetricsProbes()> m_MakeProbes; ///< Set by the test seam only
     void renderOverview();
 
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;

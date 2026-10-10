@@ -195,6 +195,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
+    src/Platform/Linux/SystemdBus.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
@@ -229,6 +230,27 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WinString.cpp
     src/Platform/Windows/Factory.cpp
 )
+
+# Optional systemd D-Bus client (sd-bus, from libsystemd) on Linux: the System Information page's
+# Boot performance section reads systemd's boot timestamps through it (#1525). Found with pkg-config;
+# without it (or with TASKSMACK_WITH_SDBUS=OFF) the app still builds and the section says it is
+# unavailable. An INTERFACE target, so the app and the tests (which compile the same probe) both get
+# the library and TASKSMACK_HAS_SDBUS together.
+option(TASKSMACK_WITH_SDBUS "Read systemd over D-Bus with libsystemd (sd-bus) when it is installed (Linux)" ON)
+add_library(tasksmack_sdbus INTERFACE)
+if(UNIX AND NOT APPLE AND TASKSMACK_WITH_SDBUS)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBSYSTEMD QUIET IMPORTED_TARGET libsystemd)
+    endif()
+    if(LIBSYSTEMD_FOUND)
+        target_link_libraries(tasksmack_sdbus INTERFACE PkgConfig::LIBSYSTEMD)
+        target_compile_definitions(tasksmack_sdbus INTERFACE TASKSMACK_HAS_SDBUS=1)
+        message(STATUS "libsystemd ${LIBSYSTEMD_VERSION}: systemd is read over D-Bus (Boot performance section)")
+    else()
+        message(STATUS "libsystemd not found (install libsystemd-dev): the Boot performance section will be unavailable")
+    endif()
+endif()
 
 if(UNIX AND NOT APPLE)
     list(APPEND TASKSMACK_SOURCES ${PLATFORM_SOURCES_LINUX})
@@ -272,6 +294,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ISystemProbe.h
     src/Platform/ISystemInfoProbe.h
     src/Platform/EdidParser.h
+    src/Platform/HwIdsParser.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
     src/Platform/ProcessTypes.h
@@ -319,7 +342,10 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxCommitPaging.h
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h
+        src/Platform/Linux/LinuxDevices.h
         src/Platform/Linux/LinuxPlatformSecurity.h
+        src/Platform/Linux/LinuxBootTimes.h
+        src/Platform/Linux/SystemdBus.h
         src/Platform/Linux/LinuxSensors.h
         src/Platform/Linux/LinuxNetworkAdapters.h
     )
@@ -352,6 +378,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsCommitPaging.h
         src/Platform/Windows/WindowsStorage.h
         src/Platform/Windows/WindowsGraphics.h
+        src/Platform/Windows/WindowsDevices.h
+        src/Platform/Windows/ComScope.h
     )
 endif()
 
@@ -491,7 +519,8 @@ function(tasksmack_configure_app_target target)
             setupapi # WindowsBatteryInfo: the battery devices (#1523)
         )
     elseif(UNIX AND NOT APPLE)
-        target_link_libraries(${target} PRIVATE dl)
+        # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525)
+        target_link_libraries(${target} PRIVATE dl tasksmack_sdbus)
     endif()
 endfunction()
 

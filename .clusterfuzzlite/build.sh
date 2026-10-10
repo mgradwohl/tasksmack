@@ -66,6 +66,10 @@ seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
 build_fuzzer fuzz_edid
 seed_corpus fuzz_edid tests/fuzz/corpus/fuzz_edid/*
 
+# The pci.ids / usb.ids parser (#1520): header-only, seeded with excerpts of both files.
+build_fuzzer fuzz_hwids
+seed_corpus fuzz_hwids tests/fuzz/corpus/fuzz_hwids/*
+
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
 # toml++ crash inputs (#1387, #1388, #1389) as regression seeds.

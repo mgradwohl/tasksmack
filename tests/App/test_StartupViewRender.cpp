@@ -140,10 +140,10 @@ TEST_F(StartupViewRenderTest, TableShowsRowsAndFilters)
     EXPECT_EQ(state.enabledLabels[0], "Enabled");
     EXPECT_TRUE(state.enabledLabels[1].starts_with("Disabled since 2024-01-0")) << state.enabledLabels[1];
 
-    // Publisher matches too, case-insensitively.
+    // Publisher matches too, case-insensitively; by the default sort the enabled one comes first.
     state.filter = "MICROSOFT";
     static_cast<void>(runFrame([&] { return renderStartupView(&publication, supported(), state); }));
-    EXPECT_EQ(state.rows, (std::vector<std::size_t>{1, 2}));
+    EXPECT_EQ(state.rows, (std::vector<std::size_t>{2, 1}));
 
     // Without an enabled state the table still draws.
     state.filter.clear();
@@ -161,6 +161,54 @@ TEST(StartupViewTest, RowsSortByColumnAndDirection)
     EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Publisher, true), (std::vector<std::size_t>{3, 0, 1, 2}));
     EXPECT_EQ(buildStartupRows(publication.entries, "background", StartupColumn::Name, true).size(), 4U);
     EXPECT_TRUE(buildStartupRows(publication.entries, "nothing matches", StartupColumn::Name, true).empty());
+}
+
+TEST_F(StartupViewRenderTest, DefaultSortIsEnabledFirstThenName)
+{
+    // #1597: with no header clicked, the table is sorted by Enabled -- enabled entries A to Z, then the
+    // disabled ones A to Z -- and the table's own default sort spec agrees, so the first frame keeps it.
+    const auto publication = makePublication();
+    StartupViewState state;
+    EXPECT_EQ(state.sortColumn, StartupColumn::Enabled);
+    EXPECT_TRUE(state.ascending);
+    static_cast<void>(runFrame([&] { return renderStartupView(&publication, supported(), state); }));
+    static_cast<void>(runFrame([&] { return renderStartupView(&publication, supported(), state); }));
+    EXPECT_EQ(state.sortColumn, StartupColumn::Enabled);
+    EXPECT_TRUE(state.ascending);
+    EXPECT_EQ(state.rows, (std::vector<std::size_t>{0, 2, 3, 1}));
+}
+
+TEST(StartupViewTest, EnabledSortGroupsThenNamesCaseInsensitively)
+{
+    const std::vector<Platform::StartupEntry> entries = {
+        entry("zoom", "", StartupLocation::RunUser, true),
+        entry("Backup", "", StartupLocation::RunUser, false, 1704164645), // disabled earliest
+        entry("adobe", "", StartupLocation::RunUser, false, 1804164645),
+        entry("Teams", "", StartupLocation::RunUser, true),
+        entry("ARC", "", StartupLocation::RunUser, true),
+        entry("Cortex", "", StartupLocation::RunUser, false),
+    };
+    // Enabled A to Z (case ignored), then disabled A to Z -- not by when they were disabled.
+    EXPECT_EQ(buildStartupRows(entries, "", StartupColumn::Enabled, true), (std::vector<std::size_t>{4, 3, 0, 2, 1, 5}));
+    // Descending reverses the groups only: the names stay A to Z within each.
+    EXPECT_EQ(buildStartupRows(entries, "", StartupColumn::Enabled, false), (std::vector<std::size_t>{2, 1, 5, 4, 3, 0}));
+}
+
+TEST(StartupViewTest, EnabledSortBreaksNameTiesDeterministically)
+{
+    // Same name differing only in case, and the same name registered in two places.
+    const std::vector<Platform::StartupEntry> entries = {
+        entry("Updater", "", StartupLocation::StartupFolderUser, true),
+        entry("updater", "", StartupLocation::RunUser, true),
+        entry("Updater", "", StartupLocation::RunUser, true),
+        entry("Updater", "", StartupLocation::RunMachine, false),
+    };
+    // Exact name ("U" before "u"), then the location; the disabled one last.
+    const std::vector<std::size_t> expected = {2, 0, 1, 3};
+    EXPECT_EQ(buildStartupRows(entries, "", StartupColumn::Enabled, true), expected);
+    // The same order whatever order the entries arrive in.
+    const std::vector<Platform::StartupEntry> reversed(entries.rbegin(), entries.rend());
+    EXPECT_EQ(buildStartupRows(reversed, "", StartupColumn::Enabled, true), (std::vector<std::size_t>{1, 3, 2, 0}));
 }
 
 TEST(StartupViewTest, Labels)

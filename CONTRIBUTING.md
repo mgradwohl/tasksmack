@@ -114,6 +114,11 @@ sudo apt install clang-22 clang-tidy-22 clang-format-22 lld-22 llvm-22 cmake nin
 # NVIDIA drivers (download from nvidia.com)
 # ROCm SMI (download from amd.com/rocm)
 # Intel: no package needed (reads /sys/class/drm via sysfs)
+
+# Optional: for the System Information page's Boot performance section (#1525), which reads systemd
+# over D-Bus with sd-bus. Found with pkg-config at configure time; without it the section says it is
+# unavailable. -DTASKSMACK_WITH_SDBUS=OFF builds without it even when it is installed.
+sudo apt install libsystemd-dev pkg-config
 ```
 
 ### Windows Pre-Requisites
@@ -785,6 +790,7 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_commit_paging` | the Commit & paging parsers: `/proc/meminfo`, `/proc/swaps`, zram `mm_stat`, sysfs flags (`Platform/Linux/LinuxCommitPaging.h`) | `tests/fuzz/corpus/fuzz_commit_paging/` |
 | `fuzz_mountinfo` | the Storage parsers: `/proc/self/mountinfo`, the volume choice, udev database files (`Platform/Linux/LinuxStorage.h`) | `tests/fuzz/corpus/fuzz_mountinfo/` |
 | `fuzz_edid` | the monitor EDID parser: manufacturer, name and serial descriptors, image size (`Platform/EdidParser.h`) | `tests/fuzz/corpus/fuzz_edid/` |
+| `fuzz_hwids` | the hwdata `pci.ids` / `usb.ids` parser: vendor, device and class lines (`Platform/HwIdsParser.h`) | `tests/fuzz/corpus/fuzz_hwids/` |
 | `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
 

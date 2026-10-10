@@ -35,7 +35,10 @@ enum class StartupColumn : std::uint8_t
 [[nodiscard]] std::string startupEnabledLabel(const Platform::StartupEntry& entry);
 
 /// Indices into `entries` of those whose name, publisher or command contains `filter` (ASCII case-
-/// insensitive; empty matches all), ordered by `column`. Ties keep the name order the model sorted.
+/// insensitive; empty matches all), ordered by `column`. By Enabled, the enabled entries come first
+/// (last when descending) and each group is sorted A to Z by name (case-insensitively; the exact name
+/// and then the location break ties) in either direction. Other columns' ties keep the name order
+/// the model sorted.
 [[nodiscard]] std::vector<std::size_t>
 buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_view filter, StartupColumn column, bool ascending);
 
@@ -53,14 +56,14 @@ enum class StartupViewContent : std::uint8_t
 struct StartupViewState
 {
     std::string filter;
-    StartupColumn sortColumn = StartupColumn::Name;
+    StartupColumn sortColumn = StartupColumn::Enabled; ///< The default (#1597): enabled entries first.
     bool ascending = true;
 
     std::vector<std::size_t> rows;
     std::vector<std::string> enabledLabels; ///< Per entry of the publication, not per row.
     std::uint64_t rowsVersion = 0;
     std::string rowsFilter;
-    StartupColumn rowsColumn = StartupColumn::Name;
+    StartupColumn rowsColumn = StartupColumn::Enabled;
     bool rowsAscending = true;
 
     std::string unavailableHeading; ///< The empty state's heading when there is no startup list.

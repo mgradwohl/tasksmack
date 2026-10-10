@@ -83,6 +83,21 @@ void appendRowsLinux(const Platform::OsInfo& os, std::vector<Row>& rows)
     return text;
 }
 
+/// An audio endpoint's row label.
+[[nodiscard]] constexpr std::string_view audioLabel(Platform::AudioFlow flow) noexcept
+{
+    switch (flow)
+    {
+    case Platform::AudioFlow::Output:
+        return "Audio output";
+    case Platform::AudioFlow::Input:
+        return "Audio input";
+    case Platform::AudioFlow::Unknown:
+        break;
+    }
+    return "Audio device";
+}
+
 /// The label of module @p index: its locator, or with the bank locator in front when another module has
 /// the same locator; "Module N" when the table names neither.
 [[nodiscard]] std::string moduleLabel(std::span<const Platform::MemoryModule> modules, std::size_t index)
@@ -973,6 +988,27 @@ Section buildSensorsSection(const Platform::SensorsInfo& sensors)
     return section;
 }
 
+std::string formatDeviceName(const Platform::Device& device)
+{
+    const std::string_view vendorWord = std::string_view(device.vendor).substr(0, device.vendor.find(' '));
+    const bool nameHasVendor = !vendorWord.empty() && device.name.size() >= vendorWord.size() &&
+                               containsIgnoringCase(std::string_view(device.name).substr(0, vendorWord.size()), vendorWord);
+    std::string text = joinNonEmpty({nameHasVendor ? std::string_view{} : std::string_view(device.vendor), device.name}, " ");
+    if (text.empty())
+    {
+        text = "Unknown device";
+    }
+    else if (device.name.empty())
+    {
+        text += " device";
+    }
+    if (device.vendorId != 0)
+    {
+        text += std::format(" ({:04X}:{:04X})", device.vendorId, device.productId);
+    }
+    return text;
+}
+
 std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter)
 {
     std::string text = adapter.up ? "Up" : "Down";
@@ -989,6 +1025,86 @@ std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter)
         text += ", driver " + adapter.driver;
     }
     return text;
+}
+
+std::string formatUsbSpeed(double mbps)
+{
+    if (mbps <= 0.0)
+    {
+        return {};
+    }
+    if (mbps >= 1000.0)
+    {
+        return std::format("{:g} Gbps", mbps / 1000.0);
+    }
+    return std::format("{:g} Mbps", mbps);
+}
+
+Section buildDevicesSection(const Platform::DevicesInfo& devices)
+{
+    const bool windows = devices.family == Platform::OsFamily::Windows;
+    Section section{.title = "Devices", .icon = ICON_FA_SITEMAP, .rows = {}};
+    std::vector<Row>& rows = section.rows;
+    const std::string_view listFailed = windows ? "SetupAPI couldn't list the devices" : "/sys/bus/pci/devices couldn't be listed";
+
+    std::string problemCount = devices.problems.empty() ? "None" : std::format("{}", devices.problems.size());
+    rows.push_back(row("Problem devices", devices.problemsRead ? std::move(problemCount) : std::string{}, listFailed));
+    for (const Platform::Device& device : devices.problems)
+    {
+        rows.push_back(row("Problem device", std::format("{}: {}", formatDeviceName(device), device.problem)));
+    }
+
+    std::vector<const Platform::Device*> pci;
+    pci.reserve(devices.pci.size());
+    for (const Platform::Device& device : devices.pci)
+    {
+        pci.push_back(&device);
+    }
+    std::ranges::stable_sort(pci, {}, [](const Platform::Device* device) { return std::string_view(device->className); });
+    for (const Platform::Device* device : pci)
+    {
+        const std::string location = device->location.empty() ? std::string{} : "PCI " + device->location;
+        const std::string driver = device->driver.empty() ? std::string{} : "driver " + device->driver;
+        rows.push_back(row(device->className.empty() ? "PCI device" : device->className,
+                           joinNonEmpty({formatDeviceName(*device), location, driver, device->problem}, ", ")));
+    }
+    if (pci.empty())
+    {
+        rows.push_back(row("PCI devices", devices.pciRead ? "None found" : std::string{}, listFailed));
+    }
+
+    for (std::size_t i = 0; i < devices.usb.size(); ++i)
+    {
+        const Platform::Device& device = devices.usb[i];
+        const bool hasParent = device.parent.has_value() && *device.parent < devices.usb.size();
+        const std::string via = hasParent ? "via " + formatDeviceName(devices.usb[*device.parent]) : std::string{};
+        const std::string label = std::format("USB {}", i + 1);
+        rows.push_back(row(label, joinNonEmpty({formatDeviceName(device), formatUsbSpeed(device.speedMbps), via, device.problem}, ", ")));
+        if (!device.serial.empty())
+        {
+            rows.push_back(row(label + " serial number", device.serial, NOT_REPORTED, true));
+        }
+    }
+    if (devices.usb.empty())
+    {
+        rows.push_back(row("USB devices",
+                           devices.usbRead ? "None found" : std::string{},
+                           windows ? listFailed : "/sys/bus/usb/devices couldn't be listed"));
+    }
+
+    for (const Platform::AudioEndpoint& endpoint : devices.audio)
+    {
+        rows.push_back(
+            row(std::string(audioLabel(endpoint.flow)), endpoint.name.empty() ? std::string("Unnamed endpoint") : endpoint.name));
+    }
+    if (devices.audio.empty())
+    {
+        rows.push_back(
+            row("Audio",
+                devices.audioRead ? "No active devices" : std::string{},
+                windows ? "The Windows audio device API couldn't be used" : "/proc/asound/cards couldn't be read (no ALSA sound driver)"));
+    }
+    return section;
 }
 
 std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
@@ -1069,6 +1185,56 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
     return section;
 }
 
+std::string formatBootDuration(std::uint64_t microseconds)
+{
+    constexpr std::uint64_t MS = 1000;
+    constexpr std::uint64_t SECOND = 1000 * MS;
+    constexpr std::uint64_t MINUTE = 60 * SECOND;
+    if (microseconds < SECOND)
+    {
+        return std::format("{} ms", microseconds / MS);
+    }
+    if (microseconds < MINUTE)
+    {
+        return std::format("{:.2f} s", static_cast<double>(microseconds) / static_cast<double>(SECOND));
+    }
+    return std::format("{} min {:.1f} s", microseconds / MINUTE, static_cast<double>(microseconds % MINUTE) / static_cast<double>(SECOND));
+}
+
+Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot)
+{
+    Section section{.title = "Boot performance", .icon = ICON_FA_POWER_OFF, .rows = {}};
+    auto& rows = section.rows;
+    if (!boot.timingsRead)
+    {
+        rows.push_back(row("Last boot", {}, boot.unavailableReason.empty() ? std::string(NOT_REPORTED) : boot.unavailableReason));
+        return section;
+    }
+    if (!boot.finished)
+    {
+        rows.push_back(row("Last boot", "Still starting up"));
+    }
+    else
+    {
+        rows.push_back(row("Last boot", boot.totalUs.has_value() ? formatBootDuration(*boot.totalUs) : std::string{}));
+    }
+    const auto phase = [&rows](const char* label, const std::optional<std::uint64_t>& microseconds, std::string_view reason)
+    {
+        rows.push_back(row(label, microseconds.has_value() ? formatBootDuration(*microseconds) : std::string{}, reason));
+    };
+    constexpr std::string_view NOT_MEASURED_BY_LOADER =
+        "Not measured: the boot loader didn't record it (systemd-boot does), or not booted with UEFI";
+    phase("Firmware", boot.firmwareUs, NOT_MEASURED_BY_LOADER);
+    phase("Boot loader", boot.loaderUs, NOT_MEASURED_BY_LOADER);
+    phase("Kernel", boot.kernelUs, NOT_REPORTED);
+    if (boot.initrdUs.has_value())
+    {
+        phase("Initrd", boot.initrdUs, NOT_REPORTED); // left out entirely without an initramfs
+    }
+    phase("Userspace", boot.userspaceUs, boot.finished ? NOT_REPORTED : std::string_view("Startup hasn't finished yet"));
+    return section;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot, const Core::GraphicsHostInfo& host)
 {
     std::vector<Section> sections;
@@ -1111,6 +1277,14 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.adapters.available)
     {
         sections.push_back(buildNetworkAdaptersSection(snapshot.adapters));
+    }
+    if (snapshot.boot.available)
+    {
+        sections.push_back(buildBootPerformanceSection(snapshot.boot));
+    }
+    if (snapshot.devices.available)
+    {
+        sections.push_back(buildDevicesSection(snapshot.devices));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

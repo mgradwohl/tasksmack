@@ -1,6 +1,8 @@
 #include "LinuxSystemInfoProbe.h"
 
+#include "LinuxBootTimes.h"
 #include "LinuxCommitPaging.h"
+#include "LinuxDevices.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxGraphics.h"
 #include "LinuxNetworkAdapters.h"
@@ -9,6 +11,7 @@
 #include "LinuxSensors.h"
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "SystemdBus.h"
 #include "UserNameLookup.h"
 
 #include <array>
@@ -219,12 +222,42 @@ SensorsInfo LinuxSystemInfoProbe::readSensors()
     return info;
 }
 
+DevicesInfo LinuxSystemInfoProbe::readDevices()
+{
+    DevicesInfo info;
+    LinuxDevices::readDeviceFacts(m_Root, info);
+    return info;
+}
+
 NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters()
 {
     NetworkAdaptersInfo info;
     // The addresses are this system's own (getifaddrs()); the rest is read under m_Root, so a fixture
     // root in a test still gets this machine's addresses for adapters of the same name, if any.
     LinuxNetworkAdapters::readNetworkAdapterFacts(m_Root, info, m_Root == "/" ? &listAdapterAddresses : nullptr);
+    return info;
+}
+
+BootPerformanceInfo LinuxSystemInfoProbe::readBootPerformance()
+{
+    BootPerformanceInfo info;
+    info.available = true;
+    if (m_Root != "/")
+    {
+        // A fixture root: systemd is only ever this system's.
+        info.unavailableReason = "Not read under a test root";
+        return info;
+    }
+    const SystemdBus::BootTimestampsRead read = SystemdBus::readBootTimestamps();
+    if (!read.ok)
+    {
+        info.unavailableReason = read.error;
+        return info;
+    }
+    info.timingsRead = true;
+    LinuxBootTimes::computePhases(
+        {.firmware = read.firmware, .loader = read.loader, .initrd = read.initrd, .userspace = read.userspace, .finish = read.finish},
+        info);
     return info;
 }
 
