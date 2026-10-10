@@ -568,6 +568,29 @@ TEST(LinuxProcessActionsTest, GetIoPriorityReadsAnotherUsersLiveProcess)
     ASSERT_TRUE(current.has_value()) << current.error();
 }
 
+TEST(LinuxProcessActionsTest, SignallingAnotherUsersProcessSaysPermissionDenied)
+{
+    // PID 1 belongs to root: a confirmed identity, then EPERM from the signal itself, reported in
+    // words rather than as errno text (#1548). SIGCONT ("resume") so that even a misdetected run
+    // could do no harm: resuming a running process changes nothing.
+    if (geteuid() == 0)
+    {
+        GTEST_SKIP() << "running as root: PID 1 is not another user's process";
+    }
+    std::ifstream stat("/proc/1/stat");
+    const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+    const std::uint64_t startTicks = ProcParsing::parseStatStartTime(line).value_or(0);
+    if (startTicks == 0)
+    {
+        GTEST_SKIP() << "PID 1's start time is not readable here (hidepid)";
+    }
+
+    LinuxProcessActions actions;
+    const ProcessActionResult result = actions.resume({.pid = 1, .startTimeTicks = startTicks});
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user");
+}
+
 TEST(LinuxProcessActionsTest, SetIoPriorityBestEffortLevelIsReadBack)
 {
     const SleepingChild child;
