@@ -1,5 +1,6 @@
 #include "TitleBarLayer.h"
 
+#include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -258,25 +259,10 @@ void TitleBarLayer::onAttach()
     // Must match renderTitleBar()'s drawing exactly, or the click targets drift away from the
     // painted buttons -- both derive from the same helper for that reason.
     const float titleBarHeight = height();
-    const float buttonWidth = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
-    const auto rightX = static_cast<float>(windowWidth);
-
-    // Right to left: Close, Maximize, Minimize, (gap), Settings, Help
-    float buttonX = rightX - buttonWidth;
-    m_CloseBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= buttonWidth;
-    m_MaximizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= buttonWidth;
-    m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO; // Separator before the app buttons
-    buttonX -= buttonWidth;
-    m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
-
-    buttonX -= buttonWidth;
-    m_HelpBounds = {.minX = buttonX, .maxX = buttonX + buttonWidth, .minY = 0, .maxY = titleBarHeight};
+    m_ButtonLayout = computeTitleBarButtonLayout(static_cast<float>(windowWidth),
+                                                 computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT),
+                                                 titleBarHeight,
+                                                 titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
 
     // The icon texture is loaded by the first renderTitleBar(), at the size the bar draws it; ImGui
     // only knows the framebuffer scale from the first frame on (#1169).
@@ -414,10 +400,8 @@ void TitleBarLayer::onSDLEvent(SDL_Event* event)
 auto TitleBarLayer::isPointInControlArea(float x, float y) const -> bool
 {
     // Called from the mouse-move hot path (updateResizeCursor(), hitTestCallback()) - test
-    // each bound directly rather than building a std::array<ButtonBounds, 6> copy per call.
-    return computeIsPointInBounds(x, y, m_IconBounds) || computeIsPointInBounds(x, y, m_HelpBounds) ||
-           computeIsPointInBounds(x, y, m_SettingsBounds) || computeIsPointInBounds(x, y, m_MinimizeBounds) ||
-           computeIsPointInBounds(x, y, m_MaximizeBounds) || computeIsPointInBounds(x, y, m_CloseBounds);
+    // each bound directly rather than building an array of ButtonBounds copies per call.
+    return computeIsPointInBounds(x, y, m_IconBounds) || computeIsPointOnTitleBarButton(x, y, m_ButtonLayout);
 }
 
 auto TitleBarLayer::detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge
@@ -1189,7 +1173,10 @@ void TitleBarLayer::renderTitleBar()
         }
     }
     const float BUTTON_HEIGHT = titleBarHeight;
-    const auto rightX = static_cast<float>(windowWidth);
+    // Where every button is drawn, and so what isPointInControlArea() keeps out of the drag area.
+    m_ButtonLayout = computeTitleBarButtonLayout(
+        static_cast<float>(windowWidth), BUTTON_WIDTH, BUTTON_HEIGHT, titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
+    const ImVec2 buttonSize(BUTTON_WIDTH, BUTTON_HEIGHT);
 
     // Window control buttons (right to left: Close, Maximize, Minimize)
     // titleBgActive with zero alpha gives a transparent resting state; if ImGui ever composites
@@ -1212,8 +1199,7 @@ void TitleBarLayer::renderTitleBar()
     }
 
     // Close button (hover/active colors from theme)
-    float buttonX = rightX - BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
+    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.close.minX, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.closeButtonHovered);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.closeButtonActive);
     // The X is drawn over an unlabelled button rather than passed as that button's label: fa-xmark
@@ -1221,7 +1207,7 @@ void TitleBarLayer::renderTitleBar()
     // and centring on its ink, neither of which a button label can express. The labelled form is
     // the fallback for when the chrome icon font failed to load.
     const char* closeLabel = (chromeIcons != nullptr) ? "##Close" : ICON_FA_XMARK "##Close";
-    if (ImGui::Button(closeLabel, ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+    if (ImGui::Button(closeLabel, buttonSize))
     {
         window.requestClose();
     }
@@ -1232,14 +1218,11 @@ void TitleBarLayer::renderTitleBar()
                            ImGui::GetItemRectMin(),
                            ImGui::GetItemRectMax());
     ImGui::PopStyleColor(2);
-    m_CloseBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
     // Maximize/Restore button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
+    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.maximize.minX, 0));
     const bool isMaximized = window.isMaximized();
-    if (ImGui::Button(isMaximized ? ICON_FA_WINDOW_RESTORE "##Restore" : ICON_FA_WINDOW_MAXIMIZE "##Maximize",
-                      ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+    if (ImGui::Button(isMaximized ? ICON_FA_WINDOW_RESTORE "##Restore" : ICON_FA_WINDOW_MAXIMIZE "##Maximize", buttonSize))
     {
         if (isMaximized)
         {
@@ -1250,55 +1233,54 @@ void TitleBarLayer::renderTitleBar()
             window.maximize();
         }
     }
-    m_MaximizeBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
     // Minimize button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    if (ImGui::Button(ICON_FA_WINDOW_MINIMIZE "##Minimize", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.minimize.minX, 0));
+    if (ImGui::Button(ICON_FA_WINDOW_MINIMIZE "##Minimize", buttonSize))
     {
         window.minimize();
     }
-    m_MinimizeBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
 
-    // Separator -- same ratio as the hit-bounds pass, so the two stay aligned.
-    buttonX -= titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO;
-
-    // Settings button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    if (ImGui::Button(ICON_FA_GEAR "##Settings", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+    // The app buttons, after the separator gap the layout leaves: Settings, then Help (the "?",
+    // #172), then About (the "i", #1600). Their tooltips are shown after the chrome icon font is
+    // popped: that font has no letters (#1200).
+    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.settings.minX, 0));
+    if (ImGui::Button(TitleBarButtons::SETTINGS_LABEL, buttonSize))
     {
         Core::OpenSettingsEvent event;
         Core::Application::get().raiseEvent(event);
     }
-    // Shown after the chrome icon font is popped: that font has no letters (#1200).
-    const bool settingsHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
-    m_SettingsBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
+    const char* tooltip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) ? TitleBarButtons::SETTINGS_TOOLTIP : nullptr;
 
-    // Help button
-    buttonX -= BUTTON_WIDTH;
-    ImGui::SetCursorPos(ImVec2(buttonX, 0));
-    if (ImGui::Button(ICON_FA_CIRCLE_QUESTION "##Help", ImVec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.help.minX, 0));
+    if (ImGui::Button(TitleBarButtons::HELP_LABEL, buttonSize))
     {
         Core::OpenHelpEvent event;
         Core::Application::get().raiseEvent(event);
     }
-    const bool helpHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
-    m_HelpBounds = {.minX = buttonX, .maxX = buttonX + BUTTON_WIDTH, .minY = 0, .maxY = BUTTON_HEIGHT};
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+    {
+        tooltip = TitleBarButtons::HELP_TOOLTIP;
+    }
+
+    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.about.minX, 0));
+    if (ImGui::Button(TitleBarButtons::ABOUT_LABEL, buttonSize))
+    {
+        Core::OpenAboutEvent event;
+        Core::Application::get().raiseEvent(event);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+    {
+        tooltip = TitleBarButtons::ABOUT_TOOLTIP;
+    }
 
     if (pushedChromeIcons)
     {
         ImGui::PopFont();
     }
-    // The "?" opens the Help window (#172); About is reached from its footer.
-    if (settingsHovered)
+    if (tooltip != nullptr)
     {
-        ImGui::SetTooltip("Settings (F2)");
-    }
-    else if (helpHovered)
-    {
-        ImGui::SetTooltip("Help: keyboard shortcuts, columns and tabs (F1)");
+        ImGui::SetTooltip("%s", tooltip);
     }
     ImGui::PopStyleColor(3); // Button colors
     ImGui::PopStyleVar(2);   // Frame padding, item spacing

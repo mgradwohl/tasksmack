@@ -531,8 +531,10 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
     # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
-    # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
+    # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), the layer that opens it on
+    # Core::OpenAboutEvent (#1600), and the link opener they call
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/AboutLayer.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
     # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp

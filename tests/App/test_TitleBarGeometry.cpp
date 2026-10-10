@@ -1,9 +1,13 @@
+#include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
+#include "Core/WindowConstants.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <limits>
+#include <string_view>
 
 namespace App
 {
@@ -873,6 +877,111 @@ TEST(ComputeIsPointInBoundsTest, DefaultConstructedBoundsNeverMatch)
     EXPECT_FALSE(computeIsPointInBounds(0.0F, 0.0F, unset));
 }
 
+// ========== computeTitleBarButtonLayout (#1600) ==========
+// The title bar's buttons, from the one computation TitleBarLayer both draws them at and keeps out
+// of the drag area with. #1600 added About (the circle-i) just left of Help (the circle-?).
+
+constexpr float LAYOUT_RIGHT = 1100.0F;
+constexpr float LAYOUT_BUTTON_W = 46.0F;
+constexpr float LAYOUT_BAR_H = 32.0F;
+constexpr float LAYOUT_GAP = 12.0F;
+
+[[nodiscard]] TitleBarButtonLayout sampleLayout()
+{
+    return computeTitleBarButtonLayout(LAYOUT_RIGHT, LAYOUT_BUTTON_W, LAYOUT_BAR_H, LAYOUT_GAP);
+}
+
+[[nodiscard]] float centreX(const ButtonBounds& bounds)
+{
+    return (bounds.minX + bounds.maxX) * 0.5F;
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, LaysOutAboutHelpSettingsThenTheWindowControls)
+{
+    const TitleBarButtonLayout layout = sampleLayout();
+    // Close touches the right edge; each button abuts the next, except for the gap before Settings.
+    EXPECT_FLOAT_EQ(layout.close.maxX, LAYOUT_RIGHT);
+    EXPECT_FLOAT_EQ(layout.maximize.maxX, layout.close.minX);
+    EXPECT_FLOAT_EQ(layout.minimize.maxX, layout.maximize.minX);
+    EXPECT_FLOAT_EQ(layout.settings.maxX, layout.minimize.minX - LAYOUT_GAP);
+    EXPECT_FLOAT_EQ(layout.help.maxX, layout.settings.minX);
+    EXPECT_FLOAT_EQ(layout.about.maxX, layout.help.minX); // "i" right beside "?"
+    EXPECT_FLOAT_EQ(layout.about.minX, LAYOUT_RIGHT - (LAYOUT_BUTTON_W * static_cast<float>(TITLE_BAR_BUTTON_COUNT)) - LAYOUT_GAP);
+
+    for (const ButtonBounds& bounds : {layout.about, layout.help, layout.settings, layout.minimize, layout.maximize, layout.close})
+    {
+        EXPECT_FLOAT_EQ(bounds.maxX - bounds.minX, LAYOUT_BUTTON_W);
+        EXPECT_FLOAT_EQ(bounds.minY, 0.0F);
+        EXPECT_FLOAT_EQ(bounds.maxY, LAYOUT_BAR_H);
+    }
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, TheContentWidthCountsEveryButtonItLaysOut)
+{
+    // The minimum window width must leave room for every button the layout places, About included.
+    const TitleBarButtonLayout layout = sampleLayout();
+    const float buttonsWidth = LAYOUT_RIGHT - layout.about.minX;
+    EXPECT_FLOAT_EQ(computeTitleBarContentWidth(0.0F, 0.0F, 0.0F, 0.0F, LAYOUT_BUTTON_W, LAYOUT_GAP), buttonsWidth);
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, EveryButtonIsExcludedFromTheDragArea)
+{
+    const TitleBarButtonLayout layout = sampleLayout();
+    for (const ButtonBounds& bounds : {layout.about, layout.help, layout.settings, layout.minimize, layout.maximize, layout.close})
+    {
+        EXPECT_TRUE(computeIsPointOnTitleBarButton(centreX(bounds), LAYOUT_BAR_H * 0.5F, layout));
+    }
+    // About's edges are included, as every button's are.
+    EXPECT_TRUE(computeIsPointOnTitleBarButton(layout.about.minX, 0.0F, layout));
+    EXPECT_TRUE(computeIsPointOnTitleBarButton(layout.about.maxX, LAYOUT_BAR_H, layout));
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, TheBarLeftOfAboutAndTheGapStayDraggable)
+{
+    const TitleBarButtonLayout layout = sampleLayout();
+    EXPECT_FALSE(computeIsPointOnTitleBarButton(layout.about.minX - 1.0F, LAYOUT_BAR_H * 0.5F, layout));
+    EXPECT_FALSE(computeIsPointOnTitleBarButton(layout.minimize.minX - (LAYOUT_GAP * 0.5F), LAYOUT_BAR_H * 0.5F, layout));
+    EXPECT_FALSE(computeIsPointOnTitleBarButton(centreX(layout.about), LAYOUT_BAR_H + 1.0F, layout)); // Below the bar
+    EXPECT_FALSE(computeIsPointOnTitleBarButton(10.0F, 10.0F, TitleBarButtonLayout{}));               // Not laid out yet
+}
+
+TEST(ComputeTitleBarButtonLayoutTest, OnNativeWaylandAboutIsAClickNotADrag)
+{
+    // What the SDL hit test sees: the About button must stay NORMAL (clickable) where the empty bar
+    // beside it hands the press to the compositor as a drag (#744).
+    const TitleBarButtonLayout layout = sampleLayout();
+    const auto hitTest = [&layout](float x, float y)
+    {
+        return computeWindowHitTest(x,
+                                    y,
+                                    1100,
+                                    800,
+                                    LAYOUT_BAR_H,
+                                    8.0F,
+                                    /*isMaximized=*/false,
+                                    computeIsPointOnTitleBarButton(x, y, layout),
+                                    /*isNativeWayland=*/true);
+    };
+    EXPECT_EQ(hitTest(centreX(layout.about), LAYOUT_BAR_H * 0.5F), SDL_HITTEST_NORMAL);
+    EXPECT_EQ(hitTest(layout.about.minX - 20.0F, LAYOUT_BAR_H * 0.5F), SDL_HITTEST_DRAGGABLE);
+}
+
+TEST(TitleBarButtonsTest, AboutAndHelpHaveTheirOwnIconsAndTooltips)
+{
+    // #1600: the "?" is Help and a new "i" is About, each with its own ImGui ID and tooltip.
+    const std::string_view about{TitleBarButtons::ABOUT_LABEL};
+    const std::string_view help{TitleBarButtons::HELP_LABEL};
+    const std::string_view settings{TitleBarButtons::SETTINGS_LABEL};
+    EXPECT_TRUE(about.starts_with(ICON_FA_CIRCLE_INFO));
+    EXPECT_TRUE(help.starts_with(ICON_FA_CIRCLE_QUESTION));
+    EXPECT_TRUE(settings.starts_with(ICON_FA_GEAR));
+    EXPECT_NE(about, help);
+    EXPECT_NE(about, settings);
+    EXPECT_EQ(std::string_view{TitleBarButtons::ABOUT_TOOLTIP}, "About TaskSmack");
+    EXPECT_EQ(std::string_view{TitleBarButtons::HELP_TOOLTIP}, "Help (F1)");
+    EXPECT_EQ(std::string_view{TitleBarButtons::SETTINGS_TOOLTIP}, "Settings (F2)");
+}
+
 // ========== computeDetectResizeEdge (#769) ==========
 // Extracted from TitleBarLayer::detectResizeEdge().
 
@@ -1012,19 +1121,20 @@ TEST(TitleBarGeometryTest, ResizeBorderIsNeverThinnerThanTheReference)
 
 // ========== Minimum window size (#970) ==========
 
-// The bar's content: margin, icon, gap, wordmark, gap again, five buttons and the separator.
+// The bar's content: margin, icon, gap, wordmark, gap again, six buttons and the separator.
 TEST(TitleBarGeometryTest, TitleBarContentWidthSumsWhatTheBarDraws)
 {
     // The 175% bar measured in the report: 56px tall, so margin 11.2, icon 52.64, gap 16.24,
     // buttons 64.4 each, separator 21.84 -- with a 370px wordmark.
     const float width = computeTitleBarContentWidth(11.2F, 52.64F, 16.24F, 370.0F, 64.4F, 21.84F);
-    EXPECT_NEAR(width, 11.2F + 52.64F + 16.24F + 370.0F + 16.24F + (64.4F * 5.0F) + 21.84F, 0.01F);
+    // Six buttons since #1600: About, Help, Settings, Minimize, Maximize, Close.
+    EXPECT_NEAR(width, 11.2F + 52.64F + 16.24F + 370.0F + 16.24F + (64.4F * 6.0F) + 21.84F, 0.01F);
 }
 
 TEST(TitleBarGeometryTest, TitleBarContentWidthIgnoresUnusableInputs)
 {
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    EXPECT_FLOAT_EQ(computeTitleBarContentWidth(nan, -5.0F, nan, 0.0F, 10.0F, nan), 50.0F);
+    EXPECT_FLOAT_EQ(computeTitleBarContentWidth(nan, -5.0F, nan, 0.0F, 10.0F, nan), 60.0F);
 }
 
 // At a 1.0 display scale with nothing measured yet, the minimum is the base minimum it always was.

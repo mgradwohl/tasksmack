@@ -132,7 +132,7 @@ The table's keys work while the pointer is over the process table or after click
 
 **F1**, or the **?** button in the title bar or the status bar, opens the **Help** window. It is not a dialog: you can keep it open beside the rest of TaskSmack, move it and resize it, and it keeps its place and size until you quit. It lists every keyboard shortcut grouped by where it works (Global, Processes, Process Details), with a box to find one by typing; describes each Processes column, with its units and platform notes, from the same text as the column headers' tooltips; gives one line on each tab; and links to this guide and the issue tracker. Escape or its close button closes it.
 
-**About TaskSmack** (the version, build, commit, licences and credits) opens from the link at the foot of the Help window, or from **About TaskSmack** in Settings' Advanced section.
+**About TaskSmack** (the version, build, commit, licences and credits, and the same links to this guide and the issue tracker as the Help window) opens from the **i** button in the title bar, just left of the **?**, from the link at the foot of the Help window, or from **About TaskSmack** in Settings' Advanced section. It has no keyboard shortcut. From left to right, the title bar's buttons are **i** (About), **?** (Help, F1) and the gear (Settings, F2), then Minimize, Maximize and Close; hovering one names it.
 
 ### System Metrics
 

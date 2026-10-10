@@ -23,7 +23,7 @@ namespace App
 /// This layer handles:
 /// - App icon display
 /// - "TaskSmack" title in Sixtyfour pixel font
-/// - Help and Settings buttons (emit events)
+/// - About (i), Help (?) and Settings (gear) buttons (emit events)
 /// - Window controls: minimize, maximize/restore, close
 /// - SDL hit test registration for window dragging
 class TitleBarLayer : public Core::Layer
@@ -145,11 +145,7 @@ class TitleBarLayer : public Core::Layer
     bool m_ShowSystemMenu = false;
 
     // Cached button bounds for hit testing
-    ButtonBounds m_HelpBounds{};
-    ButtonBounds m_SettingsBounds{};
-    ButtonBounds m_MinimizeBounds{};
-    ButtonBounds m_MaximizeBounds{};
-    ButtonBounds m_CloseBounds{};
+    TitleBarButtonLayout m_ButtonLayout{};
     ButtonBounds m_IconBounds{};
 
     InteractionMode m_InteractionMode = InteractionMode::None;

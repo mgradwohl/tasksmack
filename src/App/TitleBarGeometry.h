@@ -131,8 +131,12 @@ inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
     return std::round(RESIZE_BORDER_REFERENCE_PX * scale);
 }
 
-/// Width the title bar's own content needs: the icon, the wordmark, and the five buttons, with the
-/// gaps the bar draws between them.
+/// How many buttons the title bar draws at its right: About, Help and Settings, then a gap, then
+/// Minimize, Maximize and Close (#1600 gave About its own button).
+inline constexpr int TITLE_BAR_BUTTON_COUNT = 6;
+
+/// Width the title bar's own content needs: the icon, the wordmark, and the TITLE_BAR_BUTTON_COUNT
+/// buttons, with the gaps the bar draws between them.
 ///
 /// Every input is a size the bar has already computed for drawing, so the minimum window width
 /// derived from this cannot drift from what is actually on screen.
@@ -142,7 +146,7 @@ inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
 /// @param titleGapPx      Gap between the icon and the wordmark; reused between wordmark and buttons.
 /// @param wordmarkWidthPx Measured width of the "TaskSmack" wordmark; 0 before it has been drawn.
 /// @param buttonWidthPx   Width of one title-bar button.
-/// @param separatorGapPx  Gap between the two app buttons and the three window buttons.
+/// @param separatorGapPx  Gap between the three app buttons and the three window buttons.
 [[nodiscard]] inline auto computeTitleBarContentWidth(const float edgeMarginPx,
                                                       const float iconSizePx,
                                                       const float titleGapPx,
@@ -150,7 +154,7 @@ inline constexpr float RESIZE_BORDER_REFERENCE_PX = 8.0F;
                                                       const float buttonWidthPx,
                                                       const float separatorGapPx) -> float
 {
-    constexpr float BUTTON_COUNT = 5.0F; // help, settings, minimize, maximize, close
+    constexpr auto BUTTON_COUNT = static_cast<float>(TITLE_BAR_BUTTON_COUNT);
     const auto atLeastZero = [](const float value)
     {
         return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
@@ -372,7 +376,7 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
     return {.width = cap(minimum.width, usableWidth), .height = cap(minimum.height, usableHeight)};
 }
 
-/// Screen-space rectangle for a title-bar button's hit area (icon, help, settings,
+/// Screen-space rectangle for a title-bar button's hit area (icon, about, help, settings,
 /// minimize, maximize, close). A non-positive width (maxX <= minX) is treated as "not set"
 /// by computeIsPointInBounds below, so a default-constructed ButtonBounds never matches.
 struct ButtonBounds
@@ -392,6 +396,58 @@ struct ButtonBounds
         return false;
     }
     return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+}
+
+/// Where the title bar's right-hand buttons are, in window coordinates: what TitleBarLayer draws them
+/// at and what its hit testing excludes from the drag area, from one computation so the two cannot
+/// drift apart. Left to right: About (i), Help (?), Settings (gear), a gap, Minimize, Maximize, Close.
+struct TitleBarButtonLayout
+{
+    ButtonBounds about;
+    ButtonBounds help;
+    ButtonBounds settings;
+    ButtonBounds minimize;
+    ButtonBounds maximize;
+    ButtonBounds close;
+};
+
+/// Lays the title bar's buttons out right to left from the window's right edge, each
+/// @p buttonWidthPx wide and the bar's full height, with @p separatorGapPx between the window
+/// controls and the app buttons (#1600).
+///
+/// @param rightEdgePx     The window's width: the right edge the Close button touches.
+/// @param buttonWidthPx   Width of one button (computeTitleBarButtonWidth()).
+/// @param titleBarHeightPx Height of the bar, and so of every button.
+/// @param separatorGapPx  Gap between Minimize and Settings.
+[[nodiscard]] inline auto
+computeTitleBarButtonLayout(const float rightEdgePx, const float buttonWidthPx, const float titleBarHeightPx, const float separatorGapPx)
+    -> TitleBarButtonLayout
+{
+    float rightPx = rightEdgePx;
+    const auto next = [&rightPx, buttonWidthPx, titleBarHeightPx]
+    {
+        const ButtonBounds bounds{.minX = rightPx - buttonWidthPx, .maxX = rightPx, .minY = 0.0F, .maxY = titleBarHeightPx};
+        rightPx = bounds.minX;
+        return bounds;
+    };
+    TitleBarButtonLayout layout;
+    layout.close = next();
+    layout.maximize = next();
+    layout.minimize = next();
+    rightPx -= separatorGapPx;
+    layout.settings = next();
+    layout.help = next();
+    layout.about = next();
+    return layout;
+}
+
+/// Whether (x, y) is on any of the title bar's right-hand buttons, so neither a drag nor a resize
+/// may start there.
+[[nodiscard]] inline auto computeIsPointOnTitleBarButton(const float x, const float y, const TitleBarButtonLayout& layout) -> bool
+{
+    return computeIsPointInBounds(x, y, layout.about) || computeIsPointInBounds(x, y, layout.help) ||
+           computeIsPointInBounds(x, y, layout.settings) || computeIsPointInBounds(x, y, layout.minimize) ||
+           computeIsPointInBounds(x, y, layout.maximize) || computeIsPointInBounds(x, y, layout.close);
 }
 
 /// Pure decision for TitleBarLayer::detectResizeEdge(): which window edge/corner (x, y) is

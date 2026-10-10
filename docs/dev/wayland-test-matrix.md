@@ -119,7 +119,7 @@ Test that title-bar dragging is smooth and accurate:
   - Expected: Compositor's own maximize/restore-on-drag behavior applies (varies by compositor -- note what actually happens)
 - [ ] Drag onto a different monitor (multi-monitor)
   - Expected: Window moves smoothly between monitors
-- [ ] **Regression check: every title-bar button still works** (icon/system-menu, help, settings, minimize, maximize, close) -- these must stay clickable and must NOT start a window drag. This is the highest-risk regression surface for #744's fix (`isPointInControlArea()` must be checked before returning `DRAGGABLE`).
+- [ ] **Regression check: every title-bar button still works** (icon/system-menu, about, help, settings, minimize, maximize, close) -- these must stay clickable and must NOT start a window drag. This is the highest-risk regression surface for #744's fix (`isPointInControlArea()` must be checked before returning `DRAGGABLE`).
 - [ ] Double-click the empty title-bar area
   - Expected (accepted trade-off, not a bug): does NOT toggle maximize/restore on native Wayland, since the compositor consumes the button-down entirely. Use the maximize button instead.
 

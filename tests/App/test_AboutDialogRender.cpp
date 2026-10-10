@@ -3,10 +3,15 @@
 /// used to auto-fit around a wrapped shortcut table and creep wider every frame until it filled most
 /// of the window -- its height is held to its own cap with the contents scrolling inside it, it
 /// stays inside a small window with its OK button reachable, and OK or Escape closes it. Since #172
-/// it has no shortcuts section; those are in the Help window (test_HelpWindowRender.cpp).
+/// it has no shortcuts section; those are in the Help window (test_HelpWindowRender.cpp). Since #1600
+/// it has the Help window's user guide and "Report a problem" links, and AboutLayer opens it on the
+/// Core::OpenAboutEvent the title bar's "i" raises.
 
 #include "App/AboutDialog.h"
+#include "App/AboutLayer.h"
 #include "App/DialogGeometry.h"
+#include "App/HelpContent.h"
+#include "Core/ApplicationEvents.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconLoader.h"
 
@@ -15,6 +20,7 @@
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal, its body and its OK button
 
 #include <algorithm>
+#include <string>
 #include <string_view>
 
 namespace App
@@ -39,6 +45,7 @@ struct Measured
     float bodyContentRight = 0.0F; ///< Screen x of that region's right edge
     float bodyContentUsed = 0.0F;  ///< Width the body's items reached (its ContentSize.x)
     float widestOverflowPx = 0.0F; ///< Most any table cell's content ran past its column's right edge
+    std::string activatedUrl;      ///< What render() returned: the link pressed this frame, if any
 };
 
 class AboutDialogRenderTest : public ::testing::Test
@@ -72,7 +79,7 @@ class AboutDialogRenderTest : public ::testing::Test
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
         ImGui::Begin("Main", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::End();
-        AboutDialog::render(m_OpenRequested, m_Icon);
+        measured.activatedUrl = AboutDialog::render(m_OpenRequested, m_Icon);
         measured.open = ImGui::IsPopupOpen(AboutDialog::POPUP_ID);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
         {
@@ -138,6 +145,28 @@ class AboutDialogRenderTest : public ::testing::Test
         const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
         ASSERT_NE(modal, nullptr);
         ImGui::ActivateItemByID(ImHashStr("OK", 0, modal->ID));
+    }
+
+    /// The dialog's scrolling body, or nullptr when it was not drawn.
+    [[nodiscard]] static const ImGuiWindow* aboutBody()
+    {
+        for (const ImGuiWindow* window : GImGui->Windows)
+        {
+            if (std::string_view{window->Name}.contains("##AboutBody"))
+            {
+                return window;
+            }
+        }
+        return nullptr;
+    }
+
+    /// Presses, on the next frame, the link to @p url drawn directly in the body (not in a table):
+    /// renderLink() pushes the URL as its ID, then draws its "##Link" button.
+    static void pressLink(const char* url)
+    {
+        const ImGuiWindow* body = aboutBody();
+        ASSERT_NE(body, nullptr);
+        ImGui::ActivateItemByID(ImHashStr("##Link", 0, ImHashStr(url, 0, body->ID)));
     }
 
     [[nodiscard]] static float expectedWidth(const Measured& measured)
@@ -305,6 +334,58 @@ TEST_F(AboutDialogRenderTest, HasNoShortcutsSection)
     ASSERT_NE(body, nullptr);
     EXPECT_NE(ImGui::TableFindByID(ImHashStr("##AboutProject", 0, body->ID)), nullptr); // The probe finds About's tables
     EXPECT_EQ(ImGui::TableFindByID(ImHashStr("##Shortcuts", 0, body->ID)), nullptr);
+}
+
+TEST_F(AboutDialogRenderTest, HasTheHelpWindowsUserGuideAndReportAProblemLinks)
+{
+    // #1600: About shows the same two links as the Help window, with the same URLs. Pressing one
+    // returns its URL for AboutLayer to open; a link that was not drawn could not be pressed.
+    ASSERT_TRUE(openAndSettle().open);
+    for (const char* url : {HelpContent::USER_GUIDE_URL, HelpContent::ISSUES_URL})
+    {
+        SCOPED_TRACE(url);
+        pressLink(url);
+        std::string activated;
+        int frame = 0;
+        while (frame < 2 && activated.empty())
+        {
+            activated = runFrame().activatedUrl;
+            ++frame;
+        }
+        EXPECT_EQ(activated, url);
+        EXPECT_TRUE(runFrame().activatedUrl.empty()); // Once per press
+    }
+    EXPECT_TRUE(runFrame().open); // A link leaves the dialog open
+}
+
+TEST_F(AboutDialogRenderTest, NothingIsActivatedWithoutAPress)
+{
+    m_OpenRequested = true;
+    for (int frame = 0; frame < SETTLE_FRAMES; ++frame)
+    {
+        EXPECT_TRUE(runFrame().activatedUrl.empty());
+    }
+}
+
+TEST_F(AboutDialogRenderTest, TheTitleBarsOpenAboutEventOpensIt)
+{
+    // The title bar's "i" (#1600), like Help's link and Settings, raises Core::OpenAboutEvent;
+    // AboutLayer opens the dialog on it, without consuming it.
+    AboutLayer layer;
+    const auto renderLayerFrame = [&layer]
+    {
+        ImGui::NewFrame();
+        layer.onRender();
+        const bool open = ImGui::IsPopupOpen(AboutDialog::POPUP_ID);
+        ImGui::Render();
+        return open;
+    };
+    EXPECT_FALSE(renderLayerFrame());
+
+    Core::OpenAboutEvent event;
+    layer.onEvent(event);
+    EXPECT_FALSE(event.isHandled());
+    EXPECT_TRUE(renderLayerFrame());
 }
 
 TEST_F(AboutDialogRenderTest, DrawsNothingUntilRequested)
