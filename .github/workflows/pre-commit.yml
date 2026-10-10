@@ -21,6 +21,11 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    # The hooks read and rewrite text (check-utf8, fix-byte-order-marker, clang-format): run them in
+    # UTF-8, not the runner's POSIX default (#1648).
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
