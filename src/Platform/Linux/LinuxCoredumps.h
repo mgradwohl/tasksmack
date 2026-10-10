@@ -48,7 +48,8 @@ struct CoredumpName
     out.reserve(text.size());
     constexpr std::size_t ESCAPE = 4; // "\xNN"
     constexpr int HEX = 16;
-    for (std::size_t i = 0; i < text.size(); ++i)
+    std::size_t i = 0;
+    while (i < text.size())
     {
         unsigned value = 0;
         if (text[i] == '\\' && i + ESCAPE <= text.size() && text[i + 1] == 'x')
@@ -58,11 +59,12 @@ struct CoredumpName
             if (ec == std::errc{} && end == first + 2)
             {
                 out += static_cast<char>(value);
-                i += ESCAPE - 1;
+                i += ESCAPE;
                 continue;
             }
         }
         out += text[i];
+        ++i;
     }
     return out;
 }
@@ -78,7 +80,8 @@ struct CoredumpName
     }
     name.remove_prefix(PREFIX.size());
     std::vector<std::string_view> parts;
-    for (std::size_t start = 0;;)
+    std::size_t start = 0;
+    while (true)
     {
         const std::size_t dot = name.find('.', start);
         parts.push_back(name.substr(start, dot == std::string_view::npos ? std::string_view::npos : dot - start));
