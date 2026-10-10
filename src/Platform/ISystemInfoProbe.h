@@ -4,6 +4,8 @@
 // thread. Each section of the page has a raw struct here and a read*() method on the probe; the App
 // layer turns them into labelled rows (App/Panels/SystemInfoSections.h).
 
+#include "Platform/IServiceProbe.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -390,6 +392,35 @@ struct DevicesInfo
     std::vector<Device> problems; ///< Windows: every present device with a problem; Linux: PCI devices without a driver
 };
 
+/// One kernel driver (#1521): a Windows driver service that is running, or a loaded Linux kernel module.
+/// A fact the probe couldn't read, or the other platform's, is empty, 0 or Unknown.
+struct KernelDriver
+{
+    std::string name;                                       ///< The driver service's name ("ACPI") / the module's ("snd_hda_intel")
+    std::string displayName;                                ///< Windows: the service's display name ("Microsoft ACPI Driver")
+    std::string path;                                       ///< Windows: the image file ("C:\Windows\System32\drivers\ACPI.sys")
+    std::string version;                                    ///< Windows: the image's file version; Linux: /sys/module/<name>/version
+    std::string company;                                    ///< Windows: the image's CompanyName
+    bool fileSystem = false;                                ///< Windows: a file system driver (SERVICE_FILE_SYSTEM_DRIVER)
+    ServiceState state = ServiceState::Unknown;             ///< Windows
+    ServiceStartType startType = ServiceStartType::Unknown; ///< Windows
+    std::string moduleState;                                ///< Linux: "Live", "Loading" or "Unloading"
+    std::uint64_t sizeBytes = 0;                            ///< Linux: the module's memory size
+    std::optional<std::uint32_t> useCount;                  ///< Linux: the reference count
+    std::vector<std::string> usedBy;                        ///< Linux: the modules that depend on it
+    bool permanent = false;                                 ///< Linux: it can't be unloaded ("[permanent]")
+    std::string taints;                                     ///< Linux: its taint flags ("POE"); empty when none
+};
+
+/// The Drivers facts (#1521): Windows' running driver services, or Linux's loaded kernel modules.
+struct DriversInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    bool listed = false; ///< The list was read: an empty drivers means none were found.
+    std::vector<KernelDriver> drivers;
+};
+
 /// One IP address on an adapter (#1518).
 struct AdapterAddress
 {
@@ -497,6 +528,9 @@ class ISystemInfoProbe
     /// The Devices facts (#1520); read when hasOs is true. Enumeration only: no device state changes.
     [[nodiscard]] virtual DevicesInfo readDevices() = 0;
 
+    /// The Drivers facts (#1521); read when hasOs is true. Enumeration only: no driver is started, stopped or changed.
+    [[nodiscard]] virtual DriversInfo readDrivers() = 0;
+
     /// The Network adapters facts (#1518); read when hasOs is true.
     [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters() = 0;
 
@@ -554,6 +588,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] DevicesInfo readDevices() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] DriversInfo readDrivers() override
     {
         return {};
     }

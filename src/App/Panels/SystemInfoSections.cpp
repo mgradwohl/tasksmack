@@ -1,7 +1,9 @@
 #include "SystemInfoSections.h"
 
+#include "App/Panels/ServicesView.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
@@ -1107,6 +1109,95 @@ Section buildDevicesSection(const Platform::DevicesInfo& devices)
     return section;
 }
 
+std::string formatDriverValue(const Platform::KernelDriver& driver)
+{
+    if (!driver.moduleState.empty()) // a Linux kernel module
+    {
+        std::string uses;
+        if (!driver.usedBy.empty())
+        {
+            uses = "used by";
+            for (std::size_t i = 0; i < driver.usedBy.size(); ++i)
+            {
+                uses += (i == 0 ? " " : ", ") + driver.usedBy[i];
+            }
+        }
+        else if (driver.useCount.has_value())
+        {
+            const std::uint32_t refs = *driver.useCount;
+            uses = refs == 0 ? std::string("not in use") : std::format("{} {}", refs, refs == 1 ? "reference" : "references");
+        }
+        const std::string size = driver.sizeBytes > 0 ? UI::Format::formatBytes(static_cast<double>(driver.sizeBytes)) : std::string{};
+        const std::string version = driver.version.empty() ? std::string{} : "version " + driver.version;
+        const std::string tainted = driver.taints.empty() ? std::string{} : "tainted (" + driver.taints + ")";
+        return joinNonEmpty(
+            {
+                size,
+                uses,
+                version,
+                driver.moduleState == "Live" ? std::string_view{} : std::string_view(driver.moduleState),
+                driver.permanent ? "permanent" : "",
+                tainted,
+            },
+            ", ");
+    }
+    const bool sameName = containsIgnoringCase(driver.displayName, driver.name) && driver.displayName.size() == driver.name.size();
+    const std::string_view startType = serviceStartTypeLabel(driver.startType);
+    const std::string start = startType.empty() ? std::string{} : std::string(startType) + " start";
+    const bool running = driver.state == Platform::ServiceState::Running || driver.state == Platform::ServiceState::Unknown;
+    return joinNonEmpty(
+        {
+            sameName ? std::string_view{} : std::string_view(driver.displayName),
+            driver.fileSystem ? "file system driver" : "",
+            start,
+            running ? std::string_view{} : serviceStateLabel(driver.state),
+            driver.version,
+            driver.company,
+            driver.path,
+        },
+        ", ");
+}
+
+Section buildDriversSection(const Platform::DriversInfo& drivers)
+{
+    const bool windows = drivers.family == Platform::OsFamily::Windows;
+    Section section{.title = windows ? "Drivers" : "Kernel modules", .icon = ICON_FA_GEARS, .rows = {}};
+    std::vector<Row>& rows = section.rows;
+    std::string count = drivers.drivers.empty() ? "None found" : std::format("{}", drivers.drivers.size());
+    rows.push_back(row(windows ? "Loaded drivers" : "Loaded modules",
+                       drivers.listed ? std::move(count) : std::string{},
+                       windows ? "The Service Control Manager couldn't list the drivers"
+                               : "/proc/modules couldn't be read (a kernel without loadable module support)"));
+    if (!windows)
+    {
+        const auto tainted =
+            std::ranges::count_if(drivers.drivers, [](const Platform::KernelDriver& module) { return !module.taints.empty(); });
+        if (tainted > 0)
+        {
+            rows.push_back(row("Tainted modules", std::format("{}", tainted)));
+        }
+        rows.push_back(row("Built-in modules", "Not listed: built into the kernel, they aren't in /proc/modules"));
+    }
+    std::vector<const Platform::KernelDriver*> sorted;
+    sorted.reserve(drivers.drivers.size());
+    for (const Platform::KernelDriver& driver : drivers.drivers)
+    {
+        sorted.push_back(&driver);
+    }
+    const auto lower = [](unsigned char c)
+    {
+        return std::tolower(c);
+    };
+    std::ranges::stable_sort(sorted,
+                             [&](const Platform::KernelDriver* a, const Platform::KernelDriver* b)
+                             { return std::ranges::lexicographical_compare(a->name, b->name, {}, lower, lower); });
+    for (const Platform::KernelDriver* driver : sorted)
+    {
+        rows.push_back(row(driver->name.empty() ? "Unnamed driver" : driver->name, formatDriverValue(*driver)));
+    }
+    return section;
+}
+
 std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
 {
     std::string text;
@@ -1285,6 +1376,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.devices.available)
     {
         sections.push_back(buildDevicesSection(snapshot.devices));
+    }
+    if (snapshot.drivers.available)
+    {
+        sections.push_back(buildDriversSection(snapshot.drivers));
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

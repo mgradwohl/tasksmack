@@ -178,6 +178,16 @@ struct VisibleSection
 /// the active audio endpoints.
 [[nodiscard]] Section buildDevicesSection(const Platform::DevicesInfo& devices);
 
+/// A driver's row value. Windows: its display name, start type, state when not running, file version,
+/// company and image ("Microsoft ACPI Driver, Boot start, 10.0.26100.1, Microsoft Corporation,
+/// C:\Windows\System32\drivers\ACPI.sys"). Linux: its size, what uses it, version, state when not Live,
+/// "permanent" and taint flags ("1.2 MB, used by kvm_intel, tainted (OE)").
+[[nodiscard]] std::string formatDriverValue(const Platform::KernelDriver& driver);
+
+/// The Drivers section (#1521), titled "Kernel modules" on Linux: a count, then one row per driver or
+/// module by name; on Linux, the tainted count and a note that built-in modules aren't listed.
+[[nodiscard]] Section buildDriversSection(const Platform::DriversInfo& drivers);
+
 /// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
 /// for the Graphics & displays section, captured on the UI thread.
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.
