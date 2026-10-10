@@ -126,6 +126,7 @@ set(TASKSMACK_SOURCES
     src/UI/IconLoader.cpp
     src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
+    src/App/ElevationNoticeDialog.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/HelpLayer.cpp
     src/App/HelpWindow.cpp
