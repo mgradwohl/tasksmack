@@ -89,6 +89,12 @@ endif()
 add_test(NAME BenchmarkRegressionGateScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
 
+# tools/tidy-changed-files.py picks the PR clang-tidy jobs' translation units (#1406, #1626). The tests
+# build throwaway git repositories (about 10 s); the 180 s limit keeps them clear of the CI --timeout.
+add_test(NAME TidyChangedFilesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_changed_files.py)
+set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 180)
+
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES

@@ -130,6 +130,19 @@ if [[ ! -f "$COMPILE_COMMANDS_TIDY" ]]; then
         "$COMPILE_COMMANDS" > "$COMPILE_COMMANDS_TIDY"
 fi
 
+# Several targets compile the same src/ files (the TaskSmackApp object library, the tests, ...), and
+# clang-tidy analyzes a file once per database entry. Keep one entry per file, the app's (#1626).
+# Not fatal: without it every file is still analyzed, just once per target that compiles it.
+PYTHON_EXE=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
+if [[ -z "$PYTHON_EXE" ]]; then
+    echo "Warning: python3 not found; compile database not de-duplicated (files may be analyzed more than once)." >&2
+elif ! DEDUPE_OUTPUT=$("$PYTHON_EXE" -I "$SCRIPT_DIR/dedupe-compile-commands.py" "$COMPILE_COMMANDS_TIDY" 2>&1); then
+    echo "Warning: compile database not de-duplicated (files may be analyzed more than once):" >&2
+    echo "$DEDUPE_OUTPUT" | tail -n 20 >&2
+elif $VERBOSE; then
+    echo "$DEDUPE_OUTPUT"
+fi
+
 COMPILE_COMMANDS_DIR_IN_USE="$TIDY_COMPDB_DIR"
 
 # Determine files to analyze
