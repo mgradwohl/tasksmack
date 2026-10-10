@@ -381,5 +381,164 @@ TEST_F(CoredumpsFixture, NoCoredumpDirectory)
     EXPECT_NE(info.unavailableReason.find("systemd-coredump"), std::string::npos);
 }
 
+// ---- The journal's systemd-coredump entries (#1674) ----
+
+TEST(LinuxCoredumpsTest, NamesSignals)
+{
+    EXPECT_EQ(LinuxCoredumps::signalName(11), "SIGSEGV");
+    EXPECT_EQ(LinuxCoredumps::signalName(6), "SIGABRT");
+    EXPECT_EQ(LinuxCoredumps::signalName(31), "SIGSYS");
+    EXPECT_EQ(LinuxCoredumps::signalName(64), "signal 64");
+}
+
+TEST(LinuxCoredumpsTest, AJournalEntryIsItsCrash)
+{
+    std::string coreFile;
+    const LinuxCoredumps::JournalFields fields{
+        {"PID", "4242"},
+        {"UID", "1000"},
+        {"SIGNAL", "11"},
+        {"TIMESTAMP", "1791613600123456"},
+        {"COMM", "python3.12"},
+        {"EXE", "/usr/bin/python3.12"},
+        {"FILENAME", "/var/lib/systemd/coredump/core.python3\\x2e12.1000.boot.4242.1791613600123456.zst"},
+    };
+    const std::optional<CrashEvent> event = LinuxCoredumps::crashFromJournal(fields, coreFile);
+    ASSERT_TRUE(event.has_value());
+    const CrashEvent crash = event.value_or(CrashEvent{});
+    EXPECT_EQ(crash.application, "python3.12");
+    EXPECT_EQ(crash.pid, std::optional<std::uint32_t>(4242));
+    EXPECT_EQ(crash.uid, std::optional<std::uint32_t>(1000));
+    EXPECT_EQ(crash.unixSeconds, 1'791'613'600U);
+    EXPECT_EQ(crash.signal, "SIGSEGV"); // from the number when there is no SIGNAL_NAME
+    EXPECT_EQ(crash.executable, "/usr/bin/python3.12");
+    EXPECT_TRUE(crash.coreKept);
+    EXPECT_TRUE(coreFile.starts_with("/var/lib/systemd/coredump/core."));
+}
+
+TEST(LinuxCoredumpsTest, AJournalEntryWithoutItsCoreOrAProcess)
+{
+    std::string coreFile;
+    const std::optional<CrashEvent> notKept =
+        LinuxCoredumps::crashFromJournal({{"PID", "7"}, {"SIGNAL", "6"}, {"SIGNAL_NAME", "SIGABRT"}, {"COMM", "app"}}, coreFile);
+    ASSERT_TRUE(notKept.has_value());
+    EXPECT_FALSE(notKept.value_or(CrashEvent{}).coreKept);
+    EXPECT_EQ(notKept.value_or(CrashEvent{}).signal, "SIGABRT"); // the name when the journal has it
+    EXPECT_FALSE(notKept.value_or(CrashEvent{}).uid.has_value());
+    EXPECT_TRUE(coreFile.empty());
+
+    EXPECT_FALSE(LinuxCoredumps::crashFromJournal({{"SIGNAL", "11"}}, coreFile).has_value()); // no process named
+    EXPECT_FALSE(LinuxCoredumps::crashFromJournal({}, coreFile).has_value());
+}
+
+/// A fake journal returning @p entries, recording what it was asked for.
+struct FakeJournal
+{
+    bool opened = true;
+    std::vector<LinuxCoredumps::JournalFields> entries;
+    std::uint64_t askedSince = 0;
+    std::size_t askedMax = 0;
+
+    [[nodiscard]] LinuxCoredumps::JournalReader reader()
+    {
+        return [this](std::uint64_t sinceUsec, std::size_t maxEntries)
+        {
+            askedSince = sinceUsec;
+            askedMax = maxEntries;
+            LinuxCoredumps::JournalRead read;
+            read.opened = opened;
+            read.error = opened ? std::string{} : "no journal";
+            read.entries = entries;
+            return read;
+        };
+    }
+};
+
+LinuxCoredumps::JournalFields entry(std::string_view comm, std::uint32_t pid, std::uint64_t unixSeconds, std::string_view file = {})
+{
+    LinuxCoredumps::JournalFields fields{
+        {"PID", std::to_string(pid)},
+        {"UID", "1000"},
+        {"SIGNAL", "11"},
+        {"TIMESTAMP", std::to_string(unixSeconds * 1'000'000)},
+        {"COMM", std::string(comm)},
+        {"EXE", std::format("/usr/bin/{}", comm)},
+    };
+    if (!file.empty())
+    {
+        fields.emplace_back("FILENAME", std::string(file));
+    }
+    return fields;
+}
+
+TEST_F(CoredumpsFixture, TheJournalAddsDetailsAndCrashesWithoutACore)
+{
+    core("kept", NOW - DAY, "abcdef"); // in the journal too (pid 42)
+    core("other", NOW - (2 * DAY));    // another user's: not in this user's journal
+    const std::string keptFile = std::format("/var/lib/systemd/coredump/core.kept.1000.{}.42.{}000000.zst", BOOT_ID, NOW - DAY);
+    FakeJournal journal;
+    journal.entries = {entry("kept", 42, NOW - DAY, keptFile), entry("nocore", 7, NOW - (3 * DAY))};
+    CrashesInfo info;
+    LinuxCoredumps::readCrashFacts(m_Root, NOW, info, journal.reader());
+    EXPECT_EQ(journal.askedSince, (NOW - (14 * DAY)) * 1'000'000);
+    EXPECT_EQ(journal.askedMax, CRASH_LIST_MAX + 1);
+    EXPECT_TRUE(info.listed);
+    ASSERT_EQ(info.events.size(), 3U);
+    EXPECT_EQ(info.events[0].application, "kept");
+    EXPECT_EQ(info.events[0].signal, "SIGSEGV");
+    EXPECT_EQ(info.events[0].executable, "/usr/bin/kept");
+    EXPECT_EQ(info.events[0].coreBytes, 6U);        // sized from the file the journal names
+    EXPECT_EQ(info.events[1].application, "other"); // the directory's, not duplicated
+    EXPECT_TRUE(info.events[1].signal.empty());
+    EXPECT_EQ(info.events[2].application, "nocore");
+    EXPECT_FALSE(info.events[2].coreKept);
+}
+
+TEST_F(CoredumpsFixture, TheJournalListsCrashesWhenTheDirectoryIsMissing)
+{
+    FakeJournal journal;
+    journal.entries = {entry("nocore", 7, NOW - DAY)};
+    CrashesInfo info;
+    LinuxCoredumps::readCrashFacts(m_Root, NOW, info, journal.reader());
+    EXPECT_TRUE(info.listed);
+    EXPECT_TRUE(info.unavailableReason.empty());
+    ASSERT_EQ(info.events.size(), 1U);
+}
+
+TEST_F(CoredumpsFixture, WithoutAJournalTheDirectoryAlone)
+{
+    core("kept", NOW - DAY);
+    FakeJournal closed;
+    closed.opened = false;
+    CrashesInfo info;
+    LinuxCoredumps::readCrashFacts(m_Root, NOW, info, closed.reader());
+    ASSERT_EQ(info.events.size(), 1U);
+    EXPECT_TRUE(info.events[0].coreKept);
+
+    CrashesInfo none;
+    LinuxCoredumps::readCrashFacts(m_Root / "missing", NOW, none, closed.reader());
+    EXPECT_FALSE(none.listed); // the directory's reason stands
+    EXPECT_FALSE(none.unavailableReason.empty());
+
+    CrashesInfo noReader;
+    LinuxCoredumps::readCrashFacts(m_Root, NOW, noReader);
+    EXPECT_EQ(noReader.events.size(), 1U);
+}
+
+TEST_F(CoredumpsFixture, TheJournalIsCappedAtTheNewest)
+{
+    FakeJournal journal;
+    for (std::uint32_t i = 0; i < 5; ++i)
+    {
+        journal.entries.push_back(entry(std::format("app{}", i), 100 + i, NOW - i));
+    }
+    CrashesInfo info;
+    LinuxCoredumps::readCrashFacts(m_Root, NOW, info, journal.reader(), 3);
+    EXPECT_EQ(journal.askedMax, 4U);
+    EXPECT_TRUE(info.capped);
+    ASSERT_EQ(info.events.size(), 3U);
+    EXPECT_EQ(info.events[0].application, "app0");
+}
+
 } // namespace
 } // namespace Platform

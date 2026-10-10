@@ -1250,11 +1250,20 @@ std::string formatCrashValue(const Platform::CrashEvent& event)
     const std::string app =
         joinNonEmpty({event.application.empty() ? std::string_view("Unknown application") : event.application, event.appVersion}, " ");
     const std::string pid = event.pid.has_value() ? std::format("pid {}", *event.pid) : std::string{};
-    if (event.uid.has_value()) // a Linux core dump
+    const bool coreKept = event.coreKept || event.coreBytes > 0;
+    if (event.uid.has_value() || coreKept || !event.signal.empty()) // a Linux core dump
     {
-        const std::string uid = std::format("uid {}", *event.uid);
-        const std::string size = event.coreBytes > 0 ? UI::Format::formatBytes(static_cast<double>(event.coreBytes)) : std::string{};
-        return joinNonEmpty({app + " dumped core", pid, uid, size}, ", ");
+        // "python3.12 dumped core (SIGSEGV), /usr/bin/python3.12, pid 4242, uid 1000, 3.1 MiB", or
+        // "... crashed (SIGABRT), ..., core not kept" when the journal recorded a crash without its core (#1674).
+        const std::string what = coreKept ? app + " dumped core" : app + " crashed";
+        const std::string headline = event.signal.empty() ? what : std::format("{} ({})", what, event.signal);
+        const std::string uid = event.uid.has_value() ? std::format("uid {}", *event.uid) : std::string{};
+        std::string core = "core not kept";
+        if (coreKept)
+        {
+            core = event.coreBytes > 0 ? UI::Format::formatBytes(static_cast<double>(event.coreBytes)) : std::string{};
+        }
+        return joinNonEmpty({headline, event.executable, pid, uid, core}, ", ");
     }
     if (event.hang)
     {

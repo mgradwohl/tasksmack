@@ -1391,6 +1391,18 @@ TEST(SystemInfoSectionsTest, CrashesRowsLinuxCappedAndUnreadable)
     EXPECT_TRUE(findRow(section, "Source")->available());
     EXPECT_EQ(section.rows.back().value, "python3.12 dumped core, pid 4242, uid 1000, 2.0 KiB");
 
+    // The journal's details (#1674): the signal and the executable, and a crash whose core wasn't kept.
+    Platform::CrashEvent detailed = core;
+    detailed.coreKept = true;
+    detailed.signal = "SIGSEGV";
+    detailed.executable = "/usr/bin/python3.12";
+    EXPECT_EQ(SystemInfo::formatCrashValue(detailed), "python3.12 dumped core (SIGSEGV), /usr/bin/python3.12, pid 4242, uid 1000, 2.0 KiB");
+    Platform::CrashEvent notKept;
+    notKept.application = "app";
+    notKept.pid = 7;
+    notKept.signal = "SIGABRT";
+    EXPECT_EQ(SystemInfo::formatCrashValue(notKept), "app crashed (SIGABRT), pid 7, core not kept");
+
     Platform::CrashesInfo denied;
     denied.available = true;
     denied.family = Platform::OsFamily::Linux;
