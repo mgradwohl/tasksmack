@@ -120,8 +120,7 @@ inline void putGroupedDigits(const char* digits, std::size_t count, const Numeri
     // Separator positions, as the count of integer digits to their right: the grouping's running sums
     // ("\3\2" -> 3, 5), then every `repeat` digits past the last while its last size repeats (7, 9,
     // ...). A size <= 0 or CHAR_MAX ends grouping there, with no repeat.
-    constexpr std::size_t MAX_SIZES = 8; // numpunct groupings have one to three sizes
-    std::array<std::size_t, MAX_SIZES> fixed{};
+    std::array<std::size_t, 8> fixed{}; // numpunct groupings have one to three sizes
     std::size_t fixedCount = 0;
     std::size_t last = 0;
     std::size_t repeat = 0;
