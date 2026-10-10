@@ -16,6 +16,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cmath>
 #include <ranges>
 #include <string_view>
 
@@ -110,8 +111,14 @@ void ElevationNoticeLayer::renderDialog()
         // Centred on the TaskSmack window when it opens, and again whenever the window is resized or
         // the dialog's width changes (a font preset or display scale change) while it is open, so it
         // does not stay pinned to a corner of the old layout (#1601).
-        if (widthPx != m_CentredDialogWidth || sizingViewport->WorkSize.x != m_CentredViewportWidth ||
-            sizingViewport->WorkSize.y != m_CentredViewportHeight)
+        // Sizes are compared to half a pixel: anything less doesn't move the centre visibly.
+        constexpr float RECENTRE_THRESHOLD_PX = 0.5F;
+        const auto moved = [](float now, float centredFor)
+        {
+            return std::abs(now - centredFor) > RECENTRE_THRESHOLD_PX;
+        };
+        if (moved(widthPx, m_CentredDialogWidth) || moved(sizingViewport->WorkSize.x, m_CentredViewportWidth) ||
+            moved(sizingViewport->WorkSize.y, m_CentredViewportHeight))
         {
             ImGui::SetNextWindowPos(sizingViewport->GetWorkCenter(), ImGuiCond_Always, ImVec2(0.5F, 0.5F));
             m_CentredDialogWidth = widthPx;
