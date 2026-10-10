@@ -39,8 +39,12 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp  # Factory.cpp makes the readers
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp  # WindowsPowerProbe.cpp reads the battery through it
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/DXGIGPUProbe.cpp
