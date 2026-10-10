@@ -55,6 +55,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp  # Factory.cpp makes the crash-event reader (#1524)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp  # Factory.cpp makes it (#1577)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
@@ -157,6 +158,7 @@ if(WIN32)
         cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
         version
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
+        wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
     )
 endif()
 
