@@ -18,6 +18,7 @@
 
 #include "Platform/IServiceActions.h"
 
+#include <stop_token>
 #include <string_view>
 
 namespace Platform
@@ -57,8 +58,9 @@ struct ServiceControlFunctions
 
 /// Starts, stops, restarts and reconfigures Windows services. Each action opens the manager with
 /// SC_MANAGER_CONNECT and the service with only the rights it needs, then waits (polling, bounded by
-/// ServiceActionMath::WAIT_TIMEOUT_MS) for the new state. Stateless beyond its fixed function table,
-/// so safe to call from any thread.
+/// ServiceActionMath::WAIT_TIMEOUT_MS) for the new state, checking the stop token between polls, so a
+/// stop request ends the wait within one WAIT_POLL_MS (#1591). Stateless beyond its fixed function
+/// table, so safe to call from any thread.
 class WindowsServiceActions final : public IServiceActions
 {
   public:
@@ -66,9 +68,9 @@ class WindowsServiceActions final : public IServiceActions
     explicit WindowsServiceActions(bool elevated, Windows::ServiceControlFunctions api = {});
 
     [[nodiscard]] ServiceActionCapabilities capabilities() const override;
-    [[nodiscard]] ServiceActionResult start(std::string_view name) override;
-    [[nodiscard]] ServiceActionResult stop(std::string_view name) override;
-    [[nodiscard]] ServiceActionResult restart(std::string_view name) override;
+    [[nodiscard]] ServiceActionResult start(std::string_view name, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override;
     [[nodiscard]] ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) override;
 
     /// Whether the current process token is elevated (TokenElevation); false if it can't be read.

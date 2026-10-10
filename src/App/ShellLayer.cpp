@@ -5,12 +5,15 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/WindowConstants.h"
+#include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
+#include "Platform/Factory.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "SelectOverride.h"
 #include "ShellMetrics.h"
@@ -37,6 +40,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -121,6 +125,23 @@ void ShellLayer::onAttach()
     // the window would have no SDL-level minimum at all in that mode. UILayer attaches first, so
     // the display scale is already known (#970).
     applyBaseMinimumWindowSize();
+
+    // The recent crashes and hangs, shared by the System tab, whose reads fill it, and Process Details'
+    // Recent crashes line, which reads it when stale (#1675). Not in synthetic runs: their processes are
+    // made up, and a real crash list would match them by accident. Before the panels attach, so the
+    // System tab's model is built with it.
+    if (Synthetic::activeScenario() == nullptr)
+    {
+        // Its own probe: the System tab's model keeps its probe to itself, under its read lock.
+        std::shared_ptr<Platform::ISystemInfoProbe> probe = Platform::makeSystemInfoProbe();
+        // MSVC STL false positive, as in ProcessModel::computeSnapshotsLocked(): the analyzer loses track
+        // of the probe's shared_ptr control block (_Rep) once it is moved into the lambda.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+        auto crashHistory = std::make_shared<Domain::CrashHistory>(
+            [probe = std::move(probe)] { return probe->capabilities().hasOs ? probe->readCrashes() : Platform::CrashesInfo{}; });
+        m_SystemInfoPanel.setCrashHistory(crashHistory);
+        m_ProcessDetailsPanel.setCrashHistory(std::move(crashHistory));
+    }
 
     // Initialize panels
     m_Tabs.onAttach();

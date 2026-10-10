@@ -1,8 +1,9 @@
 /// @file test_ServiceActionsView.cpp
 /// @brief The Services tab's actions (#1577): the critical-service list, which actions apply in which
 /// state, the confirm and result texts, and, headless, the row menu enabling its items per state, the
-/// centred confirm with the critical warning, and the result line after the worker finishes. The
-/// actions are a fake: no real service is touched.
+/// centred confirm with the critical warning, and the result line after the worker finishes; and a
+/// running action cancelled by cancel() or the view's destruction (#1591), through a gated fake that
+/// returns only once its stop token is stopped. The actions are fakes: no real service is touched.
 
 #include "App/Panels/ServiceActionsView.h"
 #include "Platform/IServiceActions.h"
@@ -15,7 +16,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <latch>
 #include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -44,17 +50,17 @@ class FakeServiceActions final : public Platform::IServiceActions
     {
         return ALL;
     }
-    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/) override
+    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
     {
         ++starts;
         return result;
     }
-    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/) override
+    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
     {
         ++stops;
         return result;
     }
-    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/) override
+    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
     {
         return result;
     }
@@ -62,6 +68,85 @@ class FakeServiceActions final : public Platform::IServiceActions
     {
         ++startTypes;
         return result;
+    }
+};
+
+/// How long the gated fake waits for its stop request before giving up: a bound for a broken build
+/// only, never reached when cancelling works.
+constexpr auto GATE_LIMIT = std::chrono::seconds(10);
+
+/// Start / Stop / Restart block, as a slow service's wait does, until their stop token is stopped,
+/// then answer cancelled, as WindowsServiceActions does. No sleeps: a condition variable woken by the
+/// stop request. `entered` opens once an action is running on the worker.
+class GatedServiceActions final : public Platform::IServiceActions
+{
+  public:
+    std::latch entered{1};
+    std::atomic<bool> sawStop{false};
+
+    [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
+    {
+        return ALL;
+    }
+    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& stopToken) override
+    {
+        return block(stopToken);
+    }
+    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& stopToken) override
+    {
+        return block(stopToken);
+    }
+    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& stopToken) override
+    {
+        return block(stopToken);
+    }
+    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    {
+        return Platform::ServiceActionResult::succeeded();
+    }
+
+  private:
+    [[nodiscard]] Platform::ServiceActionResult block(const std::stop_token& stopToken)
+    {
+        entered.count_down();
+        std::unique_lock lock(m_Mutex);
+        // Woken by the stop request itself; the predicate is the stop, so a spurious wake waits on.
+        static_cast<void>(m_Wake.wait_for(lock, stopToken, GATE_LIMIT, [] { return false; }));
+        if (!stopToken.stop_requested())
+        {
+            return Platform::ServiceActionResult::failed("not cancelled");
+        }
+        sawStop = true;
+        return Platform::ServiceActionResult::stopRequested();
+    }
+
+    std::mutex m_Mutex;
+    std::condition_variable_any m_Wake;
+};
+
+/// Every action throws, on the worker.
+class ThrowingServiceActions final : public Platform::IServiceActions
+{
+  public:
+    [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
+    {
+        return ALL;
+    }
+    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        throw std::runtime_error("boom");
+    }
+    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        throw std::runtime_error("boom");
+    }
+    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        throw std::runtime_error("boom");
+    }
+    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    {
+        throw std::runtime_error("boom");
     }
 };
 
@@ -149,6 +234,59 @@ TEST(ServiceActionsViewTest, UnsupportedPlatformHasNoActions)
 {
     const ServiceActionsView view(std::make_shared<Platform::UnsupportedServiceActions>());
     EXPECT_FALSE(view.supported());
+}
+
+TEST(ServiceActionsViewTest, CancelEndsTheRunningActionAsCancelled)
+{
+    const auto fake = std::make_shared<GatedServiceActions>();
+    ServiceActionsView view(fake);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped))); // no confirm
+    fake->entered.wait();
+    EXPECT_TRUE(view.busy());
+    EXPECT_FALSE(view.takeFinished());
+
+    view.cancel();
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_TRUE(fake->sawStop.load());
+    EXPECT_FALSE(view.busy());
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not start Spooler: Cancelled before it finished");
+}
+
+TEST(ServiceActionsViewTest, DestroyingTheViewCancelsTheRunningActionAndReturnsPromptly)
+{
+    const auto fake = std::make_shared<GatedServiceActions>();
+    auto view = std::make_unique<ServiceActionsView>(fake);
+    view->request(SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped)));
+    fake->entered.wait();
+
+    const auto before = std::chrono::steady_clock::now();
+    view.reset(); // as ServicesPanel::onDetach() does
+    const auto took = std::chrono::steady_clock::now() - before;
+    EXPECT_TRUE(fake->sawStop.load()) << "the destructor stopped the action rather than waiting it out";
+    EXPECT_LT(took, GATE_LIMIT / 2);
+}
+
+TEST(ServiceActionsViewTest, CancelWhileIdleDoesNotCarryOverToTheNextAction)
+{
+    const auto fake = std::make_shared<FakeServiceActions>();
+    ServiceActionsView view(fake);
+    view.cancel(); // nothing running: a no-op
+    EXPECT_FALSE(view.busy());
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(fake->starts.load(), 1);
+    EXPECT_TRUE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Started Spooler");
+}
+
+TEST(ServiceActionsViewTest, ActionThatThrowsBecomesAPlainFailedResult)
+{
+    ServiceActionsView view(std::make_shared<ThrowingServiceActions>());
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped)));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not start Spooler: boom");
 }
 
 class ServiceActionsViewRenderTest : public ::testing::Test
