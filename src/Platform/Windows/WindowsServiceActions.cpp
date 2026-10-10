@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <format>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -72,9 +73,11 @@ struct OpenedService
 }
 
 /// Polls until the service reaches @p target, for at most Math::WAIT_TIMEOUT_MS. A service that falls
-/// back to stopped while starting has failed to start, and says so at once rather than timing out.
-[[nodiscard]] ServiceActionResult
-waitForState(const Windows::ServiceControlFunctions& api, SC_HANDLE service, DWORD target, std::string_view verb)
+/// back to stopped while starting has failed to start, and says so at once rather than timing out. A
+/// stop request on @p stopToken ends the wait at the next poll (#1591): the state is read once more,
+/// so a service that got there still reports success; otherwise the wait is abandoned.
+[[nodiscard]] ServiceActionResult waitForState(
+    const Windows::ServiceControlFunctions& api, SC_HANDLE service, DWORD target, std::string_view verb, const std::stop_token& stopToken)
 {
     for (std::uint32_t waited = 0;; waited += Math::WAIT_POLL_MS)
     {
@@ -92,6 +95,10 @@ waitForState(const Windows::ServiceControlFunctions& api, SC_HANDLE service, DWO
             return ServiceActionResult::failed(status.dwWin32ExitCode != NO_ERROR
                                                    ? std::format("It stopped while starting: {}", Math::errorText(status.dwWin32ExitCode))
                                                    : std::string("It stopped while starting"));
+        }
+        if (stopToken.stop_requested())
+        {
+            return ServiceActionResult::stopRequested();
         }
         if (waited >= Math::WAIT_TIMEOUT_MS)
         {
@@ -145,8 +152,12 @@ ServiceActionCapabilities WindowsServiceActions::capabilities() const
     return {.canStart = true, .canStop = true, .canRestart = true, .canSetStartType = true, .elevated = m_Elevated};
 }
 
-ServiceActionResult WindowsServiceActions::start(std::string_view name)
+ServiceActionResult WindowsServiceActions::start(std::string_view name, const std::stop_token& stopToken)
 {
+    if (stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested(); // nothing sent yet, and nothing is
+    }
     const OpenedService opened = openService(m_Api, name, SERVICE_START | SERVICE_QUERY_STATUS);
     if (opened.error != ERROR_SUCCESS)
     {
@@ -156,11 +167,15 @@ ServiceActionResult WindowsServiceActions::start(std::string_view name)
     {
         return lastError();
     }
-    return waitForState(m_Api, opened.service.get(), SERVICE_RUNNING, "start");
+    return waitForState(m_Api, opened.service.get(), SERVICE_RUNNING, "start", stopToken);
 }
 
-ServiceActionResult WindowsServiceActions::stop(std::string_view name)
+ServiceActionResult WindowsServiceActions::stop(std::string_view name, const std::stop_token& stopToken)
 {
+    if (stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested(); // nothing sent yet, and nothing is
+    }
     const OpenedService opened = openService(m_Api, name, SERVICE_STOP | SERVICE_QUERY_STATUS);
     if (opened.error != ERROR_SUCCESS)
     {
@@ -177,16 +192,17 @@ ServiceActionResult WindowsServiceActions::stop(std::string_view name)
         }
         return ServiceActionResult::failed(Math::errorText(error));
     }
-    return waitForState(m_Api, opened.service.get(), SERVICE_STOPPED, "stop");
+    return waitForState(m_Api, opened.service.get(), SERVICE_STOPPED, "stop", stopToken);
 }
 
-ServiceActionResult WindowsServiceActions::restart(std::string_view name)
+ServiceActionResult WindowsServiceActions::restart(std::string_view name, const std::stop_token& stopToken)
 {
-    if (ServiceActionResult stopped = stop(name); !stopped.ok)
+    if (ServiceActionResult stopped = stop(name, stopToken); !stopped.ok)
     {
         return stopped;
     }
-    return start(name);
+    // A stop requested once the service has stopped leaves it stopped: start() sends nothing then.
+    return start(name, stopToken);
 }
 
 ServiceActionResult WindowsServiceActions::setStartType(std::string_view name, ServiceStartType startType)
