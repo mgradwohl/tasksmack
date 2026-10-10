@@ -54,6 +54,7 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ inputs.llvm-version }}
+          generate-test-locales: 'true'
 
       - name: Setup Windows LLVM
         if: runner.os == 'Windows'
