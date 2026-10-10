@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <clocale>
+#include <exception>
 #include <locale>
 #include <string>
 #include <utility>
@@ -220,6 +221,118 @@ TEST(LocaleSetupDescribeTest, NamesEveryField)
     };
     EXPECT_EQ(describe(summary), R"(Locale: GetACP()=65001 C="de-DE.UTF-8" C++ global="*" user="de-DE.UTF-8")");
     EXPECT_EQ(describe(Summary{}), R"(Locale: GetACP()=n/a C="" C++ global="" user="")");
+    Summary overridden;
+    overridden.userLocaleName = "de-DE.UTF-8";
+    overridden.userLocaleOverridden = true;
+    EXPECT_EQ(describe(overridden), R"(Locale: GetACP()=n/a C="" C++ global="" user="de-DE.UTF-8" (TASKSMACK_LOCALE))");
+}
+
+// ---- Display punctuation (#1648, slice E) ----
+
+/// Numeric punctuation with a chosen decimal point, separator and grouping.
+class FixedNumpunct : public std::numpunct<char>
+{
+  public:
+    FixedNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
+        : m_DecimalPoint(decimalPoint), m_ThousandsSep(thousandsSep), m_Grouping(std::move(grouping))
+    {}
+
+  protected:
+    [[nodiscard]] char do_decimal_point() const override
+    {
+        return m_DecimalPoint;
+    }
+    [[nodiscard]] char do_thousands_sep() const override
+    {
+        return m_ThousandsSep;
+    }
+    [[nodiscard]] std::string do_grouping() const override
+    {
+        return m_Grouping;
+    }
+
+  private:
+    char m_DecimalPoint;
+    char m_ThousandsSep;
+    std::string m_Grouping;
+};
+
+[[nodiscard]] std::locale withNumpunct(char decimalPoint, char thousandsSep, std::string grouping)
+{
+    // std::locale takes ownership of the facet and deletes it with its last copy.
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory,clang-analyzer-cplusplus.NewDeleteLeaks)
+    return {std::locale::classic(), new FixedNumpunct(decimalPoint, thousandsSep, std::move(grouping))};
+}
+
+TEST(LocaleSetupPunctuationTest, ClassicHasADotAndNoGrouping)
+{
+    const NumberPunctuation classic = numberPunctuation(std::locale::classic());
+    EXPECT_EQ(classic.decimalPoint, '.');
+    EXPECT_TRUE(classic.thousandsSep.empty());
+    EXPECT_TRUE(classic.grouping.empty());
+    EXPECT_EQ(classic, NumberPunctuation{});
+    EXPECT_EQ(numberPunctuation(std::locale::classic(), "C"), NumberPunctuation{}) << "no OS lookup for C";
+}
+
+TEST(LocaleSetupPunctuationTest, TakesTheFacetsSeparators)
+{
+    const NumberPunctuation deDe = numberPunctuation(withNumpunct(',', '.', "\3"));
+    EXPECT_EQ(deDe.decimalPoint, ',');
+    EXPECT_EQ(deDe.thousandsSep, ".");
+    EXPECT_EQ(deDe.grouping, "\3");
+}
+
+// numpunct<char> holds one byte of a multibyte separator (fr-FR's U+202F gives 0xE2): never half a
+// UTF-8 character on screen.
+TEST(LocaleSetupPunctuationTest, ALoneNonAsciiByteBecomesAWholeNoBreakSpace)
+{
+    const NumberPunctuation truncated = numberPunctuation(withNumpunct(',', '\xE2', "\3"));
+    EXPECT_EQ(truncated.thousandsSep, "\xC2\xA0");
+    EXPECT_EQ(truncated.decimalPoint, ',');
+    const NumberPunctuation badDecimal = numberPunctuation(withNumpunct('\xD9', '.', "\3"));
+    EXPECT_EQ(badDecimal.decimalPoint, ',') << "not '.', which already groups";
+}
+
+TEST(LocaleSetupPunctuationTest, NoGroupingMeansNoSeparator)
+{
+    const NumberPunctuation ungrouped = numberPunctuation(withNumpunct(',', '.', ""));
+    EXPECT_TRUE(ungrouped.thousandsSep.empty());
+    EXPECT_TRUE(ungrouped.grouping.empty());
+}
+
+// The real fr-FR locale, through the OS: its separator is a whole UTF-8 sequence (U+202F on
+// Windows and current glibc, U+00A0 on older glibc), where the C++ facet holds one byte or a space.
+TEST(LocaleSetupPunctuationTest, FrFrSeparatorComesWholeFromTheOs)
+{
+#ifdef _WIN32
+    const std::string name = "fr-FR.UTF-8";
+#else
+    const std::string name = "fr_FR.UTF-8";
+#endif
+    std::locale french;
+    try
+    {
+        french = std::locale(name);
+    }
+    catch (const std::exception&)
+    {
+        GTEST_SKIP() << name << " is not available on this machine";
+    }
+    const NumberPunctuation fr = numberPunctuation(french, name);
+    EXPECT_EQ(fr.decimalPoint, ',');
+#ifdef _WIN32
+    EXPECT_EQ(fr.thousandsSep, "\xE2\x80\xAF");
+#else
+    EXPECT_TRUE(fr.thousandsSep == "\xE2\x80\xAF" || fr.thousandsSep == "\xC2\xA0") << fr.thousandsSep;
+#endif
+    EXPECT_FALSE(fr.grouping.empty());
+}
+
+TEST(LocaleSetupOverrideTest, TriesTheUtf8VariantFirst)
+{
+    EXPECT_EQ(localeOverrideCandidates("de-DE"), (std::vector<std::string>{"de-DE.UTF-8", "de-DE"}));
+    EXPECT_EQ(localeOverrideCandidates("de_DE.UTF-8"), (std::vector<std::string>{"de_DE.UTF-8"}));
+    EXPECT_TRUE(localeOverrideCandidates("").empty());
 }
 
 } // namespace

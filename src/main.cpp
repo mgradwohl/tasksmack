@@ -18,6 +18,7 @@
 #include "Core/EnvUtils.h"
 #include "Core/LocaleSetup.h"
 #include "Core/WindowConstants.h"
+#include "UI/Format.h"
 #include "UI/UILayer.h"
 #include "version.h"
 
@@ -53,9 +54,11 @@ namespace
 /// code pages to UTF-8. Runs before logging is up: the caller logs the returned summary once it is.
 auto initializeLocale() -> const Core::LocaleSetup::Summary&
 {
-    // NumericFacets::User until display formatting moves onto LocaleSetup::userLocale() (#1648,
-    // slice E): UI::Format and the "{:L}" specs read the global locale's numpunct today.
-    const Core::LocaleSetup::Summary& summary = Core::LocaleSetup::initialize(Core::LocaleSetup::NumericFacets::User);
+    // The global C++ locale keeps the classic numeric facets, so streams, "{:L}" and parsing are
+    // locale-independent. Displayed numbers follow the user's locale through UI::Format, which
+    // takes its punctuation from LocaleSetup::userNumberPunctuation() (#1648, slice E).
+    const Core::LocaleSetup::Summary& summary = Core::LocaleSetup::initialize(Core::LocaleSetup::NumericFacets::Classic);
+    UI::Format::setDisplayPunctuation(Core::LocaleSetup::userNumberPunctuation());
     const std::locale global;
     std::cout.imbue(global);
     std::cerr.imbue(global);

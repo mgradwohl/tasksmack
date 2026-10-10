@@ -37,7 +37,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <format>
 #include <optional>
 #include <span>
 #include <string>
@@ -792,12 +791,22 @@ void ShellLayer::renderStatusBar() const
         std::size_t fpsLength = 0;
         if (m_ShowRenderMetrics)
         {
-            const auto fpsEnd = std::format_to_n(fpsText.data(),
-                                                 fpsText.size() - 1,
-                                                 "{:.1f} FPS ({:.2f} ms)",
-                                                 static_cast<double>(m_FpsCounter.displayedFps()),
-                                                 static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F));
-            fpsLength = static_cast<std::size_t>(fpsEnd.out - fpsText.data());
+            // "60.0 FPS (16.67 ms)" in the display locale's punctuation, without allocating.
+            std::array<char, 24> fpsValue{};
+            std::array<char, 24> msValue{};
+            const std::size_t fpsValueLength =
+                UI::Format::formatFixedLocalizedTo(fpsValue.data(), fpsValue.size(), static_cast<double>(m_FpsCounter.displayedFps()), 1);
+            const std::size_t msValueLength = UI::Format::formatFixedLocalizedTo(
+                msValue.data(), msValue.size(), static_cast<double>(m_FpsCounter.displayedFrameTime() * 1000.0F), 2);
+            if (fpsValueLength > 0 && msValueLength > 0)
+            {
+                const std::size_t capacity = fpsText.size() - 1;
+                UI::Format::appendText(fpsText.data(), capacity, fpsLength, {fpsValue.data(), fpsValueLength});
+                UI::Format::appendText(fpsText.data(), capacity, fpsLength, " FPS (");
+                UI::Format::appendText(fpsText.data(), capacity, fpsLength, {msValue.data(), msValueLength});
+                UI::Format::appendText(fpsText.data(), capacity, fpsLength, " ms)");
+                fpsLength = (fpsLength <= capacity) ? fpsLength : 0;
+            }
         }
         const float fpsWidth = (fpsLength > 0) ? ImGui::CalcTextSize(fpsText.data(), fpsText.data() + fpsLength).x : 0.0F;
 

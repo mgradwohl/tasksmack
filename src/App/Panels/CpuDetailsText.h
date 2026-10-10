@@ -58,7 +58,7 @@ struct Inputs
 /// "3.70 GHz", as the CPU Cores header writes a clock.
 [[nodiscard]] inline std::string formatGigahertz(std::uint64_t megahertz)
 {
-    return std::format("{:.2f} GHz", Domain::Numeric::toDouble(megahertz) / 1000.0);
+    return UI::Format::formatFixedLocalized(Domain::Numeric::toDouble(megahertz) / 1000.0, 2, " GHz");
 }
 
 /// "24", or "24 (8 P + 16 E)" on a hybrid CPU.

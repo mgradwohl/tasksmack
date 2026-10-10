@@ -3,9 +3,11 @@
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "App/UserConfigHelpers.h"
+#include "Core/LocaleSetup.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
+#include "UI/Format.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
@@ -17,9 +19,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <locale>
 #include <random>
 #include <string>
 #include <system_error>
@@ -1233,6 +1237,67 @@ TEST_F(UserConfigSaveLoadFixture, ChartTauRangeRoundTrip)
     config.load();
     EXPECT_EQ(config.settings().chartTauMsMin, 50);
     EXPECT_EQ(config.settings().chartTauMsMax, 1000);
+}
+
+// #1648, slice E: config.toml is machine-readable, so it is written and read in the classic locale
+// however the user's numbers are displayed. Even with de-DE's numeric facets in the global locale
+// (more than TaskSmack installs: it keeps the classic ones) and as the display punctuation, a
+// fraction keeps its '.' and a large integer gets no thousands separator, and both load back.
+TEST_F(UserConfigSaveLoadFixture, NumbersRoundTripInTheClassicFormatUnderADecimalCommaLocale)
+{
+#ifdef _WIN32
+    constexpr const char* DE_DE = "de-DE.UTF-8";
+#else
+    constexpr const char* DE_DE = "de_DE.UTF-8";
+#endif
+    std::locale german;
+    try
+    {
+        german = std::locale(DE_DE);
+    }
+    catch (const std::exception&)
+    {
+        GTEST_SKIP() << DE_DE << " is not available on this machine";
+    }
+    /// Makes @p locale global and puts the previous one back however the test ends.
+    class ScopedGlobalLocale
+    {
+      public:
+        explicit ScopedGlobalLocale(const std::locale& locale) : m_Previous(std::locale::global(locale))
+        {}
+        ~ScopedGlobalLocale()
+        {
+            std::locale::global(m_Previous);
+        }
+        ScopedGlobalLocale(const ScopedGlobalLocale&) = delete;
+        ScopedGlobalLocale& operator=(const ScopedGlobalLocale&) = delete;
+        ScopedGlobalLocale(ScopedGlobalLocale&&) = delete;
+        ScopedGlobalLocale& operator=(ScopedGlobalLocale&&) = delete;
+
+      private:
+        std::locale m_Previous;
+    };
+    const ScopedGlobalLocale globalGerman(german);
+    const UI::Format::ScopedDisplayPunctuation display(Core::LocaleSetup::numberPunctuation(german, DE_DE));
+    ASSERT_EQ(UI::Format::formatDoubleLocalized(0.25, 2), "0,25") << "the display punctuation is de-DE's";
+
+    auto& config = UserConfig::get();
+    config.settings().chartSmoothFactor = 0.25;
+    config.settings().windowWidth = 2560;
+    config.save();
+
+    std::ifstream file(m_ConfigPath);
+    const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("0.25"), std::string::npos) << text;
+    EXPECT_EQ(text.find("0,25"), std::string::npos) << text;
+    EXPECT_NE(text.find("2560"), std::string::npos) << text;
+    EXPECT_EQ(text.find("2.560"), std::string::npos) << text;
+
+    config.settings().chartSmoothFactor = Domain::Sampling::CHART_SMOOTH_FACTOR_DEFAULT;
+    config.settings().windowWidth = 1280;
+    config.load();
+    EXPECT_DOUBLE_EQ(config.settings().chartSmoothFactor, 0.25);
+    EXPECT_EQ(config.settings().windowWidth, 2560);
 }
 
 /// Restores UI's chart smoothing to its defaults however a test ends, so later tests in this
