@@ -154,6 +154,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp
     src/App/Panels/ProcessModulesView.cpp
+    src/App/Panels/ProcessCrashHistoryView.cpp
     src/App/Panels/ProcessOpenFilesView.cpp
     src/App/Panels/ProcessSecurityView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
@@ -180,6 +181,7 @@ set(TASKSMACK_SOURCES
     src/Domain/StartupModel.cpp
     src/Domain/ServiceModel.cpp
     src/Domain/SystemInfoModel.cpp
+    src/Domain/CrashHistory.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
@@ -326,6 +328,7 @@ set(TASKSMACK_HEADERS
     src/Domain/StartupModel.h
     src/Domain/ServiceModel.h
     src/Domain/SystemInfoModel.h
+    src/Domain/CrashHistory.h
 )
 
 # Platform-specific headers

@@ -120,6 +120,13 @@ inline constexpr int PROCESS_MODULES_REFRESH_MS = 3000;
 // Credentials change rarely (setuid(), a capability drop), so a slow re-read is enough to notice one.
 inline constexpr int PROCESS_SECURITY_REFRESH_MS = 3000;
 
+// How old Process Details lets the shared crash history get before it reads it again (milliseconds)
+// (#1675). Read on demand, never per frame or per selection change: only while the Overview's Recent
+// crashes line is drawn, once when it is first shown and then when the newest read (Process Details' own
+// or the System tab's) is this old. Each read queries the Application event log (Windows) or lists the
+// core dumps and their journal entries (Linux), and crashes are rare, so a minute is enough.
+inline constexpr int PROCESS_CRASH_HISTORY_REFRESH_MS = 60000;
+
 // How often the Services tab re-reads the service list (milliseconds) (#800). Sampled only while the
 // tab is shown; a service changes state far less often than a process's counters do.
 inline constexpr int SERVICES_REFRESH_MS = 2000;
