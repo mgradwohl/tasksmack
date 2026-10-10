@@ -1,5 +1,6 @@
 #include "SystemInfoModel.h"
 
+#include "Domain/CrashHistory.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <chrono>
@@ -12,7 +13,8 @@
 namespace Domain
 {
 
-SystemInfoModel::SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe> probe) : m_Probe(std::move(probe))
+SystemInfoModel::SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe> probe, std::shared_ptr<CrashHistory> crashHistory)
+    : m_Probe(std::move(probe)), m_CrashHistory(std::move(crashHistory))
 {
     if (!m_Probe)
     {
@@ -44,6 +46,11 @@ void SystemInfoModel::read()
     }
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = static_cast<std::uint64_t>(now);
+    if (m_CrashHistory && m_Capabilities.hasOs)
+    {
+        // Process Details' crash line (#1675) shows this read too, without a second one of its own.
+        m_CrashHistory->publish(next->crashes, next->readAtUnixSeconds);
+    }
     next->version = ++m_LastVersion;
     m_Slot.commit(std::move(next));
 }

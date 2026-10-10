@@ -2,6 +2,7 @@
 /// @brief Domain::SystemInfoModel (#1399): nothing is read until read() is called, each read publishes
 /// a new immutable snapshot, and a probe without OS facts is never asked for them.
 
+#include "Domain/CrashHistory.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -205,6 +206,31 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
 
     const SystemInfoModel stub(std::make_unique<Platform::UnsupportedSystemInfoProbe>());
     EXPECT_FALSE(stub.capabilities().hasOs);
+}
+
+TEST(SystemInfoModelTest, HandsEachReadsCrashesToTheSharedCrashHistory)
+{
+    // Process Details' crash line (#1675) shows the System tab's read without reading the log itself.
+    int historyReads = 0;
+    const auto history = std::make_shared<CrashHistory>(
+        [&historyReads]
+        {
+            ++historyReads;
+            return Platform::CrashesInfo{};
+        });
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads), history);
+    model.read();
+    EXPECT_EQ(history->version(), 1U);
+    EXPECT_TRUE(history->snapshot()->crashes.listed);
+    EXPECT_EQ(history->snapshot()->readAtUnixSeconds, model.snapshot()->readAtUnixSeconds);
+    EXPECT_EQ(historyReads, 0);
+
+    // A probe without OS facts publishes nothing: the history's own read stays due.
+    const auto untouched = std::make_shared<CrashHistory>([] { return Platform::CrashesInfo{}; });
+    SystemInfoModel unsupported(std::make_unique<FakeSystemInfoProbe>(false, &reads), untouched);
+    unsupported.read();
+    EXPECT_EQ(untouched->version(), 0U);
 }
 
 TEST(SystemInfoModelTest, RequiresAProbe)

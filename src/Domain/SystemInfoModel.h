@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Domain/CrashHistory.h"
 #include "Domain/PublicationSlot.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -36,7 +37,9 @@ struct SystemInfoSnapshot
 class SystemInfoModel
 {
   public:
-    explicit SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe> probe);
+    /// @param crashHistory The shared crash cache Process Details shows (#1675), handed each read's
+    ///        crashes so it need not read them again; null for none.
+    explicit SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe> probe, std::shared_ptr<CrashHistory> crashHistory = nullptr);
 
     /// Reads every section and publishes the result. Thread-safe; reads are serialised. Called off the
     /// UI thread.
@@ -62,6 +65,7 @@ class SystemInfoModel
   private:
     std::unique_ptr<Platform::ISystemInfoProbe> m_Probe; // used under m_ReadMutex only
     Platform::SystemInfoCapabilities m_Capabilities;
+    std::shared_ptr<CrashHistory> m_CrashHistory; // may be null
     std::mutex m_ReadMutex;
     std::uint64_t m_LastVersion = 0; // guarded by m_ReadMutex
     PublicationSlot<SystemInfoSnapshot> m_Slot;

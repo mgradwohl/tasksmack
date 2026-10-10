@@ -4,6 +4,7 @@
 #include "App/Panel.h"
 #include "App/SelectOverride.h"
 #include "Core/Event.h"
+#include "Domain/CrashHistory.h"
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
@@ -16,6 +17,7 @@
 #include "Platform/ProcessTypes.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
+#include "ProcessCrashHistoryView.h"
 #include "ProcessDetailsCharts.h"
 #include "ProcessDetailsHistory.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
@@ -33,6 +35,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 
 namespace App
 {
@@ -126,6 +129,13 @@ class ProcessDetailsPanel : public Panel
     /// What the process probe can report, so series it never fills are not drawn (#1028, #1035).
     /// Set once by ShellLayer at attach; the default (all false) hides those optional series.
     void setProcessCapabilities(const Platform::ProcessCapabilities& capabilities);
+
+    /// The shared crash cache the Overview's Recent crashes line reads (#1675), from the composition root
+    /// (ShellLayer); null (the default) hides the line.
+    void setCrashHistory(std::shared_ptr<Domain::CrashHistory> crashHistory) noexcept
+    {
+        m_CrashHistoryView.setHistory(std::move(crashHistory));
+    }
 
     /// Brings @p tab forward the next time the tabs are drawn: the test hook's TASKSMACK_DETAILS_TAB (#1559).
     void requestTab(SelectOverride::DetailsTab tab)
@@ -278,6 +288,12 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessOpenFilesReader> m_OpenFilesReader;
     bool m_HasOpenFiles = false; // m_OpenFilesReader can list open files here (Windows, Linux; not synthetic runs)
     ProcessOpenFilesView m_OpenFilesView;
+
+    // The Overview's Recent crashes line (#1675): the selected executable's crashes and hangs from the
+    // shared Domain::CrashHistory, read on a worker at most once a refresh interval while the line is
+    // drawn, never per frame or per selection change. Its destructor waits for a read in flight, which
+    // holds its own reference to the history.
+    ProcessCrashHistoryView m_CrashHistoryView;
 
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;

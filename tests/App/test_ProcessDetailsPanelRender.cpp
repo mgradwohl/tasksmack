@@ -7,9 +7,11 @@
 #include "App/Panels/ProcessDetailsPanel.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
+#include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -168,6 +170,50 @@ TEST_F(ProcessDetailsPanelRenderTest, ASelectedProcessShowsItsOverview)
     EXPECT_TRUE(text.contains("CPU")) << text;
     EXPECT_TRUE(text.contains("Memory")) << text;
     EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 2);
+}
+
+TEST_F(ProcessDetailsPanelRenderTest, TheOverviewShowsTheExecutablesRecentCrashes)
+{
+    // Without a crash history (synthetic runs, the other tests here) there is no line at all.
+    const auto bare = activePanel();
+    bare->setSelectedPid(PID, START_TICKS);
+    const std::vector first{sampleAt(0.0, 10.0)};
+    bare->updateWithSamples(first, 1.0F);
+    EXPECT_FALSE(renderAndCapture(*bare).contains("Recent crashes")) << "no history, no line";
+
+    // With one, already read (as the System tab's read publishes it), the selected executable's own.
+    int reads = 0;
+    const auto history = std::make_shared<Domain::CrashHistory>(
+        [&reads]
+        {
+            ++reads;
+            return Platform::CrashesInfo{};
+        });
+    Platform::CrashesInfo crashes;
+    crashes.available = true;
+    crashes.listed = true;
+    crashes.family = Platform::OsFamily::Linux;
+    const auto crashOf = [](const char* application, std::uint64_t unixSeconds)
+    {
+        Platform::CrashEvent event;
+        event.application = application;
+        event.unixSeconds = unixSeconds;
+        return event;
+    };
+    crashes.events = {crashOf("server", 1'790'000'000), crashOf("client", 1'789'000'000), crashOf("server", 1'788'000'000)};
+    history->publish(std::move(crashes), 1'790'000'100);
+
+    const auto panel = activePanel();
+    panel->setCrashHistory(history);
+    panel->setSelectedPid(PID, START_TICKS);
+    panel->updateWithSamples(first, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Recent crashes:")) << text;
+    EXPECT_TRUE(text.contains("2 crashes in the last 14 days")) << text;
+    // Fresh, so drawing it read nothing more.
+    panel->updateWithSamples({}, 1.0F);
+    EXPECT_EQ(reads, 0);
 }
 
 TEST_F(ProcessDetailsPanelRenderTest, ARequestedTabIsSelected)

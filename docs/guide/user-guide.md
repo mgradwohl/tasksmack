@@ -225,6 +225,14 @@ Numbers use your regional format's decimal mark and digit grouping: Windows' reg
 - **Power** has one decimal in W, mW or µW ("45.0 W"). **Temperature** is in whole degrees, rounded ("65°C").
 - **Durations** (CPU Time, uptime) use the two largest units: "45s", "2m 05s", "1h 02m", "3d 04h". The charts' time axis counts back from **now** ("5m", "4m", … "now"), and a chart tooltip gives the hovered sample's age.
 
+### Recent crashes in Process Details
+
+The Process Details **Overview** tab has a **Recent crashes:** line under the command line, above the Identity and Runtime cards: how often the selected process's program has crashed or hung in the last 14 days, from the same list as the System tab's **Recent crashes & hangs** section (see [System Information](#system-information)). For example "2 crashes, 1 hang in the last 14 days (last 2026-10-02 14:44)", in the warning colour; "None in the last 14 days", muted, when there were none. Hover over it for the newest five (time, version, and the faulting module and exception code or the hang type), how the program was matched, and when the list was read.
+
+- **Matching:** by the executable's file name. **Windows:** ignoring case, so `NOTEPAD.EXE` and `notepad.exe` are the same program. **Linux:** a core dump is named by the process's *comm*, which the kernel cuts to 15 characters, so a longer name is matched on its first 15 (and the tooltip says so: another program with the same first 15 characters would match too); when systemd-coredump's journal entry gives the executable's path, its full file name matches as well.
+- **When it is read:** never per frame or per process you select. The list is shared with the System tab: when the System tab reads (or you click its **Refresh**), Process Details shows that read. Otherwise TaskSmack reads it in the background when the line is first shown, then again at most once a minute while it stays on screen. "Reading..." shows until the first read finishes.
+- **Unreadable:** if the log can't be read, the line says "Not readable without more permission" or "Unavailable", muted, with the reason in its tooltip. Where TaskSmack has no crash history for the platform, there is no line.
+
 ### Environment variables
 
 On Linux, the Process Details **Overview** tab has a collapsible **Environment** section, closed by default, under the Identity and Runtime blocks. Open it to list the selected process's environment variables in a NAME / VALUE table sorted by name; with more than 20 variables a filter box appears. A value too long for its column shows in a tooltip, up to its first 4 KiB (a longer value is cut there, at a character boundary); the cell itself draws at most the first 512 bytes. TaskSmack reads `/proc/[pid]/environ` only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds. The list is the environment the process started with; a later `setenv()` inside the process does not show.
@@ -479,6 +487,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | System Information: Devices section | ✅ (`/sys/bus/pci` and `/sys/bus/usb` named from hwdata's `pci.ids`/`usb.ids`, USB speed, ALSA cards; problem devices are PCI devices without a driver) | ✅ (SetupAPI device nodes with `CM_Get_DevNode_Status` problem codes for every device, MMDevice audio endpoints; no USB speed yet) |
 | System Information: Drivers / Kernel modules section | ✅ (`/proc/modules` with size, users, `/sys/module` version, `[permanent]` and taint flags; built-in modules not listed) | ✅ (running driver services from the Service Control Manager with start type, image path, file version and company; non-service images such as the kernel and HAL not listed) |
 | System Information: Recent crashes section | ✅ (systemd-coredump's core files in `/var/lib/systemd/coredump`: name, pid, uid, size; no signal or journal details yet) | ✅ (Application log events 1000 and 1002: application, version, faulting module, exception code or hang type) |
+| Process Details: Recent crashes line | ✅ (core dumps matched on the 15-character comm, or the journal's executable path) | ✅ (Application log events 1000 and 1002 matched by file name, ignoring case) |
 | Startup apps tab | ❌ (planned: XDG autostart) | ✅ (Run/RunOnce keys, Startup folders; enable / disable through StartupApproved, all-users entries need administrator) |
 | NVIDIA GPU metrics | ✅ (NVML) | ✅ (NVML) |
 | AMD GPU metrics | ✅ (ROCm SMI) | Capability-dependent via DXGI/PDH |

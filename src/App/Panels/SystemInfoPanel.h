@@ -2,10 +2,12 @@
 
 #include "App/Panel.h"
 #include "App/Panels/SystemInfoView.h"
+#include "Domain/CrashHistory.h"
 #include "Domain/SystemInfoModel.h"
 
 #include <future>
 #include <memory>
+#include <utility>
 
 namespace App
 {
@@ -24,6 +26,13 @@ class SystemInfoPanel : public Panel
     SystemInfoPanel(SystemInfoPanel&&) = delete;
     SystemInfoPanel& operator=(SystemInfoPanel&&) = delete;
 
+    /// The crash cache Process Details shows (#1675), handed each read's crashes. Set by the composition
+    /// root (ShellLayer) before onAttach(); none by default.
+    void setCrashHistory(std::shared_ptr<Domain::CrashHistory> crashHistory) noexcept
+    {
+        m_CrashHistory = std::move(crashHistory);
+    }
+
     void onAttach() override;
     void onDetach() override;
     void onEvent(Core::Event& event) override;
@@ -35,6 +44,7 @@ class SystemInfoPanel : public Panel
     /// Takes in a finished read; with @p wait, waits for one in flight first.
     void finishRead(bool wait);
 
+    std::shared_ptr<Domain::CrashHistory> m_CrashHistory;
     std::shared_ptr<Domain::SystemInfoModel> m_Model;
     std::future<void> m_Pending; // the read in flight, if any
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;

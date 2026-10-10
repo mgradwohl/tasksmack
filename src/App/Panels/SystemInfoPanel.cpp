@@ -36,7 +36,7 @@ SystemInfoPanel::~SystemInfoPanel() = default;
 void SystemInfoPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; the first read waits for the tab.
-    m_Model = std::make_shared<Domain::SystemInfoModel>(Platform::makeSystemInfoProbe());
+    m_Model = std::make_shared<Domain::SystemInfoModel>(Platform::makeSystemInfoProbe(), m_CrashHistory);
 }
 
 void SystemInfoPanel::onDetach()
