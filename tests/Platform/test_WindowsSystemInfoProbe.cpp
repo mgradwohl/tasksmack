@@ -894,6 +894,23 @@ TEST(WindowsSystemInfoProbeTest, ReadsDevices)
     }
 }
 
+TEST(WindowsSystemInfoProbeTest, ReadsDrivers)
+{
+    WindowsSystemInfoProbe probe;
+    const DriversInfo info = probe.readDrivers();
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.family, OsFamily::Windows);
+    ASSERT_TRUE(info.listed); // the SCM lists driver services without administrator
+    EXPECT_FALSE(info.drivers.empty());
+    const bool anyVersioned = std::ranges::any_of(info.drivers, [](const KernelDriver& driver) { return !driver.version.empty(); });
+    EXPECT_TRUE(anyVersioned); // the in-box drivers carry a version resource
+    for (const KernelDriver& driver : info.drivers)
+    {
+        EXPECT_FALSE(driver.name.empty());
+        EXPECT_TRUE(driver.moduleState.empty());
+    }
+}
+
 // The fake devices table's state: whether SetupAPI and MMDevice can be used.
 bool g_DevicesFail = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 

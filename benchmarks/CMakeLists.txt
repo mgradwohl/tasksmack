@@ -162,6 +162,7 @@ endif()
 
 # Apply project warnings (benchmarks should compile clean too)
 tasksmack_apply_default_warnings(TaskSmackBenchmarks)
+tasksmack_apply_text_encoding(TaskSmackBenchmarks)
 
 # Disable warnings that conflict with Google Benchmark's use of __COUNTER__ and DoNotOptimize
 # These are from the benchmark library's macros, not our code

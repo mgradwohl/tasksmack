@@ -11,7 +11,8 @@ namespace Platform
 /// modules from the same table plus installed against usable memory (#1515), and commit and page files
 /// (WindowsCommitPaging.h, #1516), and physical disks and volumes (WindowsStorage.h, #1517), and GPUs,
 /// drivers and monitors from DXGI, SetupAPI and EDID (WindowsGraphics.h, #1519), and device nodes, their
-/// problems and audio endpoints from SetupAPI, CfgMgr32 and MMDevice (WindowsDevices.h, #1520).
+/// problems and audio endpoints from SetupAPI, CfgMgr32 and MMDevice (WindowsDevices.h, #1520), and the running
+/// driver services from the Service Control Manager with their images' versions (WindowsDrivers.h, #1521).
 class WindowsSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -35,6 +36,7 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
         return {};
     }
     [[nodiscard]] DevicesInfo readDevices() override;
+    [[nodiscard]] DriversInfo readDrivers() override;
     /// Not read yet: GetAdaptersAddresses and WlanQueryInterface are the Windows lane's follow-up to
     /// #1518, so the section is left out on Windows.
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override

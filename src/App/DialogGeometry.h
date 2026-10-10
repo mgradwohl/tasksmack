@@ -63,9 +63,14 @@ inline constexpr float HELP_MIN_HEIGHT_EM = 16.0F; // 171px
 
 // ---- Elevation notice (#937) ----
 
-/// Authored width of the notice. Like the About box (#1490), this width is applied every
-/// frame the popup is open -- see ElevationNoticeLayer for why that distinction matters.
+/// Widest the notice may be. It fits itself to its text between ELEVATION_MIN_WIDTH_EM and this
+/// (#1601): the long Linux text wraps at this width, the short Windows text shrinks. Like the About
+/// box (#1490), the width is applied every frame the popup is open -- see ElevationNoticeLayer for
+/// why that distinction matters.
 inline constexpr float ELEVATION_WIDTH_EM = 45.0F; // 480px
+/// Narrowest the notice may fit itself to when its text is short (#1601): still room for the title
+/// and the OK button.
+inline constexpr float ELEVATION_MIN_WIDTH_EM = 22.5F; // 240px
 
 /// Floor on the OK button's width.
 inline constexpr float ELEVATION_BUTTON_MIN_EM = 9.375F; // 100px

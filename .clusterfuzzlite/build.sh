@@ -11,12 +11,17 @@ export FUZZ_DEPS_DIR="${FUZZ_DEPS_DIR:-${WORK:-$PWD/build}/fuzz-deps}"
 .clusterfuzzlite/fetch-deps.sh
 
 # ClusterFuzzLite supplies compiler and linker flags as argument lists.
+# -finput-charset/-fexec-charset=UTF-8: the sources are compiled as UTF-8, as in the CMake build
+# (tasksmack_apply_text_encoding, #1648). UTF-8 is clang's only charset, so this states it rather
+# than changing it.
 # shellcheck disable=SC2086
 build_fuzzer() {
     local name="$1"
     shift
     "$CXX" $CXXFLAGS \
         -std=c++23 \
+        -finput-charset=UTF-8 \
+        -fexec-charset=UTF-8 \
         -Isrc \
         -isystem "$FUZZ_DEPS_DIR/tomlplusplus/include" \
         -isystem "$FUZZ_DEPS_DIR/spdlog/include" \
@@ -69,6 +74,10 @@ seed_corpus fuzz_edid tests/fuzz/corpus/fuzz_edid/*
 # The pci.ids / usb.ids parser (#1520): header-only, seeded with excerpts of both files.
 build_fuzzer fuzz_hwids
 seed_corpus fuzz_hwids tests/fuzz/corpus/fuzz_hwids/*
+
+# The /proc/modules parser (#1521): header-only, seeded with a real-looking /proc/modules.
+build_fuzzer fuzz_proc_modules
+seed_corpus fuzz_proc_modules tests/fuzz/corpus/fuzz_proc_modules/*
 
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised

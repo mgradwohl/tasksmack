@@ -344,6 +344,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h
         src/Platform/Linux/LinuxDevices.h
+        src/Platform/Linux/LinuxKernelModules.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
@@ -381,6 +382,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsStorage.h
         src/Platform/Windows/WindowsGraphics.h
         src/Platform/Windows/WindowsDevices.h
+        src/Platform/Windows/WindowsDrivers.h
         src/Platform/Windows/ComScope.h
     )
 endif()
@@ -459,6 +461,7 @@ function(tasksmack_configure_app_target target)
     tasksmack_apply_linux_toolchain(${target})
 
     tasksmack_apply_default_warnings(${target})
+    tasksmack_apply_text_encoding(${target})
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(${target} PRIVATE

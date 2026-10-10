@@ -95,6 +95,10 @@ add_test(NAME TidyChangedFilesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_changed_files.py)
 set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 180)
 
+# tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
+add_test(NAME CoverageMismatchesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_coverage_mismatches.py)
+
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES
@@ -144,6 +148,7 @@ set(COMMON_TEST_SOURCES
     UI/test_ChartGeometryBudget.cpp
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
+    UI/test_SourceEncoding.cpp
     UI/test_RenderMetrics.cpp
     UI/test_RenderMetricsOverlay.cpp
     UI/test_RateAxis.cpp
@@ -203,6 +208,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_SmbiosParser.cpp
     Platform/test_GraphicsInfo.cpp
     Platform/test_DevicesInfo.cpp
+    Platform/test_DriversInfo.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
@@ -613,6 +619,7 @@ if(UNIX AND NOT APPLE)
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
     tasksmack_apply_default_warnings(TaskSmackNVMLMock)
+    tasksmack_apply_text_encoding(TaskSmackNVMLMock)
 
     add_library(TaskSmackROCmMock SHARED
         Mocks/ROCmMock.cpp
@@ -627,6 +634,7 @@ if(UNIX AND NOT APPLE)
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
     tasksmack_apply_default_warnings(TaskSmackROCmMock)
+    tasksmack_apply_text_encoding(TaskSmackROCmMock)
 
     add_dependencies(TaskSmackTests TaskSmackNVMLMock TaskSmackROCmMock)
     target_compile_definitions(TaskSmackTests PRIVATE
@@ -665,6 +673,7 @@ if(WIN32)
 endif()
 
 tasksmack_apply_default_warnings(TaskSmackTests)
+tasksmack_apply_text_encoding(TaskSmackTests)
 
 # Precompiled headers for tests (speeds up compilation)
 if(TASKSMACK_ENABLE_PCH)
@@ -704,6 +713,7 @@ target_link_libraries(TaskSmackThemeTests PRIVATE gtest gtest_main spdlog::spdlo
 target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
+tasksmack_apply_text_encoding(TaskSmackThemeTests)
 gtest_discover_tests(TaskSmackThemeTests DISCOVERY_TIMEOUT 30)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
