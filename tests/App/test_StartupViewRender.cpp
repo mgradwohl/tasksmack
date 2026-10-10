@@ -3,16 +3,21 @@
 /// capabilities), the loading state, rows for a publication (a missing target among them), the
 /// filter, and the pure row order and labels.
 
+#include "App/Panels/StartupActionsView.h"
 #include "App/Panels/StartupView.h"
 #include "Domain/StartupModel.h"
+#include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h> // GImGui->LogBuffer, TableFindByID()
 
+#include <cfloat>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -76,6 +81,20 @@ entry(const char* name, const char* publisher, StartupLocation location, bool en
             .unavailableReason = {}};
 }
 
+/// Elevated actions that are never run here: the tests only draw the action bar.
+class IdleStartupActions final : public Platform::IStartupActions
+{
+  public:
+    [[nodiscard]] Platform::StartupActionCapabilities capabilities() const override
+    {
+        return {.canSetEnabled = true, .elevated = true};
+    }
+    [[nodiscard]] Platform::StartupActionResult setEnabled(const Platform::StartupEntry& /*entry*/, bool /*enabled*/) override
+    {
+        return Platform::StartupActionResult::succeeded();
+    }
+};
+
 class StartupViewRenderTest : public ::testing::Test
 {
   protected:
@@ -106,6 +125,59 @@ class StartupViewRenderTest : public ::testing::Test
         ImGui::End();
         ImGui::Render();
         return content;
+    }
+
+    /// One frame of the view, returning every text it drew (tooltips included).
+    static std::string
+    captureFrame(const Domain::StartupPublication& publication, StartupViewState& state, StartupActionsView* actions = nullptr)
+    {
+        std::string captured;
+        static_cast<void>(runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                const StartupViewContent content = renderStartupView(&publication, supported(), state, actions);
+                captured = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+                return content;
+            }));
+        return captured;
+    }
+
+    /// The centre of the table's first row's Name cell, from a frame that drew @p publication.
+    static ImVec2
+    firstRowCentre(const Domain::StartupPublication& publication, StartupViewState& state, StartupActionsView* actions = nullptr)
+    {
+        ImVec2 centre(-1.0F, -1.0F);
+        static_cast<void>(runFrame(
+            [&]
+            {
+                const StartupViewContent content = renderStartupView(&publication, supported(), state, actions);
+                if (const ImGuiTable* table = ImGui::TableFindByID(ImGui::GetID("##StartupTable")); table != nullptr)
+                {
+                    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+                    centre = ImVec2((table->Columns[0].MinX + table->Columns[0].MaxX) * 0.5F, table->OuterRect.Min.y + (rowHeight * 1.5F));
+                }
+                return content;
+            }));
+        return centre;
+    }
+
+    /// Hovers @p at and draws @p publication until its tooltip shows @p wanted (a few frames, each
+    /// past the hover delay); returns the last frame's text.
+    static std::string hoverUntil(const Domain::StartupPublication& publication, StartupViewState& state, ImVec2 at, const char* wanted)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(at.x, at.y);
+        io.DeltaTime = 0.25F;
+        std::string text;
+        for (int i = 0; i < 6 && !text.contains(wanted); ++i)
+        {
+            text = captureFrame(publication, state);
+        }
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        io.DeltaTime = 1.0F / 60.0F;
+        return text;
     }
 
   private:
@@ -223,6 +295,90 @@ TEST(StartupViewTest, Labels)
     EXPECT_EQ(startupEnabledLabel(disabled), "Disabled"); // no time recorded
     disabled.enabled = true;
     EXPECT_EQ(startupEnabledLabel(disabled), "Enabled");
+}
+
+// The Windows-only Startup tab's remaining branches (#1395, Windows half).
+TEST(StartupViewTest, EveryLocationHasItsLabelAndCommandSorts)
+{
+    EXPECT_EQ(startupLocationLabel(StartupLocation::RunUser), "Registry: HKCU Run");
+    EXPECT_EQ(startupLocationLabel(StartupLocation::RunMachine), "Registry: HKLM Run");
+    EXPECT_EQ(startupLocationLabel(StartupLocation::RunOnceUser), "Registry: HKCU RunOnce");
+    EXPECT_EQ(startupLocationLabel(StartupLocation::RunOnceMachine), "Registry: HKLM RunOnce");
+    EXPECT_EQ(startupLocationLabel(StartupLocation::StartupFolderCommon), "Startup folder (all users)");
+
+    auto publication = makePublication();
+    publication.entries[0].command = "zz.exe";
+    publication.entries[1].command = "AA.exe";
+    publication.entries[2].command = "mm.exe";
+    publication.entries[3].command = "bb.exe";
+    EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Command, true), (std::vector<std::size_t>{1, 3, 2, 0}));
+    EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Command, false), (std::vector<std::size_t>{0, 2, 3, 1}));
+}
+
+TEST_F(StartupViewRenderTest, AMissingProgramsTooltipShowsWithoutTheHoverDelay)
+{
+    Domain::StartupPublication publication;
+    publication.version = 1;
+    publication.entries = {entry("Stale", "", StartupLocation::RunUser, true)};
+    publication.entries[0].target = Platform::StartupTargetState::Missing;
+    StartupViewState state;
+    const ImVec2 row = firstRowCentre(publication, state);
+    ASSERT_GT(row.y, 0.0F);
+
+    const std::string text = hoverUntil(publication, state, row, "was not found");
+    EXPECT_TRUE(text.contains("The program this entry starts was not found"));
+    EXPECT_TRUE(text.contains(R"(Command: "C:\Apps\Stale.exe" --background)"));
+    EXPECT_TRUE(text.contains(R"(Program: C:\Apps\Stale.exe)"));
+}
+
+TEST_F(StartupViewRenderTest, AnUnresolvedShortcutShowsItsOwnPath)
+{
+    Domain::StartupPublication publication;
+    publication.version = 1;
+    publication.entries = {entry("Helper", "", StartupLocation::StartupFolderUser, true)};
+    auto& shortcut = publication.entries[0];
+    shortcut.command.clear();
+    shortcut.executablePath.clear();
+    shortcut.sourcePath = R"(C:\Users\me\Startup\Helper.lnk)";
+    shortcut.target = Platform::StartupTargetState::Unresolved;
+    StartupViewState state;
+
+    // The Command cell names the shortcut instead of a command.
+    EXPECT_TRUE(captureFrame(publication, state).contains(R"(C:\Users\me\Startup\Helper.lnk (target unresolved))"));
+
+    const ImVec2 row = firstRowCentre(publication, state);
+    ASSERT_GT(row.y, 0.0F);
+    const std::string text = hoverUntil(publication, state, row, "Shortcut target unresolved");
+    EXPECT_TRUE(text.contains("Shortcut target unresolved"));
+    EXPECT_TRUE(text.contains(R"(Shortcut: C:\Users\me\Startup\Helper.lnk)"));
+    EXPECT_FALSE(text.contains("Command:"));
+}
+
+TEST_F(StartupViewRenderTest, RightClickSelectsTheRowTheBarActsOn)
+{
+    const auto publication = makePublication();
+    StartupActionsView actions(std::make_shared<IdleStartupActions>());
+    StartupViewState state;
+    EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a startup app"));
+
+    // The default order lists Discord first; a right click on it selects it, location included.
+    const ImVec2 row = firstRowCentre(publication, state, &actions);
+    ASSERT_GT(row.y, 0.0F);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(row.x, row.y);
+    static_cast<void>(captureFrame(publication, state, &actions));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    static_cast<void>(captureFrame(publication, state, &actions));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    static_cast<void>(captureFrame(publication, state, &actions));
+    EXPECT_EQ(state.selectedName, "Discord");
+    EXPECT_EQ(state.selectedLocation, StartupLocation::RunUser);
+    EXPECT_FALSE(captureFrame(publication, state, &actions).contains("Select a startup app"));
+
+    // The same name registered somewhere else is not the selection.
+    state.selectedLocation = StartupLocation::RunMachine;
+    EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a startup app"));
 }
 
 } // namespace

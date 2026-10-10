@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <stop_token>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -27,7 +28,12 @@ namespace
 /// The fake SCM's answers and what it saw, reset per test.
 struct FakeScm
 {
+    DWORD scmError = ERROR_SUCCESS;   ///< OpenSCManagerW fails with this, when set.
     DWORD openError = ERROR_SUCCESS;  ///< OpenServiceW fails with this, when set.
+    int openFailsFrom = 0;            ///< When set, OpenServiceW fails with openError from this call on (1-based).
+    DWORD queryError = ERROR_SUCCESS; ///< QueryServiceStatus fails with this, when set.
+    int dependentsListFailsOn = 0;    ///< When set, EnumDependentServicesW's call with this count fails.
+    int dependentsCalls = 0;
     DWORD startError = ERROR_SUCCESS; ///< StartServiceW fails with this, when set.
     DWORD stopError = ERROR_SUCCESS;  ///< ControlService fails with this, when set.
     DWORD configError = ERROR_SUCCESS;
@@ -62,13 +68,19 @@ SC_HANDLE handle()
 SC_HANDLE WINAPI fakeOpenScm(LPCWSTR /*machine*/, LPCWSTR /*database*/, DWORD access)
 {
     EXPECT_EQ(access, static_cast<DWORD>(SC_MANAGER_CONNECT));
+    if (fake().scmError != ERROR_SUCCESS)
+    {
+        SetLastError(fake().scmError);
+        return nullptr;
+    }
     return handle();
 }
 
 SC_HANDLE WINAPI fakeOpenService(SC_HANDLE /*scm*/, LPCWSTR /*name*/, DWORD access)
 {
     fake().accesses.push_back(access);
-    if (fake().openError != ERROR_SUCCESS)
+    const bool failing = fake().openFailsFrom == 0 || std::cmp_greater_equal(fake().accesses.size(), fake().openFailsFrom);
+    if (fake().openError != ERROR_SUCCESS && failing)
     {
         SetLastError(fake().openError);
         return nullptr;
@@ -99,6 +111,11 @@ BOOL WINAPI fakeControl(SC_HANDLE /*service*/, DWORD control, LPSERVICE_STATUS /
 
 BOOL WINAPI fakeQuery(SC_HANDLE /*service*/, LPSERVICE_STATUS status)
 {
+    if (fake().queryError != ERROR_SUCCESS)
+    {
+        SetLastError(fake().queryError);
+        return FALSE;
+    }
     const auto& states = fake().states;
     *status = SERVICE_STATUS{};
     status->dwCurrentState = states[std::min(fake().queries++, states.size() - 1)];
@@ -109,6 +126,11 @@ BOOL WINAPI
 fakeEnumDependents(SC_HANDLE /*service*/, DWORD state, LPENUM_SERVICE_STATUSW buffer, DWORD bytes, LPDWORD needed, LPDWORD count)
 {
     EXPECT_EQ(state, static_cast<DWORD>(SERVICE_ACTIVE));
+    if (++fake().dependentsCalls == fake().dependentsListFailsOn)
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
     auto& dependents = fake().dependents;
     *needed = static_cast<DWORD>(dependents.size() * sizeof(ENUM_SERVICE_STATUSW));
     if (buffer == nullptr || bytes < *needed)
@@ -352,6 +374,53 @@ TEST(UnsupportedServiceActionsTest, RefusesEverything)
     EXPECT_FALSE(caps.canStart || caps.canStop || caps.canRestart || caps.canSetStartType);
     EXPECT_FALSE(actions.start("x", std::stop_token{}).ok);
     EXPECT_FALSE(actions.setStartType("x", ServiceStartType::Manual).ok);
+}
+
+// The error paths left (#1395, Windows half).
+TEST_F(WindowsServiceActionsTest, AServiceManagerThatWontOpenFailsWithItsError)
+{
+    fake().scmError = ERROR_ACCESS_DENIED;
+    const std::string denied = Windows::ServiceActionMath::errorText(ERROR_ACCESS_DENIED);
+    EXPECT_EQ(actions().start("Spooler", token()).message, denied);
+    EXPECT_EQ(actions().stop("Spooler", token()).message, denied);
+    EXPECT_FALSE(actions().setStartType("Spooler", ServiceStartType::Manual).ok);
+    EXPECT_TRUE(fake().accesses.empty()) << "no service is opened without the manager";
+    EXPECT_EQ(fake().starts + fake().stops, 0);
+}
+
+TEST_F(WindowsServiceActionsTest, AFailedStatusQueryEndsTheWaitWithItsError)
+{
+    fake().queryError = ERROR_INVALID_HANDLE;
+    const ServiceActionResult result = actions().start("Spooler", token());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, Windows::ServiceActionMath::errorText(ERROR_INVALID_HANDLE));
+    EXPECT_EQ(fake().starts, 1);
+    EXPECT_EQ(fake().sleeps, 0) << "a status that can't be read is not polled again";
+}
+
+TEST_F(WindowsServiceActionsTest, DependentsThatCantBeListedGiveThePlainMessage)
+{
+    const std::string plain = Windows::ServiceActionMath::dependentsText({});
+
+    // None reported (the size query gives 0 bytes).
+    fake().stopError = ERROR_DEPENDENT_SERVICES_RUNNING;
+    EXPECT_EQ(actions().stop("Spooler", token()).message, plain);
+
+    // The list itself can't be read.
+    fake() = FakeScm{};
+    fake().stopError = ERROR_DEPENDENT_SERVICES_RUNNING;
+    fake().dependents = {L"Fax"};
+    fake().dependentsListFailsOn = 2;
+    EXPECT_EQ(actions().stop("Spooler", token()).message, plain);
+
+    // The service can't be opened again to list them.
+    fake() = FakeScm{};
+    fake().stopError = ERROR_DEPENDENT_SERVICES_RUNNING;
+    fake().dependents = {L"Fax"};
+    fake().openError = ERROR_ACCESS_DENIED;
+    fake().openFailsFrom = 2;
+    EXPECT_EQ(actions().stop("Spooler", token()).message, plain);
+    EXPECT_EQ(fake().dependentsCalls, 0);
 }
 
 } // namespace

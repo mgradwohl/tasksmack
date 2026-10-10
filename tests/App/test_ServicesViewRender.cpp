@@ -2,17 +2,25 @@
 /// @brief The Services tab's table (#800), headless: the unsupported message (the Linux stub's
 /// capabilities), the loading state, rows for a publication, the filter, and the pure row order.
 
+#include "App/Panels/ServiceActionsView.h"
 #include "App/Panels/ServicesView.h"
 #include "Domain/ServiceModel.h"
+#include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h> // GImGui->LogBuffer, TableFindByID()
 
+#include <cfloat>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <stop_token>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace App
@@ -52,6 +60,32 @@ using Platform::ServiceState;
     return publication;
 }
 
+/// Elevated actions that are never run here: the tests only draw the bar and the row menus.
+class IdleServiceActions final : public Platform::IServiceActions
+{
+  public:
+    [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
+    {
+        return {.canStart = true, .canStop = true, .canRestart = true, .canSetStartType = true, .elevated = true};
+    }
+    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return Platform::ServiceActionResult::succeeded();
+    }
+    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return Platform::ServiceActionResult::succeeded();
+    }
+    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    {
+        return Platform::ServiceActionResult::succeeded();
+    }
+    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    {
+        return Platform::ServiceActionResult::succeeded();
+    }
+};
+
 class ServicesViewRenderTest : public ::testing::Test
 {
   protected:
@@ -82,6 +116,41 @@ class ServicesViewRenderTest : public ::testing::Test
         ImGui::End();
         ImGui::Render();
         return content;
+    }
+
+    /// One frame of the view, returning every text it drew (tooltips included).
+    static std::string
+    captureFrame(const Domain::ServicePublication& publication, ServicesViewState& state, ServiceActionsView* actions = nullptr)
+    {
+        std::string captured;
+        static_cast<void>(runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                const ServicesViewContent content = renderServicesView(&publication, enumerable(), state, actions);
+                captured = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+                return content;
+            }));
+        return captured;
+    }
+
+    /// The centre of the table's first row's Name cell, from a frame that drew @p publication.
+    static ImVec2 firstRowCentre(const Domain::ServicePublication& publication, ServicesViewState& state)
+    {
+        ImVec2 centre(-1.0F, -1.0F);
+        static_cast<void>(runFrame(
+            [&]
+            {
+                const ServicesViewContent content = renderServicesView(&publication, enumerable(), state);
+                if (const ImGuiTable* table = ImGui::TableFindByID(ImGui::GetID("##ServicesTable")); table != nullptr)
+                {
+                    const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
+                    centre = ImVec2((table->Columns[0].MinX + table->Columns[0].MaxX) * 0.5F, table->OuterRect.Min.y + (rowHeight * 1.5F));
+                }
+                return content;
+            }));
+        return centre;
     }
 
   private:
@@ -227,6 +296,102 @@ TEST(ServicesViewTest, LabelsAndColours)
     UI::ColorScheme scheme{};
     scheme.statusRunning = ImVec4(0.0F, 1.0F, 0.0F, 1.0F);
     EXPECT_FLOAT_EQ(serviceStateColor(ServiceState::Running, scheme).y, 1.0F);
+}
+
+// The Windows-only Services tab's remaining branches (#1395, Windows half).
+TEST(ServicesViewTest, EveryStateStartTypeAndColourHasItsLabel)
+{
+    using enum ServiceState;
+    EXPECT_EQ(serviceStateLabel(Stopped), "Stopped");
+    EXPECT_EQ(serviceStateLabel(StopPending), "Stopping");
+    EXPECT_EQ(serviceStateLabel(ContinuePending), "Resuming");
+    EXPECT_EQ(serviceStateLabel(PausePending), "Pausing");
+    EXPECT_EQ(serviceStateLabel(Paused), "Paused");
+    EXPECT_EQ(serviceStateLabel(Unknown), "Unknown");
+
+    using Platform::ServiceStartType;
+    EXPECT_EQ(serviceStartTypeLabel(ServiceStartType::Automatic), "Automatic");
+    EXPECT_EQ(serviceStartTypeLabel(ServiceStartType::Disabled), "Disabled");
+    EXPECT_EQ(serviceStartTypeLabel(ServiceStartType::Boot), "Boot");
+    EXPECT_EQ(serviceStartTypeLabel(ServiceStartType::System), "System");
+    EXPECT_EQ(serviceStartTypeLabel(ServiceStartType::Unknown), "");
+
+    UI::ColorScheme scheme{};
+    scheme.statusDiskSleep = ImVec4(0.1F, 0.0F, 0.0F, 1.0F);
+    scheme.statusStopped = ImVec4(0.2F, 0.0F, 0.0F, 1.0F);
+    scheme.statusSleeping = ImVec4(0.3F, 0.0F, 0.0F, 1.0F);
+    for (const ServiceState pending : {StartPending, StopPending, ContinuePending, PausePending})
+    {
+        EXPECT_FLOAT_EQ(serviceStateColor(pending, scheme).x, 0.1F) << serviceStateLabel(pending);
+    }
+    EXPECT_FLOAT_EQ(serviceStateColor(Paused, scheme).x, 0.2F);
+    EXPECT_FLOAT_EQ(serviceStateColor(Stopped, scheme).x, 0.3F);
+    EXPECT_FLOAT_EQ(serviceStateColor(Unknown, scheme).x, 0.3F);
+}
+
+TEST(ServicesViewTest, RowsSortByStartTypeAndAccount)
+{
+    auto publication = makePublication();
+    publication.services[0].startType = Platform::ServiceStartType::Manual;
+    publication.services[1].startType = Platform::ServiceStartType::Automatic;
+    publication.services[2].startType = Platform::ServiceStartType::Disabled;
+    publication.services[0].account = "LocalSystem";
+    publication.services[1].account = "localservice";
+    publication.services[2].account = "NetworkService";
+    EXPECT_EQ(buildServiceRows(publication.services, "", ServiceColumn::StartType, true), (std::vector<std::size_t>{1, 2, 0}));
+    EXPECT_EQ(buildServiceRows(publication.services, "", ServiceColumn::Account, true), (std::vector<std::size_t>{1, 0, 2}));
+    EXPECT_EQ(buildServiceRows(publication.services, "", ServiceColumn::Account, false), (std::vector<std::size_t>{2, 0, 1}));
+}
+
+TEST_F(ServicesViewRenderTest, HoveringARowShowsItsDetails)
+{
+    Domain::ServicePublication publication;
+    publication.version = 1;
+    publication.services = {service("Spooler", "Print Spooler", ServiceState::Running, 2200)};
+    publication.services[0].description = "Queues print jobs";
+    publication.services[0].binaryPath = R"(C:\Windows\System32\spoolsv.exe)";
+    publication.services[0].group = "print";
+    publication.services[0].serviceType = "Own process";
+    ServicesViewState state;
+    const ImVec2 row = firstRowCentre(publication, state);
+    ASSERT_GT(row.y, 0.0F);
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(row.x, row.y);
+    io.DeltaTime = 0.25F; // past the tooltip's hover delay in a few frames
+    std::string text;
+    for (int i = 0; i < 6 && !text.contains("Queues print jobs"); ++i)
+    {
+        text = captureFrame(publication, state);
+    }
+    EXPECT_TRUE(text.contains("Queues print jobs"));
+    EXPECT_TRUE(text.contains(R"(Command: C:\Windows\System32\spoolsv.exe)"));
+    EXPECT_TRUE(text.contains("Group: print"));
+    EXPECT_TRUE(text.contains("Type: Own process"));
+
+    // A right click selects the row, as the row menu acts on it.
+    EXPECT_TRUE(state.selectedName.empty());
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    static_cast<void>(captureFrame(publication, state));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    static_cast<void>(captureFrame(publication, state));
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    EXPECT_EQ(state.selectedName, "Spooler");
+}
+
+TEST_F(ServicesViewRenderTest, ActionBarActsOnTheSelectedServiceByName)
+{
+    const auto publication = makePublication();
+    ServiceActionsView actions(std::make_shared<IdleServiceActions>());
+    ServicesViewState state;
+    EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a service"));
+
+    state.selectedName = "Spooler";
+    EXPECT_FALSE(captureFrame(publication, state, &actions).contains("Select a service"));
+
+    // A selection the latest sample no longer lists acts on nothing.
+    state.selectedName = "RemovedService";
+    EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a service"));
 }
 
 } // namespace
