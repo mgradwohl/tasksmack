@@ -88,10 +88,8 @@ TEST(FactoryTest, MakeProcessConnectionsReaderReturnsNonNull)
 {
     const auto reader = makeProcessConnectionsReader();
     ASSERT_NE(reader, nullptr);
-#ifdef _WIN32
-    // Not wired up on Windows yet (#1489): the Connections section is hidden.
-    EXPECT_NE(dynamic_cast<UnsupportedProcessConnectionsReader*>(reader.get()), nullptr);
-#endif
+    // Linux (#799) and Windows (#1489) both list a process's sockets.
+    EXPECT_TRUE(reader->hasConnections());
 }
 
 TEST(FactoryTest, MakeProcessModulesReaderListsModules)

@@ -37,6 +37,7 @@ void SystemInfoModel::read()
         next->security = m_Probe->readPlatformSecurity();
         next->sensors = m_Probe->readSensors();
         next->devices = m_Probe->readDevices();
+        next->drivers = m_Probe->readDrivers();
         next->adapters = m_Probe->readNetworkAdapters();
         next->boot = m_Probe->readBootPerformance();
     }

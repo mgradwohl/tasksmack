@@ -204,6 +204,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_SmbiosParser.cpp
     Platform/test_GraphicsInfo.cpp
     Platform/test_DevicesInfo.cpp
+    Platform/test_DriversInfo.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
@@ -310,6 +311,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessProbe.cpp
     Platform/test_WindowsSystemProbe.cpp
     Platform/test_WindowsProcessActions.cpp
+    Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsDiskProbe.cpp
@@ -378,6 +380,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp

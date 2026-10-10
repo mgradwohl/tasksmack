@@ -20,7 +20,8 @@ namespace Platform
 /// session environment (LinuxGraphics.h, #1519); adapters, gateways and DNS from /sys, /proc and
 /// resolv.conf, addresses from getifaddrs() (LinuxNetworkAdapters.h, #1518); boot phases from systemd
 /// over D-Bus when built with libsystemd (SystemdBus.h, LinuxBootTimes.h, #1525); PCI and USB devices
-/// from /sys/bus and audio from /proc/asound (LinuxDevices.h, #1520).
+/// from /sys/bus and audio from /proc/asound (LinuxDevices.h, #1520); loaded kernel modules from /proc/modules
+/// (LinuxKernelModules.h, #1521).
 class LinuxSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -39,6 +40,7 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override;
     [[nodiscard]] SensorsInfo readSensors() override;
     [[nodiscard]] DevicesInfo readDevices() override;
+    [[nodiscard]] DriversInfo readDrivers() override;
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override;
     [[nodiscard]] BootPerformanceInfo readBootPerformance() override;
 

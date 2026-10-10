@@ -926,7 +926,10 @@ TEST(LinuxNetworkAdaptersTest, ReadsTheFactsUnderARoot)
     std::filesystem::create_directories(root.path() / "sys/class/net/wlp3s0/wireless");
     std::filesystem::create_directories(root.path() / "sys/bus/pci/drivers/e1000e");
     std::filesystem::create_directories(root.path() / "sys/class/net/eth0/device");
-    std::filesystem::create_directory_symlink(root.path() / "sys/bus/pci/drivers/e1000e", root.path() / "sys/class/net/eth0/device/driver");
+    // The driver link, where the file system allows one (Windows needs Developer Mode or elevation, #1643).
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(
+        root.path() / "sys/bus/pci/drivers/e1000e", root.path() / "sys/class/net/eth0/device/driver", linkError);
     root.write("proc/net/wireless", "Inter-| sta-|\n face | tus |\nwlp3s0: 0000   54.  -61.  -256 0 0 0 0 0 0\n");
     root.write("proc/net/route",
                "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\neth0\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\n");
@@ -943,7 +946,7 @@ TEST(LinuxNetworkAdaptersTest, ReadsTheFactsUnderARoot)
     EXPECT_EQ(eth0.mac, "a4:5e:60:12:34:56");
     EXPECT_EQ(eth0.mtu, 1500U);
     EXPECT_TRUE(eth0.up);
-    EXPECT_EQ(eth0.driver, "e1000e");
+    EXPECT_EQ(eth0.driver, linkError ? "" : "e1000e");
     EXPECT_FALSE(eth0.wireless);
     EXPECT_EQ(eth0.addresses.size(), 2U);
     const NetworkAdapter& wifi = info.adapters[1];

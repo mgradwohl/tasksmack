@@ -25,6 +25,7 @@ struct SystemInfoSnapshot
     Platform::PlatformSecurityInfo security;
     Platform::SensorsInfo sensors;
     Platform::DevicesInfo devices;
+    Platform::DriversInfo drivers;
     Platform::NetworkAdaptersInfo adapters;
     Platform::BootPerformanceInfo boot;
 };

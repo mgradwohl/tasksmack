@@ -5,6 +5,7 @@
 #include "LinuxDevices.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxGraphics.h"
+#include "LinuxKernelModules.h"
 #include "LinuxNetworkAdapters.h"
 #include "LinuxOsInfo.h"
 #include "LinuxPlatformSecurity.h"
@@ -226,6 +227,13 @@ DevicesInfo LinuxSystemInfoProbe::readDevices()
 {
     DevicesInfo info;
     LinuxDevices::readDeviceFacts(m_Root, info);
+    return info;
+}
+
+DriversInfo LinuxSystemInfoProbe::readDrivers()
+{
+    DriversInfo info;
+    LinuxKernelModules::readKernelModules(m_Root, info);
     return info;
 }
 

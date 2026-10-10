@@ -33,8 +33,7 @@ namespace Platform
 /// an UnsupportedProcessEnvironmentReader (hasEnvironment() false).
 [[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader();
 
-/// Creates the platform-appropriate IProcessConnectionsReader implementation (#799). Windows returns
-/// an UnsupportedProcessConnectionsReader (hasConnections() false) until #1489.
+/// Creates the platform-appropriate IProcessConnectionsReader implementation (#799; Windows #1489).
 [[nodiscard]] std::unique_ptr<IProcessConnectionsReader> makeProcessConnectionsReader();
 
 /// Creates the platform-appropriate IProcessModulesReader implementation (#802).

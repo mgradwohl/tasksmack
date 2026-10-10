@@ -211,6 +211,7 @@ set(PLATFORM_SOURCES_LINUX
 set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
+    src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
@@ -343,6 +344,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h
         src/Platform/Linux/LinuxDevices.h
+        src/Platform/Linux/LinuxKernelModules.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
@@ -353,6 +355,7 @@ elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
+        src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsSystemProbe.h
@@ -379,6 +382,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsStorage.h
         src/Platform/Windows/WindowsGraphics.h
         src/Platform/Windows/WindowsDevices.h
+        src/Platform/Windows/WindowsDrivers.h
         src/Platform/Windows/ComScope.h
     )
 endif()
