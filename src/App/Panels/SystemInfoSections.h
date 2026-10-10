@@ -113,6 +113,9 @@ struct VisibleSection
 /// front when any warning bit is set.
 [[nodiscard]] std::string formatNvmeHealth(const Platform::NvmeHealth& health);
 
+/// An ATA drive's SMART health (#1631): "SMART OK, 0 bad sectors, 12345 power-on hours".
+[[nodiscard]] std::string formatAtaHealth(const Platform::AtaHealth& health);
+
 /// One volume's value: "Windows, NTFS, 120 GiB free of 476 GiB (75% used)" / "ext4 on /dev/sda2, ...";
 /// a network one isn't sized ("nfs4 on server:/export, network, size not read"). A label that is an
 /// identifier is left out.
@@ -187,6 +190,19 @@ struct VisibleSection
 /// The Drivers section (#1521), titled "Kernel modules" on Linux: a count, then one row per driver or
 /// module by name; on Linux, the tainted count and a note that built-in modules aren't listed.
 [[nodiscard]] Section buildDriversSection(const Platform::DriversInfo& drivers);
+
+/// A well-known exception code's name ("access violation" for 0xC0000005); empty for others.
+[[nodiscard]] std::string_view exceptionCodeName(std::string_view code);
+
+/// A crash's row value: "notepad.exe 10.0.26100.1 crashed in ntdll.dll 10.0.26100.1, exception 0xC0000005
+/// (access violation), pid 6700", "notepad.exe 10.0.26100.1 hung (Quiesce)" or, on Linux, "python3 dumped
+/// core, pid 4242, uid 1000, 1.5 MiB".
+[[nodiscard]] std::string formatCrashValue(const Platform::CrashEvent& event);
+
+/// The Recent crashes & hangs section (#1524), titled "Recent crashes" on Linux, the page's last: the counts
+/// of the last CRASH_HISTORY_DAYS days, a muted note when only the newest CRASH_LIST_MAX are listed, then
+/// one row per event, newest first, labelled by its local time.
+[[nodiscard]] Section buildCrashesSection(const Platform::CrashesInfo& crashes);
 
 /// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
 /// for the Graphics & displays section, captured on the UI thread.

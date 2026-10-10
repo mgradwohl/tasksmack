@@ -4,7 +4,7 @@
 // - Physical disks from /sys/block: size, queue/rotational, device/model, the firmware revision and
 //   serial, and the temperature from the disk's hwmon (NVMe, or SATA with the drivetemp module). Udev's
 //   plain-file database (/run/udev/data/b<major>:<minor>) supplies the bus and a SATA disk's serial.
-//   SMART status needs udisks2 over D-Bus, which this reader doesn't use, so it is left unknown.
+//   SMART status comes from udisks2 over D-Bus through an injected reader (LinuxDiskSmart.h, #1631).
 // - Volumes from /proc/self/mountinfo: real file systems only (see isPseudoFileSystem()), one per device
 //   (a bind mount repeats its device and is left out), each sized by an injected statvfs() so the parsers
 //   stay standard library only and the fixture tests and the fuzz target (tests/fuzz/fuzz_mountinfo.cpp)
@@ -13,6 +13,7 @@
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxCommitPaging.h"
+#include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 
 #include <algorithm>
@@ -311,7 +312,7 @@ struct MountEntry
             disk.serial = udevProperty(udev, "ID_SERIAL_SHORT");
         }
         disk.temperatureCelsius = hwmonTemperature(device);
-        disk.healthUnavailableReason = "SMART status needs udisks2, which TaskSmack doesn't read yet";
+        disk.healthUnavailableReason = "SMART status wasn't read"; // readStorageFacts() reads it through udisks2
         disks.push_back(std::move(disk));
     }
     std::ranges::sort(disks, {}, &PhysicalDisk::name);
@@ -322,8 +323,10 @@ struct MountEntry
 /// it can't be read. The app passes statvfs(); tests pass a fake.
 using VolumeSizer = bool (*)(const std::string& mountPoint, std::uint64_t& sizeBytes, std::uint64_t& freeBytes);
 
-/// The facts under @p root into @p info; @p sizer sizes each local volume.
-inline void readStorageFacts(const std::filesystem::path& root, StorageInfo& info, VolumeSizer sizer)
+/// The facts under @p root into @p info; @p sizer sizes each local volume, and @p smart, when given,
+/// reads each disk's SMART health through udisks2 (#1631).
+inline void
+readStorageFacts(const std::filesystem::path& root, StorageInfo& info, VolumeSizer sizer, const LinuxDiskSmart::SmartReader& smart = {})
 {
     info.available = true;
     info.family = OsFamily::Linux;
@@ -331,6 +334,13 @@ inline void readStorageFacts(const std::filesystem::path& root, StorageInfo& inf
     {
         info.disksRead = true;
         info.disks = std::move(*disks);
+        if (smart)
+        {
+            for (PhysicalDisk& disk : info.disks)
+            {
+                LinuxDiskSmart::applySmart(disk, smart(disk.name));
+            }
+        }
     }
 
     // mountinfo always has the root mount, so an empty read means it couldn't be read.

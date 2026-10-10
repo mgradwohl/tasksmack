@@ -2,6 +2,7 @@
 
 #include "LinuxBootTimes.h"
 #include "LinuxCommitPaging.h"
+#include "LinuxCoredumps.h"
 #include "LinuxDevices.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxGraphics.h"
@@ -13,6 +14,7 @@
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "SystemdBus.h"
+#include "SystemdJournal.h"
 #include "UserNameLookup.h"
 
 #include <array>
@@ -196,7 +198,8 @@ StorageInfo LinuxSystemInfoProbe::readStorage()
         freeBytes = static_cast<std::uint64_t>(stats.f_bavail) * stats.f_frsize;
         return true;
     };
-    LinuxStorage::readStorageFacts(m_Root, info, sizer);
+    // SMART status through udisks2 (#1631): only this system's, never under a fixture root.
+    LinuxStorage::readStorageFacts(m_Root, info, sizer, m_Root == "/" ? SystemdBus::makeDriveSmartReader() : LinuxDiskSmart::SmartReader{});
     return info;
 }
 
@@ -234,6 +237,19 @@ DriversInfo LinuxSystemInfoProbe::readDrivers()
 {
     DriversInfo info;
     LinuxKernelModules::readKernelModules(m_Root, info);
+    return info;
+}
+
+CrashesInfo LinuxSystemInfoProbe::readCrashes()
+{
+    CrashesInfo info;
+    const std::time_t now = std::time(nullptr);
+    // The journal's entries add the signal and the executable, and crashes whose core wasn't kept (#1674);
+    // only this system's journal, never under a fixture root.
+    LinuxCoredumps::readCrashFacts(m_Root,
+                                   now > 0 ? static_cast<std::uint64_t>(now) : 0,
+                                   info,
+                                   m_Root == "/" ? SystemdJournal::makeCoredumpJournalReader() : LinuxCoredumps::JournalReader{});
     return info;
 }
 

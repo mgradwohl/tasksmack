@@ -268,6 +268,29 @@ Every TaskSmack target compiles its sources as UTF-8, with UTF-8 narrow string l
 `A` functions. `tasksmack_apply_text_encoding()` in `cmake/CompilerOptions.cmake` sets both; call
 it on any new target. Third-party dependencies keep their own settings.
 
+### Text encoding and locale
+
+- **UTF-8 `std::string` everywhere.** Strings inside TaskSmack hold UTF-8. Lengths and offsets
+  are byte counts, not characters or columns.
+- **UTF-16 only at the Win32 call site.** Convert with `Platform::WinString::utf8ToWide` /
+  `wideToUtf8` right where you call the `W` API, and convert straight back. Don't use `TCHAR`,
+  `std::wstring` members or the `A` functions.
+- **The process runs in UTF-8.** On Windows the application manifest sets the active code page
+  to UTF-8 (`activeCodePage`, Windows 10 1903+), so `GetACP()` is 65001 and narrow CRT calls,
+  `std::filesystem::path` and `getenv` take UTF-8. The test binaries have no manifest, so code
+  under test must not depend on it: convert explicitly rather than relying on the code page.
+- **Locales are set once, at startup** (`Core/LocaleSetup.h`, first thing in `main`): the C and
+  C++ locales follow the user's regional settings with a UTF-8 codeset, and the C runtime's
+  `LC_NUMERIC` stays `"C"`. Don't call `setlocale` or `std::locale::global` anywhere else. The
+  startup log records the result (`Locale: GetACP()=... C="..." C++ global="..." user="..."`).
+- **Displayed numbers use the user's locale** (decimal mark, digit grouping):
+  `Core::LocaleSetup::userLocale()`, with `std::format(loc, "{:L}", ...)`. Display formatting is
+  moving onto it (#1648, slice E); until then `UI::Format` reads the global locale.
+- **Parsing and machine-readable output use the classic locale:** `std::from_chars`/`std::to_chars`,
+  `std::format` without `L`, or a stream imbued with `std::locale::classic()`. This covers config
+  and theme TOML, `/proc` and `/sys`, command-line values and structured log fields. Never use
+  `std::stod`/`strtod`/`atof`/`sscanf` or a default-locale stream on text you read back.
+
 ### Cleaning Build Artifacts
 
 Remove stale build directories, FetchContent cache, and coverage output:
@@ -810,6 +833,7 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_edid` | the monitor EDID parser: manufacturer, name and serial descriptors, image size (`Platform/EdidParser.h`) | `tests/fuzz/corpus/fuzz_edid/` |
 | `fuzz_hwids` | the hwdata `pci.ids` / `usb.ids` parser: vendor, device and class lines (`Platform/HwIdsParser.h`) | `tests/fuzz/corpus/fuzz_hwids/` |
 | `fuzz_proc_modules` | the `/proc/modules` parser: size, use count, dependents, `[permanent]`, state and taint flags (`Platform/Linux/LinuxKernelModules.h`) | `tests/fuzz/corpus/fuzz_proc_modules/` |
+| `fuzz_coredump_names` | the systemd-coredump core file name parser: comm with `\xNN` escapes, uid, boot id, pid, time and compression (`Platform/Linux/LinuxCoredumps.h`) | `tests/fuzz/corpus/fuzz_coredump_names/` |
 | `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
 

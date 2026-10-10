@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <locale>
 #include <optional>
 #include <random>
 #include <sstream>
@@ -806,6 +807,9 @@ void UserConfig::save()
     // across a power loss: nothing is synced to disk. Each save gets its own, exclusively created
     // temporary file, so two TaskSmack instances can't write into the same one.
     std::ostringstream text;
+    // Classic, not the global locale: config.toml is machine-read, so a decimal-comma or digit-grouping
+    // user locale must never reach it (#1648). toml++ also formats its numbers in the classic locale.
+    text.imbue(std::locale::classic());
     text << "# TaskSmack user configuration\n";
     text << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
     text << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";

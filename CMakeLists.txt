@@ -111,6 +111,7 @@ set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
     src/Core/ConfigDirOverride.cpp
+    src/Core/LocaleSetup.cpp
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
@@ -126,12 +127,14 @@ set(TASKSMACK_SOURCES
     src/UI/IconLoader.cpp
     src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
+    src/App/ElevationNoticeDialog.cpp
     src/App/ElevationNoticeLayer.cpp
     src/App/HelpLayer.cpp
     src/App/HelpWindow.cpp
     src/App/InstanceLock.cpp
     src/App/KeyboardInput.cpp
     src/App/PlatformOpen.cpp
+    src/App/SettingsDialog.cpp
     src/App/SettingsLayer.cpp
     src/App/SelectOverride.cpp
     src/App/ShellLayer.cpp
@@ -196,6 +199,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdBus.cpp
+    src/Platform/Linux/SystemdJournal.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
@@ -216,6 +220,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
+    src/Platform/Windows/WindowsCrashEvents.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -264,6 +269,7 @@ endif()
 set(TASKSMACK_HEADERS
     src/Core/Application.h
     src/Core/ConfigDirOverride.h
+    src/Core/LocaleSetup.h
     src/Core/PathService.h
     src/Core/Window.h
     src/Core/GraphicsHostInfo.h
@@ -341,13 +347,16 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxSystemInfoProbe.h
         src/Platform/Linux/LinuxOsInfo.h
         src/Platform/Linux/LinuxCommitPaging.h
+        src/Platform/Linux/LinuxDiskSmart.h
         src/Platform/Linux/LinuxStorage.h
         src/Platform/Linux/LinuxGraphics.h
         src/Platform/Linux/LinuxDevices.h
         src/Platform/Linux/LinuxKernelModules.h
+        src/Platform/Linux/LinuxCoredumps.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
+        src/Platform/Linux/SystemdJournal.h
         src/Platform/Linux/LinuxSensors.h
         src/Platform/Linux/LinuxNetworkAdapters.h
     )
@@ -383,6 +392,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsGraphics.h
         src/Platform/Windows/WindowsDevices.h
         src/Platform/Windows/WindowsDrivers.h
+        src/Platform/Windows/WindowsCrashEvents.h
         src/Platform/Windows/ComScope.h
     )
 endif()
@@ -522,6 +532,7 @@ function(tasksmack_configure_app_target target)
             version
             powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
             setupapi # WindowsBatteryInfo: the battery devices (#1523)
+            wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
         )
     elseif(UNIX AND NOT APPLE)
         # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525)

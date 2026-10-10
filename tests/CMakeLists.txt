@@ -107,6 +107,7 @@ set(COMMON_TEST_SOURCES
     Core/test_Application.cpp
     Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
+    Core/test_LocaleSetup.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
     Core/test_Layer.cpp
@@ -205,10 +206,12 @@ set(COMMON_TEST_SOURCES
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
     Platform/test_LinuxOsInfo.cpp
+    Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_GraphicsInfo.cpp
     Platform/test_DevicesInfo.cpp
     Platform/test_DriversInfo.cpp
+    Platform/test_CrashesInfo.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
@@ -262,6 +265,7 @@ set(COMMON_TEST_SOURCES
     App/test_SystemInfoView.cpp
     App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
+    App/test_SettingsDialogRender.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
@@ -275,6 +279,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_AboutDialogRender.cpp
+    App/test_ElevationNoticeDialogRender.cpp
     App/test_HelpContent.cpp
     App/test_HelpWindowRender.cpp
     App/test_KeyboardInputRender.cpp
@@ -359,6 +364,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_SystemdBus.cpp
+    Platform/test_SystemdJournal.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
     Platform/test_LinuxDiskProbe.cpp
@@ -398,6 +404,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
@@ -420,6 +427,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPowerProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/SystemdBus.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/SystemdJournal.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxSystemInfoProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxGPUProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/NVMLGPUProbe.cpp
@@ -460,6 +468,7 @@ add_executable(TaskSmackTests
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/ConfigDirOverride.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/LocaleSetup.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
@@ -519,9 +528,13 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
+    # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
     # The PGO UI training plan (#880), pure: test_UiTrainingPlan.cpp
@@ -669,6 +682,7 @@ if(WIN32)
         version
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
         setupapi # WindowsBatteryInfo: the battery devices (#1523)
+        wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
     )
 endif()
 
