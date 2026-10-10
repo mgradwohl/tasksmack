@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -18,6 +19,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -75,8 +77,14 @@ namespace Platform::PartitionTable
         {"48465300-0000-11AA-AA11-00306543ECAC", "Apple HFS+"},          {"7C3457EF-0000-11AA-AA11-00306543ECAC", "Apple APFS"},
     }};
     const std::string upper = upperGuid(guid);
-    const auto found = std::ranges::find(NAMES, std::string_view(upper), &std::pair<std::string_view, std::string_view>::first);
-    return found == NAMES.end() ? std::string_view{} : found->second;
+    for (const auto& [id, name] : NAMES)
+    {
+        if (id == upper)
+        {
+            return name;
+        }
+    }
+    return {};
 }
 
 /// An MBR partition type byte's common name; empty for one not in the table (and for 0, an unused slot).
@@ -144,17 +152,10 @@ namespace Platform::PartitionTable
         return std::nullopt;
     }
     unsigned value = 0;
-    for (const char c : text)
+    const auto [stop, error] = std::from_chars(text.data(), text.data() + text.size(), value, 16);
+    if (error != std::errc{} || stop != text.data() + text.size())
     {
-        const int digit = std::isdigit(static_cast<unsigned char>(c)) != 0 ? c - '0'
-                        : (c >= 'a' && c <= 'f')                           ? c - 'a' + 10
-                        : (c >= 'A' && c <= 'F')                           ? c - 'A' + 10
-                                                                           : -1;
-        if (digit < 0)
-        {
-            return std::nullopt;
-        }
-        value = (value * 16U) + static_cast<unsigned>(digit);
+        return std::nullopt;
     }
     return static_cast<std::uint8_t>(value);
 }
@@ -237,7 +238,7 @@ struct DriveLayout
     }
     const std::uint64_t count = readLittleEndian(buffer, 4, 4);
     const std::size_t fit = (buffer.size() - LAYOUT_HEADER_BYTES) / LAYOUT_ENTRY_BYTES;
-    const std::size_t entries = static_cast<std::size_t>(std::min<std::uint64_t>(count, fit));
+    const auto entries = static_cast<std::size_t>(std::min<std::uint64_t>(count, fit));
     std::size_t index = 0;
     while (index < entries)
     {
