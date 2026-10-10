@@ -259,6 +259,15 @@ This repo uses CMake Presets; list them with:
 cmake --list-presets
 ```
 
+### Source encoding
+
+Every TaskSmack target compiles its sources as UTF-8, with UTF-8 narrow string literals
+(`/utf-8` with clang-cl, `-finput-charset=UTF-8` with clang/gcc), and every Windows target defines
+`UNICODE` and `_UNICODE`, so an unsuffixed Win32 macro resolves to its `W` function. Call the
+`W` function by name, converting with `Platform::WinString::utf8ToWide` at the call site; don't use `TCHAR` or the
+`A` functions. `tasksmack_apply_text_encoding()` in `cmake/CompilerOptions.cmake` sets both; call
+it on any new target. Third-party dependencies keep their own settings.
+
 ### Cleaning Build Artifacts
 
 Remove stale build directories, FetchContent cache, and coverage output:
@@ -708,6 +717,15 @@ pwsh tools/coverage.ps1
 pwsh tools/coverage.ps1 -OpenReport
 pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-coverage"
 ```
+
+> **Note ("functions have mismatched data"):** `llvm-cov` warns that a couple of hundred functions
+> have mismatched data. They are clang's unused-function placeholders: a header or inline function a
+> binary references but never emits gets a hash-0 record with no counters, and when another binary
+> ran that function the profile has it under that binary's real hash. The placeholder has nothing to
+> lose, and the binary that ran the function carries the counts, so the report is complete.
+> `tools/coverage.sh` confirms this on every run with `tools/coverage-mismatches.py`, and warns if a
+> real record ever mismatches -- a function compiled differently in two binaries, whose counts would
+> be missing (#1544). The check reads ELF sections, so `tools/coverage.ps1` doesn't run it.
 
 > **Note (Linux GPU mock tests):** The Linux GPU probe tests depend on mock shared libraries
 > (`libnvidia-ml.so.1`, `librocm_smi64.so.6`) built into `build/<preset>/tests/mocks/`

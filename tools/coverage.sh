@@ -55,6 +55,7 @@ COVERAGE_DIR="${PROJECT_ROOT}/coverage"
 # Find llvm tools using common.sh functions
 LLVM_PROFDATA="$(find_llvm_tool llvm-profdata)"
 LLVM_COV="$(find_llvm_tool llvm-cov)"
+LLVM_OBJCOPY="$(find_llvm_tool llvm-objcopy)"
 
 if [[ -z "$LLVM_PROFDATA" ]]; then
     echo "Error: llvm-profdata not found. Install LLVM tools." >&2
@@ -150,6 +151,23 @@ $LLVM_COV report \
     "${COV_OBJECTS[@]}" \
     -instr-profile="${BUILD_DIR}/default.profdata" \
     -ignore-filename-regex="${COV_IGNORE_REGEX}"
+
+# llvm-cov warns above that a couple of hundred functions "have mismatched data". They are clang's
+# unused-function placeholders, which carry no counts, so nothing is lost; this confirms that every
+# mismatch is one, and warns (without failing the run) if a real record ever mismatches (#1544).
+echo ""
+echo "==> Checking mismatched functions..."
+if [[ -z "$LLVM_OBJCOPY" ]]; then
+    echo "Warning: llvm-objcopy not found; skipping the mismatched-functions check." >&2
+elif ! "$PYTHON_EXE" -I "${SCRIPT_DIR}/coverage-mismatches.py" \
+    --profdata "${BUILD_DIR}/default.profdata" \
+    --llvm-profdata "$LLVM_PROFDATA" \
+    --llvm-objcopy "$LLVM_OBJCOPY" \
+    "${BUILD_DIR}/tests/TaskSmackTests" "${BUILD_DIR}/tests/TaskSmackThemeTests" "$APP_BINARY"; then
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        echo "::warning title=Coverage::Some functions' coverage is missing from the report: a real record mismatched (see tools/coverage-mismatches.py, #1544)"
+    fi
+fi
 
 echo ""
 echo "HTML report generated at: ${COVERAGE_DIR}/index.html"

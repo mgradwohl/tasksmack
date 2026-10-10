@@ -59,6 +59,28 @@ inline constexpr float BUTTON_LABEL_PADDING_EM = 1.0F;
     return std::min(wanted, viewportWidthPx * MAX_VIEWPORT_FRACTION);
 }
 
+/// Width of a dialog that fits its text: as wide as its widest unwrapped line, but no narrower than
+/// a floor and no wider than its authored width (itself clamped to the viewport).
+///
+/// A fixed authored width suits only the text it was authored against. The elevation notice's
+/// Windows text is three short lines, and in the 45 em it shares with the much longer Linux text it
+/// sat in a box half empty (#1601). Fitting keeps a long text at the authored width, wrapped, and
+/// lets a short one shrink to what it needs.
+///
+/// @param contentWidthPx   Widest line plus the window's horizontal padding, unwrapped.
+/// @param emPx             One em, i.e. ImGui::GetFontSize().
+/// @param minWidthEm       Floor in ems.
+/// @param maxWidthEm       Authored (largest) width in ems.
+/// @param viewportWidthPx  Width of the viewport the dialog is centred in.
+[[nodiscard]] inline float
+computeFittedDialogWidth(float contentWidthPx, float emPx, float minWidthEm, float maxWidthEm, float viewportWidthPx) noexcept
+{
+    const float maxPx = computeDialogWidth(emPx, maxWidthEm, viewportWidthPx);
+    const float minPx = std::min(computeDialogWidth(emPx, minWidthEm, viewportWidthPx), maxPx);
+    const float contentPx = (std::isfinite(contentWidthPx) && contentWidthPx > 0.0F) ? contentWidthPx : 0.0F;
+    return std::clamp(contentPx, minPx, maxPx);
+}
+
 /// Width of a dialog's action button: wide enough for its label, and never below a floor.
 ///
 /// The floor is what keeps a short label like "OK" from collapsing to a button narrower than it is
