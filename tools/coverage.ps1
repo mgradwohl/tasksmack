@@ -22,6 +22,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# llvm-cov writes UTF-8 source paths into the LCOV export piped below; decode it as UTF-8 (#1648).
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
