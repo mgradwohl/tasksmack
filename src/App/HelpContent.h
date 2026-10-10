@@ -17,6 +17,9 @@ namespace App::HelpContent
 
 inline constexpr const char* USER_GUIDE_URL = "https://github.com/mgradwohl/tasksmack/blob/main/docs/guide/user-guide.md";
 inline constexpr const char* ISSUES_URL = "https://github.com/mgradwohl/tasksmack/issues";
+// The two links' text, shared by the Help window and About (#1600), which both show them.
+inline constexpr const char* USER_GUIDE_LINK_LABEL = "User guide (online)";
+inline constexpr const char* ISSUES_LINK_LABEL = "Report a problem or ask for a feature";
 
 /// One line of the tab overview.
 struct TabSummary

@@ -55,7 +55,7 @@ class HelpWindowRenderTest : public ::testing::Test
         {
             m_AboutRequested = true;
         }
-        AboutDialog::render(m_AboutRequested, m_Icon);
+        (void) AboutDialog::render(m_AboutRequested, m_Icon);    // No link is pressed here
         m_AboutOpen = ImGui::IsPopupOpen(AboutDialog::POPUP_ID); // Inside the frame: it needs a current window
         ImGui::Render();
     }

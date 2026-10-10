@@ -181,8 +181,8 @@ void link(const char* label, const char* url)
 void renderLinks()
 {
     (void) UI::Widgets::sectionHeader(ICON_FA_CIRCLE_QUESTION, "More help");
-    link("User guide (online)", HelpContent::USER_GUIDE_URL);
-    link("Report a problem or ask for a feature", HelpContent::ISSUES_URL);
+    link(HelpContent::USER_GUIDE_LINK_LABEL, HelpContent::USER_GUIDE_URL);
+    link(HelpContent::ISSUES_LINK_LABEL, HelpContent::ISSUES_URL);
 }
 
 } // namespace

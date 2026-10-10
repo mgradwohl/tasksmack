@@ -1,7 +1,7 @@
 #include "App/AboutDialog.h"
 
 #include "App/DialogGeometry.h"
-#include "App/PlatformOpen.h"
+#include "App/HelpContent.h"
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
@@ -41,14 +41,14 @@ void wrapped(std::string_view text)
 }
 
 /// A link: @p label in the accent colour, wrapped at the right edge of its cell like the text around
-/// it, that opens @p url in the system browser when clicked or activated from the keyboard (#1212).
-/// The full URL shows as a tooltip and the cursor becomes a hand; a one-line link is underlined on
-/// hover.
+/// it, that sets @p activatedUrl to @p url when clicked or activated from the keyboard (#1212); the
+/// caller opens it in the system browser. The full URL shows as a tooltip and the cursor becomes a
+/// hand; a one-line link is underlined on hover.
 ///
 /// The label is a short form of the URL and wraps: a one-line Selectable as wide as the full URL
 /// could not shrink with the dialog, and was clipped by a narrow window at a large font (#1490
 /// review). An invisible button over the wrapped text is what makes it clickable and focusable.
-void renderLink(std::string_view label, const char* url, const ImVec4& color)
+void renderLink(std::string_view label, const char* url, const ImVec4& color, std::string_view& activatedUrl)
 {
     ImGui::PushStyleColor(ImGuiCol_Text, color);
     wrapped(label);
@@ -66,7 +66,7 @@ void renderLink(std::string_view label, const char* url, const ImVec4& color)
     ImGui::PopID();
     if (pressed)
     {
-        (void) App::PlatformOpen::openWithSystemHandler(std::string_view{url});
+        activatedUrl = url;
     }
     if (ImGui::IsItemHovered())
     {
@@ -195,14 +195,14 @@ void detailsRow(const char* label)
     ImGui::TableNextColumn();
 }
 
-void renderDetails()
+void renderDetails(std::string_view& activatedUrl)
 {
     const auto& theme = UI::Theme::get();
     (void) UI::Widgets::sectionHeader(ICON_FA_CIRCLE_INFO, "Project");
     if (beginDetailsTable("##AboutProject"))
     {
         detailsRow("Source");
-        renderLink(REPO_LABEL, REPO_URL, theme.accentColor(0));
+        renderLink(REPO_LABEL, REPO_URL, theme.accentColor(0), activatedUrl);
         detailsRow("License");
         ImGui::TextUnformatted("MIT");
         detailsRow("Commit");
@@ -211,7 +211,17 @@ void renderDetails()
     }
 }
 
-void renderCredits()
+/// The user guide and the issue tracker, the same links as the Help window's "More help" (#1600):
+/// About is where people look for where to get help or report a problem, so they are in both.
+void renderMoreHelp(std::string_view& activatedUrl)
+{
+    const ImVec4 color = UI::Theme::get().accentColor(0);
+    (void) UI::Widgets::sectionHeader(ICON_FA_CIRCLE_QUESTION, "More help");
+    renderLink(HelpContent::USER_GUIDE_LINK_LABEL, HelpContent::USER_GUIDE_URL, color, activatedUrl);
+    renderLink(HelpContent::ISSUES_LINK_LABEL, HelpContent::ISSUES_URL, color, activatedUrl);
+}
+
+void renderCredits(std::string_view& activatedUrl)
 {
     const auto& theme = UI::Theme::get();
     // Every bundled font and icon set with its licence (#1212). Font Awesome Free is licensed in two
@@ -226,21 +236,21 @@ void renderCredits()
         detailsRow("Icons");
         wrapped("Font Awesome Free by Fonticons, Inc.");
         mutedWrapped("Icons CC BY 4.0, font SIL Open Font License 1.1");
-        renderLink(FONT_AWESOME_LICENSE_LABEL, FONT_AWESOME_LICENSE_URL, theme.accentColor(0));
+        renderLink(FONT_AWESOME_LICENSE_LABEL, FONT_AWESOME_LICENSE_URL, theme.accentColor(0), activatedUrl);
         ImGui::EndTable();
     }
 }
 
 // The keyboard shortcuts were listed here until Help became a window of its own (#172): About is
-// product information only, and F1 opens App::HelpWindow.
+// product information and where to get help, and F1 opens App::HelpWindow.
 
 } // namespace
 
-void render(bool& openRequested, const UI::Texture& icon)
+std::string_view render(bool& openRequested, const UI::Texture& icon)
 {
     if (!openRequested && !ImGui::IsPopupOpen(POPUP_ID))
     {
-        return; // Nothing to draw when neither open nor requested
+        return {}; // Nothing to draw when neither open nor requested
     }
 
     if (openRequested)
@@ -278,7 +288,7 @@ void render(bool& openRequested, const UI::Texture& icon)
     ImGui::PopStyleVar(); // The modal keeps its padding; the body and tables use the app's own
     if (!open)
     {
-        return;
+        return {};
     }
 
     UI::Widgets::keepCurrentWindowInViewport();
@@ -306,9 +316,12 @@ void render(bool& openRequested, const UI::Texture& icon)
     ImGui::BeginChild("##AboutBody", ImVec2(0.0F, 0.0F), ImGuiChildFlags_AutoResizeY);
     renderHeader(icon, emPx);
     UI::Widgets::sectionGap();
-    renderDetails();
+    std::string_view activatedUrl;
+    renderDetails(activatedUrl);
     UI::Widgets::sectionGap();
-    renderCredits();
+    renderMoreHelp(activatedUrl);
+    UI::Widgets::sectionGap();
+    renderCredits(activatedUrl);
     ImGui::EndChild(); // ##AboutBody
 
     ImGui::PopStyleColor();
@@ -324,6 +337,7 @@ void render(bool& openRequested, const UI::Texture& icon)
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
+    return activatedUrl;
 }
 
 } // namespace App::AboutDialog

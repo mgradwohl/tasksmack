@@ -1,6 +1,7 @@
 #include "App/AboutLayer.h"
 
 #include "App/AboutDialog.h"
+#include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <filesystem>
+#include <string_view>
 
 namespace App
 {
@@ -38,14 +40,18 @@ void AboutLayer::onUpdate([[maybe_unused]] float deltaTime)
 
 void AboutLayer::onRender()
 {
-    AboutDialog::render(m_OpenRequested, m_Icon);
+    if (const std::string_view url = AboutDialog::render(m_OpenRequested, m_Icon); !url.empty())
+    {
+        (void) PlatformOpen::openWithSystemHandler(url);
+    }
 }
 
 void AboutLayer::onEvent(Core::Event& event)
 {
     Core::EventDispatcher dispatcher(event);
 
-    // Listen for About requests: Help's "About TaskSmack..." link and Settings (#172)
+    // Listen for About requests: the title bar's "i" (#1600), Help's "About TaskSmack..." link and
+    // Settings (#172)
     dispatcher.dispatch<Core::OpenAboutEvent>(
         [this](Core::OpenAboutEvent&)
         {
