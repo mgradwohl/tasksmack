@@ -116,6 +116,34 @@ function(tasksmack_apply_default_warnings target_name)
     endif()
 endfunction()
 
+# Text encoding (#1648): every TaskSmack-owned target reads its sources as UTF-8 and stores its
+# narrow string literals as UTF-8, whatever the build machine's code page; Windows targets also
+# define UNICODE/_UNICODE, so an unsuffixed Win32 macro (CreateFile, LoadImage, ...) resolves to
+# its W function and passing it a narrow string fails to compile. Per target, never global:
+# FetchContent dependencies (SDL, imgui, glad, freetype, ...) keep their own settings.
+#
+# clang-cl/MSVC: /utf-8 sets both the source and the execution charset. clang/gcc: the source
+# charset is -finput-charset; clang accepts -fexec-charset only as UTF-8 (its only execution
+# charset), and gcc accepts it too, so it's checked rather than assumed. C and C++ only: the same
+# target also compiles the Windows .rc file, whose compiler takes neither flag.
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC" OR (MSVC AND NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT))
+    set(TASKSMACK_TEXT_ENCODING_FLAGS /utf-8)
+else()
+    include(CheckCXXCompilerFlag)
+    set(TASKSMACK_TEXT_ENCODING_FLAGS -finput-charset=UTF-8)
+    check_cxx_compiler_flag(-fexec-charset=UTF-8 TASKSMACK_HAS_FEXEC_CHARSET_UTF8)
+    if(TASKSMACK_HAS_FEXEC_CHARSET_UTF8)
+        list(APPEND TASKSMACK_TEXT_ENCODING_FLAGS -fexec-charset=UTF-8)
+    endif()
+endif()
+
+function(tasksmack_apply_text_encoding target)
+    target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:${TASKSMACK_TEXT_ENCODING_FLAGS}>")
+    if(WIN32)
+        target_compile_definitions(${target} PRIVATE UNICODE _UNICODE)
+    endif()
+endfunction()
+
 if(TASKSMACK_ENABLE_IPO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ipo_supported)

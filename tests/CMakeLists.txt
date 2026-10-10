@@ -611,6 +611,7 @@ if(UNIX AND NOT APPLE)
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
     tasksmack_apply_default_warnings(TaskSmackNVMLMock)
+    tasksmack_apply_text_encoding(TaskSmackNVMLMock)
 
     add_library(TaskSmackROCmMock SHARED
         Mocks/ROCmMock.cpp
@@ -625,6 +626,7 @@ if(UNIX AND NOT APPLE)
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/mocks"
     )
     tasksmack_apply_default_warnings(TaskSmackROCmMock)
+    tasksmack_apply_text_encoding(TaskSmackROCmMock)
 
     add_dependencies(TaskSmackTests TaskSmackNVMLMock TaskSmackROCmMock)
     target_compile_definitions(TaskSmackTests PRIVATE
@@ -663,6 +665,7 @@ if(WIN32)
 endif()
 
 tasksmack_apply_default_warnings(TaskSmackTests)
+tasksmack_apply_text_encoding(TaskSmackTests)
 
 # Precompiled headers for tests (speeds up compilation)
 if(TASKSMACK_ENABLE_PCH)
@@ -702,6 +705,7 @@ target_link_libraries(TaskSmackThemeTests PRIVATE gtest gtest_main spdlog::spdlo
 target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
+tasksmack_apply_text_encoding(TaskSmackThemeTests)
 gtest_discover_tests(TaskSmackThemeTests DISCOVERY_TIMEOUT 30)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every

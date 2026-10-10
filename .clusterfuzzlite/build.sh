@@ -11,12 +11,17 @@ export FUZZ_DEPS_DIR="${FUZZ_DEPS_DIR:-${WORK:-$PWD/build}/fuzz-deps}"
 .clusterfuzzlite/fetch-deps.sh
 
 # ClusterFuzzLite supplies compiler and linker flags as argument lists.
+# -finput-charset/-fexec-charset=UTF-8: the sources are compiled as UTF-8, as in the CMake build
+# (tasksmack_apply_text_encoding, #1648). UTF-8 is clang's only charset, so this states it rather
+# than changing it.
 # shellcheck disable=SC2086
 build_fuzzer() {
     local name="$1"
     shift
     "$CXX" $CXXFLAGS \
         -std=c++23 \
+        -finput-charset=UTF-8 \
+        -fexec-charset=UTF-8 \
         -Isrc \
         -isystem "$FUZZ_DEPS_DIR/tomlplusplus/include" \
         -isystem "$FUZZ_DEPS_DIR/spdlog/include" \
