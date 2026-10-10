@@ -1,11 +1,7 @@
 #pragma once
 
-#include "App/SettingsLayerDetail.h"
+#include "App/SettingsDialog.h"
 #include "Core/Layer.h"
-#include "UI/Theme.h"
-
-#include <string>
-#include <vector>
 
 namespace App
 {
@@ -30,31 +26,9 @@ class SettingsLayer : public Core::Layer
 
   private:
     void requestOpen();
-    void renderSettingsDialog();
-    void loadCurrentSettings();
     void applySettings();
-    void resetToDefaults();
 
-    bool m_OpenRequested = false;
-    // Whether one of the dialog's combos was open on the previous frame, so the Escape that closes
-    // a combo does not also cancel the dialog (#1129).
-    bool m_ComboOpenLastFrame = false;
-
-    // The combos' state while the dialog is open. Save writes only the ones the user picked (#1120).
-    Detail::ComboState m_ThemeChoice;
-    Detail::ComboState m_FontSizeChoice;
-    Detail::ComboState m_RefreshRateChoice;
-    Detail::ComboState m_HistoryChoice;
-    bool m_ForceNativeDecorationsOnWayland = false;
-    bool m_ShowPrivilegeNotice = true;
-
-    // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
-    std::string m_CustomThemePreview;
-    std::string m_CustomRefreshPreview;
-    std::string m_CustomHistoryPreview;
-
-    // Available options
-    std::vector<UI::DiscoveredTheme> m_Themes;
+    SettingsDialog::State m_State;
 };
 
 } // namespace App

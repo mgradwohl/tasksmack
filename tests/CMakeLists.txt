@@ -265,6 +265,7 @@ set(COMMON_TEST_SOURCES
     App/test_SystemInfoView.cpp
     App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
+    App/test_SettingsDialogRender.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
@@ -525,6 +526,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
