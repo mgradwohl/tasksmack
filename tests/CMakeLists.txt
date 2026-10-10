@@ -107,6 +107,7 @@ set(COMMON_TEST_SOURCES
     Core/test_Application.cpp
     Core/test_ConfigDirOverride.cpp
     Core/test_EnvUtils.cpp
+    Core/test_LocaleSetup.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
     Core/test_Layer.cpp
@@ -460,6 +461,7 @@ add_executable(TaskSmackTests
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/ConfigDirOverride.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/LocaleSetup.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/VideoBackend.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/Window.cpp
