@@ -23,6 +23,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# git writes UTF-8 paths; decode its output as UTF-8 (#1648).
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
@@ -43,7 +47,8 @@ if ($ChangedOnly) {
     if ($ShowDetails) {
         Write-Host "Getting changed files from git..."
     }
-    $gitOutput = & git diff --name-only HEAD 2>&1
+    # core.quotePath=false: non-ASCII paths come out as UTF-8 rather than quoted octal escapes.
+    $gitOutput = & git -c core.quotePath=false diff --name-only HEAD 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "Failed to get changed files from git. Falling back to all files."
         $ChangedOnly = $false

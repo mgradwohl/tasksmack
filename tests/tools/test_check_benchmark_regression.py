@@ -2,6 +2,7 @@
 """Tests for tools/check-benchmark-regression.py's regression gate (#1322 noise floor, #1420 skips)."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -87,7 +88,8 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
                     *extra,
                 ],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                env={**os.environ, "PYTHONUTF8": "1"},
                 check=False,
             )
         return result.returncode, result.stdout + result.stderr
@@ -147,7 +149,8 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
                         "40",
                     ],
                     capture_output=True,
-                    text=True,
+                    encoding="utf-8",
+                    env={**os.environ, "PYTHONUTF8": "1"},
                     check=False,
                 )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

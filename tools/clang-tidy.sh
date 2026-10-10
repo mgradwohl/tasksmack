@@ -136,7 +136,7 @@ fi
 PYTHON_EXE=$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo "")
 if [[ -z "$PYTHON_EXE" ]]; then
     echo "Warning: python3 not found; compile database not de-duplicated (files may be analyzed more than once)." >&2
-elif ! DEDUPE_OUTPUT=$("$PYTHON_EXE" -I "$SCRIPT_DIR/dedupe-compile-commands.py" "$COMPILE_COMMANDS_TIDY" 2>&1); then
+elif ! DEDUPE_OUTPUT=$("$PYTHON_EXE" -I -X utf8 "$SCRIPT_DIR/dedupe-compile-commands.py" "$COMPILE_COMMANDS_TIDY" 2>&1); then
     echo "Warning: compile database not de-duplicated (files may be analyzed more than once):" >&2
     echo "$DEDUPE_OUTPUT" | tail -n 20 >&2
 elif $VERBOSE; then

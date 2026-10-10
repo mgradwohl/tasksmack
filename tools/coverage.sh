@@ -159,7 +159,7 @@ echo ""
 echo "==> Checking mismatched functions..."
 if [[ -z "$LLVM_OBJCOPY" ]]; then
     echo "Warning: llvm-objcopy not found; skipping the mismatched-functions check." >&2
-elif ! "$PYTHON_EXE" -I "${SCRIPT_DIR}/coverage-mismatches.py" \
+elif ! "$PYTHON_EXE" -I -X utf8 "${SCRIPT_DIR}/coverage-mismatches.py" \
     --profdata "${BUILD_DIR}/default.profdata" \
     --llvm-profdata "$LLVM_PROFDATA" \
     --llvm-objcopy "$LLVM_OBJCOPY" \
