@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 
 namespace Domain
 {
@@ -44,6 +46,13 @@ class SystemInfoModel
     /// Reads every section and publishes the result. Thread-safe; reads are serialised. Called off the
     /// UI thread.
     void read();
+
+    /// read(), for a worker thread: a read that throws is caught here, on the thread that threw it, and
+    /// only its message is returned (a copy), so no exception object reaches another thread through a
+    /// future (#1685, #1706). @return nullopt when the read succeeded; else the exception's what(), or
+    /// "unknown error" for a throw that isn't a std::exception. Only building that message (bad_alloc)
+    /// can still escape.
+    [[nodiscard]] std::optional<std::string> tryRead();
 
     /// The newest read (an empty version-0 one before the first).
     [[nodiscard]] std::shared_ptr<const SystemInfoSnapshot> snapshot() const noexcept

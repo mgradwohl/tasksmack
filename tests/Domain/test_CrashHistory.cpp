@@ -160,6 +160,19 @@ TEST(CrashHistoryTest, AThrowingReadIsPublishedAsUnlisted)
     EXPECT_TRUE(snapshot->crashes.unavailableReason.contains("log gone"));
 }
 
+TEST(CrashHistoryTest, AReadThrowingANonStandardExceptionIsPublishedAsUnlisted)
+{
+    // read() runs on a worker: nothing it throws may reach the future (#1706).
+    // NOLINTNEXTLINE(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - intentionally not a std::exception
+    CrashHistory history([] -> CrashesInfo { throw 42; });
+    EXPECT_NO_THROW(history.read());
+    const auto snapshot = history.snapshot();
+    EXPECT_EQ(snapshot->version, 1U);
+    EXPECT_TRUE(snapshot->crashes.available);
+    EXPECT_FALSE(snapshot->crashes.listed);
+    EXPECT_EQ(snapshot->crashes.unavailableReason, "Couldn't read the crash history: unknown error");
+}
+
 TEST(CrashHistoryTest, AnOlderPublicationThanTheShownOneIsDropped)
 {
     CrashHistory history([] { return CrashesInfo{}; });

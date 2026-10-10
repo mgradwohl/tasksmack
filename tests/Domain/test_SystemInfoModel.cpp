@@ -19,10 +19,18 @@ namespace Domain
 namespace
 {
 
+/// How FakeSystemInfoProbe::readOs() fails, if at all.
+enum class ReadOsThrows : std::uint8_t
+{
+    No,
+    StdException, ///< std::runtime_error("no WMI")
+    NonStandard,  ///< an int
+};
+
 class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
 {
   public:
-    FakeSystemInfoProbe(bool hasOs, int* reads) : m_HasOs(hasOs), m_Reads(reads)
+    FakeSystemInfoProbe(bool hasOs, int* reads, ReadOsThrows throws = ReadOsThrows::No) : m_HasOs(hasOs), m_Reads(reads), m_Throws(throws)
     {}
 
     [[nodiscard]] Platform::SystemInfoCapabilities capabilities() const override
@@ -33,6 +41,15 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     [[nodiscard]] Platform::OsInfo readOs() override
     {
         ++*m_Reads;
+        if (m_Throws == ReadOsThrows::StdException)
+        {
+            throw std::runtime_error("no WMI");
+        }
+        if (m_Throws == ReadOsThrows::NonStandard)
+        {
+            // NOLINTNEXTLINE(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - intentionally not a std::exception
+            throw 42;
+        }
         Platform::OsInfo info;
         info.family = Platform::OsFamily::Windows;
         info.name = "Windows 11 Pro";
@@ -144,6 +161,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
   private:
     bool m_HasOs;
     int* m_Reads;
+    ReadOsThrows m_Throws;
 };
 
 TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
@@ -231,6 +249,25 @@ TEST(SystemInfoModelTest, HandsEachReadsCrashesToTheSharedCrashHistory)
     SystemInfoModel unsupported(std::make_unique<FakeSystemInfoProbe>(false, &reads), untouched);
     unsupported.read();
     EXPECT_EQ(untouched->version(), 0U);
+}
+
+TEST(SystemInfoModelTest, ReadThatThrowsBecomesAPlainFailureMessage)
+{
+    // tryRead() runs on the System tab's worker: a failed read comes back as a copied message, never
+    // as an exception through the future (#1706). Nothing is published for it.
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads, ReadOsThrows::StdException));
+    EXPECT_EQ(model.tryRead(), std::optional<std::string>("no WMI"));
+    EXPECT_EQ(reads, 1);
+    EXPECT_EQ(model.version(), 0U);
+
+    SystemInfoModel nonStandard(std::make_unique<FakeSystemInfoProbe>(true, &reads, ReadOsThrows::NonStandard));
+    EXPECT_EQ(nonStandard.tryRead(), std::optional<std::string>("unknown error"));
+    EXPECT_EQ(nonStandard.version(), 0U);
+
+    SystemInfoModel fine(std::make_unique<FakeSystemInfoProbe>(true, &reads));
+    EXPECT_EQ(fine.tryRead(), std::nullopt);
+    EXPECT_EQ(fine.version(), 1U);
 }
 
 TEST(SystemInfoModelTest, RequiresAProbe)

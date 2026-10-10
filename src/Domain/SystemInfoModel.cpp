@@ -5,9 +5,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace Domain
@@ -53,6 +56,23 @@ void SystemInfoModel::read()
     }
     next->version = ++m_LastVersion;
     m_Slot.commit(std::move(next));
+}
+
+std::optional<std::string> SystemInfoModel::tryRead()
+{
+    try
+    {
+        read();
+    }
+    catch (const std::exception& e)
+    {
+        return std::string(e.what());
+    }
+    catch (...)
+    {
+        return std::string("unknown error");
+    }
+    return std::nullopt;
 }
 
 } // namespace Domain
