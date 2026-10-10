@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <locale>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -95,6 +96,8 @@ SystemDiskCounters LinuxDiskProbe::read()
     while (std::getline(diskstats, line))
     {
         std::istringstream iss(line);
+        // Kernel text: parse it in the classic locale, never the user's (digit grouping, #1648).
+        iss.imbue(std::locale::classic());
 
         // /proc/diskstats format (Linux kernel 2.6+):
         // major minor device_name reads_completed reads_merged sectors_read time_reading

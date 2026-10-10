@@ -111,6 +111,7 @@ set(TASKSMACK_SOURCES
     src/main.cpp
     src/Core/Application.cpp
     src/Core/ConfigDirOverride.cpp
+    src/Core/LocaleSetup.cpp
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
@@ -266,6 +267,7 @@ endif()
 set(TASKSMACK_HEADERS
     src/Core/Application.h
     src/Core/ConfigDirOverride.h
+    src/Core/LocaleSetup.h
     src/Core/PathService.h
     src/Core/Window.h
     src/Core/GraphicsHostInfo.h

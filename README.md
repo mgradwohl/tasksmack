@@ -30,8 +30,10 @@ See [Implemented Features](docs/dev/completed-features.md) for the detailed ship
 | Platform | Support |
 |----------|---------|
 | Linux | Supported |
-| Windows 10 or later | Supported |
+| Windows 10 version 1903 or later | Supported |
 | macOS and other operating systems | Not supported |
+
+Windows 10 version 1903 is the first release that honours the application manifest's UTF-8 process code page (`activeCodePage`), which TaskSmack relies on for UTF-8 text throughout.
 
 Some metrics require optional drivers, vendor libraries, kernel support, or elevated privileges. The [User Guide](docs/guide/user-guide.md) documents those differences.
 

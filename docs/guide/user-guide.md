@@ -7,7 +7,7 @@ TaskSmack is a system monitor and task manager for Linux and Windows, built with
 ## Supported Platforms
 
 - Linux
-- Windows 10 or later
+- Windows 10 version 1903 or later (TaskSmack runs with a UTF-8 process code page, which needs 1903)
 
 TaskSmack runs on Linux and Windows only; macOS and other operating systems are not supported.
 

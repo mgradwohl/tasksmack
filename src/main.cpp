@@ -16,6 +16,7 @@
 #include "Core/ConfigDirOverride.h"
 // NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
 #include "Core/EnvUtils.h"
+#include "Core/LocaleSetup.h"
 #include "Core/WindowConstants.h"
 #include "UI/UILayer.h"
 #include "version.h"
@@ -34,7 +35,6 @@
 #endif
 
 #include <algorithm>
-#include <clocale>
 #include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
 #include <cstdlib>
 #include <exception>
@@ -49,36 +49,29 @@
 
 namespace
 {
-void initializeLocale()
+/// Sets the C and C++ locales to the user's, with UTF-8 text (Core/LocaleSetup.h), and the console
+/// code pages to UTF-8. Runs before logging is up: the caller logs the returned summary once it is.
+auto initializeLocale() -> const Core::LocaleSetup::Summary&
 {
-    // Use user-preferred locale ("" picks up OS locale) and force UTF-8 I/O where possible.
-    try
-    {
-        const std::locale userLocale("");
-        std::locale::global(userLocale);
-        std::cout.imbue(userLocale);
-        std::cerr.imbue(userLocale);
-        std::cin.imbue(userLocale);
-    }
-    catch (const std::exception& e)
-    {
-        std::println(stderr, "Failed to set global locale: {}", e.what());
-    }
-
-    // Ensure C locale uses UTF-8
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - called once at startup before any threads are created
-    setlocale(LC_ALL, "");
+    // NumericFacets::User until display formatting moves onto LocaleSetup::userLocale() (#1648,
+    // slice E): UI::Format and the "{:L}" specs read the global locale's numpunct today.
+    const Core::LocaleSetup::Summary& summary = Core::LocaleSetup::initialize(Core::LocaleSetup::NumericFacets::User);
+    const std::locale global;
+    std::cout.imbue(global);
+    std::cerr.imbue(global);
+    std::cin.imbue(global);
 
 #ifdef _WIN32
     // On Windows, also set the console code page to UTF-8 for wide output.
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #endif
+    return summary;
 }
 
 auto runApp() -> int
 {
-    initializeLocale();
+    const Core::LocaleSetup::Summary& localeSummary = initializeLocale();
 
 // Required on Windows to see console output when launching from an IDE or debugger. Debug-only
 // on purpose: a release-class GUI build must not pop up a console window.
@@ -208,6 +201,12 @@ auto runApp() -> int
 #endif
 
     spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::STRING, tasksmack::Version::BUILD_TYPE);
+    // Set first thing in runApp(), before logging was up, so logged here.
+    spdlog::info("{}", Core::LocaleSetup::describe(localeSummary));
+    for (const std::string& warning : localeSummary.warnings)
+    {
+        spdlog::warn("Locale: {}", warning);
+    }
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
 
