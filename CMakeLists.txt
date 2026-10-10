@@ -461,6 +461,7 @@ function(tasksmack_configure_app_target target)
     tasksmack_apply_linux_toolchain(${target})
 
     tasksmack_apply_default_warnings(${target})
+    tasksmack_apply_text_encoding(${target})
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(${target} PRIVATE

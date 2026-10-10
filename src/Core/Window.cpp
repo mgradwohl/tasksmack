@@ -82,17 +82,17 @@ namespace
 [[nodiscard]] auto loadIconFromResource(HINSTANCE instance, int width, int height) -> HANDLE
 {
     // LoadImage returns HANDLE; with IMAGE_ICON the returned handle is an icon handle.
-    return LoadImage(instance, MAKEINTRESOURCE(1), IMAGE_ICON, width, height, LR_DEFAULTCOLOR);
+    return LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, width, height, LR_DEFAULTCOLOR);
 }
 
 void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 {
     // Win32 SendMessage takes LPARAM; HICON is pointer-sized and is passed opaquely
     // NOLINT: Required cast for Win32 API - HICON and LPARAM have compatible sizes
-    SendMessage(hwnd,
-                WM_SETICON,
-                iconType,
-                reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int)
+    SendMessageW(hwnd,
+                 WM_SETICON,
+                 iconType,
+                 reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int)
 }
 
 // Returns the {small, large} icon handles so the caller (Window) can own and eventually
@@ -111,7 +111,7 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
     }
 
     // Get the module handle for this executable
-    HINSTANCE hInstance = GetModuleHandle(nullptr);
+    HINSTANCE hInstance = GetModuleHandleW(nullptr);
 
     // Get icon dimensions from system metrics (with validation)
     const int smallIconWidth = GetSystemMetrics(SM_CXSMICON);

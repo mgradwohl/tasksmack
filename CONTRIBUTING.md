@@ -259,6 +259,15 @@ This repo uses CMake Presets; list them with:
 cmake --list-presets
 ```
 
+### Source encoding
+
+Every TaskSmack target compiles its sources as UTF-8, with UTF-8 narrow string literals
+(`/utf-8` with clang-cl, `-finput-charset=UTF-8` with clang/gcc), and every Windows target defines
+`UNICODE` and `_UNICODE`, so an unsuffixed Win32 macro resolves to its `W` function. Call the
+`W` function by name, converting with `Platform::WinString::utf8ToWide` at the call site; don't use `TCHAR` or the
+`A` functions. `tasksmack_apply_text_encoding()` in `cmake/CompilerOptions.cmake` sets both; call
+it on any new target. Third-party dependencies keep their own settings.
+
 ### Cleaning Build Artifacts
 
 Remove stale build directories, FetchContent cache, and coverage output:
