@@ -4,8 +4,8 @@
 /// memory modules and installed/usable memory (#1515), real and through a faked function table; and commit,
 /// page files and compressed memory (#1516), real and faked, including the NT-to-DOS path conversion; and
 /// the Storage section's disks and volumes (#1517), real and through a faked function table, with each
-/// disk's partitions and the drive letters on them (#1632); and the
-/// Graphics & displays adapters, drivers and monitors (#1519), real and faked.
+/// disk's partitions and the drive letters on them (#1632); and the Graphics & displays adapters, drivers
+/// and monitors (#1519), real and faked; and the Devices section's USB link speeds from faked hubs (#1642).
 
 #include "EdidTestData.h"
 #include "PartitionLayoutTestData.h"
@@ -36,6 +36,7 @@
 #include <psapi.h>
 #include <winioctl.h>
 #include <cfgmgr32.h>
+#include <usbspec.h>
 // clang-format on
 
 #include <algorithm>
@@ -45,6 +46,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -1173,13 +1175,22 @@ bool g_DevicesFail = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-v
     wifi.address = (0x14U << 16U) | 3U;
     WindowsDevices::DevNodeRecord odd = devNode(R"(ROOT\ODD\0000)", "HTREE\\ROOT\\0", "", 99); // no name of its own
     odd.manufacturer = "Contoso";
+    WindowsDevices::DevNodeRecord receiver =
+        devNode(R"(USB\VID_046D&PID_C52B\5&3&0&2)", R"(USB\VID_05E3&PID_0610\6&4&0&1)", "USB Receiver");
+    receiver.locationInfo = "Port_#0002.Hub_#0003";
+    WindowsDevices::DevNodeRecord hub = devNode(R"(USB\VID_05E3&PID_0610\6&4&0&1)", R"(USB\ROOT_HUB30\4&6&0&0)", "Generic USB Hub");
+    hub.address = 1; // no location information: the port is its address
+    WindowsDevices::DevNodeRecord storage =
+        devNode(R"(USB\VID_0781&PID_5583\4C530001)", R"(USB\ROOT_HUB30\4&6&0&0)", "USB Mass Storage Device");
+    storage.locationInfo = "Port_#0004.Hub_#0001";
+    storage.address = 9; // the location information wins
     return std::vector{
         gpu,
         wifi,
-        devNode(R"(USB\VID_046D&PID_C52B\5&3&0&2)", R"(USB\VID_05E3&PID_0610\6&4&0&1)", "USB Receiver"), // listed before its hub
+        receiver, // listed before its hub
         devNode(R"(USB\VID_046D&PID_C52B&MI_00\6&5&0&0000)", R"(USB\VID_046D&PID_C52B\5&3&0&2)", "Interface"),
-        devNode(R"(USB\VID_05E3&PID_0610\6&4&0&1)", R"(USB\ROOT_HUB30\4&6&0&0)", "Generic USB Hub"),
-        devNode(R"(USB\VID_0781&PID_5583\4C530001)", R"(USB\ROOT_HUB30\4&6&0&0)", "USB Mass Storage Device"),
+        hub,
+        storage,
         devNode(R"(USB\ROOT_HUB30\4&6&0&0)", R"(PCI\VEN_8086&DEV_51ED\3&0)", "USB Root Hub (USB 3.0)"),
         devNode(R"(ROOT\DISABLED\0000)", "HTREE\\ROOT\\0", "Disabled thing", CM_PROB_DISABLED),
         odd,
@@ -1196,6 +1207,53 @@ bool g_DevicesFail = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-v
         {.name = "Speakers (Realtek(R) Audio)", .capture = false},
         {.name = "Microphone (USB Audio)", .capture = true},
     };
+}
+
+// The fake hubs' state: whether they can be opened, and which ports of which hub were asked for.
+bool g_HubsFail = false;                         // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<std::string> g_HubsAsked;            // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<std::vector<ULONG>> g_HubPortsAsked; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+/// A hub's answer for a port: the EX speed, the EX_V2 flags and the SuperSpeedPlus lane speed and count.
+[[nodiscard]] WindowsDevices::UsbPortRecord portAnswer(std::optional<UCHAR> speed,
+                                                       bool superSpeed = false,
+                                                       bool superSpeedPlus = false,
+                                                       std::optional<ULONG> laneSpeed = std::nullopt,
+                                                       ULONG lanesLessOne = 0)
+{
+    return {
+        .speed = speed,
+        .superSpeed = superSpeed,
+        .superSpeedPlus = superSpeedPlus,
+        .superSpeedPlusLaneSpeed = laneSpeed,
+        .superSpeedPlusLanes = lanesLessOne,
+    };
+}
+
+// A SuperSpeedPlus lane speed as the hub gives it: mantissa in bits 16-31, exponent 3 (Gb/s) in bits 4-5.
+constexpr ULONG LANE_10_GBPS = (10UL << 16U) | (3UL << 4U);
+
+/// The root hub answers for its port 1 (EX only: High-Speed) and port 4 (a SuperSpeedPlus Gen 2x2 link);
+/// the external hub answers for its port 2 at Full-Speed.
+[[nodiscard]] std::map<ULONG, WindowsDevices::UsbPortRecord> fakeHubPorts(const std::string& hubInstanceId, const std::vector<ULONG>& ports)
+{
+    g_HubsAsked.push_back(hubInstanceId);
+    g_HubPortsAsked.push_back(ports);
+    std::map<ULONG, WindowsDevices::UsbPortRecord> answers;
+    if (g_HubsFail)
+    {
+        return answers;
+    }
+    if (hubInstanceId == R"(USB\ROOT_HUB30\4&6&0&0)")
+    {
+        answers[1] = portAnswer(UsbHighSpeed);
+        answers[4] = portAnswer(UsbSuperSpeed, true, true, LANE_10_GBPS, 1);
+    }
+    else if (hubInstanceId == R"(USB\VID_05E3&PID_0610\6&4&0&1)")
+    {
+        answers[2] = portAnswer(UsbFullSpeed);
+    }
+    return answers;
 }
 
 TEST(WindowsSystemInfoProbeTest, DevicesThroughTheFunctionTable)
@@ -1235,6 +1293,10 @@ TEST(WindowsSystemInfoProbeTest, DevicesThroughTheFunctionTable)
     EXPECT_TRUE(info.usb[1].serial.empty()); // a generated instance id: no serial number
     EXPECT_EQ(info.usb[2].serial, "4C530001");
     EXPECT_EQ(info.usb[2].depth, 1U);
+    for (const Device& usb : info.usb)
+    {
+        EXPECT_DOUBLE_EQ(usb.speedMbps, 0.0); // no hub reader: no speed
+    }
 
     ASSERT_TRUE(info.audioRead);
     ASSERT_EQ(info.audio.size(), 2U);
@@ -1249,6 +1311,81 @@ TEST(WindowsSystemInfoProbeTest, DevicesThroughTheFunctionTable)
     EXPECT_FALSE(failed.pciRead);
     EXPECT_FALSE(failed.problemsRead);
     EXPECT_FALSE(failed.audioRead);
+}
+
+TEST(WindowsSystemInfoProbeTest, UsbSpeedsFromTheHubs)
+{
+    g_HubsAsked.clear();
+    g_HubPortsAsked.clear();
+    DevicesInfo info;
+    WindowsDevices::readDevices(info, {.listDevNodes = &fakeDevNodes, .listAudioEndpoints = &fakeAudio, .readHubPorts = &fakeHubPorts});
+    ASSERT_EQ(info.usb.size(), 3U);
+    EXPECT_EQ(info.usb[0].name, "Generic USB Hub");
+    EXPECT_DOUBLE_EQ(info.usb[0].speedMbps, 480.0);   // root hub port 1, from its address
+    EXPECT_DOUBLE_EQ(info.usb[1].speedMbps, 12.0);    // the external hub's port 2, from its location
+    EXPECT_DOUBLE_EQ(info.usb[2].speedMbps, 20000.0); // root hub port 4: two 10 Gbit/s lanes
+    // One call per hub, with every port wanted on it; the composite device's interface isn't asked for.
+    ASSERT_EQ(g_HubsAsked.size(), 2U);
+    EXPECT_EQ(g_HubsAsked[0], R"(USB\ROOT_HUB30\4&6&0&0)");
+    EXPECT_EQ(g_HubPortsAsked[0], (std::vector<ULONG>{1, 4}));
+    EXPECT_EQ(g_HubsAsked[1], R"(USB\VID_05E3&PID_0610\6&4&0&1)");
+    EXPECT_EQ(g_HubPortsAsked[1], (std::vector<ULONG>{2}));
+
+    // A hub that can't be opened: no speed, and nothing else lost.
+    g_HubsFail = true;
+    DevicesInfo failed;
+    WindowsDevices::readDevices(failed, {.listDevNodes = &fakeDevNodes, .listAudioEndpoints = &fakeAudio, .readHubPorts = &fakeHubPorts});
+    g_HubsFail = false;
+    ASSERT_EQ(failed.usb.size(), 3U);
+    for (const Device& usb : failed.usb)
+    {
+        EXPECT_DOUBLE_EQ(usb.speedMbps, 0.0);
+        EXPECT_TRUE(usb.problem.empty()); // a failed speed read isn't a problem
+    }
+    EXPECT_EQ(failed.problems.size(), 3U);
+    EXPECT_TRUE(failed.audioRead);
+}
+
+TEST(WindowsSystemInfoProbeTest, UsbPortAndSpeedHelpers)
+{
+    EXPECT_EQ(WindowsDevices::portFromLocation("Port_#0003.Hub_#0001"), std::optional<ULONG>(3));
+    EXPECT_EQ(WindowsDevices::portFromLocation("Port_#0012.Hub_#0004"), std::optional<ULONG>(12));
+    EXPECT_EQ(WindowsDevices::portFromLocation("Port_#0000.Hub_#0001"), std::nullopt); // ports are one based
+    EXPECT_EQ(WindowsDevices::portFromLocation("Port_#.Hub_#0001"), std::nullopt);
+    EXPECT_EQ(WindowsDevices::portFromLocation("0000.0014.0000.001.003.000.000.000.000"), std::nullopt);
+    EXPECT_EQ(WindowsDevices::portFromLocation(""), std::nullopt);
+
+    WindowsDevices::DevNodeRecord node;
+    EXPECT_EQ(WindowsDevices::usbPort(node), std::nullopt);
+    node.address = 0;
+    EXPECT_EQ(WindowsDevices::usbPort(node), std::nullopt);
+    node.address = 5;
+    EXPECT_EQ(WindowsDevices::usbPort(node), std::optional<ULONG>(5));
+    node.locationInfo = "Port_#0007.Hub_#0002";
+    EXPECT_EQ(WindowsDevices::usbPort(node), std::optional<ULONG>(7));
+
+    using WindowsDevices::usbSpeedMbps;
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(WindowsDevices::UsbPortRecord{}), 0.0); // nothing read
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbLowSpeed)), 1.5);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbFullSpeed)), 12.0);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbHighSpeed)), 480.0);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbSuperSpeed)), 5000.0);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(7)), 0.0);
+    // EX_V2 overrides EX: a USB 3 device the older call reports as High-Speed.
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbHighSpeed, true)), 5000.0);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(std::nullopt, true)), 5000.0);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbSuperSpeed, true, true)), 10000.0); // no lane information
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbSuperSpeed, true, true, LANE_10_GBPS)), 10000.0);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(UsbSuperSpeed, true, true, LANE_10_GBPS, 1)), 20000.0);
+    constexpr ULONG LANE_5_GBPS = (5UL << 16U) | (3UL << 4U);
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(std::nullopt, true, true, LANE_5_GBPS, 1)), 10000.0); // Gen 1x2
+    EXPECT_DOUBLE_EQ(usbSpeedMbps(portAnswer(std::nullopt, true, true, 0)), 10000.0);              // a nonsense lane speed
+
+    constexpr ULONG LANE_10000_MBPS = (10000UL << 16U) | (2UL << 4U);
+    EXPECT_DOUBLE_EQ(WindowsDevices::superSpeedPlusMbps(LANE_10000_MBPS, 0), 10000.0);
+    EXPECT_DOUBLE_EQ(WindowsDevices::superSpeedPlusMbps(LANE_10_GBPS, 1), 20000.0);
+    EXPECT_DOUBLE_EQ(WindowsDevices::superSpeedPlusMbps(LANE_10_GBPS, 7), 0.0); // 80 Gbit/s: out of range
+    EXPECT_DOUBLE_EQ(WindowsDevices::superSpeedPlusMbps(LANE_5_GBPS, 0), 0.0);  // 5 Gbit/s isn't SuperSpeedPlus
 }
 
 TEST(WindowsSystemInfoProbeTest, DeviceHelpers)
