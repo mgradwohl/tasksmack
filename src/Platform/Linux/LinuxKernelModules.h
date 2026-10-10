@@ -34,12 +34,18 @@ inline constexpr std::string_view PERMANENT = "[permanent]";
 [[nodiscard]] inline std::optional<KernelDriver> parseModuleLine(std::string_view line)
 {
     std::vector<std::string_view> fields;
-    for (std::size_t start = line.find_first_not_of(" \t\r"); start != std::string_view::npos;
-         start = line.find_first_not_of(" \t\r", start))
+    std::string_view rest = line;
+    while (!rest.empty())
     {
-        const std::size_t end = std::min(line.find_first_of(" \t\r", start), line.size());
-        fields.push_back(line.substr(start, end - start));
-        start = end;
+        const std::size_t start = rest.find_first_not_of(" \t\r");
+        if (start == std::string_view::npos)
+        {
+            break;
+        }
+        rest.remove_prefix(start);
+        const std::size_t length = std::min(rest.find_first_of(" \t\r"), rest.size());
+        fields.push_back(rest.substr(0, length));
+        rest.remove_prefix(length);
     }
     constexpr std::size_t REQUIRED = 5; // name size refcount deps state
     if (fields.size() < REQUIRED)
