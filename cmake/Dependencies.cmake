@@ -106,8 +106,8 @@ endif()
 # The patch fixes two TOML_ASSERT_ASSUMEs in parse_value() that malformed input reaches, neither
 # fixed upstream yet: 'm=[}' (#1388) and a date, a space, a digit, then a terminator, as in
 # 'h=2000-02-1a 1 1' (#1659). A source tree that still has an older version of the patch applied
-# fails the patch step; delete its tomlplusplus-* directories under FETCHCONTENT_BASE_DIR to
-# refetch. ApplyPatch.cmake skips it when already applied, since the source tree under
+# (a restored CI cache, a long-lived local one) is reset to pristine and re-patched by
+# ApplyPatch.cmake. ApplyPatch.cmake skips it when already applied, since the source tree under
 # FETCHCONTENT_BASE_DIR is shared by every preset. Re-check the patch whenever GIT_TAG moves, and
 # give an edited patch a new file name: FetchContent only re-runs the patch step when this
 # declaration changes, and CI's FetchContent cache is keyed on this file, not on the patch.

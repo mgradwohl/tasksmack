@@ -21,14 +21,22 @@ pinned_sha() {
 }
 
 # Applies each patch unless it is already in place (it reverses cleanly), as
-# cmake/patches/ApplyPatch.cmake does for the CMake build; a patch that neither reverses nor
-# applies (the pin moved under it) fails the build rather than fuzzing an unpatched dependency.
+# cmake/patches/ApplyPatch.cmake does for the CMake build. A patch that neither reverses nor
+# applies gets one retry on a pristine checkout (an older version of it may be applied); if it
+# still doesn't apply (the pin moved under it), the build fails rather than fuzzing an unpatched
+# dependency. The reset drops any other local change, so a dependency gets at most one patch.
 apply_patches() {
     local dir="$1" p
     shift
     for p in "$@"; do
-        git -C "$dir" apply --check --reverse --whitespace=nowarn "$p" 2>/dev/null ||
-            git -C "$dir" apply --whitespace=nowarn "$p"
+        git -C "$dir" apply --check --reverse --whitespace=nowarn "$p" 2>/dev/null && continue
+        git -C "$dir" apply --whitespace=nowarn "$p" 2>/dev/null && continue
+        # Neither: most likely an older version of the patch is applied (a reused $FUZZ_DEPS_DIR).
+        # Reset the dependency's own checkout to pristine and try once more, as ApplyPatch.cmake does.
+        echo "fetch-deps: resetting $(basename "$dir") to pristine before applying $(basename "$p")" >&2
+        git -C "$dir" checkout -q -- .
+        git -C "$dir" clean -fdq
+        git -C "$dir" apply --whitespace=nowarn "$p"
     done
 }
 
