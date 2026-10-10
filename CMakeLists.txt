@@ -132,6 +132,7 @@ set(TASKSMACK_SOURCES
     src/App/InstanceLock.cpp
     src/App/KeyboardInput.cpp
     src/App/PlatformOpen.cpp
+    src/App/SettingsDialog.cpp
     src/App/SettingsLayer.cpp
     src/App/SelectOverride.cpp
     src/App/ShellLayer.cpp
