@@ -421,6 +421,40 @@ struct DriversInfo
     std::vector<KernelDriver> drivers;
 };
 
+/// How far back the Recent crashes & hangs section looks (#1524), and the most it lists (the newest).
+inline constexpr std::uint32_t CRASH_HISTORY_DAYS = 14;
+inline constexpr std::size_t CRASH_LIST_MAX = 200;
+
+/// One application crash or hang (#1524): a Windows Application Error (1000) or Application Hang (1002)
+/// event, or a Linux systemd-coredump core file. A fact the source doesn't carry is empty or nullopt.
+struct CrashEvent
+{
+    std::uint64_t unixSeconds = 0; ///< When it happened; 0 when unknown
+    bool hang = false;             ///< Windows: an Application Hang (1002) rather than a crash
+    std::string application;       ///< "notepad.exe" / the core's comm ("python3")
+    std::string appVersion;        ///< Windows
+    std::string module;            ///< Windows 1000: the faulting module ("ntdll.dll")
+    std::string moduleVersion;     ///< Windows 1000
+    std::string exceptionCode;     ///< Windows 1000: "0xC0000005"
+    std::string hangType;          ///< Windows 1002: "Quiesce", "Cross-thread", ...
+    std::optional<std::uint32_t> pid;
+    std::optional<std::uint32_t> uid; ///< Linux: the crashed process's user id
+    std::uint64_t coreBytes = 0;      ///< Linux: the core file's size on disk
+};
+
+/// The Recent crashes & hangs facts (#1524), newest first, at most CRASH_LIST_MAX of the last
+/// CRASH_HISTORY_DAYS days.
+struct CrashesInfo
+{
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
+    bool listed = false;           ///< The source was read: an empty events means none were found.
+    bool accessDenied = false;     ///< Not listed because reading it needs more permission.
+    std::string unavailableReason; ///< Why not listed, for the UI.
+    bool capped = false;           ///< More than CRASH_LIST_MAX matched; the newest are kept.
+    std::vector<CrashEvent> events;
+};
+
 /// One IP address on an adapter (#1518).
 struct AdapterAddress
 {
@@ -531,6 +565,9 @@ class ISystemInfoProbe
     /// The Drivers facts (#1521); read when hasOs is true. Enumeration only: no driver is started, stopped or changed.
     [[nodiscard]] virtual DriversInfo readDrivers() = 0;
 
+    /// The Recent crashes & hangs facts (#1524); read when hasOs is true. Reads logs only: nothing is cleared or written.
+    [[nodiscard]] virtual CrashesInfo readCrashes() = 0;
+
     /// The Network adapters facts (#1518); read when hasOs is true.
     [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters() = 0;
 
@@ -593,6 +630,11 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
     }
 
     [[nodiscard]] DriversInfo readDrivers() override
+    {
+        return {};
+    }
+
+    [[nodiscard]] CrashesInfo readCrashes() override
     {
         return {};
     }

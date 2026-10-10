@@ -13,6 +13,7 @@
 #include "Domain/SystemInfoModel.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -1314,6 +1315,98 @@ TEST(SystemInfoSectionsTest, DriversSectionComesLast)
     EXPECT_NE(SystemInfo::sectionText(sections[2], false).find("ACPI: Microsoft ACPI Driver, Boot start"), std::string::npos);
 }
 
+[[nodiscard]] Platform::CrashesInfo windowsCrashes()
+{
+    Platform::CrashesInfo info;
+    info.available = true;
+    info.family = Platform::OsFamily::Windows;
+    info.listed = true;
+    Platform::CrashEvent hang;
+    hang.unixSeconds = 1'791'015'300;
+    hang.hang = true;
+    hang.application = "notepad.exe";
+    hang.appVersion = "11.2408.12.0";
+    hang.hangType = "Quiesce";
+    hang.pid = 16224;
+    Platform::CrashEvent crash;
+    crash.unixSeconds = 1'790'863'402;
+    crash.application = "contoso.exe";
+    crash.appVersion = "2.4.0.17";
+    crash.module = "ntdll.dll";
+    crash.moduleVersion = "10.0.26100.2033";
+    crash.exceptionCode = "0xC0000005";
+    crash.pid = 6700;
+    Platform::CrashEvent bare;
+    bare.unixSeconds = 1'790'000'000;
+    bare.exceptionCode = "0x12345678";
+    info.events = {hang, crash, bare};
+    return info;
+}
+
+TEST(SystemInfoSectionsTest, CrashesRowsWindows)
+{
+    const Section section = SystemInfo::buildCrashesSection(windowsCrashes());
+    EXPECT_EQ(section.title, "Recent crashes & hangs");
+    EXPECT_EQ(findRow(section, "Last 14 days")->value, "2 crashes, 1 hang");
+    EXPECT_EQ(findRow(section, "Older"), nullptr);
+    ASSERT_EQ(section.rows.size(), 4U);
+    EXPECT_EQ(section.rows[1].label, UI::Format::formatEpochDateTime(1'791'015'300)); // newest first, by local time
+    EXPECT_EQ(section.rows[1].value, "notepad.exe 11.2408.12.0 hung (Quiesce), pid 16224");
+    EXPECT_EQ(section.rows[2].value,
+              "contoso.exe 2.4.0.17 crashed in ntdll.dll 10.0.26100.2033, exception 0xC0000005 (access violation), pid 6700");
+    EXPECT_EQ(section.rows[3].value, "Unknown application crashed, exception 0x12345678");
+}
+
+TEST(SystemInfoSectionsTest, CrashesRowsLinuxCappedAndUnreadable)
+{
+    Platform::CrashesInfo cores;
+    cores.available = true;
+    cores.family = Platform::OsFamily::Linux;
+    cores.listed = true;
+    cores.capped = true;
+    Platform::CrashEvent core;
+    core.unixSeconds = 1'790'863'402;
+    core.application = "python3.12";
+    core.pid = 4242;
+    core.uid = 1000;
+    core.coreBytes = 2048;
+    cores.events = {core};
+    const Section section = SystemInfo::buildCrashesSection(cores);
+    EXPECT_EQ(section.title, "Recent crashes");
+    EXPECT_EQ(findRow(section, "Last 14 days")->value, "1 core dump");
+    EXPECT_EQ(findRow(section, "Older")->unavailableReason, "Not listed: only the 200 newest are shown"); // a muted note
+    EXPECT_TRUE(findRow(section, "Source")->available());
+    EXPECT_EQ(section.rows.back().value, "python3.12 dumped core, pid 4242, uid 1000, 2.0 KiB");
+
+    Platform::CrashesInfo denied;
+    denied.available = true;
+    denied.family = Platform::OsFamily::Linux;
+    denied.accessDenied = true;
+    denied.unavailableReason = "Listing /var/lib/systemd/coredump requires permission";
+    const Section unreadable = SystemInfo::buildCrashesSection(denied);
+    ASSERT_EQ(unreadable.rows.size(), 1U);
+    EXPECT_FALSE(unreadable.rows[0].available());
+    EXPECT_EQ(unreadable.rows[0].unavailableReason, "Listing /var/lib/systemd/coredump requires permission");
+
+    Platform::CrashesInfo none;
+    none.available = true;
+    none.family = Platform::OsFamily::Windows;
+    none.listed = true;
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(none), "Last 14 days")->value, "No crashes or hangs");
+}
+
+TEST(SystemInfoSectionsTest, CrashesSectionComesLast)
+{
+    Domain::SystemInfoSnapshot all = snapshot();
+    all.drivers = windowsDrivers();
+    all.crashes = windowsCrashes();
+    const auto sections = SystemInfo::buildSystemInfoSections(all, windowsHost());
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[1].title, "Drivers");
+    EXPECT_EQ(sections[2].title, "Recent crashes & hangs");
+    EXPECT_NE(SystemInfo::sectionText(sections[2], false).find("crashed in ntdll.dll"), std::string::npos);
+}
+
 TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
 {
     EXPECT_TRUE(SystemInfo::buildSystemInfoSections(Domain::SystemInfoSnapshot{}).empty());
@@ -1489,6 +1582,23 @@ TEST_F(SystemInfoViewRenderTest, DriversSectionRendersAndFilters)
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 2U); // the count and nvidia
+}
+
+TEST_F(SystemInfoViewRenderTest, CrashesSectionRendersAndFilters)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.crashes = windowsCrashes();
+    SystemInfoViewState state;
+    EXPECT_EQ(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }).content, SystemInfoViewContent::Sections);
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+    ASSERT_EQ(state.visible.size(), 2U);
+    EXPECT_EQ(state.visible[1].rows.size(), 4U);
+
+    state.filter = "ntdll";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.visible[0].rows.size(), 1U); // the contoso.exe crash
 }
 
 } // namespace

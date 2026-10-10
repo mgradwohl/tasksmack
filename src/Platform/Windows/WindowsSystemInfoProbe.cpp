@@ -40,6 +40,7 @@
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "WinString.h"
 #include "WindowsCommitPaging.h"
+#include "WindowsCrashEvents.h"
 #include "WindowsDevices.h"
 #include "WindowsDrivers.h"
 #include "WindowsGraphics.h"
@@ -742,6 +743,13 @@ DriversInfo WindowsSystemInfoProbe::readDrivers()
     DriversInfo info;
     WindowsDrivers::readDrivers(
         info, {.listDriverServices = &listDriverServices, .windowsDirectory = &windowsDirectory, .readFileVersion = &readFileVersion});
+    return info;
+}
+
+CrashesInfo WindowsSystemInfoProbe::readCrashes()
+{
+    CrashesInfo info;
+    WindowsCrashEvents::readCrashes(info, WindowsCrashEvents::systemFunctions());
     return info;
 }
 

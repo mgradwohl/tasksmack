@@ -792,6 +792,7 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_edid` | the monitor EDID parser: manufacturer, name and serial descriptors, image size (`Platform/EdidParser.h`) | `tests/fuzz/corpus/fuzz_edid/` |
 | `fuzz_hwids` | the hwdata `pci.ids` / `usb.ids` parser: vendor, device and class lines (`Platform/HwIdsParser.h`) | `tests/fuzz/corpus/fuzz_hwids/` |
 | `fuzz_proc_modules` | the `/proc/modules` parser: size, use count, dependents, `[permanent]`, state and taint flags (`Platform/Linux/LinuxKernelModules.h`) | `tests/fuzz/corpus/fuzz_proc_modules/` |
+| `fuzz_coredump_names` | the systemd-coredump core file name parser: comm with `\xNN` escapes, uid, boot id, pid, time and compression (`Platform/Linux/LinuxCoredumps.h`) | `tests/fuzz/corpus/fuzz_coredump_names/` |
 | `fuzz_user_config` | `App::UserConfig::parseSettings`: toml++ plus the `config.toml` schema, as `load()` reads it | `tests/fuzz/corpus/fuzz_user_config/` |
 | `fuzz_theme_loader` | `UI::ThemeLoader::loadThemeFromString`: toml++ plus every theme colour lookup, as `loadTheme()` reads a file | `assets/themes/*.toml` and `tests/fuzz/corpus/fuzz_theme_loader/` |
 

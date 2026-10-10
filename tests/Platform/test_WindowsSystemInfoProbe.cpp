@@ -911,6 +911,20 @@ TEST(WindowsSystemInfoProbeTest, ReadsDrivers)
     }
 }
 
+TEST(WindowsSystemInfoProbeTest, ReadsCrashes)
+{
+    WindowsSystemInfoProbe probe;
+    const CrashesInfo info = probe.readCrashes();
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.family, OsFamily::Windows);
+    ASSERT_TRUE(info.listed) << info.unavailableReason; // the Application log is readable without administrator
+    EXPECT_LE(info.events.size(), CRASH_LIST_MAX);
+    for (std::size_t i = 1; i < info.events.size(); ++i)
+    {
+        EXPECT_GE(info.events[i - 1].unixSeconds, info.events[i].unixSeconds); // newest first
+    }
+}
+
 // The fake devices table's state: whether SetupAPI and MMDevice can be used.
 bool g_DevicesFail = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 

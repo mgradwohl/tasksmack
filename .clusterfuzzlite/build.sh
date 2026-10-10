@@ -74,6 +74,10 @@ seed_corpus fuzz_hwids tests/fuzz/corpus/fuzz_hwids/*
 build_fuzzer fuzz_proc_modules
 seed_corpus fuzz_proc_modules tests/fuzz/corpus/fuzz_proc_modules/*
 
+# The systemd-coredump core file name parser (#1524): header-only, seeded with real-looking names.
+build_fuzzer fuzz_coredump_names
+seed_corpus fuzz_coredump_names tests/fuzz/corpus/fuzz_coredump_names/*
+
 build_fuzzer fuzz_theme_loader src/UI/ThemeLoader.cpp
 # Every built-in theme, hand-written seeds for the colour forms they don't use, and the minimised
 # toml++ crash inputs (#1387, #1388, #1389, #1659) as regression seeds.
