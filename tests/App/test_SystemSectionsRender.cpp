@@ -375,6 +375,64 @@ TEST_F(SystemSectionsRenderTest, MemorySectionLeavesOutSeriesWithNoHistory)
     }
 }
 
+TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsCommitChargeOnlyWhenTheSnapshotHasIt)
+{
+    // Commit charge against the commit limit, in the value strip (#1627): a reading, not a series,
+    // so the chart's series are unchanged either way.
+    Domain::SystemPublication publication = memoryPublication();
+    publication.snapshot.hasCommitCharge = true;
+    publication.snapshot.commitChargeBytes = 35ULL << 30U;
+    publication.snapshot.commitLimitBytes = 70ULL << 30U;
+    MemorySection::SmoothedMemory smoothed;
+    MemorySection::RenderContext ctx{.publication = &publication, .smoothedMemory = &smoothed};
+    MemorySection::updateSmoothedMemory(smoothed, publication.snapshot, 0.0F, REFRESH);
+    const auto render = [&]
+    {
+        MemorySection::renderMemorySection(ctx, publication.timestamps, UI::Widgets::historyFrameNowSeconds(), 3);
+    };
+    runFrame(render);
+    runFrame(render);
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Used", "Cached", "Swap", "Peak Used"}));
+
+    const std::string value = UI::Format::bytesUsedTotalPercentCompact(35ULL << 30U, 70ULL << 30U, 50.0);
+    EXPECT_EQ(MemorySection::commitStripValue(publication.snapshot), value);
+    const std::string text = renderAndCapture(render);
+    EXPECT_NE(text.find("Commit"), std::string::npos) << text;
+    EXPECT_NE(text.find(value), std::string::npos) << text;
+
+    // Not supported, or not read this sample: no Commit entry at all.
+    publication.snapshot.hasCommitCharge = false;
+    EXPECT_TRUE(MemorySection::commitStripValue(publication.snapshot).empty());
+    const std::string hidden = renderAndCapture(render);
+    EXPECT_NE(hidden.find("Peak Used"), std::string::npos) << hidden; // the strip itself is still there
+    EXPECT_EQ(hidden.find("Commit"), std::string::npos) << hidden;
+    EXPECT_EQ(hidden.find(value), std::string::npos) << hidden;
+}
+
+TEST(MemorySectionCommitTest, TooltipHasThePeakOnlyWhenThePlatformKeepsOne)
+{
+    Domain::SystemSnapshot snap;
+    EXPECT_TRUE(MemorySection::commitStripTooltip(snap).empty()); // no commit charge, no tooltip
+
+    snap.hasCommitCharge = true;
+    snap.commitChargeBytes = 35ULL << 30U;
+    snap.commitLimitBytes = 70ULL << 30U;
+    const std::string noPeak = MemorySection::commitStripTooltip(snap); // no peak (Linux)
+    EXPECT_FALSE(noPeak.empty());
+    EXPECT_EQ(noPeak.find("Peak"), std::string::npos) << noPeak;
+
+    snap.commitPeakBytes = 40ULL << 30U; // Windows' CommitPeak
+    const std::string withPeak = MemorySection::commitStripTooltip(snap);
+    EXPECT_NE(withPeak.find("Peak: " + UI::Format::formatBytes(static_cast<double>(40ULL << 30U))), std::string::npos) << withPeak;
+
+    // Linux outside strict overcommit: committed past the limit reads over 100%, not clamped.
+    snap.commitChargeBytes = 105ULL << 30U;
+    EXPECT_EQ(MemorySection::commitStripValue(snap), UI::Format::bytesUsedTotalPercentCompact(105ULL << 30U, 70ULL << 30U, 150.0));
+}
+
 // ========== CPU Cores ==========
 
 [[nodiscard]] Domain::SystemSnapshot coresSnapshot(const std::vector<double>& totals)

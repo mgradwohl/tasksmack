@@ -97,6 +97,25 @@ struct SwapBytes
     };
 }
 
+/// Commit charge in bytes from PERFORMANCE_INFORMATION's CommitTotal, CommitLimit and CommitPeak,
+/// which are in pages (#1627).
+struct CommitBytes
+{
+    std::uint64_t chargeBytes = 0;
+    std::uint64_t limitBytes = 0;
+    std::uint64_t peakBytes = 0;
+};
+
+[[nodiscard]] constexpr CommitBytes
+commitFromPerformanceInfo(std::uint64_t totalPages, std::uint64_t limitPages, std::uint64_t peakPages, std::uint64_t pageSizeBytes) noexcept
+{
+    return {
+        .chargeBytes = totalPages * pageSizeBytes,
+        .limitBytes = limitPages * pageSizeBytes,
+        .peakBytes = peakPages * pageSizeBytes,
+    };
+}
+
 /// One processor's times from SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION, as CpuCounters.
 ///
 /// Windows reports KernelTime *including* idle, and DPC and interrupt time *inside* kernel time.

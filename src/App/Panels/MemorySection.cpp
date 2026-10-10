@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace App::MemorySection
@@ -43,8 +44,36 @@ constexpr const char* USED_LABEL = "Used";
 constexpr const char* CACHED_LABEL = "Cached";
 constexpr const char* SWAP_LABEL = "Swap";
 constexpr const char* PEAK_LABEL = "Peak Used";
+constexpr const char* COMMIT_LABEL = "Commit";
 
 } // namespace
+
+std::string commitStripValue(const Domain::SystemSnapshot& snap)
+{
+    if (!snap.hasCommitCharge || snap.commitLimitBytes == 0)
+    {
+        return {};
+    }
+    // Not clamped: Linux outside strict overcommit lets Committed_AS run past CommitLimit, and
+    // reading over 100% is the truth there.
+    const double percent = 100.0 * (static_cast<double>(snap.commitChargeBytes) / static_cast<double>(snap.commitLimitBytes));
+    return UI::Format::bytesUsedTotalPercentCompact(snap.commitChargeBytes, snap.commitLimitBytes, percent);
+}
+
+std::string commitStripTooltip(const Domain::SystemSnapshot& snap)
+{
+    if (!snap.hasCommitCharge)
+    {
+        return {};
+    }
+    std::string text = "Virtual memory the system has committed, against its commit limit";
+    if (snap.commitPeakBytes > 0)
+    {
+        text += "\nPeak: ";
+        text += UI::Format::formatBytes(static_cast<double>(snap.commitPeakBytes));
+    }
+    return text;
+}
 
 void updateSmoothedMemory(SmoothedMemory& smoothed,
                           const Domain::SystemSnapshot& snap,
@@ -258,13 +287,30 @@ void renderMemorySection(RenderContext& ctx, std::span<const double> timestamps,
     }
 
     // Peak Used is a line with a tooltip row but no bar; list it in the value strip too (#1193).
-    const std::array peakEntry{UI::Widgets::ValueStripEntry{
-        .label = PEAK_LABEL,
-        .value = UI::Format::formatPercent(peakMemPercent),
-        .color = theme.scheme().chartPeakLine,
-    }};
-    const std::span<const UI::Widgets::ValueStripEntry> stripExtras =
-        (peakMemPercent > 0.0) ? std::span<const UI::Widgets::ValueStripEntry>(peakEntry) : std::span<const UI::Widgets::ValueStripEntry>{};
+    std::array<UI::Widgets::ValueStripEntry, 2> extras{};
+    std::size_t extraCount = 0;
+    if (peakMemPercent > 0.0)
+    {
+        extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
+            .label = PEAK_LABEL,
+            .value = UI::Format::formatPercent(peakMemPercent),
+            .color = theme.scheme().chartPeakLine,
+        };
+    }
+    // Commit charge against the commit limit (#1627): how close the machine is to "out of memory"
+    // while RAM may still be free. A reading only, not a series -- its swatch stays blank -- and only
+    // where the probe supports it and read it this sample.
+    const std::string commitTooltip = commitStripTooltip(snap);
+    if (snap.hasCommitCharge)
+    {
+        extras.at(extraCount++) = UI::Widgets::ValueStripEntry{
+            .label = COMMIT_LABEL,
+            .value = commitStripValue(snap),
+            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .tooltip = commitTooltip.c_str(),
+        };
+    }
+    const std::span<const UI::Widgets::ValueStripEntry> stripExtras(extras.data(), extraCount);
     renderHistoryWithNowBars("MemorySwapHistoryLayout",
                              ctx.plotHeight,
                              memoryPlot,

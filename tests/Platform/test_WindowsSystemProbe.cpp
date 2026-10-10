@@ -534,6 +534,22 @@ TEST(WindowsSystemProbeTest, CachedIsReportedAndWithinRam)
     EXPECT_LE(counters.memory.cachedBytes, counters.memory.totalBytes);
 }
 
+TEST(WindowsSystemProbeTest, CommitChargeIsReportedWithinItsLimitAndPeak)
+{
+    // Commit charge for the Memory chart's value strip, from the GetPerformanceInfo call the cache
+    // figure already makes (#1627). A running system has something committed; the limit covers RAM
+    // (less what the kernel keeps) plus page files, and the peak is never below what is committed now.
+    WindowsSystemProbe probe;
+    EXPECT_TRUE(probe.capabilities().hasCommitCharge);
+    const auto counters = probe.read();
+
+    ASSERT_TRUE(counters.memory.hasCommitCharge);
+    EXPECT_GT(counters.memory.commitChargeBytes, 0ULL);
+    EXPECT_LE(counters.memory.commitChargeBytes, counters.memory.commitLimitBytes);
+    EXPECT_GE(counters.memory.commitLimitBytes, counters.memory.totalBytes / 2);
+    EXPECT_GE(counters.memory.commitPeakBytes, counters.memory.commitChargeBytes);
+}
+
 TEST(WindowsSystemProbeTest, PerCoreActiveTimeDoesNotExceedKernelPlusUser)
 {
     // Interrupt and DPC time are inside kernel time; adding them again made every core read busier

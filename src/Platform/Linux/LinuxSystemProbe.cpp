@@ -165,6 +165,7 @@ SystemCapabilities LinuxSystemProbe::capabilities() const
     return SystemCapabilities{.hasPerCoreCpu = true,
                               .hasMemoryAvailable = true, // Modern kernels have MemAvailable
                               .hasSwap = true,
+                              .hasCommitCharge = true, // Committed_AS / CommitLimit in /proc/meminfo (#1627)
                               .hasUptime = true,
                               .hasIoWait = true,
                               .hasSteal = true,
@@ -277,6 +278,8 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
     // Cached:          4567890 kB
     // SwapTotal:       2097152 kB
     // SwapFree:        2097152 kB
+    // CommitLimit:    10289152 kB
+    // Committed_AS:    6543210 kB
 
     const auto meminfoPath = procRoot / "meminfo";
     const std::string pathStr = meminfoPath.string();
@@ -293,6 +296,8 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
     const char* p = buf.data();
     const char* const end = buf.data() + len;
     constexpr uint64_t KB = 1024;
+    bool hasCommitted = false;
+    bool hasCommitLimit = false;
 
     while (p < end)
     {
@@ -352,9 +357,22 @@ void LinuxSystemProbe::readMemoryCounters(SystemCounters& counters, const std::f
         {
             counters.memory.swapFreeBytes = value * KB;
         }
+        else if (key == "CommitLimit")
+        {
+            counters.memory.commitLimitBytes = value * KB;
+            hasCommitLimit = true;
+        }
+        else if (key == "Committed_AS")
+        {
+            counters.memory.commitChargeBytes = value * KB;
+            hasCommitted = true;
+        }
 
         p = (lineEnd < end) ? lineEnd + 1 : end;
     }
+
+    // Commit charge (#1627): both lines, or none of it. The kernel keeps no peak.
+    counters.memory.hasCommitCharge = hasCommitted && hasCommitLimit;
 }
 
 void LinuxSystemProbe::readUptime(SystemCounters& counters, const std::filesystem::path& procRoot)

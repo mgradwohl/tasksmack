@@ -89,6 +89,25 @@ TEST(WindowsSystemProbeMathTest, InUseAboveSizeIsCappedSoFreeCannotWrap)
     EXPECT_EQ(swap.freeBytes, 0ULL);
 }
 
+TEST(WindowsSystemProbeMathTest, CommitChargeLimitAndPeakArePagesTimesPageSize)
+{
+    // PERFORMANCE_INFORMATION reports CommitTotal, CommitLimit and CommitPeak in pages (#1627):
+    // 35 GiB committed of a 73.5 GiB limit, peak 40 GiB, at 4 KiB pages.
+    constexpr std::uint64_t PAGE = 4096;
+    constexpr std::uint64_t GIB_PAGES = (1ULL << 30U) / PAGE;
+    const CommitBytes commit = commitFromPerformanceInfo(35 * GIB_PAGES, (147 * GIB_PAGES) / 2, 40 * GIB_PAGES, PAGE);
+    EXPECT_EQ(commit.chargeBytes, 35ULL << 30U);
+    EXPECT_EQ(commit.limitBytes, (147ULL << 30U) / 2);
+    EXPECT_EQ(commit.peakBytes, 40ULL << 30U);
+
+    // Large pages scale the same way, and an all-zero reading stays zero.
+    EXPECT_EQ(commitFromPerformanceInfo(3, 5, 4, 2ULL << 20U).limitBytes, 10ULL << 20U);
+    const CommitBytes none = commitFromPerformanceInfo(0, 0, 0, PAGE);
+    EXPECT_EQ(none.chargeBytes, 0ULL);
+    EXPECT_EQ(none.limitBytes, 0ULL);
+    EXPECT_EQ(none.peakBytes, 0ULL);
+}
+
 TEST(WindowsSystemProbeMathTest, ProcessorTimesTakeInterruptAndDpcOutOfKernel)
 {
     // kernel 1000 includes idle 600, so 400 busy, of which 50 interrupt and 30 DPC.

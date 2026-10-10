@@ -565,6 +565,15 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
     if (GetPerformanceInfo(&perfInfo, sizeof(perfInfo)) != 0)
     {
         counters.memory.cachedBytes = static_cast<uint64_t>(perfInfo.SystemCache) * static_cast<uint64_t>(perfInfo.PageSize);
+
+        // Commit charge, its limit and peak (#1627): the same call, so the Memory chart's value
+        // strip costs no extra system call per sample.
+        const CommitBytes commit =
+            commitFromPerformanceInfo(perfInfo.CommitTotal, perfInfo.CommitLimit, perfInfo.CommitPeak, perfInfo.PageSize);
+        counters.memory.commitChargeBytes = commit.chargeBytes;
+        counters.memory.commitLimitBytes = commit.limitBytes;
+        counters.memory.commitPeakBytes = commit.peakBytes;
+        counters.memory.hasCommitCharge = true;
     }
 
     // Swap: the page files' own sizes (#1026). The commit figures in MEMORYSTATUSEX describe RAM
@@ -664,6 +673,7 @@ SystemCapabilities WindowsSystemProbe::capabilities() const
         .hasPerCoreCpu = true, // Via NtQuerySystemInformation
         .hasMemoryAvailable = true,
         .hasSwap = true,
+        .hasCommitCharge = true, // GetPerformanceInfo's CommitTotal/CommitLimit/CommitPeak (#1627)
         .hasUptime = true,
         .hasIoWait = false,            // Windows doesn't expose iowait
         .hasSteal = false,             // Windows doesn't expose steal time

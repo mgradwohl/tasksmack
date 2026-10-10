@@ -70,6 +70,14 @@ struct MemoryCounters
 
     uint64_t swapTotalBytes = 0;
     uint64_t swapFreeBytes = 0;
+
+    // Commit charge (#1627): the virtual memory the system has promised (Windows CommitTotal, Linux
+    // Committed_AS) and the most it may promise (CommitLimit), in bytes. hasCommitCharge is set once
+    // both were read this sample. commitPeakBytes is 0 where the platform keeps no peak (Linux).
+    bool hasCommitCharge = false;
+    uint64_t commitChargeBytes = 0;
+    uint64_t commitLimitBytes = 0;
+    uint64_t commitPeakBytes = 0;
 };
 
 /// Combined system counters snapshot.
@@ -132,6 +140,7 @@ struct SystemCapabilities
     bool hasPerCoreCpu = false;
     bool hasMemoryAvailable = false; // Some older kernels lack MemAvailable
     bool hasSwap = false;
+    bool hasCommitCharge = false; // MemoryCounters' commit charge and limit (#1627)
     bool hasUptime = false;
     bool hasIoWait = false;
     bool hasSteal = false;

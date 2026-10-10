@@ -2873,11 +2873,14 @@ enum class NowBarValues : std::uint8_t
 /// A value strip entry for a series with no NowBar, e.g. the network totals drawn behind a selected
 /// interface. The label is a view, typically of a constant; `value` holds a short formatted rate or
 /// percent, which fits std::string's small-buffer storage, so building one allocates nothing.
+/// A reading the chart does not plot (the Memory chart's commit charge, #1627) gives a fully
+/// transparent `color`, so its swatch slot stays blank rather than keying a line that isn't there.
 struct ValueStripEntry
 {
     std::string_view label;
     std::string value;
     ImVec4 color;
+    const char* tooltip = nullptr; ///< Hover text when not null; must outlive the strip call
 };
 
 namespace Detail
@@ -2913,7 +2916,8 @@ inline void drawValueStripEntry(std::string_view head,
                                 ImPlotMarker marker = ImPlotMarker_None,
                                 float slotWidth = 0.0F,
                                 std::string_view seriesLabel = {},
-                                bool rightAxis = false)
+                                bool rightAxis = false,
+                                std::string_view tooltip = {})
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineHeight = ImGui::GetTextLineHeight();
@@ -2929,6 +2933,12 @@ inline void drawValueStripEntry(std::string_view head,
         {
             ImGui::NewLine();
         }
+    }
+    // An entry with a tooltip is one hover target: swatch, label and value (#1627).
+    const bool hasTooltip = !tooltip.empty();
+    if (hasTooltip)
+    {
+        ImGui::BeginGroup();
     }
     const ImVec2 at = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddRectFilled(
@@ -2975,6 +2985,16 @@ inline void drawValueStripEntry(std::string_view head,
         ImGui::TextUnformatted(SECONDARY_AXIS_MARK.data(), SECONDARY_AXIS_MARK.data() + SECONDARY_AXIS_MARK.size());
         ImGui::PopStyleColor();
     }
+    if (hasTooltip)
+    {
+        ImGui::EndGroup();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(tooltip.data(), tooltip.data() + tooltip.size());
+            ImGui::EndTooltip();
+        }
+    }
 }
 } // namespace Detail
 
@@ -3019,7 +3039,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         // "label: valueText", where head/tail may hold its richer tooltipText.
         std::string_view compactHead;
         std::string_view compactTail;
-        bool rightAxis = false; // Drawn on the chart's right-hand axis: SECONDARY_AXIS_MARK after the value
+        bool rightAxis = false;   // Drawn on the chart's right-hand axis: SECONDARY_AXIS_MARK after the value
+        std::string_view tooltip; // An extra's hover text (ValueStripEntry::tooltip)
     };
     static std::vector<Entry> entries; // UI thread only; reused
     entries.clear();
@@ -3046,7 +3067,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                            .seriesLabel = bar.label,
                            .compactHead = label.name,
                            .compactTail = bar.valueText,
-                           .rightAxis = label.rightAxis});
+                           .rightAxis = label.rightAxis,
+                           .tooltip = {}});
     }
     for (const ValueStripEntry& entry : extras)
     {
@@ -3057,7 +3079,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                            .seriesLabel = entry.label,
                            .compactHead = label.name,
                            .compactTail = entry.value,
-                           .rightAxis = label.rightAxis});
+                           .rightAxis = label.rightAxis,
+                           .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{}});
     }
     if (entries.empty())
     {
@@ -3176,7 +3199,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                                     entry.marker,
                                     entry.slotWidth,
                                     entry.seriesLabel,
-                                    entry.rightAxis);
+                                    entry.rightAxis,
+                                    entry.tooltip);
         first = false;
     }
 }
