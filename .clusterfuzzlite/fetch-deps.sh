@@ -50,7 +50,7 @@ fetch_dep() {
 
 PATCHES_DIR="$PWD/cmake/patches"
 
-fetch_dep tomlplusplus https://github.com/marzer/tomlplusplus.git "$PATCHES_DIR/tomlplusplus-parse-value-terminator.patch"
+fetch_dep tomlplusplus https://github.com/marzer/tomlplusplus.git "$PATCHES_DIR/tomlplusplus-parse-value-assertions.patch"
 fetch_dep spdlog https://github.com/gabime/spdlog.git
 fetch_dep imgui https://github.com/ocornut/imgui.git
 fetch_dep implot https://github.com/epezent/implot.git

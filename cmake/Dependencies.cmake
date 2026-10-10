@@ -103,8 +103,11 @@ endif()
 # fixed upstream in 1e8829b). Both are UB in release builds. Move back to a release tag once one
 # includes them (v3.5.0+).
 #
-# The patch fixes #1388 ('m=[}' hits a TOML_ASSERT_ASSUME in parse_value()), which is not fixed
-# upstream yet. ApplyPatch.cmake skips it when already applied, since the source tree under
+# The patch fixes two TOML_ASSERT_ASSUMEs in parse_value() that malformed input reaches, neither
+# fixed upstream yet: 'm=[}' (#1388) and a date, a space, a digit, then a terminator, as in
+# 'h=2000-02-1a 1 1' (#1659). A source tree that still has an older version of the patch applied
+# fails the patch step; delete its tomlplusplus-* directories under FETCHCONTENT_BASE_DIR to
+# refetch. ApplyPatch.cmake skips it when already applied, since the source tree under
 # FETCHCONTENT_BASE_DIR is shared by every preset. Re-check the patch whenever GIT_TAG moves, and
 # give an edited patch a new file name: FetchContent only re-runs the patch step when this
 # declaration changes, and CI's FetchContent cache is keyed on this file, not on the patch.
@@ -117,7 +120,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
     GIT_TAG 1e8829b793b66ad17011732a146b8077d379b011  # master after v3.4.0 - pinned to SHA for supply chain security
     PATCH_COMMAND "${CMAKE_COMMAND}" "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
-                  "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/tomlplusplus-parse-value-terminator.patch"
+                  "-DPATCH_FILE=${CMAKE_CURRENT_LIST_DIR}/patches/tomlplusplus-parse-value-assertions.patch"
                   -P "${CMAKE_CURRENT_LIST_DIR}/patches/ApplyPatch.cmake"
     SYSTEM  # Treat as system headers to suppress warnings
     BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/tomlplusplus-build"  # per-preset build tree (#1308)

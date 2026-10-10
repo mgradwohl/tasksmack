@@ -43,7 +43,7 @@ SPDX-License-Identifier = "OFL-1.1"
 
 # Patch against toml++ (https://github.com/marzer/tomlplusplus, MIT); its context lines are toml++ code.
 [[annotations]]
-path = "cmake/patches/tomlplusplus-parse-value-terminator.patch"
+path = "cmake/patches/tomlplusplus-parse-value-assertions.patch"
 precedence = "override"
 SPDX-FileCopyrightText = [
     "2024-2026 Matt Gradwohl",
