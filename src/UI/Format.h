@@ -105,41 +105,59 @@ namespace Detail
 template<typename Put>
 inline void putGroupedDigits(const char* digits, std::size_t count, const NumericPunctuation& punct, Put& put) noexcept
 {
-    // Separator positions, as the count of integer digits to their right, largest last.
-    std::array<std::size_t, 320> cuts{};
-    std::size_t cutCount = 0;
-    if (!punct.grouping.empty() && !punct.thousandsSep.empty())
+    // No grouping (the classic locale): the digits as they are. The common case, and the one every
+    // fast table cell takes, so it does nothing else -- #1704 measured a 2.5 KB scratch array zeroed
+    // here on every call as +46% on the full process row.
+    if (punct.grouping.empty() || punct.thousandsSep.empty())
     {
-        std::size_t position = 0;
-        std::size_t group = 0;
-        while (cutCount < cuts.size())
+        for (std::size_t i = 0; i < count; ++i)
         {
-            const char size = punct.grouping[std::min(group, punct.grouping.size() - 1)];
-            if (size <= 0 || size == std::numeric_limits<char>::max())
-            {
-                break;
-            }
-            position += static_cast<std::size_t>(size);
-            if (position >= count)
-            {
-                break;
-            }
-            cuts[cutCount++] = position;
-            ++group;
+            put(digits[i]);
         }
+        return;
     }
+
+    // Separator positions, as the count of integer digits to their right: the grouping's running sums
+    // ("\3\2" -> 3, 5), then every `repeat` digits past the last while its last size repeats (7, 9,
+    // ...). A size <= 0 or CHAR_MAX ends grouping there, with no repeat.
+    std::array<std::size_t, 8> fixed{}; // numpunct groupings have one to three sizes
+    std::size_t fixedCount = 0;
+    std::size_t last = 0;
+    std::size_t repeat = 0;
+    for (std::size_t g = 0; g < punct.grouping.size() && fixedCount < fixed.size(); ++g)
+    {
+        const char size = punct.grouping[g];
+        if (size <= 0 || size == std::numeric_limits<char>::max())
+        {
+            repeat = 0;
+            break;
+        }
+        last += static_cast<std::size_t>(static_cast<unsigned char>(size));
+        fixed[fixedCount++] = last;
+        repeat = static_cast<std::size_t>(static_cast<unsigned char>(size));
+    }
+    const auto isCut = [&](std::size_t toTheRight) noexcept
+    {
+        for (std::size_t f = 0; f < fixedCount; ++f)
+        {
+            if (fixed[f] == toTheRight)
+            {
+                return true;
+            }
+        }
+        return repeat > 0 && toTheRight > last && (toTheRight - last) % repeat == 0;
+    };
 
     for (std::size_t i = 0; i < count; ++i)
     {
         put(digits[i]);
         const std::size_t toTheRight = count - i - 1;
-        if (cutCount > 0 && toTheRight == cuts[cutCount - 1])
+        if (toTheRight > 0 && isCut(toTheRight))
         {
             for (const char c : punct.thousandsSep)
             {
                 put(c);
             }
-            --cutCount;
         }
     }
 }
