@@ -13,9 +13,10 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
-#include <exception>
 #include <future>
 #include <memory>
+#include <optional>
+#include <string>
 #include <system_error>
 
 namespace App
@@ -74,7 +75,9 @@ void SystemInfoPanel::startRead()
                                {
                                    // Best effort, as for the Connections read: a pooled thread may keep the name.
                                    static_cast<void>(Platform::setCurrentThreadName(Platform::SYSTEM_INFO_READ_THREAD_NAME));
-                                   model->read();
+                                   // A failed read comes back as its message, copied here on the worker: no
+                                   // exception object crosses to the UI thread (#1685, #1706).
+                                   return model->tryRead();
                                });
     }
     catch (const std::system_error& e)
@@ -91,11 +94,17 @@ void SystemInfoPanel::finishRead(bool wait)
     }
     try
     {
-        m_Pending.get();
+        if (const std::optional<std::string> failure = m_Pending.get())
+        {
+            spdlog::warn("System Information: read failed: {}", *failure);
+        }
     }
-    catch (const std::exception& e)
+    catch (...)
     {
-        spdlog::warn("System Information: read failed: {}", e.what());
+        // The worker turns a throwing read into its message itself (SystemInfoModel::tryRead()), so only
+        // building that message can land here (bad_alloc). The exception object was thrown on the worker
+        // and is not read here (#1685, #1706).
+        spdlog::warn("System Information: read failed: unknown error");
     }
 }
 

@@ -41,8 +41,8 @@ class CrashHistory
     explicit CrashHistory(ReadFn read);
 
     /// Reads the crashes and publishes them. Off the UI thread; reads are serialised. A read that
-    /// throws is published as an unlisted CrashesInfo carrying the message, so nothing crosses threads
-    /// but a plain value (#1685).
+    /// throws (a std::exception or anything else) is published as an unlisted CrashesInfo carrying the
+    /// message, so nothing crosses threads but a plain value (#1685, #1706).
     void read();
 
     /// Publishes @p crashes, read at @p readAtUnixSeconds: the System Information read's (#1399), so

@@ -78,6 +78,31 @@ StartupActionMessage resultMessage(const StartupActionRequest& request, const Pl
 
 namespace AutoDetail = StartupActionsDetail;
 
+namespace
+{
+
+/// Runs on the worker: the action, or a failed result for one that threw. The exception is caught and
+/// its message copied here, on the thread that threw it, so the UI thread gets a plain result through
+/// the future and never an exception object (#1685, #1706). Only building the failed result itself
+/// (bad_alloc) can still escape, to takeFinished().
+[[nodiscard]] Platform::StartupActionResult setEnabledOrFailed(Platform::IStartupActions& actions, const StartupActionRequest& request)
+{
+    try
+    {
+        return actions.setEnabled(request.entry, request.enable);
+    }
+    catch (const std::exception& e)
+    {
+        return Platform::StartupActionResult::failed(std::string(e.what()));
+    }
+    catch (...)
+    {
+        return Platform::StartupActionResult::failed("Unknown error");
+    }
+}
+
+} // namespace
+
 StartupActionsView::StartupActionsView(std::shared_ptr<Platform::IStartupActions> actions)
     : m_Actions(actions ? std::move(actions) : std::make_shared<Platform::UnsupportedStartupActions>()),
       m_Capabilities(m_Actions->capabilities())
@@ -126,7 +151,7 @@ void StartupActionsView::run(StartupActionRequest request)
                               [actions = m_Actions, request = std::move(request)]
                               {
                                   static_cast<void>(Platform::setCurrentThreadName(Platform::STARTUP_ACTION_THREAD_NAME));
-                                  return actions->setEnabled(request.entry, request.enable);
+                                  return setEnabledOrFailed(*actions, request);
                               });
     }
     catch (const std::system_error& e)
@@ -147,9 +172,12 @@ bool StartupActionsView::takeFinished()
     {
         result = m_Worker.get();
     }
-    catch (const std::exception& e)
+    catch (...)
     {
-        result = Platform::StartupActionResult::failed(e.what());
+        // The worker turns a throwing action into a failed result itself (setEnabledOrFailed()), so only
+        // building that result can land here (bad_alloc). The exception object was thrown on the worker
+        // and is not read here (#1685, #1706).
+        result = Platform::StartupActionResult::failed("Unknown error");
     }
     m_Result = AutoDetail::resultMessage(m_Running, result);
     m_ResultSecondsLeft = AutoDetail::RESULT_SECONDS;

@@ -7,6 +7,8 @@
 
 #include <future>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
 namespace App
@@ -46,7 +48,8 @@ class SystemInfoPanel : public Panel
 
     std::shared_ptr<Domain::CrashHistory> m_CrashHistory;
     std::shared_ptr<Domain::SystemInfoModel> m_Model;
-    std::future<void> m_Pending; // the read in flight, if any
+    // The read in flight, if any; it hands back only a failed read's message, copied on the worker.
+    std::future<std::optional<std::string>> m_Pending;
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;
     SystemInfoViewState m_ViewState;
 };

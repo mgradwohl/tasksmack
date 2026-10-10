@@ -62,6 +62,14 @@ void CrashHistory::read()
             crashes.available = true;
             crashes.unavailableReason = std::string("Couldn't read the crash history: ") + e.what();
         }
+        catch (...)
+        {
+            // Not a std::exception: published the same way, so nothing is rethrown to the reader's
+            // caller on another thread (#1706).
+            crashes = {};
+            crashes.available = true;
+            crashes.unavailableReason = "Couldn't read the crash history: unknown error";
+        }
     }
     publish(std::move(crashes), nowUnixSeconds());
 }

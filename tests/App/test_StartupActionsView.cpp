@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -53,6 +54,31 @@ class FakeStartupActions final : public Platform::IStartupActions
 
   private:
     Platform::StartupActionCapabilities m_Caps;
+};
+
+/// Throws from every action: a std::runtime_error("boom"), or with `nonStandard` an int.
+class ThrowingStartupActions final : public Platform::IStartupActions
+{
+  public:
+    explicit ThrowingStartupActions(bool nonStandard = false) : m_NonStandard(nonStandard)
+    {}
+
+    [[nodiscard]] Platform::StartupActionCapabilities capabilities() const override
+    {
+        return USER;
+    }
+    [[nodiscard]] Platform::StartupActionResult setEnabled(const Platform::StartupEntry& /*entry*/, bool /*enabled*/) override
+    {
+        if (m_NonStandard)
+        {
+            // NOLINTNEXTLINE(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - intentionally not a std::exception
+            throw 42;
+        }
+        throw std::runtime_error("boom");
+    }
+
+  private:
+    bool m_NonStandard;
 };
 
 [[nodiscard]] Platform::StartupEntry entry(const char* name, StartupLocation location, bool enabled = true)
@@ -111,6 +137,25 @@ TEST(StartupActionsDetailTest, TextsNameTheEntryAndTheOutcome)
     const auto denied = AutoDetail::resultMessage(disable, Platform::StartupActionResult::failed("Requires administrator"));
     EXPECT_FALSE(denied.ok);
     EXPECT_EQ(denied.text, "Could not disable OneDrive: Requires administrator");
+}
+
+TEST(StartupActionsViewTest, ActionThatThrowsBecomesAPlainFailedResult)
+{
+    StartupActionsView view(std::make_shared<ThrowingStartupActions>());
+    view.request({.enable = true, .entry = entry("OneDrive", StartupLocation::RunUser, false)});
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not enable OneDrive: boom");
+    EXPECT_FALSE(view.busy());
+}
+
+TEST(StartupActionsViewTest, ActionThatThrowsANonStandardExceptionBecomesAGenericFailedResult)
+{
+    StartupActionsView view(std::make_shared<ThrowingStartupActions>(true));
+    view.request({.enable = true, .entry = entry("OneDrive", StartupLocation::RunUser, false)});
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not enable OneDrive: Unknown error");
 }
 
 TEST(StartupActionsViewTest, UnsupportedPlatformHasNoActions)
