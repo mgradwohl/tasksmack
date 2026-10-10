@@ -1,5 +1,6 @@
 #pragma once
 
+#include "App/ElevationNoticeDialog.h"
 #include "Core/Layer.h"
 
 namespace App
@@ -31,16 +32,8 @@ class ElevationNoticeLayer : public Core::Layer
 
   private:
     void requestOpen();
-    void renderDialog();
-    /// Width the dialog's content needs unwrapped, window padding included (#1601).
-    [[nodiscard]] static float measureContentWidth();
 
-    bool m_OpenRequested = false;
-    bool m_DontShowAgain = false;
-    // The viewport size and dialog width it was last centred for: either changing re-centres it (#1601).
-    float m_CentredViewportWidth = 0.0F;
-    float m_CentredViewportHeight = 0.0F;
-    float m_CentredDialogWidth = 0.0F;
+    ElevationNoticeDialog::State m_State;
 };
 
 } // namespace App

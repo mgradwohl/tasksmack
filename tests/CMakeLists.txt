@@ -275,6 +275,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
     App/test_AboutDialogRender.cpp
+    App/test_ElevationNoticeDialogRender.cpp
     App/test_HelpContent.cpp
     App/test_HelpWindowRender.cpp
     App/test_KeyboardInputRender.cpp
@@ -522,6 +523,8 @@ add_executable(TaskSmackTests
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), and the link opener it calls
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/PlatformOpen.cpp
+    # The Limited Data notice (#1547), run headless (test_ElevationNoticeDialogRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/ElevationNoticeDialog.cpp
     # The Help window (#172), run headless (test_HelpWindowRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/HelpWindow.cpp
     # The PGO UI training plan (#880), pure: test_UiTrainingPlan.cpp
