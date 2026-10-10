@@ -20,6 +20,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -80,20 +81,41 @@ constexpr std::array<std::string_view, 20> CRITICAL_SERVICES{
     return "change";
 }
 
-[[nodiscard]] Platform::ServiceActionResult dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request)
+[[nodiscard]] Platform::ServiceActionResult
+dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request, const std::stop_token& stopToken)
 {
     switch (request.kind)
     {
     case ServiceActionKind::Start:
-        return actions.start(request.name);
+        return actions.start(request.name, stopToken);
     case ServiceActionKind::Stop:
-        return actions.stop(request.name);
+        return actions.stop(request.name, stopToken);
     case ServiceActionKind::Restart:
-        return actions.restart(request.name);
+        return actions.restart(request.name, stopToken);
     case ServiceActionKind::SetStartType:
         break;
     }
     return actions.setStartType(request.name, request.startType);
+}
+
+/// Runs on the worker: the action, or a failed result for one that threw. The exception is caught and
+/// its message copied here, on the thread that threw it, so the UI thread gets a plain result through
+/// the future and never an exception object (the #1685 pattern of LazyBackgroundRead).
+[[nodiscard]] Platform::ServiceActionResult
+dispatchOrFailed(Platform::IServiceActions& actions, const ServiceActionRequest& request, const std::stop_token& stopToken)
+{
+    try
+    {
+        return dispatch(actions, request, stopToken);
+    }
+    catch (const std::exception& e)
+    {
+        return Platform::ServiceActionResult::failed(std::string(e.what()));
+    }
+    catch (...)
+    {
+        return Platform::ServiceActionResult::failed("Unknown error");
+    }
 }
 
 } // namespace
@@ -234,8 +256,10 @@ ServiceActionsView::ServiceActionsView(std::shared_ptr<Platform::IServiceActions
 
 ServiceActionsView::~ServiceActionsView()
 {
-    // A running action is waited for: it holds its own shared_ptr to the actions, but its result must
-    // not outlive the view it reports to. The wait is bounded by the platform's own timeout.
+    // A running action is cancelled, then waited for: it holds its own shared_ptr to the actions, but
+    // its result must not outlive the view it reports to (and a detached worker could touch spdlog or
+    // other statics after exit destroyed them). Cancelled, it returns at the platform's next poll.
+    cancel();
     try
     {
         if (m_Worker.valid())
@@ -245,6 +269,11 @@ ServiceActionsView::~ServiceActionsView()
     }
     catch (...) // NOLINT(bugprone-empty-catch): a destructor; wait() on a valid future does not throw
     {}
+}
+
+void ServiceActionsView::cancel() noexcept
+{
+    static_cast<void>(m_Stop.request_stop()); // false when already requested: nothing more to do
 }
 
 bool ServiceActionsView::supported() const noexcept
@@ -274,14 +303,16 @@ void ServiceActionsView::run(ServiceActionRequest request)
 {
     m_Result = {};
     m_Running = request;
+    m_Stop = std::stop_source{}; // a cancel() of an earlier action does not carry over
     try
     {
-        // The worker owns copies of everything it uses; nothing here is shared with it but the future.
+        // The worker owns copies of everything it uses; it shares only the future and the stop token's
+        // state with this view.
         m_Worker = std::async(std::launch::async,
-                              [actions = m_Actions, request = std::move(request)]
+                              [actions = m_Actions, request = std::move(request), stopToken = m_Stop.get_token()]
                               {
                                   static_cast<void>(Platform::setCurrentThreadName(Platform::SERVICE_ACTION_THREAD_NAME));
-                                  return SvcDetail::dispatch(*actions, request);
+                                  return SvcDetail::dispatchOrFailed(*actions, request, stopToken);
                               });
     }
     catch (const std::system_error& e)
@@ -302,9 +333,12 @@ bool ServiceActionsView::takeFinished()
     {
         result = m_Worker.get();
     }
-    catch (const std::exception& e)
+    catch (...)
     {
-        result = Platform::ServiceActionResult::failed(e.what());
+        // The worker turns a throwing action into a failed result itself (dispatchOrFailed()), so only
+        // building that result can land here (bad_alloc). The exception object was thrown on the worker
+        // and is not read here (#1685).
+        result = Platform::ServiceActionResult::failed("Unknown error");
     }
     m_Result = SvcDetail::resultMessage(m_Running, result);
     m_ResultSecondsLeft = SvcDetail::RESULT_SECONDS;

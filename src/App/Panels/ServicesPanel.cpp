@@ -40,7 +40,13 @@ void ServicesPanel::onAttach()
 
 void ServicesPanel::onDetach()
 {
-    m_Actions.reset(); // waits for an action still running (bounded by the platform's timeout)
+    // An action still running is cancelled first, so the wait below is one platform poll (#1591), not
+    // the service's full stop or restart. The request already sent to the service manager stands.
+    if (m_Actions)
+    {
+        m_Actions->cancel();
+    }
+    m_Actions.reset();
     m_Sampler.reset(); // joins the sampler thread: the one place it is waited for
     m_Gate.reset();
     m_Publication.reset();

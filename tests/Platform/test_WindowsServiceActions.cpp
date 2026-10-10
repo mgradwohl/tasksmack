@@ -1,8 +1,9 @@
 /// @file test_WindowsServiceActions.cpp
 /// @brief WindowsServiceActions (#1577) against a fake Service Control Manager: each action's
 /// success, a denied open (Requires administrator), a timed-out wait, a stop refused because of
-/// running dependents, already running / not running, and start-type changes with delayed
-/// auto-start. No real service is ever started or stopped.
+/// running dependents, already running / not running, start-type changes with delayed auto-start,
+/// and a stop request ending the wait within one poll (#1591). No real service is ever started or
+/// stopped.
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -40,6 +42,8 @@ struct FakeScm
     DWORD startType = 0;
     int delayedCalls = 0;
     BOOL delayed = FALSE;
+    std::stop_source stop;   ///< The actions' token comes from this (token()).
+    int stopAfterSleeps = 0; ///< When set, the fake Sleep requests the stop on its call with this count.
 };
 
 FakeScm& fake()
@@ -148,9 +152,19 @@ BOOL WINAPI fakeChangeConfig2(SC_HANDLE /*service*/, DWORD level, LPVOID info)
     return TRUE;
 }
 
-void WINAPI fakeSleep(DWORD /*ms*/)
+void WINAPI fakeSleep(DWORD ms)
 {
+    EXPECT_EQ(ms, Windows::ServiceActionMath::WAIT_POLL_MS);
     ++fake().sleeps;
+    if (fake().stopAfterSleeps != 0 && fake().sleeps == fake().stopAfterSleeps)
+    {
+        static_cast<void>(fake().stop.request_stop()); // as if TaskSmack closed during this poll's sleep
+    }
+}
+
+[[nodiscard]] std::stop_token token()
+{
+    return fake().stop.get_token();
 }
 
 class WindowsServiceActionsTest : public ::testing::Test
@@ -192,8 +206,9 @@ TEST_F(WindowsServiceActionsTest, CapabilitiesAreAllTrueAndCarryElevation)
 TEST_F(WindowsServiceActionsTest, StartWaitsUntilRunning)
 {
     fake().states = {SERVICE_START_PENDING, SERVICE_START_PENDING, SERVICE_RUNNING};
-    const ServiceActionResult result = actions().start("Spooler");
+    const ServiceActionResult result = actions().start("Spooler", token());
     EXPECT_TRUE(result.ok) << result.message;
+    EXPECT_FALSE(result.cancelled);
     EXPECT_EQ(fake().starts, 1);
     EXPECT_EQ(fake().sleeps, 2);
     ASSERT_EQ(fake().accesses.size(), 1U);
@@ -203,7 +218,7 @@ TEST_F(WindowsServiceActionsTest, StartWaitsUntilRunning)
 TEST_F(WindowsServiceActionsTest, DeniedOpenRequiresAdministrator)
 {
     fake().openError = ERROR_ACCESS_DENIED;
-    EXPECT_EQ(actions().stop("Spooler").message, "Requires administrator");
+    EXPECT_EQ(actions().stop("Spooler", token()).message, "Requires administrator");
     EXPECT_EQ(actions().setStartType("Spooler", ServiceStartType::Manual).message, "Requires administrator");
     EXPECT_EQ(fake().stops, 0);
 }
@@ -211,15 +226,15 @@ TEST_F(WindowsServiceActionsTest, DeniedOpenRequiresAdministrator)
 TEST_F(WindowsServiceActionsTest, AlreadyRunningAndNotRunningAreReported)
 {
     fake().startError = ERROR_SERVICE_ALREADY_RUNNING;
-    EXPECT_EQ(actions().start("Spooler").message, "It is already running");
+    EXPECT_EQ(actions().start("Spooler", token()).message, "It is already running");
     fake().stopError = ERROR_SERVICE_NOT_ACTIVE;
-    EXPECT_EQ(actions().stop("Spooler").message, "It is not running");
+    EXPECT_EQ(actions().stop("Spooler", token()).message, "It is not running");
 }
 
 TEST_F(WindowsServiceActionsTest, StopTimesOutAfterTheBoundedWait)
 {
     fake().states = {SERVICE_STOP_PENDING};
-    const ServiceActionResult result = actions().stop("Spooler");
+    const ServiceActionResult result = actions().stop("Spooler", token());
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.message, "It didn't stop within 10 s");
     EXPECT_EQ(static_cast<std::uint32_t>(fake().sleeps),
@@ -229,14 +244,14 @@ TEST_F(WindowsServiceActionsTest, StopTimesOutAfterTheBoundedWait)
 TEST_F(WindowsServiceActionsTest, StartThatFallsBackToStoppedFailsAtOnce)
 {
     fake().states = {SERVICE_START_PENDING, SERVICE_STOPPED};
-    EXPECT_EQ(actions().start("Spooler").message, "It stopped while starting");
+    EXPECT_EQ(actions().start("Spooler", token()).message, "It stopped while starting");
 }
 
 TEST_F(WindowsServiceActionsTest, StopWithRunningDependentsNamesThemAndStopsNothing)
 {
     fake().stopError = ERROR_DEPENDENT_SERVICES_RUNNING;
     fake().dependents = {L"Fax", L"Print Workflow"};
-    const ServiceActionResult result = actions().stop("Spooler");
+    const ServiceActionResult result = actions().stop("Spooler", token());
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.message, "Stop the services that depend on it first: Fax, Print Workflow");
     EXPECT_EQ(fake().stops, 1);
@@ -247,7 +262,7 @@ TEST_F(WindowsServiceActionsTest, StopWithRunningDependentsNamesThemAndStopsNoth
 TEST_F(WindowsServiceActionsTest, RestartStopsThenStarts)
 {
     fake().states = {SERVICE_STOP_PENDING, SERVICE_STOPPED, SERVICE_START_PENDING, SERVICE_RUNNING};
-    EXPECT_TRUE(actions().restart("Spooler").ok);
+    EXPECT_TRUE(actions().restart("Spooler", token()).ok);
     EXPECT_EQ(fake().stops, 1);
     EXPECT_EQ(fake().starts, 1);
 }
@@ -255,7 +270,52 @@ TEST_F(WindowsServiceActionsTest, RestartStopsThenStarts)
 TEST_F(WindowsServiceActionsTest, RestartDoesNotStartWhenTheStopFails)
 {
     fake().openError = ERROR_ACCESS_DENIED;
-    EXPECT_EQ(actions().restart("Spooler").message, "Requires administrator");
+    EXPECT_EQ(actions().restart("Spooler", token()).message, "Requires administrator");
+    EXPECT_EQ(fake().starts, 0);
+}
+
+TEST_F(WindowsServiceActionsTest, StopRequestMidWaitReturnsCancelledAtTheNextPoll)
+{
+    fake().states = {SERVICE_STOP_PENDING}; // never stops: without the stop request this waits out 10 s
+    fake().stopAfterSleeps = 3;
+    const ServiceActionResult result = actions().stop("Spooler", token());
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.cancelled);
+    EXPECT_EQ(result.message, ServiceActionResult::stopRequested().message);
+    EXPECT_EQ(fake().stops, 1) << "the stop request was sent, and is not undone";
+    EXPECT_EQ(fake().sleeps, 3) << "no further poll after the one the stop was requested in";
+    EXPECT_EQ(fake().queries, 4U) << "the state is read once more after the stop request";
+}
+
+TEST_F(WindowsServiceActionsTest, StateReachedAtTheCancellingPollStillSucceeds)
+{
+    fake().states = {SERVICE_START_PENDING, SERVICE_START_PENDING, SERVICE_RUNNING};
+    fake().stopAfterSleeps = 2;
+    const ServiceActionResult result = actions().start("Spooler", token());
+    EXPECT_TRUE(result.ok) << result.message;
+    EXPECT_FALSE(result.cancelled);
+}
+
+TEST_F(WindowsServiceActionsTest, StopRequestedBeforeTheActionSendsNothing)
+{
+    static_cast<void>(fake().stop.request_stop());
+    EXPECT_TRUE(actions().start("Spooler", token()).cancelled);
+    EXPECT_TRUE(actions().stop("Spooler", token()).cancelled);
+    EXPECT_TRUE(actions().restart("Spooler", token()).cancelled);
+    EXPECT_TRUE(fake().accesses.empty()) << "no service was even opened";
+    EXPECT_EQ(fake().starts, 0);
+    EXPECT_EQ(fake().stops, 0);
+    EXPECT_EQ(fake().queries, 0U);
+}
+
+TEST_F(WindowsServiceActionsTest, RestartStoppedOnRequestDoesNotStartAgain)
+{
+    // The stop request arrives while the service stops; it does stop, but is then left stopped.
+    fake().states = {SERVICE_STOP_PENDING, SERVICE_STOPPED};
+    fake().stopAfterSleeps = 1;
+    const ServiceActionResult result = actions().restart("Spooler", token());
+    EXPECT_TRUE(result.cancelled);
+    EXPECT_EQ(fake().stops, 1);
     EXPECT_EQ(fake().starts, 0);
 }
 
@@ -290,7 +350,7 @@ TEST(UnsupportedServiceActionsTest, RefusesEverything)
     UnsupportedServiceActions actions;
     const ServiceActionCapabilities caps = actions.capabilities();
     EXPECT_FALSE(caps.canStart || caps.canStop || caps.canRestart || caps.canSetStartType);
-    EXPECT_FALSE(actions.start("x").ok);
+    EXPECT_FALSE(actions.start("x", std::stop_token{}).ok);
     EXPECT_FALSE(actions.setStartType("x", ServiceStartType::Manual).ok);
 }
 

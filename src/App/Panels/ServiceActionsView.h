@@ -4,8 +4,8 @@
 // menu and in an action bar for the selected row, the confirm for destructive ones (the shared
 // ProcessActionConfirm dialog, centred), and the result line. An action runs on a worker thread of
 // its own (std::async), never on the UI or the sampler thread: the platform call waits up to 10 s
-// per state change. The pure helpers (which actions apply, the critical list, the texts) make no
-// ImGui calls.
+// per state change, so it carries a stop token: cancel() or the destructor abandons that wait within one
+// poll (#1591). The pure helpers (which actions apply, the critical list, the texts) make no ImGui calls.
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
@@ -14,6 +14,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 
@@ -81,13 +82,14 @@ inline constexpr float RESULT_SECONDS = 8.0F;
 } // namespace ServiceActionsDetail
 
 /// The actions' state between frames, owned by ServicesPanel; drawn from ServicesView. Used on the UI
-/// thread only: the worker gets its own copy of the request and a shared_ptr to the actions, and hands
-/// back only its result, through the future.
+/// thread only: the worker gets its own copy of the request, a shared_ptr to the actions and a stop
+/// token (whose shared state is thread-safe), and hands back only its plain result, through the future.
 class ServiceActionsView
 {
   public:
     explicit ServiceActionsView(std::shared_ptr<Platform::IServiceActions> actions);
-    /// Waits for an action still running (bounded by the platform's wait, at most 20 s for a restart).
+    /// Cancels an action still running (cancel()), then waits for it: within one platform poll
+    /// (250 ms on Windows) rather than the platform's full wait.
     ~ServiceActionsView();
 
     ServiceActionsView(const ServiceActionsView&) = delete;
@@ -115,6 +117,11 @@ class ServiceActionsView
     {
         return m_Worker.valid();
     }
+
+    /// Asks a running action to stop waiting for the service (#1591): its result arrives at the
+    /// platform's next poll, as cancelled. A request already sent to the service manager stands. Does
+    /// nothing when no action runs.
+    void cancel() noexcept;
 
     /// Counts the result line down by @p deltaSeconds.
     void tick(float deltaSeconds) noexcept;
@@ -153,6 +160,7 @@ class ServiceActionsView
     std::string m_ConfirmTitle;
     std::string m_ConfirmQuestion;
     std::future<Platform::ServiceActionResult> m_Worker;
+    std::stop_source m_Stop; ///< The running action's; a new one per action.
     ServiceActionRequest m_Running;
     ServiceActionMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;
