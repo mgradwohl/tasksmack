@@ -389,7 +389,7 @@ struct Device
     std::string className;             ///< PCI: the setup class ("Display adapters") / pci.ids ("VGA compatible controller")
     std::string location;              ///< PCI: "01:00.0" / "0000:01:00.0"; Linux USB: the port path ("1-1.2")
     std::string driver;                ///< The bound driver: Windows' service / Linux's module; empty without one
-    double speedMbps = 0.0;            ///< Linux USB: the link speed; 0 when unknown
+    double speedMbps = 0.0;            ///< USB: the link speed; 0 when unknown
     std::uint32_t depth = 0;           ///< USB: 1 for a device on a root hub, 2 behind one more hub, ...
     std::optional<std::size_t> parent; ///< USB: the hub it is plugged into, as an index into DevicesInfo::usb
     std::string serial;                ///< USB: the device's serial number, an identifier
