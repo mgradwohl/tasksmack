@@ -18,6 +18,7 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#include <cfloat>
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -301,7 +302,7 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewFollowsTheSharedMemoryAndPowerCap
     const ImGuiContext& g = *ImGui::GetCurrentContext();
     for (const ImGuiWindow* window : g.Windows)
     {
-        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string(window->Name).find("/" + id + "_") != std::string::npos)
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string(window->Name).contains("/" + id + "_"))
         {
             return window;
         }
@@ -524,6 +525,41 @@ TEST_F(ProcessDetailsChartsRenderTest, TheNetworkChartsShowTooltips)
     drawNetwork();
     EXPECT_TRUE(hoverPlot(SeriesLabels{"Sent", "Received"}, drawNetwork));
 }
+
+#ifdef _WIN32
+/// busyPoint() with the newest few GDI readings missing: the series is drawn, its newest value is N/A.
+[[nodiscard]] Detail::ProcessHistoryPoint newestGdiGapPoint(std::size_t i)
+{
+    Detail::ProcessHistoryPoint point = busyPoint(i);
+    if (i + 3 >= HISTORY_POINTS)
+    {
+        point.gdiObjects = NOT_A_NUMBER;
+    }
+    return point;
+}
+
+// Windows only (#1000, #1395 Windows half): the Resources tooltip lists the GDI Objects series beside
+// Threads and Handles, a reading and a missing one alike.
+TEST_F(ProcessDetailsChartsRenderTest, TheResourcesTooltipListsGdiObjects)
+{
+    for (Detail::ProcessHistoryPoint (*makePoint)(std::size_t) : {busyPoint, newestGdiGapPoint})
+    {
+        const ChartInputs inputs(makePoint);
+        ProcessDetailsCharts charts;
+        const auto draw = [&]
+        {
+            renderOverview(charts, inputs.ctx);
+        };
+        draw();
+        draw();
+        const auto plots = plotsDrawn();
+        ASSERT_EQ(plots.size(), 3U);
+        EXPECT_EQ(plots[2], resourceSeries()); // GDI Objects is drawn: it has readings
+        EXPECT_TRUE(hoverPlot(resourceSeries(), draw));
+        ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    }
+}
+#endif
 
 } // namespace
 } // namespace App

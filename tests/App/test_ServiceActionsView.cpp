@@ -41,14 +41,18 @@ constexpr Platform::ServiceActionCapabilities ALL{
 class FakeServiceActions final : public Platform::IServiceActions
 {
   public:
+    explicit FakeServiceActions(Platform::ServiceActionCapabilities caps = ALL) : m_Caps(caps)
+    {}
+
     Platform::ServiceActionResult result = Platform::ServiceActionResult::succeeded();
     std::atomic<int> starts{0};
     std::atomic<int> stops{0};
     std::atomic<int> startTypes{0};
+    std::atomic<Platform::ServiceStartType> lastStartType{Platform::ServiceStartType::Unknown};
 
     [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
     {
-        return ALL;
+        return m_Caps;
     }
     [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
     {
@@ -64,11 +68,15 @@ class FakeServiceActions final : public Platform::IServiceActions
     {
         return result;
     }
-    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType type) override
     {
+        lastStartType = type;
         ++startTypes;
         return result;
     }
+
+  private:
+    Platform::ServiceActionCapabilities m_Caps;
 };
 
 /// How long the gated fake waits for its stop request before giving up: a bound for a broken build
@@ -172,6 +180,23 @@ class ThrowingServiceActions final : public Platform::IServiceActions
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return false;
+}
+
+/// Waits for an action the fake answers at once, without sleeping: the worker's future is ready as
+/// soon as the fake returns, so this yields until takeFinished() takes it. GATE_LIMIT bounds a broken
+/// build only.
+[[nodiscard]] bool finishWithoutSleeping(ServiceActionsView& view)
+{
+    const auto giveUpAt = std::chrono::steady_clock::now() + GATE_LIMIT;
+    while (!view.takeFinished())
+    {
+        if (std::chrono::steady_clock::now() > giveUpAt)
+        {
+            return false;
+        }
+        std::this_thread::yield();
+    }
+    return true;
 }
 
 TEST(ServiceActionsDetailTest, CriticalServicesAreKnown)
@@ -343,6 +368,46 @@ class ServiceActionsViewRenderTest : public ::testing::Test
         frame(view, row);
     }
 
+    /// One frame of the action bar above the table for @p selected, the result line and the confirm,
+    /// as ServicesView draws them. Returns the bar's and the result line's text.
+    static std::string barFrame(ServiceActionsView& view, const Platform::ServiceInfo* selected)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(1200.0F, 800.0F));
+        ImGui::Begin("Services", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::LogToBuffer();
+        view.renderActionBar(selected);
+        view.renderResultLine();
+        std::string captured = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        view.renderConfirmation();
+        ImGui::End();
+        ImGui::Render();
+        return captured;
+    }
+
+    /// Clicks the action bar's button labelled @p label (a disabled one does nothing).
+    static void clickBarButton(ServiceActionsView& view, const Platform::ServiceInfo* selected, const char* label)
+    {
+        static_cast<void>(barFrame(view, selected));
+        const ImGuiWindow* window = ImGui::FindWindowByName("Services");
+        ASSERT_NE(window, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(label, 0, window->ID));
+        static_cast<void>(barFrame(view, selected));
+        static_cast<void>(barFrame(view, selected));
+    }
+
+    /// Picks the item labelled @p label in the innermost open popup, drawing the bar for @p selected.
+    static void pickBarPopupItem(ServiceActionsView& view, const Platform::ServiceInfo* selected, const char* label)
+    {
+        const ImGuiContext& g = *ImGui::GetCurrentContext();
+        ASSERT_FALSE(g.OpenPopupStack.empty());
+        ImGui::ActivateItemByID(ImHashStr(label, 0, g.OpenPopupStack.back().Window->ID));
+        static_cast<void>(barFrame(view, selected));
+        static_cast<void>(barFrame(view, selected));
+    }
+
   private:
     ImGuiContext* m_Context = nullptr;
 };
@@ -412,6 +477,125 @@ TEST_F(ServiceActionsViewRenderTest, CriticalStopConfirmsCentredThenShowsTheResu
 
     view.tick(SvcDetail::RESULT_SECONDS + 1.0F);
     EXPECT_TRUE(view.lastResult().text.empty());
+}
+
+// The action bar above the table (#1577, #1395 Windows half): what it says beside its buttons.
+TEST_F(ServiceActionsViewRenderTest, ActionBarSaysWhatTheButtonsActOn)
+{
+    const auto spooler = service("Spooler", ServiceState::Running);
+
+    ServiceActionsView limited(std::make_shared<FakeServiceActions>());
+    EXPECT_TRUE(barFrame(limited, &spooler).contains("Requires administrator for most services"));
+
+    auto elevatedCaps = ALL;
+    elevatedCaps.elevated = true;
+    ServiceActionsView elevated(std::make_shared<FakeServiceActions>(elevatedCaps));
+    const std::string nothingSelected = barFrame(elevated, nullptr);
+    EXPECT_TRUE(nothingSelected.contains("Select a service"));
+    EXPECT_FALSE(nothingSelected.contains("Requires administrator"));
+    EXPECT_TRUE(barFrame(elevated, &spooler).contains("Spooler"));
+
+    // A platform with no actions draws no bar at all.
+    ServiceActionsView unsupported(std::make_shared<Platform::UnsupportedServiceActions>());
+    EXPECT_TRUE(barFrame(unsupported, &spooler).empty());
+}
+
+TEST_F(ServiceActionsViewRenderTest, ActionBarButtonsFollowTheSelectedServicesState)
+{
+    const auto fake = std::make_shared<FakeServiceActions>();
+    ServiceActionsView view(fake);
+    const auto running = service("Spooler", ServiceState::Running);
+
+    clickBarButton(view, nullptr, ICON_FA_STOP " Stop"); // nothing selected: disabled
+    EXPECT_FALSE(view.confirmRequested());
+    clickBarButton(view, &running, ICON_FA_PLAY " Start"); // running: disabled
+    EXPECT_FALSE(view.confirmRequested());
+    EXPECT_FALSE(view.busy());
+
+    clickBarButton(view, &running, ICON_FA_ARROWS_ROTATE " Restart"); // asks first
+    ASSERT_TRUE(view.confirmRequested());
+    EXPECT_EQ(view.pendingConfirm().value_or(ServiceActionRequest{}).kind, ServiceActionKind::Restart);
+    EXPECT_EQ(fake->starts.load() + fake->stops.load(), 0);
+
+    // A stopped service starts from the bar straight away and reports it.
+    ServiceActionsView startView(fake);
+    const auto stopped = service("Spooler", ServiceState::Stopped);
+    clickBarButton(startView, &stopped, ICON_FA_PLAY " Start");
+    EXPECT_FALSE(startView.confirmRequested());
+    ASSERT_TRUE(finishWithoutSleeping(startView));
+    EXPECT_EQ(fake->starts.load(), 1);
+    EXPECT_TRUE(barFrame(startView, &stopped).contains("Started Spooler"));
+}
+
+TEST_F(ServiceActionsViewRenderTest, StartupTypeMenuOffersTheOtherTypes)
+{
+    const auto fake = std::make_shared<FakeServiceActions>();
+    const auto spooler = service("Spooler", ServiceState::Running); // Manual
+    constexpr const char* MENU_BUTTON = "Startup type " ICON_FA_CARET_DOWN;
+
+    {
+        ServiceActionsView view(fake);
+        clickBarButton(view, &spooler, MENU_BUTTON);
+        pickBarPopupItem(view, &spooler, "Manual"); // its current type: disabled
+        EXPECT_FALSE(view.confirmRequested());
+        EXPECT_FALSE(view.busy());
+    }
+    {
+        // Disabled asks first.
+        ServiceActionsView view(fake);
+        clickBarButton(view, &spooler, MENU_BUTTON);
+        pickBarPopupItem(view, &spooler, "Disabled");
+        ASSERT_TRUE(view.confirmRequested());
+        const ServiceActionRequest pending = view.pendingConfirm().value_or(ServiceActionRequest{});
+        EXPECT_EQ(pending.kind, ServiceActionKind::SetStartType);
+        EXPECT_EQ(pending.startType, Platform::ServiceStartType::Disabled);
+    }
+    {
+        // Another automatic type runs straight away.
+        ServiceActionsView view(fake);
+        clickBarButton(view, &spooler, MENU_BUTTON);
+        pickBarPopupItem(view, &spooler, "Automatic (delayed)");
+        EXPECT_FALSE(view.confirmRequested());
+        ASSERT_TRUE(finishWithoutSleeping(view));
+        EXPECT_EQ(fake->startTypes.load(), 1);
+        EXPECT_EQ(fake->lastStartType.load(), Platform::ServiceStartType::AutomaticDelayed);
+        EXPECT_EQ(view.lastResult().text, "Set Spooler to Automatic (delayed)");
+    }
+    EXPECT_EQ(fake->startTypes.load(), 1);
+}
+
+TEST_F(ServiceActionsViewRenderTest, RowMenuStartupTypeSubmenuAsksBeforeDisabling)
+{
+    const auto fake = std::make_shared<FakeServiceActions>();
+    ServiceActionsView view(fake);
+    const auto spooler = service("Spooler", ServiceState::Running);
+
+    pickMenuItem(view, spooler, "Startup type"); // opens the submenu
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    ASSERT_GE(g.OpenPopupStack.Size, 2) << "the row menu and its Startup type submenu";
+    ImGui::ActivateItemByID(ImHashStr("Disabled", 0, g.OpenPopupStack.back().Window->ID));
+    frame(view, spooler);
+    frame(view, spooler);
+
+    ASSERT_TRUE(view.confirmRequested());
+    EXPECT_EQ(view.pendingConfirm().value_or(ServiceActionRequest{}).startType, Platform::ServiceStartType::Disabled);
+    EXPECT_EQ(fake->startTypes.load(), 0);
+}
+
+TEST_F(ServiceActionsViewRenderTest, RunningActionShowsProgressAndDisablesTheBar)
+{
+    const auto fake = std::make_shared<GatedServiceActions>();
+    ServiceActionsView view(fake);
+    const auto stopped = service("Spooler", ServiceState::Stopped);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Start, stopped));
+    fake->entered.wait();
+
+    EXPECT_TRUE(barFrame(view, &stopped).contains("Starting Spooler..."));
+    clickBarButton(view, &stopped, ICON_FA_PLAY " Start"); // busy: disabled, no second action
+    EXPECT_FALSE(view.confirmRequested());
+
+    view.cancel();
+    // The destructor waits for the cancelled worker; the gate returns once its token is stopped.
 }
 
 } // namespace
