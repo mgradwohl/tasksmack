@@ -217,6 +217,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
+    src/Platform/Windows/WindowsCrashEvents.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -347,6 +348,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxGraphics.h
         src/Platform/Linux/LinuxDevices.h
         src/Platform/Linux/LinuxKernelModules.h
+        src/Platform/Linux/LinuxCoredumps.h
         src/Platform/Linux/LinuxPlatformSecurity.h
         src/Platform/Linux/LinuxBootTimes.h
         src/Platform/Linux/SystemdBus.h
@@ -385,6 +387,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsGraphics.h
         src/Platform/Windows/WindowsDevices.h
         src/Platform/Windows/WindowsDrivers.h
+        src/Platform/Windows/WindowsCrashEvents.h
         src/Platform/Windows/ComScope.h
     )
 endif()
@@ -524,6 +527,7 @@ function(tasksmack_configure_app_target target)
             version
             powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
             setupapi # WindowsBatteryInfo: the battery devices (#1523)
+            wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
         )
     elseif(UNIX AND NOT APPLE)
         # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525)

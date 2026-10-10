@@ -1219,6 +1219,100 @@ Section buildDriversSection(const Platform::DriversInfo& drivers)
     return section;
 }
 
+std::string_view exceptionCodeName(std::string_view code)
+{
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 10> NAMES{
+        {
+            {"0xC0000005", "access violation"},
+            {"0xC0000409", "stack buffer overrun / fail fast"},
+            {"0xC00000FD", "stack overflow"},
+            {"0xC0000374", "heap corruption"},
+            {"0x80000003", "breakpoint"},
+            {"0xC000001D", "illegal instruction"},
+            {"0xC0000094", "integer divide by zero"},
+            {"0xC0000420", "assertion failure"},
+            {"0xE0434352", ".NET exception"},
+            {"0xE06D7363", "C++ exception"},
+        },
+    };
+    for (const auto& [hex, name] : NAMES)
+    {
+        if (hex == code)
+        {
+            return name;
+        }
+    }
+    return {};
+}
+
+std::string formatCrashValue(const Platform::CrashEvent& event)
+{
+    const std::string app =
+        joinNonEmpty({event.application.empty() ? std::string_view("Unknown application") : event.application, event.appVersion}, " ");
+    const std::string pid = event.pid.has_value() ? std::format("pid {}", *event.pid) : std::string{};
+    if (event.uid.has_value()) // a Linux core dump
+    {
+        const std::string uid = std::format("uid {}", *event.uid);
+        const std::string size = event.coreBytes > 0 ? UI::Format::formatBytes(static_cast<double>(event.coreBytes)) : std::string{};
+        return joinNonEmpty({app + " dumped core", pid, uid, size}, ", ");
+    }
+    if (event.hang)
+    {
+        return joinNonEmpty({event.hangType.empty() ? app + " hung" : std::format("{} hung ({})", app, event.hangType), pid}, ", ");
+    }
+    const std::string module = joinNonEmpty({event.module, event.moduleVersion}, " ");
+    const std::string_view name = exceptionCodeName(event.exceptionCode);
+    std::string exception;
+    if (!event.exceptionCode.empty())
+    {
+        exception = name.empty() ? "exception " + event.exceptionCode : std::format("exception {} ({})", event.exceptionCode, name);
+    }
+    return joinNonEmpty({module.empty() ? app + " crashed" : std::format("{} crashed in {}", app, module), exception, pid}, ", ");
+}
+
+Section buildCrashesSection(const Platform::CrashesInfo& crashes)
+{
+    const bool windows = crashes.family == Platform::OsFamily::Windows;
+    Section section{.title = windows ? "Recent crashes & hangs" : "Recent crashes", .icon = ICON_FA_TRIANGLE_EXCLAMATION, .rows = {}};
+    std::vector<Row>& rows = section.rows;
+    const std::string period = std::format("Last {} days", Platform::CRASH_HISTORY_DAYS);
+    const auto plural = [](std::size_t count, std::string_view one, std::string_view many)
+    {
+        return std::format("{} {}", count, count == 1 ? one : many);
+    };
+    std::string count;
+    if (crashes.listed)
+    {
+        const auto hangs = static_cast<std::size_t>(std::ranges::count_if(crashes.events, &Platform::CrashEvent::hang));
+        const std::size_t crashed = crashes.events.size() - hangs;
+        if (crashes.events.empty())
+        {
+            count = windows ? "No crashes or hangs" : "No core dumps";
+        }
+        else
+        {
+            count = windows ? std::format("{}, {}", plural(crashed, "crash", "crashes"), plural(hangs, "hang", "hangs"))
+                            : plural(crashed, "core dump", "core dumps");
+        }
+    }
+    rows.push_back(
+        row(period, std::move(count), crashes.unavailableReason.empty() ? std::string_view(NOT_REPORTED) : crashes.unavailableReason));
+    if (crashes.capped)
+    {
+        rows.push_back(row("Older", "", std::format("Not listed: only the {} newest are shown", Platform::CRASH_LIST_MAX)));
+    }
+    if (!windows && crashes.listed)
+    {
+        rows.push_back(row("Source", "systemd-coredump's core files; the journal's details (signal, executable) aren't read"));
+    }
+    for (const Platform::CrashEvent& event : crashes.events)
+    {
+        std::string when = UI::Format::formatEpochDateTime(event.unixSeconds);
+        rows.push_back(row(when.empty() ? std::string("Unknown time") : std::move(when), formatCrashValue(event)));
+    }
+    return section;
+}
+
 std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
 {
     std::string text;
@@ -1401,6 +1495,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     if (snapshot.drivers.available)
     {
         sections.push_back(buildDriversSection(snapshot.drivers));
+    }
+    if (snapshot.crashes.available)
+    {
+        sections.push_back(buildCrashesSection(snapshot.crashes)); // the page's last section
     }
     // Further sections (#1514 and on) follow here, in the page's order.
     return sections;

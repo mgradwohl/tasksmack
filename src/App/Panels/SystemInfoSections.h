@@ -191,6 +191,19 @@ struct VisibleSection
 /// module by name; on Linux, the tainted count and a note that built-in modules aren't listed.
 [[nodiscard]] Section buildDriversSection(const Platform::DriversInfo& drivers);
 
+/// A well-known exception code's name ("access violation" for 0xC0000005); empty for others.
+[[nodiscard]] std::string_view exceptionCodeName(std::string_view code);
+
+/// A crash's row value: "notepad.exe 10.0.26100.1 crashed in ntdll.dll 10.0.26100.1, exception 0xC0000005
+/// (access violation), pid 6700", "notepad.exe 10.0.26100.1 hung (Quiesce)" or, on Linux, "python3 dumped
+/// core, pid 4242, uid 1000, 1.5 MiB".
+[[nodiscard]] std::string formatCrashValue(const Platform::CrashEvent& event);
+
+/// The Recent crashes & hangs section (#1524), titled "Recent crashes" on Linux, the page's last: the counts
+/// of the last CRASH_HISTORY_DAYS days, a muted note when only the newest CRASH_LIST_MAX are listed, then
+/// one row per event, newest first, labelled by its local time.
+[[nodiscard]] Section buildCrashesSection(const Platform::CrashesInfo& crashes);
+
 /// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
 /// for the Graphics & displays section, captured on the UI thread.
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.

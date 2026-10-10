@@ -21,7 +21,7 @@ namespace Platform
 /// resolv.conf, addresses from getifaddrs() (LinuxNetworkAdapters.h, #1518); boot phases from systemd
 /// over D-Bus when built with libsystemd (SystemdBus.h, LinuxBootTimes.h, #1525); PCI and USB devices
 /// from /sys/bus and audio from /proc/asound (LinuxDevices.h, #1520); loaded kernel modules from /proc/modules
-/// (LinuxKernelModules.h, #1521).
+/// (LinuxKernelModules.h, #1521); core dumps from /var/lib/systemd/coredump (LinuxCoredumps.h, #1524).
 class LinuxSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -41,6 +41,7 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] SensorsInfo readSensors() override;
     [[nodiscard]] DevicesInfo readDevices() override;
     [[nodiscard]] DriversInfo readDrivers() override;
+    [[nodiscard]] CrashesInfo readCrashes() override;
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override;
     [[nodiscard]] BootPerformanceInfo readBootPerformance() override;
 

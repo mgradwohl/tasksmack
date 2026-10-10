@@ -210,6 +210,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_GraphicsInfo.cpp
     Platform/test_DevicesInfo.cpp
     Platform/test_DriversInfo.cpp
+    Platform/test_CrashesInfo.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
@@ -400,6 +401,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsStartupActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemInfoProbe.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsCrashEvents.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsServiceProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
@@ -673,6 +675,7 @@ if(WIN32)
         version
         powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
         setupapi # WindowsBatteryInfo: the battery devices (#1523)
+        wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
     )
 endif()
 

@@ -2,6 +2,7 @@
 
 #include "LinuxBootTimes.h"
 #include "LinuxCommitPaging.h"
+#include "LinuxCoredumps.h"
 #include "LinuxDevices.h"
 #include "LinuxFirmwareInfo.h"
 #include "LinuxGraphics.h"
@@ -235,6 +236,14 @@ DriversInfo LinuxSystemInfoProbe::readDrivers()
 {
     DriversInfo info;
     LinuxKernelModules::readKernelModules(m_Root, info);
+    return info;
+}
+
+CrashesInfo LinuxSystemInfoProbe::readCrashes()
+{
+    CrashesInfo info;
+    const std::time_t now = std::time(nullptr);
+    LinuxCoredumps::readCoredumps(m_Root, now > 0 ? static_cast<std::uint64_t>(now) : 0, info);
     return info;
 }
 
