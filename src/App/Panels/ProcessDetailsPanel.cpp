@@ -15,6 +15,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessSecurity.h"
 #include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
@@ -27,6 +28,7 @@
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessEnvironmentView.h"
 #include "ProcessModulesView.h"
+#include "ProcessOpenFilesView.h"
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSecurityView.h"
@@ -65,7 +67,8 @@ ProcessDetailsPanel::ProcessDetailsPanel()
                           Synthetic::makeProcessEnvironmentReader(Synthetic::activeScenario()),
                           Synthetic::makeProcessConnectionsReader(Synthetic::activeScenario()),
                           Synthetic::makeProcessModulesReader(Synthetic::activeScenario()),
-                          Synthetic::makeProcessSecurityReader(Synthetic::activeScenario()))
+                          Synthetic::makeProcessSecurityReader(Synthetic::activeScenario()),
+                          Synthetic::makeProcessOpenFilesReader(Synthetic::activeScenario()))
 {}
 
 ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActions> processActions)
@@ -95,7 +98,8 @@ ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActio
                                          std::unique_ptr<Platform::IProcessEnvironmentReader> environmentReader,
                                          std::unique_ptr<Platform::IProcessConnectionsReader> connectionsReader,
                                          std::unique_ptr<Platform::IProcessModulesReader> modulesReader,
-                                         std::unique_ptr<Platform::IProcessSecurityReader> securityReader)
+                                         std::unique_ptr<Platform::IProcessSecurityReader> securityReader,
+                                         std::unique_ptr<Platform::IProcessOpenFilesReader> openFilesReader)
     : Panel("Process Details"),
       m_ProcessActions(std::move(processActions)),
       m_ActionCapabilities(m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{}),
@@ -106,7 +110,9 @@ ProcessDetailsPanel::ProcessDetailsPanel(std::unique_ptr<Platform::IProcessActio
       m_ModulesReader(std::move(modulesReader)),
       m_HasModules(m_ModulesReader != nullptr && m_ModulesReader->hasModules()),
       m_SecurityReader(std::move(securityReader)),
-      m_HasSecurity(m_SecurityReader != nullptr && m_SecurityReader->hasSecurity())
+      m_HasSecurity(m_SecurityReader != nullptr && m_SecurityReader->hasSecurity()),
+      m_OpenFilesReader(std::move(openFilesReader)),
+      m_HasOpenFiles(m_OpenFilesReader != nullptr && m_OpenFilesReader->hasOpenFiles())
 {}
 
 void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSample> samples, float deltaTime)
@@ -187,6 +193,9 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     // The Security section's on-demand read (#1526), on the same terms.
     const bool canReadSecurity = m_HasSecurity && m_HasSnapshot && !m_ProcessExited;
     static_cast<void>(m_SecurityView.update(canReadSecurity ? m_SecurityReader.get() : nullptr, selectedTarget(), deltaTime));
+    // The Open files section's on-demand read (#183), on the same terms.
+    const bool canReadOpenFiles = m_HasOpenFiles && m_HasSnapshot && !m_ProcessExited;
+    static_cast<void>(m_OpenFilesView.update(canReadOpenFiles ? m_OpenFilesReader.get() : nullptr, selectedTarget(), deltaTime));
 }
 
 void ProcessDetailsPanel::recordHistoryPoint(const Domain::ProcessSnapshot& snapshot,
@@ -314,6 +323,8 @@ void ProcessDetailsPanel::renderContent()
                 m_ModulesView.render(m_HasModules);
                 // Likewise collapsed by default; hidden on Windows until its token reader lands (#1526)
                 m_SecurityView.render(m_HasSecurity);
+                // Likewise collapsed by default; hidden only in synthetic runs (#183)
+                m_OpenFilesView.render(m_HasOpenFiles);
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick
                 if (!m_SmoothedUsage.initialized)
@@ -435,6 +446,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTi
     m_ConnectionsView.onSelectionChanged(); // Drops the previous process's sockets (#799)
     m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
     m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
+    m_OpenFilesView.onSelectionChanged();   // Drops the previous process's open files (#183)
 
     if (pid != -1)
     {

@@ -151,6 +151,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessEnvironmentView.cpp
     src/App/Panels/ProcessConnectionsView.cpp
     src/App/Panels/ProcessModulesView.cpp
+    src/App/Panels/ProcessOpenFilesView.cpp
     src/App/Panels/ProcessSecurityView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
@@ -191,6 +192,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxProcessModulesReader.cpp
+    src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdBus.cpp
@@ -210,6 +212,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
+    src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
@@ -282,6 +285,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
     src/Platform/IProcessModules.h
+    src/Platform/IProcessOpenFiles.h
     src/Platform/IProcessSecurity.h
     src/Platform/IStartupProbe.h
     src/Platform/IStartupActions.h
@@ -303,6 +307,7 @@ set(TASKSMACK_HEADERS
     src/Domain/SocketTrafficAccumulator.h
     src/Domain/ProcessConnections.h
     src/Domain/ProcessModules.h
+    src/Domain/ProcessOpenFiles.h
     src/Domain/ProcessSecurity.h
     src/Domain/ISamplable.h
     src/Domain/PublicationSlot.h
@@ -324,6 +329,8 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessSecurityReader.h
         src/Platform/Linux/ProcStatusSecurityParser.h
         src/Platform/Linux/ProcMapsParser.h
+        src/Platform/Linux/LinuxProcessOpenFilesReader.h
+        src/Platform/Linux/ProcFdParser.h
         src/Platform/Linux/InetSocketTable.h
         src/Platform/Linux/LinuxDiskProbe.h
         src/Platform/Linux/LinuxPowerProbe.h
@@ -347,6 +354,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsProcessModules.h
+        src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h

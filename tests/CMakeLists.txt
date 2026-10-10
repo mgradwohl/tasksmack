@@ -204,6 +204,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_GraphicsInfo.cpp
     Platform/test_DevicesInfo.cpp
     Platform/test_ProcMapsParser.cpp
+    Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp
     Platform/test_ProcessName.cpp
@@ -245,6 +246,8 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessConnectionsView.cpp
     App/test_ProcessConnectionsViewRender.cpp
     App/test_ProcessModulesViewRender.cpp
+    App/test_ProcessOpenFilesViewRender.cpp
+    App/test_LazyBackgroundRead.cpp
     App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp
@@ -307,6 +310,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSystemProbe.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessModules.cpp
+    Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsDiskProbe.cpp
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
@@ -345,6 +349,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxProcessEnvironmentReader.cpp
     Platform/test_LinuxProcessConnectionsReader.cpp
     Platform/test_LinuxProcessModulesReader.cpp
+    Platform/test_LinuxProcessOpenFilesReader.cpp
     Platform/test_LinuxProcessSecurityReader.cpp
     Platform/test_SystemdBus.cpp
     Platform/test_InetSocketTable.cpp
@@ -373,6 +378,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSystemProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsPathProvider.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -400,6 +406,7 @@ else()
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessConnectionsReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessModulesReader.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessOpenFilesReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxProcessSecurityReader.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxDiskProbe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Linux/LinuxPathProvider.cpp
@@ -456,7 +463,8 @@ add_executable(TaskSmackTests
     # test_ProcessPriorityViewRender.cpp, test_ProcessIoPriorityViewRender.cpp,
     # test_ProcessDetailsChartsRender.cpp, test_ProcessEnvironmentViewRender.cpp,
     # test_ProcessConnectionsViewRender.cpp), the Modules section (test_ProcessModulesViewRender.cpp, #802),
-    # the Security section (test_ProcessSecurityViewRender.cpp, #1526), and the batch priority dialog (#1484,
+    # the Open files section (test_ProcessOpenFilesViewRender.cpp, #183), the Security section
+    # (test_ProcessSecurityViewRender.cpp, #1526), and the batch priority dialog (#1484,
     # test_ProcessBatchPriorityDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
@@ -468,6 +476,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessEnvironmentView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessConnectionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessModulesView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessOpenFilesView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessSecurityView.cpp
     # The Overview's CPU Details block, run headless (test_CpuDetailsBlockRender.cpp, #809)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuDetailsBlock.cpp

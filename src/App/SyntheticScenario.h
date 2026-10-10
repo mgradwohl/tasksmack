@@ -30,6 +30,7 @@
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
 #include "Platform/ISystemProbe.h"
@@ -111,6 +112,8 @@ class Scenario
 [[nodiscard]] std::unique_ptr<Platform::IProcessConnectionsReader> makeProcessConnectionsReader(const Scenario* scenario);
 /// With a scenario, a reader that reports no modules support, for the same reason (#802).
 [[nodiscard]] std::unique_ptr<Platform::IProcessModulesReader> makeProcessModulesReader(const Scenario* scenario);
+/// With a scenario, a reader that reports no open-files support, for the same reason (#183).
+[[nodiscard]] std::unique_ptr<Platform::IProcessOpenFilesReader> makeProcessOpenFilesReader(const Scenario* scenario);
 /// With a scenario, a reader that reports no security support, for the same reason (#1526).
 [[nodiscard]] std::unique_ptr<Platform::IProcessSecurityReader> makeProcessSecurityReader(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::ISystemProbe> makeSystemProbe(const Scenario* scenario);
