@@ -95,6 +95,10 @@ add_test(NAME TidyChangedFilesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_changed_files.py)
 set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 180)
 
+# tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
+add_test(NAME CoverageMismatchesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_coverage_mismatches.py)
+
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.
 set(COMMON_TEST_SOURCES

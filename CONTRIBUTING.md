@@ -709,6 +709,15 @@ pwsh tools/coverage.ps1 -OpenReport
 pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-coverage"
 ```
 
+> **Note ("functions have mismatched data"):** `llvm-cov` warns that a couple of hundred functions
+> have mismatched data. They are clang's unused-function placeholders: a header or inline function a
+> binary references but never emits gets a hash-0 record with no counters, and when another binary
+> ran that function the profile has it under that binary's real hash. The placeholder has nothing to
+> lose, and the binary that ran the function carries the counts, so the report is complete.
+> `tools/coverage.sh` confirms this on every run with `tools/coverage-mismatches.py`, and warns if a
+> real record ever mismatches -- a function compiled differently in two binaries, whose counts would
+> be missing (#1544). The check reads ELF sections, so `tools/coverage.ps1` doesn't run it.
+
 > **Note (Linux GPU mock tests):** The Linux GPU probe tests depend on mock shared libraries
 > (`libnvidia-ml.so.1`, `librocm_smi64.so.6`) built into `build/<preset>/tests/mocks/`
 > (e.g. `build/debug/tests/mocks/` or `build/coverage/tests/mocks/`).
