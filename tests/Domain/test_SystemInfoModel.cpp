@@ -99,6 +99,14 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
+    [[nodiscard]] Platform::DevicesInfo readDevices() override
+    {
+        Platform::DevicesInfo info;
+        info.available = true;
+        info.pciRead = true;
+        return info;
+    }
+
     [[nodiscard]] Platform::NetworkAdaptersInfo readNetworkAdapters() override
     {
         Platform::NetworkAdaptersInfo info;
@@ -145,6 +153,7 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(first->graphics.adapters[0].name, "Contoso GPU");
     EXPECT_EQ(first->security.secureBoot, Platform::SecurityFeatureState::On);
     EXPECT_TRUE(first->sensors.listed);
+    EXPECT_TRUE(first->devices.pciRead);
     EXPECT_EQ(first->adapters.gatewayV4, "192.168.1.1");
     EXPECT_EQ(first->boot.totalUs, std::optional<std::uint64_t>(12'000'000));
     EXPECT_GT(first->readAtUnixSeconds, 0U);
@@ -170,6 +179,7 @@ TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)
     EXPECT_FALSE(model.snapshot()->graphics.available);
     EXPECT_FALSE(model.snapshot()->security.available);
     EXPECT_FALSE(model.snapshot()->sensors.available);
+    EXPECT_FALSE(model.snapshot()->devices.available);
     EXPECT_FALSE(model.snapshot()->adapters.available);
     EXPECT_FALSE(model.snapshot()->boot.available);
 

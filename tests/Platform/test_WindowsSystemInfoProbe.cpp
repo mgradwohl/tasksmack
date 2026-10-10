@@ -12,6 +12,7 @@
 #include "Platform/SmbiosParser.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
+#include "Platform/Windows/WindowsDevices.h"
 #include "Platform/Windows/WindowsGraphics.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsInstalledMemory.h"
@@ -31,6 +32,7 @@
 #include <winternl.h>
 #include <psapi.h>
 #include <winioctl.h>
+#include <cfgmgr32.h>
 // clang-format on
 
 #include <algorithm>
@@ -44,6 +46,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -876,6 +879,145 @@ TEST(WindowsSystemInfoProbeTest, GraphicsHelpers)
     EXPECT_NE(WindowsGraphics::findDriverNode(nodes, 0x8086, 0xA7A0, PciLocation{.bus = 0, .device = 2, .function = 0}), nullptr);
     EXPECT_EQ(WindowsGraphics::findDriverNode(nodes, 0x8086, 0xA7A0, PciLocation{.bus = 0, .device = 3, .function = 0}), nullptr);
     EXPECT_EQ(WindowsGraphics::findDriverNode(nodes, 0x10DE, 0xA7A0, std::nullopt), nullptr);
+}
+
+TEST(WindowsSystemInfoProbeTest, ReadsDevices)
+{
+    WindowsSystemInfoProbe probe;
+    const DevicesInfo info = probe.readDevices();
+    EXPECT_TRUE(info.available);
+    EXPECT_EQ(info.family, OsFamily::Windows);
+    EXPECT_TRUE(info.pciRead); // SetupAPI lists every present device; a VM may have no PCI bus at all
+    for (const Device& device : info.problems)
+    {
+        EXPECT_FALSE(device.problem.empty());
+    }
+}
+
+// The fake devices table's state: whether SetupAPI and MMDevice can be used.
+bool g_DevicesFail = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+[[nodiscard]] WindowsDevices::DevNodeRecord devNode(std::string id, std::string parent, std::string name, ULONG problem = 0)
+{
+    WindowsDevices::DevNodeRecord node;
+    node.instanceId = std::move(id);
+    node.parentId = std::move(parent);
+    node.name = std::move(name);
+    node.statusRead = true;
+    node.status = DN_DRIVER_LOADED | DN_STARTED | (problem != 0 ? DN_HAS_PROBLEM : 0U);
+    node.problem = problem;
+    return node;
+}
+
+[[nodiscard]] std::optional<std::vector<WindowsDevices::DevNodeRecord>> fakeDevNodes()
+{
+    if (g_DevicesFail)
+    {
+        return std::nullopt;
+    }
+    WindowsDevices::DevNodeRecord gpu =
+        devNode(R"(PCI\VEN_10DE&DEV_2786&SUBSYS_00000000&REV_A1\4&1&0&0008)", "ACPI\\PNP0A08\\0", "NVIDIA GeForce RTX 4070");
+    gpu.manufacturer = "NVIDIA";
+    gpu.className = "Display adapters";
+    gpu.service = "nvlddmkm";
+    gpu.bus = 1;
+    gpu.address = 0;
+    WindowsDevices::DevNodeRecord wifi =
+        devNode(R"(PCI\VEN_8086&DEV_51F0&SUBSYS_00948086&REV_01\3&2&0&A3)", "ACPI\\PNP0A08\\0", "Wireless adapter", CM_PROB_FAILED_START);
+    wifi.manufacturer = "(Standard system devices)";
+    wifi.bus = 0;
+    wifi.address = (0x14U << 16U) | 3U;
+    WindowsDevices::DevNodeRecord odd = devNode(R"(ROOT\ODD\0000)", "HTREE\\ROOT\\0", "", 99); // no name of its own
+    odd.manufacturer = "Contoso";
+    return std::vector{
+        gpu,
+        wifi,
+        devNode(R"(USB\VID_046D&PID_C52B\5&3&0&2)", R"(USB\VID_05E3&PID_0610\6&4&0&1)", "USB Receiver"), // listed before its hub
+        devNode(R"(USB\VID_046D&PID_C52B&MI_00\6&5&0&0000)", R"(USB\VID_046D&PID_C52B\5&3&0&2)", "Interface"),
+        devNode(R"(USB\VID_05E3&PID_0610\6&4&0&1)", R"(USB\ROOT_HUB30\4&6&0&0)", "Generic USB Hub"),
+        devNode(R"(USB\VID_0781&PID_5583\4C530001)", R"(USB\ROOT_HUB30\4&6&0&0)", "USB Mass Storage Device"),
+        devNode(R"(USB\ROOT_HUB30\4&6&0&0)", R"(PCI\VEN_8086&DEV_51ED\3&0)", "USB Root Hub (USB 3.0)"),
+        devNode(R"(ROOT\DISABLED\0000)", "HTREE\\ROOT\\0", "Disabled thing", CM_PROB_DISABLED),
+        odd,
+    };
+}
+
+[[nodiscard]] std::optional<std::vector<WindowsDevices::AudioRecord>> fakeAudio()
+{
+    if (g_DevicesFail)
+    {
+        return std::nullopt;
+    }
+    return std::vector<WindowsDevices::AudioRecord>{
+        {.name = "Speakers (Realtek(R) Audio)", .capture = false},
+        {.name = "Microphone (USB Audio)", .capture = true},
+    };
+}
+
+TEST(WindowsSystemInfoProbeTest, DevicesThroughTheFunctionTable)
+{
+    DevicesInfo info;
+    WindowsDevices::readDevices(info, {.listDevNodes = &fakeDevNodes, .listAudioEndpoints = &fakeAudio});
+    ASSERT_TRUE(info.pciRead);
+    ASSERT_EQ(info.pci.size(), 2U);
+    EXPECT_EQ(info.pci[0].location, "00:14.3"); // sorted by location
+    EXPECT_TRUE(info.pci[0].vendor.empty());    // named: the manufacturer isn't needed
+    EXPECT_EQ(info.pci[0].problem, "This device cannot start (Code 10)");
+    const Device& gpu = info.pci[1];
+    EXPECT_EQ(gpu.name, "NVIDIA GeForce RTX 4070");
+    EXPECT_TRUE(gpu.vendor.empty());
+    EXPECT_EQ(gpu.vendorId, 0x10DEU);
+    EXPECT_EQ(gpu.productId, 0x2786U);
+    EXPECT_EQ(gpu.className, "Display adapters");
+    EXPECT_EQ(gpu.driver, "nvlddmkm");
+    EXPECT_EQ(gpu.location, "01:00.0");
+    EXPECT_TRUE(gpu.problem.empty());
+
+    ASSERT_TRUE(info.problemsRead);
+    ASSERT_EQ(info.problems.size(), 3U);
+    EXPECT_EQ(info.problems[1].problem, "This device is disabled (Code 22)");
+    EXPECT_EQ(info.problems[2].problem, "Problem code 99");
+    EXPECT_EQ(info.problems[2].vendor, "Contoso"); // no name: the manufacturer is kept
+
+    ASSERT_TRUE(info.usbRead);
+    ASSERT_EQ(info.usb.size(), 3U); // the root hub and the composite device's interface left out
+    EXPECT_EQ(info.usb[0].name, "Generic USB Hub");
+    EXPECT_EQ(info.usb[0].depth, 1U);
+    EXPECT_EQ(info.usb[1].name, "USB Receiver"); // after its hub
+    EXPECT_EQ(info.usb[1].depth, 2U);
+    EXPECT_EQ(info.usb[1].parent, std::optional<std::size_t>(0));
+    EXPECT_EQ(info.usb[1].vendorId, 0x046DU);
+    EXPECT_EQ(info.usb[1].productId, 0xC52BU);
+    EXPECT_TRUE(info.usb[1].serial.empty()); // a generated instance id: no serial number
+    EXPECT_EQ(info.usb[2].serial, "4C530001");
+    EXPECT_EQ(info.usb[2].depth, 1U);
+
+    ASSERT_TRUE(info.audioRead);
+    ASSERT_EQ(info.audio.size(), 2U);
+    EXPECT_EQ(info.audio[0].flow, AudioFlow::Output);
+    EXPECT_EQ(info.audio[1].flow, AudioFlow::Input);
+
+    g_DevicesFail = true;
+    DevicesInfo failed;
+    WindowsDevices::readDevices(failed, {.listDevNodes = &fakeDevNodes, .listAudioEndpoints = &fakeAudio});
+    g_DevicesFail = false;
+    EXPECT_TRUE(failed.available);
+    EXPECT_FALSE(failed.pciRead);
+    EXPECT_FALSE(failed.problemsRead);
+    EXPECT_FALSE(failed.audioRead);
+}
+
+TEST(WindowsSystemInfoProbeTest, DeviceHelpers)
+{
+    EXPECT_EQ(WindowsDevices::problemText(CM_PROB_FAILED_INSTALL), "The drivers for this device are not installed (Code 28)");
+    EXPECT_EQ(WindowsDevices::problemText(CM_PROB_UNSIGNED_DRIVER), "Windows cannot verify the digital signature of the drivers (Code 52)");
+    EXPECT_EQ(WindowsDevices::problemText(1234), "Problem code 1234");
+    EXPECT_EQ(WindowsDevices::idAfter("PCI\\VEN_8086&DEV_51F0", "DEV_"), 0x51F0U);
+    EXPECT_EQ(WindowsDevices::idAfter("PCI\\VEN_80", "VEN_"), 0U); // too short
+    EXPECT_EQ(WindowsDevices::idAfter("ACPI\\VEN_INT&DEV_33A0", "VEN_"), 0U);
+    EXPECT_TRUE(WindowsDevices::isListedUsbDevice("USB\\VID_046D&PID_C52B\\5&3"));
+    EXPECT_FALSE(WindowsDevices::isListedUsbDevice("USB\\ROOT_HUB30\\4&6"));
+    EXPECT_FALSE(WindowsDevices::isListedUsbDevice("USB\\VID_046D&PID_C52B&MI_01\\6&5"));
 }
 
 } // namespace
