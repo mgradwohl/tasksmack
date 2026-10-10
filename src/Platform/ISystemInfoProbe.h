@@ -197,6 +197,27 @@ struct AtaHealth
     std::optional<std::uint64_t> powerOnHours; ///< When reported
 };
 
+/// How a disk is partitioned (#1632).
+enum class PartitionStyle : std::uint8_t
+{
+    Unknown, ///< Not read (Linux without udev's database)
+    Mbr,
+    Gpt,
+    Raw, ///< No partition table
+};
+
+/// One partition (#1632). A string the probe couldn't read is empty.
+struct Partition
+{
+    std::uint32_t number = 0; ///< 1-based, as the OS numbers it
+    std::string device;       ///< Linux: the kernel name ("nvme0n1p2"); empty on Windows
+    std::string typeId;       ///< The GPT type GUID ("C12A7328-F81F-11D2-BA4B-00A0C93EC93B") or MBR type ("0x07")
+    std::string typeName;     ///< typeId's common name ("EFI System"); empty for one not in the table
+    std::uint64_t offsetBytes = 0;
+    std::uint64_t sizeBytes = 0;
+    std::string mountPoint; ///< The drive letter ("C:") or mount point ("/boot/efi") on it; empty when none
+};
+
 /// One physical disk (#1517). A string the probe couldn't read is empty and a size 0.
 struct PhysicalDisk
 {
@@ -211,6 +232,10 @@ struct PhysicalDisk
     std::optional<NvmeHealth> health;    ///< NVMe drives, when the health log could be read (Linux: through udisks2, #1631)
     std::optional<AtaHealth> ataHealth;  ///< Linux: ATA drives' SMART status, through udisks2 (#1631)
     std::string healthUnavailableReason; ///< Why health is missing; empty when it isn't read for this disk at all
+    PartitionStyle partitionStyle = PartitionStyle::Unknown; ///< #1632
+    bool partitionsRead = false;                             ///< The layout was read: an empty partitions means none
+    std::vector<Partition> partitions;                       ///< In the OS's order (by number)
+    std::string partitionsUnavailableReason;                 ///< Why the layout wasn't read
 };
 
 /// One mounted volume (#1517): a drive letter or a mount point.

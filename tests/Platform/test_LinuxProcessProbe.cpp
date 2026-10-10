@@ -39,6 +39,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -59,7 +60,12 @@
 #include <thread>
 #include <utility>
 
+#include <linux/prctl.h>
 #include <sched.h>
+// NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
+#include <signal.h>
+#include <sys/prctl.h>
+#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -222,6 +228,121 @@ TEST(LinuxProcessProbeTest, EnumerateReturnsProcesses)
 
     // Should find at least a few processes (init, kernel threads, this test, etc.)
     EXPECT_GT(processes.size(), 0ULL);
+}
+
+/// A child process for one test, killed and reaped when it goes out of scope.
+class ChildProcess
+{
+  public:
+    explicit ChildProcess(pid_t pid) : m_Pid(pid)
+    {}
+    ~ChildProcess()
+    {
+        if (m_Pid > 0)
+        {
+            ::kill(m_Pid, SIGKILL);
+            int status = 0;
+            ::waitpid(m_Pid, &status, 0);
+        }
+    }
+    ChildProcess(const ChildProcess&) = delete;
+    ChildProcess& operator=(const ChildProcess&) = delete;
+    ChildProcess(ChildProcess&&) = delete;
+    ChildProcess& operator=(ChildProcess&&) = delete;
+
+    [[nodiscard]] pid_t pid() const noexcept
+    {
+        return m_Pid;
+    }
+
+  private:
+    pid_t m_Pid = -1;
+};
+
+/// Not UTF-8: a lead byte without its continuation, a stray continuation and 0xFF (#1648). NUL-terminated
+/// for prctl(), and as a view for the comparisons.
+constexpr const char* NOT_UTF8_CSTR = "bad\xC3(\x80\xFFname";
+constexpr std::string_view NOT_UTF8 = NOT_UTF8_CSTR;
+
+[[nodiscard]] std::optional<ProcessCounters> countersFor(LinuxProcessProbe& probe, pid_t pid)
+{
+    for (ProcessCounters& counters : probe.enumerate())
+    {
+        if (counters.pid == static_cast<std::int32_t>(pid))
+        {
+            return std::move(counters);
+        }
+    }
+    return std::nullopt;
+}
+
+// #1648: a real process whose /proc/<pid>/comm isn't UTF-8 -- it renamed itself with prctl(PR_SET_NAME) --
+// reaches the snapshot byte for byte, as the mocks in test_NonAsciiRoundTrips.cpp assume.
+TEST(LinuxProcessProbeTest, ARealProcessNameThatIsntUtf8ArrivesByteForByte)
+{
+    std::array<int, 2> ready{};
+    ASSERT_EQ(::pipe(ready.data()), 0);
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0)
+    {
+        // The child: async-signal-safe calls only (the test binary has other threads).
+        ::prctl(PR_SET_NAME, NOT_UTF8_CSTR, 0, 0, 0); // NOLINT(cppcoreguidelines-pro-type-vararg) - prctl is variadic
+        const char byte = 1;
+        static_cast<void>(::write(ready[1], &byte, 1));
+        while (true)
+        {
+            ::pause();
+        }
+    }
+    const ChildProcess child(pid);
+    ::close(ready[1]);
+    char byte = 0;
+    ASSERT_EQ(::read(ready[0], &byte, 1), 1); // renamed
+    ::close(ready[0]);
+
+    LinuxProcessProbe probe;
+    const std::optional<ProcessCounters> counters = countersFor(probe, child.pid());
+    ASSERT_TRUE(counters.has_value());
+    EXPECT_EQ(counters.value_or(ProcessCounters{}).name, NOT_UTF8);
+}
+
+// #1648: a real process whose command line isn't UTF-8 (argv[0]) reaches the snapshot byte for byte.
+TEST(LinuxProcessProbeTest, ARealCommandLineThatIsntUtf8ArrivesByteForByte)
+{
+    constexpr const char* SLEEP = "/bin/sleep";
+    if (::access(SLEEP, X_OK) != 0)
+    {
+        GTEST_SKIP() << SLEEP << " isn't here";
+    }
+    std::string argv0(NOT_UTF8);
+    std::string seconds = "30";
+    std::array<char*, 3> argv{argv0.data(), seconds.data(), nullptr};
+    const pid_t pid = ::fork();
+    ASSERT_GE(pid, 0);
+    if (pid == 0)
+    {
+        ::execv(SLEEP, argv.data());
+        ::_exit(127);
+    }
+    const ChildProcess child(pid);
+
+    // Wait for the exec: until then /proc/<pid>/cmdline is the test binary's.
+    LinuxProcessProbe probe;
+    std::optional<ProcessCounters> counters;
+    for (int attempt = 0; attempt < 200; ++attempt)
+    {
+        counters = countersFor(probe, child.pid());
+        if (counters.has_value() && counters.value_or(ProcessCounters{}).command.starts_with(NOT_UTF8))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(counters.has_value());
+    const ProcessCounters found = counters.value_or(ProcessCounters{});
+    EXPECT_EQ(found.command, std::string(NOT_UTF8) + " 30");
+    EXPECT_FALSE(found.name.empty()); // "sleep" from comm, or the command line's -- either way, not lost
 }
 
 TEST(LinuxProcessProbeTest, EnumerateFindsOurOwnProcess)

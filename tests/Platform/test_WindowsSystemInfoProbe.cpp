@@ -3,13 +3,15 @@
 /// and the session facts any signed-in test run has; the real SMBIOS table (#1513) parses; and the
 /// memory modules and installed/usable memory (#1515), real and through a faked function table; and commit,
 /// page files and compressed memory (#1516), real and faked, including the NT-to-DOS path conversion; and
-/// the Storage section's disks and volumes (#1517), real and through a faked function table; and the
-/// Graphics & displays adapters, drivers and monitors (#1519), real and faked; and the Devices section's
-/// USB link speeds from faked hubs (#1642).
+/// the Storage section's disks and volumes (#1517), real and through a faked function table, with each
+/// disk's partitions and the drive letters on them (#1632); and the Graphics & displays adapters, drivers
+/// and monitors (#1519), real and faked; and the Devices section's USB link speeds from faked hubs (#1642).
 
 #include "EdidTestData.h"
+#include "PartitionLayoutTestData.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/PartitionTable.h"
 #include "Platform/SmbiosParser.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
@@ -410,6 +412,78 @@ TEST(WindowsSystemInfoProbeTest, ReadsDisksAndVolumes)
     {
         EXPECT_TRUE(disk.name.starts_with("Disk ")) << disk.name;
     }
+    // The layout needs no access beyond the query-only handle (#1632): read without administrator.
+    const auto partitioned = std::ranges::find_if(info.disks, [](const PhysicalDisk& disk) { return disk.partitionsRead; });
+    if (partitioned != info.disks.end())
+    {
+        // The system drive lives on a partition of a basic disk.
+        const bool systemFound = std::ranges::any_of(
+            info.disks,
+            [](const PhysicalDisk& disk)
+            {
+                return std::ranges::any_of(disk.partitions, [](const Partition& partition) { return partition.mountPoint.contains("C:"); });
+            });
+        EXPECT_TRUE(systemFound);
+    }
+}
+
+// DRIVE_LAYOUT_INFORMATION_EX as PartitionTable.h reads it, checked against <winioctl.h> (#1632).
+static_assert(PartitionTable::LAYOUT_HEADER_BYTES == offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry));
+static_assert(PartitionTable::LAYOUT_ENTRY_BYTES == sizeof(PARTITION_INFORMATION_EX));
+static_assert(PartitionTable::ENTRY_STARTING_OFFSET == offsetof(PARTITION_INFORMATION_EX, StartingOffset));
+static_assert(PartitionTable::ENTRY_LENGTH == offsetof(PARTITION_INFORMATION_EX, PartitionLength));
+static_assert(PartitionTable::ENTRY_NUMBER == offsetof(PARTITION_INFORMATION_EX, PartitionNumber));
+static_assert(PartitionTable::ENTRY_TYPE == offsetof(PARTITION_INFORMATION_EX, Mbr.PartitionType));
+static_assert(PartitionTable::ENTRY_TYPE == offsetof(PARTITION_INFORMATION_EX, Gpt.PartitionType));
+static_assert(PartitionTable::STYLE_MBR == PARTITION_STYLE_MBR);
+static_assert(PartitionTable::STYLE_GPT == PARTITION_STYLE_GPT);
+static_assert(PartitionTable::STYLE_RAW == PARTITION_STYLE_RAW);
+
+TEST(WindowsSystemInfoProbeTest, LayoutParserMatchesWinIoctlStructs)
+{
+    // A layout built with <winioctl.h>'s own structs parses the same as the hand-built one.
+    std::vector<std::byte> buffer(offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry) + (2 * sizeof(PARTITION_INFORMATION_EX)));
+    DRIVE_LAYOUT_INFORMATION_EX header{};
+    header.PartitionStyle = PARTITION_STYLE_GPT;
+    header.PartitionCount = 2;
+    std::memcpy(buffer.data(), &header, offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry));
+    PARTITION_INFORMATION_EX efi{};
+    efi.PartitionStyle = PARTITION_STYLE_GPT;
+    efi.StartingOffset.QuadPart = 1LL << 20U;
+    efi.PartitionLength.QuadPart = 260LL << 20U;
+    efi.PartitionNumber = 1;
+    efi.Gpt.PartitionType = GUID{0xC12A7328, 0xF81F, 0x11D2, {0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B}};
+    PARTITION_INFORMATION_EX data = efi;
+    data.StartingOffset.QuadPart = 277LL << 20U;
+    data.PartitionLength.QuadPart = 930LL << 30U;
+    data.PartitionNumber = 3;
+    data.Gpt.PartitionType = GUID{0xEBD0A0A2, 0xB9E5, 0x4433, {0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7}};
+    std::memcpy(buffer.data() + offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry), &efi, sizeof(efi));
+    std::memcpy(buffer.data() + offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry) + sizeof(efi), &data, sizeof(data));
+
+    const std::optional<PartitionTable::DriveLayout> layout = PartitionTable::parseDriveLayout(buffer);
+    ASSERT_TRUE(layout.has_value());
+    EXPECT_EQ(layout->style, PartitionStyle::Gpt);
+    ASSERT_EQ(layout->partitions.size(), 2U);
+    EXPECT_EQ(layout->partitions[0].typeName, "EFI System");
+    EXPECT_EQ(layout->partitions[0].offsetBytes, 1ULL << 20U);
+    EXPECT_EQ(layout->partitions[1].number, 3U);
+    EXPECT_EQ(layout->partitions[1].typeName, "Basic data");
+    EXPECT_EQ(layout->partitions[1].sizeBytes, 930ULL << 30U);
+
+    PARTITION_INFORMATION_EX mbr{};
+    mbr.PartitionStyle = PARTITION_STYLE_MBR;
+    mbr.StartingOffset.QuadPart = 1LL << 20U;
+    mbr.PartitionLength.QuadPart = 1LL << 30U;
+    mbr.PartitionNumber = 1;
+    mbr.Mbr.PartitionType = PARTITION_IFS;
+    header.PartitionStyle = PARTITION_STYLE_MBR;
+    header.PartitionCount = 1;
+    std::memcpy(buffer.data(), &header, offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry));
+    std::memcpy(buffer.data() + offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry), &mbr, sizeof(mbr));
+    const std::optional<PartitionTable::DriveLayout> mbrLayout = PartitionTable::parseDriveLayout(buffer);
+    ASSERT_EQ(mbrLayout.value_or(PartitionTable::DriveLayout{}).partitions.size(), 1U);
+    EXPECT_EQ(mbrLayout->partitions[0].typeName, "NTFS/exFAT");
 }
 
 /// A STORAGE_DEVICE_DESCRIPTOR with its strings after it, as the driver returns it.
@@ -487,10 +561,12 @@ TEST(WindowsSystemInfoProbeTest, ParsesDeviceDescriptorsAndHealthLogs)
 // The fake machine: Disk 0 is an NVMe SSD with a temperature and a health log; Disk 2 a SATA HDD that
 // reports no temperature; the rest don't exist. Drives C: (fixed), D: (an empty optical drive), E:
 // (removable, with media) and Z: (a network drive, which must never be queried).
-HANDLE g_Nvme = nullptr;             // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
-bool g_HealthDenied = false;         // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
-std::vector<std::wstring> g_Queried; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
-std::vector<DWORD> g_ErrorModes;     // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+HANDLE g_Nvme = nullptr;                           // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+bool g_HealthDenied = false;                       // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+DWORD g_LayoutError = ERROR_SUCCESS;               // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<std::pair<HANDLE, wchar_t>> g_Volumes; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<std::wstring> g_Queried;               // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<DWORD> g_ErrorModes;                   // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 Windows::UniqueHandle openFakeDrive(int index)
 {
@@ -519,6 +595,39 @@ BOOL WINAPI fakeIoControl(
     HANDLE disk, DWORD code, LPVOID in, DWORD /*inSize*/, LPVOID out, DWORD outSize, LPDWORD returned, LPOVERLAPPED /*overlapped*/)
 {
     const bool nvme = disk == g_Nvme;
+    if (code == IOCTL_DISK_GET_DRIVE_LAYOUT_EX)
+    {
+        // Disk 0 is the Windows install disk (GPT), Disk 2 an MBR data disk.
+        if (g_LayoutError != ERROR_SUCCESS)
+        {
+            SetLastError(g_LayoutError);
+            return FALSE;
+        }
+        const std::vector<std::byte> layout = nvme ? PartitionTable::TestData::windowsGptLayout() : PartitionTable::TestData::mbrLayout();
+        if (outSize < layout.size())
+        {
+            SetLastError(ERROR_INSUFFICIENT_BUFFER);
+            return FALSE;
+        }
+        std::memcpy(out, layout.data(), layout.size());
+        *returned = static_cast<DWORD>(layout.size());
+        return TRUE;
+    }
+    if (code == IOCTL_STORAGE_GET_DEVICE_NUMBER)
+    {
+        // C: is Disk 0's partition 3, E: Disk 2's partition 2; any other volume isn't on one disk.
+        const auto volume = std::ranges::find(g_Volumes, disk, &std::pair<HANDLE, wchar_t>::first);
+        if (volume == g_Volumes.end() || (volume->second != L'C' && volume->second != L'E'))
+        {
+            SetLastError(ERROR_INVALID_FUNCTION);
+            return FALSE;
+        }
+        STORAGE_DEVICE_NUMBER number{};
+        number.DeviceType = FILE_DEVICE_DISK;
+        number.DeviceNumber = volume->second == L'C' ? 0 : 2;
+        number.PartitionNumber = volume->second == L'C' ? 3 : 2;
+        return answer(number, out, outSize, returned);
+    }
     if (code == IOCTL_DISK_GET_DRIVE_GEOMETRY_EX)
     {
         DISK_GEOMETRY_EX geometry{};
@@ -661,6 +770,14 @@ BOOL WINAPI fakeErrorMode(DWORD mode, LPDWORD previous)
     return TRUE;
 }
 
+Windows::UniqueHandle openFakeVolume(wchar_t letter)
+{
+    Windows::UniqueHandle handle(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    std::erase_if(g_Volumes, [&handle](const std::pair<HANDLE, wchar_t>& volume) { return volume.first == handle.get(); });
+    g_Volumes.emplace_back(handle.get(), letter);
+    return handle;
+}
+
 [[nodiscard]] WindowsStorage::Functions fakeStorage()
 {
     return {
@@ -671,12 +788,14 @@ BOOL WINAPI fakeErrorMode(DWORD mode, LPDWORD previous)
         .getVolumeInformation = &fakeVolumeInformation,
         .getDiskFreeSpaceEx = &fakeFreeSpace,
         .setThreadErrorMode = &fakeErrorMode,
+        .openVolume = &openFakeVolume,
     };
 }
 
 TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
 {
     g_Queried.clear();
+    g_Volumes.clear();
     g_ErrorModes.clear();
     g_HealthDenied = false;
     StorageInfo info;
@@ -716,8 +835,23 @@ TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
     EXPECT_TRUE(info.volumes[2].network);
     EXPECT_FALSE(info.volumes[2].sizeRead);
     EXPECT_EQ(std::ranges::count_if(g_Queried, [](const std::wstring& root) { return root.starts_with(L'Z'); }), 0);
-    // Critical-error prompts off for the calls, the old mode back after.
-    EXPECT_EQ(g_ErrorModes, (std::vector<DWORD>{SEM_FAILCRITICALERRORS, 0x8000}));
+    // Critical-error prompts off for the calls, the old mode back after: the volumes, then their locations.
+    EXPECT_EQ(g_ErrorModes, (std::vector<DWORD>{SEM_FAILCRITICALERRORS, 0x8000, SEM_FAILCRITICALERRORS, 0x8000}));
+
+    // Partitions (#1632), each tied to the drive letter on it.
+    EXPECT_TRUE(nvme.partitionsRead);
+    EXPECT_EQ(nvme.partitionStyle, PartitionStyle::Gpt);
+    ASSERT_EQ(nvme.partitions.size(), 4U);
+    EXPECT_EQ(nvme.partitions[0].typeName, "EFI System");
+    EXPECT_EQ(nvme.partitions[0].mountPoint, "");
+    EXPECT_EQ(nvme.partitions[2].typeName, "Basic data");
+    EXPECT_EQ(nvme.partitions[2].mountPoint, "C:");
+    EXPECT_EQ(hdd.partitionStyle, PartitionStyle::Mbr);
+    ASSERT_EQ(hdd.partitions.size(), 2U);
+    EXPECT_EQ(hdd.partitions[0].mountPoint, "");
+    EXPECT_EQ(hdd.partitions[1].mountPoint, "E:");
+    // The network drive's volume is never opened.
+    EXPECT_EQ(std::ranges::count(g_Volumes, L'Z', &std::pair<HANDLE, wchar_t>::second), 0);
 
     // Health refused to a query-only handle: says administrator, never asks for more access.
     g_HealthDenied = true;
@@ -727,6 +861,84 @@ TEST(WindowsSystemInfoProbeTest, StorageThroughTheFunctionTable)
     EXPECT_FALSE(denied.disks[0].health.has_value());
     EXPECT_EQ(denied.disks[0].healthUnavailableReason, "Requires administrator");
     g_HealthDenied = false;
+
+    // A driver that refuses the layout to a query-only handle: administrator, never a read open.
+    g_LayoutError = ERROR_ACCESS_DENIED;
+    StorageInfo noLayout;
+    WindowsStorage::readStorage(noLayout, fakeStorage());
+    ASSERT_FALSE(noLayout.disks.empty());
+    EXPECT_FALSE(noLayout.disks[0].partitionsRead);
+    EXPECT_TRUE(noLayout.disks[0].partitions.empty());
+    EXPECT_EQ(noLayout.disks[0].partitionsUnavailableReason, "Requires administrator");
+    g_LayoutError = ERROR_NOT_SUPPORTED;
+    StorageInfo unsupported;
+    WindowsStorage::readStorage(unsupported, fakeStorage());
+    ASSERT_FALSE(unsupported.disks.empty());
+    EXPECT_EQ(unsupported.disks[0].partitionsUnavailableReason, "The drive didn't return its partition layout");
+    g_LayoutError = ERROR_SUCCESS;
+}
+
+/// A drive with 40 partitions: more than the first try's buffer holds.
+BOOL WINAPI bigLayoutIoControl(
+    HANDLE /*disk*/, DWORD code, LPVOID /*in*/, DWORD /*inSize*/, LPVOID out, DWORD outSize, LPDWORD returned, LPOVERLAPPED /*overlapped*/)
+{
+    EXPECT_EQ(code, static_cast<DWORD>(IOCTL_DISK_GET_DRIVE_LAYOUT_EX));
+    std::vector<PartitionTable::TestData::Entry> entries;
+    std::uint32_t number = 1;
+    while (number <= 40)
+    {
+        entries.push_back({.offset = number * PartitionTable::TestData::MIB,
+                           .length = PartitionTable::TestData::MIB,
+                           .number = number,
+                           .mbrType = 0,
+                           .gptType = PartitionTable::TestData::BASIC_DATA});
+        ++number;
+    }
+    const std::vector<std::byte> layout = PartitionTable::TestData::driveLayout(PartitionTable::STYLE_GPT, entries);
+    if (outSize < layout.size())
+    {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    std::memcpy(out, layout.data(), layout.size());
+    *returned = static_cast<DWORD>(layout.size());
+    return TRUE;
+}
+
+TEST(WindowsSystemInfoProbeTest, PartitionLayoutBufferGrows)
+{
+    WindowsStorage::Functions fns = fakeStorage();
+    fns.deviceIoControl = &bigLayoutIoControl;
+    PhysicalDisk disk;
+    WindowsStorage::readPartitions(fns, nullptr, disk);
+    EXPECT_TRUE(disk.partitionsRead);
+    EXPECT_EQ(disk.partitions.size(), 40U);
+    EXPECT_TRUE(disk.partitionsUnavailableReason.empty());
+}
+
+TEST(WindowsSystemInfoProbeTest, AssignsDriveLettersToPartitions)
+{
+    std::vector<PhysicalDisk> disks(2);
+    const auto numbered = [](std::uint32_t number)
+    {
+        Partition partition;
+        partition.number = number;
+        return partition;
+    };
+    disks[0].partitions = {numbered(1), numbered(2)};
+    disks[1].partitions = {numbered(1)};
+    const std::vector<int> numbers{0, 3};
+    const std::vector<WindowsStorage::VolumeLocation> locations{
+        {.mountPoint = "C:", .disk = 0, .partition = 2},
+        {.mountPoint = "D:", .disk = 3, .partition = 1},
+        {.mountPoint = "F:", .disk = 3, .partition = 1}, // a second letter on the same partition
+        {.mountPoint = "G:", .disk = 1, .partition = 1}, // a disk that wasn't opened
+        {.mountPoint = "H:", .disk = 0, .partition = 9}, // a partition the layout doesn't list
+    };
+    WindowsStorage::assignMountPoints(disks, numbers, locations);
+    EXPECT_EQ(disks[0].partitions[0].mountPoint, "");
+    EXPECT_EQ(disks[0].partitions[1].mountPoint, "C:");
+    EXPECT_EQ(disks[1].partitions[0].mountPoint, "D:, F:");
 }
 
 TEST(WindowsSystemInfoProbeTest, ReadsGraphics)
