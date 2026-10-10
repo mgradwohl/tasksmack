@@ -24,6 +24,8 @@
 #include <propsys.h>
 #include <winsvc.h>
 #include <winver.h>
+#include <winioctl.h>
+#include <usbioctl.h> // the hub connection IOCTLs: a USB device's link speed (#1642)
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
@@ -54,8 +56,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cwchar>
 #include <format>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -437,11 +441,142 @@ constexpr GUID MONITOR_INTERFACE_GUID{
         {
             node.address = value;
         }
+        if (node.instanceId.starts_with("USB\\"))
+        {
+            node.locationInfo = deviceRegistryString(devices, device, SPDRP_LOCATION_INFORMATION);
+        }
         node.statusRead = CM_Get_DevNode_Status(&node.status, &node.problem, device.DevInst, 0) == CR_SUCCESS;
         nodes.push_back(std::move(node));
     }
     SetupDiDestroyDeviceInfoList(devices);
     return nodes;
+}
+
+// GUID_DEVINTERFACE_USB_HUB (usbiodef.h), spelled out so no <initguid.h> is needed.
+constexpr GUID USB_HUB_INTERFACE_GUID{
+    .Data1 = 0xf18a0e88,
+    .Data2 = 0xc30c,
+    .Data3 = 0x11d0,
+    .Data4 = {0x88, 0x15, 0x00, 0xa0, 0xc9, 0x06, 0xbe, 0xd8},
+};
+
+// IOCTL_USB_GET_NODE_CONNECTION_SUPERSPEEDPLUS_INFORMATION and its structure (usbioctl.h), which the SDK
+// declares only for NTDDI_WIN10_RS3 and later; the project targets NTDDI_WIN10. Windows before 1709
+// fails the call, and the speed falls back to the EX_V2 flags.
+constexpr DWORD USB_SUPERSPEEDPLUS_INFORMATION_IOCTL =
+    CTL_CODE(FILE_DEVICE_USB, USB_GET_NODE_CONNECTION_SUPERSPEEDPLUS_INFORMATION, METHOD_BUFFERED, FILE_ANY_ACCESS);
+struct UsbSuperSpeedPlusInformation
+{
+    ULONG connectionIndex;  ///< One-based port number
+    ULONG length;           ///< sizeof the structure
+    ULONG rxSuperSpeedPlus; ///< USB_DEVICE_CAPABILITY_SUPERSPEEDPLUS_SPEED
+    ULONG rxLaneCount;      ///< The lanes less one
+    ULONG txSuperSpeedPlus;
+    ULONG txLaneCount;
+};
+static_assert(sizeof(UsbSuperSpeedPlusInformation) == 24);
+
+/// The hub's device interface path, from CfgMgr32; empty when the node has none (or isn't a hub).
+[[nodiscard]] std::wstring hubInterfacePath(const std::string& hubInstanceId)
+{
+    std::wstring id = WinString::utf8ToWide(hubInstanceId);
+    GUID hubGuid = USB_HUB_INTERFACE_GUID; // CfgMgr32 takes a non-const GUID
+    ULONG size = 0;
+    if (CM_Get_Device_Interface_List_SizeW(&size, &hubGuid, id.data(), CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != CR_SUCCESS || size <= 1)
+    {
+        return {};
+    }
+    std::vector<wchar_t> list(size + 1, L'\0'); // a multi-string: the first path is all that's needed
+    if (CM_Get_Device_Interface_ListW(&hubGuid, id.data(), list.data(), size, CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != CR_SUCCESS)
+    {
+        return {};
+    }
+    return {list.data()};
+}
+
+/// What the hub says about each of @p ports: its connection information (EX: the device's speed), the
+/// EX_V2 SuperSpeed flags, and for a SuperSpeedPlus link its lane speed and count. The hub is opened
+/// once with no access rights (query only), and only query IOCTLs are sent: no port is reset, cycled or
+/// powered. A port the hub can't answer for is left out; an empty map when the hub can't be opened.
+[[nodiscard]] std::map<ULONG, WindowsDevices::UsbPortRecord> readHubPorts(const std::string& hubInstanceId, const std::vector<ULONG>& ports)
+{
+    std::map<ULONG, WindowsDevices::UsbPortRecord> answers;
+    const std::wstring path = hubInterfacePath(hubInstanceId);
+    if (path.empty())
+    {
+        return answers;
+    }
+    const Windows::UniqueHandle hub(CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr));
+    if (!hub.valid())
+    {
+        return answers;
+    }
+    for (const ULONG port : ports)
+    {
+        WindowsDevices::UsbPortRecord record;
+        bool answered = false;
+        DWORD returned = 0;
+
+        // EX's fixed part, with room for the open pipes the hub appends.
+        constexpr std::size_t PIPE_ROOM = 32;
+        alignas(ULONG) std::array<std::byte, sizeof(USB_NODE_CONNECTION_INFORMATION_EX) + (PIPE_ROOM * sizeof(USB_PIPE_INFO))> buffer{};
+        USB_NODE_CONNECTION_INFORMATION_EX ex{};
+        ex.ConnectionIndex = port;
+        std::memcpy(buffer.data(), &ex, sizeof(ex));
+        if (DeviceIoControl(hub.get(),
+                            IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX,
+                            buffer.data(),
+                            static_cast<DWORD>(buffer.size()),
+                            buffer.data(),
+                            static_cast<DWORD>(buffer.size()),
+                            &returned,
+                            nullptr) != FALSE &&
+            returned >= offsetof(USB_NODE_CONNECTION_INFORMATION_EX, PipeList))
+        {
+            std::memcpy(&ex, buffer.data(), sizeof(ex));
+            if (ex.ConnectionStatus == DeviceConnected)
+            {
+                record.speed = ex.Speed;
+                answered = true;
+            }
+        }
+
+        USB_NODE_CONNECTION_INFORMATION_EX_V2 v2{};
+        v2.ConnectionIndex = port;
+        v2.Length = sizeof(v2);
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - USB_PROTOCOLS and the flags are bitfield unions
+        v2.SupportedUsbProtocols.ul = 0x7U; // Usb110 | Usb200 | Usb300: the caller understands them all
+        if (DeviceIoControl(
+                hub.get(), IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2, &v2, sizeof(v2), &v2, sizeof(v2), &returned, nullptr) !=
+                FALSE &&
+            returned >= sizeof(v2))
+        {
+            record.superSpeed = v2.Flags.DeviceIsOperatingAtSuperSpeedOrHigher != 0U;
+            record.superSpeedPlus = v2.Flags.DeviceIsOperatingAtSuperSpeedPlusOrHigher != 0U;
+            answered = true;
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+
+        if (record.superSpeedPlus)
+        {
+            UsbSuperSpeedPlusInformation plus{};
+            plus.connectionIndex = port;
+            plus.length = sizeof(plus);
+            if (DeviceIoControl(
+                    hub.get(), USB_SUPERSPEEDPLUS_INFORMATION_IOCTL, &plus, sizeof(plus), &plus, sizeof(plus), &returned, nullptr) !=
+                    FALSE &&
+                returned >= sizeof(plus))
+            {
+                record.superSpeedPlusLaneSpeed = plus.rxSuperSpeedPlus;
+                record.superSpeedPlusLanes = plus.rxLaneCount;
+            }
+        }
+        if (answered)
+        {
+            answers.emplace(port, record);
+        }
+    }
+    return answers;
 }
 
 // PKEY_Device_FriendlyName (functiondiscoverykeys_devpkey.h), spelled out so no <initguid.h> is needed.
@@ -734,7 +869,8 @@ GraphicsInfo WindowsSystemInfoProbe::readGraphics()
 DevicesInfo WindowsSystemInfoProbe::readDevices()
 {
     DevicesInfo info;
-    WindowsDevices::readDevices(info, {.listDevNodes = &listDevNodes, .listAudioEndpoints = &listAudioEndpoints});
+    WindowsDevices::readDevices(info,
+                                {.listDevNodes = &listDevNodes, .listAudioEndpoints = &listAudioEndpoints, .readHubPorts = &readHubPorts});
     return info;
 }
 

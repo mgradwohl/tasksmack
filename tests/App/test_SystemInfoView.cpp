@@ -1159,6 +1159,7 @@ TEST(SystemInfoSectionsTest, GraphicsSectionFollowsStorage)
     info.problems = {wifi};
     Platform::Device hub = device("", "Generic USB Hub", 0x05E3, 0x0610);
     hub.depth = 1;
+    hub.speedMbps = 20000.0; // a SuperSpeedPlus Gen 2x2 link read from its hub (#1642)
     Platform::Device stick = device("SanDisk", "Ultra", 0x0781, 0x5583);
     stick.depth = 2;
     stick.parent = 0;
@@ -1184,6 +1185,9 @@ TEST(SystemInfoSectionsTest, FormatsDeviceValues)
     EXPECT_EQ(SystemInfo::formatUsbSpeed(1.5), "1.5 Mbps");
     EXPECT_EQ(SystemInfo::formatUsbSpeed(480.0), "480 Mbps");
     EXPECT_EQ(SystemInfo::formatUsbSpeed(5000.0), "5 Gbps");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(12.0), "12 Mbps");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(10000.0), "10 Gbps");
+    EXPECT_EQ(SystemInfo::formatUsbSpeed(20000.0), "20 Gbps");
     EXPECT_EQ(SystemInfo::formatUsbSpeed(0.0), "");
 }
 
@@ -1195,7 +1199,7 @@ TEST(SystemInfoSectionsTest, DevicesRowsWindows)
     EXPECT_EQ(findRow(section, "Problem device")->value, "Intel(R) Wi-Fi 6E AX211 (8086:51F0): This device cannot start (Code 10)");
     EXPECT_EQ(findRow(section, "Display adapters")->value, "NVIDIA GeForce RTX 4070 (10DE:2786), PCI 01:00.0, driver nvlddmkm");
     EXPECT_EQ(findRow(section, "Network adapters")->value, "Intel(R) Wi-Fi 6E AX211 (8086:51F0), This device cannot start (Code 10)");
-    EXPECT_EQ(findRow(section, "USB 1")->value, "Generic USB Hub (05E3:0610)");
+    EXPECT_EQ(findRow(section, "USB 1")->value, "Generic USB Hub (05E3:0610), 20 Gbps");
     EXPECT_EQ(findRow(section, "USB 2")->value, "SanDisk Ultra (0781:5583), 5 Gbps, via Generic USB Hub (05E3:0610)");
     const Row* serial = findRow(section, "USB 2 serial number");
     ASSERT_NE(serial, nullptr);
