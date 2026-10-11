@@ -8,6 +8,7 @@
 // line in buildSystemInfoSections() (CONTRIBUTING.md, "Adding a System Information section").
 
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -32,6 +33,8 @@ struct Row
     std::string value;
     std::string unavailableReason;
     bool isIdentifier = false; ///< Names the user or the machine: hidden (and left out of Copy) unless shown.
+    /// A live sensor row's history: its index in the SensorPublication's series.
+    std::optional<std::size_t> series;
 
     [[nodiscard]] bool available() const noexcept
     {
@@ -177,10 +180,23 @@ struct VisibleSection
 /// "12.18 V", "1.20 A", "15.2 W". The thresholds follow a temperature only when the driver reports them.
 [[nodiscard]] std::string formatSensorReading(const Platform::SensorReading& reading);
 
+/// One sensor value in its kind's unit, without thresholds: "45.0 °C", "1200 RPM", "12.18 V", "1.20 A",
+/// "15.2 W".
+[[nodiscard]] std::string formatSensorValue(Platform::SensorKind kind, double value);
+
+/// A live sensor's value (#1522): the current reading, then its minimum and maximum since start, then
+/// any thresholds: "45.0 °C, min 38.0 °C, max 71.0 °C (high 80.0 °C, critical 100.0 °C)". "No reading"
+/// stands in for a current value the last read missed; empty when the sensor was never read.
+[[nodiscard]] std::string formatLiveSensorReading(const Platform::SensorReading& reading, const Domain::SensorStats& stats);
+
+/// The Sensors section's title, which the view looks for to swap in the live section.
+inline constexpr std::string_view SENSORS_SECTION_TITLE = "Sensors";
+
 /// The Sensors section (#1522): one row per reading, labelled "device: sensor" ("coretemp: Package id
 /// 0"), devices in the OS's order. None exposed (common in VMs and WSL) shows one muted row saying so.
-/// On Windows a last row says that most motherboard sensors need a vendor driver.
-[[nodiscard]] Section buildSensorsSection(const Platform::SensorsInfo& sensors);
+/// On Windows a last row says that most motherboard sensors need a vendor driver. With @p live (one
+/// entry per reading, the sensor model's), each row shows formatLiveSensorReading() and names its series.
+[[nodiscard]] Section buildSensorsSection(const Platform::SensorsInfo& sensors, std::span<const Domain::SensorStats> live = {});
 
 /// A device's name: its vendor (unless the name already starts with it) and name, then its ids,
 /// "Intel Corporation Wi-Fi 6E AX211 (8086:51F0)"; "Unknown device (8086:51F0)" without names.

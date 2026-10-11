@@ -2,11 +2,14 @@
 /// @brief The System tab's panel (#1399), headless with a fake probe through its test seam (#1395): no
 /// read until the tab first shows, then one on a worker thread, whose facts the page draws and whose
 /// graphics facts are asked for once; showing the tab again doesn't read again, Refresh does; a probe
-/// with nothing to read is never asked; and detaching waits for a read still in flight.
+/// with nothing to read is never asked; detaching waits for a read still in flight; and the live
+/// sensors (#1522) are sampled from attach and shown with their minimum and maximum.
 
 #include "App/Panels/SystemInfoPanel.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SamplingConfig.h"
+#include "Mocks/MockProbes.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -19,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace App
 {
@@ -81,7 +85,8 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     }
     [[nodiscard]] Platform::SensorsInfo readSensors() override
     {
-        return m_Default.readSensors();
+        // Listed but none found, so the page has a Sensors section for the live one to replace (#1522).
+        return {.available = true, .family = Platform::OsFamily::Linux, .listed = true, .devices = {}};
     }
     [[nodiscard]] Platform::DevicesInfo readDevices() override
     {
@@ -145,6 +150,31 @@ class SystemInfoPanelRenderTest : public ::testing::Test
                                                     });
         m_Panel->onAttach();
     }
+
+    /// A panel with live sensors (#1522): one package temperature, found at 52 °C by a mock probe the
+    /// test keeps a pointer to (the panel's sampler owns it).
+    void makePanelWithSensors()
+    {
+        m_Panel = std::make_unique<SystemInfoPanel>(
+            [this] { return std::make_unique<FakeSystemInfoProbe>(m_Log, true); },
+            [] { return Core::GraphicsHostInfo{}; },
+            [this]
+            {
+                Platform::SensorsInfo sensors;
+                sensors.available = true;
+                sensors.listed = true;
+                sensors.devices.push_back({.name = "coretemp", .readings = {}});
+                sensors.devices[0].readings.push_back(
+                    {.kind = Platform::SensorKind::Temperature, .label = "Package id 0", .value = 52.0, .high = {}, .critical = {}});
+                auto probe = std::make_unique<TestMocks::MockSensorProbe>(std::move(sensors));
+                probe->setValues({60.0});
+                m_SensorProbe = probe.get();
+                return probe;
+            });
+        m_Panel->onAttach();
+    }
+
+    TestMocks::MockSensorProbe* m_SensorProbe = nullptr; // owned by the panel's sensor model
 
     void showTab(const std::string& name = "SystemInfo")
     {
@@ -236,6 +266,27 @@ TEST_F(SystemInfoPanelRenderTest, AProbeWithNothingToReadIsNeverAsked)
     }
     EXPECT_EQ(m_Log.reads.load(), 0);
     EXPECT_EQ(m_HostQueries, 0);
+}
+
+TEST_F(SystemInfoPanelRenderTest, SensorsAreSampledFromAttachAndShownLive)
+{
+    makePanelWithSensors();
+    ASSERT_NE(m_SensorProbe, nullptr);
+    // Sampled from onAttach(), before the tab ever shows: minimum and maximum are since start.
+    EXPECT_TRUE(m_SensorProbe->discoveries.waitFor(1));
+    EXPECT_EQ(m_Log.reads.load(), 0);
+
+    // The faster interval once the tab shows, so the second sample (the probe's 60 °C) comes promptly.
+    Core::RefreshRateChangedEvent refresh(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    m_Panel->onEvent(refresh);
+    Core::HistoryDurationChangedEvent history(60);
+    m_Panel->onEvent(history);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    EXPECT_TRUE(m_SensorProbe->reads.waitFor(1));
+    ASSERT_TRUE(frameUntil("max 60.0")) << frame();
+    EXPECT_TRUE(frame().contains("min 52.0"));
+    EXPECT_EQ(m_SensorProbe->discoveries.count(), 1); // found once; every later sample only reads
 }
 
 TEST_F(SystemInfoPanelRenderTest, DetachingWaitsForAReadInFlight)

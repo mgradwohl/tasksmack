@@ -1,10 +1,11 @@
 /// @file test_WindowsSystemInfoReaders.cpp
 /// @brief The Windows halves of the Security (#1514), Sensors (#1522) and Boot performance (#1525) readers,
 /// through fake function tables: the boot event parser and its errors (WindowsBootPerformance.h), the
-/// thermal zone conversion and PDH statuses (WindowsThermalZones.h), and Secure Boot, the TPM, HVCI, Kernel
+/// thermal zone conversion, PDH statuses and per-tick read (WindowsThermalZones.h), and Secure Boot, the TPM, HVCI, Kernel
 /// DMA Protection and the speculation-control decoding (WindowsPlatformSecurity.h). Standard library only,
 /// so it runs everywhere.
 
+#include "Platform/ISensorProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Windows/WindowsBootPerformance.h"
 #include "Platform/Windows/WindowsPlatformSecurity.h"
@@ -14,11 +15,13 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -221,6 +224,78 @@ TEST(WindowsThermalZonesTest, NoZonesIsListedAndAFailureIsNot)
     EXPECT_TRUE(failed.available);
     EXPECT_FALSE(failed.listed);
     EXPECT_TRUE(failed.devices.empty());
+}
+
+TEST(WindowsThermalZonesTest, ZoneValuesMatchByInstance)
+{
+    const std::vector<WindowsThermalZones::ZoneSample> zones{
+        {.instance = "\\_TZ.TZ01", .kelvin = 320.15},
+        {.instance = "\\_TZ.TZ00", .kelvin = 0.0}, // unpopulated this time
+    };
+    const std::vector<std::string> instances{"\\_TZ.TZ00", "\\_TZ.TZ01", "\\_TZ.GONE"};
+    std::vector<double> values(4, -1.0);
+    WindowsThermalZones::zoneValues(zones, instances, values);
+    EXPECT_TRUE(std::isnan(values[0]));
+    EXPECT_NEAR(values[1], 47.0, 1e-9);
+    EXPECT_TRUE(std::isnan(values[2])); // missing from this collection
+    EXPECT_DOUBLE_EQ(values[3], -1.0);  // beyond the zones listed: left alone
+}
+
+TEST(WindowsThermalZonesTest, SensorProbeReadsTheListedZonesPerTick)
+{
+    // A reader standing in for the kept-open PDH query: each call is one collection.
+    struct Collections
+    {
+        std::vector<std::vector<WindowsThermalZones::ZoneSample>> answers;
+        std::uint32_t status = 0;
+        std::size_t next = 0;
+    };
+    const auto collections = std::make_shared<Collections>();
+    collections->answers = {
+        {{.instance = "\\_TZ.TZ01", .kelvin = 318.15}, {.instance = "\\_TZ.TZ00", .kelvin = 300.0}},
+        {{.instance = "\\_TZ.TZ00", .kelvin = 305.0}, {.instance = "\\_TZ.TZ01", .kelvin = 330.15}},
+    };
+    WindowsThermalZones::ThermalZoneSensorProbe probe(
+        [collections](std::vector<WindowsThermalZones::ZoneSample>& zones) -> std::uint32_t
+        {
+            const std::size_t index = std::min(collections->next, collections->answers.size() - 1);
+            ++collections->next;
+            zones = collections->answers[index];
+            return collections->status;
+        });
+
+    const SensorsInfo info = probe.discover();
+    ASSERT_EQ(sensorCount(info), 2U);
+    EXPECT_EQ(info.devices[0].readings[0].label, "TZ00"); // sorted by label, as the page lists them
+    EXPECT_EQ(info.devices[0].readings[1].label, "TZ01");
+
+    std::vector<double> values(2, 0.0);
+    probe.readValues(values);
+    EXPECT_NEAR(values[0], 31.85, 1e-9); // TZ00, whatever order the collection lists it in
+    EXPECT_NEAR(values[1], 57.0, 1e-9);
+
+    constexpr std::uint32_t PDH_ACCESS_DENIED = 0xC0000BDBU;
+    collections->status = PDH_ACCESS_DENIED;
+    probe.readValues(values);
+    EXPECT_TRUE(std::isnan(values[0])); // a failed collection is a gap for every zone
+    EXPECT_TRUE(std::isnan(values[1]));
+}
+
+TEST(WindowsThermalZonesTest, SensorProbeWithNoZonesCollectsNothingPerTick)
+{
+    const auto calls = std::make_shared<int>(0);
+    WindowsThermalZones::ThermalZoneSensorProbe probe(
+        [calls](std::vector<WindowsThermalZones::ZoneSample>& /*zones*/) -> std::uint32_t
+        {
+            ++*calls;
+            return WindowsThermalZones::PDH_CSTATUS_NO_OBJECT_CODE;
+        });
+    const SensorsInfo info = probe.discover();
+    EXPECT_TRUE(info.listed);
+    EXPECT_EQ(sensorCount(info), 0U);
+    probe.readValues({});
+    probe.readValues({});
+    EXPECT_EQ(*calls, 1); // discover() only
 }
 
 // ========== Security (#1514) ==========

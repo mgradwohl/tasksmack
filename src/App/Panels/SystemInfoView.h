@@ -6,10 +6,13 @@
 
 #include "App/Panels/SystemInfoSections.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SamplingConfig.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -35,12 +38,20 @@ struct SystemInfoViewState
     /// read; the sections are built from it and the snapshot together.
     Core::GraphicsHostInfo host;
 
+    /// The sensor model's newest publication (#1522), set by the panel; null for none. While it has
+    /// found the sensors, the Sensors section is built from it rather than the read, and updates live.
+    std::shared_ptr<const Domain::SensorPublication> sensors;
+    /// The history window the sensor model keeps, set by the panel.
+    double historySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT;
+
     std::vector<SystemInfo::Section> sections;
     std::uint64_t sectionsVersion = 0;
-    std::string readAtText; ///< "Read at HH:MM:SS", with the sections.
+    std::uint64_t sensorsVersion = 0; ///< The live publication the Sensors section was built from; 0 for the read
+    std::string readAtText;           ///< "Read at HH:MM:SS", with the sections.
 
     std::vector<SystemInfo::VisibleSection> visible;
     std::uint64_t visibleVersion = 0;
+    std::uint64_t visibleSensorsVersion = 0;
     std::string visibleFilter;
     bool visibleShowIdentifiers = false;
 

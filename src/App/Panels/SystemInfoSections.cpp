@@ -2,7 +2,9 @@
 
 #include "App/Panels/ServicesView.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
+#include "Platform/ISensorProbe.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
@@ -37,7 +39,13 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
 [[nodiscard]] Row row(std::string label, std::string value, std::string_view reason = NOT_REPORTED, bool identifier = false)
 {
     std::string why = value.empty() ? std::string(reason) : std::string{};
-    return {.label = std::move(label), .value = std::move(value), .unavailableReason = std::move(why), .isIdentifier = identifier};
+    return {
+        .label = std::move(label),
+        .value = std::move(value),
+        .unavailableReason = std::move(why),
+        .isIdentifier = identifier,
+        .series = std::nullopt,
+    };
 }
 
 [[nodiscard]] bool containsIgnoringCase(std::string_view text, std::string_view needle)
@@ -1048,50 +1056,83 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
     return section;
 }
 
-std::string formatSensorReading(const Platform::SensorReading& reading)
+std::string formatSensorValue(Platform::SensorKind kind, double value)
 {
     using Platform::SensorKind;
-    switch (reading.kind)
+    switch (kind)
     {
     case SensorKind::Temperature:
-    {
-        std::string text = UI::Format::formatFixedLocalized(reading.value, 1, " \u00B0C");
-        std::string limits;
-        if (reading.high.has_value())
-        {
-            limits = "high " + UI::Format::formatFixedLocalized(*reading.high, 1, " \u00B0C");
-        }
-        if (reading.critical.has_value())
-        {
-            limits += std::format(
-                "{}critical {}", limits.empty() ? "" : ", ", UI::Format::formatFixedLocalized(*reading.critical, 1, " \u00B0C"));
-        }
-        if (!limits.empty())
-        {
-            text += " (" + limits + ")";
-        }
-        return text;
-    }
+        return UI::Format::formatFixedLocalized(value, 1, " \u00B0C");
     case SensorKind::Fan:
-        return std::format("{:.0f} RPM", reading.value);
+        return std::format("{:.0f} RPM", value);
     case SensorKind::Voltage:
-        return UI::Format::formatFixedLocalized(reading.value, 2, " V");
+        return UI::Format::formatFixedLocalized(value, 2, " V");
     case SensorKind::Current:
-        return UI::Format::formatFixedLocalized(reading.value, 2, " A");
+        return UI::Format::formatFixedLocalized(value, 2, " A");
     case SensorKind::Power:
-        return UI::Format::formatFixedLocalized(reading.value, 1, " W");
+        return UI::Format::formatFixedLocalized(value, 1, " W");
     }
     return {};
 }
 
-Section buildSensorsSection(const Platform::SensorsInfo& sensors)
+namespace
 {
-    Section section{.title = "Sensors", .icon = ICON_FA_TEMPERATURE_HALF, .rows = {}};
+
+/// A temperature's thresholds, " (high 80.0 \u00B0C, critical 100.0 \u00B0C)", whichever the driver reports;
+/// empty for none.
+[[nodiscard]] std::string sensorLimits(const Platform::SensorReading& reading)
+{
+    std::string limits;
+    if (reading.high.has_value())
+    {
+        limits = "high " + formatSensorValue(reading.kind, *reading.high);
+    }
+    if (reading.critical.has_value())
+    {
+        limits += std::format("{}critical {}", limits.empty() ? "" : ", ", formatSensorValue(reading.kind, *reading.critical));
+    }
+    return limits.empty() ? limits : " (" + limits + ")";
+}
+
+} // namespace
+
+std::string formatSensorReading(const Platform::SensorReading& reading)
+{
+    return formatSensorValue(reading.kind, reading.value) + sensorLimits(reading);
+}
+
+std::string formatLiveSensorReading(const Platform::SensorReading& reading, const Domain::SensorStats& stats)
+{
+    if (std::isnan(stats.min))
+    {
+        return {}; // never read
+    }
+    std::string text = std::isnan(stats.current) ? std::string("No reading") : formatSensorValue(reading.kind, stats.current);
+    text += ", min " + formatSensorValue(reading.kind, stats.min) + ", max " + formatSensorValue(reading.kind, stats.max);
+    return text + sensorLimits(reading);
+}
+
+Section buildSensorsSection(const Platform::SensorsInfo& sensors, std::span<const Domain::SensorStats> live)
+{
+    Section section{.title = std::string(SENSORS_SECTION_TITLE), .icon = ICON_FA_TEMPERATURE_HALF, .rows = {}};
+    const bool withLive = !live.empty() && live.size() == Platform::sensorCount(sensors);
+    std::size_t index = 0;
     for (const Platform::SensorDevice& device : sensors.devices)
     {
         for (const Platform::SensorReading& reading : device.readings)
         {
-            section.rows.push_back(row(std::format("{}: {}", device.name, reading.label), formatSensorReading(reading)));
+            std::string label = std::format("{}: {}", device.name, reading.label);
+            if (withLive)
+            {
+                Row item = row(std::move(label), formatLiveSensorReading(reading, live[index]), "The sensor couldn't be read");
+                item.series = index;
+                section.rows.push_back(std::move(item));
+            }
+            else
+            {
+                section.rows.push_back(row(std::move(label), formatSensorReading(reading)));
+            }
+            ++index;
         }
     }
     const bool windows = sensors.family == Platform::OsFamily::Windows;

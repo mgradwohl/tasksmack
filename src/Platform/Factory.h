@@ -11,6 +11,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/ISensorProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -56,6 +57,10 @@ namespace Platform
 
 /// Creates the platform-appropriate ISystemInfoProbe, the System Information page's static facts (#1399).
 [[nodiscard]] std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe();
+
+/// Creates the platform-appropriate ISensorProbe, the live Sensors section's per-tick read (#1522): hwmon and
+/// thermal zones on Linux, the ACPI thermal zones' performance counter on Windows.
+[[nodiscard]] std::unique_ptr<ISensorProbe> makeSensorProbe();
 
 /// Creates the platform-appropriate ISystemProbe implementation.
 [[nodiscard]] std::unique_ptr<ISystemProbe> makeSystemProbe();

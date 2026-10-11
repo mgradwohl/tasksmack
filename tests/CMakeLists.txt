@@ -136,6 +136,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
     Domain/test_SystemInfoModel.cpp
+    Domain/test_SensorModel.cpp
     Domain/test_CrashHistory.cpp
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
@@ -375,6 +376,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_PowerProbeContract.cpp
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemInfoProbe.cpp
+    Platform/test_LinuxSensorProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_SyscallTrace.cpp
@@ -546,6 +548,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StartupModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/SensorModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemInfoModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/CrashHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/ServiceModel.cpp

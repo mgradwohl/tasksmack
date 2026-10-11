@@ -11,6 +11,7 @@
 #include "LinuxProcessOpenFilesReader.h"
 #include "LinuxProcessProbe.h"
 #include "LinuxProcessSecurityReader.h"
+#include "LinuxSensorProbe.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
 #include "Platform/IDiskProbe.h"
@@ -24,6 +25,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/ISensorProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -86,6 +88,11 @@ std::unique_ptr<IStartupActions> makeStartupActions()
 std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
 {
     return std::make_unique<LinuxSystemInfoProbe>();
+}
+
+std::unique_ptr<ISensorProbe> makeSensorProbe()
+{
+    return std::make_unique<LinuxSensorProbe>();
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

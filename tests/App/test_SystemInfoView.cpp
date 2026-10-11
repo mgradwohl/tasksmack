@@ -1,7 +1,8 @@
 /// @file test_SystemInfoView.cpp
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
 /// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
-/// rows (#1517), the Security rows (#1514), the Sensors rows (#1522), the Graphics & displays rows
+/// rows (#1517), the Security rows (#1514), the Sensors rows and their live minimum, maximum and
+/// history (#1522), the Graphics & displays rows
 /// (#1519), the Network adapters rows (#1518), the Boot performance rows (#1525), the Devices rows
 /// (#1520), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
@@ -10,7 +11,9 @@
 #include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
+#include "Mocks/MockProbes.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
@@ -20,10 +23,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -2173,6 +2179,95 @@ TEST_F(SystemInfoViewRenderTest, CrashesSectionRendersAndFilters)
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 1U); // the contoso.exe crash
+}
+
+// ========== Live sensors (#1522) ==========
+
+/// A package temperature with a high threshold and a fan, on one chip, as the sensor model finds them.
+[[nodiscard]] Platform::SensorsInfo liveSensors()
+{
+    Platform::SensorsInfo sensors;
+    sensors.available = true;
+    sensors.family = Platform::OsFamily::Linux;
+    sensors.listed = true;
+    sensors.devices.push_back({.name = "coretemp", .readings = {}});
+    sensors.devices[0].readings.push_back(
+        {.kind = Platform::SensorKind::Temperature, .label = "Package id 0", .value = 52.0, .high = 100.0, .critical = {}});
+    sensors.devices[0].readings.push_back(
+        {.kind = Platform::SensorKind::Fan, .label = "fan1", .value = 1180.0, .high = {}, .critical = {}});
+    return sensors;
+}
+
+TEST(SystemInfoSectionsTest, LiveSensorRowsShowMinimumAndMaximumSinceStart)
+{
+    const Platform::SensorReading package = liveSensors().devices[0].readings[0];
+    EXPECT_EQ(SystemInfo::formatLiveSensorReading(package, {.current = 52.0, .min = 38.5, .max = 71.0}),
+              "52.0 °C, min 38.5 °C, max 71.0 °C (high 100.0 °C)");
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(SystemInfo::formatLiveSensorReading(package, {.current = nan, .min = 38.5, .max = 71.0}),
+              "No reading, min 38.5 °C, max 71.0 °C (high 100.0 °C)");
+    EXPECT_EQ(SystemInfo::formatLiveSensorReading(package, {.current = nan, .min = nan, .max = nan}), ""); // never read
+    EXPECT_EQ(SystemInfo::formatSensorValue(Platform::SensorKind::Fan, 1180.0), "1180 RPM");
+
+    const std::vector<Domain::SensorStats> stats{{.current = 52.0, .min = 38.5, .max = 71.0}, {.current = nan, .min = nan, .max = nan}};
+    const Section section = SystemInfo::buildSensorsSection(liveSensors(), stats);
+    ASSERT_EQ(section.rows.size(), 2U);
+    EXPECT_EQ(section.rows[0].label, "coretemp: Package id 0");
+    EXPECT_TRUE(section.rows[0].value.starts_with("52.0 °C, min 38.5")) << section.rows[0].value;
+    EXPECT_EQ(section.rows[0].series, std::optional<std::size_t>(0));
+    EXPECT_FALSE(section.rows[1].available()); // never read: a muted dash that says why
+    EXPECT_EQ(section.rows[1].unavailableReason, "The sensor couldn't be read");
+    EXPECT_EQ(section.rows[1].series, std::optional<std::size_t>(1));
+
+    // Stats that don't match the sensors (a different layout) are ignored: the read's values, no series.
+    const Section mismatched = SystemInfo::buildSensorsSection(liveSensors(), std::span(stats).first(1));
+    EXPECT_EQ(mismatched.rows[0].value, "52.0 °C (high 100.0 °C)");
+    EXPECT_FALSE(mismatched.rows[0].series.has_value());
+}
+
+TEST_F(SystemInfoViewRenderTest, LiveSensorsReplaceTheRead)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.sensors = liveSensors(); // the read: 52 °C
+
+    auto owned = std::make_unique<TestMocks::MockSensorProbe>(liveSensors());
+    TestMocks::MockSensorProbe* probe = owned.get();
+    Domain::SensorModel model(std::move(owned));
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start - std::chrono::seconds(2));
+    probe->setValues({60.0, 1200.0});
+    model.sampleAt(start - std::chrono::seconds(1));
+
+    SystemInfoViewState state;
+    state.sensors = model.publication();
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    const auto sensors = std::ranges::find(state.sections, SystemInfo::SENSORS_SECTION_TITLE, &Section::title);
+    ASSERT_NE(sensors, state.sections.end());
+    const Row* package = findRow(*sensors, "coretemp: Package id 0");
+    ASSERT_NE(package, nullptr);
+    EXPECT_TRUE(package->value.contains("min")) << package->value; // the live section, not the read's
+    EXPECT_TRUE(package->series.has_value());
+    EXPECT_EQ(state.sensorsVersion, model.publicationVersion());
+    EXPECT_GT(ImGui::GetDrawData()->TotalVtxCount, 0);
+
+    // A new sample rebuilds the Sensors section alone; the filter follows its new values.
+    probe->setValues({75.0, 1300.0});
+    model.sampleAt(start);
+    state.sensors = model.publication();
+    state.filter = "75.0";
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    ASSERT_EQ(state.visible.size(), 1U);
+    EXPECT_EQ(state.sections[state.visible[0].section].title, SystemInfo::SENSORS_SECTION_TITLE);
+    EXPECT_EQ(state.visible[0].rows.size(), 1U);
+
+    // A new read puts the read's section back, and the live one replaces it again on the same frame.
+    snap.version += 1;
+    state.filter.clear();
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
+    const auto again = std::ranges::find(state.sections, SystemInfo::SENSORS_SECTION_TITLE, &Section::title);
+    ASSERT_NE(again, state.sections.end());
+    EXPECT_TRUE(findRow(*again, "coretemp: Package id 0")->value.starts_with("75.0")) << findRow(*again, "coretemp: Package id 0")->value;
 }
 
 } // namespace

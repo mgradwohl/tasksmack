@@ -15,6 +15,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/ISensorProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -24,6 +25,7 @@
 #include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -31,6 +33,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -1162,6 +1165,50 @@ class MockStartupProbe : public Platform::IStartupProbe
     Platform::StartupCapabilities m_Capabilities;
     std::mutex m_Mutex;
     std::vector<Platform::StartupEntry> m_Entries;
+};
+
+/// A sensor probe (#1522) that finds the sensors setSensors() gave it and reads the values setValues()
+/// gave it (thread-safe: the sampler thread reads it), counting discover() and readValues() calls.
+class MockSensorProbe : public Platform::ISensorProbe
+{
+  public:
+    explicit MockSensorProbe(Platform::SensorsInfo sensors = {}) : m_Sensors(std::move(sensors))
+    {}
+
+    /// The values the next readValues() calls return, in discover()'s order (NaN for a failed read).
+    void setValues(std::vector<double> values)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Values = std::move(values);
+    }
+
+    [[nodiscard]] Platform::SensorsInfo discover() override
+    {
+        Platform::SensorsInfo copy;
+        {
+            const std::scoped_lock lock(m_Mutex);
+            copy = m_Sensors;
+        }
+        discoveries.bump();
+        return copy;
+    }
+
+    void readValues(std::span<double> values) override
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            std::ranges::copy(std::span<const double>(m_Values).first(std::min(m_Values.size(), values.size())), values.begin());
+        }
+        reads.bump();
+    }
+
+    CallSignal discoveries; ///< discover() calls
+    CallSignal reads;       ///< readValues() calls
+
+  private:
+    std::mutex m_Mutex;
+    Platform::SensorsInfo m_Sensors;
+    std::vector<double> m_Values;
 };
 
 /// Service actions that never touch a real service: each answers setResult()'s result and records the

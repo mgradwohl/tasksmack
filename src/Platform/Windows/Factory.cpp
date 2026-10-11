@@ -11,6 +11,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/ISensorProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IStartupActions.h"
@@ -33,6 +34,7 @@
 #include "WindowsStartupProbe.h"
 #include "WindowsSystemInfoProbe.h"
 #include "WindowsSystemProbe.h"
+#include "WindowsThermalZones.h"
 
 #include <memory>
 
@@ -90,6 +92,11 @@ std::unique_ptr<IStartupActions> makeStartupActions()
 std::unique_ptr<ISystemInfoProbe> makeSystemInfoProbe()
 {
     return std::make_unique<WindowsSystemInfoProbe>();
+}
+
+std::unique_ptr<ISensorProbe> makeSensorProbe()
+{
+    return std::make_unique<WindowsThermalZones::ThermalZoneSensorProbe>(WindowsThermalZones::makeZoneReader());
 }
 
 std::unique_ptr<ISystemProbe> makeSystemProbe()

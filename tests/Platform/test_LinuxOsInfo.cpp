@@ -921,6 +921,52 @@ TEST(LinuxSensorsTest, ReadsChipsAndThermalZonesUnderARoot)
     EXPECT_EQ(info.devices[5].readings[0].label, "x86_pkg_temp");
 }
 
+TEST(LinuxSensorsTest, NamesEachReadingsSourceInOrder)
+{
+    const FixtureRoot root;
+    root.write("sys/class/hwmon/hwmon0/name", "nct6798\n");
+    root.write("sys/class/hwmon/hwmon0/in0_input", "12180\n");
+    root.write("sys/class/hwmon/hwmon0/fan1_input", "1180\n");
+    root.write("sys/class/hwmon/hwmon0/power1_average", "15000000\n");
+    root.write("sys/class/hwmon/hwmon1/name", "amdgpu\n");
+    root.write("sys/class/hwmon/hwmon1/temp1_input", "45000\n");
+    root.write("sys/class/hwmon/hwmon1/device/power/runtime_status", "active\n");
+    root.write("sys/class/thermal/thermal_zone3/type", "x86_pkg_temp\n");
+    root.write("sys/class/thermal/thermal_zone3/temp", "52000\n");
+    root.write("sys/class/thermal/thermal_zone1/type", "iwlwifi_1\n");
+    root.write("sys/class/thermal/thermal_zone1/temp", "40000\n");
+
+    SensorsInfo info;
+    std::vector<LinuxSensors::SensorSource> sources;
+    LinuxSensors::readSensorFacts(root.path(), info, &sources);
+    ASSERT_EQ(sources.size(), 6U); // one per reading, device by device
+    const std::filesystem::path chip = root.path() / "sys/class/hwmon/hwmon0";
+    EXPECT_EQ(sources[0].input, chip / "fan1_input"); // the readings' order: fan, voltage, power
+    EXPECT_DOUBLE_EQ(sources[0].divisor, 1.0);
+    EXPECT_EQ(sources[1].input, chip / "in0_input");
+    EXPECT_DOUBLE_EQ(sources[1].divisor, 1000.0);
+    EXPECT_EQ(sources[2].input, chip / "power1_average");
+    EXPECT_DOUBLE_EQ(sources[2].divisor, 1'000'000.0);
+    EXPECT_TRUE(sources[2].runtimeStatus.empty());
+    EXPECT_EQ(sources[3].input, root.path() / "sys/class/hwmon/hwmon1/temp1_input");
+    EXPECT_EQ(sources[3].runtimeStatus, root.path() / "sys/class/hwmon/hwmon1/device/power/runtime_status");
+    EXPECT_EQ(sources[4].input, root.path() / "sys/class/thermal/thermal_zone1/temp"); // zones by index
+    EXPECT_EQ(sources[5].input, root.path() / "sys/class/thermal/thermal_zone3/temp");
+    EXPECT_DOUBLE_EQ(sources[5].divisor, 1000.0);
+    ASSERT_EQ(info.devices.size(), 3U);
+    EXPECT_EQ(info.devices[2].readings[0].label, "iwlwifi_1");
+}
+
+TEST(LinuxSensorsTest, OnlyAnAwakeDeviceIsRead)
+{
+    EXPECT_TRUE(LinuxSensors::runtimeStatusAllowsRead("active\n"));
+    EXPECT_TRUE(LinuxSensors::runtimeStatusAllowsRead("unsupported\n"));
+    EXPECT_FALSE(LinuxSensors::runtimeStatusAllowsRead("suspended\n"));
+    EXPECT_FALSE(LinuxSensors::runtimeStatusAllowsRead("suspending\n"));
+    EXPECT_FALSE(LinuxSensors::runtimeStatusAllowsRead("resuming\n"));
+    EXPECT_FALSE(LinuxSensors::runtimeStatusAllowsRead(""));
+}
+
 TEST(LinuxSensorsTest, NoSensorsAndNoSysfs)
 {
     {
