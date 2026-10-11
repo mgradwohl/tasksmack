@@ -9,6 +9,9 @@
 // - Monitors from every adapter's DXGI outputs (indirect-display ones included): the desktop rectangle,
 //   the colour space and bits per colour (IDXGIOutput6::GetDesc1), and the EDID from the monitor's device
 //   registry key (Platform/EdidParser.h).
+// - Each listed adapter's highest Direct3D feature level (#1636), from a D3D12 device made on it for the
+//   query and released right after; d3d12.dll is loaded from System32 at run time, so a system without
+//   it leaves the level empty.
 // Every call goes through an injectable table; WindowsSystemInfoProbe.cpp supplies the real one, tests
 // substitute fakes.
 
@@ -29,6 +32,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <dxgi1_6.h>
+#include <d3dcommon.h> // D3D_FEATURE_LEVEL
 #pragma clang diagnostic pop
 // clang-format on
 
@@ -80,7 +84,17 @@ struct Functions
     std::optional<PciLocation> (*pciLocation)(const LUID& luid) = nullptr;
     std::vector<DriverNode> (*listDisplayDrivers)() = nullptr;
     std::vector<std::uint8_t> (*readMonitorEdid)(const std::wstring& outputDeviceName) = nullptr; ///< Empty when unreadable
+    /// The adapter's highest Direct3D 12 feature level, from a device created for the query and released
+    /// before it returns; nullopt when d3d12.dll is missing, the adapter isn't found or no device can be made.
+    std::optional<D3D_FEATURE_LEVEL> (*maxFeatureLevel)(const LUID& luid) = nullptr;
 };
+
+/// A Direct3D feature level as dxdiag writes it: D3D_FEATURE_LEVEL_12_2 is "12_2".
+[[nodiscard]] inline std::string featureLevelName(D3D_FEATURE_LEVEL level)
+{
+    const auto value = static_cast<std::uint32_t>(level);
+    return std::format("{}_{}", (value >> 12U) & 0xFU, (value >> 8U) & 0xFU);
+}
 
 /// A DXGI colour space's short name.
 [[nodiscard]] inline std::string colorSpaceName(DXGI_COLOR_SPACE_TYPE space)
@@ -219,6 +233,10 @@ inline void readGraphics(GraphicsInfo& info, const Functions& fns)
         {
             adapter.driverVersion = node->driverVersion;
             adapter.driverDate = node->driverDate.has_value() ? fileTimeDate(*node->driverDate) : std::string{};
+        }
+        if (const std::optional<D3D_FEATURE_LEVEL> level = fns.maxFeatureLevel(desc.AdapterLuid))
+        {
+            adapter.d3dFeatureLevel = featureLevelName(*level);
         }
         info.adapters.push_back(std::move(adapter));
     }

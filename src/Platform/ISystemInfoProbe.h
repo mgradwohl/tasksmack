@@ -275,6 +275,7 @@ struct GraphicsAdapter
     std::string driver;               ///< Linux: the kernel driver ("amdgpu", "nvidia")
     std::string driverVersion;        ///< Windows: the driver package's / Linux: the module's, if it has one
     std::string driverDate;           ///< Windows: "2024-09-05"
+    std::string d3dFeatureLevel;      ///< Windows: the highest Direct3D 12 feature level, "12_2" (#1636)
 };
 
 /// One connected monitor (#1519), from its EDID and, on Windows, the DXGI output it is attached to.
