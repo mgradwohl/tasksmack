@@ -1484,6 +1484,51 @@ std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
     return text;
 }
 
+std::string formatWifiLink(const Platform::WifiLink& link)
+{
+    std::string text;
+    const auto append = [&text](std::string_view part)
+    {
+        if (!text.empty())
+        {
+            text += ", ";
+        }
+        text += part;
+    };
+    const std::uint32_t mhz = link.frequencyMhz;
+    // The channel numbering of IEEE 802.11: 2.4 GHz from 2407 MHz (channel 14 apart, at 2484), 5 GHz
+    // from 5000 MHz, 6 GHz from 5950 MHz (channel 2 apart, at 5935), 5 MHz a channel.
+    if (mhz == 2484)
+    {
+        append("2.4 GHz, channel 14");
+    }
+    else if (mhz >= 2412 && mhz <= 2472)
+    {
+        append(std::format("2.4 GHz, channel {}", (mhz - 2407) / 5));
+    }
+    else if (mhz >= 5150 && mhz <= 5895)
+    {
+        append(std::format("5 GHz, channel {}", (mhz - 5000) / 5));
+    }
+    else if (mhz == 5935)
+    {
+        append("6 GHz, channel 2");
+    }
+    else if (mhz >= 5955 && mhz <= 7115)
+    {
+        append(std::format("6 GHz, channel {}", (mhz - 5950) / 5));
+    }
+    else if (mhz != 0)
+    {
+        append(std::format("{} MHz", mhz));
+    }
+    if (link.bitrateKbps != 0)
+    {
+        append(UI::Format::formatFixedLocalized(static_cast<double>(link.bitrateKbps) / 1000.0, 1, " Mbit/s"));
+    }
+    return text;
+}
+
 Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network)
 {
     Section section{.title = "Network adapters", .icon = ICON_FA_ETHERNET, .rows = {}};
@@ -1536,6 +1581,14 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
             rows.push_back(row(adapter.name + " Wi-Fi signal",
                                adapter.wifiSignalDbm.has_value() ? std::format("{} dBm", *adapter.wifiSignalDbm) : std::string{},
                                "Not reported by the driver, or not connected"));
+            // The network's name can place the machine, like a MAC address: an identifier.
+            const std::string_view linkReason = adapter.wifiLinkUnavailable.empty() ? NOT_REPORTED : adapter.wifiLinkUnavailable;
+            rows.push_back(
+                row(adapter.name + " Wi-Fi network", adapter.wifiLink ? adapter.wifiLink->ssid : std::string{}, linkReason, true));
+            if (adapter.wifiLink)
+            {
+                rows.push_back(row(adapter.name + " Wi-Fi link", formatWifiLink(*adapter.wifiLink)));
+            }
         }
     }
     return section;

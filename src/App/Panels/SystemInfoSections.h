@@ -223,8 +223,13 @@ struct VisibleSection
 /// An adapter's addresses: "192.168.1.20/24, fe80::1c2a:3bff:fe4d:5e6f/64", IPv4 first.
 [[nodiscard]] std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter);
 
+/// A Wi-Fi link's band, channel and rate: "5 GHz, channel 36, 866.7 Mbit/s", unknown parts left out; a
+/// frequency outside the 2.4, 5 and 6 GHz Wi-Fi channels is shown in MHz.
+[[nodiscard]] std::string formatWifiLink(const Platform::WifiLink& link);
+
 /// The Network adapters section (#1518): the default gateways and DNS servers, then per adapter its
-/// summary, addresses, MAC address (an identifier) and Wi-Fi signal.
+/// summary, addresses, MAC address (an identifier), and for Wi-Fi its signal, network name (an
+/// identifier) and link.
 [[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network);
 
 /// A boot phase's length: "850 ms", "4.21 s", "1 min 12.3 s".

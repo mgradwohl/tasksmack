@@ -675,6 +675,61 @@ TEST(SystemInfoSectionsTest, NetworkAdapterRows)
     EXPECT_EQ(findRow(section, "wlp3s0 MAC address"), nullptr); // none reported
     EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi signal")->value, "-61 dBm");
     EXPECT_EQ(findRow(section, "eth0 Wi-Fi signal"), nullptr);
+    // No link read: the network row says so, and there is no link row.
+    EXPECT_FALSE(findRow(section, "wlp3s0 Wi-Fi network")->available());
+    EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi link"), nullptr);
+    EXPECT_EQ(findRow(section, "eth0 Wi-Fi network"), nullptr);
+}
+
+TEST(SystemInfoSectionsTest, WifiLinkBandChannelAndRate)
+{
+    const auto link = [](std::uint32_t mhz, std::uint32_t kbps)
+    {
+        return SystemInfo::formatWifiLink({.ssid = "", .frequencyMhz = mhz, .bitrateKbps = kbps});
+    };
+    EXPECT_EQ(link(2412, 0), "2.4 GHz, channel 1");
+    EXPECT_EQ(link(2472, 0), "2.4 GHz, channel 13");
+    EXPECT_EQ(link(2484, 0), "2.4 GHz, channel 14"); // Japan's, off the 5 MHz grid
+    EXPECT_EQ(link(5180, 0), "5 GHz, channel 36");
+    EXPECT_EQ(link(5825, 0), "5 GHz, channel 165");
+    EXPECT_EQ(link(5935, 0), "6 GHz, channel 2"); // off the 6 GHz grid
+    EXPECT_EQ(link(5955, 0), "6 GHz, channel 1");
+    EXPECT_EQ(link(7115, 0), "6 GHz, channel 233");
+    EXPECT_EQ(link(58320, 0), "58320 MHz"); // 60 GHz: shown as it is
+    EXPECT_EQ(link(5180, 866'700), "5 GHz, channel 36, 866.7 Mbit/s");
+    EXPECT_EQ(link(0, 54'000), "54.0 Mbit/s");
+    EXPECT_EQ(link(0, 0), "");
+}
+
+TEST(SystemInfoSectionsTest, WifiNetworkAndLinkRows)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    Platform::NetworkAdapter wifi;
+    wifi.name = "wlp3s0";
+    wifi.up = true;
+    wifi.wireless = true;
+    wifi.wifiLink = Platform::WifiLink{.ssid = "Cafe \\xFF", .frequencyMhz = 5180, .bitrateKbps = 866'700};
+    Platform::NetworkAdapter idle;
+    idle.name = "wlan1";
+    idle.wireless = true;
+    idle.wifiLinkUnavailable = "Not connected";
+    network.adapters = {idle, wifi};
+
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    const auto* name = findRow(section, "wlp3s0 Wi-Fi network");
+    ASSERT_NE(name, nullptr);
+    EXPECT_EQ(name->value, "Cafe \\xFF");
+    EXPECT_TRUE(name->isIdentifier); // a network's name can place the machine
+    EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi link")->value, "5 GHz, channel 36, 866.7 Mbit/s");
+    EXPECT_FALSE(findRow(section, "wlp3s0 Wi-Fi link")->isIdentifier);
+
+    const auto* idleName = findRow(section, "wlan1 Wi-Fi network");
+    ASSERT_NE(idleName, nullptr);
+    EXPECT_FALSE(idleName->available());
+    EXPECT_EQ(idleName->unavailableReason, "Not connected");
+    EXPECT_EQ(findRow(section, "wlan1 Wi-Fi link"), nullptr);
 }
 
 TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)

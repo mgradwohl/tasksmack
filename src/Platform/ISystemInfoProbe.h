@@ -520,6 +520,14 @@ struct AdapterAddress
     [[nodiscard]] friend bool operator==(const AdapterAddress&, const AdapterAddress&) = default;
 };
 
+/// A connected Wi-Fi adapter's link (#1518): the network it has joined and how fast.
+struct WifiLink
+{
+    std::string ssid;               ///< The network's name, made safe to draw; an identifier (it can place the machine)
+    std::uint32_t frequencyMhz = 0; ///< The channel's centre frequency; 0 when unknown
+    std::uint32_t bitrateKbps = 0;  ///< The current transmit rate in kbit/s; 0 when unknown
+};
+
 /// One network adapter's configuration (#1518). A fact the probe couldn't read is empty or 0.
 struct NetworkAdapter
 {
@@ -531,6 +539,8 @@ struct NetworkAdapter
     bool wireless = false;
     std::vector<AdapterAddress> addresses;
     std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
+    std::optional<WifiLink> wifiLink; ///< Wi-Fi: the link, when it is connected and could be read.
+    std::string wifiLinkUnavailable;  ///< Wi-Fi: why wifiLink is empty, for the UI; empty when unknown.
 };
 
 /// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways

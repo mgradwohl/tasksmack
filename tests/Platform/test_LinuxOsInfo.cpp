@@ -1041,6 +1041,54 @@ TEST(LinuxNetworkAdaptersTest, ReadsTheFactsUnderARoot)
     EXPECT_EQ(info.searchDomains, (std::vector<std::string>{"lan"}));
 }
 
+TEST(LinuxNetworkAdaptersTest, AsksTheWifiReaderOnlyForWirelessAdapters)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/eth0/address", "a4:5e:60:12:34:56\n");
+    root.write("sys/class/net/wlp3s0/address", "3c:22:fb:00:11:22\n");
+    root.write("sys/class/net/wlan1/address", "3c:22:fb:00:11:33\n");
+    std::filesystem::create_directories(root.path() / "sys/class/net/wlp3s0/wireless");
+    std::filesystem::create_directories(root.path() / "sys/class/net/wlan1/wireless");
+
+    std::vector<std::string> asked;
+    const LinuxNetworkAdapters::WifiLinkReader reader = [&asked](const std::string& adapter)
+    {
+        asked.push_back(adapter);
+        LinuxNetworkAdapters::WifiLinkRead read;
+        if (adapter == "wlp3s0")
+        {
+            read.link = WifiLink{.ssid = "home", .frequencyMhz = 2437, .bitrateKbps = 144'400};
+        }
+        else
+        {
+            read.error = "Not connected";
+        }
+        return read;
+    };
+    NetworkAdaptersInfo info;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, reader);
+
+    std::ranges::sort(asked);
+    EXPECT_EQ(asked, (std::vector<std::string>{"wlan1", "wlp3s0"})); // never eth0
+    ASSERT_EQ(info.adapters.size(), 3U);                             // eth0, wlan1, wlp3s0
+    EXPECT_FALSE(info.adapters[0].wifiLink.has_value());
+    EXPECT_TRUE(info.adapters[0].wifiLinkUnavailable.empty());
+    EXPECT_FALSE(info.adapters[1].wifiLink.has_value());
+    EXPECT_EQ(info.adapters[1].wifiLinkUnavailable, "Not connected");
+    ASSERT_TRUE(info.adapters[2].wifiLink.has_value());
+    const WifiLink link = info.adapters[2].wifiLink.value_or(WifiLink{});
+    EXPECT_EQ(link.ssid, "home");
+    EXPECT_EQ(link.frequencyMhz, 2437U);
+    EXPECT_EQ(link.bitrateKbps, 144'400U);
+    EXPECT_TRUE(info.adapters[2].wifiLinkUnavailable.empty());
+
+    // Without a reader nothing is asked, and no reason is made up.
+    NetworkAdaptersInfo plain;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), plain, nullptr);
+    EXPECT_FALSE(plain.adapters[2].wifiLink.has_value());
+    EXPECT_TRUE(plain.adapters[2].wifiLinkUnavailable.empty());
+}
+
 TEST(LinuxNetworkAdaptersTest, OnlyTheStubAndNothingReadable)
 {
     {
