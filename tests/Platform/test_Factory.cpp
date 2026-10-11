@@ -106,15 +106,11 @@ TEST(FactoryTest, MakeProcessOpenFilesReaderListsOpenFiles)
     EXPECT_TRUE(reader->hasOpenFiles()); // both platforms (#183)
 }
 
-TEST(FactoryTest, MakeProcessSecurityReaderMatchesThePlatform)
+TEST(FactoryTest, MakeProcessSecurityReaderReadsSecurity)
 {
     const auto reader = makeProcessSecurityReader();
     ASSERT_NE(reader, nullptr);
-#ifdef _WIN32
-    EXPECT_FALSE(reader->hasSecurity()); // the token reader is the Windows lane's follow-up (#1526)
-#else
-    EXPECT_TRUE(reader->hasSecurity());
-#endif
+    EXPECT_TRUE(reader->hasSecurity()); // both platforms: /proc on Linux, the process token on Windows (#1526)
 }
 
 TEST(FactoryTest, MakeStartupProbeReturnsNonNull)

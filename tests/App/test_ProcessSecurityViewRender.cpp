@@ -68,6 +68,43 @@ TEST(ProcessSecurityViewTest, BuildsOneRowPerReportedField)
     EXPECT_TRUE(Detail::securityRows({}).empty()); // nothing reported: no made-up rows
 }
 
+TEST(ProcessSecurityViewTest, BuildsTheWindowsTokenRows)
+{
+    Platform::ProcessSecurity security;
+    security.tokenUser = Platform::SecurityAccount{.sid = "S-1-5-21-1-2-3-1001", .name = "DESKTOP\\matt"};
+    security.sessionId = 1;
+    security.integrityLevel = 0x2000;
+    security.elevated = false;
+    security.elevationType = Platform::TokenElevationKind::Limited;
+    security.appContainer = false;
+    security.virtualizationEnabled = true;
+    security.privileges = std::vector<Platform::TokenPrivilege>{{.name = "SeShutdownPrivilege", .enabled = false},
+                                                                {.name = "SeChangeNotifyPrivilege", .enabled = true}};
+    security.tokenGroups = std::vector<Platform::TokenGroup>{
+        {.account = {.sid = "S-1-1-0", .name = "Everyone"}, .enabled = true, .denyOnly = false},
+        {.account = {.sid = "S-1-5-32-544", .name = "BUILTIN\\Administrators"}, .enabled = false, .denyOnly = true},
+    };
+    const std::vector<Detail::SecurityRow> expected{
+        {.label = "User", .value = "DESKTOP\\matt (S-1-5-21-1-2-3-1001)"},
+        {.label = "Session", .value = "1"},
+        {.label = "Integrity level", .value = "Medium"},
+        {.label = "Elevated", .value = "No"},
+        {.label = "Elevation type", .value = "Limited (filtered)"},
+        {.label = "AppContainer", .value = "No"},
+        {.label = "Virtualization", .value = "Enabled"},
+        {.label = "Privileges", .value = "SeShutdownPrivilege: Disabled\nSeChangeNotifyPrivilege: Enabled"},
+        {.label = "Groups", .value = "Everyone\nBUILTIN\\Administrators (deny only)"},
+    };
+    EXPECT_EQ(Detail::securityRows(security), expected);
+
+    // A token with no privileges or groups says so, rather than dropping the rows.
+    Platform::ProcessSecurity empty;
+    empty.privileges = std::vector<Platform::TokenPrivilege>{};
+    empty.tokenGroups = std::vector<Platform::TokenGroup>{};
+    const std::vector<Detail::SecurityRow> none{{.label = "Privileges", .value = "none"}, {.label = "Groups", .value = "none"}};
+    EXPECT_EQ(Detail::securityRows(empty), none);
+}
+
 TEST(ProcessSecurityViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
 {
     ProcessSecurityView view;

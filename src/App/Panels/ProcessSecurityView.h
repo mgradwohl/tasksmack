@@ -1,15 +1,17 @@
 #pragma once
 
-// Process Details' collapsible Security section (#1526): the selected process's user and group IDs,
-// supplementary groups, capability sets, no_new_privs, seccomp mode, LSM label and cgroup, as a
-// two-column table of label and value.
+// Process Details' collapsible Security section (#1526), as a two-column table of label and value: on
+// Linux the selected process's user and group IDs, supplementary groups, capability sets,
+// no_new_privs, seccomp mode, LSM label and cgroup; on Windows its token's user, session, integrity
+// level, elevation, AppContainer and virtualization state, privileges and groups.
 //
 // The view never creates a reader. The panel owns the IProcessSecurityReader (the composition root's
 // Platform::makeProcessSecurityReader() result) and passes it to update(), which the panel calls from
 // its per-frame update path, never from render(). update() reads only while the section was drawn
 // open on the last frame, once when it opens or the selection changes and then every
 // Domain::Sampling::PROCESS_SECURITY_REFRESH_MS; render() only draws the rows the last read built.
-// The read is a few small files, so it runs on the calling thread, as the Environment section's does.
+// The read is a few small files or token queries, so it runs on the calling thread, as the Environment
+// section's does.
 //
 // Everything but render() is defined here, free of ImGui, so the cadence, the statuses and the rows
 // are tested against a mock reader without an ImGui context; render() is run headless in
@@ -110,6 +112,48 @@ struct SecurityRow
     {
         rows.push_back({.label = "Control group", .value = security.controlGroup});
     }
+
+    // A Windows token's fields (none are set on Linux).
+    const auto yesNo = [](bool value)
+    {
+        return std::string(value ? "Yes" : "No");
+    };
+    if (security.tokenUser.has_value())
+    {
+        rows.push_back({.label = "User", .value = Text::accountText(*security.tokenUser)});
+    }
+    if (security.sessionId.has_value())
+    {
+        rows.push_back({.label = "Session", .value = std::to_string(*security.sessionId)});
+    }
+    if (security.integrityLevel.has_value())
+    {
+        rows.push_back({.label = "Integrity level", .value = Text::integrityLevelText(*security.integrityLevel)});
+    }
+    if (security.elevated.has_value())
+    {
+        rows.push_back({.label = "Elevated", .value = yesNo(*security.elevated)});
+    }
+    if (security.elevationType.has_value())
+    {
+        rows.push_back({.label = "Elevation type", .value = std::string(Text::elevationTypeText(*security.elevationType))});
+    }
+    if (security.appContainer.has_value())
+    {
+        rows.push_back({.label = "AppContainer", .value = yesNo(*security.appContainer)});
+    }
+    if (security.virtualizationEnabled.has_value())
+    {
+        rows.push_back({.label = "Virtualization", .value = *security.virtualizationEnabled ? "Enabled" : "Disabled"});
+    }
+    if (security.privileges.has_value())
+    {
+        rows.push_back({.label = "Privileges", .value = Text::privilegeListText(*security.privileges)});
+    }
+    if (security.tokenGroups.has_value())
+    {
+        rows.push_back({.label = "Groups", .value = Text::tokenGroupListText(*security.tokenGroups)});
+    }
     return rows;
 }
 
@@ -121,7 +165,7 @@ class ProcessSecurityView
   public:
     /// Draws the section: a collapsing "Security" header and, while it is open, the last read's table
     /// or its status line. Draws nothing at all when @p hasSecurity is false (the platform cannot read
-    /// a process's security context: Windows for now, synthetic runs).
+    /// a process's security context: synthetic runs).
     void render(bool hasSecurity);
 
     /// The panel's per-frame update: reads @p target's security context through @p reader when the

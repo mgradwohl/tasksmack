@@ -334,6 +334,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
+    Platform/test_WindowsProcessSecurity.cpp
     Platform/test_WindowsDiskProbe.cpp
     Platform/test_WindowsDiskProbeSeams.cpp
     Platform/test_WindowsPathProvider.cpp
