@@ -19,6 +19,21 @@ set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(googletest)
 
+# Property-based testing (#139): rapidcheck and its Google Test integration (RC_GTEST_PROP). It has no
+# releases, so a master commit is pinned; its ext/ submodules are only for its own tests and examples.
+FetchContent_Declare(
+    rapidcheck
+    GIT_REPOSITORY https://github.com/emil-e/rapidcheck.git
+    GIT_TAG 6e8dadfdafa3a74eabb52ead87f8787f72eccd0b  # master 2026-08-06 - pinned to SHA for supply chain security
+    GIT_SUBMODULES ""
+    SYSTEM  # Treat as system headers to suppress warnings from rapidcheck
+    BINARY_DIR "${TASKSMACK_DEPS_BINARY_DIR}/rapidcheck-build"  # per-preset build tree (#1308)
+)
+set(RC_ENABLE_GTEST ON CACHE BOOL "" FORCE)
+set(RC_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(RC_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(rapidcheck)
+
 # Ensure Google Test headers are treated as SYSTEM to suppress warnings
 # Apply SYSTEM include directories to all gtest/gmock targets
 foreach(_gtest_target gtest gtest_main gmock gmock_main)
@@ -166,6 +181,7 @@ set(COMMON_TEST_SOURCES
     UI/test_IconEncoding.cpp
     App/test_DialogGeometry.cpp
     UI/test_ThemeCatalog.cpp
+    UI/test_FormatProperties.cpp
     UI/test_ThemeLoader.cpp
     UI/test_AssetPath.cpp
     UI/test_ThemeHeader.cpp
@@ -376,6 +392,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_PowerProbeContract.cpp
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemInfoProbe.cpp
+    Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_SyscallTrace.cpp
@@ -602,6 +619,7 @@ target_include_directories(TaskSmackTests SYSTEM PRIVATE ${stb_SOURCE_DIR})  # F
 target_link_libraries(TaskSmackTests PRIVATE
     gtest
     gmock
+    rapidcheck_gtest  # property-based tests (#139)
     spdlog::spdlog_header_only
     tomlplusplus::tomlplusplus
     SDL3::SDL3

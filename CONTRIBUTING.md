@@ -435,6 +435,25 @@ ctest --preset debug -R Integration
 ctest --preset win-debug -R Integration
 ```
 
+### Property-based tests
+
+For code whose contract holds over a whole input space -- formatters, parsers, round-trips -- write a
+[rapidcheck](https://github.com/emil-e/rapidcheck) property next to the example-based tests. `RC_GTEST_PROP`
+registers it as an ordinary Google Test case, so it runs under `ctest` with everything else; each run checks
+a few hundred generated inputs and shrinks a failure to the smallest one it can find, printing it with a
+seed to replay. Examples: `tests/UI/test_FormatProperties.cpp` (digit grouping, integer formatting) and
+`tests/Platform/test_NetworkTextProperties.cpp` (address text, the networkd JSON parser).
+
+```cpp
+RC_GTEST_PROP(MyTest, RoundTrips, (std::uint32_t value))
+{
+    RC_ASSERT(parse(format(value)) == value);
+}
+```
+
+Keep a property's generator bounded (no unbounded loops on what it generates), and use `RC_PRE` to drop
+inputs a property doesn't cover rather than asserting around them.
+
 ### Writing tests (mocks)
 
 For unit tests that need process/system probe data, prefer the mocks in `tests/Mocks/MockProbes.h`. `MockProcessProbe` supports a fluent builder-style API:
