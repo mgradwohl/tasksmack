@@ -88,8 +88,12 @@ namespace
     return windowsSeconds - WINDOWS_EPOCH_TO_UNIX_EPOCH;
 }
 
+using ProcessFunctions = WindowsProcessProbeFunctions::Process;
+using SystemFunctions = WindowsProcessProbeFunctions::System;
+using TokenFunctions = WindowsProcessProbeFunctions::Token;
+
 /// Get the username (owner) of a process
-[[nodiscard]] std::string getProcessOwner(HANDLE hProcess)
+[[nodiscard]] std::string getProcessOwner(const TokenFunctions& fns, HANDLE hProcess)
 {
     if (hProcess == nullptr)
     {
@@ -97,14 +101,14 @@ namespace
     }
 
     Windows::UniqueHandle hToken;
-    if (OpenProcessToken(hProcess, TOKEN_QUERY, hToken.put()) == 0)
+    if (fns.openProcessToken(hProcess, TOKEN_QUERY, hToken.put()) == 0)
     {
         return {};
     }
 
     // Get token user size
     DWORD tokenInfoLen = 0;
-    GetTokenInformation(hToken.get(), TokenUser, nullptr, 0, &tokenInfoLen);
+    fns.getTokenInformation(hToken.get(), TokenUser, nullptr, 0, &tokenInfoLen);
     if (tokenInfoLen == 0)
     {
         return {};
@@ -114,7 +118,7 @@ namespace
     // every exit path below, including if this allocation throws std::bad_alloc (#774's leak
     // class, one level deeper than getProcessDetails' own hProcess/hQueryInfo).
     std::vector<BYTE> tokenInfo(tokenInfoLen);
-    if (GetTokenInformation(hToken.get(), TokenUser, tokenInfo.data(), tokenInfoLen, &tokenInfoLen) == 0)
+    if (fns.getTokenInformation(hToken.get(), TokenUser, tokenInfo.data(), tokenInfoLen, &tokenInfoLen) == 0)
     {
         return {};
     }
@@ -134,7 +138,7 @@ namespace
     auto domainNameLen = Domain::Numeric::narrowOr<DWORD>(domainName.size(), DWORD{256});
     SID_NAME_USE sidType{SidTypeUnknown}; // LookupAccountSidW will overwrite this; SidTypeUnknown is the nearest valid zero-like sentinel
 
-    if (LookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
+    if (fns.lookupAccountSidW(nullptr, tokenUser.User.Sid, userName.data(), &userNameLen, domainName.data(), &domainNameLen, &sidType) == 0)
     {
         return {};
     }
@@ -143,7 +147,7 @@ namespace
 }
 
 /// The full path of a process's executable (QueryFullProcessImageNameW). Empty when unreadable.
-[[nodiscard]] std::wstring getProcessImagePath(HANDLE hProcess)
+[[nodiscard]] std::wstring getProcessImagePath(const ProcessFunctions& fns, HANDLE hProcess)
 {
     if (hProcess == nullptr)
     {
@@ -160,7 +164,7 @@ namespace
     for (;;)
     {
         auto size = static_cast<DWORD>(path.size());
-        if (QueryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
+        if (fns.queryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
         {
             path.resize(size);
             return path;
@@ -174,11 +178,13 @@ namespace
     }
 }
 
-using NtQueryInformationProcessFn = NTSTATUS(NTAPI*)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+// The information class is passed as a ULONG, PROCESSINFOCLASS's representation, so the extended
+// classes below need no enum cast.
+using NtQueryInformationProcessFn = decltype(ProcessFunctions::ntQueryInformationProcess);
 
 [[nodiscard]] NtQueryInformationProcessFn getNtQueryInformationProcessFn() noexcept
 {
-    static NtQueryInformationProcessFn cachedFn = []() -> NtQueryInformationProcessFn
+    static NtQueryInformationProcessFn cachedFn = [] -> NtQueryInformationProcessFn
     {
         HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
         if (ntdll == nullptr)
@@ -272,23 +278,22 @@ struct ProcessExtendedBasicInformation
     ULONG flags = 0;
 };
 
-// Some Windows SDKs cap PROCESSINFOCLASS enum to a smaller range; use a non-constexpr
-// conversion to allow the extended value used by ProcessExtendedBasicInformation.
-const PROCESSINFOCLASS PROCESS_INFO_EXTENDED_BASIC = static_cast<PROCESSINFOCLASS>(64);
+// ProcessExtendedBasicInformation: past the PROCESSINFOCLASS range some SDKs declare.
+constexpr ULONG PROCESS_INFO_EXTENDED_BASIC = 64;
 
 // Bit flags for ProcessExtendedBasicInformation.flags (only keep flags we use)
 constexpr ULONG PEBI_IS_FROZEN = 0x00000010;     // Process is suspended (UWP apps, frozen by OS)
 constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficiency mode)
 
 /// Query process status (Suspended, Efficiency Mode)
-[[nodiscard]] std::string getProcessStatus(HANDLE hProcess)
+[[nodiscard]] std::string_view getProcessStatus(const ProcessFunctions& fns, HANDLE hProcess)
 {
     if (hProcess == nullptr)
     {
         return {};
     }
 
-    auto* fn = getNtQueryInformationProcessFn();
+    auto* fn = fns.ntQueryInformationProcess;
     if (fn == nullptr)
     {
         return {};
@@ -326,14 +331,14 @@ constexpr ULONG PEBI_IS_BACKGROUND = 0x00000020; // Background process (efficien
 
 // ProcessCommandLineInformation (Windows 8.1+): the command line from the process's PEB, as a
 // UNICODE_STRING followed by its characters. Needs only PROCESS_QUERY_LIMITED_INFORMATION.
-const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>(60);
+constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
 
 /// The command line a process was started with (#1156), as Linux reads it from /proc/[pid]/cmdline.
 /// Empty when it can't be read: processes with no user-mode PEB (System, Registry, Memory
 /// Compression, vmmem) and isolated ones (LsaIso.exe and other VBS trustlets) don't have one to read.
-[[nodiscard]] std::string getProcessCommandLine(HANDLE hProcess)
+[[nodiscard]] std::string getProcessCommandLine(const ProcessFunctions& fns, HANDLE hProcess)
 {
-    auto* fn = getNtQueryInformationProcessFn();
+    auto* fn = fns.ntQueryInformationProcess;
     if (hProcess == nullptr || fn == nullptr)
     {
         return {};
@@ -387,7 +392,7 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// Returns 0 when the process is accessible but owns no GDI objects.
 /// Note: GetGuiResources returns 0 on error as well as on genuine zero; SetLastError(0) before
 /// the call lets us distinguish the two cases via GetLastError() afterwards.
-[[nodiscard]] std::optional<std::int32_t> getProcessGdiObjectCount(HANDLE hQuery)
+[[nodiscard]] std::optional<std::int32_t> getProcessGdiObjectCount(const ProcessFunctions& fns, HANDLE hQuery)
 {
     if (hQuery == nullptr)
     {
@@ -395,7 +400,7 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
     }
 
     SetLastError(0);
-    const DWORD count = GetGuiResources(hQuery, GR_GDIOBJECTS);
+    const DWORD count = fns.getGuiResources(hQuery, GR_GDIOBJECTS);
     if (count == 0 && GetLastError() != 0)
     {
         // GetGuiResources failed (e.g. insufficient access rights on this handle type).
@@ -539,7 +544,7 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// Limitations: console apps host their window in conhost.exe, so they return
 /// zero USER objects and are classified as "Background Process" even if
 /// user-facing. Services with message-only windows may be misclassified as "App".
-[[nodiscard]] std::string classifyProcessType(HANDLE hQuery, DWORD pid, std::string_view imagePath)
+[[nodiscard]] std::string_view classifyProcessType(const ProcessFunctions& fns, HANDLE hQuery, DWORD pid, std::string_view imagePath)
 {
     // PID 0 (Idle) and PID 4 (System) are always Windows processes.
     if (pid == 0 || pid == 4)
@@ -552,7 +557,7 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
     // must come before the directory heuristic to classify them as "App" correctly.
     if (hQuery != nullptr)
     {
-        const DWORD userObjects = GetGuiResources(hQuery, GR_USEROBJECTS);
+        const DWORD userObjects = fns.getGuiResources(hQuery, GR_USEROBJECTS);
         if (userObjects > 0)
         {
             return "App";
@@ -594,11 +599,11 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// Whether the current process token is elevated, via GetTokenInformation(TokenElevation).
 /// The elevation state is constant for the lifetime of the process, so callers query it once.
 /// Conservative: any failure reports "not elevated".
-[[nodiscard]] bool isCurrentProcessElevated()
+[[nodiscard]] bool isCurrentProcessElevated(const TokenFunctions& fns)
 {
     // UniqueHandle ensures CloseHandle is called on all paths.
     Windows::UniqueHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+    if (fns.openProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
     {
         spdlog::debug("WindowsProcessProbe: OpenProcessToken failed (error code: {})", GetLastError());
         return false;
@@ -606,7 +611,7 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 
     TOKEN_ELEVATION elevation{};
     DWORD dwSize = sizeof(elevation);
-    if (GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &dwSize) == FALSE)
+    if (fns.getTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &dwSize) == FALSE)
     {
         spdlog::debug("WindowsProcessProbe: GetTokenInformation failed (error code: {})", GetLastError());
         return false;
@@ -618,12 +623,12 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// numbers per-core CPUs by (#1247). Fixed for the boot session, so read once; active masks are
 /// left 0 for readActiveProcessorMasks(). Empty if discovery failed (a group count or size of 0):
 /// affinityTopology() then reports Unknown, never one group.
-[[nodiscard]] std::vector<ProcessorGroupLayout> readProcessorGroupMaximums()
+[[nodiscard]] std::vector<ProcessorGroupLayout> readProcessorGroupMaximums(const SystemFunctions& fns)
 {
-    std::vector<ProcessorGroupLayout> groups(GetMaximumProcessorGroupCount());
+    std::vector<ProcessorGroupLayout> groups(fns.getMaximumProcessorGroupCount());
     for (std::size_t group = 0; group < groups.size(); ++group)
     {
-        groups[group].maximumProcessors = GetMaximumProcessorCount(static_cast<WORD>(group));
+        groups[group].maximumProcessors = fns.getMaximumProcessorCount(static_cast<WORD>(group));
         if (groups[group].maximumProcessors == 0)
         {
             spdlog::debug("GetMaximumProcessorCount({}) failed: CPU affinity unreadable", group);
@@ -637,20 +642,20 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// GroupInfo lists the active groups (a group with none active gets mask 0). Hot-add or offlining
 /// changes them, so they are re-read on the heavy detail cadence (#1247). False, with every mask
 /// cleared, if they can't be read.
-[[nodiscard]] bool readActiveProcessorMasks(std::span<ProcessorGroupLayout> groups)
+[[nodiscard]] bool readActiveProcessorMasks(const SystemFunctions& fns, std::span<ProcessorGroupLayout> groups)
 {
     for (ProcessorGroupLayout& group : groups)
     {
         group.activeMask = 0;
     }
     DWORD bytes = 0;
-    (void) GetLogicalProcessorInformationEx(RelationGroup, nullptr, &bytes);
+    (void) fns.getLogicalProcessorInformationEx(RelationGroup, nullptr, &bytes);
     std::vector<std::byte> buffer(bytes);
     constexpr std::size_t GROUP_OFFSET = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Group);
     if (bytes < GROUP_OFFSET + sizeof(GROUP_RELATIONSHIP) ||
         // Safe and necessary: the API writes this variable-size structure into the byte buffer.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        GetLogicalProcessorInformationEx(
+        fns.getLogicalProcessorInformationEx(
             RelationGroup, reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data()), &bytes) == FALSE)
     {
         spdlog::debug("GetLogicalProcessorInformationEx(RelationGroup) failed: multi-group CPU affinity unreadable");
@@ -700,7 +705,8 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
 /// affinity unreadable rather than infer the missing threads' groups. A thread ID can be reused as
 /// soon as its thread exits, so an opened thread that now belongs to another process than
 /// `ownerPid` is a missing thread too, not one of this process's (review #1434).
-[[nodiscard]] ThreadGroupAffinityReads readThreadGroupAffinities(std::span<const std::byte> threadRecords, DWORD ownerPid)
+[[nodiscard]] ThreadGroupAffinityReads
+readThreadGroupAffinities(const ProcessFunctions& fns, std::span<const std::byte> threadRecords, DWORD ownerPid)
 {
     ThreadGroupAffinityReads reads;
     reads.complete = threadRecords.size() >= sizeof(SYSTEM_THREAD_INFORMATION);
@@ -712,10 +718,10 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
         // Safe and necessary: the kernel stores thread IDs as HANDLE-sized integers; they fit in 32 bits.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
         const auto tid = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(thread.ClientId.UniqueThread));
-        const Windows::UniqueHandle hThread(OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
+        const Windows::UniqueHandle hThread(fns.openThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid));
         GROUP_AFFINITY affinity{};
-        if (!hThread.valid() || GetProcessIdOfThread(hThread.get()) != ownerPid ||
-            GetThreadGroupAffinity(hThread.get(), &affinity) == FALSE)
+        if (!hThread.valid() || fns.getProcessIdOfThread(hThread.get()) != ownerPid ||
+            fns.getThreadGroupAffinity(hThread.get(), &affinity) == FALSE)
         {
             reads.complete = false;
             break; // The affinity is unreadable now; the remaining threads can't change that
@@ -725,12 +731,91 @@ const PROCESSINFOCLASS PROCESS_INFO_COMMAND_LINE = static_cast<PROCESSINFOCLASS>
     return reads;
 }
 
+/// iphlpapi.dll's TCP EStats exports: the IPv4 pair, and the IPv6 pair (#1100) only when the IPv4
+/// pair resolved. All null if the DLL can't be loaded.
+[[nodiscard]] WindowsProcessProbeFunctions::TcpEStats loadTcpEStats(Windows::UniqueModule& ownedModule)
+{
+    using TcpEStats = WindowsProcessProbeFunctions::TcpEStats;
+    HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
+    if (iphlp == nullptr)
+    {
+        // Defensive guard: today this runs at most once per probe (detectNetworkCounters() is only
+        // called from the constructor), so ownedModule is always null on first entry here. A future
+        // retry path re-entering it would otherwise call LoadLibraryW again and overwrite the
+        // module without a matching FreeLibrary, leaking one DLL reference count (same latent class
+        // as #781). Only the library load needs guarding: the GetProcAddress lookups and the
+        // privilege probe still run on every call, so a privilege change would be seen on a retry.
+        if (ownedModule == nullptr)
+        {
+            // iphlpapi.dll was not already loaded, so we own this reference; ownedModule frees it
+            ownedModule.reset(LoadLibraryW(L"iphlpapi.dll"));
+            if (ownedModule == nullptr)
+            {
+                return {};
+            }
+        }
+        iphlp = ownedModule.get();
+    }
+
+    TcpEStats estats{
+        .getPerTcpConnectionEStats = Windows::getProcAddress<TcpEStats::GetFn>(iphlp, "GetPerTcpConnectionEStats"),
+        .setPerTcpConnectionEStats = Windows::getProcAddress<TcpEStats::SetFn>(iphlp, "SetPerTcpConnectionEStats"),
+    };
+    if (estats.getPerTcpConnectionEStats == nullptr || estats.setPerTcpConnectionEStats == nullptr)
+    {
+        return {};
+    }
+    // Exported alongside the IPv4 pair since Vista.
+    estats.getPerTcp6ConnectionEStats = Windows::getProcAddress<TcpEStats::Get6Fn>(iphlp, "GetPerTcp6ConnectionEStats");
+    estats.setPerTcp6ConnectionEStats = Windows::getProcAddress<TcpEStats::Set6Fn>(iphlp, "SetPerTcp6ConnectionEStats");
+    return estats;
+}
+
 } // namespace
 
-WindowsProcessProbe::WindowsProcessProbe()
-    : m_IsElevated(isCurrentProcessElevated()),
-      m_ProcessorGroups(readProcessorGroupMaximums()),
-      m_ThreadsMaySpanGroups(threadsMaySpanGroups(windowsBuildNumber()))
+WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
+{
+    return {
+        .network = {.loadTcpEStats = &loadTcpEStats, .getExtendedTcpTable = &GetExtendedTcpTable},
+        .system =
+            {
+                .ntQuerySystemInformation = Windows::ntQuerySystemInformation(),
+                .getMaximumProcessorGroupCount = &GetMaximumProcessorGroupCount,
+                .getMaximumProcessorCount = &GetMaximumProcessorCount,
+                .getLogicalProcessorInformationEx = &GetLogicalProcessorInformationEx,
+                .windowsBuildNumber = &windowsBuildNumber,
+            },
+        .token =
+            {
+                .openProcessToken = &OpenProcessToken,
+                .getTokenInformation = &GetTokenInformation,
+                .lookupAccountSidW = &LookupAccountSidW,
+            },
+        .process =
+            {
+                .openProcess = &OpenProcess,
+                .getPriorityClass = &GetPriorityClass,
+                .queryFullProcessImageNameW = &QueryFullProcessImageNameW,
+                .ntQueryInformationProcess = getNtQueryInformationProcessFn(),
+                .getGuiResources = &GetGuiResources,
+                .getProcessAffinityMask = &GetProcessAffinityMask,
+                .getProcessGroupAffinity = &GetProcessGroupAffinity,
+                .getProcessId = &GetProcessId,
+                .openThread = &OpenThread,
+                .getProcessIdOfThread = &GetProcessIdOfThread,
+                .getThreadGroupAffinity = &GetThreadGroupAffinity,
+            },
+    };
+}
+
+WindowsProcessProbe::WindowsProcessProbe() : WindowsProcessProbe(systemFunctions())
+{}
+
+WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& functions)
+    : m_Fns(functions),
+      m_IsElevated(isCurrentProcessElevated(functions.token)),
+      m_ProcessorGroups(readProcessorGroupMaximums(functions.system)),
+      m_ThreadsMaySpanGroups(threadsMaySpanGroups(functions.system.windowsBuildNumber()))
 {
     // Stored here rather than in the member-initializer list on purpose: detectNetworkCounters()
     // writes members declared after m_HasNetworkCounters (m_NetworkCountersAccessDenied,
@@ -762,7 +847,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     results.reserve(m_LastEnumeratedProcessCount);
     ++m_DetailCacheGeneration;
 
-    auto* queryFn = Windows::ntQuerySystemInformation();
+    auto* queryFn = m_Fns.system.ntQuerySystemInformation;
     if (queryFn == nullptr)
     {
         spdlog::error("NtQuerySystemInformation unavailable; cannot enumerate processes");
@@ -1007,7 +1092,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     // A handle is only needed to refresh TTL-cached details. Non-cacheable entries
     // (startTimeTicks == 0) are kernel pseudo-processes like Idle that OpenProcess can never
     // access, and TTL backoff cannot be remembered for them — skip the attempt entirely.
-    const Windows::UniqueHandle hProcess(canCache ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
+    const Windows::UniqueHandle hProcess(canCache ? m_Fns.process.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
     if (!hProcess.valid())
     {
         // Can't access this process (protected/system). Push the due TTLs forward so we don't retry
@@ -1028,7 +1113,7 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     {
         // Mid-bucket nice values, so each class is labelled as itself (#1204).
         // The class itself too: Realtime and High share a nice bucket (#1280).
-        const DWORD priorityClass = GetPriorityClass(hProcess.get());
+        const DWORD priorityClass = m_Fns.process.getPriorityClass(hProcess.get());
         counters.nice = priorityClassToNice(priorityClass);
         counters.priorityClass = toPriorityClass(priorityClass);
         cache.nice = counters.nice;
@@ -1039,12 +1124,12 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     if (plan.heavy)
     {
         // Expensive data: owner, command line, image path and publisher at a lower cadence.
-        const std::wstring imagePath = getProcessImagePath(hProcess.get());
+        const std::wstring imagePath = getProcessImagePath(m_Fns.process, hProcess.get());
         imagePathUtf8 = WinString::wideToUtf8(imagePath);
-        counters.user = getProcessOwner(hProcess.get());
+        counters.user = getProcessOwner(m_Fns.token, hProcess.get());
 
         // The command line, as Linux shows it (#1156); the image path where it can't be read.
-        counters.command = getProcessCommandLine(hProcess.get());
+        counters.command = getProcessCommandLine(m_Fns.process, hProcess.get());
         if (counters.command.empty())
         {
             counters.command = imagePathUtf8;
@@ -1061,26 +1146,26 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     if (plan.light || plan.heavy)
     {
         // Medium-cost data refreshed more frequently than heavy details.
-        counters.status = getProcessStatus(hProcess.get());
+        counters.status = getProcessStatus(m_Fns.process, hProcess.get());
 
         // GDI objects change as the process draws, so on the light cadence (#1156), with the handle
         // already open. A refused read is retried with PROCESS_QUERY_INFORMATION (see
         // getProcessGdiObjectCount), and the handle that worked is shared with classifyProcessType.
         Windows::UniqueHandle hQueryInfo;
         HANDLE hGui = hProcess.get();
-        counters.gdiObjectCount = getProcessGdiObjectCount(hProcess.get());
+        counters.gdiObjectCount = getProcessGdiObjectCount(m_Fns.process, hProcess.get());
         if (!counters.gdiObjectCount.has_value())
         {
-            hQueryInfo.reset(OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid)));
+            hQueryInfo.reset(m_Fns.process.openProcess(PROCESS_QUERY_INFORMATION, FALSE, static_cast<DWORD>(pid)));
             hGui = hQueryInfo.get();
-            counters.gdiObjectCount = getProcessGdiObjectCount(hQueryInfo.get());
+            counters.gdiObjectCount = getProcessGdiObjectCount(m_Fns.process, hQueryInfo.get());
         }
 
         if (plan.heavy)
         {
             // Classify process type (App / Background Process / Windows Process)
-            counters.processType =
-                classifyProcessType(counters.gdiObjectCount.has_value() ? hGui : nullptr, static_cast<DWORD>(pid), imagePathUtf8);
+            counters.processType = classifyProcessType(
+                m_Fns.process, counters.gdiObjectCount.has_value() ? hGui : nullptr, static_cast<DWORD>(pid), imagePathUtf8);
         }
 
         cache.status = counters.status;
@@ -1116,14 +1201,14 @@ CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<cons
         const auto now = std::chrono::steady_clock::now();
         if (now >= m_NextActiveMasksRead)
         {
-            m_ActiveMasksRead = readActiveProcessorMasks(m_ProcessorGroups);
+            m_ActiveMasksRead = readActiveProcessorMasks(m_Fns.system, m_ProcessorGroups);
             m_NextActiveMasksRead = now + m_HeavyDetailTTL;
         }
     }
 
     DWORD_PTR processAffinityMask = 0;
     DWORD_PTR systemAffinityMask = 0;
-    const bool maskRead = GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0;
+    const bool maskRead = m_Fns.process.getProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask) != 0;
     // Safe: DWORD_PTR is pointer-sized (64-bit on x64); uint64_t can hold all values.
     const std::uint64_t processMask = maskRead ? static_cast<std::uint64_t>(processAffinityMask) : 0;
     switch (affinityTopology(m_ProcessorGroups.size(), m_ActiveMasksRead))
@@ -1140,14 +1225,14 @@ CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<cons
     // Several groups: the process mask covers one group only, and doesn't say which (#1247).
     std::vector<std::uint16_t> groups(m_ProcessorGroups.size());
     auto groupCount = static_cast<USHORT>(groups.size());
-    if (GetProcessGroupAffinity(hProcess, &groupCount, groups.data()) == FALSE)
+    if (m_Fns.process.getProcessGroupAffinity(hProcess, &groupCount, groups.data()) == FALSE)
     {
         if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
         {
             return {};
         }
         groups.resize(groupCount); // groupCount is now the size required
-        if (GetProcessGroupAffinity(hProcess, &groupCount, groups.data()) == FALSE)
+        if (m_Fns.process.getProcessGroupAffinity(hProcess, &groupCount, groups.data()) == FALSE)
         {
             return {};
         }
@@ -1162,7 +1247,8 @@ CpuAffinity WindowsProcessProbe::readCpuAffinity(HANDLE hProcess, std::span<cons
     // affinity the process-level reads leave open.
     // GetProcessId() returns 0 on failure; no thread this probe can open belongs to PID 0 (Idle), so
     // that leaves every thread unmatched and the affinity unreadable.
-    const ThreadGroupAffinityReads threadReads = readThreadGroupAffinities(threadRecords, GetProcessId(hProcess));
+    const ThreadGroupAffinityReads threadReads =
+        readThreadGroupAffinities(m_Fns.process, threadRecords, m_Fns.process.getProcessId(hProcess));
     return cpuAffinityFromGroupMasks(groupMasksFromThreads(groups, threadReads, m_ProcessorGroups, m_ThreadsMaySpanGroups),
                                      m_ProcessorGroups);
 }
@@ -1297,47 +1383,16 @@ bool WindowsProcessProbe::detectNetworkCounters()
         return false;
     }
 
-    HMODULE iphlp = GetModuleHandleW(L"iphlpapi.dll");
-    if (iphlp == nullptr)
-    {
-        // Defensive guard: today this branch runs at most once (this whole function is only
-        // ever called once, from the constructor via m_HasNetworkCounters), so m_IphlpModule is
-        // always null on first entry here. A future retry path re-entering it would otherwise
-        // call LoadLibraryW again and overwrite m_IphlpModule without a matching FreeLibrary,
-        // leaking one DLL reference count (same latent class as #781). Only the library load
-        // itself needs guarding this way: the GetProcAddress lookups and the privilege probe
-        // below must still run on every call (not short-circuited by this guard) so a privilege
-        // change is correctly reflected on a hypothetical retry instead of replaying a stale
-        // access-denied result.
-        if (m_IphlpModule != nullptr)
-        {
-            iphlp = m_IphlpModule.get();
-        }
-        else
-        {
-            // iphlpapi.dll was not already loaded, so we own this reference; m_IphlpModule frees it
-            m_IphlpModule.reset(LoadLibraryW(L"iphlpapi.dll"));
-            if (m_IphlpModule == nullptr)
-            {
-                return false;
-            }
-            iphlp = m_IphlpModule.get();
-        }
-    }
-
-    m_GetPerTcpConnectionEStats = Windows::getProcAddress<GetPerTcpConnectionEStatsFn>(iphlp, "GetPerTcpConnectionEStats");
-    m_SetPerTcpConnectionEStats = Windows::getProcAddress<SetPerTcpConnectionEStatsFn>(iphlp, "SetPerTcpConnectionEStats");
-
-    if (m_GetPerTcpConnectionEStats == nullptr || m_SetPerTcpConnectionEStats == nullptr)
+    // m_IphlpModule holds iphlpapi.dll if this probe had to load it (see loadTcpEStats()).
+    m_EStats = m_Fns.network.loadTcpEStats(m_IphlpModule);
+    if (m_EStats.getPerTcpConnectionEStats == nullptr || m_EStats.setPerTcpConnectionEStats == nullptr)
     {
         return false;
     }
 
-    // IPv6 EStats (#1100): exported alongside the IPv4 pair since Vista. Optional: if either is
-    // missing the IPv6 walk is skipped and only IPv4 connections are counted.
-    m_GetPerTcp6ConnectionEStats = Windows::getProcAddress<GetPerTcp6ConnectionEStatsFn>(iphlp, "GetPerTcp6ConnectionEStats");
-    m_SetPerTcp6ConnectionEStats = Windows::getProcAddress<SetPerTcp6ConnectionEStatsFn>(iphlp, "SetPerTcp6ConnectionEStats");
-    if (m_GetPerTcp6ConnectionEStats == nullptr || m_SetPerTcp6ConnectionEStats == nullptr)
+    // IPv6 EStats (#1100) is optional: if either is missing the IPv6 walk is skipped and only
+    // IPv4 connections are counted.
+    if (m_EStats.getPerTcp6ConnectionEStats == nullptr || m_EStats.setPerTcp6ConnectionEStats == nullptr)
     {
         spdlog::debug("Per-process network counters: IPv6 TCP EStats unavailable; counting IPv4 connections only");
     }
@@ -1347,7 +1402,8 @@ bool WindowsProcessProbe::detectNetworkCounters()
     MIB_TCPROW dummy{};
     TCP_ESTATS_DATA_RW_v0 rw{};
     rw.EnableCollection = TRUE;
-    const DWORD status = m_SetPerTcpConnectionEStats(&dummy, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
+    const DWORD status =
+        m_EStats.setPerTcpConnectionEStats(&dummy, TcpConnectionEstatsData, reinterpret_cast<PUCHAR>(&rw), 0, sizeof(rw), 0);
 
     // Access denied or not supported means we can't use EStats.
     // ERROR_NOT_FOUND is expected for the dummy row, but it proves nothing about real rows: the
@@ -1378,10 +1434,10 @@ static_assert(TCP_STATE_ESTABLISHED == static_cast<std::uint32_t>(MIB_TCP_STATE_
 /// Connections open between the size query and the fill, so a fill that reports the buffer is now
 /// too small is retried with the new size plus headroom rather than dropping the family's rows
 /// for the sample.
-[[nodiscard]] std::vector<unsigned char> readOwnerPidTcpTable(ULONG addressFamily)
+[[nodiscard]] std::vector<unsigned char> readOwnerPidTcpTable(const WindowsProcessProbeFunctions::Network& fns, ULONG addressFamily)
 {
     DWORD tableSize = 0;
-    DWORD status = GetExtendedTcpTable(nullptr, &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+    DWORD status = fns.getExtendedTcpTable(nullptr, &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
     if (status != ERROR_INSUFFICIENT_BUFFER || tableSize == 0)
     {
         return {};
@@ -1393,7 +1449,7 @@ static_assert(TCP_STATE_ESTABLISHED == static_cast<std::uint32_t>(MIB_TCP_STATE_
         constexpr DWORD HEADROOM_BYTES = 4096; // Room for a few dozen connections opened meanwhile
         buffer.assign(static_cast<std::size_t>(tableSize) + HEADROOM_BYTES, 0);
         tableSize = static_cast<DWORD>(buffer.size());
-        status = GetExtendedTcpTable(buffer.data(), &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
+        status = fns.getExtendedTcpTable(buffer.data(), &tableSize, FALSE, addressFamily, TCP_TABLE_OWNER_PID_ALL, 0);
         if (status != ERROR_INSUFFICIENT_BUFFER)
         {
             break;
@@ -1524,12 +1580,12 @@ bool WindowsProcessProbe::collectTcp4Reads(EStatsEnableTracker& enabled,
                                            std::vector<EStatsConnectionRead>& reads,
                                            EStatsSampleCounts& counts) const
 {
-    if (m_GetPerTcpConnectionEStats == nullptr)
+    if (m_EStats.getPerTcpConnectionEStats == nullptr)
     {
         return true;
     }
 
-    const std::vector<unsigned char> buffer = readOwnerPidTcpTable(AF_INET);
+    const std::vector<unsigned char> buffer = readOwnerPidTcpTable(m_Fns.network, AF_INET);
     if (buffer.empty())
     {
         return false;
@@ -1554,8 +1610,8 @@ bool WindowsProcessProbe::collectTcp4Reads(EStatsEnableTracker& enabled,
                       estatsConnectionKey(toConnectionEndpoints(ownerRow)),
                       ownerRow.dwOwningPid,
                       ownerRow.dwState,
-                      m_SetPerTcpConnectionEStats,
-                      m_GetPerTcpConnectionEStats,
+                      m_EStats.setPerTcpConnectionEStats,
+                      m_EStats.getPerTcpConnectionEStats,
                       enabled,
                       reads,
                       counts);
@@ -1568,12 +1624,12 @@ bool WindowsProcessProbe::collectTcp6Reads(EStatsEnableTracker& enabled,
                                            std::vector<EStatsConnectionRead>& reads,
                                            EStatsSampleCounts& counts) const
 {
-    if (m_GetPerTcp6ConnectionEStats == nullptr || m_SetPerTcp6ConnectionEStats == nullptr)
+    if (m_EStats.getPerTcp6ConnectionEStats == nullptr || m_EStats.setPerTcp6ConnectionEStats == nullptr)
     {
         return true;
     }
 
-    const std::vector<unsigned char> buffer = readOwnerPidTcpTable(AF_INET6);
+    const std::vector<unsigned char> buffer = readOwnerPidTcpTable(m_Fns.network, AF_INET6);
     if (buffer.empty())
     {
         return false;
@@ -1596,8 +1652,8 @@ bool WindowsProcessProbe::collectTcp6Reads(EStatsEnableTracker& enabled,
                       estatsConnectionKey(toConnectionEndpoints(ownerRow)),
                       ownerRow.dwOwningPid,
                       ownerRow.dwState,
-                      m_SetPerTcp6ConnectionEStats,
-                      m_GetPerTcp6ConnectionEStats,
+                      m_EStats.setPerTcp6ConnectionEStats,
+                      m_EStats.getPerTcp6ConnectionEStats,
                       enabled,
                       reads,
                       counts);
