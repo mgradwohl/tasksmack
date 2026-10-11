@@ -22,7 +22,9 @@ on:
       - 'src/Platform/Linux/LinuxCommitPaging.h'
       - 'src/Platform/Linux/LinuxCoredumps.h'
       - 'src/Platform/Linux/LinuxKernelModules.h'
+      - 'src/Platform/Linux/LinuxNetworkAdapters.h'
       - 'src/Platform/Linux/LinuxStorage.h'
+      - 'src/Platform/Linux/NetworkdLinkJson.h'
       - 'src/Platform/Linux/ProcFdParser.h'
       - 'src/Platform/Linux/ProcMapsParser.h'
       - 'src/Platform/Linux/ProcParsing.h'
@@ -50,7 +52,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # Step timeouts well above the normal times (about 2 min to build, 120 s of fuzzing plus the
+      # corpus download), so a stalled corpus download (#1406: the artifacts API rate limit) or a hung
+      # build fails in minutes rather than holding the job for its whole 15.
       - name: Build fuzzers
+        timeout-minutes: 6
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: c++
@@ -58,6 +64,7 @@ jobs:
           sanitizer: address
 
       - name: Run fuzzers
+        timeout-minutes: 5
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
