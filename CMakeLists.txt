@@ -473,6 +473,47 @@ if(TASKSMACK_ENABLE_UNITY_BUILD)
     set(CMAKE_UNITY_BUILD_BATCH_SIZE 16)
 endif()
 
+# The Windows compile definitions and system libraries the platform sources need, in one place for
+# every target that compiles them: tasksmack_configure_app_target() below and TaskSmackTests
+# (tests/CMakeLists.txt), so the two can't drift (#1702). The tests link pdh, psapi and userenv on
+# top of it. Call it only when WIN32.
+function(tasksmack_apply_windows_platform target)
+    # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
+    # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
+    # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
+    target_compile_definitions(${target} PRIVATE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00
+        NTDDI_VERSION=0x0A000000
+        # Make spdlog's filename_t std::wstring on Windows so the log file is opened by its
+        # native UTF-16 path (Core/LogFileSink.h, which static_asserts it). Kept after the
+        # manifest's activeCodePage=UTF-8 (#1648): without it spdlog uses std::string +
+        # _fsopen, which goes through the active code page -- UTF-8 only in TaskSmack.exe.
+        # TaskSmackUiTraining and the tests have no manifest, so there a %TEMP% under a
+        # non-ASCII user name fails or names another file; tests/App/test_NonAsciiRoundTrips.cpp
+        # shows it. The same on every target built from the app's sources and on TaskSmackTests,
+        # so spdlog's templates agree across them; spdlog is consumed header-only
+        # (spdlog::spdlog_header_only), so there is no prebuilt library whose ABI could disagree.
+        SPDLOG_WCHAR_FILENAMES
+    )
+
+    target_link_libraries(${target} PRIVATE
+        iphlpapi
+        ws2_32
+        dxgi
+        gdi32
+        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
+        version
+        powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
+        setupapi # WindowsBatteryInfo: the battery devices (#1523)
+        wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
+        wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
+        crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)
+    )
+endfunction()
+
 # The settings every target built from the app's sources shares: TaskSmackApp (the objects),
 # TaskSmack (main() and the Windows resources), TaskSmackUiTraining (src/Training/, #880) and
 # TaskSmackBenchmarks (benchmarks/, #1691). Paths name the project's own directories, not
@@ -500,29 +541,6 @@ function(tasksmack_configure_app_target target)
         )
     endif()
 
-    if(WIN32)
-        # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
-        # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
-        # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
-        target_compile_definitions(${target} PRIVATE
-            NOMINMAX
-            WIN32_LEAN_AND_MEAN
-            _WIN32_WINNT=0x0A00
-            WINVER=0x0A00
-            NTDDI_VERSION=0x0A000000
-            # Make spdlog's filename_t std::wstring on Windows so the log file is opened by its
-            # native UTF-16 path (Core/LogFileSink.h, which static_asserts it). Kept after the
-            # manifest's activeCodePage=UTF-8 (#1648): without it spdlog uses std::string +
-            # _fsopen, which goes through the active code page -- UTF-8 only in TaskSmack.exe.
-            # TaskSmackUiTraining and the tests have no manifest, so there a %TEMP% under a
-            # non-ASCII user name fails or names another file; tests/App/test_NonAsciiRoundTrips.cpp
-            # shows it. The same on every target built from the app's sources and on TaskSmackTests,
-            # so spdlog's templates agree across them; spdlog is consumed header-only
-            # (spdlog::spdlog_header_only), so there is no prebuilt library whose ABI could disagree.
-            SPDLOG_WCHAR_FILENAMES
-        )
-    endif()
-
     target_include_directories(${target} PRIVATE
         ${TaskSmack_SOURCE_DIR}/src
         ${TaskSmack_BINARY_DIR}/generated
@@ -544,19 +562,7 @@ function(tasksmack_configure_app_target target)
     )
 
     if(WIN32)
-        target_link_libraries(${target} PRIVATE
-            iphlpapi
-            ws2_32
-            dxgi
-            gdi32
-            cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
-            version
-            powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
-            setupapi # WindowsBatteryInfo: the battery devices (#1523)
-            wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
-            wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
-            crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)
-        )
+        tasksmack_apply_windows_platform(${target})
     elseif(UNIX AND NOT APPLE)
         # tasksmack_sdbus: libsystemd and TASKSMACK_HAS_SDBUS when found (#1525)
         target_link_libraries(${target} PRIVATE dl tasksmack_sdbus)

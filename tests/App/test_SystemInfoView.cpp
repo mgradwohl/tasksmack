@@ -1136,6 +1136,7 @@ TEST(SystemInfoSectionsTest, StorageSectionFollowsCommitPaging)
         .driver = "",
         .driverVersion = "32.0.15.6094",
         .driverDate = "2024-09-05",
+        .d3dFeatureLevel = "12_2",
     });
     info.monitorsRead = true;
     Platform::Monitor monitor;
@@ -1258,6 +1259,7 @@ TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
     EXPECT_EQ(section.title, "Graphics & displays");
     EXPECT_EQ(findRow(section, "GPU")->value, "NVIDIA GeForce RTX 4070, 12 GiB dedicated, 16 GiB shared, PCI 01:00.0");
     EXPECT_EQ(findRow(section, "GPU driver")->value, "32.0.15.6094 (2024-09-05)");
+    EXPECT_EQ(findRow(section, "Direct3D on GPU")->value, "Feature level 12_2");
     EXPECT_EQ(findRow(section, "OpenGL")->value, "4.6.0 NVIDIA 560.94");
     EXPECT_EQ(findRow(section, "OpenGL renderer")->value, "NVIDIA GeForce RTX 4070/PCIe/SSE2 (NVIDIA Corporation)");
     EXPECT_EQ(findRow(section, "Display server"), nullptr);
@@ -1274,6 +1276,17 @@ TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
     EXPECT_FALSE(findRow(bare, "OpenGL")->available());
     EXPECT_FALSE(findRow(bare, "Displays")->available());
     EXPECT_EQ(findRow(bare, "Monitor 1")->value, "DELL U2720Q, 27.0\" (597 \xC3\x97 336 mm), HDR (BT.2020 PQ, 10-bit)");
+
+    // A second adapter without Direct3D 12 gets a muted dash with the reason (#1636).
+    Platform::GraphicsInfo two = windowsGraphics();
+    two.adapters.push_back(two.adapters[0]);
+    two.adapters[1].d3dFeatureLevel.clear();
+    const Section both = SystemInfo::buildGraphicsSection(two, {});
+    EXPECT_EQ(findRow(both, "Direct3D on GPU 1")->value, "Feature level 12_2");
+    const Row* noD3d = findRow(both, "Direct3D on GPU 2");
+    ASSERT_NE(noD3d, nullptr);
+    EXPECT_FALSE(noD3d->available());
+    EXPECT_TRUE(noD3d->unavailableReason.contains("d3d12.dll"));
 }
 
 TEST(SystemInfoSectionsTest, GraphicsRowsLinuxAndUnreadable)
@@ -1295,6 +1308,7 @@ TEST(SystemInfoSectionsTest, GraphicsRowsLinuxAndUnreadable)
     const Section section = SystemInfo::buildGraphicsSection(linuxGraphics, host);
     EXPECT_EQ(findRow(section, "GPU 1")->value, "AMD Radeon RX 6800 XT, PCI 0000:03:00.0");
     EXPECT_EQ(findRow(section, "GPU 2 driver")->value, "i915");
+    EXPECT_EQ(findRow(section, "Direct3D on GPU 1"), nullptr); // Windows only
     EXPECT_EQ(findRow(section, "Display server")->value, "Wayland (TaskSmack runs through XWayland)");
     EXPECT_TRUE(findRow(section, "Display 1")->value.starts_with("DELL U2720Q, 3840")); // matched by name
     EXPECT_FALSE(findRow(section, "Display 1 serial number")->available());

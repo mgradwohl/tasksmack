@@ -483,6 +483,7 @@ TEST(WindowsSystemInfoProbeReadersTest, GraphicsAndDeviceReadersFailEmpty)
     const LUID noAdapter{.LowPart = 0xFFFFFFFFU, .HighPart = 0x7FFFFFFF};
     EXPECT_FALSE(graphics.adapterType(noAdapter).has_value());
     EXPECT_FALSE(graphics.pciLocation(noAdapter).has_value());
+    EXPECT_FALSE(graphics.maxFeatureLevel(noAdapter).has_value()); // no adapter: no device is made
 
     const WindowsDevices::Functions devices = WindowsSystemInfoProbe::deviceFunctions();
     EXPECT_TRUE(devices.readHubPorts("USB\\TASKSMACK-1722\\NO-SUCH-HUB", {1, 2}).empty());

@@ -153,9 +153,10 @@ struct VisibleSection
 /// (BT.2020 PQ, 10-bit), primary", the monitor's EDID name and facts used when @p monitor is set.
 [[nodiscard]] std::string formatDisplay(const Core::DisplayInfo& display, const Platform::Monitor* monitor);
 
-/// The Graphics & displays section (#1519): each adapter and its driver, TaskSmack's OpenGL context, the
-/// display server (Linux), then each display (Core's SDL view merged with the platform's monitor facts)
-/// with its EDID serial as an identifier, and any monitor no display matched.
+/// The Graphics & displays section (#1519): each adapter, its driver and (Windows) its highest Direct3D
+/// feature level (#1636), TaskSmack's OpenGL context, the display server (Linux), then each display (Core's
+/// SDL view merged with the platform's monitor facts) with its EDID serial as an identifier, and any
+/// monitor no display matched.
 [[nodiscard]] Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core::GraphicsHostInfo& host);
 
 /// A CPU vulnerability's name as the section labels it: the kernel's file name with its underscores as

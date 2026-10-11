@@ -232,6 +232,7 @@ set(COMMON_TEST_SOURCES
     App/test_ShellLayerRender.cpp
     App/test_TitleBarGeometry.cpp
     App/test_TitleBarViewRender.cpp
+    App/test_WindowInteraction.cpp
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
@@ -654,35 +655,14 @@ endif()
 target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
 
 if(WIN32)
-    # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
-    # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
-    # NTDDI_VERSION is required for iphlpapi.h to include netioapi.h (GetIfTable2 APIs).
-    target_compile_definitions(TaskSmackTests PRIVATE
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
-        _WIN32_WINNT=0x0A00
-        WINVER=0x0A00
-        NTDDI_VERSION=0x0A000000
-        # As for the app's targets (CMakeLists.txt): the log file is opened by its UTF-16 path, and
-        # Core/LogFileSink.h, which test_NonAsciiRoundTrips.cpp exercises, static_asserts it (#1648).
-        SPDLOG_WCHAR_FILENAMES
-    )
-    # Windows needs additional system libraries
+    # The same Windows definitions and system libraries as the app's targets, from the one list in
+    # the root CMakeLists.txt (#1702), so a library the platform sources gain links here too.
+    tasksmack_apply_windows_platform(TaskSmackTests)
+    # The tests also link these, beyond the app's list; kept here so the app's link line is unchanged.
     target_link_libraries(TaskSmackTests PRIVATE
         pdh
         psapi
-        iphlpapi
-        ws2_32
         userenv
-        dxgi
-        gdi32
-        cfgmgr32 # DisplayDevicePower: a GPU's PnP power state (#1265)
-        version
-        powrprof # CallNtPowerInformation: the rated base CPU clock (#1530)
-        setupapi # WindowsBatteryInfo: the battery devices (#1523)
-        wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
-        wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
-        crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)
     )
 endif()
 

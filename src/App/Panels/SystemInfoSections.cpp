@@ -890,6 +890,12 @@ Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core:
         rows.push_back(row(label + " driver",
                            formatAdapterDriver(adapter),
                            windows ? "No display device node matched this adapter" : "No kernel driver is bound to it"));
+        if (windows)
+        {
+            const std::string level = adapter.d3dFeatureLevel.empty() ? std::string{} : "Feature level " + adapter.d3dFeatureLevel;
+            rows.push_back(
+                row("Direct3D on " + label, level, "Direct3D 12 isn't available: d3d12.dll is missing or no device could be created"));
+        }
     }
 
     constexpr std::string_view NO_CONTEXT = "TaskSmack's OpenGL context isn't available";
