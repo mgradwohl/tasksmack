@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/TitleBarGeometry.h"
+#include "App/WindowInteraction.h"
 #include "Core/Layer.h"
 #include "UI/IconLoader.h"
 
@@ -72,44 +73,6 @@ class TitleBarLayer : public Core::Layer
         Resize,
     };
 
-    // Per-drag session state — zeroed by endWindowInteraction via m_Drag = {}.
-    struct DragState
-    {
-        int startMouseGlobalX = 0;
-        int startMouseGlobalY = 0;
-        int startWindowX = 0;
-        int startWindowY = 0;
-        int lastAppliedX = 0;
-        int lastAppliedY = 0;
-        bool pendingRestore = false;
-        int maximizedWindowX = 0;
-        int maximizedWindowWidth = 0;
-    };
-
-    // Per-resize session state — zeroed by endWindowInteraction via m_Resize =
-    // {}.
-    struct ResizeState
-    {
-        ResizeEdge edge = ResizeEdge::None;
-        int startMouseGlobalX = 0;
-        int startMouseGlobalY = 0;
-        int startWindowX = 0;
-        int startWindowY = 0;
-        int startWindowWidth = 0;
-        int startWindowHeight = 0;
-        int lastAppliedX = 0;
-        int lastAppliedY = 0;
-        int lastAppliedWidth = 0;
-        int lastAppliedHeight = 0;
-        bool hasPendingCommit = false;
-        int pendingWidth = 0;
-        int pendingHeight = 0;
-        double lastSizeCommitTime = 0.0;
-        int lastImmediatePixelW = 0;
-        int lastImmediatePixelH = 0;
-        double lastImmediateEventTime = 0.0;
-    };
-
     void beginWindowInteraction(const SDL_Event& event);
     void handleTitleBarDoubleClick(const SDL_Event& event) const;
     void updateWindowInteraction();
@@ -154,8 +117,9 @@ class TitleBarLayer : public Core::Layer
     ButtonBounds m_IconBounds{};
 
     InteractionMode m_InteractionMode = InteractionMode::None;
-    DragState m_Drag{};
-    ResizeState m_Resize{};
+    // The drag or resize under way (WindowInteraction.h); reset by endWindowInteraction().
+    DragTracker m_Drag;
+    ResizeTracker m_Resize;
 
     // Smallest size the window may be resized to, from the title bar's own content and the display
     // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn; applied to

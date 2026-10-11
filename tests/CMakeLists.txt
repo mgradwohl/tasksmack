@@ -230,6 +230,7 @@ set(COMMON_TEST_SOURCES
     App/test_ShellLayer.cpp
     App/test_TitleBarGeometry.cpp
     App/test_TitleBarViewRender.cpp
+    App/test_WindowInteraction.cpp
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
