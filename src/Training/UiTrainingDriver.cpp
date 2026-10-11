@@ -24,10 +24,10 @@
 #include "UI/AssetPath.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FontFileCache.h"
+#include "UI/FontLoading.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
-#include "UI/UILayer.h"
 
 #include <SDL3/SDL_stdinc.h>
 #include <imgui.h>
@@ -453,7 +453,7 @@ class HeadlessUi
         auto& theme = UI::Theme::get();
         theme.setDisplayScale(DISPLAY_SCALE);
         const std::filesystem::path assetsDir = UI::findAssetsDir();
-        UI::UILayer::loadAllFonts(m_FontFiles, assetsDir, theme.displayScale());
+        UI::loadAllFonts(m_FontFiles, assetsDir, theme.displayScale());
         theme.loadThemes(assetsDir / "themes");
         theme.applyImGuiStyle();
     }

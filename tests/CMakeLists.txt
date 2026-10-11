@@ -416,6 +416,7 @@ endif()
 # The real UI::Theme's tests, built into TaskSmackThemeTests below rather than TaskSmackTests (#1547)
 set(THEME_REAL_TEST_SOURCES
     UI/test_ThemeReal.cpp
+    UI/test_FontLoading.cpp
 )
 set(TASKSMACK_REGISTERED_TEST_SOURCES
     ${COMMON_TEST_SOURCES}
@@ -713,10 +714,16 @@ add_executable(TaskSmackThemeTests
     ${THEME_REAL_TEST_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/UI/Theme.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/ThemeLoader.cpp
+    # The app's fonts registered with the real Theme (test_FontLoading.cpp)
+    ${CMAKE_SOURCE_DIR}/src/UI/FontLoading.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
 )
 target_include_directories(TaskSmackThemeTests PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)  # FallbackTheme.h
-target_link_libraries(TaskSmackThemeTests PRIVATE gtest gtest_main spdlog::spdlog_header_only tomlplusplus::tomlplusplus imgui_lib implot_lib)
-target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
+target_link_libraries(TaskSmackThemeTests PRIVATE gtest gtest_main spdlog::spdlog_header_only tomlplusplus::tomlplusplus imgui_lib implot_lib
+                      Freetype::Freetype) # TabularDigits.cpp
+target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"
+                                                       TASKSMACK_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
 tasksmack_apply_text_encoding(TaskSmackThemeTests)
