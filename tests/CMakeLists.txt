@@ -229,6 +229,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp
     App/test_TitleBarGeometry.cpp
+    App/test_TitleBarViewRender.cpp
     App/test_UserConfig.cpp
     App/test_UserConfigHelpers.cpp
     App/test_UserConfigPersistence.cpp
@@ -494,6 +495,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The custom title bar (#1547), run headless (test_TitleBarViewRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/TitleBarView.cpp
     # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), the layer that opens it on

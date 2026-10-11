@@ -130,7 +130,12 @@ class TitleBarLayer : public Core::Layer
     [[nodiscard]] static auto detectResizeEdge(float x, float y, int windowWidth, int windowHeight, bool isMaximized) -> ResizeEdge;
 
     void renderTitleBar();
-    void renderSystemMenu();
+    /// Widens the window's SDL minimum size to the bar's @p contentWidth and the panels' content.
+    void updateMinimumWindowSize(float contentWidth);
+#ifdef _WIN32
+    /// The native Windows system menu at the cursor (the icon's click).
+    void showNativeSystemMenu();
+#endif
     void setupHitTest();
 
     // Load the bundled application icon closest above @p pixelSize (selectIconPixelSize()).

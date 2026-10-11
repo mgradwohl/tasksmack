@@ -189,6 +189,13 @@ auto Theme::largeFont() const -> ImFont*
     return nullptr;
 }
 
+// Referenced by App/TitleBarView.cpp's wordmark (test_TitleBarViewRender.cpp). No fonts are loaded
+// here, so the wordmark draws in the context's default font.
+auto Theme::titleFont() const -> ImFont*
+{
+    return nullptr;
+}
+
 // Referenced by ChartWidgets.h's lineWeight(). The reference configuration (Medium font, 100 % display
 // scale), where authored line weights are drawn as written.
 auto Theme::styleScale() const -> float

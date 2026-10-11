@@ -1,7 +1,7 @@
 #include "TitleBarLayer.h"
 
-#include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
+#include "App/TitleBarView.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/EnvUtils.h"
@@ -12,7 +12,6 @@
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/IconLoader.h"
-#include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
 #include <SDL3/SDL.h>
@@ -35,26 +34,6 @@
 namespace App
 {
 
-// How far the icon is inset from the bar's full height, as a fraction of that height.
-constexpr float TITLE_BAR_ICON_INSET_RATIO = 0.06F;
-
-// Window control button width as a multiple of the bar height. Keeps the controls' aspect stable
-// instead of pinning them to a pixel width that is too small on a HiDPI display.
-constexpr float TITLE_BAR_BUTTON_ASPECT = 1.15F;
-
-// Left margin before the icon, and the gap between icon and title text, as fractions of the bar
-// height. Reproduce the previous 8px and 12px at the default density.
-constexpr float TITLE_BAR_EDGE_MARGIN_RATIO = 0.20F;
-constexpr float TITLE_BAR_TITLE_GAP_RATIO = 0.29F;
-
-// The bar window's padding, as fractions of the bar height: exactly the former fixed 8 x 4 px on
-// the 32px (24pt) bar at 96 DPI (#1200).
-constexpr float TITLE_BAR_PADDING_X_RATIO = 0.25F;
-constexpr float TITLE_BAR_PADDING_Y_RATIO = 0.125F;
-
-// Gap separating the window controls from the app buttons, as a fraction of the bar height.
-constexpr float TITLE_BAR_SEPARATOR_GAP_RATIO = 0.39F;
-
 // The title bar is chrome and is sized from display density only -- never from the application's
 // Font Size setting. See the note at the top of TitleBarGeometry.h for why, including the hit-test
 // bug that a body-font-derived height caused.
@@ -72,54 +51,6 @@ namespace
 // (computeIsPointInBounds, computeDetectResizeEdge) so they're directly unit-testable
 // without linking this file - see #769. The resize-perf-tracing env-var check below now
 // reuses Core::isEnvFlagEnabled() instead of its own duplicate case-insensitive parser.
-
-// Code points of the title-bar control glyphs, needed to look their ink boxes up in the baked icon
-// font. They must stay in step with the matching ICON_FA_* strings in IconsFontAwesome6.h.
-constexpr ImWchar CHROME_GLYPH_WINDOW_MINIMIZE = 0xF2D1;
-constexpr ImWchar CHROME_GLYPH_XMARK = 0xF00D;
-
-// Draw one chrome glyph over a title-bar button, sized so its ink matches the control glyphs beside
-// it and centred on that ink rather than on its text line box.
-//
-// window-minimize is the reference because it is the one control glyph the bar always shows at the
-// same size: it spans the full em of ink width, as window-maximize, window-restore and
-// circle-question do, and unlike the maximize button it never swaps glyph with the window state.
-// See computeMatchedGlyphSize() for why the match is made on width rather than height.
-//
-// ImGui::Button centres a label by its line box, which is right only while every glyph sits the
-// same way inside its em box. fa-xmark does not, so left as a button label its X comes out both
-// smaller and higher than its neighbours. The baked glyph carries its
-// ink rectangle in X0/Y0..X1/Y1 relative to the text layout position, so both corrections are read
-// from the font itself and neither needs a constant here that a change of icon font would stale.
-//
-// A no-op when the chrome icon font is missing; the caller falls back to a plain button label.
-void drawChromeGlyphMatched(
-    ImFont* font, float chromeIconPx, const char* text, ImWchar codepoint, const ImVec2& rectMin, const ImVec2& rectMax)
-{
-    ImFontBaked* baked = (font != nullptr) ? font->GetFontBaked(chromeIconPx) : nullptr;
-    if (baked == nullptr)
-    {
-        return;
-    }
-    const ImFontGlyph* reference = baked->FindGlyphNoFallback(CHROME_GLYPH_WINDOW_MINIMIZE);
-    const ImFontGlyph* atBaseSize = baked->FindGlyphNoFallback(codepoint);
-    if (reference == nullptr || atBaseSize == nullptr)
-    {
-        return;
-    }
-
-    const float matchedPx = computeMatchedGlyphSize(chromeIconPx, reference->X1 - reference->X0, atBaseSize->X1 - atBaseSize->X0);
-    ImFontBaked* matchedBaked = font->GetFontBaked(matchedPx);
-    const ImFontGlyph* glyph = (matchedBaked != nullptr) ? matchedBaked->FindGlyphNoFallback(codepoint) : nullptr;
-    if (glyph == nullptr)
-    {
-        return;
-    }
-
-    const ImVec2 center((rectMin.x + rectMax.x) * 0.5F, (rectMin.y + rectMax.y) * 0.5F);
-    const ImVec2 pos(center.x - ((glyph->X0 + glyph->X1) * 0.5F), center.y - ((glyph->Y0 + glyph->Y1) * 0.5F));
-    ImGui::GetWindowDrawList()->AddText(font, matchedPx, pos, ImGui::GetColorU32(ImGuiCol_Text), text);
-}
 
 // Shared resize border thickness -- must stay in sync between hit-test and cursor detection, so
 // both ask here. Scaled with the display like the title bar itself; see
@@ -1022,137 +953,86 @@ void TitleBarLayer::setupHitTest()
 
 void TitleBarLayer::renderTitleBar()
 {
-    const auto& scheme = UI::Theme::get().scheme();
     auto& window = Core::Application::get().getWindow();
     const auto [windowWidth, windowHeight] = window.getSize();
-
     const float titleBarHeight = height();
-    // Set up window for title bar - no padding, no scrolling, fixed position
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(windowWidth), titleBarHeight));
-
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
-                                   ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-
-    // From the bar's height like the rest of its geometry, so it follows display density but not the
-    // Font Size setting: the former fixed 8 x 4 px at the default density (#1200).
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                        ImVec2(titleBarHeight * TITLE_BAR_PADDING_X_RATIO, titleBarHeight * TITLE_BAR_PADDING_Y_RATIO));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, scheme.titleBgActive);
-
-    ImGui::Begin("##TitleBar", nullptr, flags);
-
-    // Icon (left side) - clickable for system menu
-    // Size: title bar height minus 2px border on top and bottom
-    const float ICON_SIZE = computeTitleBarIconSize(titleBarHeight, titleBarHeight * TITLE_BAR_ICON_INSET_RATIO);
-    const float centerY = titleBarHeight * 0.5F;
-    const float iconY = centerY - (ICON_SIZE * 0.5F);
-    // Left margin and the gap after the icon, proportional to the bar so they hold at any density.
-    const float iconX = titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO;
 
     // The bundled icon nearest above the drawn size in framebuffer pixels; after a display-scale
     // change that is another file (#1169). Loading between NewFrame() and Render() is fine: the
     // texture is only sampled when the frame is drawn.
-    if (const int wantedPx = selectIconPixelSize(ICON_SIZE * ImGui::GetIO().DisplayFramebufferScale.y, APP_ICON_PIXEL_SIZES);
+    if (const int wantedPx =
+            selectIconPixelSize(TitleBarView::iconSize(titleBarHeight) * ImGui::GetIO().DisplayFramebufferScale.y, APP_ICON_PIXEL_SIZES);
         wantedPx != m_IconTexturePx)
     {
         loadIconTexture(wantedPx);
     }
 
-    if (m_IconTexture.valid())
+    const TitleBarView::Output drawn = TitleBarView::render({.windowWidth = static_cast<float>(windowWidth),
+                                                             .windowHeight = static_cast<float>(windowHeight),
+                                                             .barHeight = titleBarHeight,
+                                                             .maximized = window.isMaximized(),
+                                                             .icon = &m_IconTexture,
+                                                             .openSystemMenu = std::exchange(m_ShowSystemMenu, false)});
+    // Where every button and the icon were drawn, and so what isPointInControlArea() keeps out of the
+    // drag area and where a right-click opens the system menu.
+    m_ButtonLayout = drawn.layout;
+    if (drawn.iconDrawn)
     {
-        ImGui::SetCursorPos(ImVec2(iconX, iconY));
+        m_IconBounds = drawn.iconBounds;
+    }
+    updateMinimumWindowSize(drawn.contentWidth);
 
-        // Make icon clickable with invisible button.
-        // We use titleBgActive with zero alpha rather than a literal ImVec4(0,0,0,0) so that
-        // if ImGui ever composites the RGB channel even at alpha=0, we still blend with
-        // the actual title bar background color rather than black.
-        ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.titleBgActive, 0.0F));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.tabHovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.tabSelected);
-        if (ImGui::InvisibleButton("##IconButton", ImVec2(ICON_SIZE, ICON_SIZE)))
-        {
+    switch (drawn.action)
+    {
+    case TitleBarView::Action::IconClicked:
 #ifdef _WIN32
-            // Show native Windows system menu
-            auto* sdlWindow = Core::Application::get().getWindow().getHandle();
-            SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
-            auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-
-            if (hwnd != nullptr)
-            {
-                HMENU systemMenu = GetSystemMenu(hwnd, FALSE);
-                if (systemMenu != nullptr)
-                {
-                    // Get cursor position for menu display
-                    POINT pt;
-                    GetCursorPos(&pt);
-
-                    // Track the menu command
-                    int const cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
-                    if (cmd != 0)
-                    {
-                        PostMessageW(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
-                    }
-                }
-            }
-#else
-            // Use custom system menu on Linux
-            m_ShowSystemMenu = true;
+        showNativeSystemMenu();
 #endif
-        }
-        ImGui::PopStyleColor(3);
-
-        // Draw icon over the invisible button
-        ImGui::SetCursorPos(ImVec2(iconX, iconY));
-        ImGui::Image(m_IconTexture.textureId(), ImVec2(ICON_SIZE, ICON_SIZE));
-
-        // Track icon bounds for right-click detection
-        m_IconBounds = {.minX = iconX, .maxX = iconX + ICON_SIZE, .minY = iconY, .maxY = iconY + ICON_SIZE};
-    }
-
-    // Title text using Sixtyfour font - centered vertically
-    ImGui::SameLine();
-    ImGui::SetCursorPosX(iconX + ICON_SIZE + (titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO));
-
-    // Get the font to use and center the text vertically
-    ImFont* titleFont = UI::Theme::get().titleFont();
-    if (titleFont != nullptr)
+        break; // Linux: the view opened its own menu
+    case TitleBarView::Action::Close:
+        window.requestClose();
+        break;
+    case TitleBarView::Action::Maximize:
+        window.maximize();
+        break;
+    case TitleBarView::Action::Restore:
+        window.restore();
+        break;
+    case TitleBarView::Action::Minimize:
+        window.minimize();
+        break;
+    case TitleBarView::Action::Settings:
     {
-        ImGui::PushFont(titleFont);
+        Core::OpenSettingsEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
     }
-
-    // Now get the font size after pushing (ImGui::GetFontSize() returns current font size)
-    const float fontSize = ImGui::GetFontSize();
-    const float titleY = centerY - (fontSize * 0.5F);
-    ImGui::SetCursorPosY(titleY);
-
-    ImGui::TextColored(scheme.textPrimary, "TaskSmack");
-    const float wordmarkWidth = ImGui::GetItemRectSize().x;
-
-    if (titleFont != nullptr)
+    case TitleBarView::Action::Help:
     {
-        ImGui::PopFont();
+        Core::OpenHelpEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
     }
+    case TitleBarView::Action::About:
+    {
+        Core::OpenAboutEvent event;
+        Core::Application::get().raiseEvent(event);
+        break;
+    }
+    case TitleBarView::Action::None:
+        break;
+    }
+}
 
-    // Right side buttons
-    const float BUTTON_WIDTH = computeTitleBarButtonWidth(titleBarHeight, TITLE_BAR_BUTTON_ASPECT);
-
+void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
+{
     // The window may not be made narrower than what this bar or the panels below it have to show
     // (#1207), or shorter than the panels' content (#1278) or the base minimum at this display scale. Derived from the sizes just used for
     // drawing, so it cannot drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set the scaled base
     // minimum at attach; this widens it to cover the bar.
+    auto& window = Core::Application::get().getWindow();
     const WindowMinimumSize desiredMinimumSize =
-        computeMinimumWindowSize(UI::Theme::get().displayScale(),
-                                 computeTitleBarContentWidth(iconX,
-                                                             ICON_SIZE,
-                                                             titleBarHeight * TITLE_BAR_TITLE_GAP_RATIO,
-                                                             wordmarkWidth,
-                                                             BUTTON_WIDTH,
-                                                             titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO),
-                                 m_ContentMinimumWidthPx,
-                                 m_ContentMinimumHeightPx);
+        computeMinimumWindowSize(UI::Theme::get().displayScale(), contentWidth, m_ContentMinimumWidthPx, m_ContentMinimumHeightPx);
     // Held inside the current display's usable bounds, or a large font on a small display would
     // leave a window that cannot fit on-screen or be maximized (#1207). The bounds are read only
     // when the wanted minimum or the display changes.
@@ -1172,234 +1052,36 @@ void TitleBarLayer::renderTitleBar()
             }
         }
     }
-    const float BUTTON_HEIGHT = titleBarHeight;
-    // Where every button is drawn, and so what isPointInControlArea() keeps out of the drag area.
-    m_ButtonLayout = computeTitleBarButtonLayout(
-        static_cast<float>(windowWidth), BUTTON_WIDTH, BUTTON_HEIGHT, titleBarHeight * TITLE_BAR_SEPARATOR_GAP_RATIO);
-    const ImVec2 buttonSize(BUTTON_WIDTH, BUTTON_HEIGHT);
-
-    // Window control buttons (right to left: Close, Maximize, Minimize)
-    // titleBgActive with zero alpha gives a transparent resting state; if ImGui ever composites
-    // the RGB channel at alpha=0, we blend against the actual title bar background color.
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Button, UI::withAlpha(scheme.titleBgActive, 0.0F));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.buttonHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.buttonActive);
-
-    // These controls draw Font Awesome glyphs, which are merged into every body font at that font's
-    // size. Left under the globally pushed body font they grew and shrank with the Font Size setting
-    // inside their now-fixed boxes, so the chrome was only half independent of it. The dedicated
-    // fixed-size icon font keeps them proportional to the bar instead.
-    ImFont* chromeIcons = UI::Theme::get().chromeIconFont();
-    const bool pushedChromeIcons = chromeIcons != nullptr;
-    if (pushedChromeIcons)
-    {
-        ImGui::PushFont(chromeIcons);
-    }
-
-    // Close button (hover/active colors from theme)
-    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.close.minX, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, scheme.closeButtonHovered);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, scheme.closeButtonActive);
-    // The X is drawn over an unlabelled button rather than passed as that button's label: fa-xmark
-    // fills much less of its em box than the icons beside it, so it needs both its own font size
-    // and centring on its ink, neither of which a button label can express. The labelled form is
-    // the fallback for when the chrome icon font failed to load.
-    const char* closeLabel = (chromeIcons != nullptr) ? "##Close" : ICON_FA_XMARK "##Close";
-    if (ImGui::Button(closeLabel, buttonSize))
-    {
-        window.requestClose();
-    }
-    drawChromeGlyphMatched(chromeIcons,
-                           UI::Theme::get().chromeIconFontSizePx(),
-                           ICON_FA_XMARK,
-                           CHROME_GLYPH_XMARK,
-                           ImGui::GetItemRectMin(),
-                           ImGui::GetItemRectMax());
-    ImGui::PopStyleColor(2);
-
-    // Maximize/Restore button
-    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.maximize.minX, 0));
-    const bool isMaximized = window.isMaximized();
-    if (ImGui::Button(isMaximized ? ICON_FA_WINDOW_RESTORE "##Restore" : ICON_FA_WINDOW_MAXIMIZE "##Maximize", buttonSize))
-    {
-        if (isMaximized)
-        {
-            window.restore();
-        }
-        else
-        {
-            window.maximize();
-        }
-    }
-
-    // Minimize button
-    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.minimize.minX, 0));
-    if (ImGui::Button(ICON_FA_WINDOW_MINIMIZE "##Minimize", buttonSize))
-    {
-        window.minimize();
-    }
-
-    // The app buttons, after the separator gap the layout leaves: Settings, then Help (the "?",
-    // #172), then About (the "i", #1600). Their tooltips are shown after the chrome icon font is
-    // popped: that font has no letters (#1200).
-    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.settings.minX, 0));
-    if (ImGui::Button(TitleBarButtons::SETTINGS_LABEL, buttonSize))
-    {
-        Core::OpenSettingsEvent event;
-        Core::Application::get().raiseEvent(event);
-    }
-    const char* tooltip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) ? TitleBarButtons::SETTINGS_TOOLTIP : nullptr;
-
-    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.help.minX, 0));
-    if (ImGui::Button(TitleBarButtons::HELP_LABEL, buttonSize))
-    {
-        Core::OpenHelpEvent event;
-        Core::Application::get().raiseEvent(event);
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-    {
-        tooltip = TitleBarButtons::HELP_TOOLTIP;
-    }
-
-    ImGui::SetCursorPos(ImVec2(m_ButtonLayout.about.minX, 0));
-    if (ImGui::Button(TitleBarButtons::ABOUT_LABEL, buttonSize))
-    {
-        Core::OpenAboutEvent event;
-        Core::Application::get().raiseEvent(event);
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-    {
-        tooltip = TitleBarButtons::ABOUT_TOOLTIP;
-    }
-
-    if (pushedChromeIcons)
-    {
-        ImGui::PopFont();
-    }
-    if (tooltip != nullptr)
-    {
-        ImGui::SetTooltip("%s", tooltip);
-    }
-    ImGui::PopStyleColor(3); // Button colors
-    ImGui::PopStyleVar(2);   // Frame padding, item spacing
-
-    // Alt+Space is handled in onSDLEvent() for reliable capture
-
-    // Handle system menu popup (must be within the window context)
-    if (m_ShowSystemMenu)
-    {
-        ImGui::OpenPopup("##SystemMenu");
-        m_ShowSystemMenu = false;
-    }
-
-    // Render the system menu popup
-    renderSystemMenu();
-
-    ImGui::End();
-
-    if (!window.isMaximized())
-    {
-        constexpr float BORDER_THICKNESS = 1.0F;
-        ImDrawList* drawList = ImGui::GetForegroundDrawList();
-        drawList->AddRect(ImVec2(0.0F, 0.0F),
-                          ImVec2(static_cast<float>(windowWidth), static_cast<float>(windowHeight)),
-                          ImGui::ColorConvertFloat4ToU32(scheme.border),
-                          0.0F,
-                          ImDrawFlags_None,
-                          BORDER_THICKNESS);
-    }
-
-    ImGui::PopStyleColor(); // WindowBg
-    ImGui::PopStyleVar(2);  // WindowPadding, WindowBorderSize
 }
+
+#ifdef _WIN32
+void TitleBarLayer::showNativeSystemMenu()
+{
+    // Show native Windows system menu
+    auto* sdlWindow = Core::Application::get().getWindow().getHandle();
+    SDL_PropertiesID const props = SDL_GetWindowProperties(sdlWindow);
+    auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+
+    if (hwnd != nullptr)
+    {
+        HMENU systemMenu = GetSystemMenu(hwnd, FALSE);
+        if (systemMenu != nullptr)
+        {
+            // Get cursor position for menu display
+            POINT pt;
+            GetCursorPos(&pt);
+
+            // Track the menu command
+            int const cmd = TrackPopupMenu(systemMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+            if (cmd != 0)
+            {
+                PostMessageW(hwnd, WM_SYSCOMMAND, static_cast<WPARAM>(cmd), 0);
+            }
+        }
+    }
+}
+#endif
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static) - Intentionally non-static for OOP consistency
-void TitleBarLayer::renderSystemMenu()
-{
-    auto& window = Core::Application::get().getWindow();
-    const bool isMaximized = window.isMaximized();
-
-    // Set position for the popup (below the icon)
-    const float titleBarHeight = height();
-    // Under the icon, which sits at this same fraction of the bar height from the left edge.
-    ImGui::SetNextWindowPos(ImVec2(titleBarHeight * TITLE_BAR_EDGE_MARGIN_RATIO, titleBarHeight), ImGuiCond_Appearing);
-
-    if (ImGui::BeginPopup("##SystemMenu"))
-    {
-        // Restore (only enabled when maximized)
-        if (isMaximized)
-        {
-            if (ImGui::MenuItem(ICON_FA_WINDOW_RESTORE "  Restore"))
-            {
-                window.restore();
-            }
-        }
-        else
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_WINDOW_RESTORE "  Restore");
-            ImGui::EndDisabled();
-        }
-
-        // Move (disabled when maximized)
-        if (isMaximized)
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move");
-            ImGui::EndDisabled();
-        }
-        else
-        {
-            // Move mode not implemented - would require special hit test mode
-            static_cast<void>(ImGui::MenuItem(ICON_FA_ARROW_RIGHT "  Move"));
-        }
-
-        // Size (disabled when maximized)
-        if (isMaximized)
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_EXPAND "  Size");
-            ImGui::EndDisabled();
-        }
-        else
-        {
-            // Size mode not implemented - would require special hit test mode
-            static_cast<void>(ImGui::MenuItem(ICON_FA_EXPAND "  Size"));
-        }
-
-        // Minimize
-        if (ImGui::MenuItem(ICON_FA_WINDOW_MINIMIZE "  Minimize"))
-        {
-            window.minimize();
-        }
-
-        // Maximize (only enabled when not maximized)
-        if (!isMaximized)
-        {
-            if (ImGui::MenuItem(ICON_FA_WINDOW_MAXIMIZE "  Maximize"))
-            {
-                window.maximize();
-            }
-        }
-        else
-        {
-            ImGui::BeginDisabled();
-            ImGui::MenuItem(ICON_FA_WINDOW_MAXIMIZE "  Maximize");
-            ImGui::EndDisabled();
-        }
-
-        ImGui::Separator();
-
-        // Close with shortcut hint
-        if (ImGui::MenuItem(ICON_FA_XMARK "  Close", "Alt+F4"))
-        {
-            window.requestClose();
-        }
-
-        ImGui::EndPopup();
-    }
-}
 
 } // namespace App
