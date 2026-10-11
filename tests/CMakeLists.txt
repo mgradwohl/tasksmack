@@ -342,8 +342,10 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsStartupProbeSeams.cpp
     Platform/test_WindowsStartupActions.cpp
     Platform/test_WindowsSystemInfoProbe.cpp
+    Platform/test_WindowsSystemInfoProbeSeams.cpp
     Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp

@@ -82,16 +82,16 @@ namespace
 constexpr const wchar_t* CURRENT_VERSION_KEY = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
 
 /// A REG_SZ value of the CurrentVersion key (64-bit view), UTF-8; empty when absent.
-[[nodiscard]] std::string readVersionString(const wchar_t* name)
+[[nodiscard]] std::string readVersionString(const SystemInfoFunctions& fns, const wchar_t* name)
 {
     DWORD bytes = 0;
     constexpr DWORD FLAGS = RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY;
-    if (RegGetValueW(HKEY_LOCAL_MACHINE, CURRENT_VERSION_KEY, name, FLAGS, nullptr, nullptr, &bytes) != ERROR_SUCCESS || bytes == 0)
+    if (fns.regGetValue(HKEY_LOCAL_MACHINE, CURRENT_VERSION_KEY, name, FLAGS, nullptr, nullptr, &bytes) != ERROR_SUCCESS || bytes == 0)
     {
         return {};
     }
     std::wstring value(bytes / sizeof(wchar_t), L'\0');
-    if (RegGetValueW(HKEY_LOCAL_MACHINE, CURRENT_VERSION_KEY, name, FLAGS, nullptr, value.data(), &bytes) != ERROR_SUCCESS)
+    if (fns.regGetValue(HKEY_LOCAL_MACHINE, CURRENT_VERSION_KEY, name, FLAGS, nullptr, value.data(), &bytes) != ERROR_SUCCESS)
     {
         return {};
     }
@@ -104,11 +104,11 @@ constexpr const wchar_t* CURRENT_VERSION_KEY = L"SOFTWARE\\Microsoft\\Windows NT
 }
 
 /// A REG_DWORD value of the CurrentVersion key; nullopt when absent.
-[[nodiscard]] std::optional<std::uint32_t> readVersionDword(const wchar_t* name) noexcept
+[[nodiscard]] std::optional<std::uint32_t> readVersionDword(const SystemInfoFunctions& fns, const wchar_t* name) noexcept
 {
     DWORD value = 0;
     DWORD bytes = sizeof(value);
-    if (RegGetValueW(HKEY_LOCAL_MACHINE, CURRENT_VERSION_KEY, name, RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &value, &bytes) !=
+    if (fns.regGetValue(HKEY_LOCAL_MACHINE, CURRENT_VERSION_KEY, name, RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &value, &bytes) !=
         ERROR_SUCCESS)
     {
         return std::nullopt;
@@ -156,11 +156,11 @@ template<typename Get> [[nodiscard]] std::string readDirectory(Get get)
     return WinString::wideToUtf8(buffer);
 }
 
-void readJoinInformation(OsInfo& info)
+void readJoinInformation(const SystemInfoFunctions& fns, OsInfo& info)
 {
     LPWSTR name = nullptr;
     NETSETUP_JOIN_STATUS status = NetSetupUnknownStatus;
-    if (NetGetJoinInformation(nullptr, &name, &status) != NERR_Success)
+    if (fns.netGetJoinInformation(nullptr, &name, &status) != NERR_Success)
     {
         return;
     }
@@ -169,13 +169,13 @@ void readJoinInformation(OsInfo& info)
         info.domainOrWorkgroup = WinString::wideToUtf8(name);
         info.joinedToDomain = status == NetSetupDomainName;
     }
-    NetApiBufferFree(name);
+    fns.netApiBufferFree(name);
 }
 
-void readTimeZone(OsInfo& info)
+void readTimeZone(const SystemInfoFunctions& fns, OsInfo& info)
 {
     DYNAMIC_TIME_ZONE_INFORMATION zone{};
-    const DWORD id = GetDynamicTimeZoneInformation(&zone);
+    const DWORD id = fns.getDynamicTimeZoneInformation(&zone);
     if (id == TIME_ZONE_ID_INVALID)
     {
         return;
@@ -197,16 +197,16 @@ void readTimeZone(OsInfo& info)
 /// The raw SMBIOS table (a RawSMBIOSData blob) from GetSystemFirmwareTable('RSMB'); no administrator
 /// rights needed. Empty on failure. The size can change between the two calls (it doesn't in
 /// practice), so a second call that wants more room gives nothing.
-[[nodiscard]] std::vector<std::uint8_t> readRawSmbios()
+[[nodiscard]] std::vector<std::uint8_t> readRawSmbios(const SystemInfoFunctions& fns)
 {
     constexpr DWORD RSMB = 0x52534D42;
-    const UINT size = GetSystemFirmwareTable(RSMB, 0, nullptr, 0);
+    const UINT size = fns.getSystemFirmwareTable(RSMB, 0, nullptr, 0);
     if (size == 0)
     {
         return {};
     }
     std::vector<std::uint8_t> table(size);
-    const UINT written = GetSystemFirmwareTable(RSMB, 0, table.data(), size);
+    const UINT written = fns.getSystemFirmwareTable(RSMB, 0, table.data(), size);
     if (written == 0 || written > size)
     {
         return {};
@@ -952,6 +952,31 @@ struct CatalogAdmin
 
 } // namespace
 
+WindowsSystemInfoProbe::WindowsSystemInfoProbe() : WindowsSystemInfoProbe(systemFunctions())
+{}
+
+WindowsSystemInfoProbe::WindowsSystemInfoProbe(const SystemInfoFunctions& functions) : m_Fns(functions)
+{}
+
+SystemInfoFunctions WindowsSystemInfoProbe::systemFunctions()
+{
+    return {
+        .regGetValue = &::RegGetValueW,
+        .isWow64Process2 = &::IsWow64Process2,
+        .computerName = [](LPWSTR buffer, PULONG size) { return GetComputerNameExW(ComputerNameDnsHostname, buffer, size); },
+        .userName = [](LPWSTR buffer, PULONG size) -> BOOL { return GetUserNameExW(NameSamCompatible, buffer, size); },
+        .netGetJoinInformation = &::NetGetJoinInformation,
+        .netApiBufferFree = &::NetApiBufferFree,
+        .getUserDefaultLocaleName = &::GetUserDefaultLocaleName,
+        .getDynamicTimeZoneInformation = &::GetDynamicTimeZoneInformation,
+        .getSystemDirectory = &::GetSystemDirectoryW,
+        .getSystemWindowsDirectory = &::GetSystemWindowsDirectoryW,
+        .getFirmwareType = &::GetFirmwareType,
+        .getSystemFirmwareTable = &::GetSystemFirmwareTable,
+        .powerDeterminePlatformRoleEx = &::PowerDeterminePlatformRoleEx,
+    };
+}
+
 SystemInfoCapabilities WindowsSystemInfoProbe::capabilities() const
 {
     return {.hasOs = true, .unavailableReason = {}};
@@ -962,16 +987,16 @@ OsInfo WindowsSystemInfoProbe::readOs()
     OsInfo info;
     info.family = OsFamily::Windows;
 
-    const std::string currentBuild = readVersionString(L"CurrentBuild");
+    const std::string currentBuild = readVersionString(m_Fns, L"CurrentBuild");
     const std::optional<std::uint32_t> build = WindowsOsInfo::parseBuild(currentBuild);
-    info.name = WindowsOsInfo::productName(readVersionString(L"ProductName"), readVersionString(L"EditionID"), build);
-    info.version = WindowsOsInfo::displayVersion(readVersionString(L"DisplayVersion"), readVersionString(L"ReleaseId"));
-    info.build = WindowsOsInfo::buildString(currentBuild, readVersionDword(L"UBR"));
-    info.installUnixSeconds = readVersionDword(L"InstallDate").value_or(0); // Unix seconds
+    info.name = WindowsOsInfo::productName(readVersionString(m_Fns, L"ProductName"), readVersionString(m_Fns, L"EditionID"), build);
+    info.version = WindowsOsInfo::displayVersion(readVersionString(m_Fns, L"DisplayVersion"), readVersionString(m_Fns, L"ReleaseId"));
+    info.build = WindowsOsInfo::buildString(currentBuild, readVersionDword(m_Fns, L"UBR"));
+    info.installUnixSeconds = readVersionDword(m_Fns, L"InstallDate").value_or(0); // Unix seconds
 
     USHORT processMachine = 0;
     USHORT nativeMachine = 0;
-    if (IsWow64Process2(GetCurrentProcess(), &processMachine, &nativeMachine) != FALSE)
+    if (m_Fns.isWow64Process2(GetCurrentProcess(), &processMachine, &nativeMachine) != FALSE)
     {
         info.architecture = std::string(WindowsOsInfo::machineName(nativeMachine));
     }
@@ -980,21 +1005,20 @@ OsInfo WindowsSystemInfoProbe::readOs()
     const auto upSeconds = static_cast<std::int64_t>(GetTickCount64() / 1000);
     info.bootUnixSeconds = now > upSeconds ? static_cast<std::uint64_t>(now - upSeconds) : 0;
 
-    info.computerName =
-        readSizedString([](wchar_t* buffer, ULONG& size) { return GetComputerNameExW(ComputerNameDnsHostname, buffer, &size); });
-    readJoinInformation(info);
-    info.userName = readSizedString([](wchar_t* buffer, ULONG& size) { return GetUserNameExW(NameSamCompatible, buffer, &size); });
+    info.computerName = readSizedString([this](wchar_t* buffer, ULONG& size) { return m_Fns.computerName(buffer, &size); });
+    readJoinInformation(m_Fns, info);
+    info.userName = readSizedString([this](wchar_t* buffer, ULONG& size) { return m_Fns.userName(buffer, &size); });
 
     std::wstring locale(LOCALE_NAME_MAX_LENGTH, L'\0');
-    if (const int length = GetUserDefaultLocaleName(locale.data(), LOCALE_NAME_MAX_LENGTH); length > 1)
+    if (const int length = m_Fns.getUserDefaultLocaleName(locale.data(), LOCALE_NAME_MAX_LENGTH); length > 1)
     {
         locale.resize(static_cast<std::size_t>(length) - 1);
         info.locale = WinString::wideToUtf8(locale);
     }
-    readTimeZone(info);
+    readTimeZone(m_Fns, info);
 
-    info.systemDirectory = readDirectory([](wchar_t* buffer, UINT size) { return GetSystemDirectoryW(buffer, size); });
-    info.windowsDirectory = readDirectory([](wchar_t* buffer, UINT size) { return GetSystemWindowsDirectoryW(buffer, size); });
+    info.systemDirectory = readDirectory([this](wchar_t* buffer, UINT size) { return m_Fns.getSystemDirectory(buffer, size); });
+    info.windowsDirectory = readDirectory([this](wchar_t* buffer, UINT size) { return m_Fns.getSystemWindowsDirectory(buffer, size); });
     return info;
 }
 
@@ -1004,7 +1028,7 @@ FirmwareInfo WindowsSystemInfoProbe::readFirmware()
     info.available = true;
 
     FIRMWARE_TYPE type = FirmwareTypeUnknown;
-    if (GetFirmwareType(&type) != FALSE)
+    if (m_Fns.getFirmwareType(&type) != FALSE)
     {
         if (type == FirmwareTypeUefi)
         {
@@ -1016,7 +1040,7 @@ FirmwareInfo WindowsSystemInfoProbe::readFirmware()
         }
     }
 
-    if (const std::vector<std::uint8_t> table = readRawSmbios(); !table.empty())
+    if (const std::vector<std::uint8_t> table = readRawSmbios(m_Fns); !table.empty())
     {
         Smbios::decodeFirmware(table, info);
     }
@@ -1024,7 +1048,7 @@ FirmwareInfo WindowsSystemInfoProbe::readFirmware()
     // The power manager's role (from the ACPI FADT preferred profile) is what msinfo32 shows; the
     // chassis-derived role from the SMBIOS table stands in when it is unspecified.
     if (const std::string_view role =
-            WindowsOsInfo::platformRoleName(static_cast<std::uint32_t>(PowerDeterminePlatformRoleEx(POWER_PLATFORM_ROLE_V2)));
+            WindowsOsInfo::platformRoleName(static_cast<std::uint32_t>(m_Fns.powerDeterminePlatformRoleEx(POWER_PLATFORM_ROLE_V2)));
         !role.empty())
     {
         info.platformRole = std::string(role);
@@ -1036,7 +1060,7 @@ MemoryModulesInfo WindowsSystemInfoProbe::readMemoryModules()
 {
     MemoryModulesInfo info;
     info.available = true;
-    if (const std::vector<std::uint8_t> table = readRawSmbios(); !table.empty())
+    if (const std::vector<std::uint8_t> table = readRawSmbios(m_Fns); !table.empty())
     {
         Smbios::decodeMemoryModules(table, info);
     }
@@ -1058,9 +1082,9 @@ StorageInfo WindowsSystemInfoProbe::readStorage()
     return info;
 }
 
-GraphicsInfo WindowsSystemInfoProbe::readGraphics()
+WindowsGraphics::Functions WindowsSystemInfoProbe::graphicsFunctions()
 {
-    const WindowsGraphics::Functions fns{
+    return {
         .listAdapters = &listDxgiAdapters,
         .adapterType = [](const LUID& luid) -> std::optional<AdapterTypeBits>
         {
@@ -1071,33 +1095,44 @@ GraphicsInfo WindowsSystemInfoProbe::readGraphics()
         .listDisplayDrivers = &listDisplayDriverNodes,
         .readMonitorEdid = &readMonitorEdid,
     };
+}
+
+WindowsDevices::Functions WindowsSystemInfoProbe::deviceFunctions()
+{
+    return {.listDevNodes = &listDevNodes, .listAudioEndpoints = &listAudioEndpoints, .readHubPorts = &readHubPorts};
+}
+
+WindowsDrivers::Functions WindowsSystemInfoProbe::driverFunctions()
+{
+    return {
+        .listDriverServices = &listDriverServices,
+        .windowsDirectory = &windowsDirectory,
+        .readFileVersion = &readFileVersion,
+        .errorMessage = &errorMessage,
+        .fileStamp = &fileStamp,
+        .verifyEmbeddedSignature = &verifyEmbeddedSignature,
+        .verifyCatalogSignature = &verifyCatalogSignature,
+    };
+}
+
+GraphicsInfo WindowsSystemInfoProbe::readGraphics()
+{
     GraphicsInfo info;
-    WindowsGraphics::readGraphics(info, fns);
+    WindowsGraphics::readGraphics(info, graphicsFunctions());
     return info;
 }
 
 DevicesInfo WindowsSystemInfoProbe::readDevices()
 {
     DevicesInfo info;
-    WindowsDevices::readDevices(info,
-                                {.listDevNodes = &listDevNodes, .listAudioEndpoints = &listAudioEndpoints, .readHubPorts = &readHubPorts});
+    WindowsDevices::readDevices(info, deviceFunctions());
     return info;
 }
 
 DriversInfo WindowsSystemInfoProbe::readDrivers()
 {
     DriversInfo info;
-    WindowsDrivers::readDrivers(info,
-                                {
-                                    .listDriverServices = &listDriverServices,
-                                    .windowsDirectory = &windowsDirectory,
-                                    .readFileVersion = &readFileVersion,
-                                    .errorMessage = &errorMessage,
-                                    .fileStamp = &fileStamp,
-                                    .verifyEmbeddedSignature = &verifyEmbeddedSignature,
-                                    .verifyCatalogSignature = &verifyCatalogSignature,
-                                },
-                                &m_SignatureCache);
+    WindowsDrivers::readDrivers(info, driverFunctions(), &m_SignatureCache);
     return info;
 }
 

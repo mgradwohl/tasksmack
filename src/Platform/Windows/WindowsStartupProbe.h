@@ -2,6 +2,17 @@
 
 #include "Platform/IStartupProbe.h"
 
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shlobj.h>
+// clang-format on
+
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -11,6 +22,31 @@
 
 namespace Platform
 {
+
+namespace Windows
+{
+
+/// The registry and known-folder calls WindowsStartupProbe makes (#1722): advapi32's and shell32's by
+/// default, or a test's fakes, so the Run keys, the Startup folders and their StartupApproved state can
+/// be tested without reading (or writing) the real ones. Every key opened is closed through closeKey.
+struct StartupProbeFunctions
+{
+    using RegOpenKeyExFn = LSTATUS(WINAPI*)(HKEY, LPCWSTR, DWORD, REGSAM, PHKEY);
+    using RegQueryInfoKeyFn =
+        LSTATUS(WINAPI*)(HKEY, LPWSTR, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD, PFILETIME);
+    using RegEnumValueFn = LSTATUS(WINAPI*)(HKEY, DWORD, LPWSTR, LPDWORD, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
+    using RegCloseKeyFn = LSTATUS(WINAPI*)(HKEY);
+    /// SHGetKnownFolderPath: the path is allocated with CoTaskMemAlloc, and the caller frees it.
+    using KnownFolderPathFn = HRESULT(WINAPI*)(const GUID&, DWORD, HANDLE, PWSTR*);
+
+    RegOpenKeyExFn openKey = &::RegOpenKeyExW;
+    RegQueryInfoKeyFn queryInfoKey = &::RegQueryInfoKeyW;
+    RegEnumValueFn enumValue = &::RegEnumValueW;
+    RegCloseKeyFn closeKey = &::RegCloseKey;
+    KnownFolderPathFn knownFolderPath = &::SHGetKnownFolderPath;
+};
+
+} // namespace Windows
 
 /// Windows startup entries (#801), read-only and without elevation.
 ///
@@ -23,6 +59,8 @@ class WindowsStartupProbe : public IStartupProbe
 {
   public:
     WindowsStartupProbe();
+    /// Make every registry and known-folder call through @p functions (tests, #1722).
+    explicit WindowsStartupProbe(const Windows::StartupProbeFunctions& functions);
     ~WindowsStartupProbe() override;
 
     WindowsStartupProbe(const WindowsStartupProbe&) = delete;

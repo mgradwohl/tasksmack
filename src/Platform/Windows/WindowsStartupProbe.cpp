@@ -28,7 +28,6 @@
 #include "ComPtr.h"
 #include "ComScope.h"
 #include "WinString.h"
-#include "WindowsHandles.h"
 #include "WindowsStartupProbeMath.h"
 
 #include <array>
@@ -44,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -104,19 +104,34 @@ using ApprovedMap = std::unordered_map<std::wstring, Windows::StartupMath::Appro
     return text;
 }
 
+/// Closes a key through the injected RegCloseKey: advapi32's, or a test's fake for its fake keys.
+struct InjectedKeyCloser
+{
+    Windows::StartupProbeFunctions::RegCloseKeyFn close = &::RegCloseKey;
+
+    void operator()(HKEY key) const noexcept
+    {
+        close(key);
+    }
+};
+
+using InjectableKey = std::unique_ptr<std::remove_pointer_t<HKEY>, InjectedKeyCloser>;
+
 /// Calls `onValue(name, type, bytes)` for every value of `root\subkey`. A key that doesn't exist or
 /// can't be opened has no values.
-template<typename OnValue> void forEachValue(HKEY root, const wchar_t* subkey, REGSAM view, OnValue onValue)
+template<typename OnValue>
+void forEachValue(const Windows::StartupProbeFunctions& api, HKEY root, const wchar_t* subkey, REGSAM view, OnValue onValue)
 {
-    Windows::UniqueRegistryKey key;
-    if (RegOpenKeyExW(root, subkey, 0, KEY_READ | view, key.put()) != ERROR_SUCCESS)
+    HKEY rawKey = nullptr;
+    if (api.openKey(root, subkey, 0, KEY_READ | view, &rawKey) != ERROR_SUCCESS || rawKey == nullptr)
     {
         return;
     }
+    const InjectableKey key(rawKey, InjectedKeyCloser{.close = api.closeKey});
     DWORD valueCount = 0;
     DWORD maxNameChars = 0;
     DWORD maxDataBytes = 0;
-    if (RegQueryInfoKeyW(
+    if (api.queryInfoKey(
             key.get(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &valueCount, &maxNameChars, &maxDataBytes, nullptr, nullptr) !=
         ERROR_SUCCESS)
     {
@@ -130,7 +145,7 @@ template<typename OnValue> void forEachValue(HKEY root, const wchar_t* subkey, R
         auto dataBytes = static_cast<DWORD>(data.size());
         DWORD type = 0;
         // A value that grew since RegQueryInfoKeyW (ERROR_MORE_DATA) is skipped this pass.
-        if (RegEnumValueW(key.get(), index, name.data(), &nameChars, nullptr, &type, data.data(), &dataBytes) != ERROR_SUCCESS)
+        if (api.enumValue(key.get(), index, name.data(), &nameChars, nullptr, &type, data.data(), &dataBytes) != ERROR_SUCCESS)
         {
             continue;
         }
@@ -138,14 +153,15 @@ template<typename OnValue> void forEachValue(HKEY root, const wchar_t* subkey, R
     }
 }
 
-[[nodiscard]] ApprovedMap readApproved(HKEY root, const wchar_t* subkey)
+[[nodiscard]] ApprovedMap readApproved(const Windows::StartupProbeFunctions& api, HKEY root, const wchar_t* subkey)
 {
     ApprovedMap approved;
     if (subkey == nullptr)
     {
         return approved;
     }
-    forEachValue(root,
+    forEachValue(api,
+                 root,
                  subkey,
                  0,
                  [&approved](const std::wstring& name, DWORD type, std::span<const std::uint8_t> data)
@@ -216,11 +232,11 @@ void applyApproved(StartupEntry& entry, const ApprovedMap& approved, const std::
     return command;
 }
 
-[[nodiscard]] std::wstring knownFolder(const KNOWNFOLDERID& id)
+[[nodiscard]] std::wstring knownFolder(const Windows::StartupProbeFunctions& api, const KNOWNFOLDERID& id)
 {
     PWSTR path = nullptr;
     std::wstring result;
-    if (SUCCEEDED(SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &path)) && path != nullptr)
+    if (SUCCEEDED(api.knownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &path)) && path != nullptr)
     {
         result = path;
     }
@@ -349,6 +365,7 @@ std::optional<std::string> readShortcutCommand(const std::filesystem::path& shor
 
 struct WindowsStartupProbe::Impl
 {
+    Windows::StartupProbeFunctions api;
     std::unordered_map<std::wstring, CachedPublisher> publishers; ///< By lower-cased path.
 
     /// Fills `entry`'s executable, target state and publisher from its command.
@@ -384,8 +401,9 @@ struct WindowsStartupProbe::Impl
     {
         for (const RunSource& source : RUN_SOURCES)
         {
-            const ApprovedMap approved = readApproved(source.root, source.approvedSubkey);
-            forEachValue(source.root,
+            const ApprovedMap approved = readApproved(api, source.root, source.approvedSubkey);
+            forEachValue(api,
+                         source.root,
                          source.subkey,
                          source.view,
                          [&](const std::wstring& name, DWORD type, std::span<const std::uint8_t> data)
@@ -413,12 +431,12 @@ struct WindowsStartupProbe::Impl
                            std::vector<StartupEntry>& entries,
                            std::unordered_set<std::wstring>& seenPaths)
     {
-        const std::wstring folder = knownFolder(folderId);
+        const std::wstring folder = knownFolder(api, folderId);
         if (folder.empty())
         {
             return;
         }
-        const ApprovedMap approved = readApproved(approvedRoot, APPROVED_FOLDER_KEY);
+        const ApprovedMap approved = readApproved(api, approvedRoot, APPROVED_FOLDER_KEY);
         std::error_code error;
         for (std::filesystem::directory_iterator it(folder, error), end; !error && it != end; it.increment(error))
         {
@@ -458,8 +476,13 @@ struct WindowsStartupProbe::Impl
     }
 };
 
-WindowsStartupProbe::WindowsStartupProbe() : m_Impl(std::make_unique<Impl>())
+WindowsStartupProbe::WindowsStartupProbe() : WindowsStartupProbe(Windows::StartupProbeFunctions{})
 {}
+
+WindowsStartupProbe::WindowsStartupProbe(const Windows::StartupProbeFunctions& functions) : m_Impl(std::make_unique<Impl>())
+{
+    m_Impl->api = functions;
+}
 
 WindowsStartupProbe::~WindowsStartupProbe() = default;
 
