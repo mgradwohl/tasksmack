@@ -1,7 +1,8 @@
 #pragma once
 
 // Display text for Process Details' Security section (#1526): capability names from their bit numbers,
-// and the short phrases the section shows for IDs, seccomp and no_new_privs. Pure functions over
+// and the short phrases the section shows for IDs, seccomp and no_new_privs; and for a Windows token,
+// its accounts, integrity level, elevation type, privileges and groups. Pure functions over
 // Platform::ProcessSecurity's raw fields, so they are unit-tested without a platform
 // (tests/Domain/test_ProcessSecurity.cpp).
 
@@ -178,6 +179,105 @@ inline constexpr std::array<std::string_view, 41> CAPABILITY_NAMES{
             text += ", ";
         }
         text += principalText(group);
+    }
+    return text;
+}
+
+/// A Windows account as the section shows it: "DOMAIN\name (S-1-...)", or the bare SID when it does not
+/// resolve to a name.
+[[nodiscard]] inline std::string accountText(const Platform::SecurityAccount& account)
+{
+    if (account.name.empty())
+    {
+        return account.sid;
+    }
+    return account.sid.empty() ? account.name : std::format("{} ({})", account.name, account.sid);
+}
+
+/// A Windows integrity level, from its mandatory-label RID (SECURITY_MANDATORY_*_RID in winnt.h):
+/// "Medium", or the RID in hex for one between the named levels.
+[[nodiscard]] inline std::string integrityLevelText(std::uint32_t rid)
+{
+    switch (rid)
+    {
+    case 0x0000:
+        return "Untrusted";
+    case 0x1000:
+        return "Low";
+    case 0x2000:
+        return "Medium";
+    case 0x2100:
+        return "Medium Plus";
+    case 0x3000:
+        return "High";
+    case 0x4000:
+        return "System";
+    case 0x5000:
+        return "Protected Process";
+    default:
+        break;
+    }
+    return std::format("0x{:04X}", rid);
+}
+
+/// A Windows token's elevation type in words.
+[[nodiscard]] constexpr std::string_view elevationTypeText(Platform::TokenElevationKind type) noexcept
+{
+    switch (type)
+    {
+    case Platform::TokenElevationKind::Default:
+        return "Default (not a split token)";
+    case Platform::TokenElevationKind::Full:
+        return "Full (elevated)";
+    case Platform::TokenElevationKind::Limited:
+        return "Limited (filtered)";
+    }
+    return "Unknown";
+}
+
+/// A token's privileges one per line, each with its state ("SeShutdownPrivilege: Disabled"), or "none".
+[[nodiscard]] inline std::string privilegeListText(const std::vector<Platform::TokenPrivilege>& privileges)
+{
+    if (privileges.empty())
+    {
+        return "none";
+    }
+    std::string text;
+    for (const Platform::TokenPrivilege& privilege : privileges)
+    {
+        if (!text.empty())
+        {
+            text += '\n';
+        }
+        text += std::format("{}: {}", privilege.name, privilege.enabled ? "Enabled" : "Disabled");
+    }
+    return text;
+}
+
+/// A token's groups one per line: the account's name (its SID when it has none), marked "(deny only)"
+/// or "(disabled)" unless enabled; or "none".
+[[nodiscard]] inline std::string tokenGroupListText(const std::vector<Platform::TokenGroup>& groups)
+{
+    if (groups.empty())
+    {
+        return "none";
+    }
+    std::string text;
+    for (const Platform::TokenGroup& group : groups)
+    {
+        if (!text.empty())
+        {
+            text += '\n';
+        }
+        text += group.account.name.empty() ? group.account.sid : group.account.name;
+        if (group.denyOnly)
+        {
+            text += " (deny only)";
+        }
+        else if (!group.enabled)
+        {
+            text += " (disabled)";
+        }
     }
     return text;
 }

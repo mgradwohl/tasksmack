@@ -326,7 +326,7 @@ void ProcessDetailsPanel::renderContent()
                 m_ConnectionsView.render(m_HasConnections);
                 // Likewise collapsed by default; hidden only in synthetic runs (#802)
                 m_ModulesView.render(m_HasModules);
-                // Likewise collapsed by default; hidden on Windows until its token reader lands (#1526)
+                // Likewise collapsed by default; hidden only in synthetic runs (#1526)
                 m_SecurityView.render(m_HasSecurity);
                 // Likewise collapsed by default; hidden only in synthetic runs (#183)
                 m_OpenFilesView.render(m_HasOpenFiles);

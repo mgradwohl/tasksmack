@@ -225,6 +225,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
+    src/Platform/Windows/WindowsProcessSecurity.cpp
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsCrashEvents.cpp
@@ -313,6 +314,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ISystemProbe.h
     src/Platform/ISystemInfoProbe.h
     src/Platform/EdidParser.h
+    src/Platform/VulkanInfo.h
     src/Platform/HwIdsParser.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
@@ -380,6 +382,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
+        src/Platform/Windows/WindowsProcessSecurity.h
         src/Platform/Windows/WindowsSystemProbe.h
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h

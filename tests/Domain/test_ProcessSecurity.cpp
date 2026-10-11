@@ -54,5 +54,37 @@ TEST(ProcessSecurityTest, GroupListAndSeccompText)
     EXPECT_EQ(seccompText(Platform::SeccompMode::Filter), "Filter");
 }
 
+TEST(ProcessSecurityTest, WindowsAccountAndIntegrityText)
+{
+    EXPECT_EQ(accountText({.sid = "S-1-5-18", .name = "NT AUTHORITY\\SYSTEM"}), "NT AUTHORITY\\SYSTEM (S-1-5-18)");
+    EXPECT_EQ(accountText({.sid = "S-1-5-21-9-9-9-7777", .name = {}}), "S-1-5-21-9-9-9-7777"); // unresolved: the SID
+    EXPECT_EQ(accountText({.sid = {}, .name = "matt"}), "matt");
+    EXPECT_EQ(integrityLevelText(0x0000), "Untrusted");
+    EXPECT_EQ(integrityLevelText(0x1000), "Low");
+    EXPECT_EQ(integrityLevelText(0x2000), "Medium");
+    EXPECT_EQ(integrityLevelText(0x2100), "Medium Plus");
+    EXPECT_EQ(integrityLevelText(0x3000), "High");
+    EXPECT_EQ(integrityLevelText(0x4000), "System");
+    EXPECT_EQ(integrityLevelText(0x5000), "Protected Process");
+    EXPECT_EQ(integrityLevelText(0x1500), "0x1500"); // between the named levels
+    EXPECT_EQ(elevationTypeText(Platform::TokenElevationKind::Default), "Default (not a split token)");
+    EXPECT_EQ(elevationTypeText(Platform::TokenElevationKind::Full), "Full (elevated)");
+    EXPECT_EQ(elevationTypeText(Platform::TokenElevationKind::Limited), "Limited (filtered)");
+}
+
+TEST(ProcessSecurityTest, WindowsPrivilegeAndGroupListsShowTheirState)
+{
+    EXPECT_EQ(privilegeListText({}), "none");
+    EXPECT_EQ(privilegeListText({{.name = "SeDebugPrivilege", .enabled = true}, {.name = "SeShutdownPrivilege", .enabled = false}}),
+              "SeDebugPrivilege: Enabled\nSeShutdownPrivilege: Disabled");
+    EXPECT_EQ(tokenGroupListText({}), "none");
+    const std::vector<Platform::TokenGroup> groups{
+        {.account = {.sid = "S-1-1-0", .name = "Everyone"}, .enabled = true, .denyOnly = false},
+        {.account = {.sid = "S-1-5-32-544", .name = "BUILTIN\\Administrators"}, .enabled = false, .denyOnly = true},
+        {.account = {.sid = "S-1-5-21-9-9-9-7777", .name = {}}, .enabled = false, .denyOnly = false},
+    };
+    EXPECT_EQ(tokenGroupListText(groups), "Everyone\nBUILTIN\\Administrators (deny only)\nS-1-5-21-9-9-9-7777 (disabled)");
+}
+
 } // namespace
 } // namespace Domain::ProcessSecurity

@@ -15,7 +15,7 @@ void ProcessSecurityView::render(bool hasSecurity)
 {
     if (!hasSecurity)
     {
-        return; // Windows for now, synthetic runs: no section at all
+        return; // synthetic runs: no section at all
     }
     // Collapsed by default: nothing is read until it is opened.
     if (!ImGui::CollapsingHeader(ICON_FA_LOCK "  Security###ProcessSecurity"))

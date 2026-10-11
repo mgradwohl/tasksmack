@@ -26,6 +26,7 @@
 #include "WindowsProcessModules.h"
 #include "WindowsProcessOpenFiles.h"
 #include "WindowsProcessProbe.h"
+#include "WindowsProcessSecurity.h"
 #include "WindowsServiceActions.h"
 #include "WindowsServiceProbe.h"
 #include "WindowsStartupActions.h"
@@ -73,9 +74,7 @@ std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader()
 
 std::unique_ptr<IProcessSecurityReader> makeProcessSecurityReader()
 {
-    // The token reader (OpenProcessToken/GetTokenInformation: integrity, elevation, privileges, groups)
-    // is the Windows lane's follow-up to #1526, so the Security section is hidden.
-    return std::make_unique<UnsupportedProcessSecurityReader>();
+    return std::make_unique<Windows::WindowsProcessSecurityReader>();
 }
 
 std::unique_ptr<IStartupProbe> makeStartupProbe()

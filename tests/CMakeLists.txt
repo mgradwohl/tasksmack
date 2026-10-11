@@ -211,6 +211,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
     Platform/test_GraphicsInfo.cpp
+    Platform/test_VulkanInfo.cpp
     Platform/test_DevicesInfo.cpp
     Platform/test_DriversInfo.cpp
     Platform/test_CrashesInfo.cpp
@@ -335,6 +336,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
+    Platform/test_WindowsProcessSecurity.cpp
     Platform/test_WindowsDiskProbe.cpp
     Platform/test_WindowsDiskProbeSeams.cpp
     Platform/test_WindowsPathProvider.cpp
@@ -370,6 +372,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_PathProviderContract.cpp
     Platform/test_PowerProbeContract.cpp
     Platform/test_LinuxProcessProbe.cpp
+    Platform/test_LinuxSystemInfoProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_SyscallTrace.cpp

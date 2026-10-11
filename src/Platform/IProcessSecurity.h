@@ -3,14 +3,18 @@
 // On-demand read of one process's security context (#1526): the Security section of Process Details.
 // Linux reads /proc/[pid]/status (user and group IDs, supplementary groups, capability sets,
 // no_new_privs, seccomp), /proc/[pid]/attr/current (the SELinux or AppArmor label) and
-// /proc/[pid]/cgroup.
+// /proc/[pid]/cgroup. Windows reads the process token (OpenProcessToken, GetTokenInformation): its
+// user, integrity level, elevation, privileges, groups, AppContainer and virtualization state, and
+// session.
 //
 // Not part of the per-sample enumeration: it is read only for the process Process Details shows, only
-// while its Security section is open, and at most every Domain::Sampling::PROCESS_SECURITY_REFRESH_MS.
+// while its Security section is open, at most every Domain::Sampling::PROCESS_SECURITY_REFRESH_MS, and
+// on a worker thread, one read at a time.
 // The App composition root creates the reader (Platform::makeProcessSecurityReader()) and hands it to
 // the panel, which never calls the factory.
 //
-// The fields are raw: numeric IDs with the names the OS maps them to, capability sets as bit masks.
+// The fields are raw: numeric IDs and SIDs with the names the OS maps them to, capability sets as bit
+// masks, the integrity level as its mandatory-label RID.
 // Capability names and the display text are Domain's (Domain/ProcessSecurity.h).
 
 #include "Platform/IProcessActions.h"
@@ -29,7 +33,7 @@ enum class SecurityReadStatus : std::uint8_t
     Ok,               ///< Read; `security` holds what the platform reported.
     PermissionDenied, ///< The OS refused (a protected process, or another user's where that is hidden).
     ProcessExited,    ///< The process is gone, or its PID now belongs to a different process.
-    Unsupported,      ///< This run cannot read another process's security context (Windows for now, synthetic runs).
+    Unsupported,      ///< This run cannot read another process's security context (synthetic runs).
     IdentityUnknown,  ///< The target's start time is unknown (0), so the process could not be confirmed; nothing was read.
     Failed,           ///< Any other error.
 };
@@ -76,8 +80,45 @@ enum class SeccompMode : std::uint8_t
     Filter = 2,
 };
 
+/// A Windows security identifier (SID) and the account it names.
+struct SecurityAccount
+{
+    std::string sid;  ///< The SID in string form ("S-1-5-32-544").
+    std::string name; ///< "DOMAIN\name" from LookupAccountSid; empty when the SID does not resolve.
+
+    [[nodiscard]] friend bool operator==(const SecurityAccount&, const SecurityAccount&) = default;
+};
+
+/// A Windows token's elevation type (TOKEN_ELEVATION_TYPE).
+enum class TokenElevationKind : std::uint8_t
+{
+    Default = 1, ///< No split token: UAC is off, or the account is a standard user or a service.
+    Full = 2,    ///< The elevated half of a split (UAC) token.
+    Limited = 3, ///< The filtered half of a split token: an administrator running unelevated.
+};
+
+/// One privilege in a Windows token (TOKEN_PRIVILEGES), with whether it is enabled now.
+struct TokenPrivilege
+{
+    std::string name; ///< "SeDebugPrivilege"; "LUID 0x..." when the name cannot be looked up.
+    bool enabled = false;
+
+    [[nodiscard]] friend bool operator==(const TokenPrivilege&, const TokenPrivilege&) = default;
+};
+
+/// One group in a Windows token (TOKEN_GROUPS) and how the token holds it.
+struct TokenGroup
+{
+    SecurityAccount account;
+    bool enabled = false;  ///< SE_GROUP_ENABLED: access checks use it.
+    bool denyOnly = false; ///< SE_GROUP_USE_FOR_DENY_ONLY: it only denies (a filtered administrator token's Administrators).
+
+    [[nodiscard]] friend bool operator==(const TokenGroup&, const TokenGroup&) = default;
+};
+
 /// One process's security context, as far as the platform reports it. Every field is optional: what a
-/// platform or kernel does not report is left empty rather than shown as a made-up default.
+/// platform or kernel does not report is left empty rather than shown as a made-up default. The first
+/// block is Linux's, the second the Windows token's.
 struct ProcessSecurity
 {
     std::optional<SecurityIdSet> users;
@@ -88,6 +129,16 @@ struct ProcessSecurity
     std::optional<SeccompMode> seccomp;  ///< Absent when the kernel lacks seccomp.
     std::string securityLabel;           ///< SELinux context or AppArmor profile; empty with no LSM label.
     std::string controlGroup;            ///< The cgroup v2 path ("/user.slice/..."); else the v1 lines joined.
+
+    std::optional<SecurityAccount> tokenUser;              ///< TokenUser.
+    std::optional<std::uint32_t> integrityLevel;           ///< TokenIntegrityLevel's RID (SECURITY_MANDATORY_*_RID).
+    std::optional<bool> elevated;                          ///< TokenElevation.
+    std::optional<TokenElevationKind> elevationType;       ///< TokenElevationType.
+    std::optional<std::vector<TokenPrivilege>> privileges; ///< TokenPrivileges, in the token's order.
+    std::optional<std::vector<TokenGroup>> tokenGroups;    ///< TokenGroups, less the integrity label.
+    std::optional<bool> appContainer;                      ///< TokenIsAppContainer.
+    std::optional<bool> virtualizationEnabled;             ///< TokenVirtualizationEnabled (UAC file/registry virtualization).
+    std::optional<std::uint32_t> sessionId;                ///< TokenSessionId.
 
     [[nodiscard]] friend bool operator==(const ProcessSecurity&, const ProcessSecurity&) = default;
 };
@@ -117,14 +168,14 @@ class IProcessSecurityReader
     /// Security section and readSecurity() only ever returns Unsupported.
     [[nodiscard]] virtual bool hasSecurity() const = 0;
 
-    /// Read @p target's security context now. Synchronous and quick (a few small files). The target's
-    /// start time is checked against the process holding the PID, so a reused PID reports
-    /// ProcessExited; an unknown start time (0) is refused with IdentityUnknown.
+    /// Read @p target's security context now. Synchronous, and it can block: a few small files on Linux,
+    /// but on Windows naming the token's SIDs can wait on a domain controller, so callers run it off
+    /// the UI thread (the Security section reads on a worker). The target's start time is checked against the process holding the PID, so a
+    /// reused PID reports ProcessExited; an unknown start time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual SecurityReadResult readSecurity(const ProcessTarget& target) = 0;
 };
 
-/// The reader for a run that cannot read another process's security context (Windows until its token
-/// reader lands, synthetic scenarios).
+/// The reader for a run that cannot read another process's security context (synthetic scenarios).
 class UnsupportedProcessSecurityReader final : public IProcessSecurityReader
 {
   public:

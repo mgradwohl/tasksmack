@@ -42,8 +42,8 @@ namespace Platform
 /// Creates the platform-appropriate IProcessOpenFilesReader implementation (#183).
 [[nodiscard]] std::unique_ptr<IProcessOpenFilesReader> makeProcessOpenFilesReader();
 
-/// Creates the platform-appropriate IProcessSecurityReader implementation (#1526). Windows returns an
-/// UnsupportedProcessSecurityReader until its token reader lands.
+/// Creates the platform-appropriate IProcessSecurityReader implementation (#1526): /proc on Linux, the
+/// process token on Windows.
 [[nodiscard]] std::unique_ptr<IProcessSecurityReader> makeProcessSecurityReader();
 
 /// Creates the platform-appropriate IStartupProbe implementation (#801). Linux returns an

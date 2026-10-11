@@ -276,6 +276,8 @@ struct GraphicsAdapter
     std::string driverVersion;        ///< Windows: the driver package's / Linux: the module's, if it has one
     std::string driverDate;           ///< Windows: "2024-09-05"
     std::string d3dFeatureLevel;      ///< Windows: the highest Direct3D 12 feature level, "12_2" (#1636)
+    std::string vulkanApiVersion;     ///< The Vulkan version its driver supports, "1.4.303"; empty without one (#1635)
+    std::string vulkanDriverVersion;  ///< That Vulkan driver's version, decoded the vendor's way ("101.6881")
 };
 
 /// One connected monitor (#1519), from its EDID and, on Windows, the DXGI output it is attached to.
@@ -307,6 +309,8 @@ struct GraphicsInfo
     bool monitorsRead = false; ///< The monitors were enumerated.
     std::vector<Monitor> monitors;
     std::string displayServer; ///< Linux: "Wayland", "X11", ...; empty without a graphical session
+    bool vulkanRead = false;   ///< The probe looked for a Vulkan loader (Windows so far, #1635)
+    std::string vulkanVersion; ///< The loader's instance version, "1.4.304"; empty when no loader is installed
 };
 
 /// The state of one platform security feature (#1514).

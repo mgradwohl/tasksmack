@@ -14,6 +14,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/PartitionTable.h"
 #include "Platform/SmbiosParser.h"
+#include "Platform/VulkanInfo.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
 #include "Platform/Windows/WindowsDevices.h"
@@ -42,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -958,6 +960,17 @@ TEST(WindowsSystemInfoProbeTest, ReadsGraphics)
             EXPECT_TRUE(adapter.d3dFeatureLevel.starts_with("11_") || adapter.d3dFeatureLevel.starts_with("12_"))
                 << adapter.d3dFeatureLevel;
         }
+        // Vulkan versions are 1.x; a GPU without a Vulkan driver has none (#1635).
+        if (!adapter.vulkanApiVersion.empty())
+        {
+            EXPECT_TRUE(adapter.vulkanApiVersion.starts_with("1.")) << adapter.vulkanApiVersion;
+            EXPECT_FALSE(adapter.vulkanDriverVersion.empty());
+        }
+    }
+    EXPECT_TRUE(info.vulkanRead);
+    if (!info.vulkanVersion.empty()) // vulkan-1.dll ships with the GPU drivers, so a CI VM may lack it
+    {
+        EXPECT_TRUE(info.vulkanVersion.starts_with("1.")) << info.vulkanVersion;
     }
 }
 
@@ -966,6 +979,44 @@ TEST(WindowsSystemInfoProbeTest, ReadsGraphics)
 bool g_DxgiFails = false;               // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 bool g_D3d12Missing = false;            // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 std::vector<DWORD> g_FeatureLevelLuids; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+bool g_VulkanMissing = false;           // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+int g_VulkanReads = 0;                  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+[[nodiscard]] std::array<std::uint8_t, 8> luidBytes(DWORD low)
+{
+    return std::bit_cast<std::array<std::uint8_t, 8>>(LUID{.LowPart = low, .HighPart = 0});
+}
+
+/// The fake loader: Vulkan 1.4.304 with the listed GPU (LUID 1) and the indirect display's twin (LUID 3),
+/// listed first so only the LUID tells them apart.
+[[nodiscard]] std::optional<Vulkan::Info> fakeVulkan()
+{
+    ++g_VulkanReads;
+    if (g_VulkanMissing)
+    {
+        return std::nullopt;
+    }
+    return Vulkan::Info{
+        .instanceVersion = Vulkan::makeApiVersion(1, 4, 304),
+        .devices =
+            {
+                {.vendorId = 0x10DE,
+                 .deviceId = 0x2786,
+                 .apiVersion = Vulkan::makeApiVersion(1, 3, 0),
+                 .driverVersion = 1,
+                 .driverId = 4,
+                 .luid = luidBytes(3)},
+                {
+                    .vendorId = 0x10DE,
+                    .deviceId = 0x2786,
+                    .apiVersion = Vulkan::makeApiVersion(1, 4, 303),
+                    .driverVersion = (560U << 22U) | (94U << 14U),
+                    .driverId = 4,
+                    .luid = luidBytes(1),
+                },
+            },
+    };
+}
 
 [[nodiscard]] DXGI_ADAPTER_DESC1 adapterDesc(std::wstring_view name, UINT vendor, UINT device, DWORD luidLow, UINT flags)
 {
@@ -1055,6 +1106,7 @@ std::vector<DWORD> g_FeatureLevelLuids; // NOLINT(cppcoreguidelines-avoid-non-co
             g_FeatureLevelLuids.push_back(luid.LowPart);
             return g_D3d12Missing ? std::nullopt : std::optional(D3D_FEATURE_LEVEL_12_2);
         },
+        .readVulkan = &fakeVulkan,
     };
 }
 
@@ -1071,6 +1123,10 @@ TEST(WindowsSystemInfoProbeTest, GraphicsThroughTheFunctionTable)
     EXPECT_EQ(gpu.driverVersion, "32.0.15.6094"); // the node at its PCI location, not the first with its ids
     EXPECT_EQ(gpu.driverDate, "2024-09-05");
     EXPECT_EQ(gpu.d3dFeatureLevel, "12_2");
+    EXPECT_TRUE(info.vulkanRead);
+    EXPECT_EQ(info.vulkanVersion, "1.4.304");
+    EXPECT_EQ(gpu.vulkanApiVersion, "1.4.303"); // the device with its LUID, not the twin listed first
+    EXPECT_EQ(gpu.vulkanDriverVersion, "560.94.0.0");
 
     ASSERT_TRUE(info.monitorsRead);
     ASSERT_EQ(info.monitors.size(), 2U); // the indirect display's monitor is kept
@@ -1116,6 +1172,72 @@ TEST(WindowsSystemInfoProbeTest, GraphicsFeatureLevelOnlyForListedAdapters)
     WindowsGraphics::readGraphics(failed, fakeGraphics());
     g_DxgiFails = false;
     EXPECT_TRUE(g_FeatureLevelLuids.empty());
+}
+
+TEST(WindowsSystemInfoProbeTest, GraphicsVulkanOncePerRead)
+{
+    g_VulkanReads = 0;
+    GraphicsInfo info;
+    WindowsGraphics::readGraphics(info, fakeGraphics());
+    EXPECT_EQ(g_VulkanReads, 1); // one instance per read, not one per adapter
+
+    // Without vulkan-1.dll: read, but no versions, and the rest of the adapter is still there.
+    g_VulkanMissing = true;
+    GraphicsInfo missing;
+    WindowsGraphics::readGraphics(missing, fakeGraphics());
+    g_VulkanMissing = false;
+    EXPECT_TRUE(missing.vulkanRead);
+    EXPECT_TRUE(missing.vulkanVersion.empty());
+    ASSERT_EQ(missing.adapters.size(), 1U);
+    EXPECT_TRUE(missing.adapters[0].vulkanApiVersion.empty());
+    EXPECT_TRUE(missing.adapters[0].vulkanDriverVersion.empty());
+    EXPECT_EQ(missing.adapters[0].d3dFeatureLevel, "12_2");
+
+    // DXGI unusable: the loader's version is still shown.
+    g_DxgiFails = true;
+    GraphicsInfo failed;
+    WindowsGraphics::readGraphics(failed, fakeGraphics());
+    g_DxgiFails = false;
+    EXPECT_FALSE(failed.adaptersRead);
+    EXPECT_EQ(failed.vulkanVersion, "1.4.304");
+}
+
+TEST(WindowsSystemInfoProbeTest, FindVulkanDevice)
+{
+    const LUID gpu{.LowPart = 1, .HighPart = 0};
+    const std::vector<Vulkan::Device> devices{
+        {.vendorId = 0x8086, .deviceId = 0x7D51, .apiVersion = 1, .driverVersion = 0, .driverId = 0, .luid = std::nullopt},
+        {.vendorId = 0x10DE, .deviceId = 0x2786, .apiVersion = 2, .driverVersion = 0, .driverId = 0, .luid = luidBytes(3)},
+        {.vendorId = 0x10DE, .deviceId = 0x2786, .apiVersion = 3, .driverVersion = 0, .driverId = 0, .luid = luidBytes(1)},
+        {.vendorId = 0x10DE, .deviceId = 0x2786, .apiVersion = 4, .driverVersion = 0, .driverId = 0, .luid = std::nullopt},
+    };
+    // By LUID, before any device that matches only by ids.
+    const Vulkan::Device* byLuid = WindowsGraphics::findVulkanDevice(devices, gpu, 0x10DE, 0x2786);
+    ASSERT_NE(byLuid, nullptr);
+    EXPECT_EQ(byLuid->apiVersion, 3U);
+    // No LUID matches: the first device without a LUID that has the ids, never one whose LUID differs.
+    const Vulkan::Device* byIds = WindowsGraphics::findVulkanDevice(devices, LUID{.LowPart = 9, .HighPart = 0}, 0x10DE, 0x2786);
+    ASSERT_NE(byIds, nullptr);
+    EXPECT_EQ(byIds->apiVersion, 4U);
+    EXPECT_EQ(WindowsGraphics::findVulkanDevice(std::span(devices).first(3), LUID{.LowPart = 9, .HighPart = 0}, 0x10DE, 0x2786), nullptr);
+    EXPECT_EQ(WindowsGraphics::findVulkanDevice(devices, LUID{.LowPart = 9, .HighPart = 0}, 0x1002, 0x73BF), nullptr);
+    EXPECT_EQ(WindowsGraphics::findVulkanDevice({}, gpu, 0x10DE, 0x2786), nullptr);
+
+    // Dozen (Vulkan over Direct3D 12) reports the adapter's LUID too: the adapter's own driver wins
+    // wherever it is listed, and Dozen is used only when it is the one Vulkan driver for the GPU.
+    const std::vector<Vulkan::Device> layered{
+        {
+            .vendorId = 0x8086,
+            .deviceId = 0x7D51,
+            .apiVersion = 5,
+            .driverVersion = 0,
+            .driverId = Vulkan::DRIVER_ID_MESA_DOZEN,
+            .luid = luidBytes(1),
+        },
+        {.vendorId = 0x8086, .deviceId = 0x7D51, .apiVersion = 6, .driverVersion = 0, .driverId = 5, .luid = luidBytes(1)},
+    };
+    EXPECT_EQ(WindowsGraphics::findVulkanDevice(layered, gpu, 0x8086, 0x7D51)->apiVersion, 6U);
+    EXPECT_EQ(WindowsGraphics::findVulkanDevice(std::span(layered).first(1), gpu, 0x8086, 0x7D51)->apiVersion, 5U);
 }
 
 TEST(WindowsSystemInfoProbeTest, GraphicsHelpers)
