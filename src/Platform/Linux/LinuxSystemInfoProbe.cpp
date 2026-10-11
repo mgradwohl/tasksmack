@@ -258,7 +258,12 @@ NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters()
     NetworkAdaptersInfo info;
     // The addresses are this system's own (getifaddrs()); the rest is read under m_Root, so a fixture
     // root in a test still gets this machine's addresses for adapters of the same name, if any.
-    LinuxNetworkAdapters::readNetworkAdapterFacts(m_Root, info, m_Root == "/" ? &listAdapterAddresses : nullptr);
+    // The Wi-Fi links are NetworkManager's, so only ever this system's too.
+    LinuxNetworkAdapters::readNetworkAdapterFacts(m_Root,
+                                                  info,
+                                                  m_Root == "/" ? &listAdapterAddresses : nullptr,
+                                                  m_Root == "/" ? SystemdBus::makeWifiLinkReader()
+                                                                : LinuxNetworkAdapters::WifiLinkReader{});
     return info;
 }
 

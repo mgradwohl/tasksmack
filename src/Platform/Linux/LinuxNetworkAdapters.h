@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -243,8 +244,23 @@ struct ResolverConfig
     return std::nullopt;
 }
 
-/// The facts under @p root into @p info, with the addresses from @p listAddresses.
-inline void readNetworkAdapterFacts(const std::filesystem::path& root, NetworkAdaptersInfo& info, AddressLister listAddresses)
+/// A Wi-Fi adapter's link as a WifiLinkReader read it: the link, or why there is none.
+struct WifiLinkRead
+{
+    std::optional<WifiLink> link;
+    std::string error; ///< Why not, for the UI, when !link: not connected, no NetworkManager, no D-Bus in this build.
+};
+
+/// Reads a Wi-Fi adapter's link by its name ("wlp3s0"). SystemdBus::makeWifiLinkReader() asks
+/// NetworkManager; tests hand in their own.
+using WifiLinkReader = std::function<WifiLinkRead(const std::string& adapter)>;
+
+/// The facts under @p root into @p info, with the addresses from @p listAddresses and each Wi-Fi
+/// adapter's link from @p readWifiLink (none when it is empty).
+inline void readNetworkAdapterFacts(const std::filesystem::path& root,
+                                    NetworkAdaptersInfo& info,
+                                    AddressLister listAddresses,
+                                    const WifiLinkReader& readWifiLink = {})
 {
     info.available = true;
     std::error_code ec;
@@ -278,6 +294,12 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root, NetworkAd
         if (adapter.wireless)
         {
             adapter.wifiSignalDbm = parseWirelessLevel(wireless, adapter.name);
+            if (readWifiLink)
+            {
+                WifiLinkRead read = readWifiLink(adapter.name);
+                adapter.wifiLink = std::move(read.link);
+                adapter.wifiLinkUnavailable = std::move(read.error);
+            }
         }
         info.adapters.push_back(std::move(adapter));
     }

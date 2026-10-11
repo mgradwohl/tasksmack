@@ -675,6 +675,77 @@ TEST(SystemInfoSectionsTest, NetworkAdapterRows)
     EXPECT_EQ(findRow(section, "wlp3s0 MAC address"), nullptr); // none reported
     EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi signal")->value, "-61 dBm");
     EXPECT_EQ(findRow(section, "eth0 Wi-Fi signal"), nullptr);
+    // No link read: the network row says so, and there is no link row.
+    EXPECT_FALSE(findRow(section, "wlp3s0 Wi-Fi network")->available());
+    EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi link"), nullptr);
+    EXPECT_EQ(findRow(section, "eth0 Wi-Fi network"), nullptr);
+}
+
+TEST(SystemInfoSectionsTest, WifiLinkBandChannelAndRate)
+{
+    const auto link = [](std::uint32_t mhz, std::uint32_t kbps)
+    {
+        return SystemInfo::formatWifiLink({
+            .ssid = "",
+            .frequencyMhz = mhz,
+            .bitrateKbps = kbps,
+            .signalQuality = std::nullopt,
+            .phy = "",
+            .channel = 0,
+            .rxBitrateKbps = 0,
+        });
+    };
+    EXPECT_EQ(link(2412, 0), "2.4 GHz, channel 1");
+    EXPECT_EQ(link(2472, 0), "2.4 GHz, channel 13");
+    EXPECT_EQ(link(2484, 0), "2.4 GHz, channel 14"); // Japan's, off the 5 MHz grid
+    EXPECT_EQ(link(5180, 0), "5 GHz, channel 36");
+    EXPECT_EQ(link(5825, 0), "5 GHz, channel 165");
+    EXPECT_EQ(link(5935, 0), "6 GHz, channel 2"); // off the 6 GHz grid
+    EXPECT_EQ(link(5955, 0), "6 GHz, channel 1");
+    EXPECT_EQ(link(7115, 0), "6 GHz, channel 233");
+    EXPECT_EQ(link(58320, 0), "58320 MHz"); // 60 GHz: shown as it is
+    EXPECT_EQ(link(5180, 866'700), "5 GHz, channel 36, 866.7 Mbit/s");
+    EXPECT_EQ(link(0, 54'000), "54.0 Mbit/s");
+    EXPECT_EQ(link(0, 0), "");
+}
+
+TEST(SystemInfoSectionsTest, WifiNetworkAndLinkRows)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    Platform::NetworkAdapter wifi;
+    wifi.name = "wlp3s0";
+    wifi.up = true;
+    wifi.wireless = true;
+    wifi.wifiLink = Platform::WifiLink{
+        .ssid = "Cafe \\xFF",
+        .frequencyMhz = 5180,
+        .bitrateKbps = 866'700,
+        .signalQuality = std::nullopt,
+        .phy = "",
+        .channel = 0,
+        .rxBitrateKbps = 0,
+    };
+    Platform::NetworkAdapter idle;
+    idle.name = "wlan1";
+    idle.wireless = true;
+    idle.wifiLinkUnavailable = "Not connected";
+    network.adapters = {idle, wifi};
+
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    const auto* name = findRow(section, "wlp3s0 Wi-Fi network");
+    ASSERT_NE(name, nullptr);
+    EXPECT_EQ(name->value, "Cafe \\xFF");
+    EXPECT_TRUE(name->isIdentifier); // a network's name can place the machine
+    EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi link")->value, "5 GHz, channel 36, 866.7 Mbit/s");
+    EXPECT_FALSE(findRow(section, "wlp3s0 Wi-Fi link")->isIdentifier);
+
+    const auto* idleName = findRow(section, "wlan1 Wi-Fi network");
+    ASSERT_NE(idleName, nullptr);
+    EXPECT_FALSE(idleName->available());
+    EXPECT_EQ(idleName->unavailableReason, "Not connected");
+    EXPECT_EQ(findRow(section, "wlan1 Wi-Fi link"), nullptr);
 }
 
 TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)
@@ -716,14 +787,14 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     wifi.dhcpServer = "192.168.0.1";
     wifi.dhcpLeaseSecondsLeft = 86'000;
     wifi.wifiSignalDbm = -55;
-    wifi.wifi = Platform::WifiConnection{
+    wifi.wifiLink = Platform::WifiLink{
         .ssid = "HomeNet",
+        .frequencyMhz = 5180,
+        .bitrateKbps = 864'500,
         .signalQuality = 82,
         .phy = "802.11ax (Wi-Fi 6)",
-        .band = "5 GHz",
-        .channel = 36,
-        .rxKbps = 1'201'000,
-        .txKbps = 864'500,
+        .channel = 0,
+        .rxBitrateKbps = 1'201'000,
     };
     Platform::NetworkAdapter ethernet;
     ethernet.name = "Ethernet";
@@ -731,7 +802,17 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     Platform::NetworkAdapter denied;
     denied.name = "Wi-Fi 2";
     denied.wireless = true;
-    denied.wifiUnavailableReason = "Windows refused it: turn on location access";
+    denied.wifiLinkUnavailable = "Windows refused it: turn on location access";
+    // The location refusal still leaves the channel number.
+    denied.wifiLink = Platform::WifiLink{
+        .ssid = "",
+        .frequencyMhz = 0,
+        .bitrateKbps = 0,
+        .signalQuality = std::nullopt,
+        .phy = "",
+        .channel = 36,
+        .rxBitrateKbps = 0,
+    };
     network.adapters = {ethernet, wifi, denied};
 
     const Section section = SystemInfo::buildNetworkAdaptersSection(network);
@@ -745,12 +826,14 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi network")->value, "HomeNet");
     EXPECT_TRUE(findRow(section, "Wi-Fi Wi-Fi network")->isIdentifier);
     EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi link")->value,
-              "802.11ax (Wi-Fi 6), 5 GHz, channel 36, receive 1201 Mbps, transmit " + UI::Format::withLocaleDecimalPoint("864.5 Mbps"));
+              "802.11ax (Wi-Fi 6), 5 GHz, channel 36, " + UI::Format::formatFixedLocalized(864.5, 1, " Mbit/s") + " transmit, " +
+                  UI::Format::formatFixedLocalized(1201.0, 1, " Mbit/s") + " receive");
     EXPECT_EQ(findRow(section, "Ethernet gateways"), nullptr);
     EXPECT_EQ(findRow(section, "Ethernet DNS suffix"), nullptr);
-    EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi network"), nullptr);
-    EXPECT_FALSE(findRow(section, "Wi-Fi 2 Wi-Fi link")->available());
-    EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi link")->unavailableReason, "Windows refused it: turn on location access");
+    EXPECT_FALSE(findRow(section, "Wi-Fi 2 Wi-Fi network")->available());
+    EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi network")->unavailableReason, "Windows refused it: turn on location access");
+    EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi link")->value, "channel 36");
+    EXPECT_FALSE(findRow(section, "Wi-Fi 2 Wi-Fi signal")->available());
 
     network.adapters.clear();
     network.listed = false;

@@ -10,8 +10,8 @@
 //      are up, without repeats.
 //   2. wlanapi.dll, loaded at run time from System32 (it is missing on Server without the Wireless LAN
 //      Service): per Wi-Fi interface its current connection (network name, signal quality, PHY type and
-//      link rates), the RSSI, and the channel's centre frequency from the cached BSS list (band and
-//      channel), else the channel number alone. Windows 11 24H2 and later refuse the connection and the
+//      link rates), the RSSI, and the channel's centre frequency from the cached BSS list, else the
+//      channel number alone. Windows 11 24H2 and later refuse the connection and the
 //      BSS list unless location access is on for desktop apps; the RSSI and channel still read then.
 //      Without wlanapi.dll the Wi-Fi rows are simply left out.
 //
@@ -95,15 +95,9 @@ void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns);
 /// IPv6 DNS server configured; never a real resolver.
 [[nodiscard]] bool isPlaceholderDnsServer(std::string_view address);
 
-/// The PHY type's standard and generation ("802.11ax (Wi-Fi 6)"; "Wi-Fi 6E" in the 6 GHz band); empty
-/// for one not known.
+/// The PHY type's standard and generation ("802.11ax (Wi-Fi 6)"; "Wi-Fi 6E" at a 6 GHz @p frequencyMhz);
+/// empty for one not known.
 [[nodiscard]] std::string_view phyName(std::uint32_t dot11PhyType, std::uint32_t frequencyMhz);
-
-/// The band of a channel's centre frequency ("2.4 GHz", "5 GHz", "6 GHz"); empty outside them.
-[[nodiscard]] std::string_view bandName(std::uint32_t frequencyMhz);
-
-/// The IEEE channel number of a centre frequency in the 2.4, 5 or 6 GHz band; 0 outside them.
-[[nodiscard]] std::uint32_t channelOf(std::uint32_t frequencyMhz);
 
 /// A GUID in the registry form of an adapter's AdapterName ("{4D36E972-E325-11CE-BFC1-08002BE10318}").
 [[nodiscard]] std::string guidText(const GUID& guid);

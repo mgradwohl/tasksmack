@@ -521,16 +521,18 @@ struct AdapterAddress
     [[nodiscard]] friend bool operator==(const AdapterAddress&, const AdapterAddress&) = default;
 };
 
-/// The Wi-Fi connection of a wireless adapter (#1518; Windows only so far). A fact not read is empty or 0.
-struct WifiConnection
+/// A connected Wi-Fi adapter's link (#1518): the network it has joined and how fast.
+struct WifiLink
 {
-    std::string ssid;                           ///< The network name; an identifier
-    std::optional<std::uint32_t> signalQuality; ///< 0-100 %, Windows' own measure
-    std::string phy;                            ///< "802.11ax (Wi-Fi 6)"
-    std::string band;                           ///< "2.4 GHz", "5 GHz", "6 GHz"
-    std::uint32_t channel = 0;
-    std::uint32_t rxKbps = 0; ///< The link's receive rate
-    std::uint32_t txKbps = 0; ///< The link's transmit rate
+    std::string ssid;               ///< The network's name, made safe to draw; an identifier (it can place the machine)
+    std::uint32_t frequencyMhz = 0; ///< The channel's centre frequency; 0 when unknown
+    std::uint32_t bitrateKbps = 0;  ///< The current transmit rate in kbit/s; 0 when unknown
+
+    // Windows only so far: Linux leaves these empty.
+    std::optional<std::uint32_t> signalQuality; ///< 0-100 %, Windows' own measure of the signal
+    std::string phy;                            ///< The standard: "802.11ax (Wi-Fi 6)"
+    std::uint32_t channel = 0;                  ///< The channel when frequencyMhz isn't known; 0 when unknown
+    std::uint32_t rxBitrateKbps = 0;            ///< The current receive rate in kbit/s; 0 when unknown
 };
 
 /// One network adapter's configuration (#1518). A fact the probe couldn't read is empty or 0.
@@ -544,6 +546,8 @@ struct NetworkAdapter
     bool wireless = false;
     std::vector<AdapterAddress> addresses;
     std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
+    std::optional<WifiLink> wifiLink; ///< Wi-Fi: the link, when it is connected and could be read.
+    std::string wifiLinkUnavailable;  ///< Wi-Fi: why wifiLink is empty, for the UI; empty when unknown.
 
     // Windows only so far: Linux leaves these empty, and their rows out.
     std::string description;             ///< The adapter's hardware, "Intel(R) Wi-Fi 6E AX211 160MHz"
@@ -553,8 +557,6 @@ struct NetworkAdapter
     std::optional<bool> dhcpEnabled;     ///< IPv4 from DHCP; unset when not known
     std::string dhcpServer;
     std::optional<std::uint32_t> dhcpLeaseSecondsLeft; ///< The DHCP lease's time left when read; unset when not known
-    std::optional<WifiConnection> wifi;                ///< Wi-Fi: the connected network, when connected and readable
-    std::string wifiUnavailableReason;                 ///< Wi-Fi: why the connection couldn't be read
 };
 
 /// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways

@@ -1,6 +1,7 @@
 #include "WindowsNetworkAdapters.h"
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/ProcessEnvironment.h"
 #include "Platform/Windows/WindowsProcAddress.h"
 #include "WinString.h"
 
@@ -40,10 +41,14 @@ constexpr int MAX_LIST_ATTEMPTS = 4;
 
 constexpr ULONG LIST_FLAGS = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST;
 constexpr ULONG INFINITE_LEASE = 0xFFFFFFFFU;
-constexpr DWORD WLAN_CLIENT_VERSION = 2; // Vista and later
+constexpr DWORD WLAN_CLIENT_VERSION = 2;        // Vista and later
+constexpr std::uint32_t SIX_GHZ_LOW_MHZ = 5925; // where the 6 GHz band starts
 
 /// Why the Wi-Fi connection couldn't be read, for ERROR_ACCESS_DENIED: Windows 11 24H2 and later gate
 /// the network name and BSS list behind location access.
+constexpr std::string_view NOT_CONNECTED = "Not connected";
+constexpr std::string_view NO_WLAN_API = "wlanapi.dll isn't installed (Windows Server without the Wireless LAN Service)";
+constexpr std::string_view NO_WLAN_SERVICE = "The WLAN AutoConfig service isn't running";
 constexpr std::string_view LOCATION_DENIED =
     "Windows refused it: turn on location access for desktop apps (Settings > Privacy & security > Location)";
 
@@ -288,10 +293,10 @@ connectedFrequencyMhz(const Functions& fns, HANDLE client, const GUID& guid, con
     return mhz;
 }
 
-/// The Wi-Fi connection of the connected interface @p guid into @p adapter.
+/// The Wi-Fi link of the connected interface @p guid into @p adapter.
 void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdapter& adapter)
 {
-    WifiConnection wifi;
+    WifiLink link;
     bool any = false;
     {
         const WlanData connection(fns, client, guid, wlan_intf_opcode_current_connection);
@@ -301,19 +306,22 @@ void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdap
             const WLAN_ASSOCIATION_ATTRIBUTES& association = attributes->wlanAssociationAttributes;
             const std::size_t length = std::min<std::size_t>(association.dot11Ssid.uSSIDLength, DOT11_SSID_MAX_LENGTH);
             const std::span<const UCHAR> ssid = std::span(association.dot11Ssid.ucSSID).first(length);
-            wifi.ssid.assign(ssid.begin(), ssid.end());
-            wifi.signalQuality = static_cast<std::uint32_t>(association.wlanSignalQuality);
-            wifi.rxKbps = static_cast<std::uint32_t>(association.ulRxRate);
-            wifi.txKbps = static_cast<std::uint32_t>(association.ulTxRate);
-            const std::uint32_t mhz = connectedFrequencyMhz(fns, client, guid, *attributes);
-            wifi.band = std::string(bandName(mhz));
-            wifi.channel = channelOf(mhz);
-            wifi.phy = std::string(phyName(static_cast<std::uint32_t>(association.dot11PhyType), mhz));
+            // An SSID is any 32 bytes, so it is escaped for display, as on Linux.
+            link.ssid = Environment::escapeForDisplay(std::string(ssid.begin(), ssid.end()));
+            link.signalQuality = static_cast<std::uint32_t>(association.wlanSignalQuality);
+            link.bitrateKbps = static_cast<std::uint32_t>(association.ulTxRate);
+            link.rxBitrateKbps = static_cast<std::uint32_t>(association.ulRxRate);
+            link.frequencyMhz = connectedFrequencyMhz(fns, client, guid, *attributes);
+            link.phy = std::string(phyName(static_cast<std::uint32_t>(association.dot11PhyType), link.frequencyMhz));
             any = true;
         }
         else if (connection.status() == ERROR_ACCESS_DENIED)
         {
-            adapter.wifiUnavailableReason = LOCATION_DENIED;
+            adapter.wifiLinkUnavailable = LOCATION_DENIED;
+        }
+        else
+        {
+            adapter.wifiLinkUnavailable = "The WLAN API couldn't read the connection";
         }
     }
     {
@@ -323,34 +331,47 @@ void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdap
             adapter.wifiSignalDbm = static_cast<int>(*dbm);
         }
     }
-    if (wifi.channel == 0)
+    if (link.frequencyMhz == 0)
     {
         const WlanData channel(fns, client, guid, wlan_intf_opcode_channel_number);
         if (const auto* number = channel.as<ULONG>(); number != nullptr && *number != 0)
         {
-            wifi.channel = static_cast<std::uint32_t>(*number);
+            link.channel = static_cast<std::uint32_t>(*number);
             any = true;
         }
     }
     if (any)
     {
-        adapter.wifi = std::move(wifi);
+        adapter.wifiLink = std::move(link);
     }
 }
 
-/// Every connected Wi-Fi interface's connection, into the adapter with its GUID.
+/// Every Wi-Fi interface's link, into the adapter with its GUID; for a wireless adapter that can't be
+/// asked, why.
 void readWlan(const Functions& fns, std::vector<Listed>& listed)
 {
+    const auto explainAll = [&listed](std::string_view reason)
+    {
+        for (Listed& entry : listed)
+        {
+            if (entry.adapter.wireless)
+            {
+                entry.adapter.wifiLinkUnavailable = reason;
+            }
+        }
+    };
     if (fns.wlanOpenHandle == nullptr || fns.wlanCloseHandle == nullptr || fns.wlanEnumInterfaces == nullptr ||
         fns.wlanQueryInterface == nullptr || fns.wlanGetNetworkBssList == nullptr || fns.wlanFreeMemory == nullptr)
     {
-        return; // no wlanapi.dll: the Wi-Fi rows are left out
+        explainAll(NO_WLAN_API);
+        return;
     }
     DWORD negotiated = 0;
     HANDLE client = nullptr;
     if (fns.wlanOpenHandle(WLAN_CLIENT_VERSION, nullptr, &negotiated, &client) != ERROR_SUCCESS)
     {
-        return; // the Wireless LAN Service isn't running
+        explainAll(NO_WLAN_SERVICE);
+        return;
     }
     PWLAN_INTERFACE_INFO_LIST interfaces = nullptr;
     if (fns.wlanEnumInterfaces(client, nullptr, &interfaces) == ERROR_SUCCESS && interfaces != nullptr)
@@ -372,10 +393,22 @@ void readWlan(const Functions& fns, std::vector<Listed>& listed)
             {
                 readWifi(fns, client, info.InterfaceGuid, match->adapter);
             }
+            else
+            {
+                match->adapter.wifiLinkUnavailable = NOT_CONNECTED;
+            }
         }
         fns.wlanFreeMemory(interfaces);
     }
     fns.wlanCloseHandle(client, nullptr);
+    // A wireless adapter that isn't a WLAN interface, such as a Wi-Fi Direct virtual adapter, while down.
+    for (Listed& entry : listed)
+    {
+        if (entry.adapter.wireless && !entry.adapter.up && !entry.adapter.wifiLink.has_value() && entry.adapter.wifiLinkUnavailable.empty())
+        {
+            entry.adapter.wifiLinkUnavailable = NOT_CONNECTED;
+        }
+    }
 }
 
 ULONG WINAPI systemGetAdaptersAddresses(ULONG family, ULONG flags, PVOID reserved, PIP_ADAPTER_ADDRESSES addresses, PULONG size)
@@ -488,48 +521,6 @@ bool isPlaceholderDnsServer(std::string_view address)
     return address == "fec0:0:0:ffff::1" || address == "fec0:0:0:ffff::2" || address == "fec0:0:0:ffff::3";
 }
 
-std::string_view bandName(std::uint32_t frequencyMhz)
-{
-    if (frequencyMhz >= 2400 && frequencyMhz < 2500)
-    {
-        return "2.4 GHz";
-    }
-    if (frequencyMhz >= 5150 && frequencyMhz < 5925)
-    {
-        return "5 GHz";
-    }
-    if (frequencyMhz >= 5925 && frequencyMhz <= 7125)
-    {
-        return "6 GHz";
-    }
-    return {};
-}
-
-std::uint32_t channelOf(std::uint32_t frequencyMhz)
-{
-    if (frequencyMhz == 2484)
-    {
-        return 14;
-    }
-    if (frequencyMhz >= 2412 && frequencyMhz < 2484)
-    {
-        return (frequencyMhz - 2407) / 5;
-    }
-    if (frequencyMhz >= 5150 && frequencyMhz < 5925)
-    {
-        return (frequencyMhz - 5000) / 5;
-    }
-    if (frequencyMhz == 5935)
-    {
-        return 2; // 6 GHz channel 2 sits below channel 1
-    }
-    if (frequencyMhz >= 5950 && frequencyMhz <= 7125)
-    {
-        return (frequencyMhz - 5950) / 5;
-    }
-    return 0;
-}
-
 std::string_view phyName(std::uint32_t dot11PhyType, std::uint32_t frequencyMhz)
 {
     switch (dot11PhyType)
@@ -547,7 +538,7 @@ std::string_view phyName(std::uint32_t dot11PhyType, std::uint32_t frequencyMhz)
     case dot11_phy_type_dmg:
         return "802.11ad (WiGig)";
     case dot11_phy_type_he:
-        return bandName(frequencyMhz) == "6 GHz" ? "802.11ax (Wi-Fi 6E)" : "802.11ax (Wi-Fi 6)";
+        return frequencyMhz >= SIX_GHZ_LOW_MHZ ? "802.11ax (Wi-Fi 6E)" : "802.11ax (Wi-Fi 6)";
     case dot11_phy_type_eht:
         return "802.11be (Wi-Fi 7)";
     default:

@@ -1518,7 +1518,7 @@ std::string formatAdapterDhcp(const Platform::NetworkAdapter& adapter)
 
 std::string formatWifiSignal(const Platform::NetworkAdapter& adapter)
 {
-    const std::optional<std::uint32_t> quality = adapter.wifi.has_value() ? adapter.wifi->signalQuality : std::nullopt;
+    const std::optional<std::uint32_t> quality = adapter.wifiLink.has_value() ? adapter.wifiLink->signalQuality : std::nullopt;
     if (adapter.wifiSignalDbm.has_value() && quality.has_value())
     {
         return std::format("{} dBm ({}%)", *adapter.wifiSignalDbm, *quality);
@@ -1530,25 +1530,72 @@ std::string formatWifiSignal(const Platform::NetworkAdapter& adapter)
     return quality.has_value() ? std::format("{}%", *quality) : std::string{};
 }
 
-std::string formatWifiLink(const Platform::WifiConnection& wifi)
+std::string formatWifiLink(const Platform::WifiLink& link)
 {
     std::string text;
-    const auto add = [&text](const std::string& part)
+    const auto append = [&text](std::string_view part)
     {
-        if (!part.empty())
+        if (!text.empty())
         {
-            text += (text.empty() ? "" : ", ") + part;
+            text += ", ";
         }
+        text += part;
     };
-    add(wifi.phy);
-    add(wifi.band);
-    add(wifi.channel != 0 ? std::format("channel {}", wifi.channel) : std::string{});
-    const auto mbps = [](std::uint32_t kbps)
+    if (!link.phy.empty())
     {
-        return UI::Format::withLocaleDecimalPoint(std::format("{:g} Mbps", kbps / 1000.0));
+        append(link.phy);
+    }
+    const std::uint32_t mhz = link.frequencyMhz;
+    // The channel numbering of IEEE 802.11: 2.4 GHz from 2407 MHz (channel 14 apart, at 2484), 5 GHz
+    // from 5000 MHz, 6 GHz from 5950 MHz (channel 2 apart, at 5935), 5 MHz a channel.
+    if (mhz == 2484)
+    {
+        append("2.4 GHz, channel 14");
+    }
+    else if (mhz >= 2412 && mhz <= 2472)
+    {
+        append(std::format("2.4 GHz, channel {}", (mhz - 2407) / 5));
+    }
+    else if (mhz >= 5150 && mhz <= 5895)
+    {
+        append(std::format("5 GHz, channel {}", (mhz - 5000) / 5));
+    }
+    else if (mhz == 5935)
+    {
+        append("6 GHz, channel 2");
+    }
+    else if (mhz >= 5955 && mhz <= 7115)
+    {
+        append(std::format("6 GHz, channel {}", (mhz - 5950) / 5));
+    }
+    else if (mhz != 0)
+    {
+        append(std::format("{} MHz", mhz));
+    }
+    else if (link.channel != 0)
+    {
+        append(std::format("channel {}", link.channel)); // Windows, when the frequency couldn't be read
+    }
+    const auto rate = [](std::uint32_t kbps)
+    {
+        return UI::Format::formatFixedLocalized(static_cast<double>(kbps) / 1000.0, 1, " Mbit/s");
     };
-    add(wifi.rxKbps != 0 ? "receive " + mbps(wifi.rxKbps) : std::string{});
-    add(wifi.txKbps != 0 ? "transmit " + mbps(wifi.txKbps) : std::string{});
+    if (link.rxBitrateKbps == 0)
+    {
+        if (link.bitrateKbps != 0)
+        {
+            append(rate(link.bitrateKbps));
+        }
+    }
+    else
+    {
+        // Windows reports both directions; Linux only the transmit rate, shown alone as before.
+        if (link.bitrateKbps != 0)
+        {
+            append(rate(link.bitrateKbps) + " transmit");
+        }
+        append(rate(link.rxBitrateKbps) + " receive");
+    }
     return text;
 }
 
@@ -1631,16 +1678,13 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         if (adapter.wireless)
         {
             rows.push_back(row(adapter.name + " Wi-Fi signal", formatWifiSignal(adapter), "Not reported by the driver, or not connected"));
-            if (adapter.wifi.has_value() && !adapter.wifi->ssid.empty())
+            // The network's name can place the machine, like a MAC address: an identifier.
+            const std::string_view linkReason = adapter.wifiLinkUnavailable.empty() ? NOT_REPORTED : adapter.wifiLinkUnavailable;
+            rows.push_back(
+                row(adapter.name + " Wi-Fi network", adapter.wifiLink ? adapter.wifiLink->ssid : std::string{}, linkReason, true));
+            if (adapter.wifiLink)
             {
-                // The network name can say who or where the user is, like the computer name.
-                rows.push_back(row(adapter.name + " Wi-Fi network", adapter.wifi->ssid, NOT_REPORTED, true));
-            }
-            if (adapter.wifi.has_value() || !adapter.wifiUnavailableReason.empty())
-            {
-                rows.push_back(row(adapter.name + " Wi-Fi link",
-                                   adapter.wifi.has_value() ? formatWifiLink(*adapter.wifi) : std::string{},
-                                   adapter.wifiUnavailableReason.empty() ? NOT_REPORTED : std::string_view(adapter.wifiUnavailableReason)));
+                rows.push_back(row(adapter.name + " Wi-Fi link", formatWifiLink(*adapter.wifiLink)));
             }
         }
     }

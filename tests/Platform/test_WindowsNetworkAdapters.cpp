@@ -343,12 +343,12 @@ VOID WINAPI fakeFree(PVOID memory)
     return nullptr;
 }
 
-/// @p adapter's Wi-Fi connection, or an empty one. A plain reference keeps clang-tidy's optional
+/// @p adapter's Wi-Fi link, or an empty one. A plain reference keeps clang-tidy's optional
 /// dataflow satisfied: bugprone-unchecked-optional-access doesn't model ASSERT_TRUE's early return.
-[[nodiscard]] const WifiConnection& wifiOf(const NetworkAdapter& adapter)
+[[nodiscard]] const WifiLink& wifiOf(const NetworkAdapter& adapter)
 {
-    static const WifiConnection none;
-    return adapter.wifi.has_value() ? *adapter.wifi : none;
+    static const WifiLink none;
+    return adapter.wifiLink.has_value() ? *adapter.wifiLink : none;
 }
 
 class WindowsNetworkAdaptersTest : public ::testing::Test
@@ -510,7 +510,7 @@ TEST_F(WindowsNetworkAdaptersTest, ListGrowsThenFailsOrIsEmpty)
     EXPECT_TRUE(none.adapters.empty());
 }
 
-TEST_F(WindowsNetworkAdaptersTest, DecodesTheWifiConnection)
+TEST_F(WindowsNetworkAdaptersTest, DecodesTheWifiLink)
 {
     FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
     g_State.adapters = {&wifi};
@@ -521,15 +521,28 @@ TEST_F(WindowsNetworkAdaptersTest, DecodesTheWifiConnection)
     const NetworkAdapter& adapter = info.adapters[0];
     EXPECT_TRUE(adapter.wireless);
     EXPECT_EQ(adapter.wifiSignalDbm, std::optional<int>(-55));
-    ASSERT_TRUE(adapter.wifi.has_value());
+    ASSERT_TRUE(adapter.wifiLink.has_value());
     EXPECT_EQ(wifiOf(adapter).ssid, "HomeNet");
     EXPECT_EQ(wifiOf(adapter).signalQuality, std::optional<std::uint32_t>(82));
     EXPECT_EQ(wifiOf(adapter).phy, "802.11ax (Wi-Fi 6)");
-    EXPECT_EQ(wifiOf(adapter).band, "5 GHz");
-    EXPECT_EQ(wifiOf(adapter).channel, 36U) << "from the connected BSS's frequency, not the other access point's";
-    EXPECT_EQ(wifiOf(adapter).rxKbps, 1'201'000U);
-    EXPECT_EQ(wifiOf(adapter).txKbps, 864'500U);
-    EXPECT_TRUE(adapter.wifiUnavailableReason.empty());
+    EXPECT_EQ(wifiOf(adapter).frequencyMhz, 5180U) << "the connected BSS's, not the other access point's";
+    EXPECT_EQ(wifiOf(adapter).channel, 0U) << "not asked for: the frequency gives it";
+    EXPECT_EQ(wifiOf(adapter).rxBitrateKbps, 1'201'000U);
+    EXPECT_EQ(wifiOf(adapter).bitrateKbps, 864'500U);
+    EXPECT_TRUE(adapter.wifiLinkUnavailable.empty());
+}
+
+TEST_F(WindowsNetworkAdaptersTest, SsidBytesAreEscapedForDisplay)
+{
+    FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
+    g_State.adapters = {&wifi};
+    DOT11_SSID& ssid = g_State.connection.wlanAssociationAttributes.dot11Ssid;
+    const std::array<UCHAR, 6> bytes{'C', 'a', 'f', 'e', ' ', 0xFF}; // not UTF-8
+    std::ranges::copy(bytes, std::begin(ssid.ucSSID));
+    ssid.uSSIDLength = static_cast<ULONG>(bytes.size());
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctions());
+    EXPECT_EQ(wifiOf(info.adapters[0]).ssid, "Cafe \\xFF");
 }
 
 TEST_F(WindowsNetworkAdaptersTest, SixGigahertzIsWifi6E)
@@ -539,10 +552,9 @@ TEST_F(WindowsNetworkAdaptersTest, SixGigahertzIsWifi6E)
     g_State.bssFrequencyKhz = 6'135'000;
     NetworkAdaptersInfo info;
     readNetworkAdapters(info, fakeFunctions());
-    ASSERT_TRUE(info.adapters[0].wifi.has_value());
+    ASSERT_TRUE(info.adapters[0].wifiLink.has_value());
     EXPECT_EQ(wifiOf(info.adapters[0]).phy, "802.11ax (Wi-Fi 6E)");
-    EXPECT_EQ(wifiOf(info.adapters[0]).band, "6 GHz");
-    EXPECT_EQ(wifiOf(info.adapters[0]).channel, 37U);
+    EXPECT_EQ(wifiOf(info.adapters[0]).frequencyMhz, 6135U);
 }
 
 TEST_F(WindowsNetworkAdaptersTest, LocationDeniedKeepsTheRssiAndChannel)
@@ -554,13 +566,13 @@ TEST_F(WindowsNetworkAdaptersTest, LocationDeniedKeepsTheRssiAndChannel)
     readNetworkAdapters(info, fakeFunctions());
 
     const NetworkAdapter& adapter = info.adapters[0];
-    EXPECT_TRUE(adapter.wifiUnavailableReason.contains("location")) << adapter.wifiUnavailableReason;
+    EXPECT_TRUE(adapter.wifiLinkUnavailable.contains("location")) << adapter.wifiLinkUnavailable;
     EXPECT_EQ(adapter.wifiSignalDbm, std::optional<int>(-55));
-    ASSERT_TRUE(adapter.wifi.has_value());
+    ASSERT_TRUE(adapter.wifiLink.has_value());
     EXPECT_TRUE(wifiOf(adapter).ssid.empty());
     EXPECT_FALSE(wifiOf(adapter).signalQuality.has_value());
     EXPECT_EQ(wifiOf(adapter).channel, 36U) << "from wlan_intf_opcode_channel_number";
-    EXPECT_TRUE(wifiOf(adapter).band.empty());
+    EXPECT_EQ(wifiOf(adapter).frequencyMhz, 0U);
 }
 
 TEST_F(WindowsNetworkAdaptersTest, BssListMissingFallsBackToTheChannelNumber)
@@ -571,10 +583,10 @@ TEST_F(WindowsNetworkAdaptersTest, BssListMissingFallsBackToTheChannelNumber)
     g_State.channel = 6;
     NetworkAdaptersInfo info;
     readNetworkAdapters(info, fakeFunctions());
-    ASSERT_TRUE(info.adapters[0].wifi.has_value());
+    ASSERT_TRUE(info.adapters[0].wifiLink.has_value());
     EXPECT_EQ(wifiOf(info.adapters[0]).ssid, "HomeNet");
     EXPECT_EQ(wifiOf(info.adapters[0]).channel, 6U);
-    EXPECT_TRUE(wifiOf(info.adapters[0]).band.empty());
+    EXPECT_EQ(wifiOf(info.adapters[0]).frequencyMhz, 0U);
     EXPECT_EQ(wifiOf(info.adapters[0]).phy, "802.11ax (Wi-Fi 6)");
 }
 
@@ -586,15 +598,17 @@ TEST_F(WindowsNetworkAdaptersTest, DisconnectedOrNoServiceOrNoDll)
     NetworkAdaptersInfo disconnected;
     readNetworkAdapters(disconnected, fakeFunctions());
     EXPECT_TRUE(disconnected.adapters[0].wireless);
-    EXPECT_FALSE(disconnected.adapters[0].wifi.has_value());
+    EXPECT_FALSE(disconnected.adapters[0].wifiLink.has_value());
     EXPECT_FALSE(disconnected.adapters[0].wifiSignalDbm.has_value());
+    EXPECT_EQ(disconnected.adapters[0].wifiLinkUnavailable, "Not connected");
 
     g_State.interfaceState = wlan_interface_state_connected;
     g_State.openStatus = ERROR_SERVICE_NOT_ACTIVE;
     NetworkAdaptersInfo noService;
     readNetworkAdapters(noService, fakeFunctions());
     EXPECT_TRUE(noService.adapters[0].wireless) << "still Wi-Fi by its interface type";
-    EXPECT_FALSE(noService.adapters[0].wifi.has_value());
+    EXPECT_FALSE(noService.adapters[0].wifiLink.has_value());
+    EXPECT_TRUE(noService.adapters[0].wifiLinkUnavailable.contains("WLAN AutoConfig")) << noService.adapters[0].wifiLinkUnavailable;
 
     g_State.openStatus = ERROR_SUCCESS;
     Functions noDll = fakeFunctions();
@@ -602,8 +616,9 @@ TEST_F(WindowsNetworkAdaptersTest, DisconnectedOrNoServiceOrNoDll)
     const int opensBefore = g_State.opens;
     NetworkAdaptersInfo missing;
     readNetworkAdapters(missing, noDll);
-    EXPECT_FALSE(missing.adapters[0].wifi.has_value());
+    EXPECT_FALSE(missing.adapters[0].wifiLink.has_value());
     EXPECT_EQ(g_State.opens, opensBefore) << "nothing opened without every export";
+    EXPECT_TRUE(missing.adapters[0].wifiLinkUnavailable.contains("wlanapi.dll")) << missing.adapters[0].wifiLinkUnavailable;
 }
 
 TEST_F(WindowsNetworkAdaptersTest, WlanInterfaceMarksAnAdapterWireless)
@@ -614,7 +629,21 @@ TEST_F(WindowsNetworkAdaptersTest, WlanInterfaceMarksAnAdapterWireless)
     NetworkAdaptersInfo info;
     readNetworkAdapters(info, fakeFunctions());
     EXPECT_TRUE(info.adapters[0].wireless);
-    EXPECT_TRUE(info.adapters[0].wifi.has_value());
+    EXPECT_TRUE(info.adapters[0].wifiLink.has_value());
+}
+
+TEST_F(WindowsNetworkAdaptersTest, DownWirelessAdapterThatIsNoWlanInterfaceIsNotConnected)
+{
+    // A Wi-Fi Direct virtual adapter: Wi-Fi by its interface type, but not one of WlanEnumInterfaces'.
+    FakeAdapter direct(L"Wi-Fi 2", "{DDDDDDDD-0000-0000-0000-000000000005}", IF_TYPE_IEEE80211);
+    direct.raw().OperStatus = IfOperStatusDown;
+    FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
+    g_State.adapters = {&direct, &wifi};
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctions());
+    ASSERT_EQ(info.adapters.size(), 2U);
+    EXPECT_EQ(find(info, "Wi-Fi 2")->wifiLinkUnavailable, "Not connected");
+    EXPECT_TRUE(find(info, "Wi-Fi")->wifiLinkUnavailable.empty());
 }
 
 TEST(WindowsNetworkAdaptersHelpers, Formatting)
@@ -627,18 +656,6 @@ TEST(WindowsNetworkAdaptersHelpers, Formatting)
     EXPECT_TRUE(isPlaceholderDnsServer("fec0:0:0:ffff::1"));
     EXPECT_TRUE(isPlaceholderDnsServer("fec0:0:0:ffff::3"));
     EXPECT_FALSE(isPlaceholderDnsServer("fe80::1"));
-
-    EXPECT_EQ(bandName(2437), "2.4 GHz");
-    EXPECT_EQ(bandName(5745), "5 GHz");
-    EXPECT_EQ(bandName(5955), "6 GHz");
-    EXPECT_EQ(bandName(60'480), "");
-    EXPECT_EQ(channelOf(2412), 1U);
-    EXPECT_EQ(channelOf(2484), 14U);
-    EXPECT_EQ(channelOf(5180), 36U);
-    EXPECT_EQ(channelOf(5825), 165U);
-    EXPECT_EQ(channelOf(5935), 2U);
-    EXPECT_EQ(channelOf(5955), 1U);
-    EXPECT_EQ(channelOf(0), 0U);
 
     EXPECT_EQ(phyName(dot11_phy_type_ht, 2437), "802.11n (Wi-Fi 4)");
     EXPECT_EQ(phyName(dot11_phy_type_vht, 5180), "802.11ac (Wi-Fi 5)");

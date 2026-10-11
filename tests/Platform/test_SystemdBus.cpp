@@ -1,9 +1,10 @@
 /// @file test_SystemdBus.cpp
 /// @brief Platform::SystemdBus (#1525) against this machine: with libsystemd and a system bus running
 /// systemd, the boot timestamps read and userspace started after the kernel; otherwise the read says
-/// why and the test is skipped.
+/// why and the test is skipped. Likewise udisks2 (#1631) and NetworkManager (#1518).
 
 #include "Platform/Linux/LinuxDiskSmart.h"
+#include "Platform/Linux/LinuxNetworkAdapters.h"
 #include "Platform/Linux/SystemdBus.h"
 
 #include <gtest/gtest.h>
@@ -49,6 +50,25 @@ TEST(SystemdBusTest, ReadsAThisMachineDisksSmartDataOrSaysWhyNot)
         GTEST_SKIP() << "udisks2 isn't reachable here: " << read.error;
     }
     EXPECT_TRUE(read.error.empty());
+}
+
+// NetworkManager (#1518): a Wi-Fi adapter's link on this machine, or why not (no NetworkManager under
+// WSL or in CI). Either way the reader answers, and once NetworkManager is known to be absent it says
+// so again without asking.
+TEST(SystemdBusTest, ReadsAWifiLinkOrSaysWhyNot)
+{
+    const LinuxNetworkAdapters::WifiLinkReader reader = SystemdBus::makeWifiLinkReader();
+    ASSERT_TRUE(reader);
+    const LinuxNetworkAdapters::WifiLinkRead first = reader("wlan0");
+    const LinuxNetworkAdapters::WifiLinkRead second = reader("wlan0");
+    if (!first.link.has_value())
+    {
+        EXPECT_FALSE(first.error.empty());
+        EXPECT_FALSE(second.link.has_value());
+        EXPECT_FALSE(second.error.empty());
+        GTEST_SKIP() << "No Wi-Fi link read here: " << first.error;
+    }
+    EXPECT_TRUE(first.error.empty());
 }
 
 } // namespace

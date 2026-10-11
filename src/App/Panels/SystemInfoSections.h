@@ -224,19 +224,22 @@ struct VisibleSection
 /// An adapter's addresses: "192.168.1.20/24, fe80::1c2a:3bff:fe4d:5e6f/64", IPv4 first.
 [[nodiscard]] std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter);
 
-/// An adapter's DHCP state ("On, server 192.168.0.1, lease 23h 59m left", "Off (static IPv4)"); empty
+/// An adapter's DHCP state ("On, server 192.168.0.1, lease 23h 53m left", "Off (static IPv4)"); empty
 /// when not known.
 [[nodiscard]] std::string formatAdapterDhcp(const Platform::NetworkAdapter& adapter);
 
-/// A Wi-Fi adapter's signal: "-55 dBm (82%)", or whichever of the two was read; empty for neither.
+/// A Wi-Fi adapter's signal: "-55 dBm (82%)" (the quality is Windows'), or whichever of the two was read;
+/// empty for neither.
 [[nodiscard]] std::string formatWifiSignal(const Platform::NetworkAdapter& adapter);
 
-/// A Wi-Fi connection's link: "802.11ax (Wi-Fi 6), 5 GHz, channel 36, receive 1201 Mbps, transmit 1201 Mbps",
-/// with what wasn't read left out.
-[[nodiscard]] std::string formatWifiLink(const Platform::WifiConnection& wifi);
+/// A Wi-Fi link's standard, band, channel and rate: "5 GHz, channel 36, 866.7 Mbit/s" (Linux),
+/// "802.11ax (Wi-Fi 6), 5 GHz, channel 36, 866.7 Mbit/s transmit, 780.0 Mbit/s receive" (Windows),
+/// unknown parts left out; a frequency outside the 2.4, 5 and 6 GHz Wi-Fi channels is shown in MHz.
+[[nodiscard]] std::string formatWifiLink(const Platform::WifiLink& link);
 
 /// The Network adapters section (#1518): the default gateways and DNS servers, then per adapter its
-/// summary, addresses, MAC address (an identifier) and Wi-Fi signal.
+/// summary, addresses, MAC address (an identifier), and for Wi-Fi its signal, network name (an
+/// identifier) and link.
 [[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network);
 
 /// A boot phase's length: "850 ms", "4.21 s", "1 min 12.3 s".
