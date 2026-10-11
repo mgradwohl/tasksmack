@@ -47,11 +47,35 @@ using SidBytes = std::vector<std::byte>;
     return sid;
 }
 
-const SidBytes USER_SID = makeSid(5, {21, 1111, 2222, 3333, 1001});             // S-1-5-21-1111-2222-3333-1001
-const SidBytes EVERYONE_SID = makeSid(1, {0});                                  // S-1-1-0
-const SidBytes ADMINS_SID = makeSid(5, {32, 544});                              // S-1-5-32-544
-const SidBytes UNNAMED_SID = makeSid(5, {21, 9, 9, 9, 7777});                   // resolves to no name
-const SidBytes MEDIUM_LABEL_SID = makeSid(16, {SECURITY_MANDATORY_MEDIUM_RID}); // S-1-16-8192
+const SidBytes& userSid() // S-1-5-21-1111-2222-3333-1001
+{
+    static const SidBytes sid = makeSid(5, {21, 1111, 2222, 3333, 1001});
+    return sid;
+}
+
+const SidBytes& everyoneSid() // S-1-1-0
+{
+    static const SidBytes sid = makeSid(1, {0});
+    return sid;
+}
+
+const SidBytes& adminsSid() // S-1-5-32-544
+{
+    static const SidBytes sid = makeSid(5, {32, 544});
+    return sid;
+}
+
+const SidBytes& unnamedSid() // resolves to no name
+{
+    static const SidBytes sid = makeSid(5, {21, 9, 9, 9, 7777});
+    return sid;
+}
+
+const SidBytes& mediumLabelSid() // S-1-16-8192
+{
+    static const SidBytes sid = makeSid(16, {SECURITY_MANDATORY_MEDIUM_RID});
+    return sid;
+}
 
 struct FakeGroup
 {
@@ -129,7 +153,7 @@ BOOL WINAPI fakeOpenProcessToken(HANDLE /*process*/, DWORD access, PHANDLE token
 /// Lays out a header of @p headerBytes and the SIDs after it, the way the token does: each pointer
 /// slot (at the given header offset) points at its SID inside @p out.
 [[nodiscard]] std::vector<std::byte>
-layOut(const std::vector<std::byte>& header, const std::vector<std::pair<std::size_t, const SidBytes*>>& sids, std::byte* out)
+layOut(const std::vector<std::byte>& header, const std::vector<std::pair<std::size_t, const SidBytes*>>& sids, const std::byte* out)
 {
     std::vector<std::byte> answer = header;
     for (const auto& [slot, sid] : sids)
@@ -151,18 +175,18 @@ template<typename T> [[nodiscard]] std::vector<std::byte> bytesOf(const T& value
 }
 
 /// The answer to one GetTokenInformation class, its SID pointers aimed into @p out.
-[[nodiscard]] std::vector<std::byte> answerFor(TOKEN_INFORMATION_CLASS infoClass, std::byte* out)
+[[nodiscard]] std::vector<std::byte> answerFor(TOKEN_INFORMATION_CLASS infoClass, const std::byte* out)
 {
     switch (infoClass)
     {
     case TokenUser:
-        return layOut(bytesOf(TOKEN_USER{}), {{offsetof(TOKEN_USER, User) + offsetof(SID_AND_ATTRIBUTES, Sid), &USER_SID}}, out);
+        return layOut(bytesOf(TOKEN_USER{}), {{offsetof(TOKEN_USER, User) + offsetof(SID_AND_ATTRIBUTES, Sid), &userSid()}}, out);
     case TokenIntegrityLevel:
     {
         TOKEN_MANDATORY_LABEL label{};
         label.Label.Attributes = SE_GROUP_INTEGRITY;
         return layOut(
-            bytesOf(label), {{offsetof(TOKEN_MANDATORY_LABEL, Label) + offsetof(SID_AND_ATTRIBUTES, Sid), &MEDIUM_LABEL_SID}}, out);
+            bytesOf(label), {{offsetof(TOKEN_MANDATORY_LABEL, Label) + offsetof(SID_AND_ATTRIBUTES, Sid), &mediumLabelSid()}}, out);
     }
     case TokenGroups:
     {
@@ -316,10 +340,10 @@ class WindowsProcessSecurityTest : public ::testing::Test
     void SetUp() override
     {
         fake() = {};
-        fake().groups = {{.sid = EVERYONE_SID, .attributes = SE_GROUP_ENABLED | SE_GROUP_MANDATORY | SE_GROUP_ENABLED_BY_DEFAULT},
-                         {.sid = ADMINS_SID, .attributes = SE_GROUP_USE_FOR_DENY_ONLY},
-                         {.sid = UNNAMED_SID, .attributes = 0},
-                         {.sid = MEDIUM_LABEL_SID, .attributes = SE_GROUP_INTEGRITY | SE_GROUP_INTEGRITY_ENABLED}};
+        fake().groups = {{.sid = everyoneSid(), .attributes = SE_GROUP_ENABLED | SE_GROUP_MANDATORY | SE_GROUP_ENABLED_BY_DEFAULT},
+                         {.sid = adminsSid(), .attributes = SE_GROUP_USE_FOR_DENY_ONLY},
+                         {.sid = unnamedSid(), .attributes = 0},
+                         {.sid = mediumLabelSid(), .attributes = SE_GROUP_INTEGRITY | SE_GROUP_INTEGRITY_ENABLED}};
         fake().privileges = {{.luidLow = 19, .attributes = 0},
                              {.luidLow = 23, .attributes = SE_PRIVILEGE_ENABLED | SE_PRIVILEGE_ENABLED_BY_DEFAULT}};
         fake().accounts = {{"S-1-5-21-1111-2222-3333-1001", {L"DESKTOP", L"matt"}},
@@ -349,7 +373,8 @@ TEST_F(WindowsProcessSecurityTest, ReadsEveryTokenField)
     const ProcessSecurity& security = result.security;
 
     ASSERT_TRUE(security.tokenUser.has_value());
-    EXPECT_EQ(*security.tokenUser, (SecurityAccount{.sid = "S-1-5-21-1111-2222-3333-1001", .name = "DESKTOP\\matt"}));
+    const SecurityAccount expectedUser{.sid = "S-1-5-21-1111-2222-3333-1001", .name = "DESKTOP\\matt"};
+    EXPECT_EQ(security.tokenUser, std::optional{expectedUser});
     EXPECT_EQ(security.sessionId, std::optional<std::uint32_t>{3});
     EXPECT_EQ(security.integrityLevel, std::optional<std::uint32_t>{SECURITY_MANDATORY_MEDIUM_RID});
     EXPECT_EQ(security.elevated, std::optional<bool>{false});
@@ -388,7 +413,7 @@ TEST_F(WindowsProcessSecurityTest, NamesEachSidOnceAcrossReads)
     ASSERT_EQ(again.status, SecurityReadStatus::Ok);
     EXPECT_EQ(fake().accountLookups, lookups);
     ASSERT_TRUE(again.security.tokenUser.has_value());
-    EXPECT_EQ(again.security.tokenUser->name, "DESKTOP\\matt");
+    EXPECT_EQ(again.security.tokenUser.value_or(SecurityAccount{}).name, "DESKTOP\\matt");
 }
 
 TEST_F(WindowsProcessSecurityTest, RetriesALookupWithRoomForALongName)
@@ -400,9 +425,9 @@ TEST_F(WindowsProcessSecurityTest, RetriesALookupWithRoomForALongName)
     const SecurityReadResult result = reader.readSecurity(TARGET);
     ASSERT_EQ(result.status, SecurityReadStatus::Ok);
     ASSERT_TRUE(result.security.tokenUser.has_value());
-    EXPECT_EQ(result.security.tokenUser->name, "CORP\\" + std::string(300, 'x'));
+    EXPECT_EQ(result.security.tokenUser.value_or(SecurityAccount{}).name, "CORP\\" + std::string(300, 'x'));
     ASSERT_TRUE(result.security.privileges.has_value());
-    EXPECT_EQ(result.security.privileges->front().name, std::string(100, 'p'));
+    EXPECT_EQ(result.security.privileges.value_or(std::vector<TokenPrivilege>{}).front().name, std::string(100, 'p'));
 }
 
 TEST_F(WindowsProcessSecurityTest, AnUnknownPrivilegeIsShownByItsLuid)
@@ -422,8 +447,8 @@ TEST_F(WindowsProcessSecurityTest, GroupsThatGrowBeforeTheCopyAreReadAgain)
     const SecurityReadResult result = reader.readSecurity(TARGET);
     ASSERT_EQ(result.status, SecurityReadStatus::Ok);
     ASSERT_TRUE(result.security.tokenGroups.has_value());
-    EXPECT_EQ(result.security.tokenGroups->size(), 6U); // three named and unnamed, three added; no label
-    EXPECT_EQ(result.security.tokenGroups->back().account.sid, "S-1-5-21-5-5-5-2002");
+    EXPECT_EQ(result.security.tokenGroups.value_or(std::vector<TokenGroup>{}).size(), 6U); // three named and unnamed, three added; no label
+    EXPECT_EQ(result.security.tokenGroups.value_or(std::vector<TokenGroup>{}).back().account.sid, "S-1-5-21-5-5-5-2002");
     EXPECT_EQ(fake().groupCopies, 2);
 }
 
@@ -520,7 +545,7 @@ std::string systemSidString(PSID sid)
 
 TEST(WindowsSidToStringTest, MatchesConvertSidToStringSid)
 {
-    for (const SidBytes& bytes : {USER_SID, EVERYONE_SID, ADMINS_SID, MEDIUM_LABEL_SID, makeSid(0, {})})
+    for (const SidBytes& bytes : {userSid(), everyoneSid(), adminsSid(), mediumLabelSid(), makeSid(0, {})})
     {
         SidBytes copy = bytes;
         EXPECT_EQ(sidToString(copy.data()), systemSidString(copy.data()));
@@ -533,7 +558,7 @@ TEST(WindowsSidToStringTest, MatchesConvertSidToStringSid)
     EXPECT_EQ(sidToString(wide.data()), "S-1-0x100000000AB-7");
 
     EXPECT_EQ(sidToString(nullptr), "");
-    SidBytes invalid = USER_SID;
+    SidBytes invalid = userSid();
     invalid[0] = std::byte{9}; // not revision 1
     EXPECT_EQ(sidToString(invalid.data()), "");
 }
@@ -553,16 +578,18 @@ TEST(WindowsProcessSecurityRealTest, ReadsThisProcesssToken)
     ASSERT_EQ(result.status, SecurityReadStatus::Ok) << result.detail;
     const ProcessSecurity& security = result.security;
     ASSERT_TRUE(security.tokenUser.has_value());
-    EXPECT_TRUE(security.tokenUser->sid.starts_with("S-1-5-"));
-    EXPECT_FALSE(security.tokenUser->name.empty());
+    EXPECT_TRUE(security.tokenUser.value_or(SecurityAccount{}).sid.starts_with("S-1-5-"));
+    EXPECT_FALSE(security.tokenUser.value_or(SecurityAccount{}).name.empty());
     EXPECT_TRUE(security.integrityLevel.has_value());
     EXPECT_TRUE(security.elevated.has_value());
     EXPECT_TRUE(security.elevationType.has_value());
     EXPECT_EQ(security.appContainer, std::optional<bool>{false});
     ASSERT_TRUE(security.privileges.has_value());
-    EXPECT_TRUE(std::ranges::any_of(*security.privileges, [](const TokenPrivilege& p) { return p.name == "SeChangeNotifyPrivilege"; }));
+    EXPECT_TRUE(std::ranges::any_of(security.privileges.value_or(std::vector<TokenPrivilege>{}),
+                                    [](const TokenPrivilege& p) { return p.name == "SeChangeNotifyPrivilege"; }));
     ASSERT_TRUE(security.tokenGroups.has_value());
-    EXPECT_TRUE(std::ranges::any_of(*security.tokenGroups, [](const TokenGroup& g) { return g.account.sid == "S-1-1-0"; }));
+    EXPECT_TRUE(std::ranges::any_of(security.tokenGroups.value_or(std::vector<TokenGroup>{}),
+                                    [](const TokenGroup& g) { return g.account.sid == "S-1-1-0"; }));
 
     DWORD session = 0;
     ASSERT_NE(ProcessIdToSessionId(GetCurrentProcessId(), &session), FALSE);

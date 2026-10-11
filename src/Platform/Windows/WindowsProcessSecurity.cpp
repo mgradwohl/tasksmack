@@ -151,8 +151,9 @@ template<typename T> [[nodiscard]] std::optional<T> readAt(const std::vector<std
     return static_cast<std::uint32_t>(*GetSidSubAuthority(label, static_cast<DWORD>(count - 1U)));
 }
 
-/// TOKEN_ELEVATION_TYPE as the platform-neutral enum; empty for a value Windows does not define.
-[[nodiscard]] std::optional<TokenElevationKind> elevationType(TOKEN_ELEVATION_TYPE type) noexcept
+/// A TOKEN_ELEVATION_TYPE (read as its DWORD) as the platform-neutral enum; empty for a value Windows
+/// does not define.
+[[nodiscard]] std::optional<TokenElevationKind> elevationType(DWORD type) noexcept
 {
     switch (type)
     {
@@ -162,6 +163,8 @@ template<typename T> [[nodiscard]] std::optional<T> readAt(const std::vector<std
         return TokenElevationKind::Full;
     case TokenElevationTypeLimited:
         return TokenElevationKind::Limited;
+    default:
+        break;
     }
     return std::nullopt;
 }
@@ -376,7 +379,7 @@ SecurityReadResult WindowsProcessSecurityReader::readSecurity(const ProcessTarge
     {
         security.elevated = elevation->TokenIsElevated != 0;
     }
-    if (const auto type = queryTokenValue<TOKEN_ELEVATION_TYPE>(m_Api, token.get(), TokenElevationType); type.has_value())
+    if (const auto type = queryTokenValue<DWORD>(m_Api, token.get(), TokenElevationType); type.has_value())
     {
         security.elevationType = elevationType(*type);
     }
