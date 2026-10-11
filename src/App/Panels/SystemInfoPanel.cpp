@@ -29,6 +29,8 @@ namespace App
 namespace
 {
 constexpr const char* TAB_EVENT_NAME = "SystemInfo";
+// How often the sensors are read again while the tab is drawn, so their ranges (#1522) follow them.
+constexpr std::chrono::seconds SENSOR_REFRESH{2};
 } // namespace
 
 SystemInfoPanel::SystemInfoPanel() : Panel("System Information")
@@ -72,7 +74,7 @@ void SystemInfoPanel::onEvent(Core::Event& event)
         });
 }
 
-void SystemInfoPanel::startRead()
+void SystemInfoPanel::startRead(bool sensorsOnly)
 {
     if (m_Pending.valid() || !m_Model || !m_Model->capabilities().hasOs)
     {
@@ -81,14 +83,16 @@ void SystemInfoPanel::startRead()
     try
     {
         m_Pending = std::async(std::launch::async,
-                               [model = m_Model]
+                               [model = m_Model, sensorsOnly]
                                {
                                    // Best effort, as for the Connections read: a pooled thread may keep the name.
                                    static_cast<void>(Platform::setCurrentThreadName(Platform::SYSTEM_INFO_READ_THREAD_NAME));
                                    // A failed read comes back as its message, copied here on the worker: no
                                    // exception object crosses to the UI thread (#1685, #1706).
-                                   return model->tryRead();
+                                   return sensorsOnly ? model->tryReadSensors() : model->tryRead();
                                });
+        m_PendingSensorsOnly = sensorsOnly;
+        m_LastReadStart = std::chrono::steady_clock::now();
     }
     catch (const std::system_error& e)
     {
@@ -134,7 +138,16 @@ void SystemInfoPanel::renderContent()
             m_ViewState.host = m_QueryHost ? m_QueryHost() : Core::Application::get().getWindow().queryGraphicsHostInfo();
         }
     }
-    const SystemInfoViewResult result = renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), m_Pending.valid(), m_ViewState);
+    // While the tab is drawn, the sensors are read again every SENSOR_REFRESH so their ranges follow them
+    // (#1522); not where there are none to read, and never over another read.
+    if (!m_Pending.valid() && m_Snapshot->version != 0 && !m_Snapshot->sensors.devices.empty() &&
+        std::chrono::steady_clock::now() - m_LastReadStart >= SENSOR_REFRESH)
+    {
+        startRead(/*sensorsOnly=*/true);
+    }
+    // A sensors-only read is quiet: the page doesn't show "reading" for it.
+    const bool reading = m_Pending.valid() && !m_PendingSensorsOnly;
+    const SystemInfoViewResult result = renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), reading, m_ViewState);
     if (result.refreshRequested)
     {
         startRead();

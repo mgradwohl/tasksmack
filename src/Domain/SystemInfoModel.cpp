@@ -3,6 +3,7 @@
 #include "Domain/CrashHistory.h"
 #include "Platform/ISystemInfoProbe.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -47,6 +48,8 @@ void SystemInfoModel::read()
         next->adapters = m_Probe->readNetworkAdapters();
         next->boot = m_Probe->readBootPerformance();
     }
+    addToSensorRanges(next->sensors);
+    next->sensorRanges = m_SensorRanges;
     const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     next->readAtUnixSeconds = static_cast<std::uint64_t>(now);
     if (m_CrashHistory && m_Capabilities.hasOs)
@@ -58,11 +61,15 @@ void SystemInfoModel::read()
     m_Slot.commit(std::move(next));
 }
 
-std::optional<std::string> SystemInfoModel::tryRead()
+namespace
+{
+
+/// @p readFn's throw as its message, caught on the thread that threw it (#1685, #1706).
+template<typename ReadFn> [[nodiscard]] std::optional<std::string> tryReading(ReadFn&& readFn)
 {
     try
     {
-        read();
+        std::forward<ReadFn>(readFn)();
     }
     catch (const std::exception& e)
     {
@@ -73,6 +80,47 @@ std::optional<std::string> SystemInfoModel::tryRead()
         return std::string("unknown error");
     }
     return std::nullopt;
+}
+
+} // namespace
+
+void SystemInfoModel::addToSensorRanges(const Platform::SensorsInfo& sensors)
+{
+    for (const Platform::SensorDevice& device : sensors.devices)
+    {
+        for (const Platform::SensorReading& reading : device.readings)
+        {
+            SensorRange& range = m_SensorRanges[sensorRangeKey(device.name, reading.label)];
+            range.min = range.samples == 0 ? reading.value : std::min(range.min, reading.value);
+            range.max = range.samples == 0 ? reading.value : std::max(range.max, reading.value);
+            ++range.samples;
+        }
+    }
+}
+
+void SystemInfoModel::readSensors()
+{
+    const std::scoped_lock lock(m_ReadMutex);
+    if (!m_Capabilities.hasOs || m_LastVersion == 0)
+    {
+        return; // nothing to keep the other facts of yet
+    }
+    auto next = std::make_shared<SystemInfoSnapshot>(*m_Slot.load());
+    next->sensors = m_Probe->readSensors();
+    addToSensorRanges(next->sensors);
+    next->sensorRanges = m_SensorRanges;
+    next->version = ++m_LastVersion;
+    m_Slot.commit(std::move(next));
+}
+
+std::optional<std::string> SystemInfoModel::tryReadSensors()
+{
+    return tryReading([this] { readSensors(); });
+}
+
+std::optional<std::string> SystemInfoModel::tryRead()
+{
+    return tryReading([this] { read(); });
 }
 
 } // namespace Domain

@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -30,6 +31,8 @@ struct ProbeLog
 {
     std::atomic<int> reads{0};
     std::atomic<bool> hold{false}; ///< While set, a read waits: a read "in flight".
+    bool withSensors = false;      ///< The probe reports a temperature sensor.
+    std::atomic<int> sensorReads{0};
 };
 
 /// A probe with an OS to report and nothing else, counting its reads.
@@ -81,7 +84,22 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     }
     [[nodiscard]] Platform::SensorsInfo readSensors() override
     {
-        return m_Default.readSensors();
+        if (!m_Log->withSensors)
+        {
+            return m_Default.readSensors();
+        }
+        // One temperature, a degree warmer each read: a range to track (#1522).
+        ++m_Log->sensorReads;
+        Platform::SensorsInfo info;
+        info.available = true;
+        info.listed = true;
+        info.devices.push_back({.name = "coretemp",
+                                .readings = {{.kind = Platform::SensorKind::Temperature,
+                                              .label = "Package id 0",
+                                              .value = 40.0 + static_cast<double>(m_Log->sensorReads.load()),
+                                              .high = std::nullopt,
+                                              .critical = std::nullopt}}});
+        return info;
     }
     [[nodiscard]] Platform::DevicesInfo readDevices() override
     {
@@ -265,6 +283,29 @@ TEST_F(SystemInfoPanelRenderTest, NothingIsDrawnBeforeAttach)
                                                 [] { return Core::GraphicsHostInfo{}; });
     EXPECT_TRUE(frame().empty());
     m_Panel.reset();
+}
+
+// #1522: while the tab is drawn the sensors are read again on their own every couple of seconds, without
+// a full read, and the Sensors rows show each sensor's range once it has moved.
+TEST_F(SystemInfoPanelRenderTest, TheSensorsAreReadAgainWhileTheTabShowsAndTheirRangeAppears)
+{
+    m_Log.withSensors = true;
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    ASSERT_EQ(m_Log.sensorReads.load(), 1); // with the full read
+
+    // Within a few seconds, a sensors-only read: the OS wasn't read again, the range shows.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+    std::string text;
+    while (std::chrono::steady_clock::now() < deadline && m_Log.sensorReads.load() < 2)
+    {
+        text = frame();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_GE(m_Log.sensorReads.load(), 2);
+    EXPECT_TRUE(frameUntil("min ")) << text;
+    EXPECT_EQ(m_Log.reads.load(), 1); // only the sensors were read again
 }
 
 } // namespace

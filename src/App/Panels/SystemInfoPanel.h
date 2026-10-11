@@ -2,11 +2,13 @@
 
 #include "App/Panel.h"
 #include "App/Panels/SystemInfoView.h"
+#include "Core/Event.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Domain/CrashHistory.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
+#include <chrono>
 #include <functional>
 #include <future>
 #include <memory>
@@ -51,8 +53,9 @@ class SystemInfoPanel : public Panel
     void renderContent() override;
 
   private:
-    /// Starts a read on a worker thread, unless one is already in flight.
-    void startRead();
+    /// Starts a read on a worker thread, unless one is already in flight: every section, or with
+    /// @p sensorsOnly just the sensors (their ranges, #1522), quietly, without the page's "reading" state.
+    void startRead(bool sensorsOnly = false);
     /// Takes in a finished read; with @p wait, waits for one in flight first.
     void finishRead(bool wait);
 
@@ -62,6 +65,9 @@ class SystemInfoPanel : public Panel
     std::shared_ptr<Domain::SystemInfoModel> m_Model;
     // The read in flight, if any; it hands back only a failed read's message, copied on the worker.
     std::future<std::optional<std::string>> m_Pending;
+    bool m_PendingSensorsOnly = false; // the read in flight is a sensors-only one
+    // When the last read started: the sensors are read again SENSOR_REFRESH after it, while the tab shows.
+    std::chrono::steady_clock::time_point m_LastReadStart;
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;
     SystemInfoViewState m_ViewState;
 };

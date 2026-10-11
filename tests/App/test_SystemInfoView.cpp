@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -730,6 +731,40 @@ TEST(SystemInfoSectionsTest, DhcpLeaseRowWhereThereIsOne)
     const Section section = SystemInfo::buildNetworkAdaptersSection(network);
     EXPECT_EQ(findRow(section, "eth0 DHCP lease")->value, "From 192.168.1.1, 1 day lease");
     EXPECT_EQ(findRow(section, "eth1 DHCP lease"), nullptr);
+}
+
+// #1522: a sensor's range since the page first read it, in its unit, once it has moved.
+TEST(SystemInfoSectionsTest, SensorRowsShowTheirRangeOnceItHasMoved)
+{
+    const Platform::SensorReading temperature{
+        .kind = Platform::SensorKind::Temperature, .label = "Package id 0", .value = 55.0, .high = 80.0, .critical = std::nullopt};
+    EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 41.0, .max = 63.0, .samples = 5}),
+              "min " + UI::Format::formatFixedLocalized(41.0, 1, " \u00B0C") + ", max " +
+                  UI::Format::formatFixedLocalized(63.0, 1, " \u00B0C"));                                // no thresholds repeated
+    EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 55.0, .max = 55.0, .samples = 5}), ""); // unchanged
+    EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 50.0, .max = 55.0, .samples = 1}), ""); // one read
+
+    const Platform::SensorReading fan{.kind = Platform::SensorKind::Fan, .label = "fan1", .value = 1200.0, .high = {}, .critical = {}};
+    EXPECT_EQ(SystemInfo::formatSensorRange(fan, {.min = 900.0, .max = 1500.0, .samples = 3}), "min 900 RPM, max 1500 RPM");
+
+    Platform::SensorsInfo sensors;
+    sensors.available = true;
+    sensors.listed = true;
+    sensors.devices.push_back({.name = "coretemp", .readings = {temperature}});
+    sensors.devices.push_back({.name = "it8792", .readings = {fan}});
+    const std::map<std::string, Domain::SensorRange> ranges{
+        {Domain::sensorRangeKey("coretemp", "Package id 0"), {.min = 41.0, .max = 63.0, .samples = 5}},
+        {Domain::sensorRangeKey("it8792", "fan1"), {.min = 1200.0, .max = 1200.0, .samples = 5}},
+    };
+    const Section section = SystemInfo::buildSensorsSection(sensors, ranges);
+    const auto* temp = findRow(section, "coretemp: Package id 0");
+    ASSERT_NE(temp, nullptr);
+    EXPECT_TRUE(temp->value.contains(SystemInfo::formatSensorReading(temperature))) << temp->value;
+    EXPECT_TRUE(temp->value.contains("min ")) << temp->value;
+    EXPECT_EQ(findRow(section, "it8792: fan1")->value, "1200 RPM"); // its range hasn't moved
+    // Without ranges (Windows, or before a second read) the rows are as before.
+    EXPECT_EQ(findRow(SystemInfo::buildSensorsSection(sensors), "coretemp: Package id 0")->value,
+              SystemInfo::formatSensorReading(temperature));
 }
 
 TEST(SystemInfoSectionsTest, WifiLinkBandChannelAndRate)

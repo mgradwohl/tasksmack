@@ -18,6 +18,7 @@
 #include <format>
 #include <initializer_list>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -1084,14 +1085,40 @@ std::string formatSensorReading(const Platform::SensorReading& reading)
     return {};
 }
 
-Section buildSensorsSection(const Platform::SensorsInfo& sensors)
+std::string formatSensorRange(const Platform::SensorReading& reading, const Domain::SensorRange& range)
+{
+    if (range.samples < 2 || range.max <= range.min)
+    {
+        return {};
+    }
+    // In the reading's own unit and precision, without its thresholds.
+    Platform::SensorReading bound = reading;
+    bound.high.reset();
+    bound.critical.reset();
+    bound.value = range.min;
+    const std::string min = formatSensorReading(bound);
+    bound.value = range.max;
+    return "min " + min + ", max " + formatSensorReading(bound);
+}
+
+Section buildSensorsSection(const Platform::SensorsInfo& sensors, const std::map<std::string, Domain::SensorRange>& ranges)
 {
     Section section{.title = "Sensors", .icon = ICON_FA_TEMPERATURE_HALF, .rows = {}};
     for (const Platform::SensorDevice& device : sensors.devices)
     {
         for (const Platform::SensorReading& reading : device.readings)
         {
-            section.rows.push_back(row(std::format("{}: {}", device.name, reading.label), formatSensorReading(reading)));
+            std::string label = Domain::sensorRangeKey(device.name, reading.label);
+            std::string value = formatSensorReading(reading);
+            // Since the page first read it, while it shows (#1522).
+            if (const auto it = ranges.find(label); it != ranges.end())
+            {
+                if (const std::string range = formatSensorRange(reading, it->second); !range.empty())
+                {
+                    value += " \u00B7 " + range;
+                }
+            }
+            section.rows.push_back(row(std::move(label), std::move(value)));
         }
     }
     const bool windows = sensors.family == Platform::OsFamily::Windows;
@@ -1882,7 +1909,7 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.sensors.available)
     {
-        sections.push_back(buildSensorsSection(snapshot.sensors));
+        sections.push_back(buildSensorsSection(snapshot.sensors, snapshot.sensorRanges));
     }
     if (snapshot.graphics.available)
     {
