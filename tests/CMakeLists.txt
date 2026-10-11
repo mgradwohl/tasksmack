@@ -271,6 +271,7 @@ set(COMMON_TEST_SOURCES
     App/test_StartupViewRender.cpp
     App/test_StartupActionsView.cpp
     App/test_SystemInfoView.cpp
+    App/test_SystemInfoPanelRender.cpp
     App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_SettingsDialogRender.cpp

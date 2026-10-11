@@ -2,9 +2,12 @@
 
 #include "App/Panel.h"
 #include "App/Panels/SystemInfoView.h"
+#include "Core/GraphicsHostInfo.h"
 #include "Domain/CrashHistory.h"
 #include "Domain/SystemInfoModel.h"
+#include "Platform/ISystemInfoProbe.h"
 
+#include <functional>
 #include <future>
 #include <memory>
 #include <optional>
@@ -21,6 +24,13 @@ class SystemInfoPanel : public Panel
 {
   public:
     SystemInfoPanel();
+
+    /// Test seam (#1395): onAttach() takes its probe from @p makeProbe, and each new read's graphics
+    /// facts come from @p queryHost, instead of the platform's probe and Core's window (tests: a fake
+    /// probe and no window). The App layer stays the only place the platform's probe is made, still at
+    /// onAttach().
+    SystemInfoPanel(std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> makeProbe,
+                    std::function<Core::GraphicsHostInfo()> queryHost);
     ~SystemInfoPanel() override;
 
     SystemInfoPanel(const SystemInfoPanel&) = delete;
@@ -46,6 +56,8 @@ class SystemInfoPanel : public Panel
     /// Takes in a finished read; with @p wait, waits for one in flight first.
     void finishRead(bool wait);
 
+    std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> m_MakeProbe; ///< Set by the test seam only
+    std::function<Core::GraphicsHostInfo()> m_QueryHost;                      ///< Set by the test seam only
     std::shared_ptr<Domain::CrashHistory> m_CrashHistory;
     std::shared_ptr<Domain::SystemInfoModel> m_Model;
     // The read in flight, if any; it hands back only a failed read's message, copied on the worker.
