@@ -41,7 +41,7 @@ struct SystemInfoViewState
     /// The sensor model's newest publication (#1522), set by the panel; null for none. While it has
     /// found the sensors, the Sensors section is built from it rather than the read, and updates live.
     std::shared_ptr<const Domain::SensorPublication> sensors;
-    /// The history window the sensor model keeps, set by the panel.
+    /// The history window the Sensors section's sparklines span, set by the panel.
     double historySeconds = Domain::Sampling::HISTORY_SECONDS_DEFAULT;
 
     std::vector<SystemInfo::Section> sections;

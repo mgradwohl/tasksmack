@@ -11,6 +11,7 @@
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/LineLayout.h"
+#include "UI/Sparkline.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -84,6 +85,43 @@ void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot, SystemInfoViewSt
     state.visibleShowIdentifiers = state.showIdentifiers;
 }
 
+/// A sensor kind's chart colour: the GPU tab's for temperature and fan speed, the power charts' for
+/// power, and accents for the rest.
+[[nodiscard]] const ImVec4& sensorColor(Platform::SensorKind kind, const UI::ColorScheme& scheme)
+{
+    switch (kind)
+    {
+    case Platform::SensorKind::Temperature:
+        return scheme.gpuTemperature;
+    case Platform::SensorKind::Fan:
+        return scheme.gpuFan;
+    case Platform::SensorKind::Power:
+        return scheme.chartPower;
+    case Platform::SensorKind::Voltage:
+        return scheme.accents[0];
+    case Platform::SensorKind::Current:
+        return scheme.accents[1];
+    }
+    return scheme.accents[0];
+}
+
+/// Each live reading's kind, in series order.
+[[nodiscard]] Platform::SensorKind seriesKind(const Platform::SensorsInfo& sensors, std::size_t series)
+{
+    for (const Platform::SensorDevice& device : sensors.devices)
+    {
+        if (series < device.readings.size())
+        {
+            return device.readings[series].kind;
+        }
+        series -= device.readings.size();
+    }
+    return Platform::SensorKind::Temperature;
+}
+
+/// The width of a section's sparkline column, in ems.
+constexpr float SPARKLINE_WIDTH_EM = 10.0F;
+
 void copy(std::string text, SystemInfoViewState& state)
 {
     state.copiedText = std::move(text);
@@ -154,11 +192,20 @@ void renderSection(const SystemInfo::VisibleSection& visible, float labelWidth, 
     }
     ImGui::SetItemTooltip("Copy this section as plain text");
 
+    // A live Sensors section (#1522) has a third column: each reading's history as a sparkline.
+    const Domain::SensorPublication* live = usableSensors(state);
+    const bool charts =
+        live != nullptr && std::ranges::any_of(visible.rows, [&](std::size_t index) { return section.rows[index].series.has_value(); });
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_RowBg | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_SizingFixedFit;
-    if (ImGui::BeginTable("##Rows", 2, TABLE_FLAGS))
+    if (ImGui::BeginTable("##Rows", charts ? 3 : 2, TABLE_FLAGS))
     {
+        const float sparklineWidth = ImGui::GetFontSize() * SPARKLINE_WIDTH_EM;
         ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelWidth);
         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+        if (charts)
+        {
+            ImGui::TableSetupColumn("History", ImGuiTableColumnFlags_WidthFixed, sparklineWidth);
+        }
         for (const std::size_t index : visible.rows)
         {
             const SystemInfo::Row& row = section.rows[index];
@@ -169,6 +216,17 @@ void renderSection(const SystemInfo::VisibleSection& visible, float labelWidth, 
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
             renderValue(row, scheme);
+            if (charts && ImGui::TableNextColumn() && row.series.has_value() && *row.series < live->series.size())
+            {
+                ImGui::PushID(static_cast<int>(index));
+                UI::Widgets::renderSparkline("##History",
+                                             live->timestamps,
+                                             live->series[*row.series],
+                                             state.historySeconds,
+                                             ImVec2(sparklineWidth, ImGui::GetTextLineHeight()),
+                                             sensorColor(seriesKind(*live->sensors, *row.series), scheme));
+                ImGui::PopID();
+            }
         }
         ImGui::EndTable();
     }

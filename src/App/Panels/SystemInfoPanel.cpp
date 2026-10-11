@@ -127,7 +127,7 @@ void SystemInfoPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::HistoryDurationChangedEvent>(
         [this](Core::HistoryDurationChangedEvent& e)
         {
-            // Clamped as the model clamps it (#1145).
+            // Clamped as the model clamps it, so the sparklines span the window it keeps (#1145).
             m_ViewState.historySeconds = Domain::Sampling::clampHistorySeconds(Domain::Numeric::toDouble(e.getSeconds()));
             if (m_SensorModel)
             {

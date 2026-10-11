@@ -33,7 +33,7 @@ struct Row
     std::string value;
     std::string unavailableReason;
     bool isIdentifier = false; ///< Names the user or the machine: hidden (and left out of Copy) unless shown.
-    /// A live sensor row's history: its index in the SensorPublication's series.
+    /// A live sensor row's history: its index in the SensorPublication's series, drawn as a sparkline.
     std::optional<std::size_t> series;
 
     [[nodiscard]] bool available() const noexcept

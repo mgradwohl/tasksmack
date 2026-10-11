@@ -2,7 +2,7 @@
 /// @brief The System Information page (#1399): the Operating system section's rows (#1512), the
 /// Firmware & board section's rows (#1513), the Memory modules section's rows (#1515), the Commit & paging rows (#1516), the Storage
 /// rows (#1517), the Security rows (#1514), the Sensors rows and their live minimum, maximum and
-/// history (#1522), the Graphics & displays rows
+/// sparklines (#1522), the Graphics & displays rows
 /// (#1519), the Network adapters rows (#1518), the Boot performance rows (#1525), the Devices rows
 /// (#1520), the filter,
 /// identifier hiding, the Copy text and unavailable values; then the view headless: the unsupported and loading states, sections drawn, the
@@ -17,9 +17,11 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
+#include "UI/Sparkline.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <implot.h>
 
 #include <algorithm>
 #include <array>
@@ -2198,6 +2200,25 @@ TEST_F(SystemInfoViewRenderTest, CrashesSectionRendersAndFilters)
     return sensors;
 }
 
+TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::array<float, 4> values{40.0F, nan, 60.0F, 50.0F};
+    const std::pair<double, double> none{0.0, 0.0};
+    const auto [low, high] = UI::Widgets::sparklineYRange(values).value_or(none);
+    EXPECT_DOUBLE_EQ(low, 38.0); // 10% headroom either side of 40..60
+    EXPECT_DOUBLE_EQ(high, 62.0);
+
+    const std::array<float, 2> flat{1200.0F, 1200.0F};
+    const auto [flatLow, flatHigh] = UI::Widgets::sparklineYRange(flat).value_or(none);
+    EXPECT_DOUBLE_EQ(flatLow, 1199.0); // a band of 1 around a flat line
+    EXPECT_DOUBLE_EQ(flatHigh, 1201.0);
+
+    const std::array<float, 2> unread{nan, nan};
+    EXPECT_FALSE(UI::Widgets::sparklineYRange(unread).has_value());
+    EXPECT_FALSE(UI::Widgets::sparklineYRange({}).has_value());
+}
+
 TEST(SystemInfoSectionsTest, LiveSensorRowsShowMinimumAndMaximumSinceStart)
 {
     const Platform::SensorReading package = liveSensors().devices[0].readings[0];
@@ -2225,8 +2246,9 @@ TEST(SystemInfoSectionsTest, LiveSensorRowsShowMinimumAndMaximumSinceStart)
     EXPECT_FALSE(mismatched.rows[0].series.has_value());
 }
 
-TEST_F(SystemInfoViewRenderTest, LiveSensorsReplaceTheRead)
+TEST_F(SystemInfoViewRenderTest, LiveSensorsReplaceTheReadAndDrawSparklines)
 {
+    ImPlotContext* plot = ImPlot::CreateContext();
     const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
     Domain::SystemInfoSnapshot snap = snapshot();
     snap.sensors = liveSensors(); // the read: 52 °C
@@ -2268,6 +2290,7 @@ TEST_F(SystemInfoViewRenderTest, LiveSensorsReplaceTheRead)
     const auto again = std::ranges::find(state.sections, SystemInfo::SENSORS_SECTION_TITLE, &Section::title);
     ASSERT_NE(again, state.sections.end());
     EXPECT_TRUE(findRow(*again, "coretemp: Package id 0")->value.starts_with("75.0")) << findRow(*again, "coretemp: Package id 0")->value;
+    ImPlot::DestroyContext(plot);
 }
 
 } // namespace
