@@ -3,12 +3,18 @@
 /// actions through its probe-factory seam: the table lists the probe's processes, the tree view nests
 /// a child under its parent (and toggling it before the table's first frame no longer asserts, #1656),
 /// and an inactive panel draws nothing. Selection raises application events, which go to the test's
-/// event sink through the panel's second seam: keyboard selection announces the selected process.
+/// event sink through the panel's second seam: keyboard selection announces the selected process. A
+/// right-click opens the row menu for that process, whose Details, Copy PID and Kill (through its
+/// confirmation, to the mock actions) work; the Columns menu shows a hidden column and the meter menu
+/// turns a meter on.
 
 #include "App/Panels/ProcessesPanel.h"
+#include "App/ProcessColumnConfig.h"
+#include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Mocks/MockProbes.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -17,8 +23,11 @@
 
 #include <chrono>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <regex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -47,10 +56,12 @@ class ProcessesPanelRenderTest : public ::testing::Test
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
         io.Fonts->AddFontDefault();
+        m_Settings = UserConfig::get().settings(); // the menus write the column and meter settings
     }
 
     void TearDown() override
     {
+        UserConfig::get().settings() = m_Settings;
         ImPlot::DestroyContext(m_ImPlot);
         ImGui::DestroyContext(m_ImGui);
     }
@@ -73,6 +84,75 @@ class ProcessesPanelRenderTest : public ::testing::Test
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         return panel;
+    }
+
+    /// As attachedPanel(), with mock actions that can do everything; @p actions is left pointing at them
+    /// (the panel owns them).
+    [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanelWithActions(std::function<void(Core::Event&)> raiseEvent,
+                                                                                  TestMocks::MockProcessActions*& actions)
+    {
+        auto panel = std::make_unique<ProcessesPanel>(
+            [&actions]
+            {
+                auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+                probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                    .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
+                    .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+                auto mock = std::make_unique<TestMocks::MockProcessActions>();
+                mock->setCapabilities(
+                    {.canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = true});
+                actions = mock.get();
+                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock)};
+            },
+            std::move(raiseEvent));
+        panel->onAttach();
+        Core::ActiveTabChangedEvent shown("Processes");
+        panel->onEvent(shown);
+        return panel;
+    }
+
+    /// The popup open on top, if any.
+    [[nodiscard]] static ImGuiWindow* topPopup()
+    {
+        return GImGui->OpenPopupStack.empty() ? nullptr : GImGui->OpenPopupStack.back().Window;
+    }
+
+    /// Right-clicks down the panel until a row's menu opens; the PID its header names, if one did. Another
+    /// popup on the way (the filter box's own context menu) is closed again.
+    [[nodiscard]] static std::optional<std::int32_t> openARowMenu(ProcessesPanel& panel)
+    {
+        static const std::regex PID_IN_HEADER(R"(\(PID (\d+)\))");
+        ImGuiIO& io = ImGui::GetIO();
+        for (int step = 0; step < 94; ++step) // 40 px down to 600 px, every 6 px
+        {
+            io.AddMousePosEvent(40.0F, 40.0F + (6.0F * static_cast<float>(step)));
+            io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+            static_cast<void>(renderAndCapture(panel));
+            io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+            const std::string text = renderAndCapture(panel);
+            if (GImGui->OpenPopupStack.empty())
+            {
+                continue;
+            }
+            if (std::smatch match; std::regex_search(text, match, PID_IN_HEADER))
+            {
+                return std::stoi(match[1].str());
+            }
+            io.AddKeyEvent(ImGuiKey_Escape, true);
+            static_cast<void>(renderAndCapture(panel));
+            io.AddKeyEvent(ImGuiKey_Escape, false);
+            static_cast<void>(renderAndCapture(panel));
+        }
+        return std::nullopt;
+    }
+
+    /// Presses the top popup's item labelled @p label, then draws the frame that acts on it.
+    static void pressPopupItem(ProcessesPanel& panel, const std::string& label)
+    {
+        const ImGuiWindow* popup = topPopup();
+        ASSERT_NE(popup, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(label.c_str(), 0, popup->ID));
+        static_cast<void>(renderAndCapture(panel));
     }
 
     /// One frame of a window filling the display, drawing @p panel's content, and the text it drew.
@@ -117,6 +197,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
     static constexpr int LOAD_FRAMES = 200;
 
   private:
+    UserSettings m_Settings;
     ImGuiContext* m_ImGui = nullptr;
     ImPlotContext* m_ImPlot = nullptr;
 };
@@ -214,6 +295,113 @@ TEST_F(ProcessesPanelRenderTest, EndSelectsTheLastRow)
     ASSERT_GE(events.selected.size(), 2U);
     EXPECT_NE(events.selected.back(), first);
     EXPECT_EQ(events.selected.back(), panel->selectedPid());
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, ARightClickOpensTheRowMenuForThatProcess)
+{
+    SelectionSink events;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions(events.sink(), actions);
+    renderUntilLoaded(*panel);
+    ASSERT_EQ(panel->processCount(), 3U);
+
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const std::int32_t pid = menuPid.value_or(-1);
+    // The press selected the row it opened on, and the menu names that same process (#1365).
+    EXPECT_EQ(panel->selectedPid(), pid);
+    ASSERT_FALSE(events.selected.empty());
+    EXPECT_EQ(events.selected.back(), pid);
+
+    pressPopupItem(*panel, ICON_FA_CIRCLE_INFO " Details");
+    EXPECT_EQ(events.showDetails, 1);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, CopyPidPutsThePidOnTheClipboard)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, ICON_FA_COPY " Copy PID");
+    ASSERT_NE(ImGui::GetClipboardText(), nullptr);
+    EXPECT_EQ(std::string(ImGui::GetClipboardText()), std::to_string(menuPid.value_or(-1)));
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, KillFromTheRowMenuIsConfirmedThenSentForThatProcess)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, std::format("{} Kill...###Kill", ICON_FA_SKULL));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Kill")) << modal->Name;
+    EXPECT_EQ(actions->killCount(), 0); // asked, not done
+
+    // The dialog's danger-filled Kill button (UI::Widgets::filledButton(): "##filled" under its label).
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Kill", 0, modal->ID)));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(actions->killCount(), 1);
+    EXPECT_EQ(actions->lastKillPid(), menuPid.value_or(-1));
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheColumnsMenuShowsAHiddenColumn)
+{
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    ASSERT_FALSE(renderAndCapture(*panel).contains("Threads")); // hidden by default
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_TABLE_COLUMNS " Columns", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(topPopup(), nullptr);
+    pressPopupItem(*panel, "Threads");
+    EXPECT_NE(topPopup(), nullptr); // stays open while columns are ticked
+
+    // Closed, the table has the column from the next frame.
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(renderAndCapture(*panel).contains("Threads"));
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
+{
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const bool wasOn = UserConfig::get().settings().processMeters.isOn(ProcessColumn::CpuPercent);
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_TABLE_COLUMNS " Columns", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(topPopup(), nullptr);
+    pressPopupItem(*panel, ICON_FA_CHART_BAR " Show meter"); // opens the submenu
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* submenu = topPopup();
+    ASSERT_NE(submenu, nullptr);
+    EXPECT_TRUE(std::string_view(submenu->Name).contains("Show meter")) << submenu->Name;
+    pressPopupItem(*panel, "CPU %");
+    EXPECT_NE(UserConfig::get().settings().processMeters.isOn(ProcessColumn::CpuPercent), wasOn);
     panel->onDetach();
 }
 
