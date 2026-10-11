@@ -236,6 +236,7 @@ set(COMMON_TEST_SOURCES
     App/test_NonAsciiRoundTrips.cpp
     App/test_InstanceLock.cpp
     App/test_PanelTabs.cpp
+    App/test_MainTabBarViewRender.cpp
     App/test_TabLabel.cpp
     App/test_PriorityHelpers.cpp
     App/test_ProcessGpuHelpers.cpp
@@ -501,6 +502,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The main tab bar (#1547), run headless (test_MainTabBarViewRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/MainTabBarView.cpp
     # The custom title bar (#1547), run headless (test_TitleBarViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/TitleBarView.cpp
     # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
