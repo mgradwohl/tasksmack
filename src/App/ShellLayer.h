@@ -4,6 +4,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "FpsCounter.h"
 #include "KeyboardShortcuts.h"
+#include "MainTabBarView.h"
 #include "PanelTabs.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessesPanel.h"
@@ -138,6 +139,9 @@ class ShellLayer : public Core::Layer
     // thinks is selected (#1140).
     std::string m_CachedSystemTabLabel;      // ICON + hostname: rebuilt in onAttach()
     TabLabel::CachedLabel m_DetailsTabLabel; // ICON + process name: rebuilt when the name changes
+
+    // The tab bar's items, rebuilt each frame into the same storage (no per-frame allocation once grown).
+    std::vector<MainTabBarView::Tab> m_TabBarItems;
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;

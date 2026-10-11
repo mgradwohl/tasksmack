@@ -41,6 +41,11 @@ namespace Platform
 // Pimpl struct containing Windows-specific types
 struct WindowsDiskProbe::Impl
 {
+    explicit Impl(const WindowsDiskProbeFunctions& functions) : fns(functions)
+    {}
+
+    WindowsDiskProbeFunctions fns; // Every OS call goes through these (#1719)
+
     /// One physical disk opened for IOCTL_DISK_PERFORMANCE. The UniqueHandle closes it on stack
     /// unwind (e.g. if name conversion or vector growth throws mid-enumeration) as well as on normal
     /// teardown, so a failure partway through enumerating disks can't leak this handle or any earlier
@@ -78,12 +83,13 @@ namespace
 /// failure, closing the handle first if it was opened but the probe query failed.
 /// Disks are re-enumerated periodically, so a drive that cannot be opened warns on its
 /// first failure and logs at debug level until it next succeeds (#1159).
-[[nodiscard]] Windows::UniqueHandle openPhysicalDriveForPerfQuery(int driveIndex, FailureLogLimiter& failures)
+[[nodiscard]] Windows::UniqueHandle
+openPhysicalDriveForPerfQuery(const WindowsDiskProbeFunctions::Drive& fns, int driveIndex, FailureLogLimiter& failures)
 {
     // The UTF-8 path, for the failure logs below.
     const std::string path = R"(\\.\PhysicalDrive)" + std::to_string(driveIndex);
     // CreateFileW fails with INVALID_HANDLE_VALUE, which UniqueHandle treats as empty.
-    Windows::UniqueHandle handle = Windows::openPhysicalDriveQueryOnly(driveIndex);
+    Windows::UniqueHandle handle = fns.openPhysicalDriveQueryOnly(driveIndex);
     if (!handle)
     {
         // Capture GetLastError() before any other call can overwrite it - argument evaluation
@@ -97,7 +103,7 @@ namespace
 
     DISK_PERFORMANCE perf{};
     DWORD bytesReturned = 0;
-    if (DeviceIoControl(handle.get(), IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
+    if (fns.deviceIoControl(handle.get(), IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr) == 0)
     {
         // Capture the error, then close the handle before logging: the drive isn't usable, so
         // there is no reason to keep it open while the log call runs.
@@ -119,7 +125,7 @@ namespace
 /// built aside and swapped in; if PDH itself fails, the current list is kept.
 void WindowsDiskProbe::Impl::enumerate()
 {
-    lastEnumeration = std::chrono::steady_clock::now();
+    lastEnumeration = fns.now();
     std::vector<OpenDisk> found;
     bool enumerated = false;
 
@@ -132,7 +138,7 @@ void WindowsDiskProbe::Impl::enumerate()
     // first enumeration never appeared. Refreshing the list (PdhEnumObjects with bRefresh = TRUE,
     // per PdhEnumObjectItems' remarks) first is what lets a rescan see it (#1159).
     DWORD objectListSize = 0;
-    const PDH_STATUS refresh = PdhEnumObjectsW(nullptr, nullptr, nullptr, &objectListSize, PERF_DETAIL_WIZARD, TRUE);
+    const PDH_STATUS refresh = fns.pdh.enumObjectsW(nullptr, nullptr, nullptr, &objectListSize, PERF_DETAIL_WIZARD, TRUE);
     if (refresh != ERROR_SUCCESS && static_cast<DWORD>(refresh) != PDH_MORE_DATA)
     {
         spdlog::debug("WindowsDiskProbe: refreshing the PDH object list failed (0x{:08X}), keeping {} disks",
@@ -143,7 +149,7 @@ void WindowsDiskProbe::Impl::enumerate()
 
     DWORD counterBufferSize = 0;
     DWORD instanceBufferSize = 0;
-    PDH_STATUS status = PdhEnumObjectItemsW(
+    PDH_STATUS status = fns.pdh.enumObjectItemsW(
         nullptr, nullptr, L"PhysicalDisk", nullptr, &counterBufferSize, nullptr, &instanceBufferSize, PERF_DETAIL_WIZARD, 0);
 
     if (static_cast<DWORD>(status) == PDH_MORE_DATA && instanceBufferSize != 0U)
@@ -153,15 +159,15 @@ void WindowsDiskProbe::Impl::enumerate()
         DWORD counterSize = counterBufferSize;
         DWORD instanceSize = instanceBufferSize;
 
-        status = PdhEnumObjectItemsW(nullptr,
-                                     nullptr,
-                                     L"PhysicalDisk",
-                                     counterBuffer.data(),
-                                     &counterSize,
-                                     instanceBuffer.data(),
-                                     &instanceSize,
-                                     PERF_DETAIL_WIZARD,
-                                     0);
+        status = fns.pdh.enumObjectItemsW(nullptr,
+                                          nullptr,
+                                          L"PhysicalDisk",
+                                          counterBuffer.data(),
+                                          &counterSize,
+                                          instanceBuffer.data(),
+                                          &instanceSize,
+                                          PERF_DETAIL_WIZARD,
+                                          0);
 
         if (status == ERROR_SUCCESS)
         {
@@ -183,7 +189,7 @@ void WindowsDiskProbe::Impl::enumerate()
                 {
                     // The handle is owned from the moment it is opened, so the name conversion or
                     // push_back below throwing closes it on unwind instead of leaking it.
-                    Windows::UniqueHandle handle = openPhysicalDriveForPerfQuery(*driveIndex, openFailures);
+                    Windows::UniqueHandle handle = openPhysicalDriveForPerfQuery(fns.drive, *driveIndex, openFailures);
                     if (handle)
                     {
                         found.push_back(OpenDisk{.instanceName = WinString::wideToUtf8(instanceName), .handle = std::move(handle)});
@@ -225,7 +231,23 @@ void WindowsDiskProbe::Impl::enumerate()
                   { return std::ranges::none_of(disks, [&](const OpenDisk& disk) { return disk.instanceName == entry.first; }); });
 }
 
-WindowsDiskProbe::WindowsDiskProbe() : m_Impl(std::make_unique<Impl>())
+WindowsDiskProbe::WindowsDiskProbe() : WindowsDiskProbe(systemFunctions())
+{}
+
+WindowsDiskProbeFunctions WindowsDiskProbe::systemFunctions()
+{
+    WindowsDiskProbeFunctions fns;
+    fns.pdh.enumObjectsW = &PdhEnumObjectsW;
+    fns.pdh.enumObjectItemsW = &PdhEnumObjectItemsW;
+    fns.drive.openPhysicalDriveQueryOnly = &Windows::openPhysicalDriveQueryOnly;
+    fns.drive.deviceIoControl = &DeviceIoControl;
+    fns.drive.getLogicalDrives = &GetLogicalDrives;
+    fns.drive.getDriveTypeW = &GetDriveTypeW;
+    fns.now = &std::chrono::steady_clock::now;
+    return fns;
+}
+
+WindowsDiskProbe::WindowsDiskProbe(const WindowsDiskProbeFunctions& functions) : m_Impl(std::make_unique<Impl>(functions))
 {
     m_Impl->enumerate();
     spdlog::debug("WindowsDiskProbe: initialized with {} disks", m_Impl->disks.size());
@@ -245,8 +267,7 @@ SystemDiskCounters WindowsDiskProbe::read()
     // drive) would land between that timestamp and the disks' busy-time readings and swing
     // utilisation up on that sample and down on the next (#1108, #1159). Done here, it delays only
     // the end of this read; a removed disk is also dropped before the next read rather than during it.
-    if (m_Impl &&
-        shouldReenumerate(std::chrono::steady_clock::now(), m_Impl->lastEnumeration, m_Impl->lastReadHadFailure, DISK_REENUMERATE_INTERVAL))
+    if (m_Impl && shouldReenumerate(m_Impl->fns.now(), m_Impl->lastEnumeration, m_Impl->lastReadHadFailure, DISK_REENUMERATE_INTERVAL))
     {
         m_Impl->enumerate();
     }
@@ -260,7 +281,7 @@ SystemDiskCounters WindowsDiskProbe::readCounters()
     if (!m_Impl || m_Impl->disks.empty())
     {
         // Fallback: enumerate logical drives
-        const DWORD drives = GetLogicalDrives();
+        const DWORD drives = m_Impl->fns.drive.getLogicalDrives();
         if (drives == 0)
         {
             spdlog::warn("WindowsDiskProbe: GetLogicalDrives failed");
@@ -277,7 +298,7 @@ SystemDiskCounters WindowsDiskProbe::readCounters()
             const auto driveLetter = static_cast<wchar_t>('A' + i);
             const std::wstring drivePath = std::wstring{driveLetter} + L":\\";
 
-            const UINT driveType = GetDriveTypeW(drivePath.c_str());
+            const UINT driveType = m_Impl->fns.drive.getDriveTypeW(drivePath.c_str());
 
             // Only include fixed drives
             if (driveType != DRIVE_FIXED)
@@ -310,15 +331,15 @@ SystemDiskCounters WindowsDiskProbe::readCounters()
     {
         DISK_PERFORMANCE perf{};
         DWORD bytesReturned = 0;
-        const BOOL queried =
-            DeviceIoControl(diskHandle.handle.get(), IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr);
+        const BOOL queried = m_Impl->fns.drive.deviceIoControl(
+            diskHandle.handle.get(), IOCTL_DISK_PERFORMANCE, nullptr, 0, &perf, sizeof(perf), &bytesReturned, nullptr);
         const DWORD queryError = (queried == 0) ? GetLastError() : ERROR_SUCCESS; // Before any other call
         // This disk's busy-time clock (#1108), taken next to its own IdleTime sample: monotonic, in
         // DISK_PERFORMANCE's 100 ns units. One timestamp for the whole loop let an earlier disk's
         // slow query become a later, idle disk's "busy" time.
-        const std::int64_t now100ns = std::chrono::duration_cast<std::chrono::duration<std::int64_t, std::ratio<1, 10'000'000>>>(
-                                          std::chrono::steady_clock::now().time_since_epoch())
-                                          .count();
+        const std::int64_t now100ns =
+            std::chrono::duration_cast<std::chrono::duration<std::int64_t, std::ratio<1, 10'000'000>>>(m_Impl->fns.now().time_since_epoch())
+                .count();
         if (queried == 0)
         {
             // Skip this disk for this cycle rather than pushing fabricated zero counters,

@@ -237,6 +237,7 @@ set(COMMON_TEST_SOURCES
     App/test_NonAsciiRoundTrips.cpp
     App/test_InstanceLock.cpp
     App/test_PanelTabs.cpp
+    App/test_MainTabBarViewRender.cpp
     App/test_TabLabel.cpp
     App/test_PriorityHelpers.cpp
     App/test_ProcessGpuHelpers.cpp
@@ -328,11 +329,13 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessProbe.cpp
     Platform/test_WindowsProcessProbeSeams.cpp
     Platform/test_WindowsSystemProbe.cpp
+    Platform/test_WindowsSystemProbeSeams.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsDiskProbe.cpp
+    Platform/test_WindowsDiskProbeSeams.cpp
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
@@ -344,8 +347,10 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
+    Platform/test_WindowsStartupProbeSeams.cpp
     Platform/test_WindowsStartupActions.cpp
     Platform/test_WindowsSystemInfoProbe.cpp
+    Platform/test_WindowsSystemInfoProbeSeams.cpp
     Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
@@ -503,6 +508,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp
     # The keyboard shortcuts' ImGui adapter (#160, #170), run headless (test_KeyboardInputRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
+    # The main tab bar (#1547), run headless (test_MainTabBarViewRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/MainTabBarView.cpp
     # The status bar (#1547), run headless (test_StatusBarViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/StatusBarView.cpp
     # The shell's frame (#1547): the main window, tab bar and status bar over the panels, drawn

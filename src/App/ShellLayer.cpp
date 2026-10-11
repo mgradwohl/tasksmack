@@ -10,6 +10,7 @@
 #include "FontSizeChange.h"
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
+#include "MainTabBarView.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/Factory.h"
@@ -654,68 +655,49 @@ void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
 
 void ShellLayer::renderTabBar()
 {
-    // Every size here is authored at the reference configuration and scaled like the ImGuiStyle
-    // values around it. As pixel literals pushed over a scaled style they kept one size while the
-    // text they frame grew and shrank: the tabs' padding was more than a line of text at Small and
-    // about half a line at Even Huger (#971).
-    const float styleScale = UI::Theme::get().styleScale();
+    // Track previous tab to emit change event if selection changes
+    const auto* previousTab = &m_Tabs.activeTab();
 
-    // Add top edge padding for visual balance
-    ImGui::Dummy(ImVec2(0.0F, ShellMetrics::TOP_EDGE_PADDING * styleScale));
-
-    // Add left indent to align main tabs with panel tabs below (same as the content area's gutter)
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ShellMetrics::CONTENT_PADDING_H * styleScale));
-
-    // Add horizontal padding inside tabs and vertical padding for taller tabs
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(ShellMetrics::TAB_PADDING_X * styleScale, ShellMetrics::MAIN_TAB_PADDING_Y * styleScale));
-
-    if (ImGui::BeginTabBar("##MainTabBar",
-                           ImGuiTabBarFlags_NoCloseWithMiddleMouseButton | ImGuiTabBarFlags_NoTooltip |
-                               ImGuiTabBarFlags_DrawSelectedOverline))
+    // TASKSMACK_TAB's tab is found by its registered id, not its position, and asked for on every
+    // frame until BeginTabItem() reports it selected (#1575).
+    m_TabBarItems.clear();
+    for (const auto& tab : m_Tabs.tabs())
     {
-        // Track previous tab to emit change event if selection changes
-        const auto* previousTab = &m_Tabs.activeTab();
-
-        // TASKSMACK_TAB's tab is found by its registered id, not its position, and asked for on every
-        // frame until BeginTabItem() reports it selected (#1575).
-        std::size_t index = 0;
-        for (const auto& tab : m_Tabs.tabs())
-        {
-            ImGuiTabItemFlags tabFlags = ImGuiTabItemFlags_NoCloseWithMiddleMouseButton;
-            if ((m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") || m_StartupTab.wantsSelected(tab.eventName))
-            {
-                tabFlags |= ImGuiTabItemFlags_SetSelected;
-            }
-            const bool selected = ImGui::BeginTabItem(tab.label(), nullptr, tabFlags);
-            m_StartupTab.onTabSubmitted(tab.eventName, selected);
-            if (selected)
-            {
-                m_Tabs.select(index);
-                ImGui::EndTabItem();
-            }
-            ++index;
-        }
-        m_ShowDetailsTabRequested = false;
-        if (const std::optional<std::string> dropped = m_StartupTab.onFrameEnd(); dropped.has_value())
-        {
-            spdlog::warn("{}: tab '{}' was not selected after {} frames; ignored",
-                         SelectOverride::MAIN_TAB_ENV_VAR,
-                         *dropped,
-                         SelectOverride::MAX_MAIN_TAB_FRAMES);
-        }
-
-        ImGui::EndTabBar();
-
-        // Emit ActiveTabChangedEvent when tab selection changes
-        if (previousTab != &m_Tabs.activeTab())
-        {
-            Core::ActiveTabChangedEvent evt(m_Tabs.activeTab().eventName);
-            m_Host->raiseEvent(evt);
-        }
+        m_TabBarItems.push_back({.label = tab.label(),
+                                 .selectRequested = (m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") ||
+                                                    m_StartupTab.wantsSelected(tab.eventName)});
+    }
+    const MainTabBarView::Result bar = MainTabBarView::render(m_TabBarItems);
+    if (!bar.drawn)
+    {
+        return;
     }
 
-    ImGui::PopStyleVar();
+    std::size_t index = 0;
+    for (const auto& tab : m_Tabs.tabs())
+    {
+        m_StartupTab.onTabSubmitted(tab.eventName, bar.selected == index);
+        ++index;
+    }
+    if (bar.selected.has_value())
+    {
+        m_Tabs.select(*bar.selected);
+    }
+    m_ShowDetailsTabRequested = false;
+    if (const std::optional<std::string> dropped = m_StartupTab.onFrameEnd(); dropped.has_value())
+    {
+        spdlog::warn("{}: tab '{}' was not selected after {} frames; ignored",
+                     SelectOverride::MAIN_TAB_ENV_VAR,
+                     *dropped,
+                     SelectOverride::MAX_MAIN_TAB_FRAMES);
+    }
+
+    // Emit ActiveTabChangedEvent when tab selection changes
+    if (previousTab != &m_Tabs.activeTab())
+    {
+        Core::ActiveTabChangedEvent evt(m_Tabs.activeTab().eventName);
+        m_Host->raiseEvent(evt);
+    }
 }
 
 void ShellLayer::renderStatusBar() const
