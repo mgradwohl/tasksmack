@@ -6,9 +6,6 @@
 #include "TitleBarLayer.h"
 #include "WindowOverride.h"
 
-#include <SDL3/SDL_error.h>
-#include <spdlog/spdlog.h>
-
 #include <memory>
 #include <optional>
 #include <utility>
@@ -64,11 +61,8 @@ class ApplicationShellHost final : public IShellHost
 
     void setMinimumWindowSize(int width, int height) override
     {
-        if (SDL_Window* window = Core::Application::get().getWindow().getHandle();
-            window != nullptr && !SDL_SetWindowMinimumSize(window, width, height))
-        {
-            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", width, height, SDL_GetError());
-        }
+        // Logs its own failure; keeps the current size on a tiled Wayland window (#1777).
+        static_cast<void>(Core::Application::get().getWindow().setMinimumSize(width, height));
     }
 
     [[nodiscard]] WindowOverride::CapturedWindow captureWindow() const override

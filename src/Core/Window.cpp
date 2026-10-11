@@ -520,6 +520,34 @@ void Window::setSize(int width, int height)
     m_Spec.Height = clampedHeight;
 }
 
+bool Window::setMinimumSize(int width, int height)
+{
+    if (m_Handle == nullptr)
+    {
+        return false;
+    }
+
+    const std::pair<int, int> current = getSize();
+    if (!SDL_SetWindowMinimumSize(m_Handle, width, height))
+    {
+        spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", width, height, SDL_GetError());
+        return false;
+    }
+    // SDL_SetWindowMinimumSize() has just resized the window to SDL's saved floating size, which
+    // native Wayland leaves stale while the compositor tiles the window (#1777); put the size the
+    // compositor gave back. X11 and Windows refresh the floating size on every configure, so there it
+    // already is the current size.
+    if (VideoBackend::isWayland())
+    {
+        const bool maximizedOrFullscreen = (SDL_GetWindowFlags(m_Handle) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN)) != 0;
+        if (const auto keep = WindowGeometry::sizeAfterMinimumChange(current, width, height, maximizedOrFullscreen); keep.has_value())
+        {
+            SDL_SetWindowSize(m_Handle, keep->first, keep->second);
+        }
+    }
+    return true;
+}
+
 auto Window::getSize() const noexcept -> std::pair<int, int>
 {
     if (m_Handle == nullptr)

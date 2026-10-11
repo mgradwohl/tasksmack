@@ -602,5 +602,31 @@ TEST(NormalGeometryTrackerTest, RestoreSpendsTheRestoreTarget)
     EXPECT_EQ(savedNormal(tracker, false, NORMAL_B), NORMAL_B);
 }
 
+// #1777: SDL_SetWindowMinimumSize() resizes to SDL's floating size, stale on a tiled Wayland window.
+TEST(WindowGeometrySizeAfterMinimumChangeTest, KeepsACurrentSizeThatMeetsTheMinimum)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({1600, 1000}, 800, 500, false), (std::pair{1600, 1000}));
+}
+
+TEST(WindowGeometrySizeAfterMinimumChangeTest, GrowsEachSideToTheMinimum)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({700, 1000}, 800, 500, false), (std::pair{800, 1000}));
+    EXPECT_EQ(sizeAfterMinimumChange({1600, 400}, 800, 500, false), (std::pair{1600, 500}));
+    EXPECT_EQ(sizeAfterMinimumChange({700, 400}, 800, 500, false), (std::pair{800, 500}));
+}
+
+TEST(WindowGeometrySizeAfterMinimumChangeTest, LeavesAMaximizedOrFullscreenWindowAlone)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({1600, 1000}, 800, 500, true), std::nullopt);
+}
+
+TEST(WindowGeometrySizeAfterMinimumChangeTest, DoesNotRestoreAnUnknownSize)
+{
+    EXPECT_EQ(sizeAfterMinimumChange({0, 0}, 800, 500, false), std::nullopt);
+    EXPECT_EQ(sizeAfterMinimumChange({1600, -1}, 800, 500, false), std::nullopt);
+}
+
+static_assert(sizeAfterMinimumChange({1600, 1000}, 0, 0, false) == std::pair{1600, 1000});
+
 } // namespace
 } // namespace Core::WindowGeometry

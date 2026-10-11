@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Core/GraphicsHostInfo.h"
-#include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL_video.h>
@@ -79,6 +78,11 @@ class Window
     [[nodiscard]] static bool supportsPositioning() noexcept;
 
     void setSize(int width, int height);
+    /// Set the smallest size the user can resize the window to, in window coordinates. Unlike a bare
+    /// SDL_SetWindowMinimumSize(), it keeps the window's current size on native Wayland, where SDL
+    /// would otherwise shrink a tiled window to its stale floating size (#1777). False, with the SDL
+    /// error logged, when SDL rejects the minimum. Cheap: no SDL_SyncWindow().
+    bool setMinimumSize(int width, int height);
     /// Return the current logical size as {width, height} in screen coordinates.
     /// Returns {m_Spec.Width, m_Spec.Height} when the window handle has not yet
     /// been created. Callers that need both dimensions should prefer this over

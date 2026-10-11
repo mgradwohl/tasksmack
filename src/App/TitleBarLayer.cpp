@@ -942,10 +942,8 @@ void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
         if (minimumSize != m_MinimumSize)
         {
             m_MinimumSize = minimumSize;
-            if (!SDL_SetWindowMinimumSize(window.getHandle(), minimumSize.width, minimumSize.height))
-            {
-                spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", minimumSize.width, minimumSize.height, SDL_GetError());
-            }
+            // Logs its own failure; keeps the current size on a tiled Wayland window (#1777).
+            static_cast<void>(window.setMinimumSize(minimumSize.width, minimumSize.height));
         }
     }
 }

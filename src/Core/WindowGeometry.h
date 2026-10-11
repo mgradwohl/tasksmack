@@ -386,6 +386,25 @@ class NormalGeometryTracker
     return primaryIndex < displays.size() ? primaryIndex : 0;
 }
 
+/// The size to put back after SDL_SetWindowMinimumSize() (#1777), or std::nullopt to leave the
+/// window alone.
+///
+/// SDL_SetWindowMinimumSize() ends by resizing the window to SDL's saved floating size. On native
+/// Wayland SDL does not update that size while the compositor tiles the window (a tiling compositor,
+/// or a half-screen snap), so the call would shrink a tiled window back to its creation size inside
+/// its tile. Putting back @p current -- grown to the new minimum where it is smaller -- keeps the size
+/// the compositor gave. A maximized or fullscreen window is never resized by SDL, and a size that is
+/// not known (not positive) is not restored.
+[[nodiscard]] constexpr std::optional<std::pair<int, int>>
+sizeAfterMinimumChange(std::pair<int, int> current, int minimumWidth, int minimumHeight, bool maximizedOrFullscreen) noexcept
+{
+    if (maximizedOrFullscreen || current.first <= 0 || current.second <= 0)
+    {
+        return std::nullopt;
+    }
+    return std::pair{std::max(current.first, minimumWidth), std::max(current.second, minimumHeight)};
+}
+
 /// Largest window scale (window units per 96-DPI point) accepted from a saved config. Windows tops
 /// out at 500 %; anything far beyond that is a corrupt value, not a display.
 inline constexpr float MAX_WINDOW_SCALE = 16.0F;

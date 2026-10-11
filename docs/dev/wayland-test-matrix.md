@@ -185,6 +185,7 @@ Test toggle maximize/restore:
 
 **Sway:**
 - [ ] Verify correct behavior in tiling mode
+  - Expected: launched tiled, the window renders at the tile's full size, and keeps it when a tab switch or a font-size change re-sets the minimum window size (#1777). GNOME and KDE half-screen snaps use the same tiled states.
 - [ ] Test floating window mode
 
 **Hyprland:**
