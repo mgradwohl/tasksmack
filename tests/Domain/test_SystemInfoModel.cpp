@@ -9,12 +9,14 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace Domain
@@ -33,7 +35,11 @@ enum class ReadOsThrows : std::uint8_t
 class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
 {
   public:
-    FakeSystemInfoProbe(bool hasOs, int* reads, ReadOsThrows throws = ReadOsThrows::No) : m_HasOs(hasOs), m_Reads(reads), m_Throws(throws)
+    FakeSystemInfoProbe(bool hasOs,
+                        int* reads,
+                        ReadOsThrows throws = ReadOsThrows::No,
+                        std::chrono::milliseconds readOsDelay = std::chrono::milliseconds(0))
+        : m_HasOs(hasOs), m_Reads(reads), m_Throws(throws), m_ReadOsDelay(readOsDelay)
     {}
 
     [[nodiscard]] Platform::SystemInfoCapabilities capabilities() const override
@@ -44,6 +50,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     [[nodiscard]] Platform::OsInfo readOs() override
     {
         ++*m_Reads;
+        std::this_thread::sleep_for(m_ReadOsDelay);
         if (m_Throws == ReadOsThrows::StdException)
         {
             throw std::runtime_error("no WMI");
@@ -175,6 +182,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     bool m_HasOs;
     int* m_Reads;
     ReadOsThrows m_Throws;
+    std::chrono::milliseconds m_ReadOsDelay;
     std::size_t m_SensorReads = 0;
 };
 
@@ -246,6 +254,19 @@ TEST(SystemInfoModelTest, ReadSensorsKeepsTheRestAndTracksEachSensorsRange)
     model.read();
     EXPECT_EQ(model.snapshot()->sensorRanges.at(key).samples, 4U);
     EXPECT_FALSE(model.tryReadSensors().has_value());
+}
+
+// #1773: a read is stamped when it starts, so the crash cache it publishes to orders it correctly against
+// a read that started later and finished first.
+TEST(SystemInfoModelTest, AReadIsStampedWhenItStarts)
+{
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads, ReadOsThrows::No, std::chrono::milliseconds(2100)));
+    const auto before = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    model.read();
+    EXPECT_LE(model.snapshot()->readAtUnixSeconds, before + 1); // finished two seconds later
+    EXPECT_GE(model.snapshot()->readAtUnixSeconds, before);
 }
 
 TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)

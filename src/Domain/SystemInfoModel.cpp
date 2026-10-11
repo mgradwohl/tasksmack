@@ -32,6 +32,10 @@ void SystemInfoModel::read()
     const std::scoped_lock lock(m_ReadMutex);
 
     auto next = std::make_shared<SystemInfoSnapshot>();
+    // Stamped when the read starts, not when it ends: the crash cache orders publications by it, and a
+    // slow read that started earlier must not replace one that started later (#1773).
+    const auto started = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    next->readAtUnixSeconds = started > 0 ? static_cast<std::uint64_t>(started) : 0;
     if (m_Capabilities.hasOs)
     {
         next->os = m_Probe->readOs();
@@ -50,8 +54,6 @@ void SystemInfoModel::read()
     }
     addToSensorRanges(next->sensors);
     next->sensorRanges = m_SensorRanges;
-    const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    next->readAtUnixSeconds = static_cast<std::uint64_t>(now);
     if (m_CrashHistory && m_Capabilities.hasOs)
     {
         // Process Details' crash line (#1675) shows this read too, without a second one of its own.

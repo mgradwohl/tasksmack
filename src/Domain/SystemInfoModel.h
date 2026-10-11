@@ -37,7 +37,7 @@ struct SensorRange
 struct SystemInfoSnapshot
 {
     std::uint64_t version = 0;           ///< 0 until the first read.
-    std::uint64_t readAtUnixSeconds = 0; ///< When the read was taken.
+    std::uint64_t readAtUnixSeconds = 0; ///< When the read started (#1773).
     Platform::OsInfo os;
     Platform::FirmwareInfo firmware;
     Platform::MemoryModulesInfo memory;

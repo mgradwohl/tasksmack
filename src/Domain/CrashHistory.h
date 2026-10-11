@@ -25,7 +25,7 @@ namespace Domain
 struct CrashHistorySnapshot
 {
     std::uint64_t version = 0;           ///< 0 until the first read.
-    std::uint64_t readAtUnixSeconds = 0; ///< When the read was taken.
+    std::uint64_t readAtUnixSeconds = 0; ///< When the read started (publications are ordered by it, #1773).
     Platform::CrashesInfo crashes;
 };
 
@@ -45,9 +45,9 @@ class CrashHistory
     /// message, so nothing crosses threads but a plain value (#1685, #1706).
     void read();
 
-    /// Publishes @p crashes, read at @p readAtUnixSeconds: the System Information read's (#1399), so
-    /// Process Details shows what the System tab shows without reading the log again. A read older
-    /// than the one already published is dropped.
+    /// Publishes @p crashes from a read that started at @p readAtUnixSeconds: the System Information
+    /// read's (#1399), so Process Details shows what the System tab shows without reading the log again.
+    /// A read that started before the one already published is dropped, however late it finishes (#1773).
     void publish(Platform::CrashesInfo crashes, std::uint64_t readAtUnixSeconds);
 
     /// The newest read (an empty version-0 one before the first).

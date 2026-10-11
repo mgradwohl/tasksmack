@@ -9,10 +9,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -182,6 +185,50 @@ TEST(CrashHistoryTest, AnOlderPublicationThanTheShownOneIsDropped)
     EXPECT_EQ(history.snapshot()->crashes.events[0].application, "new.exe");
     history.publish(listed(OsFamily::Windows, {}), 2000); // the same time is as fresh
     EXPECT_EQ(history.version(), 2U);
+}
+
+/// Wall-clock seconds now, as CrashHistory stamps reads.
+[[nodiscard]] std::uint64_t secondsNow()
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+// #1773: a read is stamped when it starts. A slow one that started before a newer publication doesn't
+// replace it when it finishes; before the fix it was stamped when it finished, so it did.
+TEST(CrashHistoryTest, ASlowReadThatStartedEarlierDoesNotReplaceANewerList)
+{
+    std::atomic<bool> reading{false};
+    CrashHistory history(
+        [&reading]
+        {
+            reading = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+            return listed(OsFamily::Windows, {crash("old.exe", 1)});
+        });
+    const std::uint64_t started = secondsNow();
+    std::thread slow([&history] { history.read(); });
+    while (!reading)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // While it reads, a newer list arrives (the System Information read, a second or more later).
+    history.publish(listed(OsFamily::Windows, {crash("new.exe", 1)}), started + 1);
+    slow.join();
+    ASSERT_FALSE(history.snapshot()->crashes.events.empty());
+    EXPECT_EQ(history.snapshot()->crashes.events[0].application, "new.exe");
+    EXPECT_EQ(history.version(), 1U); // the slow read was dropped
+
+    // On its own, a slow read carries the second it started, not the one it finished.
+    CrashHistory alone(
+        []
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+            return listed(OsFamily::Linux, {});
+        });
+    const std::uint64_t before = secondsNow();
+    alone.read();
+    EXPECT_LE(alone.snapshot()->readAtUnixSeconds, before + 1);
 }
 
 TEST(CrashHistoryTest, RequiresAReadFunction)
