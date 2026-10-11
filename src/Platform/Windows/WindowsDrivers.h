@@ -6,12 +6,13 @@
 // version and company from its version resource.
 // The SCM is the one source: a running driver service is a loaded driver, and it names its start type and
 // image. Loaded images that aren't services (the kernel, the HAL, kdcom and the like, which
-// EnumDeviceDrivers would add) aren't listed. Stopped drivers are left out too, except (#1661) a Boot, System
-// or Automatic start driver that stopped with an error: it failed to start. Each image's signature is checked
-// with WinVerifyTrust, embedded or through the catalogs, without the network, and cached by path and file
-// time for the session (#1661). No driver is started, stopped or changed.
-// Every call goes through an injectable table; WindowsSystemInfoProbe.cpp supplies the real one, tests
-// substitute fakes.
+// EnumDeviceDrivers would add) aren't listed. Stopped drivers are left out too, except (#1661) a Boot,
+// System or Automatic start driver that stopped with an error: it failed to start. Errors a healthy machine
+// shows aren't failures: never started, not supported, no hypervisor, and a Microsoft-signed image's
+// general failure. Each image's signature is checked with WinVerifyTrust, embedded or through the
+// catalogs, without the network, and cached by path and file time for the session (#1661).
+// No driver is started, stopped or changed. Every call goes through an injectable table;
+// WindowsSystemInfoProbe.cpp supplies the real one, tests substitute fakes.
 
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -67,7 +68,15 @@ struct FileStamp
 struct SignatureCheck
 {
     DriverSignature signature = DriverSignature::NotChecked;
-    std::string note; ///< Untrusted or Unknown: the failing result's text
+    std::string note;   ///< Untrusted or Unknown: the failing result's text
+    std::string signer; ///< Embedded or Catalog: the signing certificate's name ("Microsoft Windows")
+};
+
+/// One WinVerifyTrust call's answer.
+struct TrustCheck
+{
+    std::int32_t result = 0; ///< 0 when the signature is trusted, else the failing HRESULT
+    std::string signer;      ///< When trusted: the signing certificate's simple name; empty if unread
 };
 
 /// The calls readDrivers() makes.
@@ -81,14 +90,15 @@ struct Functions
     /// The file's last write time and size; nullopt when it can't be read. Without it (or either verify
     /// call) signatures aren't checked.
     std::optional<FileStamp> (*fileStamp)(const std::string& path) = nullptr;
-    /// WinVerifyTrust's result for the file's own (embedded) signature: 0 when it is trusted.
-    std::int32_t (*verifyEmbeddedSignature)(const std::string& path) = nullptr;
-    /// WinVerifyTrust's result for the catalog that holds the file's hash: 0 when it is trusted; nullopt when
-    /// no catalog holds it; a failure's HRESULT when the catalogs couldn't be searched.
-    std::optional<std::int32_t> (*verifyCatalogSignature)(const std::string& path) = nullptr;
+    /// WinVerifyTrust's answer for the file's own (embedded) signature: result 0 when it is trusted.
+    TrustCheck (*verifyEmbeddedSignature)(const std::string& path) = nullptr;
+    /// WinVerifyTrust's answer for the catalog that holds the file's hash: result 0 when it is trusted;
+    /// nullopt when no catalog holds it; a failure's HRESULT when the catalogs couldn't be searched.
+    std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path) = nullptr;
 };
 
 inline constexpr std::uint32_t SERVICE_STOPPED_STATE = 1;    ///< SERVICE_STOPPED
+inline constexpr std::uint32_t GEN_FAILURE_EXIT = 31;        ///< ERROR_GEN_FAILURE
 inline constexpr std::uint32_t NOT_SUPPORTED_EXIT = 50;      ///< ERROR_NOT_SUPPORTED: the driver doesn't apply to this machine
 inline constexpr std::uint32_t SERVICE_SPECIFIC_EXIT = 1066; ///< ERROR_SERVICE_SPECIFIC_ERROR
 inline constexpr std::uint32_t NEVER_STARTED_EXIT = 1077;    ///< ERROR_SERVICE_NEVER_STARTED
@@ -109,12 +119,39 @@ inline constexpr std::int32_t CERT_SIGNATURE = static_cast<std::int32_t>(0x80096
 inline constexpr std::int32_t BAD_DIGEST = static_cast<std::int32_t>(0x80096010U);           ///< TRUST_E_BAD_DIGEST
 } // namespace TrustResult
 
-/// A stopped driver's exit code that means it tried to start and failed. 1077 is "never started" (the
-/// usual code of a driver for hardware that isn't there) and 50 "not supported" (a driver that declined to
-/// load on this machine); neither is a failure.
+/// A hypervisor-facility NTSTATUS (0xC035xxxx): a virtualization driver that found no hypervisor, or not
+/// the feature it serves ("A hypervisor feature is not available to the user"), on a machine without one.
+[[nodiscard]] constexpr bool isHypervisorStatus(std::uint32_t code) noexcept
+{
+    constexpr std::uint32_t FACILITY_MASK = 0xFFFF0000U;
+    constexpr std::uint32_t HYPERVISOR_ERROR = 0xC0350000U; // STATUS_SEVERITY_ERROR | FACILITY_HYPERVISOR (0x35)
+    return (code & FACILITY_MASK) == HYPERVISOR_ERROR;
+}
+
+/// A stopped driver's exit code that may mean it tried to start and failed. 1077 is "never started" (the
+/// usual code of a driver for hardware that isn't there), 50 "not supported" (a driver that declined to
+/// load on this machine) and a hypervisor-facility NTSTATUS a virtualization driver on a machine without
+/// the hypervisor; none is a failure. readDrivers() also excuses ERROR_GEN_FAILURE from a Microsoft-signed
+/// image (isBenignInboxFailure()).
 [[nodiscard]] constexpr bool isStartFailureCode(std::uint32_t win32ExitCode) noexcept
 {
-    return win32ExitCode != 0 && win32ExitCode != NEVER_STARTED_EXIT && win32ExitCode != NOT_SUPPORTED_EXIT;
+    return win32ExitCode != 0 && win32ExitCode != NEVER_STARTED_EXIT && win32ExitCode != NOT_SUPPORTED_EXIT &&
+           !isHypervisorStatus(win32ExitCode);
+}
+
+/// Windows' own signer names: an image they sign trustedly is an inbox one. "Microsoft Windows Hardware
+/// Compatibility Publisher" (WHQL, which signs third-party drivers) is deliberately not among them.
+[[nodiscard]] inline bool isMicrosoftSigned(DriverSignature signature, std::string_view signer) noexcept
+{
+    const bool trusted = signature == DriverSignature::Embedded || signature == DriverSignature::Catalog;
+    return trusted && (signer == "Microsoft Windows" || signer == "Microsoft Corporation");
+}
+
+/// A start failure that is expected on a healthy machine: ERROR_GEN_FAILURE from a Microsoft-signed image
+/// (hwpolicy, the Hardware Policy Driver, commonly stops so). From any other image it still counts.
+[[nodiscard]] inline bool isBenignInboxFailure(std::uint32_t win32ExitCode, DriverSignature signature, std::string_view signer) noexcept
+{
+    return win32ExitCode == GEN_FAILURE_EXIT && isMicrosoftSigned(signature, signer);
 }
 
 /// A start type with which Windows loads the driver itself, at boot or startup.
@@ -314,7 +351,7 @@ class SignatureCache
     const std::optional<FileStamp> stamp = fns.fileStamp(path);
     if (!stamp.has_value())
     {
-        return {.signature = DriverSignature::Unknown, .note = "The image file couldn't be read"};
+        return {.signature = DriverSignature::Unknown, .note = "The image file couldn't be read", .signer = {}};
     }
     if (cache != nullptr)
     {
@@ -323,13 +360,22 @@ class SignatureCache
             return std::move(*cached);
         }
     }
-    const std::int32_t embedded = fns.verifyEmbeddedSignature(path);
-    const std::optional<std::int32_t> catalog = embedded == 0 ? std::nullopt : fns.verifyCatalogSignature(path);
-    const SignatureVerdict verdict = classifySignature(embedded, catalog);
-    SignatureCheck check{.signature = verdict.signature, .note = {}};
+    TrustCheck embedded = fns.verifyEmbeddedSignature(path);
+    std::optional<TrustCheck> catalog = embedded.result == 0 ? std::nullopt : fns.verifyCatalogSignature(path);
+    const SignatureVerdict verdict =
+        classifySignature(embedded.result, catalog.has_value() ? std::optional<std::int32_t>(catalog->result) : std::nullopt);
+    SignatureCheck check{.signature = verdict.signature, .note = {}, .signer = {}};
     if (verdict.signature == DriverSignature::Untrusted || verdict.signature == DriverSignature::Unknown)
     {
         check.note = describeError(fns, static_cast<std::uint32_t>(verdict.result)); // an HRESULT's bits
+    }
+    else if (verdict.signature == DriverSignature::Embedded)
+    {
+        check.signer = std::move(embedded.signer);
+    }
+    else if (verdict.signature == DriverSignature::Catalog && catalog.has_value())
+    {
+        check.signer = std::move(catalog->signer);
     }
     if (cache != nullptr && verdict.signature != DriverSignature::Unknown)
     {
@@ -366,10 +412,7 @@ inline void readDrivers(DriversInfo& info, const Functions& fns, SignatureCache*
         driver.state = Windows::ServiceMath::stateFromCode(service.currentState);
         driver.startType = service.startType;
         driver.path = driverImagePath(service.binaryPath, service.name, windowsDir);
-        if (failed)
-        {
-            driver.startError = startErrorText(fns, service);
-        }
+        std::string signer;
         if (!driver.path.empty())
         {
             FileVersionRecord file = fns.readFileVersion(driver.path);
@@ -378,6 +421,15 @@ inline void readDrivers(DriversInfo& info, const Functions& fns, SignatureCache*
             SignatureCheck signature = checkSignature(fns, cache, driver.path);
             driver.signature = signature.signature;
             driver.signatureNote = std::move(signature.note);
+            signer = std::move(signature.signer);
+        }
+        if (failed)
+        {
+            if (isBenignInboxFailure(service.win32ExitCode, driver.signature, signer))
+            {
+                continue; // stopped as it does on a healthy machine: left out, as other stopped drivers are
+            }
+            driver.startError = startErrorText(fns, service);
         }
         info.drivers.push_back(std::move(driver));
     }

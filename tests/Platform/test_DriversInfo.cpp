@@ -159,12 +159,19 @@ struct FakeSignatures
     std::map<std::string, std::optional<std::int32_t>> catalog;
     std::map<std::string, int> embeddedChecks;
     std::map<std::string, int> catalogChecks;
+    std::map<std::string, std::string> signers; ///< A trusted signature's signer (absent: "Microsoft Windows")
 };
 
 [[nodiscard]] FakeSignatures& fakes()
 {
     static FakeSignatures signatures;
     return signatures;
+}
+
+[[nodiscard]] std::string signerOf(const std::string& path)
+{
+    const auto found = fakes().signers.find(path);
+    return found != fakes().signers.end() ? found->second : std::string("Microsoft Windows");
 }
 
 constexpr std::int32_t ACCESS_DENIED = static_cast<std::int32_t>(0x80070005U); // HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)
@@ -217,14 +224,19 @@ void resetSignatures()
         {
             ++fakes().embeddedChecks[path];
             const auto found = fakes().embedded.find(path);
-            return found != fakes().embedded.end() ? found->second : 0;
+            const std::int32_t result = found != fakes().embedded.end() ? found->second : 0;
+            return WindowsDrivers::TrustCheck{.result = result, .signer = result == 0 ? signerOf(path) : std::string{}};
         },
-        .verifyCatalogSignature =
-            [](const std::string& path)
+        .verifyCatalogSignature = [](const std::string& path) -> std::optional<WindowsDrivers::TrustCheck>
         {
             ++fakes().catalogChecks[path];
             const auto found = fakes().catalog.find(path);
-            return found != fakes().catalog.end() ? found->second : std::nullopt;
+            if (found == fakes().catalog.end() || !found->second.has_value())
+            {
+                return std::nullopt;
+            }
+            const std::int32_t result = *found->second;
+            return WindowsDrivers::TrustCheck{.result = result, .signer = result == 0 ? signerOf(path) : std::string{}};
         },
     };
 }
@@ -311,11 +323,12 @@ TEST(WindowsDriversTest, ScmFailureIsNotListed)
 TEST(WindowsDriversTest, ListsDriversThatFailedToStart)
 {
     resetSignatures();
+    fakes().signers[imagePath("hwbad")] = "Contoso Ltd."; // a third-party image: its general failure counts
     g_Services = std::vector<WindowsDrivers::DriverServiceRecord>{
         service("ACPI", RUNNING, ServiceStartType::Boot),
         service("hwbad", STOPPED, ServiceStartType::Boot, 31),
         service("svcerr", STOPPED, ServiceStartType::Automatic, WindowsDrivers::SERVICE_SPECIFIC_EXIT, 5),
-        service("ntstat", STOPPED, ServiceStartType::System, 0xC035001EU), // an NTSTATUS with no message text
+        service("ntstat", STOPPED, ServiceStartType::System, 0xC0000034U), // an NTSTATUS with no message text
         // Not failures: a demand-start driver (most are for absent hardware), one that never started or
         // declined as not supported, one stopped cleanly, and a disabled one.
         service("usbcam", STOPPED, ServiceStartType::Manual, 31),
@@ -332,11 +345,70 @@ TEST(WindowsDriversTest, ListsDriversThatFailedToStart)
     EXPECT_EQ(info.drivers[1].state, ServiceState::Stopped);
     EXPECT_EQ(info.drivers[1].startError, "A device attached to the system is not functioning"); // no period or line break
     EXPECT_EQ(info.drivers[2].startError, "service-specific error 5");
-    EXPECT_EQ(info.drivers[3].startError, "error 0xC035001E");
+    EXPECT_EQ(info.drivers[3].startError, "error 0xC0000034");
 
     EXPECT_TRUE(WindowsDrivers::failedToStart(service("x", STOPPED, ServiceStartType::AutomaticDelayed, 2)));
     EXPECT_FALSE(WindowsDrivers::failedToStart(service("x", RUNNING, ServiceStartType::Boot, 31)));
     EXPECT_FALSE(WindowsDrivers::failedToStart(service("x", STOPPED, ServiceStartType::Unknown, 31)));
+}
+
+TEST(WindowsDriversTest, LeavesOutStartErrorsAHealthyMachineShows)
+{
+    // The maintainer's rule (#1661): a healthy machine shows no problem drivers. A Microsoft-signed image's
+    // ERROR_GEN_FAILURE (hwpolicy) and a hypervisor-facility NTSTATUS (l1vhlwf without Hyper-V) aren't
+    // failures; the same 31 from any other image, or another NTSTATUS, still is.
+    resetSignatures();
+    namespace Trust = WindowsDrivers::TrustResult;
+    fakes().embedded = {
+        {imagePath("hwpolicy"), Trust::NO_SIGNATURE},
+        {imagePath("vendor"), Trust::NO_SIGNATURE},
+        {imagePath("whql"), Trust::NO_SIGNATURE},
+        {imagePath("homebrew"), Trust::NO_SIGNATURE},
+    };
+    fakes().catalog = {{imagePath("hwpolicy"), 0}, {imagePath("whql"), 0}}; // catalog-signed
+    fakes().signers = {
+        {imagePath("msembedded"), "Microsoft Corporation"},
+        {imagePath("vendor"), "Contoso Ltd."},
+        {imagePath("whql"), "Microsoft Windows Hardware Compatibility Publisher"}, // signs third-party drivers
+    };
+    g_Services = std::vector<WindowsDrivers::DriverServiceRecord>{
+        service("hwpolicy", STOPPED, ServiceStartType::Boot, WindowsDrivers::GEN_FAILURE_EXIT),   // Microsoft Windows, catalog
+        service("msembedded", STOPPED, ServiceStartType::Boot, WindowsDrivers::GEN_FAILURE_EXIT), // Microsoft Corporation, embedded
+        service("l1vhlwf", STOPPED, ServiceStartType::Automatic, 0xC035001EU),
+        service("hvother", STOPPED, ServiceStartType::System, 0xC0351000U),
+        service("vendor", STOPPED, ServiceStartType::Boot, WindowsDrivers::GEN_FAILURE_EXIT),
+        service("whql", STOPPED, ServiceStartType::System, WindowsDrivers::GEN_FAILURE_EXIT),
+        service("homebrew", STOPPED, ServiceStartType::System, WindowsDrivers::GEN_FAILURE_EXIT), // unsigned
+        service("Missing", STOPPED, ServiceStartType::System, WindowsDrivers::GEN_FAILURE_EXIT),  // signature unknown
+        service("ntother", STOPPED, ServiceStartType::Boot, 0xC0000034U),
+    };
+    DriversInfo info;
+    WindowsDrivers::readDrivers(info, fakeFunctions());
+    std::vector<std::string> failed;
+    for (const KernelDriver& driver : info.drivers)
+    {
+        EXPECT_FALSE(driver.startError.empty()) << driver.name;
+        failed.push_back(driver.name);
+    }
+    EXPECT_EQ(failed, (std::vector<std::string>{"vendor", "whql", "homebrew", "Missing", "ntother"}));
+
+    // The signer is cached with the signature: a cached read excuses the same drivers.
+    WindowsDrivers::SignatureCache cache;
+    DriversInfo first;
+    WindowsDrivers::readDrivers(first, fakeFunctions(), &cache);
+    DriversInfo cached;
+    WindowsDrivers::readDrivers(cached, fakeFunctions(), &cache);
+    EXPECT_EQ(cached.drivers.size(), info.drivers.size());
+    EXPECT_EQ(fakes().embeddedChecks[imagePath("hwpolicy")], 2); // the uncached read, then the first cached one
+
+    EXPECT_TRUE(WindowsDrivers::isHypervisorStatus(0xC035001EU));
+    EXPECT_FALSE(WindowsDrivers::isHypervisorStatus(0xC0340001U));
+    EXPECT_FALSE(WindowsDrivers::isStartFailureCode(0xC035001EU));
+    EXPECT_TRUE(WindowsDrivers::isStartFailureCode(WindowsDrivers::GEN_FAILURE_EXIT)); // excused only by the signer
+    EXPECT_TRUE(WindowsDrivers::isMicrosoftSigned(DriverSignature::Catalog, "Microsoft Windows"));
+    EXPECT_FALSE(WindowsDrivers::isMicrosoftSigned(DriverSignature::Untrusted, "Microsoft Windows"));
+    EXPECT_FALSE(WindowsDrivers::isMicrosoftSigned(DriverSignature::Embedded, "Microsoft Windows Hardware Compatibility Publisher"));
+    EXPECT_FALSE(WindowsDrivers::isBenignInboxFailure(2, DriverSignature::Embedded, "Microsoft Windows"));
 }
 
 TEST(WindowsDriversTest, ClassifiesWinVerifyTrustResults)
