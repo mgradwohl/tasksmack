@@ -625,7 +625,34 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
         & git -C $checkout -c user.name=bench-test -c user.email=bench-test@example.invalid commit -q --allow-empty -m init 2>&1 | Out-Null
         $repoRoot = $checkout
         $branchGit = Get-GitProvenance
-        Assert-True ($branchGit.branch -ceq $branchName -and $branchGit.commit -match '^[0-9a-f]{40}$' -and $branchGit.dirty -eq $false) "Unicode branch: $($branchGit | ConvertTo-Json -Compress)"
+        # Each field on its own, and the branch as code points: printed through a non-UTF-8 console,
+        # mojibake can turn back into the right characters in the log (#1745).
+        $branchCodePoints = if ($null -eq $branchGit.branch) { '<null>' } else { ($branchGit.branch.ToCharArray() | ForEach-Object { 'U+{0:X4}' -f [int]$_ }) -join ' ' }
+        Assert-True ($branchGit.branch -ceq $branchName) "Unicode branch: [$branchCodePoints], expected [U+0066 U+00EB U+0061 U+0074 U+0075 U+0072 U+0065]"
+        Assert-True ("$($branchGit.commit)" -cmatch '^[0-9a-f]{40}$') "Unicode branch commit: [$($branchGit.commit)]"
+        Assert-True ($branchGit.dirty -eq $false) "Unicode branch dirty: [$($branchGit.dirty)]"
+        # The same read under a console whose code page is not UTF-8 (#1745): git's output is
+        # decoded as UTF-8 whatever the console says. In a process with a console of its own
+        # (CreateNoWindow), so the code page of the console CTest's other tests share is never
+        # changed. The child prints only ASCII: the code page it ran under and the code points.
+        $quote = { param([string]$Text) "'" + $Text.Replace("'", "''") + "'" }
+        $gitExe = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+        $probe = @(
+            "function Invoke-GitText {$((Get-Command Invoke-GitText).ScriptBlock)}"
+            '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437)'
+            "`$read = Invoke-GitText $(& $quote $gitExe) @('-C', $(& $quote $checkout), 'rev-parse', '--abbrev-ref', 'HEAD')"
+            "'' + [Console]::OutputEncoding.CodePage + '|' + ((`$read.Output.Trim().ToCharArray() | ForEach-Object { 'U+{0:X4}' -f [int]`$_ }) -join ' ')"
+        ) -join "`n"
+        $probeStart = [System.Diagnostics.ProcessStartInfo]::new($hostExe)
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe)))) { $probeStart.ArgumentList.Add($argument) }
+        $probeStart.UseShellExecute = $false
+        $probeStart.CreateNoWindow = $true
+        $probeStart.RedirectStandardOutput = $true
+        $probeProcess = [System.Diagnostics.Process]::Start($probeStart)
+        $probeOutput = $probeProcess.StandardOutput.ReadToEnd().Trim()
+        $probeProcess.WaitForExit()
+        $probeProcess.Dispose()
+        Assert-True ($probeOutput -ceq '437|U+0066 U+00EB U+0061 U+0074 U+0075 U+0072 U+0065') "Unicode branch under code page 437: [$probeOutput]"
         # #1445 review: a user or host name in the branch is hidden between the branch's own '-',
         # '.', '_' and '/' too. The same cases as test_bench_sh.py.
         foreach ($case in @(
