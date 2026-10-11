@@ -1,8 +1,8 @@
 #pragma once
 
 // A minimal client for system-bus services through sd-bus (libsystemd): systemd's boot timestamps
-// (#1525), udisks2's drive SMART data (#1631), NetworkManager's Wi-Fi links and DHCP leases, and
-// systemd-resolved's per-adapter DNS settings (#1518).
+// (#1525), udisks2's drive SMART data (#1631), NetworkManager's Wi-Fi links and DHCP leases,
+// systemd-networkd's DHCP leases and systemd-resolved's per-adapter DNS settings (#1518).
 // Optional at build time: without libsystemd (TASKSMACK_HAS_SDBUS undefined) every read reports that
 // the build can't, so callers say "unavailable" rather than guess. Reads are synchronous and quick;
 // the System Information page makes them on its worker thread, never per frame.
@@ -60,5 +60,11 @@ inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
 /// sharing one system-bus connection, opened on its first call; once NetworkManager is found not
 /// running, or doesn't answer in time, the rest of the read doesn't ask again. Unprivileged.
 [[nodiscard]] LinuxNetworkAdapters::DhcpLeaseReader makeDhcpLeaseReader();
+
+/// A reader of each adapter's IPv4 DHCP lease from systemd-networkd (org.freedesktop.network1): the
+/// link's Describe() JSON (NetworkdLinkJson). The calls don't start networkd if it isn't running
+/// (no D-Bus auto-start). One connection per read; once networkd is found absent or unresponsive, the
+/// rest of the read doesn't ask again. Unprivileged.
+[[nodiscard]] LinuxNetworkAdapters::IndexedDhcpLeaseReader makeNetworkdLeaseReader();
 
 } // namespace Platform::SystemdBus

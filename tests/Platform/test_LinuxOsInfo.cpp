@@ -1121,7 +1121,8 @@ TEST(LinuxNetworkAdaptersTest, AsksTheWifiReaderOnlyForWirelessAdapters)
         return read;
     };
     NetworkAdaptersInfo info;
-    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = reader, .linkDns = {}, .dhcpLease = {}});
+    LinuxNetworkAdapters::readNetworkAdapterFacts(
+        root.path(), info, nullptr, {.wifiLink = reader, .linkDns = {}, .dhcpLease = {}, .networkdLease = {}});
 
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<std::string>{"wlan1", "wlp3s0"})); // never eth0
@@ -1182,7 +1183,8 @@ TEST(LinuxNetworkAdaptersTest, AsksTheDnsReaderByInterfaceIndex)
         return read;
     };
     NetworkAdaptersInfo info;
-    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = {}, .linkDns = reader, .dhcpLease = {}});
+    LinuxNetworkAdapters::readNetworkAdapterFacts(
+        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = reader, .dhcpLease = {}, .networkdLease = {}});
 
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<int>{2, 3}));
@@ -1232,12 +1234,48 @@ TEST(LinuxNetworkAdaptersTest, AsksTheDhcpReaderForEveryAdapter)
         return read;
     };
     NetworkAdaptersInfo info;
-    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = {}, .linkDns = {}, .dhcpLease = reader});
+    LinuxNetworkAdapters::readNetworkAdapterFacts(
+        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = {}, .dhcpLease = reader, .networkdLease = {}});
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<std::string>{"eth0", "eth1"}));
     ASSERT_EQ(info.adapters.size(), 2U);
     EXPECT_EQ(info.adapters[0].dhcpLease.value_or(DhcpLease{}).server, "192.168.1.1");
     EXPECT_FALSE(info.adapters[1].dhcpLease.has_value());
+}
+
+TEST(LinuxNetworkAdaptersTest, NetworkdIsAskedForALeaseOnlyWhereNetworkManagerHasNone)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/eth0/ifindex", "2\n");
+    root.write("sys/class/net/eth1/ifindex", "3\n");
+    const LinuxNetworkAdapters::DhcpLeaseReader networkManager = [](const std::string& adapter)
+    {
+        LinuxNetworkAdapters::DhcpLeaseRead read;
+        if (adapter == "eth0")
+        {
+            read.lease = DhcpLease{.server = "10.0.0.1", .leaseSeconds = 600, .expiresUnix = 0};
+        }
+        else
+        {
+            read.error = "NetworkManager isn't running";
+        }
+        return read;
+    };
+    std::vector<int> askedNetworkd;
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader networkd = [&askedNetworkd](int ifindex)
+    {
+        askedNetworkd.push_back(ifindex);
+        LinuxNetworkAdapters::DhcpLeaseRead read;
+        read.lease = DhcpLease{.server = "192.168.1.1", .leaseSeconds = 86'400, .expiresUnix = 0};
+        return read;
+    };
+    NetworkAdaptersInfo info;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(
+        root.path(), info, nullptr, {.wifiLink = {}, .linkDns = {}, .dhcpLease = networkManager, .networkdLease = networkd});
+    EXPECT_EQ(askedNetworkd, (std::vector<int>{3})); // eth1 only, by its index
+    ASSERT_EQ(info.adapters.size(), 2U);
+    EXPECT_EQ(info.adapters[0].dhcpLease.value_or(DhcpLease{}).server, "10.0.0.1");    // NetworkManager's
+    EXPECT_EQ(info.adapters[1].dhcpLease.value_or(DhcpLease{}).server, "192.168.1.1"); // networkd's
 }
 
 TEST(LinuxNetworkAdaptersTest, OnlyTheStubAndNothingReadable)

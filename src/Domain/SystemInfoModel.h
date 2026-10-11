@@ -5,20 +5,39 @@
 #include "Platform/ISystemInfoProbe.h"
 
 #include <cstdint>
+#include <format>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace Domain
 {
 
 /// One immutable read of the System Information page's static facts (#1399). Each section's raw
 /// facts are a member; a new section adds one.
+/// The lowest and highest one sensor has read since the page's first read (#1522).
+struct SensorRange
+{
+    double min = 0.0;
+    double max = 0.0;
+    std::uint32_t samples = 0; ///< How many reads it was in.
+
+    [[nodiscard]] bool operator==(const SensorRange&) const = default;
+};
+
+/// A sensor's key in SystemInfoSnapshot::sensorRanges: "device: label", as its row is labelled.
+[[nodiscard]] inline std::string sensorRangeKey(std::string_view device, std::string_view label)
+{
+    return std::format("{}: {}", device, label);
+}
+
 struct SystemInfoSnapshot
 {
     std::uint64_t version = 0;           ///< 0 until the first read.
-    std::uint64_t readAtUnixSeconds = 0; ///< When the read was taken.
+    std::uint64_t readAtUnixSeconds = 0; ///< When the read started (#1773).
     Platform::OsInfo os;
     Platform::FirmwareInfo firmware;
     Platform::MemoryModulesInfo memory;
@@ -32,6 +51,8 @@ struct SystemInfoSnapshot
     Platform::CrashesInfo crashes;
     Platform::NetworkAdaptersInfo adapters;
     Platform::BootPerformanceInfo boot;
+    /// Each sensor's range over the reads so far (sensorRangeKey()); full reads and readSensors() add to it.
+    std::map<std::string, SensorRange> sensorRanges;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,
@@ -53,6 +74,12 @@ class SystemInfoModel
     /// "unknown error" for a throw that isn't a std::exception. Only building that message (bad_alloc)
     /// can still escape.
     [[nodiscard]] std::optional<std::string> tryRead();
+    /// Reads the sensors again and publishes them with every other fact of the newest read unchanged,
+    /// "read at" included, adding to each sensor's range (#1522). Does nothing before the first read() or
+    /// when the probe reads nothing. Thread-safe; serialised with read(). Called off the UI thread.
+    void readSensors();
+    /// readSensors(), for a worker thread, as tryRead() is for read().
+    [[nodiscard]] std::optional<std::string> tryReadSensors();
 
     /// The newest read (an empty version-0 one before the first).
     [[nodiscard]] std::shared_ptr<const SystemInfoSnapshot> snapshot() const noexcept
@@ -76,7 +103,11 @@ class SystemInfoModel
     Platform::SystemInfoCapabilities m_Capabilities;
     std::shared_ptr<CrashHistory> m_CrashHistory; // may be null
     std::mutex m_ReadMutex;
-    std::uint64_t m_LastVersion = 0; // guarded by m_ReadMutex
+    std::uint64_t m_LastVersion = 0;                   // guarded by m_ReadMutex
+    std::map<std::string, SensorRange> m_SensorRanges; // guarded by m_ReadMutex
+
+    /// Adds @p sensors' readings to m_SensorRanges. Under m_ReadMutex.
+    void addToSensorRanges(const Platform::SensorsInfo& sensors);
     PublicationSlot<SystemInfoSnapshot> m_Slot;
 };
 

@@ -49,8 +49,13 @@ CrashHistory::CrashHistory(ReadFn read) : m_Read(std::move(read))
 void CrashHistory::read()
 {
     Platform::CrashesInfo crashes;
+    std::uint64_t startedAt = 0;
     {
         const std::scoped_lock lock(m_ReadMutex);
+        // When this read starts, once it has the read lock: publish() keeps the newest read by it, so a
+        // slower read that started earlier (this one or the System Information read) can't replace a
+        // newer list (#1773).
+        startedAt = nowUnixSeconds();
         try
         {
             crashes = m_Read();
@@ -71,7 +76,7 @@ void CrashHistory::read()
             crashes.unavailableReason = "Couldn't read the crash history: unknown error";
         }
     }
-    publish(std::move(crashes), nowUnixSeconds());
+    publish(std::move(crashes), startedAt);
 }
 
 void CrashHistory::publish(Platform::CrashesInfo crashes, std::uint64_t readAtUnixSeconds)

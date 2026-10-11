@@ -8,11 +8,16 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 
 namespace Domain
 {
@@ -30,7 +35,11 @@ enum class ReadOsThrows : std::uint8_t
 class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
 {
   public:
-    FakeSystemInfoProbe(bool hasOs, int* reads, ReadOsThrows throws = ReadOsThrows::No) : m_HasOs(hasOs), m_Reads(reads), m_Throws(throws)
+    FakeSystemInfoProbe(bool hasOs,
+                        int* reads,
+                        ReadOsThrows throws = ReadOsThrows::No,
+                        std::chrono::milliseconds readOsDelay = std::chrono::milliseconds(0))
+        : m_HasOs(hasOs), m_Reads(reads), m_Throws(throws), m_ReadOsDelay(readOsDelay)
     {}
 
     [[nodiscard]] Platform::SystemInfoCapabilities capabilities() const override
@@ -41,6 +50,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     [[nodiscard]] Platform::OsInfo readOs() override
     {
         ++*m_Reads;
+        std::this_thread::sleep_for(m_ReadOsDelay);
         if (m_Throws == ReadOsThrows::StdException)
         {
             throw std::runtime_error("no WMI");
@@ -114,6 +124,16 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         Platform::SensorsInfo info;
         info.available = true;
         info.listed = true;
+        // One temperature that reads 50, 40, 60 °C, then repeats: a range to track (#1522).
+        constexpr std::array<double, 3> TEMPERATURES{50.0, 40.0, 60.0};
+        Platform::SensorDevice device;
+        device.name = "coretemp";
+        device.readings.push_back({.kind = Platform::SensorKind::Temperature,
+                                   .label = "Package id 0",
+                                   .value = TEMPERATURES.at(m_SensorReads++ % TEMPERATURES.size()),
+                                   .high = std::nullopt,
+                                   .critical = std::nullopt});
+        info.devices.push_back(std::move(device));
         return info;
     }
 
@@ -162,6 +182,8 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     bool m_HasOs;
     int* m_Reads;
     ReadOsThrows m_Throws;
+    std::chrono::milliseconds m_ReadOsDelay;
+    std::size_t m_SensorReads = 0;
 };
 
 TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
@@ -199,6 +221,52 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(model.version(), 2U);
     EXPECT_EQ(model.snapshot()->os.build, "26100.2");
     EXPECT_EQ(first->os.build, "26100.1"); // the earlier snapshot is unchanged
+}
+
+// #1522: the sensors read again on their own, with every other fact (and when they were read) kept, and
+// each sensor's range over the reads.
+TEST(SystemInfoModelTest, ReadSensorsKeepsTheRestAndTracksEachSensorsRange)
+{
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
+    model.readSensors(); // before the first read: nothing to keep the rest of
+    EXPECT_EQ(model.version(), 0U);
+
+    model.read();
+    const auto first = model.snapshot();
+    const std::string key = sensorRangeKey("coretemp", "Package id 0");
+    ASSERT_TRUE(first->sensorRanges.contains(key));
+    EXPECT_EQ(first->sensorRanges.at(key), (SensorRange{.min = 50.0, .max = 50.0, .samples = 1}));
+
+    model.readSensors();
+    model.readSensors();
+    const auto latest = model.snapshot();
+    EXPECT_EQ(latest->version, 3U);
+    EXPECT_EQ(reads, 1);                          // the OS wasn't read again
+    EXPECT_EQ(latest->os.build, first->os.build); // nor anything else
+    EXPECT_EQ(latest->readAtUnixSeconds, first->readAtUnixSeconds);
+    ASSERT_EQ(latest->sensors.devices.size(), 1U);
+    EXPECT_DOUBLE_EQ(latest->sensors.devices[0].readings[0].value, 60.0);
+    EXPECT_EQ(latest->sensorRanges.at(key), (SensorRange{.min = 40.0, .max = 60.0, .samples = 3}));
+    EXPECT_EQ(first->sensorRanges.at(key).samples, 1U); // an earlier snapshot is unchanged
+
+    // A full read (Refresh) adds to the ranges rather than starting them again.
+    model.read();
+    EXPECT_EQ(model.snapshot()->sensorRanges.at(key).samples, 4U);
+    EXPECT_FALSE(model.tryReadSensors().has_value());
+}
+
+// #1773: a read is stamped when it starts, so the crash cache it publishes to orders it correctly against
+// a read that started later and finished first.
+TEST(SystemInfoModelTest, AReadIsStampedWhenItStarts)
+{
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads, ReadOsThrows::No, std::chrono::milliseconds(2100)));
+    const auto before = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    model.read();
+    EXPECT_LE(model.snapshot()->readAtUnixSeconds, before + 1); // finished two seconds later
+    EXPECT_GE(model.snapshot()->readAtUnixSeconds, before);
 }
 
 TEST(SystemInfoModelTest, UnsupportedProbeIsNotAskedForFacts)

@@ -50,12 +50,10 @@ runs:
     - name: Use cached LLVM install
       if: steps.llvm-cache.outputs.cache-hit == 'true'
       shell: pwsh
-      run: |
-        # Replace, don't overlay: the image ships its own LLVM at the same path. Renaming it
-        # aside is instant, and the move stays on C:, so it is a rename too.
-        $dest = 'C:\Program Files\LLVM'
-        if (Test-Path -LiteralPath $dest) { Rename-Item -LiteralPath $dest -NewName 'LLVM.runner-image' }
-        Move-Item -LiteralPath 'C:\llvm-cache\LLVM' -Destination $dest
+      # Renames the image's own LLVM aside and moves the cached tree into its place, retrying the
+      # rename and falling back to copying over the image's tree when a held handle refuses it
+      # (#1761). The script's header says why the destination can't move elsewhere.
+      run: '& "$env:GITHUB_ACTION_PATH\use-cached-llvm.ps1"'
 
     - name: Install LLVM
       if: steps.llvm-cache.outputs.cache-hit != 'true'

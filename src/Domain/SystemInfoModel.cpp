@@ -3,6 +3,7 @@
 #include "Domain/CrashHistory.h"
 #include "Platform/ISystemInfoProbe.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -31,6 +32,10 @@ void SystemInfoModel::read()
     const std::scoped_lock lock(m_ReadMutex);
 
     auto next = std::make_shared<SystemInfoSnapshot>();
+    // Stamped when the read starts, not when it ends: the crash cache orders publications by it, and a
+    // slow read that started earlier must not replace one that started later (#1773).
+    const auto started = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    next->readAtUnixSeconds = started > 0 ? static_cast<std::uint64_t>(started) : 0;
     if (m_Capabilities.hasOs)
     {
         next->os = m_Probe->readOs();
@@ -47,8 +52,8 @@ void SystemInfoModel::read()
         next->adapters = m_Probe->readNetworkAdapters();
         next->boot = m_Probe->readBootPerformance();
     }
-    const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    next->readAtUnixSeconds = static_cast<std::uint64_t>(now);
+    addToSensorRanges(next->sensors);
+    next->sensorRanges = m_SensorRanges;
     if (m_CrashHistory && m_Capabilities.hasOs)
     {
         // Process Details' crash line (#1675) shows this read too, without a second one of its own.
@@ -58,11 +63,15 @@ void SystemInfoModel::read()
     m_Slot.commit(std::move(next));
 }
 
-std::optional<std::string> SystemInfoModel::tryRead()
+namespace
+{
+
+/// @p readFn's throw as its message, caught on the thread that threw it (#1685, #1706).
+template<typename ReadFn> [[nodiscard]] std::optional<std::string> tryReading(ReadFn&& readFn)
 {
     try
     {
-        read();
+        std::forward<ReadFn>(readFn)();
     }
     catch (const std::exception& e)
     {
@@ -73,6 +82,47 @@ std::optional<std::string> SystemInfoModel::tryRead()
         return std::string("unknown error");
     }
     return std::nullopt;
+}
+
+} // namespace
+
+void SystemInfoModel::addToSensorRanges(const Platform::SensorsInfo& sensors)
+{
+    for (const Platform::SensorDevice& device : sensors.devices)
+    {
+        for (const Platform::SensorReading& reading : device.readings)
+        {
+            SensorRange& range = m_SensorRanges[sensorRangeKey(device.name, reading.label)];
+            range.min = range.samples == 0 ? reading.value : std::min(range.min, reading.value);
+            range.max = range.samples == 0 ? reading.value : std::max(range.max, reading.value);
+            ++range.samples;
+        }
+    }
+}
+
+void SystemInfoModel::readSensors()
+{
+    const std::scoped_lock lock(m_ReadMutex);
+    if (!m_Capabilities.hasOs || m_LastVersion == 0)
+    {
+        return; // nothing to keep the other facts of yet
+    }
+    auto next = std::make_shared<SystemInfoSnapshot>(*m_Slot.load());
+    next->sensors = m_Probe->readSensors();
+    addToSensorRanges(next->sensors);
+    next->sensorRanges = m_SensorRanges;
+    next->version = ++m_LastVersion;
+    m_Slot.commit(std::move(next));
+}
+
+std::optional<std::string> SystemInfoModel::tryReadSensors()
+{
+    return tryReading([this] { readSensors(); });
+}
+
+std::optional<std::string> SystemInfoModel::tryRead()
+{
+    return tryReading([this] { read(); });
 }
 
 } // namespace Domain

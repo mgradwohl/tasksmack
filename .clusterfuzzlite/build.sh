@@ -66,6 +66,8 @@ seed_corpus fuzz_commit_paging tests/fuzz/corpus/fuzz_commit_paging/*
 # The Storage parsers (#1517): header-only, seeded with a real-looking /proc/self/mountinfo and udev file.
 build_fuzzer fuzz_mountinfo
 seed_corpus fuzz_mountinfo tests/fuzz/corpus/fuzz_mountinfo/*
+build_fuzzer fuzz_networkd_json
+seed_corpus fuzz_networkd_json tests/fuzz/corpus/fuzz_networkd_json/*
 
 # The partition layout parsers (#1632): header-only, seeded with GPT and MBR DRIVE_LAYOUT_INFORMATION_EX
 # buffers and udev partition type strings.

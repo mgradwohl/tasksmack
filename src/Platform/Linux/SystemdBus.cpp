@@ -10,6 +10,7 @@
 
 #ifdef TASKSMACK_HAS_SDBUS
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Linux/NetworkdLinkJson.h"
 #include "Platform/ProcessEnvironment.h"
 
 #include <array>
@@ -17,6 +18,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -744,6 +746,159 @@ LinuxNetworkAdapters::DhcpLeaseReader makeDhcpLeaseReader()
 namespace
 {
 
+constexpr const char* NETWORKD = "org.freedesktop.network1";
+constexpr const char* NETWORKD_PATH = "/org/freedesktop/network1";
+constexpr const char* NETWORKD_MANAGER = "org.freedesktop.network1.Manager";
+constexpr const char* NETWORKD_LINK = "org.freedesktop.network1.Link";
+
+/// One system-bus connection for every adapter of a read, opened on the first.
+struct NetworkdSession
+{
+    Bus bus;
+    bool opened = false;
+    std::string stopped; ///< Set once networkd is found absent or unresponsive: every later adapter gets it.
+};
+
+/// Why networkd couldn't answer for an adapter, and whether that holds for every other adapter too.
+[[nodiscard]] std::pair<std::string, bool> networkdError(const BusError& error, int result)
+{
+    if (timedOut(error.raw(), result))
+    {
+        return {"systemd-networkd didn't answer in time", true};
+    }
+    if (error.is("org.freedesktop.DBus.Error.ServiceUnknown") || error.is("org.freedesktop.DBus.Error.NameHasNoOwner"))
+    {
+        return {"systemd-networkd isn't running", true};
+    }
+    if (error.is("org.freedesktop.network1.NoSuchLink") || error.is("org.freedesktop.DBus.Error.UnknownObject"))
+    {
+        return {"systemd-networkd doesn't manage this adapter", false};
+    }
+    return {"systemd-networkd couldn't be asked: " + error.text(result), false};
+}
+
+/// A call to networkd that won't start it if it isn't running: reading the page mustn't start a
+/// network manager the user has stopped (no D-Bus auto-start).
+[[nodiscard]] int callNetworkd(sd_bus* bus,
+                               const char* path,
+                               const char* interface,
+                               const char* member,
+                               const std::optional<int>& ifindex,
+                               BusError& error,
+                               Message& reply)
+{
+    Message call;
+    int result = sd_bus_message_new_method_call(bus, call.out(), NETWORKD, path, interface, member);
+    if (result >= 0)
+    {
+        result = sd_bus_message_set_auto_start(call.get(), 0);
+    }
+    if (result >= 0 && ifindex.has_value())
+    {
+        result = sd_bus_message_append(call.get(), "i", *ifindex);
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_call(bus, call.get(), 0, error.get(), reply.out()); // 0: the bus's CALL_TIMEOUT_USEC
+    }
+    return result;
+}
+
+/// CLOCK_BOOTTIME now, in microseconds: networkd's lease times are on it.
+[[nodiscard]] std::uint64_t bootTimeUsec() noexcept
+{
+    timespec now{};
+    // CLOCK_BOOTTIME comes from glibc's internal <bits/time.h>, through <ctime>; there's no public header of its own.
+    if (::clock_gettime(CLOCK_BOOTTIME, &now) != 0) // NOLINT(misc-include-cleaner)
+    {
+        return 0;
+    }
+    return (static_cast<std::uint64_t>(now.tv_sec) * 1'000'000U) + (static_cast<std::uint64_t>(now.tv_nsec) / 1'000U);
+}
+
+[[nodiscard]] LinuxNetworkAdapters::DhcpLeaseRead readNetworkdLeaseOnce(NetworkdSession& session, int ifindex)
+{
+    LinuxNetworkAdapters::DhcpLeaseRead read;
+    if (!session.opened)
+    {
+        session.opened = true;
+        if (const int result = openSystemBus(session.bus); result < 0)
+        {
+            session.stopped =
+                std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - as above
+        }
+    }
+    if (!session.stopped.empty())
+    {
+        read.error = session.stopped;
+        return read;
+    }
+    sd_bus* bus = session.bus.get();
+    const auto fail = [&session, &read](const BusError& error, int result)
+    {
+        auto [text, forEveryAdapter] = networkdError(error, result);
+        if (forEveryAdapter)
+        {
+            session.stopped = text;
+        }
+        read.error = std::move(text);
+        return read;
+    };
+
+    // The link's object: GetLinkByIndex() returns its name and path.
+    BusError error;
+    Message reply;
+    int result = callNetworkd(bus, NETWORKD_PATH, NETWORKD_MANAGER, "GetLinkByIndex", ifindex, error, reply);
+    const char* name = nullptr;
+    const char* linkPath = nullptr;
+    if (result >= 0)
+    {
+        result = sd_bus_message_read(reply.get(), "so", &name, &linkPath);
+    }
+    if (result < 0 || linkPath == nullptr)
+    {
+        return fail(error, result);
+    }
+    const std::string link(linkPath);
+
+    BusError describeError;
+    Message described;
+    result = callNetworkd(bus, link.c_str(), NETWORKD_LINK, "Describe", std::nullopt, describeError, described);
+    const char* json = nullptr;
+    if (result >= 0)
+    {
+        result = sd_bus_message_read(described.get(), "s", &json);
+    }
+    if (result < 0 || json == nullptr)
+    {
+        return fail(describeError, result);
+    }
+    const std::optional<NetworkdLinkJson::Lease> lease = NetworkdLinkJson::leaseFromDescription(json);
+    const std::time_t now = std::time(nullptr);
+    if (lease.has_value())
+    {
+        read.lease = NetworkdLinkJson::toDhcpLease(*lease, now > 0 ? static_cast<std::uint64_t>(now) : 0, bootTimeUsec());
+    }
+    if (!read.lease)
+    {
+        read.error = "Not configured by DHCP";
+    }
+    return read;
+}
+
+} // namespace
+
+LinuxNetworkAdapters::IndexedDhcpLeaseReader makeNetworkdLeaseReader()
+{
+    return [session = std::make_shared<NetworkdSession>()](int ifindex)
+    {
+        return readNetworkdLeaseOnce(*session, ifindex);
+    };
+}
+
+namespace
+{
+
 constexpr const char* RESOLVE = "org.freedesktop.resolve1";
 constexpr const char* RESOLVE_PATH = "/org/freedesktop/resolve1";
 constexpr const char* RESOLVE_MANAGER = "org.freedesktop.resolve1.Manager";
@@ -938,6 +1093,16 @@ LinuxNetworkAdapters::DhcpLeaseReader makeDhcpLeaseReader()
     {
         LinuxNetworkAdapters::DhcpLeaseRead read;
         read.error = "This build has no D-Bus support (it was built without libsystemd), so the DHCP lease can't be read";
+        return read;
+    };
+}
+
+LinuxNetworkAdapters::IndexedDhcpLeaseReader makeNetworkdLeaseReader()
+{
+    return [](int)
+    {
+        LinuxNetworkAdapters::DhcpLeaseRead read;
+        read.error = "This build has no D-Bus support (it was built without libsystemd), so systemd-networkd can't be asked";
         return read;
     };
 }
