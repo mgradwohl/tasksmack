@@ -6,7 +6,10 @@
 
 #include "App/Panels/SystemMetricsPanel.h"
 #include "Core/ApplicationEvents.h"
+#include "Domain/ProcessModel.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/PowerTypes.h"
+#include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
 
 #include <gtest/gtest.h>
@@ -15,10 +18,13 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 namespace App
@@ -212,6 +218,88 @@ TEST_F(SystemMetricsPanelRenderTest, AnInactivePanelDrawsNothingAndADetachedOneS
 
     panel->onDetach();
     EXPECT_TRUE(renderAndCapture(*panel).contains("System data unavailable"));
+}
+
+/// A battery the power probe reports, discharging at 80 %.
+[[nodiscard]] std::unique_ptr<TestMocks::MockPowerProbe> mockBattery()
+{
+    auto probe = std::make_unique<TestMocks::MockPowerProbe>();
+    Platform::PowerCapabilities caps;
+    caps.hasBattery = true;
+    caps.hasChargePercent = true;
+    caps.hasPowerRate = true;
+    probe->setCapabilities(caps);
+    Platform::PowerCounters counters;
+    counters.state = Platform::BatteryState::Discharging;
+    counters.chargePercent = 80;
+    counters.powerNowW = 12.5;
+    probe->setCounters(counters);
+    return probe;
+}
+
+/// A process model over two processes whose threads, page faults, descriptors and energy it can read.
+[[nodiscard]] std::shared_ptr<Domain::ProcessModel> mockProcessModel()
+{
+    auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+    Platform::ProcessCapabilities caps;
+    caps.hasThreadCount = true;
+    caps.hasHandleCount = true;
+    caps.hasPageFaults = true;
+    caps.hasPowerUsage = true;
+    probe->setCapabilities(caps);
+    Platform::ProcessCounters init = TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0);
+    init.threadCount = 1;
+    init.handleCount = 12;
+    Platform::ProcessCounters server = TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+    server.threadCount = 8;
+    server.handleCount = 40;
+    probe->withProcess(init).withProcess(server);
+    return std::make_shared<Domain::ProcessModel>(std::move(probe));
+}
+
+// #1546: with samples arriving (the sampler's, and the process model's), onUpdate() adopting them as the
+// app's update loop does, the Overview's charts draw their history: CPU, the battery chart with its
+// details, and the threads/page faults/descriptors chart from the process model. Hovering a chart draws
+// its tooltip.
+TEST_F(SystemMetricsPanelRenderTest, OverviewChartsDrawTheirHistoryAsSamplesArrive)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        [] { return SystemMetricsProbes{.system = mockSystem(), .power = mockBattery(), .disk = nullptr, .gpu = nullptr}; });
+    panel->onAttach();
+    const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel();
+    panel->setProcessModel(processes);
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+
+    std::string text;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    int frames = 0;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        processes->refresh();
+        panel->onUpdate(1.0F / 60.0F);
+        text = renderAndCapture(*panel);
+        ++frames;
+        if (frames > 30 && text.contains("Battery") && text.contains("Threads, Page Faults"))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(text.contains("CPU Usage")) << text;
+    EXPECT_TRUE(text.contains("Power & Battery")) << text; // the process probe measures power too
+    EXPECT_TRUE(text.contains("80")) << text;              // the battery's charge, in its Now bar
+    EXPECT_TRUE(text.contains("Threads, Page Faults")) << text;
+    EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 4); // CPU, memory, power, resources
+
+    // Hover across the charts: each plot's tooltip path runs (and must not assert).
+    ImGuiIO& io = ImGui::GetIO();
+    for (int step = 1; step < 20; ++step)
+    {
+        io.AddMousePosEvent(DISPLAY_WIDTH * 0.4F, DISPLAY_HEIGHT * static_cast<float>(step) / 20.0F);
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    panel->onDetach();
 }
 
 } // namespace
