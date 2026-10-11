@@ -11,6 +11,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -302,6 +303,7 @@ SecurityAccount WindowsProcessSecurityReader::account(PSID sid)
 
 SecurityReadResult WindowsProcessSecurityReader::readSecurity(const ProcessTarget& target)
 {
+    const std::scoped_lock lock(m_Mutex); // one read at a time: the name cache is shared
     if (target.pid <= 0)
     {
         return failure(SecurityReadStatus::ProcessExited);

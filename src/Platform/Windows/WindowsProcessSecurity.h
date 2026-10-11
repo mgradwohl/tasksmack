@@ -23,6 +23,7 @@
 #include "Platform/IProcessSecurity.h"
 
 #include <cstddef>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -53,7 +54,9 @@ struct ProcessSecurityFunctions
 /// invalid SID.
 [[nodiscard]] std::string sidToString(PSID sid);
 
-/// Not thread-safe: one read at a time (the Security section reads from the panel's update path).
+/// Thread-safe: reads are serialised by a mutex, which also guards the SID name cache. The Security
+/// section runs them on its worker, one at a time (LazyBackgroundRead), never on the UI thread: a SID
+/// lookup can wait seconds for an unreachable domain controller.
 class WindowsProcessSecurityReader final : public IProcessSecurityReader
 {
   public:
@@ -67,8 +70,9 @@ class WindowsProcessSecurityReader final : public IProcessSecurityReader
     [[nodiscard]] SecurityReadResult readSecurity(const ProcessTarget& target) override;
 
     /// How many account names are cached (tests: a SID is looked up once).
-    [[nodiscard]] std::size_t cachedAccountCount() const noexcept
+    [[nodiscard]] std::size_t cachedAccountCount() const
     {
+        const std::scoped_lock lock(m_Mutex);
         return m_AccountNames.size();
     }
 
@@ -77,6 +81,7 @@ class WindowsProcessSecurityReader final : public IProcessSecurityReader
     [[nodiscard]] SecurityAccount account(PSID sid);
 
     ProcessSecurityFunctions m_Api;
+    mutable std::mutex m_Mutex;                                  ///< Held for a whole read; guards m_AccountNames.
     std::unordered_map<std::string, std::string> m_AccountNames; ///< SID string -> "DOMAIN\name" (empty: none).
 };
 

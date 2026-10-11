@@ -8,7 +8,8 @@
 // session.
 //
 // Not part of the per-sample enumeration: it is read only for the process Process Details shows, only
-// while its Security section is open, and at most every Domain::Sampling::PROCESS_SECURITY_REFRESH_MS.
+// while its Security section is open, at most every Domain::Sampling::PROCESS_SECURITY_REFRESH_MS, and
+// on a worker thread, one read at a time.
 // The App composition root creates the reader (Platform::makeProcessSecurityReader()) and hands it to
 // the panel, which never calls the factory.
 //
@@ -167,9 +168,10 @@ class IProcessSecurityReader
     /// Security section and readSecurity() only ever returns Unsupported.
     [[nodiscard]] virtual bool hasSecurity() const = 0;
 
-    /// Read @p target's security context now. Synchronous and quick (a few small files, or a few token queries). The target's
-    /// start time is checked against the process holding the PID, so a reused PID reports
-    /// ProcessExited; an unknown start time (0) is refused with IdentityUnknown.
+    /// Read @p target's security context now. Synchronous, and it can block: a few small files on Linux,
+    /// but on Windows naming the token's SIDs can wait on a domain controller, so callers run it off
+    /// the UI thread (the Security section reads on a worker). The target's start time is checked against the process holding the PID, so a
+    /// reused PID reports ProcessExited; an unknown start time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual SecurityReadResult readSecurity(const ProcessTarget& target) = 0;
 };
 

@@ -7,11 +7,13 @@
 //
 // The view never creates a reader. The panel owns the IProcessSecurityReader (the composition root's
 // Platform::makeProcessSecurityReader() result) and passes it to update(), which the panel calls from
-// its per-frame update path, never from render(). update() reads only while the section was drawn
-// open on the last frame, once when it opens or the selection changes and then every
-// Domain::Sampling::PROCESS_SECURITY_REFRESH_MS; render() only draws the rows the last read built.
-// The read is a few small files or token queries, so it runs on the calling thread, as the Environment
-// section's does.
+// its per-frame update path, never from render(). update() starts a read only while the section was
+// drawn open on the last frame, once when it opens or the selection changes and then every
+// Domain::Sampling::PROCESS_SECURITY_REFRESH_MS, on a worker thread, one at a time
+// (LazyBackgroundRead.h, as the Modules section's): on Windows naming the token's SIDs
+// (LookupAccountSidW) can wait seconds each for an unreachable domain controller, so the read never
+// runs on the UI thread. A read for a previous selection is dropped when it arrives; render() only
+// draws the rows the last read built, or "Reading..." until the first arrives.
 //
 // Everything but render() is defined here, free of ImGui, so the cadence, the statuses and the rows
 // are tested against a mock reader without an ImGui context; render() is run headless in
@@ -19,8 +21,10 @@
 
 #include "Domain/ProcessSecurity.h"
 #include "Domain/SamplingConfig.h"
+#include "LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/ThreadName.h"
 
 #include <cstdint>
 #include <optional>
@@ -164,48 +168,57 @@ class ProcessSecurityView
 {
   public:
     /// Draws the section: a collapsing "Security" header and, while it is open, the last read's table
-    /// or its status line. Draws nothing at all when @p hasSecurity is false (the platform cannot read
-    /// a process's security context: synthetic runs).
+    /// or its status line ("Reading..." until the first read arrives). Draws nothing at all when
+    /// @p hasSecurity is false (the platform cannot read a process's security context: synthetic runs).
     void render(bool hasSecurity);
 
-    /// The panel's per-frame update: reads @p target's security context through @p reader when the
-    /// section was drawn open on the last frame and a read is due -- none yet since it opened or the
-    /// selection changed, or PROCESS_SECURITY_REFRESH_MS since the last. @p reader may be null.
-    /// @return Whether it read.
+    /// The panel's per-frame update. Never blocks: takes in a finished read for this selection and
+    /// @p target, then starts the next on a worker when the section was drawn open on the last frame,
+    /// none is in flight, and one is due -- none yet since it opened or the selection changed, or
+    /// PROCESS_SECURITY_REFRESH_MS since the last started. @p reader may be null. The caller must keep
+    /// @p reader alive until a read in flight finishes (the destructor waits for it).
+    /// @return Whether it started a read.
     bool update(Platform::IProcessSecurityReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
-        m_SecondsSinceRead += deltaSeconds;
-        const bool shownOpen = std::exchange(m_DrawnOpen, false);
-        // Kept counting while the section is closed, so one reopened after the interval reads at once.
-        if (!shownOpen || reader == nullptr || !reader->hasSecurity())
+        takeFinishedRead(target, false);
+        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasSecurity())
         {
             return false;
         }
-        if (m_HasRead && (m_SecondsSinceRead * 1000.0F) < static_cast<float>(Domain::Sampling::PROCESS_SECURITY_REFRESH_MS))
+        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readSecurity(t); }))
         {
-            return false;
+            applyResult(*failed);
         }
-        applyResult(reader->readSecurity(target));
         return true;
     }
 
-    /// A different process was selected: drop its rows, and read afresh when next shown.
+    /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
+    void finishPendingRead(const Platform::ProcessTarget& target)
+    {
+        takeFinishedRead(target, true);
+    }
+
+    /// Whether a read is running on its worker.
+    [[nodiscard]] bool readInFlight() const noexcept
+    {
+        return m_Read.inFlight();
+    }
+
+    /// A different process was selected: drop its rows, and read afresh when next shown. A read in
+    /// flight is dropped when it arrives.
     void onSelectionChanged() noexcept
     {
+        m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::SecurityReadStatus::Ok;
         m_Detail.clear();
         m_Rows.clear();
-        m_SecondsSinceRead = 0.0F;
-        // The open frame was the previous process's: the new one's section has not been drawn yet.
-        m_DrawnOpen = false;
     }
 
     /// Takes in a read: its status and, for Ok, the rows to show.
     void applyResult(const Platform::SecurityReadResult& result)
     {
         m_HasRead = true;
-        m_SecondsSinceRead = 0.0F;
         m_Status = result.status;
         m_Detail = result.detail;
         m_Rows = (result.status == Platform::SecurityReadStatus::Ok) ? Detail::securityRows(result.security)
@@ -215,7 +228,7 @@ class ProcessSecurityView
     /// Records that render() drew the section open this frame (render() calls it; tests may too).
     void markDrawnOpen() noexcept
     {
-        m_DrawnOpen = true;
+        m_Read.markDrawnOpen();
     }
 
     [[nodiscard]] bool hasRead() const noexcept
@@ -228,18 +241,42 @@ class ProcessSecurityView
         return m_Status;
     }
 
+    /// For Failed, what failed, if known.
+    [[nodiscard]] const std::string& detail() const noexcept
+    {
+        return m_Detail;
+    }
+
     [[nodiscard]] std::span<const Detail::SecurityRow> rows() const noexcept
     {
         return m_Rows;
     }
 
   private:
-    bool m_HasRead = false;
+    /// Takes in the read in flight once it has finished (or, with @p wait, after waiting for it), if it
+    /// is for this selection and @p target; a stale one is dropped.
+    void takeFinishedRead(const Platform::ProcessTarget& target, bool wait)
+    {
+        if (auto result = m_Read.takeFinished(target, wait))
+        {
+            applyResult(*result);
+        }
+    }
+
+    /// The result shown for a read that threw, or one no worker thread could be started for.
+    [[nodiscard]] static Platform::SecurityReadResult failedRead(std::string detail)
+    {
+        return {.status = Platform::SecurityReadStatus::Failed, .security = {}, .detail = std::move(detail)};
+    }
+
+    bool m_HasRead = false; // a read was taken in since the selection changed
     Platform::SecurityReadStatus m_Status = Platform::SecurityReadStatus::Ok;
     std::string m_Detail;
     std::vector<Detail::SecurityRow> m_Rows;
-    float m_SecondsSinceRead = 0.0F;
-    bool m_DrawnOpen = false; // render() drew the section open since the last update()
+
+    // The read in flight and its cadence. Destroying the view waits for at most one read.
+    Detail::LazyBackgroundRead<Platform::SecurityReadResult> m_Read{
+        Domain::Sampling::PROCESS_SECURITY_REFRESH_MS, Platform::SECURITY_READ_THREAD_NAME, &failedRead};
 };
 
 } // namespace App
