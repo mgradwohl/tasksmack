@@ -106,5 +106,20 @@ TEST(SystemdBusTest, ReadsADhcpLeaseOrSaysWhyNot)
     EXPECT_TRUE(read.error.empty());
 }
 
+// systemd-networkd (#1518): an adapter's lease from its link description, or why not. Asked without
+// D-Bus auto-start, so a stopped networkd stays stopped.
+TEST(SystemdBusTest, ReadsANetworkdLeaseOrSaysWhyNot)
+{
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader reader = SystemdBus::makeNetworkdLeaseReader();
+    ASSERT_TRUE(reader);
+    const LinuxNetworkAdapters::DhcpLeaseRead read = reader(1);
+    if (!read.lease.has_value())
+    {
+        EXPECT_FALSE(read.error.empty());
+        GTEST_SKIP() << "No networkd lease read here: " << read.error;
+    }
+    EXPECT_TRUE(read.error.empty());
+}
+
 } // namespace
 } // namespace Platform

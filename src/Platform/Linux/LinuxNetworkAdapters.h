@@ -320,12 +320,17 @@ leaseFromDhcpOptions(std::string_view server, std::string_view leaseTime, std::s
     return lease;
 }
 
+/// Reads an adapter's IPv4 DHCP lease by its interface index, from a source that knows adapters by
+/// index: SystemdBus::makeNetworkdLeaseReader() asks systemd-networkd.
+using IndexedDhcpLeaseReader = std::function<DhcpLeaseRead(int ifindex)>;
+
 /// The system-wide sources readNetworkAdapterFacts() asks for each adapter; an empty one isn't asked.
 struct AdapterReaders
 {
-    WifiLinkReader wifiLink;   ///< Each Wi-Fi adapter's link.
-    LinkDnsReader linkDns;     ///< Each adapter's own DNS servers and search domains.
-    DhcpLeaseReader dhcpLease; ///< Each adapter's IPv4 DHCP lease.
+    WifiLinkReader wifiLink;              ///< Each Wi-Fi adapter's link.
+    LinkDnsReader linkDns;                ///< Each adapter's own DNS servers and search domains.
+    DhcpLeaseReader dhcpLease;            ///< Each adapter's IPv4 DHCP lease (NetworkManager).
+    IndexedDhcpLeaseReader networkdLease; ///< The same from systemd-networkd, asked when the first has none.
 };
 
 /// The facts under @p root into @p info, with the addresses from @p listAddresses and what @p readers
@@ -374,24 +379,29 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
                 adapter.wifiLinkUnavailable = std::move(read.error);
             }
         }
-        if (readers.dhcpLease)
-        {
-            // No lease (a static address, an unmanaged adapter) just leaves the row out.
-            adapter.dhcpLease = readers.dhcpLease(adapter.name).lease;
-        }
-        if (readers.linkDns)
+        int ifindex = 0;
+        if (readers.linkDns || readers.networkdLease)
         {
             const std::string index = LinuxOsInfo::readLine(dir / "ifindex");
-            int ifindex = 0;
             std::from_chars(index.data(), index.data() + index.size(), ifindex, 10);
-            if (ifindex > 0)
+        }
+        // The lease from whichever manages the adapter: NetworkManager, else systemd-networkd. No lease
+        // (a static address, an unmanaged adapter) just leaves the row out.
+        if (readers.dhcpLease)
+        {
+            adapter.dhcpLease = readers.dhcpLease(adapter.name).lease;
+        }
+        if (!adapter.dhcpLease && readers.networkdLease && ifindex > 0)
+        {
+            adapter.dhcpLease = readers.networkdLease(ifindex).lease;
+        }
+        if (readers.linkDns && ifindex > 0)
+        {
+            // A failed read leaves the adapter's rows out: the system-wide DNS servers still show.
+            if (LinkDnsRead read = readers.linkDns(ifindex); read.read)
             {
-                // A failed read leaves the adapter's rows out: the system-wide DNS servers still show.
-                if (LinkDnsRead read = readers.linkDns(ifindex); read.read)
-                {
-                    adapter.linkDnsServers = std::move(read.servers);
-                    adapter.linkSearchDomains = std::move(read.domains);
-                }
+                adapter.linkDnsServers = std::move(read.servers);
+                adapter.linkSearchDomains = std::move(read.domains);
             }
         }
         info.adapters.push_back(std::move(adapter));
