@@ -207,7 +207,6 @@ set(COMMON_TEST_SOURCES
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
     Platform/test_LinuxOsInfo.cpp
-    Platform/test_LinuxSystemInfoProbe.cpp
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -370,6 +369,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_PathProviderContract.cpp
     Platform/test_PowerProbeContract.cpp
     Platform/test_LinuxProcessProbe.cpp
+    Platform/test_LinuxSystemInfoProbe.cpp
     Platform/test_LinuxSystemProbe.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_SyscallTrace.cpp
