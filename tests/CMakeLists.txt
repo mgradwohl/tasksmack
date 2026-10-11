@@ -356,6 +356,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
+    Platform/test_WindowsNetworkAdapters.cpp
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES

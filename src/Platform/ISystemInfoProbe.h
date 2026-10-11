@@ -521,10 +521,22 @@ struct AdapterAddress
     [[nodiscard]] friend bool operator==(const AdapterAddress&, const AdapterAddress&) = default;
 };
 
+/// The Wi-Fi connection of a wireless adapter (#1518; Windows only so far). A fact not read is empty or 0.
+struct WifiConnection
+{
+    std::string ssid;                           ///< The network name; an identifier
+    std::optional<std::uint32_t> signalQuality; ///< 0-100 %, Windows' own measure
+    std::string phy;                            ///< "802.11ax (Wi-Fi 6)"
+    std::string band;                           ///< "2.4 GHz", "5 GHz", "6 GHz"
+    std::uint32_t channel = 0;
+    std::uint32_t rxKbps = 0; ///< The link's receive rate
+    std::uint32_t txKbps = 0; ///< The link's transmit rate
+};
+
 /// One network adapter's configuration (#1518). A fact the probe couldn't read is empty or 0.
 struct NetworkAdapter
 {
-    std::string name; ///< "eth0", "wlp3s0"
+    std::string name; ///< "eth0", "wlp3s0"; Windows: the connection's name, "Ethernet", "Wi-Fi"
     std::string mac;  ///< "a4:5e:60:12:34:56"; an identifier
     std::uint32_t mtu = 0;
     std::string driver; ///< "e1000e", "iwlwifi"
@@ -532,13 +544,25 @@ struct NetworkAdapter
     bool wireless = false;
     std::vector<AdapterAddress> addresses;
     std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
+
+    // Windows only so far: Linux leaves these empty, and their rows out.
+    std::string description;             ///< The adapter's hardware, "Intel(R) Wi-Fi 6E AX211 160MHz"
+    std::vector<std::string> gateways;   ///< This adapter's default gateways
+    std::vector<std::string> dnsServers; ///< This adapter's DNS servers
+    std::string dnsSuffix;               ///< The connection-specific DNS suffix; can name the organisation
+    std::optional<bool> dhcpEnabled;     ///< IPv4 from DHCP; unset when not known
+    std::string dhcpServer;
+    std::optional<std::uint32_t> dhcpLeaseSecondsLeft; ///< The DHCP lease's time left when read; unset when not known
+    std::optional<WifiConnection> wifi;                ///< Wi-Fi: the connected network, when connected and readable
+    std::string wifiUnavailableReason;                 ///< Wi-Fi: why the connection couldn't be read
 };
 
 /// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways
 /// and the DNS servers.
 struct NetworkAdaptersInfo
 {
-    bool available = false;               ///< The probe read the section at all.
+    bool available = false; ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown;
     bool listed = false;                  ///< The adapters could be listed: an empty `adapters` means none.
     std::vector<NetworkAdapter> adapters; ///< By name; the loopback adapter is left out.
     std::string gatewayV4;                ///< The IPv4 default gateway; empty when there is none or it is unknown.

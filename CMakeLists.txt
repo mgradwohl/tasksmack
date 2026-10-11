@@ -228,6 +228,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsCrashEvents.cpp
+    src/Platform/Windows/WindowsNetworkAdapters.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -405,6 +406,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsDevices.h
         src/Platform/Windows/WindowsDrivers.h
         src/Platform/Windows/WindowsCrashEvents.h
+        src/Platform/Windows/WindowsNetworkAdapters.h
         src/Platform/Windows/ComScope.h
     )
 endif()

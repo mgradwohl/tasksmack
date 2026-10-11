@@ -1105,6 +1105,10 @@ std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter)
     {
         text += ", driver " + adapter.driver;
     }
+    if (!adapter.description.empty())
+    {
+        text += ", " + adapter.description;
+    }
     return text;
 }
 
@@ -1490,6 +1494,64 @@ std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
     return text;
 }
 
+std::string formatAdapterDhcp(const Platform::NetworkAdapter& adapter)
+{
+    if (!adapter.dhcpEnabled.has_value())
+    {
+        return {};
+    }
+    if (!*adapter.dhcpEnabled)
+    {
+        return "Off (static IPv4)";
+    }
+    std::string text = "On";
+    if (!adapter.dhcpServer.empty())
+    {
+        text += ", server " + adapter.dhcpServer;
+    }
+    if (adapter.dhcpLeaseSecondsLeft.has_value())
+    {
+        text += ", lease " + UI::Format::formatDuration(static_cast<double>(*adapter.dhcpLeaseSecondsLeft)) + " left";
+    }
+    return text;
+}
+
+std::string formatWifiSignal(const Platform::NetworkAdapter& adapter)
+{
+    const std::optional<std::uint32_t> quality = adapter.wifi.has_value() ? adapter.wifi->signalQuality : std::nullopt;
+    if (adapter.wifiSignalDbm.has_value() && quality.has_value())
+    {
+        return std::format("{} dBm ({}%)", *adapter.wifiSignalDbm, *quality);
+    }
+    if (adapter.wifiSignalDbm.has_value())
+    {
+        return std::format("{} dBm", *adapter.wifiSignalDbm);
+    }
+    return quality.has_value() ? std::format("{}%", *quality) : std::string{};
+}
+
+std::string formatWifiLink(const Platform::WifiConnection& wifi)
+{
+    std::string text;
+    const auto add = [&text](const std::string& part)
+    {
+        if (!part.empty())
+        {
+            text += (text.empty() ? "" : ", ") + part;
+        }
+    };
+    add(wifi.phy);
+    add(wifi.band);
+    add(wifi.channel != 0 ? std::format("channel {}", wifi.channel) : std::string{});
+    const auto mbps = [](std::uint32_t kbps)
+    {
+        return UI::Format::withLocaleDecimalPoint(std::format("{:g} Mbps", kbps / 1000.0));
+    };
+    add(wifi.rxKbps != 0 ? "receive " + mbps(wifi.rxKbps) : std::string{});
+    add(wifi.txKbps != 0 ? "transmit " + mbps(wifi.txKbps) : std::string{});
+    return text;
+}
+
 Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network)
 {
     Section section{.title = "Network adapters", .icon = ICON_FA_ETHERNET, .rows = {}};
@@ -1526,7 +1588,10 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
 
     if (network.adapters.empty())
     {
-        rows.push_back(row("Adapters", network.listed ? "None found" : "", "/sys/class/net couldn't be listed"));
+        rows.push_back(
+            row("Adapters",
+                network.listed ? "None found" : "",
+                network.family == Platform::OsFamily::Windows ? "GetAdaptersAddresses failed" : "/sys/class/net couldn't be listed"));
         return section;
     }
     for (const Platform::NetworkAdapter& adapter : network.adapters)
@@ -1537,11 +1602,46 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         {
             rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
         }
+        // Windows only so far: Linux leaves these empty, so their rows are left out there.
+        const auto joined = [](const std::vector<std::string>& items)
+        {
+            std::string text;
+            for (const std::string& item : items)
+            {
+                text += (text.empty() ? "" : ", ") + item;
+            }
+            return text;
+        };
+        if (!adapter.gateways.empty())
+        {
+            rows.push_back(row(adapter.name + " gateways", joined(adapter.gateways)));
+        }
+        if (!adapter.dnsServers.empty())
+        {
+            rows.push_back(row(adapter.name + " DNS servers", joined(adapter.dnsServers)));
+        }
+        if (!adapter.dnsSuffix.empty())
+        {
+            rows.push_back(row(adapter.name + " DNS suffix", adapter.dnsSuffix, NOT_REPORTED, true)); // like the search domains
+        }
+        if (adapter.dhcpEnabled.has_value())
+        {
+            rows.push_back(row(adapter.name + " DHCP", formatAdapterDhcp(adapter)));
+        }
         if (adapter.wireless)
         {
-            rows.push_back(row(adapter.name + " Wi-Fi signal",
-                               adapter.wifiSignalDbm.has_value() ? std::format("{} dBm", *adapter.wifiSignalDbm) : std::string{},
-                               "Not reported by the driver, or not connected"));
+            rows.push_back(row(adapter.name + " Wi-Fi signal", formatWifiSignal(adapter), "Not reported by the driver, or not connected"));
+            if (adapter.wifi.has_value() && !adapter.wifi->ssid.empty())
+            {
+                // The network name can say who or where the user is, like the computer name.
+                rows.push_back(row(adapter.name + " Wi-Fi network", adapter.wifi->ssid, NOT_REPORTED, true));
+            }
+            if (adapter.wifi.has_value() || !adapter.wifiUnavailableReason.empty())
+            {
+                rows.push_back(row(adapter.name + " Wi-Fi link",
+                                   adapter.wifi.has_value() ? formatWifiLink(*adapter.wifi) : std::string{},
+                                   adapter.wifiUnavailableReason.empty() ? NOT_REPORTED : std::string_view(adapter.wifiUnavailableReason)));
+            }
         }
     }
     return section;

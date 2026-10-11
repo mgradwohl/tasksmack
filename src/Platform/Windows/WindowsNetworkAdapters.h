@@ -1,0 +1,111 @@
+#pragma once
+
+// The Windows Network adapters facts (#1518), unprivileged and read only:
+//
+//   1. GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS): per adapter its connection name and
+//      description, state, MTU, MAC, unicast addresses with their prefix lengths, gateways, DNS servers
+//      and suffix, and whether IPv4 comes from DHCP, from which server and for how much longer. The
+//      loopback adapter is left out. The section's default gateways are those of the adapter with the
+//      lowest route metric that has one; its DNS servers and search domains, those of the adapters that
+//      are up, without repeats.
+//   2. wlanapi.dll, loaded at run time from System32 (it is missing on Server without the Wireless LAN
+//      Service): per Wi-Fi interface its current connection (network name, signal quality, PHY type and
+//      link rates), the RSSI, and the channel's centre frequency from the cached BSS list (band and
+//      channel), else the channel number alone. Windows 11 24H2 and later refuse the connection and the
+//      BSS list unless location access is on for desktop apps; the RSSI and channel still read then.
+//      Without wlanapi.dll the Wi-Fi rows are simply left out.
+//
+// The calls go through a table of function pointers, the system's by default (systemFunctions()), so
+// tests feed fake adapter lists and WLAN answers (test_WindowsNetworkAdapters.cpp).
+
+// NOLINTBEGIN(misc-include-cleaner) - Windows umbrella headers; their symbols come from sub-headers
+// that cannot be included on their own without breaking the required include order.
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2ipdef.h>
+#include <windows.h>
+#include <iphlpapi.h>
+#include <wlanapi.h>
+// clang-format on
+// NOLINTEND(misc-include-cleaner)
+
+#include "Platform/ISystemInfoProbe.h"
+
+#include <cstdint>
+#include <span>
+#include <string>
+#include <string_view>
+
+namespace Platform::WindowsNetworkAdapters
+{
+
+/// The calls readNetworkAdapters() makes. getAdaptersAddresses must be set; the WLAN calls are null when
+/// wlanapi.dll (or one of its exports) is missing, and the Wi-Fi connection is then not read.
+struct Functions
+{
+    // NOLINTBEGIN(misc-include-cleaner) - the WLAN types come from wlanapi.h's sub-headers
+    ULONG(WINAPI* getAdaptersAddresses)(ULONG family, ULONG flags, PVOID reserved, PIP_ADAPTER_ADDRESSES addresses, PULONG size) = nullptr;
+    DWORD(WINAPI* wlanOpenHandle)(DWORD clientVersion, PVOID reserved, PDWORD negotiatedVersion, PHANDLE client) = nullptr;
+    DWORD(WINAPI* wlanCloseHandle)(HANDLE client, PVOID reserved) = nullptr;
+    DWORD(WINAPI* wlanEnumInterfaces)(HANDLE client, PVOID reserved, PWLAN_INTERFACE_INFO_LIST* list) = nullptr;
+    DWORD(WINAPI* wlanQueryInterface)
+    (HANDLE client,
+     const GUID* interfaceGuid,
+     WLAN_INTF_OPCODE opcode,
+     PVOID reserved,
+     PDWORD size,
+     PVOID* data,
+     PWLAN_OPCODE_VALUE_TYPE type) = nullptr;
+    DWORD(WINAPI* wlanGetNetworkBssList)
+    (HANDLE client,
+     const GUID* interfaceGuid,
+     PDOT11_SSID ssid,
+     DOT11_BSS_TYPE bssType,
+     BOOL securityEnabled,
+     PVOID reserved,
+     PWLAN_BSS_LIST* list) = nullptr;
+    VOID(WINAPI* wlanFreeMemory)(PVOID memory) = nullptr;
+    // NOLINTEND(misc-include-cleaner)
+};
+
+/// The real table: iphlpapi's GetAdaptersAddresses, and wlanapi.dll's exports when it loads (once per
+/// process, from System32).
+[[nodiscard]] Functions systemFunctions();
+
+/// Every adapter through @p fns into @p info (available, listed, adapters sorted by name, the default
+/// gateways and DNS servers). Never throws for a failed call: what couldn't be read stays empty.
+void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns);
+
+// ---- Pure helpers, exposed for tests ----
+
+/// A MAC address in Windows' own form ("A4-5E-60-12-34-56"); empty for no address or all zeros.
+[[nodiscard]] std::string formatMac(std::span<const std::uint8_t> bytes);
+
+/// An IPv4 or IPv6 socket address's address text ("192.168.1.20", "fe80::1c2a:3bff:fe4d:5e6f"), without
+/// a port or scope; empty for a null or other-family address.
+[[nodiscard]] std::string formatSocketAddress(const SOCKET_ADDRESS& address);
+
+/// The placeholder DNS servers fec0:0:0:ffff::1, ::2 and ::3 that Windows lists on an adapter with no
+/// IPv6 DNS server configured; never a real resolver.
+[[nodiscard]] bool isPlaceholderDnsServer(std::string_view address);
+
+/// The PHY type's standard and generation ("802.11ax (Wi-Fi 6)"; "Wi-Fi 6E" in the 6 GHz band); empty
+/// for one not known.
+[[nodiscard]] std::string_view phyName(std::uint32_t dot11PhyType, std::uint32_t frequencyMhz);
+
+/// The band of a channel's centre frequency ("2.4 GHz", "5 GHz", "6 GHz"); empty outside them.
+[[nodiscard]] std::string_view bandName(std::uint32_t frequencyMhz);
+
+/// The IEEE channel number of a centre frequency in the 2.4, 5 or 6 GHz band; 0 outside them.
+[[nodiscard]] std::uint32_t channelOf(std::uint32_t frequencyMhz);
+
+/// A GUID in the registry form of an adapter's AdapterName ("{4D36E972-E325-11CE-BFC1-08002BE10318}").
+[[nodiscard]] std::string guidText(const GUID& guid);
+
+} // namespace Platform::WindowsNetworkAdapters

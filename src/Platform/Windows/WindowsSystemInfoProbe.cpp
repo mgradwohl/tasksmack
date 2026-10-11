@@ -58,6 +58,7 @@
 #include "WindowsGraphics.h"
 #include "WindowsHandles.h"
 #include "WindowsInstalledMemory.h"
+#include "WindowsNetworkAdapters.h"
 #include "WindowsOsInfoMath.h"
 #include "WindowsServiceConfig.h"
 #include "WindowsStorage.h"
@@ -1233,6 +1234,13 @@ CrashesInfo WindowsSystemInfoProbe::readCrashes()
 {
     CrashesInfo info;
     WindowsCrashEvents::readCrashes(info, WindowsCrashEvents::systemFunctions());
+    return info;
+}
+
+NetworkAdaptersInfo WindowsSystemInfoProbe::readNetworkAdapters()
+{
+    NetworkAdaptersInfo info;
+    WindowsNetworkAdapters::readNetworkAdapters(info, WindowsNetworkAdapters::systemFunctions());
     return info;
 }
 

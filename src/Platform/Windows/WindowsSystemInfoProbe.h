@@ -90,12 +90,8 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] DevicesInfo readDevices() override;
     [[nodiscard]] DriversInfo readDrivers() override;
     [[nodiscard]] CrashesInfo readCrashes() override;
-    /// Not read yet: GetAdaptersAddresses and WlanQueryInterface are the Windows lane's follow-up to
-    /// #1518, so the section is left out on Windows.
-    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override
-    {
-        return {};
-    }
+    /// The adapters from GetAdaptersAddresses and the Wi-Fi connections from wlanapi.dll (WindowsNetworkAdapters.h, #1518).
+    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override;
     /// Not read yet: the Diagnostics-Performance event 100 is the Windows lane's follow-up to #1525, so
     /// the section is left out on Windows.
     [[nodiscard]] BootPerformanceInfo readBootPerformance() override

@@ -696,6 +696,68 @@ TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)
     EXPECT_EQ(findRow(stub, "Adapters")->value, "None found");
 }
 
+TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.family = Platform::OsFamily::Windows;
+    network.listed = true;
+    network.dnsRead = true;
+    Platform::NetworkAdapter wifi;
+    wifi.name = "Wi-Fi";
+    wifi.description = "Intel(R) Wi-Fi 6E AX211 160MHz";
+    wifi.up = true;
+    wifi.wireless = true;
+    wifi.mtu = 1500;
+    wifi.gateways = {"192.168.0.1", "fe80::1"};
+    wifi.dnsServers = {"192.168.0.1"};
+    wifi.dnsSuffix = "home.example";
+    wifi.dhcpEnabled = true;
+    wifi.dhcpServer = "192.168.0.1";
+    wifi.dhcpLeaseSecondsLeft = 86'000;
+    wifi.wifiSignalDbm = -55;
+    wifi.wifi = Platform::WifiConnection{
+        .ssid = "HomeNet",
+        .signalQuality = 82,
+        .phy = "802.11ax (Wi-Fi 6)",
+        .band = "5 GHz",
+        .channel = 36,
+        .rxKbps = 1'201'000,
+        .txKbps = 864'500,
+    };
+    Platform::NetworkAdapter ethernet;
+    ethernet.name = "Ethernet";
+    ethernet.dhcpEnabled = false;
+    Platform::NetworkAdapter denied;
+    denied.name = "Wi-Fi 2";
+    denied.wireless = true;
+    denied.wifiUnavailableReason = "Windows refused it: turn on location access";
+    network.adapters = {ethernet, wifi, denied};
+
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(section, "Wi-Fi")->value, "Up, Wi-Fi, MTU 1500, Intel(R) Wi-Fi 6E AX211 160MHz");
+    EXPECT_EQ(findRow(section, "Wi-Fi gateways")->value, "192.168.0.1, fe80::1");
+    EXPECT_EQ(findRow(section, "Wi-Fi DNS servers")->value, "192.168.0.1");
+    EXPECT_TRUE(findRow(section, "Wi-Fi DNS suffix")->isIdentifier);
+    EXPECT_EQ(findRow(section, "Wi-Fi DHCP")->value, "On, server 192.168.0.1, lease 23h 53m left");
+    EXPECT_EQ(findRow(section, "Ethernet DHCP")->value, "Off (static IPv4)");
+    EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi signal")->value, "-55 dBm (82%)");
+    EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi network")->value, "HomeNet");
+    EXPECT_TRUE(findRow(section, "Wi-Fi Wi-Fi network")->isIdentifier);
+    EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi link")->value,
+              "802.11ax (Wi-Fi 6), 5 GHz, channel 36, receive 1201 Mbps, transmit " + UI::Format::withLocaleDecimalPoint("864.5 Mbps"));
+    EXPECT_EQ(findRow(section, "Ethernet gateways"), nullptr);
+    EXPECT_EQ(findRow(section, "Ethernet DNS suffix"), nullptr);
+    EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi network"), nullptr);
+    EXPECT_FALSE(findRow(section, "Wi-Fi 2 Wi-Fi link")->available());
+    EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi link")->unavailableReason, "Windows refused it: turn on location access");
+
+    network.adapters.clear();
+    network.listed = false;
+    const Section failed = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(failed, "Adapters")->unavailableReason, "GetAdaptersAddresses failed");
+}
+
 TEST(SystemInfoSectionsTest, BootPerformanceRows)
 {
     EXPECT_EQ(SystemInfo::formatBootDuration(850'000), "850 ms");
