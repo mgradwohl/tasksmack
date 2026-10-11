@@ -952,11 +952,20 @@ TEST(WindowsSystemInfoProbeTest, ReadsGraphics)
     for (const GraphicsAdapter& adapter : info.adapters)
     {
         EXPECT_FALSE(adapter.name.empty());
+        // A CI VM's adapter may have no D3D12 driver; when it reports a level, it is one D3D12 requires.
+        if (!adapter.d3dFeatureLevel.empty())
+        {
+            EXPECT_TRUE(adapter.d3dFeatureLevel.starts_with("11_") || adapter.d3dFeatureLevel.starts_with("12_"))
+                << adapter.d3dFeatureLevel;
+        }
     }
 }
 
-// The fake graphics table's state: whether DXGI can be used at all.
-bool g_DxgiFails = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+// The fake graphics table's state: whether DXGI can be used at all, whether D3D12 can, and the LUIDs a
+// Direct3D device was asked for.
+bool g_DxgiFails = false;               // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+bool g_D3d12Missing = false;            // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::vector<DWORD> g_FeatureLevelLuids; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 [[nodiscard]] DXGI_ADAPTER_DESC1 adapterDesc(std::wstring_view name, UINT vendor, UINT device, DWORD luidLow, UINT flags)
 {
@@ -1041,6 +1050,11 @@ bool g_DxgiFails = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-var
         .listDisplayDrivers = &fakeDriverNodes,
         .readMonitorEdid = [](const std::wstring& output)
         { return output == L"\\\\.\\DISPLAY1" ? TestSupport::makeEdid() : std::vector<std::uint8_t>{}; },
+        .maxFeatureLevel = [](const LUID& luid) -> std::optional<D3D_FEATURE_LEVEL>
+        {
+            g_FeatureLevelLuids.push_back(luid.LowPart);
+            return g_D3d12Missing ? std::nullopt : std::optional(D3D_FEATURE_LEVEL_12_2);
+        },
     };
 }
 
@@ -1056,6 +1070,7 @@ TEST(WindowsSystemInfoProbeTest, GraphicsThroughTheFunctionTable)
     EXPECT_EQ(gpu.dedicatedBytes, 12ULL << 30U);
     EXPECT_EQ(gpu.driverVersion, "32.0.15.6094"); // the node at its PCI location, not the first with its ids
     EXPECT_EQ(gpu.driverDate, "2024-09-05");
+    EXPECT_EQ(gpu.d3dFeatureLevel, "12_2");
 
     ASSERT_TRUE(info.monitorsRead);
     ASSERT_EQ(info.monitors.size(), 2U); // the indirect display's monitor is kept
@@ -1077,6 +1092,32 @@ TEST(WindowsSystemInfoProbeTest, GraphicsThroughTheFunctionTable)
     EXPECT_FALSE(failed.adaptersRead);
 }
 
+TEST(WindowsSystemInfoProbeTest, GraphicsFeatureLevelOnlyForListedAdapters)
+{
+    g_FeatureLevelLuids.clear();
+    GraphicsInfo info;
+    WindowsGraphics::readGraphics(info, fakeGraphics());
+    // A device is made for the listed GPU only: not the software adapter, not the indirect display.
+    EXPECT_EQ(g_FeatureLevelLuids, std::vector<DWORD>{1});
+
+    // Without D3D12 the level is left empty and the rest of the adapter is still read.
+    g_D3d12Missing = true;
+    GraphicsInfo missing;
+    WindowsGraphics::readGraphics(missing, fakeGraphics());
+    g_D3d12Missing = false;
+    ASSERT_EQ(missing.adapters.size(), 1U);
+    EXPECT_TRUE(missing.adapters[0].d3dFeatureLevel.empty());
+    EXPECT_EQ(missing.adapters[0].driverVersion, "32.0.15.6094");
+
+    // DXGI unusable: nothing to make a device on.
+    g_FeatureLevelLuids.clear();
+    g_DxgiFails = true;
+    GraphicsInfo failed;
+    WindowsGraphics::readGraphics(failed, fakeGraphics());
+    g_DxgiFails = false;
+    EXPECT_TRUE(g_FeatureLevelLuids.empty());
+}
+
 TEST(WindowsSystemInfoProbeTest, GraphicsHelpers)
 {
     using namespace std::chrono;
@@ -1084,6 +1125,10 @@ TEST(WindowsSystemInfoProbeTest, GraphicsHelpers)
     EXPECT_EQ(WindowsGraphics::colorSpaceName(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709), "sRGB");
     EXPECT_FALSE(WindowsGraphics::isHdrColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709));
     EXPECT_TRUE(WindowsGraphics::isHdrColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020));
+    EXPECT_EQ(WindowsGraphics::featureLevelName(D3D_FEATURE_LEVEL_12_2), "12_2");
+    EXPECT_EQ(WindowsGraphics::featureLevelName(D3D_FEATURE_LEVEL_12_0), "12_0");
+    EXPECT_EQ(WindowsGraphics::featureLevelName(D3D_FEATURE_LEVEL_11_1), "11_1");
+    EXPECT_EQ(WindowsGraphics::featureLevelName(D3D_FEATURE_LEVEL_9_3), "9_3");
 
     // Without a PCI location the first node with the ids is used; with one, only the node there.
     const std::vector<WindowsGraphics::DriverNode> nodes{

@@ -39,7 +39,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-# git writes UTF-8 ref names, recorded in the manifest; decode its output as UTF-8 (#1648).
+# The script's own output is UTF-8 (#1648). git's output is decoded as UTF-8 by Invoke-GitText,
+# whatever this setting (#1745).
 # Without a console (a detached process) setting it throws; the default is kept then.
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
@@ -96,30 +97,54 @@ New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 # .NET file APIs resolve against the process directory, not the PowerShell location.
 $outDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outDir)
 
+function Invoke-GitText {
+    # git's exit code and standard output, decoded as UTF-8 whatever the console's code page
+    # (#1745). PowerShell decodes a native command's output with [Console]::OutputEncoding, which
+    # follows the console the script inherited: the script sets it to UTF-8 above, but not without
+    # a console, and a caller that loads only these functions (the tests) never sets it. Under a
+    # 437 or 1252 console, a non-ASCII branch name was read back as mojibake. git's stderr ("not a
+    # git repository") is read and dropped; the exit code decides.
+    param([string]$Git, [string[]]$Arguments)
+    $start = [System.Diagnostics.ProcessStartInfo]::new($Git)
+    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $process = [System.Diagnostics.Process]::Start($start)
+    try {
+        # Both pipes are drained together, so a full stderr pipe cannot stall git.
+        $errorText = $process.StandardError.ReadToEndAsync()
+        $output = $process.StandardOutput.ReadToEnd()
+        $null = $errorText.GetAwaiter().GetResult()
+        $process.WaitForExit()
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output }
+    }
+    finally { $process.Dispose() }
+}
+
 function Get-GitProvenance {
     # The checkout's commit, branch and dirty flag; a user or host name in the branch is hidden
     # (Hide-NameIdentity).
     param([string]$User = [Environment]::UserName, [string[]]$Hosts = (Get-HostNames))
     $git = [ordered]@{ commit = $null; branch = $null; dirty = $null }
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $git }
-    # Before PowerShell 7.2, a native command's stderr becomes error records even when redirected
-    # to $null, and the script's ErrorActionPreference of Stop makes them terminating: git's
-    # "not a git repository" would abort the run. This function's own preference keeps them quiet;
-    # the exit codes below decide.
-    $ErrorActionPreference = 'Continue'
+    $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $gitCommand) { return $git }
+    $gitPath = $gitCommand.Source
     # Only the script's own checkout counts: git searches parent directories, so a source archive
     # unpacked inside another checkout would otherwise report that checkout's commit (#1445
     # review). The repository root must be git's top level (an empty prefix).
-    $prefix = & git -C $repoRoot rev-parse --show-prefix 2>$null
-    if ($LASTEXITCODE -ne 0 -or "$prefix".Trim()) { return $git }
-    $commit = & git -C $repoRoot rev-parse HEAD 2>$null
-    if ($LASTEXITCODE -ne 0) { return $git }
-    $git.commit = "$commit".Trim()
-    $branch = & git -C $repoRoot rev-parse --abbrev-ref HEAD 2>$null
-    if ($LASTEXITCODE -eq 0) { $git.branch = Hide-NameIdentity "$branch".Trim() -User $User -Hosts $Hosts }
+    $prefix = Invoke-GitText $gitPath @('-C', $repoRoot, 'rev-parse', '--show-prefix')
+    if ($prefix.ExitCode -ne 0 -or $prefix.Output.Trim()) { return $git }
+    $commit = Invoke-GitText $gitPath @('-C', $repoRoot, 'rev-parse', 'HEAD')
+    if ($commit.ExitCode -ne 0) { return $git }
+    $git.commit = $commit.Output.Trim()
+    $branch = Invoke-GitText $gitPath @('-C', $repoRoot, 'rev-parse', '--abbrev-ref', 'HEAD')
+    if ($branch.ExitCode -eq 0) { $git.branch = Hide-NameIdentity $branch.Output.Trim() -User $User -Hosts $Hosts }
     # Tracked changes only: untracked scratch files do not change what was built.
-    $status = & git -C $repoRoot status --porcelain --untracked-files=no 2>$null
-    if ($LASTEXITCODE -eq 0) { $git.dirty = [bool]("$status".Trim()) }
+    $status = Invoke-GitText $gitPath @('-C', $repoRoot, 'status', '--porcelain', '--untracked-files=no')
+    if ($status.ExitCode -eq 0) { $git.dirty = [bool]($status.Output.Trim()) }
     return $git
 }
 

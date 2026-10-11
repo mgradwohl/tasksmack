@@ -30,6 +30,10 @@
 #include <wintrust.h>
 #include <softpub.h>  // WINTRUST_ACTION_GENERIC_VERIFY_V2, DRIVER_ACTION_VERIFY
 #include <mscat.h>    // CryptCATAdmin*: a driver's catalog (#1661)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+#include <d3d12.h>    // the device maxD3D12FeatureLevel() creates (#1636); d3d12.dll is loaded at run time
+#pragma clang diagnostic pop
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
@@ -291,6 +295,81 @@ constexpr GUID MONITOR_INTERFACE_GUID{
         records.push_back(std::move(record));
     }
     return records;
+}
+
+using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+
+/// d3d12.dll's D3D12CreateDevice, resolved at run time from System32 rather than linked, so TaskSmack
+/// starts without Direct3D 12. Null when either is missing. The module is loaded once and never freed:
+/// a driver's worker threads can outlive the device, and unloading the runtime under them isn't safe.
+[[nodiscard]] D3D12CreateDeviceFn d3d12CreateDevice()
+{
+    static auto* const create = [] -> D3D12CreateDeviceFn
+    {
+        HMODULE module = LoadLibraryExW(L"d3d12.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (module == nullptr)
+        {
+            return nullptr;
+        }
+        return reinterpret_cast<D3D12CreateDeviceFn>(GetProcAddress(module, "D3D12CreateDevice"));
+    }();
+    return create;
+}
+
+/// The highest Direct3D 12 feature level of the DXGI adapter with @p luid (#1636). A device is created
+/// on it for the query, which loads the adapter's user-mode driver, and released before returning.
+[[nodiscard]] std::optional<D3D_FEATURE_LEVEL> maxD3D12FeatureLevel(const LUID& luid)
+{
+    auto* const create = d3d12CreateDevice();
+    if (create == nullptr)
+    {
+        return std::nullopt;
+    }
+    ComPtr<IDXGIFactory4> factory;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory4), reinterpret_cast<void**>(factory.releaseAndGetAddressOf()))) || !factory)
+    {
+        return std::nullopt;
+    }
+    ComPtr<IDXGIAdapter1> adapter;
+    if (FAILED(factory->EnumAdapterByLuid(luid, __uuidof(IDXGIAdapter1), reinterpret_cast<void**>(adapter.releaseAndGetAddressOf()))) ||
+        !adapter)
+    {
+        return std::nullopt;
+    }
+    ComPtr<ID3D12Device> device;
+    if (FAILED(create(
+            adapter.get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), reinterpret_cast<void**>(device.releaseAndGetAddressOf()))) ||
+        !device)
+    {
+        return std::nullopt;
+    }
+    static constexpr std::array<D3D_FEATURE_LEVEL, 5> LEVELS{
+        D3D_FEATURE_LEVEL_12_2,
+        D3D_FEATURE_LEVEL_12_1,
+        D3D_FEATURE_LEVEL_12_0,
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+    };
+    // A runtime older than 12_2 (Windows 10 before 20H2) rejects the whole query for a level it doesn't
+    // know, so ask again without it.
+    const auto query = [&device](std::span<const D3D_FEATURE_LEVEL> requested) -> std::optional<D3D_FEATURE_LEVEL>
+    {
+        D3D12_FEATURE_DATA_FEATURE_LEVELS levels{
+            .NumFeatureLevels = static_cast<UINT>(requested.size()),
+            .pFeatureLevelsRequested = requested.data(),
+            .MaxSupportedFeatureLevel = D3D_FEATURE_LEVEL_11_0,
+        };
+        if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof(levels))))
+        {
+            return std::nullopt;
+        }
+        return levels.MaxSupportedFeatureLevel;
+    };
+    if (const std::optional<D3D_FEATURE_LEVEL> level = query(LEVELS))
+    {
+        return level;
+    }
+    return query(std::span(LEVELS).subspan(1));
 }
 
 /// Every present display-class device node's hardware id, PCI location and driver version and date.
@@ -1107,6 +1186,7 @@ WindowsGraphics::Functions WindowsSystemInfoProbe::graphicsFunctions()
         .pciLocation = [](const LUID& luid) { return adapterPciLocation(luid); },
         .listDisplayDrivers = &listDisplayDriverNodes,
         .readMonitorEdid = &readMonitorEdid,
+        .maxFeatureLevel = &maxD3D12FeatureLevel,
     };
 }
 
