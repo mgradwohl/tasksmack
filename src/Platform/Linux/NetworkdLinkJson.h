@@ -107,14 +107,17 @@ class Parser
 
     [[nodiscard]] bool consume(std::string_view literal) noexcept
     {
-        if (m_Text.substr(m_Pos, literal.size()) == literal)
+        if (m_Text.size() - m_Pos < literal.size() || std::string_view(m_Text.data() + m_Pos, literal.size()) != literal)
         {
-            m_Pos += literal.size();
-            return true;
+            return false;
         }
-        return false;
+        m_Pos += literal.size();
+        return true;
     }
 
+    // parseValue(), parseObject() and parseArray() recurse into each other for nested values; the depth
+    // is bounded by MAX_DEPTH, so the text can't exhaust the stack (and the parser is fuzzed).
+    // NOLINTBEGIN(misc-no-recursion)
     [[nodiscard]] std::optional<Value> parseValue(int depth)
     {
         if (depth > MAX_DEPTH)
@@ -236,6 +239,8 @@ class Parser
             }
         }
     }
+
+    // NOLINTEND(misc-no-recursion)
 
     [[nodiscard]] std::optional<std::uint32_t> parseHex4() noexcept
     {
