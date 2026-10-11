@@ -36,7 +36,8 @@ namespace
 {
 
 static_assert(TBS_SUCCESS_CODE == TBS_SUCCESS);
-static_assert(TBS_E_TPM_NOT_FOUND_CODE == static_cast<std::uint32_t>(TBS_E_TPM_NOT_FOUND));
+constexpr auto TPM_NOT_FOUND = static_cast<std::uint32_t>(TBS_E_TPM_NOT_FOUND);
+static_assert(TBS_E_TPM_NOT_FOUND_CODE == TPM_NOT_FOUND);
 static_assert(TPM_VERSION_12_CODE == TPM_VERSION_12 && TPM_VERSION_20_CODE == TPM_VERSION_20);
 
 /// UEFISecureBootEnabled, as Windows records it at boot.
@@ -80,7 +81,7 @@ using TbsiGetDeviceInfoFn = TBS_RESULT(WINAPI*)(UINT32 size, PVOID info);
 
 [[nodiscard]] std::optional<std::uint32_t> tpmDeviceInfo(std::uint32_t& version)
 {
-    const TbsiGetDeviceInfoFn fn = tbsiGetDeviceInfo();
+    TbsiGetDeviceInfoFn fn = tbsiGetDeviceInfo();
     if (fn == nullptr)
     {
         return std::nullopt;
@@ -94,7 +95,7 @@ using TbsiGetDeviceInfoFn = TBS_RESULT(WINAPI*)(UINT32 size, PVOID info);
 [[nodiscard]] std::int32_t querySystemInformation(std::uint32_t infoClass, std::span<std::byte> buffer)
 {
     constexpr LONG STATUS_NOT_IMPLEMENTED_CODE = static_cast<LONG>(0xC000'0002U);
-    const Windows::NtQuerySystemInformationFn query = Windows::ntQuerySystemInformation();
+    Windows::NtQuerySystemInformationFn query = Windows::ntQuerySystemInformation();
     if (query == nullptr)
     {
         return STATUS_NOT_IMPLEMENTED_CODE;

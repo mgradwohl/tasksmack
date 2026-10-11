@@ -96,6 +96,26 @@ struct Functions
     return std::nullopt;
 }
 
+/// "Not affected" when the CPU doesn't need the mitigation, else @p mitigation or @p vulnerable by whether it is on.
+[[nodiscard]] inline std::string statusText(bool required, bool mitigated, std::string_view mitigation, std::string_view vulnerable)
+{
+    if (!required)
+    {
+        return "Not affected";
+    }
+    return std::string(mitigated ? mitigation : vulnerable);
+}
+
+/// TPM_DEVICE_INFO::tpmVersion as the major version: 1 or 2, 0 when it is neither.
+[[nodiscard]] constexpr std::uint32_t tpmVersionMajor(std::uint32_t tpmVersion) noexcept
+{
+    if (tpmVersion == TPM_VERSION_20_CODE)
+    {
+        return 2;
+    }
+    return tpmVersion == TPM_VERSION_12_CODE ? 1 : 0;
+}
+
 /// The vulnerabilities Windows reports, by the Linux kernel's names and in its status wording ("Not
 /// affected", "Mitigation: ...", "Vulnerable..."), sorted by name. @p speculation is the
 /// SystemSpeculationControlInformation flags and @p kvaShadow the SystemKernelVaShadowInformation flags,
@@ -116,9 +136,15 @@ decodeVulnerabilities(std::optional<std::uint32_t> speculation, std::optional<st
         std::string spectre;
         if (has(SPEC_BPB_ENABLED))
         {
-            spectre = has(SPEC_ENHANCED_IBRS)     ? "Mitigation: Enhanced IBRS"
-                    : has(SPEC_RETPOLINE_ENABLED) ? "Mitigation: Retpolines"
-                                                  : "Mitigation: IBRS";
+            spectre = "Mitigation: IBRS";
+            if (has(SPEC_ENHANCED_IBRS))
+            {
+                spectre = "Mitigation: Enhanced IBRS";
+            }
+            else if (has(SPEC_RETPOLINE_ENABLED))
+            {
+                spectre = "Mitigation: Retpolines";
+            }
         }
         else if (has(SPEC_BPB_DISABLED_SYSTEM_POLICY))
         {
@@ -136,10 +162,13 @@ decodeVulnerabilities(std::optional<std::uint32_t> speculation, std::optional<st
 
         if (has(SPEC_SSBD_AVAILABLE))
         {
-            std::string status = !has(SPEC_SSBD_REQUIRED)   ? "Not affected"
-                               : has(SPEC_SSBD_SYSTEM_WIDE) ? "Mitigation: Speculative Store Bypass disabled system-wide"
-                                                            : "Vulnerable: Speculative Store Bypass Disable is off (the Windows default)";
-            out.push_back({.name = "spec_store_bypass", .status = std::move(status)});
+            out.push_back({
+                .name = "spec_store_bypass",
+                .status = statusText(has(SPEC_SSBD_REQUIRED),
+                                     has(SPEC_SSBD_SYSTEM_WIDE),
+                                     "Mitigation: Speculative Store Bypass disabled system-wide",
+                                     "Vulnerable: Speculative Store Bypass Disable is off (the Windows default)"),
+            });
         }
 
         if (has(SPEC_MB_CLEAR_REPORTED))
@@ -171,13 +200,15 @@ decodeVulnerabilities(std::optional<std::uint32_t> speculation, std::optional<st
             (flags & KVA_SHADOW_REQUIRED_AVAILABLE) != 0 ? std::optional<bool>((flags & KVA_SHADOW_REQUIRED) != 0) : vendorAffected;
         if (required.has_value())
         {
-            const bool kvaOn = (flags & KVA_SHADOW_ENABLED) != 0;
-            out.push_back(
-                {.name = "meltdown",
-                 .status = !*required ? "Not affected" : (kvaOn ? "Mitigation: Kernel VA shadow" : "Vulnerable: Kernel VA shadow is off")});
-            const bool l1tfOn = (flags & KVA_L1TF_MITIGATION_PRESENT) != 0;
-            out.push_back(
-                {.name = "l1tf", .status = !*required ? "Not affected" : (l1tfOn ? "Mitigation: Invalid PTE bit" : "Vulnerable")});
+            out.push_back({
+                .name = "meltdown",
+                .status = statusText(
+                    *required, (flags & KVA_SHADOW_ENABLED) != 0, "Mitigation: Kernel VA shadow", "Vulnerable: Kernel VA shadow is off"),
+            });
+            out.push_back({
+                .name = "l1tf",
+                .status = statusText(*required, (flags & KVA_L1TF_MITIGATION_PRESENT) != 0, "Mitigation: Invalid PTE bit", "Vulnerable"),
+            });
         }
     }
     std::ranges::sort(out, {}, &CpuVulnerability::name);
@@ -222,7 +253,7 @@ inline void readPlatformSecurity(PlatformSecurityInfo& info, const Functions& fn
     if (const std::optional<std::uint32_t> result = fns.tpmDeviceInfo(version); result == TBS_SUCCESS_CODE)
     {
         info.tpm = SecurityFeatureState::On;
-        info.tpmVersionMajor = version == TPM_VERSION_20_CODE ? 2U : (version == TPM_VERSION_12_CODE ? 1U : 0U);
+        info.tpmVersionMajor = tpmVersionMajor(version);
     }
     else if (result == TBS_E_TPM_NOT_FOUND_CODE)
     {

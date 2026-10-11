@@ -16,7 +16,6 @@
 #pragma comment(lib, "wevtapi.lib")
 
 #include <cstdint>
-#include <cwchar>
 #include <string>
 #include <string_view>
 #include <vector>

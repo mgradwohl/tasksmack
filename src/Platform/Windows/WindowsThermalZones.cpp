@@ -35,7 +35,7 @@ namespace
     DWORD bytes = 0;
     DWORD count = 0;
     PDH_STATUS status = PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &bytes, &count, nullptr);
-    if (status != static_cast<PDH_STATUS>(PDH_MORE_DATA))
+    if (static_cast<DWORD>(status) != PDH_MORE_DATA)
     {
         return status; // ERROR_SUCCESS here means no instances
     }
@@ -53,6 +53,8 @@ namespace
         {
             continue;
         }
+        // PDH_FMT_DOUBLE fills the union's doubleValue.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
         zones.push_back({.instance = WinString::wideToUtf8(item.szName), .kelvin = item.FmtValue.doubleValue});
     }
     return ERROR_SUCCESS;

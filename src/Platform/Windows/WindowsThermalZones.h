@@ -88,11 +88,13 @@ inline void readSensors(SensorsInfo& info, const Functions& fns)
         {
             continue;
         }
-        device.readings.push_back({.kind = SensorKind::Temperature,
-                                   .label = zoneLabel(zone.instance),
-                                   .value = zone.kelvin - KELVIN_AT_ZERO_CELSIUS,
-                                   .high = {},
-                                   .critical = {}});
+        device.readings.push_back({
+            .kind = SensorKind::Temperature,
+            .label = zoneLabel(zone.instance),
+            .value = zone.kelvin - KELVIN_AT_ZERO_CELSIUS,
+            .high = {},
+            .critical = {},
+        });
     }
     if (device.readings.empty())
     {

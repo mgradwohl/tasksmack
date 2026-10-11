@@ -751,9 +751,11 @@ TEST(SystemInfoSectionsTest, WindowsSecurityRows)
     security.memoryIntegrity = true;
     security.kernelDmaProtection = false;
     security.vulnerabilitiesRead = true;
-    security.vulnerabilities = {{.name = "l1tf", .status = "Not affected"},
-                                {.name = "spec_store_bypass", .status = "Vulnerable: Speculative Store Bypass Disable is off"},
-                                {.name = "spectre_v2", .status = "Mitigation: Enhanced IBRS"}};
+    security.vulnerabilities = {
+        {.name = "l1tf", .status = "Not affected"},
+        {.name = "spec_store_bypass", .status = "Vulnerable: Speculative Store Bypass Disable is off"},
+        {.name = "spectre_v2", .status = "Mitigation: Enhanced IBRS"},
+    };
     const Section section = SystemInfo::buildSecuritySection(security);
     EXPECT_EQ(findRow(section, "Secure Boot")->value, "On");
     EXPECT_EQ(findRow(section, "TPM")->value, "Present (TPM 2.0)");
@@ -803,8 +805,14 @@ TEST(SystemInfoSectionsTest, WindowsSensorsRowsAndVendorDriverNote)
     sensors.family = Platform::OsFamily::Windows;
     sensors.listed = true;
     sensors.devices = {
-        {.name = "Thermal zones",
-         .readings = {{.kind = Platform::SensorKind::Temperature, .label = "TZ00", .value = 45.0, .high = {}, .critical = {}}}}};
+        {
+            .name = "Thermal zones",
+            .readings =
+                {
+                    {.kind = Platform::SensorKind::Temperature, .label = "TZ00", .value = 45.0, .high = {}, .critical = {}},
+                },
+        },
+    };
     const Section section = SystemInfo::buildSensorsSection(sensors);
     ASSERT_EQ(section.rows.size(), 2U);
     EXPECT_EQ(section.rows[0].label, "Thermal zones: TZ00");

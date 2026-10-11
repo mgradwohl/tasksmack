@@ -12,6 +12,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -44,36 +46,39 @@ constexpr std::string_view BOOT_EVENT_XML =
     "<Data Name='MainPathBootTime'>14200</Data><Data Name='BootKernelInitTime'>48</Data>"
     "<Data Name='BootPostBootTime'>20367</Data><Data Name='BootIsDegradation'>false</Data></EventData></Event>";
 
-std::string g_BootXml;
-std::uint32_t g_BootError = 0;
-std::string g_BootXPath;
+std::string g_BootXml;         // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::uint32_t g_BootError = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::string g_BootXPath;       // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 [[nodiscard]] WindowsBootPerformance::Functions fakeBootFunctions(std::string xml, std::uint32_t error)
 {
     g_BootXml = std::move(xml);
     g_BootError = error;
     g_BootXPath.clear();
-    return {.newestEventXml = [](const std::string& xpath, std::string& out, std::uint32_t& outError) -> bool
+    return {
+        .newestEventXml = [](const std::string& xpath, std::string& out, std::uint32_t& outError) -> bool
+        {
+            g_BootXPath = xpath;
+            if (g_BootError != 0)
             {
-                g_BootXPath = xpath;
-                if (g_BootError != 0)
-                {
-                    outError = g_BootError;
-                    return false;
-                }
-                out = g_BootXml;
-                return true;
-            }};
+                outError = g_BootError;
+                return false;
+            }
+            out = g_BootXml;
+            return true;
+        },
+    };
 }
 
 TEST(WindowsBootPerformanceTest, ParsesTheBootEvent)
 {
-    const auto event = WindowsBootPerformance::parseBootEventXml(BOOT_EVENT_XML);
-    ASSERT_TRUE(event.has_value());
-    EXPECT_EQ(event->bootMs, 34567U);
-    EXPECT_EQ(event->mainPathMs, 14200U);
-    EXPECT_EQ(event->postBootMs, 20367U);
-    EXPECT_EQ(event->unixSeconds, 1'791'529'361U); // 2026-10-09T07:02:41Z
+    const auto parsed = WindowsBootPerformance::parseBootEventXml(BOOT_EVENT_XML);
+    ASSERT_TRUE(parsed.has_value());
+    const WindowsBootPerformance::BootEvent event = parsed.value_or(WindowsBootPerformance::BootEvent{});
+    EXPECT_EQ(event.bootMs, 34567U);
+    EXPECT_EQ(event.mainPathMs, 14200U);
+    EXPECT_EQ(event.postBootMs, 20367U);
+    EXPECT_EQ(event.unixSeconds, 1'791'529'361U); // 2026-10-09T07:02:41Z
 }
 
 TEST(WindowsBootPerformanceTest, RejectsOtherEventsAndMissingTimes)
@@ -89,8 +94,8 @@ TEST(WindowsBootPerformanceTest, RejectsOtherEventsAndMissingTimes)
                                                                   "<Data Name='MainPathBootTime'>1000</Data>"
                                                                   "<Data Name='BootPostBootTime'>250</Data></EventData></Event>");
     ASSERT_TRUE(summed.has_value());
-    EXPECT_EQ(summed->bootMs, 1250U);
-    EXPECT_EQ(summed->unixSeconds, 0U);
+    EXPECT_EQ(summed.value_or(WindowsBootPerformance::BootEvent{}).bootMs, 1250U);
+    EXPECT_EQ(summed.value_or(WindowsBootPerformance::BootEvent{}).unixSeconds, 0U);
 
     // A value that isn't a whole number is left out.
     EXPECT_FALSE(WindowsBootPerformance::parseMilliseconds(std::string("12a")).has_value());
@@ -145,18 +150,20 @@ TEST(WindowsBootPerformanceTest, ErrorsSayWhy)
 
 // ========== Thermal zones (#1522) ==========
 
-std::vector<WindowsThermalZones::ZoneSample> g_Zones;
-std::uint32_t g_ZoneStatus = 0;
+std::vector<WindowsThermalZones::ZoneSample> g_Zones; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::uint32_t g_ZoneStatus = 0;                       // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
 [[nodiscard]] WindowsThermalZones::Functions fakeZoneFunctions(std::vector<WindowsThermalZones::ZoneSample> zones, std::uint32_t status)
 {
     g_Zones = std::move(zones);
     g_ZoneStatus = status;
-    return {.readZones = [](std::vector<WindowsThermalZones::ZoneSample>& out) -> std::uint32_t
-            {
-                out = g_Zones;
-                return g_ZoneStatus;
-            }};
+    return {
+        .readZones = [](std::vector<WindowsThermalZones::ZoneSample>& out) -> std::uint32_t
+        {
+            out = g_Zones;
+            return g_ZoneStatus;
+        },
+    };
 }
 
 TEST(WindowsThermalZonesTest, LabelsDropTheAcpiScope)
@@ -169,12 +176,13 @@ TEST(WindowsThermalZonesTest, LabelsDropTheAcpiScope)
 
 TEST(WindowsThermalZonesTest, ZonesAreOneDeviceInCelsius)
 {
+    std::vector<WindowsThermalZones::ZoneSample> zones{
+        {.instance = "\\_TZ.TZ01", .kelvin = 318.15},
+        {.instance = "\\_TZ.TZ00", .kelvin = 300.0},
+        {.instance = "\\_TZ.TZ02", .kelvin = 0.0}, // unpopulated
+    };
     SensorsInfo info;
-    WindowsThermalZones::readSensors(info,
-                                     fakeZoneFunctions({{.instance = "\\_TZ.TZ01", .kelvin = 318.15},
-                                                        {.instance = "\\_TZ.TZ00", .kelvin = 300.0},
-                                                        {.instance = "\\_TZ.TZ02", .kelvin = 0.0}}, // unpopulated
-                                                       0));
+    WindowsThermalZones::readSensors(info, fakeZoneFunctions(std::move(zones), 0));
     EXPECT_TRUE(info.available);
     EXPECT_EQ(info.family, OsFamily::Windows);
     EXPECT_TRUE(info.listed);
@@ -191,11 +199,14 @@ TEST(WindowsThermalZonesTest, ZonesAreOneDeviceInCelsius)
 
 TEST(WindowsThermalZonesTest, NoZonesIsListedAndAFailureIsNot)
 {
-    for (const std::uint32_t status : {WindowsThermalZones::PDH_CSTATUS_NO_OBJECT_CODE,
-                                       WindowsThermalZones::PDH_CSTATUS_NO_COUNTER_CODE,
-                                       WindowsThermalZones::PDH_CSTATUS_NO_INSTANCE_CODE,
-                                       WindowsThermalZones::PDH_NO_DATA_CODE,
-                                       0U})
+    constexpr std::array<std::uint32_t, 5> NO_ZONES{
+        WindowsThermalZones::PDH_CSTATUS_NO_OBJECT_CODE,
+        WindowsThermalZones::PDH_CSTATUS_NO_COUNTER_CODE,
+        WindowsThermalZones::PDH_CSTATUS_NO_INSTANCE_CODE,
+        WindowsThermalZones::PDH_NO_DATA_CODE,
+        0U,
+    };
+    for (const std::uint32_t status : NO_ZONES)
     {
         SensorsInfo none;
         WindowsThermalZones::readSensors(none, fakeZoneFunctions({}, status));
@@ -221,12 +232,24 @@ struct FakeSecurity
     std::optional<std::uint32_t> tbsResult = WindowsPlatformSecurity::TBS_SUCCESS_CODE;
     std::uint32_t tpmVersion = WindowsPlatformSecurity::TPM_VERSION_20_CODE;
     /// NtQuerySystemInformation's answers by class: the bytes written, or absent for STATUS_INVALID_INFO_CLASS.
-    std::map<std::uint32_t, std::vector<std::byte>> answers;
+    std::vector<std::pair<std::uint32_t, std::vector<std::byte>>> answers;
     std::string vendor = "GenuineIntel";
     std::uint32_t codeIntegrityLengthSeen = 0;
 };
 
-FakeSecurity g_Security;
+/// The fake table's state, set by fakeSecurityFunctions().
+[[nodiscard]] FakeSecurity& fakeState()
+{
+    static FakeSecurity state;
+    return state;
+}
+
+/// Answer @p infoClass with @p bytes from now on.
+void answer(FakeSecurity& fake, std::uint32_t infoClass, std::vector<std::byte> bytes)
+{
+    std::erase_if(fake.answers, [infoClass](const auto& item) { return item.first == infoClass; });
+    fake.answers.emplace_back(infoClass, std::move(bytes));
+}
 
 [[nodiscard]] std::vector<std::byte> words(std::initializer_list<std::uint32_t> values)
 {
@@ -242,14 +265,14 @@ FakeSecurity g_Security;
 
 [[nodiscard]] WindowsPlatformSecurity::Functions fakeSecurityFunctions(FakeSecurity fake)
 {
-    g_Security = std::move(fake);
+    fakeState() = std::move(fake);
     return {
-        .secureBootEnabledValue = [] { return g_Security.secureBoot; },
-        .bootedWithUefi = [] { return g_Security.uefi; },
+        .secureBootEnabledValue = [] { return fakeState().secureBoot; },
+        .bootedWithUefi = [] { return fakeState().uefi; },
         .tpmDeviceInfo = [](std::uint32_t& version) -> std::optional<std::uint32_t>
         {
-            version = g_Security.tpmVersion;
-            return g_Security.tbsResult;
+            version = fakeState().tpmVersion;
+            return fakeState().tbsResult;
         },
         .querySystemInformation = [](std::uint32_t infoClass, std::span<std::byte> buffer) -> std::int32_t
         {
@@ -257,10 +280,11 @@ FakeSecurity g_Security;
             constexpr auto STATUS_INFO_LENGTH_MISMATCH = static_cast<std::int32_t>(0xC0000004U);
             if (infoClass == WindowsPlatformSecurity::SYSTEM_CODE_INTEGRITY_INFORMATION)
             {
-                std::memcpy(&g_Security.codeIntegrityLengthSeen, buffer.data(), sizeof(std::uint32_t));
+                std::memcpy(&fakeState().codeIntegrityLengthSeen, buffer.data(), sizeof(std::uint32_t));
             }
-            const auto it = g_Security.answers.find(infoClass);
-            if (it == g_Security.answers.end())
+            const auto& answers = fakeState().answers;
+            const auto it = std::ranges::find(answers, infoClass, &std::pair<std::uint32_t, std::vector<std::byte>>::first);
+            if (it == answers.end())
             {
                 return STATUS_INVALID_INFO_CLASS;
             }
@@ -271,7 +295,7 @@ FakeSecurity g_Security;
             std::memcpy(buffer.data(), it->second.data(), buffer.size());
             return 0;
         },
-        .cpuVendor = [] { return g_Security.vendor; },
+        .cpuVendor = [] { return fakeState().vendor; },
     };
 }
 
@@ -279,10 +303,10 @@ FakeSecurity g_Security;
 [[nodiscard]] FakeSecurity modernIntel()
 {
     FakeSecurity fake;
-    fake.answers[WindowsPlatformSecurity::SYSTEM_CODE_INTEGRITY_INFORMATION] = words({8, 0xF401U});
-    fake.answers[WindowsPlatformSecurity::SYSTEM_DMA_GUARD_POLICY_INFORMATION] = {std::byte{1}};
-    fake.answers[WindowsPlatformSecurity::SYSTEM_SPECULATION_CONTROL_INFORMATION] = words({0x7D8F'93F9U});
-    fake.answers[WindowsPlatformSecurity::SYSTEM_KERNEL_VA_SHADOW_INFORMATION] = words({0x3020U});
+    answer(fake, WindowsPlatformSecurity::SYSTEM_CODE_INTEGRITY_INFORMATION, words({8, 0xF401U}));
+    answer(fake, WindowsPlatformSecurity::SYSTEM_DMA_GUARD_POLICY_INFORMATION, std::vector<std::byte>{std::byte{1}});
+    answer(fake, WindowsPlatformSecurity::SYSTEM_SPECULATION_CONTROL_INFORMATION, words({0x7D8F'93F9U}));
+    answer(fake, WindowsPlatformSecurity::SYSTEM_KERNEL_VA_SHADOW_INFORMATION, words({0x3020U}));
     return fake;
 }
 
@@ -307,7 +331,7 @@ TEST(WindowsPlatformSecurityTest, ReadsEveryFact)
     EXPECT_EQ(info.secureBoot, SecurityFeatureState::On);
     EXPECT_EQ(info.tpm, SecurityFeatureState::On);
     EXPECT_EQ(info.tpmVersionMajor, 2U);
-    EXPECT_EQ(g_Security.codeIntegrityLengthSeen, 8U); // SYSTEM_CODEINTEGRITY_INFORMATION::Length was set
+    EXPECT_EQ(fakeState().codeIntegrityLengthSeen, 8U); // SYSTEM_CODEINTEGRITY_INFORMATION::Length was set
     EXPECT_EQ(info.memoryIntegrity, true);
     EXPECT_EQ(info.kernelDmaProtection, true);
     EXPECT_TRUE(info.vulnerabilitiesRead);
@@ -373,8 +397,8 @@ TEST(WindowsPlatformSecurityTest, FailedQueriesLeaveTheirFactsUnread)
     EXPECT_EQ(info.secureBoot, SecurityFeatureState::On); // the rest is unaffected
 
     FakeSecurity off = modernIntel();
-    off.answers[WindowsPlatformSecurity::SYSTEM_CODE_INTEGRITY_INFORMATION] = words({8, 0x0001U}); // CI on, HVCI off
-    off.answers[WindowsPlatformSecurity::SYSTEM_DMA_GUARD_POLICY_INFORMATION] = {std::byte{0}};
+    answer(off, WindowsPlatformSecurity::SYSTEM_CODE_INTEGRITY_INFORMATION, words({8, 0x0001U})); // CI on, HVCI off
+    answer(off, WindowsPlatformSecurity::SYSTEM_DMA_GUARD_POLICY_INFORMATION, std::vector<std::byte>{std::byte{0}});
     PlatformSecurityInfo offInfo;
     WindowsPlatformSecurity::readPlatformSecurity(offInfo, fakeSecurityFunctions(off));
     EXPECT_EQ(offInfo.memoryIntegrity, false);
