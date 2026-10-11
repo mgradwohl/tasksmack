@@ -168,7 +168,9 @@ struct VisibleSection
 [[nodiscard]] std::string formatVulnerabilitySummary(std::span<const Platform::CpuVulnerability> vulnerabilities);
 
 /// The Security section (#1514): Secure Boot, the TPM, the security modules, SELinux and AppArmor, the
-/// kernel lockdown mode, then the CPU vulnerabilities, a summary row and one row per vulnerability.
+/// kernel lockdown mode, then the CPU vulnerabilities, a summary row and one row per vulnerability. On
+/// Windows, memory integrity (HVCI), Kernel DMA Protection and BitLocker (which needs administrator) take
+/// the place of the Linux-only rows.
 [[nodiscard]] Section buildSecuritySection(const Platform::PlatformSecurityInfo& security);
 
 /// One sensor's value in its unit: "45.0 °C (high 80.0 °C, critical 100.0 °C)", "1200 RPM",
@@ -177,6 +179,7 @@ struct VisibleSection
 
 /// The Sensors section (#1522): one row per reading, labelled "device: sensor" ("coretemp: Package id
 /// 0"), devices in the OS's order. None exposed (common in VMs and WSL) shows one muted row saying so.
+/// On Windows a last row says that most motherboard sensors need a vendor driver.
 [[nodiscard]] Section buildSensorsSection(const Platform::SensorsInfo& sensors);
 
 /// A device's name: its vendor (unless the name already starts with it) and name, then its ids,
@@ -247,7 +250,8 @@ struct VisibleSection
 [[nodiscard]] std::string formatBootDuration(std::uint64_t microseconds);
 
 /// The Boot performance section (#1525): the last boot's total, then each phase systemd measured
-/// (firmware, boot loader, kernel, initrd, userspace), as `systemd-analyze` prints them.
+/// (firmware, boot loader, kernel, initrd, userspace), as `systemd-analyze` prints them. On Windows: the
+/// total, when the boot event was recorded, the main path (to the desktop) and the post-boot time.
 [[nodiscard]] Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot);
 
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,

@@ -334,7 +334,8 @@ struct CpuVulnerability
 /// couldn't be read is Unknown, empty or nullopt rather than a guess.
 struct PlatformSecurityInfo
 {
-    bool available = false; ///< The probe read the section at all.
+    bool available = false;              ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown; ///< Picks the rows: Windows, else the Linux ones.
     SecurityFeatureState secureBoot = SecurityFeatureState::Unknown;
     SecurityFeatureState tpm = SecurityFeatureState::Unknown;
     std::uint32_t tpmVersionMajor = 0; ///< 1 or 2 when known; 0 otherwise.
@@ -347,6 +348,9 @@ struct PlatformSecurityInfo
 
     bool vulnerabilitiesRead = false;              ///< The kernel's list was read.
     std::vector<CpuVulnerability> vulnerabilities; ///< Sorted by name.
+
+    std::optional<bool> memoryIntegrity;     ///< Windows: HVCI (kernel-mode code integrity enforced by the hypervisor) is on.
+    std::optional<bool> kernelDmaProtection; ///< Windows: the DMA guard policy (Kernel DMA Protection) is on.
 };
 
 /// What a sensor measures (#1522).
@@ -379,9 +383,10 @@ struct SensorDevice
 /// The Sensors facts (#1522): every readable sensor at the time of the read, grouped by device.
 struct SensorsInfo
 {
-    bool available = false;            ///< The probe read the section at all.
-    bool listed = false;               ///< The sensor devices could be listed: an empty `devices` means none.
-    std::vector<SensorDevice> devices; ///< In the OS's device order (Linux: by hwmon index, thermal zones last).
+    bool available = false;              ///< The probe read the section at all.
+    OsFamily family = OsFamily::Unknown; ///< Picks the empty-state text and notes: Windows, else Linux.
+    bool listed = false;                 ///< The sensor devices could be listed: an empty `devices` means none.
+    std::vector<SensorDevice> devices;   ///< In the OS's device order (Linux: by hwmon index, thermal zones last).
 };
 
 /// One device (#1520): a PCI function or a USB device. A fact the probe couldn't read is empty or 0.
@@ -583,7 +588,8 @@ struct NetworkAdaptersInfo
 
 /// How long the last boot took and where the time went (#1525), in microseconds. A phase the
 /// platform doesn't measure (firmware and loader without UEFI's boot-time variables, initrd without
-/// an initramfs) is nullopt.
+/// an initramfs) is nullopt. Windows measures other phases: the total, main path and post-boot times of
+/// the boot's Diagnostics-Performance event, with the systemd phases left nullopt.
 struct BootPerformanceInfo
 {
     bool available = false;        ///< The probe read the section at all.
@@ -596,6 +602,11 @@ struct BootPerformanceInfo
     std::optional<std::uint64_t> initrdUs;
     std::optional<std::uint64_t> userspaceUs;
     std::optional<std::uint64_t> totalUs; ///< The sum of the phases measured; nullopt until startup finishes.
+
+    OsFamily family = OsFamily::Unknown;     ///< Picks the phase rows: Windows, else the Linux (systemd) ones.
+    std::optional<std::uint64_t> mainPathUs; ///< Windows: from the OS loader until the desktop shows (MainPathBootTime).
+    std::optional<std::uint64_t> postBootUs; ///< Windows: from the desktop until the system settles (BootPostBootTime).
+    std::uint64_t recordedUnixSeconds = 0;   ///< Windows: when the boot's event was logged; 0 when unknown.
 };
 
 /// What the platform can read at all.
