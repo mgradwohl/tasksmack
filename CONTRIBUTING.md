@@ -474,10 +474,6 @@ Operating system section (#1512) is the pattern to follow:
    Linux header that reads under an injected root, like `Platform/Linux/LinuxOsInfo.h`.
 2. **Domain:** a member of `SystemInfoSnapshot`, filled in `SystemInfoModel::read()`. Reads happen
    once on a worker thread when the tab first shows, and on Refresh: never per tick or per frame.
-   A section whose values change and need history gets a sampled model of its own instead, as the
-   Sensors section does (#1522): an `ISensorProbe` that finds its sources once and reads only their
-   values per tick, a `SensorModel` on the panel's sampler, and the view swapping the live section in
-   for the read's (`SystemInfoViewState::sensors`).
 3. **App:** a `build<Section>Section()` in `SystemInfoSections.cpp` turning the facts into rows, and
    one line in `buildSystemInfoSections()`. Give an empty value an `unavailableReason` (it shows as a
    muted "—" with that tooltip and is copied as "unavailable (reason)"), and mark anything that names

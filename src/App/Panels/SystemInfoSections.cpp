@@ -38,7 +38,13 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
 [[nodiscard]] Row row(std::string label, std::string value, std::string_view reason = NOT_REPORTED, bool identifier = false)
 {
     std::string why = value.empty() ? std::string(reason) : std::string{};
-    return {.label = std::move(label), .value = std::move(value), .unavailableReason = std::move(why), .isIdentifier = identifier};
+    return {
+        .label = std::move(label),
+        .value = std::move(value),
+        .unavailableReason = std::move(why),
+        .isIdentifier = identifier,
+        .sensorKind = std::nullopt,
+    };
 }
 
 [[nodiscard]] bool containsIgnoringCase(std::string_view text, std::string_view needle)
@@ -1118,7 +1124,9 @@ Section buildSensorsSection(const Platform::SensorsInfo& sensors, const std::map
                     value += " \u00B7 " + range;
                 }
             }
-            section.rows.push_back(row(std::move(label), std::move(value)));
+            Row item = row(std::move(label), std::move(value));
+            item.sensorKind = reading.kind; // its history is charted beside it (#1522)
+            section.rows.push_back(std::move(item));
         }
     }
     const bool windows = sensors.family == Platform::OsFamily::Windows;

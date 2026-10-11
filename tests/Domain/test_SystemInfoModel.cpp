@@ -1,8 +1,10 @@
 /// @file test_SystemInfoModel.cpp
 /// @brief Domain::SystemInfoModel (#1399): nothing is read until read() is called, each read publishes
-/// a new immutable snapshot, and a probe without OS facts is never asked for them.
+/// a new immutable snapshot, a probe without OS facts is never asked for them, and each sensor's range
+/// and bounded history (#1522).
 
 #include "Domain/CrashHistory.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 
@@ -10,6 +12,7 @@
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -341,6 +344,75 @@ TEST(SystemInfoModelTest, ReadThatThrowsBecomesAPlainFailureMessage)
 TEST(SystemInfoModelTest, RequiresAProbe)
 {
     EXPECT_THROW(SystemInfoModel(std::unique_ptr<Platform::ISystemInfoProbe>{}), std::invalid_argument);
+}
+
+// #1522: each sensor's history for its row's chart, appended on full and sensors-only reads alike.
+TEST(SystemInfoModelTest, BothKindsOfReadAppendToEachSensorsHistory)
+{
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
+    const std::string key = sensorRangeKey("coretemp", "Package id 0");
+    model.read(); // 50 °C
+    ASSERT_TRUE(model.snapshot()->sensorHistories.contains(key));
+    EXPECT_EQ(model.snapshot()->sensorHistories.at(key).values.size(), 1U);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2)); // a later steady-clock time
+    model.readSensors();                                       // 40 °C
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    model.read(); // 60 °C
+    const SensorHistory& range = model.snapshot()->sensorHistories.at(key);
+    ASSERT_EQ(range.values.size(), 3U);
+    ASSERT_EQ(range.times.size(), 3U);
+    EXPECT_FLOAT_EQ(range.values[0], 50.0F); // oldest first
+    EXPECT_FLOAT_EQ(range.values[1], 40.0F);
+    EXPECT_FLOAT_EQ(range.values[2], 60.0F);
+    EXPECT_LT(range.times[0], range.times[1]);
+    EXPECT_LT(range.times[1], range.times[2]);
+}
+
+TEST(SystemInfoModelTest, SensorHistoryIsOrderedAndBounded)
+{
+    constexpr double REFRESH = static_cast<double>(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS) / 1000.0;
+    SensorHistory range;
+    appendSensorHistory(range, 40.0, 100.0);
+    appendSensorHistory(range, 45.0, 100.0); // not after the newest: ignored
+    appendSensorHistory(range, 45.0, 99.0);
+    ASSERT_EQ(range.values.size(), 1U);
+    EXPECT_FLOAT_EQ(range.values[0], 40.0F);
+
+    // At the sensor refresh, the history keeps exactly its capacity, oldest dropped first.
+    std::size_t index = 1;
+    while (index <= Sampling::SENSOR_HISTORY_CAPACITY + 10)
+    {
+        appendSensorHistory(range, 40.0 + static_cast<double>(index), 100.0 + (static_cast<double>(index) * REFRESH));
+        ++index;
+    }
+    EXPECT_EQ(range.values.size(), Sampling::SENSOR_HISTORY_CAPACITY);
+    EXPECT_EQ(range.times.size(), range.values.size());
+    EXPECT_FLOAT_EQ(range.values.back(), 40.0F + static_cast<float>(Sampling::SENSOR_HISTORY_CAPACITY + 10));
+    EXPECT_FLOAT_EQ(range.values.front(), 40.0F + 11.0F);
+    EXPECT_LE(range.times.back() - range.times.front(), static_cast<double>(Sampling::HISTORY_SECONDS_DEFAULT));
+}
+
+TEST(SystemInfoModelTest, APauseBreaksTheSensorHistoryAndOldReadingsAgeOut)
+{
+    constexpr double REFRESH = static_cast<double>(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS) / 1000.0;
+    SensorHistory range;
+    appendSensorHistory(range, 40.0, 1000.0);
+    appendSensorHistory(range, 41.0, 1000.0 + REFRESH);
+    // The tab was hidden for a minute: a NaN break a refresh after the last reading, then the new one.
+    appendSensorHistory(range, 50.0, 1060.0);
+    ASSERT_EQ(range.values.size(), 4U);
+    EXPECT_TRUE(std::isnan(range.values[2]));
+    EXPECT_DOUBLE_EQ(range.times[2], 1000.0 + (2.0 * REFRESH));
+    EXPECT_FLOAT_EQ(range.values[3], 50.0F);
+
+    // Hidden longer than the window: everything before it ages out.
+    const double later = 1060.0 + static_cast<double>(Sampling::HISTORY_SECONDS_DEFAULT) + 100.0;
+    appendSensorHistory(range, 55.0, later);
+    ASSERT_EQ(range.values.size(), 1U);
+    EXPECT_FLOAT_EQ(range.values[0], 55.0F);
+    EXPECT_DOUBLE_EQ(range.times[0], later);
 }
 
 } // namespace

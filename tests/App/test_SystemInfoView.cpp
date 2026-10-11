@@ -14,16 +14,20 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/Format.h"
+#include "UI/Sparkline.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <implot.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -2208,6 +2212,88 @@ TEST_F(SystemInfoViewRenderTest, CrashesSectionRendersAndFilters)
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     ASSERT_EQ(state.visible.size(), 1U);
     EXPECT_EQ(state.visible[0].rows.size(), 1U); // the contoso.exe crash
+}
+
+// ========== Sensor histories (#1522) ==========
+
+TEST(SystemInfoSectionsTest, SparklineRangeFitsTheFiniteValues)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::pair<double, double> none{0.0, 0.0};
+    const std::array<float, 4> values{40.0F, nan, 60.0F, 50.0F};
+    const auto [low, high] = UI::Widgets::sparklineYRange(values).value_or(none);
+    EXPECT_DOUBLE_EQ(low, 38.0); // 10% headroom either side of 40..60
+    EXPECT_DOUBLE_EQ(high, 62.0);
+
+    const std::array<float, 2> flat{1200.0F, 1200.0F};
+    const auto [flatLow, flatHigh] = UI::Widgets::sparklineYRange(flat).value_or(none);
+    EXPECT_DOUBLE_EQ(flatLow, 1199.0); // a band of 1 around a flat line
+    EXPECT_DOUBLE_EQ(flatHigh, 1201.0);
+
+    const std::array<float, 2> unread{nan, nan};
+    EXPECT_FALSE(UI::Widgets::sparklineYRange(unread).has_value());
+    EXPECT_FALSE(UI::Widgets::sparklineYRange({}).has_value());
+}
+
+/// A package temperature and a fan, with a few seconds of history for the first (keyed as its row is).
+[[nodiscard]] Domain::SystemInfoSnapshot snapshotWithSensorHistory()
+{
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.sensors.available = true;
+    snap.sensors.listed = true;
+    snap.sensors.devices.push_back({.name = "coretemp", .readings = {}});
+    snap.sensors.devices[0].readings.push_back(
+        {.kind = Platform::SensorKind::Temperature, .label = "Package id 0", .value = 55.0, .high = {}, .critical = {}});
+    snap.sensors.devices[0].readings.push_back(
+        {.kind = Platform::SensorKind::Fan, .label = "fan1", .value = 1200.0, .high = {}, .critical = {}});
+    const std::string key = Domain::sensorRangeKey("coretemp", "Package id 0");
+    Domain::SensorRange& range = snap.sensorRanges[key];
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    int sample = 0;
+    while (sample < 5)
+    {
+        const double value = 50.0 + sample;
+        range.min = sample == 0 ? value : std::min(range.min, value);
+        range.max = std::max(range.max, value);
+        ++range.samples;
+        Domain::appendSensorHistory(snap.sensorHistories[key], value, now - 10.0 + (2.0 * sample));
+        ++sample;
+    }
+    return snap;
+}
+
+TEST(SystemInfoSectionsTest, SensorRowsNameTheirKindForTheirChart)
+{
+    const Domain::SystemInfoSnapshot snap = snapshotWithSensorHistory();
+    const Section section = SystemInfo::buildSensorsSection(snap.sensors, snap.sensorRanges);
+    const Row* temperature = findRow(section, "coretemp: Package id 0");
+    ASSERT_NE(temperature, nullptr);
+    EXPECT_EQ(temperature->sensorKind, std::optional(Platform::SensorKind::Temperature));
+    EXPECT_EQ(findRow(section, "coretemp: fan1")->sensorKind, std::optional(Platform::SensorKind::Fan));
+    // Other sections' rows have no chart.
+    for (const Row& item : SystemInfo::buildOsSection(windowsOs(), 0).rows)
+    {
+        EXPECT_FALSE(item.sensorKind.has_value()) << item.label;
+    }
+}
+
+TEST_F(SystemInfoViewRenderTest, SensorsSectionDrawsEachSensorsHistory)
+{
+    ImPlotContext* plot = ImPlot::CreateContext();
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    const Domain::SystemInfoSnapshot withHistory = snapshotWithSensorHistory();
+    SystemInfoViewState state;
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&withHistory, supported, false, state); }));
+    const int withCharts = ImGui::GetDrawData()->TotalVtxCount;
+
+    // The same page with no history (a first read): no chart column, so less geometry.
+    Domain::SystemInfoSnapshot withoutHistory = withHistory;
+    withoutHistory.version += 1;
+    withoutHistory.sensorHistories.clear();
+    static_cast<void>(runFrame([&] { return renderSystemInfoView(&withoutHistory, supported, false, state); }));
+    const int withoutCharts = ImGui::GetDrawData()->TotalVtxCount;
+    EXPECT_GT(withCharts, withoutCharts);
+    ImPlot::DestroyContext(plot);
 }
 
 } // namespace

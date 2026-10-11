@@ -5,8 +5,7 @@
 // (/sys/class/hwmon/hwmon*, Documentation/hwmon/sysfs-interface.rst) and the thermal zones
 // (/sys/class/thermal/thermal_zone*) that no hwmon chip already reports. Only standard-library file
 // access, so the parsing and the fixture tests build and run everywhere. Every file read here is
-// world-readable. The facts can also name each reading's input file (SensorSource), which
-// LinuxSensorProbe keeps open and re-reads per tick for the live Sensors section.
+// world-readable.
 
 #include "LinuxOsInfo.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -20,7 +19,6 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -48,23 +46,6 @@ inline constexpr std::array<InputFamily, 6> INPUT_FAMILIES{{
     {.prefix = "power", .kind = SensorKind::Power, .divisor = 1'000'000.0, .inputSuffix = "_input"},
     {.prefix = "power", .kind = SensorKind::Power, .divisor = 1'000'000.0, .inputSuffix = "_average"},
 }};
-
-/// Where one reading comes from, for the per-tick read: its input file, the divisor from the file's
-/// unit to the kind's, and, when the chip's device has one, its runtime power-management status file.
-struct SensorSource
-{
-    std::filesystem::path input;
-    double divisor = 1.0;
-    std::filesystem::path runtimeStatus; ///< "<chip>/device/power/runtime_status"; empty when it has none
-};
-
-/// Whether a device whose runtime PM status reads @p status may have its sensors read without waking
-/// it: "active" (awake) or "unsupported" (no runtime PM). A suspended discrete GPU is left asleep, as
-/// the GPU probes leave it; its readings are gaps until it wakes.
-[[nodiscard]] constexpr bool runtimeStatusAllowsRead(std::string_view status) noexcept
-{
-    return status.starts_with("active") || status.starts_with("unsupported");
-}
 
 /// A whole hwmon value: a signed decimal integer, optionally followed by a newline; nullopt otherwise.
 [[nodiscard]] inline std::optional<std::int64_t> parseSysfsInteger(std::string_view text)
@@ -130,14 +111,12 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
 }
 
 /// One hwmon chip's readings, ordered by kind then channel. A channel whose input can't be read (a
-/// disconnected fan header reads as an error on some chips) is left out. With @p sources, each
-/// reading's input is appended to it, in the same order.
-[[nodiscard]] inline std::vector<SensorReading> readHwmonReadings(const std::filesystem::path& dir,
-                                                                  std::vector<SensorSource>* sources = nullptr)
+/// disconnected fan header reads as an error on some chips) is left out.
+[[nodiscard]] inline std::vector<SensorReading> readHwmonReadings(const std::filesystem::path& dir)
 {
-    // (kind, channel) -> reading and its source, so the order is stable and a chip that offers both
-    // power1_input and power1_average reports the channel once.
-    std::map<std::pair<SensorKind, unsigned>, std::pair<SensorReading, SensorSource>> byChannel;
+    // (kind, channel, power input suffix) -> reading, so the order is stable and a chip that offers
+    // both power1_input and power1_average reports the channel once.
+    std::map<std::pair<SensorKind, unsigned>, SensorReading> byChannel;
     std::vector<std::string> fileNames;
     std::error_code ec;
     std::filesystem::directory_iterator entries(dir, ec);
@@ -169,35 +148,27 @@ readScaled(const std::filesystem::path& dir, const InputFamily& family, unsigned
             }
             const bool temperature = family.kind == SensorKind::Temperature;
             byChannel.emplace(std::pair{family.kind, *channel},
-                              std::pair{SensorReading{.kind = family.kind,
-                                                      .label = std::move(label),
-                                                      .value = *value,
-                                                      .high = temperature ? readScaled(dir, family, *channel, "_max") : std::nullopt,
-                                                      .critical = temperature ? readScaled(dir, family, *channel, "_crit") : std::nullopt},
-                                        SensorSource{.input = dir / fileName, .divisor = family.divisor, .runtimeStatus = {}}});
+                              SensorReading{.kind = family.kind,
+                                            .label = std::move(label),
+                                            .value = *value,
+                                            .high = temperature ? readScaled(dir, family, *channel, "_max") : std::nullopt,
+                                            .critical = temperature ? readScaled(dir, family, *channel, "_crit") : std::nullopt});
         }
     }
     std::vector<SensorReading> readings;
     readings.reserve(byChannel.size());
-    for (auto& [key, entry] : byChannel)
+    for (auto& [key, reading] : byChannel)
     {
-        readings.push_back(std::move(entry.first));
-        if (sources != nullptr)
-        {
-            sources->push_back(std::move(entry.second));
-        }
+        readings.push_back(std::move(reading));
     }
     return readings;
 }
 
 /// The thermal zones' temperatures, labelled by zone type ("x86_pkg_temp", "acpitz"), leaving out any
 /// type in @p hwmonNames: those zones also register a hwmon chip of the same name, already listed.
-/// With @p sources, each zone's temp file is appended to it, in the same order.
-[[nodiscard]] inline std::vector<SensorReading>
-readThermalZones(const std::filesystem::path& root, const std::set<std::string>& hwmonNames, std::vector<SensorSource>* sources = nullptr)
+[[nodiscard]] inline std::vector<SensorReading> readThermalZones(const std::filesystem::path& root, const std::set<std::string>& hwmonNames)
 {
-    // index -> reading and its temp file, sorted by index below.
-    std::vector<std::pair<unsigned, std::pair<SensorReading, std::filesystem::path>>> zones;
+    std::vector<std::pair<unsigned, SensorReading>> zones;
     std::error_code ec;
     std::filesystem::directory_iterator entries(root / "sys/class/thermal", ec);
     for (; !ec && entries != std::filesystem::directory_iterator{}; entries.increment(ec))
@@ -218,30 +189,24 @@ readThermalZones(const std::filesystem::path& root, const std::set<std::string>&
             continue;
         }
         zones.emplace_back(index,
-                           std::pair{SensorReading{.kind = SensorKind::Temperature,
-                                                   .label = type,
-                                                   .value = static_cast<double>(*milli) / 1000.0,
-                                                   .high = std::nullopt,
-                                                   .critical = std::nullopt},
-                                     entries->path() / "temp"});
+                           SensorReading{.kind = SensorKind::Temperature,
+                                         .label = type,
+                                         .value = static_cast<double>(*milli) / 1000.0,
+                                         .high = std::nullopt,
+                                         .critical = std::nullopt});
     }
-    std::ranges::sort(zones, {}, [](const auto& zone) { return zone.first; });
+    std::ranges::sort(zones, {}, &std::pair<unsigned, SensorReading>::first);
     std::vector<SensorReading> readings;
     readings.reserve(zones.size());
-    for (auto& [index, entry] : zones)
+    for (auto& [index, reading] : zones)
     {
-        readings.push_back(std::move(entry.first));
-        if (sources != nullptr)
-        {
-            sources->push_back({.input = std::move(entry.second), .divisor = 1000.0, .runtimeStatus = {}});
-        }
+        readings.push_back(std::move(reading));
     }
     return readings;
 }
 
-/// The facts under @p root into @p info. With @p sources, each reading's source is appended to it, in
-/// the order of info's readings, device by device.
-inline void readSensorFacts(const std::filesystem::path& root, SensorsInfo& info, std::vector<SensorSource>* sources = nullptr)
+/// The facts under @p root into @p info.
+inline void readSensorFacts(const std::filesystem::path& root, SensorsInfo& info)
 {
     info.available = true;
     std::error_code ec;
@@ -273,29 +238,16 @@ inline void readSensorFacts(const std::filesystem::path& root, SensorsInfo& info
             name = "hwmon" + std::to_string(index);
         }
         hwmonNames.insert(name);
-        const std::size_t firstSource = (sources != nullptr) ? sources->size() : 0;
-        std::vector<SensorReading> readings = readHwmonReadings(dir, sources);
+        std::vector<SensorReading> readings = readHwmonReadings(dir);
         if (readings.empty())
         {
             continue; // a chip with nothing to read (an AC adapter's online flag only)
-        }
-        if (sources != nullptr)
-        {
-            // Read per tick, so a chip whose device sleeps (a discrete GPU) is checked first (LinuxSensorProbe).
-            std::error_code statusError;
-            if (const std::filesystem::path status = dir / "device/power/runtime_status"; std::filesystem::exists(status, statusError))
-            {
-                for (SensorSource& source : std::span(*sources).subspan(firstSource))
-                {
-                    source.runtimeStatus = status;
-                }
-            }
         }
         const unsigned count = ++seen[name];
         info.devices.push_back({.name = (count == 1) ? name : name + " #" + std::to_string(count), .readings = std::move(readings)});
     }
 
-    std::vector<SensorReading> zones = readThermalZones(root, hwmonNames, sources);
+    std::vector<SensorReading> zones = readThermalZones(root, hwmonNames);
     if (!zones.empty())
     {
         info.listed = true;

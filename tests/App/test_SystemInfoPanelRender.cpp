@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(), the log buffer
+#include <implot.h>
 
 #include <atomic>
 #include <chrono>
@@ -134,6 +135,7 @@ class SystemInfoPanelRenderTest : public ::testing::Test
     void SetUp() override
     {
         m_Context = ImGui::CreateContext();
+        m_PlotContext = ImPlot::CreateContext(); // the Sensors rows' charts (#1522)
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
@@ -150,6 +152,7 @@ class SystemInfoPanelRenderTest : public ::testing::Test
             m_Panel->onDetach();
             m_Panel.reset();
         }
+        ImPlot::DestroyContext(m_PlotContext);
         ImGui::DestroyContext(m_Context);
     }
 
@@ -207,6 +210,7 @@ class SystemInfoPanelRenderTest : public ::testing::Test
 
   private:
     ImGuiContext* m_Context = nullptr;
+    ImPlotContext* m_PlotContext = nullptr;
 };
 
 TEST_F(SystemInfoPanelRenderTest, ReadsOnlyOnceTheTabShowsAndDrawsTheFacts)

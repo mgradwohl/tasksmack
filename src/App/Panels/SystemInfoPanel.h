@@ -4,12 +4,8 @@
 #include "App/Panels/SystemInfoView.h"
 #include "Core/Event.h"
 #include "Core/GraphicsHostInfo.h"
-#include "Domain/BackgroundSampler.h"
 #include "Domain/CrashHistory.h"
-#include "Domain/SamplingConfig.h"
-#include "Domain/SensorModel.h"
 #include "Domain/SystemInfoModel.h"
-#include "Platform/ISensorProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <chrono>
@@ -25,10 +21,7 @@ namespace App
 
 /// The System tab (#1399): static facts about the machine, in titled sections. Owns the
 /// SystemInfoModel; the facts are read on a worker thread the first time the tab shows, and again
-/// only when Refresh is clicked: never per tick or per frame. Also owns the SensorModel and its
-/// sampler (#1522), started at onAttach() so the Sensors section's minimum and maximum cover the time
-/// since TaskSmack started; it samples at the refresh interval while the tab shows, half as often
-/// otherwise.
+/// only when Refresh is clicked: never per tick or per frame.
 class SystemInfoPanel : public Panel
 {
   public:
@@ -36,11 +29,10 @@ class SystemInfoPanel : public Panel
 
     /// Test seam (#1395): onAttach() takes its probe from @p makeProbe, and each new read's graphics
     /// facts come from @p queryHost, instead of the platform's probe and Core's window (tests: a fake
-    /// probe and no window). The live sensors come from @p makeSensorProbe; without one there are none.
-    /// The App layer stays the only place the platform's probes are made, still at onAttach().
+    /// probe and no window). The App layer stays the only place the platform's probe is made, still at
+    /// onAttach().
     SystemInfoPanel(std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> makeProbe,
-                    std::function<Core::GraphicsHostInfo()> queryHost,
-                    std::function<std::unique_ptr<Platform::ISensorProbe>()> makeSensorProbe = {});
+                    std::function<Core::GraphicsHostInfo()> queryHost);
     ~SystemInfoPanel() override;
 
     SystemInfoPanel(const SystemInfoPanel&) = delete;
@@ -66,17 +58,9 @@ class SystemInfoPanel : public Panel
     void startRead(bool sensorsOnly = false);
     /// Takes in a finished read; with @p wait, waits for one in flight first.
     void finishRead(bool wait);
-    /// The sensor sampler's interval: the refresh interval while the tab shows, relaxed otherwise.
-    void applySensorInterval();
 
-    std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> m_MakeProbe;   ///< Set by the test seam only
-    std::function<Core::GraphicsHostInfo()> m_QueryHost;                        ///< Set by the test seam only
-    std::function<std::unique_ptr<Platform::ISensorProbe>()> m_MakeSensorProbe; ///< Set by the test seam only
-    bool m_TestSeam = false;
-    std::shared_ptr<Domain::SensorModel> m_SensorModel;
-    std::unique_ptr<Domain::BackgroundSampler> m_SensorSampler;
-    std::chrono::milliseconds m_RefreshInterval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
-    bool m_IsActiveTab = false;
+    std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> m_MakeProbe; ///< Set by the test seam only
+    std::function<Core::GraphicsHostInfo()> m_QueryHost;                      ///< Set by the test seam only
     std::shared_ptr<Domain::CrashHistory> m_CrashHistory;
     std::shared_ptr<Domain::SystemInfoModel> m_Model;
     // The read in flight, if any; it hands back only a failed read's message, copied on the worker.

@@ -4,14 +4,10 @@
 /// These tests validate actual Windows API calls and real system behavior.
 /// They ensure probes correctly handle real-world scenarios on Windows.
 
-#include "Platform/Factory.h"
-#include "Platform/ISensorProbe.h"
-#include "Platform/ISystemInfoProbe.h"
 #include "Platform/Windows/WindowsGPUProbe.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
-#include "Platform/Windows/WindowsThermalZones.h"
 
 #include <gtest/gtest.h>
 
@@ -19,12 +15,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
-#include <format>
-#include <iostream>
 #include <iterator>
 #include <ranges>
-#include <ratio>
 #include <string>
 #include <thread>
 #include <vector>
@@ -625,49 +617,4 @@ TEST(WindowsGPUProbeTest, ReadGPUCountersAfterEnumerateProducesValidUtilizationR
     {
         checkMultiGPUUtilizationDistribution(counters);
     }
-}
-
-// =============================================================================
-// Sensors (#1522)
-// =============================================================================
-
-/// The live Sensors section's real read: the thermal zones' kept-open PDH query, timed per tick (the
-/// figure the PR reports). A machine without zones (many desktops, VMs) finds none and reads nothing.
-TEST(WindowsSensorProbeTest, ReadsTheThermalZonesCheaply)
-{
-    const auto probe = Platform::makeSensorProbe();
-    const Platform::SensorsInfo info = probe->discover();
-    EXPECT_TRUE(info.available);
-    EXPECT_EQ(info.family, Platform::OsFamily::Windows);
-    std::vector<double> values(Platform::sensorCount(info), 0.0);
-    constexpr int TICKS = 200;
-    const auto start = std::chrono::steady_clock::now();
-    int tick = 0;
-    while (tick < TICKS)
-    {
-        probe->readValues(values);
-        ++tick;
-    }
-    const double perTick = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / TICKS;
-    std::cout << std::format("[ sensors  ] {} thermal zones, {:.2f} us per readValues()\n", values.size(), perTick);
-    RecordProperty("sensors", static_cast<int>(values.size()));
-    RecordProperty("microsecondsPerTick", std::format("{:.2f}", perTick));
-    for (const double value : values)
-    {
-        EXPECT_TRUE(std::isnan(value) || (value > -50.0 && value < 150.0)) << value;
-    }
-
-    // The kept-open query's collection on its own, which readValues() skips when no zone is listed.
-    const Platform::WindowsThermalZones::ZoneReader reader = Platform::WindowsThermalZones::makeZoneReader();
-    std::vector<Platform::WindowsThermalZones::ZoneSample> zones;
-    std::uint32_t status = reader(zones);
-    const auto collectStart = std::chrono::steady_clock::now();
-    tick = 0;
-    while (tick < TICKS)
-    {
-        status = reader(zones);
-        ++tick;
-    }
-    const double perCollection = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - collectStart).count() / TICKS;
-    std::cout << std::format("[ sensors  ] PDH status 0x{:08X}, {} zones, {:.2f} us per collection\n", status, zones.size(), perCollection);
 }

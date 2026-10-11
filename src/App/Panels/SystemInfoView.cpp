@@ -2,9 +2,8 @@
 
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/SystemInfoSections.h"
-#include "Domain/SensorModel.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
-#include "Platform/ISensorProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
@@ -18,6 +17,7 @@
 // imgui_stdlib.h extends imgui.h's API for std::string, so it follows it.
 #include <algorithm>
 #include <cstddef>
+#include <map>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -39,88 +39,25 @@ void textView(std::string_view text)
 
 /// Rebuilds the sections when a new read is published, and the visible rows when that, the filter or
 /// the identifier toggle changed: never every frame (#580).
-/// The live sensor publication, when it has found the sensors and its stats match them; else null.
-[[nodiscard]] const Domain::SensorPublication* usableSensors(const SystemInfoViewState& state)
-{
-    const Domain::SensorPublication* live = state.sensors.get();
-    if (live == nullptr || !live->sensors || live->stats.size() != Platform::sensorCount(*live->sensors) ||
-        live->series.size() != live->stats.size())
-    {
-        return nullptr;
-    }
-    return live;
-}
-
-/// Rebuilds the sections when a new read is published, the Sensors section alone when a new sensor
-/// sample is (#1522), and the visible rows when either, the filter or the identifier toggle changed:
-/// never every frame (#580).
 void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot, SystemInfoViewState& state)
 {
     if (state.sectionsVersion != snapshot.version)
     {
         state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host);
         state.sectionsVersion = snapshot.version;
-        state.sensorsVersion = 0; // the read's Sensors section: the live one goes back in below
         const std::string when = UI::Format::formatEpochDateTime(snapshot.readAtUnixSeconds);
         state.readAtText = when.empty() ? std::string{} : "Read at " + when.substr(when.find(' ') + 1);
     }
-    if (const Domain::SensorPublication* live = usableSensors(state); live != nullptr && live->version != state.sensorsVersion)
-    {
-        const auto found = std::ranges::find(state.sections, SystemInfo::SENSORS_SECTION_TITLE, &SystemInfo::Section::title);
-        if (found != state.sections.end())
-        {
-            *found = SystemInfo::buildSensorsSection(*live->sensors, live->stats);
-        }
-        state.sensorsVersion = live->version;
-    }
-    if (state.visibleVersion == state.sectionsVersion && state.visibleSensorsVersion == state.sensorsVersion &&
-        state.visibleFilter == state.filter && state.visibleShowIdentifiers == state.showIdentifiers)
+    if (state.visibleVersion == state.sectionsVersion && state.visibleFilter == state.filter &&
+        state.visibleShowIdentifiers == state.showIdentifiers)
     {
         return;
     }
     state.visible = SystemInfo::visibleSections(state.sections, state.filter, state.showIdentifiers);
     state.visibleVersion = state.sectionsVersion;
-    state.visibleSensorsVersion = state.sensorsVersion;
     state.visibleFilter = state.filter;
     state.visibleShowIdentifiers = state.showIdentifiers;
 }
-
-/// A sensor kind's chart colour: the GPU tab's for temperature and fan speed, the power charts' for
-/// power, and accents for the rest.
-[[nodiscard]] const ImVec4& sensorColor(Platform::SensorKind kind, const UI::ColorScheme& scheme)
-{
-    switch (kind)
-    {
-    case Platform::SensorKind::Temperature:
-        return scheme.gpuTemperature;
-    case Platform::SensorKind::Fan:
-        return scheme.gpuFan;
-    case Platform::SensorKind::Power:
-        return scheme.chartPower;
-    case Platform::SensorKind::Voltage:
-        return scheme.accents[0];
-    case Platform::SensorKind::Current:
-        return scheme.accents[1];
-    }
-    return scheme.accents[0];
-}
-
-/// Each live reading's kind, in series order.
-[[nodiscard]] Platform::SensorKind seriesKind(const Platform::SensorsInfo& sensors, std::size_t series)
-{
-    for (const Platform::SensorDevice& device : sensors.devices)
-    {
-        if (series < device.readings.size())
-        {
-            return device.readings[series].kind;
-        }
-        series -= device.readings.size();
-    }
-    return Platform::SensorKind::Temperature;
-}
-
-/// The width of a section's sparkline column, in ems.
-constexpr float SPARKLINE_WIDTH_EM = 10.0F;
 
 void copy(std::string text, SystemInfoViewState& state)
 {
@@ -176,9 +113,36 @@ void renderValue(const SystemInfo::Row& row, const UI::ColorScheme& scheme)
     }
 }
 
+/// A sensor kind's chart colour: the GPU tab's for temperature and fan speed, the power charts' for
+/// power, and accents for the rest.
+[[nodiscard]] const ImVec4& sensorColor(Platform::SensorKind kind, const UI::ColorScheme& scheme)
+{
+    switch (kind)
+    {
+    case Platform::SensorKind::Temperature:
+        return scheme.gpuTemperature;
+    case Platform::SensorKind::Fan:
+        return scheme.gpuFan;
+    case Platform::SensorKind::Power:
+        return scheme.chartPower;
+    case Platform::SensorKind::Voltage:
+        return scheme.accents[0];
+    case Platform::SensorKind::Current:
+        return scheme.accents[1];
+    }
+    return scheme.accents[0];
+}
+
+/// The width of the Sensors section's sparkline column, in ems.
+constexpr float SPARKLINE_WIDTH_EM = 10.0F;
+
 /// A section: its header with a Copy button at the right, then a two-column table of its visible rows.
 /// Every section's label column is @p labelWidth wide, so the values line up down the page.
-void renderSection(const SystemInfo::VisibleSection& visible, float labelWidth, SystemInfoViewState& state, const UI::ColorScheme& scheme)
+void renderSection(const SystemInfo::VisibleSection& visible,
+                   float labelWidth,
+                   const std::map<std::string, Domain::SensorHistory>& sensorHistories,
+                   SystemInfoViewState& state,
+                   const UI::ColorScheme& scheme)
 {
     const SystemInfo::Section& section = state.sections[visible.section];
     ImGui::PushID(static_cast<int>(visible.section));
@@ -192,10 +156,17 @@ void renderSection(const SystemInfo::VisibleSection& visible, float labelWidth, 
     }
     ImGui::SetItemTooltip("Copy this section as plain text");
 
-    // A live Sensors section (#1522) has a third column: each reading's history as a sparkline.
-    const Domain::SensorPublication* live = usableSensors(state);
-    const bool charts =
-        live != nullptr && std::ranges::any_of(visible.rows, [&](std::size_t index) { return section.rows[index].series.has_value(); });
+    // The Sensors section (#1522) has a third column: each sensor's recent history as a sparkline.
+    const auto history = [&](const SystemInfo::Row& row) -> const Domain::SensorHistory*
+    {
+        if (!row.sensorKind.has_value())
+        {
+            return nullptr;
+        }
+        const auto it = sensorHistories.find(row.label);
+        return (it != sensorHistories.end() && !it->second.times.empty()) ? &it->second : nullptr;
+    };
+    const bool charts = std::ranges::any_of(visible.rows, [&](std::size_t index) { return history(section.rows[index]) != nullptr; });
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_RowBg | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_SizingFixedFit;
     if (ImGui::BeginTable("##Rows", charts ? 3 : 2, TABLE_FLAGS))
     {
@@ -216,15 +187,16 @@ void renderSection(const SystemInfo::VisibleSection& visible, float labelWidth, 
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
             renderValue(row, scheme);
-            if (charts && ImGui::TableNextColumn() && row.series.has_value() && *row.series < live->series.size())
+            const Domain::SensorHistory* recent = charts ? history(row) : nullptr;
+            if (charts && ImGui::TableNextColumn() && recent != nullptr)
             {
                 ImGui::PushID(static_cast<int>(index));
                 UI::Widgets::renderSparkline("##History",
-                                             live->timestamps,
-                                             live->series[*row.series],
-                                             state.historySeconds,
+                                             recent->times,
+                                             recent->values,
+                                             static_cast<double>(Domain::Sampling::HISTORY_SECONDS_DEFAULT),
                                              ImVec2(sparklineWidth, ImGui::GetTextLineHeight()),
-                                             sensorColor(seriesKind(*live->sensors, *row.series), scheme));
+                                             sensorColor(row.sensorKind.value_or(Platform::SensorKind::Temperature), scheme));
                 ImGui::PopID();
             }
         }
@@ -272,7 +244,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         const float labelWidth = UI::LineLayout::labelColumnWidth(widestLabel, ImGui::GetFontSize());
         for (const auto& visible : state.visible)
         {
-            renderSection(visible, labelWidth, state, scheme);
+            renderSection(visible, labelWidth, snapshot->sensorHistories, state, scheme);
         }
         if (state.visible.empty())
         {

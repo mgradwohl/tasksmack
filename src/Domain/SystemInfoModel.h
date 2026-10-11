@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Domain
 {
@@ -27,6 +28,26 @@ struct SensorRange
 
     [[nodiscard]] bool operator==(const SensorRange&) const = default;
 };
+
+/// One sensor's recent readings, for its row's chart (#1522), oldest first, `values` aligned with
+/// `times`: at most Sampling::SENSOR_HISTORY_CAPACITY of them, none more than
+/// Sampling::HISTORY_SECONDS_DEFAULT older than the newest. A NaN value marks a break where the reads
+/// paused (the tab was hidden).
+struct SensorHistory
+{
+    std::vector<float> values;
+    std::vector<double> times; ///< When each was read, steady_clock seconds (UI::Widgets::historyFrameNowSeconds()'s clock)
+
+    [[nodiscard]] bool operator==(const SensorHistory&) const = default;
+};
+
+/// Appends @p value read at @p nowSeconds to @p history: a NaN break first when the reads paused for
+/// longer than SENSOR_HISTORY_GAP_INTERVALS refreshes, then the oldest dropped past the capacity or the
+/// window. A time not after the newest is ignored, so the history stays in order.
+void appendSensorHistory(SensorHistory& history, double value, double nowSeconds);
+
+/// A pause longer than this many sensor refreshes breaks a sensor's history line.
+inline constexpr double SENSOR_HISTORY_GAP_INTERVALS = 3.0;
 
 /// A sensor's key in SystemInfoSnapshot::sensorRanges: "device: label", as its row is labelled.
 [[nodiscard]] inline std::string sensorRangeKey(std::string_view device, std::string_view label)
@@ -53,6 +74,8 @@ struct SystemInfoSnapshot
     Platform::BootPerformanceInfo boot;
     /// Each sensor's range over the reads so far (sensorRangeKey()); full reads and readSensors() add to it.
     std::map<std::string, SensorRange> sensorRanges;
+    /// Each sensor's recent readings, keyed as sensorRanges; appended to by the same reads (#1522).
+    std::map<std::string, SensorHistory> sensorHistories;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,
@@ -103,10 +126,11 @@ class SystemInfoModel
     Platform::SystemInfoCapabilities m_Capabilities;
     std::shared_ptr<CrashHistory> m_CrashHistory; // may be null
     std::mutex m_ReadMutex;
-    std::uint64_t m_LastVersion = 0;                   // guarded by m_ReadMutex
-    std::map<std::string, SensorRange> m_SensorRanges; // guarded by m_ReadMutex
+    std::uint64_t m_LastVersion = 0;                        // guarded by m_ReadMutex
+    std::map<std::string, SensorRange> m_SensorRanges;      // guarded by m_ReadMutex
+    std::map<std::string, SensorHistory> m_SensorHistories; // guarded by m_ReadMutex
 
-    /// Adds @p sensors' readings to m_SensorRanges. Under m_ReadMutex.
+    /// Adds @p sensors' readings to m_SensorRanges and m_SensorHistories. Under m_ReadMutex.
     void addToSensorRanges(const Platform::SensorsInfo& sensors);
     PublicationSlot<SystemInfoSnapshot> m_Slot;
 };

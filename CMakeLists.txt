@@ -185,7 +185,6 @@ set(TASKSMACK_SOURCES
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
     src/Domain/ServiceModel.cpp
-    src/Domain/SensorModel.cpp
     src/Domain/SystemInfoModel.cpp
     src/Domain/CrashHistory.cpp
     src/Platform/CurrentProcess.cpp
@@ -208,7 +207,6 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdBus.cpp
     src/Platform/Linux/SystemdJournal.cpp
-    src/Platform/Linux/LinuxSensorProbe.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
@@ -317,7 +315,6 @@ set(TASKSMACK_HEADERS
     src/Platform/IServiceActions.h
     src/Platform/IServiceProbe.h
     src/Platform/ISystemProbe.h
-    src/Platform/ISensorProbe.h
     src/Platform/ISystemInfoProbe.h
     src/Platform/EdidParser.h
     src/Platform/VulkanInfo.h
@@ -343,7 +340,6 @@ set(TASKSMACK_HEADERS
     src/Domain/GPUModel.h
     src/Domain/StartupModel.h
     src/Domain/ServiceModel.h
-    src/Domain/SensorModel.h
     src/Domain/SystemInfoModel.h
     src/Domain/CrashHistory.h
 )
@@ -380,7 +376,6 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/SystemdBus.h
         src/Platform/Linux/SystemdJournal.h
         src/Platform/Linux/LinuxSensors.h
-        src/Platform/Linux/LinuxSensorProbe.h
         src/Platform/Linux/LinuxNetworkAdapters.h
     )
 elseif(WIN32)

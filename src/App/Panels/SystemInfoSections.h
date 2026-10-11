@@ -33,6 +33,9 @@ struct Row
     std::string value;
     std::string unavailableReason;
     bool isIdentifier = false; ///< Names the user or the machine: hidden (and left out of Copy) unless shown.
+    /// A sensor row's kind (#1522): the row charts the history its label keys in the snapshot's
+    /// sensorHistories, in this kind's colour. Empty for every other row.
+    std::optional<Platform::SensorKind> sensorKind;
 
     [[nodiscard]] bool available() const noexcept
     {

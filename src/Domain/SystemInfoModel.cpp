@@ -1,12 +1,15 @@
 #include "SystemInfoModel.h"
 
 #include "Domain/CrashHistory.h"
+#include "Domain/SamplingConfig.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -54,6 +57,7 @@ void SystemInfoModel::read()
     }
     addToSensorRanges(next->sensors);
     next->sensorRanges = m_SensorRanges;
+    next->sensorHistories = m_SensorHistories;
     if (m_CrashHistory && m_Capabilities.hasOs)
     {
         // Process Details' crash line (#1675) shows this read too, without a second one of its own.
@@ -86,16 +90,48 @@ template<typename ReadFn> [[nodiscard]] std::optional<std::string> tryReading(Re
 
 } // namespace
 
+void appendSensorHistory(SensorHistory& history, double value, double nowSeconds)
+{
+    if (!history.times.empty() && nowSeconds <= history.times.back())
+    {
+        return; // in time order only
+    }
+    constexpr double REFRESH_SECONDS = static_cast<double>(Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS) / 1000.0;
+    if (!history.times.empty() && nowSeconds - history.times.back() > SENSOR_HISTORY_GAP_INTERVALS * REFRESH_SECONDS)
+    {
+        // The reads paused (the tab was hidden): end the line a refresh after its last reading rather
+        // than drawing it straight across the pause.
+        history.times.push_back(history.times.back() + REFRESH_SECONDS);
+        history.values.push_back(std::numeric_limits<float>::quiet_NaN());
+    }
+    history.times.push_back(nowSeconds);
+    history.values.push_back(static_cast<float>(value));
+
+    const double cutoff = nowSeconds - static_cast<double>(Sampling::HISTORY_SECONDS_DEFAULT);
+    std::size_t drop =
+        history.times.size() > Sampling::SENSOR_HISTORY_CAPACITY ? history.times.size() - Sampling::SENSOR_HISTORY_CAPACITY : 0;
+    while (drop < history.times.size() && history.times[drop] < cutoff)
+    {
+        ++drop;
+    }
+    const auto count = static_cast<std::ptrdiff_t>(drop);
+    history.times.erase(history.times.begin(), history.times.begin() + count);
+    history.values.erase(history.values.begin(), history.values.begin() + count);
+}
+
 void SystemInfoModel::addToSensorRanges(const Platform::SensorsInfo& sensors)
 {
+    const double nowSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     for (const Platform::SensorDevice& device : sensors.devices)
     {
         for (const Platform::SensorReading& reading : device.readings)
         {
-            SensorRange& range = m_SensorRanges[sensorRangeKey(device.name, reading.label)];
+            const std::string key = sensorRangeKey(device.name, reading.label);
+            SensorRange& range = m_SensorRanges[key];
             range.min = range.samples == 0 ? reading.value : std::min(range.min, reading.value);
             range.max = range.samples == 0 ? reading.value : std::max(range.max, reading.value);
             ++range.samples;
+            appendSensorHistory(m_SensorHistories[key], reading.value, nowSeconds);
         }
     }
 }
@@ -111,6 +147,7 @@ void SystemInfoModel::readSensors()
     next->sensors = m_Probe->readSensors();
     addToSensorRanges(next->sensors);
     next->sensorRanges = m_SensorRanges;
+    next->sensorHistories = m_SensorHistories;
     next->version = ++m_LastVersion;
     m_Slot.commit(std::move(next));
 }

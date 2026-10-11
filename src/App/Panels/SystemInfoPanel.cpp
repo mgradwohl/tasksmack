@@ -7,6 +7,7 @@
 #include "Core/Event.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Core/Window.h"
+#include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/Factory.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -29,8 +30,9 @@ namespace App
 namespace
 {
 constexpr const char* TAB_EVENT_NAME = "SystemInfo";
-// How often the sensors are read again while the tab is drawn, so their ranges (#1522) follow them.
-constexpr std::chrono::seconds SENSOR_REFRESH{2};
+// How often the sensors are read again while the tab is drawn, so their ranges and histories (#1522)
+// follow them.
+constexpr std::chrono::milliseconds SENSOR_REFRESH{Domain::Sampling::SYSTEM_INFO_SENSOR_REFRESH_MS};
 } // namespace
 
 SystemInfoPanel::SystemInfoPanel() : Panel("System Information")
