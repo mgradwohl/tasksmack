@@ -52,7 +52,9 @@ struct SystemInfoFunctions
 /// problems and audio endpoints from SetupAPI, CfgMgr32 and MMDevice (WindowsDevices.h, #1520), and the running
 /// driver services from the Service Control Manager with their images' versions (WindowsDrivers.h, #1521), the
 /// drivers that failed to start and the images' signatures (#1661), and
-/// the Application log's crash and hang events (WindowsCrashEvents.h, #1524).
+/// the Application log's crash and hang events (WindowsCrashEvents.h, #1524), and Secure Boot, the TPM, HVCI,
+/// Kernel DMA Protection and the CPU vulnerabilities (WindowsPlatformSecurity.h, #1514), the thermal zones
+/// (WindowsThermalZones.h, #1522) and the last boot's timings (WindowsBootPerformance.h, #1525).
 class WindowsSystemInfoProbe final : public ISystemInfoProbe
 {
   public:
@@ -75,18 +77,10 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] CommitPagingInfo readCommitPaging() override;
     [[nodiscard]] StorageInfo readStorage() override;
     [[nodiscard]] GraphicsInfo readGraphics() override;
-    /// Not read yet: Secure Boot, the TPM, HVCI and Kernel DMA Protection are the Windows lane's
-    /// follow-up to #1514, so the section is left out on Windows.
-    [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override
-    {
-        return {};
-    }
-    /// Not read yet: the thermal zone counters (PDH "\Thermal Zone Information(*)\Temperature") are the
-    /// Windows lane's follow-up to #1522, so the section is left out on Windows.
-    [[nodiscard]] SensorsInfo readSensors() override
-    {
-        return {};
-    }
+    /// Secure Boot, the TPM, HVCI, Kernel DMA Protection and the CPU vulnerabilities (WindowsPlatformSecurity.h, #1514).
+    [[nodiscard]] PlatformSecurityInfo readPlatformSecurity() override;
+    /// The ACPI thermal zones' temperatures (WindowsThermalZones.h, #1522).
+    [[nodiscard]] SensorsInfo readSensors() override;
     [[nodiscard]] DevicesInfo readDevices() override;
     [[nodiscard]] DriversInfo readDrivers() override;
     [[nodiscard]] CrashesInfo readCrashes() override;
@@ -96,12 +90,8 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     {
         return {};
     }
-    /// Not read yet: the Diagnostics-Performance event 100 is the Windows lane's follow-up to #1525, so
-    /// the section is left out on Windows.
-    [[nodiscard]] BootPerformanceInfo readBootPerformance() override
-    {
-        return {};
-    }
+    /// The last boot's Diagnostics-Performance event 100 (WindowsBootPerformance.h, #1525).
+    [[nodiscard]] BootPerformanceInfo readBootPerformance() override;
 
   private:
     SystemInfoFunctions m_Fns;

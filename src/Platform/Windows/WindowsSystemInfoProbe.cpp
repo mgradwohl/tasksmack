@@ -47,6 +47,7 @@
 #include "Platform/SmbiosParser.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "WinString.h"
+#include "WindowsBootPerformance.h"
 #include "WindowsCommitPaging.h"
 #include "WindowsCrashEvents.h"
 #include "WindowsDevices.h"
@@ -55,8 +56,10 @@
 #include "WindowsHandles.h"
 #include "WindowsInstalledMemory.h"
 #include "WindowsOsInfoMath.h"
+#include "WindowsPlatformSecurity.h"
 #include "WindowsServiceConfig.h"
 #include "WindowsStorage.h"
+#include "WindowsThermalZones.h"
 
 #include <array>
 #include <chrono>
@@ -1153,6 +1156,27 @@ CrashesInfo WindowsSystemInfoProbe::readCrashes()
 {
     CrashesInfo info;
     WindowsCrashEvents::readCrashes(info, WindowsCrashEvents::systemFunctions());
+    return info;
+}
+
+PlatformSecurityInfo WindowsSystemInfoProbe::readPlatformSecurity()
+{
+    PlatformSecurityInfo info;
+    WindowsPlatformSecurity::readPlatformSecurity(info, WindowsPlatformSecurity::systemFunctions());
+    return info;
+}
+
+SensorsInfo WindowsSystemInfoProbe::readSensors()
+{
+    SensorsInfo info;
+    WindowsThermalZones::readSensors(info, WindowsThermalZones::systemFunctions());
+    return info;
+}
+
+BootPerformanceInfo WindowsSystemInfoProbe::readBootPerformance()
+{
+    BootPerformanceInfo info;
+    WindowsBootPerformance::readBootPerformance(info, WindowsBootPerformance::systemFunctions());
     return info;
 }
 

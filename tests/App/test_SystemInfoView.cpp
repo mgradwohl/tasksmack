@@ -740,6 +740,119 @@ TEST(SystemInfoSectionsTest, BootPerformanceUnreadAndStarting)
     EXPECT_EQ(findRow(early, "Userspace")->unavailableReason, "Startup hasn't finished yet");
 }
 
+TEST(SystemInfoSectionsTest, WindowsSecurityRows)
+{
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.family = Platform::OsFamily::Windows;
+    security.secureBoot = Platform::SecurityFeatureState::On;
+    security.tpm = Platform::SecurityFeatureState::On;
+    security.tpmVersionMajor = 2;
+    security.memoryIntegrity = true;
+    security.kernelDmaProtection = false;
+    security.vulnerabilitiesRead = true;
+    security.vulnerabilities = {{.name = "l1tf", .status = "Not affected"},
+                                {.name = "spec_store_bypass", .status = "Vulnerable: Speculative Store Bypass Disable is off"},
+                                {.name = "spectre_v2", .status = "Mitigation: Enhanced IBRS"}};
+    const Section section = SystemInfo::buildSecuritySection(security);
+    EXPECT_EQ(findRow(section, "Secure Boot")->value, "On");
+    EXPECT_EQ(findRow(section, "TPM")->value, "Present (TPM 2.0)");
+    EXPECT_EQ(findRow(section, "Memory integrity (HVCI)")->value, "On");
+    EXPECT_EQ(findRow(section, "Kernel DMA Protection")->value, "Off");
+    const Row* bitLocker = findRow(section, "BitLocker");
+    ASSERT_NE(bitLocker, nullptr);
+    EXPECT_FALSE(bitLocker->available());
+    EXPECT_EQ(bitLocker->unavailableReason, "Requires administrator");
+    EXPECT_EQ(findRow(section, "CPU vulnerabilities")->value, "1 vulnerable, 1 mitigated, 1 not affected");
+    EXPECT_EQ(findRow(section, "L1TF")->value, "Not affected");
+    EXPECT_EQ(findRow(section, "Spectre v2")->value, "Mitigation: Enhanced IBRS");
+    // The Linux-only rows are left out.
+    for (const std::string_view label : {"Security modules", "SELinux", "AppArmor", "Kernel lockdown"})
+    {
+        EXPECT_EQ(findRow(section, label), nullptr) << label;
+    }
+}
+
+TEST(SystemInfoSectionsTest, WindowsSecurityUnknownsSayWhy)
+{
+    Platform::PlatformSecurityInfo unread;
+    unread.available = true;
+    unread.family = Platform::OsFamily::Windows;
+    const Section section = SystemInfo::buildSecuritySection(unread);
+    EXPECT_TRUE(findRow(section, "Secure Boot")->unavailableReason.contains("registry"))
+        << findRow(section, "Secure Boot")->unavailableReason;
+    EXPECT_TRUE(findRow(section, "TPM")->unavailableReason.contains("tbs.dll")) << findRow(section, "TPM")->unavailableReason;
+    for (const std::string_view label : {"Memory integrity (HVCI)", "Kernel DMA Protection", "CPU vulnerabilities"})
+    {
+        const Row* item = findRow(section, label);
+        ASSERT_NE(item, nullptr) << label;
+        EXPECT_FALSE(item->available()) << label;
+        EXPECT_FALSE(item->unavailableReason.empty()) << label;
+    }
+    EXPECT_EQ(findRow(section, "CPU vulnerabilities")->unavailableReason, "Windows didn't report its speculation control settings");
+
+    unread.vulnerabilitiesRead = true;
+    const Section none = SystemInfo::buildSecuritySection(unread);
+    EXPECT_EQ(findRow(none, "CPU vulnerabilities")->unavailableReason, "Windows reports none");
+}
+
+TEST(SystemInfoSectionsTest, WindowsSensorsRowsAndVendorDriverNote)
+{
+    Platform::SensorsInfo sensors;
+    sensors.available = true;
+    sensors.family = Platform::OsFamily::Windows;
+    sensors.listed = true;
+    sensors.devices = {
+        {.name = "Thermal zones",
+         .readings = {{.kind = Platform::SensorKind::Temperature, .label = "TZ00", .value = 45.0, .high = {}, .critical = {}}}}};
+    const Section section = SystemInfo::buildSensorsSection(sensors);
+    ASSERT_EQ(section.rows.size(), 2U);
+    EXPECT_EQ(section.rows[0].label, "Thermal zones: TZ00");
+    EXPECT_EQ(section.rows[0].value, "45.0 \u00B0C");
+    EXPECT_EQ(section.rows[1].label, "Other sensors");
+    EXPECT_TRUE(section.rows[1].value.contains("need a vendor driver")) << section.rows[1].value;
+
+    sensors.devices.clear();
+    const Section none = SystemInfo::buildSensorsSection(sensors);
+    ASSERT_EQ(none.rows.size(), 2U);
+    EXPECT_FALSE(none.rows[0].available());
+    EXPECT_TRUE(none.rows[0].unavailableReason.contains("No ACPI thermal zones")) << none.rows[0].unavailableReason;
+    EXPECT_EQ(none.rows[1].label, "Other sensors");
+
+    sensors.listed = false;
+    const Section unread = SystemInfo::buildSensorsSection(sensors);
+    EXPECT_TRUE(unread.rows[0].unavailableReason.contains("Thermal Zone Information")) << unread.rows[0].unavailableReason;
+}
+
+TEST(SystemInfoSectionsTest, WindowsBootPerformanceRows)
+{
+    Platform::BootPerformanceInfo boot;
+    boot.available = true;
+    boot.family = Platform::OsFamily::Windows;
+    boot.timingsRead = true;
+    boot.finished = true;
+    boot.totalUs = 34'567'000;
+    boot.mainPathUs = 14'200'000;
+    boot.postBootUs = 20'367'000;
+    boot.recordedUnixSeconds = 1'791'529'361;
+    const Section section = SystemInfo::buildBootPerformanceSection(boot);
+    ASSERT_EQ(section.rows.size(), 4U);
+    EXPECT_EQ(findRow(section, "Last boot")->value, "34.57 s");
+    EXPECT_EQ(findRow(section, "Recorded")->value, UI::Format::formatEpochDateTime(1'791'529'361));
+    EXPECT_EQ(findRow(section, "Main path (to the desktop)")->value, "14.20 s");
+    EXPECT_EQ(findRow(section, "Post-boot (desktop to idle)")->value, "20.37 s");
+    EXPECT_EQ(findRow(section, "Firmware"), nullptr); // the systemd phases are Linux only
+    EXPECT_EQ(findRow(section, "Userspace"), nullptr);
+
+    Platform::BootPerformanceInfo denied;
+    denied.available = true;
+    denied.family = Platform::OsFamily::Windows;
+    denied.unavailableReason = "Requires administrator (the Diagnostics-Performance event log is readable by administrators only)";
+    const Section admin = SystemInfo::buildBootPerformanceSection(denied);
+    ASSERT_EQ(admin.rows.size(), 1U);
+    EXPECT_FALSE(admin.rows[0].available());
+    EXPECT_EQ(admin.rows[0].unavailableReason, denied.unavailableReason);
+}
 TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)
 {
     Platform::CommitPagingInfo unread;

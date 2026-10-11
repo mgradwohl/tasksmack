@@ -944,6 +944,7 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
     using Platform::SecurityFeatureState;
     Section section{.title = "Security", .icon = ICON_FA_LOCK, .rows = {}};
     auto& rows = section.rows;
+    const bool windows = security.family == Platform::OsFamily::Windows;
 
     std::string secureBoot;
     switch (security.secureBoot)
@@ -960,7 +961,10 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
     case SecurityFeatureState::Unknown:
         break;
     }
-    rows.push_back(row("Secure Boot", std::move(secureBoot), "The SecureBoot EFI variable couldn't be read"));
+    rows.push_back(
+        row("Secure Boot",
+            std::move(secureBoot),
+            windows ? "The Secure Boot state isn't in the registry (SecureBoot\\State)" : "The SecureBoot EFI variable couldn't be read"));
 
     std::string tpm;
     switch (security.tpm)
@@ -975,30 +979,50 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
     case SecurityFeatureState::Unknown:
         break;
     }
-    rows.push_back(row("TPM", std::move(tpm), "/sys/class/tpm couldn't be read"));
+    rows.push_back(
+        row("TPM", std::move(tpm), windows ? "The TPM Base Services (tbs.dll) couldn't be asked" : "/sys/class/tpm couldn't be read"));
 
-    std::string lsms;
-    for (const std::string& name : security.lsms)
+    if (windows)
     {
-        lsms += (lsms.empty() ? "" : ", ") + name;
+        rows.push_back(row("Memory integrity (HVCI)",
+                           triStateText(security.memoryIntegrity, "On", "Off", ""),
+                           "Windows didn't report its code integrity options"));
+        rows.push_back(row("Kernel DMA Protection",
+                           triStateText(security.kernelDmaProtection, "On", "Off", ""),
+                           "Not reported by this version of Windows"));
+        rows.push_back(row("BitLocker", {}, "Requires administrator"));
     }
-    rows.push_back(row("Security modules", std::move(lsms), "securityfs (/sys/kernel/security) isn't mounted"));
-    rows.push_back(row("SELinux", triStateText(security.selinuxEnforcing, "Enforcing", "Permissive", "Not active")));
-    rows.push_back(row("AppArmor", triStateText(security.apparmorEnabled, "Enabled", "Disabled", "Not loaded")));
-    std::string lockdown = security.lockdown;
-    if (!lockdown.empty())
+    else
     {
-        lockdown.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(lockdown.front())));
+        std::string lsms;
+        for (const std::string& name : security.lsms)
+        {
+            lsms += (lsms.empty() ? "" : ", ") + name;
+        }
+        rows.push_back(row("Security modules", std::move(lsms), "securityfs (/sys/kernel/security) isn't mounted"));
+        rows.push_back(row("SELinux", triStateText(security.selinuxEnforcing, "Enforcing", "Permissive", "Not active")));
+        rows.push_back(row("AppArmor", triStateText(security.apparmorEnabled, "Enabled", "Disabled", "Not loaded")));
+        std::string lockdown = security.lockdown;
+        if (!lockdown.empty())
+        {
+            lockdown.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(lockdown.front())));
+        }
+        rows.push_back(row("Kernel lockdown",
+                           std::move(lockdown),
+                           "securityfs (/sys/kernel/security) isn't mounted, or the lockdown module isn't built in"));
     }
-    rows.push_back(row(
-        "Kernel lockdown", std::move(lockdown), "securityfs (/sys/kernel/security) isn't mounted, or the lockdown module isn't built in"));
 
     if (!security.vulnerabilitiesRead)
     {
-        rows.push_back(row("CPU vulnerabilities", {}, "/sys/devices/system/cpu/vulnerabilities couldn't be read"));
+        rows.push_back(row("CPU vulnerabilities",
+                           {},
+                           windows ? "Windows didn't report its speculation control settings"
+                                   : "/sys/devices/system/cpu/vulnerabilities couldn't be read"));
         return section;
     }
-    rows.push_back(row("CPU vulnerabilities", formatVulnerabilitySummary(security.vulnerabilities), "The kernel lists none"));
+    rows.push_back(row("CPU vulnerabilities",
+                       formatVulnerabilitySummary(security.vulnerabilities),
+                       windows ? "Windows reports none" : "The kernel lists none"));
     for (const Platform::CpuVulnerability& item : security.vulnerabilities)
     {
         rows.push_back(row(formatVulnerabilityName(item.name), item.status));
@@ -1052,13 +1076,27 @@ Section buildSensorsSection(const Platform::SensorsInfo& sensors)
             section.rows.push_back(row(std::format("{}: {}", device.name, reading.label), formatSensorReading(reading)));
         }
     }
+    const bool windows = sensors.family == Platform::OsFamily::Windows;
     if (section.rows.empty())
     {
-        section.rows.push_back(row("Sensors",
-                                   {},
-                                   sensors.listed
-                                       ? "No hwmon sensors or thermal zones are exposed (common in virtual machines, containers and WSL)"
-                                       : "/sys/class/hwmon couldn't be read"));
+        std::string_view reason;
+        if (windows)
+        {
+            reason = sensors.listed ? "No ACPI thermal zones are exposed (common on desktops and in virtual machines)"
+                                    : "The Thermal Zone Information performance counters couldn't be read";
+        }
+        else
+        {
+            reason = sensors.listed ? "No hwmon sensors or thermal zones are exposed (common in virtual machines, containers and WSL)"
+                                    : "/sys/class/hwmon couldn't be read";
+        }
+        section.rows.push_back(row("Sensors", {}, reason));
+    }
+    if (windows)
+    {
+        section.rows.push_back(row("Other sensors",
+                                   "Most motherboard sensors (fans, voltages, CPU and board temperatures) need a vendor driver; "
+                                   "GPU temperatures are on the GPU tab"));
     }
     return section;
 }
@@ -1566,6 +1604,18 @@ Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot)
     if (!boot.timingsRead)
     {
         rows.push_back(row("Last boot", {}, boot.unavailableReason.empty() ? std::string(NOT_REPORTED) : boot.unavailableReason));
+        return section;
+    }
+    const auto duration = [](const std::optional<std::uint64_t>& microseconds)
+    {
+        return microseconds.has_value() ? formatBootDuration(*microseconds) : std::string{};
+    };
+    if (boot.family == Platform::OsFamily::Windows)
+    {
+        rows.push_back(row("Last boot", duration(boot.totalUs)));
+        rows.push_back(row("Recorded", UI::Format::formatEpochDateTime(boot.recordedUnixSeconds)));
+        rows.push_back(row("Main path (to the desktop)", duration(boot.mainPathUs)));
+        rows.push_back(row("Post-boot (desktop to idle)", duration(boot.postBootUs)));
         return section;
     }
     if (!boot.finished)

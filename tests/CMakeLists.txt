@@ -214,6 +214,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_DevicesInfo.cpp
     Platform/test_DriversInfo.cpp
     Platform/test_CrashesInfo.cpp
+    Platform/test_WindowsSystemInfoReaders.cpp
     Platform/test_ProcMapsParser.cpp
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
