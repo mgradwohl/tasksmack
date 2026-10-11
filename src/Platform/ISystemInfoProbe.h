@@ -544,6 +544,14 @@ struct WifiLink
     std::uint32_t rxBitrateKbps = 0;            ///< The current receive rate in kbit/s; 0 when unknown
 };
 
+/// An adapter's IPv4 DHCP lease (#1518): who gave the address, for how long, and until when.
+struct DhcpLease
+{
+    std::string server;             ///< The DHCP server's address; empty when unknown
+    std::uint32_t leaseSeconds = 0; ///< The lease's length; 0 when unknown
+    std::uint64_t expiresUnix = 0;  ///< When it runs out, in Unix seconds; 0 when unknown
+};
+
 /// One network adapter's configuration (#1518). A fact the probe couldn't read is empty or 0.
 struct NetworkAdapter
 {
@@ -565,13 +573,17 @@ struct NetworkAdapter
     /// written "~corp.example", as resolvectl writes it. Windows: the connection-specific DNS suffix,
     /// then the adapter's DNS suffix search list.
     std::vector<std::string> linkSearchDomains;
+    /// The IPv4 DHCP lease, when the address came from one. Linux: the one NetworkManager holds for this
+    /// adapter (none when NetworkManager doesn't manage it). Windows: the server and the expiry from
+    /// GetAdaptersAddresses (the lease's length isn't reported, so leaseSeconds stays 0).
+    std::optional<DhcpLease> dhcpLease;
 
     // Windows only so far: Linux leaves these empty, and their rows out.
     std::string description;           ///< The adapter's hardware, "Intel(R) Wi-Fi 6E AX211 160MHz"
     std::vector<std::string> gateways; ///< This adapter's default gateways
-    std::optional<bool> dhcpEnabled;   ///< IPv4 from DHCP; unset when not known
-    std::string dhcpServer;
-    std::optional<std::uint32_t> dhcpLeaseSecondsLeft; ///< The DHCP lease's time left when read; unset when not known
+    /// Whether IPv4 is configured by DHCP; unset when not known. Says "static" for an adapter without
+    /// a dhcpLease, and "no lease yet" for one that asks DHCP but holds none.
+    std::optional<bool> dhcpEnabled;
 };
 
 /// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways

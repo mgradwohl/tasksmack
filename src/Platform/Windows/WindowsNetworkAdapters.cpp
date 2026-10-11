@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -85,8 +86,9 @@ struct Listed
     return text == nullptr ? std::string{} : WinString::wideToUtf8(text);
 }
 
-/// The adapter's unicast addresses, and the DHCP lease's time left from its DHCP-assigned IPv4 address.
-void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter)
+/// The adapter's unicast addresses, and into @p leaseLeft the DHCP lease's time left from its
+/// DHCP-assigned IPv4 address.
+void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter, std::optional<std::uint32_t>& leaseLeft)
 {
     const IP_ADAPTER_UNICAST_ADDRESS* unicast = raw.FirstUnicastAddress;
     while (unicast != nullptr)
@@ -98,10 +100,9 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter)
         if (!text.empty())
         {
             const bool v6 = unicast->Address.lpSockaddr->sa_family == AF_INET6;
-            if (!v6 && unicast->PrefixOrigin == IpPrefixOriginDhcp && unicast->LeaseLifetime != INFINITE_LEASE &&
-                !adapter.dhcpLeaseSecondsLeft.has_value())
+            if (!v6 && unicast->PrefixOrigin == IpPrefixOriginDhcp && unicast->LeaseLifetime != INFINITE_LEASE && !leaseLeft.has_value())
             {
-                adapter.dhcpLeaseSecondsLeft = unicast->LeaseLifetime;
+                leaseLeft = unicast->LeaseLifetime;
             }
             adapter.addresses.push_back({.address = std::move(text), .prefix = unicast->OnLinkPrefixLength, .v6 = v6});
         }
@@ -110,7 +111,7 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter)
 }
 
 /// One GetAdaptersAddresses entry.
-[[nodiscard]] Listed readAdapter(const IP_ADAPTER_ADDRESSES& raw)
+[[nodiscard]] Listed readAdapter(const IP_ADAPTER_ADDRESSES& raw, std::uint64_t nowUnix)
 {
     Listed listed;
     NetworkAdapter& adapter = listed.adapter;
@@ -140,7 +141,8 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter)
     listed.metricV4 = raw.Ipv4Metric;
     listed.metricV6 = raw.Ipv6Metric;
 
-    readUnicast(raw, adapter);
+    std::optional<std::uint32_t> leaseLeft;
+    readUnicast(raw, adapter, leaseLeft);
 
     const IP_ADAPTER_GATEWAY_ADDRESS_LH* gateway = raw.FirstGatewayAddress;
     while (gateway != nullptr)
@@ -171,13 +173,16 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter)
     {
         const bool dhcp = (flags & IP_ADAPTER_DHCP_ENABLED) != 0;
         adapter.dhcpEnabled = dhcp;
-        if (dhcp)
+        // GetAdaptersAddresses gives the lease's time left, not its length: leaseSeconds stays 0 and the
+        // expiry is the read's time plus what is left.
+        std::string server = dhcp ? formatSocketAddress(raw.Dhcpv4Server) : std::string{};
+        if (dhcp && (!server.empty() || leaseLeft.has_value()))
         {
-            adapter.dhcpServer = formatSocketAddress(raw.Dhcpv4Server);
-        }
-        else
-        {
-            adapter.dhcpLeaseSecondsLeft.reset();
+            adapter.dhcpLease = DhcpLease{
+                .server = std::move(server),
+                .leaseSeconds = 0,
+                .expiresUnix = leaseLeft.has_value() && nowUnix != 0 ? nowUnix + *leaseLeft : 0,
+            };
         }
     }
     return listed;
@@ -427,6 +432,12 @@ void readWlan(const Functions& fns, std::vector<Listed>& listed)
     }
 }
 
+std::uint64_t systemNowUnix()
+{
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    return seconds > 0 ? static_cast<std::uint64_t>(seconds) : 0;
+}
+
 ULONG WINAPI systemGetAdaptersAddresses(ULONG family, ULONG flags, PVOID reserved, PIP_ADAPTER_ADDRESSES addresses, PULONG size)
 {
     return GetAdaptersAddresses(family, flags, reserved, addresses, size);
@@ -440,6 +451,7 @@ Functions systemFunctions()
     // Wireless LAN Service, which leaves the WLAN calls null.
     static const HMODULE wlan = LoadLibraryExW(L"wlanapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     Functions fns{.getAdaptersAddresses = &systemGetAdaptersAddresses};
+    fns.nowUnix = &systemNowUnix;
     if (wlan != nullptr)
     {
         fns.wlanOpenHandle = Windows::getProcAddress<decltype(fns.wlanOpenHandle)>(wlan, "WlanOpenHandle");
@@ -477,7 +489,7 @@ void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns)
     {
         if (raw->IfType != IF_TYPE_SOFTWARE_LOOPBACK)
         {
-            listed.push_back(readAdapter(*raw));
+            listed.push_back(readAdapter(*raw, fns.nowUnix != nullptr ? fns.nowUnix() : 0));
         }
         raw = raw->Next;
     }

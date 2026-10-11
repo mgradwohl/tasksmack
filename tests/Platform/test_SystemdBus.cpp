@@ -92,5 +92,19 @@ TEST(SystemdBusTest, ReadsAnAdaptersDnsSettingsOrSaysWhyNot)
     EXPECT_TRUE(reader(1).read);
 }
 
+// NetworkManager (#1518): an adapter's DHCP lease on this machine, or why not.
+TEST(SystemdBusTest, ReadsADhcpLeaseOrSaysWhyNot)
+{
+    const LinuxNetworkAdapters::DhcpLeaseReader reader = SystemdBus::makeDhcpLeaseReader();
+    ASSERT_TRUE(reader);
+    const LinuxNetworkAdapters::DhcpLeaseRead read = reader("eth0");
+    if (!read.lease.has_value())
+    {
+        EXPECT_FALSE(read.error.empty());
+        GTEST_SKIP() << "No DHCP lease read here: " << read.error;
+    }
+    EXPECT_TRUE(read.error.empty());
+}
+
 } // namespace
 } // namespace Platform

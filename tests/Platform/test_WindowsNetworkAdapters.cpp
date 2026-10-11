@@ -326,6 +326,13 @@ VOID WINAPI fakeFree(PVOID memory)
     std::free(memory); // NOLINT(cppcoreguidelines-no-malloc)
 }
 
+constexpr std::uint64_t FAKE_NOW = 1'760'000'000;
+
+std::uint64_t fakeNow()
+{
+    return FAKE_NOW;
+}
+
 [[nodiscard]] Functions fakeFunctions()
 {
     return {
@@ -336,6 +343,7 @@ VOID WINAPI fakeFree(PVOID memory)
         .wlanQueryInterface = &fakeQuery,
         .wlanGetNetworkBssList = &fakeBssList,
         .wlanFreeMemory = &fakeFree,
+        .nowUnix = &fakeNow,
     };
 }
 
@@ -433,7 +441,7 @@ TEST_F(WindowsNetworkAdaptersTest, WalksTheAdapterListsAndFormats)
     EXPECT_EQ(adapter.linkDnsServers, (std::vector<std::string>{"192.168.0.1"})) << "no repeats, no fec0 placeholders";
     EXPECT_EQ(adapter.linkSearchDomains, (std::vector<std::string>{"corp.example.com", "example.com"}));
     EXPECT_EQ(adapter.dhcpEnabled, std::optional<bool>(false));
-    EXPECT_FALSE(adapter.dhcpLeaseSecondsLeft.has_value());
+    EXPECT_FALSE(adapter.dhcpLease.has_value()) << "static IPv4: no lease";
 
     EXPECT_EQ(info.gatewayV4, "192.168.0.1");
     EXPECT_EQ(info.gatewayV4Adapter, "Ethernet");
@@ -479,8 +487,11 @@ TEST_F(WindowsNetworkAdaptersTest, LowestMetricGatewayDnsFromUpAdaptersAndDhcp)
     const NetworkAdapter* ethernet = find(info, "Ethernet");
     ASSERT_NE(ethernet, nullptr);
     EXPECT_EQ(ethernet->dhcpEnabled, std::optional<bool>(true));
-    EXPECT_EQ(ethernet->dhcpServer, "192.168.0.1");
-    EXPECT_EQ(ethernet->dhcpLeaseSecondsLeft, std::optional<std::uint32_t>(86'000));
+    ASSERT_TRUE(ethernet->dhcpLease.has_value());
+    const DhcpLease lease = ethernet->dhcpLease.value_or(DhcpLease{});
+    EXPECT_EQ(lease.server, "192.168.0.1");
+    EXPECT_EQ(lease.leaseSeconds, 0U) << "the length isn't reported";
+    EXPECT_EQ(lease.expiresUnix, FAKE_NOW + 86'000) << "the read's time plus the time left";
     EXPECT_FALSE(find(info, "VPN")->dhcpEnabled.has_value()) << "IPv4 not enabled: DHCP isn't known";
 }
 

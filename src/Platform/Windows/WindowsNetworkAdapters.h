@@ -3,16 +3,17 @@
 // The Windows Network adapters facts (#1518), unprivileged and read only:
 //
 //   1. GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS): per adapter its connection name and
-//      description, state, MTU, MAC, unicast addresses with their prefix lengths, gateways, DNS servers,
-//      search domains (the DNS suffix and the adapter's suffix search list), and whether IPv4 comes from DHCP, from which server and for
-//      how much longer. The loopback adapter is left out. The section's default gateways are those of the adapter with the lowest route
-//      metric that has one; its DNS servers and search domains, those of the adapters that are up, without repeats.
+//      description, state, MTU, MAC, unicast addresses with their prefix lengths, gateways, DNS
+//      servers, search domains (the DNS suffix, then the adapter's suffix search list), and whether
+//      IPv4 comes from DHCP, from which server and until when. The loopback adapter is left out. The
+//      section's default gateways are those of the up adapter with the lowest route metric that has
+//      one; its DNS servers and search domains, those of the up adapters, without repeats.
 //   2. wlanapi.dll, loaded at run time from System32 (it is missing on Server without the Wireless LAN
 //      Service): per Wi-Fi interface its current connection (network name, signal quality, PHY type and
 //      link rates), the RSSI, and the channel's centre frequency from the cached BSS list, else the
-//      channel number alone. Windows 11 24H2 and later refuse the connection and the
-//      BSS list unless location access is on for desktop apps; the RSSI and channel still read then.
-//      Without wlanapi.dll the Wi-Fi rows are simply left out.
+//      channel number alone. Windows 11 24H2 and later refuse the connection and the BSS list unless
+//      location access is on for desktop apps; the RSSI and channel still read then. Without
+//      wlanapi.dll, or the WLAN AutoConfig service, the Wi-Fi network row says so.
 //
 // The calls go through a table of function pointers, the system's by default (systemFunctions()), so
 // tests feed fake adapter lists and WLAN answers (test_WindowsNetworkAdapters.cpp).
@@ -70,6 +71,8 @@ struct Functions
      PVOID reserved,
      PWLAN_BSS_LIST* list) = nullptr;
     VOID(WINAPI* wlanFreeMemory)(PVOID memory) = nullptr;
+    /// The time now, in Unix seconds, for a DHCP lease's expiry; null or 0 leaves the expiry unknown.
+    std::uint64_t (*nowUnix)() = nullptr;
     // NOLINTEND(misc-include-cleaner)
 };
 

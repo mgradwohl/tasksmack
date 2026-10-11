@@ -705,6 +705,33 @@ TEST(SystemInfoSectionsTest, AnAdaptersOwnDnsSettingsOnlyWhereItHasAny)
     EXPECT_EQ(findRow(section, "eth0 search domains"), nullptr);
 }
 
+TEST(SystemInfoSectionsTest, DhcpLeaseRowWhereThereIsOne)
+{
+    using SystemInfo::formatDhcpLease;
+    EXPECT_EQ(formatDhcpLease({.server = "192.168.1.1", .leaseSeconds = 86'400, .expiresUnix = 0}), "From 192.168.1.1, 1 day lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = (3 * 86'400) + 7200, .expiresUnix = 0}), "3 days 2 h lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 5400, .expiresUnix = 0}), "1 h 30 min lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 7200, .expiresUnix = 0}), "2 h lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 600, .expiresUnix = 0}), "10 min lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 45, .expiresUnix = 0}), "45 s lease");
+    const std::uint64_t expiry = 1'760'000'000;
+    EXPECT_EQ(formatDhcpLease({.server = "10.0.0.1", .leaseSeconds = 0, .expiresUnix = expiry}),
+              "From 10.0.0.1, expires " + UI::Format::formatEpochDateTime(expiry));
+
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    Platform::NetworkAdapter dhcp;
+    dhcp.name = "eth0";
+    dhcp.dhcpLease = Platform::DhcpLease{.server = "192.168.1.1", .leaseSeconds = 86'400, .expiresUnix = 0};
+    Platform::NetworkAdapter fixed;
+    fixed.name = "eth1";
+    network.adapters = {dhcp, fixed};
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(section, "eth0 DHCP lease")->value, "From 192.168.1.1, 1 day lease");
+    EXPECT_EQ(findRow(section, "eth1 DHCP lease"), nullptr);
+}
+
 TEST(SystemInfoSectionsTest, WifiLinkBandChannelAndRate)
 {
     const auto link = [](std::uint32_t mhz, std::uint32_t kbps)
@@ -808,8 +835,7 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     wifi.linkDnsServers = {"192.168.0.1"};
     wifi.linkSearchDomains = {"home.example"};
     wifi.dhcpEnabled = true;
-    wifi.dhcpServer = "192.168.0.1";
-    wifi.dhcpLeaseSecondsLeft = 86'000;
+    wifi.dhcpLease = Platform::DhcpLease{.server = "192.168.0.1", .leaseSeconds = 0, .expiresUnix = 1'760'000'000};
     wifi.wifiSignalDbm = -55;
     wifi.wifiLink = Platform::WifiLink{
         .ssid = "HomeNet",
@@ -825,6 +851,7 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     ethernet.dhcpEnabled = false;
     Platform::NetworkAdapter denied;
     denied.name = "Wi-Fi 2";
+    denied.dhcpEnabled = true; // asks DHCP, holds no lease
     denied.wireless = true;
     denied.wifiLinkUnavailable = "Windows refused it: turn on location access";
     // The location refusal still leaves the channel number.
@@ -845,8 +872,9 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     EXPECT_EQ(findRow(section, "Wi-Fi DNS servers")->value, "192.168.0.1");
     EXPECT_TRUE(findRow(section, "Wi-Fi search domains")->isIdentifier);
     EXPECT_EQ(findRow(section, "Wi-Fi DNS suffix"), nullptr); // one set of rows for both platforms
-    EXPECT_EQ(findRow(section, "Wi-Fi DHCP")->value, "On, server 192.168.0.1, lease 23h 53m left");
-    EXPECT_EQ(findRow(section, "Ethernet DHCP")->value, "Off (static IPv4)");
+    EXPECT_EQ(findRow(section, "Wi-Fi DHCP lease")->value, "From 192.168.0.1, expires " + UI::Format::formatEpochDateTime(1'760'000'000));
+    EXPECT_EQ(findRow(section, "Ethernet DHCP lease")->value, "None: a static IPv4 address");
+    EXPECT_EQ(findRow(section, "Wi-Fi DHCP"), nullptr); // one DHCP row for both platforms
     EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi signal")->value, "-55 dBm (82%)");
     EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi network")->value, "HomeNet");
     EXPECT_TRUE(findRow(section, "Wi-Fi Wi-Fi network")->isIdentifier);
@@ -859,6 +887,8 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     EXPECT_FALSE(findRow(section, "Wi-Fi 2 Wi-Fi network")->available());
     EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi network")->unavailableReason, "Windows refused it: turn on location access");
     EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi link")->value, "channel 36");
+    EXPECT_FALSE(findRow(section, "Wi-Fi 2 DHCP lease")->available());
+    EXPECT_EQ(findRow(section, "Wi-Fi 2 DHCP lease")->unavailableReason, "DHCP is on, but no lease is held (not connected)");
     EXPECT_FALSE(findRow(section, "Wi-Fi 2 Wi-Fi signal")->available());
 
     network.adapters.clear();

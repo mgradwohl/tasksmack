@@ -5,19 +5,23 @@
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Core/GraphicsHostInfo.h"
 #include "Core/Window.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/Factory.h"
+#include "Platform/ISystemInfoProbe.h"
 #include "Platform/ThreadName.h"
 
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <functional>
 #include <future>
 #include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace App
 {
@@ -30,6 +34,11 @@ constexpr const char* TAB_EVENT_NAME = "SystemInfo";
 SystemInfoPanel::SystemInfoPanel() : Panel("System Information")
 {}
 
+SystemInfoPanel::SystemInfoPanel(std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> makeProbe,
+                                 std::function<Core::GraphicsHostInfo()> queryHost)
+    : Panel("System Information"), m_MakeProbe(std::move(makeProbe)), m_QueryHost(std::move(queryHost))
+{}
+
 // A read still in flight is waited for by m_Pending's destructor (a std::async future); it holds its
 // own reference to the model.
 SystemInfoPanel::~SystemInfoPanel() = default;
@@ -37,7 +46,8 @@ SystemInfoPanel::~SystemInfoPanel() = default;
 void SystemInfoPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; the first read waits for the tab.
-    m_Model = std::make_shared<Domain::SystemInfoModel>(Platform::makeSystemInfoProbe(), m_CrashHistory);
+    // An injected factory (tests, #1395) replaces the platform's.
+    m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : Platform::makeSystemInfoProbe(), m_CrashHistory);
 }
 
 void SystemInfoPanel::onDetach()
@@ -121,7 +131,7 @@ void SystemInfoPanel::renderContent()
         if (m_Snapshot->version != 0)
         {
             // Core's OpenGL and SDL display facts, on the UI thread that owns them, once per read (#1519).
-            m_ViewState.host = Core::Application::get().getWindow().queryGraphicsHostInfo();
+            m_ViewState.host = m_QueryHost ? m_QueryHost() : Core::Application::get().getWindow().queryGraphicsHostInfo();
         }
     }
     const SystemInfoViewResult result = renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), m_Pending.valid(), m_ViewState);

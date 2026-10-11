@@ -1544,28 +1544,6 @@ std::string formatAdapterAddresses(const Platform::NetworkAdapter& adapter)
     return text;
 }
 
-std::string formatAdapterDhcp(const Platform::NetworkAdapter& adapter)
-{
-    if (!adapter.dhcpEnabled.has_value())
-    {
-        return {};
-    }
-    if (!*adapter.dhcpEnabled)
-    {
-        return "Off (static IPv4)";
-    }
-    std::string text = "On";
-    if (!adapter.dhcpServer.empty())
-    {
-        text += ", server " + adapter.dhcpServer;
-    }
-    if (adapter.dhcpLeaseSecondsLeft.has_value())
-    {
-        text += ", lease " + UI::Format::formatDuration(static_cast<double>(*adapter.dhcpLeaseSecondsLeft)) + " left";
-    }
-    return text;
-}
-
 std::string formatWifiSignal(const Platform::NetworkAdapter& adapter)
 {
     const std::optional<std::uint32_t> quality = adapter.wifiLink.has_value() ? adapter.wifiLink->signalQuality : std::nullopt;
@@ -1649,6 +1627,63 @@ std::string formatWifiLink(const Platform::WifiLink& link)
     return text;
 }
 
+std::string formatDhcpLease(const Platform::DhcpLease& lease)
+{
+    std::string text;
+    const auto append = [&text](std::string_view part)
+    {
+        if (!text.empty())
+        {
+            text += ", ";
+        }
+        text += part;
+    };
+    if (!lease.server.empty())
+    {
+        append("From " + lease.server);
+    }
+    if (lease.leaseSeconds != 0)
+    {
+        constexpr std::uint32_t MINUTE = 60;
+        constexpr std::uint32_t HOUR = 60 * MINUTE;
+        constexpr std::uint32_t DAY = 24 * HOUR;
+        const std::uint32_t seconds = lease.leaseSeconds;
+        std::string length;
+        if (seconds >= DAY)
+        {
+            const std::uint32_t days = seconds / DAY;
+            const std::uint32_t hours = (seconds % DAY) / HOUR;
+            length = std::format("{} {}", days, days == 1 ? "day" : "days");
+            if (hours != 0)
+            {
+                length += std::format(" {} h", hours);
+            }
+        }
+        else if (seconds >= HOUR)
+        {
+            const std::uint32_t minutes = (seconds % HOUR) / MINUTE;
+            length = minutes != 0 ? std::format("{} h {} min", seconds / HOUR, minutes) : std::format("{} h", seconds / HOUR);
+        }
+        else if (seconds >= MINUTE)
+        {
+            length = std::format("{} min", seconds / MINUTE);
+        }
+        else
+        {
+            length = std::format("{} s", seconds);
+        }
+        append(length + " lease");
+    }
+    if (lease.expiresUnix != 0)
+    {
+        if (const std::string when = UI::Format::formatEpochDateTime(lease.expiresUnix); !when.empty())
+        {
+            append("expires " + when);
+        }
+    }
+    return text;
+}
+
 Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network)
 {
     Section section{.title = "Network adapters", .icon = ICON_FA_ETHERNET, .rows = {}};
@@ -1695,6 +1730,17 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
     {
         rows.push_back(row(adapter.name, formatAdapterSummary(adapter)));
         rows.push_back(row(adapter.name + " addresses", formatAdapterAddresses(adapter), "No IP address assigned"));
+        if (adapter.dhcpLease)
+        {
+            rows.push_back(row(adapter.name + " DHCP lease", formatDhcpLease(*adapter.dhcpLease)));
+        }
+        else if (adapter.dhcpEnabled.has_value())
+        {
+            // Windows says whether the adapter asks DHCP at all, so the one row can say why there is no lease.
+            rows.push_back(row(adapter.name + " DHCP lease",
+                               *adapter.dhcpEnabled ? std::string{} : std::string("None: a static IPv4 address"),
+                               "DHCP is on, but no lease is held (not connected)"));
+        }
         // Its own DNS settings, only where it has any: otherwise the system-wide servers above apply.
         const auto joined = [](const std::vector<std::string>& items)
         {
@@ -1722,10 +1768,6 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         if (!adapter.gateways.empty())
         {
             rows.push_back(row(adapter.name + " gateways", joined(adapter.gateways)));
-        }
-        if (adapter.dhcpEnabled.has_value())
-        {
-            rows.push_back(row(adapter.name + " DHCP", formatAdapterDhcp(adapter)));
         }
         if (adapter.wireless)
         {
