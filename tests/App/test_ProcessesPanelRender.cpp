@@ -6,7 +6,8 @@
 /// event sink through the panel's second seam: keyboard selection announces the selected process. A
 /// right-click opens the row menu for that process, whose Details, Copy PID and Kill (through its
 /// confirmation, to the mock actions) work; the Columns menu shows a hidden column and the meter menu
-/// turns a meter on.
+/// turns a meter on. Ctrl+A selects every row, F9 then asks to kill them all in one confirmation, and
+/// the row menu on a selection sets one priority for all of it through the batch dialog (#804, #1484).
 
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
@@ -152,6 +153,30 @@ class ProcessesPanelRenderTest : public ::testing::Test
         const ImGuiWindow* popup = topPopup();
         ASSERT_NE(popup, nullptr);
         ImGui::ActivateItemByID(ImHashStr(label.c_str(), 0, popup->ID));
+        static_cast<void>(renderAndCapture(panel));
+    }
+
+    /// Ctrl+A over the panel: every row shown selected (#804).
+    static void selectAll(ProcessesPanel& panel)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: navigation is armed
+        io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        io.AddKeyEvent(ImGuiKey_A, true);
+        static_cast<void>(renderAndCapture(panel));
+        io.AddKeyEvent(ImGuiKey_A, false);
+        io.AddKeyEvent(ImGuiMod_Ctrl, false);
+        static_cast<void>(renderAndCapture(panel));
+    }
+
+    /// Presses the top-most modal's filled button labelled @p label (UI::Widgets::filledButton():
+    /// "##filled" under the label's ID), then draws the frames that act on it.
+    static void pressModalFilledButton(ProcessesPanel& panel, const std::string& label)
+    {
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr);
+        ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr(label.c_str(), 0, modal->ID)));
+        static_cast<void>(renderAndCapture(panel));
         static_cast<void>(renderAndCapture(panel));
     }
 
@@ -402,6 +427,56 @@ TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
     EXPECT_TRUE(std::string_view(submenu->Name).contains("Show meter")) << submenu->Name;
     pressPopupItem(*panel, "CPU %");
     EXPECT_NE(UserConfig::get().settings().processMeters.isOn(ProcessColumn::CpuPercent), wasOn);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, CtrlAThenF9KillsEverySelectedProcessAfterOneConfirmation)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    ASSERT_EQ(panel->processCount(), 3U);
+
+    selectAll(*panel);
+    EXPECT_EQ(panel->selectionCount(), 3U);
+
+    panel->requestKillSelected(); // F9, as ShellLayer hands it to the tab on show
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).contains("3")) << modal->Name; // one dialog for all three
+    EXPECT_EQ(actions->killCount(), 0);
+
+    pressModalFilledButton(*panel, "Kill");
+    EXPECT_EQ(actions->killCount(), 3); // each, by identity
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheRowMenuOnASelectionSetsOnePriorityForAllOfIt)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+
+    // A right-click on a row of the selection keeps it, and the menu acts on all of it.
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    EXPECT_EQ(panel->selectionCount(), 3U);
+    pressPopupItem(*panel, std::format("{} Set priority for 3 processes...###SetPriority", ICON_FA_GAUGE_HIGH));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    EXPECT_EQ(actions->setPriorityCount(), 0);
+
+    // The dialog lists them, so it is the confirmation (#1539): Apply sets the value on each.
+    pressModalFilledButton(*panel, "Apply to 3 processes");
+    EXPECT_EQ(actions->setPriorityCount(), 3);
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
     panel->onDetach();
 }
 
