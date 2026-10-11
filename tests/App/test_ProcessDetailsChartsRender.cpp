@@ -20,6 +20,7 @@
 
 #include <cfloat>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <limits>
@@ -540,6 +541,75 @@ TEST_F(ProcessDetailsChartsRenderTest, GapsRenderAndTheirTooltipsShow)
     EXPECT_TRUE(hoverPlot(gapResourceSeries(), draw));
     EXPECT_TRUE(hoverPlot(cpuSeries(), draw));
     EXPECT_TRUE(hoverPlot(SeriesLabels{"Power"}, draw));
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, TheMemoryChartShowsATooltip)
+{
+    const ChartInputs inputs(busyPoint);
+    ProcessDetailsCharts charts;
+    const auto draw = [&]
+    {
+        renderOverview(charts, inputs.ctx);
+    };
+    draw();
+    draw();
+    EXPECT_TRUE(hoverPlot(memorySeries(), draw));
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+}
+
+/// The text one frame of the GPU tab drew.
+[[nodiscard]] std::string gpuTabText(ProcessDetailsCharts& charts, const ProcessChartContext& ctx)
+{
+    std::string text;
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+    ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+    ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::LogToBuffer();
+    charts.renderGpuTab(ctx);
+    text = GImGui->LogBuffer.c_str();
+    ImGui::LogFinish();
+    ImGui::End();
+    ImGui::Render();
+    return text;
+}
+
+// A process on two GPUs gets a breakdown under the usage table, one block per GPU with its name,
+// utilisation, memory (dedicated and shared) and engines; on one GPU there is none, since it would
+// repeat the table (#1207).
+TEST_F(ProcessDetailsChartsRenderTest, GpuTabBreaksDownAProcessOnTwoGpus)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.snapshot.perGpuUsage = {
+        {.gpuId = "0",
+         .gpuName = "Discrete GPU 4090",
+         .isIntegrated = false,
+         .utilPercent = 60.0,
+         .memoryBytes = 2'000'000'000,
+         .dedicatedMemoryBytes = 2'000'000'000,
+         .sharedMemoryBytes = 0,
+         .engines = {"3D", "Copy"}},
+        {.gpuId = "1",
+         .gpuName = "Integrated GPU 770",
+         .isIntegrated = true,
+         .utilPercent = 5.0,
+         .memoryBytes = 300'000'000,
+         .dedicatedMemoryBytes = 0,
+         .sharedMemoryBytes = 300'000'000,
+         .engines = {"Video"}},
+    };
+    ProcessDetailsCharts charts;
+    static_cast<void>(gpuTabText(charts, inputs.ctx));
+    const std::string text = gpuTabText(charts, inputs.ctx);
+    EXPECT_TRUE(text.contains("Per-GPU Breakdown")) << text;
+    EXPECT_TRUE(text.contains("Discrete GPU 4090")) << text;
+    EXPECT_TRUE(text.contains("Integrated GPU 770")) << text;
+    EXPECT_TRUE(text.contains("3D")) << text;
+    EXPECT_TRUE(text.contains("Video")) << text;
+
+    inputs.snapshot.perGpuUsage.resize(1);
+    static_cast<void>(gpuTabText(charts, inputs.ctx));
+    EXPECT_FALSE(gpuTabText(charts, inputs.ctx).contains("Per-GPU Breakdown"));
 }
 
 TEST_F(ProcessDetailsChartsRenderTest, TheNetworkChartsShowTooltips)
