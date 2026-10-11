@@ -324,6 +324,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_PathProviderContract.cpp
     Platform/test_PowerProbeContract.cpp
     Platform/test_WindowsProcessProbe.cpp
+    Platform/test_WindowsProcessProbeSeams.cpp
     Platform/test_WindowsSystemProbe.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessConnections.cpp

@@ -44,9 +44,76 @@
 // clang-format on
 
 #include "WindowsHandles.h"
+#include "WindowsNtQuery.h"
 
 namespace Platform
 {
+
+/// The Win32/NT calls WindowsProcessProbe makes (#1718): the system's by default
+/// (WindowsProcessProbe::systemFunctions()), fakes in tests, so the EStats network counters,
+/// processor-group affinity and per-process detail reads, and their failures, can be tested
+/// without elevation, a multi-group machine or a process that refuses them. Grouped by area.
+/// Every member must be set, except the two noted as nullable.
+struct WindowsProcessProbeFunctions
+{
+    /// iphlpapi.dll's TCP EStats exports. Any may be null: without the IPv4 pair network counters
+    /// are off; without the IPv6 pair (#1100) only IPv4 connections are walked.
+    struct TcpEStats
+    {
+        using GetFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+        using SetFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+        using Get6Fn = DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
+        using Set6Fn = DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
+
+        GetFn getPerTcpConnectionEStats = nullptr;
+        SetFn setPerTcpConnectionEStats = nullptr;
+        Get6Fn getPerTcp6ConnectionEStats = nullptr;
+        Set6Fn setPerTcp6ConnectionEStats = nullptr;
+    };
+
+    struct Network
+    {
+        /// Resolve the EStats exports, loading iphlpapi.dll into @p ownedModule (freed with the
+        /// probe) if no one has loaded it. Called only when elevated.
+        TcpEStats (*loadTcpEStats)(Windows::UniqueModule& ownedModule) = nullptr;
+        DWORD(WINAPI* getExtendedTcpTable)(PVOID, PDWORD, BOOL, ULONG, TCP_TABLE_CLASS, ULONG) = nullptr;
+    } network;
+
+    struct System
+    {
+        Windows::NtQuerySystemInformationFn ntQuerySystemInformation = nullptr; // Nullable: nothing is enumerated
+        WORD(WINAPI* getMaximumProcessorGroupCount)() = nullptr;
+        DWORD(WINAPI* getMaximumProcessorCount)(WORD) = nullptr;
+        BOOL(WINAPI* getLogicalProcessorInformationEx)(LOGICAL_PROCESSOR_RELATIONSHIP,
+                                                       PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+                                                       PDWORD) = nullptr;
+        std::uint32_t (*windowsBuildNumber)() = nullptr; // 0 if unknown
+    } system;
+
+    struct Token
+    {
+        BOOL(WINAPI* openProcessToken)(HANDLE, DWORD, PHANDLE) = nullptr;
+        BOOL(WINAPI* getTokenInformation)(HANDLE, TOKEN_INFORMATION_CLASS, LPVOID, DWORD, PDWORD) = nullptr;
+        BOOL(WINAPI* lookupAccountSidW)(LPCWSTR, PSID, LPWSTR, LPDWORD, LPWSTR, LPDWORD, PSID_NAME_USE) = nullptr;
+    } token;
+
+    struct Process
+    {
+        HANDLE(WINAPI* openProcess)(DWORD, BOOL, DWORD) = nullptr;
+        DWORD(WINAPI* getPriorityClass)(HANDLE) = nullptr;
+        BOOL(WINAPI* queryFullProcessImageNameW)(HANDLE, DWORD, LPWSTR, PDWORD) = nullptr;
+        /// ntdll's NtQueryInformationProcess, its class passed as a ULONG. Nullable: status and
+        /// command line are then not read.
+        LONG(NTAPI* ntQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG) = nullptr;
+        DWORD(WINAPI* getGuiResources)(HANDLE, DWORD) = nullptr;
+        BOOL(WINAPI* getProcessAffinityMask)(HANDLE, PDWORD_PTR, PDWORD_PTR) = nullptr;
+        BOOL(WINAPI* getProcessGroupAffinity)(HANDLE, PUSHORT, PUSHORT) = nullptr;
+        DWORD(WINAPI* getProcessId)(HANDLE) = nullptr;
+        HANDLE(WINAPI* openThread)(DWORD, BOOL, DWORD) = nullptr;
+        DWORD(WINAPI* getProcessIdOfThread)(HANDLE) = nullptr;
+        BOOL(WINAPI* getThreadGroupAffinity)(HANDLE, PGROUP_AFFINITY) = nullptr;
+    } process;
+};
 
 /// Windows implementation of IProcessProbe.
 /// Uses a single bulk NtQuerySystemInformation(SystemProcessInformation) snapshot per sample
@@ -57,7 +124,12 @@ class WindowsProcessProbe : public IProcessProbe
 {
   public:
     WindowsProcessProbe();
+    /// Make every Win32/NT call through @p functions rather than the system's (tests, #1718).
+    explicit WindowsProcessProbe(const WindowsProcessProbeFunctions& functions);
     ~WindowsProcessProbe() override;
+
+    /// The real calls: the Win32 APIs themselves, and ntdll's exports resolved once.
+    [[nodiscard]] static WindowsProcessProbeFunctions systemFunctions();
 
     WindowsProcessProbe(const WindowsProcessProbe&) = delete;
     WindowsProcessProbe& operator=(const WindowsProcessProbe&) = delete;
@@ -79,7 +151,8 @@ class WindowsProcessProbe : public IProcessProbe
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
 
   private:
-    bool m_IsElevated = false; // Process token elevation, queried once at construction (constant for the process lifetime)
+    WindowsProcessProbeFunctions m_Fns; // Every Win32/NT call below goes through these (#1718)
+    bool m_IsElevated = false;          // Process token elevation, queried once at construction (constant for the process lifetime)
     // The network flags can flip after construction when the first real sample proves EStats
     // unusable (#1161). readSocketTraffic()'s const EStats walk writes them and capabilities() may read
     // them from another thread, hence mutable atomics.
@@ -100,19 +173,8 @@ class WindowsProcessProbe : public IProcessProbe
     mutable std::mutex m_EStatsEnableMutex;
     mutable EStatsEnableTracker m_EStatsEnabled; // Guarded by m_EStatsEnableMutex
 
-    // EStats function signatures
-    using GetPerTcpConnectionEStatsFn =
-        DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
-    using SetPerTcpConnectionEStatsFn = DWORD(WINAPI*)(PMIB_TCPROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
-    // IPv6 twins (#1100): same shape, MIB_TCP6ROW instead of MIB_TCPROW
-    using GetPerTcp6ConnectionEStatsFn =
-        DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG, PUCHAR, ULONG, ULONG);
-    using SetPerTcp6ConnectionEStatsFn = DWORD(WINAPI*)(PMIB_TCP6ROW, TCP_ESTATS_TYPE, PUCHAR, ULONG, ULONG, ULONG);
-
-    GetPerTcpConnectionEStatsFn m_GetPerTcpConnectionEStats = nullptr;
-    SetPerTcpConnectionEStatsFn m_SetPerTcpConnectionEStats = nullptr;
-    GetPerTcp6ConnectionEStatsFn m_GetPerTcp6ConnectionEStats = nullptr; // Null if unresolved: IPv6 is then skipped
-    SetPerTcp6ConnectionEStatsFn m_SetPerTcp6ConnectionEStats = nullptr;
+    // Resolved by detectNetworkCounters(). A null IPv6 pair skips IPv6 (#1100).
+    WindowsProcessProbeFunctions::TcpEStats m_EStats;
 
     struct DetailCacheKey
     {
