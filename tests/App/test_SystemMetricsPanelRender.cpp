@@ -302,5 +302,49 @@ TEST_F(SystemMetricsPanelRenderTest, OverviewChartsDrawTheirHistoryAsSamplesArri
     panel->onDetach();
 }
 
+/// The x-axis span, in seconds, of the first plot drawn: the Overview's CPU chart, which comes first.
+/// 0 when none was drawn.
+[[nodiscard]] double cpuChartXSpan()
+{
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    const ImPlotPlot* plot = context.Plots.GetBufSize() > 0 ? context.Plots.GetByIndex(0) : nullptr;
+    return plot != nullptr ? plot->Axes[ImAxis_X1].Range.Size() : 0.0;
+}
+
+// The Settings dialog's events (#1078, #1145): a new history length re-spans the Overview's charts to
+// that window at once, an unchanged one changes nothing, and a new refresh rate is taken while the
+// charts keep drawing.
+TEST_F(SystemMetricsPanelRenderTest, TheChartsFollowTheHistoryAndRefreshSettings)
+{
+    const auto panel = attachedPanel();
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    const double before = cpuChartXSpan();
+    ASSERT_GT(before, 0.0);
+
+    Core::HistoryDurationChangedEvent shorter(60);
+    panel->onEvent(shorter);
+    panel->onUpdate(1.0F / 60.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const double after = cpuChartXSpan();
+    EXPECT_LT(after, before);
+    EXPECT_NEAR(after, 60.0, 6.0);
+
+    Core::HistoryDurationChangedEvent same(60);
+    panel->onEvent(same);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_DOUBLE_EQ(cpuChartXSpan(), after);
+
+    Core::RefreshRateChangedEvent faster(250);
+    panel->onEvent(faster);
+    panel->onUpdate(1.0F / 60.0F);
+    EXPECT_TRUE(renderAndCapture(*panel).contains("CPU Usage"));
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App
