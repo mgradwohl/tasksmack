@@ -39,6 +39,7 @@
 #pragma comment(lib, "secur32.lib")
 #pragma comment(lib, "version.lib")
 #pragma comment(lib, "wintrust.lib")
+#pragma comment(lib, "crypt32.lib")
 
 #include "ComPtr.h"
 #include "ComScope.h"
@@ -802,16 +803,45 @@ constexpr PROPERTYKEY FRIENDLY_NAME_KEY{
     return data;
 }
 
-/// WinVerifyTrust without an interactive user (INVALID_HANDLE_VALUE as the window: no UI at all).
-[[nodiscard]] std::int32_t verifyTrust(WINTRUST_DATA& data)
+/// The leaf signing certificate's simple name ("Microsoft Windows") from a verified WinVerifyTrust state.
+[[nodiscard]] std::string signerName(HANDLE state)
+{
+    CRYPT_PROVIDER_DATA* provider = WTHelperProvDataFromStateData(state);
+    if (provider == nullptr)
+    {
+        return {};
+    }
+    const CRYPT_PROVIDER_SGNR* signer = WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0);
+    if (signer == nullptr || signer->csCertChain == 0 || signer->pasCertChain == nullptr || signer->pasCertChain->pCert == nullptr)
+    {
+        return {};
+    }
+    std::array<wchar_t, 256> name{};
+    const DWORD length = CertGetNameStringW(
+        signer->pasCertChain->pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name.data(), static_cast<DWORD>(name.size()));
+    return length > 1 ? WinString::wideToUtf8(std::wstring_view(name.data(), length - 1)) : std::string{}; // length counts the NUL
+}
+
+/// WinVerifyTrust without an interactive user (INVALID_HANDLE_VALUE as the window: no UI at all), and the
+/// signer's name when the signature is trusted. The verification state is always closed.
+[[nodiscard]] WindowsDrivers::TrustCheck verifyTrust(WINTRUST_DATA& data)
 {
     GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - WinVerifyTrust's documented "no interactive user" window
-    return WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &action, &data);
+    auto* const noUser = static_cast<HWND>(INVALID_HANDLE_VALUE);
+    data.dwStateAction = WTD_STATEACTION_VERIFY;
+    WindowsDrivers::TrustCheck check{.result = WinVerifyTrust(noUser, &action, &data), .signer = {}};
+    if (check.result == 0)
+    {
+        check.signer = signerName(data.hWVTStateData);
+    }
+    data.dwStateAction = WTD_STATEACTION_CLOSE;
+    WinVerifyTrust(noUser, &action, &data);
+    return check;
 }
 
 /// The file's own Authenticode signature.
-[[nodiscard]] std::int32_t verifyEmbeddedSignature(const std::string& path)
+[[nodiscard]] WindowsDrivers::TrustCheck verifyEmbeddedSignature(const std::string& path)
 {
     const std::wstring wide = WinString::utf8ToWide(path);
     WINTRUST_FILE_INFO file{};
@@ -855,14 +885,14 @@ struct CatalogAdmin
 
 /// The signature of the system catalog that holds the file's hash: its SHA-256 hash (current catalogs),
 /// else its SHA-1 hash (older ones). nullopt when no catalog holds either.
-[[nodiscard]] std::optional<std::int32_t> verifyCatalogSignature(const std::string& path)
+[[nodiscard]] std::optional<WindowsDrivers::TrustCheck> verifyCatalogSignature(const std::string& path)
 {
     const std::wstring wide = WinString::utf8ToWide(path);
     const Windows::UniqueHandle file(CreateFileW(
         wide.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
     if (!file)
     {
-        return lastErrorResult();
+        return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
     }
     const GUID subsystem = DRIVER_ACTION_VERIFY;
     for (const wchar_t* algorithm : {BCRYPT_SHA256_ALGORITHM, BCRYPT_SHA1_ALGORITHM})
@@ -870,7 +900,7 @@ struct CatalogAdmin
         CatalogAdmin catalogAdmin;
         if (CryptCATAdminAcquireContext2(&catalogAdmin.handle, &subsystem, algorithm, nullptr, 0) == FALSE)
         {
-            return lastErrorResult();
+            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
         }
         HCATADMIN admin = catalogAdmin.handle;
         const LARGE_INTEGER start{};
@@ -878,13 +908,13 @@ struct CatalogAdmin
         if (SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) == FALSE ||
             (CryptCATAdminCalcHashFromFileHandle2(admin, file.get(), &hashSize, nullptr, 0) == FALSE && hashSize == 0))
         {
-            return lastErrorResult();
+            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
         }
         std::vector<BYTE> hash(hashSize);
         if (SetFilePointerEx(file.get(), start, nullptr, FILE_BEGIN) == FALSE ||
             CryptCATAdminCalcHashFromFileHandle2(admin, file.get(), &hashSize, hash.data(), 0) == FALSE)
         {
-            return lastErrorResult();
+            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
         }
         catalogAdmin.catalog = CryptCATAdminEnumCatalogFromHash(admin, hash.data(), hashSize, 0, nullptr);
         if (catalogAdmin.catalog == nullptr)
@@ -895,7 +925,7 @@ struct CatalogAdmin
         info.cbStruct = sizeof(info);
         if (CryptCATCatalogInfoFromContext(catalogAdmin.catalog, &info, 0) == FALSE)
         {
-            return lastErrorResult();
+            return WindowsDrivers::TrustCheck{.result = lastErrorResult(), .signer = {}};
         }
         std::wstring memberTag; // the catalog names its members by their hash, in upper-case hex
         memberTag.reserve(static_cast<std::size_t>(hashSize) * 2);
