@@ -414,5 +414,71 @@ TEST_F(GpuSectionRenderTest, AHoveredChartShowsItsTooltip)
     EXPECT_TRUE(text.contains("Utilization")) << text;
 }
 
+// The Thermal & Power chart's tooltip too: temperature, power against its limit, and fan speed.
+TEST_F(GpuSectionRenderTest, TheThermalChartShowsItsTooltip)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "GPU");
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    static_cast<void>(renderAndCapture(ctx));
+
+    ImPlotContext& plots = *ImPlot::GetCurrentContext();
+    ASSERT_GE(plots.Plots.GetBufSize(), 2); // the core chart, then the thermal one
+    const ImRect rect = plots.Plots.GetByIndex(1)->PlotRect;
+    ImGui::GetIO().AddMousePosEvent(rect.Max.x - 2.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+    const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+    ASSERT_NE(tooltip, nullptr);
+    EXPECT_TRUE(tooltip->Active);
+    EXPECT_TRUE(text.contains("Temperature")) << text;
+    EXPECT_TRUE(text.contains("Power")) << text;
+    EXPECT_TRUE(text.contains("Fan")) << text;
+}
+
+// A GPU that reports its temperature but not its power or fan: the thermal card says which it lacks.
+TEST_F(GpuSectionRenderTest, TheThermalCardNotesTheSensorsTheGpuLacks)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "GPU");
+    Platform::GPUCapabilities temperatureOnly;
+    temperatureOnly.hasTemperature = true;
+    temperatureOnly.hasClockSpeeds = true;
+    publication.gpuInfo[0].sensorCapabilities = temperatureOnly;
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+    EXPECT_EQ(cardsNamed("GpuThermalCard").size(), 1U);
+    EXPECT_TRUE(text.contains("does not report GPU")) << text;
+    EXPECT_TRUE(text.contains("power draw")) << text;
+    EXPECT_TRUE(text.contains("fan speed")) << text;
+    EXPECT_FALSE(text.contains("GPU temperature")) << text;
+}
+
+// A first sample that couldn't read utilisation or memory leaves them uninitialised, so their now bars
+// say N/A rather than a made-up 0 % (#1111); the tab still draws.
+TEST_F(GpuSectionRenderTest, UnreadValuesShowAsNotAvailable)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "GPU");
+    publication.snapshots[0].utilizationAvailable = false;
+    publication.snapshots[0].memoryAvailable = false;
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+    ASSERT_TRUE(m_Smoothed.contains("gpu0"));
+    EXPECT_FALSE(m_Smoothed.at("gpu0").utilizationInitialized);
+    EXPECT_FALSE(m_Smoothed.at("gpu0").memoryInitialized);
+    EXPECT_TRUE(m_Smoothed.at("gpu0").initialized); // the rest of the sample was read
+    EXPECT_TRUE(text.contains("GPU")) << text;
+}
+
 } // namespace
 } // namespace App
