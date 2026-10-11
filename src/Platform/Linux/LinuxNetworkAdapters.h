@@ -292,11 +292,40 @@ struct LinkDnsRead
 /// SystemdBus::makeLinkDnsReader() asks systemd-resolved; tests hand in their own.
 using LinkDnsReader = std::function<LinkDnsRead(int ifindex)>;
 
+/// An adapter's IPv4 DHCP lease as a DhcpLeaseReader read it: the lease, or why there is none.
+struct DhcpLeaseRead
+{
+    std::optional<DhcpLease> lease;
+    std::string error; ///< Why not, when !lease: no DHCP on it, not managed, no NetworkManager.
+};
+
+/// Reads an adapter's IPv4 DHCP lease by its name. SystemdBus::makeDhcpLeaseReader() asks
+/// NetworkManager; tests hand in their own.
+using DhcpLeaseReader = std::function<DhcpLeaseRead(const std::string& adapter)>;
+
+/// NetworkManager's DHCP4Config Options, as their string values: the lease from
+/// "dhcp_server_identifier", "dhcp_lease_time" (seconds) and "expiry" (Unix seconds). None when no
+/// option gives anything.
+[[nodiscard]] inline std::optional<DhcpLease>
+leaseFromDhcpOptions(std::string_view server, std::string_view leaseTime, std::string_view expiry)
+{
+    DhcpLease lease;
+    lease.server = server;
+    std::from_chars(leaseTime.data(), leaseTime.data() + leaseTime.size(), lease.leaseSeconds, 10);
+    std::from_chars(expiry.data(), expiry.data() + expiry.size(), lease.expiresUnix, 10);
+    if (lease.server.empty() && lease.leaseSeconds == 0 && lease.expiresUnix == 0)
+    {
+        return std::nullopt;
+    }
+    return lease;
+}
+
 /// The system-wide sources readNetworkAdapterFacts() asks for each adapter; an empty one isn't asked.
 struct AdapterReaders
 {
-    WifiLinkReader wifiLink; ///< Each Wi-Fi adapter's link.
-    LinkDnsReader linkDns;   ///< Each adapter's own DNS servers and search domains.
+    WifiLinkReader wifiLink;   ///< Each Wi-Fi adapter's link.
+    LinkDnsReader linkDns;     ///< Each adapter's own DNS servers and search domains.
+    DhcpLeaseReader dhcpLease; ///< Each adapter's IPv4 DHCP lease.
 };
 
 /// The facts under @p root into @p info, with the addresses from @p listAddresses and what @p readers
@@ -344,6 +373,11 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
                 adapter.wifiLink = std::move(read.link);
                 adapter.wifiLinkUnavailable = std::move(read.error);
             }
+        }
+        if (readers.dhcpLease)
+        {
+            // No lease (a static address, an unmanaged adapter) just leaves the row out.
+            adapter.dhcpLease = readers.dhcpLease(adapter.name).lease;
         }
         if (readers.linkDns)
         {

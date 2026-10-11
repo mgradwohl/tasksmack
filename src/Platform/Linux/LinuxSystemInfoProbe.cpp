@@ -258,13 +258,14 @@ NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters()
     NetworkAdaptersInfo info;
     // The addresses are this system's own (getifaddrs()); the rest is read under m_Root, so a fixture
     // root in a test still gets this machine's addresses for adapters of the same name, if any.
-    // The Wi-Fi links (NetworkManager) and each adapter's own DNS settings (systemd-resolved) are only
-    // ever this system's too.
+    // The Wi-Fi links and DHCP leases (NetworkManager) and each adapter's own DNS settings
+    // (systemd-resolved) are only ever this system's too.
     LinuxNetworkAdapters::AdapterReaders readers;
     if (m_Root == "/")
     {
         readers.wifiLink = SystemdBus::makeWifiLinkReader();
         readers.linkDns = SystemdBus::makeLinkDnsReader();
+        readers.dhcpLease = SystemdBus::makeDhcpLeaseReader();
     }
     LinuxNetworkAdapters::readNetworkAdapterFacts(m_Root, info, m_Root == "/" ? &listAdapterAddresses : nullptr, readers);
     return info;

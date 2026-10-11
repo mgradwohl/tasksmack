@@ -232,9 +232,13 @@ struct VisibleSection
 /// frequency outside the 2.4, 5 and 6 GHz Wi-Fi channels is shown in MHz.
 [[nodiscard]] std::string formatWifiLink(const Platform::WifiLink& link);
 
+/// A DHCP lease: "From 192.168.1.1, 1 day lease, expires <local date and time>", unknown parts left out.
+[[nodiscard]] std::string formatDhcpLease(const Platform::DhcpLease& lease);
+
 /// The Network adapters section (#1518): the default gateways and DNS servers, then per adapter its
-/// summary, addresses, its own DNS servers and search domains (an identifier) where it has any, MAC
-/// address (an identifier), and for Wi-Fi its signal, network name (an identifier) and link.
+/// summary, addresses, DHCP lease where it has one, its own DNS servers and search domains (an
+/// identifier) where it has any, MAC address (an identifier), and for Wi-Fi its signal, network name
+/// (an identifier) and link.
 [[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network);
 
 /// A boot phase's length: "850 ms", "4.21 s", "1 min 12.3 s".

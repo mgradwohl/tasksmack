@@ -538,6 +538,14 @@ struct WifiLink
     std::uint32_t bitrateKbps = 0;  ///< The current transmit rate in kbit/s; 0 when unknown
 };
 
+/// An adapter's IPv4 DHCP lease (#1518): who gave the address, for how long, and until when.
+struct DhcpLease
+{
+    std::string server;             ///< The DHCP server's address; empty when unknown
+    std::uint32_t leaseSeconds = 0; ///< The lease's length; 0 when unknown
+    std::uint64_t expiresUnix = 0;  ///< When it runs out, in Unix seconds; 0 when unknown
+};
+
 /// One network adapter's configuration (#1518). A fact the probe couldn't read is empty or 0.
 struct NetworkAdapter
 {
@@ -557,6 +565,9 @@ struct NetworkAdapter
     /// Linux: this adapter's own search domains; a routing-only one is written "~corp.example", as
     /// resolvectl writes it.
     std::vector<std::string> linkSearchDomains;
+    /// Linux: the IPv4 DHCP lease NetworkManager holds for this adapter; none when its address isn't
+    /// from DHCP, or NetworkManager doesn't manage it.
+    std::optional<DhcpLease> dhcpLease;
 };
 
 /// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways

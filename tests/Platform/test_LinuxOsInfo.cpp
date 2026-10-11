@@ -1067,7 +1067,7 @@ TEST(LinuxNetworkAdaptersTest, AsksTheWifiReaderOnlyForWirelessAdapters)
         return read;
     };
     NetworkAdaptersInfo info;
-    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = reader, .linkDns = {}});
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = reader, .linkDns = {}, .dhcpLease = {}});
 
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<std::string>{"wlan1", "wlp3s0"})); // never eth0
@@ -1128,7 +1128,7 @@ TEST(LinuxNetworkAdaptersTest, AsksTheDnsReaderByInterfaceIndex)
         return read;
     };
     NetworkAdaptersInfo info;
-    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = {}, .linkDns = reader});
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = {}, .linkDns = reader, .dhcpLease = {}});
 
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<int>{2, 3}));
@@ -1137,6 +1137,53 @@ TEST(LinuxNetworkAdaptersTest, AsksTheDnsReaderByInterfaceIndex)
     EXPECT_EQ(info.adapters[0].linkSearchDomains, (std::vector<std::string>{"corp.example", "~vpn.example"}));
     EXPECT_TRUE(info.adapters[1].linkDnsServers.empty()); // a failed read adds nothing
     EXPECT_TRUE(info.adapters[2].linkDnsServers.empty());
+}
+
+TEST(LinuxNetworkAdaptersTest, LeaseFromNetworkManagersDhcpOptions)
+{
+    using LinuxNetworkAdapters::leaseFromDhcpOptions;
+    const std::optional<DhcpLease> full = leaseFromDhcpOptions("192.168.1.1", "86400", "1760000000");
+    ASSERT_TRUE(full.has_value());
+    EXPECT_EQ(full.value_or(DhcpLease{}).server, "192.168.1.1");
+    EXPECT_EQ(full.value_or(DhcpLease{}).leaseSeconds, 86'400U);
+    EXPECT_EQ(full.value_or(DhcpLease{}).expiresUnix, 1'760'000'000U);
+
+    // A part that's missing or not a number stays unknown; the rest is still a lease.
+    const std::optional<DhcpLease> partial = leaseFromDhcpOptions("", "garbage", "1760000000");
+    ASSERT_TRUE(partial.has_value());
+    EXPECT_TRUE(partial.value_or(DhcpLease{}).server.empty());
+    EXPECT_EQ(partial.value_or(DhcpLease{}).leaseSeconds, 0U);
+
+    EXPECT_FALSE(leaseFromDhcpOptions("", "", "").has_value());
+}
+
+TEST(LinuxNetworkAdaptersTest, AsksTheDhcpReaderForEveryAdapter)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/eth0/address", "a4:5e:60:12:34:56\n");
+    root.write("sys/class/net/eth1/address", "a4:5e:60:12:34:57\n");
+    std::vector<std::string> asked;
+    const LinuxNetworkAdapters::DhcpLeaseReader reader = [&asked](const std::string& adapter)
+    {
+        asked.push_back(adapter);
+        LinuxNetworkAdapters::DhcpLeaseRead read;
+        if (adapter == "eth0")
+        {
+            read.lease = DhcpLease{.server = "192.168.1.1", .leaseSeconds = 3600, .expiresUnix = 0};
+        }
+        else
+        {
+            read.error = "Not configured by DHCP";
+        }
+        return read;
+    };
+    NetworkAdaptersInfo info;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = {}, .linkDns = {}, .dhcpLease = reader});
+    std::ranges::sort(asked);
+    EXPECT_EQ(asked, (std::vector<std::string>{"eth0", "eth1"}));
+    ASSERT_EQ(info.adapters.size(), 2U);
+    EXPECT_EQ(info.adapters[0].dhcpLease.value_or(DhcpLease{}).server, "192.168.1.1");
+    EXPECT_FALSE(info.adapters[1].dhcpLease.has_value());
 }
 
 TEST(LinuxNetworkAdaptersTest, OnlyTheStubAndNothingReadable)

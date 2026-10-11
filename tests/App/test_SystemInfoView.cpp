@@ -705,6 +705,33 @@ TEST(SystemInfoSectionsTest, AnAdaptersOwnDnsSettingsOnlyWhereItHasAny)
     EXPECT_EQ(findRow(section, "eth0 search domains"), nullptr);
 }
 
+TEST(SystemInfoSectionsTest, DhcpLeaseRowWhereThereIsOne)
+{
+    using SystemInfo::formatDhcpLease;
+    EXPECT_EQ(formatDhcpLease({.server = "192.168.1.1", .leaseSeconds = 86'400, .expiresUnix = 0}), "From 192.168.1.1, 1 day lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = (3 * 86'400) + 7200, .expiresUnix = 0}), "3 days 2 h lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 5400, .expiresUnix = 0}), "1 h 30 min lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 7200, .expiresUnix = 0}), "2 h lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 600, .expiresUnix = 0}), "10 min lease");
+    EXPECT_EQ(formatDhcpLease({.server = "", .leaseSeconds = 45, .expiresUnix = 0}), "45 s lease");
+    const std::uint64_t expiry = 1'760'000'000;
+    EXPECT_EQ(formatDhcpLease({.server = "10.0.0.1", .leaseSeconds = 0, .expiresUnix = expiry}),
+              "From 10.0.0.1, expires " + UI::Format::formatEpochDateTime(expiry));
+
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    Platform::NetworkAdapter dhcp;
+    dhcp.name = "eth0";
+    dhcp.dhcpLease = Platform::DhcpLease{.server = "192.168.1.1", .leaseSeconds = 86'400, .expiresUnix = 0};
+    Platform::NetworkAdapter fixed;
+    fixed.name = "eth1";
+    network.adapters = {dhcp, fixed};
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(section, "eth0 DHCP lease")->value, "From 192.168.1.1, 1 day lease");
+    EXPECT_EQ(findRow(section, "eth1 DHCP lease"), nullptr);
+}
+
 TEST(SystemInfoSectionsTest, WifiLinkBandChannelAndRate)
 {
     const auto link = [](std::uint32_t mhz, std::uint32_t kbps)
