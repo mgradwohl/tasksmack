@@ -256,6 +256,70 @@ TEST_F(GpuSectionRenderTest, OneGpuDrawsItsCoreAndThermalCharts)
     EXPECT_TRUE(plots[1].contains("Fan"));
 }
 
+/// The card child windows drawn under the tab whose names contain @p id, in drawing order.
+std::vector<const ImGuiWindow*> cardsNamed(std::string_view id)
+{
+    std::vector<const ImGuiWindow*> cards;
+    for (const ImGuiWindow* window : GImGui->Windows)
+    {
+        if (window->Active && std::string_view{window->Name}.contains(id))
+        {
+            cards.push_back(window);
+        }
+    }
+    return cards;
+}
+
+TEST_F(GpuSectionRenderTest, EachChartIsABorderedCardWithItsHeadingInside)
+{
+    // #1595: under the adapter's header, Core & Video and Thermal & Power are each a card, as CPU
+    // Cores' cells are.
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "NVIDIA GeForce RTX 4080");
+    GpuSection::RenderContext ctx = context(&publication);
+    for (int frame = 0; frame < 3; ++frame) // A chart card's chrome is measured from the previous frame
+    {
+        static_cast<void>(renderAndCapture(ctx));
+    }
+
+    const std::vector<const ImGuiWindow*> core = cardsNamed("GpuCoreCard");
+    const std::vector<const ImGuiWindow*> thermal = cardsNamed("GpuThermalCard");
+    ASSERT_EQ(core.size(), 1U);
+    ASSERT_EQ(thermal.size(), 1U);
+    EXPECT_NE(core[0]->ChildFlags & ImGuiChildFlags_Borders, 0);
+    EXPECT_NE(thermal[0]->ChildFlags & ImGuiChildFlags_Borders, 0);
+    EXPECT_LE(core[0]->Pos.y + core[0]->Size.y, thermal[0]->Pos.y); // In order, not overlapping
+
+    // Each chart is drawn inside a card.
+    ImPlotContext& plots = *ImPlot::GetCurrentContext();
+    int inside = 0;
+    for (int i = 0; i < plots.Plots.GetBufSize(); ++i)
+    {
+        const ImPlotPlot* plot = plots.Plots.GetByIndex(i);
+        if (plot != nullptr && (core[0]->Rect().Contains(plot->FrameRect) || thermal[0]->Rect().Contains(plot->FrameRect)))
+        {
+            ++inside;
+        }
+    }
+    EXPECT_EQ(inside, 2);
+}
+
+TEST_F(GpuSectionRenderTest, AGpuWithoutThermalSensorsHasNoThermalCard)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors();
+    addGpu(publication, "gpu0", "Integrated GPU");
+    publication.gpuInfo[0].sensorCapabilities = Platform::GPUCapabilities{};
+    GpuSection::RenderContext ctx = context(&publication);
+    static_cast<void>(renderAndCapture(ctx));
+    static_cast<void>(renderAndCapture(ctx));
+    EXPECT_EQ(cardsNamed("GpuCoreCard").size(), 1U);
+    EXPECT_TRUE(cardsNamed("GpuThermalCard").empty());
+}
+
 TEST_F(GpuSectionRenderTest, SeriesFollowWhatTheGpuReports)
 {
     Domain::GPUPublication publication;
