@@ -70,6 +70,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -156,14 +157,20 @@ template<typename Get> [[nodiscard]] std::string readDirectory(Get get)
     return WinString::wideToUtf8(buffer);
 }
 
+// SystemInfoFunctions spells the NetApi types without <lm.h> (its HLOG clashes with pdh.h's).
+static_assert(std::is_same_v<NET_API_STATUS, DWORD>);
+static_assert(sizeof(NETSETUP_JOIN_STATUS) == sizeof(DWORD));
+static_assert(std::is_same_v<decltype(&::NetApiBufferFree), decltype(SystemInfoFunctions::netApiBufferFree)>);
+
 void readJoinInformation(const SystemInfoFunctions& fns, OsInfo& info)
 {
     LPWSTR name = nullptr;
-    NETSETUP_JOIN_STATUS status = NetSetupUnknownStatus;
-    if (fns.netGetJoinInformation(nullptr, &name, &status) != NERR_Success)
+    DWORD rawStatus = NetSetupUnknownStatus;
+    if (fns.netGetJoinInformation(nullptr, &name, &rawStatus) != NERR_Success)
     {
         return;
     }
+    const auto status = static_cast<NETSETUP_JOIN_STATUS>(rawStatus);
     if (name != nullptr && (status == NetSetupDomainName || status == NetSetupWorkgroupName))
     {
         info.domainOrWorkgroup = WinString::wideToUtf8(name);
@@ -965,7 +972,13 @@ SystemInfoFunctions WindowsSystemInfoProbe::systemFunctions()
         .isWow64Process2 = &::IsWow64Process2,
         .computerName = [](LPWSTR buffer, PULONG size) { return GetComputerNameExW(ComputerNameDnsHostname, buffer, size); },
         .userName = [](LPWSTR buffer, PULONG size) -> BOOL { return GetUserNameExW(NameSamCompatible, buffer, size); },
-        .netGetJoinInformation = &::NetGetJoinInformation,
+        .netGetJoinInformation = [](LPCWSTR server, LPWSTR* name, DWORD* joinStatus) -> DWORD
+        {
+            NETSETUP_JOIN_STATUS status = NetSetupUnknownStatus;
+            const NET_API_STATUS result = NetGetJoinInformation(server, name, &status);
+            *joinStatus = static_cast<DWORD>(status);
+            return result;
+        },
         .netApiBufferFree = &::NetApiBufferFree,
         .getUserDefaultLocaleName = &::GetUserDefaultLocaleName,
         .getDynamicTimeZoneInformation = &::GetDynamicTimeZoneInformation,

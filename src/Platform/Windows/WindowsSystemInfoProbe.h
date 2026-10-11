@@ -12,8 +12,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
-#include <lm.h>
+#include <windows.h> // not <lm.h>: its lmerrlog.h HLOG clashes with pdh.h's, and Factory.cpp sees both
 // clang-format on
 
 namespace Platform
@@ -29,8 +28,10 @@ struct SystemInfoFunctions
     BOOL(WINAPI* isWow64Process2)(HANDLE, USHORT*, USHORT*) = nullptr;
     BOOL (*computerName)(LPWSTR, PULONG) = nullptr; ///< GetComputerNameExW(ComputerNameDnsHostname, ...)
     BOOL (*userName)(LPWSTR, PULONG) = nullptr;     ///< GetUserNameExW(NameSamCompatible, ...)
-    NET_API_STATUS(NET_API_FUNCTION* netGetJoinInformation)(LPCWSTR, LPWSTR*, PNETSETUP_JOIN_STATUS) = nullptr;
-    NET_API_STATUS(NET_API_FUNCTION* netApiBufferFree)(LPVOID) = nullptr;
+    /// NetGetJoinInformation, with NET_API_STATUS as DWORD and the NETSETUP_JOIN_STATUS out-param as a DWORD,
+    /// so this header needs no <lm.h> (the .cpp static_asserts the types match).
+    DWORD (*netGetJoinInformation)(LPCWSTR server, LPWSTR* name, DWORD* joinStatus) = nullptr;
+    DWORD(WINAPI* netApiBufferFree)(LPVOID) = nullptr; ///< NetApiBufferFree (NET_API_STATUS is DWORD)
     int(WINAPI* getUserDefaultLocaleName)(LPWSTR, int) = nullptr;
     DWORD(WINAPI* getDynamicTimeZoneInformation)(PDYNAMIC_TIME_ZONE_INFORMATION) = nullptr;
     UINT(WINAPI* getSystemDirectory)(LPWSTR, UINT) = nullptr;

@@ -173,7 +173,7 @@ void copyText(std::span<wchar_t> destination, std::wstring_view text)
     destination[text.size()] = L'\0';
 }
 
-NET_API_STATUS NET_API_FUNCTION fakeJoin(LPCWSTR server, LPWSTR* name, PNETSETUP_JOIN_STATUS status)
+DWORD fakeJoin(LPCWSTR server, LPWSTR* name, DWORD* status)
 {
     EXPECT_EQ(server, nullptr);
     if (fake().joinResult != NERR_Success)
@@ -181,7 +181,7 @@ NET_API_STATUS NET_API_FUNCTION fakeJoin(LPCWSTR server, LPWSTR* name, PNETSETUP
         return fake().joinResult;
     }
     *name = fake().joinName.data();
-    *status = fake().joinStatus;
+    *status = static_cast<DWORD>(fake().joinStatus);
     return NERR_Success;
 }
 
