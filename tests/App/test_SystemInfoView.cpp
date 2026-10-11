@@ -681,6 +681,29 @@ TEST(SystemInfoSectionsTest, NetworkAdapterRows)
     EXPECT_EQ(findRow(section, "eth0 Wi-Fi network"), nullptr);
 }
 
+TEST(SystemInfoSectionsTest, AnAdaptersOwnDnsSettingsOnlyWhereItHasAny)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    Platform::NetworkAdapter vpn;
+    vpn.name = "wg0";
+    vpn.linkDnsServers = {"10.0.0.53", "2001:db8::53"};
+    vpn.linkSearchDomains = {"corp.example", "~vpn.example"};
+    Platform::NetworkAdapter plain;
+    plain.name = "eth0";
+    network.adapters = {plain, vpn};
+
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(section, "wg0 DNS servers")->value, "10.0.0.53, 2001:db8::53");
+    EXPECT_FALSE(findRow(section, "wg0 DNS servers")->isIdentifier);
+    EXPECT_EQ(findRow(section, "wg0 search domains")->value, "corp.example, ~vpn.example");
+    EXPECT_TRUE(findRow(section, "wg0 search domains")->isIdentifier);
+    // None of its own: the system-wide servers apply, and no row says otherwise.
+    EXPECT_EQ(findRow(section, "eth0 DNS servers"), nullptr);
+    EXPECT_EQ(findRow(section, "eth0 search domains"), nullptr);
+}
+
 TEST(SystemInfoSectionsTest, WifiLinkBandChannelAndRate)
 {
     const auto link = [](std::uint32_t mhz, std::uint32_t kbps)

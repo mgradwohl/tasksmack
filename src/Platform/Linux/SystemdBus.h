@@ -1,7 +1,8 @@
 #pragma once
 
 // A minimal client for system-bus services through sd-bus (libsystemd): systemd's boot timestamps
-// (#1525), udisks2's drive SMART data (#1631) and NetworkManager's Wi-Fi links (#1518).
+// (#1525), udisks2's drive SMART data (#1631), NetworkManager's Wi-Fi links and systemd-resolved's
+// per-adapter DNS settings (#1518).
 // Optional at build time: without libsystemd (TASKSMACK_HAS_SDBUS undefined) every read reports that
 // the build can't, so callers say "unavailable" rather than guess. Reads are synchronous and quick;
 // the System Information page makes them on its worker thread, never per frame.
@@ -48,5 +49,11 @@ inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
 /// connection, opened on its first call; once NetworkManager is found not running, or doesn't answer
 /// in time, the rest of the read doesn't ask again. Unprivileged.
 [[nodiscard]] LinuxNetworkAdapters::WifiLinkReader makeWifiLinkReader();
+
+/// A reader of each adapter's own DNS servers and search domains from systemd-resolved
+/// (org.freedesktop.resolve1), sharing one system-bus connection, opened on its first call; once
+/// resolved is found not running, or doesn't answer in time, the rest of the read doesn't ask again.
+/// Unprivileged.
+[[nodiscard]] LinuxNetworkAdapters::LinkDnsReader makeLinkDnsReader();
 
 } // namespace Platform::SystemdBus

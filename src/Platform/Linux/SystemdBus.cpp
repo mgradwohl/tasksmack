@@ -17,8 +17,10 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <span>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 // Newer libsystemd (259 here) declares sd_bus and sd_bus_error in sd-bus-protocol.h; older releases
 // (Ubuntu 24.04's, in CI) declare them in sd-bus.h, so include-cleaner wants this line on one and not the other.
@@ -598,6 +600,178 @@ LinuxNetworkAdapters::WifiLinkReader makeWifiLinkReader()
     };
 }
 
+namespace
+{
+
+constexpr const char* RESOLVE = "org.freedesktop.resolve1";
+constexpr const char* RESOLVE_PATH = "/org/freedesktop/resolve1";
+constexpr const char* RESOLVE_MANAGER = "org.freedesktop.resolve1.Manager";
+constexpr const char* RESOLVE_LINK = "org.freedesktop.resolve1.Link";
+
+/// One system-bus connection for every adapter of a read, opened on the first.
+struct ResolvedSession
+{
+    Bus bus;
+    bool opened = false;
+    std::string stopped; ///< Set once resolved is found absent or unresponsive: every later adapter gets it.
+};
+
+/// Why resolved couldn't answer for an adapter, and whether that holds for every other adapter too.
+[[nodiscard]] std::pair<std::string, bool> resolvedError(const BusError& error, int result)
+{
+    if (timedOut(error.raw(), result))
+    {
+        return {"systemd-resolved didn't answer in time", true};
+    }
+    if (error.is("org.freedesktop.DBus.Error.ServiceUnknown") || error.is("org.freedesktop.DBus.Error.NameHasNoOwner"))
+    {
+        return {"systemd-resolved isn't running", true};
+    }
+    if (error.is("org.freedesktop.resolve1.NoSuchLink"))
+    {
+        return {"systemd-resolved doesn't know this adapter", false};
+    }
+    return {"systemd-resolved couldn't be asked: " + error.text(result), false};
+}
+
+/// The Link's DNS property, a(iay): each server's address family and bytes.
+[[nodiscard]] int readLinkServers(sd_bus* bus, const char* link, std::vector<std::string>& servers, BusError& error)
+{
+    Message reply;
+    int result = sd_bus_get_property(bus, RESOLVE, link, RESOLVE_LINK, "DNS", error.get(), reply.out(), "a(iay)");
+    if (result >= 0)
+    {
+        result = sd_bus_message_enter_container(reply.get(), 'a', "(iay)");
+    }
+    while (result >= 0 && (result = sd_bus_message_enter_container(reply.get(), 'r', "iay")) > 0)
+    {
+        int family = 0;
+        const void* bytes = nullptr;
+        std::size_t size = 0;
+        result = sd_bus_message_read(reply.get(), "i", &family);
+        if (result >= 0)
+        {
+            result = sd_bus_message_read_array(reply.get(), 'y', &bytes, &size);
+        }
+        if (result >= 0 && bytes != nullptr)
+        {
+            if (std::string address = LinuxNetworkAdapters::formatAddressBytes(
+                    family, std::span<const std::uint8_t>(static_cast<const std::uint8_t*>(bytes), size));
+                !address.empty())
+            {
+                servers.push_back(std::move(address));
+            }
+        }
+        if (result >= 0)
+        {
+            result = sd_bus_message_exit_container(reply.get());
+        }
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_message_exit_container(reply.get());
+    }
+    return result;
+}
+
+/// The Link's Domains property, a(sb): each domain and whether it only routes lookups ("~domain").
+[[nodiscard]] int readLinkDomains(sd_bus* bus, const char* link, std::vector<std::string>& domains, BusError& error)
+{
+    Message reply;
+    int result = sd_bus_get_property(bus, RESOLVE, link, RESOLVE_LINK, "Domains", error.get(), reply.out(), "a(sb)");
+    if (result >= 0)
+    {
+        result = sd_bus_message_enter_container(reply.get(), 'a', "(sb)");
+    }
+    while (result >= 0 && (result = sd_bus_message_enter_container(reply.get(), 'r', "sb")) > 0)
+    {
+        const char* name = nullptr;
+        int routeOnly = 0;
+        result = sd_bus_message_read(reply.get(), "sb", &name, &routeOnly);
+        if (result >= 0 && name != nullptr && *name != '\0')
+        {
+            domains.push_back((routeOnly != 0 ? "~" : "") + Environment::escapeForDisplay(name));
+        }
+        if (result >= 0)
+        {
+            result = sd_bus_message_exit_container(reply.get());
+        }
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_message_exit_container(reply.get());
+    }
+    return result;
+}
+
+[[nodiscard]] LinuxNetworkAdapters::LinkDnsRead readLinkDnsOnce(ResolvedSession& session, int ifindex)
+{
+    LinuxNetworkAdapters::LinkDnsRead read;
+    if (!session.opened)
+    {
+        session.opened = true;
+        if (const int result = openSystemBus(session.bus); result < 0)
+        {
+            session.stopped =
+                std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - as above
+        }
+    }
+    if (!session.stopped.empty())
+    {
+        read.error = session.stopped;
+        return read;
+    }
+    sd_bus* bus = session.bus.get();
+    const auto fail = [&session, &read](const BusError& error, int result)
+    {
+        auto [text, forEveryAdapter] = resolvedError(error, result);
+        if (forEveryAdapter)
+        {
+            session.stopped = text;
+        }
+        read.servers.clear();
+        read.domains.clear();
+        read.error = std::move(text);
+        return read;
+    };
+
+    BusError error;
+    Message reply;
+    int result = sd_bus_call_method(bus, RESOLVE, RESOLVE_PATH, RESOLVE_MANAGER, "GetLink", error.get(), reply.out(), "i", ifindex);
+    const char* linkPath = nullptr;
+    if (result >= 0)
+    {
+        result = sd_bus_message_read(reply.get(), "o", &linkPath);
+    }
+    if (result < 0 || linkPath == nullptr)
+    {
+        return fail(error, result);
+    }
+    const std::string link(linkPath);
+    BusError serversError;
+    if (result = readLinkServers(bus, link.c_str(), read.servers, serversError); result < 0)
+    {
+        return fail(serversError, result);
+    }
+    BusError domainsError;
+    if (result = readLinkDomains(bus, link.c_str(), read.domains, domainsError); result < 0)
+    {
+        return fail(domainsError, result);
+    }
+    read.read = true;
+    return read;
+}
+
+} // namespace
+
+LinuxNetworkAdapters::LinkDnsReader makeLinkDnsReader()
+{
+    return [session = std::make_shared<ResolvedSession>()](int ifindex)
+    {
+        return readLinkDnsOnce(*session, ifindex);
+    };
+}
+
 #else
 
 BootTimestampsRead readBootTimestamps()
@@ -613,6 +787,16 @@ LinuxDiskSmart::SmartReader makeDriveSmartReader()
     {
         LinuxDiskSmart::DriveSmartRead read;
         read.error = "This build has no D-Bus support (it was built without libsystemd), so SMART status can't be read";
+        return read;
+    };
+}
+
+LinuxNetworkAdapters::LinkDnsReader makeLinkDnsReader()
+{
+    return [](int)
+    {
+        LinuxNetworkAdapters::LinkDnsRead read;
+        read.error = "This build has no D-Bus support (it was built without libsystemd), so systemd-resolved can't be asked";
         return read;
     };
 }

@@ -71,5 +71,26 @@ TEST(SystemdBusTest, ReadsAWifiLinkOrSaysWhyNot)
     EXPECT_TRUE(first.error.empty());
 }
 
+// systemd-resolved (#1518): an adapter's own DNS settings on this machine, or why not. Index 1 is the
+// loopback adapter, which resolved knows wherever it runs.
+TEST(SystemdBusTest, ReadsAnAdaptersDnsSettingsOrSaysWhyNot)
+{
+    const LinuxNetworkAdapters::LinkDnsReader reader = SystemdBus::makeLinkDnsReader();
+    ASSERT_TRUE(reader);
+    const LinuxNetworkAdapters::LinkDnsRead read = reader(1);
+    if (!read.read)
+    {
+        EXPECT_FALSE(read.error.empty());
+        EXPECT_TRUE(read.servers.empty());
+        GTEST_SKIP() << "systemd-resolved isn't reachable here: " << read.error;
+    }
+    EXPECT_TRUE(read.error.empty());
+    // An index no adapter has: resolved says so, for that adapter only.
+    const LinuxNetworkAdapters::LinkDnsRead missing = reader(999'999);
+    EXPECT_FALSE(missing.read);
+    EXPECT_FALSE(missing.error.empty());
+    EXPECT_TRUE(reader(1).read);
+}
+
 } // namespace
 } // namespace Platform

@@ -20,6 +20,7 @@
 #include <format>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -255,12 +256,55 @@ struct WifiLinkRead
 /// NetworkManager; tests hand in their own.
 using WifiLinkReader = std::function<WifiLinkRead(const std::string& adapter)>;
 
-/// The facts under @p root into @p info, with the addresses from @p listAddresses and each Wi-Fi
-/// adapter's link from @p readWifiLink (none when it is empty).
+/// An IP address from its family (AF_INET is 2, AF_INET6 is 10, as Linux numbers them) and its bytes
+/// in network order, as systemd-resolved hands them over. Empty when the two don't make an address.
+[[nodiscard]] inline std::string formatAddressBytes(int family, std::span<const std::uint8_t> bytes)
+{
+    constexpr int LINUX_AF_INET = 2;
+    constexpr int LINUX_AF_INET6 = 10;
+    if (family == LINUX_AF_INET && bytes.size() == 4)
+    {
+        return std::format("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]);
+    }
+    if (family == LINUX_AF_INET6 && bytes.size() == 16)
+    {
+        std::string hex;
+        hex.reserve(32);
+        for (const std::uint8_t byte : bytes)
+        {
+            hex += std::format("{:02x}", byte);
+        }
+        return formatIpv6Hex(hex);
+    }
+    return {};
+}
+
+/// An adapter's own DNS settings as a LinkDnsReader read them.
+struct LinkDnsRead
+{
+    bool read = false; ///< The settings were read: empty lists then mean the adapter has none of its own.
+    std::vector<std::string> servers;
+    std::vector<std::string> domains;
+    std::string error; ///< Why not, when !read.
+};
+
+/// Reads an adapter's own DNS settings by its interface index (/sys/class/net/<name>/ifindex).
+/// SystemdBus::makeLinkDnsReader() asks systemd-resolved; tests hand in their own.
+using LinkDnsReader = std::function<LinkDnsRead(int ifindex)>;
+
+/// The system-wide sources readNetworkAdapterFacts() asks for each adapter; an empty one isn't asked.
+struct AdapterReaders
+{
+    WifiLinkReader wifiLink; ///< Each Wi-Fi adapter's link.
+    LinkDnsReader linkDns;   ///< Each adapter's own DNS servers and search domains.
+};
+
+/// The facts under @p root into @p info, with the addresses from @p listAddresses and what @p readers
+/// can add: each Wi-Fi adapter's link, each adapter's own DNS settings.
 inline void readNetworkAdapterFacts(const std::filesystem::path& root,
                                     NetworkAdaptersInfo& info,
                                     AddressLister listAddresses,
-                                    const WifiLinkReader& readWifiLink = {})
+                                    const AdapterReaders& readers = {})
 {
     info.available = true;
     std::error_code ec;
@@ -294,11 +338,26 @@ inline void readNetworkAdapterFacts(const std::filesystem::path& root,
         if (adapter.wireless)
         {
             adapter.wifiSignalDbm = parseWirelessLevel(wireless, adapter.name);
-            if (readWifiLink)
+            if (readers.wifiLink)
             {
-                WifiLinkRead read = readWifiLink(adapter.name);
+                WifiLinkRead read = readers.wifiLink(adapter.name);
                 adapter.wifiLink = std::move(read.link);
                 adapter.wifiLinkUnavailable = std::move(read.error);
+            }
+        }
+        if (readers.linkDns)
+        {
+            const std::string index = LinuxOsInfo::readLine(dir / "ifindex");
+            int ifindex = 0;
+            std::from_chars(index.data(), index.data() + index.size(), ifindex, 10);
+            if (ifindex > 0)
+            {
+                // A failed read leaves the adapter's rows out: the system-wide DNS servers still show.
+                if (LinkDnsRead read = readers.linkDns(ifindex); read.read)
+                {
+                    adapter.linkDnsServers = std::move(read.servers);
+                    adapter.linkSearchDomains = std::move(read.domains);
+                }
             }
         }
         info.adapters.push_back(std::move(adapter));

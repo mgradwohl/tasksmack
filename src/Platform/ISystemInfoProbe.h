@@ -542,6 +542,12 @@ struct NetworkAdapter
     std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
     std::optional<WifiLink> wifiLink; ///< Wi-Fi: the link, when it is connected and could be read.
     std::string wifiLinkUnavailable;  ///< Wi-Fi: why wifiLink is empty, for the UI; empty when unknown.
+    /// Linux: the DNS servers set for this adapter alone (systemd-resolved's per-link servers, which
+    /// NetworkManager and systemd-networkd hand it); empty when there are none or they couldn't be read.
+    std::vector<std::string> linkDnsServers;
+    /// Linux: this adapter's own search domains; a routing-only one is written "~corp.example", as
+    /// resolvectl writes it.
+    std::vector<std::string> linkSearchDomains;
 };
 
 /// The Network adapters facts (#1518): each adapter's addresses and settings, the default gateways

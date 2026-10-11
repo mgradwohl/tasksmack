@@ -1578,6 +1578,25 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
     {
         rows.push_back(row(adapter.name, formatAdapterSummary(adapter)));
         rows.push_back(row(adapter.name + " addresses", formatAdapterAddresses(adapter), "No IP address assigned"));
+        // Its own DNS settings, only where it has any: otherwise the system-wide servers above apply.
+        const auto joined = [](const std::vector<std::string>& items)
+        {
+            std::string text;
+            for (const std::string& item : items)
+            {
+                text += (text.empty() ? "" : ", ") + item;
+            }
+            return text;
+        };
+        if (!adapter.linkDnsServers.empty())
+        {
+            rows.push_back(row(adapter.name + " DNS servers", joined(adapter.linkDnsServers)));
+        }
+        if (!adapter.linkSearchDomains.empty())
+        {
+            // Like the system-wide search domains, these can name the organisation: an identifier.
+            rows.push_back(row(adapter.name + " search domains", joined(adapter.linkSearchDomains), NOT_REPORTED, true));
+        }
         if (!adapter.mac.empty())
         {
             rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
