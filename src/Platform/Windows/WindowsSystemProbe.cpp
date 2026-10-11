@@ -130,28 +130,28 @@ template<typename Query>
 
 /// Logical processors across every processor group. dwNumberOfProcessors counts only the calling
 /// thread's group (at most 64), so a machine with more under-reported its core count (#1107).
-[[nodiscard]] std::size_t logicalProcessorCount()
+[[nodiscard]] std::size_t logicalProcessorCount(const WindowsSystemProbeFunctions::Cpu& fns)
 {
-    const DWORD allGroups = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    const DWORD allGroups = fns.getActiveProcessorCount(ALL_PROCESSOR_GROUPS);
     if (allGroups != 0)
     {
         return allGroups;
     }
     SYSTEM_INFO sysInfo{};
-    GetSystemInfo(&sysInfo);
+    fns.getSystemInfo(&sysInfo);
     return sysInfo.dwNumberOfProcessors;
 }
 
 /// Each processor group's first coreId, from the groups' maximum sizes (#1107; see
 /// processorGroupFirstCoreIds()). Read once: the maximums are fixed for the boot session.
-[[nodiscard]] std::vector<std::size_t> groupFirstCoreIds()
+[[nodiscard]] std::vector<std::size_t> groupFirstCoreIds(const WindowsSystemProbeFunctions::Cpu& fns)
 {
-    const WORD groups = GetMaximumProcessorGroupCount();
+    const WORD groups = fns.getMaximumProcessorGroupCount();
     std::vector<std::uint32_t> maximums;
     maximums.reserve(groups);
     for (WORD group = 0; group < groups; ++group)
     {
-        maximums.push_back(GetMaximumProcessorCount(group));
+        maximums.push_back(fns.getMaximumProcessorCount(group));
     }
     return processorGroupFirstCoreIds(maximums);
 }
@@ -183,18 +183,21 @@ constexpr ULONG SystemIsolatedUserModeInformationClass = 165;
 /// (#809). Fields stay nullopt if the call fails. `groupFirstCoreIds` numbers each logical
 /// processor as the per-core counters do (#1107), for efficiencyClassByCoreId and `activeIds`, which
 /// receives every active logical processor's id, ascending (empty if the call fails).
-void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> groupFirstCoreIds, std::vector<std::size_t>& activeIds)
+void readProcessorTopology(const WindowsSystemProbeFunctions::Cpu& fns,
+                           CpuDetails& details,
+                           std::span<const std::size_t> groupFirstCoreIds,
+                           std::vector<std::size_t>& activeIds)
 {
     DWORD length = 0;
-    if (GetLogicalProcessorInformationEx(RelationAll, nullptr, &length) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+    if (fns.getLogicalProcessorInformationEx(RelationAll, nullptr, &length) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
         length == 0)
     {
         spdlog::debug("GetLogicalProcessorInformationEx sizing failed: {}", GetLastError());
         return;
     }
     std::vector<std::byte> buffer(length);
-    if (GetLogicalProcessorInformationEx(RelationAll, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &length) ==
-        FALSE)
+    if (fns.getLogicalProcessorInformationEx(
+            RelationAll, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &length) == FALSE)
     {
         spdlog::debug("GetLogicalProcessorInformationEx failed: {}", GetLastError());
         return;
@@ -234,10 +237,11 @@ void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> gro
                     activeIds.push_back(firstId + bit);
                 }
             }
-            cores.push_back({.efficiencyClass = record.Processor.EfficiencyClass,
-                             .logicalProcessors = (record.Processor.GroupCount > 0)
-                                                    ? static_cast<std::uint32_t>(std::popcount(record.Processor.GroupMask[0].Mask))
-                                                    : 0U});
+            cores.push_back({
+                .efficiencyClass = record.Processor.EfficiencyClass,
+                .logicalProcessors =
+                    (record.Processor.GroupCount > 0) ? static_cast<std::uint32_t>(std::popcount(record.Processor.GroupMask[0].Mask)) : 0U,
+            });
             break;
         case RelationCache:
             caches.push_back({.level = record.Cache.Level, .bytes = record.Cache.CacheSize});
@@ -262,7 +266,7 @@ void readProcessorTopology(CpuDetails& details, std::span<const std::size_t> gro
 /// Firmware virtualization, SLAT, a running hypervisor and virtualization-based security (#809):
 /// processor-feature flags, CPUID, and two NtQuerySystemInformation classes a standard user may
 /// query -- no WMI, no elevation.
-void readVirtualization(CpuDetails& details)
+void readVirtualization(Windows::NtQuerySystemInformationFn ntQuery, CpuDetails& details)
 {
     details.virtualizationFirmwareEnabled = IsProcessorFeaturePresent(PF_VIRT_FIRMWARE_ENABLED) != FALSE;
     details.slatSupported = IsProcessorFeaturePresent(PF_SECOND_LEVEL_ADDRESS_TRANSLATION) != FALSE;
@@ -272,7 +276,6 @@ void readVirtualization(CpuDetails& details)
     details.hypervisorPresent = hypervisorPresentBit(static_cast<std::uint32_t>(registers[2]));
 #endif
 
-    const auto ntQuery = Windows::ntQuerySystemInformation();
     if (ntQuery == nullptr)
     {
         return;
@@ -298,12 +301,13 @@ void readVirtualization(CpuDetails& details)
 /// Every CpuDetails fact this probe reports (#809). Base speed is the rated MaxMhz from powrprof
 /// (#1530) and stays unknown without it: the registry's ~MHz fallback is not a base clock.
 /// `activeIds` receives the active logical processors' ids the topology describes (ascending).
-[[nodiscard]] CpuDetails readCpuDetails(std::span<const std::size_t> groupFirstCoreIds, std::vector<std::size_t>& activeIds)
+[[nodiscard]] CpuDetails
+readCpuDetails(const WindowsSystemProbeFunctions& fns, std::span<const std::size_t> groupFirstCoreIds, std::vector<std::size_t>& activeIds)
 {
     CpuDetails details;
     activeIds.clear();
-    readProcessorTopology(details, groupFirstCoreIds, activeIds);
-    readVirtualization(details);
+    readProcessorTopology(fns.cpu, details, groupFirstCoreIds, activeIds);
+    readVirtualization(fns.nt.ntQuerySystemInformation, details);
     const std::vector<std::uint32_t> processorMaxMHz = readProcessorMaxMHz(&CallNtPowerInformation);
     if (const std::uint64_t ratedMHz = nominalCpuBaseMHz(processorMaxMHz, 0); ratedMHz > 0)
     {
@@ -326,8 +330,32 @@ WindowsSystemProbe::WindowsSystemProbe() : WindowsSystemProbe(readBaseCpuMHz(), 
 {}
 
 WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance)
-    : m_NumCores(logicalProcessorCount()),
-      m_GroupFirstCoreIds(groupFirstCoreIds()),
+    : WindowsSystemProbe(baseCpuMHz, std::move(processorPerformance), systemFunctions())
+{}
+
+WindowsSystemProbeFunctions WindowsSystemProbe::systemFunctions()
+{
+    WindowsSystemProbeFunctions fns;
+    fns.cpu.getSystemTimes = &GetSystemTimes;
+    fns.cpu.getActiveProcessorGroupCount = &GetActiveProcessorGroupCount;
+    fns.cpu.getActiveProcessorCount = &GetActiveProcessorCount;
+    fns.cpu.getMaximumProcessorGroupCount = &GetMaximumProcessorGroupCount;
+    fns.cpu.getMaximumProcessorCount = &GetMaximumProcessorCount;
+    fns.cpu.getLogicalProcessorInformationEx = &GetLogicalProcessorInformationEx;
+    fns.cpu.getSystemInfo = &GetSystemInfo;
+    fns.nt.ntQuerySystemInformation = Windows::ntQuerySystemInformation();
+    fns.nt.ntQuerySystemInformationEx = Windows::ntQuerySystemInformationEx();
+    fns.memory.globalMemoryStatusEx = &GlobalMemoryStatusEx;
+    fns.memory.getPerformanceInfo = &GetPerformanceInfo;
+    return fns;
+}
+
+WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz,
+                                       std::unique_ptr<ProcessorPerformanceCounter> processorPerformance,
+                                       const WindowsSystemProbeFunctions& functions)
+    : m_Fns(functions),
+      m_NumCores(logicalProcessorCount(m_Fns.cpu)),
+      m_GroupFirstCoreIds(groupFirstCoreIds(m_Fns.cpu)),
       m_BaseCpuMHz(baseCpuMHz),
       m_ProcessorPerformance(std::move(processorPerformance))
 {
@@ -381,7 +409,7 @@ WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr
 
     // The CPU Details facts (#809), read again only when the set of active processors changes
     // (refreshCpuDetailsIfProcessorsChanged())
-    m_CpuDetails.details = readCpuDetails(m_GroupFirstCoreIds, m_CpuDetails.ids);
+    m_CpuDetails.details = readCpuDetails(m_Fns, m_GroupFirstCoreIds, m_CpuDetails.ids);
 
     spdlog::debug("WindowsSystemProbe initialized with {} cores, host={}, cpu={}", m_NumCores, m_Hostname, m_CpuModel);
 }
@@ -408,27 +436,16 @@ void WindowsSystemProbe::readCpuCounters(SystemCounters& counters) const
     FILETIME ftKernel{};
     FILETIME ftUser{};
 
-    if (GetSystemTimes(&ftIdle, &ftKernel, &ftUser) == 0)
+    if (m_Fns.cpu.getSystemTimes(&ftIdle, &ftKernel, &ftUser) == 0)
     {
         spdlog::error("GetSystemTimes failed: {}", GetLastError());
         return;
     }
 
-    // GetSystemTimes returns:
-    // - idle: time spent idle
-    // - kernel: time spent in kernel mode (includes idle time)
-    // - user: time spent in user mode
-    //
-    // To get actual kernel time: kernel - idle
-
-    const uint64_t idle = filetimeToTicks(ftIdle);
-    const uint64_t kernel = filetimeToTicks(ftKernel);
-    const uint64_t user = filetimeToTicks(ftUser);
-    const uint64_t system = kernel - idle; // Actual kernel time
-
-    counters.cpuTotal.idle = idle;
-    counters.cpuTotal.system = system;
-    counters.cpuTotal.user = user;
+    // GetSystemTimes returns idle time, kernel time (which includes idle) and user time. The split
+    // is processorTimes()', as for each core, so a sample whose idle time exceeds its kernel time
+    // reads as no system time rather than wrapping to ~2^64 ticks (#1719).
+    counters.cpuTotal = processorTimes(filetimeToTicks(ftKernel), filetimeToTicks(ftIdle), filetimeToTicks(ftUser), 0, 0);
 
     // Now get per-core CPU via NtQuerySystemInformation
     readPerCoreCpuCounters(counters);
@@ -452,9 +469,9 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     // so a machine with more than 64 logical processors (several groups) showed one group's
     // cores (#1107). NtQuerySystemInformationEx takes the group as input: query each in turn and
     // append them in group order.
-    const WORD groupCount = GetActiveProcessorGroupCount();
+    const WORD groupCount = m_Fns.cpu.getActiveProcessorGroupCount();
     const bool multiGroup = groupCount > 1;
-    if (const auto ntQueryEx = Windows::ntQuerySystemInformationEx(); ntQueryEx != nullptr)
+    if (const auto ntQueryEx = m_Fns.nt.ntQuerySystemInformationEx; ntQueryEx != nullptr)
     {
         std::vector<CpuCounters> cores;
         cores.reserve(m_NumCores);
@@ -470,7 +487,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
                 break;
             }
             USHORT groupNumber = group;
-            std::vector<ProcessorPerformanceInfo> perfInfo(std::max<DWORD>(GetActiveProcessorCount(group), 1));
+            std::vector<ProcessorPerformanceInfo> perfInfo(std::max<DWORD>(m_Fns.cpu.getActiveProcessorCount(group), 1));
             ULONG returnLength = 0;
             const NTSTATUS status = queryProcessorPerformance(
                 perfInfo,
@@ -513,7 +530,7 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     }
 
     // Fallback without NtQuerySystemInformationEx on a single-group machine.
-    auto ntQuery = Windows::ntQuerySystemInformation();
+    const auto ntQuery = m_Fns.nt.ntQuerySystemInformation;
     if (ntQuery == nullptr)
     {
         spdlog::warn("NtQuerySystemInformation not available, per-core CPU disabled");
@@ -539,12 +556,12 @@ void WindowsSystemProbe::readPerCoreCpuCounters(SystemCounters& counters) const
     spdlog::trace("Read per-core CPU for {} cores", coresReturned);
 }
 
-void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
+void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters) const
 {
     MEMORYSTATUSEX memStatus{};
     memStatus.dwLength = sizeof(memStatus);
 
-    if (GlobalMemoryStatusEx(&memStatus) == 0)
+    if (m_Fns.memory.globalMemoryStatusEx(&memStatus) == 0)
     {
         spdlog::error("GlobalMemoryStatusEx failed: {}", GetLastError());
         return;
@@ -562,7 +579,7 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
     // per-list breakdown (SystemMemoryListInformation).
     PERFORMANCE_INFORMATION perfInfo{};
     perfInfo.cb = sizeof(perfInfo);
-    if (GetPerformanceInfo(&perfInfo, sizeof(perfInfo)) != 0)
+    if (m_Fns.memory.getPerformanceInfo(&perfInfo, sizeof(perfInfo)) != 0)
     {
         counters.memory.cachedBytes = static_cast<uint64_t>(perfInfo.SystemCache) * static_cast<uint64_t>(perfInfo.PageSize);
 
@@ -584,16 +601,16 @@ void WindowsSystemProbe::readMemoryCounters(SystemCounters& counters)
     counters.memory.swapFreeBytes = swap.freeBytes;
 }
 
-SwapBytes WindowsSystemProbe::readSwap()
+SwapBytes WindowsSystemProbe::readSwap() const
 {
-    const auto ntQuerySystemInformation = Windows::ntQuerySystemInformation();
+    const auto ntQuerySystemInformation = m_Fns.nt.ntQuerySystemInformation;
     if (ntQuerySystemInformation == nullptr)
     {
         return {};
     }
 
     SYSTEM_INFO sysInfo{};
-    GetSystemInfo(&sysInfo);
+    m_Fns.cpu.getSystemInfo(&sysInfo);
 
     // One entry is 32 bytes plus its file name; 4 KiB holds dozens of page files. Grow once if the
     // OS says it needs more.
@@ -625,8 +642,8 @@ void WindowsSystemProbe::readUptime(SystemCounters& counters)
     counters.uptimeSeconds = uptimeMs / 1000;
 
     // Calculate boot timestamp
-    auto now = std::chrono::system_clock::now();
-    auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+    const auto now = std::chrono::system_clock::now();
+    const auto nowEpoch = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
     const uint64_t nowEpochSeconds = toU64NonNegative(nowEpoch);
     counters.bootTimestamp = (nowEpochSeconds > counters.uptimeSeconds) ? (nowEpochSeconds - counters.uptimeSeconds) : 0ULL;
 }
@@ -646,7 +663,7 @@ void WindowsSystemProbe::refreshCpuDetailsIfProcessorsChanged(std::span<const Cp
     {
         // Rare: only after the set of active processors changes (a hot-add), never every sample
         std::vector<std::size_t> describedIds;
-        CpuDetails fresh = readCpuDetails(m_GroupFirstCoreIds, describedIds);
+        CpuDetails fresh = readCpuDetails(m_Fns, m_GroupFirstCoreIds, describedIds);
         (void) CpuTopology::commitIfConsistent(sampledIds, std::move(describedIds), std::move(fresh), m_CpuDetails);
     }
     // cpuCoreCount and the fallback per-core buffer follow the processors actually sampled, so

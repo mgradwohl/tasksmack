@@ -15,10 +15,57 @@
 #include <unordered_map>
 #include <vector>
 
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h> // PERFORMANCE_INFORMATION
+// clang-format on
+
+#include "Platform/Windows/WindowsNtQuery.h"
+
 namespace Platform
 {
 
 class ProcessorPerformanceCounter;
+
+/// The Win32/NT calls WindowsSystemProbe makes for CPU, topology and memory (#1719): the system's by
+/// default (WindowsSystemProbe::systemFunctions()), fakes in tests, so each one failing alone, the
+/// per-core fallbacks and several processor groups can be tested. Grouped by area. Every member must
+/// be set, except the two NT exports, which are nullable as ntdll's lookups are.
+struct WindowsSystemProbeFunctions
+{
+    struct Cpu
+    {
+        BOOL(WINAPI* getSystemTimes)(PFILETIME, PFILETIME, PFILETIME) = nullptr;
+        WORD(WINAPI* getActiveProcessorGroupCount)() = nullptr;
+        DWORD(WINAPI* getActiveProcessorCount)(WORD) = nullptr;
+        WORD(WINAPI* getMaximumProcessorGroupCount)() = nullptr;
+        DWORD(WINAPI* getMaximumProcessorCount)(WORD) = nullptr;
+        BOOL(WINAPI* getLogicalProcessorInformationEx)(LOGICAL_PROCESSOR_RELATIONSHIP,
+                                                       PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+                                                       PDWORD) = nullptr;
+        void(WINAPI* getSystemInfo)(LPSYSTEM_INFO) = nullptr; // Processor-count fallback and page size
+    } cpu;
+
+    struct Nt
+    {
+        /// Per-core fallback, page files and virtualization status. Nullable: those are then not read.
+        Windows::NtQuerySystemInformationFn ntQuerySystemInformation = nullptr;
+        /// Per-core counters by processor group (#1107). Nullable: the one-group query is used.
+        Windows::NtQuerySystemInformationExFn ntQuerySystemInformationEx = nullptr;
+    } nt;
+
+    struct Memory
+    {
+        BOOL(WINAPI* globalMemoryStatusEx)(LPMEMORYSTATUSEX) = nullptr;
+        BOOL(WINAPI* getPerformanceInfo)(PPERFORMANCE_INFORMATION, DWORD) = nullptr;
+    } memory;
+};
 
 /// Windows implementation of ISystemProbe.
 /// Reads system metrics from Windows APIs (GetSystemTimes, GlobalMemoryStatusEx, etc).
@@ -31,7 +78,14 @@ class WindowsSystemProbe : public ISystemProbe
     /// constructor reads the rated base (readNominalCpuBaseMHz in CpuBaseClock.h: CallNtPowerInformation's
     /// MaxMhz, else the registry's ~MHz; #1530) and opens pdh.dll's counter; tests inject fakes here.
     WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance);
+    /// As above, making every CPU, topology and memory call through @p functions (tests, #1719).
+    WindowsSystemProbe(std::uint64_t baseCpuMHz,
+                       std::unique_ptr<ProcessorPerformanceCounter> processorPerformance,
+                       const WindowsSystemProbeFunctions& functions);
     ~WindowsSystemProbe() override;
+
+    /// The real calls: the Win32 APIs themselves, and ntdll's exports resolved once.
+    [[nodiscard]] static WindowsSystemProbeFunctions systemFunctions();
 
     WindowsSystemProbe(const WindowsSystemProbe&) = delete;
     WindowsSystemProbe& operator=(const WindowsSystemProbe&) = delete;
@@ -53,10 +107,10 @@ class WindowsSystemProbe : public ISystemProbe
   private:
     void readCpuCounters(SystemCounters& counters) const;
     void readPerCoreCpuCounters(SystemCounters& counters) const;
-    static void readMemoryCounters(SystemCounters& counters);
+    void readMemoryCounters(SystemCounters& counters) const;
     /// Page-file totals from NtQuerySystemInformation; zero when there is no page file or the
     /// query fails.
-    [[nodiscard]] static SwapBytes readSwap();
+    [[nodiscard]] SwapBytes readSwap() const;
     static void readUptime(SystemCounters& counters);
     void readStaticInfo(SystemCounters& counters) const;
     /// When the per-core read sampled a different set of active processors than m_CpuDetails
@@ -68,6 +122,7 @@ class WindowsSystemProbe : public ISystemProbe
     void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);
 
+    WindowsSystemProbeFunctions m_Fns; // Every CPU, topology and memory call goes through these (#1719)
     std::size_t m_NumCores{0};
     // Each processor group's first coreId, fixed for the boot session (#1107)
     std::vector<std::size_t> m_GroupFirstCoreIds;

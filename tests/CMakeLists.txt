@@ -326,11 +326,13 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessProbe.cpp
     Platform/test_WindowsProcessProbeSeams.cpp
     Platform/test_WindowsSystemProbe.cpp
+    Platform/test_WindowsSystemProbeSeams.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsDiskProbe.cpp
+    Platform/test_WindowsDiskProbeSeams.cpp
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
