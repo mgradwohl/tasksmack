@@ -461,6 +461,13 @@ TEST_F(ProcessDetailsChartsRenderTest, GpuChartsSitInsideCardsBelowTheUsageCard)
     for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
     {
         runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+        // The auto-sized card's content size is measured from what it drew: never NaN, not even on the
+        // first frame, when a table's stretch column has no width yet (UBSan caught 0/0 there).
+        if (const ImGuiWindow* card = findCard("##ProcGpuUsageCard"); card != nullptr)
+        {
+            EXPECT_TRUE(std::isfinite(card->DC.CursorMaxPos.x)) << "frame " << frame;
+            EXPECT_TRUE(std::isfinite(card->ContentSize.x)) << "frame " << frame;
+        }
     }
 
     const ImGuiWindow* usage = findCard("##ProcGpuUsageCard");

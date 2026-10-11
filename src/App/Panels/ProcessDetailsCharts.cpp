@@ -1187,7 +1187,10 @@ void ProcessDetailsCharts::renderGpuCurrentMetricsTable(const ProcessChartContex
         return;
     }
     ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
-    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+    // An explicit weight: left to default, a SizingStretchProp column's weight is its content width,
+    // which is 0 on the table's first frame, and the 0/0 left a NaN in the auto-sized GPU Usage card's
+    // content size (UBSan, #1594).
+    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F);
 
     const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
     row(LABEL_UTILIZATION, Detail::gpuUtilizationText(smoothed.gpuUtilAvailable, smoothed.gpuUtilPercent), &gpuUtilColor);
@@ -1287,7 +1290,7 @@ void ProcessDetailsCharts::renderPerGpuBreakdown(const ProcessChartContext& ctx)
         if (ImGui::BeginTable("PerGPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
         {
             ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColumnWidth);
-            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F); // As above: no first-frame NaN
 
             row(LABEL_UTILIZATION, Detail::gpuUtilizationText(ctx.rateReadings.gpuUtilization, gpuUsage.utilPercent), &gpuUtilColor);
             row(LABEL_MEMORY, UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes)), &gpuMemColor);
