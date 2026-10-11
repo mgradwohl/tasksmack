@@ -213,6 +213,28 @@ void Theme::setFontSize(FontSize size)
     m_CurrentFontSize = size;
 }
 
+// One step up or down the sizes, as the real ones (Ctrl+= / Ctrl+- in ShellLayer, #1547); no fonts to rebuild.
+auto Theme::increaseFontSize() -> bool
+{
+    const auto next = static_cast<std::size_t>(m_CurrentFontSize) + 1;
+    if (next >= static_cast<std::size_t>(FontSize::Count))
+    {
+        return false;
+    }
+    setFontSize(static_cast<FontSize>(next));
+    return true;
+}
+
+auto Theme::decreaseFontSize() -> bool
+{
+    if (m_CurrentFontSize == FontSize::Small)
+    {
+        return false;
+    }
+    setFontSize(static_cast<FontSize>(static_cast<std::size_t>(m_CurrentFontSize) - 1));
+    return true;
+}
+
 // NOLINTEND(readability-convert-member-functions-to-static)
 
 } // namespace UI

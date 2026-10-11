@@ -228,6 +228,7 @@ set(COMMON_TEST_SOURCES
     App/test_Panel.cpp
     App/test_ProcessesPanel.cpp
     App/test_ShellLayer.cpp
+    App/test_ShellLayerRender.cpp
     App/test_TitleBarGeometry.cpp
     App/test_TitleBarViewRender.cpp
     App/test_UserConfig.cpp
@@ -504,6 +505,11 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/KeyboardInput.cpp
     # The status bar (#1547), run headless (test_StatusBarViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/StatusBarView.cpp
+    # The shell's frame (#1547): the main window, tab bar and status bar over the panels, drawn
+    # headless with a fake host (test_ShellLayerRender.cpp), and what it pulls in
+    ${CMAKE_SOURCE_DIR}/src/App/ShellLayer.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoPanel.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/WindowOverride.cpp
     # The custom title bar (#1547), run headless (test_TitleBarViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/TitleBarView.cpp
     # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)

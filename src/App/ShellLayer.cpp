@@ -16,6 +16,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "SelectOverride.h"
+#include "ShellHost.h"
 #include "ShellMetrics.h"
 #include "StatusBarText.h"
 #include "StatusBarView.h"
@@ -77,8 +78,9 @@ constexpr const char* SYSTEM_INFO_TAB_LABEL = ICON_FA_SERVER "  System###SystemI
 }
 } // namespace
 
-ShellLayer::ShellLayer()
+ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host)
     : Layer("ShellLayer"),
+      m_Host(std::move(host)),
       m_Tabs({{.panel = m_SystemMetricsPanel,
                .eventName = "SystemOverview",
                .label = [this] { return m_CachedSystemTabLabel.c_str(); },
@@ -204,22 +206,18 @@ void ShellLayer::onAttach()
 void ShellLayer::applyBaseMinimumWindowSize()
 {
     m_MinimumSizeDisplayScale = UI::Theme::get().displayScale();
-    const auto& window = Core::Application::get().getWindow();
-    m_MinimumSizeDisplayId = window.getDisplayId();
-    if (SDL_Window* sdlWindow = window.getHandle(); sdlWindow != nullptr)
+    m_MinimumSizeDisplayId = m_Host->displayId();
+    if (m_Host->hasWindow())
     {
         // Held inside the display's usable bounds, so a large font on a small display cannot leave
         // a window that does not fit on-screen (#1207).
-        const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
+        const auto [usableWidth, usableHeight] = m_Host->usableDisplaySize().value_or(std::pair{0, 0});
         const WindowMinimumSize baseMinimum = capMinimumToUsable(
             computeMinimumWindowSize(
                 m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx), static_cast<float>(m_ContentMinimumHeightPx)),
             usableWidth,
             usableHeight);
-        if (!SDL_SetWindowMinimumSize(sdlWindow, baseMinimum.width, baseMinimum.height))
-        {
-            spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", baseMinimum.width, baseMinimum.height, SDL_GetError());
-        }
+        m_Host->setMinimumWindowSize(baseMinimum.width, baseMinimum.height);
     }
 }
 
@@ -332,10 +330,10 @@ void ShellLayer::onUpdate(float deltaTime)
         const Synthetic::Scenario* scenario = Synthetic::activeScenario();
         Core::RefreshRateChangedEvent refreshEvent(Synthetic::startupRefreshIntervalMs(scenario, settings.refreshIntervalMs),
                                                    /*initial=*/true);
-        Core::Application::get().raiseEvent(refreshEvent);
+        m_Host->raiseEvent(refreshEvent);
         Core::HistoryDurationChangedEvent historyEvent(Synthetic::startupHistorySeconds(scenario, settings.maxHistorySeconds),
                                                        /*initial=*/true);
-        Core::Application::get().raiseEvent(historyEvent);
+        m_Host->raiseEvent(historyEvent);
     }
 
     // Dispatch the startup privilege notice on the first update, after all layers are stacked.
@@ -343,20 +341,19 @@ void ShellLayer::onUpdate(float deltaTime)
     {
         m_PendingPrivilegeNotice = false;
         Core::OpenElevationNoticeEvent evt;
-        Core::Application::get().raiseEvent(evt);
+        m_Host->raiseEvent(evt);
     }
 
     // The frame's real duration, not deltaTime: deltaTime is capped at 0.1 s for animation, which made a
     // 6.7 FPS stall read "10.0 FPS (100.00 ms)" (#1152).
-    m_FpsCounter.update(UI::Format::toFloatNarrow(Core::Application::get().lastFrameIntervalSeconds()));
+    m_FpsCounter.update(UI::Format::toFloatNarrow(m_Host->lastFrameIntervalSeconds()));
 
     // With native decorations, follow a display-scale change (#943), or a move to another display,
     // whose usable bounds the minimum is capped to (#1207). Not with the borderless title bar:
     // TitleBarLayer re-derives a wider minimum from the scale every frame, and re-applying the base
     // here would overwrite it.
-    if (const auto& window = Core::Application::get().getWindow();
-        !window.isBorderless() && (UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()) ||
-                                   window.getDisplayId() != m_MinimumSizeDisplayId))
+    if (!m_Host->isBorderless() && (UI::displayScaleChanged(m_MinimumSizeDisplayScale, UI::Theme::get().displayScale()) ||
+                                    m_Host->displayId() != m_MinimumSizeDisplayId))
     {
         applyBaseMinimumWindowSize();
     }
@@ -495,7 +492,7 @@ void ShellLayer::onRender()
 
     // Get dynamic title bar height (matches tab bars). Zero when native OS decorations are in
     // use instead of the custom title bar (see #745) -- TitleBarLayer isn't pushed in that case.
-    const float titleBarHeight = Core::Application::get().getWindow().isBorderless() ? TitleBarLayer::height() : 0.0F;
+    const float titleBarHeight = m_Host->isBorderless() ? m_Host->titleBarHeight() : 0.0F;
 
     // Calculate status bar height
     const float statusBarHeight = ImGui::GetFrameHeight() + (ImGui::GetStyle().WindowPadding.y * 2.0F);
@@ -609,13 +606,13 @@ void ShellLayer::handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action)
     {
         // The Help window (#172); About is reached from its footer and from Settings.
         Core::OpenHelpEvent event;
-        Core::Application::get().raiseEvent(event);
+        m_Host->raiseEvent(event);
         break;
     }
     case ShortcutAction::OpenSettings:
     {
         Core::OpenSettingsEvent event;
-        Core::Application::get().raiseEvent(event);
+        m_Host->raiseEvent(event);
         break;
     }
     case ShortcutAction::ToggleTreeView:
@@ -623,7 +620,7 @@ void ShellLayer::handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action)
         break; // Tab-sensitive: handleTabShortcut(), after the tab bar
     case ShortcutAction::Quit:
         // The title bar Close button's path: a close request, vetoable, and onDetach() saves settings.
-        Core::Application::get().getWindow().requestClose();
+        m_Host->requestClose();
         break;
     case ShortcutAction::None:
         break;
@@ -714,7 +711,7 @@ void ShellLayer::renderTabBar()
         if (previousTab != &m_Tabs.activeTab())
         {
             Core::ActiveTabChangedEvent evt(m_Tabs.activeTab().eventName);
-            Core::Application::get().raiseEvent(evt);
+            m_Host->raiseEvent(evt);
         }
     }
 
@@ -733,19 +730,19 @@ void ShellLayer::renderStatusBar() const
         .networkCountersBlocked = capabilities.networkCountersBlocked,
         .processText = m_StatusProcessText,
         .intervalText = m_StatusIntervalText,
-        .showControls = !Core::Application::get().getWindow().isBorderless(),
+        .showControls = !m_Host->isBorderless(),
         .fps = m_ShowRenderMetrics ? std::optional<float>(m_FpsCounter.displayedFps()) : std::nullopt,
         .frameTimeSeconds = m_FpsCounter.displayedFrameTime(),
     });
     if (action == StatusBarView::Action::Settings)
     {
         Core::OpenSettingsEvent event;
-        Core::Application::get().raiseEvent(event);
+        m_Host->raiseEvent(event);
     }
     else if (action == StatusBarView::Action::Help)
     {
         Core::OpenHelpEvent event;
-        Core::Application::get().raiseEvent(event);
+        m_Host->raiseEvent(event);
     }
 }
 

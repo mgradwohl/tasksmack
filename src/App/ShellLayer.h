@@ -12,12 +12,14 @@
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "SelectOverride.h"
+#include "ShellHost.h"
 #include "TabLabel.h"
 
 #include <SDL3/SDL_video.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -30,7 +32,10 @@ class TitleBarLayer;
 class ShellLayer : public Core::Layer
 {
   public:
+    /// With the real host: Core::Application and its window (ShellHost.cpp).
     ShellLayer();
+    /// With the given host; a headless test's fake (#1547).
+    explicit ShellLayer(std::unique_ptr<IShellHost> host);
     ~ShellLayer() override = default;
 
     ShellLayer(const ShellLayer&) = delete;
@@ -56,7 +61,7 @@ class ShellLayer : public Core::Layer
   private:
     /// The htop-style function keys (#170) that do not depend on the tab: F1 Help (with the shortcut
     /// list, #172), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
-    static void handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action);
+    void handleGlobalShortcut(KeyboardShortcuts::ShortcutAction action);
     /// F5 (tree view) and F9 (Kill, confirm dialog only), to the tab drawn this frame: called after
     /// renderTabBar() and before the tabs draw, whose render takes the request this frame.
     void handleTabShortcut(KeyboardShortcuts::ShortcutAction action);
@@ -66,6 +71,9 @@ class ShellLayer : public Core::Layer
     void applyContentMinimumSize(float widthPx, float heightPx);
 
     // Panels
+    // The application and window it runs in (#1547). Never null.
+    std::unique_ptr<IShellHost> m_Host;
+
     ProcessesPanel m_ProcessesPanel;
     ProcessDetailsPanel m_ProcessDetailsPanel;
     SystemMetricsPanel m_SystemMetricsPanel;
