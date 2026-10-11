@@ -134,7 +134,7 @@ class TitleBarLayer : public Core::Layer
     void updateMinimumWindowSize(float contentWidth);
 #ifdef _WIN32
     /// The native Windows system menu at the cursor (the icon's click).
-    void showNativeSystemMenu();
+    static void showNativeSystemMenu();
 #endif
     void setupHitTest();
 
