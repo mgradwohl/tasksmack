@@ -9,14 +9,18 @@
 /// turns a meter on. Ctrl+A selects every row, F9 then asks to kill them all in one confirmation, and
 /// the row menu on a selection sets one priority for all of it through the batch dialog (#804, #1484).
 /// The startup selection (TASKSMACK_SELECT, #1559) selects its process, by PID or by name, once it is
-/// listed, and opens Details and its tab when asked to.
+/// listed, and opens Details and its tab when asked to. onUpdate() gives the sampler the refresh setting,
+/// slowed while the window is resized or moved and for a moment after, and relaxed on a tab with no
+/// process data.
 
+#include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/SamplingConfig.h"
 #include "Mocks/MockProbes.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -526,6 +530,55 @@ TEST_F(ProcessesPanelRenderTest, TheStartupSelectionFindsAProcessByName)
 
     EXPECT_EQ(panel->selectedPid(), 100);
     EXPECT_EQ(events.showDetails, 0); // not asked to open Details
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheSamplingIntervalFollowsInteractionAndTheTabOnShow)
+{
+    bool interacting = false;
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
+        },
+        [](Core::Event&) {},
+        [&interacting] { return interacting; });
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    const auto base = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+    const auto normal = AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(base, true, false);
+    const auto throttled = AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(base, true, true);
+    ASSERT_GT(throttled, normal);
+
+    panel->onUpdate(0.016F);
+    EXPECT_EQ(panel->appliedSamplingInterval(), normal);
+
+    // A resize or move slows sampling while it lasts...
+    interacting = true;
+    panel->onUpdate(0.016F);
+    EXPECT_EQ(panel->appliedSamplingInterval(), throttled);
+
+    // ...and for a moment after, so a drag that pauses doesn't flap the interval...
+    interacting = false;
+    panel->onUpdate(0.1F);
+    EXPECT_EQ(panel->appliedSamplingInterval(), throttled);
+
+    // ...then the setting comes back.
+    panel->onUpdate(0.5F);
+    EXPECT_EQ(panel->appliedSamplingInterval(), normal);
+
+    // A tab that shows no process data relaxes it; coming back restores it.
+    Core::ActiveTabChangedEvent away("SystemInfo");
+    panel->onEvent(away);
+    panel->onUpdate(0.016F);
+    EXPECT_EQ(panel->appliedSamplingInterval(), AdaptiveIntervalUtils::chooseAdaptiveProcessInterval(base, false, false));
+    EXPECT_GT(panel->appliedSamplingInterval(), normal);
+    panel->onEvent(shown);
+    panel->onUpdate(0.016F);
+    EXPECT_EQ(panel->appliedSamplingInterval(), normal);
     panel->onDetach();
 }
 

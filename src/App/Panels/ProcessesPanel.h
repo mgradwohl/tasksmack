@@ -161,6 +161,13 @@ class ProcessesPanel : public Panel
         return m_Selection.size();
     }
 
+    /// The interval onUpdate() last gave the sampler: the refresh setting, relaxed while no tab on show
+    /// needs process data and while the window is being resized or moved (AdaptiveIntervalUtils).
+    [[nodiscard]] std::chrono::milliseconds appliedSamplingInterval() const noexcept
+    {
+        return m_AppliedSamplerInterval;
+    }
+
     /// Get the process count.
     [[nodiscard]] size_t processCount() const;
 
