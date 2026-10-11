@@ -4,6 +4,7 @@
 #include "Core/Event.h"
 #include "ShellLayer.h"
 #include "TitleBarLayer.h"
+#include "WindowOverride.h"
 
 #include <SDL3/SDL_error.h>
 #include <spdlog/spdlog.h>
@@ -68,6 +69,17 @@ class ApplicationShellHost final : public IShellHost
         {
             spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", width, height, SDL_GetError());
         }
+    }
+
+    [[nodiscard]] WindowOverride::CapturedWindow captureWindow() const override
+    {
+        const Core::Window& window = Core::Application::get().getWindow();
+        return {
+            .normal = window.getNormalGeometry(),
+            .normalScale = window.getNormalGeometryScale(),
+            .canPosition = Core::Window::supportsPositioning(),
+            .maximized = window.isMaximized(),
+        };
     }
 };
 

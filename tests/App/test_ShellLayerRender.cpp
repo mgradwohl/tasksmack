@@ -8,7 +8,10 @@
 #include "App/ShellHost.h"
 #include "App/ShellLayer.h"
 #include "App/StatusBarView.h"
+#include "App/UserConfig.h"
+#include "App/WindowOverride.h"
 #include "Core/Event.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL_video.h>
 #include <gtest/gtest.h>
@@ -17,8 +20,12 @@
 #include <implot.h>
 
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <optional>
+#include <random>
+#include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -37,6 +44,7 @@ struct HostLog
     std::vector<Core::EventType> events;
     int closeRequests = 0;
     std::vector<std::pair<int, int>> minimumSizes;
+    WindowOverride::CapturedWindow window; // what captureWindow() reports
 };
 
 class FakeShellHost final : public IShellHost
@@ -80,6 +88,10 @@ class FakeShellHost final : public IShellHost
     void setMinimumWindowSize(int width, int height) override
     {
         m_Log.minimumSizes.emplace_back(width, height);
+    }
+    [[nodiscard]] WindowOverride::CapturedWindow captureWindow() const override
+    {
+        return m_Log.window;
     }
 
   private:
@@ -225,6 +237,93 @@ TEST_F(ShellLayerRenderTest, TheWindowsMinimumSizeFollowsThePanelsMeasurements)
     const std::size_t applied = m_Log.minimumSizes.size();
     frame();
     EXPECT_EQ(m_Log.minimumSizes.size(), applied);
+}
+
+/// onDetach() against a config file of the test's own: UserConfig is redirected to a fresh temporary
+/// directory, never the user's config.toml.
+class ShellLayerDetachTest : public ShellLayerRenderTest
+{
+  protected:
+    void SetUp() override
+    {
+        ShellLayerRenderTest::SetUp();
+        m_OriginalPath = UserConfig::get().configPath();
+        m_Settings = UserConfig::get().settings();
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        ASSERT_FALSE(ec);
+        std::random_device random;
+        for (int attempt = 0; attempt < 100 && m_TempDir.empty(); ++attempt)
+        {
+            std::filesystem::path candidate = base / ("tasksmack_shell_detach_" + std::to_string(random()));
+            if (std::filesystem::create_directory(candidate, ec) && !ec)
+            {
+                m_TempDir = std::move(candidate);
+            }
+        }
+        ASSERT_FALSE(m_TempDir.empty());
+        m_ConfigPath = m_TempDir / "config.toml";
+        UserConfig::get().resetConfigPathForTesting(m_ConfigPath);
+        ASSERT_EQ(UserConfig::get().configPath(), m_ConfigPath);
+    }
+
+    void TearDown() override
+    {
+        UserConfig::get().resetConfigPathForTesting(m_OriginalPath);
+        UserConfig::get().settings() = m_Settings;
+        std::error_code ec;
+        std::filesystem::remove_all(m_TempDir, ec);
+        ShellLayerRenderTest::TearDown();
+    }
+
+    std::filesystem::path m_ConfigPath;
+
+  private:
+    std::filesystem::path m_OriginalPath;
+    std::filesystem::path m_TempDir;
+    UserSettings m_Settings;
+};
+
+TEST_F(ShellLayerDetachTest, SavesTheWindowsNormalGeometryFromTheHost)
+{
+    // Maximized: what Restore returns to is saved, with the scale it was measured at (#1121, #1168).
+    m_Log.window = {.normal = Core::WindowGeometry::Rect{.x = 120, .y = 80, .width = 1111, .height = 777},
+                    .normalScale = 1.5F,
+                    .canPosition = true,
+                    .maximized = true};
+    makeShell(false);
+    frame();
+    m_Shell->onDetach();
+
+    const UserSettings& settings = UserConfig::get().settings();
+    EXPECT_EQ(settings.windowWidth, 1111);
+    EXPECT_EQ(settings.windowHeight, 777);
+    EXPECT_EQ(settings.windowPosX, 120);
+    EXPECT_EQ(settings.windowPosY, 80);
+    EXPECT_EQ(settings.windowScale, std::optional<float>{1.5F});
+    EXPECT_TRUE(settings.windowMaximized);
+
+    // And written out: a fresh load reads the same back.
+    ASSERT_TRUE(std::filesystem::exists(m_ConfigPath));
+    UserConfig::get().settings() = UserSettings{};
+    UserConfig::get().load();
+    EXPECT_EQ(UserConfig::get().settings().windowWidth, 1111);
+    EXPECT_EQ(UserConfig::get().settings().windowHeight, 777);
+    EXPECT_TRUE(UserConfig::get().settings().windowMaximized);
+}
+
+TEST_F(ShellLayerDetachTest, AnUnknownNormalRectangleKeepsTheSavedSize)
+{
+    UserConfig::get().settings().windowWidth = 900;
+    UserConfig::get().settings().windowHeight = 650;
+    // Maximized by the compositor: no normal rectangle to save, so the loaded one stays.
+    m_Log.window = {.normal = std::nullopt, .normalScale = 0.0F, .canPosition = false, .maximized = true};
+    makeShell(false);
+    m_Shell->onDetach();
+
+    EXPECT_EQ(UserConfig::get().settings().windowWidth, 900);
+    EXPECT_EQ(UserConfig::get().settings().windowHeight, 650);
+    EXPECT_TRUE(UserConfig::get().settings().windowMaximized);
 }
 
 } // namespace

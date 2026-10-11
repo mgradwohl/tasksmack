@@ -1,6 +1,5 @@
 #include "ShellLayer.h"
 
-#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
@@ -259,15 +258,8 @@ void ShellLayer::onDetach()
     // saved last time is kept. The normal scale is, for a maximized window, the one captured with
     // its restore rectangle, not the live maximized one (#1168). With TASKSMACK_WINDOW set (#1453)
     // none of it is captured, so a measurement run leaves the saved geometry as it was.
-    const auto& window = Core::Application::get().getWindow();
     auto& settings = config.settings();
-    const WindowOverride::CapturedWindow captured{
-        .normal = window.getNormalGeometry(),
-        .normalScale = window.getNormalGeometryScale(),
-        .canPosition = Core::Window::supportsPositioning(),
-        .maximized = window.isMaximized(),
-    };
-    WindowOverride::captureWindowGeometry(settings, captured, WindowOverride::active());
+    WindowOverride::captureWindowGeometry(settings, m_Host->captureWindow(), WindowOverride::active());
 
     // Column widths, order and sort of the Processes table (#952). Empty means the table was never
     // drawn this session, so whatever was loaded is kept.

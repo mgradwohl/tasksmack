@@ -1,10 +1,12 @@
 #pragma once
 
 // What ShellLayer needs from the running application and its window (#1547): its events, the frame's
-// real duration, the title bar's height, a close request and the window's minimum size. The seam a
-// headless test fakes, so the shell's frame can be drawn without SDL, a GL context or an Application.
+// real duration, the title bar's height, a close request, the window's minimum size and the geometry
+// saved on exit. The seam a headless test fakes, so the shell's frame can be drawn, and its settings
+// saved, without SDL, a GL context or an Application.
 
 #include "Core/Event.h"
+#include "WindowOverride.h"
 
 #include <SDL3/SDL_video.h>
 
@@ -44,6 +46,9 @@ class IShellHost
     [[nodiscard]] virtual bool hasWindow() const = 0;
     /// SDL_SetWindowMinimumSize(); a refusal is logged, and the next scale or display change tries again.
     virtual void setMinimumWindowSize(int width, int height) = 0;
+    /// The window's normal (restored) geometry, its scale, and whether it is maximized, for the
+    /// settings saved on exit (#1121, #1168).
+    [[nodiscard]] virtual WindowOverride::CapturedWindow captureWindow() const = 0;
 };
 
 /// The real host: Core::Application, its window and TitleBarLayer::height().
