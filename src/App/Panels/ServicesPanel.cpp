@@ -15,13 +15,19 @@
 #include <imgui.h>
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace App
 {
 
 ServicesPanel::ServicesPanel() : Panel("Services")
+{}
+
+ServicesPanel::ServicesPanel(std::function<ServicesPanelPlatform()> makePlatform)
+    : Panel("Services"), m_MakePlatform(std::move(makePlatform))
 {}
 
 ServicesPanel::~ServicesPanel()
@@ -33,9 +39,13 @@ ServicesPanel::~ServicesPanel()
 void ServicesPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; sampling waits for the tab to show.
-    m_Model = std::make_shared<Domain::ServiceModel>(Platform::makeServiceProbe());
+    // An injected factory (tests, #1721) replaces the platform's.
+    ServicesPanelPlatform platform =
+        m_MakePlatform ? m_MakePlatform()
+                       : ServicesPanelPlatform{.probe = Platform::makeServiceProbe(), .actions = Platform::makeServiceActions()};
+    m_Model = std::make_shared<Domain::ServiceModel>(std::move(platform.probe));
     m_Gate = std::make_shared<SamplingGate>(m_Model);
-    m_Actions = std::make_unique<ServiceActionsView>(Platform::makeServiceActions());
+    m_Actions = std::make_unique<ServiceActionsView>(std::move(platform.actions));
 }
 
 void ServicesPanel::onDetach()

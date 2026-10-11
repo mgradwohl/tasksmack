@@ -15,13 +15,18 @@
 #include <imgui.h>
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace App
 {
 
 StartupPanel::StartupPanel() : Panel("Startup")
+{}
+
+StartupPanel::StartupPanel(std::function<StartupPanelPlatform()> makePlatform) : Panel("Startup"), m_MakePlatform(std::move(makePlatform))
 {}
 
 StartupPanel::~StartupPanel()
@@ -33,9 +38,13 @@ StartupPanel::~StartupPanel()
 void StartupPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; sampling waits for the tab to show.
-    m_Model = std::make_shared<Domain::StartupModel>(Platform::makeStartupProbe());
+    // An injected factory (tests, #1721) replaces the platform's.
+    StartupPanelPlatform platform =
+        m_MakePlatform ? m_MakePlatform()
+                       : StartupPanelPlatform{.probe = Platform::makeStartupProbe(), .actions = Platform::makeStartupActions()};
+    m_Model = std::make_shared<Domain::StartupModel>(std::move(platform.probe));
     m_Gate = std::make_shared<SamplingGate>(m_Model);
-    m_Actions = std::make_unique<StartupActionsView>(Platform::makeStartupActions());
+    m_Actions = std::make_unique<StartupActionsView>(std::move(platform.actions));
 }
 
 void StartupPanel::onDetach()
