@@ -140,6 +140,7 @@ set(TASKSMACK_SOURCES
     src/App/ShellLayer.cpp
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
+    src/App/TitleBarView.cpp
     src/App/UserConfig.cpp
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
