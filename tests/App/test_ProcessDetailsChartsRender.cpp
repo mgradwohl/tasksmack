@@ -453,6 +453,35 @@ TEST_F(ProcessDetailsChartsRenderTest, GpuTabDrawsUtilizationAndMemoryWhenThereI
     EXPECT_EQ(plots[1], (SeriesLabels{"Memory"}));
 }
 
+TEST_F(ProcessDetailsChartsRenderTest, GpuChartsSitInsideCardsBelowTheUsageCard)
+{
+    // #1594: the GPU tab is cards like the other tabs: the current values in one, each chart in its own.
+    ChartInputs inputs(busyPoint);
+    ProcessDetailsCharts charts;
+    for (int frame = 0; frame < 4; ++frame) // The fill layout measures from the previous frame
+    {
+        runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+        // The auto-sized card's content size is measured from what it drew: never NaN, not even on the
+        // first frame, when a table's stretch column has no width yet (UBSan caught 0/0 there).
+        if (const ImGuiWindow* card = findCard("##ProcGpuUsageCard"); card != nullptr)
+        {
+            EXPECT_TRUE(std::isfinite(card->DC.CursorMaxPos.x)) << "frame " << frame;
+            EXPECT_TRUE(std::isfinite(card->ContentSize.x)) << "frame " << frame;
+        }
+    }
+
+    const ImGuiWindow* usage = findCard("##ProcGpuUsageCard");
+    ASSERT_NE(usage, nullptr);
+    EXPECT_NE(usage->ChildFlags & ImGuiChildFlags_Borders, 0);
+    const ImGuiWindow* utilization = findCard("##ProcGpuUtilCard");
+    ASSERT_NE(utilization, nullptr);
+    EXPECT_LE(usage->Pos.y + usage->Size.y, utilization->Pos.y); // The values above the charts
+    expectChartsInFillingCards({
+        {"##ProcGpuUtilCard", SeriesLabels{"Utilization"}},
+        {"##ProcGpuMemCard", SeriesLabels{"Memory"}},
+    });
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, GpuTabEmptyStatesDrawNoPlot)
 {
     // Unavailable: the probe has no per-process GPU data on this system.

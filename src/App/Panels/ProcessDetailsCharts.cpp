@@ -28,6 +28,7 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1124,24 +1125,19 @@ void ProcessDetailsCharts::renderGpuUsage(const ProcessChartContext& ctx, UI::Wi
         m_LastGpuLogMemoryBytes = proc.gpuMemoryBytes;
     }
 
-    // Show GPU info
-    (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "GPU Usage");
-    ImGui::Spacing();
-
-    renderGpuCurrentMetricsTable(ctx);
-
-    ImGui::Spacing();
-    // With one GPU the breakdown repeats the table above (#1207).
-    if (Detail::shouldShowPerGpuBreakdown(proc.perGpuUsage.size()))
+    // The current values as a card, as CPU Details is on System › Overview (#1594).
+    if (UI::Widgets::beginCompactCard("##ProcGpuUsageCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY))
     {
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        renderPerGpuBreakdown(ctx);
+        (void) UI::Widgets::sectionHeader(ICON_FA_MICROCHIP, "GPU Usage");
+        renderGpuCurrentMetricsTable(ctx);
+        // With one GPU the breakdown repeats the table above (#1207).
+        if (Detail::shouldShowPerGpuBreakdown(proc.perGpuUsage.size()))
+        {
+            ImGui::Separator();
+            renderPerGpuBreakdown(ctx);
+        }
     }
-
-    ImGui::Separator();
-    ImGui::Spacing();
+    UI::Widgets::endCard();
 
     renderGpuHistoryGraphs(ctx, fill);
 }
@@ -1191,7 +1187,10 @@ void ProcessDetailsCharts::renderGpuCurrentMetricsTable(const ProcessChartContex
         return;
     }
     ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
-    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+    // An explicit weight: left to default, a SizingStretchProp column's weight is its content width,
+    // which is 0 on the table's first frame, and the 0/0 left a NaN in the auto-sized GPU Usage card's
+    // content size (UBSan, #1594).
+    ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F);
 
     const ImVec4 gpuUtilColor = theme.scheme().gpuUtilization;
     row(LABEL_UTILIZATION, Detail::gpuUtilizationText(smoothed.gpuUtilAvailable, smoothed.gpuUtilPercent), &gpuUtilColor);
@@ -1291,7 +1290,7 @@ void ProcessDetailsCharts::renderPerGpuBreakdown(const ProcessChartContext& ctx)
         if (ImGui::BeginTable("PerGPUMetrics", 2, ImGuiTableFlags_SizingStretchProp))
         {
             ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, labelColumnWidth);
-            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F); // As above: no first-frame NaN
 
             row(LABEL_UTILIZATION, Detail::gpuUtilizationText(ctx.rateReadings.gpuUtilization, gpuUsage.utilPercent), &gpuUtilColor);
             row(LABEL_MEMORY, UI::Format::formatBytes(static_cast<double>(gpuUsage.memoryBytes)), &gpuMemColor);
@@ -1387,17 +1386,24 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
         .color = theme.scheme().gpuMemory,
     };
 
-    (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Utilization History", {}, axis.alignedCount);
-    renderHistoryWithNowBars(
-        "ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, Detail::PROCESS_GPU_NOW_BAR_COLUMNS);
+    // Each chart in its own card with its heading inside, as on the other Process Details tabs (#1594).
+    if (UI::Widgets::beginChartCard("##ProcGpuUtilCard", fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Utilization History", {}, axis.alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, Detail::PROCESS_GPU_NOW_BAR_COLUMNS);
+    }
+    UI::Widgets::endChartCard("##ProcGpuUtilCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 
-    (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Memory History", {}, axis.alignedCount);
-    renderHistoryWithNowBars(
-        "ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, Detail::PROCESS_GPU_NOW_BAR_COLUMNS);
+    if (UI::Widgets::beginChartCard("##ProcGpuMemCard", fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Memory History", {}, axis.alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, Detail::PROCESS_GPU_NOW_BAR_COLUMNS);
+    }
+    UI::Widgets::endChartCard("##ProcGpuMemCard", fill.plotHeight());
     fill.addPlot();
-    ImGui::Spacing();
 }
 
 } // namespace App

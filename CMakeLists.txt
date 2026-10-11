@@ -139,6 +139,7 @@ set(TASKSMACK_SOURCES
     src/App/SelectOverride.cpp
     src/App/MainTabBarView.cpp
     src/App/ShellLayer.cpp
+    src/App/StatusBarView.cpp
     src/App/SyntheticScenario.cpp
     src/App/TitleBarLayer.cpp
     src/App/TitleBarView.cpp
