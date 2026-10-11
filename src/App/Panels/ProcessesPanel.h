@@ -120,7 +120,11 @@ class ProcessesPanel : public Panel
 
     /// Test seam (#1546): as above, and the events the panel raises (a selection, Details) go to
     /// @p raiseEvent instead of Core::Application, so selection can be driven without an Application.
-    ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent);
+    /// With @p interactionRedrawActive, onUpdate() asks it, not Core::Application, whether the window is
+    /// being resized or moved, so onUpdate() runs without an Application too.
+    ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform,
+                   std::function<void(Core::Event&)> raiseEvent,
+                   std::function<bool()> interactionRedrawActive = {});
     ~ProcessesPanel() override;
 
     ProcessesPanel(const ProcessesPanel&) = delete;
@@ -287,6 +291,7 @@ class ProcessesPanel : public Panel
   private:
     std::function<ProcessesPanelPlatform()> m_MakePlatform; ///< Set by the test seam only
     std::function<void(Core::Event&)> m_RaiseEvent;         ///< Set by the test seam only; else the Application
+    std::function<bool()> m_InteractionRedrawActive;        ///< Set by the test seam only; else the Application
     // shared_ptr (not unique_ptr): BackgroundSampler observes this model via a weak_ptr rather
     // than a raw pointer, so the sampler thread can never outlive-dereference it regardless of
     // destructor ordering.

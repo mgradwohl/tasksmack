@@ -848,8 +848,13 @@ ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatf
     : Panel("Processes"), m_MakePlatform(std::move(makePlatform))
 {}
 
-ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform, std::function<void(Core::Event&)> raiseEvent)
-    : Panel("Processes"), m_MakePlatform(std::move(makePlatform)), m_RaiseEvent(std::move(raiseEvent))
+ProcessesPanel::ProcessesPanel(std::function<ProcessesPanelPlatform()> makePlatform,
+                               std::function<void(Core::Event&)> raiseEvent,
+                               std::function<bool()> interactionRedrawActive)
+    : Panel("Processes"),
+      m_MakePlatform(std::move(makePlatform)),
+      m_RaiseEvent(std::move(raiseEvent)),
+      m_InteractionRedrawActive(std::move(interactionRedrawActive))
 {}
 
 void ProcessesPanel::raiseEvent(Core::Event& event)
@@ -1044,7 +1049,8 @@ void ProcessesPanel::onUpdate(float deltaTime)
         return;
     }
 
-    const bool interactionRedrawActive = Core::Application::get().isInteractionRedrawActive();
+    const bool interactionRedrawActive =
+        m_InteractionRedrawActive ? m_InteractionRedrawActive() : Core::Application::get().isInteractionRedrawActive();
     if (interactionRedrawActive)
     {
         this->m_InteractionHoldSeconds = INTERACTION_INTERVAL_HOLD_SECONDS;

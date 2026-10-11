@@ -8,9 +8,12 @@
 /// confirmation, to the mock actions) work; the Columns menu shows a hidden column and the meter menu
 /// turns a meter on. Ctrl+A selects every row, F9 then asks to kill them all in one confirmation, and
 /// the row menu on a selection sets one priority for all of it through the batch dialog (#804, #1484).
+/// The startup selection (TASKSMACK_SELECT, #1559) selects its process, by PID or by name, once it is
+/// listed, and opens Details and its tab when asked to.
 
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
+#include "App/SelectOverride.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -68,7 +71,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
     }
 
     /// An attached panel reading three processes: init (1), server (100) and its child worker (101). The
-    /// events it raises go to @p raiseEvent, when given.
+    /// events it raises go to @p raiseEvent, when given; onUpdate() is told no interaction redraw is on.
     [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanel(std::function<void(Core::Event&)> raiseEvent = {})
     {
         auto panel = std::make_unique<ProcessesPanel>(
@@ -80,7 +83,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
                     .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
                 return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
             },
-            std::move(raiseEvent));
+            std::move(raiseEvent),
+            [] { return false; });
         panel->onAttach();
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
@@ -206,6 +210,20 @@ class ProcessesPanelRenderTest : public ::testing::Test
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         static_cast<void>(renderAndCapture(panel)); // the table draws the rows it now has
+    }
+
+    /// As renderUntilLoaded(), with onUpdate() before each frame as the app's loop runs it: it adopts the
+    /// sampler's snapshots and applies the startup selection.
+    static void updateUntilLoaded(ProcessesPanel& panel)
+    {
+        for (int frame = 0; frame < LOAD_FRAMES && panel.processCount() < 3; ++frame)
+        {
+            panel.onUpdate(1.0F / 60.0F);
+            static_cast<void>(renderAndCapture(panel));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        panel.onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(panel));
     }
 
     /// Presses and releases @p key over the panel, one frame each.
@@ -477,6 +495,37 @@ TEST_F(ProcessesPanelRenderTest, TheRowMenuOnASelectionSetsOnePriorityForAllOfIt
     pressModalFilledButton(*panel, "Apply to 3 processes");
     EXPECT_EQ(actions->setPriorityCount(), 3);
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheStartupSelectionPicksItsProcessByPidAndOpensDetails)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    panel->requestStartupSelection(SelectOverride::Target{.pid = 101, .name = {}, .tab = SelectOverride::DetailsTab::Network}, true);
+    EXPECT_FALSE(panel->takeStartupDetailsTab().has_value()); // nothing until it fires
+    updateUntilLoaded(*panel);
+
+    EXPECT_EQ(panel->selectedPid(), 101);
+    EXPECT_EQ(panel->selectionCount(), 1U);
+    ASSERT_FALSE(events.selected.empty());
+    EXPECT_EQ(events.selected.back(), 101);
+    EXPECT_EQ(events.showDetails, 1); // as the row menu's Details
+    // The Details tab it asked for, handed over once (TASKSMACK_DETAILS_TAB).
+    EXPECT_EQ(panel->takeStartupDetailsTab(), std::optional<SelectOverride::DetailsTab>(SelectOverride::DetailsTab::Network));
+    EXPECT_FALSE(panel->takeStartupDetailsTab().has_value());
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheStartupSelectionFindsAProcessByName)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    panel->requestStartupSelection(SelectOverride::Target{.pid = std::nullopt, .name = "server", .tab = {}}, false);
+    updateUntilLoaded(*panel);
+
+    EXPECT_EQ(panel->selectedPid(), 100);
+    EXPECT_EQ(events.showDetails, 0); // not asked to open Details
     panel->onDetach();
 }
 
