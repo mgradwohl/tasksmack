@@ -206,6 +206,23 @@ class SettingsDialogRenderTest : public ::testing::Test
         ImGui::ActivateItemByID(ImHashStr(label, 0, window->ID));
     }
 
+    /// Opens the body's combo @p comboId and picks its entry @p entry (under @p entryScope's ID, when
+    /// the entries are scoped), a frame or two apiece, as a click on each would.
+    void pickFromCombo(const char* comboId, const char* entry, const char* entryScope = nullptr)
+    {
+        pressInBody(comboId);
+        static_cast<void>(runFrame());
+        static_cast<void>(runFrame());
+        ASSERT_FALSE(GImGui->OpenPopupStack.empty());
+        const ImGuiWindow* combo = GImGui->OpenPopupStack.back().Window;
+        ASSERT_NE(combo, nullptr);
+        ASSERT_TRUE(std::string_view(combo->Name).contains("Combo")) << combo->Name;
+        const ImGuiID scope = entryScope != nullptr ? ImHashStr(entryScope, 0, combo->ID) : combo->ID;
+        ImGui::ActivateItemByID(ImHashStr(entry, 0, scope));
+        static_cast<void>(runFrame());
+        static_cast<void>(runFrame());
+    }
+
     static void expectInsideDisplay(const Measured& measured)
     {
         const ImVec2 display = ImGui::GetIO().DisplaySize;
@@ -222,6 +239,50 @@ class SettingsDialogRenderTest : public ::testing::Test
   private:
     ImGuiContext* m_Context = nullptr;
 };
+
+TEST_F(SettingsDialogRenderTest, EachComboPicksAnEntryAndMarksItTouched)
+{
+    static_cast<void>(openAndSettle());
+    ASSERT_FALSE(m_State.themeChoice.touched);
+
+    // The theme's entries are scoped by theme id: two themes may share a display name.
+    pickFromCombo("##Theme", "Cyberpunk", "cyberpunk");
+    EXPECT_EQ(m_State.themeChoice.index, std::optional<std::size_t>(1));
+    EXPECT_TRUE(m_State.themeChoice.touched);
+
+    pickFromCombo("##FontSize", "Large");
+    EXPECT_EQ(m_State.fontSizeChoice.index, std::optional<std::size_t>(2));
+    EXPECT_TRUE(m_State.fontSizeChoice.touched);
+
+    pickFromCombo("##RefreshRate", "250 ms");
+    EXPECT_EQ(m_State.refreshRateChoice.index, std::optional<std::size_t>(1));
+    EXPECT_TRUE(m_State.refreshRateChoice.touched);
+
+    pickFromCombo("##History", "10 minutes");
+    EXPECT_EQ(m_State.historyChoice.index, std::optional<std::size_t>(3));
+    EXPECT_TRUE(m_State.historyChoice.touched);
+
+    // Picking only edits the dialog's state: still open, nothing saved.
+    EXPECT_TRUE(runFrame().open);
+}
+
+// The Escape that closes an open combo must not also close the dialog (SettingsDialog's
+// comboOpenLastFrame guard): with a combo open, the dialog stays, unsaved and unchanged.
+TEST_F(SettingsDialogRenderTest, EscapeWithAComboOpenKeepsTheDialog)
+{
+    static_cast<void>(openAndSettle());
+    pressInBody("##RefreshRate");
+    static_cast<void>(runFrame());
+    static_cast<void>(runFrame());
+    ASSERT_GE(GImGui->OpenPopupStack.Size, 2); // the dialog, and the combo over it
+
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    static_cast<void>(runFrame());
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    const Measured after = settle();
+    EXPECT_TRUE(after.open);
+    EXPECT_FALSE(m_State.refreshRateChoice.touched);
+}
 
 TEST_F(SettingsDialogRenderTest, StaysClosedUntilRequested)
 {
