@@ -3,11 +3,10 @@
 // The Windows Network adapters facts (#1518), unprivileged and read only:
 //
 //   1. GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS): per adapter its connection name and
-//      description, state, MTU, MAC, unicast addresses with their prefix lengths, gateways, DNS servers
-//      and suffix, and whether IPv4 comes from DHCP, from which server and for how much longer. The
-//      loopback adapter is left out. The section's default gateways are those of the adapter with the
-//      lowest route metric that has one; its DNS servers and search domains, those of the adapters that
-//      are up, without repeats.
+//      description, state, MTU, MAC, unicast addresses with their prefix lengths, gateways, DNS servers,
+//      search domains (the DNS suffix and the adapter's suffix search list), and whether IPv4 comes from DHCP, from which server and for
+//      how much longer. The loopback adapter is left out. The section's default gateways are those of the adapter with the lowest route
+//      metric that has one; its DNS servers and search domains, those of the adapters that are up, without repeats.
 //   2. wlanapi.dll, loaded at run time from System32 (it is missing on Server without the Wireless LAN
 //      Service): per Wi-Fi interface its current connection (network name, signal quality, PHY type and
 //      link rates), the RSSI, and the channel's centre frequency from the cached BSS list, else the

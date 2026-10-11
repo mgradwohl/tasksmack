@@ -682,6 +682,29 @@ TEST(SystemInfoSectionsTest, NetworkAdapterRows)
     EXPECT_EQ(findRow(section, "eth0 Wi-Fi network"), nullptr);
 }
 
+TEST(SystemInfoSectionsTest, AnAdaptersOwnDnsSettingsOnlyWhereItHasAny)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.listed = true;
+    Platform::NetworkAdapter vpn;
+    vpn.name = "wg0";
+    vpn.linkDnsServers = {"10.0.0.53", "2001:db8::53"};
+    vpn.linkSearchDomains = {"corp.example", "~vpn.example"};
+    Platform::NetworkAdapter plain;
+    plain.name = "eth0";
+    network.adapters = {plain, vpn};
+
+    const Section section = SystemInfo::buildNetworkAdaptersSection(network);
+    EXPECT_EQ(findRow(section, "wg0 DNS servers")->value, "10.0.0.53, 2001:db8::53");
+    EXPECT_FALSE(findRow(section, "wg0 DNS servers")->isIdentifier);
+    EXPECT_EQ(findRow(section, "wg0 search domains")->value, "corp.example, ~vpn.example");
+    EXPECT_TRUE(findRow(section, "wg0 search domains")->isIdentifier);
+    // None of its own: the system-wide servers apply, and no row says otherwise.
+    EXPECT_EQ(findRow(section, "eth0 DNS servers"), nullptr);
+    EXPECT_EQ(findRow(section, "eth0 search domains"), nullptr);
+}
+
 TEST(SystemInfoSectionsTest, WifiLinkBandChannelAndRate)
 {
     const auto link = [](std::uint32_t mhz, std::uint32_t kbps)
@@ -782,8 +805,8 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     wifi.wireless = true;
     wifi.mtu = 1500;
     wifi.gateways = {"192.168.0.1", "fe80::1"};
-    wifi.dnsServers = {"192.168.0.1"};
-    wifi.dnsSuffix = "home.example";
+    wifi.linkDnsServers = {"192.168.0.1"};
+    wifi.linkSearchDomains = {"home.example"};
     wifi.dhcpEnabled = true;
     wifi.dhcpServer = "192.168.0.1";
     wifi.dhcpLeaseSecondsLeft = 86'000;
@@ -820,7 +843,8 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
     EXPECT_EQ(findRow(section, "Wi-Fi")->value, "Up, Wi-Fi, MTU 1500, Intel(R) Wi-Fi 6E AX211 160MHz");
     EXPECT_EQ(findRow(section, "Wi-Fi gateways")->value, "192.168.0.1, fe80::1");
     EXPECT_EQ(findRow(section, "Wi-Fi DNS servers")->value, "192.168.0.1");
-    EXPECT_TRUE(findRow(section, "Wi-Fi DNS suffix")->isIdentifier);
+    EXPECT_TRUE(findRow(section, "Wi-Fi search domains")->isIdentifier);
+    EXPECT_EQ(findRow(section, "Wi-Fi DNS suffix"), nullptr); // one set of rows for both platforms
     EXPECT_EQ(findRow(section, "Wi-Fi DHCP")->value, "On, server 192.168.0.1, lease 23h 53m left");
     EXPECT_EQ(findRow(section, "Ethernet DHCP")->value, "Off (static IPv4)");
     EXPECT_EQ(findRow(section, "Wi-Fi Wi-Fi signal")->value, "-55 dBm (82%)");
@@ -830,7 +854,8 @@ TEST(SystemInfoSectionsTest, NetworkAdapterWindowsRows)
               "802.11ax (Wi-Fi 6), 5 GHz, channel 36, " + UI::Format::formatFixedLocalized(864.5, 1, " Mbit/s") + " transmit, " +
                   UI::Format::formatFixedLocalized(1201.0, 1, " Mbit/s") + " receive");
     EXPECT_EQ(findRow(section, "Ethernet gateways"), nullptr);
-    EXPECT_EQ(findRow(section, "Ethernet DNS suffix"), nullptr);
+    EXPECT_EQ(findRow(section, "Ethernet search domains"), nullptr);
+    EXPECT_EQ(findRow(section, "Ethernet DNS servers"), nullptr);
     EXPECT_FALSE(findRow(section, "Wi-Fi 2 Wi-Fi network")->available());
     EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi network")->unavailableReason, "Windows refused it: turn on location access");
     EXPECT_EQ(findRow(section, "Wi-Fi 2 Wi-Fi link")->value, "channel 36");

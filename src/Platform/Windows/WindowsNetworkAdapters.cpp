@@ -121,7 +121,21 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter)
     adapter.mtu = raw.Mtu == std::numeric_limits<ULONG>::max() ? 0 : raw.Mtu;
     adapter.mac =
         formatMac(std::span(raw.PhysicalAddress).first(std::min<std::size_t>(raw.PhysicalAddressLength, MAX_ADAPTER_ADDRESS_LENGTH)));
-    adapter.dnsSuffix = wide(raw.DnsSuffix);
+    // The search domains: the connection-specific suffix, then the adapter's own search list.
+    const auto addDomain = [&adapter](std::string domain)
+    {
+        if (!domain.empty() && !std::ranges::contains(adapter.linkSearchDomains, domain))
+        {
+            adapter.linkSearchDomains.push_back(std::move(domain));
+        }
+    };
+    addDomain(wide(raw.DnsSuffix));
+    const IP_ADAPTER_DNS_SUFFIX* suffix = raw.FirstDnsSuffix;
+    while (suffix != nullptr)
+    {
+        addDomain(wide(&suffix->String[0]));
+        suffix = suffix->Next;
+    }
     listed.guid = raw.AdapterName == nullptr ? std::string{} : std::string(raw.AdapterName);
     listed.metricV4 = raw.Ipv4Metric;
     listed.metricV6 = raw.Ipv6Metric;
@@ -144,9 +158,9 @@ void readUnicast(const IP_ADAPTER_ADDRESSES& raw, NetworkAdapter& adapter)
     while (dns != nullptr)
     {
         std::string text = formatSocketAddress(dns->Address);
-        if (!text.empty() && !isPlaceholderDnsServer(text) && !std::ranges::contains(adapter.dnsServers, text))
+        if (!text.empty() && !isPlaceholderDnsServer(text) && !std::ranges::contains(adapter.linkDnsServers, text))
         {
-            adapter.dnsServers.push_back(std::move(text));
+            adapter.linkDnsServers.push_back(std::move(text));
         }
         dns = dns->Next;
     }
@@ -202,17 +216,19 @@ void collectDns(const std::vector<Listed>& listed, NetworkAdaptersInfo& info)
     std::ranges::stable_sort(byMetric, {}, [](const Listed* entry) { return entry->metricV4; });
     for (const Listed* entry : byMetric)
     {
-        for (const std::string& server : entry->adapter.dnsServers)
+        for (const std::string& server : entry->adapter.linkDnsServers)
         {
             if (!std::ranges::contains(info.dnsServers, server))
             {
                 info.dnsServers.push_back(server);
             }
         }
-        const std::string& suffix = entry->adapter.dnsSuffix;
-        if (!suffix.empty() && !std::ranges::contains(info.searchDomains, suffix))
+        for (const std::string& domain : entry->adapter.linkSearchDomains)
         {
-            info.searchDomains.push_back(suffix);
+            if (!std::ranges::contains(info.searchDomains, domain))
+            {
+                info.searchDomains.push_back(domain);
+            }
         }
     }
 }

@@ -1695,11 +1695,7 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
     {
         rows.push_back(row(adapter.name, formatAdapterSummary(adapter)));
         rows.push_back(row(adapter.name + " addresses", formatAdapterAddresses(adapter), "No IP address assigned"));
-        if (!adapter.mac.empty())
-        {
-            rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
-        }
-        // Windows only so far: Linux leaves these empty, so their rows are left out there.
+        // Its own DNS settings, only where it has any: otherwise the system-wide servers above apply.
         const auto joined = [](const std::vector<std::string>& items)
         {
             std::string text;
@@ -1709,17 +1705,23 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
             }
             return text;
         };
+        if (!adapter.linkDnsServers.empty())
+        {
+            rows.push_back(row(adapter.name + " DNS servers", joined(adapter.linkDnsServers)));
+        }
+        if (!adapter.linkSearchDomains.empty())
+        {
+            // Like the system-wide search domains, these can name the organisation: an identifier.
+            rows.push_back(row(adapter.name + " search domains", joined(adapter.linkSearchDomains), NOT_REPORTED, true));
+        }
+        if (!adapter.mac.empty())
+        {
+            rows.push_back(row(adapter.name + " MAC address", adapter.mac, NOT_REPORTED, true));
+        }
+        // Windows only so far: Linux leaves these empty, so their rows are left out there.
         if (!adapter.gateways.empty())
         {
             rows.push_back(row(adapter.name + " gateways", joined(adapter.gateways)));
-        }
-        if (!adapter.dnsServers.empty())
-        {
-            rows.push_back(row(adapter.name + " DNS servers", joined(adapter.dnsServers)));
-        }
-        if (!adapter.dnsSuffix.empty())
-        {
-            rows.push_back(row(adapter.name + " DNS suffix", adapter.dnsSuffix, NOT_REPORTED, true)); // like the search domains
         }
         if (adapter.dhcpEnabled.has_value())
         {

@@ -557,13 +557,19 @@ struct NetworkAdapter
     std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
     std::optional<WifiLink> wifiLink; ///< Wi-Fi: the link, when it is connected and could be read.
     std::string wifiLinkUnavailable;  ///< Wi-Fi: why wifiLink is empty, for the UI; empty when unknown.
+    /// The DNS servers set for this adapter alone; empty when there are none or they couldn't be read.
+    /// Linux: systemd-resolved's per-link servers (which NetworkManager and systemd-networkd hand it).
+    /// Windows: the adapter's DNS servers from GetAdaptersAddresses.
+    std::vector<std::string> linkDnsServers;
+    /// This adapter's own search domains; they can name the organisation. Linux: a routing-only one is
+    /// written "~corp.example", as resolvectl writes it. Windows: the connection-specific DNS suffix,
+    /// then the adapter's DNS suffix search list.
+    std::vector<std::string> linkSearchDomains;
 
     // Windows only so far: Linux leaves these empty, and their rows out.
-    std::string description;             ///< The adapter's hardware, "Intel(R) Wi-Fi 6E AX211 160MHz"
-    std::vector<std::string> gateways;   ///< This adapter's default gateways
-    std::vector<std::string> dnsServers; ///< This adapter's DNS servers
-    std::string dnsSuffix;               ///< The connection-specific DNS suffix; can name the organisation
-    std::optional<bool> dhcpEnabled;     ///< IPv4 from DHCP; unset when not known
+    std::string description;           ///< The adapter's hardware, "Intel(R) Wi-Fi 6E AX211 160MHz"
+    std::vector<std::string> gateways; ///< This adapter's default gateways
+    std::optional<bool> dhcpEnabled;   ///< IPv4 from DHCP; unset when not known
     std::string dhcpServer;
     std::optional<std::uint32_t> dhcpLeaseSecondsLeft; ///< The DHCP lease's time left when read; unset when not known
 };

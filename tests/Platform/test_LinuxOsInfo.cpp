@@ -23,6 +23,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -1074,7 +1075,7 @@ TEST(LinuxNetworkAdaptersTest, AsksTheWifiReaderOnlyForWirelessAdapters)
         return read;
     };
     NetworkAdaptersInfo info;
-    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, reader);
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = reader, .linkDns = {}});
 
     std::ranges::sort(asked);
     EXPECT_EQ(asked, (std::vector<std::string>{"wlan1", "wlp3s0"})); // never eth0
@@ -1095,6 +1096,55 @@ TEST(LinuxNetworkAdaptersTest, AsksTheWifiReaderOnlyForWirelessAdapters)
     LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), plain, nullptr);
     EXPECT_FALSE(plain.adapters[2].wifiLink.has_value());
     EXPECT_TRUE(plain.adapters[2].wifiLinkUnavailable.empty());
+}
+
+TEST(LinuxNetworkAdaptersTest, AddressBytesAsResolvedHandsThemOver)
+{
+    using LinuxNetworkAdapters::formatAddressBytes;
+    const std::array<std::uint8_t, 4> v4{192, 168, 0, 1};
+    EXPECT_EQ(formatAddressBytes(2, v4), "192.168.0.1");
+    const std::array<std::uint8_t, 16> v6{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    EXPECT_EQ(formatAddressBytes(10, v6), "2001:db8::1");
+    EXPECT_EQ(formatAddressBytes(10, v4), ""); // the wrong length for the family
+    EXPECT_EQ(formatAddressBytes(2, v6), "");
+    EXPECT_EQ(formatAddressBytes(7, v4), ""); // neither family
+}
+
+TEST(LinuxNetworkAdaptersTest, AsksTheDnsReaderByInterfaceIndex)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/eth0/ifindex", "2\n");
+    root.write("sys/class/net/eth1/ifindex", "3\n");
+    root.write("sys/class/net/tun0/ifindex", "garbage\n"); // no index: not asked
+
+    std::vector<int> asked;
+    const LinuxNetworkAdapters::LinkDnsReader reader = [&asked](int ifindex)
+    {
+        asked.push_back(ifindex);
+        LinuxNetworkAdapters::LinkDnsRead read;
+        if (ifindex == 2)
+        {
+            read.read = true;
+            read.servers = {"10.0.0.53", "2001:db8::53"};
+            read.domains = {"corp.example", "~vpn.example"};
+        }
+        else
+        {
+            read.error = "systemd-resolved doesn't know this adapter";
+            read.servers = {"must not be used"};
+        }
+        return read;
+    };
+    NetworkAdaptersInfo info;
+    LinuxNetworkAdapters::readNetworkAdapterFacts(root.path(), info, nullptr, {.wifiLink = {}, .linkDns = reader});
+
+    std::ranges::sort(asked);
+    EXPECT_EQ(asked, (std::vector<int>{2, 3}));
+    ASSERT_EQ(info.adapters.size(), 3U); // eth0, eth1, tun0
+    EXPECT_EQ(info.adapters[0].linkDnsServers, (std::vector<std::string>{"10.0.0.53", "2001:db8::53"}));
+    EXPECT_EQ(info.adapters[0].linkSearchDomains, (std::vector<std::string>{"corp.example", "~vpn.example"}));
+    EXPECT_TRUE(info.adapters[1].linkDnsServers.empty()); // a failed read adds nothing
+    EXPECT_TRUE(info.adapters[2].linkDnsServers.empty());
 }
 
 TEST(LinuxNetworkAdaptersTest, OnlyTheStubAndNothingReadable)

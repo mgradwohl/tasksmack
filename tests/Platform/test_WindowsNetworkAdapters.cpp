@@ -74,6 +74,13 @@ class FakeAdapter
         m_Raw.Description = m_Description.data();
     }
 
+    void searchSuffix(const wchar_t* text)
+    {
+        IP_ADAPTER_DNS_SUFFIX& node = m_SearchList.emplace_back();
+        wcsncpy_s(&node.String[0], MAX_DNS_SUFFIX_STRING_LENGTH, text, _TRUNCATE);
+        append(m_Raw.FirstDnsSuffix, &node);
+    }
+
     void dnsSuffix(const wchar_t* text)
     {
         m_Suffix = text;
@@ -151,6 +158,7 @@ class FakeAdapter
     std::deque<IP_ADAPTER_UNICAST_ADDRESS> m_Unicast;
     std::deque<IP_ADAPTER_GATEWAY_ADDRESS_LH> m_Gateways;
     std::deque<IP_ADAPTER_DNS_SERVER_ADDRESS> m_Dns;
+    std::deque<IP_ADAPTER_DNS_SUFFIX> m_SearchList;
     std::deque<SOCKADDR_STORAGE> m_Sockaddrs;
 };
 
@@ -393,6 +401,8 @@ TEST_F(WindowsNetworkAdaptersTest, WalksTheAdapterListsAndFormats)
     ethernet.dns("192.168.0.1"); // listed twice, kept once
     ethernet.dns("fec0:0:0:ffff::1");
     ethernet.dnsSuffix(L"corp.example.com");
+    ethernet.searchSuffix(L"corp.example.com"); // repeats the suffix: kept once
+    ethernet.searchSuffix(L"example.com");
     ethernet.raw().Flags |= IP_ADAPTER_IPV4_ENABLED; // NOLINT(cppcoreguidelines-pro-type-union-access) - static IPv4
     ethernet.raw().Ipv4Metric = 25;
     ethernet.raw().Ipv6Metric = 25;
@@ -420,8 +430,8 @@ TEST_F(WindowsNetworkAdaptersTest, WalksTheAdapterListsAndFormats)
     EXPECT_EQ(adapter.addresses[1], (AdapterAddress{.address = "192.168.0.20", .prefix = 24, .v6 = false}));
     EXPECT_EQ(adapter.addresses[2], (AdapterAddress{.address = "fe80::2", .prefix = 64, .v6 = true}));
     EXPECT_EQ(adapter.gateways, (std::vector<std::string>{"192.168.0.1", "fe80::1"}));
-    EXPECT_EQ(adapter.dnsServers, (std::vector<std::string>{"192.168.0.1"})) << "no repeats, no fec0 placeholders";
-    EXPECT_EQ(adapter.dnsSuffix, "corp.example.com");
+    EXPECT_EQ(adapter.linkDnsServers, (std::vector<std::string>{"192.168.0.1"})) << "no repeats, no fec0 placeholders";
+    EXPECT_EQ(adapter.linkSearchDomains, (std::vector<std::string>{"corp.example.com", "example.com"}));
     EXPECT_EQ(adapter.dhcpEnabled, std::optional<bool>(false));
     EXPECT_FALSE(adapter.dhcpLeaseSecondsLeft.has_value());
 
@@ -429,7 +439,7 @@ TEST_F(WindowsNetworkAdaptersTest, WalksTheAdapterListsAndFormats)
     EXPECT_EQ(info.gatewayV4Adapter, "Ethernet");
     EXPECT_EQ(info.gatewayV6, "fe80::1");
     EXPECT_EQ(info.dnsServers, (std::vector<std::string>{"192.168.0.1"}));
-    EXPECT_EQ(info.searchDomains, (std::vector<std::string>{"corp.example.com"}));
+    EXPECT_EQ(info.searchDomains, (std::vector<std::string>{"corp.example.com", "example.com"}));
 }
 
 TEST_F(WindowsNetworkAdaptersTest, LowestMetricGatewayDnsFromUpAdaptersAndDhcp)

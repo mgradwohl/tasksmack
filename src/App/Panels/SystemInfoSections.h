@@ -242,8 +242,8 @@ struct VisibleSection
 [[nodiscard]] std::string formatWifiLink(const Platform::WifiLink& link);
 
 /// The Network adapters section (#1518): the default gateways and DNS servers, then per adapter its
-/// summary, addresses, MAC address (an identifier), and for Wi-Fi its signal, network name (an
-/// identifier) and link.
+/// summary, addresses, its own DNS servers and search domains (an identifier) where it has any, MAC
+/// address (an identifier), and for Wi-Fi its signal, network name (an identifier) and link.
 [[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network);
 
 /// A boot phase's length: "850 ms", "4.21 s", "1 min 12.3 s".
