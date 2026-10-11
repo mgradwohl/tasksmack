@@ -3,6 +3,7 @@
 #include "Domain/GPUModel.h"
 #include "Domain/GPUSnapshot.h"
 #include "Platform/GPUTypes.h"
+#include "UI/Card.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
@@ -426,8 +427,6 @@ void renderGpuSection(RenderContext& ctx)
         // Chart 1: Core + Video (all percentages)
         // Utilization, Memory, Clock, Encoder, Decoder
         // ========================================
-        (void) UI::Widgets::sectionHeader(ICON_FA_VIDEO, "GPU Core & Video", {}, alignedCount);
-
         auto gpuCorePlot = [&]()
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
@@ -705,11 +704,15 @@ void renderGpuSection(RenderContext& ctx)
         // Use max bar count across both charts for x-axis alignment
         const size_t gpuNowBarColumns = std::max(gpuCoreBars.size(), gpuThermalBars.size());
 
-        renderHistoryWithNowBars(cache.coreLayoutIds[entryIndex].c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
-        countPlot();
-
-        // Show notes for unavailable core metrics
+        // Each chart is a card with its heading inside, as CPU Cores' cells are (#1595); the note on what
+        // this GPU can't report sits inside it too, so the card's measured chrome counts it.
+        if (UI::Widgets::beginChartCard("##GpuCoreCard", plotHeight))
         {
+            (void) UI::Widgets::sectionHeader(ICON_FA_VIDEO, "GPU Core & Video", {}, alignedCount);
+            renderHistoryWithNowBars(
+                cache.coreLayoutIds[entryIndex].c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
+
+            // Show notes for unavailable core metrics
             UnavailableMetrics unavailableCoreNotes;
             if (!caps.hasClockSpeeds)
             {
@@ -721,8 +724,8 @@ void renderGpuSection(RenderContext& ctx)
             }
             renderUnavailableMetricsNote(unavailableCoreNotes.names(), theme.scheme().textMuted);
         }
-
-        ImGui::Spacing();
+        UI::Widgets::endChartCard("##GpuCoreCard", plotHeight);
+        countPlot();
 
         // ========================================
         // Chart 2: Thermal/Power (temp, power, fan)
@@ -730,8 +733,6 @@ void renderGpuSection(RenderContext& ctx)
         // ========================================
         if (caps.hasTemperature || caps.hasPowerMetrics || caps.hasFanSpeed)
         {
-            (void) UI::Widgets::sectionHeader(ICON_FA_TEMPERATURE_HALF, "Thermal & Power", {}, alignedCount);
-
             // Note: maxTempC and maxPowerW are defined above with the thermal bars
             // Note: Fan speed is already a percentage, no max needed for normalization - but
             // unlike temp/power it isn't clamped to 100 (see GPUModel::computeSnapshot), so a
@@ -853,25 +854,30 @@ void renderGpuSection(RenderContext& ctx)
             // Thermal bars were already built above for alignment calculation, one for each capability
             // that brought this chart here, so there is always at least one. Rendered with the same
             // column count as the core chart for x-axis alignment.
-            renderHistoryWithNowBars(
-                cache.thermalLayoutIds[entryIndex].c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
-            countPlot();
+            if (UI::Widgets::beginChartCard("##GpuThermalCard", plotHeight))
+            {
+                (void) UI::Widgets::sectionHeader(ICON_FA_TEMPERATURE_HALF, "Thermal & Power", {}, alignedCount);
+                renderHistoryWithNowBars(
+                    cache.thermalLayoutIds[entryIndex].c_str(), plotHeight, gpuThermalPlot, gpuThermalBars, false, gpuNowBarColumns);
 
-            // Show notes for unavailable metrics
-            UnavailableMetrics unavailableNotes;
-            if (!caps.hasTemperature)
-            {
-                unavailableNotes.add("temperature");
+                // Show notes for unavailable metrics
+                UnavailableMetrics unavailableNotes;
+                if (!caps.hasTemperature)
+                {
+                    unavailableNotes.add("temperature");
+                }
+                if (!caps.hasPowerMetrics)
+                {
+                    unavailableNotes.add("power draw");
+                }
+                if (!caps.hasFanSpeed)
+                {
+                    unavailableNotes.add("fan speed");
+                }
+                renderUnavailableMetricsNote(unavailableNotes.names(), theme.scheme().textMuted);
             }
-            if (!caps.hasPowerMetrics)
-            {
-                unavailableNotes.add("power draw");
-            }
-            if (!caps.hasFanSpeed)
-            {
-                unavailableNotes.add("fan speed");
-            }
-            renderUnavailableMetricsNote(unavailableNotes.names(), theme.scheme().textMuted);
+            UI::Widgets::endChartCard("##GpuThermalCard", plotHeight);
+            countPlot();
         }
 
         ImGui::Unindent();
