@@ -295,6 +295,7 @@ set(COMMON_TEST_SOURCES
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
     App/test_ProcessesPanelRender.cpp
+    App/test_ServicesStartupPanelsRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
 )
@@ -489,6 +490,10 @@ add_executable(TaskSmackTests
     # The Startup tab's table (#801), run headless (test_StartupViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupActionsView.cpp
+    # The Services and Startup panels as a whole, with fake probes and actions through their seam
+    # (test_ServicesStartupPanelsRender.cpp, #1721)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ServicesPanel.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupPanel.cpp
     # The System Information page (#1399), run headless (test_SystemInfoView.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoSections.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SystemInfoView.cpp

@@ -2,7 +2,8 @@
 /// @brief Shared mock implementations for platform probes used in unit tests.
 ///
 /// This header provides reusable mock classes for IProcessProbe and ISystemProbe,
-/// along with helper functions for creating test data.
+/// along with helper functions for creating test data, and the Services and Startup tabs' probes and
+/// actions (#1721), which the panels call on their sampler and action threads.
 
 #pragma once
 
@@ -14,16 +15,25 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/IServiceActions.h"
+#include "Platform/IServiceProbe.h"
+#include "Platform/IStartupActions.h"
+#include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -1029,6 +1039,284 @@ class MockProcessOpenFilesReader : public Platform::IProcessOpenFilesReader
   private:
     Platform::OpenFilesReadResult m_Result;
     int m_ReadCount = 0;
+};
+
+// =============================================================================
+// Services and Startup tabs (#1721): probes read on a sampler thread, actions run on a worker
+// =============================================================================
+
+/// How long a mock's wait gives up after: a bound for a broken build only, never reached when the
+/// code under test works. Every wait below is woken by the event itself, never by polling or sleeping.
+inline constexpr std::chrono::seconds MOCK_WAIT_LIMIT{10};
+
+/// Counts calls made on another thread and lets a test wait, without sleeping, until there have been
+/// at least n.
+class CallSignal
+{
+  public:
+    void bump()
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            ++m_Count;
+        }
+        m_Changed.notify_all();
+    }
+
+    [[nodiscard]] int count() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_Count;
+    }
+
+    /// True once there have been at least @p atLeast calls; false after MOCK_WAIT_LIMIT.
+    [[nodiscard]] bool waitFor(int atLeast) const
+    {
+        std::unique_lock lock(m_Mutex);
+        return m_Changed.wait_for(lock, MOCK_WAIT_LIMIT, [&] { return m_Count >= atLeast; });
+    }
+
+  private:
+    mutable std::mutex m_Mutex;
+    mutable std::condition_variable m_Changed;
+    int m_Count = 0;
+};
+
+/// A service probe answering what setEnumeration() gave it (thread-safe: the sampler thread reads it),
+/// counting enumerate() and forgetCachedConfig() calls. Its capabilities are fixed at construction, as
+/// the model reads them once.
+class MockServiceProbe : public Platform::IServiceProbe
+{
+  public:
+    explicit MockServiceProbe(Platform::ServiceCapabilities capabilities) : m_Capabilities(std::move(capabilities))
+    {}
+
+    void setEnumeration(Platform::ServiceEnumeration enumeration)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Enumeration = std::move(enumeration);
+    }
+
+    [[nodiscard]] Platform::ServiceCapabilities capabilities() const override
+    {
+        return m_Capabilities;
+    }
+
+    [[nodiscard]] Platform::ServiceEnumeration enumerate() override
+    {
+        Platform::ServiceEnumeration copy;
+        {
+            const std::scoped_lock lock(m_Mutex);
+            copy = m_Enumeration;
+        }
+        enumerations.bump();
+        return copy;
+    }
+
+    void forgetCachedConfig() override
+    {
+        configForgets.bump();
+    }
+
+    CallSignal enumerations;  ///< enumerate() calls
+    CallSignal configForgets; ///< forgetCachedConfig() calls
+
+  private:
+    Platform::ServiceCapabilities m_Capabilities;
+    std::mutex m_Mutex;
+    Platform::ServiceEnumeration m_Enumeration = Platform::ServiceEnumeration::succeeded({});
+};
+
+/// A startup probe answering what setEntries() gave it (thread-safe), counting enumerate() calls.
+class MockStartupProbe : public Platform::IStartupProbe
+{
+  public:
+    explicit MockStartupProbe(Platform::StartupCapabilities capabilities) : m_Capabilities(std::move(capabilities))
+    {}
+
+    void setEntries(std::vector<Platform::StartupEntry> entries)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Entries = std::move(entries);
+    }
+
+    [[nodiscard]] Platform::StartupCapabilities capabilities() const override
+    {
+        return m_Capabilities;
+    }
+
+    [[nodiscard]] std::vector<Platform::StartupEntry> enumerate() override
+    {
+        std::vector<Platform::StartupEntry> copy;
+        {
+            const std::scoped_lock lock(m_Mutex);
+            copy = m_Entries;
+        }
+        enumerations.bump();
+        return copy;
+    }
+
+    CallSignal enumerations; ///< enumerate() calls
+
+  private:
+    Platform::StartupCapabilities m_Capabilities;
+    std::mutex m_Mutex;
+    std::vector<Platform::StartupEntry> m_Entries;
+};
+
+/// Service actions that never touch a real service: each answers setResult()'s result and records the
+/// call. With blockUntilCancelled(), Start / Stop / Restart instead wait, as a slow service's state
+/// change does, until their stop token is stopped, then answer stopRequested() as WindowsServiceActions
+/// does.
+class MockServiceActions : public Platform::IServiceActions
+{
+  public:
+    explicit MockServiceActions(Platform::ServiceActionCapabilities capabilities) : m_Capabilities(capabilities)
+    {}
+
+    void setResult(Platform::ServiceActionResult result)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Result = std::move(result);
+    }
+
+    void blockUntilCancelled()
+    {
+        m_Block = true;
+    }
+
+    [[nodiscard]] std::string lastName() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_LastName;
+    }
+
+    [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
+    {
+        return m_Capabilities;
+    }
+    [[nodiscard]] Platform::ServiceActionResult start(std::string_view name, const std::stop_token& stopToken) override
+    {
+        return answer(name, stopToken, starts);
+    }
+    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override
+    {
+        return answer(name, stopToken, stops);
+    }
+    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override
+    {
+        return answer(name, stopToken, restarts);
+    }
+    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view name, Platform::ServiceStartType /*type*/) override
+    {
+        return answer(name, std::stop_token{}, startTypes);
+    }
+
+    CallSignal starts;
+    CallSignal stops;
+    CallSignal restarts;
+    CallSignal startTypes;
+    std::atomic<bool> sawStop{false}; ///< A blocked action ended because its stop token was stopped.
+
+  private:
+    [[nodiscard]] Platform::ServiceActionResult answer(std::string_view name, const std::stop_token& stopToken, CallSignal& calls)
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_LastName = name;
+        }
+        calls.bump();
+        if (m_Block && stopToken.stop_possible())
+        {
+            std::unique_lock lock(m_Mutex);
+            // Woken by the stop request itself; the predicate is the stop, so a spurious wake waits on.
+            static_cast<void>(m_Wake.wait_for(lock, stopToken, MOCK_WAIT_LIMIT, [] { return false; }));
+            if (!stopToken.stop_requested())
+            {
+                return Platform::ServiceActionResult::failed("not cancelled");
+            }
+            sawStop = true;
+            return Platform::ServiceActionResult::stopRequested();
+        }
+        const std::scoped_lock lock(m_Mutex);
+        return m_Result;
+    }
+
+    Platform::ServiceActionCapabilities m_Capabilities;
+    std::atomic<bool> m_Block{false};
+    mutable std::mutex m_Mutex;
+    std::condition_variable_any m_Wake;
+    Platform::ServiceActionResult m_Result = Platform::ServiceActionResult::succeeded();
+    std::string m_LastName;
+};
+
+/// Startup actions that never touch the registry or a Startup folder: setEnabled() answers setResult()'s
+/// result and records the call. With holdUntilReleased(), it first waits for release() (a write in
+/// flight).
+class MockStartupActions : public Platform::IStartupActions
+{
+  public:
+    explicit MockStartupActions(Platform::StartupActionCapabilities capabilities) : m_Capabilities(capabilities)
+    {}
+
+    void setResult(Platform::StartupActionResult result)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        m_Result = std::move(result);
+    }
+
+    void holdUntilReleased()
+    {
+        m_Hold = true;
+    }
+
+    void release()
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Released = true;
+        }
+        m_Wake.notify_all();
+    }
+
+    [[nodiscard]] std::string lastName() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_LastName;
+    }
+
+    [[nodiscard]] Platform::StartupActionCapabilities capabilities() const override
+    {
+        return m_Capabilities;
+    }
+    [[nodiscard]] Platform::StartupActionResult setEnabled(const Platform::StartupEntry& entry, bool enabled) override
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_LastName = entry.name;
+        }
+        (enabled ? enables : disables).bump();
+        std::unique_lock lock(m_Mutex);
+        if (m_Hold)
+        {
+            static_cast<void>(m_Wake.wait_for(lock, MOCK_WAIT_LIMIT, [this] { return m_Released; }));
+        }
+        returned = true;
+        return m_Result;
+    }
+
+    CallSignal enables;
+    CallSignal disables;
+    std::atomic<bool> returned{false}; ///< setEnabled() has finished
+
+  private:
+    Platform::StartupActionCapabilities m_Capabilities;
+    std::atomic<bool> m_Hold{false};
+    mutable std::mutex m_Mutex;
+    std::condition_variable m_Wake;
+    bool m_Released = false;
+    Platform::StartupActionResult m_Result = Platform::StartupActionResult::succeeded();
+    std::string m_LastName;
 };
 
 } // namespace TestMocks
