@@ -876,6 +876,7 @@ Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core:
     Section section{.title = "Graphics & displays", .icon = ICON_FA_TV, .rows = {}};
     auto& rows = section.rows;
     const bool windows = graphics.family == Platform::OsFamily::Windows;
+    constexpr std::string_view NO_VULKAN_LOADER = "No Vulkan loader (vulkan-1.dll / libvulkan.so.1) is installed";
     if (!graphics.adaptersRead || graphics.adapters.empty())
     {
         rows.push_back(row("GPU",
@@ -896,12 +897,23 @@ Section buildGraphicsSection(const Platform::GraphicsInfo& graphics, const Core:
             rows.push_back(
                 row("Direct3D on " + label, level, "Direct3D 12 isn't available: d3d12.dll is missing or no device could be created"));
         }
+        if (graphics.vulkanRead)
+        {
+            const std::string driver = adapter.vulkanDriverVersion.empty() ? std::string{} : "(driver " + adapter.vulkanDriverVersion + ")";
+            rows.push_back(row("Vulkan on " + label,
+                               adapter.vulkanApiVersion.empty() ? std::string{} : joinNonEmpty({adapter.vulkanApiVersion, driver}, " "),
+                               graphics.vulkanVersion.empty() ? NO_VULKAN_LOADER : "The Vulkan loader lists no device for this GPU"));
+        }
     }
 
     constexpr std::string_view NO_CONTEXT = "TaskSmack's OpenGL context isn't available";
     rows.push_back(row("OpenGL", host.glVersion, NO_CONTEXT));
     const std::string vendor = host.glVendor.empty() ? std::string{} : "(" + host.glVendor + ")";
     rows.push_back(row("OpenGL renderer", joinNonEmpty({host.glRenderer, vendor}, " "), NO_CONTEXT));
+    if (graphics.vulkanRead)
+    {
+        rows.push_back(row("Vulkan", graphics.vulkanVersion, NO_VULKAN_LOADER));
+    }
     if (graphics.family == Platform::OsFamily::Linux)
     {
         std::string server = graphics.displayServer;

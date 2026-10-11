@@ -49,7 +49,9 @@
 #include "ComScope.h"
 #include "DXGIAdapterLocation.h"
 #include "Platform/SmbiosParser.h"
+#include "Platform/VulkanInfo.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
+#include "Platform/Windows/WindowsProcAddress.h"
 #include "WinString.h"
 #include "WindowsCommitPaging.h"
 #include "WindowsCrashEvents.h"
@@ -370,6 +372,19 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
         return level;
     }
     return query(std::span(LEVELS).subspan(1));
+}
+
+/// vulkan-1.dll's vkGetInstanceProcAddr (#1635), resolved at run time from System32 rather than linked, so
+/// TaskSmack starts without a Vulkan loader. Null when either is missing. The loader is loaded once and never
+/// freed: vkDestroyInstance unloads the drivers, and the loader itself is cheap to keep.
+[[nodiscard]] Vulkan::GetInstanceProcAddrFn vulkanGetInstanceProcAddr()
+{
+    static auto* const getInstanceProcAddr = [] -> Vulkan::GetInstanceProcAddrFn
+    {
+        HMODULE module = LoadLibraryExW(L"vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        return Windows::getProcAddress<Vulkan::GetInstanceProcAddrFn>(module, "vkGetInstanceProcAddr");
+    }();
+    return getInstanceProcAddr;
 }
 
 /// Every present display-class device node's hardware id, PCI location and driver version and date.
@@ -1187,6 +1202,7 @@ WindowsGraphics::Functions WindowsSystemInfoProbe::graphicsFunctions()
         .listDisplayDrivers = &listDisplayDriverNodes,
         .readMonitorEdid = &readMonitorEdid,
         .maxFeatureLevel = &maxD3D12FeatureLevel,
+        .readVulkan = [] { return Vulkan::read(vulkanGetInstanceProcAddr()); },
     };
 }
 

@@ -12,12 +12,17 @@
 // - Each listed adapter's highest Direct3D feature level (#1636), from a D3D12 device made on it for the
 //   query and released right after; d3d12.dll is loaded from System32 at run time, so a system without
 //   it leaves the level empty.
+// - The Vulkan loader's instance version and each listed adapter's Vulkan API and driver versions (#1635),
+//   from one instance per read (Platform/VulkanInfo.h), matched to the adapter by LUID (by vendor and
+//   device id for a device that reports none); vulkan-1.dll is loaded from System32 at run time, so a
+//   system without it leaves them empty.
 // Every call goes through an injectable table; WindowsSystemInfoProbe.cpp supplies the real one, tests
 // substitute fakes.
 
 #include "Platform/EdidParser.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/VulkanInfo.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WinString.h"
 
@@ -37,6 +42,8 @@
 // clang-format on
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
 #include <cstdint>
 #include <format>
@@ -87,7 +94,48 @@ struct Functions
     /// The adapter's highest Direct3D 12 feature level, from a device created for the query and released
     /// before it returns; nullopt when d3d12.dll is missing, the adapter isn't found or no device can be made.
     std::optional<D3D_FEATURE_LEVEL> (*maxFeatureLevel)(const LUID& luid) = nullptr;
+    /// The Vulkan loader's versions and devices, from an instance created for the read and destroyed
+    /// before it returns; nullopt when vulkan-1.dll is missing.
+    std::optional<Vulkan::Info> (*readVulkan)() = nullptr;
 };
+
+/// The Vulkan device of the adapter with @p luid: one reporting that LUID, else one that reports no LUID
+/// and has @p vendorId and @p deviceId; a device with another LUID never matches. Among those, the
+/// adapter's own driver comes before Dozen, which layers Vulkan over Direct3D 12 on the same adapter and
+/// reports its LUID too; then the first listed. Null when none matches.
+[[nodiscard]] inline const Vulkan::Device*
+findVulkanDevice(std::span<const Vulkan::Device> devices, const LUID& luid, std::uint32_t vendorId, std::uint32_t deviceId)
+{
+    const auto bytes = std::bit_cast<std::array<std::uint8_t, sizeof(LUID)>>(luid);
+    const Vulkan::Device* best = nullptr;
+    int bestRank = 4; // 0: LUID, native; 1: LUID, Dozen; 2: ids, native; 3: ids, Dozen
+    for (const Vulkan::Device& device : devices)
+    {
+        int rank = 0;
+        if (device.luid.has_value())
+        {
+            if (*device.luid != bytes)
+            {
+                continue;
+            }
+        }
+        else if (device.vendorId == vendorId && device.deviceId == deviceId)
+        {
+            rank = 2;
+        }
+        else
+        {
+            continue;
+        }
+        rank += device.driverId == Vulkan::DRIVER_ID_MESA_DOZEN ? 1 : 0;
+        if (rank < bestRank)
+        {
+            best = &device;
+            bestRank = rank;
+        }
+    }
+    return best;
+}
 
 /// A Direct3D feature level as dxdiag writes it: D3D_FEATURE_LEVEL_12_2 is "12_2".
 [[nodiscard]] inline std::string featureLevelName(D3D_FEATURE_LEVEL level)
@@ -192,6 +240,9 @@ inline void readGraphics(GraphicsInfo& info, const Functions& fns)
 {
     info.available = true;
     info.family = OsFamily::Windows;
+    const std::optional<Vulkan::Info> vulkan = fns.readVulkan();
+    info.vulkanRead = true;
+    info.vulkanVersion = vulkan.has_value() ? Vulkan::apiVersionText(vulkan->instanceVersion) : std::string{};
     const std::optional<std::vector<AdapterRecord>> adapters = fns.listAdapters();
     if (!adapters.has_value())
     {
@@ -237,6 +288,13 @@ inline void readGraphics(GraphicsInfo& info, const Functions& fns)
         if (const std::optional<D3D_FEATURE_LEVEL> level = fns.maxFeatureLevel(desc.AdapterLuid))
         {
             adapter.d3dFeatureLevel = featureLevelName(*level);
+        }
+        const Vulkan::Device* device =
+            vulkan.has_value() ? findVulkanDevice(vulkan->devices, desc.AdapterLuid, desc.VendorId, desc.DeviceId) : nullptr;
+        if (device != nullptr)
+        {
+            adapter.vulkanApiVersion = Vulkan::apiVersionText(device->apiVersion);
+            adapter.vulkanDriverVersion = Vulkan::driverVersionText(device->vendorId, device->driverId, device->driverVersion, true);
         }
         info.adapters.push_back(std::move(adapter));
     }

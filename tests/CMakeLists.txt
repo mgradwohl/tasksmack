@@ -211,6 +211,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
     Platform/test_GraphicsInfo.cpp
+    Platform/test_VulkanInfo.cpp
     Platform/test_DevicesInfo.cpp
     Platform/test_DriversInfo.cpp
     Platform/test_CrashesInfo.cpp

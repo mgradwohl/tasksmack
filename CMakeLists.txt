@@ -312,6 +312,7 @@ set(TASKSMACK_HEADERS
     src/Platform/ISystemProbe.h
     src/Platform/ISystemInfoProbe.h
     src/Platform/EdidParser.h
+    src/Platform/VulkanInfo.h
     src/Platform/HwIdsParser.h
     src/Platform/GPUTypes.h
     src/Platform/PowerTypes.h
