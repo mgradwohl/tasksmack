@@ -110,10 +110,9 @@ struct PidfdOpen
 /// a moment later, so the actions fail closed: they refuse rather than fall back to the bare PID,
 /// as they refuse an unknown start time (#973). The supported Linux target (Ubuntu 24.04, kernel
 /// 6.x) always has pidfd_open, so this only refuses on old kernels or under a seccomp filter.
-[[nodiscard]] PidfdOpen openPidfd(std::int32_t pid)
+[[nodiscard]] PidfdOpen openPidfd(const LinuxProcessSyscalls& syscalls, std::int32_t pid)
 {
-#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-    const int fd = static_cast<int>(::syscall(SYS_pidfd_open, static_cast<pid_t>(pid), 0U));
+    const int fd = syscalls.pidfdOpen(static_cast<pid_t>(pid));
     if (fd >= 0)
     {
         return {.fd = fd, .refusal = {}};
@@ -127,43 +126,32 @@ struct PidfdOpen
         return {.fd = -1, .refusal = noPidfdMessage(pid)};
     }
     return {.fd = -1, .refusal = signalErrorMessage(err)};
-#else
-    return {.fd = -1, .refusal = noPidfdMessage(pid)};
-#endif
 }
 
 /// Whether the process @p pidfd refers to has exited: 1 if it has, 0 if it is still running, -1 with
 /// errno set if poll() fails. A pidfd polls readable once its process exits. Unlike signal 0, this
 /// needs no permission over the process, so another user's live process (EPERM to a signal) is never
 /// taken for an exited one (#803 review).
-[[nodiscard]] int pidfdExited(const FdGuard& pidfd)
+[[nodiscard]] int pidfdExited(const LinuxProcessSyscalls& syscalls, const FdGuard& pidfd)
 {
-    pollfd entry{.fd = pidfd.get(), .events = POLLIN, .revents = 0};
     // A signal can interrupt even a zero-timeout poll(); that says nothing about the process, so it
     // is retried rather than reported as an unconfirmed identity (#803 review).
-    int ready = ::poll(&entry, 1, 0);
-    while (ready < 0 && errno == EINTR)
+    int exited = syscalls.pollPidfd(pidfd.get());
+    while (exited < 0 && errno == EINTR)
     {
-        ready = ::poll(&entry, 1, 0);
+        exited = syscalls.pollPidfd(pidfd.get());
     }
-    if (ready < 0)
+    if (exited < 0)
     {
         return -1;
     }
-    return (ready > 0 && (entry.revents & (POLLIN | POLLHUP)) != 0) ? 1 : 0;
+    return exited > 0 ? 1 : 0;
 }
 
 /// Send `signal` through `pidfd`; 0 on success, -1 with errno set on failure.
-[[nodiscard]] int sendThroughPidfd(const FdGuard& pidfd, int signal)
+[[nodiscard]] int sendThroughPidfd(const LinuxProcessSyscalls& syscalls, const FdGuard& pidfd, int signal)
 {
-#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-    return static_cast<int>(::syscall(SYS_pidfd_send_signal, pidfd.get(), signal, nullptr, 0U));
-#else
-    static_cast<void>(pidfd);
-    static_cast<void>(signal);
-    errno = ENOSYS;
-    return -1;
-#endif
+    return syscalls.pidfdSendSignal(pidfd.get(), signal);
 }
 [[nodiscard]] std::string signalErrorMessage(int err)
 {
@@ -185,12 +173,91 @@ struct PidfdOpen
 [[nodiscard]] bool ownProcessCanSetRealtimeIo();
 } // namespace
 
-LinuxProcessActions::LinuxProcessActions()
-    : m_TraceTools(discoverSyscallTraceTools()), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
+namespace
+{
+// The real system calls (realProcessSyscalls()). pidfd_open, pidfd_send_signal and the ioprio calls have
+// no glibc wrappers, so they are raw syscalls; a kernel or libc without them says ENOSYS.
+int realPidfdOpen(pid_t pid)
+{
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    return static_cast<int>(::syscall(SYS_pidfd_open, pid, 0U));
+#else
+    static_cast<void>(pid);
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int realPidfdSendSignal(int pidfd, int signal)
+{
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    return static_cast<int>(::syscall(SYS_pidfd_send_signal, pidfd, signal, nullptr, 0U));
+#else
+    static_cast<void>(pidfd);
+    static_cast<void>(signal);
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int realPollPidfd(int pidfd)
+{
+    pollfd entry{.fd = pidfd, .events = POLLIN, .revents = 0};
+    const int ready = ::poll(&entry, 1, 0);
+    if (ready < 0)
+    {
+        return -1;
+    }
+    return (ready > 0 && (entry.revents & (POLLIN | POLLHUP)) != 0) ? 1 : 0;
+}
+
+int realSetPriority(id_t tid, int nice)
+{
+    return ::setpriority(PRIO_PROCESS, tid, nice);
+}
+
+int realIoprioSet(id_t tid, int ioprio)
+{
+#ifdef SYS_ioprio_set
+    return static_cast<int>(::syscall(SYS_ioprio_set, IoPrio::WHO_PROCESS, static_cast<pid_t>(tid), ioprio));
+#else
+    static_cast<void>(tid);
+    static_cast<void>(ioprio);
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+int realIoprioGet(pid_t pid)
+{
+#ifdef SYS_ioprio_get
+    return static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, pid));
+#else
+    static_cast<void>(pid);
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+} // namespace
+
+LinuxProcessSyscalls realProcessSyscalls() noexcept
+{
+    return {.pidfdOpen = &realPidfdOpen,
+            .pidfdSendSignal = &realPidfdSendSignal,
+            .pollPidfd = &realPollPidfd,
+            .setPriority = &realSetPriority,
+            .ioprioSet = &realIoprioSet,
+            .ioprioGet = &realIoprioGet};
+}
+
+LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls())
 {}
 
-LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools)
-    : m_TraceTools(std::move(traceTools)), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools) : LinuxProcessActions(std::move(traceTools), realProcessSyscalls())
+{}
+
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, LinuxProcessSyscalls syscalls)
+    : m_TraceTools(std::move(traceTools)), m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
 {}
 
 ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
@@ -281,48 +348,27 @@ namespace
 }
 
 /// reniceThreads() against the real /proc and setpriority(2).
-[[nodiscard]] std::expected<PriorityChange, std::error_code> setPriorityOfEveryThread(int32_t pid, int32_t nice)
+[[nodiscard]] std::expected<PriorityChange, std::error_code>
+setPriorityOfEveryThread(const LinuxProcessSyscalls& syscalls, int32_t pid, int32_t nice)
 {
     return reniceThreads(
         pid,
         threadIds,
-        [nice](id_t tid) -> int
+        [&syscalls, nice](id_t tid) -> int
         {
             // setpriority() returns 0 on success and -1 on error (per POSIX).
-            return setpriority(PRIO_PROCESS, tid, nice) == 0 ? 0 : errno;
+            return syscalls.setPriority(tid, nice) == 0 ? 0 : errno;
         },
         isThreadOf);
 }
 
-/// ioprio_set(2) for one thread: 0, or the errno. There is no glibc wrapper, so it is a raw syscall.
-[[nodiscard]] int ioprioSet(id_t tid, int ioprio)
-{
-#ifdef SYS_ioprio_set
-    return ::syscall(SYS_ioprio_set, IoPrio::WHO_PROCESS, static_cast<pid_t>(tid), ioprio) == 0 ? 0 : errno;
-#else
-    static_cast<void>(tid);
-    static_cast<void>(ioprio);
-    return ENOSYS;
-#endif
-}
-
-/// ioprio_get(2) for one process: the ioprio value, or -1 with errno set.
-[[nodiscard]] int ioprioGet(std::int32_t pid)
-{
-#ifdef SYS_ioprio_get
-    return static_cast<int>(::syscall(SYS_ioprio_get, IoPrio::WHO_PROCESS, static_cast<pid_t>(pid)));
-#else
-    static_cast<void>(pid);
-    errno = ENOSYS;
-    return -1;
-#endif
-}
-
 /// reniceThreads() against the real /proc and ioprio_set(2). I/O priority is per thread on Linux, as
 /// nice is: ioprio_set(IOPRIO_WHO_PROCESS, pid) alone changes only the main thread (#803, as #1104).
-[[nodiscard]] std::expected<PriorityChange, std::error_code> setIoPriorityOfEveryThread(int32_t pid, int ioprio)
+[[nodiscard]] std::expected<PriorityChange, std::error_code>
+setIoPriorityOfEveryThread(const LinuxProcessSyscalls& syscalls, int32_t pid, int ioprio)
 {
-    return reniceThreads(pid, threadIds, [ioprio](id_t tid) -> int { return ioprioSet(tid, ioprio); }, isThreadOf);
+    return reniceThreads(
+        pid, threadIds, [&syscalls, ioprio](id_t tid) -> int { return syscalls.ioprioSet(tid, ioprio) == 0 ? 0 : errno; }, isThreadOf);
 }
 
 /// How the shared reporting below names the change: "priority" or "I/O priority".
@@ -354,7 +400,8 @@ constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O prio
 /// meanwhile, the change may have reached another process, which matters more than which threads
 /// failed (#1228 review). Then exited workers, an incomplete relisting and threads that kept starting
 /// are each reported, and only a change that reached every thread is a success.
-[[nodiscard]] ProcessActionResult reportThreadChange(const PriorityChange& change,
+[[nodiscard]] ProcessActionResult reportThreadChange(const LinuxProcessSyscalls& syscalls,
+                                                     const PriorityChange& change,
                                                      const FdGuard& pidfd,
                                                      const ProcessTarget& target,
                                                      ChangeWording wording,
@@ -368,7 +415,7 @@ constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O prio
         // another user's process with only CAP_SYS_NICE is not reported as unconfirmed (#1483).
         // A failing poll() leaves the change unconfirmed: it gives no evidence the target still
         // held the PID.
-        const int exited = pidfdExited(pidfd);
+        const int exited = pidfdExited(syscalls, pidfd);
         if (exited != 0)
         {
             const int probeErr = errno;
@@ -457,7 +504,7 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     // ask afterwards whether the target is still there. A PID is freed only when its process is
     // reaped, so if the target is still there after the call -- running or a zombie -- the PID
     // never changed hands and the call reached it.
-    const PidfdOpen opened = openPidfd(target.pid);
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
     if (opened.fd < 0)
     {
         spdlog::warn("Failed to set priority for PID {}: {}", target.pid, opened.refusal);
@@ -476,12 +523,13 @@ ProcessActionResult LinuxProcessActions::setPriority(const ProcessTarget& target
     // changes only the main thread, so a multithreaded compiler or browser kept nearly all of its
     // work at the old priority while the UI reported success (#1104). Renice every thread, as
     // Windows' SetPriorityClass changes the whole process.
-    const auto result = setPriorityOfEveryThread(target.pid, clampedNice);
+    const auto result = setPriorityOfEveryThread(m_Syscalls, target.pid, clampedNice);
     if (!result.has_value())
     {
         return threadListError(target, result.error(), NICE_WORDING);
     }
-    return reportThreadChange(*result,
+    return reportThreadChange(m_Syscalls,
+                              *result,
                               pidfd,
                               target,
                               NICE_WORDING,
@@ -508,7 +556,7 @@ ProcessActionResult LinuxProcessActions::setIoPriority(const ProcessTarget& targ
 
     // As setPriority(): ioprio_set(2) has no pidfd form either, so the pidfd opened before the
     // identity check is asked afterwards whether the target survived the call.
-    const PidfdOpen opened = openPidfd(target.pid);
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
     if (opened.fd < 0)
     {
         spdlog::warn("Failed to set I/O priority for PID {}: {}", target.pid, opened.refusal);
@@ -524,12 +572,13 @@ ProcessActionResult LinuxProcessActions::setIoPriority(const ProcessTarget& targ
     }
 
     // I/O priority is per thread, as nice is, so every thread is set (#803, as #1104).
-    const auto result = setIoPriorityOfEveryThread(target.pid, ioprio);
+    const auto result = setIoPriorityOfEveryThread(m_Syscalls, target.pid, ioprio);
     if (!result.has_value())
     {
         return threadListError(target, result.error(), IO_WORDING);
     }
-    return reportThreadChange(*result, pidfd, target, IO_WORDING, setting, ioPriorityErrorMessage(result->firstError, ioClass, target.pid));
+    return reportThreadChange(
+        m_Syscalls, *result, pidfd, target, IO_WORDING, setting, ioPriorityErrorMessage(result->firstError, ioClass, target.pid));
 }
 
 IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& target)
@@ -542,7 +591,7 @@ IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& tar
     // Checked as an action is, so a reused PID's value is never shown for the target: the pidfd is
     // opened before the identity check and asked after the read whether the target still holds the
     // PID; if it does, the value read was the target's.
-    const PidfdOpen opened = openPidfd(target.pid);
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
     if (opened.fd < 0)
     {
         return std::unexpected(opened.refusal);
@@ -556,7 +605,7 @@ IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& tar
     }
 
     // The main thread's value: the one ionice(1) shows, and the one setIoPriority() sets with the rest.
-    const int raw = ioprioGet(target.pid);
+    const int raw = m_Syscalls.ioprioGet(static_cast<pid_t>(target.pid));
     if (raw < 0)
     {
         const int err = errno;
@@ -569,7 +618,7 @@ IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& tar
     }
     // Reading needs no privilege over the process, so neither may this check: another user's process
     // refuses signal 0 with EPERM while it is very much alive.
-    const int exited = pidfdExited(pidfd);
+    const int exited = pidfdExited(m_Syscalls, pidfd);
     if (exited < 0)
     {
         return std::unexpected(std::format("Can't confirm that process {} still held its PID while its I/O priority was read: {}",
@@ -713,7 +762,7 @@ ProcessActionResult LinuxProcessActions::launchSyscallTrace(const ProcessTarget&
     // moment later -- it has no pidfd form -- so a target that exits in that instant and whose PID is
     // reused at once could still be the one traced; tracing only observes, and strace names the
     // process it attached to.
-    const PidfdOpen opened = openPidfd(target.pid);
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
     if (opened.fd < 0)
     {
         spdlog::warn("Not tracing PID {}: {}", target.pid, opened.refusal);
@@ -753,7 +802,7 @@ ProcessActionResult LinuxProcessActions::launchSyscallTrace(const ProcessTarget&
     return ProcessActionResult::ok();
 }
 
-ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target, int signal, std::string_view signalName)
+ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target, int signal, std::string_view signalName) const
 {
     if (target.pid <= 0)
     {
@@ -766,7 +815,7 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
     // PID at that moment; if the start time read afterwards is the target's, that process is the
     // target, because the target is older than any process that could take the PID after it. From
     // then on the pidfd keeps referring to it, so a reuse of the PID cannot redirect the signal.
-    const PidfdOpen opened = openPidfd(target.pid);
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
     if (opened.fd < 0)
     {
         spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, opened.refusal);
@@ -781,7 +830,7 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
         return identity;
     }
 
-    const int sendResult = sendThroughPidfd(pidfd, signal);
+    const int sendResult = sendThroughPidfd(m_Syscalls, pidfd, signal);
 
     if (sendResult == 0)
     {

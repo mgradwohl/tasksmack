@@ -34,6 +34,7 @@
 #include <pthread.h>
 
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
+#include <fcntl.h>
 #include <signal.h>
 #include <sys/poll.h>
 #include <sys/resource.h>
@@ -826,6 +827,217 @@ TEST(LinuxProcessActionsTest, SyscallTraceOpensTheTerminalWithStraceOrExplainsPt
         args.push_back(line);
     }
     EXPECT_EQ(args, (std::vector<std::string>{"-e", tools.tracerPath, "-f", "-tt", "-p", std::to_string(self.pid)}));
+}
+
+// ============================================================================
+// Kernel failures, through LinuxProcessActions' syscall table (#1548)
+// ============================================================================
+// The actions still check the target's start time against the real /proc, so these aim at this test
+// process; the fake calls answer for the kernel, so nothing is ever actually signalled or reniced.
+
+/// What the fake system calls do, and what they were asked.
+struct FaultPlan
+{
+    int openErrno = 0;      ///< pidfd_open fails with this, when set
+    int sendErrno = 0;      ///< pidfd_send_signal fails with this, when set
+    int pollEintrs = 0;     ///< poll() is interrupted this many times first
+    int pollErrno = 0;      ///< then fails with this, when set
+    int pollResult = 0;     ///< else 1 (the process exited) or 0
+    int setErrno = 0;       ///< setpriority / ioprio_set fail with this, when set
+    int ioprioGetValue = 0; ///< ioprio_get returns this
+    int ioprioGetErrno = 0; ///< or fails with this, when set
+    int sendCalls = 0;
+    int lastSignal = 0;
+    int setCalls = 0;
+    int pollCalls = 0;
+};
+
+FaultPlan& plan()
+{
+    static FaultPlan state;
+    return state;
+}
+
+int fail(int err)
+{
+    errno = err;
+    return -1;
+}
+
+int fakePidfdOpen(pid_t /*pid*/)
+{
+    // A real descriptor, so the action's FdGuard closes something that is ours.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
+    return plan().openErrno != 0 ? fail(plan().openErrno) : ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+}
+
+int fakePidfdSendSignal(int /*pidfd*/, int signal)
+{
+    ++plan().sendCalls;
+    plan().lastSignal = signal;
+    return plan().sendErrno != 0 ? fail(plan().sendErrno) : 0;
+}
+
+int fakePollPidfd(int /*pidfd*/)
+{
+    ++plan().pollCalls;
+    if (plan().pollEintrs > 0)
+    {
+        --plan().pollEintrs;
+        return fail(EINTR);
+    }
+    return plan().pollErrno != 0 ? fail(plan().pollErrno) : plan().pollResult;
+}
+
+int fakeSet(id_t /*tid*/, int /*value*/)
+{
+    ++plan().setCalls;
+    return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
+}
+
+int fakeIoprioGet(pid_t /*pid*/)
+{
+    return plan().ioprioGetErrno != 0 ? fail(plan().ioprioGetErrno) : plan().ioprioGetValue;
+}
+
+class LinuxProcessActionsFaultTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        plan() = FaultPlan{};
+    }
+
+    LinuxProcessActions m_Actions{SyscallTrace::Tools{},
+                                  LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                       .pidfdSendSignal = &fakePidfdSendSignal,
+                                                       .pollPidfd = &fakePollPidfd,
+                                                       .setPriority = &fakeSet,
+                                                       .ioprioSet = &fakeSet,
+                                                       .ioprioGet = &fakeIoprioGet}};
+};
+
+TEST_F(LinuxProcessActionsFaultTest, SignalsGoThroughThePidfd)
+{
+    EXPECT_TRUE(m_Actions.terminate(ownTarget()).success);
+    EXPECT_EQ(plan().lastSignal, SIGTERM);
+    EXPECT_TRUE(m_Actions.kill(ownTarget()).success);
+    EXPECT_EQ(plan().lastSignal, SIGKILL);
+    EXPECT_TRUE(m_Actions.stop(ownTarget()).success);
+    EXPECT_EQ(plan().lastSignal, SIGSTOP);
+    EXPECT_TRUE(m_Actions.resume(ownTarget()).success);
+    EXPECT_EQ(plan().lastSignal, SIGCONT);
+    EXPECT_EQ(plan().sendCalls, 4);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, WithoutPidfdsEveryActionIsRefused)
+{
+    // ENOSYS: a kernel before 5.3. EPERM/EACCES: a seccomp filter, not "another user".
+    for (const int err : {ENOSYS, EPERM, EACCES})
+    {
+        plan().openErrno = err;
+        const ProcessActionResult kill = m_Actions.kill(ownTarget());
+        EXPECT_FALSE(kill.success);
+        EXPECT_TRUE(kill.errorMessage.contains("pidfd")) << kill.errorMessage;
+        EXPECT_FALSE(m_Actions.setPriority(ownTarget(), 5).success);
+        EXPECT_FALSE(m_Actions.setIoPriority(ownTarget(), IoPriorityClass::BestEffort, 4).success);
+        EXPECT_FALSE(m_Actions.getIoPriority(ownTarget()).has_value());
+    }
+    EXPECT_EQ(plan().sendCalls, 0); // Never sent to the bare PID instead
+    EXPECT_EQ(plan().setCalls, 0);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, AProcessGoneBeforeThePidfdOpensIsNotFound)
+{
+    plan().openErrno = ESRCH;
+    EXPECT_EQ(m_Actions.kill(ownTarget()).errorMessage, "Process not found - may have already exited");
+}
+
+TEST_F(LinuxProcessActionsFaultTest, ASignalTheKernelRefusesSaysWhy)
+{
+    plan().sendErrno = ESRCH;
+    EXPECT_EQ(m_Actions.terminate(ownTarget()).errorMessage, "Process not found - may have already exited");
+    plan().sendErrno = EPERM;
+    EXPECT_EQ(m_Actions.kill(ownTarget()).errorMessage, "Permission denied - process belongs to another user");
+}
+
+TEST_F(LinuxProcessActionsFaultTest, PriorityReachesEveryThreadAndIsConfirmed)
+{
+    EXPECT_TRUE(m_Actions.setPriority(ownTarget(), 5).success);
+    EXPECT_GE(plan().setCalls, 1); // One per thread of this process
+    EXPECT_EQ(plan().pollCalls, 1);
+    EXPECT_TRUE(m_Actions.setIoPriority(ownTarget(), IoPriorityClass::Idle, 0).success);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, ATargetThatExitedDuringTheChangeIsReported)
+{
+    plan().pollResult = 1;
+    const ProcessActionResult result = m_Actions.setPriority(ownTarget(), 5);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("exited while its priority was being changed")) << result.errorMessage;
+    const ProcessActionResult io = m_Actions.setIoPriority(ownTarget(), IoPriorityClass::BestEffort, 2);
+    EXPECT_TRUE(io.errorMessage.contains("exited while its I/O priority was being changed")) << io.errorMessage;
+}
+
+TEST_F(LinuxProcessActionsFaultTest, AConfirmationThatFailsLeavesTheChangeUnconfirmed)
+{
+    plan().pollErrno = EBADF;
+    const ProcessActionResult result = m_Actions.setPriority(ownTarget(), 5);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("could not be confirmed")) << result.errorMessage;
+}
+
+TEST_F(LinuxProcessActionsFaultTest, AnInterruptedConfirmationIsRetried)
+{
+    plan().pollEintrs = 2;
+    EXPECT_TRUE(m_Actions.setPriority(ownTarget(), 5).success);
+    EXPECT_EQ(plan().pollCalls, 3);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, APriorityTheKernelRefusesIsAnError)
+{
+    plan().setErrno = EPERM;
+    const ProcessActionResult nice = m_Actions.setPriority(ownTarget(), -5);
+    EXPECT_FALSE(nice.success);
+    EXPECT_FALSE(nice.errorMessage.empty());
+    plan().setErrno = EINVAL;
+    EXPECT_FALSE(m_Actions.setIoPriority(ownTarget(), IoPriorityClass::BestEffort, 2).success);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, ReadingTheIoPriority)
+{
+    plan().ioprioGetValue = IoPrio::encode({.ioClass = IoPriorityClass::BestEffort, .level = 4});
+    const IoPriorityReadResult read = m_Actions.getIoPriority(ownTarget());
+    ASSERT_TRUE(read.has_value());
+    EXPECT_EQ(read.value_or(IoPriority{}).ioClass, IoPriorityClass::BestEffort);
+    EXPECT_EQ(read.value_or(IoPriority{}).level, 4);
+
+    plan().ioprioGetErrno = ESRCH;
+    EXPECT_EQ(m_Actions.getIoPriority(ownTarget()).error_or(""), "Process not found - may have already exited");
+    plan().ioprioGetErrno = EINVAL;
+    EXPECT_TRUE(m_Actions.getIoPriority(ownTarget()).error_or("").starts_with("Can't read the I/O priority"));
+
+    plan().ioprioGetErrno = 0;
+    plan().pollResult = 1;
+    EXPECT_TRUE(m_Actions.getIoPriority(ownTarget()).error_or("").contains("exited while its I/O priority was being read"));
+    plan().pollResult = 0;
+    plan().pollErrno = EBADF;
+    EXPECT_TRUE(m_Actions.getIoPriority(ownTarget()).error_or("").starts_with("Can't confirm"));
+
+    plan().pollErrno = 0;
+    plan().ioprioGetValue = 0x7FFF'0000; // no class TaskSmack knows
+    EXPECT_TRUE(m_Actions.getIoPriority(ownTarget()).error_or("").contains("does not recognise"));
+}
+
+TEST(LinuxProcessSyscallsTest, TheRealTableIsComplete)
+{
+    const LinuxProcessSyscalls real = realProcessSyscalls();
+    EXPECT_NE(real.pidfdOpen, nullptr);
+    EXPECT_NE(real.pidfdSendSignal, nullptr);
+    EXPECT_NE(real.pollPidfd, nullptr);
+    EXPECT_NE(real.setPriority, nullptr);
+    EXPECT_NE(real.ioprioSet, nullptr);
+    EXPECT_NE(real.ioprioGet, nullptr);
 }
 
 } // namespace

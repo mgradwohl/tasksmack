@@ -6,8 +6,28 @@
 #include <cstdint>
 #include <string_view>
 
+#include <sys/types.h>
+
 namespace Platform
 {
+
+/// The system calls LinuxProcessActions makes, as a table so tests can make each fail as a kernel would
+/// (#1548): an old kernel without pidfds, a process that exits between the check and the call, a
+/// permission refused. realProcessSyscalls() is the real one. Each returns as the call does -- a
+/// descriptor or 0 on success, -1 with errno set on failure -- except where noted.
+struct LinuxProcessSyscalls
+{
+    int (*pidfdOpen)(pid_t pid) = nullptr;                   ///< pidfd_open(pid, 0); ENOSYS without pidfd support
+    int (*pidfdSendSignal)(int pidfd, int signal) = nullptr; ///< pidfd_send_signal(pidfd, signal, nullptr, 0)
+    /// poll() on the pidfd with no timeout: 1 when it is readable (its process exited), 0 when not.
+    int (*pollPidfd)(int pidfd) = nullptr;
+    int (*setPriority)(id_t tid, int nice) = nullptr; ///< setpriority(PRIO_PROCESS, tid, nice)
+    int (*ioprioSet)(id_t tid, int ioprio) = nullptr; ///< ioprio_set(IOPRIO_WHO_PROCESS, tid, ioprio)
+    int (*ioprioGet)(pid_t pid) = nullptr;            ///< ioprio_get(IOPRIO_WHO_PROCESS, pid): the value
+};
+
+/// The real system calls.
+[[nodiscard]] LinuxProcessSyscalls realProcessSyscalls() noexcept;
 
 /// Linux implementation of IProcessActions.
 /// Signals go through a pidfd: the action opens one for the PID, confirms the start time in
@@ -29,6 +49,8 @@ class LinuxProcessActions : public IProcessActions
     LinuxProcessActions();
     /// Uses @p traceTools instead of searching (tests: a fake terminal that records its argv).
     explicit LinuxProcessActions(SyscallTrace::Tools traceTools);
+    /// As above, making its system calls through @p syscalls (tests: calls that fail on demand, #1548).
+    LinuxProcessActions(SyscallTrace::Tools traceTools, LinuxProcessSyscalls syscalls);
     ~LinuxProcessActions() override = default;
 
     LinuxProcessActions(const LinuxProcessActions&) = delete;
@@ -50,9 +72,10 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] static SyscallTrace::Tools discoverSyscallTraceTools();
 
   private:
-    [[nodiscard]] static ProcessActionResult sendSignal(const ProcessTarget& target, int signal, std::string_view signalName);
+    [[nodiscard]] ProcessActionResult sendSignal(const ProcessTarget& target, int signal, std::string_view signalName) const;
 
     SyscallTrace::Tools m_TraceTools;
+    LinuxProcessSyscalls m_Syscalls;
     bool m_CanSetRealtimeIoPriority = false; // CAP_SYS_NICE or CAP_SYS_ADMIN, read at construction (#1540)
 };
 
