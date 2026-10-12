@@ -25,6 +25,8 @@
 #include "Core/Layer.h"
 #include "Core/Window.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RenderMetrics.h"
+#include "UI/Theme.h"
 #include "UI/UILayer.h"
 
 #include <SDL3/SDL_events.h>
@@ -36,6 +38,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(): the bar and its buttons
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdlib>
@@ -350,6 +353,96 @@ TEST(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
     EXPECT_TRUE(observed.positionKeptAfterClick);           // a press and release without motion moves nothing
     EXPECT_TRUE(observed.sizeKeptAfterEdgePress);           // likewise on the resize edge
     EXPECT_TRUE(observed.systemMenuOpened);                 // Ctrl+Space opens the window menu
+}
+
+/// What the UI-layer driver saw.
+struct UiLayerObserved
+{
+    bool userThemeLoaded = false;
+    int drawCalls = 0;
+    int frames = 0;
+};
+
+/// Pushed after UILayer: a display-scale event (noted, then re-measured at the next frame boundary;
+/// a headless display's scale doesn't change, so nothing is rebuilt), then what UILayer loaded and
+/// counted.
+class UiLayerDriverLayer : public Core::Layer
+{
+  public:
+    explicit UiLayerDriverLayer(UiLayerObserved& observed) : Layer("UiLayerDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        // Something to draw, so each frame has draw calls to count.
+        ImGui::Begin("UiLayerDriver");
+        ImGui::TextUnformatted("frame");
+        ImGui::End();
+        const int frame = ++m_Observed.frames;
+        if (frame == 5)
+        {
+            SDL_Event event{};
+            event.type = SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED;
+            event.window.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+            static_cast<void>(SDL_PushEvent(&event));
+        }
+        else if (frame == 15)
+        {
+            const auto& themes = UI::Theme::get().discoveredThemes();
+            m_Observed.userThemeLoaded =
+                std::ranges::any_of(themes, [](const UI::DiscoveredTheme& theme) { return theme.id == "app-tests-user-theme"; });
+            m_Observed.drawCalls = UI::RenderMetrics::get().drawCalls();
+            Core::Application::get().stop();
+        }
+    }
+
+  private:
+    UiLayerObserved& m_Observed;
+};
+
+TEST(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    // A user theme beside config.toml (AppTestsMain.cpp's temporary directory): merged over the
+    // built-ins by its file name (#1127).
+    const std::optional<std::filesystem::path>& configDir = Core::ConfigDirOverride::active();
+    ASSERT_TRUE(configDir.has_value());
+    const std::filesystem::path userThemes = configDir.value_or(std::filesystem::path{}) / "themes";
+    std::error_code ec;
+    std::filesystem::create_directories(userThemes, ec);
+    ASSERT_FALSE(ec);
+    std::filesystem::copy_file(std::filesystem::path(TASKSMACK_SOURCE_THEMES_DIR) / "arctic-fire.toml",
+                               userThemes / "app-tests-user-theme.toml",
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    ASSERT_FALSE(ec) << ec.message();
+    UI::RenderMetrics::get().setEnabled(true);
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayUiLayerTest";
+    spec.VSync = false;
+    UiLayerObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<UiLayerDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        UI::RenderMetrics::get().setEnabled(false);
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    UI::RenderMetrics::get().setEnabled(false);
+    std::filesystem::remove_all(userThemes, ec);
+
+    EXPECT_TRUE(observed.userThemeLoaded);
+    EXPECT_GT(observed.drawCalls, 0); // counted after each Render(), while the overlay's metrics are on
 }
 
 /// The tab IDs pressed, in order, then back to the first (TabLabel.h, ShellLayer.cpp's labels).

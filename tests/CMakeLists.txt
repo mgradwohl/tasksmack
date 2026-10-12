@@ -767,6 +767,7 @@ add_executable(TaskSmackAppTests
 tasksmack_configure_app_target(TaskSmackAppTests)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
 target_link_libraries(TaskSmackAppTests PRIVATE gtest)
+target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
 gtest_discover_tests(TaskSmackAppTests DISCOVERY_TIMEOUT 30)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
