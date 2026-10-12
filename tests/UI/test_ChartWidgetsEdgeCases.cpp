@@ -1,7 +1,6 @@
 /// @file test_ChartWidgetsEdgeCases.cpp
 /// @brief ChartWidgets.h's edge cases (#1395): reductions given nothing to do or samples all at one
-/// time, and HistoryChart with a Y axis that doesn't start at 0, one with no height at all, and the
-/// Render Metrics overlay on.
+/// time, and HistoryChart with a Y axis that doesn't start at 0 and with the Render Metrics overlay on.
 
 #include "UI/ChartWidgets.h"
 #include "UI/RenderMetrics.h"
@@ -143,17 +142,14 @@ class HistoryChartEdgeTest : public ::testing::Test
     ImPlotContext* m_ImPlot = nullptr;
 };
 
-TEST_F(HistoryChartEdgeTest, AnAxisNotStartingAtZeroAndOneWithNoHeightBothDraw)
+TEST_F(HistoryChartEdgeTest, AnAxisNotStartingAtZeroKeepsImPlotsOwnTicks)
 {
-    // A fixed Y range off zero keeps ImPlot's own ticks; an axis whose top is 0 (nothing to scale to
-    // yet) skips the 1-2-5 ticks. Neither trips anything. (An infinite top is not tried: ImPlot itself
-    // converts the limit to int, which UBSan rightly rejects, and no chart hands it one.)
+    // A fixed Y range off zero keeps ImPlot's own ticks rather than the 1-2-5 ones. (A top of 0 or
+    // infinity is not tried: ImPlot itself then converts -inf to int, which UBSan rightly rejects, and
+    // no chart hands it one -- rateAxisUpperBound() is positive and finite by construction.)
     HistoryChartConfig offZero = percentHistoryConfig("##OffZero", -10.0, 0.0);
     offZero.yLimits = std::pair{10.0, 50.0};
     EXPECT_TRUE(frame(offZero));
-    HistoryChartConfig flat = percentHistoryConfig("##Flat", -10.0, 0.0);
-    flat.yLimits = std::pair{0.0, 0.0};
-    EXPECT_TRUE(frame(flat));
 }
 
 TEST_F(HistoryChartEdgeTest, RenderMetricsRecordsAHistoryChartWhenOn)
