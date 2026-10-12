@@ -77,6 +77,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "Some Theme tests failed, but continuing with coverage report..."
     }
+    # Built from the app's own objects, for the layers that need the whole app on a display (#1395).
+    & "$BuildDir\tests\TaskSmackAppTests.exe"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Some App tests failed, but continuing with coverage report..."
+    }
 
     # Step 3: Merge profraw files
     Write-Host "==> Merging coverage data..."
@@ -100,7 +105,7 @@ try {
         Write-Error "$AppBinary not found; without it the report would only count files linked into TaskSmackTests."
         exit 1
     }
-    $CovObjects = @("$BuildDir\tests\TaskSmackTests.exe", "-object", "$BuildDir\tests\TaskSmackThemeTests.exe", "-object", $AppBinary)
+    $CovObjects = @("$BuildDir\tests\TaskSmackTests.exe", "-object", "$BuildDir\tests\TaskSmackThemeTests.exe", "-object", "$BuildDir\tests\TaskSmackAppTests.exe", "-object", $AppBinary)
 
     # Step 4: Generate HTML report
     Write-Host "==> Generating HTML report..."
