@@ -40,7 +40,7 @@ makeGPUInfo(const std::string& id, const std::string& name, const std::string& v
 /// Create a GPUCounters struct with common test values.
 inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
                                              double utilization = 50.0,
-                                             std::uint64_t memoryUsed = 1024 * 1024 * 1024,
+                                             std::uint64_t memoryUsed = 1024ULL * 1024 * 1024,
                                              std::uint64_t memoryTotal = 4ULL * 1024 * 1024 * 1024)
 {
     Platform::GPUCounters c;
@@ -62,7 +62,7 @@ inline Platform::GPUCounters makeGPUCounters(const std::string& gpuId,
 
 /// Create a ProcessGPUCounters struct with common test values.
 inline Platform::ProcessGPUCounters
-makeProcessGPUCounters(std::int32_t pid, const std::string& gpuId, std::uint64_t memoryBytes = 512 * 1024 * 1024)
+makeProcessGPUCounters(std::int32_t pid, const std::string& gpuId, std::uint64_t memoryBytes = 512ULL * 1024 * 1024)
 {
     Platform::ProcessGPUCounters c;
     c.pid = pid;

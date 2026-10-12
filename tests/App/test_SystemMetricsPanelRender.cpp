@@ -7,7 +7,9 @@
 #include "App/Panels/SystemMetricsPanel.h"
 #include "Core/ApplicationEvents.h"
 #include "Domain/ProcessModel.h"
+#include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/GPUTypes.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
@@ -38,8 +40,9 @@ constexpr float DISPLAY_HEIGHT = 1200.0F;
 using SeriesLabels = std::set<std::string>;
 
 /// A mock system probe reading a 4-core machine at 25% CPU and 50% memory; with @p network, network
-/// counters and one interface too.
-[[nodiscard]] std::unique_ptr<TestMocks::MockSystemProbe> mockSystem(bool network = false)
+/// counters and one interface too: @p interfaceName, linked at @p linkSpeedMbps (0: unknown).
+[[nodiscard]] std::unique_ptr<TestMocks::MockSystemProbe>
+mockSystem(bool network = false, const char* interfaceName = "eth0", std::uint64_t linkSpeedMbps = 1000)
 {
     auto probe = std::make_unique<TestMocks::MockSystemProbe>();
     Platform::SystemCounters counters = TestMocks::makeSystemCounters(TestMocks::makeCpuAtUsage(25.0),
@@ -55,12 +58,12 @@ using SeriesLabels = std::set<std::string>;
         counters.netRxBytes = 1'000'000;
         counters.netTxBytes = 500'000;
         Platform::SystemCounters::InterfaceCounters eth0;
-        eth0.name = "eth0";
-        eth0.displayName = "eth0";
+        eth0.name = interfaceName;
+        eth0.displayName = interfaceName;
         eth0.rxBytes = 1'000'000;
         eth0.txBytes = 500'000;
         eth0.isUp = true;
-        eth0.linkSpeedMbps = 1000;
+        eth0.linkSpeedMbps = linkSpeedMbps;
         counters.networkInterfaces.push_back(eth0);
     }
     probe->setCounters(std::move(counters));
@@ -378,6 +381,65 @@ TEST_F(SystemMetricsPanelRenderTest, ThePowerHeadingSaysWhatTheChartShows)
     EXPECT_TRUE(text.contains("Battery: System battery charge")) << text;
     EXPECT_TRUE(text.contains("Health: 93")) << text;
     EXPECT_TRUE(text.contains("sample")) << text; // the sample count
+    panel->onDetach();
+}
+
+// #1395: a GPU whose clock and fan this sample didn't read, and a system that reports no GPU temperature:
+// the clock and the fan say they are unavailable this sample (the capability is there, the reading isn't)
+// and the page notes the missing temperature.
+TEST_F(SystemMetricsPanelRenderTest, TheGpuTabMarksReadingsItDoesntHave)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        []
+        {
+            auto gpu = std::make_unique<TestMocks::MockGPUProbe>();
+            Platform::GPUCapabilities caps;
+            caps.hasFanSpeed = true;
+            caps.hasClockSpeeds = true;
+            caps.hasTemperature = false;
+            gpu->withCapabilities(caps);
+            gpu->withGPU("GPU0", "Test GPU");
+            Platform::GPUCounters counters = TestMocks::makeGPUCounters("GPU0");
+            counters.gpuClockAvailable = false;
+            counters.fanSpeedMaxRaw = 0; // the fan read failed this sample
+            counters.temperatureAvailable = false;
+            gpu->withGPUCounters("GPU0", counters);
+            return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = std::move(gpu)};
+        });
+    panel->onAttach();
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(selectTab("GPU"));
+
+    std::string text;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline && !text.contains("Fan : unavailable this sample"))
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        text = renderAndCapture(*panel);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(text.contains("Test GPU")) << text;
+    EXPECT_TRUE(text.contains("Fan : unavailable this sample")) << text;
+    EXPECT_TRUE(text.contains("Clock (% of 2000 MHz) : unavailable this sample")) << text;
+    EXPECT_TRUE(text.contains("does not report GPU temperature")) << text;
+    panel->onDetach();
+}
+
+// #1395: an interface whose link speed is unknown reads as a dash in the Interface Status table's Speed
+// column, not "0 bit/s".
+TEST_F(SystemMetricsPanelRenderTest, AnInterfaceWithoutALinkSpeedSaysSo)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        [] { return SystemMetricsProbes{.system = mockSystem(true, "eth1", 0), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
+    panel->onAttach();
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(selectTab("Network and I/O"));
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Interface Status")) << text;
+    EXPECT_TRUE(text.contains("eth1")) << text;
+    EXPECT_TRUE(text.contains("| eth1 | Up | - |")) << text; // Speed: unknown
     panel->onDetach();
 }
 
