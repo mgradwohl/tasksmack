@@ -562,16 +562,16 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
     }
 
-    // Build the new immutable generation before taking the lock: std::make_shared allocates
-    // (control block + vector shell), and that allocator call must not happen while readers
-    // are blocked on m_Mutex -- that would add allocator latency to exactly the
-    // reader-blocking critical section this shared_ptr scheme exists to shrink.
     // The sparklines' rings (#1612), carried over from the last generation and given this one's
     // values; nullptr, with every ring dropped, while no sparkline is shown. Row-aligned with
     // newSnapshots, so built before it is moved into the publication.
     std::shared_ptr<const ProcessRowHistory::Generation> newRowHistory =
         m_RowHistoryTracker.advance(newSnapshots, m_RowHistoryMetrics.load(std::memory_order_relaxed));
 
+    // Build the new immutable generation before taking the lock: std::make_shared allocates
+    // (control block + vector shell), and that allocator call must not happen while readers
+    // are blocked on m_Mutex -- that would add allocator latency to exactly the
+    // reader-blocking critical section this shared_ptr scheme exists to shrink.
     auto newSnapshotsPublication = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
 
     // Absolute time (since the clock's epoch), to match SystemModel's timestamp format. Also the

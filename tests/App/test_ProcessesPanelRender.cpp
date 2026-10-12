@@ -21,7 +21,6 @@
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
-#include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Mocks/MockProbes.h"
 #include "UI/IconsFontAwesome6.h"
