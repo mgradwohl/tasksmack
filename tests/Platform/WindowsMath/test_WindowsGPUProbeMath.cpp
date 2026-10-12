@@ -999,18 +999,18 @@ TEST(ExcludeIdleNVMLMemoryTest, AnIdleAdaptersMemoryInUseIsPDHsCurrentFigure)
 }
 
 // ==========================================================================
-// listedGPULuids / separateOtherAdapterUsage: per-process samples count only
+// listedAdapterLuids / separateOtherAdapterUsage: per-process samples count only
 // the adapters listed as GPUs (#1826).
 // ==========================================================================
 
-TEST(ListedGPULuidsTest, IsEveryListedAdaptersLuid)
+TEST(ListedAdapterLuidsTest, IsEveryListedAdaptersLuid)
 {
     std::vector<GPUInfo> gpus(3);
     gpus[0].luidId = "GPU_0x00000000_0x00017C33";
     gpus[1].luidId = "GPU_0x00000000_0x0001A000";
     // gpus[2] has no LUID: nothing to match
-    EXPECT_EQ(listedGPULuids(gpus), (std::unordered_set<std::string>{"GPU_0x00000000_0x00017C33", "GPU_0x00000000_0x0001A000"}));
-    EXPECT_TRUE(listedGPULuids({}).empty());
+    EXPECT_EQ(listedAdapterLuids(gpus), (std::unordered_set<std::string>{"GPU_0x00000000_0x00017C33", "GPU_0x00000000_0x0001A000"}));
+    EXPECT_TRUE(listedAdapterLuids({}).empty());
 }
 
 // The NPU (Intel AI Boost, an MCDM adapter: engine type "Compute") and the Basic Render Driver have
@@ -1091,6 +1091,81 @@ TEST(SeparateOtherAdapterUsageTest, EverySampleListedIsKeptInOrder)
     EXPECT_EQ(counters[0].pid, 1);
     EXPECT_EQ(counters[1].pid, 2);
     EXPECT_EQ(counters[2].pid, 3);
+}
+
+// ==========================================================================
+// adapterKindsByLuid / tagProcessCounterKinds: an enumerated NPU's per-process
+// samples are kept, tagged with its kind (#1799).
+// ==========================================================================
+
+TEST(AdapterKindsByLuidTest, IsEachListedAdaptersKind)
+{
+    std::vector<GPUInfo> adapters(3);
+    adapters[0].luidId = "GPU_0x00000000_0x00017C33";
+    adapters[1].luidId = "GPU_0x00000000_0x00018103";
+    adapters[1].kind = DeviceKind::Npu;
+    adapters[2].kind = DeviceKind::ComputeAccelerator; // No LUID: nothing to match
+    const auto kinds = adapterKindsByLuid(adapters);
+    ASSERT_EQ(kinds.size(), 2U);
+    EXPECT_EQ(kinds.at("GPU_0x00000000_0x00017C33"), DeviceKind::Gpu);
+    EXPECT_EQ(kinds.at("GPU_0x00000000_0x00018103"), DeviceKind::Npu);
+}
+
+// The NPU's samples (engine type "Compute", like a GPU compute engine's) are told apart by LUID
+// alone; the GPU's stay GPU samples, figures unchanged.
+TEST(TagProcessCounterKindsTest, TagsEachSampleWithItsAdaptersKind)
+{
+    const std::string iGPU = "GPU_0x00000000_0x00017C33";
+    const std::string npu = "GPU_0x00000000_0x00018103";
+    const std::string accelerator = "GPU_0x00000000_0x00000300";
+    std::vector<ProcessGPUCounters> counters(4);
+    counters[0] = {.pid = 10, .gpuId = iGPU, .gpuUtilPercent = 20.0, .activeEngines = {"Compute"}};
+    counters[1] = {.pid = 10, .gpuId = npu, .gpuSharedMemoryBytes = 8192, .gpuUtilPercent = 80.0, .activeEngines = {"Compute"}};
+    counters[2] = {.pid = 11, .gpuId = accelerator, .gpuUtilPercent = 5.0, .activeEngines = {}};
+    counters[3] = {
+        .pid = 12,
+        .gpuId = "GPU_0x00000000_0x0000FFFF",
+        .kind = DeviceKind::Npu,
+        .activeEngines = {},
+    }; // Not listed: a GPU's by default
+
+    tagProcessCounterKinds(counters, {{iGPU, DeviceKind::Gpu}, {npu, DeviceKind::Npu}, {accelerator, DeviceKind::ComputeAccelerator}});
+
+    EXPECT_EQ(counters[0].kind, DeviceKind::Gpu);
+    EXPECT_DOUBLE_EQ(counters[0].gpuUtilPercent, 20.0);
+    EXPECT_EQ(counters[1].kind, DeviceKind::Npu);
+    EXPECT_DOUBLE_EQ(counters[1].gpuUtilPercent, 80.0);
+    EXPECT_EQ(counters[1].gpuSharedMemoryBytes, 8192U);
+    EXPECT_EQ(counters[2].kind, DeviceKind::ComputeAccelerator);
+    EXPECT_EQ(counters[3].kind, DeviceKind::Gpu);
+}
+
+// An enumerated NPU's LUID is listed, so its samples stay with the listed adapters' rather than
+// going to the unlisted ones' (#1826); the Basic Render Driver's still go there.
+TEST(SeparateOtherAdapterUsageTest, AnEnumeratedNpusSamplesAreKept)
+{
+    const std::string iGPU = "GPU_0x00000000_0x00017C33";
+    const std::string npu = "GPU_0x00000000_0x00018103";
+    const std::string basicRender = "GPU_0x00000000_0x0001809D";
+    std::vector<ProcessGPUCounters> counters(3);
+    counters[0] = {.pid = 10, .gpuId = npu, .gpuUtilPercent = 80.0, .activeEngines = {}};
+    counters[1] = {.pid = 10, .gpuId = iGPU, .gpuUtilPercent = 20.0, .activeEngines = {}};
+    counters[2] = {.pid = 12, .gpuId = basicRender, .gpuUtilPercent = 30.0, .activeEngines = {}};
+    std::vector<GPUInfo> adapters(2);
+    adapters[0].luidId = iGPU;
+    adapters[1].luidId = npu;
+    adapters[1].kind = DeviceKind::Npu;
+
+    const auto other = separateOtherAdapterUsage(counters, listedAdapterLuids(adapters));
+    tagProcessCounterKinds(counters, adapterKindsByLuid(adapters));
+
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].gpuId, npu);
+    EXPECT_EQ(counters[0].kind, DeviceKind::Npu);
+    EXPECT_EQ(counters[1].gpuId, iGPU);
+    EXPECT_EQ(counters[1].kind, DeviceKind::Gpu);
+    ASSERT_EQ(other.size(), 1U);
+    EXPECT_EQ(other[0].adapterLuid, basicRender);
 }
 
 } // namespace

@@ -99,6 +99,25 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// An NPU or other compute accelerator (#1799): listed with its kind and LUID, its memory figures
+    /// counting its shared segment, as an Intel AI Boost's do on Windows.
+    MockGPUProbe& withAccelerator(const std::string& id,
+                                  const std::string& name,
+                                  const std::string& luidId,
+                                  Platform::DeviceKind kind = Platform::DeviceKind::Npu)
+    {
+        auto info = makeGPUInfo(id, name, "Intel");
+        info.kind = kind;
+        info.luidId = luidId;
+        info.memoryIsShared = true;
+        info.sensorCapabilities = Platform::GPUCapabilities{};
+        m_GPUInfo.push_back(std::move(info));
+        auto counters = makeGPUCounters(id);
+        counters.kind = kind;
+        m_Counters.push_back(std::move(counters));
+        return *this;
+    }
+
     MockGPUProbe& withGPUCounters(const std::string& gpuId, Platform::GPUCounters counters)
     {
         for (auto& existing : m_Counters)

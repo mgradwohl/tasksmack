@@ -4,6 +4,7 @@
 #include "GPUModel.h"
 #include "History.h"
 #include "Numeric.h"
+#include "Platform/GPUTypes.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "PriorityConfig.h"
@@ -124,15 +125,36 @@ struct AggregatedGPU
     std::vector<ProcessSnapshot::PerGPUUsage> perGpuBreakdown;
     std::vector<std::string> allEngines;
     std::vector<std::string> gpuNames; // Friendly names instead of UUIDs
+
+    // The same for the NPUs and compute accelerators, never counted in the GPU figures above (#1799)
+    double maxNpuUtilPercent = 0.0;
+    std::uint64_t totalNpuMemoryBytes = 0;
+    std::uint64_t totalNpuDedicatedMemoryBytes = 0;
+    std::uint64_t totalNpuSharedMemoryBytes = 0;
+    std::vector<std::string> npuEngines;
+    std::vector<std::string> npuNames;
 };
 
 // What the per-process breakdown shows about one adapter.
 struct GpuIdentity
 {
     std::string name;
+    Platform::DeviceKind kind = Platform::DeviceKind::Gpu;
     bool isIntegrated = false;
     bool memoryIsShared = false;
 };
+
+/// Append each of @p values not already in @p into, in first-seen order.
+void appendUnique(std::vector<std::string>& into, const std::vector<std::string>& values)
+{
+    for (const auto& value : values)
+    {
+        if (std::ranges::find(into, value) == into.end())
+        {
+            into.push_back(value);
+        }
+    }
+}
 
 // The publication's per-process counters aggregated by pid (a process may use several GPUs).
 [[nodiscard]] std::unordered_map<std::int32_t, AggregatedGPU> aggregateProcessGPUUsage(const ProcessGPUPublication& publication)
@@ -145,7 +167,12 @@ struct GpuIdentity
     std::unordered_map<std::string, GpuIdentity> gpuIdToIdentity;
     for (const auto& adapter : publication.adapters)
     {
-        const GpuIdentity identity{.name = adapter.name, .isIntegrated = adapter.isIntegrated, .memoryIsShared = adapter.memoryIsShared};
+        const GpuIdentity identity{
+            .name = adapter.name,
+            .kind = adapter.kind,
+            .isIntegrated = adapter.isIntegrated,
+            .memoryIsShared = adapter.memoryIsShared,
+        };
         gpuIdToIdentity[adapter.id] = identity;
         if (!adapter.luidId.empty())
         {
@@ -164,6 +191,20 @@ struct GpuIdentity
         if (const auto identityIt = gpuIdToIdentity.find(gc.gpuId); identityIt != gpuIdToIdentity.end())
         {
             identity = identityIt->second;
+        }
+
+        // A sample on an NPU or compute accelerator -- tagged so by the probe, or on an adapter
+        // enumerated as one -- is the process's NPU usage, never its GPU usage (#1799).
+        if (gc.kind != Platform::DeviceKind::Gpu || identity.kind != Platform::DeviceKind::Gpu)
+        {
+            const std::uint64_t memoryBytes = identity.memoryIsShared ? gc.gpuSharedMemoryBytes : gc.gpuMemoryBytes;
+            agg.maxNpuUtilPercent = std::max(agg.maxNpuUtilPercent, Numeric::clampPercent(gc.gpuUtilPercent));
+            agg.totalNpuMemoryBytes += memoryBytes;
+            agg.totalNpuDedicatedMemoryBytes += gc.gpuMemoryBytes;
+            agg.totalNpuSharedMemoryBytes += gc.gpuSharedMemoryBytes;
+            appendUnique(agg.npuNames, {identity.name});
+            appendUnique(agg.npuEngines, gc.activeEngines);
+            continue;
         }
 
         ProcessSnapshot::PerGPUUsage perGpu;
@@ -974,6 +1015,12 @@ void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots,
         snapshot.gpuEngines = agg.allEngines;
         snapshot.perGpuUsage = agg.perGpuBreakdown;
         snapshot.gpuDevices = joinGpuNames(agg.gpuNames);
+        snapshot.npuUtilPercent = agg.maxNpuUtilPercent;
+        snapshot.npuMemoryBytes = agg.totalNpuMemoryBytes;
+        snapshot.npuDedicatedMemoryBytes = agg.totalNpuDedicatedMemoryBytes;
+        snapshot.npuSharedMemoryBytes = agg.totalNpuSharedMemoryBytes;
+        snapshot.npuEngines = agg.npuEngines;
+        snapshot.npuDevices = joinGpuNames(agg.npuNames);
     }
 
     spdlog::debug("ProcessModel::mergeGPUData: merged GPU data for {} processes", mergedCount);
@@ -1072,6 +1119,12 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
             snapshot.gpuEngines.clear();
             snapshot.perGpuUsage.clear();
             snapshot.gpuDevices.clear();
+            snapshot.npuUtilPercent = 0.0;
+            snapshot.npuMemoryBytes = 0;
+            snapshot.npuDedicatedMemoryBytes = 0;
+            snapshot.npuSharedMemoryBytes = 0;
+            snapshot.npuEngines.clear();
+            snapshot.npuDevices.clear();
         }
     }
     // No GPU fields this generation. A failed merge is not a lack of support: the

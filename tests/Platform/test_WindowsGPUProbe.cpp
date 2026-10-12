@@ -12,7 +12,9 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <iostream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Platform
@@ -164,6 +166,44 @@ TEST(WindowsGPUProbeTest, ProcessCountersAreOnlyForListedGPUs)
     for (const auto& usage : probe.otherAdapterUsage())
     {
         EXPECT_FALSE(listedLuids.contains(usage.adapterLuid)) << "pid " << usage.pid << " on " << usage.adapterLuid;
+    }
+}
+
+// #1799: this machine's NPUs and compute accelerators (DXCore) are listed after its GPUs with their
+// kind, each adapter once, and a per-process sample is tagged with its adapter's kind. Each adapter
+// is printed (kind, name, id, LUID, driver version) for a look at the real hardware: on a Core
+// Ultra 7 255H, "Intel(R) AI Boost" as an NPU with its PnP driver version.
+TEST(WindowsGPUProbeTest, AcceleratorsAreListedAfterTheGPUsWithTheirKind)
+{
+    WindowsGPUProbe probe;
+    const auto adapters = probe.enumerateGPUs();
+    std::unordered_map<std::string, DeviceKind> kinds;
+    bool seenAccelerator = false;
+    for (const auto& adapter : adapters)
+    {
+        const char* kind = "ComputeAccelerator";
+        if (adapter.kind == DeviceKind::Gpu)
+        {
+            kind = "Gpu";
+        }
+        else if (adapter.kind == DeviceKind::Npu)
+        {
+            kind = "Npu";
+        }
+        std::cout << "[ adapter  ] " << kind << " | " << adapter.name << " | " << adapter.id << " | " << adapter.luidId << " | driver "
+                  << adapter.driverVersion << '\n';
+        EXPECT_FALSE(seenAccelerator && adapter.kind == DeviceKind::Gpu) << adapter.name << ": a GPU after an accelerator";
+        seenAccelerator = seenAccelerator || adapter.kind != DeviceKind::Gpu;
+        EXPECT_FALSE(adapter.luidId.empty()) << adapter.name;
+        EXPECT_TRUE(kinds.emplace(adapter.luidId, adapter.kind).second) << adapter.name << " listed twice";
+        EXPECT_FALSE(adapter.driverVersion.empty()) << adapter.name;
+    }
+    static_cast<void>(probe.readProcessGPUCounters()); // PDH's first collect only warms up its rates
+    for (const auto& counter : probe.readProcessGPUCounters())
+    {
+        const auto kind = kinds.find(counter.gpuId);
+        ASSERT_NE(kind, kinds.end()) << counter.gpuId;
+        EXPECT_EQ(counter.kind, kind->second) << "pid " << counter.pid << " on " << counter.gpuId;
     }
 }
 

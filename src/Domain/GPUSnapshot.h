@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/GPUTypes.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -28,6 +30,9 @@ struct GPUSnapshot
     std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
     std::string name;
     std::string vendor;
+    // A GPU, or an NPU or other compute accelerator (Platform::GPUInfo::kind, #1799). GPUModel's
+    // publication lists the two apart, so GPU views and totals never take an accelerator.
+    Platform::DeviceKind kind = Platform::DeviceKind::Gpu;
     bool isIntegrated = false;
     // The memory used/total figures count the shared segment rather than dedicated VRAM
     // (Platform::GPUInfo::memoryIsShared): what a process's "GPU memory" on this GPU counts (#1164).

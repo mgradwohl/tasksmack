@@ -634,33 +634,67 @@ inline void excludeIdleNVMLMemory(std::unordered_set<std::string>& nvmlMemoryIds
     return fingerprint;
 }
 
-/// The LUIDs ("GPU_0x{High}_0x{Low}", GPUInfo::luidId) of the adapters TaskSmack lists as GPUs, the
-/// ones per-process PDH samples are kept for (#1826).
-[[nodiscard]] inline std::unordered_set<std::string> listedGPULuids(const std::vector<GPUInfo>& gpus)
+/// The LUIDs ("GPU_0x{High}_0x{Low}", GPUInfo::luidId) of the adapters TaskSmack lists -- its GPUs,
+/// and the NPUs and compute accelerators DXCore enumerates (#1799) -- the ones per-process PDH samples
+/// are kept for (#1826).
+[[nodiscard]] inline std::unordered_set<std::string> listedAdapterLuids(const std::vector<GPUInfo>& adapters)
 {
     std::unordered_set<std::string> luids;
-    for (const auto& gpu : gpus)
+    for (const auto& adapter : adapters)
     {
-        if (!gpu.luidId.empty())
+        if (!adapter.luidId.empty())
         {
-            luids.insert(gpu.luidId);
+            luids.insert(adapter.luidId);
         }
     }
     return luids;
 }
 
-/// Move the per-process samples of adapters TaskSmack doesn't list as GPUs out of @p counters (#1826).
-/// PDH's "GPU Engine" and "GPU Process Memory" have instances for every WDDM and MCDM adapter: the
-/// NPU (an MCDM compute-only adapter, whose engine type is "Compute", so only its LUID tells it from a
-/// GPU's compute engine), other compute accelerators, and the Basic Render Driver DXGI lists but
-/// TaskSmack skips. Left in, they were folded into a process's GPU % and GPU memory, and named by
-/// their raw "GPU_0x..." id in the GPU Device column.
+/// Each listed adapter's kind by its LUID (GPUInfo::luidId), which is all a per-process PDH sample
+/// names its adapter by: an NPU's engine type is "Compute", like a GPU's compute engine (#1799).
+[[nodiscard]] inline std::unordered_map<std::string, DeviceKind> adapterKindsByLuid(const std::vector<GPUInfo>& adapters)
+{
+    std::unordered_map<std::string, DeviceKind> kinds;
+    for (const auto& adapter : adapters)
+    {
+        if (!adapter.luidId.empty())
+        {
+            kinds[adapter.luidId] = adapter.kind;
+        }
+    }
+    return kinds;
+}
+
+/// Tag each per-process sample with its adapter's kind (#1799), so Domain counts a process's samples
+/// on an NPU or compute accelerator as its NPU figures and never in its GPU ones. A sample whose LUID
+/// isn't in @p kindsByLuid stays a GPU's: separateOtherAdapterUsage() has already moved every sample of
+/// an unlisted adapter out.
+inline void tagProcessCounterKinds(std::vector<ProcessGPUCounters>& counters,
+                                   const std::unordered_map<std::string, DeviceKind>& kindsByLuid)
+{
+    std::size_t index = 0;
+    while (index < counters.size())
+    {
+        ProcessGPUCounters& counter = counters[index];
+        const auto kind = kindsByLuid.find(counter.gpuId);
+        counter.kind = kind != kindsByLuid.end() ? kind->second : DeviceKind::Gpu;
+        ++index;
+    }
+}
+
+/// Move the per-process samples of adapters TaskSmack doesn't list out of @p counters (#1826). PDH's
+/// "GPU Engine" and "GPU Process Memory" have instances for every WDDM and MCDM adapter: the GPUs,
+/// the NPU (an MCDM compute-only adapter, whose engine type is "Compute", so only its LUID tells it
+/// from a GPU's compute engine), other compute accelerators, and the Basic Render Driver DXGI lists
+/// but TaskSmack skips. Left in, an unlisted adapter's were folded into a process's GPU % and GPU
+/// memory, and named by their raw "GPU_0x..." id in the GPU Device column.
 ///
-/// They are kept apart rather than dropped: NPU reporting (#1799) builds on them. The listed GPUs'
-/// samples stay in @p counters, unchanged and in order.
+/// They are kept apart rather than dropped. The listed adapters' samples -- an enumerated NPU's
+/// included, which tagProcessCounterKinds() then marks as such (#1799) -- stay in @p counters,
+/// unchanged and in order.
 ///
 /// @param counters Per-process samples, keyed by "GPU_<luid>" (PDHGPUProbe's gpuId format)
-/// @param listedLuids listedGPULuids() of the last enumeration
+/// @param listedLuids listedAdapterLuids() of the last enumeration
 /// @return The samples moved out, one per process and adapter, keyed by the adapter's LUID
 [[nodiscard]] inline std::vector<OtherAdapterProcessUsage> separateOtherAdapterUsage(std::vector<ProcessGPUCounters>& counters,
                                                                                      const std::unordered_set<std::string>& listedLuids)

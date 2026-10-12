@@ -426,6 +426,55 @@ TEST(GPUModelTest, PublicationRecordsFailedEnumeration)
     EXPECT_TRUE(publication->gpuInfo.empty());
 }
 
+// #1799: an NPU and a compute accelerator travel the GPU pipeline with their kind, but the
+// publication lists them apart, so the GPU tab and every GPU total see the GPUs alone. Their
+// snapshots and history are kept, by id, as a GPU's are.
+TEST(GPUModelTest, PublicationListsTheGPUsApartFromTheAccelerators)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("PCI_00:02.0_8086:7D51", "Intel(R) Arc(TM) 140T GPU", "Intel", true)
+        .withAccelerator("PCI_00:0B.0_8086:7D1D", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103")
+        .withAccelerator(
+            "PCI_03:00.0_1234:5678", "Contoso Accelerator", "GPU_0x00000000_0x00000300", Platform::DeviceKind::ComputeAccelerator)
+        .withUtilization("PCI_00:0B.0_8086:7D1D", 35.0);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    model.refresh();
+
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+    ASSERT_EQ(publication->gpuInfo.size(), 1U);
+    EXPECT_EQ(publication->gpuInfo[0].kind, Platform::DeviceKind::Gpu);
+    ASSERT_EQ(publication->snapshots.size(), 1U);
+    EXPECT_EQ(publication->snapshots[0].gpuId, "PCI_00:02.0_8086:7D51");
+    EXPECT_EQ(publication->snapshots[0].kind, Platform::DeviceKind::Gpu);
+
+    ASSERT_EQ(publication->acceleratorInfo.size(), 2U);
+    EXPECT_EQ(publication->acceleratorInfo[0].kind, Platform::DeviceKind::Npu);
+    EXPECT_EQ(publication->acceleratorInfo[1].kind, Platform::DeviceKind::ComputeAccelerator);
+    ASSERT_EQ(publication->acceleratorSnapshots.size(), 2U);
+    const Domain::GPUSnapshot& npu = publication->acceleratorSnapshots[0];
+    EXPECT_EQ(npu.gpuId, "PCI_00:0B.0_8086:7D1D");
+    EXPECT_EQ(npu.kind, Platform::DeviceKind::Npu) << "The kind carries through to the snapshot";
+    EXPECT_EQ(npu.name, "Intel(R) AI Boost");
+    EXPECT_EQ(npu.luidId, "GPU_0x00000000_0x00018103");
+    EXPECT_TRUE(npu.memoryIsShared);
+    EXPECT_DOUBLE_EQ(npu.utilizationPercent, 35.0);
+    EXPECT_EQ(publication->acceleratorSnapshots[1].kind, Platform::DeviceKind::ComputeAccelerator);
+
+    // Each keeps a history, as a GPU does
+    ASSERT_TRUE(publication->histories.contains("PCI_00:0B.0_8086:7D1D"));
+    EXPECT_EQ(publication->histories.at("PCI_00:0B.0_8086:7D1D").utilization.size(), 2U);
+    EXPECT_FLOAT_EQ(publication->histories.at("PCI_00:0B.0_8086:7D1D").utilization.back(), 35.0F);
+    EXPECT_TRUE(publication->histories.contains("PCI_00:02.0_8086:7D51"));
+
+    // The accessors agree with the publication
+    EXPECT_EQ(model.gpuInfo().size(), 1U);
+    EXPECT_EQ(model.snapshots().size(), 1U);
+    EXPECT_EQ(model.acceleratorInfo().size(), 2U);
+}
+
 TEST(GPUModelTest, ReadProcessGPUCountersStillAttemptsProbeWhenCapabilityDiscoveryFailed)
 {
     // Regression test for a review finding on #862: the constructor's capabilities() query

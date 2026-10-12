@@ -25,6 +25,7 @@
 #include "Platform/VulkanInfo.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsDriverNodes.h" // DriverNode, findDriverNode()
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -71,16 +72,6 @@ struct AdapterRecord
 {
     DXGI_ADAPTER_DESC1 desc{};
     std::vector<OutputRecord> outputs;
-};
-
-/// One display-class device node's driver facts.
-struct DriverNode
-{
-    std::string hardwareId;       ///< The first hardware id, "PCI\VEN_10DE&DEV_2786&SUBSYS_..."
-    std::optional<DWORD> bus;     ///< SPDRP_BUSNUMBER
-    std::optional<DWORD> address; ///< SPDRP_ADDRESS: (device << 16) | function for PCI
-    std::string driverVersion;
-    std::optional<FILETIME> driverDate;
 };
 
 /// The calls readGraphics() makes.
@@ -177,37 +168,6 @@ findVulkanDevice(std::span<const Vulkan::Device> devices, const LUID& luid, std:
     const std::chrono::sys_days epoch{std::chrono::year{1601} / 1 / 1};
     const std::chrono::year_month_day date{epoch + std::chrono::days{static_cast<std::int64_t>(ticks / TICKS_PER_DAY)}};
     return std::format("{:%F}", date);
-}
-
-/// The device node of the adapter with @p vendorId and @p deviceId: the one at @p location when it is
-/// known and a node reports it, else the first with those ids. Null when none matches.
-[[nodiscard]] inline const DriverNode* findDriverNode(std::span<const DriverNode> nodes,
-                                                      std::uint32_t vendorId,
-                                                      std::uint32_t deviceId,
-                                                      const std::optional<PciLocation>& location)
-{
-    const std::string ids = std::format("VEN_{:04X}&DEV_{:04X}", vendorId, deviceId);
-    const DriverNode* first = nullptr;
-    for (const DriverNode& node : nodes)
-    {
-        std::string upper = node.hardwareId;
-        std::ranges::transform(upper, upper.begin(), [](char c) { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c; });
-        if (!upper.contains(ids))
-        {
-            continue;
-        }
-        if (location.has_value() && node.bus.has_value() && node.address.has_value())
-        {
-            const DWORD address = (location->device << 16U) | location->function.value_or(0);
-            if (*node.bus == location->bus && *node.address == address)
-            {
-                return &node;
-            }
-            continue;
-        }
-        first = first != nullptr ? first : &node;
-    }
-    return first;
 }
 
 [[nodiscard]] inline Monitor readMonitor(const OutputRecord& output, const Functions& fns)

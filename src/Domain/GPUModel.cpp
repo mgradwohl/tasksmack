@@ -37,6 +37,35 @@ namespace Domain
 namespace
 {
 
+/// The adapters in @p adapters that are GPUs (@p gpus) or that aren't -- the NPUs and compute
+/// accelerators -- in their order (#1799).
+[[nodiscard]] std::vector<Platform::GPUInfo> adaptersOfKind(const std::vector<Platform::GPUInfo>& adapters, bool gpus)
+{
+    std::vector<Platform::GPUInfo> selected;
+    for (const auto& adapter : adapters)
+    {
+        if ((adapter.kind == Platform::DeviceKind::Gpu) == gpus)
+        {
+            selected.push_back(adapter);
+        }
+    }
+    return selected;
+}
+
+/// The snapshots in @p snapshots that are GPUs' (@p gpus) or that aren't, in their order (#1799).
+[[nodiscard]] std::vector<GPUSnapshot> snapshotsOfKind(const std::vector<GPUSnapshot>& snapshots, bool gpus)
+{
+    std::vector<GPUSnapshot> selected;
+    for (const auto& snapshot : snapshots)
+    {
+        if ((snapshot.kind == Platform::DeviceKind::Gpu) == gpus)
+        {
+            selected.push_back(snapshot);
+        }
+    }
+    return selected;
+}
+
 /// A history value as a float: NaN for a placeholder recorded while the GPU was missing (#1146).
 template<typename T> [[nodiscard]] float sampleOrNaN(const GPUSnapshot& sample, T value)
 {
@@ -630,10 +659,15 @@ void GPUModel::publish()
     {
         const std::shared_lock stateLock(m_Mutex);
         publication->version = m_PublicationVersion + 1;
-        publication->gpuInfo = m_GPUInfo;
+        // The GPUs and the NPUs / compute accelerators listed apart, so no GPU view or total takes
+        // an accelerator (#1799)
+        publication->gpuInfo = adaptersOfKind(m_GPUInfo, /*gpus=*/true);
+        publication->acceleratorInfo = adaptersOfKind(m_GPUInfo, /*gpus=*/false);
         publication->gpuInfoKnown = m_GPUInfoKnown;
         publication->capabilities = m_Capabilities;
-        publication->snapshots = orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
+        const std::vector<GPUSnapshot> ordered = orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
+        publication->snapshots = snapshotsOfKind(ordered, /*gpus=*/true);
+        publication->acceleratorSnapshots = snapshotsOfKind(ordered, /*gpus=*/false);
         // A view of each series, sharing the model's samples: O(series), whatever the history length (#1412).
         publication->histories.reserve(m_Histories.size());
         for (const auto& [gpuId, series] : m_Histories)
@@ -649,13 +683,19 @@ void GPUModel::publish()
 std::vector<GPUSnapshot> GPUModel::snapshots() const
 {
     const std::shared_lock lock(m_Mutex);
-    return orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots);
+    return snapshotsOfKind(orderSnapshotsByEnumeration(m_GPUInfo, m_Snapshots), /*gpus=*/true);
 }
 
 std::vector<Platform::GPUInfo> GPUModel::gpuInfo() const
 {
     const std::shared_lock lock(m_Mutex);
-    return m_GPUInfo;
+    return adaptersOfKind(m_GPUInfo, /*gpus=*/true);
+}
+
+std::vector<Platform::GPUInfo> GPUModel::acceleratorInfo() const
+{
+    const std::shared_lock lock(m_Mutex);
+    return adaptersOfKind(m_GPUInfo, /*gpus=*/false);
 }
 
 Platform::GPUCapabilities GPUModel::capabilities() const
@@ -766,6 +806,7 @@ void GPUModel::publishProcessGPUData(std::chrono::steady_clock::time_point now)
             publication->adapters.push_back(GPUAdapterIdentity{.id = info.id,
                                                                .luidId = info.luidId,
                                                                .name = info.name,
+                                                               .kind = info.kind,
                                                                .isIntegrated = info.isIntegrated,
                                                                .memoryIsShared = info.memoryIsShared});
         }
@@ -787,6 +828,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
 
     // Copy identity
     snapshot.gpuId = current.gpuId;
+    snapshot.kind = current.kind;
 
     // Find GPU info for this ID
     auto infoIt = std::ranges::find_if(m_GPUInfo, [&](const auto& info) { return info.id == current.gpuId; });
@@ -794,6 +836,7 @@ GPUModel::computeSnapshot(const Platform::GPUCounters& current, const Platform::
     {
         snapshot.name = infoIt->name;
         snapshot.vendor = infoIt->vendor;
+        snapshot.kind = infoIt->kind; // The enumeration's word on what the adapter is (#1799)
         snapshot.isIntegrated = infoIt->isIntegrated;
         snapshot.memoryIsShared = infoIt->memoryIsShared;
         snapshot.luidId = infoIt->luidId; // For PDH counter matching

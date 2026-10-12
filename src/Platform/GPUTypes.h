@@ -56,16 +56,29 @@ struct PciLocation
     return a.bus == b.bus && a.device == b.device && (!a.function.has_value() || !b.function.has_value() || *a.function == *b.function);
 }
 
-// Identifies a physical GPU
+/// What kind of adapter a GPUInfo describes (#1799). GPUs and the compute-only accelerators Windows
+/// drives through MCDM -- an NPU such as Intel AI Boost, or another compute accelerator -- share the
+/// adapter pipeline (enumeration by LUID, PDH counters, history) but never each other's figures: GPU
+/// views and totals take Gpu alone, and a process's use of an accelerator is kept apart from its GPU
+/// usage.
+enum class DeviceKind : std::uint8_t
+{
+    Gpu,                ///< A graphics adapter: the default, and every adapter Linux lists today
+    Npu,                ///< A neural processing unit (DXCore's hardware type NPU)
+    ComputeAccelerator, ///< Another compute-only accelerator (DXCore's hardware type COMPUTE_ACCELERATOR)
+};
+
+// Identifies a physical GPU, or a compute accelerator (see kind)
 struct GPUInfo
 {
-    std::string id;     // Stable identifier, unique among present GPUs (Windows: "PCI_01:00.0_10DE:2684", slot + model, #1317)
-    std::string luidId; // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
-    std::string name;   // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
-    std::string vendor; // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
-    std::string driverVersion;
-    bool isIntegrated = false;     // Integrated vs discrete
-    std::uint32_t deviceIndex = 0; // Vendor-specific index (on Windows, DXGI's display order, not identity)
+    std::string id;            // Stable identifier, unique among present GPUs (Windows: "PCI_01:00.0_10DE:2684", slot + model, #1317)
+    std::string luidId;        // LUID-based identifier for PDH matching (e.g., "GPU_0x00000000_0x0000F78E")
+    std::string name;          // Human-readable name (e.g., "NVIDIA GeForce RTX 2080 Ti")
+    std::string vendor;        // "NVIDIA", "AMD", "Intel", "Qualcomm" (Windows), "Unknown"
+    std::string driverVersion; // Windows: the device's PnP driver version, or "Unknown" (#1799)
+    DeviceKind kind = DeviceKind::Gpu; // A GPU, or an NPU or other compute accelerator (#1799)
+    bool isIntegrated = false;         // Integrated vs discrete
+    std::uint32_t deviceIndex = 0;     // Vendor-specific index (on Windows, DXGI's display order, not identity)
     /// Which memory segment the adapter's used/total figures count: true for its shared segment
     /// (system memory the GPU maps -- a Windows integrated GPU's memory), false for dedicated VRAM
     /// (every discrete GPU, and an APU's carve-out on Linux, where NVML/ROCm SMI/DRM have no shared
@@ -123,7 +136,8 @@ struct GPUEngineClientCounters
 // Derived metrics (rates, percentages) are computed by Domain layer
 struct GPUCounters
 {
-    std::string gpuId; // Associates with GPUInfo
+    std::string gpuId;                 // Associates with GPUInfo
+    DeviceKind kind = DeviceKind::Gpu; // The adapter's GPUInfo::kind (#1799)
 
     // Whether this sample's read of each field succeeded. False when a supported sensor couldn't be
     // read this time (NVML_ERROR_TIMEOUT, GPU lost, a driver reset): its value is then meaningless,
@@ -201,6 +215,9 @@ struct ProcessGPUCounters
 {
     std::int32_t pid = 0;
     std::string gpuId; // Which GPU
+    // The adapter's GPUInfo::kind (#1799): a process's samples on an NPU or another compute
+    // accelerator are its NPU figures, never counted in its GPU ones.
+    DeviceKind kind = DeviceKind::Gpu;
 
     // Memory allocated by the process on this GPU (bytes), kept apart as the adapter's own figures
     // are (#1164): dedicated is the GPU's own memory (VRAM; what NVML and ROCm SMI report per
@@ -219,9 +236,10 @@ struct ProcessGPUCounters
     std::vector<std::string> activeEngines;
 };
 
-/// One process's use of one adapter TaskSmack doesn't list as a GPU (#1826): an NPU or another MCDM
-/// compute accelerator, or a software adapter such as the Basic Render Driver. Kept apart from
-/// ProcessGPUCounters, so it is never counted in a GPU figure; NPU reporting (#1799) builds on it.
+/// One process's use of one adapter TaskSmack doesn't list (#1826): a software adapter such as the
+/// Basic Render Driver, or an NPU or compute accelerator DXCore couldn't enumerate. Kept apart from
+/// ProcessGPUCounters, so it is never counted in a GPU or NPU figure. An enumerated NPU's or compute
+/// accelerator's samples are ProcessGPUCounters of its kind instead (#1799).
 struct OtherAdapterProcessUsage
 {
     std::int32_t pid = 0;

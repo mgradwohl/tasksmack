@@ -431,6 +431,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsCommitPaging.h
         src/Platform/Windows/WindowsStorage.h
         src/Platform/Windows/WindowsGraphics.h
+        src/Platform/Windows/WindowsDriverNodes.h
         src/Platform/Windows/WindowsDevices.h
         src/Platform/Windows/WindowsDrivers.h
         src/Platform/Windows/WindowsCrashEvents.h

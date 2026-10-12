@@ -2,6 +2,7 @@
 
 #include "Platform/GPUTypes.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/Windows/WindowsDriverNodes.h"
 
 #include <chrono>
 #include <memory>
@@ -29,6 +30,12 @@ class PDHGPUProbe;
 /// changed, re-matches NVML devices to adapters by PCI location (#1241) and rebuilds the LUID maps
 /// PDH's figures are matched by. NVML itself restarts after a lost GPU, and a quick rescan reports a
 /// GPU asleep at enumeration that has woken, so it gets its own sensors (#1294).
+///
+/// The NPUs and other MCDM compute accelerators, which DXGI never lists, come from DXCore
+/// (DXGIGPUProbe::enumerateAccelerators()) and are listed after the GPUs with their DeviceKind
+/// (#1799). They share the GPUs' PDH figures by LUID -- adapter utilization and memory, and
+/// per-process samples, which are tagged with the adapter's kind -- and have no sensors. Every
+/// adapter's driver version is read from its PnP device node.
 class WindowsGPUProbe : public IGPUProbe
 {
   public:
@@ -55,11 +62,11 @@ class WindowsGPUProbe : public IGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const override;
     [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
-    /// The last readProcessGPUCounters()'s per-process samples of adapters not listed as GPUs: an
-    /// NPU or another MCDM compute accelerator, or the Basic Render Driver, one per process and
-    /// adapter LUID (#1826). readProcessGPUCounters() leaves them out of every GPU figure; this keeps
-    /// them for NPU reporting (#1799), which nothing reads yet. Call it under the same serialization
-    /// as readProcessGPUCounters() (GPUModel's probe lock).
+    /// The last readProcessGPUCounters()'s per-process samples of adapters not listed: the Basic
+    /// Render Driver, or an NPU or other compute accelerator DXCore couldn't enumerate (an older
+    /// Windows), one per process and adapter LUID (#1826). readProcessGPUCounters() leaves them out of
+    /// every figure; an enumerated NPU's samples are returned by it instead, tagged with their kind
+    /// (#1799). Call it under the same serialization as readProcessGPUCounters() (GPUModel's probe lock).
     [[nodiscard]] std::vector<OtherAdapterProcessUsage> otherAdapterUsage() const;
 
   private:
@@ -99,19 +106,27 @@ class WindowsGPUProbe : public IGPUProbe
     // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
     std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
 
-    // The LUIDs of the adapters listed as GPUs at the last enumeration (listedGPULuids()), rebuilt
-    // with m_DXGIIdToLuidId, so a rescan or hot-plug updates it. Per-process PDH samples of any other
-    // adapter -- the NPU, other MCDM compute accelerators, the Basic Render Driver -- go to
-    // m_OtherAdapterUsage rather than being counted as GPU work (#1826); before the first
-    // enumeration no adapter is listed, so every sample goes there.
-    std::unordered_set<std::string> m_ListedGPULuids;
+    // The LUIDs of the adapters listed at the last enumeration (listedAdapterLuids()): the GPUs, and
+    // the NPUs and compute accelerators DXCore found (#1799). Rebuilt with m_DXGIIdToLuidId, so a
+    // rescan or hot-plug updates it. Per-process PDH samples of any other adapter -- the Basic Render
+    // Driver, or an accelerator DXCore couldn't enumerate -- go to m_OtherAdapterUsage rather than
+    // being counted as GPU work (#1826); before the first enumeration no adapter is listed, so every
+    // sample goes there.
+    std::unordered_set<std::string> m_ListedAdapterLuids;
 
-    // The last readProcessGPUCounters()'s samples of adapters not in m_ListedGPULuids (#1826)
+    // Each listed adapter's kind by LUID, which per-process samples are tagged with (#1799)
+    std::unordered_map<std::string, DeviceKind> m_AdapterKindByLuid;
+
+    // The last readProcessGPUCounters()'s samples of adapters not in m_ListedAdapterLuids (#1826)
     std::vector<OtherAdapterProcessUsage> m_OtherAdapterUsage;
 
-    // Map DXGI GPU id ("GPU0") to whether it is integrated, which decides whether its memory in
-    // use is the shared or the dedicated segment. Built during enumerateGPUs().
+    // Map adapter id to whether its memory figures count its shared segment (an integrated GPU, or
+    // an NPU without memory of its own) rather than dedicated memory. Built during enumerateGPUs().
     std::unordered_map<std::string, bool> m_DXGIIdIsIntegrated;
+
+    // Reads the PnP device nodes every adapter's driver version comes from (#1799): SetupAPI's PCI
+    // devices in production, a fake in tests.
+    std::vector<WindowsGraphics::DriverNode> (*m_ListDriverNodes)() = nullptr;
 
     // The NVIDIA adapters at the last enumeration (nvidiaAdapterFingerprint()); unset before the
     // first. A change (an NVIDIA GPU added or removed, re-created under a new LUID by a driver update

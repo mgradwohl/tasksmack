@@ -5,11 +5,15 @@
 #include "App/Panels/GpuSection.h"
 #include "Domain/GPUModel.h"
 #include "Domain/GPUSnapshot.h"
+#include "Mocks/MockGPUProbe.h"
 #include "Platform/GPUTypes.h"
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -166,6 +170,33 @@ TEST(GpuSectionDrawListTest, ADuplicatedIdIsDrawnOnce)
     publication.snapshots = {snapshot("GPU0")};
 
     EXPECT_EQ(idsOf(gpuDrawList(publication)), (std::vector<std::string>{"GPU0"}));
+}
+
+// #1799: the GPU tab and the Overview's VRAM total draw from a GPU model's publication, which lists
+// an NPU apart from the GPUs, so neither shows nor counts it before the NPU tab exists.
+TEST(GpuSectionDrawListTest, AnNpuIsNeitherDrawnNorCountedAsAGpu)
+{
+    constexpr std::uint64_t GIB = 1ULL << 30U;
+    auto probe = std::make_unique<TestMocks::MockGPUProbe>();
+    probe->withGPU("dGPU", "Discrete GPU", "NVIDIA", false)
+        .withMemory("dGPU", GIB, 8 * GIB)
+        .withAccelerator("NPU", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103")
+        .withGPUCounters("NPU",
+                         []
+                         {
+                             auto counters = TestMocks::makeGPUCounters("NPU", 10.0, GIB, 16 * GIB);
+                             counters.kind = Platform::DeviceKind::Npu;
+                             return counters;
+                         }());
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+    const auto publication = model.publication();
+    ASSERT_NE(publication, nullptr);
+
+    EXPECT_EQ(idsOf(gpuDrawList(*publication)), (std::vector<std::string>{"dGPU"}));
+    EXPECT_EQ(GpuSection::totalDedicatedVramBytes(publication->snapshots), 8 * GIB) << "Without the NPU's 16 GiB";
+    ASSERT_EQ(publication->acceleratorSnapshots.size(), 1U);
+    EXPECT_EQ(publication->acceleratorSnapshots[0].gpuId, "NPU");
 }
 
 } // namespace

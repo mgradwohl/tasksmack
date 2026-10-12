@@ -2698,6 +2698,91 @@ TEST(ProcessModelTest, MergeGPUDataDedicatedSegmentIntegratedGpuIgnoresSharedRea
     EXPECT_EQ(snaps[0].gpuSharedMemoryBytes, 512U);
 }
 
+// #1799: a process's samples on the NPU (the probe tags them with its kind, PDH naming the NPU by
+// its LUID) are its NPU figures, never counted in its GPU ones: a process that only uses the NPU
+// has no GPU figures and no GPU device, and one using both has the iGPU's GPU figures alone.
+TEST(ProcessModelTest, MergeGPUDataRoutesNpuSamplesToTheNpuFields)
+{
+    constexpr std::uint64_t MIB = 1024ULL * 1024ULL;
+    const std::string npuLuid = "GPU_0x00000000_0x00018103";
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "npu_only", 'R', 1000, 500), makeCounter(200, "gpu_and_npu", 'R', 2000, 1000)});
+    processProbe->setTotalCpuTime(100000);
+
+    const auto onNpu = [&npuLuid](std::int32_t pid, double util, std::uint64_t sharedBytes)
+    {
+        auto counters = makeProcessGpuUsage(pid, npuLuid, util, 0, sharedBytes);
+        counters.kind = Platform::DeviceKind::Npu;
+        counters.activeEngines = {"Compute"};
+        return counters;
+    };
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withSharedMemoryGPU("iGPU", "Intel(R) Arc(TM) 140T GPU", "Intel")
+        .withAccelerator("NPU", "Intel(R) AI Boost", npuLuid)
+        .withProcessGPUCounters(onNpu(100, 60.0, 8 * MIB))
+        .withProcessGPUCounters(makeProcessGpuUsage(200, "iGPU", 20.0, 0, 300 * MIB))
+        .withProcessGPUCounters(onNpu(200, 80.0, 16 * MIB));
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh(); // Seed: the processes are listed before the GPU read, as in the app (#1417)
+    gpuModel->refresh();
+    processModel.refresh();
+
+    const auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 2U);
+    const auto byPid = [&snaps](std::int32_t pid) -> const Domain::ProcessSnapshot&
+    {
+        return *std::ranges::find(snaps, pid, &Domain::ProcessSnapshot::pid);
+    };
+
+    const Domain::ProcessSnapshot& npuOnly = byPid(100);
+    EXPECT_TRUE(npuOnly.gpuFieldsRead);
+    EXPECT_DOUBLE_EQ(npuOnly.gpuUtilPercent, 0.0) << "The NPU's 60% isn't GPU work";
+    EXPECT_EQ(npuOnly.gpuMemoryBytes, 0U);
+    EXPECT_EQ(npuOnly.gpuSharedMemoryBytes, 0U);
+    EXPECT_TRUE(npuOnly.gpuDevices.empty()) << "No GPU device, let alone a raw GPU_0x... id";
+    EXPECT_TRUE(npuOnly.perGpuUsage.empty());
+    EXPECT_TRUE(npuOnly.gpuEngines.empty());
+    EXPECT_DOUBLE_EQ(npuOnly.npuUtilPercent, 60.0);
+    EXPECT_EQ(npuOnly.npuMemoryBytes, 8 * MIB) << "The NPU's figures count its shared segment";
+    EXPECT_EQ(npuOnly.npuSharedMemoryBytes, 8 * MIB);
+    EXPECT_EQ(npuOnly.npuDedicatedMemoryBytes, 0U);
+    EXPECT_EQ(npuOnly.npuEngines, std::vector<std::string>{"Compute"});
+    EXPECT_EQ(npuOnly.npuDevices, "Intel(R) AI Boost");
+
+    const Domain::ProcessSnapshot& both = byPid(200);
+    EXPECT_DOUBLE_EQ(both.gpuUtilPercent, 20.0) << "The iGPU's own figure, not the NPU's 80%";
+    EXPECT_EQ(both.gpuMemoryBytes, 300 * MIB);
+    EXPECT_EQ(both.gpuDevices, "Intel(R) Arc(TM) 140T GPU");
+    EXPECT_EQ(both.gpuEngines, std::vector<std::string>{"3D"});
+    ASSERT_EQ(both.perGpuUsage.size(), 1U);
+    EXPECT_DOUBLE_EQ(both.npuUtilPercent, 80.0);
+    EXPECT_EQ(both.npuMemoryBytes, 16 * MIB);
+    EXPECT_EQ(both.npuDevices, "Intel(R) AI Boost");
+}
+
+// #1799: a sample on an adapter enumerated as an NPU is routed by the adapter's kind too, even
+// untagged, so a probe that doesn't tag its samples still never counts NPU work as GPU work.
+TEST(ProcessModelTest, MergeGPUDataRoutesAnUntaggedSampleOnAnEnumeratedNpuToTheNpuFields)
+{
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withAccelerator("NPU", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103")
+        .withProcessGPUCounters(makeProcessGpuUsage(100, "GPU_0x00000000_0x00018103", 45.0, 0, 4096));
+
+    const auto snaps = mergeOnce(std::move(gpuProbe));
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_DOUBLE_EQ(snaps[0].gpuUtilPercent, 0.0);
+    EXPECT_TRUE(snaps[0].gpuDevices.empty());
+    EXPECT_DOUBLE_EQ(snaps[0].npuUtilPercent, 45.0);
+    EXPECT_EQ(snaps[0].npuMemoryBytes, 4096U);
+}
+
 TEST(ProcessModelTest, MergeGPUDataWithNoGPUModel)
 {
     auto processProbe = std::make_unique<MockProcessProbe>();

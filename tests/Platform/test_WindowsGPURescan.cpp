@@ -17,6 +17,7 @@
 #include "Platform/Windows/NVMLGPUProbe.h"
 #include "Platform/Windows/PDHGPUProbe.h"
 #include "Platform/Windows/PDHGPUProbeImpl.h"
+#include "Platform/Windows/WindowsDriverNodes.h"
 #include "Platform/Windows/WindowsGPUProbe.h"
 
 #include <gtest/gtest.h>
@@ -56,6 +57,15 @@ struct WindowsGPUProbeTestAccessor
     static void setProcessPDH(WindowsGPUProbe& probe, std::unique_ptr<PDHGPUProbe> pdh)
     {
         probe.m_PDHProbe = std::move(pdh);
+    }
+    static void setAdapterPDH(WindowsGPUProbe& probe, std::unique_ptr<PDHGPUProbe> pdh)
+    {
+        probe.m_PDHAdapterProbe = std::move(pdh);
+    }
+    /// The PnP device nodes driver versions are read from (#1799), in place of this machine's.
+    static void setDriverNodes(WindowsGPUProbe& probe, std::vector<WindowsGraphics::DriverNode> (*list)())
+    {
+        probe.m_ListDriverNodes = list;
     }
 };
 
@@ -114,6 +124,7 @@ class WindowsGPURescanTest : public ::testing::Test
         DXGIGPUProbeTestAccessor::useFakes(WindowsGPUProbeTestAccessor::dxgi(probe));
         NVMLGPUProbeTestAccessor::inject(WindowsGPUProbeTestAccessor::nvml(probe), NVMLGPUProbeTestAccessor::fullFakeFunctions(), true);
         WindowsGPUProbeTestAccessor::dropPDH(probe);
+        WindowsGPUProbeTestAccessor::setDriverNodes(probe, [] { return std::vector<WindowsGraphics::DriverNode>{}; });
     }
 };
 
@@ -581,6 +592,12 @@ struct FakeProcessPDH
     std::vector<FakePDHSample> dedicatedMemory;
     PDH_HCOUNTER engineCounter = nullptr;
     PDH_HCOUNTER dedicatedCounter = nullptr;
+    // The adapter query's (fakeAdapterPDHProbe(), #1799): its own "GPU Engine" instances and the
+    // "GPU Adapter Memory" shared-usage ones.
+    std::vector<FakePDHSample> adapterEngines;
+    std::vector<FakePDHSample> adapterSharedMemory;
+    PDH_HCOUNTER adapterEngineCounter = nullptr;
+    PDH_HCOUNTER adapterSharedCounter = nullptr;
     std::uintptr_t nextHandle = 1;
 };
 
@@ -628,6 +645,14 @@ PDH_STATUS WINAPI fakePdhGetFormattedCounterArray(
     {
         list = &state.dedicatedMemory;
     }
+    else if (counter == state.adapterEngineCounter)
+    {
+        list = &state.adapterEngines;
+    }
+    else if (counter == state.adapterSharedCounter)
+    {
+        list = &state.adapterSharedMemory;
+    }
     std::vector<FakePDHSample>& samples = *list;
     const auto needed = static_cast<DWORD>(sizeof(PDH_FMT_COUNTERVALUE_ITEM_W) * samples.size());
     if (!samples.empty() && (*bufferSize < needed || buffer == nullptr))
@@ -674,6 +699,27 @@ std::unique_ptr<PDHGPUProbe> fakeProcessPDHProbe()
     impl->warmedUp = true;
     processPDH().engineCounter = impl->utilizationCounter;
     processPDH().dedicatedCounter = impl->dedicatedMemoryCounter;
+    return std::make_unique<PDHGPUProbe>(std::move(impl));
+}
+
+/// An adapter PDH probe (#1799) whose query is the fake above, already warmed up: adapter
+/// utilization from FakeProcessPDH::adapterEngines, memory in use from adapterSharedMemory.
+std::unique_ptr<PDHGPUProbe> fakeAdapterPDHProbe()
+{
+    auto impl = std::make_unique<PDHGPUProbe::Impl>();
+    impl->role = PDHGPUProbe::Role::Adapter;
+    impl->pdhOpenQuery = fakePdhOpenQuery;
+    impl->pdhCloseQuery = fakePdhCloseQuery;
+    impl->pdhAddEnglishCounter = fakePdhAddEnglishCounter;
+    impl->pdhCollectQueryData = fakePdhCollectQueryData;
+    impl->pdhGetFormattedCounterArray = fakePdhGetFormattedCounterArray;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - a fake query handle the fakes never dereference
+    impl->query = reinterpret_cast<PDH_HQUERY>(static_cast<std::uintptr_t>(1));
+    impl->initialized = true;
+    impl->ensureCounters();
+    impl->warmedUp = true;
+    processPDH().adapterEngineCounter = impl->utilizationCounter;
+    processPDH().adapterSharedCounter = impl->adapterSharedCounter;
     return std::make_unique<PDHGPUProbe>(std::move(impl));
 }
 
@@ -841,6 +887,235 @@ TEST_F(WindowsGPUProcessLuidFilterTest, TheListedSetFollowsARescan)
     EXPECT_EQ(findProcess(counters, 13, LUID_NVIDIA), nullptr) << "Kept apart again once it is removed";
     EXPECT_EQ(counters.size(), 1U);
     EXPECT_EQ(probe.otherAdapterUsage().size(), 4U);
+}
+
+// =============================================================================
+// NPUs and compute accelerators from DXCore, and PnP driver versions (#1799)
+// =============================================================================
+
+constexpr std::uint32_t LUID_ACCELERATOR = 0x300;
+constexpr std::uint64_t GIB = 1ULL << 30U;
+const PciLocation NPU_LOCATION{.bus = 0x00, .device = 0x0B, .function = 0};
+
+/// Intel AI Boost on a Core Ultra 7 255H: an MCDM NPU at 00:0b.0, which DXGI never lists.
+FakeAccelerator intelNPU(std::uint32_t luidLowPart = LUID_NPU)
+{
+    return makeAccelerator("Intel(R) AI Boost", VENDOR_INTEL, 0x7D1D, luidLowPart, NPU_LOCATION);
+}
+
+/// A non-NPU compute accelerator with memory of its own.
+FakeAccelerator computeAccelerator()
+{
+    FakeAccelerator accelerator = makeAccelerator(
+        "Contoso Inference Accelerator", 0x1234, 0x5678, LUID_ACCELERATOR, PciLocation{.bus = 3, .device = 0, .function = 0}, false);
+    accelerator.record.dedicatedAdapterMemory = 8 * GIB;
+    return accelerator;
+}
+
+/// The PnP device nodes: the Intel iGPU's and the NPU's, each with its driver version, and another
+/// node with the NPU's ids at another location, which mustn't be taken for it.
+std::vector<WindowsGraphics::DriverNode> fakeDriverNodes()
+{
+    const auto node = [](const char* hardwareId, DWORD address, const char* driverVersion)
+    {
+        return WindowsGraphics::DriverNode{
+            .hardwareId = hardwareId,
+            .bus = 0,
+            .address = address,
+            .driverVersion = driverVersion,
+            .driverDate = std::nullopt,
+        };
+    };
+    return {
+        node("PCI\\VEN_8086&DEV_9A49&SUBSYS_0CE51028&REV_01", 0x00020000, "32.0.101.6881"),
+        node("PCI\\VEN_8086&DEV_7D1D&SUBSYS_0CE51028&REV_05", 0x000B0000, "32.0.100.4778"),
+        node("PCI\\VEN_8086&DEV_7D1D&SUBSYS_00000000&REV_05", 0x000C0000, "1.0.0.0"),
+    };
+}
+
+const GPUInfo* findById(const std::vector<GPUInfo>& adapters, const std::string& id)
+{
+    const auto it = std::ranges::find(adapters, id, &GPUInfo::id);
+    return it == adapters.end() ? nullptr : &*it;
+}
+
+const GPUCounters* findCounters(const std::vector<GPUCounters>& counters, const std::string& id)
+{
+    const auto it = std::ranges::find(counters, id, &GPUCounters::gpuId);
+    return it == counters.end() ? nullptr : &*it;
+}
+
+class WindowsGPUAcceleratorTest : public WindowsGPUProcessLuidFilterTest
+{
+  protected:
+    /// A WindowsGPUProbe with fake DXGI, NVML, DXCore accelerators, PnP nodes and per-process PDH.
+    static void useAcceleratorFakes(WindowsGPUProbe& probe)
+    {
+        useFakesWithProcessPDH(probe);
+        DXGIGPUProbeTestAccessor::useFakeAccelerators(WindowsGPUProbeTestAccessor::dxgi(probe));
+        WindowsGPUProbeTestAccessor::setDriverNodes(probe, fakeDriverNodes);
+    }
+};
+
+// DXCore's NPU and compute accelerator are listed after DXGI's GPUs, with their kind, a stable
+// PCI id and LUID as a GPU has, and no sensors; an adapter DXGI already lists isn't listed again
+// whatever DXCore calls it. Every adapter's driver version is its PnP node's: the Intel GPU's and the
+// NPU's, matched by PCI location, which were "Unknown" before.
+TEST_F(WindowsGPUAcceleratorTest, DXCoreAcceleratorsAreListedWithTheirKindAndPnPDriverVersions)
+{
+    setAdapters({intelIGPU(), basicRenderDriver()});
+    const FakeAccelerator iGPUAsAccelerator =
+        makeAccelerator("Intel(R) UHD Graphics", VENDOR_INTEL, 0x9A49, LUID_IGPU, std::nullopt, false);
+    dxgiState().accelerators = {intelNPU(), iGPUAsAccelerator, computeAccelerator()};
+    WindowsGPUProbe probe;
+    useAcceleratorFakes(probe);
+
+    const auto adapters = probe.enumerateGPUs();
+
+    ASSERT_EQ(adapters.size(), 3U) << "The iGPU, the NPU and the compute accelerator";
+    const GPUInfo& iGPU = adapters[0];
+    EXPECT_EQ(iGPU.kind, DeviceKind::Gpu);
+    EXPECT_EQ(iGPU.luidId, pdhLuid(LUID_IGPU));
+    EXPECT_EQ(iGPU.driverVersion, "32.0.101.6881") << "A non-NVIDIA GPU's driver version, from PnP";
+
+    const GPUInfo& npu = adapters[1];
+    EXPECT_EQ(npu.kind, DeviceKind::Npu);
+    EXPECT_EQ(npu.id, "PCI_00:0B.0_8086:7D1D");
+    EXPECT_EQ(npu.luidId, pdhLuid(LUID_NPU));
+    EXPECT_EQ(npu.name, "Intel(R) AI Boost");
+    EXPECT_EQ(npu.vendor, "Intel");
+    EXPECT_EQ(npu.driverVersion, "32.0.100.4778") << "The node at the NPU's location, not the other with its ids";
+    EXPECT_TRUE(npu.memoryIsShared);
+    EXPECT_EQ(npu.pciLocation, std::optional<PciLocation>(NPU_LOCATION));
+    GPUCapabilities unknown; // What a missing sensor set would read as: fails the check below
+    unknown.hasTemperature = true;
+    const GPUCapabilities sensors = npu.sensorCapabilities.value_or(unknown);
+    EXPECT_TRUE(npu.sensorCapabilities.has_value());
+    EXPECT_FALSE(sensors.hasTemperature || sensors.hasPowerMetrics || sensors.hasClockSpeeds || sensors.hasFanSpeed ||
+                 sensors.hasEncoderDecoder)
+        << "No sensors";
+
+    const GPUInfo& accelerator = adapters[2];
+    EXPECT_EQ(accelerator.kind, DeviceKind::ComputeAccelerator);
+    EXPECT_EQ(accelerator.id, "PCI_03:00.0_1234:5678");
+    EXPECT_FALSE(accelerator.memoryIsShared) << "Its own dedicated memory";
+    EXPECT_EQ(accelerator.driverVersion, "Unknown") << "No PnP node for it";
+
+    EXPECT_EQ(std::ranges::count(adapters, pdhLuid(LUID_IGPU), &GPUInfo::luidId), 1) << "Listed once, by DXGI";
+}
+
+// The accelerators' counters carry their kind and memory size, and PDH's adapter utilization and
+// memory in use are matched to them by LUID, as a GPU's are: the NPU's 35% lands on the NPU, not
+// the iGPU, whose own 20% is unchanged.
+TEST_F(WindowsGPUAcceleratorTest, AnAcceleratorsUtilizationAndMemoryComeFromPDHByLuid)
+{
+    setAdapters({intelIGPU()});
+    dxgiState().accelerators = {intelNPU(), computeAccelerator()};
+    processPDH().adapterEngines = {
+        {.name = engineInstance(10, LUID_IGPU, L"3D"), .value = 20.0},
+        {.name = engineInstance(10, LUID_NPU, L"Compute"), .value = 35.0},
+    };
+    processPDH().adapterSharedMemory = {
+        {.name = std::format(L"luid_0x00000000_0x{:08X}_phys_0", LUID_IGPU), .value = 1.0e9},
+        {.name = std::format(L"luid_0x00000000_0x{:08X}_phys_0", LUID_NPU), .value = 8192.0},
+    };
+    WindowsGPUProbe probe;
+    useAcceleratorFakes(probe);
+    WindowsGPUProbeTestAccessor::setAdapterPDH(probe, fakeAdapterPDHProbe());
+    const auto adapters = probe.enumerateGPUs();
+    ASSERT_EQ(adapters.size(), 3U);
+
+    const auto counters = probe.readGPUCounters();
+
+    ASSERT_EQ(counters.size(), 3U);
+    const GPUCounters* iGPU = findCounters(counters, adapters[0].id);
+    ASSERT_NE(iGPU, nullptr);
+    EXPECT_EQ(iGPU->kind, DeviceKind::Gpu);
+    EXPECT_TRUE(iGPU->utilizationAvailable);
+    EXPECT_DOUBLE_EQ(iGPU->utilizationPercent, 20.0) << "Not the NPU's 35%";
+
+    const GPUCounters* npu = findCounters(counters, "PCI_00:0B.0_8086:7D1D");
+    ASSERT_NE(npu, nullptr);
+    EXPECT_EQ(npu->kind, DeviceKind::Npu);
+    EXPECT_TRUE(npu->utilizationAvailable);
+    EXPECT_DOUBLE_EQ(npu->utilizationPercent, 35.0);
+    EXPECT_TRUE(npu->memoryAvailable);
+    EXPECT_EQ(npu->memoryUsedBytes, 8192U) << "Its shared segment's usage";
+    EXPECT_EQ(npu->memoryTotalBytes, 16 * GIB) << "The shared system memory it may map";
+
+    const GPUCounters* accelerator = findCounters(counters, "PCI_03:00.0_1234:5678");
+    ASSERT_NE(accelerator, nullptr);
+    EXPECT_EQ(accelerator->kind, DeviceKind::ComputeAccelerator);
+    EXPECT_EQ(accelerator->memoryTotalBytes, 8 * GIB);
+    EXPECT_TRUE(accelerator->utilizationAvailable) << "A successful collect with no engine of it running: idle";
+    EXPECT_DOUBLE_EQ(accelerator->utilizationPercent, 0.0);
+}
+
+// An enumerated NPU's per-process samples are no longer kept apart (#1826) but returned, tagged as
+// the NPU's, so Domain counts them as NPU usage; the GPU's stay GPU samples, and the Basic Render
+// Driver's and the absent NVIDIA GPU's are still kept apart.
+TEST_F(WindowsGPUAcceleratorTest, ProcessSamplesOnAnEnumeratedNpuAreTaggedWithItsKind)
+{
+    setAdapters({intelIGPU(), basicRenderDriver()});
+    dxgiState().accelerators = {intelNPU()};
+    WindowsGPUProbe probe;
+    useAcceleratorFakes(probe);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+
+    const auto counters = probe.readProcessGPUCounters();
+
+    ASSERT_EQ(counters.size(), 3U);
+    const ProcessGPUCounters* iGPU = findProcess(counters, 10, LUID_IGPU);
+    ASSERT_NE(iGPU, nullptr);
+    EXPECT_EQ(iGPU->kind, DeviceKind::Gpu);
+    EXPECT_DOUBLE_EQ(iGPU->gpuUtilPercent, 20.0);
+    const ProcessGPUCounters* npuAndGPU = findProcess(counters, 10, LUID_NPU);
+    ASSERT_NE(npuAndGPU, nullptr);
+    EXPECT_EQ(npuAndGPU->kind, DeviceKind::Npu);
+    EXPECT_DOUBLE_EQ(npuAndGPU->gpuUtilPercent, 80.0);
+    EXPECT_EQ(npuAndGPU->gpuMemoryBytes, 8192U);
+    EXPECT_EQ(npuAndGPU->activeEngines, std::vector<std::string>{"Compute"});
+    const ProcessGPUCounters* npuOnly = findProcess(counters, 11, LUID_NPU);
+    ASSERT_NE(npuOnly, nullptr);
+    EXPECT_EQ(npuOnly->kind, DeviceKind::Npu);
+    EXPECT_DOUBLE_EQ(npuOnly->gpuUtilPercent, 60.0);
+
+    const auto other = probe.otherAdapterUsage();
+    ASSERT_EQ(other.size(), 2U) << "The Basic Render Driver's and the absent NVIDIA GPU's";
+    for (const auto& usage : other)
+    {
+        EXPECT_NE(usage.adapterLuid, pdhLuid(LUID_NPU));
+    }
+}
+
+// The accelerator set is compared at every full rescan: one removed, or back under a new LUID after
+// a driver reset, asks for a re-enumeration -- DXGI's factory stays current, as DXGI never lists them
+// -- and the NPU keeps its id, so its history carries on. A quick rescan doesn't look.
+TEST_F(WindowsGPUAcceleratorTest, AFullRescanPicksUpAChangedAccelerator)
+{
+    setAdapters({intelIGPU()});
+    dxgiState().accelerators = {intelNPU()};
+    WindowsGPUProbe probe;
+    useAcceleratorFakes(probe);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Full)) << "Nothing changed";
+
+    dxgiState().accelerators.clear();
+    const int listingsBefore = dxgiState().acceleratorListings;
+    EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick));
+    EXPECT_EQ(dxgiState().acceleratorListings, listingsBefore) << "A quick rescan doesn't list DXCore's adapters";
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full)) << "The NPU was removed";
+    const auto withoutNPU = probe.enumerateGPUs();
+    ASSERT_EQ(withoutNPU.size(), 1U);
+    EXPECT_EQ(withoutNPU[0].kind, DeviceKind::Gpu);
+
+    dxgiState().accelerators = {intelNPU(0x19000)};
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full)) << "Back under a new LUID";
+    const auto withNPU = probe.enumerateGPUs();
+    const GPUInfo* npu = findById(withNPU, "PCI_00:0B.0_8086:7D1D");
+    ASSERT_NE(npu, nullptr) << "The same id as before the reset";
+    EXPECT_EQ(npu->luidId, pdhLuid(0x19000));
+    EXPECT_EQ(npu->kind, DeviceKind::Npu);
 }
 
 } // namespace

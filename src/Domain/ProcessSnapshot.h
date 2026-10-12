@@ -66,6 +66,14 @@ struct ProcessSnapshot
     double gpuEncoderUtil = 0.0;               // Busiest GPU's encoder utilization
     double gpuDecoderUtil = 0.0;               // Busiest GPU's decoder utilization
 
+    // NPU usage (#1799): the process's use of the NPUs and other compute accelerators (Windows MCDM
+    // adapters), on the same terms as its GPU usage above but never counted in it. Read with the GPU
+    // fields (gpuFieldsRead); not shown yet.
+    double npuUtilPercent = 0.0;               // Busiest accelerator's utilization by this process, 0-100
+    std::uint64_t npuMemoryBytes = 0;          // As each accelerator's "used" figure counts it, summed
+    std::uint64_t npuDedicatedMemoryBytes = 0; // Dedicated memory across all accelerators
+    std::uint64_t npuSharedMemoryBytes = 0;    // Shared (system) memory across all accelerators
+
     // GDI object count (optional, Windows-only via GetGuiResources).
     // std::nullopt means the probe could not open the process with the required rights.
     // A stored value of 0 means the process is accessible but owns no GDI objects.
@@ -101,6 +109,11 @@ struct ProcessSnapshot
 
     // GPU engines (union of active engines across all GPUs)
     std::vector<std::string> gpuEngines; // ["3D", "Compute"]
+
+    // NPU engines (union of active engines across the NPUs and compute accelerators, #1799) and their
+    // names, comma-separated, as gpuEngines and gpuDevices are for the GPUs
+    std::vector<std::string> npuEngines; // ["Compute"]
+    std::string npuDevices;              // "Intel(R) AI Boost"
 
     // Per-GPU breakdown (for tooltip/details view)
     struct PerGPUUsage

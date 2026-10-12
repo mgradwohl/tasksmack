@@ -51,8 +51,14 @@ struct GPUPublishedHistory
 struct GPUPublication
 {
     std::uint64_t version = 0;
+    /// The GPUs only (DeviceKind::Gpu), so every GPU view and total -- the GPU tab, the Overview's
+    /// GPU tile and VRAM total -- sees no NPU or compute accelerator (#1799).
     std::vector<GPUSnapshot> snapshots;
     std::vector<Platform::GPUInfo> gpuInfo;
+    /// The NPUs and other compute accelerators (every other kind), in the same enumeration order
+    /// (#1799). Their history is in histories, by id, as a GPU's is.
+    std::vector<GPUSnapshot> acceleratorSnapshots;
+    std::vector<Platform::GPUInfo> acceleratorInfo;
     /// False if enumerating the GPUs failed, in which case an empty gpuInfo means "could not look",
     /// not "looked and found none". Consumers that report the absence of a GPU must check this.
     bool gpuInfoKnown = false;
@@ -67,6 +73,7 @@ struct GPUAdapterIdentity
     std::string id;
     std::string luidId; ///< Empty where the platform has no LUID
     std::string name;
+    Platform::DeviceKind kind = Platform::DeviceKind::Gpu; ///< GPUInfo::kind (#1799)
     bool isIntegrated = false;
     bool memoryIsShared = false; ///< GPUInfo::memoryIsShared
 };
@@ -163,13 +170,15 @@ class GPUModel : public ISamplable
     void setMaxHistorySeconds(double seconds);
     [[nodiscard]] double maxHistorySeconds() const;
 
-    // Get current snapshots (thread-safe)
+    // Get current snapshots (thread-safe): the GPUs' only, as GPUPublication::snapshots (#1799)
     [[nodiscard]] std::vector<GPUSnapshot> snapshots() const;
 
     // GPU info: enumerated at construction, and again whenever the probe's rescanGPUs() reports a
     // change (a GPU added, removed or lost, or a sleeping adapter's sensors now discoverable) (#1116,
-    // #1289). Each refresh's publication carries the current list.
+    // #1289). Each refresh's publication carries the current list. The GPUs only, as
+    // GPUPublication::gpuInfo; the NPUs and compute accelerators are in acceleratorInfo() (#1799).
     [[nodiscard]] std::vector<Platform::GPUInfo> gpuInfo() const;
+    [[nodiscard]] std::vector<Platform::GPUInfo> acceleratorInfo() const;
 
     // Capabilities (re-read along with the GPU info)
     [[nodiscard]] Platform::GPUCapabilities capabilities() const;

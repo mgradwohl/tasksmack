@@ -4,13 +4,29 @@
 #include "NVMLGPUProbe.h"
 #include "PDHGPUProbe.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/Windows/WindowsDriverNodes.h"
+#include "WinString.h"
 #include "WindowsGPUProbeMath.h"
 
 #include <spdlog/spdlog.h>
 
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <setupapi.h>
+#include <devpropdef.h>
+// clang-format on
+
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -21,11 +37,75 @@
 namespace Platform
 {
 
+namespace
+{
+
+// DEVPKEY_Device_DriverVersion (devpkey.h), spelled out so no translation unit needs <initguid.h>.
+constexpr DEVPROPKEY PNP_DRIVER_VERSION_KEY{
+    .fmtid = {.Data1 = 0xa8b865dd, .Data2 = 0x2e3d, .Data3 = 0x4094, .Data4 = {0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6}},
+    .pid = 3,
+};
+
+/// Every present PCI device node's first hardware id, bus location and driver version, whatever its
+/// class: a GPU is a Display device and an NPU a ComputeAccelerator one, and a compute accelerator
+/// may be in another class again (#1799). Read from the PnP manager's records, so no device is woken.
+// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) - SetupAPI byte buffers
+[[nodiscard]] std::vector<WindowsGraphics::DriverNode> listPciDriverNodes()
+{
+    std::vector<WindowsGraphics::DriverNode> nodes;
+    HDEVINFO devices = SetupDiGetClassDevsW(nullptr, L"PCI", nullptr, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+    if (devices == INVALID_HANDLE_VALUE)
+    {
+        return nodes;
+    }
+    SP_DEVINFO_DATA device{};
+    device.cbSize = sizeof(device);
+    DWORD index = 0;
+    while (SetupDiEnumDeviceInfo(devices, index, &device) != FALSE)
+    {
+        ++index;
+        WindowsGraphics::DriverNode node;
+        std::array<wchar_t, 512> text{}; // the last element stays 0
+        constexpr auto TEXT_BYTES = static_cast<DWORD>((512 - 1) * sizeof(wchar_t));
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_HARDWAREID, nullptr, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr) != FALSE)
+        {
+            node.hardwareId = WinString::wideToUtf8(text.data()); // a REG_MULTI_SZ's first string
+        }
+        DWORD value = 0;
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_BUSNUMBER, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
+        {
+            node.bus = value;
+        }
+        if (SetupDiGetDeviceRegistryPropertyW(
+                devices, &device, SPDRP_ADDRESS, nullptr, reinterpret_cast<PBYTE>(&value), sizeof(value), nullptr) != FALSE)
+        {
+            node.address = value;
+        }
+        DEVPROPTYPE type = 0;
+        text.fill(L'\0');
+        if (SetupDiGetDevicePropertyW(
+                devices, &device, &PNP_DRIVER_VERSION_KEY, &type, reinterpret_cast<PBYTE>(text.data()), TEXT_BYTES, nullptr, 0) != FALSE &&
+            type == DEVPROP_TYPE_STRING)
+        {
+            node.driverVersion = WinString::wideToUtf8(text.data());
+        }
+        nodes.push_back(std::move(node));
+    }
+    SetupDiDestroyDeviceInfoList(devices);
+    return nodes;
+}
+// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+
+} // namespace
+
 WindowsGPUProbe::WindowsGPUProbe()
     : m_DXGIProbe(std::make_unique<DXGIGPUProbe>()),
       m_NVMLProbe(std::make_unique<NVMLGPUProbe>()),
       m_PDHProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Process)),
-      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Adapter))
+      m_PDHAdapterProbe(std::make_unique<PDHGPUProbe>(PDHGPUProbe::Role::Adapter)),
+      m_ListDriverNodes(listPciDriverNodes)
 {
     std::string probeSummary = "DXGI";
     if (m_NVMLProbe->isAvailable())
@@ -96,17 +176,33 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
         m_DXGIIdIsIntegrated.clear();
         // Sensor metrics are per adapter: its own NVML device's, or none without one (#1040).
         assignSensorCapabilities(gpus, nvmlGPUs, m_DXGIToNVMLMap, nvmlCaps);
+
+        // The NPUs and compute accelerators DXGI never lists, after the GPUs, so the NVML mapping's
+        // positions above still hold (#1799). They have no sensors (enumerateAccelerators()).
+        std::vector<GPUInfo> accelerators = m_DXGIProbe->enumerateAccelerators();
+        gpus.insert(gpus.end(), std::make_move_iterator(accelerators.begin()), std::make_move_iterator(accelerators.end()));
+
+        // Every adapter's driver version from its PnP device node: DXGI has none, and DXCore's is
+        // 0.0.0.0 for an NPU, which has no user-mode driver (#1799).
+        if (m_ListDriverNodes != nullptr)
+        {
+            WindowsGraphics::applyDriverVersions(gpus, m_ListDriverNodes());
+        }
+
         for (const auto& gpu : gpus)
         {
-            m_DXGIIdIsIntegrated[gpu.id] = gpu.isIntegrated;
+            // The segment its memory in use is read from: shared for an integrated GPU or an NPU
+            // without memory of its own (#1164)
+            m_DXGIIdIsIntegrated[gpu.id] = gpu.memoryIsShared;
             if (!gpu.luidId.empty())
             {
                 m_DXGIIdToLuidId[gpu.id] = gpu.luidId;
                 spdlog::debug("WindowsGPUProbe: LUID mapping: {} → {}", gpu.id, gpu.luidId);
             }
         }
-        // Which adapters' per-process samples count (#1826)
-        m_ListedGPULuids = listedGPULuids(gpus);
+        // Which adapters' per-process samples count (#1826), and as which kind (#1799)
+        m_ListedAdapterLuids = listedAdapterLuids(gpus);
+        m_AdapterKindByLuid = adapterKindsByLuid(gpus);
 
         return gpus;
     }
@@ -199,6 +295,12 @@ std::vector<GPUCounters> WindowsGPUProbe::readGPUCounters()
         // Their memory in use is PDH's current figure, not the repeated NVML one.
         excludeIdleNVMLMemory(nvmlMemoryIds, idleDevices, m_NVMLAdapterIds);
     }
+
+    // The NPUs' and compute accelerators' counters, after the GPUs' (whose positions NVML's merge
+    // above relies on): their utilization and memory in use are PDH's alone, by LUID, like a GPU's
+    // (#1799).
+    std::vector<GPUCounters> accelerators = m_DXGIProbe->readAcceleratorCounters();
+    counters.insert(counters.end(), std::make_move_iterator(accelerators.begin()), std::make_move_iterator(accelerators.end()));
 
     // PDH per-adapter utilization matched to each adapter
     mergePDHAdapterUtilization(counters, nvmlSourcedIds);
@@ -307,15 +409,16 @@ std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()
     if (m_PDHProbe && m_PDHProbe->isAvailable())
     {
         auto pdhCounters = m_PDHProbe->readProcessGPUCounters();
-        // Only the adapters listed as GPUs count as GPU work: PDH also has the NPU's, other compute
-        // accelerators' and the Basic Render Driver's instances, which are kept apart (#1826) for
-        // NPU reporting (#1799).
-        m_OtherAdapterUsage = separateOtherAdapterUsage(pdhCounters, m_ListedGPULuids);
+        // Only the listed adapters' samples count: PDH also has the Basic Render Driver's instances
+        // (and an accelerator's DXCore couldn't enumerate), which are kept apart (#1826).
+        m_OtherAdapterUsage = separateOtherAdapterUsage(pdhCounters, m_ListedAdapterLuids);
         if (!m_OtherAdapterUsage.empty())
         {
-            spdlog::debug("WindowsGPUProbe: {} per-process sample(s) on adapters not listed as GPUs, kept out of GPU figures",
+            spdlog::debug("WindowsGPUProbe: {} per-process sample(s) on adapters not listed, kept out of every figure",
                           m_OtherAdapterUsage.size());
         }
+        // An NPU's or compute accelerator's samples are its kind's, never a GPU's (#1799)
+        tagProcessCounterKinds(pdhCounters, m_AdapterKindByLuid);
         if (!pdhCounters.empty())
         {
             spdlog::debug("WindowsGPUProbe: Got {} per-process GPU entries from PDH (utilization + memory)", pdhCounters.size());
