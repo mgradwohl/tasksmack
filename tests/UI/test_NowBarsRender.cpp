@@ -1,8 +1,9 @@
 /// @file test_NowBarsRender.cpp
 /// @brief UI::Widgets::renderHistoryWithNowBars()'s other paths (#1395), headless: bars only (history
 /// unavailable: no chart, one bar per value, each with its tooltip on hover), no bars (just the chart),
-/// RenderMetrics capture (the Ctrl+Shift+M overlay's per-chart samples), and a value strip in a row too
-/// narrow for it, which falls back to compact labels.
+/// RenderMetrics capture (the Ctrl+Shift+M overlay's per-chart samples), a value strip in a row too
+/// narrow for it, which falls back to compact labels, the table layout with compact spacing (its bars'
+/// tooltips), and a history chart drawn with anti-aliasing off.
 
 #include "UI/ChartWidgets.h"
 #include "UI/RenderMetrics.h"
@@ -65,7 +66,8 @@ class NowBarsRenderTest : public ::testing::Test
     };
 
     /// One frame: a window @p width wide holding renderHistoryWithNowBars(), with the text it drew.
-    static Drawn frame(std::span<const NowBar> bars, bool barsOnly, NowBarValues values, float width = DISPLAY_WIDTH)
+    static Drawn
+    frame(std::span<const NowBar> bars, bool barsOnly, NowBarValues values, float width = DISPLAY_WIDTH, bool compactSpacing = false)
     {
         Drawn drawn;
         ImGui::NewFrame();
@@ -88,7 +90,7 @@ class NowBarsRenderTest : public ::testing::Test
             bars,
             barsOnly,
             0,
-            false,
+            compactSpacing,
             values);
         drawn.text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
@@ -163,6 +165,51 @@ TEST_F(NowBarsRenderTest, ANarrowRowShortensTheStripEntriesInsteadOfDroppingThem
     EXPECT_TRUE(narrow.plotCalled);
     EXPECT_TRUE(narrow.text.contains("CPU Total")) << narrow.text;
     EXPECT_TRUE(narrow.text.contains("\xE2\x80\xA6")) << narrow.text; // U+2026
+}
+
+TEST_F(NowBarsRenderTest, ABarBesideTheChartSaysWhatItIsOnHoverInACompactTable)
+{
+    const std::array<NowBar, 2> bars = twoBars();
+    static_cast<void>(frame(bars, false, NowBarValues::None, DISPLAY_WIDTH, /*compactSpacing=*/true));
+    // The bars sit in the table's right-hand column: sweep its lower half until a bar's tooltip shows.
+    bool shown = false;
+    for (int column = 0; column < 40 && !shown; ++column)
+    {
+        for (int row = 1; row <= 6 && !shown; ++row)
+        {
+            ImGui::GetIO().AddMousePosEvent(DISPLAY_WIDTH - 4.0F - (4.0F * static_cast<float>(column)), 20.0F * static_cast<float>(row));
+            static_cast<void>(frame(bars, false, NowBarValues::None, DISPLAY_WIDTH, true));
+            const std::string text = frame(bars, false, NowBarValues::None, DISPLAY_WIDTH, true).text;
+            shown = text.contains("CPU Total: 42%") || text.contains("CPU User: 30%");
+        }
+    }
+    EXPECT_TRUE(shown);
+}
+
+TEST_F(NowBarsRenderTest, AChartWithAntiAliasingOffClearsItsLinesFlagsOnlyWhileItDraws)
+{
+    setChartAntiAliasingEnabled(false);
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+    ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+    ImGui::Begin("Charts", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+    const ImDrawList* list = ImGui::GetWindowDrawList();
+    const ImDrawListFlags before = list->Flags;
+    ImDrawListFlags during = 0;
+    bool active = false;
+    {
+        const HistoryChart chart(percentHistoryConfig("##AntiAliasingOff", -60.0, 0.0));
+        active = chart.active();
+        during = list->Flags;
+    }
+    const ImDrawListFlags after = list->Flags;
+    ImGui::End();
+    ImGui::Render();
+    setChartAntiAliasingEnabled(true);
+
+    ASSERT_TRUE(active);
+    EXPECT_EQ(during & CHART_ANTI_ALIASING_FLAGS_MASK, 0); // the chart's lines drawn without AA
+    EXPECT_EQ(after, before);                              // the window's own flags given back
 }
 
 } // namespace
