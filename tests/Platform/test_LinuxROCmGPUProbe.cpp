@@ -792,6 +792,28 @@ void makeAmdPciDevice(const std::filesystem::path& root,
     std::filesystem::create_symlink("/nonexistent/drivers/" + driver, dir / "driver");
 }
 
+// #1395: ROCm SMI that starts but reports no GPUs leaves the probe unavailable, and an unavailable probe
+// reads nothing: no counters and no capabilities.
+TEST(LinuxROCmGPUProbeTest, RocmSmiWithNoGpusIsUnavailable)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock ROCm library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const RocmMockControls controls;
+    ASSERT_TRUE(controls.available());
+    controls.setDeviceCount(0);
+
+    ROCmGPUProbe probe(TestSupport::ISOLATED_PCI_ROOT);
+    EXPECT_FALSE(probe.isAvailable());
+    EXPECT_TRUE(probe.enumerateGPUs().empty());
+    EXPECT_TRUE(probe.readGPUCounters().empty());
+    const GPUCapabilities caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasTemperature);
+    EXPECT_FALSE(caps.hasPowerMetrics);
+}
+
 // #1116: an AMD GPU hot-plugged after startup gets ROCm SMI re-initialised at the next full rescan;
 // the GPUs already there keep their ids.
 TEST(LinuxROCmGPUProbeTest, AHotPluggedGpuIsFoundOnTheNextFullRescan)
