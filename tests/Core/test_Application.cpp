@@ -1157,6 +1157,73 @@ TEST(ApplicationHeadlessTest, LayersAttachReceiveEventsAndDetach)
     EXPECT_EQ(counts.detached, 1); // Not detached a second time by the destructor
 }
 
+namespace
+{
+
+/// A layer whose onEvent() throws something that is not a std::exception (#1395).
+class ThrowingNonStdLayer : public Core::Layer
+{
+  public:
+    ThrowingNonStdLayer() : Layer("ThrowingNonStdLayer")
+    {}
+
+    void onEvent(Core::Event& /*event*/) override
+    {
+        throw 42; // NOLINT(hicpp-exception-baseclass) - what is under test: a throw no std::exception handler catches
+    }
+};
+
+} // namespace
+
+TEST(ApplicationHeadlessTest, ALayerThrowingANonStdExceptionDoesNotStopTheOthers)
+{
+    // #1395: guardLayerCall()'s catch (...) -- logged as an unknown exception, the next layer still runs.
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    HeadlessLayerCounts counts;
+    Core::Application app(spec);
+    app.pushLayer<HeadlessCountingLayer>(counts);
+    app.pushLayer<ThrowingNonStdLayer>();
+    Core::WindowCloseEvent event;
+    EXPECT_NO_THROW(app.raiseEvent(event));
+    EXPECT_EQ(counts.events, 1);
+    app.detachAllLayers();
+}
+
+TEST(ApplicationHeadlessTest, InvalidWindowDimensionsFallBackToTheDefaults)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    spec.Width = 0;
+    spec.Height = -5;
+    const Core::Application app(spec);
+    EXPECT_FALSE(app.hasWindow());
+}
+
+TEST(ApplicationHeadlessTest, ResizePerfTracingCanBeTurnedOnFromTheEnvironment)
+{
+    // TASKSMACK_TRACE_RESIZE_PERF: the trace's clock anchor is logged at construction.
+    ASSERT_EQ(SDL_setenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF", "1", 1), 0);
+    {
+        Core::ApplicationSpecification spec;
+        spec.Headless = true;
+        const Core::Application app(spec);
+        EXPECT_EQ(&Core::Application::get(), &app);
+    }
+    SDL_unsetenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF");
+}
+
+TEST(ApplicationHeadlessTest, SetInstanceRefusesASecondOwnedInstance)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    auto first = std::make_unique<Core::Application>(spec);
+    auto second = std::make_unique<Core::Application>(spec);
+    Core::Application::setInstance(std::move(first));
+    EXPECT_THROW(Core::Application::setInstance(std::move(second)), std::logic_error);
+    Core::Application::setInstance(nullptr);
+}
+
 // =============================================================================
 // FramePacing Tests (pure decision logic extracted from Application::run())
 // =============================================================================
