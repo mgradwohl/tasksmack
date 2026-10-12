@@ -3,6 +3,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/PlatformConfig.h"
+#include "Platform/ProcessTypes.h"
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
 #include "Platform/Linux/NetlinkSocketStats.h"
@@ -266,14 +267,20 @@ class LinuxProcessProbe : public IProcessProbe
             return std::hash<std::string_view>{}(text);
         }
     };
-    /// Whether each set of cgroups (a /proc/[pid]/cgroup file's contents) is frozen, within one pass.
-    using FrozenByCgroup = std::unordered_map<std::string, bool, StringHash, std::equal_to<>>;
+    /// What a set of cgroups (a /proc/[pid]/cgroup file's contents) says of its processes.
+    struct CgroupFacts
+    {
+        bool frozen = false;
+        std::string container; // CgroupContainer::containerFromCgroups()
+    };
+    /// The facts of each set of cgroups seen, within one pass.
+    using FactsByCgroup = std::unordered_map<std::string, CgroupFacts, StringHash, std::equal_to<>>;
 
-    /// Get process status from cgroups (Suspended state detection); /proc/[pid]/cgroup is read
-    /// through `pidDirFd`. The freeze state is read once per pass for each distinct set of cgroups
-    /// (`frozenByCgroup`): processes sharing a cgroup share the answer.
-    [[nodiscard]] static std::string
-    getProcessStatus(int pidDirFd, const std::filesystem::path& cgroupRoot, FrozenByCgroup& frozenByCgroup);
+    /// Fill `counters`' status (Suspended, from the cgroup freezer) and container from its cgroups;
+    /// /proc/[pid]/cgroup is read through `pidDirFd`. Both are worked out once per pass for each
+    /// distinct set of cgroups (`factsByCgroup`): processes sharing a cgroup share the answer.
+    static void
+    readCgroupFacts(int pidDirFd, const std::filesystem::path& cgroupRoot, FactsByCgroup& factsByCgroup, ProcessCounters& counters);
 
     /// Read total CPU time from /proc/stat
     [[nodiscard]] uint64_t readTotalCpuTime() const;

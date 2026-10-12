@@ -93,6 +93,7 @@ struct ProcessSnapshot
     std::string status;       // Process status (e.g., "Suspended", "Efficiency Mode")
     std::string gpuDevices;   // Comma-separated GPU IDs: "0" or "0,1"
     std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
+    std::string container;    // Container: "docker:1a2b3c4d5e6f", "lxc:web" (Linux cgroups; empty if in none)
     std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
 
     // Tree hierarchy (computed once per snapshot)

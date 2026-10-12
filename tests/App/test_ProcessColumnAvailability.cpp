@@ -46,6 +46,15 @@ TEST(ProcessColumnAvailabilityTest, SharedMemoryIsUnsupportedOnWindows)
     EXPECT_FALSE(isSupported(ProcessColumn::Power, caps));
 }
 
+TEST(ProcessColumnAvailabilityTest, ContainerIsLinuxOnly)
+{
+    // #805: containers are read from cgroups, which Windows has none of.
+    EXPECT_FALSE(isSupported(ProcessColumn::Container, windowsLikeCapabilities()));
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Container, windowsLikeCapabilities()),
+              ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_FALSE(rowFormatOptions(windowsLikeCapabilities()).hasContainer);
+}
+
 TEST(ProcessColumnAvailabilityTest, StatusStaysSupportedWherePresent)
 {
     // Status is sparse on Windows (Suspended, Efficiency Mode), not unsupported.
@@ -104,6 +113,7 @@ TEST(ProcessColumnAvailabilityTest, UnsupportedNoteWinsOverThePerProcessNote)
     caps.hasNetworkCounters = true;
     caps.hasPowerUsage = false;
     caps.hasStatus = true;
+    caps.hasContainer = true;
     caps.hasSharedMemory = true;
     return caps;
 }
@@ -348,6 +358,7 @@ TEST(ProcessColumnAvailabilityTest, RowFormatOptionsMirrorTheCapabilities)
     EXPECT_TRUE(options.hasPublisher);
     EXPECT_TRUE(options.hasProcessType);
     EXPECT_FALSE(rowFormatOptions(linuxWithoutRaplCapabilities()).hasPublisher);
+    EXPECT_TRUE(rowFormatOptions(linuxWithoutRaplCapabilities()).hasContainer);
 
     // And every column the options gate agrees with isSupported().
     const Platform::ProcessCapabilities none{};

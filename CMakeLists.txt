@@ -368,6 +368,7 @@ if(UNIX AND NOT APPLE)
         src/Platform/Linux/LinuxProcessModulesReader.h
         src/Platform/Linux/LinuxProcessSecurityReader.h
         src/Platform/Linux/ProcStatusSecurityParser.h
+        src/Platform/Linux/CgroupContainer.h
         src/Platform/Linux/ProcMapsParser.h
         src/Platform/Linux/LinuxProcessOpenFilesReader.h
         src/Platform/Linux/ProcFdParser.h

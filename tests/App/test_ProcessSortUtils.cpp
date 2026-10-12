@@ -68,6 +68,7 @@ using Domain::ProcessSnapshot;
     snap.status = s;
     snap.gpuDevices = s;
     snap.publisher = s;
+    snap.container = s;
     snap.processType = s;
 
     // Same size (1) for both, so the generic per-column loop below exercises the

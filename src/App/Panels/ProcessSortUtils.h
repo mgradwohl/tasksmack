@@ -103,6 +103,8 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compare(a.gpuDevices, b.gpuDevices);
     case ProcessColumn::Publisher:
         return compare(a.publisher, b.publisher);
+    case ProcessColumn::Container:
+        return compare(a.container, b.container);
     case ProcessColumn::Type:
         return compare(a.processType, b.processType);
     case ProcessColumn::GdiObjects:

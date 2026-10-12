@@ -24,6 +24,7 @@ enum class ProcessColumn : std::uint8_t
     User,
     PPID,
     Publisher, // Software publisher/vendor (Windows-only, empty on Linux)
+    Container, // Container from cgroups: "docker:1a2b3c4d5e6f" (Linux-only)
                // State - what is it doing?
     State,
     Status,
@@ -72,6 +73,7 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::User,
             ProcessColumn::PPID,
             ProcessColumn::Publisher,
+            ProcessColumn::Container,
             // State
             ProcessColumn::State,
             ProcessColumn::Status,
@@ -150,6 +152,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="PPID", .menuName="Parent PID", .configKey="ppid", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Parent process ID"},
         // Publisher (Windows-only)
         {.name="Publisher", .menuName="Publisher", .configKey="publisher", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Software publisher or vendor name from the process executable (Windows only)"},
+        // Container (Linux-only)
+        {.name="Container", .menuName="Container", .configKey="container", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="Container the process runs in, from its cgroup: runtime and short ID (docker, podman, containerd, cri-o, k8s) or name (lxc, nspawn, machine) (Linux only)"},
 
         // === State ===
         // State
@@ -247,6 +251,7 @@ enum class ColumnAlign : std::uint8_t
     case ProcessColumn::Name:
     case ProcessColumn::User:
     case ProcessColumn::Publisher:
+    case ProcessColumn::Container:
     case ProcessColumn::Status:
     case ProcessColumn::Type:
     case ProcessColumn::GpuEngine:

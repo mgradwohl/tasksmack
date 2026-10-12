@@ -46,6 +46,7 @@ pid = true
 power = true
 ppid = false
 publisher = false
+container = false
 resident = true
 shared = false
 start_time = false

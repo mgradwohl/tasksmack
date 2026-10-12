@@ -115,10 +115,10 @@ TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
 TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
 {
     constexpr auto expected = std::to_array<std::string_view>({
-        "pid",         "name",        "user",        "ppid",        "publisher",  "state",         "status",     "type",
-        "cpu_percent", "mem_percent", "resident",    "virtual",     "shared",     "peak_resident", "nice",       "affinity",
-        "threads",     "handles",     "gdi_objects", "cpu_time",    "start_time", "io_read",       "io_write",   "page_faults",
-        "net_sent",    "net_recv",    "power",       "gpu_percent", "gpu_memory", "gpu_engine",    "gpu_device", "command",
+        "pid",         "name",        "user",       "ppid",       "publisher",  "container",     "state",       "status",   "type",
+        "cpu_percent", "mem_percent", "resident",   "virtual",    "shared",     "peak_resident", "nice",        "affinity", "threads",
+        "handles",     "gdi_objects", "cpu_time",   "start_time", "io_read",    "io_write",      "page_faults", "net_sent", "net_recv",
+        "power",       "gpu_percent", "gpu_memory", "gpu_engine", "gpu_device", "command",
     });
     ASSERT_EQ(expected.size(), processColumnCount());
     for (const auto col : allProcessColumns())
@@ -192,8 +192,9 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
     EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
     EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);   // Windows publisher — after User(2) and PPID(3)
-    EXPECT_EQ(toIndex(ProcessColumn::Type), 7);        // Process type — after State(5) and Status(6)
-    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 18); // GDI count — after Handles(17)
+    EXPECT_EQ(toIndex(ProcessColumn::Container), 5);   // Linux container — last of the identity columns (#805)
+    EXPECT_EQ(toIndex(ProcessColumn::Type), 8);        // Process type — after State(6) and Status(7)
+    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 19); // GDI count — after Handles(18)
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)
