@@ -1283,6 +1283,21 @@ TEST(ProcessModelTest, NetworkRatesHandleCounterDecrease)
     EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 500.0);
 }
 
+TEST(ProcessModelTest, NetworkRatesZeroWhenTheReadStampGoesBackwards)
+{
+    // #1395: a probe whose read stamp went back (a clock reset under it) gives no interval to measure
+    // over: that refresh reads 0, not a rate over a negative or wrapped time.
+    NetworkRateFixture fixture;
+    constexpr std::uint64_t SECOND_NS = 1'000'000'000;
+    fixture.sample(std::chrono::milliseconds{0}, 1000, 2000, 10 * SECOND_NS);
+    auto snap = fixture.sample(std::chrono::seconds{1}, 3000, 6000, 11 * SECOND_NS);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 2000.0);
+
+    snap = fixture.sample(std::chrono::seconds{1}, 5000, 10000, 5 * SECOND_NS);
+    EXPECT_DOUBLE_EQ(snap.netSentBytesPerSec, 0.0);
+    EXPECT_DOUBLE_EQ(snap.netReceivedBytesPerSec, 0.0);
+}
+
 TEST(ProcessModelTest, NetworkRatesZeroForImplausiblyShortInterval)
 {
     // An interval under half the minimum refresh interval (the seed refresh followed at once by
@@ -3305,6 +3320,35 @@ TEST(ProcessModelTest, MergeGPUDataWithLUIDBasedMatching)
     EXPECT_EQ(snaps[0].gpuMemoryBytes, 768ULL * 1024 * 1024); // 512 + 256 MB
     // Should include both GPU names
     EXPECT_FALSE(snaps[0].gpuDevices.empty());
+}
+
+// #1395: per-process GPU usage reported under an adapter's LUID-based ID (as PDH names adapters on
+// Windows) is matched to the adapter all the same: its name and integrated flag.
+TEST(ProcessModelTest, MergeGPUDataMatchesAnAdapterByItsLuid)
+{
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "test_proc", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    gpuProbe->withCapabilities(caps);
+    gpuProbe->withGPU("GPU0", "Integrated GPU", "Vendor", /*isIntegrated=*/true).withLuid("GPU0", "GPU_0x00000000_0x0000F78E");
+    gpuProbe->withProcessGPU(100, "GPU_0x00000000_0x0000F78E", 64ULL * 1024 * 1024);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.refresh();
+    gpuModel->refresh();
+    processModel.refresh();
+
+    const auto snaps = processModel.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    ASSERT_EQ(snaps[0].perGpuUsage.size(), 1U);
+    EXPECT_EQ(snaps[0].perGpuUsage[0].gpuName, "Integrated GPU");
+    EXPECT_TRUE(snaps[0].perGpuUsage[0].isIntegrated);
 }
 
 // The per-GPU breakdown carries each adapter's integrated flag, not just its name. It used to be

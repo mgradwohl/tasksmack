@@ -89,6 +89,19 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Also identifies GPU @p id by @p luid (Windows: PDH names adapters by LUID, "GPU_0x..._0x...").
+    MockGPUProbe& withLuid(const std::string& id, const std::string& luid)
+    {
+        for (auto& info : m_GPUInfo)
+        {
+            if (info.id == id)
+            {
+                info.luidId = luid;
+            }
+        }
+        return *this;
+    }
+
     /// An integrated GPU whose memory figures count its shared segment, as on Windows (#1164).
     MockGPUProbe& withSharedMemoryGPU(const std::string& id, const std::string& name, const std::string& vendor = "Test")
     {
