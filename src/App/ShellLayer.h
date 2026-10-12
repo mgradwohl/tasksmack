@@ -17,6 +17,7 @@
 #include "TabLabel.h"
 
 #include <SDL3/SDL_video.h>
+#include <imgui.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -67,6 +68,8 @@ class ShellLayer : public Core::Layer
     /// renderTabBar() and before the tabs draw, whose render takes the request this frame.
     void handleTabShortcut(KeyboardShortcuts::ShortcutAction action);
     void renderTabBar();
+    /// The Process Details tab's program icon for this frame, and the label that makes room for it (#1800).
+    void updateDetailsTabIcon();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();
     void applyContentMinimumSize(float widthPx, float heightPx);
@@ -139,6 +142,12 @@ class ShellLayer : public Core::Layer
     // thinks is selected (#1140).
     std::string m_CachedSystemTabLabel;      // ICON + hostname: rebuilt in onAttach()
     TabLabel::CachedLabel m_DetailsTabLabel; // ICON + process name: rebuilt when the name changes
+    // The Process Details tab with the program's own icon (#1800): spaces the icon is drawn over, then
+    // the name. Rebuilt when the name, or the number of spaces the icon takes, changes.
+    TabLabel::CachedLabel m_DetailsTabIconLabel;
+    std::size_t m_DetailsTabIconSpaces = 0;
+    ImTextureID m_DetailsTabIcon = ImTextureID_Invalid; // This frame's; ImTextureID_Invalid: the glyph label
+    float m_DetailsTabIconSize = 0.0F;
 
     // The tab bar's items, rebuilt each frame into the same storage (no per-frame allocation once grown).
     std::vector<MainTabBarView::Tab> m_TabBarItems;

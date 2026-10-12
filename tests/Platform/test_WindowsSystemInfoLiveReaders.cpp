@@ -159,14 +159,28 @@ TEST(WindowsThermalZonesLiveTest, ZonesAreNamedOrAbsentWithTheStatus)
 
 // ========== Platform security ==========
 
-TEST(WindowsPlatformSecurityLiveTest, CpuVendorIsTwelveCharactersOnX86)
+TEST(WindowsPlatformSecurityLiveTest, SpeculationControlDecodesToKnownStatuses)
 {
-    const std::string vendor = WindowsPlatformSecurity::systemFunctions().cpuVendor();
-#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
-    EXPECT_EQ(vendor.size(), 12U) << vendor;
-#else
-    EXPECT_TRUE(vendor.empty()) << vendor;
-#endif
+    // The vulnerabilities come only from what Windows reports (#1781): whatever this machine answers, every
+    // row reads in the kernel's wording or "Unknown", never anything decided by the CPU's vendor.
+    const WindowsPlatformSecurity::Functions fns = WindowsPlatformSecurity::systemFunctions();
+    const auto speculation = WindowsPlatformSecurity::querySpeculationControl(fns);
+    const auto kvaShadow = WindowsPlatformSecurity::queryWord(fns, WindowsPlatformSecurity::SYSTEM_KERNEL_VA_SHADOW_INFORMATION);
+    if (!speculation.has_value() && !kvaShadow.has_value())
+    {
+        GTEST_SKIP() << "this Windows reports neither speculation-control class";
+    }
+    const std::vector<CpuVulnerability> list = WindowsPlatformSecurity::decodeVulnerabilities(speculation, kvaShadow);
+    EXPECT_GE(list.size(), 5U) << "Spectre v2, SSB, MDS, Meltdown and L1TF always have a row";
+    std::size_t i = 0;
+    while (i < list.size())
+    {
+        const std::string& status = list[i].status;
+        EXPECT_TRUE(status.starts_with("Not affected") || status.starts_with("Mitigation: ") || status.starts_with("Vulnerable") ||
+                    status == WindowsPlatformSecurity::UNKNOWN_STATUS)
+            << list[i].name << ": " << status;
+        ++i;
+    }
 }
 
 TEST(WindowsPlatformSecurityLiveTest, UnknownInformationClassFails)

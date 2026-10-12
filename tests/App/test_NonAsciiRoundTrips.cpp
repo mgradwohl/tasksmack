@@ -401,7 +401,8 @@ TEST_F(NonAsciiProcessesPanelTest, TheTableDrawsNonAsciiAndInvalidNamesWithoutCr
             {
                 probe->withProcess(std::move(counter));
             }
-            return App::ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
+            return App::ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         });
     panel->onAttach();
     Core::ActiveTabChangedEvent shown("Processes");

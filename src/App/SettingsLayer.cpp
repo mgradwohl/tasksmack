@@ -211,6 +211,13 @@ void SettingsLayer::applySettings()
         spdlog::info("Settings: Count UDP traffic per process changed to {}", settings.udpEventTrace);
     }
 
+    // Process icons (#1800): the panels read the setting every frame, so it shows at once
+    if (m_State.showProcessIcons != settings.showProcessIcons)
+    {
+        settings.showProcessIcons = m_State.showProcessIcons;
+        spdlog::info("Settings: Show process icons changed to {}", m_State.showProcessIcons);
+    }
+
     // Save to disk
     config.save();
 }

@@ -5,6 +5,7 @@
 
 #include <imgui.h>
 
+#include <cmath>
 #include <cstddef>
 #include <span>
 
@@ -42,7 +43,19 @@ Result render(std::span<const Tab> tabs)
             {
                 tabFlags |= ImGuiTabItemFlags_SetSelected;
             }
-            if (ImGui::BeginTabItem(tabs[index].label, nullptr, tabFlags))
+            const bool open = ImGui::BeginTabItem(tabs[index].label, nullptr, tabFlags);
+            // The tab is the last item either way; its icon goes where the label starts, centred in
+            // its height (#1800).
+            if (tabs[index].icon != ImTextureID_Invalid && tabs[index].iconSize > 0.0F && ImGui::IsItemVisible())
+            {
+                const ImVec2 min = ImGui::GetItemRectMin();
+                const ImVec2 max = ImGui::GetItemRectMax();
+                const float size = tabs[index].iconSize;
+                const ImVec2 iconMin(std::floor(min.x + ImGui::GetStyle().FramePadding.x),
+                                     std::floor(min.y + ((max.y - min.y - size) * 0.5F)));
+                ImGui::GetWindowDrawList()->AddImage(ImTextureRef(tabs[index].icon), iconMin, ImVec2(iconMin.x + size, iconMin.y + size));
+            }
+            if (open)
             {
                 result.selected = index;
                 ImGui::EndTabItem();

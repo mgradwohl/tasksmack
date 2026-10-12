@@ -7,6 +7,7 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
+#include "App/Panels/ProcessIconView.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
@@ -23,6 +24,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IProcessIconSource.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
@@ -111,6 +113,8 @@ struct ProcessesPanelPlatform
     /// synthetic scenario, most tests).
     // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
     std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector{};
+    /// The icons beside the names (#1800); nullptr: every process shows the generic icon.
+    std::unique_ptr<Platform::IProcessIconSource> icons;
 };
 
 class ProcessesPanel : public Panel
@@ -243,6 +247,12 @@ class ProcessesPanel : public Panel
     [[nodiscard]] std::shared_ptr<Domain::ProcessModel> processModel() const
     {
         return m_ProcessModel;
+    }
+
+    /// The process icons (#1800), shared with the Process Details tab, which ShellLayer draws.
+    [[nodiscard]] ProcessIconView& iconView() noexcept
+    {
+        return m_IconView;
     }
 
     /// Returns true if the process probe reports reduced privileges, as of the latest snapshot
@@ -396,6 +406,8 @@ class ProcessesPanel : public Panel
     // detach. Null where the platform has none.
     std::shared_ptr<Platform::IUdpTrafficCollector> m_UdpCollector;
     void applyUdpEventTrace(bool enabled);
+    // The icon beside each name (#1800): its source is created at attach, with the probe.
+    ProcessIconView m_IconView;
     // The action awaiting confirmation: one target from a row (or F9), several from the selection
     // (#804). Each target is a PID and start time, so a reused PID is refused (#973). The dialog's
     // text is built once, here, when the action is requested. A batch priority change (#1484) is

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace Platform::Windows::StartupMath
@@ -90,6 +91,7 @@ TEST(WindowsStartupProbeMathTest, ScopeFollowsLocation)
     EXPECT_EQ(scopeOf(StartupLocation::RunUser), StartupScope::User);
     EXPECT_EQ(scopeOf(StartupLocation::RunOnceUser), StartupScope::User);
     EXPECT_EQ(scopeOf(StartupLocation::StartupFolderUser), StartupScope::User);
+    EXPECT_EQ(scopeOf(StartupLocation::PackagedApp), StartupScope::User);
     EXPECT_EQ(scopeOf(StartupLocation::RunMachine), StartupScope::Machine);
     EXPECT_EQ(scopeOf(StartupLocation::RunMachine32), StartupScope::Machine);
     EXPECT_EQ(scopeOf(StartupLocation::RunOnceMachine), StartupScope::Machine);
@@ -201,6 +203,7 @@ TEST(WindowsStartupProbeMathTest, ApprovedKeyFollowsLocationAndScope)
     EXPECT_EQ(approvedKeyFor(StartupFolderCommon), (ApprovedKey{.machine = true, .subkey = APPROVED_FOLDER_KEY}));
     EXPECT_FALSE(approvedKeyFor(RunOnceUser).has_value());
     EXPECT_FALSE(approvedKeyFor(RunOnceMachine).has_value());
+    EXPECT_FALSE(approvedKeyFor(PackagedApp).has_value());
     for (const StartupLocation location : {RunUser, RunMachine, RunMachine32, StartupFolderUser, StartupFolderCommon})
     {
         EXPECT_EQ(approvedKeyFor(location).value_or(ApprovedKey{}).machine, scopeOf(location) == StartupScope::Machine);
@@ -225,6 +228,41 @@ TEST(WindowsStartupProbeMathTest, AccessDeniedRequiresAdministrator)
 {
     EXPECT_EQ(approvedErrorText(5), "Requires administrator");
     EXPECT_EQ(approvedErrorText(87), "Windows error 87");
+}
+
+// #1798: packaged apps' startup tasks.
+TEST(WindowsStartupProbeMathTest, PackagedTaskStateEnablesOnlyEnabledAndEnabledByPolicy)
+{
+    EXPECT_FALSE(packagedTaskEnabled(0)); // Disabled (the manifest's default)
+    EXPECT_FALSE(packagedTaskEnabled(1)); // DisabledByUser
+    EXPECT_TRUE(packagedTaskEnabled(2));  // Enabled
+    EXPECT_FALSE(packagedTaskEnabled(3)); // DisabledByPolicy
+    EXPECT_TRUE(packagedTaskEnabled(4));  // EnabledByPolicy
+    EXPECT_FALSE(packagedTaskEnabled(5)); // unknown
+}
+
+TEST(WindowsStartupProbeMathTest, PackageNameIsTheFamilyWithoutItsPublisherId)
+{
+    EXPECT_EQ(packageNameOfFamily("Microsoft.WindowsTerminal_8wekyb3d8bbwe"), "Microsoft.WindowsTerminal");
+    EXPECT_EQ(packageNameOfFamily("Some_Name_With_Underscores_abc123"), "Some_Name_With_Underscores");
+    EXPECT_EQ(packageNameOfFamily("NoPublisherId"), "NoPublisherId");
+    EXPECT_EQ(packageNameOfFamily(""), "");
+}
+
+TEST(WindowsStartupProbeMathTest, ResourceUriRootsManifestReferences)
+{
+    constexpr std::string_view PACKAGE = "Microsoft.WindowsTerminal";
+    EXPECT_EQ(resourceUri("ms-resource:AppName", PACKAGE), "ms-resource://Microsoft.WindowsTerminal/Resources/AppName");
+    EXPECT_EQ(resourceUri("MS-Resource:AppName", PACKAGE), "ms-resource://Microsoft.WindowsTerminal/Resources/AppName");
+    EXPECT_EQ(resourceUri("ms-resource:Strings/AppName", PACKAGE), "ms-resource://Microsoft.WindowsTerminal/Strings/AppName");
+    EXPECT_EQ(resourceUri("ms-resource:/Strings/AppName", PACKAGE), "ms-resource://Microsoft.WindowsTerminal/Strings/AppName");
+    EXPECT_EQ(resourceUri("ms-resource://MicrosoftWindows.CrossDevice/CrossDevice.Core/Resources/AppName", PACKAGE),
+              "ms-resource://MicrosoftWindows.CrossDevice/CrossDevice.Core/Resources/AppName");
+    // Plain text, and a bare scheme, are not references.
+    EXPECT_EQ(resourceUri("Microsoft Teams", PACKAGE), "");
+    EXPECT_EQ(resourceUri("ms-resource:", PACKAGE), "");
+    EXPECT_EQ(resourceUri("ms-res", PACKAGE), "");
+    EXPECT_EQ(resourceUri("", PACKAGE), "");
 }
 
 } // namespace

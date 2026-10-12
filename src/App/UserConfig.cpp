@@ -334,6 +334,10 @@ void readSettings(const toml::table& config, UserSettings& settings)
     {
         settings.showPrivilegeNotice = *val;
     }
+    if (auto val = config["ui"]["show_process_icons"].value<bool>())
+    {
+        settings.showProcessIcons = *val;
+    }
     if (auto val = config["ui"]["cpu_details_expanded"].value<bool>())
     {
         settings.cpuDetailsExpanded = *val;
@@ -488,6 +492,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
              {"chart_tau_ms_min", Domain::Sampling::clampChartTauMsMin(settings.chartTauMsMin)},
              {"chart_tau_ms_max", Domain::Sampling::clampChartTauMsMax(settings.chartTauMsMax)},
              {"show_privilege_notice", settings.showPrivilegeNotice},
+             {"show_process_icons", settings.showProcessIcons},
              {"cpu_details_expanded", settings.cpuDetailsExpanded},
              {"chart_anti_aliasing", settings.chartAntiAliasing},
          }},

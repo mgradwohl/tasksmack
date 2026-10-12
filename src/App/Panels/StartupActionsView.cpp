@@ -31,6 +31,10 @@ std::string_view blockedReason(const Platform::StartupEntry& entry, const Platfo
     {
         return "Startup apps can't be changed on this platform yet";
     }
+    if (entry.location == Platform::StartupLocation::PackagedApp)
+    {
+        return "Change a packaged app's startup in Task Manager or Settings > Apps > Startup";
+    }
     if (!Platform::hasSwitchableState(entry.location))
     {
         return "Run-once entries run at the next sign-in only and have no enabled state";

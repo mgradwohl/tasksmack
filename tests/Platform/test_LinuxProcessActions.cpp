@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -31,11 +32,9 @@
 #include <thread>
 #include <vector>
 
-#include <pthread.h>
-
-// NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <fcntl.h>
-#include <signal.h>
+#include <pthread.h>
+#include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -1029,6 +1028,139 @@ TEST_F(LinuxProcessActionsFaultTest, ReadingTheIoPriority)
     EXPECT_TRUE(m_Actions.getIoPriority(ownTarget()).error_or("").contains("does not recognise"));
 }
 
+// ============================================================================
+// Thread listings, through the same table (#1395): what reniceThreads() meets on a busy process
+// ============================================================================
+
+/// What the fake thread listing answers, call by call (the last answer repeats), and which threads fail.
+struct ListPlan
+{
+    std::vector<std::expected<std::vector<id_t>, std::error_code>> answers;
+    bool newThreadEachCall = false; ///< every listing adds a thread not seen before
+    id_t nextTid = 900100;
+    std::vector<id_t> gone; ///< threads isThreadOf() no longer finds (exited, TID maybe reused)
+    id_t failTid = 0;       ///< setpriority / ioprio_set on this thread fails with failErrno
+    int failErrno = 0;
+    std::size_t calls = 0;
+};
+
+ListPlan& listPlan()
+{
+    static ListPlan state;
+    return state;
+}
+
+std::expected<std::vector<id_t>, std::error_code> fakeListThreads(pid_t /*pid*/)
+{
+    ListPlan& p = listPlan();
+    auto answer = p.answers.at(std::min(p.calls, p.answers.size() - 1));
+    ++p.calls;
+    if (answer.has_value() && p.newThreadEachCall)
+    {
+        answer->push_back(p.nextTid++);
+    }
+    return answer;
+}
+
+bool fakeIsThreadOf(pid_t /*pid*/, id_t tid)
+{
+    return !std::ranges::contains(listPlan().gone, tid);
+}
+
+int fakeSetPerThread(id_t tid, int /*value*/)
+{
+    ++plan().setCalls;
+    return (tid == listPlan().failTid && listPlan().failErrno != 0) ? fail(listPlan().failErrno) : 0;
+}
+
+class LinuxProcessActionsThreadListTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        plan() = FaultPlan{};
+        listPlan() = ListPlan{};
+    }
+
+    /// The target's own PID (its leader thread) and one worker, as /proc would list them.
+    [[nodiscard]] static std::vector<id_t> leaderAndWorker()
+    {
+        return {static_cast<id_t>(ownTarget().pid), WORKER};
+    }
+
+    static constexpr id_t WORKER = 900001;
+
+    LinuxProcessActions m_Actions{SyscallTrace::Tools{},
+                                  LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                       .pidfdSendSignal = &fakePidfdSendSignal,
+                                                       .pollPidfd = &fakePollPidfd,
+                                                       .setPriority = &fakeSetPerThread,
+                                                       .ioprioSet = &fakeSetPerThread,
+                                                       .ioprioGet = &fakeIoprioGet,
+                                                       .listThreads = &fakeListThreads,
+                                                       .isThreadOf = &fakeIsThreadOf}};
+};
+
+TEST_F(LinuxProcessActionsThreadListTest, AFirstListingThatFailsIsReportedForEitherChange)
+{
+    // Gone before the listing: "not found", as for a process that exited.
+    listPlan().answers = {std::unexpected(std::make_error_code(std::errc::no_such_file_or_directory))};
+    const ProcessActionResult gone = m_Actions.setPriority(ownTarget(), 5);
+    EXPECT_FALSE(gone.success);
+    EXPECT_TRUE(gone.errorMessage.contains("Process not found")) << gone.errorMessage;
+    // Any other reason is named.
+    listPlan() = ListPlan{};
+    listPlan().answers = {std::unexpected(std::make_error_code(std::errc::permission_denied))};
+    const ProcessActionResult refused = m_Actions.setIoPriority(ownTarget(), IoPriorityClass::BestEffort, 4);
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.errorMessage.contains("Can't list the threads of process")) << refused.errorMessage;
+    EXPECT_EQ(plan().setCalls, 0); // nothing was changed
+}
+
+TEST_F(LinuxProcessActionsThreadListTest, AWorkerThatLeftDuringTheChangeLeavesItUnconfirmed)
+{
+    listPlan().answers = {leaderAndWorker()};
+    listPlan().gone = {WORKER}; // set, then no longer listed under the target: its TID may be another process's now
+    const ProcessActionResult result = m_Actions.setPriority(ownTarget(), 5);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("exited during the change")) << result.errorMessage;
+}
+
+TEST_F(LinuxProcessActionsThreadListTest, ARelistingThatFailsSaysNewThreadsMayKeepTheOldValue)
+{
+    listPlan().answers = {leaderAndWorker(), std::unexpected(std::make_error_code(std::errc::io_error))};
+    const ProcessActionResult result = m_Actions.setIoPriority(ownTarget(), IoPriorityClass::Idle, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("couldn't be listed again")) << result.errorMessage;
+    EXPECT_TRUE(result.errorMessage.contains("old I/O priority")) << result.errorMessage;
+}
+
+TEST_F(LinuxProcessActionsThreadListTest, AProcessThatKeepsStartingThreadsIsReported)
+{
+    listPlan().answers = {leaderAndWorker()};
+    listPlan().newThreadEachCall = true; // every pass finds one it hasn't set: the passes run out
+    const ProcessActionResult result = m_Actions.setPriority(ownTarget(), 5);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("kept starting new ones")) << result.errorMessage;
+}
+
+TEST_F(LinuxProcessActionsThreadListTest, AThreadTheKernelRefusesMakesAPartialChange)
+{
+    listPlan().answers = {leaderAndWorker()};
+    listPlan().failTid = WORKER;
+    listPlan().failErrno = EPERM;
+    const ProcessActionResult result = m_Actions.setPriority(ownTarget(), 5);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("changed for only 1 of 2 threads")) << result.errorMessage;
+}
+
+TEST_F(LinuxProcessActionsThreadListTest, EveryListedThreadChangedIsASuccess)
+{
+    listPlan().answers = {leaderAndWorker()};
+    EXPECT_TRUE(m_Actions.setPriority(ownTarget(), 5).success);
+    EXPECT_EQ(plan().setCalls, 2);
+}
+
 TEST(LinuxProcessSyscallsTest, TheRealTableIsComplete)
 {
     const LinuxProcessSyscalls real = realProcessSyscalls();
@@ -1038,6 +1170,8 @@ TEST(LinuxProcessSyscallsTest, TheRealTableIsComplete)
     EXPECT_NE(real.setPriority, nullptr);
     EXPECT_NE(real.ioprioSet, nullptr);
     EXPECT_NE(real.ioprioGet, nullptr);
+    EXPECT_NE(real.listThreads, nullptr);
+    EXPECT_NE(real.isThreadOf, nullptr);
 }
 
 } // namespace

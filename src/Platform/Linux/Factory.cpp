@@ -7,6 +7,7 @@
 #include "LinuxProcessActions.h"
 #include "LinuxProcessConnectionsReader.h"
 #include "LinuxProcessEnvironmentReader.h"
+#include "LinuxProcessIconSource.h"
 #include "LinuxProcessModulesReader.h"
 #include "LinuxProcessOpenFilesReader.h"
 #include "LinuxProcessProbe.h"
@@ -20,6 +21,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -51,6 +53,11 @@ std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector()
 std::unique_ptr<IProcessActions> makeProcessActions()
 {
     return std::make_unique<LinuxProcessActions>();
+}
+
+std::unique_ptr<IProcessIconSource> makeProcessIconSource()
+{
+    return std::make_unique<LinuxProcessIconSource>();
 }
 
 std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()

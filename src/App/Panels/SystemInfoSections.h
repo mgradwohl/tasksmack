@@ -49,6 +49,9 @@ struct Row
     /// sensorHistories, in this kind's colour. Empty for every other row.
     std::optional<Platform::SensorKind> sensorKind;
     RowAction action = RowAction::None; ///< A button the view draws in the value cell.
+    /// A tooltip on an available value that needs explaining, such as a CPU vulnerability Windows reports
+    /// as Unknown (#1781). Empty for most rows; an unavailable row's tooltip is unavailableReason.
+    std::string valueTooltip;
 
     [[nodiscard]] bool available() const noexcept
     {
@@ -181,7 +184,9 @@ struct VisibleSection
 /// spaces and well-known acronyms capitalised ("spectre_v2" -> "Spectre v2", "mds" -> "MDS").
 [[nodiscard]] std::string formatVulnerabilityName(std::string_view name);
 
-/// "3 vulnerable, 12 mitigated, 9 not affected", the counts that are non-zero; empty for none.
+/// "3 vulnerable, 12 mitigated, 9 not affected, 2 unknown", the counts that are non-zero; empty for none.
+/// Unknown counts an "Unknown" status (Windows didn't say whether the CPU needs the mitigation, #1781) and
+/// any status worded otherwise.
 [[nodiscard]] std::string formatVulnerabilitySummary(std::span<const Platform::CpuVulnerability> vulnerabilities);
 
 /// The Security section (#1514): Secure Boot, the TPM, the security modules, SELinux and AppArmor, the

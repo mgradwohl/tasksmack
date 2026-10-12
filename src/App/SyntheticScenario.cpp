@@ -12,6 +12,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -349,6 +350,15 @@ std::unique_ptr<Platform::IProcessActions> makeProcessActions(const Scenario* sc
         return std::make_unique<Platform::Synthetic::SyntheticProcessActions>();
     }
     return Platform::makeProcessActions();
+}
+
+std::unique_ptr<Platform::IProcessIconSource> makeProcessIconSource(const Scenario* scenario)
+{
+    if (scenario != nullptr)
+    {
+        return std::make_unique<Platform::UnsupportedProcessIconSource>();
+    }
+    return Platform::makeProcessIconSource();
 }
 
 std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReader(const Scenario* scenario)

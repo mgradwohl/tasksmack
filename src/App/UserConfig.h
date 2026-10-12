@@ -102,6 +102,10 @@ struct UserSettings
     // Set to false permanently via "Don't show again" in the dialog.
     bool showPrivilegeNotice = true;
 
+    // Whether the Processes table and Process Details show each program's icon beside its name
+    // (#1800); off, the names stand alone.
+    bool showProcessIcons = true;
+
     // Whether the Overview's CPU Details block is expanded (#809); its heading toggles it. A config
     // written before the block existed has no such key and loads expanded.
     bool cpuDetailsExpanded = true;

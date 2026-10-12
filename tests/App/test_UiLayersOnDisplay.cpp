@@ -25,13 +25,20 @@
 #include "Core/Layer.h"
 #include "Core/Window.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/RenderMetrics.h"
+#include "UI/Theme.h"
 #include "UI/UILayer.h"
 
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_keycode.h>
+#include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_video.h>
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(): the bar and its buttons
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdlib>
@@ -40,6 +47,7 @@
 #include <optional>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 namespace
 {
@@ -203,6 +211,389 @@ TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     // The bar never lets the window get narrower than it has to show.
     EXPECT_GT(observed.minimumWidth, 0);
     EXPECT_GT(observed.minimumHeight, 0);
+}
+
+/// What the window-event driver saw.
+struct WindowEventsObserved
+{
+    bool maximizedAfterDoubleClick = false;
+    bool maximizedAfterSecondDoubleClick = true;
+    bool positionKeptAfterClick = false;
+    bool sizeKeptAfterEdgePress = false;
+    bool systemMenuOpened = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: feeds TitleBarLayer::onSDLEvent() the SDL events a user
+/// makes on the title bar -- pushed onto SDL's queue, so they arrive through Application's loop as real
+/// ones do -- and records the outcome. A press that isn't followed by pointer movement must leave the
+/// window where it is (the drag and resize begin, then end on release).
+class WindowEventDriverLayer : public Core::Layer
+{
+  public:
+    explicit WindowEventDriverLayer(WindowEventsObserved& observed) : Layer("WindowEventDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        const Core::Window& window = Core::Application::get().getWindow();
+        const auto [width, height] = window.getSize();
+        const float titleX = static_cast<float>(width) * 0.5F; // empty title bar: the middle, clear of the buttons
+        constexpr float TITLE_Y = 16.0F;
+        switch (frame)
+        {
+        case SETTLE:
+            pushButton(titleX, TITLE_Y, true, 2); // double-click: maximize
+            pushButton(titleX, TITLE_Y, false, 2);
+            break;
+        case SETTLE + STEP:
+            m_Observed.maximizedAfterDoubleClick = window.isMaximized();
+            pushButton(titleX, TITLE_Y, true, 2); // and again: restore
+            pushButton(titleX, TITLE_Y, false, 2);
+            break;
+        case SETTLE + (2 * STEP):
+            m_Observed.maximizedAfterSecondDoubleClick = window.isMaximized();
+            m_Position = window.getPosition();
+            pushButton(titleX, TITLE_Y, true, 1); // a drag begins...
+            break;
+        case SETTLE + (2 * STEP) + 2:
+            pushButton(titleX, TITLE_Y, false, 1); // ...and ends without moving
+            break;
+        case SETTLE + (3 * STEP):
+            m_Observed.positionKeptAfterClick = window.getPosition() == m_Position;
+            m_Size = window.getSize();
+            pushButton(static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, true, 1); // a right-edge resize begins...
+            break;
+        case SETTLE + (3 * STEP) + 2:
+            pushButton(static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, false, 1); // ...and ends
+            break;
+        case SETTLE + (4 * STEP):
+            m_Observed.sizeKeptAfterEdgePress = window.getSize() == m_Size;
+            pushKey(SDLK_SPACE, SDL_SCANCODE_SPACE, SDL_KMOD_LCTRL); // Ctrl+Space: the system menu
+            break;
+        case SETTLE + (5 * STEP):
+            m_Observed.systemMenuOpened = !GImGui->OpenPopupStack.empty();
+            Core::Application::get().stop();
+            break;
+        default:
+            if (frame > MAX_FRAMES)
+            {
+                m_Observed.timedOut = true;
+                Core::Application::get().stop();
+            }
+            break;
+        }
+    }
+
+  private:
+    static void pushButton(float x, float y, bool down, int clicks)
+    {
+        SDL_Event event{};
+        event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = down;
+        event.button.clicks = static_cast<Uint8>(clicks);
+        event.button.x = x;
+        event.button.y = y;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    static void pushKey(SDL_Keycode key, SDL_Scancode scancode, SDL_Keymod mod)
+    {
+        SDL_Event event{};
+        event.type = SDL_EVENT_KEY_DOWN;
+        event.key.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.key.key = key;
+        event.key.scancode = scancode; // as a real key event carries; ImGui's SDL backend expects one
+        event.key.mod = mod;
+        event.key.down = true;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 10;
+    static constexpr int MAX_FRAMES = 600;
+
+    WindowEventsObserved& m_Observed;
+    std::pair<int, int> m_Position;
+    std::pair<int, int> m_Size;
+};
+
+TEST(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayEventsTest";
+    spec.VSync = false;
+    WindowEventsObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<WindowEventDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.maximizedAfterDoubleClick);        // double-click on the empty title bar maximizes
+    EXPECT_FALSE(observed.maximizedAfterSecondDoubleClick); // and again restores
+    EXPECT_TRUE(observed.positionKeptAfterClick);           // a press and release without motion moves nothing
+    EXPECT_TRUE(observed.sizeKeptAfterEdgePress);           // likewise on the resize edge
+    EXPECT_TRUE(observed.systemMenuOpened);                 // Ctrl+Space opens the window menu
+}
+
+/// What the UI-layer driver saw.
+struct UiLayerObserved
+{
+    bool userThemeLoaded = false;
+    int drawCalls = 0;
+    int frames = 0;
+};
+
+/// Pushed after UILayer: a display-scale event (noted, then re-measured at the next frame boundary;
+/// a headless display's scale doesn't change, so nothing is rebuilt), then what UILayer loaded and
+/// counted.
+class UiLayerDriverLayer : public Core::Layer
+{
+  public:
+    explicit UiLayerDriverLayer(UiLayerObserved& observed) : Layer("UiLayerDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        // Something to draw, so each frame has draw calls to count.
+        ImGui::Begin("UiLayerDriver");
+        ImGui::TextUnformatted("frame");
+        ImGui::End();
+        const int frame = ++m_Observed.frames;
+        if (frame == 5)
+        {
+            SDL_Event event{};
+            event.type = SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED;
+            event.window.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+            static_cast<void>(SDL_PushEvent(&event));
+        }
+        else if (frame == 15)
+        {
+            const auto& themes = UI::Theme::get().discoveredThemes();
+            m_Observed.userThemeLoaded =
+                std::ranges::any_of(themes, [](const UI::DiscoveredTheme& theme) { return theme.id == "app-tests-user-theme"; });
+            m_Observed.drawCalls = UI::RenderMetrics::get().drawCalls();
+            Core::Application::get().stop();
+        }
+    }
+
+  private:
+    UiLayerObserved& m_Observed;
+};
+
+TEST(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    // A user theme beside config.toml (AppTestsMain.cpp's temporary directory): merged over the
+    // built-ins by its file name (#1127).
+    const std::optional<std::filesystem::path>& configDir = Core::ConfigDirOverride::active();
+    ASSERT_TRUE(configDir.has_value());
+    const std::filesystem::path userThemes = configDir.value_or(std::filesystem::path{}) / "themes";
+    std::error_code ec;
+    std::filesystem::create_directories(userThemes, ec);
+    ASSERT_FALSE(ec);
+    std::filesystem::copy_file(std::filesystem::path(TASKSMACK_SOURCE_THEMES_DIR) / "arctic-fire.toml",
+                               userThemes / "app-tests-user-theme.toml",
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    ASSERT_FALSE(ec) << ec.message();
+    UI::RenderMetrics::get().setEnabled(true);
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayUiLayerTest";
+    spec.VSync = false;
+    UiLayerObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<UiLayerDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        UI::RenderMetrics::get().setEnabled(false);
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    UI::RenderMetrics::get().setEnabled(false);
+    std::filesystem::remove_all(userThemes, ec);
+
+    EXPECT_TRUE(observed.userThemeLoaded);
+    EXPECT_GT(observed.drawCalls, 0); // counted after each Render(), while the overlay's metrics are on
+}
+
+/// What the shell-shortcuts driver saw.
+struct ShellKeysObserved
+{
+    bool detailsTabShown = false;
+    bool metricsOnAfterToggle = false;
+    bool metricsOffAfterSecondToggle = true;
+    bool fontGrew = false;
+    bool fontShrankBack = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed last over the whole shell: the row menu's Details for a process (as
+/// ProcessesPanel raises it), F5 on the Processes tab, Ctrl+Shift+M twice, then Ctrl+= and Ctrl+-.
+class ShellKeysDriverLayer : public Core::Layer
+{
+  public:
+    explicit ShellKeysDriverLayer(ShellKeysObserved& observed) : Layer("ShellKeysDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        ImGuiIO& io = ImGui::GetIO();
+        const int frame = ++m_Observed.frames;
+        switch (frame)
+        {
+        case 20:
+        {
+            // As the Processes table's row menu does it (#1209): the selection first, then Details. PID 1
+            // is init on Linux; elsewhere it isn't listed, which Process Details says, and the tab comes
+            // forward either way.
+            Core::ProcessSelectedEvent selected(1, 0);
+            Core::Application::get().raiseEvent(selected);
+            Core::ShowProcessDetailsEvent details;
+            Core::Application::get().raiseEvent(details);
+            break;
+        }
+        case 35:
+            m_Observed.detailsTabShown = selectedTab() == tabId("###ProcessDetailsTab");
+            ImGui::ActivateItemByID(tabId("###ProcessesTab"));
+            break;
+        case 45:
+            io.AddKeyEvent(ImGuiKey_F5, true); // the list/tree toggle, routed to the Processes tab
+            break;
+        case 46:
+            io.AddKeyEvent(ImGuiKey_F5, false);
+            break;
+        case 55:
+        case 70:
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            io.AddKeyEvent(ImGuiMod_Shift, true);
+            io.AddKeyEvent(ImGuiKey_M, true);
+            break;
+        case 56:
+        case 71:
+            io.AddKeyEvent(ImGuiKey_M, false);
+            io.AddKeyEvent(ImGuiMod_Shift, false);
+            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+            break;
+        case 65:
+            m_Observed.metricsOnAfterToggle = UI::RenderMetrics::get().enabled();
+            break;
+        case 80:
+            m_Observed.metricsOffAfterSecondToggle = UI::RenderMetrics::get().enabled();
+            m_FontBefore = UI::Theme::get().currentFontSize();
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            io.AddKeyEvent(ImGuiKey_Equal, true);
+            break;
+        case 81:
+            io.AddKeyEvent(ImGuiKey_Equal, false);
+            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+            break;
+        case 90:
+            m_Observed.fontGrew = UI::Theme::get().currentFontSize() != m_FontBefore;
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            io.AddKeyEvent(ImGuiKey_Minus, true);
+            break;
+        case 91:
+            io.AddKeyEvent(ImGuiKey_Minus, false);
+            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+            break;
+        case 100:
+            m_Observed.fontShrankBack = UI::Theme::get().currentFontSize() == m_FontBefore;
+            Core::Application::get().stop();
+            break;
+        default:
+            if (frame > 1000)
+            {
+                m_Observed.timedOut = true;
+                Core::Application::get().stop();
+            }
+            break;
+        }
+    }
+
+  private:
+    [[nodiscard]] static ImGuiID tabBarId()
+    {
+        const ImGuiWindow* main = ImGui::FindWindowByName("##MainWindow");
+        return main != nullptr ? ImHashStr("##MainTabBar", 0, main->ID) : 0;
+    }
+
+    [[nodiscard]] static ImGuiID tabId(const char* label)
+    {
+        return ImHashStr(label, 0, tabBarId());
+    }
+
+    [[nodiscard]] static ImGuiID selectedTab()
+    {
+        const ImGuiTabBar* bar = GImGui->TabBars.GetByKey(tabBarId());
+        return bar != nullptr ? bar->SelectedTabId : 0;
+    }
+
+    ShellKeysObserved& m_Observed;
+    UI::FontSize m_FontBefore = UI::FontSize::Medium;
+};
+
+TEST(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayShellKeysTest";
+    spec.VSync = false;
+    ShellKeysObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<App::ShellLayer>().setTitleBar(&titleBar);
+        app.pushLayer<ShellKeysDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    UI::RenderMetrics::get().setEnabled(false);
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.detailsTabShown);              // Details brings the Process Details tab forward
+    EXPECT_TRUE(observed.metricsOnAfterToggle);         // Ctrl+Shift+M turns the render metrics on...
+    EXPECT_FALSE(observed.metricsOffAfterSecondToggle); // ...and off again
+    EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one preset larger
+    EXPECT_TRUE(observed.fontShrankBack);               // Ctrl+- back
 }
 
 /// The tab IDs pressed, in order, then back to the first (TabLabel.h, ShellLayer.cpp's labels).

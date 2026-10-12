@@ -167,6 +167,8 @@ std::string_view startupLocationLabel(Platform::StartupLocation location) noexce
         return "Startup folder";
     case StartupFolderCommon:
         return "Startup folder (all users)";
+    case PackagedApp:
+        return "Packaged app";
     default:
         return "";
     }

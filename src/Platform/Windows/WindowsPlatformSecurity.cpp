@@ -15,19 +15,12 @@
 #include <tbs.h>
 // clang-format on
 
-#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
-#include <intrin.h> // __cpuid: the CPU vendor
-#endif
-
 #pragma comment(lib, "advapi32.lib")
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <optional>
 #include <span>
-#include <string>
 
 namespace Platform::WindowsPlatformSecurity
 {
@@ -103,22 +96,6 @@ using TbsiGetDeviceInfoFn = TBS_RESULT(WINAPI*)(UINT32 size, PVOID info);
     return query(infoClass, buffer.data(), static_cast<ULONG>(buffer.size()), nullptr);
 }
 
-[[nodiscard]] std::string cpuVendor()
-{
-#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
-    std::array<int, 4> registers{};
-    __cpuid(registers.data(), 0);
-    // The vendor string is EBX, EDX, ECX.
-    std::array<char, 3 * sizeof(int)> vendor{};
-    std::memcpy(vendor.data(), &registers[1], sizeof(int));
-    std::memcpy(vendor.data() + sizeof(int), &registers[3], sizeof(int));
-    std::memcpy(vendor.data() + (2 * sizeof(int)), &registers[2], sizeof(int));
-    return {vendor.data(), vendor.size()};
-#else
-    return {};
-#endif
-}
-
 } // namespace
 
 Functions systemFunctions()
@@ -128,7 +105,6 @@ Functions systemFunctions()
         .bootedWithUefi = &bootedWithUefi,
         .tpmDeviceInfo = &tpmDeviceInfo,
         .querySystemInformation = &querySystemInformation,
-        .cpuVendor = &cpuVendor,
     };
 }
 

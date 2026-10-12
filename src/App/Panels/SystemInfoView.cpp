@@ -120,12 +120,18 @@ bool renderToolbar(bool reading, SystemInfoViewState& state, const UI::ColorSche
     return clicked;
 }
 
-/// One value cell: the value, or a muted em dash whose tooltip says why there is none.
+/// One value cell: the value (with its valueTooltip, if any), or a muted em dash whose tooltip says why
+/// there is none.
 void renderValue(const SystemInfo::Row& row, const UI::ColorScheme& scheme)
 {
     if (row.available())
     {
         textView(row.value);
+        if (!row.valueTooltip.empty() && ImGui::BeginItemTooltip())
+        {
+            textView(row.valueTooltip);
+            ImGui::EndTooltip();
+        }
         return;
     }
     ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);

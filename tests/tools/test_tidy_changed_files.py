@@ -4,6 +4,7 @@ in particular that a CMakeLists.txt edit that only adds/removes source-list entr
 a whole-repo run (#1626)."""
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -59,34 +60,59 @@ FILES = {
 }
 
 
+def run_git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, encoding="utf-8").stdout
+
+
+def write_file(repo: Path, path: str, text: str) -> None:
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(text.encode("utf-8"))
+
+
+def commit_all(repo: Path, message: str) -> None:
+    run_git(repo, "add", "-A")
+    run_git(repo, "commit", "-q", "-m", message)
+
+
 class TidyChangedFilesTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # The base commit is made once and copied for each test: on a loaded Windows machine every
+        # git process costs far more than copying this small repository (#1797).
+        cls._template_tmp = tempfile.TemporaryDirectory()
+        cls.template = Path(cls._template_tmp.name) / "repo"
+        cls.template.mkdir()
+        run_git(cls.template, "init", "-q", "-b", "main")
+        run_git(cls.template, "config", "user.email", "test@example.invalid")
+        run_git(cls.template, "config", "user.name", "Test")
+        run_git(cls.template, "config", "core.autocrlf", "false")
+        write_file(cls.template, "CMakeLists.txt", ROOT_CMAKE)
+        for path, text in FILES.items():
+            write_file(cls.template, path, text)
+        commit_all(cls.template, "base")
+        cls.base = run_git(cls.template, "rev-parse", "HEAD").strip()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._template_tmp.cleanup()
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.repo = Path(self._tmp.name)
-        self.git("init", "-q", "-b", "main")
-        self.git("config", "user.email", "test@example.invalid")
-        self.git("config", "user.name", "Test")
-        self.git("config", "core.autocrlf", "false")
-        self.write("CMakeLists.txt", ROOT_CMAKE)
-        for path, text in FILES.items():
-            self.write(path, text)
-        self.commit("base")
-        self.base = self.git("rev-parse", "HEAD").strip()
+        self.repo = Path(self._tmp.name) / "repo"
+        shutil.copytree(self.template, self.repo)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
     def git(self, *args: str) -> str:
-        return subprocess.run(["git", *args], cwd=self.repo, check=True, capture_output=True, encoding="utf-8").stdout
+        return run_git(self.repo, *args)
 
     def write(self, path: str, text: str) -> None:
-        target = self.repo / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(text.encode("utf-8"))
+        write_file(self.repo, path, text)
 
     def commit(self, message: str) -> None:
-        self.git("add", "-A")
-        self.git("commit", "-q", "-m", message)
+        commit_all(self.repo, message)
 
     def edit_cmake(self, old: str, new: str) -> None:
         text = (self.repo / "CMakeLists.txt").read_text(encoding="utf-8")

@@ -606,6 +606,30 @@ turned out to be a byte-for-byte duplicate of the already-shared, already-tested
 `Core::isEnvFlagEnabled()` (`Core/EnvUtils.h`); deleting the duplicate and reusing the shared
 helper was strictly better than writing a third copy of the same test.
 
+### Testing Linux D-Bus readers (systemd, NetworkManager, udisks2)
+
+`Platform/Linux/SystemdBus.cpp` asks system services over D-Bus, and most machines (WSL, the CI
+runners) don't run NetworkManager, systemd-resolved, systemd-networkd or udisks2. So the live tests in
+`tests/Platform/test_SystemdBus.cpp` usually skip. To test a reader's parsing, use
+`tests/Platform/FakeSystemBus.h` instead:
+
+- It starts a private `dbus-daemon` in a temporary directory and points `DBUS_SYSTEM_BUS_ADDRESS` at
+  it, so the reader's own `sd_bus_open_system()` reaches it. The variable is restored and the daemon
+  reaped afterwards.
+- Describe the service before `start()`:
+  - `properties()`, a map keyed by object path, then interface, then property name, answers
+    `org.freedesktop.DBus.Properties.Get`, with values of type `s`, `o` (`ObjectPath`), `u`, `ay`, `a{sv}`, `b`, `t`, `d`, `x`, `q`, `as`, and
+    resolved's `a(iay)` and `a(sb)`;
+  - `addStringMethod()`, `addIntMethod()` and `addNoArgMethod()` add methods returning a path (`o`), a
+    name and path (`so`), a string (`s`), an `a{sv}`, or a named D-Bus error.
+- `start(serviceName)` takes the name on the bus. Pass `""` for a bus where the service isn't running,
+  to test the reader's "isn't running" path.
+- A path with nothing on it answers `UnknownObject`, as a real service does.
+- Skip the test when `FakeSystemBus::available()` is false (no `dbus-daemon` on `PATH`). The CI images
+  have it, so these tests run there.
+
+Examples: `tests/Platform/test_SystemdBusFake.cpp` (NetworkManager, resolved, networkd, udisks2).
+
 ### Testing Windows platform-probe code that touches real hardware/OS APIs
 
 `Platform::Windows` probes read real hardware/OS state (battery status, GPU adapters, process

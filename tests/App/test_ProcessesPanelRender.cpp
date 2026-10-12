@@ -89,7 +89,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
                     .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
                     .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
-                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
+                return ProcessesPanelPlatform{
+                    .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
             },
             std::move(raiseEvent),
             [] { return false; });
@@ -115,7 +116,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 mock->setCapabilities(
                     {.canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = true});
                 actions = mock.get();
-                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock)};
+                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
             },
             std::move(raiseEvent));
         panel->onAttach();
@@ -601,7 +602,8 @@ TEST_F(ProcessesPanelRenderTest, TheSamplingIntervalFollowsInteractionAndTheTabO
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
-            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
         [](Core::Event&) {},
         [&interacting] { return interacting; });
@@ -700,6 +702,158 @@ TEST_F(ProcessesPanelRenderTest, LeavingTheTreeViewShowsTheSortedListAgain)
     EXPECT_TRUE(text.contains("init")) << text;
     EXPECT_TRUE(text.contains("server")) << text;
     EXPECT_TRUE(text.contains("worker")) << text;
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, ArrowKeysWalkAndFoldTheTree)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    if (!panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    // The tree: init (1) > server (100) > worker (101).
+    pressKey(*panel, ImGuiKey_Home);
+    EXPECT_EQ(panel->selectedPid(), 1);
+    pressKey(*panel, ImGuiKey_RightArrow); // expanded already: to its first child
+    EXPECT_EQ(panel->selectedPid(), 100);
+    pressKey(*panel, ImGuiKey_RightArrow);
+    EXPECT_EQ(panel->selectedPid(), 101);
+    pressKey(*panel, ImGuiKey_LeftArrow); // a leaf: to its parent
+    EXPECT_EQ(panel->selectedPid(), 100);
+
+    pressKey(*panel, ImGuiKey_LeftArrow); // expanded: collapses it, the selection stays
+    EXPECT_EQ(panel->selectedPid(), 100);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("worker"));
+
+    pressKey(*panel, ImGuiKey_RightArrow); // collapsed: expands it
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(renderAndCapture(*panel).contains("worker"));
+    EXPECT_EQ(panel->selectedPid(), 100);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, PageKeysJumpAPageAndStopAtTheEnds)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    pressKey(*panel, ImGuiKey_Home);
+    const std::int32_t first = panel->selectedPid();
+    pressKey(*panel, ImGuiKey_End);
+    const std::int32_t last = panel->selectedPid();
+    ASSERT_NE(first, last);
+    // Three rows fit in a page: Page Up from the last row lands on the first, Page Down goes back.
+    pressKey(*panel, ImGuiKey_PageUp);
+    EXPECT_EQ(panel->selectedPid(), first);
+    pressKey(*panel, ImGuiKey_PageDown);
+    EXPECT_EQ(panel->selectedPid(), last);
+    pressKey(*panel, ImGuiKey_PageDown); // already at the end: stays
+    EXPECT_EQ(panel->selectedPid(), last);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheFilterKeepsMatchingRowsAndClearingItBringsThemBack)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    // Click into the filter and type, a character a frame as a keyboard would.
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("server")) << text; // only the matching row is left
+
+    // The clear button beside the filter brings every row back. Enter first: a click on the button
+    // takes the keyboard from the filter, which an active text field would otherwise write back over.
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_XMARK, 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("server")) << text;
+    EXPECT_TRUE(text.contains("worker")) << text;
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, HoldingCtrlOverTheTablePausesItAndSaysSo)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // the pane hovered
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    // The freeze engages once Ctrl has been held a moment (ProcessDisplayFreeze::ENGAGE_DELAY_SECONDS).
+    std::string text;
+    for (int i = 0; i < 30 && !text.contains("Paused (Ctrl)"); ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        text = renderAndCapture(*panel);
+    }
+    EXPECT_TRUE(text.contains("Paused (Ctrl)")) << text;
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Paused (Ctrl)"));
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheListAndTreeSegmentsSwitchTheView)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_SITEMAP " Tree", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(panel->treeViewEnabled());
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_LIST " List", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(panel->treeViewEnabled());
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, AColumnHeaderExplainsItsColumnOnHover)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    // The PID column's description, as its header's tooltip shows it (#1210).
+    const std::string description(getColumnInfo(ProcessColumn::PID).description);
+    ASSERT_FALSE(description.empty());
+    ImGuiIO& io = ImGui::GetIO();
+    // Down the header row's band, across the columns, holding still long enough for the tooltip.
+    bool shown = false;
+    for (int y = 20; y <= 140 && !shown; y += 6)
+    {
+        for (int x = 20; x <= 760 && !shown; x += 30)
+        {
+            io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+            for (int frame = 0; frame < 30 && !shown; ++frame) // past ImGuiHoveredFlags_DelayShort at 60 fps
+            {
+                shown = renderAndCapture(*panel).contains(description);
+            }
+        }
+    }
+    EXPECT_TRUE(shown);
     panel->onDetach();
 }
 

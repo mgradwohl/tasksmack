@@ -63,6 +63,10 @@ StartupActionCapabilities WindowsStartupActions::capabilities() const
 
 StartupActionResult WindowsStartupActions::setEnabled(const StartupEntry& entry, bool enabled)
 {
+    if (entry.location == StartupLocation::PackagedApp)
+    {
+        return StartupActionResult::failed("Packaged apps' startup can't be changed here");
+    }
     const auto approvedKey = Math::approvedKeyFor(entry.location);
     if (!approvedKey)
     {

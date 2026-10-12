@@ -10,6 +10,7 @@
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
+#include "Panels/ProcessIconView.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/Factory.h"
@@ -91,7 +92,8 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host)
                .text = [] { return std::string_view(PROCESSES_TAB_TEXT); }},
               {.panel = m_ProcessDetailsPanel,
                .eventName = "ProcessDetails",
-               .label = [this] { return m_DetailsTabLabel.label().c_str(); },
+               .label = [this]
+               { return (m_DetailsTabIcon != ImTextureID_Invalid ? m_DetailsTabIconLabel : m_DetailsTabLabel).label().c_str(); },
                .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); }},
               {.panel = m_ServicesPanel,
                .eventName = "Services",
@@ -645,19 +647,56 @@ void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
     }
 }
 
+void ShellLayer::updateDetailsTabIcon()
+{
+    m_DetailsTabIcon = ImTextureID_Invalid;
+    ProcessIconView& icons = m_ProcessesPanel.iconView();
+    icons.setEnabled(UserConfig::get().settings().showProcessIcons);
+    const Domain::ProcessSnapshot* shown = m_ProcessDetailsPanel.displayedSnapshot();
+    if (shown == nullptr || !icons.enabled())
+    {
+        return;
+    }
+    icons.beginFrame();
+    const ImTextureID texture = icons.textureFor(*shown);
+    // A program without an icon (or one still loading) keeps the tab's own glyph.
+    const float spaceWidth = ImGui::CalcTextSize(" ").x;
+    if (texture == ImTextureID_Invalid || spaceWidth <= 0.0F)
+    {
+        return;
+    }
+    // Spaces as wide as the icon at least: the label's text starts after them, and the icon is drawn
+    // over them (MainTabBarView).
+    const auto spaces = static_cast<std::size_t>(std::ceil(icons.iconSize() / spaceWidth));
+    if (spaces != m_DetailsTabIconSpaces)
+    {
+        m_DetailsTabIconLabel = {};
+        m_DetailsTabIconSpaces = spaces;
+    }
+    m_DetailsTabIconLabel.get(m_ProcessDetailsPanel.tabLabel(),
+                              [spaces](std::string_view text)
+                              { return TabLabel::make(std::string(spaces, ' '), text, TabLabel::PROCESS_DETAILS_TAB_ID); });
+    m_DetailsTabIcon = texture;
+    m_DetailsTabIconSize = icons.iconSize();
+}
+
 void ShellLayer::renderTabBar()
 {
     // Track previous tab to emit change event if selection changes
     const auto* previousTab = &m_Tabs.activeTab();
+
+    updateDetailsTabIcon();
 
     // TASKSMACK_TAB's tab is found by its registered id, not its position, and asked for on every
     // frame until BeginTabItem() reports it selected (#1575).
     m_TabBarItems.clear();
     for (const auto& tab : m_Tabs.tabs())
     {
+        const bool details = tab.eventName == "ProcessDetails";
         m_TabBarItems.push_back({.label = tab.label(),
-                                 .selectRequested = (m_ShowDetailsTabRequested && tab.eventName == "ProcessDetails") ||
-                                                    m_StartupTab.wantsSelected(tab.eventName)});
+                                 .selectRequested = (m_ShowDetailsTabRequested && details) || m_StartupTab.wantsSelected(tab.eventName),
+                                 .icon = details ? m_DetailsTabIcon : ImTextureID_Invalid,
+                                 .iconSize = details ? m_DetailsTabIconSize : 0.0F});
     }
     const MainTabBarView::Result bar = MainTabBarView::render(m_TabBarItems);
     if (!bar.drawn)

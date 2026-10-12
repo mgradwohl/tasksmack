@@ -637,5 +637,62 @@ TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
     }
 }
 
+TEST_F(WindowTest, ASizeSavedAtTwiceTheScaleComesBackAtHalfTheSize)
+{
+    VideoBackend::initialize();
+    try
+    {
+        Window window(WindowSpecification{.Title = "SavedScaleTest", .Width = 800, .Height = 600, .VSync = false, .Borderless = true});
+        const float scale = window.getUnitScale();
+        if (scale <= 0.0F)
+        {
+            GTEST_SKIP() << "No window scale on this display";
+        }
+        // Saved on a display at twice this one's scale: the same apparent size is half as many units
+        // here (#1168). No position, so only the size is converted and fitted.
+        window.applySavedGeometry(std::nullopt, false, scale * 2.0F);
+        waitForWindowSize(window, 400, 300);
+        EXPECT_EQ(window.getSize(), (std::pair{400, 300}));
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << e.what();
+    }
+}
+
+TEST_F(WindowTest, ASavedSizeLargerThanTheDisplayIsShrunkToFit)
+{
+    VideoBackend::initialize();
+    try
+    {
+        Window window(WindowSpecification{.Title = "SavedSizeFitTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        SDL_Rect usable{};
+        const SDL_DisplayID display = SDL_GetDisplayForWindow(window.getHandle());
+        if (display == 0 || !SDL_GetDisplayUsableBounds(display, &usable) || usable.w <= 0 || usable.h <= 0)
+        {
+            GTEST_SKIP() << "No display bounds available";
+        }
+        // A size saved on a bigger monitor, now gone: kept within this display rather than off its edges.
+        window.setSize(std::min(usable.w * 2, 16'000), std::min(usable.h * 2, 16'000));
+        window.applySavedGeometry(std::nullopt, false, std::nullopt);
+        waitForWindowSize(window, usable.w, usable.h);
+        const auto [width, height] = window.getSize();
+        EXPECT_LE(width, usable.w);
+        EXPECT_LE(height, usable.h);
+    }
+    catch (const std::exception& e)
+    {
+        if (isOffscreenVideoDriver() && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window creation failed on offscreen driver (no GL): " << e.what();
+        }
+        FAIL() << e.what();
+    }
+}
+
 } // namespace
 } // namespace Core

@@ -5,6 +5,8 @@
 // selection and its events; this draws the bar and reports which tab ImGui shows selected, so the bar
 // can be rendered headless in the tests.
 
+#include <imgui.h>
+
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -17,6 +19,10 @@ struct Tab
 {
     const char* label = "";       ///< Its text, with a "###" ID of its own (TabLabel.h)
     bool selectRequested = false; ///< Select it this frame (ImGuiTabItemFlags_SetSelected)
+    /// An image drawn at the start of the label, over room the label leaves for it with leading
+    /// spaces (the Process Details tab's program icon, #1800); ImTextureID_Invalid: none.
+    ImTextureID icon = ImTextureID_Invalid;
+    float iconSize = 0.0F; ///< The icon's side, in pixels
 };
 
 /// What the bar did this frame.

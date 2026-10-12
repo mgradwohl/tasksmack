@@ -8,7 +8,8 @@ namespace Platform
 {
 
 /// Where a startup entry is registered (#801). The Windows registry keys are under
-/// Software\Microsoft\Windows\CurrentVersion; the folders are the Start menu's Startup folders.
+/// Software\Microsoft\Windows\CurrentVersion; the folders are the Start menu's Startup folders; a packaged
+/// app's startup task is declared in its package manifest (#1798).
 enum class StartupLocation : std::uint8_t
 {
     RunUser,             ///< HKCU ...\Run
@@ -18,6 +19,7 @@ enum class StartupLocation : std::uint8_t
     RunOnceMachine,      ///< HKLM ...\RunOnce
     StartupFolderUser,   ///< The user's Startup folder
     StartupFolderCommon, ///< The all-users Startup folder
+    PackagedApp,         ///< A packaged (MSIX / Store) app's windows.startupTask, for the current user
 };
 
 /// Whether an entry starts for the current user only or for every user of the machine.
@@ -39,15 +41,15 @@ enum class StartupTargetState : std::uint8_t
 /// is false, or this entry's file could not be read) is left empty, 0 or Unresolved.
 struct StartupEntry
 {
-    std::string name;           ///< The registry value name, or the Startup folder file name.
+    std::string name;           ///< The registry value name, the Startup folder file name, or a packaged task's display name.
     std::string command;        ///< The command line it runs (a shortcut's target and arguments).
     std::string executablePath; ///< The program the command runs, environment variables expanded.
     std::string sourcePath;     ///< For a Startup folder entry, the file in the folder (e.g. the .lnk).
     StartupLocation location = StartupLocation::RunUser;
     StartupScope scope = StartupScope::User;
-    bool enabled = true;                     ///< From StartupApproved; entries it doesn't list are enabled.
+    bool enabled = true;                     ///< From StartupApproved (entries it doesn't list are enabled), or a packaged task's state.
     std::uint64_t disabledAtUnixSeconds = 0; ///< When it was disabled (Unix seconds); 0 when unknown or enabled.
-    std::string publisher;                   ///< The executable's version-resource CompanyName.
+    std::string publisher;                   ///< The executable's version-resource CompanyName, or the package's publisher.
     StartupTargetState target = StartupTargetState::Unresolved;
 };
 

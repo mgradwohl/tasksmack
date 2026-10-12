@@ -69,6 +69,7 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
     state.forceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
     state.showPrivilegeNotice = settings.showPrivilegeNotice;
     state.udpEventTrace = settings.udpEventTrace;
+    state.showProcessIcons = settings.showProcessIcons;
 }
 
 void resetToDefaults(State& state)
@@ -86,6 +87,7 @@ void resetToDefaults(State& state)
     state.forceNativeDecorationsOnWayland = defaults.forceNativeWindowDecorationsOnWayland;
     state.showPrivilegeNotice = defaults.showPrivilegeNotice;
     state.udpEventTrace = defaults.udpEventTrace;
+    state.showProcessIcons = defaults.showProcessIcons;
 }
 
 Action render(State& state)
@@ -235,10 +237,12 @@ Action render(State& state)
             return ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(label).x;
         };
 #ifndef _WIN32
-        const float checkboxRowWidth = std::max(checkboxWidth(PRIVILEGE_NOTICE_LABEL),
-                                                Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F);
+        const float checkboxRowWidth = std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL),
+                                                 checkboxWidth(PROCESS_ICONS_LABEL),
+                                                 Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F});
 #else
-        const float checkboxRowWidth = std::max(checkboxWidth(PRIVILEGE_NOTICE_LABEL), checkboxWidth(UDP_EVENT_TRACE_LABEL));
+        const float checkboxRowWidth =
+            std::max({checkboxWidth(PRIVILEGE_NOTICE_LABEL), checkboxWidth(PROCESS_ICONS_LABEL), checkboxWidth(UDP_EVENT_TRACE_LABEL)});
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
@@ -318,6 +322,11 @@ Action render(State& state)
             }
             ImGui::EndCombo();
         }
+
+        // The programs' icons beside process names in the Processes table and Process Details (#1800).
+        ImGui::Spacing();
+        ImGui::Checkbox(PROCESS_ICONS_LABEL, &state.showProcessIcons);
+        ImGui::SetItemTooltip("Show each program's icon beside its name in the Processes table and Process Details");
 
         UI::Widgets::sectionGap();
 
