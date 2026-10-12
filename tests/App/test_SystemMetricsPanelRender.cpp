@@ -303,6 +303,84 @@ TEST_F(SystemMetricsPanelRenderTest, OverviewChartsDrawTheirHistoryAsSamplesArri
     panel->onDetach();
 }
 
+// #1395: hovering the power card's heading explains what it shows: the process power estimate, the
+// battery's charge and its health, and how many samples the chart holds.
+TEST_F(SystemMetricsPanelRenderTest, ThePowerHeadingSaysWhatTheChartShows)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        []
+        {
+            auto battery = mockBattery();
+            Platform::PowerCounters counters;
+            counters.state = Platform::BatteryState::Discharging;
+            counters.chargePercent = 80;
+            counters.powerNowW = 12.5;
+            counters.healthPercent = 93;
+            battery->setCounters(counters);
+            return SystemMetricsProbes{.system = mockSystem(), .power = std::move(battery), .disk = nullptr, .gpu = nullptr};
+        });
+    panel->onAttach();
+    const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel();
+    panel->setProcessModel(processes);
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+
+    // Until the power card is up.
+    const ImGuiWindow* card = nullptr;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (card == nullptr && std::chrono::steady_clock::now() < deadline)
+    {
+        processes->refresh();
+        panel->onUpdate(1.0F / 60.0F);
+        if (renderAndCapture(*panel).contains("Power & Battery"))
+        {
+            for (const ImGuiWindow* window : GImGui->Windows)
+            {
+                if (std::string_view(window->Name).contains("##PowerCard") && window->Active)
+                {
+                    card = window;
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_NE(card, nullptr);
+
+    ASSERT_LT(card->Pos.y, DISPLAY_HEIGHT) << "the power card is below the window";
+
+    // A tooltip waits for the pointer to rest (ImGuiHoveredFlags_ForTooltip): not here.
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+
+    // The fill layout settles over a few frames; the card's place is read once it has.
+    for (int frame = 0; frame < 10; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+
+    // Along the card's top, where its heading is, until the heading's tooltip shows.
+    const ImVec2 cardPos = card->Pos;
+    std::string text;
+    for (int row = 0; row < 10 && !text.contains("Health:"); ++row)
+    {
+        for (int column = 0; column < 14 && !text.contains("Health:"); ++column)
+        {
+            ImGui::GetIO().AddMousePosEvent(cardPos.x + 10.0F + (15.0F * static_cast<float>(column)),
+                                            cardPos.y + 2.0F + (4.0F * static_cast<float>(row)));
+            panel->onUpdate(1.0F / 60.0F);
+            static_cast<void>(renderAndCapture(*panel));
+            text = renderAndCapture(*panel);
+        }
+    }
+    EXPECT_TRUE(text.contains("Power: Aggregated CPU-proportional estimate")) << text;
+    EXPECT_TRUE(text.contains("Battery: System battery charge")) << text;
+    EXPECT_TRUE(text.contains("Health: 93")) << text;
+    EXPECT_TRUE(text.contains("sample")) << text; // the sample count
+    panel->onDetach();
+}
+
 /// The x-axis span, in seconds, of the first plot drawn: the Overview's CPU chart, which comes first.
 /// 0 when none was drawn.
 [[nodiscard]] double cpuChartXSpan()
