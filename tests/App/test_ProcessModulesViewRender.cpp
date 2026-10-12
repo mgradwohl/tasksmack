@@ -127,6 +127,25 @@ TEST(ProcessModulesViewTest, SortsByNameByDefaultAndByAnyColumn)
     EXPECT_EQ(view.rows()[1].version, "10.0.9.1");
 }
 
+// #1395: each read that didn't succeed has its own line; the view reports the status it holds; and the
+// Path column sorts by the full path.
+TEST(ProcessModulesViewTest, StatusLinesAndThePathSort)
+{
+    EXPECT_TRUE(Detail::modulesStatusText(ModulesReadStatus::Ok).empty());
+    EXPECT_EQ(Detail::modulesStatusText(ModulesReadStatus::ProcessExited), "Process exited");
+    EXPECT_EQ(Detail::modulesStatusText(ModulesReadStatus::Unsupported), "Not available on this platform");
+    EXPECT_EQ(Detail::modulesStatusText(ModulesReadStatus::IdentityUnknown), "Not available for this process");
+
+    ProcessModulesView view;
+    view.applyResult(sampleModules());
+    EXPECT_EQ(view.status(), ModulesReadStatus::Ok);
+    view.setSort(Detail::ModulesColumn::Path, true);
+    ASSERT_EQ(view.rows().size(), 3U);
+    EXPECT_EQ(view.rows()[0].name, "libgone.so (deleted)"); // "/usr/..." < "C:\..."
+    view.setSort(Detail::ModulesColumn::Path, false);
+    EXPECT_EQ(view.rows()[2].name, "libgone.so (deleted)");
+}
+
 TEST(ProcessModulesViewTest, FiltersByNameOrPathIgnoringCase)
 {
     ProcessModulesView view;

@@ -223,6 +223,39 @@ TEST(ProcessOpenFilesViewTest, SortsByDescriptorByDefaultAndFilters)
     EXPECT_EQ(view.filteredRows().size(), 1U); // the path and the type both match one row
 }
 
+// #1395: each read that didn't succeed has its own line, and the view reports the status it holds.
+TEST(ProcessOpenFilesViewTest, EachUnsuccessfulReadHasItsOwnLine)
+{
+    EXPECT_TRUE(Detail::openFilesStatusText(OpenFilesReadStatus::Ok).empty());
+    EXPECT_EQ(Detail::openFilesStatusText(OpenFilesReadStatus::ProcessExited), "Process exited");
+    EXPECT_EQ(Detail::openFilesStatusText(OpenFilesReadStatus::Unsupported), "Not available on this platform");
+    EXPECT_EQ(Detail::openFilesStatusText(OpenFilesReadStatus::IdentityUnknown), "Not available for this process");
+    EXPECT_TRUE(Detail::openFilesStatusText(OpenFilesReadStatus::PermissionDenied).starts_with("Access denied"));
+
+    ProcessOpenFilesView view;
+    view.applyResult(statusOnly(OpenFilesReadStatus::ProcessExited));
+    EXPECT_EQ(view.status(), OpenFilesReadStatus::ProcessExited);
+}
+
+// #1395: by Type and by Mode, ties falling back to the descriptor.
+TEST(ProcessOpenFilesViewTest, SortsByTypeAndByModeWithTiesByDescriptor)
+{
+    ProcessOpenFilesView view;
+    view.applyResult(linuxFiles());
+    view.setSort(Detail::OpenFilesColumn::Type, true);
+    ASSERT_EQ(view.rows().size(), 3U);
+    EXPECT_LE(view.rows()[0].file.kind, view.rows()[1].file.kind);
+    EXPECT_LE(view.rows()[1].file.kind, view.rows()[2].file.kind);
+
+    view.setSort(Detail::OpenFilesColumn::Mode, true);
+    // fd 0 and fd 3 share mode "rw": the tie keeps descriptor order.
+    ASSERT_EQ(view.rows()[0].mode, view.rows()[1].mode);
+    EXPECT_EQ(view.rows()[0].descriptor, "0");
+    EXPECT_EQ(view.rows()[1].descriptor, "3");
+    view.setSort(Detail::OpenFilesColumn::Mode, false);
+    EXPECT_EQ(view.rows()[0].descriptor, "10"); // "w append" sorts after "rw"
+}
+
 class ProcessOpenFilesViewRenderTest : public ::testing::Test
 {
   protected:
