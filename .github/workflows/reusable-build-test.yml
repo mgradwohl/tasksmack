@@ -93,12 +93,35 @@ jobs:
         if: runner.os == 'Linux'
         run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }}
 
+      # Windows only: SDL3's ~180 configure checks cost 110-130 s there (~20 s on Linux). Preload
+      # the results of an earlier configure with the same toolchain, image and CMake inputs (#1406).
+      - name: Restore configure-check results (Windows)
+        id: cmake-checks
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/cmake-check-cache
+        with:
+          mode: restore
+          preset: win-${{ inputs.build_type }}
+          toolchain: llvm-${{ inputs.llvm-semver-version }}
+
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }}
+        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} ${{ steps.cmake-checks.outputs.cmake-args }}
+
+      # Each Windows build job saves its own preset's results; Static Analysis (Windows) only
+      # restores the win-debug ones, so two jobs never race for one key.
+      - name: Save configure-check results (Windows)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/cmake-check-cache
+        with:
+          mode: save
+          preset: win-${{ inputs.build_type }}
+          toolchain: llvm-${{ inputs.llvm-semver-version }}
+          build-dir: build/win-${{ inputs.build_type }}
+          cache-hit: ${{ steps.cmake-checks.outputs.cache-hit }}
 
       # One saver per OS so parallel jobs don't race to reserve the same key. Windows saves from
       # the debug build here; Linux saves from the benchmark-enabled build further down, so the
