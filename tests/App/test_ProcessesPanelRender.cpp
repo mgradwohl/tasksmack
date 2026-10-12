@@ -14,6 +14,7 @@
 /// process data.
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
@@ -510,6 +511,47 @@ TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
     pressStyle(ProcessColumn::CpuPercent, "Bar");
     EXPECT_EQ(panel->processModel()->rowHistoryMetrics(), 0U);
     UserConfig::get().settings().processMeters = ProcessRowMeter::Settings{}; // The singleton outlives this test
+    panel->onDetach();
+}
+
+// #1395: a text column this system can't fill (the mock probe reports no publisher, type, container or
+// per-process GPU) reads as the unavailable dash in every row when the user has chosen to show it.
+TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
+{
+    ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
+    for (const ProcessColumn col :
+         {ProcessColumn::Publisher, ProcessColumn::Type, ProcessColumn::Container, ProcessColumn::GpuEngine, ProcessColumn::GpuDevice})
+    {
+        columns.setVisible(col, true);
+    }
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Publisher")) << text;
+    EXPECT_TRUE(text.contains("Container")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+    panel->onDetach();
+}
+
+// #1395: "Reset columns" brings back this system's default columns and their default order.
+TEST_F(ProcessesPanelRenderTest, ResetColumnsBringsBackTheDefaults)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Threads, true);
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(renderAndCapture(*panel).contains("Threads"));
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_TABLE_COLUMNS " Columns", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(topPopup(), nullptr);
+    pressPopupItem(*panel, ICON_FA_ROTATE_LEFT " Reset columns");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Threads")); // hidden by default again
+    EXPECT_FALSE(UserConfig::get().settings().processColumns.isVisible(ProcessColumn::Threads));
     panel->onDetach();
 }
 
