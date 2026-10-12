@@ -750,12 +750,13 @@ gtest_discover_tests(TaskSmackThemeTests DISCOVERY_TIMEOUT 30)
 # the way the benchmarks are, so it links what the app links. tools/coverage.sh runs it too: its
 # counters match the app binary's functions by name and hash, so they count for the app's files.
 add_executable(TaskSmackAppTests
+    App/AppTestsMain.cpp  # its own main(): a temporary TASKSMACK_CONFIG_DIR before any test runs
     ${APP_REAL_TEST_SOURCES}
     $<TARGET_OBJECTS:TaskSmackApp>
 )
 tasksmack_configure_app_target(TaskSmackAppTests)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
-target_link_libraries(TaskSmackAppTests PRIVATE gtest gtest_main)
+target_link_libraries(TaskSmackAppTests PRIVATE gtest)
 gtest_discover_tests(TaskSmackAppTests DISCOVERY_TIMEOUT 30)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every

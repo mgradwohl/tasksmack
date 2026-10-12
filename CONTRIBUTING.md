@@ -594,8 +594,11 @@ Three established ways to get real coverage of such a file's logic:
    runs inside the frame after the others have drawn. Call `Core::AnimationRequest::request()` to
    keep frames coming, and press widgets by ID with `ImGui::ActivateItemByID()`. Skip the test when
    no display with GL 3.3 is available; with `TASKSMACK_REQUIRE_DISPLAY=1` (Linux CI, under Xvfb) a
-   missing display fails instead. `tools/coverage.sh` runs this binary too. Example:
-   `tests/App/test_UiLayersOnDisplay.cpp`, the title bar's buttons through `TitleBarLayer`.
+   missing display fails instead. Its own `main()` (`tests/App/AppTestsMain.cpp`) points
+   `TASKSMACK_CONFIG_DIR` at a fresh temporary directory before any test runs, so whatever the app
+   saves (`ShellLayer::onDetach()` writes `config.toml`) never reaches your own config.
+   `tools/coverage.sh` runs this binary too. Example: `tests/App/test_UiLayersOnDisplay.cpp`, the title
+   bar's buttons through `TitleBarLayer`, and the whole shell as `main.cpp` composes it.
 
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper - `TitleBarLayer.cpp` used to have its own private case-insensitive env-flag parser that
