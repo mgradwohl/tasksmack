@@ -219,4 +219,20 @@ struct ProcessGPUCounters
     std::vector<std::string> activeEngines;
 };
 
+/// One process's use of one adapter TaskSmack doesn't list as a GPU (#1826): an NPU or another MCDM
+/// compute accelerator, or a software adapter such as the Basic Render Driver. Kept apart from
+/// ProcessGPUCounters, so it is never counted in a GPU figure; NPU reporting (#1799) builds on it.
+struct OtherAdapterProcessUsage
+{
+    std::int32_t pid = 0;
+    std::string adapterLuid; // "GPU_0x{High}_0x{Low}", the format of GPUInfo::luidId
+
+    // The busiest engine's utilization (0-100), and the process's memory on the adapter, as
+    // ProcessGPUCounters' figures are read
+    double utilPercent = 0.0;
+    std::uint64_t dedicatedMemoryBytes = 0;
+    std::uint64_t sharedMemoryBytes = 0;
+    std::vector<std::string> activeEngines;
+};
+
 } // namespace Platform

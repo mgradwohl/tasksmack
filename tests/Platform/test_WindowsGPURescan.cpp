@@ -15,7 +15,8 @@
 #include "Platform/Windows/DXGIGPUProbe.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/NVMLGPUProbe.h"
-#include "Platform/Windows/PDHGPUProbe.h" // IWYU pragma: keep - WindowsGPUProbeTestAccessor::dropPDH() deletes one
+#include "Platform/Windows/PDHGPUProbe.h"
+#include "Platform/Windows/PDHGPUProbeImpl.h"
 #include "Platform/Windows/WindowsGPUProbe.h"
 
 #include <gtest/gtest.h>
@@ -24,15 +25,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform
 {
 
 /// Test-only accessor (a friend of WindowsGPUProbe): reaches its sub-probes so a test can back them
-/// with fakes, and drops PDH, whose real counters would describe this machine's adapters.
+/// with fakes, and drops PDH, whose real counters would describe this machine's adapters, or puts a
+/// per-process PDH probe backed by fakes in its place.
 struct WindowsGPUProbeTestAccessor
 {
     static DXGIGPUProbe& dxgi(WindowsGPUProbe& probe)
@@ -47,6 +52,10 @@ struct WindowsGPUProbeTestAccessor
     {
         probe.m_PDHProbe.reset();
         probe.m_PDHAdapterProbe.reset();
+    }
+    static void setProcessPDH(WindowsGPUProbe& probe, std::unique_ptr<PDHGPUProbe> pdh)
+    {
+        probe.m_PDHProbe = std::move(pdh);
     }
 };
 
@@ -550,6 +559,288 @@ TEST_F(WindowsGPURescanTest, NVMLEncoderAndDecoderReachTheMatchedAdapter)
     EXPECT_DOUBLE_EQ(withEngines->decoderUtilPercent, 9.0);
     EXPECT_FALSE(withoutEngines->encoderAvailable);
     EXPECT_FALSE(withoutEngines->decoderAvailable);
+}
+
+// =============================================================================
+// Per-process samples of adapters not listed as GPUs (#1826)
+// =============================================================================
+
+/// One instance a fake PDH counter array returns: its name and value (a percentage for an engine,
+/// bytes for process memory).
+struct FakePDHSample
+{
+    std::wstring name;
+    double value = 0.0;
+};
+
+/// The fake per-process PDH query: the "GPU Engine" and dedicated "GPU Process Memory" instances,
+/// each read through the counter handle the probe was given for it.
+struct FakeProcessPDH
+{
+    std::vector<FakePDHSample> engines;
+    std::vector<FakePDHSample> dedicatedMemory;
+    PDH_HCOUNTER engineCounter = nullptr;
+    PDH_HCOUNTER dedicatedCounter = nullptr;
+    std::uintptr_t nextHandle = 1;
+};
+
+FakeProcessPDH& processPDH()
+{
+    static FakeProcessPDH state;
+    return state;
+}
+
+PDH_STATUS WINAPI fakePdhOpenQuery(LPCWSTR /*source*/, DWORD_PTR /*userData*/, PDH_HQUERY* query)
+{
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - a fake query handle the fakes never dereference
+    *query = reinterpret_cast<PDH_HQUERY>(static_cast<std::uintptr_t>(1));
+    return ERROR_SUCCESS;
+}
+
+PDH_STATUS WINAPI fakePdhCloseQuery(PDH_HQUERY /*query*/)
+{
+    return ERROR_SUCCESS;
+}
+
+PDH_STATUS WINAPI fakePdhAddEnglishCounter(PDH_HQUERY /*query*/, LPCWSTR /*path*/, DWORD_PTR /*userData*/, PDH_HCOUNTER* counter)
+{
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - a fake counter handle the fakes never dereference
+    *counter = reinterpret_cast<PDH_HCOUNTER>(processPDH().nextHandle++);
+    return ERROR_SUCCESS;
+}
+
+PDH_STATUS WINAPI fakePdhCollectQueryData(PDH_HQUERY /*query*/)
+{
+    return ERROR_SUCCESS;
+}
+
+PDH_STATUS WINAPI fakePdhGetFormattedCounterArray(
+    PDH_HCOUNTER counter, DWORD format, LPDWORD bufferSize, LPDWORD itemCount, PPDH_FMT_COUNTERVALUE_ITEM_W buffer)
+{
+    auto& state = processPDH();
+    std::vector<FakePDHSample> none;
+    std::vector<FakePDHSample>* list = &none;
+    if (counter == state.engineCounter)
+    {
+        list = &state.engines;
+    }
+    else if (counter == state.dedicatedCounter)
+    {
+        list = &state.dedicatedMemory;
+    }
+    std::vector<FakePDHSample>& samples = *list;
+    const auto needed = static_cast<DWORD>(sizeof(PDH_FMT_COUNTERVALUE_ITEM_W) * samples.size());
+    if (!samples.empty() && (*bufferSize < needed || buffer == nullptr))
+    {
+        *bufferSize = needed;
+        return static_cast<PDH_STATUS>(PDH_MORE_DATA);
+    }
+    *itemCount = static_cast<DWORD>(samples.size());
+    std::size_t index = 0;
+    while (index < samples.size())
+    {
+        auto& item = buffer[index];
+        item.szName = samples[index].name.data();
+        item.FmtValue.CStatus = ERROR_SUCCESS;
+        if ((format & PDH_FMT_LARGE) != 0)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_LARGE selects largeValue
+            item.FmtValue.largeValue = static_cast<LONGLONG>(samples[index].value);
+        }
+        else
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PDH_FMT_DOUBLE selects doubleValue
+            item.FmtValue.doubleValue = samples[index].value;
+        }
+        ++index;
+    }
+    return ERROR_SUCCESS;
+}
+
+/// A per-process PDH probe whose query is the fake above, already warmed up.
+std::unique_ptr<PDHGPUProbe> fakeProcessPDHProbe()
+{
+    auto impl = std::make_unique<PDHGPUProbe::Impl>();
+    impl->role = PDHGPUProbe::Role::Process;
+    impl->pdhOpenQuery = fakePdhOpenQuery;
+    impl->pdhCloseQuery = fakePdhCloseQuery;
+    impl->pdhAddEnglishCounter = fakePdhAddEnglishCounter;
+    impl->pdhCollectQueryData = fakePdhCollectQueryData;
+    impl->pdhGetFormattedCounterArray = fakePdhGetFormattedCounterArray;
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) - a fake query handle the fakes never dereference
+    impl->query = reinterpret_cast<PDH_HQUERY>(static_cast<std::uintptr_t>(1));
+    impl->initialized = true;
+    impl->ensureCounters();
+    impl->warmedUp = true;
+    processPDH().engineCounter = impl->utilizationCounter;
+    processPDH().dedicatedCounter = impl->dedicatedMemoryCounter;
+    return std::make_unique<PDHGPUProbe>(std::move(impl));
+}
+
+constexpr std::uint32_t LUID_IGPU = 0x100;
+constexpr std::uint32_t LUID_BASIC_RENDER = 0x180;
+constexpr std::uint32_t LUID_NVIDIA = 0x200;
+constexpr std::uint32_t LUID_NPU = 0x18103; // Intel AI Boost on a Core Ultra 7 255H: MCDM, never listed by DXGI
+
+/// The Basic Render Driver: DXGI lists it with the software flag, so TaskSmack doesn't.
+FakeAdapter basicRenderDriver()
+{
+    FakeAdapter adapter = makeAdapter(L"Microsoft Basic Render Driver", 0x1414, 0x8C, LUID_BASIC_RENDER, std::nullopt, 0);
+    adapter.desc.Flags = DXGI_ADAPTER_FLAG_SOFTWARE;
+    return adapter;
+}
+
+std::wstring engineInstance(int pid, std::uint32_t luidLowPart, std::wstring_view engineType)
+{
+    return std::format(L"pid_{}_luid_0x00000000_0x{:08X}_phys_0_eng_0_engtype_{}", pid, luidLowPart, engineType);
+}
+
+std::wstring processMemoryInstance(int pid, std::uint32_t luidLowPart)
+{
+    return std::format(L"pid_{}_luid_0x00000000_0x{:08X}_phys_0", pid, luidLowPart);
+}
+
+std::string pdhLuid(std::uint32_t luidLowPart)
+{
+    return std::format("GPU_0x00000000_0x{:08X}", luidLowPart);
+}
+
+const ProcessGPUCounters* findProcess(const std::vector<ProcessGPUCounters>& counters, int pid, std::uint32_t luidLowPart)
+{
+    const std::string luid = pdhLuid(luidLowPart);
+    const auto it = std::ranges::find_if(
+        counters, [pid, &luid](const ProcessGPUCounters& counter) { return counter.pid == pid && counter.gpuId == luid; });
+    return it == counters.end() ? nullptr : &*it;
+}
+
+class WindowsGPUProcessLuidFilterTest : public WindowsGPURescanTest
+{
+  protected:
+    void SetUp() override
+    {
+        WindowsGPURescanTest::SetUp();
+        processPDH() = FakeProcessPDH{};
+        // pid 10 uses the iGPU, and the NPU harder (as "Compute", the NPU's engine type); pid 11 only
+        // the NPU; pid 12 only the Basic Render Driver; pid 13 the NVIDIA GPU, once it is present.
+        processPDH().engines = {
+            {.name = engineInstance(10, LUID_IGPU, L"3D"), .value = 20.0},
+            {.name = engineInstance(10, LUID_NPU, L"Compute"), .value = 80.0},
+            {.name = engineInstance(11, LUID_NPU, L"Compute"), .value = 60.0},
+            {.name = engineInstance(12, LUID_BASIC_RENDER, L"3D"), .value = 30.0},
+            {.name = engineInstance(13, LUID_NVIDIA, L"3D"), .value = 40.0},
+        };
+        processPDH().dedicatedMemory = {
+            {.name = processMemoryInstance(10, LUID_IGPU), .value = 4096.0},
+            {.name = processMemoryInstance(10, LUID_NPU), .value = 8192.0},
+            {.name = processMemoryInstance(11, LUID_NPU), .value = 8192.0},
+        };
+    }
+
+    /// A WindowsGPUProbe with fake DXGI and NVML (as useFakes()) and the fake per-process PDH query.
+    static void useFakesWithProcessPDH(WindowsGPUProbe& probe)
+    {
+        useFakes(probe);
+        WindowsGPUProbeTestAccessor::setProcessPDH(probe, fakeProcessPDHProbe());
+    }
+};
+
+// Per-process GPU % and GPU memory count only the adapters listed as GPUs (#1826). The NPU's samples
+// (an MCDM adapter DXGI never lists, engine type "Compute") and the Basic Render Driver's (listed by
+// DXGI, skipped by TaskSmack) are kept apart, per process and adapter LUID, so neither is folded into
+// a process's GPU figures nor reaches ProcessModel as an unknown "GPU_0x..." device. The listed
+// GPU's samples are unchanged.
+TEST_F(WindowsGPUProcessLuidFilterTest, SamplesOfAdaptersNotListedAsGPUsAreKeptApart)
+{
+    setAdapters({intelIGPU(), basicRenderDriver()});
+    WindowsGPUProbe probe;
+    useFakesWithProcessPDH(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U) << "The Basic Render Driver isn't listed";
+    ASSERT_EQ(gpus[0].luidId, pdhLuid(LUID_IGPU));
+
+    const auto counters = probe.readProcessGPUCounters();
+
+    ASSERT_EQ(counters.size(), 1U);
+    const ProcessGPUCounters* iGPU = findProcess(counters, 10, LUID_IGPU);
+    ASSERT_NE(iGPU, nullptr);
+    EXPECT_DOUBLE_EQ(iGPU->gpuUtilPercent, 20.0) << "The iGPU's own figure, not the NPU's 80%";
+    EXPECT_EQ(iGPU->gpuMemoryBytes, 4096U) << "Without the NPU's memory";
+    EXPECT_EQ(iGPU->activeEngines, std::vector<std::string>{"3D"});
+    for (const auto& counter : counters)
+    {
+        EXPECT_EQ(counter.gpuId, gpus[0].luidId) << "pid " << counter.pid << ": only a listed GPU's LUID";
+        EXPECT_NE(counter.pid, 11) << "An NPU-only process has no GPU figures";
+        EXPECT_NE(counter.pid, 12) << "Nor a Basic Render Driver-only one";
+    }
+
+    // The other adapters' samples, with their own figures: pid 10's and 11's on the NPU, 12's on the
+    // Basic Render Driver (13's NVIDIA GPU isn't present, so its sample is there too).
+    const auto other = probe.otherAdapterUsage();
+    const auto otherFor = [&other](int pid, std::uint32_t luidLowPart)
+    {
+        const std::string luid = pdhLuid(luidLowPart);
+        const auto it = std::ranges::find_if(
+            other, [pid, &luid](const OtherAdapterProcessUsage& usage) { return usage.pid == pid && usage.adapterLuid == luid; });
+        return it == other.end() ? nullptr : &*it;
+    };
+    EXPECT_EQ(other.size(), 4U);
+    const OtherAdapterProcessUsage* npuAndGPU = otherFor(10, LUID_NPU);
+    ASSERT_NE(npuAndGPU, nullptr);
+    EXPECT_DOUBLE_EQ(npuAndGPU->utilPercent, 80.0);
+    EXPECT_EQ(npuAndGPU->dedicatedMemoryBytes, 8192U);
+    EXPECT_EQ(npuAndGPU->activeEngines, std::vector<std::string>{"Compute"});
+    const OtherAdapterProcessUsage* npuOnly = otherFor(11, LUID_NPU);
+    ASSERT_NE(npuOnly, nullptr);
+    EXPECT_DOUBLE_EQ(npuOnly->utilPercent, 60.0);
+    const OtherAdapterProcessUsage* basicRender = otherFor(12, LUID_BASIC_RENDER);
+    ASSERT_NE(basicRender, nullptr);
+    EXPECT_DOUBLE_EQ(basicRender->utilPercent, 30.0);
+    EXPECT_NE(otherFor(13, LUID_NVIDIA), nullptr);
+    EXPECT_EQ(otherFor(10, LUID_IGPU), nullptr) << "A listed GPU's sample isn't in the other adapters'";
+}
+
+// Before the first enumeration no adapter is listed, so no sample counts as a GPU's: a GPU's LUID
+// can't be told from the NPU's yet. Every sample is kept apart instead.
+TEST_F(WindowsGPUProcessLuidFilterTest, NoSampleIsAGPUsBeforeTheFirstEnumeration)
+{
+    setAdapters({intelIGPU()});
+    WindowsGPUProbe probe;
+    useFakesWithProcessPDH(probe);
+
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+    EXPECT_EQ(probe.otherAdapterUsage().size(), 5U);
+}
+
+// The filter follows the adapter set: a GPU hot-plugged in (picked up by a full rescan and the
+// re-enumeration it asks for) has its processes' samples counted from then on, and once it is
+// removed they are kept apart again. The NPU's never count.
+TEST_F(WindowsGPUProcessLuidFilterTest, TheListedSetFollowsARescan)
+{
+    setAdapters({intelIGPU()});
+    WindowsGPUProbe probe;
+    useFakesWithProcessPDH(probe);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    EXPECT_EQ(findProcess(probe.readProcessGPUCounters(), 13, LUID_NVIDIA), nullptr) << "Not listed yet";
+
+    setAdapters({intelIGPU(), nvidiaGPU(LUID_NVIDIA, 0x01)});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+    auto counters = probe.readProcessGPUCounters();
+    const ProcessGPUCounters* nvidia = findProcess(counters, 13, LUID_NVIDIA);
+    ASSERT_NE(nvidia, nullptr) << "Listed after the rescan";
+    EXPECT_DOUBLE_EQ(nvidia->gpuUtilPercent, 40.0);
+    EXPECT_NE(findProcess(counters, 10, LUID_IGPU), nullptr);
+    EXPECT_EQ(findProcess(counters, 11, LUID_NPU), nullptr);
+    EXPECT_EQ(counters.size(), 2U);
+    EXPECT_EQ(probe.otherAdapterUsage().size(), 3U) << "The NPU's two samples and the Basic Render Driver's";
+
+    setAdapters({intelIGPU()});
+    ASSERT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+    counters = probe.readProcessGPUCounters();
+    EXPECT_EQ(findProcess(counters, 13, LUID_NVIDIA), nullptr) << "Kept apart again once it is removed";
+    EXPECT_EQ(counters.size(), 1U);
+    EXPECT_EQ(probe.otherAdapterUsage().size(), 4U);
 }
 
 } // namespace
