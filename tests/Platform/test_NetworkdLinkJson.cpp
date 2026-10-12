@@ -79,6 +79,85 @@ TEST(NetworkdLinkJsonTest, RefusesWhatIsNotOneJsonDocument)
     EXPECT_TRUE(parse(fine).has_value());
 }
 
+TEST(NetworkdLinkJsonTest, DecodesTheShortControlEscapes)
+{
+    const std::optional<Value> value = parse(R"("\b\f\r\t\n")");
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(value.value_or(Value{}).string, "\b\f\r\t\n");
+}
+
+TEST(NetworkdLinkJsonTest, RefusesBrokenEscapesAndSurrogates)
+{
+    for (const char* text : {R"("ends in a backslash\)",
+                             R"("\u12")",         // too few hex digits
+                             R"("\u12g4")",       // not hex
+                             R"("\udc00")",       // a low surrogate alone
+                             R"("\ud800A")",      // a high surrogate followed by a non-surrogate
+                             R"("\ud800\udbff")", // a high surrogate followed by another high one
+                             R"("\ud800\u12")"})  // the low half cut short
+    {
+        EXPECT_FALSE(parse(text).has_value()) << text;
+    }
+}
+
+TEST(NetworkdLinkJsonTest, RefusesBrokenObjects)
+{
+    for (const char* text : {R"({"a": 1 "b": 2})", // no comma between members
+                             R"({"a": [1,})",      // a member that doesn't parse
+                             R"({1: 2})",          // a key that isn't a string
+                             R"({"a" "b"})"})      // no colon
+    {
+        EXPECT_FALSE(parse(text).has_value()) << text;
+    }
+}
+
+TEST(NetworkdLinkJsonTest, ReadsExponentsWithASign)
+{
+    for (const char* text : {"1e+3", "1E-3", "2.5e10"})
+    {
+        const std::optional<Value> value = parse(text);
+        ASSERT_TRUE(value.has_value()) << text;
+        EXPECT_EQ(value.value_or(Value{}).kind, Value::Kind::Number) << text;
+        // Not an integer, so no unsigned value even where it would be whole.
+        EXPECT_FALSE(value.value_or(Value{}).unsignedInteger.has_value()) << text;
+    }
+    EXPECT_FALSE(parse("1e+").has_value());
+    // Too big for 64 bits: still a number, just not an unsigned integer.
+    const std::optional<Value> huge = parse("18446744073709551616");
+    ASSERT_TRUE(huge.has_value());
+    EXPECT_FALSE(huge.value_or(Value{}).unsignedInteger.has_value());
+}
+
+TEST(NetworkdLinkJsonTest, FindAnswersNothingOutsideAnObject)
+{
+    const std::optional<Value> array = parse(R"([{"a": 1}])");
+    ASSERT_TRUE(array.has_value());
+    EXPECT_EQ(array.value_or(Value{}).find("a"), nullptr);
+    EXPECT_EQ(Value{}.find("a"), nullptr);
+}
+
+TEST(NetworkdLinkJsonTest, RefusesTextOverTheSizeCap)
+{
+    std::string text = "\"";
+    text.append(NetworkdLinkJson::MAX_TEXT_BYTES, 'a');
+    text += '"';
+    EXPECT_FALSE(parse(text).has_value());
+}
+
+TEST(NetworkdLinkJsonTest, Ipv4NeedsFourByteValues)
+{
+    const auto ipv4 = [](const char* json)
+    {
+        return NetworkdLinkJson::ipv4FromBytes(parse(json).value_or(Value{}));
+    };
+    EXPECT_EQ(ipv4("[10,0,0,1]"), "10.0.0.1");
+    EXPECT_EQ(ipv4("[10,0,0,256]"), "");
+    EXPECT_EQ(ipv4(R"([10,0,0,"1"])"), "");
+    EXPECT_EQ(ipv4("[10,0,0,-1]"), "");
+    EXPECT_EQ(ipv4("[10,0,0,1.5]"), "");
+    EXPECT_EQ(ipv4(R"({"a": 1})"), "");
+}
+
 /// A link description as systemd-networkd 259 writes one (trimmed): a DHCPv4 address from 192.168.1.1,
 /// a link-local IPv6 address, and the DHCPv4 client's lease.
 constexpr const char* DESCRIPTION = R"({
