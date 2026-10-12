@@ -66,7 +66,7 @@ TEST(WindowsStartupProbeTest, EnumeratesWithoutFailing)
     {
         EXPECT_FALSE(entry.name.empty());
         EXPECT_EQ(entry.scope, Windows::StartupMath::scopeOf(entry.location)) << entry.name;
-        EXPECT_LE(entry.location, StartupLocation::StartupFolderCommon) << entry.name;
+        EXPECT_LE(entry.location, StartupLocation::PackagedApp) << entry.name;
         if (entry.enabled)
         {
             EXPECT_EQ(entry.disabledAtUnixSeconds, 0U) << entry.name;

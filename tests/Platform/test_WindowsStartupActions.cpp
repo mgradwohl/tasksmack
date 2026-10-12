@@ -221,10 +221,10 @@ TEST_F(WindowsStartupActionsTest, DeniedMachineEntryRequiresAdministrator)
     EXPECT_EQ(fake().writes, 0);
 }
 
-TEST_F(WindowsStartupActionsTest, RunOnceIsUnsupportedAndNeverTouchesTheRegistry)
+TEST_F(WindowsStartupActionsTest, RunOnceAndPackagedAppsAreUnsupportedAndNeverTouchTheRegistry)
 {
     auto subject = actions(true);
-    for (const StartupLocation location : {StartupLocation::RunOnceUser, StartupLocation::RunOnceMachine})
+    for (const StartupLocation location : {StartupLocation::RunOnceUser, StartupLocation::RunOnceMachine, StartupLocation::PackagedApp})
     {
         const StartupActionResult result = subject.setEnabled(entry("Setup", location), false);
         EXPECT_FALSE(result.ok);

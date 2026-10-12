@@ -86,10 +86,10 @@ class ThrowingStartupActions final : public Platform::IStartupActions
     Platform::StartupEntry e;
     e.name = name;
     e.location = location;
-    e.scope =
-        (location == StartupLocation::RunUser || location == StartupLocation::RunOnceUser || location == StartupLocation::StartupFolderUser)
-            ? Platform::StartupScope::User
-            : Platform::StartupScope::Machine;
+    e.scope = (location == StartupLocation::RunUser || location == StartupLocation::RunOnceUser ||
+               location == StartupLocation::StartupFolderUser || location == StartupLocation::PackagedApp)
+                ? Platform::StartupScope::User
+                : Platform::StartupScope::Machine;
     e.enabled = enabled;
     return e;
 }
@@ -123,6 +123,12 @@ TEST(StartupActionsDetailTest, WhichRowsCanChange)
     const auto once = entry("Setup", StartupLocation::RunOnceUser);
     EXPECT_TRUE(AutoDetail::blockedReason(once, ADMIN).contains("Run-once"));
     EXPECT_FALSE(AutoDetail::isApplicable(false, once, ADMIN));
+
+    // A packaged app's startup task is listed with its state, but changed in Task Manager or Settings (#1798).
+    const auto packaged = entry("Microsoft Teams", StartupLocation::PackagedApp);
+    EXPECT_TRUE(AutoDetail::blockedReason(packaged, ADMIN).contains("packaged app"));
+    EXPECT_FALSE(AutoDetail::isApplicable(false, packaged, ADMIN));
+    EXPECT_FALSE(AutoDetail::isApplicable(true, entry("Spotify", StartupLocation::PackagedApp, false), USER));
     EXPECT_FALSE(AutoDetail::isApplicable(false, user, Platform::StartupActionCapabilities{}));
 }
 

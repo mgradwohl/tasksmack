@@ -305,6 +305,7 @@ TEST(StartupViewTest, EveryLocationHasItsLabelAndCommandSorts)
     EXPECT_EQ(startupLocationLabel(StartupLocation::RunOnceUser), "Registry: HKCU RunOnce");
     EXPECT_EQ(startupLocationLabel(StartupLocation::RunOnceMachine), "Registry: HKLM RunOnce");
     EXPECT_EQ(startupLocationLabel(StartupLocation::StartupFolderCommon), "Startup folder (all users)");
+    EXPECT_EQ(startupLocationLabel(StartupLocation::PackagedApp), "Packaged app");
 
     auto publication = makePublication();
     publication.entries[0].command = "zz.exe";

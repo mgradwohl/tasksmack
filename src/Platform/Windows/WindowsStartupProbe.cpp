@@ -12,31 +12,41 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <appmodel.h>
 #include <objbase.h>
 #include <objidl.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <knownfolders.h>
+#include <shlwapi.h>
+#include <xmllite.h>
 // clang-format on
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "version.lib")
+#pragma comment(lib, "xmllite.lib")
 
 #include "ComPtr.h"
 #include "ComScope.h"
 #include "WinString.h"
 #include "WindowsStartupProbeMath.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <cwctype>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <ios>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -151,6 +161,104 @@ void forEachValue(const Windows::StartupProbeFunctions& api, HKEY root, const wc
         }
         onValue(std::wstring(name.data(), nameChars), type, std::span<const std::uint8_t>(data.data(), dataBytes));
     }
+}
+
+/// Calls `onSubkey(name)` for every subkey of `root\subkey`. A key that doesn't exist or can't be
+/// opened has none.
+template<typename OnSubkey>
+void forEachSubkey(const Windows::StartupProbeFunctions& api, HKEY root, const std::wstring& subkey, OnSubkey onSubkey)
+{
+    HKEY rawKey = nullptr;
+    if (api.openKey(root, subkey.c_str(), 0, KEY_READ, &rawKey) != ERROR_SUCCESS || rawKey == nullptr)
+    {
+        return;
+    }
+    const InjectableKey key(rawKey, InjectedKeyCloser{.close = api.closeKey});
+    DWORD subkeyCount = 0;
+    DWORD maxNameChars = 0;
+    if (api.queryInfoKey(
+            key.get(), nullptr, nullptr, nullptr, &subkeyCount, &maxNameChars, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) !=
+        ERROR_SUCCESS)
+    {
+        return;
+    }
+    std::vector<wchar_t> name(maxNameChars + 1);
+    DWORD index = 0;
+    while (index < subkeyCount)
+    {
+        auto nameChars = static_cast<DWORD>(name.size());
+        // A subkey added since RegQueryInfoKeyW with a longer name (ERROR_MORE_DATA) is skipped this pass.
+        if (api.enumKey(key.get(), index, name.data(), &nameChars, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+        {
+            onSubkey(std::wstring(name.data(), nameChars));
+        }
+        ++index;
+    }
+}
+
+/// A REG_DWORD or REG_QWORD value as a number; nullopt for any other type or size.
+[[nodiscard]] std::optional<std::uint64_t> registryNumber(DWORD type, std::span<const std::uint8_t> data)
+{
+    if (type == REG_DWORD && data.size() == sizeof(std::uint32_t))
+    {
+        std::uint32_t value = 0;
+        std::memcpy(&value, data.data(), sizeof(value));
+        return value;
+    }
+    if (type == REG_QWORD && data.size() == sizeof(std::uint64_t))
+    {
+        std::uint64_t value = 0;
+        std::memcpy(&value, data.data(), sizeof(value));
+        return value;
+    }
+    return std::nullopt;
+}
+
+/// One packaged startup task's recorded state: its key's name (the TaskId), State and LastDisabledTime.
+struct PackagedTaskRecord
+{
+    std::wstring taskId;
+    std::uint32_t state = 0;
+    std::uint64_t lastDisabledUnixSeconds = 0;
+};
+
+/// A packaged startup task as listed: its name, and its program's full path.
+struct ResolvedPackagedTask
+{
+    std::wstring taskId;
+    std::string name;
+    std::string executablePath;
+};
+
+/// What a package's manifest gives its startup tasks' entries, names resolved.
+struct ResolvedPackage
+{
+    std::string publisher;
+    std::vector<ResolvedPackagedTask> tasks;
+};
+
+/// The longest AppxManifest.xml read; real ones are tens of kilobytes.
+constexpr std::uintmax_t MAX_MANIFEST_BYTES = std::uintmax_t{8} * 1024U * 1024U;
+
+[[nodiscard]] std::optional<std::string> readSmallFile(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const std::uintmax_t size = std::filesystem::file_size(path, error);
+    if (error || size > MAX_MANIFEST_BYTES)
+    {
+        return std::nullopt;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        return std::nullopt;
+    }
+    std::string contents(static_cast<std::size_t>(size), '\0');
+    if (!file.read(contents.data(), static_cast<std::streamsize>(contents.size())))
+    {
+        return std::nullopt;
+    }
+    return contents;
 }
 
 [[nodiscard]] ApprovedMap readApproved(const Windows::StartupProbeFunctions& api, HKEY root, const wchar_t* subkey)
@@ -361,12 +469,415 @@ std::optional<std::string> readShortcutCommand(const std::filesystem::path& shor
     return std::nullopt;
 }
 
+namespace
+{
+
+/// The current element's attributes, by local name (namespace prefixes dropped).
+[[nodiscard]] std::unordered_map<std::wstring, std::wstring> readAttributes(IXmlReader& reader)
+{
+    std::unordered_map<std::wstring, std::wstring> attributes;
+    HRESULT moved = reader.MoveToFirstAttribute();
+    while (moved == S_OK)
+    {
+        const wchar_t* name = nullptr;
+        const wchar_t* value = nullptr;
+        if (SUCCEEDED(reader.GetLocalName(&name, nullptr)) && SUCCEEDED(reader.GetValue(&value, nullptr)) && name != nullptr &&
+            value != nullptr)
+        {
+            attributes.emplace(name, value);
+        }
+        moved = reader.MoveToNextAttribute();
+    }
+    reader.MoveToElement();
+    return attributes;
+}
+
+[[nodiscard]] std::string attribute(const std::unordered_map<std::wstring, std::wstring>& attributes, const wchar_t* name)
+{
+    const auto it = attributes.find(name);
+    return it == attributes.end() ? std::string{} : WinString::wideToUtf8(it->second);
+}
+
+[[nodiscard]] std::string trimmed(std::string text)
+{
+    const auto first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos)
+    {
+        return {};
+    }
+    text.erase(text.find_last_not_of(" \t\r\n") + 1);
+    text.erase(0, first);
+    return text;
+}
+
+} // namespace
+
+std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
+{
+    if (xml.size() > std::numeric_limits<UINT>::max())
+    {
+        return std::nullopt;
+    }
+    ComPtr<IStream> stream;
+    *stream.releaseAndGetAddressOf() = SHCreateMemStream(reinterpret_cast<const BYTE*>(xml.data()), static_cast<UINT>(xml.size()));
+    ComPtr<IXmlReader> reader;
+    // The reinterpret_cast is COM's out-parameter convention, as in readShortcutCommandWide.
+    if (!stream || FAILED(CreateXmlReader(IID_IXmlReader, reinterpret_cast<void**>(reader.releaseAndGetAddressOf()), nullptr)) ||
+        FAILED(reader->SetProperty(XmlReaderProperty_DtdProcessing, DtdProcessing_Prohibit)) || FAILED(reader->SetInput(stream.get())))
+    {
+        return std::nullopt;
+    }
+
+    struct Application
+    {
+        std::string executable;
+        std::string displayName; ///< VisualElements DisplayName.
+    };
+    struct Task
+    {
+        PackageStartupTask task;
+        std::optional<std::size_t> application; ///< Index into applications.
+    };
+    PackageManifest manifest;
+    std::vector<Application> applications;
+    std::vector<Task> tasks;
+    std::vector<std::wstring> path;                   ///< The open elements' local names.
+    std::optional<std::size_t> applicationDepth;      ///< path.size() inside the open Application.
+    std::optional<std::size_t> startupExtensionDepth; ///< path.size() inside an open windows.startupTask Extension.
+    std::string extensionExecutable;
+
+    XmlNodeType type = XmlNodeType_None;
+    HRESULT read = reader->Read(&type);
+    while (read == S_OK)
+    {
+        if (type == XmlNodeType_Element)
+        {
+            const wchar_t* rawName = nullptr;
+            if (FAILED(reader->GetLocalName(&rawName, nullptr)) || rawName == nullptr)
+            {
+                return std::nullopt;
+            }
+            const std::wstring name = rawName;
+            const bool empty = reader->IsEmptyElement() != FALSE;
+            const auto attributes = readAttributes(*reader.get());
+            const std::wstring parent = path.empty() ? std::wstring{} : path.back();
+            if (name == L"Application" && parent == L"Applications")
+            {
+                applications.push_back({.executable = attribute(attributes, L"Executable"), .displayName = {}});
+                applicationDepth = empty ? std::nullopt : std::optional(path.size() + 1);
+            }
+            else if (name == L"VisualElements" && applicationDepth && path.size() == *applicationDepth)
+            {
+                applications.back().displayName = attribute(attributes, L"DisplayName");
+            }
+            else if (name == L"Extension" && attribute(attributes, L"Category") == "windows.startupTask")
+            {
+                extensionExecutable = attribute(attributes, L"Executable");
+                startupExtensionDepth = empty ? std::nullopt : std::optional(path.size() + 1);
+            }
+            else if (name == L"StartupTask" && startupExtensionDepth && path.size() == *startupExtensionDepth)
+            {
+                Task task;
+                task.task.taskId = attribute(attributes, L"TaskId");
+                task.task.displayName = attribute(attributes, L"DisplayName");
+                task.task.executable = extensionExecutable;
+                task.task.enabledByDefault = attribute(attributes, L"Enabled") == "true";
+                if (applicationDepth)
+                {
+                    task.application = applications.size() - 1;
+                }
+                if (!task.task.taskId.empty())
+                {
+                    tasks.push_back(std::move(task));
+                }
+            }
+            if (!empty)
+            {
+                path.push_back(name);
+            }
+        }
+        else if (type == XmlNodeType_EndElement)
+        {
+            if (startupExtensionDepth && path.size() == *startupExtensionDepth)
+            {
+                startupExtensionDepth.reset();
+                extensionExecutable.clear();
+            }
+            if (applicationDepth && path.size() == *applicationDepth)
+            {
+                applicationDepth.reset();
+            }
+            if (!path.empty())
+            {
+                path.pop_back();
+            }
+        }
+        else if ((type == XmlNodeType_Text || type == XmlNodeType_CDATA) && path.size() >= 2 && path[path.size() - 2] == L"Properties")
+        {
+            const wchar_t* value = nullptr;
+            if (SUCCEEDED(reader->GetValue(&value, nullptr)) && value != nullptr)
+            {
+                if (path.back() == L"DisplayName")
+                {
+                    manifest.displayName += WinString::wideToUtf8(value);
+                }
+                else if (path.back() == L"PublisherDisplayName")
+                {
+                    manifest.publisherDisplayName += WinString::wideToUtf8(value);
+                }
+            }
+        }
+        read = reader->Read(&type);
+    }
+    if (read != S_FALSE) // S_FALSE: the end of the document; anything else is malformed XML
+    {
+        return std::nullopt;
+    }
+
+    manifest.displayName = trimmed(std::move(manifest.displayName));
+    manifest.publisherDisplayName = trimmed(std::move(manifest.publisherDisplayName));
+    manifest.startupTasks.reserve(tasks.size());
+    for (Task& task : tasks)
+    {
+        if (task.application)
+        {
+            const Application& application = applications[*task.application];
+            if (task.task.displayName.empty())
+            {
+                task.task.displayName = application.displayName;
+            }
+            if (task.task.executable.empty())
+            {
+                task.task.executable = application.executable;
+            }
+        }
+        manifest.startupTasks.push_back(std::move(task.task));
+    }
+    return manifest;
+}
+
 } // namespace Windows
 
 struct WindowsStartupProbe::Impl
 {
     Windows::StartupProbeFunctions api;
     std::unordered_map<std::wstring, CachedPublisher> publishers; ///< By lower-cased path.
+    /// By lower-cased package full name, which names the version: an update reads the new manifest.
+    std::unordered_map<std::wstring, ResolvedPackage> packages;
+
+    /// @p value, or the string its "ms-resource:" reference names in package @p fullName's resources;
+    /// empty when that can't be loaded.
+    [[nodiscard]] std::string
+    resolveManifestString(const std::wstring& fullName, std::string_view packageName, const std::string& value) const
+    {
+        const std::string uri = Windows::StartupMath::resourceUri(value, packageName);
+        if (uri.empty())
+        {
+            return value;
+        }
+        const std::wstring source = std::format(L"@{{{}?{}}}", fullName, WinString::utf8ToWide(uri));
+        std::array<wchar_t, 512> text{};
+        if (FAILED(api.loadIndirectString(source.c_str(), text.data(), static_cast<UINT>(text.size()), nullptr)))
+        {
+            return {};
+        }
+        return WinString::wideToUtf8(text.data());
+    }
+
+    /// The full names of @p family's packages installed for the current user.
+    [[nodiscard]] std::vector<std::wstring> packageFullNames(const std::wstring& family) const
+    {
+        UINT32 count = 0;
+        UINT32 bufferChars = 0;
+        if (api.packagesByFamily(family.c_str(), &count, nullptr, &bufferChars, nullptr) != ERROR_INSUFFICIENT_BUFFER || count == 0)
+        {
+            return {};
+        }
+        std::vector<PWSTR> names(count);
+        std::vector<WCHAR> buffer(bufferChars);
+        if (api.packagesByFamily(family.c_str(), &count, names.data(), &bufferChars, buffer.data()) != ERROR_SUCCESS)
+        {
+            return {};
+        }
+        std::vector<std::wstring> fullNames;
+        std::size_t index = 0;
+        while (index < count && index < names.size())
+        {
+            if (names[index] != nullptr)
+            {
+                fullNames.emplace_back(names[index]);
+            }
+            ++index;
+        }
+        return fullNames;
+    }
+
+    /// Package @p fullName's startup tasks, named, from its installed manifest: cached until the
+    /// package's version changes; nullptr when its folder or manifest can't be read.
+    [[nodiscard]] const ResolvedPackage*
+    resolvePackage(const std::wstring& fullName, std::string_view packageName, std::unordered_set<std::wstring>& seenPackages)
+    {
+        const std::wstring key = toLower(fullName);
+        seenPackages.insert(key);
+        if (const auto it = packages.find(key); it != packages.end())
+        {
+            return &it->second;
+        }
+        UINT32 pathChars = 0;
+        if (api.packagePath(fullName.c_str(), &pathChars, nullptr) != ERROR_INSUFFICIENT_BUFFER || pathChars == 0)
+        {
+            return nullptr;
+        }
+        std::wstring folder(pathChars, L'\0');
+        if (api.packagePath(fullName.c_str(), &pathChars, folder.data()) != ERROR_SUCCESS)
+        {
+            return nullptr;
+        }
+        folder.resize(std::wcslen(folder.c_str()));
+        const std::filesystem::path root(folder);
+        const auto xml = readSmallFile(root / L"AppxManifest.xml");
+        const auto manifest = xml ? Windows::parsePackageManifest(*xml) : std::nullopt;
+        if (!manifest)
+        {
+            return nullptr; // not cached: a manifest mid-update is read again next pass
+        }
+
+        ResolvedPackage resolved;
+        resolved.publisher = resolveManifestString(fullName, packageName, manifest->publisherDisplayName);
+        for (const Windows::PackageStartupTask& task : manifest->startupTasks)
+        {
+            std::string name = resolveManifestString(fullName, packageName, task.displayName);
+            if (name.empty())
+            {
+                name = resolveManifestString(fullName, packageName, manifest->displayName);
+            }
+            if (name.empty())
+            {
+                name = task.taskId;
+            }
+            std::string executablePath;
+            if (!task.executable.empty())
+            {
+                executablePath = WinString::wideToUtf8((root / WinString::utf8ToWide(task.executable)).make_preferred().wstring());
+            }
+            resolved.tasks.push_back(
+                {.taskId = WinString::utf8ToWide(task.taskId), .name = std::move(name), .executablePath = std::move(executablePath)});
+        }
+        return &packages.insert_or_assign(key, std::move(resolved)).first->second;
+    }
+
+    /// The startup tasks recorded for @p family: each task key's State and LastDisabledTime. A key
+    /// without a State is not a startup task (a package's other app data lives beside them).
+    [[nodiscard]] std::vector<PackagedTaskRecord> readTaskRecords(const std::wstring& family) const
+    {
+        std::vector<PackagedTaskRecord> records;
+        const std::wstring familyKey = std::format(L"{}\\{}", Windows::StartupMath::PACKAGED_TASKS_KEY, family);
+        forEachSubkey(api,
+                      HKEY_CURRENT_USER,
+                      familyKey,
+                      [&](const std::wstring& taskId)
+                      {
+                          const std::wstring taskKey = std::format(L"{}\\{}", familyKey, taskId);
+                          std::optional<std::uint64_t> state;
+                          std::uint64_t lastDisabled = 0;
+                          forEachValue(api,
+                                       HKEY_CURRENT_USER,
+                                       taskKey.c_str(),
+                                       0,
+                                       [&](const std::wstring& name, DWORD type, std::span<const std::uint8_t> data)
+                                       {
+                                           const std::wstring lower = toLower(name);
+                                           if (lower == L"state")
+                                           {
+                                               state = registryNumber(type, data);
+                                           }
+                                           else if (lower == L"lastdisabledtime")
+                                           {
+                                               lastDisabled = registryNumber(type, data).value_or(0);
+                                           }
+                                       });
+                          if (state)
+                          {
+                              records.push_back(
+                                  {.taskId = taskId, .state = static_cast<std::uint32_t>(*state), .lastDisabledUnixSeconds = lastDisabled});
+                          }
+                      });
+        return records;
+    }
+
+    /// The current user's packaged apps' startup tasks (#1798), as Task Manager lists them: a task with
+    /// recorded state whose package is installed and whose manifest still declares it; one entry per
+    /// family and TaskId, whatever versions or architectures of the package are installed.
+    void readPackagedTasks(std::vector<StartupEntry>& entries)
+    {
+        std::unordered_set<std::wstring> seenPackages;
+        std::unordered_set<std::wstring> listed; ///< Lower-cased "family!TaskId".
+        forEachSubkey(api,
+                      HKEY_CURRENT_USER,
+                      Windows::StartupMath::PACKAGED_TASKS_KEY,
+                      [&](const std::wstring& family)
+                      {
+                          const std::vector<PackagedTaskRecord> records = readTaskRecords(family);
+                          if (records.empty())
+                          {
+                              return;
+                          }
+                          const std::string familyUtf8 = WinString::wideToUtf8(family);
+                          const std::string_view packageName = Windows::StartupMath::packageNameOfFamily(familyUtf8);
+                          const std::vector<std::wstring> fullNames = packageFullNames(family);
+                          for (const PackagedTaskRecord& record : records)
+                          {
+                              if (!listed.insert(toLower(std::format(L"{}!{}", family, record.taskId))).second)
+                              {
+                                  continue;
+                              }
+                              const ResolvedPackagedTask* task = nullptr;
+                              const ResolvedPackage* package = nullptr;
+                              std::size_t index = 0;
+                              while (task == nullptr && index < fullNames.size())
+                              {
+                                  package = resolvePackage(fullNames[index], packageName, seenPackages);
+                                  if (package != nullptr)
+                                  {
+                                      const auto found = std::ranges::find_if(package->tasks,
+                                                                              [&](const ResolvedPackagedTask& t)
+                                                                              { return toLower(t.taskId) == toLower(record.taskId); });
+                                      task = (found != package->tasks.end()) ? &*found : nullptr;
+                                  }
+                                  ++index;
+                              }
+                              if (task == nullptr)
+                              {
+                                  continue; // not installed, or no longer declared: Task Manager doesn't list it either
+                              }
+                              entries.push_back(makePackagedEntry(*package, *task, record));
+                          }
+                      });
+        // Packages no longer installed (or updated to a new version) need no cached manifest.
+        std::erase_if(packages, [&seenPackages](const auto& cached) { return !seenPackages.contains(cached.first); });
+    }
+
+    [[nodiscard]] static StartupEntry
+    makePackagedEntry(const ResolvedPackage& package, const ResolvedPackagedTask& task, const PackagedTaskRecord& record)
+    {
+        StartupEntry entry;
+        entry.name = task.name;
+        entry.publisher = package.publisher;
+        entry.location = StartupLocation::PackagedApp;
+        entry.scope = Windows::StartupMath::scopeOf(StartupLocation::PackagedApp);
+        entry.enabled = Windows::StartupMath::packagedTaskEnabled(record.state);
+        entry.disabledAtUnixSeconds = entry.enabled ? 0 : record.lastDisabledUnixSeconds;
+        if (!task.executablePath.empty())
+        {
+            entry.executablePath = task.executablePath;
+            entry.command = std::format("\"{}\"", task.executablePath);
+            const DWORD attributes = GetFileAttributesW(WinString::utf8ToWide(task.executablePath).c_str());
+            entry.target = (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+                             ? StartupTargetState::Present
+                             : StartupTargetState::Missing;
+        }
+        return entry;
+    }
 
     /// Fills `entry`'s executable, target state and publisher from its command.
     void resolveTarget(StartupEntry& entry, std::unordered_set<std::wstring>& seenPaths)
@@ -512,6 +1023,8 @@ std::vector<StartupEntry> WindowsStartupProbe::enumerate()
     m_Impl->readStartupFolder(FOLDERID_Startup, StartupLocation::StartupFolderUser, HKEY_CURRENT_USER, com.usable(), entries, seenPaths);
     m_Impl->readStartupFolder(
         FOLDERID_CommonStartup, StartupLocation::StartupFolderCommon, HKEY_LOCAL_MACHINE, com.usable(), entries, seenPaths);
+    // After the ComScope: resolving a manifest's ms-resource names loads the package's resources.
+    m_Impl->readPackagedTasks(entries);
 
     // Executables no longer started need no cached publisher.
     std::erase_if(m_Impl->publishers, [&seenPaths](const auto& cached) { return !seenPaths.contains(cached.first); });

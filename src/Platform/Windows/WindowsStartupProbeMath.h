@@ -82,7 +82,8 @@ struct ApprovedKey
     friend constexpr bool operator==(const ApprovedKey&, const ApprovedKey&) noexcept = default;
 };
 
-/// The StartupApproved key for an entry at @p location; nullopt for RunOnce, which has none.
+/// The StartupApproved key for an entry at @p location; nullopt for RunOnce, which has none, and for a
+/// packaged app's startup task, whose state the app model keeps.
 [[nodiscard]] constexpr std::optional<ApprovedKey> approvedKeyFor(StartupLocation location) noexcept
 {
     switch (location)
@@ -99,6 +100,7 @@ struct ApprovedKey
         return ApprovedKey{.machine = true, .subkey = APPROVED_FOLDER_KEY};
     case StartupLocation::RunOnceUser:
     case StartupLocation::RunOnceMachine:
+    case StartupLocation::PackagedApp:
         break;
     }
     return std::nullopt;
@@ -159,6 +161,7 @@ encodeStartupApproved(std::span<const std::uint8_t> existing, bool enabled, std:
     case StartupLocation::RunUser:
     case StartupLocation::RunOnceUser:
     case StartupLocation::StartupFolderUser:
+    case StartupLocation::PackagedApp:
         return StartupScope::User;
     case StartupLocation::RunMachine:
     case StartupLocation::RunMachine32:
@@ -217,6 +220,66 @@ encodeStartupApproved(std::span<const std::uint8_t> existing, bool enabled, std:
         }
     }
     return std::string(commandLine.substr(0, commandLine.find_first_of(" \t")));
+}
+
+/// Where packaged apps' startup tasks keep their state (#1798), under HKCU: one subkey per package
+/// family, and under it one per startup task, named by its TaskId, holding State and LastDisabledTime.
+inline constexpr const wchar_t* PACKAGED_TASKS_KEY =
+    L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\SystemAppData";
+
+/// Whether a startup task's State (Windows.ApplicationModel.StartupTaskState) starts the app: Enabled
+/// (2) or EnabledByPolicy (4). Disabled (0), DisabledByUser (1), DisabledByPolicy (3) and anything
+/// unknown don't.
+[[nodiscard]] constexpr bool packagedTaskEnabled(std::uint32_t state) noexcept
+{
+    return state == 2 || state == 4;
+}
+
+/// The package name in a package family name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe" gives
+/// "Microsoft.WindowsTerminal". A name without the "_publisherId" suffix is returned whole.
+[[nodiscard]] constexpr std::string_view packageNameOfFamily(std::string_view family) noexcept
+{
+    return family.substr(0, family.rfind('_'));
+}
+
+/// The ms-resource URI a manifest string refers to, to be resolved in the package's resources; empty
+/// when @p value is plain text. "ms-resource:AppName" names a string in the package's Resources map
+/// ("ms-resource://Package/Resources/AppName"); "ms-resource:Map/Name" a string in another of its maps;
+/// "ms-resource:/Map/Name" and "ms-resource://Package/Map/Name" are already rooted.
+[[nodiscard]] inline std::string resourceUri(std::string_view value, std::string_view packageName)
+{
+    constexpr std::string_view SCHEME = "ms-resource:";
+    if (value.size() < SCHEME.size())
+    {
+        return {};
+    }
+    std::size_t index = 0;
+    while (index < SCHEME.size())
+    {
+        if (std::tolower(static_cast<unsigned char>(value[index])) != SCHEME[index])
+        {
+            return {};
+        }
+        ++index;
+    }
+    const std::string_view rest = value.substr(SCHEME.size());
+    if (rest.empty())
+    {
+        return {};
+    }
+    if (rest.starts_with("//"))
+    {
+        return std::format("{}{}", SCHEME, rest);
+    }
+    if (rest.starts_with('/'))
+    {
+        return std::format("{}//{}{}", SCHEME, packageName, rest);
+    }
+    if (rest.contains('/'))
+    {
+        return std::format("{}//{}/{}", SCHEME, packageName, rest);
+    }
+    return std::format("{}//{}/Resources/{}", SCHEME, packageName, rest);
 }
 
 } // namespace Platform::Windows::StartupMath
