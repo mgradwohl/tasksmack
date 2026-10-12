@@ -4,9 +4,12 @@
 /// it doesn't know, the DHCPv4 lease from Options (skipping a non-string one), a device without DHCP, and
 /// a bus where it isn't running. systemd-resolved: an adapter's DNS servers (IPv4 and IPv6) and search
 /// domains (a routing-only one marked "~"), an unknown link, and resolved not running. systemd-networkd:
-/// the DHCPv4 lease from a link's Describe() JSON, a link without DHCP, and an unknown link.
+/// the DHCPv4 lease from a link's Describe() JSON, a link without DHCP, and an unknown link. udisks2: an
+/// ATA disk's SMART status, an NVMe controller's health log (and a failed one), a block device with no
+/// drive, one udisks2 doesn't list, and udisks2 not running.
 
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
 #include "Platform/Linux/SystemdBus.h"
 
@@ -257,6 +260,133 @@ TEST_F(SystemdBusFakeTest, NetworkdGivesTheLeaseFromALinksDescription)
 
     EXPECT_EQ(read(4).error, "Not configured by DHCP");
     EXPECT_EQ(read(9).error, "systemd-networkd doesn't manage this adapter");
+}
+
+constexpr const char* UDISKS = "org.freedesktop.UDisks2";
+constexpr const char* UDISKS_BLOCK = "org.freedesktop.UDisks2.Block";
+constexpr const char* UDISKS_ATA = "org.freedesktop.UDisks2.Drive.Ata";
+constexpr const char* UDISKS_NVME = "org.freedesktop.UDisks2.NVMe.Controller";
+constexpr const char* ATA_DRIVE = "/org/freedesktop/UDisks2/drives/Disk1";
+constexpr const char* NVME_DRIVE = "/org/freedesktop/UDisks2/drives/NVMe1";
+constexpr const char* FAILING_NVME_DRIVE = "/org/freedesktop/UDisks2/drives/NVMe2";
+
+class SystemdBusFakeSmartTest : public SystemdBusFakeTest
+{
+  protected:
+    /// sda: an ATA disk; nvme0n1 and nvme1n1: NVMe controllers, the second refusing its health log;
+    /// sr0: a block device with no drive (an optical drive's empty slot reads "/").
+    void serveUdisks()
+    {
+        auto& props = m_Bus.properties();
+        props[LinuxDiskSmart::blockObjectPath("sda")][UDISKS_BLOCK]["Drive"] = ObjectPath{ATA_DRIVE};
+        props[LinuxDiskSmart::blockObjectPath("nvme0n1")][UDISKS_BLOCK]["Drive"] = ObjectPath{NVME_DRIVE};
+        props[LinuxDiskSmart::blockObjectPath("nvme1n1")][UDISKS_BLOCK]["Drive"] = ObjectPath{FAILING_NVME_DRIVE};
+        props[LinuxDiskSmart::blockObjectPath("sr0")][UDISKS_BLOCK]["Drive"] = ObjectPath{"/"};
+
+        auto& ata = props[ATA_DRIVE][UDISKS_ATA];
+        ata["SmartSupported"] = true;
+        ata["SmartEnabled"] = true;
+        ata["SmartFailing"] = false;
+        ata["SmartUpdated"] = std::uint64_t{1'760'000'000};
+        ata["SmartTemperature"] = 308.15;
+        ata["SmartPowerOnSeconds"] = std::uint64_t{3'600'000};
+        ata["SmartNumBadSectors"] = std::int64_t{2};
+
+        for (const char* drive : {NVME_DRIVE, FAILING_NVME_DRIVE})
+        {
+            auto& nvme = props[drive][UDISKS_NVME];
+            nvme["SmartUpdated"] = std::uint64_t{1'760'000'100};
+            nvme["SmartCriticalWarning"] = std::vector<std::string>{"spare"};
+            nvme["SmartTemperature"] = std::uint16_t{310};
+        }
+        m_Bus.addNoArgMethod(NVME_DRIVE,
+                             UDISKS_NVME,
+                             "SmartGetAttributes",
+                             []() -> MethodAnswer
+                             {
+                                 return {.path = std::nullopt,
+                                         .errorName = {},
+                                         .dict = std::map<std::string, TestSupport::DictValue>{
+                                             {"percent_used", std::uint8_t{3}},
+                                             {"avail_spare", std::uint8_t{100}},
+                                             {"media_errors", std::uint64_t{0}},
+                                             {"power_on_hours", std::uint64_t{1000}}, // not read: skipped
+                                         }};
+                             });
+        m_Bus.addNoArgMethod(FAILING_NVME_DRIVE,
+                             UDISKS_NVME,
+                             "SmartGetAttributes",
+                             []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.UDisks2.Error.Failed"}; });
+        ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+    }
+};
+
+TEST_F(SystemdBusFakeSmartTest, AnAtaDisksSmartStatusIsRead)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sda");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Ata);
+    EXPECT_TRUE(smart.smartSupported);
+    EXPECT_TRUE(smart.smartEnabled);
+    EXPECT_FALSE(smart.failing);
+    EXPECT_EQ(smart.updated, 1'760'000'000U);
+    EXPECT_DOUBLE_EQ(smart.temperatureKelvin, 308.15);
+    EXPECT_EQ(smart.powerOnSeconds, 3'600'000U);
+    EXPECT_EQ(smart.badSectors, 2);
+}
+
+TEST_F(SystemdBusFakeSmartTest, AnNvmeControllersHealthLogIsRead)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("nvme0n1");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Nvme);
+    EXPECT_EQ(smart.updated, 1'760'000'100U);
+    EXPECT_EQ(smart.criticalWarnings, (std::vector<std::string>{"spare"}));
+    EXPECT_EQ(smart.nvmeTemperatureKelvin, 310);
+    EXPECT_TRUE(smart.attributesRead);
+    EXPECT_EQ(smart.percentUsed, 3);
+    EXPECT_EQ(smart.availableSpare, 100);
+    EXPECT_EQ(smart.mediaErrors, 0U);
+}
+
+TEST_F(SystemdBusFakeSmartTest, AHealthLogThatFailsIsSaidSoAndTheRestStays)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("nvme1n1");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Nvme);
+    EXPECT_FALSE(smart.attributesRead);
+    EXPECT_FALSE(smart.attributesError.empty());
+    EXPECT_EQ(smart.nvmeTemperatureKelvin, 310); // the properties still read
+}
+
+TEST_F(SystemdBusFakeSmartTest, ABlockDeviceWithoutADriveHasNoSmart)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sr0");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    EXPECT_EQ(read.smart.value_or(LinuxDiskSmart::DriveSmart{}).kind, LinuxDiskSmart::DriveSmart::Kind::None);
+}
+
+TEST_F(SystemdBusFakeSmartTest, ADiskUdisksDoesntListIsSaidSo)
+{
+    serveUdisks();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sdz");
+    EXPECT_FALSE(read.smart.has_value());
+    EXPECT_EQ(read.error, "udisks2 doesn't list this disk");
+}
+
+TEST_F(SystemdBusFakeTest, WithoutUdisksSmartCantBeRead)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sda");
+    EXPECT_FALSE(read.smart.has_value());
+    EXPECT_EQ(read.error, "udisks2 isn't running, so SMART status can't be read");
 }
 
 } // namespace

@@ -10,6 +10,7 @@
 
 #ifdef TASKSMACK_HAS_SDBUS
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -50,17 +51,30 @@ struct ObjectPath
     std::string path;
 };
 
-/// A{sv} entry values the fakes need: strings and unsigned 32-bit numbers.
-using DictValue = std::variant<std::string, std::uint32_t>;
+/// A{sv} entry values the fakes need: strings ('s'), and unsigned numbers of 32 ('u'), 8 ('y') and 64
+/// ('t') bits.
+using DictValue = std::variant<std::string, std::uint32_t, std::uint8_t, std::uint64_t>;
 
 /// systemd-resolved's DNS servers, a(iay): each one's address family and bytes.
 using DnsServers = std::vector<std::pair<std::int32_t, std::vector<std::uint8_t>>>;
 /// systemd-resolved's search domains, a(sb): each one and whether it only routes lookups.
 using DnsDomains = std::vector<std::pair<std::string, bool>>;
 
-/// A property value: 's', 'o', 'u', 'ay', 'a{sv}', 'a(iay)' or 'a(sb)'.
-using PropertyValue = std::
-    variant<std::string, ObjectPath, std::uint32_t, std::vector<std::uint8_t>, std::map<std::string, DictValue>, DnsServers, DnsDomains>;
+/// A property value: 's', 'o', 'u', 'ay', 'a{sv}', 'a(iay)', 'a(sb)', and udisks2's 'b', 't', 'd', 'x',
+/// 'q' and 'as'.
+using PropertyValue = std::variant<std::string,
+                                   ObjectPath,
+                                   std::uint32_t,
+                                   std::vector<std::uint8_t>,
+                                   std::map<std::string, DictValue>,
+                                   DnsServers,
+                                   DnsDomains,
+                                   bool,
+                                   std::uint64_t,
+                                   double,
+                                   std::int64_t,
+                                   std::uint16_t,
+                                   std::vector<std::string>>;
 
 /// What a fake method returns: an object path (with a name before it, for an "so" reply), a string
 /// (an "s" reply), or a D-Bus error by name.
@@ -68,8 +82,9 @@ struct MethodAnswer
 {
     std::optional<ObjectPath> path;
     std::string errorName;
-    std::optional<std::string> name = std::nullopt; ///< with path: reply "so"
-    std::optional<std::string> text = std::nullopt; ///< reply "s"
+    std::optional<std::string> name = std::nullopt;                      ///< with path: reply "so"
+    std::optional<std::string> text = std::nullopt;                      ///< reply "s"
+    std::optional<std::map<std::string, DictValue>> dict = std::nullopt; ///< reply "a{sv}"
 };
 
 class FakeSystemBus
@@ -322,6 +337,43 @@ class FakeSystemBus
         {
             return sd_bus_message_append(reply, "v", "u", *number);
         }
+        if (const auto* flag = std::get_if<bool>(&value))
+        {
+            return sd_bus_message_append(reply, "v", "b", static_cast<int>(*flag));
+        }
+        if (const auto* number = std::get_if<std::uint64_t>(&value))
+        {
+            return sd_bus_message_append(reply, "v", "t", *number);
+        }
+        if (const auto* number = std::get_if<double>(&value))
+        {
+            return sd_bus_message_append(reply, "v", "d", *number);
+        }
+        if (const auto* number = std::get_if<std::int64_t>(&value))
+        {
+            return sd_bus_message_append(reply, "v", "x", *number);
+        }
+        if (const auto* number = std::get_if<std::uint16_t>(&value))
+        {
+            return sd_bus_message_append(reply, "v", "q", *number);
+        }
+        if (const auto* strings = std::get_if<std::vector<std::string>>(&value))
+        {
+            int opened = sd_bus_message_open_container(reply, 'v', "as");
+            if (opened >= 0)
+            {
+                opened = sd_bus_message_open_container(reply, 'a', "s");
+            }
+            for (auto it = strings->begin(); opened >= 0 && it != strings->end(); ++it)
+            {
+                opened = sd_bus_message_append(reply, "s", it->c_str());
+            }
+            if (opened >= 0)
+            {
+                opened = sd_bus_message_close_container(reply);
+            }
+            return opened >= 0 ? sd_bus_message_close_container(reply) : opened;
+        }
         int result = 0;
         if (const auto* bytes = std::get_if<std::vector<std::uint8_t>>(&value))
         {
@@ -378,26 +430,37 @@ class FakeSystemBus
             }
             return result >= 0 ? sd_bus_message_close_container(reply) : result;
         }
-        const auto& dict = std::get<std::map<std::string, DictValue>>(value);
         result = sd_bus_message_open_container(reply, 'v', "a{sv}");
         if (result >= 0)
         {
-            result = sd_bus_message_open_container(reply, 'a', "{sv}");
+            result = appendDict(reply, std::get<std::map<std::string, DictValue>>(value));
         }
+        return result >= 0 ? sd_bus_message_close_container(reply) : result;
+    }
+
+    /// An a{sv} into @p reply.
+    static int appendDict(sd_bus_message* reply, const std::map<std::string, DictValue>& dict)
+    {
+        int result = sd_bus_message_open_container(reply, 'a', "{sv}");
         for (auto it = dict.begin(); result >= 0 && it != dict.end(); ++it)
         {
+            const char* key = it->first.c_str();
             if (const auto* text = std::get_if<std::string>(&it->second))
             {
-                result = sd_bus_message_append(reply, "{sv}", it->first.c_str(), "s", text->c_str());
+                result = sd_bus_message_append(reply, "{sv}", key, "s", text->c_str());
+            }
+            else if (const auto* u32 = std::get_if<std::uint32_t>(&it->second))
+            {
+                result = sd_bus_message_append(reply, "{sv}", key, "u", *u32);
+            }
+            else if (const auto* u8 = std::get_if<std::uint8_t>(&it->second))
+            {
+                result = sd_bus_message_append(reply, "{sv}", key, "y", *u8);
             }
             else
             {
-                result = sd_bus_message_append(reply, "{sv}", it->first.c_str(), "u", std::get<std::uint32_t>(it->second));
+                result = sd_bus_message_append(reply, "{sv}", key, "t", std::get<std::uint64_t>(it->second));
             }
-        }
-        if (result >= 0)
-        {
-            result = sd_bus_message_close_container(reply);
         }
         return result >= 0 ? sd_bus_message_close_container(reply) : result;
     }
@@ -444,7 +507,13 @@ class FakeSystemBus
                     }
                 }
             }
-            return sd_bus_reply_method_errorf(message, "org.freedesktop.DBus.Error.UnknownProperty", "No such property");
+            // A path the fake serves nothing on is an unknown object, as a real service answers.
+            const std::string prefix = std::string(path) + '\n';
+            const bool known =
+                object != self->m_Properties.end() ||
+                std::ranges::any_of(self->m_Methods, [&prefix](const auto& entry) { return entry.first.starts_with(prefix); });
+            return known ? sd_bus_reply_method_errorf(message, "org.freedesktop.DBus.Error.UnknownProperty", "No such property")
+                         : sd_bus_reply_method_errorf(message, "org.freedesktop.DBus.Error.UnknownObject", "No such object");
         }
         const auto method = self->m_Methods.find(std::string(path) + '\n' + interface + '\n' + member);
         if (method == self->m_Methods.end())
@@ -473,6 +542,21 @@ class FakeSystemBus
         else
         {
             answer = std::get<NoArgMethod>(method->second)();
+        }
+        if (answer.dict.has_value())
+        {
+            sd_bus_message* reply = nullptr;
+            int result = sd_bus_message_new_method_return(message, &reply);
+            if (result >= 0)
+            {
+                result = appendDict(reply, *answer.dict);
+            }
+            if (result >= 0)
+            {
+                result = sd_bus_send(nullptr, reply, nullptr);
+            }
+            sd_bus_message_unref(reply);
+            return result >= 0 ? 1 : result;
         }
         if (answer.text.has_value())
         {
