@@ -1127,6 +1127,79 @@ TEST(LinuxProcessProbeTest, UnreadableRaplCounterDisablesPowerUsage)
     EXPECT_FALSE(probe.capabilities().hasPowerUsage);
 }
 
+// #1395: what the system-wide reads give when their files are not what they should be.
+
+TEST(LinuxProcessProbeTest, AMalformedProcStatGivesNoCpuTime)
+{
+    ScopedTempDir notCpu("ts_test_proc_stat_not_cpu");
+    writeFile(notCpu.path / "stat", "intr 12345\nbtime 1700000000\n"); // no "cpu " line first
+    EXPECT_EQ(LinuxProcessProbe(notCpu.path).totalCpuTime(), 0U);
+
+    ScopedTempDir tooShort("ts_test_proc_stat_short");
+    writeFile(tooShort.path / "stat", "cpu  100 20 30\n"); // fewer than the eight fields read
+    EXPECT_EQ(LinuxProcessProbe(tooShort.path).totalCpuTime(), 0U);
+}
+
+TEST(LinuxProcessProbeTest, AGarbledBootTimeLeavesStartTimesUnknown)
+{
+    ScopedTempDir proc("ts_test_proc_btime_garbled");
+    writeFile(proc.path / "stat", "cpu  100 20 30 400 50 6 7 8 0 0\nbtime soon\n");
+    writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].startTimeEpoch, 0U);
+}
+
+TEST(LinuxProcessProbeTest, MeminfoWithoutMemTotalIsNoTotal)
+{
+    ScopedTempDir proc("ts_test_proc_meminfo_no_total");
+    writeFile(proc.path / "meminfo", "MemFree:        1024 kB\nMemAvailable:   2048 kB\nMemTotal:       lots\n");
+    EXPECT_EQ(LinuxProcessProbe(proc.path).systemTotalMemory(), 0U);
+}
+
+TEST(LinuxProcessProbeTest, AnUnreadableRaplRangeIsZeroAndAnUnreadableCounterIsNoReading)
+{
+    ScopedTempDir proc("ts_test_proc_rapl_garbled");
+    ScopedTempDir powercap("ts_test_powercap_garbled");
+    const auto energyFile = powercap.path / "intel-rapl:0" / "energy_uj";
+    writeFile(energyFile, "123456\n");
+    writeFile(powercap.path / "intel-rapl:0" / "max_energy_range_uj", "unknown\n");
+    writeFile(proc.path / "stat", "cpu  100 20 30 400 50 6 7 8 0 0\n");
+
+    const LinuxProcessProbe probe(proc.path, powercap.path);
+    ASSERT_TRUE(probe.capabilities().hasPowerUsage);
+    const PackageEnergyReading reading = probe.readPackageEnergy().value_or(PackageEnergyReading{});
+    EXPECT_EQ(reading.energyUj, 123456U);
+    EXPECT_EQ(reading.maxRangeUj, 0U); // no wrap range: none is assumed
+
+    writeFile(energyFile, "");
+    EXPECT_FALSE(probe.readPackageEnergy().value_or(PackageEnergyReading{}).energyUj.has_value());
+    writeFile(energyFile, "n/a\n");
+    EXPECT_FALSE(probe.readPackageEnergy().value_or(PackageEnergyReading{}).energyUj.has_value());
+}
+
+TEST(LinuxProcessProbeTest, ACgroupFileLongerThanTheStackReadIsReadWhole)
+{
+    // Many v1 hierarchies with long paths put the v2 line naming the container past the 1 KiB read.
+    ScopedTempDir proc("ts_test_proc_long_cgroup");
+    writeVmHwmProcess(proc.path, "Name:\tapp\nUid:\t0\t0\t0\t0\n");
+    const std::string id = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b";
+    std::string cgroup;
+    for (int hierarchy = 12; hierarchy > 0; --hierarchy)
+    {
+        cgroup += std::to_string(hierarchy) + ":controller" + std::to_string(hierarchy) + ":/" + std::string(100, 'x') + "\n";
+    }
+    ASSERT_GT(cgroup.size(), 1024U);
+    cgroup += "0::/system.slice/docker-" + id + ".scope\n";
+    writeFile(proc.path / "4242" / "cgroup", cgroup);
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].container, "docker:1a2b3c4d5e6f");
+}
+
 TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
 {
     // A readable CapEff decides for root too, so these hold whatever the test runs as.
