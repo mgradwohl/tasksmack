@@ -754,6 +754,81 @@ TEST_F(ProcessesPanelRenderTest, PageKeysJumpAPageAndStopAtTheEnds)
     panel->onDetach();
 }
 
+TEST_F(ProcessesPanelRenderTest, TheFilterKeepsMatchingRowsAndClearingItBringsThemBack)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    // Click into the filter and type, a character a frame as a keyboard would.
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("server")) << text; // only the matching row is left
+
+    // The clear button beside the filter brings every row back. Enter first: a click on the button
+    // takes the keyboard from the filter, which an active text field would otherwise write back over.
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, true);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Enter, false);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_XMARK, 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("server")) << text;
+    EXPECT_TRUE(text.contains("worker")) << text;
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, HoldingCtrlOverTheTablePausesItAndSaysSo)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // the pane hovered
+    io.AddKeyEvent(ImGuiMod_Ctrl, true);
+    // The freeze engages once Ctrl has been held a moment (ProcessDisplayFreeze::ENGAGE_DELAY_SECONDS).
+    std::string text;
+    for (int i = 0; i < 30 && !text.contains("Paused (Ctrl)"); ++i)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        text = renderAndCapture(*panel);
+    }
+    EXPECT_TRUE(text.contains("Paused (Ctrl)")) << text;
+    io.AddKeyEvent(ImGuiMod_Ctrl, false);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Paused (Ctrl)"));
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, TheListAndTreeSegmentsSwitchTheView)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_SITEMAP " Tree", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(panel->treeViewEnabled());
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_LIST " List", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(panel->treeViewEnabled());
+    panel->onDetach();
+}
+
 TEST_F(ProcessesPanelRenderTest, AColumnHeaderExplainsItsColumnOnHover)
 {
     SelectionSink events;
