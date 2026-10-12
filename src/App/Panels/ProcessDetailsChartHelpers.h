@@ -99,6 +99,14 @@ inline constexpr std::size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
     return sharedBytes > 0 || dedicatedBytes != totalBytes;
 }
 
+/// Whether the GPU tab shows the process's NPU Usage card (#1799): its GPU fields were read and it
+/// uses an NPU or compute accelerator -- listed on one, busy on one, or holding memory on one. A
+/// process that has used none, every Linux process until #1827, gets no card.
+[[nodiscard]] inline bool hasNpuUsage(const Domain::ProcessSnapshot& proc) noexcept
+{
+    return proc.gpuFieldsRead && (!proc.npuDevices.empty() || proc.npuUtilPercent > 0.0 || proc.npuMemoryBytes > 0);
+}
+
 // Each chart's axis target: the largest value it draws in the window (UI::Widgets::maxOfSeriesSince(),
 // #1145) and the smoothed values of its bars, which can still be easing down from a peak that has
 // just left the window. Each bar is scaled to its series' axis, so a bar and its line show a value at

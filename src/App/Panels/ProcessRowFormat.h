@@ -17,6 +17,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace App::ProcessRowFormat
 {
@@ -146,6 +147,9 @@ struct RowFormatOptions
     bool hasPerProcessGpu = true;            ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
     bool hasPerProcessGpuUtilization = true; ///< Platform::GPUCapabilities::hasPerProcessUtilization (#1210)
     bool gpuReadFailed = false;              ///< Supported, but this generation's per-process GPU read failed (#1210)
+    /// Per-process GPU metrics on a system with an NPU or compute accelerator (#1799): the NPU columns.
+    /// NPU % needs hasPerProcessGpuUtilization too; their reads are the GPU's, so gpuReadFailed covers them.
+    bool hasPerProcessNpu = true;
     bool hasStatus = true;
     bool hasPublisher = true;
     bool hasContainer = true;
@@ -250,6 +254,23 @@ template<std::integral T> [[nodiscard]] inline AlignedCellText countCell(T value
     return alignedPowerCell(watts).text;
 }
 
+/// @p engines comma-joined ("3D, Compute"), as the GPU Engine and NPU Engine cells show them; empty for none.
+[[nodiscard]] inline std::string joinEngines(const std::vector<std::string>& engines)
+{
+    std::string joined;
+    std::size_t i = 0;
+    while (i < engines.size())
+    {
+        if (i > 0)
+        {
+            joined += ", ";
+        }
+        joined += engines[i];
+        ++i;
+    }
+    return joined;
+}
+
 /// Cache of pre-formatted strings for one process row, keyed externally by uniqueKey (see
 /// ProcessesPanel::m_RowFormatCache). Built lazily, on demand, the first time a row is actually
 /// rendered after its snapshot generation changes -- not eagerly for every process in the
@@ -282,6 +303,9 @@ struct RowFormatCache
     AlignedCellText gpuPercent; // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText gpuMemory;  // pre-formatted to avoid per-frame decimal alignment work
     std::string gpuEngines;     // comma-joined engine list, empty for none; avoids per-frame string joins
+    AlignedCellText npuPercent; // The NPU columns' (#1799), as the GPU ones above
+    AlignedCellText npuMemory;
+    std::string npuEngines;
     AlignedCellText threads;    // countCell(threadCount), or unavailable
     AlignedCellText handles;    // countCell(handleCount), or unavailable
     AlignedCellText pageFaults; // countCell(pageFaults), or unavailable
@@ -296,6 +320,7 @@ struct RowFormatCache
     LazyTextWidth commandWidth;
     LazyTextWidth gpuEnginesWidth; // of gpuEngines above
     LazyTextWidth gpuDevicesWidth;
+    LazyTextWidth npuEnginesWidth; // of npuEngines above
     LazyTextWidth publisherWidth;
     LazyTextWidth containerWidth;
     LazyTextWidth processTypeWidth;
@@ -308,6 +333,7 @@ struct RowFormatCache
     bool containerSupported = true;
     bool processTypeSupported = true;
     bool gpuSupported = true;   // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
+    bool npuSupported = true;   // NPU Engine (#1799); NPU % and NPU Memory carry their own tone
     bool gpuReadFailed = false; // Supported, but this generation's per-process GPU read failed (#1210)
     // Why this row's GPU figures are not readings although the system has them -- a failed read, or a
     // process the last GPU read did not see -- or null when they are (#1210).
@@ -333,6 +359,7 @@ struct RowFormatCache
     fmt.containerSupported = options.hasContainer;
     fmt.processTypeSupported = options.hasProcessType;
     fmt.gpuSupported = options.hasPerProcessGpu;
+    fmt.npuSupported = options.hasPerProcessGpu && options.hasPerProcessNpu;
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;
     if (options.hasPerProcessGpu)
     {
@@ -411,14 +438,32 @@ struct RowFormatCache
         fmt.gpuMemory = (fmt.gpuUnreadReason != nullptr) ? unavailableCell(fmt.gpuUnreadReason) : bytesCell(proc.gpuMemoryBytes);
     }
     // No engine in use is a fact rather than a gap, so it is left blank rather than marked unavailable.
-    for (std::size_t i = 0; i < proc.gpuEngines.size(); ++i)
+    fmt.gpuEngines = joinEngines(proc.gpuEngines);
+    // The NPU columns (#1799) as the GPU ones: their figures are read with the GPU's, so a failed or
+    // missing GPU read leaves them unread too. Without an NPU or compute accelerator -- every Linux
+    // system until #1827 -- they are not available on this system.
+    if (!(fmt.npuSupported && options.hasPerProcessGpuUtilization))
     {
-        if (i > 0)
-        {
-            fmt.gpuEngines += ", ";
-        }
-        fmt.gpuEngines += proc.gpuEngines[i];
+        fmt.npuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);
     }
+    else if (fmt.gpuUnreadReason != nullptr)
+    {
+        fmt.npuPercent = unavailableCell(fmt.gpuUnreadReason);
+    }
+    else
+    {
+        fmt.npuPercent = withZeroTone(makeAlignedCellText(formatAlignedPercentString(proc.npuUtilPercent)),
+                                      readsAsZeroAtOneDecimal(proc.npuUtilPercent));
+    }
+    if (!fmt.npuSupported)
+    {
+        fmt.npuMemory = unavailableCell(UNSUPPORTED_CELL_REASON);
+    }
+    else
+    {
+        fmt.npuMemory = (fmt.gpuUnreadReason != nullptr) ? unavailableCell(fmt.gpuUnreadReason) : bytesCell(proc.npuMemoryBytes);
+    }
+    fmt.npuEngines = joinEngines(proc.npuEngines);
     // A running process has at least one thread, so a count of 0 is one that was not read.
     if (!options.hasThreadCount)
     {

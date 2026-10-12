@@ -80,6 +80,7 @@ class ProcessDetailsCharts
     void renderGpuUsage(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill);
     static void renderGpuCurrentMetricsTable(const ProcessChartContext& ctx);
     static void renderPerGpuBreakdown(const ProcessChartContext& ctx);
+    static void renderNpuUsageCard(const ProcessChartContext& ctx);
     static void renderGpuHistoryGraphs(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill);
 
     // Render scratch buffers for the stacked CPU chart (reused across frames to avoid per-frame heap

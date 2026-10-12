@@ -308,6 +308,39 @@ TEST(ProcessColumnAvailabilityTest, GpuPercentNeedsPerProcessUtilization)
     EXPECT_TRUE(rowFormatOptions(caps).hasPerProcessGpuUtilization);
 }
 
+// #1799: the NPU columns need an NPU or compute accelerator as well as per-process GPU metrics, and
+// NPU % needs per-process utilization too. Without one -- every Linux system until #1827 -- they are
+// "not available on this system", as the GPU columns are without per-process data.
+TEST(ProcessColumnAvailabilityTest, NpuColumnsNeedAnAcceleratorAndPerProcessMetrics)
+{
+    using ProcessColumnAvailability::gpuSupport;
+    const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    constexpr ProcessColumnAvailability::GpuSupport NO_ACCELERATOR{.perProcess = true, .utilization = true, .accelerator = false};
+    for (const ProcessColumn col : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        EXPECT_TRUE(isSupported(col, caps)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(isSupported(col, caps, NO_ACCELERATOR)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(isSupported(col, caps, NO_PER_PROCESS_GPU)) << getColumnInfo(col).configKey;
+        EXPECT_EQ(unavailableValuesNote(col, caps, NO_ACCELERATOR), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+        EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(caps).isVisible(col)) << "Off by default";
+    }
+    // The GPU columns don't depend on an accelerator.
+    EXPECT_TRUE(isSupported(ProcessColumn::GpuPercent, caps, NO_ACCELERATOR));
+    // NPU % needs utilization; NPU Memory and NPU Engine don't.
+    EXPECT_FALSE(isSupported(ProcessColumn::NpuPercent, caps, NO_PER_PROCESS_GPU_UTILIZATION));
+    EXPECT_TRUE(isSupported(ProcessColumn::NpuMemory, caps, NO_PER_PROCESS_GPU_UTILIZATION));
+    EXPECT_TRUE(isSupported(ProcessColumn::NpuEngine, caps, NO_PER_PROCESS_GPU_UTILIZATION));
+
+    // The GPU model's word on an accelerator reaches the support and the row formatter.
+    EXPECT_FALSE(gpuSupport(true, false, false, /*hasAccelerator=*/false).accelerator);
+    EXPECT_TRUE(gpuSupport(true, false, false, /*hasAccelerator=*/true).accelerator);
+    EXPECT_FALSE(rowFormatOptions(caps, NO_ACCELERATOR).hasPerProcessNpu);
+    EXPECT_TRUE(rowFormatOptions(caps, NO_ACCELERATOR).hasPerProcessGpu);
+    EXPECT_FALSE(rowFormatOptions(caps, NO_PER_PROCESS_GPU).hasPerProcessNpu);
+    EXPECT_TRUE(rowFormatOptions(caps).hasPerProcessNpu);
+    EXPECT_FALSE(ProcessColumnAvailability::gpuSupportOfGeneration(true, true, false, /*accelerator=*/false).accelerator);
+}
+
 TEST(ProcessColumnAvailabilityTest, GpuColumnsShownByTheUserAreHiddenOnlyIfUnchosen)
 {
     const Platform::ProcessCapabilities caps = windowsLikeCapabilities();

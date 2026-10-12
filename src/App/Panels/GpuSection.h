@@ -125,43 +125,64 @@ struct GpuDrawEntry
     const Domain::GPUSnapshot* snapshot = nullptr; ///< Null: no reading for this GPU this sample.
 };
 
-/// The GPUs the tab draws, in order: every enumerated GPU in enumeration order, whether or not the
-/// latest read returned it, then any snapshot for a GPU enumeration did not list (all of them, if
-/// enumeration failed), in the published order. A GPU missing from one read keeps its slot and its
-/// UI state instead of vanishing and shifting the GPUs after it, whose state used to be keyed by
+/// Which of a publication's adapters a tab draws (#1799): the GPU tab's GPUs, or the NPU tab's NPUs and
+/// other compute accelerators. The two tabs share this section's code.
+enum class DeviceSet : std::uint8_t
+{
+    Gpus,         ///< GPUPublication::gpuInfo / snapshots
+    Accelerators, ///< GPUPublication::acceleratorInfo / acceleratorSnapshots
+};
+
+/// The devices a tab draws, in order: every enumerated device in enumeration order, whether or not the
+/// latest read returned it, then any snapshot for a device enumeration did not list (all of them, if
+/// enumeration failed), in the published order. A device missing from one read keeps its slot and its
+/// UI state instead of vanishing and shifting the devices after it, whose state used to be keyed by
 /// position (#1163).
 ///
 /// Written into @p entries, replacing what it held but keeping its capacity, so the tab can rebuild the
-/// list every frame without allocating (#1171).
-inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
+/// list every frame without allocating (#1171). The entries point into @p infos and @p snapshots.
+inline void
+deviceDrawList(std::span<const Platform::GPUInfo> infos, std::span<const Domain::GPUSnapshot> snapshots, std::vector<GpuDrawEntry>& entries)
 {
     entries.clear();
-    entries.reserve(publication.gpuInfo.size() + publication.snapshots.size());
+    entries.reserve(infos.size() + snapshots.size());
     const auto listed = [&entries](std::string_view gpuId)
     {
         return std::ranges::any_of(entries, [gpuId](const GpuDrawEntry& entry) { return entry.gpuId == gpuId; });
     };
 
-    for (const auto& info : publication.gpuInfo)
+    std::size_t infoIndex = 0;
+    while (infoIndex < infos.size())
     {
+        const Platform::GPUInfo& info = infos[infoIndex];
+        ++infoIndex;
         if (listed(info.id))
         {
             continue;
         }
-        const auto snapshotIt = std::ranges::find(publication.snapshots, info.id, &Domain::GPUSnapshot::gpuId);
+        const auto snapshotIt = std::ranges::find(snapshots, info.id, &Domain::GPUSnapshot::gpuId);
         entries.push_back({
             .gpuId = info.id,
             .info = &info,
-            .snapshot = (snapshotIt != publication.snapshots.end()) ? &*snapshotIt : nullptr,
+            .snapshot = (snapshotIt != snapshots.end()) ? &*snapshotIt : nullptr,
         });
     }
-    for (const auto& snapshot : publication.snapshots)
+    std::size_t snapshotIndex = 0;
+    while (snapshotIndex < snapshots.size())
     {
+        const Domain::GPUSnapshot& snapshot = snapshots[snapshotIndex];
+        ++snapshotIndex;
         if (!listed(snapshot.gpuId))
         {
             entries.push_back({.gpuId = snapshot.gpuId, .info = nullptr, .snapshot = &snapshot});
         }
     }
+}
+
+/// The GPU tab's draw list (deviceDrawList()): the publication's GPUs.
+inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
+{
+    deviceDrawList(publication.gpuInfo, publication.snapshots, entries);
 }
 
 /// gpuDrawList() into a new vector.
@@ -170,6 +191,74 @@ inline void gpuDrawList(const Domain::GPUPublication& publication, std::vector<G
     std::vector<GpuDrawEntry> entries;
     gpuDrawList(publication, entries);
     return entries;
+}
+
+/// The NPU tab's draw list (deviceDrawList()): the publication's NPUs and compute accelerators (#1799).
+inline void acceleratorDrawList(const Domain::GPUPublication& publication, std::vector<GpuDrawEntry>& entries)
+{
+    deviceDrawList(publication.acceleratorInfo, publication.acceleratorSnapshots, entries);
+}
+
+/// acceleratorDrawList() into a new vector.
+[[nodiscard]] inline std::vector<GpuDrawEntry> acceleratorDrawList(const Domain::GPUPublication& publication)
+{
+    std::vector<GpuDrawEntry> entries;
+    acceleratorDrawList(publication, entries);
+    return entries;
+}
+
+/// Whether the machine view shows its NPU tab (#1799): only once @p publication lists an NPU or other
+/// compute accelerator, enumerated or read. Never on Linux yet (#1827), nor before the first publication.
+[[nodiscard]] inline bool showAcceleratorTab(const Domain::GPUPublication* publication) noexcept
+{
+    return publication != nullptr && (!publication->acceleratorInfo.empty() || !publication->acceleratorSnapshots.empty());
+}
+
+/// What a device is called where its kind is named (#1799): "NPU", "Compute accelerator" or "GPU".
+[[nodiscard]] constexpr std::string_view deviceKindLabel(Platform::DeviceKind kind) noexcept
+{
+    switch (kind)
+    {
+    case Platform::DeviceKind::Npu:
+        return "NPU";
+    case Platform::DeviceKind::ComputeAccelerator:
+        return "Compute accelerator";
+    case Platform::DeviceKind::Gpu:
+        break;
+    }
+    return "GPU";
+}
+
+/// An NPU's or compute accelerator's collapsing-header label (#1799): its name and kind, and
+/// "Sleeping" as gpuHeaderLabel() says it. The same "###gpuHeader" id, so its collapse state survives
+/// a missed read and a label change.
+[[nodiscard]] inline std::string
+acceleratorHeaderLabel(std::string_view icon, std::string_view name, Platform::DeviceKind kind, bool suspended)
+{
+    std::string label = std::format("{} {} [{}]", icon, name, deviceKindLabel(kind));
+    if (suspended)
+    {
+        label += " (Sleeping)";
+    }
+    label += "###gpuHeader";
+    return label;
+}
+
+/// The line under an NPU's or compute accelerator's header (#1799): its kind, vendor, driver version
+/// and which memory its figures count -- "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory:
+/// Shared". A vendor the probe could not name is left out; a driver version it could not read says so.
+[[nodiscard]] inline std::string acceleratorDetailsText(const Platform::GPUInfo& info)
+{
+    constexpr std::string_view SEPARATOR = "    ";
+    std::string text = std::format("Kind: {}", deviceKindLabel(info.kind));
+    if (!info.vendor.empty() && info.vendor != "Unknown")
+    {
+        text += std::format("{}Vendor: {}", SEPARATOR, info.vendor);
+    }
+    const std::string_view driver = info.driverVersion.empty() ? std::string_view{"Unknown"} : std::string_view{info.driverVersion};
+    text += std::format("{}Driver: {}", SEPARATOR, driver);
+    text += std::format("{}Memory: {}", SEPARATOR, info.memoryIsShared ? "Shared" : "Dedicated");
+    return text;
 }
 
 /// The Overview header's "VRAM" figure: memory totals summed over discrete GPUs only. An integrated
@@ -358,6 +447,9 @@ struct FrameCache
 
     /// Per draw-list entry, built from the publication named below.
     std::vector<std::string> headerLabels;
+    /// The NPU tab's line under each header (acceleratorDetailsText(), #1799); empty for a GPU, or for an
+    /// accelerator enumeration did not list.
+    std::vector<std::string> detailTexts;
     std::vector<std::string> coreLayoutIds;
     std::vector<std::string> thermalLayoutIds;
     /// Per draw-list entry, rebuilt when the scale a label names changes (GpuScaledLabels::update()).
@@ -394,9 +486,16 @@ struct RenderContext
     // Kept across frames by the caller so drawing allocates nothing (#1171). Null: a fresh one for the
     // frame, which draws the same but rebuilds everything.
     FrameCache* cache = nullptr;
+
+    // The GPU tab's GPUs, or the NPU tab's NPUs and compute accelerators (#1799). Each tab keeps its own
+    // smoothed values, fill state and cache.
+    DeviceSet devices = DeviceSet::Gpus;
 };
 
-/// Render the GPU section with utilization, memory, thermal, and power charts.
+/// Render the GPU section with utilization, memory, thermal, and power charts -- or, for
+/// DeviceSet::Accelerators, the NPU tab: each NPU or compute accelerator's kind, vendor and driver, and
+/// its utilization and memory chart (#1799). An accelerator has no clock, video engines or thermal
+/// sensors, so those series and the notes on their absence are left out.
 /// @param ctx Render context containing model and smoothed values
 void renderGpuSection(RenderContext& ctx);
 

@@ -473,6 +473,48 @@ TEST_F(ProcessesPanelRenderTest, TheColumnsMenuShowsAHiddenColumn)
     panel->onDetach();
 }
 
+// #1799: the Columns menu lists NPU %, NPU Memory and NPU Engine, all off by default. Shown with no
+// NPU to read -- this panel has no GPU model, as Linux has no NPU data yet (#1827) -- the column's
+// cells are the unavailable dash, as the GPU columns' are without per-process data.
+TEST_F(ProcessesPanelRenderTest, TheColumnsMenuListsTheNpuColumnsOffByDefault)
+{
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const std::string before = renderAndCapture(*panel);
+    ASSERT_FALSE(before.contains("NPU")) << before; // no NPU column shown by default
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_TABLE_COLUMNS " Columns", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string menu = renderAndCapture(*panel);
+    ASSERT_NE(topPopup(), nullptr);
+    for (const char* item : {"NPU %", "NPU Memory", "NPU Engine"})
+    {
+        EXPECT_TRUE(menu.contains(item)) << item << " in\n" << menu;
+    }
+    for (const ProcessColumn col : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        EXPECT_FALSE(UserConfig::get().settings().processColumns.isVisible(col)) << getColumnInfo(col).configKey;
+    }
+    pressPopupItem(*panel, "NPU Memory");
+
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("NPU Mem")) << after;
+    // No NPU here: each row's new cell is the unavailable dash.
+    const auto dashes = [](const std::string& text)
+    {
+        return std::ranges::count(text, '\x94');
+    };
+    EXPECT_GE(dashes(after), dashes(before) + 3) << after;
+    EXPECT_TRUE(UserConfig::get().settings().processColumns.isVisible(ProcessColumn::NpuMemory));
+    panel->onDetach();
+}
+
 TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
 {
     const auto panel = attachedPanel();

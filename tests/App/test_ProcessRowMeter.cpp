@@ -90,6 +90,45 @@ TEST(ProcessRowMeterTest, AnUnreadValueHasNoMeter)
     EXPECT_DOUBLE_EQ(ProcessRowMeter::valueOf(proc, ProcessColumn::GpuPercent), 0.0);
 }
 
+// #1799: NPU % and NPU Memory carry a meter and a sparkline as GPU % and GPU Memory do, from the
+// process's NPU figures; NPU Engine, a text column, has none.
+TEST(ProcessRowMeterTest, NpuPercentAndMemoryHaveMetersFromTheNpuFigures)
+{
+    EXPECT_EQ(scaleOf(ProcessColumn::NpuPercent), Scale::Percent);
+    EXPECT_EQ(scaleOf(ProcessColumn::NpuMemory), Scale::Absolute);
+    EXPECT_EQ(scaleOf(ProcessColumn::NpuEngine), Scale::None);
+    EXPECT_TRUE(std::ranges::contains(ProcessRowMeter::METER_COLUMNS, ProcessColumn::NpuPercent));
+    EXPECT_TRUE(std::ranges::contains(ProcessRowMeter::METER_COLUMNS, ProcessColumn::NpuMemory));
+    EXPECT_EQ(ProcessRowMeter::metricOf(ProcessColumn::NpuPercent), Domain::ProcessRowHistory::Metric::NpuPercent);
+    EXPECT_EQ(ProcessRowMeter::metricOf(ProcessColumn::NpuMemory), Domain::ProcessRowHistory::Metric::NpuMemory);
+
+    Domain::ProcessSnapshot proc;
+    proc.gpuUtilPercent = 10.0;
+    proc.gpuMemoryBytes = 1000;
+    proc.npuUtilPercent = 40.0;
+    proc.npuMemoryBytes = 4096;
+    EXPECT_DOUBLE_EQ(ProcessRowMeter::valueOf(proc, ProcessColumn::NpuPercent), 40.0);
+    EXPECT_DOUBLE_EQ(ProcessRowMeter::valueOf(proc, ProcessColumn::NpuMemory), 4096.0);
+    ColumnMaxima maxima;
+    maxima.rebuild({proc});
+    EXPECT_FLOAT_EQ(ProcessRowMeter::fractionOf(proc, ProcessColumn::NpuPercent, maxima), 0.4F);
+    EXPECT_FLOAT_EQ(ProcessRowMeter::fractionOf(proc, ProcessColumn::NpuMemory, maxima), 1.0F);
+
+    // Read with the GPU fields: unread, no meter.
+    proc.gpuFieldsRead = false;
+    EXPECT_DOUBLE_EQ(ProcessRowMeter::valueOf(proc, ProcessColumn::NpuPercent), 0.0);
+    EXPECT_DOUBLE_EQ(ProcessRowMeter::valueOf(proc, ProcessColumn::NpuMemory), 0.0);
+
+    // Off by default, and a sparkline asks the model to keep the NPU's history.
+    Settings settings;
+    EXPECT_FALSE(settings.isOn(ProcessColumn::NpuPercent));
+    settings.setStyle(ProcessColumn::NpuPercent, Style::Sparkline);
+    settings.setStyle(ProcessColumn::NpuMemory, Style::Bar);
+    EXPECT_EQ(settings.sparklineMetrics(), Domain::ProcessRowHistory::bitOf(Domain::ProcessRowHistory::Metric::NpuPercent));
+    settings.setStyle(ProcessColumn::NpuEngine, Style::Bar);
+    EXPECT_FALSE(settings.isOn(ProcessColumn::NpuEngine));
+}
+
 // ========== Settings and maxima ==========
 
 TEST(ProcessRowMeterTest, OnlyCpuIsOnByDefault)

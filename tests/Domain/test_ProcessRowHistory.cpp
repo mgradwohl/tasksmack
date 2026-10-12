@@ -178,6 +178,28 @@ TEST(ProcessRowHistoryTrackerTest, AnUnreadValueIsKeptAsZero)
     expectValues(*gen->ring(0, Metric::IoRead), {0.0F});
 }
 
+// #1799: the NPU % and NPU Memory sparklines follow the process's NPU figures, never its GPU ones,
+// alongside the GPU's; read with the GPU fields, so unread they are kept as zero too.
+TEST(ProcessRowHistoryTrackerTest, TheNpuMetricsFollowTheNpuFigures)
+{
+    Domain::ProcessSnapshot proc = makeProc(10, 0.0);
+    proc.gpuUtilPercent = 5.0;
+    proc.gpuMemoryBytes = 100;
+    proc.npuUtilPercent = 70.0;
+    proc.npuMemoryBytes = 8192;
+    const auto all = static_cast<MetricSet>(0U | bitOf(Metric::GpuPercent) | bitOf(Metric::NpuPercent) | bitOf(Metric::NpuMemory));
+    Tracker tracker;
+    auto gen = tracker.advance({proc}, all);
+    expectValues(*gen->ring(0, Metric::NpuPercent), {70.0F});
+    expectValues(*gen->ring(0, Metric::NpuMemory), {8192.0F});
+    expectValues(*gen->ring(0, Metric::GpuPercent), {5.0F});
+
+    proc.gpuFieldsRead = false;
+    gen = tracker.advance({proc}, all);
+    expectValues(*gen->ring(0, Metric::NpuPercent), {70.0F, 0.0F});
+    expectValues(*gen->ring(0, Metric::NpuMemory), {8192.0F, 0.0F});
+}
+
 // ========== ProcessModel ==========
 
 using TestMocks::makeProcessCounters;

@@ -1077,6 +1077,8 @@ void ProcessDetailsCharts::renderGpuTab(const ProcessChartContext& ctx)
     {
         return;
     }
+    // A process using an NPU or compute accelerator has its NPU figures on top, whatever its GPU use (#1799).
+    renderNpuUsageCard(ctx);
     // A failed read is not "not available on this system" (#1210).
     const Detail::GpuTabContent gpuContent = Detail::gpuTabContentFor(*ctx.snapshot, *ctx.history, ctx.rateReadings.gpuSupported);
     if (gpuContent == Detail::GpuTabContent::Unavailable)
@@ -1234,6 +1236,76 @@ void ProcessDetailsCharts::renderGpuCurrentMetricsTable(const ProcessChartContex
     }
 
     ImGui::EndTable();
+}
+
+// Renders the process's NPU Usage card (#1799) when it uses an NPU or compute accelerator: its busiest
+// accelerator's utilization, its memory on them (dedicated and shared beneath where the total doesn't
+// show them), the devices and the active engines. Never counted in the GPU figures below it.
+void ProcessDetailsCharts::renderNpuUsageCard(const ProcessChartContext& ctx)
+{
+    const auto& proc = *ctx.snapshot;
+    if (!Detail::hasNpuUsage(proc))
+    {
+        return;
+    }
+    const auto& theme = UI::Theme::get();
+
+    // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
+    constexpr const char* LABEL_UTILIZATION = "NPU Utilization:";
+    constexpr const char* LABEL_MEMORY = "NPU Memory:";
+    constexpr const char* LABEL_DEDICATED = "  Dedicated:";
+    constexpr const char* LABEL_SHARED = "  Shared:";
+    constexpr const char* LABEL_DEVICES = "NPU Device(s):";
+    constexpr const char* LABEL_ENGINES = "Active Engines:";
+    constexpr auto LABELS =
+        std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_DEVICES, LABEL_ENGINES});
+
+    // One label/value row; the value in @p color, or the default text colour without one.
+    const auto row = [](const char* label, const std::string& value, const ImVec4* color)
+    {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(label);
+        ImGui::TableNextColumn();
+        if (color != nullptr)
+        {
+            ImGui::TextColored(*color, "%s", value.c_str());
+        }
+        else
+        {
+            ImGui::TextUnformatted(value.c_str());
+        }
+    };
+
+    if (UI::Widgets::beginCompactCard("##ProcNpuUsageCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_BRAIN, "NPU Usage");
+        if (ImGui::BeginTable("NPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
+        {
+            ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F); // As the GPU table: no first-frame NaN
+
+            const ImVec4 utilColor = theme.scheme().gpuUtilization;
+            row(LABEL_UTILIZATION, Detail::gpuUtilizationText(ctx.rateReadings.gpuUtilization, proc.npuUtilPercent), &utilColor);
+            const ImVec4 memColor = theme.scheme().gpuMemory;
+            row(LABEL_MEMORY, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuMemoryBytes)), &memColor);
+            if (Detail::showsGpuMemoryKinds(proc.npuMemoryBytes, proc.npuDedicatedMemoryBytes, proc.npuSharedMemoryBytes))
+            {
+                row(LABEL_DEDICATED, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuDedicatedMemoryBytes)), &memColor);
+                row(LABEL_SHARED, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuSharedMemoryBytes)), &memColor);
+            }
+            if (!proc.npuDevices.empty())
+            {
+                row(LABEL_DEVICES, proc.npuDevices, nullptr);
+            }
+            if (!proc.npuEngines.empty())
+            {
+                row(LABEL_ENGINES, Detail::joinWithCommas(proc.npuEngines), nullptr);
+            }
+            ImGui::EndTable();
+        }
+    }
+    UI::Widgets::endCard();
 }
 
 // Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in

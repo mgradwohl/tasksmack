@@ -489,6 +489,32 @@ void SystemMetricsPanel::renderContent()
             }
         }
 
+        // NPU tab, beside the GPU tab: only once an NPU or other compute accelerator is listed (#1799).
+        // The GPU tab's code draws it, over the publication's accelerators.
+        if (m_GPUModel && GpuSection::showAcceleratorTab(m_GPUPublication.get()))
+        {
+            if (ImGui::BeginTabItem(ICON_FA_BRAIN "  NPU"))
+            {
+                GpuSection::RenderContext npuCtx{
+                    .publication = m_GPUPublication.get(),
+                    .chartDataGeneration = m_ChartDataGeneration,
+                    .maxHistorySeconds = m_MaxHistorySeconds,
+                    .lastDeltaSeconds = m_LastDeltaSeconds,
+                    .refreshInterval = m_RefreshInterval,
+                    .smoothedGPUs = &m_SmoothedAccelerators,
+                    .cache = &m_NpuFrameCache,
+                    .devices = GpuSection::DeviceSet::Accelerators,
+                };
+                {
+                    const UI::Widgets::TabContentScope content("##NpuContent");
+                    UI::Widgets::FillPlotLayout fill(m_NpuFill);
+                    npuCtx.fill = &fill;
+                    GpuSection::renderGpuSection(npuCtx);
+                }
+                ImGui::EndTabItem();
+            }
+        }
+
         // Network and I/O tab - show if network counters are available
         if (m_Model != nullptr && m_Model->capabilities().hasNetworkCounters)
         {

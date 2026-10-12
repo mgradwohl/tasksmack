@@ -456,6 +456,79 @@ TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
     EXPECT_EQ(fmt.gpuMemory.tone, CellTone::Value);
 }
 
+// #1799: the NPU columns' cells, formatted as the GPU ones are: NPU % a percent, NPU Memory decimal-
+// aligned bytes, NPU Engine the joined engines; never the GPU's figures.
+TEST(ProcessRowFormatTest, NpuCellsFormatTheProcessesNpuFigures)
+{
+    ProcessSnapshot snap = makeSnapshot();
+    snap.npuUtilPercent = 62.5;
+    snap.npuMemoryBytes = 8ULL * 1024 * 1024; // 8 MiB
+    snap.npuEngines = {"Compute"};
+    const RowFormatCache fmt = buildRowFormatCache(snap);
+    EXPECT_EQ(fmt.npuPercent.text, "62.5%");
+    EXPECT_EQ(fmt.npuPercent.tone, CellTone::Value);
+    EXPECT_EQ(fmt.npuMemory.text, "8.0 MiB");
+    EXPECT_EQ(fmt.npuMemory.unit(), " MiB");
+    EXPECT_EQ(fmt.npuMemory.tone, CellTone::Value);
+    EXPECT_EQ(fmt.npuEngines, "Compute");
+    EXPECT_TRUE(fmt.npuSupported);
+    EXPECT_EQ(fmt.gpuPercent.text, "15.0%") << "The GPU's own figure, not the NPU's";
+
+    // A process that uses none: measured zeros, and no engine (blank, not a dash).
+    snap.npuUtilPercent = 0.0;
+    snap.npuMemoryBytes = 0;
+    snap.npuEngines.clear();
+    const RowFormatCache idle = buildRowFormatCache(snap);
+    expectMeasuredZero(idle.npuPercent);
+    expectMeasuredZero(idle.npuMemory);
+    EXPECT_TRUE(idle.npuEngines.empty());
+}
+
+// #1799: without an NPU or compute accelerator (Linux until #1827) the NPU cells are "not available
+// on this system", as the GPU ones are without per-process data; with one, a GPU read that failed or
+// hasn't happened yet leaves them unread, since they are read with the GPU fields.
+TEST(ProcessRowFormatTest, NpuCellsAreUnavailableWithoutAnAcceleratorOrAReading)
+{
+    ProcessSnapshot snap = makeSnapshot();
+    ProcessRowFormat::RowFormatOptions noAccelerator;
+    noAccelerator.hasPerProcessNpu = false;
+    const RowFormatCache none = buildRowFormatCache(snap, noAccelerator);
+    expectUnavailable(none.npuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    expectUnavailable(none.npuMemory, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_FALSE(none.npuSupported);
+    EXPECT_EQ(none.gpuPercent.text, "15.0%") << "The GPU columns don't need an accelerator";
+
+    ProcessRowFormat::RowFormatOptions noGpu;
+    noGpu.hasPerProcessGpu = false;
+    const RowFormatCache noPerProcess = buildRowFormatCache(snap, noGpu);
+    expectUnavailable(noPerProcess.npuMemory, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    EXPECT_FALSE(noPerProcess.npuSupported);
+
+    ProcessRowFormat::RowFormatOptions memoryOnly;
+    memoryOnly.hasPerProcessGpuUtilization = false;
+    const RowFormatCache noUtil = buildRowFormatCache(snap, memoryOnly);
+    expectUnavailable(noUtil.npuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
+    expectMeasuredZero(noUtil.npuMemory);
+
+    ProcessRowFormat::RowFormatOptions failed;
+    failed.gpuReadFailed = true;
+    const RowFormatCache failedRead = buildRowFormatCache(snap, failed);
+    expectUnavailable(failedRead.npuPercent, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+    expectUnavailable(failedRead.npuMemory, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+
+    snap.gpuFieldsRead = false;
+    const RowFormatCache notYet = buildRowFormatCache(snap);
+    expectUnavailable(notYet.npuPercent, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+    expectUnavailable(notYet.npuMemory, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+}
+
+TEST(ProcessRowFormatTest, JoinEnginesSeparatesThemWithCommas)
+{
+    EXPECT_EQ(ProcessRowFormat::joinEngines({}), "");
+    EXPECT_EQ(ProcessRowFormat::joinEngines({"Compute"}), "Compute");
+    EXPECT_EQ(ProcessRowFormat::joinEngines({"3D", "Compute", "Copy"}), "3D, Compute, Copy");
+}
+
 TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
 {
     // The per-column cell renderers (#1382) draw Status, Publisher, Container, Type and the GPU text columns

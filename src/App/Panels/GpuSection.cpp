@@ -57,6 +57,9 @@ using UI::Widgets::tailAlignedSpan;
 // nothing on screen said what the axis meant for them. Those labels are built in GpuSection.h.
 constexpr const char* UTIL_LABEL = "Utilization";
 constexpr const char* MEMORY_LABEL = "Memory";
+// The NPU tab's memory series, named for the memory an accelerator's figures count (#1799)
+constexpr const char* SHARED_MEMORY_LABEL = "Shared Memory";
+constexpr const char* DEDICATED_MEMORY_LABEL = "Dedicated Memory";
 constexpr const char* ENCODER_LABEL = "Encoder";
 constexpr const char* DECODER_LABEL = "Decoder";
 constexpr const char* FAN_LABEL = "Fan";
@@ -150,25 +153,59 @@ void renderUnavailableMetricsNote(std::span<const std::string_view> unavailable,
     ImGui::TextColored(textColor, "%s", noteText.data());
 }
 
-/// Rebuilds @p cache's per-entry strings when @p publication is not the one they were built from.
-void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publication)
+/// An NPU's or compute accelerator's header label (#1799), from its enumeration entry where it has one.
+[[nodiscard]] std::string acceleratorEntryHeaderLabel(const GpuDrawEntry& entry)
 {
-    // All three per-entry vectors must be complete: an exception part-way through a rebuild (caught by
-    // the render loop) can leave them different lengths, and they are indexed per entry below.
+    const bool suspended = (entry.snapshot != nullptr) && entry.snapshot->suspended;
+    if (entry.info != nullptr)
+    {
+        return acceleratorHeaderLabel(ICON_FA_BRAIN, entry.info->name, entry.info->kind, suspended);
+    }
+    if (entry.snapshot != nullptr)
+    {
+        return acceleratorHeaderLabel(ICON_FA_BRAIN, entry.snapshot->name, entry.snapshot->kind, suspended);
+    }
+    // deviceDrawList() never makes an entry with neither; named by its id if one ever has
+    return acceleratorHeaderLabel(ICON_FA_BRAIN, entry.gpuId, Platform::DeviceKind::Npu, false);
+}
+
+/// The memory series' label (#1799): the GPU tab's "Memory", or for an accelerator the memory it
+/// counts, shared or dedicated.
+[[nodiscard]] const char* memorySeriesLabel(bool accelerators, bool memoryIsShared) noexcept
+{
+    if (!accelerators)
+    {
+        return MEMORY_LABEL;
+    }
+    return memoryIsShared ? SHARED_MEMORY_LABEL : DEDICATED_MEMORY_LABEL;
+}
+
+/// Rebuilds @p cache's per-entry strings when @p publication is not the one they were built from:
+/// for the NPU tab (@p accelerators) its header labels and detail lines (#1799).
+void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publication, bool accelerators)
+{
+    // Every per-entry vector must be complete: an exception part-way through a rebuild (caught by the
+    // render loop) can leave them different lengths, and they are indexed per entry below.
     if (cache.labelsPublication == &publication && cache.labelsVersion == publication.version &&
-        cache.headerLabels.size() == cache.drawList.size() && cache.coreLayoutIds.size() == cache.drawList.size() &&
-        cache.thermalLayoutIds.size() == cache.drawList.size())
+        cache.headerLabels.size() == cache.drawList.size() && cache.detailTexts.size() == cache.drawList.size() &&
+        cache.coreLayoutIds.size() == cache.drawList.size() && cache.thermalLayoutIds.size() == cache.drawList.size())
     {
         return;
     }
     cache.labelsPublication = &publication;
     cache.labelsVersion = publication.version;
     cache.headerLabels.clear();
+    cache.detailTexts.clear();
     cache.coreLayoutIds.clear();
     cache.thermalLayoutIds.clear();
     for (const GpuDrawEntry& entry : cache.drawList)
     {
-        if (entry.snapshot == nullptr)
+        cache.detailTexts.push_back((accelerators && entry.info != nullptr) ? acceleratorDetailsText(*entry.info) : std::string{});
+        if (accelerators)
+        {
+            cache.headerLabels.push_back(acceleratorEntryHeaderLabel(entry));
+        }
+        else if (entry.snapshot == nullptr)
         {
             // Enumerated, but this read returned nothing for it. Same ###gpuHeader id as a GPU with a
             // reading, so its collapse state survives the gap.
@@ -242,10 +279,25 @@ void updateSmoothedGPU(const std::string& gpuId, const Domain::GPUSnapshot& snap
 
 void renderGpuSection(RenderContext& ctx)
 {
+    // The NPU tab draws the publication's NPUs and compute accelerators with this same code (#1799).
+    const bool accelerators = ctx.devices == DeviceSet::Accelerators;
+    std::span<const Platform::GPUInfo> deviceInfos;
+    std::span<const Domain::GPUSnapshot> deviceSnapshots;
+    if (ctx.publication != nullptr)
+    {
+        deviceInfos = accelerators ? ctx.publication->acceleratorInfo : ctx.publication->gpuInfo;
+        deviceSnapshots = accelerators ? ctx.publication->acceleratorSnapshots : ctx.publication->snapshots;
+    }
     const EmptyReason emptyReason = classifyEmptyState(ctx.publication != nullptr,
                                                        (ctx.publication != nullptr) && ctx.publication->gpuInfoKnown,
-                                                       (ctx.publication != nullptr) ? ctx.publication->gpuInfo.size() : 0,
-                                                       (ctx.publication != nullptr) ? ctx.publication->snapshots.size() : 0);
+                                                       deviceInfos.size(),
+                                                       deviceSnapshots.size());
+    if (accelerators && (emptyReason == EmptyReason::Unavailable || emptyReason == EmptyReason::NoDevices))
+    {
+        // The machine view shows the NPU tab only once there is one (showAcceleratorTab()).
+        UI::Widgets::renderEmptyState(ICON_FA_BRAIN "  No NPU detected", "No NPU or other compute accelerator was found.");
+        return;
+    }
     switch (emptyReason)
     {
     case EmptyReason::Unavailable:
@@ -264,12 +316,13 @@ void renderGpuSection(RenderContext& ctx)
         // Every known GPU missed this read. Say so, but keep drawing the list below: each GPU keeps
         // its slot and collapse state with "No reading" rather than the whole tab collapsing into an
         // empty state for one missed sample (#1163).
-        const std::size_t deviceCount = ctx.publication->gpuInfo.size();
+        const std::size_t deviceCount = deviceInfos.size();
         std::array<char, 96> detail{};
         std::format_to_n(detail.data(),
                          static_cast<std::ptrdiff_t>(detail.size() - 1),
-                         "{} GPU{} detected, but the latest reading returned no data.",
+                         "{} {}{} detected, but the latest reading returned no data.",
                          deviceCount,
+                         accelerators ? "NPU" : "GPU",
                          deviceCount == 1 ? " was" : "s were");
         ImGui::TextDisabled("%s", detail.data());
         break;
@@ -278,27 +331,36 @@ void renderGpuSection(RenderContext& ctx)
         break;
     }
 
-    const auto& gpuSnapshots = ctx.publication->snapshots;
     // Kept by the panel across frames, so the draw list, scratch buffers and labels are reused (#1171).
     FrameCache frameLocalCache;
     FrameCache& cache = (ctx.cache != nullptr) ? *ctx.cache : frameLocalCache;
     // Enumeration order, each GPU looked up by id, so a GPU missing from this read keeps its slot (#1163).
     // Rebuilt every frame, into the cache's storage: its entries point into this publication.
-    gpuDrawList(*ctx.publication, cache.drawList);
+    deviceDrawList(deviceInfos, deviceSnapshots, cache.drawList);
     const std::vector<GpuDrawEntry>& drawList = cache.drawList;
-    refreshEntryLabels(cache, *ctx.publication);
+    refreshEntryLabels(cache, *ctx.publication, accelerators);
     const auto& probeCaps = ctx.publication->capabilities;
     auto& theme = UI::Theme::get();
 
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // Shared with plotLineWithFill (see it)
 
-    ImGui::Text("GPU Monitoring (%zu GPU%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
+    if (accelerators)
+    {
+        ImGui::Text("NPU Monitoring (%zu device%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
+    }
+    else
+    {
+        ImGui::Text("GPU Monitoring (%zu GPU%s)", drawList.size(), drawList.size() == 1 ? "" : "s");
+    }
     ImGui::Spacing();
 
-    // Update smoothed values for all GPUs
-    for (const auto& snap : gpuSnapshots)
+    // Update smoothed values for all the tab's devices
+    std::size_t smoothIndex = 0;
+    while (smoothIndex < deviceSnapshots.size())
     {
+        const Domain::GPUSnapshot& snap = deviceSnapshots[smoothIndex];
         updateSmoothedGPU(snap.gpuId, snap, ctx);
+        ++smoothIndex;
     }
 
     // Every chart on the tab, across all GPUs, gets the same share of its height.
@@ -350,8 +412,15 @@ void renderGpuSection(RenderContext& ctx)
         {
             adapterSensors = entry.info->sensorCapabilities;
         }
+        if (accelerators)
+        {
+            // An NPU or compute accelerator reports none of a GPU's sensors (#1799): never the probe's.
+            adapterSensors = adapterSensors.value_or(Platform::GPUCapabilities{});
+        }
         // What this GPU reports, not what the probe can report for some GPU (#1040).
         const Platform::GPUCapabilities caps = capabilitiesForGpu(probeCaps, adapterSensors);
+        // An accelerator's memory series names the memory it counts, dedicated or shared (#1799).
+        const char* const memoryLabel = memorySeriesLabel(accelerators, snap.memoryIsShared);
 
         // GPU header with collapsible section; its label is built in refreshEntryLabels().
         // Scoped by the adapter's stable id (gpuIdScope above), not its position. The label's
@@ -364,6 +433,12 @@ void renderGpuSection(RenderContext& ctx)
         }
 
         ImGui::Indent();
+
+        // The NPU tab names each device's kind, vendor, driver and memory under its header (#1799).
+        if (const std::string& details = cache.detailTexts[entryIndex]; !details.empty())
+        {
+            ImGui::TextColored(theme.scheme().textMuted, "%s", details.c_str());
+        }
 
         // Get history data for this GPU
         const auto historyIt = ctx.publication->histories.find(snap.gpuId);
@@ -449,7 +524,7 @@ void renderGpuSection(RenderContext& ctx)
 
                 if (!memData.empty())
                 {
-                    plotSeries(MEMORY_LABEL,
+                    plotSeries(memoryLabel,
                                timeData.data(),
                                memData.data(),
                                UI::Format::checkedCount(memData.size()),
@@ -522,7 +597,7 @@ void renderGpuSection(RenderContext& ctx)
                             const bool haveBytes =
                                 *idxVal < memUsedBytesData.size() && *idxVal < memTotalBytesData.size() && memTotalBytesData[*idxVal] > 0;
                             rows.push_back({
-                                .label = MEMORY_LABEL,
+                                .label = memoryLabel,
                                 .color = theme.scheme().gpuMemory,
                                 .value = haveBytes ? UI::Format::bytesUsedTotalPercentCompact(
                                                          memUsedBytesData[*idxVal], memTotalBytesData[*idxVal], pct)
@@ -600,7 +675,7 @@ void renderGpuSection(RenderContext& ctx)
                                                               : unavailableBar(UTIL_LABEL));
         if (!smoothed.memoryInitialized)
         {
-            gpuCoreBars.push_back(unavailableBar(MEMORY_LABEL));
+            gpuCoreBars.push_back(unavailableBar(memoryLabel));
         }
         else if (snap.memoryTotalBytes > 0)
         {
@@ -609,9 +684,9 @@ void renderGpuSection(RenderContext& ctx)
             // impossible combination (e.g. 50% with 8 GiB / 8 GiB).
             gpuCoreBars.push_back(
                 {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
-                 .label = MEMORY_LABEL,
+                 .label = memoryLabel,
                  .tooltipText = UI::InlineText::format("{}: {} ({} / {})",
-                                                       MEMORY_LABEL,
+                                                       memoryLabel,
                                                        UI::Format::formatPercent(snap.memoryUsedPercent),
                                                        UI::Format::formatBytes(static_cast<double>(snap.memoryUsedBytes)),
                                                        UI::Format::formatBytes(static_cast<double>(snap.memoryTotalBytes))),
@@ -622,8 +697,8 @@ void renderGpuSection(RenderContext& ctx)
         {
             gpuCoreBars.push_back(
                 {.valueText = UI::Format::formatPercent(smoothed.memoryPercent),
-                 .label = MEMORY_LABEL,
-                 .tooltipText = UI::Widgets::tooltipRowText(MEMORY_LABEL, UI::Format::formatPercent(smoothed.memoryPercent)),
+                 .label = memoryLabel,
+                 .tooltipText = UI::Widgets::tooltipRowText(memoryLabel, UI::Format::formatPercent(smoothed.memoryPercent)),
                  .value01 = UI::Format::percent01(smoothed.memoryPercent),
                  .color = theme.scheme().gpuMemory});
         }
@@ -708,17 +783,24 @@ void renderGpuSection(RenderContext& ctx)
         // this GPU can't report sits inside it too, so the card's measured chrome counts it.
         if (UI::Widgets::beginChartCard("##GpuCoreCard", plotHeight))
         {
-            (void) UI::Widgets::sectionHeader(ICON_FA_VIDEO, "GPU Core & Video", {}, alignedCount);
+            if (accelerators)
+            {
+                (void) UI::Widgets::sectionHeader(ICON_FA_BRAIN, "Utilization & Memory", {}, alignedCount);
+            }
+            else
+            {
+                (void) UI::Widgets::sectionHeader(ICON_FA_VIDEO, "GPU Core & Video", {}, alignedCount);
+            }
             renderHistoryWithNowBars(
                 cache.coreLayoutIds[entryIndex].c_str(), plotHeight, gpuCorePlot, gpuCoreBars, false, gpuNowBarColumns);
 
-            // Show notes for unavailable core metrics
+            // Show notes for unavailable core metrics. An NPU has no clock or video engines to miss (#1799).
             UnavailableMetrics unavailableCoreNotes;
-            if (!caps.hasClockSpeeds)
+            if (!accelerators && !caps.hasClockSpeeds)
             {
                 unavailableCoreNotes.add("clock speed");
             }
-            if (!caps.hasEncoderDecoder)
+            if (!accelerators && !caps.hasEncoderDecoder)
             {
                 unavailableCoreNotes.add("encoder/decoder utilization");
             }

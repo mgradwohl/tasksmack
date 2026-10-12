@@ -36,9 +36,11 @@ enum class Metric : std::uint8_t
     NetReceived,
     GpuPercent,
     GpuMemory,
+    NpuPercent, ///< The NPUs' and compute accelerators' (#1799), never counted in the GPU's
+    NpuMemory,
 };
 
-inline constexpr std::size_t METRIC_COUNT = 9;
+inline constexpr std::size_t METRIC_COUNT = 11;
 
 /// A set of metrics, one bit per Metric.
 using MetricSet = std::uint16_t;
@@ -76,6 +78,10 @@ using MetricSet = std::uint16_t;
         return proc.gpuFieldsRead ? proc.gpuUtilPercent : 0.0;
     case Metric::GpuMemory:
         return proc.gpuFieldsRead ? static_cast<double>(proc.gpuMemoryBytes) : 0.0;
+    case Metric::NpuPercent: // Read with the GPU fields (#1799)
+        return proc.gpuFieldsRead ? proc.npuUtilPercent : 0.0;
+    case Metric::NpuMemory:
+        return proc.gpuFieldsRead ? static_cast<double>(proc.npuMemoryBytes) : 0.0;
     }
     return 0.0;
 }

@@ -789,6 +789,55 @@ TEST_F(UserConfigSaveLoadFixture, ProcessMeterStylesAreSavedAndLoaded)
     config.settings() = UserSettings{}; // The singleton outlives this test
 }
 
+// #1799: the NPU columns and their meters are saved and loaded under their own keys, like every
+// other column's; a config written before them leaves them at their defaults (off).
+TEST_F(UserConfigSaveLoadFixture, NpuColumnsAndMetersAreSavedAndLoaded)
+{
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.settings().processColumns.setVisible(ProcessColumn::NpuPercent, true);
+    config.settings().processColumns.setVisible(ProcessColumn::NpuMemory, true);
+    config.settings().processColumns.setVisible(ProcessColumn::NpuEngine, true);
+    config.settings().processMeters.setStyle(ProcessColumn::NpuPercent, ProcessRowMeter::Style::Sparkline);
+    config.settings().processMeters.setStyle(ProcessColumn::NpuMemory, ProcessRowMeter::Style::Bar);
+    config.save();
+    {
+        std::ifstream file(m_ConfigPath);
+        const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        EXPECT_TRUE(content.contains("npu_percent")) << content;
+        EXPECT_TRUE(content.contains("npu_memory")) << content;
+        EXPECT_TRUE(content.contains("npu_engine")) << content;
+    }
+
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuMemory));
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuEngine));
+    EXPECT_EQ(config.settings().processMeters.style(ProcessColumn::NpuPercent), ProcessRowMeter::Style::Sparkline);
+    EXPECT_EQ(config.settings().processMeters.style(ProcessColumn::NpuMemory), ProcessRowMeter::Style::Bar);
+    config.settings() = UserSettings{}; // The singleton outlives this test
+}
+
+TEST_F(UserConfigSaveLoadFixture, AConfigFromBeforeTheNpuColumnsLeavesThemOff)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_columns]\ngpu_percent = true\n[process_meters]\ngpu_percent = \"bar\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::GpuPercent));
+    for (const ProcessColumn col : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        EXPECT_FALSE(config.settings().processColumns.isVisible(col)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(config.settings().processColumns.isChosen(col)) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(config.settings().processMeters.isOn(col)) << getColumnInfo(col).configKey;
+    }
+    config.settings() = UserSettings{};
+}
+
 // ========== Process table layout persistence (#952) ==========
 
 TEST(UserSettingsTest, ProcessTableLayoutDefaultsToEmpty)

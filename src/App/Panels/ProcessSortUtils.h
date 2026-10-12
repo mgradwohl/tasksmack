@@ -5,6 +5,8 @@
 #include "Domain/ProcessSnapshot.h"
 
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace App::ProcessSortUtils
 {
@@ -15,6 +17,21 @@ namespace App::ProcessSortUtils
 template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(bool available, T value) noexcept
 {
     return available ? std::optional<T>(value) : std::nullopt;
+}
+
+/// An engine list as the GPU Engine and NPU Engine columns sort it: by the number of engines, then by
+/// the first engine's name. Equal lists, and two empty ones, compare false both ways.
+[[nodiscard]] inline bool compareEngines(const std::vector<std::string>& a, const std::vector<std::string>& b, bool ascending)
+{
+    if (a.size() != b.size())
+    {
+        return ascending ? (a.size() < b.size()) : (b.size() < a.size());
+    }
+    if (!a.empty() && !b.empty())
+    {
+        return ascending ? (a[0] < b[0]) : (b[0] < a[0]);
+    }
+    return false;
 }
 
 /// The column's own key comparison, with no tie-breaker: equal keys compare false both ways.
@@ -87,20 +104,15 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::GpuMemory:
         return compare(a.gpuMemoryBytes, b.gpuMemoryBytes);
     case ProcessColumn::GpuEngine:
-    {
-        // Sort by number of engines, then by first engine name
-        if (a.gpuEngines.size() != b.gpuEngines.size())
-        {
-            return compare(a.gpuEngines.size(), b.gpuEngines.size());
-        }
-        if (!a.gpuEngines.empty() && !b.gpuEngines.empty())
-        {
-            return compare(a.gpuEngines[0], b.gpuEngines[0]);
-        }
-        return false;
-    }
+        return compareEngines(a.gpuEngines, b.gpuEngines, ascending);
     case ProcessColumn::GpuDevice:
         return compare(a.gpuDevices, b.gpuDevices);
+    case ProcessColumn::NpuPercent:
+        return compare(a.npuUtilPercent, b.npuUtilPercent);
+    case ProcessColumn::NpuMemory:
+        return compare(a.npuMemoryBytes, b.npuMemoryBytes);
+    case ProcessColumn::NpuEngine:
+        return compareEngines(a.npuEngines, b.npuEngines, ascending);
     case ProcessColumn::Publisher:
         return compare(a.publisher, b.publisher);
     case ProcessColumn::Container:

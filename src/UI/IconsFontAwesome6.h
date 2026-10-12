@@ -55,6 +55,7 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_NETWORK_WIRED "\xef\x9b\xbf"    // U+f6ff - Network
 #define ICON_FA_GAUGE_HIGH "\xef\x98\xa5"       // U+f625 - Performance gauge
 #define ICON_FA_TEMPERATURE_HALF "\xef\x8b\x89" // U+f2c9 - Temperature
+#define ICON_FA_BRAIN "\xef\x97\x9c"            // U+f5dc - NPU / compute accelerator (#1799)
 
 // ============================================================================
 // Process & Task Icons

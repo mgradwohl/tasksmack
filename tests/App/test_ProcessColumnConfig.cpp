@@ -115,10 +115,10 @@ TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
 TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
 {
     constexpr auto expected = std::to_array<std::string_view>({
-        "pid",         "name",        "user",       "ppid",       "publisher",  "container",     "state",       "status",   "type",
-        "cpu_percent", "mem_percent", "resident",   "virtual",    "shared",     "peak_resident", "nice",        "affinity", "threads",
-        "handles",     "gdi_objects", "cpu_time",   "start_time", "io_read",    "io_write",      "page_faults", "net_sent", "net_recv",
-        "power",       "gpu_percent", "gpu_memory", "gpu_engine", "gpu_device", "command",
+        "pid",         "name",        "user",       "ppid",       "publisher",  "container",     "state",       "status",     "type",
+        "cpu_percent", "mem_percent", "resident",   "virtual",    "shared",     "peak_resident", "nice",        "affinity",   "threads",
+        "handles",     "gdi_objects", "cpu_time",   "start_time", "io_read",    "io_write",      "page_faults", "net_sent",   "net_recv",
+        "power",       "gpu_percent", "gpu_memory", "gpu_engine", "gpu_device", "npu_percent",   "npu_memory",  "npu_engine", "command",
     });
     ASSERT_EQ(expected.size(), processColumnCount());
     for (const auto col : allProcessColumns())
@@ -140,6 +140,28 @@ TEST(ProcessColumnConfigTest, HeadersUseThePlainLanguageNames)
     EXPECT_EQ(getColumnInfo(ProcessColumn::PageFaults).name, "Page Faults");
     EXPECT_EQ(getColumnInfo(ProcessColumn::NetReceived).name, "Net Received");
     EXPECT_EQ(getColumnInfo(ProcessColumn::GpuDevice).name, "GPU");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::NpuPercent).name, "NPU %");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::NpuMemory).name, "NPU Mem");
+    EXPECT_EQ(getColumnInfo(ProcessColumn::NpuEngine).name, "NPU Engine");
+}
+
+// #1799: the NPU columns sit after the GPU ones, before Command, and are off by default (as Task
+// Manager's are) but can be shown from the Columns menu.
+TEST(ProcessColumnConfigTest, TheNpuColumnsFollowTheGpuOnesAndAreOffByDefault)
+{
+    EXPECT_EQ(toIndex(ProcessColumn::NpuPercent), toIndex(ProcessColumn::GpuDevice) + 1);
+    EXPECT_EQ(toIndex(ProcessColumn::NpuMemory), toIndex(ProcessColumn::NpuPercent) + 1);
+    EXPECT_EQ(toIndex(ProcessColumn::NpuEngine), toIndex(ProcessColumn::NpuMemory) + 1);
+    EXPECT_EQ(toIndex(ProcessColumn::Command), toIndex(ProcessColumn::NpuEngine) + 1);
+    const ProcessColumnSettings defaults;
+    for (const ProcessColumn col : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        const ProcessColumnInfo info = getColumnInfo(col);
+        EXPECT_FALSE(info.defaultVisible) << info.configKey;
+        EXPECT_TRUE(info.canHide) << info.configKey;
+        EXPECT_FALSE(defaults.isVisible(col)) << info.configKey;
+        EXPECT_TRUE(info.menuName.starts_with("NPU")) << info.configKey;
+    }
 }
 
 // #1101: per-process network counts TCP only on both platforms; the column tooltips must say so
@@ -426,13 +448,15 @@ TEST(ProcessColumnSettingsTest, RequestVisibleKeepsUnhideableColumnsShown)
 
 TEST(ProcessColumnConfigTest, NumericColumnsAreRightAligned)
 {
-    for (const ProcessColumn col :
-         {ProcessColumn::PID,        ProcessColumn::PPID,       ProcessColumn::CpuPercent, ProcessColumn::MemPercent,
-          ProcessColumn::Resident,   ProcessColumn::Virtual,    ProcessColumn::Shared,     ProcessColumn::PeakResident,
-          ProcessColumn::Priority,   ProcessColumn::Affinity,   ProcessColumn::Threads,    ProcessColumn::Handles,
-          ProcessColumn::GdiObjects, ProcessColumn::CpuTime,    ProcessColumn::StartTime,  ProcessColumn::IoRead,
-          ProcessColumn::IoWrite,    ProcessColumn::PageFaults, ProcessColumn::NetSent,    ProcessColumn::NetReceived,
-          ProcessColumn::Power,      ProcessColumn::GpuPercent, ProcessColumn::GpuMemory})
+    for (const ProcessColumn col : {
+             ProcessColumn::PID,        ProcessColumn::PPID,       ProcessColumn::CpuPercent, ProcessColumn::MemPercent,
+             ProcessColumn::Resident,   ProcessColumn::Virtual,    ProcessColumn::Shared,     ProcessColumn::PeakResident,
+             ProcessColumn::Priority,   ProcessColumn::Affinity,   ProcessColumn::Threads,    ProcessColumn::Handles,
+             ProcessColumn::GdiObjects, ProcessColumn::CpuTime,    ProcessColumn::StartTime,  ProcessColumn::IoRead,
+             ProcessColumn::IoWrite,    ProcessColumn::PageFaults, ProcessColumn::NetSent,    ProcessColumn::NetReceived,
+             ProcessColumn::Power,      ProcessColumn::GpuPercent, ProcessColumn::GpuMemory,  ProcessColumn::NpuPercent,
+             ProcessColumn::NpuMemory,
+         })
     {
         EXPECT_EQ(columnAlignment(col), ColumnAlign::Right) << getColumnInfo(col).configKey;
     }
@@ -447,6 +471,7 @@ TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
                                     ProcessColumn::Type,
                                     ProcessColumn::GpuEngine,
                                     ProcessColumn::GpuDevice,
+                                    ProcessColumn::NpuEngine,
                                     ProcessColumn::Command})
     {
         EXPECT_EQ(columnAlignment(col), ColumnAlign::Left) << getColumnInfo(col).configKey;

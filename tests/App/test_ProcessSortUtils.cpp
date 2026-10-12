@@ -76,6 +76,11 @@ using Domain::ProcessSnapshot;
     // that one gets its own dedicated test.
     snap.gpuEngines = {s};
 
+    // The NPU columns' (#1799), likewise
+    snap.npuUtilPercent = d;
+    snap.npuMemoryBytes = u;
+    snap.npuEngines = {s};
+
     return snap;
 }
 
@@ -148,6 +153,40 @@ TEST(ProcessSortUtilsTest, GpuEngineWithNoEnginesIsNotLessThanItself)
 
     EXPECT_FALSE(ProcessSortUtils::compareByColumn(none, alsoNone, ProcessColumn::GpuEngine, true));
     EXPECT_FALSE(ProcessSortUtils::compareByColumn(none, alsoNone, ProcessColumn::GpuEngine, false));
+}
+
+// #1799: the NPU columns sort by the process's own NPU figures -- not by PID, and not by its GPU
+// figures -- and NPU Engine as GPU Engine does: by engine count, then by the first engine's name.
+TEST(ProcessSortUtilsTest, NpuColumnsSortByTheNpuFigures)
+{
+    ProcessSnapshot busyNpu;
+    busyNpu.pid = 1;
+    busyNpu.npuUtilPercent = 80.0;
+    busyNpu.npuMemoryBytes = 64;
+    busyNpu.npuEngines = {"Compute"};
+    busyNpu.gpuUtilPercent = 1.0;
+    busyNpu.gpuMemoryBytes = 1;
+
+    ProcessSnapshot idleNpu;
+    idleNpu.pid = 2;
+    idleNpu.gpuUtilPercent = 90.0;
+    idleNpu.gpuMemoryBytes = 1000;
+
+    for (const ProcessColumn column : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        SCOPED_TRACE(static_cast<int>(column));
+        EXPECT_TRUE(ProcessSortUtils::compareColumnKey(idleNpu, busyNpu, column, /*ascending=*/true));
+        EXPECT_FALSE(ProcessSortUtils::compareColumnKey(busyNpu, idleNpu, column, /*ascending=*/true));
+        EXPECT_TRUE(ProcessSortUtils::compareByColumn(busyNpu, idleNpu, column, /*ascending=*/false));
+    }
+
+    ProcessSnapshot fewer;
+    fewer.npuEngines = {"z"};
+    ProcessSnapshot more;
+    more.npuEngines = {"a", "b"};
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(fewer, more, ProcessColumn::NpuEngine, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(fewer, fewer, ProcessColumn::NpuEngine, true));
+    EXPECT_FALSE(ProcessSortUtils::compareColumnKey(ProcessSnapshot{}, ProcessSnapshot{}, ProcessColumn::NpuEngine, false));
 }
 
 TEST(ProcessSortUtilsTest, GdiObjectsUnavailableSortsBeforeAvailable)

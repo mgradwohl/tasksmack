@@ -4,6 +4,7 @@
 /// draw no plot, the optional series (Shared, Power) follow the capabilities, and a gap-only
 /// history and a hovered gap render (the tooltip shows N/A rather than tripping on NaN).
 
+#include "App/Panels/ProcessDetailsChartHelpers.h"
 #include "App/Panels/ProcessDetailsCharts.h"
 #include "App/Panels/ProcessDetailsHistory.h"
 #include "App/Panels/ProcessDetailsPanel_HistoryHelpers.h"
@@ -686,6 +687,61 @@ TEST_F(ProcessDetailsChartsRenderTest, TheGpuUsageCardListsEveryReadingAndEachGp
     {
         EXPECT_TRUE(text.contains(expected)) << "missing \"" << expected << "\" in:\n" << text;
     }
+}
+
+// #1799: a process using an NPU has an NPU Usage card on the GPU tab, above its GPU figures and apart
+// from them; one that uses none has no card. A process using only the NPU still gets the card above
+// the tab's "No GPU usage".
+TEST_F(ProcessDetailsChartsRenderTest, AProcessOnAnNpuHasAnNpuUsageCard)
+{
+    const auto renderText = [](ProcessDetailsCharts& charts, const ProcessChartContext& ctx)
+    {
+        std::string text;
+        for (int frame = 0; frame < 2; ++frame)
+        {
+            runFrame(
+                [&]
+                {
+                    ImGui::LogToBuffer();
+                    charts.renderGpuTab(ctx);
+                    text = GImGui->LogBuffer.c_str();
+                    ImGui::LogFinish();
+                });
+        }
+        return text;
+    };
+
+    ChartInputs inputs(busyPoint);
+    {
+        ProcessDetailsCharts charts;
+        const std::string text = renderText(charts, inputs.ctx);
+        EXPECT_FALSE(text.contains("NPU Usage")) << text;
+        EXPECT_EQ(findCard("##ProcNpuUsageCard"), nullptr);
+    }
+
+    Domain::ProcessSnapshot& proc = inputs.snapshot;
+    proc.npuUtilPercent = 42.0;
+    proc.npuMemoryBytes = 8'388'608;
+    proc.npuSharedMemoryBytes = 8'388'608;
+    proc.npuDevices = "Intel(R) AI Boost";
+    proc.npuEngines = {"Compute"};
+    ProcessDetailsCharts charts;
+    const std::string text = renderText(charts, inputs.ctx);
+    for (const char* expected :
+         {"NPU Usage", "NPU Utilization:", "42.0%", "NPU Memory:", "8.0 MiB", "NPU Device(s):", "Intel(R) AI Boost", "Compute"})
+    {
+        EXPECT_TRUE(text.contains(expected)) << "missing \"" << expected << "\" in:\n" << text;
+    }
+    EXPECT_TRUE(text.contains("GPU Utilization:")) << "The GPU card is still there: " << text;
+    const ImGuiWindow* npuCard = findCard("##ProcNpuUsageCard");
+    const ImGuiWindow* gpuCard = findCard("##ProcGpuUsageCard");
+    ASSERT_NE(npuCard, nullptr);
+    ASSERT_NE(gpuCard, nullptr);
+    EXPECT_LE(npuCard->Pos.y + npuCard->Size.y, gpuCard->Pos.y);
+
+    EXPECT_TRUE(Detail::hasNpuUsage(proc));
+    proc.gpuFieldsRead = false;
+    EXPECT_FALSE(Detail::hasNpuUsage(proc)) << "Unread, as the GPU fields are";
 }
 
 TEST_F(ProcessDetailsChartsRenderTest, OneGpuHasNoBreakdownAndNoEncoderRows)

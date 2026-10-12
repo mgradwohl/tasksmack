@@ -68,7 +68,7 @@ struct ProcessSnapshot
 
     // NPU usage (#1799): the process's use of the NPUs and other compute accelerators (Windows MCDM
     // adapters), on the same terms as its GPU usage above but never counted in it. Read with the GPU
-    // fields (gpuFieldsRead); not shown yet.
+    // fields (gpuFieldsRead); shown in the NPU columns and Process Details' NPU Usage card.
     double npuUtilPercent = 0.0;               // Busiest accelerator's utilization by this process, 0-100
     std::uint64_t npuMemoryBytes = 0;          // As each accelerator's "used" figure counts it, summed
     std::uint64_t npuDedicatedMemoryBytes = 0; // Dedicated memory across all accelerators

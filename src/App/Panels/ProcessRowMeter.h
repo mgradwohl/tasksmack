@@ -41,6 +41,7 @@ enum class Scale : std::uint8_t
     case ProcessColumn::CpuPercent:
     case ProcessColumn::MemPercent:
     case ProcessColumn::GpuPercent:
+    case ProcessColumn::NpuPercent:
         return Scale::Percent;
     case ProcessColumn::Resident:
     case ProcessColumn::IoRead:
@@ -48,13 +49,14 @@ enum class Scale : std::uint8_t
     case ProcessColumn::NetSent:
     case ProcessColumn::NetReceived:
     case ProcessColumn::GpuMemory:
+    case ProcessColumn::NpuMemory:
         return Scale::Absolute;
     default:
         return Scale::None;
     }
 }
 
-/// The columns that can carry a meter, in the Columns menu's order: CPU, memory, disk, network, GPU.
+/// The columns that can carry a meter, in the Columns menu's order: CPU, memory, disk, network, GPU, NPU.
 inline constexpr auto METER_COLUMNS = std::to_array<ProcessColumn>({
     ProcessColumn::CpuPercent,
     ProcessColumn::MemPercent,
@@ -65,6 +67,8 @@ inline constexpr auto METER_COLUMNS = std::to_array<ProcessColumn>({
     ProcessColumn::NetReceived,
     ProcessColumn::GpuPercent,
     ProcessColumn::GpuMemory,
+    ProcessColumn::NpuPercent,
+    ProcessColumn::NpuMemory,
 });
 
 /// Whether @p col's meter is on by default: CPU % only. It is the column people scan for a busy
@@ -120,6 +124,10 @@ inline constexpr auto METER_COLUMNS = std::to_array<ProcessColumn>({
         return Metric::GpuPercent;
     case ProcessColumn::GpuMemory:
         return Metric::GpuMemory;
+    case ProcessColumn::NpuPercent:
+        return Metric::NpuPercent;
+    case ProcessColumn::NpuMemory:
+        return Metric::NpuMemory;
     default:
         return std::nullopt;
     }
@@ -241,7 +249,7 @@ struct Settings
 };
 
 /// The largest value of each absolute column in one snapshot generation, which its meters are scaled
-/// against. Rebuilt once per generation (O(processes x 6)), not per frame.
+/// against. Rebuilt once per generation (O(processes x 7)), not per frame.
 struct ColumnMaxima
 {
     std::array<double, processColumnCount()> max{};

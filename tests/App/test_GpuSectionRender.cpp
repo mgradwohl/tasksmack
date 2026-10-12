@@ -460,6 +460,111 @@ TEST_F(GpuSectionRenderTest, TheThermalCardNotesTheSensorsTheGpuLacks)
     EXPECT_FALSE(text.contains("GPU temperature")) << text;
 }
 
+/// An NPU or compute accelerator (#1799), as DXCore enumerates an Intel AI Boost: its kind, vendor,
+/// PnP driver version and shared memory, no sensors, and a utilization and memory history.
+void addAccelerator(Domain::GPUPublication& publication,
+                    const std::string& id,
+                    const std::string& name,
+                    Platform::DeviceKind kind = Platform::DeviceKind::Npu)
+{
+    Platform::GPUInfo info;
+    info.id = id;
+    info.name = name;
+    info.vendor = "Intel";
+    info.driverVersion = "32.0.100.4778";
+    info.kind = kind;
+    info.memoryIsShared = true;
+    info.sensorCapabilities = Platform::GPUCapabilities{};
+    publication.acceleratorInfo.push_back(info);
+
+    Domain::GPUSnapshot snap;
+    snap.gpuId = id;
+    snap.name = name;
+    snap.vendor = "Intel";
+    snap.kind = kind;
+    snap.memoryIsShared = true;
+    snap.utilizationPercent = 35.0;
+    snap.memoryUsedBytes = std::uint64_t{64} << 20U;
+    snap.memoryTotalBytes = std::uint64_t{16} << 30U;
+    snap.memoryUsedPercent = 0.4;
+    publication.acceleratorSnapshots.push_back(snap);
+
+    Domain::GPUPublishedHistory history;
+    history.timestamps = viewOf(timestampsToNow());
+    history.memoryUsedBytes = viewOf(constant<std::uint64_t>(std::uint64_t{64} << 20U));
+    history.memoryTotalBytes = viewOf(constant<std::uint64_t>(std::uint64_t{16} << 30U));
+    history.utilization = viewOf(constant(35.0F));
+    history.memoryPercent = viewOf(constant(0.4F));
+    publication.histories.emplace(id, std::move(history));
+}
+
+// #1799: the NPU tab is the GPU tab's code over the publication's accelerators: each one's header
+// names its kind, the line under it its vendor, driver and memory, and its one chart its utilization
+// and the memory it counts. No clock, video or thermal series, and no note on their absence: an NPU
+// has none to miss. The GPUs stay on the GPU tab.
+TEST_F(GpuSectionRenderTest, TheNpuTabDrawsEachAcceleratorsUtilizationAndMemory)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.capabilities = allSensors(); // NVML's, on a hybrid laptop: never an NPU's
+    addGpu(publication, "gpu0", "NVIDIA GeForce RTX 4080");
+    addAccelerator(publication, "npu0", "Intel(R) AI Boost");
+    GpuSection::RenderContext ctx = context(&publication);
+    ctx.devices = GpuSection::DeviceSet::Accelerators;
+    static_cast<void>(renderAndCapture(ctx));
+    const std::string text = renderAndCapture(ctx);
+
+    EXPECT_TRUE(text.contains("NPU Monitoring (1 device)")) << text;
+    EXPECT_TRUE(text.contains("Intel(R) AI Boost [NPU]")) << text;
+    EXPECT_TRUE(text.contains("Kind: NPU")) << text;
+    EXPECT_TRUE(text.contains("Driver: 32.0.100.4778")) << text;
+    EXPECT_TRUE(text.contains("Memory: Shared")) << text;
+    EXPECT_TRUE(text.contains("Utilization & Memory")) << text;
+    EXPECT_FALSE(text.contains("NVIDIA GeForce RTX 4080")) << text;
+    EXPECT_FALSE(text.contains("Thermal & Power")) << text;
+    EXPECT_FALSE(text.contains("does not report")) << text;
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 1U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Utilization", "Shared Memory"}));
+    ASSERT_TRUE(m_Smoothed.contains("npu0"));
+    EXPECT_DOUBLE_EQ(m_Smoothed.at("npu0").utilizationPercent, 35.0);
+    EXPECT_FALSE(m_Smoothed.contains("gpu0")) << "The GPU is the GPU tab's to smooth";
+}
+
+TEST_F(GpuSectionRenderTest, TheNpuTabNamesAComputeAcceleratorsKindAndCountsEveryDevice)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    addAccelerator(publication, "npu0", "Intel(R) AI Boost");
+    addAccelerator(publication, "acc0", "Contoso Accelerator", Platform::DeviceKind::ComputeAccelerator);
+    GpuSection::RenderContext ctx = context(&publication);
+    ctx.devices = GpuSection::DeviceSet::Accelerators;
+    static_cast<void>(renderAndCapture(ctx));
+    std::string text = renderAndCapture(ctx);
+    EXPECT_TRUE(text.contains("NPU Monitoring (2 devices)")) << text;
+    EXPECT_TRUE(text.contains("Contoso Accelerator [Compute accelerator]")) << text;
+    EXPECT_TRUE(text.contains("Kind: Compute accelerator")) << text;
+    EXPECT_EQ(plotsDrawn().size(), 2U);
+
+    // A read that returned neither: the tab says so and keeps both.
+    publication.acceleratorSnapshots.clear();
+    ++publication.version;
+    text = renderAndCapture(ctx);
+    EXPECT_TRUE(text.contains("2 NPUs were detected, but the latest reading returned no data.")) << text;
+    EXPECT_TRUE(text.contains("Contoso Accelerator")) << text;
+}
+
+TEST_F(GpuSectionRenderTest, TheNpuTabWithoutAnAcceleratorSaysSo)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    addGpu(publication, "gpu0", "GPU");
+    GpuSection::RenderContext ctx = context(&publication);
+    ctx.devices = GpuSection::DeviceSet::Accelerators;
+    EXPECT_TRUE(renderAndCapture(ctx).contains("No NPU detected"));
+    EXPECT_TRUE(plotsDrawn().empty());
+}
+
 // A first sample that couldn't read utilisation or memory leaves them uninitialised, so their now bars
 // say N/A rather than a made-up 0 % (#1111); the tab still draws.
 TEST_F(GpuSectionRenderTest, UnreadValuesShowAsNotAvailable)

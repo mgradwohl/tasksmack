@@ -199,5 +199,64 @@ TEST(GpuSectionDrawListTest, AnNpuIsNeitherDrawnNorCountedAsAGpu)
     EXPECT_EQ(publication->acceleratorSnapshots[0].gpuId, "NPU");
 }
 
+// #1799: the NPU tab draws the publication's accelerators the way the GPU tab draws its GPUs:
+// enumeration order, a missing read keeping its slot, then any read enumeration did not list.
+TEST(GpuSectionDrawListTest, TheNpuTabDrawsTheAcceleratorsAlone)
+{
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.gpuInfo = {info("iGPU")};
+    publication.snapshots = {snapshot("iGPU")};
+    publication.acceleratorInfo = {info("NPU1"), info("NPU0")};
+    publication.acceleratorSnapshots = {snapshot("NPU0"), snapshot("Unlisted")};
+
+    const std::vector<GpuDrawEntry> entries = GpuSection::acceleratorDrawList(publication);
+    EXPECT_EQ(idsOf(entries), (std::vector<std::string>{"NPU1", "NPU0", "Unlisted"}));
+    ASSERT_EQ(entries.size(), 3U);
+    EXPECT_EQ(entries[0].snapshot, nullptr) << "Enumerated, but not read: keeps its slot";
+    EXPECT_EQ(entries[1].snapshot, publication.acceleratorSnapshots.data());
+    EXPECT_EQ(entries[2].info, nullptr);
+    EXPECT_EQ(idsOf(gpuDrawList(publication)), (std::vector<std::string>{"iGPU"})) << "Nor does the GPU tab draw them";
+}
+
+TEST(GpuSectionDrawListTest, TheNpuTabIsShownOnlyWithAnAccelerator)
+{
+    EXPECT_FALSE(GpuSection::showAcceleratorTab(nullptr));
+    Domain::GPUPublication publication;
+    publication.gpuInfoKnown = true;
+    publication.gpuInfo = {info("iGPU")};
+    publication.snapshots = {snapshot("iGPU")};
+    EXPECT_FALSE(GpuSection::showAcceleratorTab(&publication)) << "A GPU alone: no NPU tab (and every Linux system, #1827)";
+    publication.acceleratorInfo = {info("NPU")};
+    EXPECT_TRUE(GpuSection::showAcceleratorTab(&publication));
+    publication.acceleratorInfo.clear();
+    publication.acceleratorSnapshots = {snapshot("NPU")};
+    EXPECT_TRUE(GpuSection::showAcceleratorTab(&publication)) << "Read, though enumeration did not list it";
+}
+
+TEST(GpuSectionDrawListTest, AnAcceleratorIsLabelledWithItsKindAndDriver)
+{
+    EXPECT_EQ(GpuSection::deviceKindLabel(Platform::DeviceKind::Npu), "NPU");
+    EXPECT_EQ(GpuSection::deviceKindLabel(Platform::DeviceKind::ComputeAccelerator), "Compute accelerator");
+    EXPECT_EQ(GpuSection::deviceKindLabel(Platform::DeviceKind::Gpu), "GPU");
+
+    EXPECT_EQ(GpuSection::acceleratorHeaderLabel("*", "Intel(R) AI Boost", Platform::DeviceKind::Npu, false),
+              "* Intel(R) AI Boost [NPU]###gpuHeader");
+    EXPECT_EQ(GpuSection::acceleratorHeaderLabel("*", "Contoso", Platform::DeviceKind::ComputeAccelerator, true),
+              "* Contoso [Compute accelerator] (Sleeping)###gpuHeader");
+
+    Platform::GPUInfo npu = info("NPU");
+    npu.kind = Platform::DeviceKind::Npu;
+    npu.vendor = "Intel";
+    npu.driverVersion = "32.0.100.4778";
+    npu.memoryIsShared = true;
+    EXPECT_EQ(GpuSection::acceleratorDetailsText(npu), "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory: Shared");
+
+    Platform::GPUInfo unknown = info("ACC");
+    unknown.kind = Platform::DeviceKind::ComputeAccelerator;
+    unknown.vendor = "Unknown";
+    EXPECT_EQ(GpuSection::acceleratorDetailsText(unknown), "Kind: Compute accelerator    Driver: Unknown    Memory: Dedicated");
+}
+
 } // namespace
 } // namespace App

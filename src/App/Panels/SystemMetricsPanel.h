@@ -112,6 +112,7 @@ class SystemMetricsPanel : public Panel
     {
         return std::max({UI::Widgets::currentFirstPlotNonPlotHeight(m_OverviewFill.firstPlot, windowWidth, fontSize),
                          UI::Widgets::currentFirstPlotNonPlotHeight(m_GpuFill.firstPlot, windowWidth, fontSize),
+                         UI::Widgets::currentFirstPlotNonPlotHeight(m_NpuFill.firstPlot, windowWidth, fontSize),
                          UI::Widgets::currentFirstPlotNonPlotHeight(m_NetworkFill.firstPlot, windowWidth, fontSize)});
     }
 
@@ -208,6 +209,8 @@ class SystemMetricsPanel : public Panel
     UI::Widgets::PlotFillState m_OverviewFill;
     // The GPU tab's, shared by every GPU's charts (#959)
     UI::Widgets::PlotFillState m_GpuFill;
+    // The NPU tab's, shared by every NPU's and compute accelerator's charts (#1799)
+    UI::Widgets::PlotFillState m_NpuFill;
     // The Network and I/O tab's (#959)
     UI::Widgets::PlotFillState m_NetworkFill;
 
@@ -270,6 +273,9 @@ class SystemMetricsPanel : public Panel
     std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedGPUs;
     // The GPU tab's per-frame storage, kept so drawing it allocates nothing once warmed up (#1171).
     GpuSection::FrameCache m_GpuFrameCache;
+    // The NPU tab's own (#1799): its smoothed values and per-frame storage, as the GPU tab's above.
+    std::unordered_map<std::string, GpuSection::SmoothedGPU> m_SmoothedAccelerators;
+    GpuSection::FrameCache m_NpuFrameCache;
 
     std::vector<double> m_SmoothedPerCore;
 

@@ -15,7 +15,7 @@ namespace App
 
 /// All available columns for the process table.
 /// Order here defines the default column order.
-/// Grouped by category: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, Command
+/// Grouped by category: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, NPU, Command
 enum class ProcessColumn : std::uint8_t
 {
     // Identity - who is this process?
@@ -59,6 +59,10 @@ enum class ProcessColumn : std::uint8_t
     GpuMemory,
     GpuEngine,
     GpuDevice,
+    // NPU: the NPUs and other compute accelerators, never counted in the GPU columns (#1799)
+    NpuPercent,
+    NpuMemory,
+    NpuEngine,
     // Command line (typically last, fixed width by default for stable horizontal scroll extent)
     Command,
     Count
@@ -66,7 +70,7 @@ enum class ProcessColumn : std::uint8_t
 
 [[nodiscard]] constexpr auto allProcessColumns() -> std::array<ProcessColumn, static_cast<std::size_t>(ProcessColumn::Count)>
 {
-    // Order matches enum definition: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, Command
+    // Order matches enum definition: Identity, State, Resources, Scheduling, Time, I/O, Network, Power, GPU, NPU, Command
     return {// Identity
             ProcessColumn::PID,
             ProcessColumn::Name,
@@ -108,6 +112,10 @@ enum class ProcessColumn : std::uint8_t
             ProcessColumn::GpuMemory,
             ProcessColumn::GpuEngine,
             ProcessColumn::GpuDevice,
+            // NPU
+            ProcessColumn::NpuPercent,
+            ProcessColumn::NpuMemory,
+            ProcessColumn::NpuEngine,
             // Command (last)
             ProcessColumn::Command};
 }
@@ -224,6 +232,14 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // GPU Device
         {.name="GPU", .menuName="GPU Device", .configKey="gpu_device", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Which GPU(s) the process is using"},
 
+        // === NPU (#1799): NPUs and other compute accelerators, kept out of the GPU columns ===
+        // NPU Percent
+        {.name="NPU %", .menuName="NPU %", .configKey="npu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="NPU utilization on the busiest NPU or compute accelerator the process uses (0-100%, as the NPU tab reports it)"},
+        // NPU Memory
+        {.name="NPU Mem", .menuName="NPU Memory", .configKey="npu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="NPU memory in use, counted as the NPU tab counts it: the shared memory an NPU maps from system RAM, or its dedicated memory"},
+        // NPU Engine
+        {.name="NPU Engine", .menuName="NPU Engine", .configKey="npu_engine", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="Active NPU engines (Compute, etc.)"},
+
         // === Command (last, fixed-width by default) ===
         // Command
         {.name="Command", .menuName="Command Line", .configKey="command", .defaultWidth=420.0F, .defaultVisible=true, .canHide=true, .description="Full command line"},
@@ -256,6 +272,7 @@ enum class ColumnAlign : std::uint8_t
     case ProcessColumn::Type:
     case ProcessColumn::GpuEngine:
     case ProcessColumn::GpuDevice:
+    case ProcessColumn::NpuEngine:
     case ProcessColumn::Command:
         return ColumnAlign::Left;
     case ProcessColumn::State:

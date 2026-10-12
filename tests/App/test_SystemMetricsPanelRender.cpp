@@ -7,6 +7,7 @@
 #include "App/Panels/SystemMetricsPanel.h"
 #include "Core/ApplicationEvents.h"
 #include "Domain/ProcessModel.h"
+#include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
@@ -203,6 +204,55 @@ TEST_F(SystemMetricsPanelRenderTest, TheNetworkTabNeedsNetworkCounters)
     static_cast<void>(renderAndCapture(*panel));
     EXPECT_FALSE(selectTab("Network and I/O")); // not drawn at all
     EXPECT_TRUE(selectTab("Overview"));
+    panel->onDetach();
+}
+
+/// A panel whose GPU model reads a mock GPU probe with an iGPU and, with @p npu, an Intel AI Boost NPU.
+[[nodiscard]] std::unique_ptr<SystemMetricsPanel> attachedPanelWithGpu(bool npu)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        [npu]
+        {
+            auto gpu = std::make_unique<TestMocks::MockGPUProbe>();
+            gpu->withGPU("iGPU", "Intel(R) Arc(TM) 140T GPU", "Intel", true);
+            if (npu)
+            {
+                gpu->withAccelerator("NPU", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103");
+            }
+            return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = std::move(gpu)};
+        });
+    panel->onAttach();
+    return panel;
+}
+
+// #1799: the NPU tab sits beside the GPU tab only when the GPU model lists an NPU or compute
+// accelerator, and draws it there; the GPU tab keeps the GPU alone.
+TEST_F(SystemMetricsPanelRenderTest, TheNpuTabAppearsOnlyWithAnAccelerator)
+{
+    const auto withoutNpu = attachedPanelWithGpu(/*npu=*/false);
+    static_cast<void>(renderAndCapture(*withoutNpu));
+    static_cast<void>(renderAndCapture(*withoutNpu));
+    EXPECT_TRUE(selectTab("GPU"));
+    EXPECT_FALSE(selectTab("NPU")); // not drawn at all
+    withoutNpu->onDetach();
+}
+
+TEST_F(SystemMetricsPanelRenderTest, TheNpuTabDrawsTheAccelerator)
+{
+    const auto panel = attachedPanelWithGpu(/*npu=*/true);
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(selectTab("NPU"));
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("NPU Monitoring (1 device)")) << text;
+    EXPECT_TRUE(text.contains("Intel(R) AI Boost [NPU]")) << text;
+    EXPECT_FALSE(text.contains("Arc(TM) 140T")) << text;
+
+    ASSERT_TRUE(selectTab("GPU"));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("GPU Monitoring (1 GPU)")) << text;
+    EXPECT_FALSE(text.contains("AI Boost")) << text;
     panel->onDetach();
 }
 
