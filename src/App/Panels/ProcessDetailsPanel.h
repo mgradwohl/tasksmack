@@ -253,9 +253,10 @@ class ProcessDetailsPanel : public Panel
     // confirm, which shows over the Actions block there; or the test hook's tab (#1559).
     std::optional<SelectOverride::DetailsTab> m_RequestedTab;
     ProcessPriorityView m_PriorityView;
-    // The Actions block's content height as last drawn (0 until it has been): beside Identity and
-    // Runtime only while it fits their height (ProcessDetailsLayout::computeActionsBlockLayout()).
-    float m_ActionsBlockHeight = 0.0F;
+    // The Actions and Priority cards' content heights as last drawn (0 until they have been): the row
+    // they are on takes the tallest card's height (ProcessDetailsLayout::computeRowCardHeight(), #1789).
+    float m_ActionsCardHeight = 0.0F;
+    float m_PriorityCardHeight = 0.0F;
 
     // The Overview's Environment section (#179). The reader is created by the composition root (the
     // default constructor) and called only from updateWithSamples(), through the view, while the

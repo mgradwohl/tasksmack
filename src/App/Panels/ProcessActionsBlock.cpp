@@ -14,6 +14,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace App::ProcessActionsBlock
 {
@@ -70,38 +71,68 @@ Widths measure(const Platform::ProcessActionCapabilities& capabilities)
     };
 }
 
-float render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowCardHeight)
+Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout& layout, float cardHeight)
 {
+    Heights heights;
     if (context.actionsView == nullptr || context.priorityView == nullptr || context.processName == nullptr)
     {
-        return 0.0F;
+        return heights;
     }
 
-    // A card like Identity's and Runtime's, its header inside (#1537). Beside them: their height, so
-    // the three share their edges and the charts under the row keep theirs. Wrapped below them: as
-    // tall as the content.
-    const ImGuiChildFlags childFlags = layout.besideInfo ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY;
-    const float cardHeight = layout.besideInfo ? std::max(rowCardHeight, 1.0F) : 0.0F;
-    float neededHeight = 0.0F;
-    (void) ProcessOverviewCard::render(
-        "ProcessActionsBlock",
-        ICON_FA_GEARS,
-        "Actions",
-        ImVec2(layout.width, cardHeight),
-        childFlags,
-        [&]
+    // Cards like Identity's and Runtime's, each with its header inside (#1537). Given the row's height
+    // they take it, so the row's cards share their edges; otherwise each is as tall as its content.
+    const bool fixedHeight = std::isfinite(cardHeight) && cardHeight > 0.0F;
+    const ImGuiChildFlags childFlags = fixedHeight ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY;
+    const float height = fixedHeight ? cardHeight : 0.0F;
+    // The last row's bottom (the cursor is an item spacing below it) and the bottom padding.
+    const auto contentHeight = []
+    {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        return ImGui::GetCursorPosY() - style.ItemSpacing.y + style.WindowPadding.y;
+    };
+
+    const bool drawActions = layout.actionsWidth > 0.0F;
+    if (drawActions)
+    {
+        (void) ProcessOverviewCard::render("ProcessActionsBlock",
+                                           ICON_FA_GEARS,
+                                           "Actions",
+                                           ImVec2(layout.actionsWidth, height),
+                                           childFlags,
+                                           [&]
+                                           {
+                                               // The result line wraps at the card's edge instead of running out of it.
+                                               ImGui::PushTextWrapPos(0.0F);
+                                               context.actionsView->renderControls(
+                                                   context.actions, context.capabilities, *context.processName, context.target);
+                                               context.actionsView->renderResultLine();
+                                               ImGui::PopTextWrapPos();
+                                               heights.actions = contentHeight();
+                                           });
+    }
+
+    if (layout.priorityWidth > 0.0F)
+    {
+        if (drawActions && layout.priorityBesideActions)
         {
-            // The result and error lines wrap at the block's edge instead of running out of it.
-            ImGui::PushTextWrapPos(0.0F);
-            context.actionsView->renderControls(context.actions, context.capabilities, *context.processName, context.target);
-            context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
-            context.actionsView->renderResultLine();
-            ImGui::PopTextWrapPos();
-            // The last row's bottom (the cursor is an item spacing below it) and the bottom padding.
-            const ImGuiStyle& style = ImGui::GetStyle();
-            neededHeight = ImGui::GetCursorPosY() - style.ItemSpacing.y + style.WindowPadding.y;
-        });
-    return neededHeight;
+            ImGui::SameLine();
+        }
+        (void) ProcessOverviewCard::render("ProcessPriorityBlock",
+                                           ICON_FA_GAUGE_HIGH,
+                                           "Priority",
+                                           ImVec2(layout.priorityWidth, height),
+                                           childFlags,
+                                           [&]
+                                           {
+                                               // The error lines wrap at the card's edge too.
+                                               ImGui::PushTextWrapPos(0.0F);
+                                               context.priorityView->render(
+                                                   context.actions, context.capabilities, context.currentNice, context.target);
+                                               ImGui::PopTextWrapPos();
+                                               heights.priority = contentHeight();
+                                           });
+    }
+    return heights;
 }
 
 } // namespace App::ProcessActionsBlock
