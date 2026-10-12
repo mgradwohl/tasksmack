@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -48,6 +49,8 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+
+#include <unistd.h>
 
 namespace
 {
@@ -443,6 +446,155 @@ TEST(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
 
     EXPECT_TRUE(observed.userThemeLoaded);
     EXPECT_GT(observed.drawCalls, 0); // counted after each Render(), while the overlay's metrics are on
+}
+
+/// What the shell-shortcuts driver saw.
+struct ShellKeysObserved
+{
+    bool detailsTabShown = false;
+    bool metricsOnAfterToggle = false;
+    bool metricsOffAfterSecondToggle = true;
+    bool fontGrew = false;
+    bool fontShrankBack = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed last over the whole shell: the row menu's Details for this test's own process (as
+/// ProcessesPanel raises it), F5 on the Processes tab, Ctrl+Shift+M twice, then Ctrl+= and Ctrl+-.
+class ShellKeysDriverLayer : public Core::Layer
+{
+  public:
+    explicit ShellKeysDriverLayer(ShellKeysObserved& observed) : Layer("ShellKeysDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        ImGuiIO& io = ImGui::GetIO();
+        const int frame = ++m_Observed.frames;
+        switch (frame)
+        {
+        case 20:
+        {
+            // As the Processes table's row menu does it (#1209): the selection first, then Details.
+            Core::ProcessSelectedEvent selected(static_cast<std::int32_t>(getpid()), 0);
+            Core::Application::get().raiseEvent(selected);
+            Core::ShowProcessDetailsEvent details;
+            Core::Application::get().raiseEvent(details);
+            break;
+        }
+        case 35:
+            m_Observed.detailsTabShown = selectedTab() == tabId("###ProcessDetailsTab");
+            ImGui::ActivateItemByID(tabId("###ProcessesTab"));
+            break;
+        case 45:
+            io.AddKeyEvent(ImGuiKey_F5, true); // the list/tree toggle, routed to the Processes tab
+            break;
+        case 46:
+            io.AddKeyEvent(ImGuiKey_F5, false);
+            break;
+        case 55:
+        case 70:
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            io.AddKeyEvent(ImGuiMod_Shift, true);
+            io.AddKeyEvent(ImGuiKey_M, true);
+            break;
+        case 56:
+        case 71:
+            io.AddKeyEvent(ImGuiKey_M, false);
+            io.AddKeyEvent(ImGuiMod_Shift, false);
+            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+            break;
+        case 65:
+            m_Observed.metricsOnAfterToggle = UI::RenderMetrics::get().enabled();
+            break;
+        case 80:
+            m_Observed.metricsOffAfterSecondToggle = UI::RenderMetrics::get().enabled();
+            m_FontBefore = UI::Theme::get().currentFontSize();
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            io.AddKeyEvent(ImGuiKey_Equal, true);
+            break;
+        case 81:
+            io.AddKeyEvent(ImGuiKey_Equal, false);
+            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+            break;
+        case 90:
+            m_Observed.fontGrew = UI::Theme::get().currentFontSize() != m_FontBefore;
+            io.AddKeyEvent(ImGuiMod_Ctrl, true);
+            io.AddKeyEvent(ImGuiKey_Minus, true);
+            break;
+        case 91:
+            io.AddKeyEvent(ImGuiKey_Minus, false);
+            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+            break;
+        case 100:
+            m_Observed.fontShrankBack = UI::Theme::get().currentFontSize() == m_FontBefore;
+            Core::Application::get().stop();
+            break;
+        default:
+            if (frame > 1000)
+            {
+                m_Observed.timedOut = true;
+                Core::Application::get().stop();
+            }
+            break;
+        }
+    }
+
+  private:
+    [[nodiscard]] static ImGuiID tabBarId()
+    {
+        const ImGuiWindow* main = ImGui::FindWindowByName("##MainWindow");
+        return main != nullptr ? ImHashStr("##MainTabBar", 0, main->ID) : 0;
+    }
+
+    [[nodiscard]] static ImGuiID tabId(const char* label)
+    {
+        return ImHashStr(label, 0, tabBarId());
+    }
+
+    [[nodiscard]] static ImGuiID selectedTab()
+    {
+        const ImGuiTabBar* bar = GImGui->TabBars.GetByKey(tabBarId());
+        return bar != nullptr ? bar->SelectedTabId : 0;
+    }
+
+    ShellKeysObserved& m_Observed;
+    UI::FontSize m_FontBefore = UI::FontSize::Medium;
+};
+
+TEST(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayShellKeysTest";
+    spec.VSync = false;
+    ShellKeysObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<App::ShellLayer>().setTitleBar(&titleBar);
+        app.pushLayer<ShellKeysDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    UI::RenderMetrics::get().setEnabled(false);
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.detailsTabShown);              // Details brings the Process Details tab forward
+    EXPECT_TRUE(observed.metricsOnAfterToggle);         // Ctrl+Shift+M turns the render metrics on...
+    EXPECT_FALSE(observed.metricsOffAfterSecondToggle); // ...and off again
+    EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one preset larger
+    EXPECT_TRUE(observed.fontShrankBack);               // Ctrl+- back
 }
 
 /// The tab IDs pressed, in order, then back to the first (TabLabel.h, ShellLayer.cpp's labels).
