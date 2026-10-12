@@ -27,6 +27,10 @@
 #include "UI/IconsFontAwesome6.h"
 #include "UI/UILayer.h"
 
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_keycode.h>
+#include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_video.h>
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -40,6 +44,7 @@
 #include <optional>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 namespace
 {
@@ -203,6 +208,148 @@ TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     // The bar never lets the window get narrower than it has to show.
     EXPECT_GT(observed.minimumWidth, 0);
     EXPECT_GT(observed.minimumHeight, 0);
+}
+
+/// What the window-event driver saw.
+struct WindowEventsObserved
+{
+    bool maximizedAfterDoubleClick = false;
+    bool maximizedAfterSecondDoubleClick = true;
+    bool positionKeptAfterClick = false;
+    bool sizeKeptAfterEdgePress = false;
+    bool systemMenuOpened = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: feeds TitleBarLayer::onSDLEvent() the SDL events a user
+/// makes on the title bar -- pushed onto SDL's queue, so they arrive through Application's loop as real
+/// ones do -- and records the outcome. A press that isn't followed by pointer movement must leave the
+/// window where it is (the drag and resize begin, then end on release).
+class WindowEventDriverLayer : public Core::Layer
+{
+  public:
+    explicit WindowEventDriverLayer(WindowEventsObserved& observed) : Layer("WindowEventDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        const Core::Window& window = Core::Application::get().getWindow();
+        const auto [width, height] = window.getSize();
+        const float titleX = static_cast<float>(width) * 0.5F; // empty title bar: the middle, clear of the buttons
+        constexpr float TITLE_Y = 16.0F;
+        switch (frame)
+        {
+        case SETTLE:
+            pushButton(titleX, TITLE_Y, true, 2); // double-click: maximize
+            pushButton(titleX, TITLE_Y, false, 2);
+            break;
+        case SETTLE + STEP:
+            m_Observed.maximizedAfterDoubleClick = window.isMaximized();
+            pushButton(titleX, TITLE_Y, true, 2); // and again: restore
+            pushButton(titleX, TITLE_Y, false, 2);
+            break;
+        case SETTLE + (2 * STEP):
+            m_Observed.maximizedAfterSecondDoubleClick = window.isMaximized();
+            m_Position = window.getPosition();
+            pushButton(titleX, TITLE_Y, true, 1); // a drag begins...
+            break;
+        case SETTLE + (2 * STEP) + 2:
+            pushButton(titleX, TITLE_Y, false, 1); // ...and ends without moving
+            break;
+        case SETTLE + (3 * STEP):
+            m_Observed.positionKeptAfterClick = window.getPosition() == m_Position;
+            m_Size = window.getSize();
+            pushButton(static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, true, 1); // a right-edge resize begins...
+            break;
+        case SETTLE + (3 * STEP) + 2:
+            pushButton(static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, false, 1); // ...and ends
+            break;
+        case SETTLE + (4 * STEP):
+            m_Observed.sizeKeptAfterEdgePress = window.getSize() == m_Size;
+            pushKey(SDLK_SPACE, SDL_SCANCODE_SPACE, SDL_KMOD_LCTRL); // Ctrl+Space: the system menu
+            break;
+        case SETTLE + (5 * STEP):
+            m_Observed.systemMenuOpened = !GImGui->OpenPopupStack.empty();
+            Core::Application::get().stop();
+            break;
+        default:
+            if (frame > MAX_FRAMES)
+            {
+                m_Observed.timedOut = true;
+                Core::Application::get().stop();
+            }
+            break;
+        }
+    }
+
+  private:
+    static void pushButton(float x, float y, bool down, int clicks)
+    {
+        SDL_Event event{};
+        event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = down;
+        event.button.clicks = static_cast<Uint8>(clicks);
+        event.button.x = x;
+        event.button.y = y;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    static void pushKey(SDL_Keycode key, SDL_Scancode scancode, SDL_Keymod mod)
+    {
+        SDL_Event event{};
+        event.type = SDL_EVENT_KEY_DOWN;
+        event.key.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.key.key = key;
+        event.key.scancode = scancode; // as a real key event carries; ImGui's SDL backend expects one
+        event.key.mod = mod;
+        event.key.down = true;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 10;
+    static constexpr int MAX_FRAMES = 600;
+
+    WindowEventsObserved& m_Observed;
+    std::pair<int, int> m_Position;
+    std::pair<int, int> m_Size;
+};
+
+TEST(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayEventsTest";
+    spec.VSync = false;
+    WindowEventsObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<WindowEventDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.maximizedAfterDoubleClick);        // double-click on the empty title bar maximizes
+    EXPECT_FALSE(observed.maximizedAfterSecondDoubleClick); // and again restores
+    EXPECT_TRUE(observed.positionKeptAfterClick);           // a press and release without motion moves nothing
+    EXPECT_TRUE(observed.sizeKeptAfterEdgePress);           // likewise on the resize edge
+    EXPECT_TRUE(observed.systemMenuOpened);                 // Ctrl+Space opens the window menu
 }
 
 /// The tab IDs pressed, in order, then back to the first (TabLabel.h, ShellLayer.cpp's labels).
