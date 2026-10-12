@@ -197,7 +197,10 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
             return {.bytes = -1, .error = EAGAIN}; // the scripted timeout
         }
         const std::size_t length = std::min(buffer.size(), next->size());
-        std::memcpy(buffer.data(), next->data(), length);
+        if (length > 0) // An empty datagram's data() may be null: memcpy from null is undefined even for 0 bytes
+        {
+            std::memcpy(buffer.data(), next->data(), length);
+        }
         return {.bytes = static_cast<std::int64_t>(length), .error = 0};
     }
 
