@@ -24,6 +24,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 
 #include <array>
@@ -106,6 +107,10 @@ struct ProcessesPanelPlatform
 {
     std::unique_ptr<Platform::IProcessProbe> probe;
     std::unique_ptr<Platform::IProcessActions> actions;
+    /// The opt-in UDP collector (#1492), shared with the probe; null where there is none (Linux, a
+    /// synthetic scenario, most tests).
+    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
+    std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector{};
 };
 
 class ProcessesPanel : public Panel
@@ -385,6 +390,12 @@ class ProcessesPanel : public Panel
     // Actions block. Created at attach, like that panel's: this panel is part of the composition root.
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
+
+    // The opt-in UDP event trace (#1492), shared with the probe the model owns. Started at attach
+    // when Settings has it on, and on UdpEventTraceChangedEvent; stopped when it is turned off and at
+    // detach. Null where the platform has none.
+    std::shared_ptr<Platform::IUdpTrafficCollector> m_UdpCollector;
+    void applyUdpEventTrace(bool enabled);
     // The action awaiting confirmation: one target from a row (or F9), several from the selection
     // (#804). Each target is a PID and start time, so a reused PID is refused (#973). The dialog's
     // text is built once, here, when the action is requested. A batch priority change (#1484) is

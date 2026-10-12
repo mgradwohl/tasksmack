@@ -332,6 +332,7 @@ set(COMMON_TEST_SOURCES
 set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_DXGIGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsDiskProbeMath.cpp
+    Platform/WindowsMath/test_WindowsEtwNetMath.cpp
     Platform/WindowsMath/test_WindowsGPUProbeMath.cpp
     Platform/WindowsMath/test_WindowsPathProviderMath.cpp
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
@@ -351,6 +352,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_PowerProbeContract.cpp
     Platform/test_WindowsProcessProbe.cpp
     Platform/test_WindowsProcessProbeSeams.cpp
+    Platform/test_WindowsEtwNetCollector.cpp
     Platform/test_WindowsSystemProbe.cpp
     Platform/test_WindowsSystemProbeSeams.cpp
     Platform/test_WindowsSystemProbeNetwork.cpp

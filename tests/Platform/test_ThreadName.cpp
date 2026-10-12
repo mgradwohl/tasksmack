@@ -60,17 +60,20 @@ TEST(ThreadNameTest, CutNeverSplitsUtf8Sequence)
 
 TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
 {
-    constexpr std::array NAMES{Platform::UI_THREAD_NAME,
-                               Platform::SAMPLER_THREAD_NAME,
-                               Platform::PROCESS_SAMPLER_THREAD_NAME,
-                               Platform::SYSTEM_SAMPLER_THREAD_NAME,
-                               Platform::CONNECTIONS_READ_THREAD_NAME,
-                               Platform::MODULES_READ_THREAD_NAME,
-                               Platform::OPEN_FILES_READ_THREAD_NAME,
-                               Platform::SECURITY_READ_THREAD_NAME,
-                               Platform::OPEN_FILES_NAMER_THREAD_NAME,
-                               Platform::SYSTEM_INFO_READ_THREAD_NAME,
-                               Platform::CRASH_HISTORY_READ_THREAD_NAME};
+    constexpr std::array NAMES{
+        Platform::UI_THREAD_NAME,
+        Platform::SAMPLER_THREAD_NAME,
+        Platform::PROCESS_SAMPLER_THREAD_NAME,
+        Platform::SYSTEM_SAMPLER_THREAD_NAME,
+        Platform::CONNECTIONS_READ_THREAD_NAME,
+        Platform::MODULES_READ_THREAD_NAME,
+        Platform::OPEN_FILES_READ_THREAD_NAME,
+        Platform::SECURITY_READ_THREAD_NAME,
+        Platform::OPEN_FILES_NAMER_THREAD_NAME,
+        Platform::SYSTEM_INFO_READ_THREAD_NAME,
+        Platform::CRASH_HISTORY_READ_THREAD_NAME,
+        Platform::UDP_TRACE_THREAD_NAME,
+    };
     for (const std::string_view name : NAMES)
     {
         EXPECT_LE(name.size(), Platform::MAX_LINUX_THREAD_NAME_LENGTH) << name;

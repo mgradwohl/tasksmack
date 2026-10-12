@@ -168,9 +168,18 @@ An interface selector lets you focus on a specific adapter. The Total leaves out
 
 The Interface Status table's Sent and Received columns show the rate over the last refresh, not the smoothed rate beside the chart. A measured zero reads "0.0 B/s", muted. A muted "—" means there is no reading for that refresh, and hovering over it says why: the interface hasn't been sampled twice yet (just after starting, or a newly added interface), its byte counter went backwards (a driver reset), or it jumped by more than `max_sane_rate_bps`.
 
-Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform. A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy.
+Per-process network rates are the bytes the process's TCP connections transferred between two readings, divided by the time between them. On Linux the readings are cached (`socket_stats_cache_ttl_ms`, 500 ms by default), and a refresh that reuses one shows the last rate (see the FAQ). By default UDP traffic, including QUIC/HTTP3, video calls, games, and DNS, is not attributed to processes on either platform, and the Net Sent and Net Received column tooltips say "TCP only". A browser streaming over HTTP/3 can show close to 0 B/s while the interface is busy. On Windows you can turn on **Count UDP traffic per process** in Settings (see [Counting UDP on Windows](#counting-udp-on-windows)).
 
 Linux per-process attribution uses Netlink and requires Linux 4.2 or later. Windows per-process attribution uses TCP EStats and requires administrator privileges to enable collection. If Windows denies TCP EStats even to TaskSmack running as administrator (a policy or a driver can), the per-process network columns are hidden and a network icon in the status bar says so; running elevated can't bring them back on that system. System-wide and interface metrics remain available when process attribution is unavailable.
+
+#### Counting UDP on Windows
+
+Windows has no per-process UDP byte counter that an ordinary program can read. TaskSmack can count UDP per process from the kernel's own network events instead, but only if you opt in. Turn on **Count UDP traffic per process** in Settings (Performance section) and run TaskSmack as administrator. TaskSmack then starts a Windows event-tracing (ETW) session named `TaskSmack-UDP-<process ID>-<start time>` on the Microsoft-Windows-Kernel-Network provider. The session receives only the UDP send and receive events; TCP is still counted by TCP EStats, so nothing is counted twice. Once the first UDP event arrives, the network column tooltips change from "TCP only" to "TCP and UDP".
+
+- The setting is off by default. Without administrator rights it does nothing, and the counters stay TCP only.
+- Turning it off in Settings stops the session at once, and so does closing TaskSmack. If TaskSmack crashed and left its session running, the next TaskSmack that starts one stops the leftover. It never stops a session that belongs to another running TaskSmack.
+- Under very heavy UDP traffic (QUIC at full line rate) the session costs some CPU, and Windows may drop events when its buffers fill. Dropped events are reported in the debug log, and their bytes go uncounted.
+- The session shares the kernel's network provider with other tracing tools (WPR, Resource Monitor). Each tool's session gets its own copy of the events.
 
 ### Battery / Power Monitoring
 
@@ -465,6 +474,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | CPU Details: virtualization, hypervisor, VBS, memory integrity | ❌ (hidden) | ✅ (no elevated privileges needed) |
 | Process I/O counters | ✅ (other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (no elevated privileges needed) |
 | Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (TCP EStats; administrator required) |
+| Per-process UDP network | ❌ | Opt-in (**Count UDP traffic per process**; ETW kernel network events; administrator required) |
 | Thread count per process | ✅ | ✅ |
 | Process priority (nice) | ✅ | ✅ (mapped −20 … +19) |
 | Process I/O priority (ionice class and level) | ✅ (Realtime and other users' processes: `CAP_SYS_NICE` or root) | ❌ (no equivalent) |
@@ -522,7 +532,7 @@ If the saved position is no longer on any connected display (a monitor was unplu
 The Settings dialog (the gear icon) has three sections:
 
 - **Appearance:** Theme and Font size (Small to Largest).
-- **Performance:** Update interval (how often values are sampled) and History length (how much the charts keep).
+- **Performance:** Update interval (how often values are sampled) and History length (how much the charts keep). On Windows, also **Count UDP traffic per process** (off by default; needs TaskSmack running as administrator), which counts UDP in the per-process network columns through a kernel event trace. It takes effect when you click Save. See [Counting UDP on Windows](#counting-udp-on-windows).
 - **Advanced:** buttons that open `config.toml` and the user themes folder, and **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked, and **About TaskSmack**, which closes Settings (without saving) and opens About.
 
 **Save** writes your changes to `config.toml` and closes the dialog; **Cancel** (or Escape) closes it without changing anything. **Reset to defaults** sets every control in the dialog back to its default, and Save keeps them.

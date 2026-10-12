@@ -1,9 +1,11 @@
 #pragma once
 
+#include "IUdpTrafficCollector.h"
 #include "ProcessTypes.h"
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -79,6 +81,12 @@ class IProcessProbe
     /// @param ttlMs Time-to-live in milliseconds for cached socket stats
     /// @note This is a performance optimization cache, separate from the user's refresh interval.
     virtual void setSocketStatsCacheTtl([[maybe_unused]] std::chrono::milliseconds ttlMs)
+    {}
+
+    /// Share the opt-in UDP collector (#1492; Windows only), which App starts and stops. While it
+    /// delivers, readSocketTraffic() adds each process's UDP bytes and capabilities() reports
+    /// hasUdpNetworkCounters. Set once, before the probe is first sampled. The default ignores it.
+    virtual void setUdpTrafficCollector([[maybe_unused]] const std::shared_ptr<IUdpTrafficCollector>& collector)
     {}
 };
 

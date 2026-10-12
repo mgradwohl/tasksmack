@@ -17,6 +17,7 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 
 #include <memory>
 
@@ -25,6 +26,11 @@ namespace Platform
 
 /// Creates the platform-appropriate IProcessProbe implementation.
 [[nodiscard]] std::unique_ptr<IProcessProbe> makeProcessProbe();
+
+/// Creates the opt-in per-process UDP byte collector (#1492), stopped: Windows' ETW session on
+/// Microsoft-Windows-Kernel-Network (WindowsEtwNetCollector). Null on Linux, which has no such source.
+/// Shared: App starts and stops it, and the process probe reads it (IProcessProbe::setUdpTrafficCollector()).
+[[nodiscard]] std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector();
 
 /// Creates the platform-appropriate IProcessActions implementation.
 [[nodiscard]] std::unique_ptr<IProcessActions> makeProcessActions();

@@ -30,6 +30,7 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 
 #include <memory>
 
@@ -39,6 +40,12 @@ namespace Platform
 std::unique_ptr<IProcessProbe> makeProcessProbe()
 {
     return std::make_unique<LinuxProcessProbe>();
+}
+
+std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector()
+{
+    // sock_diag has no UDP byte counters, and Linux has no event source like Windows' (#1101).
+    return nullptr;
 }
 
 std::unique_ptr<IProcessActions> makeProcessActions()

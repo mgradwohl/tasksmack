@@ -205,6 +205,12 @@ void readSettings(const toml::table& config, UserSettings& settings)
                                           Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT,
                                           [](auto v) { return Domain::Sampling::clampSocketStatsCacheTtlMs(v); });
 
+    // Opt-in per-process UDP counting through an ETW session (Windows, elevated, #1492)
+    if (auto val = config["sampling"]["udp_event_trace"].value<bool>())
+    {
+        settings.udpEventTrace = *val;
+    }
+
     // Metrics calculation parameters
     UserConfigHelpers::loadAndClamp(
         config, "metrics", "max_sane_rate_bps", settings.maxSaneRateBps, [](auto v) { return Domain::Sampling::clampMaxSaneRateBps(v); });
@@ -470,6 +476,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
              {"interval_ms", Domain::Sampling::clampRefreshInterval(settings.refreshIntervalMs)},
              {"history_max_seconds", Domain::Sampling::clampHistorySeconds(settings.maxHistorySeconds)},
              {"socket_stats_cache_ttl_ms", Domain::Sampling::clampSocketStatsCacheTtlMs(settings.socketStatsCacheTtlMs)},
+             {"udp_event_trace", settings.udpEventTrace},
          }},
         {"metrics",
          toml::table{
@@ -830,6 +837,8 @@ void UserConfig::save()
     text << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
     text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
     text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
+    text << "#   [sampling] udp_event_trace: Windows only; count UDP per process through a kernel network event trace "
+            "when TaskSmack runs as administrator (true/false, default false: TCP only)\n";
     text << "#   [metrics] max_sane_rate_bps: network rate ceiling for process and interface rates "
             "(1e9-1e11 bytes/sec); a higher rate is taken for a bad reading and shown as 0 (an interface's is also "
             "a gap in its chart); read at startup\n";

@@ -222,6 +222,7 @@ set(PLATFORM_SOURCES_LINUX
 
 set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
+    src/Platform/Windows/WindowsEtwNetCollector.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
@@ -517,6 +518,7 @@ function(tasksmack_apply_windows_platform target)
         wevtapi # WindowsCrashEvents: the Application log's crash and hang events (#1524)
         wintrust # WindowsSystemInfoProbe: driver images' signatures, embedded and catalog (#1661)
         crypt32 # WindowsSystemInfoProbe: a driver signer's certificate name (#1661)
+        advapi32 # WindowsEtwNetCollector: the opt-in UDP event trace (StartTraceW, ProcessTrace, ...) (#1492)
     )
 endfunction()
 

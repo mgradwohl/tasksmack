@@ -17,7 +17,9 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "WindowsDiskProbe.h"
+#include "WindowsEtwNetCollector.h"
 #include "WindowsGPUProbe.h"
 #include "WindowsPathProvider.h"
 #include "WindowsPowerProbe.h"
@@ -42,6 +44,11 @@ namespace Platform
 std::unique_ptr<IProcessProbe> makeProcessProbe()
 {
     return std::make_unique<WindowsProcessProbe>();
+}
+
+std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector()
+{
+    return std::make_shared<WindowsEtwNetCollector>();
 }
 
 std::unique_ptr<IProcessActions> makeProcessActions()

@@ -2,6 +2,8 @@
 
 #include "Domain/Numeric.h"
 #include "Platform/CpuAffinity.h"
+#include "Platform/IUdpTrafficCollector.h"
+#include "Platform/Windows/WindowsEtwNetMath.h"
 #include "WindowsProcessActionsMath.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -46,6 +48,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -1263,6 +1266,8 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
     // elevated, and blocked on this system when elevated (#1358). The token's elevation is queried
     // once at construction (it is constant for the process lifetime).
     const NetworkCounterDenial denial = classifyNetworkCounterDenial(m_IsElevated, hasNetworkCounters, networkAccessDenied);
+    const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector();
+    const bool udpDelivering = udp != nullptr && udp->isDelivering();
 
     return ProcessCapabilities{
         .hasIoCounters = true,
@@ -1278,9 +1283,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasCpuAffinity = true, // From GetProcessAffinityMask, per processor group (#1247)
         // Network counters: TCP EStats (GetPerTcpConnectionEStats), which needs Administrator
         .hasNetworkCounters = hasNetworkCounters,
-        // TCP only: Windows has no user-mode per-process UDP byte counters; only a kernel ETW
-        // session could attribute UDP, and that is deferred (#1258).
-        .hasUdpNetworkCounters = false,
+        // TCP only by default: Windows has no user-mode per-process UDP byte counters (#1258). With
+        // the opt-in UDP event trace (#1492) running and delivering, readSocketTraffic() adds UDP.
+        .hasUdpNetworkCounters = hasNetworkCounters && udpDelivering,
         // Not measured on Windows. A fabricated figure (a fixed 1 J per sample shared out by CPU
         // time) used to stand in for it, which read ~2 W regardless of load and depended only on
         // the refresh rate (#1028). Real per-process energy needs the EMI energy meters or ETW.
@@ -1504,7 +1509,30 @@ SocketTrafficReading WindowsProcessProbe::readSocketTraffic() const
     }
     const auto sampleTimeNs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-    return makeSocketTrafficReading(reads, complete, sampleTimeNs);
+    SocketTrafficReading reading = makeSocketTrafficReading(reads, complete, sampleTimeNs);
+    // The UDP counters (#1492) are cumulative, so they are read only for a reading Domain folds: one
+    // skipped with an incomplete TCP walk loses nothing.
+    if (reading.sampleTimeNs != 0)
+    {
+        if (const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector(); udp != nullptr)
+        {
+            const std::vector<UdpProcessTraffic> udpTraffic = udp->sample();
+            EtwNet::appendUdpSamples(reading.sockets, udpTraffic);
+        }
+    }
+    return reading;
+}
+
+void WindowsProcessProbe::setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector)
+{
+    const std::scoped_lock lock(m_UdpCollectorMutex);
+    m_UdpCollector = collector;
+}
+
+std::shared_ptr<IUdpTrafficCollector> WindowsProcessProbe::udpCollector() const
+{
+    const std::scoped_lock lock(m_UdpCollectorMutex);
+    return m_UdpCollector;
 }
 
 bool WindowsProcessProbe::verifyEStats(const EStatsSampleCounts& counts) const

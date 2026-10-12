@@ -21,7 +21,8 @@ enum class EventType : uint8_t
     OpenSettings,
     OpenAbout,
     OpenHelp,
-    OpenElevationNotice
+    OpenElevationNotice,
+    UdpEventTraceChanged
 };
 
 /// Macro to implement event type boilerplate

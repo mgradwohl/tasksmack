@@ -121,6 +121,30 @@ class HistoryDurationChangedEvent : public Event
     bool m_Initial;
 };
 
+/// The Settings toggle "Count UDP traffic per process" changed (#1492, Windows): the Processes panel
+/// starts or stops its UDP event trace.
+class UdpEventTraceChangedEvent : public Event
+{
+  public:
+    explicit UdpEventTraceChangedEvent(bool enabled) : m_Enabled(enabled)
+    {}
+
+    [[nodiscard]] auto isEnabled() const -> bool
+    {
+        return m_Enabled;
+    }
+
+    [[nodiscard]] auto toString() const -> std::string override
+    {
+        return std::format("UdpEventTraceChangedEvent: {}", m_Enabled ? "on" : "off");
+    }
+
+    EVENT_CLASS_TYPE(UdpEventTraceChanged)
+
+  private:
+    bool m_Enabled;
+};
+
 // There is deliberately no theme-changed or font-size-changed event (#1178). Rendering is immediate
 // mode and reads UI::Theme every frame, so a new theme shows on the next frame, and font-dependent
 // caches already invalidate themselves by comparing the font and UI::Theme::fontGeneration().

@@ -41,6 +41,8 @@ inline constexpr std::string_view CRASH_HISTORY_READ_THREAD_NAME = "ts-crash-rea
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 /// The worker that runs one Startup tab action (enable, disable) at a time (#801).
 inline constexpr std::string_view STARTUP_ACTION_THREAD_NAME = "ts-auto-action";
+/// The thread that consumes the opt-in UDP event trace on Windows (#1492) while it runs.
+inline constexpr std::string_view UDP_TRACE_THREAD_NAME = "ts-udp-trace";
 
 /// `name` cut to at most `maxLength` bytes, never in the middle of a UTF-8 sequence.
 [[nodiscard]] inline std::string truncateThreadName(std::string_view name, std::size_t maxLength = MAX_LINUX_THREAD_NAME_LENGTH)

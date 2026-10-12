@@ -68,6 +68,7 @@ void load(State& state, const UserSettings& settings, std::vector<UI::Discovered
     state.customHistoryPreview = Detail::customHistoryLabel(settings.maxHistorySeconds);
     state.forceNativeDecorationsOnWayland = settings.forceNativeWindowDecorationsOnWayland;
     state.showPrivilegeNotice = settings.showPrivilegeNotice;
+    state.udpEventTrace = settings.udpEventTrace;
 }
 
 void resetToDefaults(State& state)
@@ -84,6 +85,7 @@ void resetToDefaults(State& state)
     state.historyChoice = Detail::defaultChoice(HISTORY_OPTIONS, defaults.maxHistorySeconds, &Detail::HistoryOption::valueSeconds);
     state.forceNativeDecorationsOnWayland = defaults.forceNativeWindowDecorationsOnWayland;
     state.showPrivilegeNotice = defaults.showPrivilegeNotice;
+    state.udpEventTrace = defaults.udpEventTrace;
 }
 
 Action render(State& state)
@@ -236,7 +238,7 @@ Action render(State& state)
         const float checkboxRowWidth = std::max(checkboxWidth(PRIVILEGE_NOTICE_LABEL),
                                                 Core::VideoBackend::isWayland() ? checkboxWidth(NATIVE_DECORATIONS_LABEL) : 0.0F);
 #else
-        const float checkboxRowWidth = checkboxWidth(PRIVILEGE_NOTICE_LABEL);
+        const float checkboxRowWidth = std::max(checkboxWidth(PRIVILEGE_NOTICE_LABEL), checkboxWidth(UDP_EVENT_TRACE_LABEL));
 #endif
         const float widestOtherRow = std::max({advancedRowWidth, actionRowWidth, checkboxRowWidth});
 
@@ -411,6 +413,17 @@ Action render(State& state)
             }
             ImGui::EndCombo();
         }
+
+#ifdef _WIN32
+        // Per-process network counters are TCP only by default; UDP needs a kernel event trace,
+        // which costs some CPU under heavy UDP and runs only as administrator (#1492).
+        ImGui::Spacing();
+        ImGui::Checkbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
+        ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and with TaskSmack running as "
+                              "administrator, TaskSmack starts a Windows network event trace (ETW) to count UDP too: QUIC/HTTP3, "
+                              "video calls, games, DNS. It costs some CPU when there is a lot of UDP traffic.");
+        ImGui::TextColored(theme.scheme().textMuted, "Needs TaskSmack running as administrator.");
+#endif
 
         UI::Widgets::sectionGap();
 

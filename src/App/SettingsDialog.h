@@ -27,6 +27,8 @@ inline constexpr const char* SAVE_LABEL = ICON_FA_FLOPPY_DISK "  Save";
 // Fills the dialog's controls with the defaults; nothing is written until Save.
 inline constexpr const char* RESET_LABEL = ICON_FA_ROTATE_LEFT "  Reset to defaults";
 inline constexpr const char* PRIVILEGE_NOTICE_LABEL = "Show limited-data notice";
+// Windows only (#1492): the opt-in UDP event trace.
+inline constexpr const char* UDP_EVENT_TRACE_LABEL = "Count UDP traffic per process";
 
 /// What the dialog keeps while it is open: the controls' values, edited in place until Save.
 struct State
@@ -43,6 +45,7 @@ struct State
     Detail::ComboState historyChoice;
     bool forceNativeDecorationsOnWayland = false;
     bool showPrivilegeNotice = true;
+    bool udpEventTrace = false; ///< Windows only (#1492); shown and saved there
 
     // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
     std::string customThemePreview;

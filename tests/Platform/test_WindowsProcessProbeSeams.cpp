@@ -5,7 +5,10 @@
 /// close, and the probe's own RAM query. No process is opened, changed or ended.
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/Windows/WindowsEtwNetCollector.h"
+#include "Platform/Windows/WindowsEtwNetMath.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
@@ -18,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -40,6 +44,33 @@
 // exact Win32 signatures.
 namespace Platform
 {
+
+/// A UDP collector whose delivery and counters the test sets (#1492). Outside the anonymous
+/// namespace: it is made with std::make_shared.
+class FakeUdpCollector final : public IUdpTrafficCollector // NOLINT(misc-use-internal-linkage) - see above
+{
+  public:
+    UdpCollectorStartResult start() override
+    {
+        return UdpCollectorStartResult::Started;
+    }
+    void stop() override
+    {}
+    [[nodiscard]] bool isDelivering() const override
+    {
+        return delivering;
+    }
+    [[nodiscard]] std::vector<UdpProcessTraffic> sample() override
+    {
+        ++samples;
+        return traffic;
+    }
+
+    bool delivering = false;
+    std::vector<UdpProcessTraffic> traffic;
+    int samples = 0;
+};
+
 namespace
 {
 
@@ -957,6 +988,102 @@ TEST_F(WindowsProcessProbeSeamTest, ASaneSampleVerifiesEStatsForGood)
     fake().readStatus = ERROR_ACCESS_DENIED; // After verification a denial no longer switches it off
     EXPECT_NE(probe.readSocketTraffic().sampleTimeNs, 0U);
     EXPECT_TRUE(probe.capabilities().hasNetworkCounters);
+}
+
+// --- The opt-in UDP event trace (#1492) ------------------------------------------------------
+
+TEST_F(WindowsProcessProbeSeamTest, TcpOnlyUntilTheUdpCollectorDelivers)
+{
+    useWorkingEStats();
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters); // No collector: TCP only
+
+    const auto udp = std::make_shared<FakeUdpCollector>();
+    probe.setUdpTrafficCollector(udp);
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters); // Started, nothing delivered yet
+    EXPECT_EQ(probe.readSocketTraffic().sockets.size(), 3U);
+
+    udp->delivering = true;
+    udp->traffic = {UdpProcessTraffic{.pid = 10, .bytesSent = 500, .bytesReceived = 600}};
+    EXPECT_TRUE(probe.capabilities().hasUdpNetworkCounters);
+    const SocketTrafficReading reading = probe.readSocketTraffic();
+    ASSERT_EQ(reading.sockets.size(), 4U); // The three TCP connections, then process 10's UDP
+    const SocketTrafficSample& udpSample = reading.sockets.back();
+    EXPECT_EQ(udpSample.key, EtwNet::udpSocketKey(10));
+    EXPECT_EQ(udpSample.pid, 10);
+    EXPECT_EQ(udpSample.bytesSent, 500U);
+    EXPECT_EQ(udpSample.bytesReceived, 600U);
+    EXPECT_TRUE(udpSample.readable);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, UdpIsReadOnlyForAReadingDomainFolds)
+{
+    useWorkingEStats();
+    WindowsProcessProbe probe(fakeFunctions());
+    const auto udp = std::make_shared<FakeUdpCollector>();
+    udp->delivering = true;
+    probe.setUdpTrafficCollector(udp);
+    fake().failTableSize = true; // No complete TCP walk: no reading, and the cumulative UDP waits
+    EXPECT_EQ(probe.readSocketTraffic().sampleTimeNs, 0U);
+    EXPECT_EQ(udp->samples, 0);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, WithoutTcpCountersTheUdpCollectorAddsNothing)
+{
+    // Not elevated: no per-process network counters at all, so no UDP either (the collector itself
+    // never starts then; a delivering one changes nothing here).
+    WindowsProcessProbe probe(fakeFunctions());
+    const auto udp = std::make_shared<FakeUdpCollector>();
+    udp->delivering = true;
+    probe.setUdpTrafficCollector(udp);
+    EXPECT_FALSE(probe.capabilities().hasUdpNetworkCounters);
+    EXPECT_EQ(probe.readSocketTraffic().sampleTimeNs, 0U);
+    EXPECT_EQ(udp->samples, 0);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, ADeniedStartTraceLeavesTheCountersTcpOnly)
+{
+    // The real collector, its StartTrace refused: the column note keeps saying "TCP only".
+    useWorkingEStats();
+    WindowsEtwNetCollector::Functions etw{};
+    etw.isElevated = []
+    {
+        return true;
+    };
+    etw.self = []
+    {
+        return EtwNet::SessionOwner{.pid = 1, .creationTime = 1};
+    };
+    etw.ownerLiveness = [](const EtwNet::SessionOwner&)
+    {
+        return EtwNet::OwnerLiveness::Unknown;
+    };
+    etw.queryAllTracesW = [](PEVENT_TRACE_PROPERTIES*, ULONG, PULONG count) -> ULONG
+    {
+        *count = 0;
+        return ERROR_SUCCESS;
+    };
+    etw.startTraceW = [](ULONG64*, LPCWSTR, PEVENT_TRACE_PROPERTIES) -> ULONG
+    {
+        return ERROR_ACCESS_DENIED;
+    };
+    etw.controlTraceW = [](ULONG64, LPCWSTR, PEVENT_TRACE_PROPERTIES, ULONG) -> ULONG
+    {
+        return ERROR_SUCCESS;
+    };
+    etw.closeTrace = [](ULONG64) -> ULONG
+    {
+        return ERROR_SUCCESS;
+    };
+    const auto collector = std::make_shared<WindowsEtwNetCollector>(etw);
+    EXPECT_EQ(collector->start(), UdpCollectorStartResult::Denied);
+
+    WindowsProcessProbe probe(fakeFunctions());
+    probe.setUdpTrafficCollector(collector);
+    const ProcessCapabilities capabilities = probe.capabilities();
+    EXPECT_TRUE(capabilities.hasNetworkCounters);
+    EXPECT_FALSE(capabilities.hasUdpNetworkCounters);
+    EXPECT_EQ(probe.readSocketTraffic().sockets.size(), 3U); // TCP only
 }
 
 } // namespace

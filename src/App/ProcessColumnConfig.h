@@ -263,15 +263,19 @@ enum class ColumnAlign : std::uint8_t
 /// What a column's header tooltip adds to its description about what the platform leaves out, or
 /// empty. The network columns say when they count TCP only: UDP traffic -- QUIC/HTTP3, video calls,
 /// games, DNS -- isn't attributed per process, and a browser streaming over HTTP/3 reads about
-/// 0 B/s (#1101).
+/// 0 B/s (#1101). With UDP counted (Windows' opt-in UDP event trace, #1492), they say that instead.
 /// @param hasUdpNetworkCounters  ProcessCapabilities::hasUdpNetworkCounters.
 [[nodiscard]] constexpr auto columnCapabilityNote(ProcessColumn col, bool hasUdpNetworkCounters) -> std::string_view
 {
-    if ((col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived) && !hasUdpNetworkCounters)
+    if (col != ProcessColumn::NetSent && col != ProcessColumn::NetReceived)
     {
-        return "TCP only: UDP traffic (QUIC/HTTP3, video calls, games, DNS) is not counted";
+        return {};
     }
-    return {};
+    if (hasUdpNetworkCounters)
+    {
+        return "TCP and UDP: UDP is counted by a Windows network event trace (Settings)";
+    }
+    return "TCP only: UDP traffic (QUIC/HTTP3, video calls, games, DNS) is not counted";
 }
 
 /// Default width of a column in pixels at the current font.

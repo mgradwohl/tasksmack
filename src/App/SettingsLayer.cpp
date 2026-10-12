@@ -200,6 +200,17 @@ void SettingsLayer::applySettings()
         spdlog::info("Settings: Show limited-data notice changed to {}", m_State.showPrivilegeNotice);
     }
 
+    // Opt-in UDP event trace (#1492, Windows): the Processes panel starts or stops it now
+    if (m_State.udpEventTrace != settings.udpEventTrace)
+    {
+        settings.udpEventTrace = m_State.udpEventTrace;
+        {
+            Core::UdpEventTraceChangedEvent event(settings.udpEventTrace);
+            raiseEvent(event);
+        }
+        spdlog::info("Settings: Count UDP traffic per process changed to {}", settings.udpEventTrace);
+    }
+
     // Save to disk
     config.save();
 }

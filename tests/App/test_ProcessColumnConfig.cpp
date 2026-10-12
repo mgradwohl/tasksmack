@@ -151,7 +151,10 @@ TEST(ProcessColumnConfigTest, NetworkColumnsNoteTheyAreTcpOnlyWithoutUdpCounters
         const std::string_view note = columnCapabilityNote(col, false);
         EXPECT_TRUE(note.contains("TCP only")) << getColumnInfo(col).configKey;
         EXPECT_TRUE(note.contains("UDP")) << getColumnInfo(col).configKey;
-        EXPECT_TRUE(columnCapabilityNote(col, true).empty()) << getColumnInfo(col).configKey;
+        // With the UDP event trace delivering (#1492), the note says both are counted.
+        const std::string_view withUdp = columnCapabilityNote(col, true);
+        EXPECT_TRUE(withUdp.contains("TCP and UDP")) << getColumnInfo(col).configKey;
+        EXPECT_FALSE(withUdp.contains("TCP only")) << getColumnInfo(col).configKey;
     }
 }
 
@@ -164,6 +167,7 @@ TEST(ProcessColumnConfigTest, OtherColumnsHaveNoCapabilityNote)
             continue;
         }
         EXPECT_TRUE(columnCapabilityNote(col, false).empty()) << getColumnInfo(col).configKey;
+        EXPECT_TRUE(columnCapabilityNote(col, true).empty()) << getColumnInfo(col).configKey;
     }
 }
 
@@ -216,7 +220,7 @@ TEST(ProcessColumnConfigTest, AllColumnsContainsUniqueColumns)
     for (const auto col : columns)
     {
         // Check not seen before
-        EXPECT_EQ(std::find(seen.begin(), seen.end(), col), seen.end()) << "Duplicate column detected";
+        EXPECT_EQ(std::ranges::find(seen, col), seen.end()) << "Duplicate column detected";
         seen.push_back(col);
     }
 }

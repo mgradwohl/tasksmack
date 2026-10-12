@@ -100,7 +100,7 @@ Per-process network rates (`sent bytes/s`, `received bytes/s`) are the bytes tra
 
 On Linux the counters come from a socket statistics cache that is refreshed every `socket_stats_cache_ttl_ms` (500 ms by default), which can span several refreshes. Refreshes that reuse a cached reading keep showing the last rate, so a rate can take up to one cache lifetime to change after a transfer starts or stops. On Windows the counters are read every refresh.
 
-Only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report byte counts per TCP connection, but not for UDP sockets. QUIC/HTTP3, WebRTC video calls, games, and DNS are therefore not attributed to any process. System-wide and per-interface rates come from the interface counters and include all traffic.
+By default only TCP traffic is counted. The kernel (Linux) and TCP EStats (Windows) report byte counts per TCP connection, but not for UDP sockets. QUIC/HTTP3, WebRTC video calls, games, and DNS are therefore not attributed to any process. On Windows, turning on **Count UDP traffic per process** in Settings and running TaskSmack as administrator adds UDP, counted from the kernel's network events (see the user guide's "Counting UDP on Windows"). System-wide and per-interface rates come from the interface counters and include all traffic.
 
 Each connection's own growth between two readings is credited to the process that owns it, so a connection closing doesn't erase the traffic on the others. A few bytes go uncounted:
 

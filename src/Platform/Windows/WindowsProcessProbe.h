@@ -2,6 +2,7 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
 #include "WindowsProcessProbeMath.h"
 
@@ -24,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -148,9 +150,17 @@ class WindowsProcessProbe : public IProcessProbe
     /// inconclusive-sample streak assumes one caller at a time: ProcessModel::refresh() is the only
     /// caller, under its sampling lock. Concurrent calls stay data-race-free (atomics and the
     /// mutex), but each would extend the streak.
+    /// While the opt-in UDP collector (#1492) delivers, a complete reading also carries each
+    /// process's UDP bytes as one synthetic connection (EtwNet::appendUdpSamples()).
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
 
+    /// The opt-in UDP collector (#1492), which App starts and stops; may be null.
+    void setUdpTrafficCollector(const std::shared_ptr<IUdpTrafficCollector>& collector) override;
+
   private:
+    /// The UDP collector, if one is set (#1492).
+    [[nodiscard]] std::shared_ptr<IUdpTrafficCollector> udpCollector() const;
+
     WindowsProcessProbeFunctions m_Fns; // Every Win32/NT call below goes through these (#1718)
     bool m_IsElevated = false;          // Process token elevation, queried once at construction (constant for the process lifetime)
     // The network flags can flip after construction when the first real sample proves EStats
@@ -175,6 +185,10 @@ class WindowsProcessProbe : public IProcessProbe
 
     // Resolved by detectNetworkCounters(). A null IPv6 pair skips IPv6 (#1100).
     WindowsProcessProbeFunctions::TcpEStats m_EStats;
+
+    // The opt-in UDP collector (#1492): set from the App thread, read on the sampler's.
+    mutable std::mutex m_UdpCollectorMutex;
+    std::shared_ptr<IUdpTrafficCollector> m_UdpCollector; // Guarded by m_UdpCollectorMutex
 
     struct DetailCacheKey
     {

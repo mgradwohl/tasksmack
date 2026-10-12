@@ -56,6 +56,12 @@ struct UserSettings
     // Lower values = fresher data but more kernel queries.
     int socketStatsCacheTtlMs = Domain::Sampling::SOCKET_STATS_CACHE_TTL_MS_DEFAULT;
 
+    // Count UDP per process (Windows only), [sampling] udp_event_trace. Off by default: per-process
+    // network counters are TCP only. On, and with TaskSmack running as administrator, the Processes
+    // panel starts an ETW session on the kernel's network provider to count UDP too (#1492). Settings
+    // toggles it; the change applies at once.
+    bool udpEventTrace = false;
+
     // Metrics Calculation Parameters
     // Network rate ceiling (bytes per second), [metrics] max_sane_rate_bps. A per-process or
     // per-interface rate above it is taken for a bad reading and shown as 0 (an interface's is also
