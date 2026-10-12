@@ -1,15 +1,16 @@
 #pragma once
 
-// The Overview's Actions block (#1493): the process-control buttons (ProcessActionsView) and the
-// priority rows (ProcessPriorityView) under one "Actions" header beside the Identity and Runtime
-// blocks, where they had a tab of their own before. One compact, left-aligned stack: the buttons on
-// one row at their labels' width, then "Priority [class] [Apply]" (and on Linux the I/O priority row),
-// then the result line. This only places the two views; their behaviour -- the confirm dialog, the
-// disabled states, the result and error lines, Apply -- is theirs.
+// The Overview's Actions and Priority cards (#1493, #1789): the process-control buttons
+// (ProcessActionsView) and their result line in the Actions card, and the priority rows
+// (ProcessPriorityView) in the Priority card, beside the Identity and Runtime cards where the pane
+// has room. They had a tab of their own before (#1493), then shared one Actions card that was too
+// tall for the Identity/Runtime row on Windows and so always wrapped below it (#1789). This only
+// places the two views; their behaviour -- the confirm dialog, the disabled states, the result and
+// error lines, Apply -- is theirs.
 //
-// Where the block goes is ProcessDetailsLayout::computeActionsBlockLayout()'s decision, from the width
-// measure() reports; render() draws it there. Neither creates a probe: the IProcessActions stays owned
-// by ProcessDetailsPanel and is passed in each frame.
+// Where the cards go is ProcessDetailsLayout::chooseTopRowLayout()'s decision, from the widths
+// measure() reports; render() draws them there. Neither creates a probe: the IProcessActions stays
+// owned by ProcessDetailsPanel and is passed in each frame.
 
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
@@ -27,8 +28,8 @@ class ProcessPriorityView;
 namespace ProcessActionsBlock
 {
 
-/// Whether the block has anything to offer: the platform can run at least one action, or set
-/// priority or I/O priority, or trace system calls (shown even greyed out). Without, it is not drawn.
+/// Whether there is anything to offer: the platform can run at least one action, or set priority or
+/// I/O priority, or trace system calls (shown even greyed out). Without, neither card is drawn.
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
@@ -36,21 +37,27 @@ namespace ProcessActionsBlock
            capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
 }
 
-/// What the block's rows need across, in pixels, at the current font (needs an ImGui frame).
+/// What the cards' rows need across, in pixels, at the current font (needs an ImGui frame).
 struct Widths
 {
-    float buttons = 0.0F;  ///< The process-control buttons' row.
+    float buttons = 0.0F;  ///< The process-control buttons' row; 0 when the platform has none.
     float priority = 0.0F; ///< The widest priority row; 0 when the platform can set neither priority.
-    float padding = 0.0F;  ///< The block's own horizontal padding, both sides together.
+    float padding = 0.0F;  ///< A card's own horizontal padding, both sides together.
 
-    /// The block's width: its widest row, padded.
-    [[nodiscard]] float content() const noexcept
+    /// The Actions card's width: its button row, padded; 0 when there are no buttons (no card).
+    [[nodiscard]] float actionsCard() const noexcept
     {
-        return (buttons > priority ? buttons : priority) + padding;
+        return buttons > 0.0F ? buttons + padding : 0.0F;
+    }
+
+    /// The Priority card's width: its widest row, padded; 0 when there is no priority (no card).
+    [[nodiscard]] float priorityCard() const noexcept
+    {
+        return priority > 0.0F ? priority + padding : 0.0F;
     }
 };
 
-/// Measures the widths computeActionsBlockLayout() lays the block out from.
+/// Measures the widths chooseTopRowLayout() lays the cards out from.
 [[nodiscard]] Widths measure(const Platform::ProcessActionCapabilities& capabilities);
 
 /// What render() draws with: the views, and the process they act on this frame.
@@ -65,17 +72,25 @@ struct Context
     std::optional<std::int32_t> currentNice;
 };
 
-/// Draws the block at the cursor: a card (ProcessOverviewCard, #1537) @p layout.width wide holding the
-/// "Actions" header, then the button row, the priority row(s) and the result line, one under the
-/// other. Beside the Identity and Runtime cards (layout.besideInfo) it is @p rowCardHeight tall, the
-/// height of theirs, so the three share their edges; wrapped below them it takes the height its
-/// content needs. Returns that height, header and padding included, for the next frame's
-/// computeActionsBlockLayout(), or 0 when the card was not drawn (scrolled out of view). Text in the
-/// block (the result and error lines) wraps at its edge rather than being clipped.
+/// What each card's content needs down, header and padding included, as render() drew it: for the
+/// next frame's computeRowCardHeight(). 0 for a card not drawn (absent, or scrolled out of view).
+struct Heights
+{
+    float actions = 0.0F;
+    float priority = 0.0F;
+};
+
+/// Draws the cards at the cursor, each a ProcessOverviewCard (#1537) as wide as @p layout says (a
+/// card of width 0 is not drawn): Actions -- the "Actions" header, the button row and the result
+/// line -- then Priority -- the "Priority" header and the priority row(s) -- to its right
+/// (layout.priorityBesideActions) or under it. Both are @p cardHeight tall when it is positive, so
+/// they share the edges of the row they are on, and as tall as their content when it is 0. Text in
+/// them (the result and error lines) wraps at the card's edge rather than being clipped. The caller
+/// puts the cursor beside Runtime first (ImGui::SameLine()) when layout.besideInfo.
 ///
-/// The confirm dialog is not drawn here, since the card, and all in it, is skipped while scrolled out
+/// The confirm dialog is not drawn here, since a card, and all in it, is skipped while scrolled out
 /// of view. The caller submits it every frame with ProcessActionsView::renderConfirmation().
-[[nodiscard]] float render(const Context& context, const ProcessDetailsLayout::ActionsBlockLayout& layout, float rowCardHeight);
+[[nodiscard]] Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout& layout, float cardHeight);
 
 } // namespace ProcessActionsBlock
 

@@ -45,8 +45,8 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
 
 /// Height of one of the Overview's section cards (#1537) holding its header line and @p rows rows of
 /// text: one text line each (ImGui::GetTextLineHeightWithSpacing()), inside the card's window padding
-/// top and bottom. Identity and Runtime both take the taller of their two heights, and Actions beside
-/// them takes it too, so the three cards share their top and bottom edges.
+/// top and bottom. Identity and Runtime both take the taller of their two heights, and the cards
+/// beside them share the row's height (computeRowCardHeight()), so all their edges line up.
 ///
 /// @param rows                 The card's rows, not counting the header.
 /// @param lineHeightPx         ImGui::GetTextLineHeightWithSpacing().
@@ -104,58 +104,90 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
     return std::max(nonNegative(actionRowPx), nonNegative(traceButtonPx));
 }
 
-/// Width of the Linux nice-slider row in the Overview's Actions block, in ems: "High", a usable
+/// Width of the Linux nice-slider row in the Overview's Priority card, in ems: "High", a usable
 /// gradient track and "Low", which the slider fits to the width it is given (#1493).
 inline constexpr float PRIORITY_SLIDER_ROW_WIDTH_EM = 28.0F;
 
-/// Where the Overview's Actions block goes (#1493).
-struct ActionsBlockLayout
+/// Where the Overview's Actions and Priority cards go (#1789).
+struct TopRowLayout
 {
-    /// A third block on the Identity/Runtime row; otherwise it wraps onto its own row below them.
+    /// Both cards are on the Identity/Runtime row, to the right of Runtime; otherwise they wrap to a
+    /// row of their own below it.
     bool besideInfo = true;
-    /// The block's width in pixels, padding included.
-    float width = 0.0F;
+    /// Priority is to the right of Actions; otherwise it is under it. Always so beside Identity and
+    /// Runtime, and on the wrapped row whenever the pane is wide enough for the two side by side.
+    bool priorityBesideActions = true;
+    /// The Actions card's width in pixels, padding included; 0 when it is not drawn.
+    float actionsWidth = 0.0F;
+    /// The Priority card's width in pixels, padding included; 0 when it is not drawn.
+    float priorityWidth = 0.0F;
 };
 
-/// Lays out the Overview's Actions block: one left-aligned stack of rows -- the process-control
-/// buttons, then the priority row(s) -- as wide as its widest row. It goes beside Identity and
-/// Runtime when it fits in what their row leaves, both across and down: beside them it may be no
-/// taller than they are, so the charts keep their height, and a block that would have to scroll there
-/// (Linux's nice slider with the I/O priority row) wraps below them instead, shown whole. Wrapped, it
-/// is held to the pane.
+/// Lays out the Overview's top row (#1789): Identity and Runtime, then the Actions card (the
+/// process-control buttons) and the Priority card (the priority row(s)), each at its content width.
 ///
-/// @param paneWidthPx      Width of the pane the row is laid out in.
-/// @param infoRowWidthPx   Width Identity and Runtime take, with the gap between them.
-/// @param spacingPx        Gap between two blocks on the row (ImGuiStyle::ItemSpacing.x).
-/// @param contentWidthPx   Width the block's widest row needs, with the block's padding.
-/// @param contentHeightPx  Height the block's rows need, with its padding, as last drawn; 0 when not
-///                         known yet, which does not keep it off the row.
-/// @param rowHeightPx      Height of the Identity/Runtime children; 0 when not known.
-/// @return Beside the row at its content width when the pane width is unknown.
-[[nodiscard]] inline ActionsBlockLayout computeActionsBlockLayout(float paneWidthPx,
-                                                                  float infoRowWidthPx,
-                                                                  float spacingPx,
-                                                                  float contentWidthPx,
-                                                                  float contentHeightPx = 0.0F,
-                                                                  float rowHeightPx = 0.0F) noexcept
+/// The rule is width alone, at the font scale in force (every width passed in is measured at it):
+/// the four cards share one row when the pane is at least
+///   Identity + Runtime + Actions + Priority + 3 x ItemSpacing.x
+/// wide (@p infoRowWidthPx already counts the gap between Identity and Runtime). Otherwise Actions
+/// and Priority wrap to a row below Identity and Runtime -- side by side when the pane fits
+/// Actions + ItemSpacing.x + Priority, else one under the other, each held to the pane -- so nothing
+/// is clipped or overlaps. A card of width 0 is not drawn and takes no gap.
+///
+/// The cards on a row share the tallest one's height (computeRowCardHeight()): a card taller than
+/// Identity and Runtime makes the row taller, rather than being kept off it as the single Actions
+/// block once was (#1493).
+///
+/// @param paneWidthPx       Width of the pane the row is laid out in.
+/// @param infoRowWidthPx    Width Identity and Runtime take, with the gap between them.
+/// @param spacingPx         Gap between two cards on a row (ImGuiStyle::ItemSpacing.x).
+/// @param actionsWidthPx    The Actions card's content width, padded; 0 when it is not drawn.
+/// @param priorityWidthPx   The Priority card's content width, padded; 0 when it is not drawn.
+/// @return Everything on the top row at its content width when the pane width is unknown.
+[[nodiscard]] inline TopRowLayout
+chooseTopRowLayout(float paneWidthPx, float infoRowWidthPx, float spacingPx, float actionsWidthPx, float priorityWidthPx) noexcept
 {
     const auto nonNegative = [](float value) noexcept
     {
         return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
     };
-    const float content = nonNegative(contentWidthPx);
+    const float actions = nonNegative(actionsWidthPx);
+    const float priority = nonNegative(priorityWidthPx);
+    const float spacing = nonNegative(spacingPx);
+    const float between = (actions > 0.0F && priority > 0.0F) ? spacing : 0.0F;
+    const float controls = actions + between + priority;
+    const TopRowLayout atContentWidth{
+        .besideInfo = true, .priorityBesideActions = true, .actionsWidth = actions, .priorityWidth = priority};
     if (!std::isfinite(paneWidthPx) || paneWidthPx <= 0.0F)
     {
-        return {.besideInfo = true, .width = content};
+        return atContentWidth;
     }
-    const float contentHeight = nonNegative(contentHeightPx);
-    const float rowHeight = nonNegative(rowHeightPx);
-    const bool fitsDown = contentHeight == 0.0F || rowHeight == 0.0F || contentHeight <= rowHeight;
-    if (fitsDown && nonNegative(infoRowWidthPx) + nonNegative(spacingPx) + content <= paneWidthPx)
+    const float lead = controls > 0.0F ? spacing : 0.0F;
+    if (nonNegative(infoRowWidthPx) + lead + controls <= paneWidthPx)
     {
-        return {.besideInfo = true, .width = content};
+        return atContentWidth;
     }
-    return {.besideInfo = false, .width = std::min(content, paneWidthPx)};
+    if (controls <= paneWidthPx)
+    {
+        return {.besideInfo = false, .priorityBesideActions = true, .actionsWidth = actions, .priorityWidth = priority};
+    }
+    return {.besideInfo = false,
+            .priorityBesideActions = false,
+            .actionsWidth = std::min(actions, paneWidthPx),
+            .priorityWidth = std::min(priority, paneWidthPx)};
+}
+
+/// Height every card on one row of the Overview shares (#1789): the tallest of @p baseHeightPx (the
+/// Identity/Runtime card height on the top row, 0 on the wrapped row) and the Actions and Priority
+/// cards' content heights as last drawn (0 when not drawn yet, or not on this row). 0 when nothing is
+/// known: each card then sizes itself to its content.
+[[nodiscard]] inline float computeRowCardHeight(float baseHeightPx, float actionsHeightPx, float priorityHeightPx) noexcept
+{
+    const auto nonNegative = [](float value) noexcept
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    return std::max({nonNegative(baseHeightPx), nonNegative(actionsHeightPx), nonNegative(priorityHeightPx)});
 }
 
 /// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).

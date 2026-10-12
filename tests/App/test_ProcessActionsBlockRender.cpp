@@ -1,10 +1,11 @@
 /// @file test_ProcessActionsBlockRender.cpp
-/// @brief The Overview's Actions block (#1493), headless: one compact stack as wide as its widest row
-/// -- the buttons at their labels' width, then the priority row(s) -- exactly as tall as the
-/// Identity/Runtime row beside it and as tall as its content wrapped below it, held to a narrow pane,
-/// and the shared confirm dialog still opens for it, acting on nothing until confirmed. Identity,
-/// Runtime and Actions are cards styled as a CPU Cores grid cell is, sharing their edges beside one
-/// another (#1537).
+/// @brief The Overview's Actions and Priority cards (#1493, #1789), headless: the Actions card holds the
+/// buttons at their labels' width, the Priority card the priority row(s), each as wide as its content.
+/// On the Identity/Runtime row they share its height (the tallest card's); wrapped below it they sit
+/// side by side at the taller one's height, or one under the other at their own, held to a narrow
+/// pane; and the shared confirm dialog still opens for them, acting on nothing until confirmed.
+/// Identity, Runtime, Actions and Priority are cards styled as a CPU Cores grid cell is, sharing their
+/// edges beside one another (#1537).
 
 #include "App/Panels/ProcessActionsBlock.h"
 #include "App/Panels/ProcessActionsView.h"
@@ -18,7 +19,6 @@
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/IconsFontAwesome6.h"
-#include "UI/Theme.h"
 
 #ifdef _WIN32
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h" // The Windows class slider: its ID and minimum width
@@ -26,7 +26,7 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
-#include <imgui_internal.h> // The block's child window, for its size, and the open modal
+#include <imgui_internal.h> // The cards' child windows, for their size, and the open modal
 
 #include <algorithm>
 #include <cstddef>
@@ -47,6 +47,63 @@ constexpr Platform::ProcessActionCapabilities ALL_ACTIONS{
     .canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = true};
 constexpr Platform::ProcessActionCapabilities NO_PRIORITY{
     .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = false};
+
+constexpr float INFO_ROW = 776.0F; // Identity and Runtime at their 384px cap, 8px apart
+
+/// The child window whose name contains @p id, as the last frame left it.
+[[nodiscard]] const ImGuiWindow* childWindow(std::string_view id)
+{
+    for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
+    {
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains(id))
+        {
+            return window;
+        }
+    }
+    return nullptr;
+}
+
+/// The Actions card's child window, as the last frame left it.
+[[nodiscard]] const ImGuiWindow* actionsWindow()
+{
+    return childWindow("ProcessActionsBlock_");
+}
+
+/// The Priority card's child window, as the last frame left it.
+[[nodiscard]] const ImGuiWindow* priorityWindow()
+{
+    return childWindow("ProcessPriorityBlock_");
+}
+
+/// The Identity/Runtime card height for @p rows rows, worked out as ProcessDetailsPanel does: the
+/// header line and the rows, inside the card's padding (#1537).
+[[nodiscard]] float infoCardHeight(float rows)
+{
+    return ProcessDetailsLayout::computeInfoCardHeight(rows, ImGui::GetTextLineHeightWithSpacing(), ImGui::GetStyle().WindowPadding.y);
+}
+
+/// The height ProcessDetailsPanel hands the Actions and Priority cards for @p layout: the top row's
+/// (the tallest of Identity/Runtime's @p infoHeight and the cards' @p last heights), the wrapped side
+/// by side row's (the taller card's), or 0 (each its own) stacked.
+[[nodiscard]] float controlsHeightFor(const ProcessDetailsLayout::TopRowLayout& layout, float infoHeight, ProcessActionsBlock::Heights last)
+{
+    const float actions = layout.actionsWidth > 0.0F ? last.actions : 0.0F;
+    const float priority = layout.priorityWidth > 0.0F ? last.priority : 0.0F;
+    if (layout.besideInfo)
+    {
+        return ProcessDetailsLayout::computeRowCardHeight(infoHeight, actions, priority);
+    }
+    return layout.priorityBesideActions ? ProcessDetailsLayout::computeRowCardHeight(0.0F, actions, priority) : 0.0F;
+}
+
+/// The layout ProcessDetailsPanel picks for @p capabilities in @p paneWidth beside a @p infoRowWidth row.
+[[nodiscard]] ProcessDetailsLayout::TopRowLayout
+layoutFor(const Platform::ProcessActionCapabilities& capabilities, float paneWidth, float infoRowWidth = INFO_ROW)
+{
+    const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(capabilities);
+    return ProcessDetailsLayout::chooseTopRowLayout(
+        paneWidth, infoRowWidth, ImGui::GetStyle().ItemSpacing.x, widths.actionsCard(), widths.priorityCard());
+}
 
 class ProcessActionsBlockRenderTest : public ::testing::Test
 {
@@ -84,39 +141,6 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
         return open;
     }
 
-    /// The block's child window, as the last frame left it.
-    [[nodiscard]] static const ImGuiWindow* blockWindow()
-    {
-        for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
-        {
-            if (std::string_view{window->Name}.contains("ProcessActionsBlock_"))
-            {
-                return window;
-            }
-        }
-        return nullptr;
-    }
-
-    /// The Identity/Runtime card height for @p rows rows, worked out as ProcessDetailsPanel does: the
-    /// header line and the rows, inside the card's padding (#1537).
-    [[nodiscard]] static float rowChildHeight(float rows)
-    {
-        return ProcessDetailsLayout::computeInfoCardHeight(rows, ImGui::GetTextLineHeightWithSpacing(), ImGui::GetStyle().WindowPadding.y);
-    }
-
-    /// The child window whose name contains @p id, as the last frame left it.
-    [[nodiscard]] static const ImGuiWindow* childWindow(std::string_view id)
-    {
-        for (const ImGuiWindow* window : ImGui::GetCurrentContext()->Windows)
-        {
-            if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string_view{window->Name}.contains(id))
-            {
-                return window;
-            }
-        }
-        return nullptr;
-    }
-
     struct Harness
     {
         TestMocks::MockProcessActions mock;
@@ -138,49 +162,45 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
         }
     };
 
-    /// Draws the block for @p capabilities, laid out as the panel lays it out in @p paneWidth beside an
-    /// Identity/Runtime row @p infoRowWidth wide whose children hold @p infoRows rows (rowChildHeight(),
-    /// worked out in the frame, where the font is known; its value is left in @p childHeight); two frames, so
-    /// an auto-resizing child has settled.
-    static ProcessDetailsLayout::ActionsBlockLayout renderBlock(Harness& h,
-                                                                const Platform::ProcessActionCapabilities& capabilities,
-                                                                float paneWidth,
-                                                                float infoRowWidth,
-                                                                float infoRows,
-                                                                float* childHeight = nullptr)
+    /// Draws the cards for @p capabilities, laid out as the panel lays them out in @p paneWidth beside
+    /// an Identity/Runtime row @p infoRowWidth wide whose cards hold @p infoRows rows, with the heights
+    /// the cards reported the frame before; three frames, so the heights and any auto-resizing card
+    /// have settled. The height the cards were handed last is left in lastCardHeight.
+    static ProcessDetailsLayout::TopRowLayout
+    renderBlock(Harness& h, const Platform::ProcessActionCapabilities& capabilities, float paneWidth, float infoRowWidth, float infoRows)
     {
-        ProcessDetailsLayout::ActionsBlockLayout layout;
+        ProcessDetailsLayout::TopRowLayout layout;
+        lastHeights = {};
         const auto body = [&]
         {
-            const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(capabilities);
-            layout =
-                ProcessDetailsLayout::computeActionsBlockLayout(paneWidth, infoRowWidth, ImGui::GetStyle().ItemSpacing.x, widths.content());
-            const float height = rowChildHeight(infoRows);
-            if (childHeight != nullptr)
-            {
-                *childHeight = height;
-            }
-            lastNeededHeight = ProcessActionsBlock::render(h.context(capabilities), layout, height);
+            layout = layoutFor(capabilities, paneWidth, infoRowWidth);
+            lastCardHeight = controlsHeightFor(layout, infoCardHeight(infoRows), lastHeights);
+            lastHeights = ProcessActionsBlock::render(h.context(capabilities), layout, lastCardHeight);
         };
-        (void) runFrame(body);
-        (void) runFrame(body);
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            (void) runFrame(body);
+        }
         return layout;
     }
 
-    /// What the last renderBlock() frame's render() reported the block needs down.
-    static inline float lastNeededHeight = 0.0F;
+    /// What the last renderBlock() frame's render() reported the cards need down.
+    static inline ProcessActionsBlock::Heights lastHeights{};
+    /// The height the last renderBlock() frame handed the cards (0: each its own).
+    static inline float lastCardHeight = 0.0F;
 
   private:
     ImGuiContext* m_Context = nullptr;
 };
 
-TEST_F(ProcessActionsBlockRenderTest, TheButtonsAreAsWideAsTheirLabelsNotAShareOfTheBlock)
+TEST_F(ProcessActionsBlockRenderTest, TheButtonsAreAsWideAsTheirLabelsNotAShareOfTheCard)
 {
     // The maintainer's #1511 review: Terminate and Kill were stretched to half the block each. They are
     // now equal at the wider label's natural width, side by side with the normal spacing.
     float buttons = 0.0F;
     float expected = 0.0F;
     float withoutPriority = 0.0F;
+    float withoutPriorityCard = -1.0F;
     float withIoPriorityOnly = 0.0F;
     (void) runFrame(
         [&]
@@ -193,41 +213,58 @@ TEST_F(ProcessActionsBlockRenderTest, TheButtonsAreAsWideAsTheirLabelsNotAShareO
                 2,
                 ImGui::GetStyle().ItemSpacing.x);
             withoutPriority = ProcessActionsBlock::measure(NO_PRIORITY).priority;
+            withoutPriorityCard = ProcessActionsBlock::measure(NO_PRIORITY).priorityCard();
             Platform::ProcessActionCapabilities ioOnly = NO_PRIORITY;
             ioOnly.canSetIoPriority = true;
             withIoPriorityOnly = ProcessActionsBlock::measure(ioOnly).priority;
         });
     EXPECT_FLOAT_EQ(buttons, expected);
     EXPECT_FLOAT_EQ(withoutPriority, 0.0F);
+    EXPECT_FLOAT_EQ(withoutPriorityCard, 0.0F); // No priority control: no Priority card, and no gap for it
     // ProcessPriorityView also draws the I/O priority row on its own (#803), so it is measured.
     EXPECT_GT(withIoPriorityOnly, 0.0F);
 }
 
-TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheBlockIsTheRowsHeightAndItsContentsWidth)
+TEST_F(ProcessActionsBlockRenderTest, BesideTheRowBothCardsAreTheRowsHeightAndTheirContentsWidth)
 {
+    // The issue (#1789): a pane wide enough for all four cards puts Actions and Priority on the
+    // Identity/Runtime row, Priority to the right of Actions, at the row's height.
     Harness h;
-    float childHeight = 0.0F;
-    const auto layout = renderBlock(h, ALL_ACTIONS, 1900.0F, 776.0F, 6.0F, &childHeight);
+    const auto layout = renderBlock(h, ALL_ACTIONS, 1900.0F, INFO_ROW, 6.0F);
     ASSERT_TRUE(layout.besideInfo);
+    ASSERT_TRUE(layout.priorityBesideActions);
 
-    const ImGuiWindow* block = blockWindow();
-    ASSERT_NE(block, nullptr);
-    EXPECT_FLOAT_EQ(block->Size.y, childHeight);
-    EXPECT_NEAR(block->Size.x, layout.width, 1.0F); // ImGui rounds a window's size to whole pixels
-    // Nothing in it is wider than the block allows: no stretched buttons, no row running out of it.
-    EXPECT_LE(block->ContentSize.x, layout.width - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
+    const ImGuiWindow* actions = actionsWindow();
+    const ImGuiWindow* priority = priorityWindow();
+    ASSERT_NE(actions, nullptr);
+    ASSERT_NE(priority, nullptr);
+    // The row is at least Identity/Runtime's height, and as tall as the taller card when that is more.
+    EXPECT_GE(lastCardHeight, infoCardHeight(6.0F));
+    EXPECT_FLOAT_EQ(lastCardHeight, std::max({infoCardHeight(6.0F), lastHeights.actions, lastHeights.priority}));
+    for (const ImGuiWindow* card : {actions, priority})
+    {
+        EXPECT_FLOAT_EQ(card->Size.y, lastCardHeight);
+        EXPECT_FLOAT_EQ(card->ScrollMax.y, 0.0F);
+        EXPECT_FLOAT_EQ(card->Pos.y, actions->Pos.y);
+    }
+    EXPECT_NEAR(actions->Size.x, layout.actionsWidth, 1.0F); // ImGui rounds a window's size to whole pixels
+    EXPECT_NEAR(priority->Size.x, layout.priorityWidth, 1.0F);
+    EXPECT_GT(priority->Pos.x, actions->Pos.x + actions->Size.x);
+    // Nothing in either is wider than the card allows: no stretched buttons, no row running out of it.
+    EXPECT_LE(actions->ContentSize.x, layout.actionsWidth - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
+    EXPECT_LE(priority->ContentSize.x, layout.priorityWidth - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
 }
 
 #ifdef _WIN32
-TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockDrawsTheClassSliderWhole)
+TEST_F(ProcessActionsBlockRenderTest, OnWindowsThePriorityCardDrawsTheClassSliderWhole)
 {
-    // Windows' actions: [Terminate] [Kill], then the priority slider with a stop per class (#1538),
-    // not a combo. The block is measured wide enough for the slider's five stop names, and wrapped
-    // below the row it is shown whole: nothing to scroll either way.
+    // Windows' actions: [Terminate] [Kill] in the Actions card, and the priority slider with a stop per
+    // class (#1538), not a combo, in the Priority card. The card is measured wide enough for the
+    // slider's five stop names, and wrapped below the row it is shown whole: nothing to scroll.
     constexpr Platform::ProcessActionCapabilities WINDOWS_ACTIONS{
         .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = true};
     Harness h;
-    const auto layout = renderBlock(h, WINDOWS_ACTIONS, 1000.0F, 776.0F, 0.0F);
+    const auto layout = renderBlock(h, WINDOWS_ACTIONS, 1000.0F, INFO_ROW, 0.0F);
     ASSERT_FALSE(layout.besideInfo);
     float priorityWidth = 0.0F;
     float sliderMinWidth = 0.0F;
@@ -238,27 +275,23 @@ TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockDrawsTheClassSliderWhole)
             sliderMinWidth = Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER);
         });
     EXPECT_GE(priorityWidth, sliderMinWidth);
-    const ImGuiWindow* block = blockWindow();
-    ASSERT_NE(block, nullptr);
-    EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
-    EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
+    const ImGuiWindow* card = priorityWindow();
+    ASSERT_NE(card, nullptr);
+    EXPECT_FLOAT_EQ(card->ScrollMax.x, 0.0F);
+    EXPECT_FLOAT_EQ(card->ScrollMax.y, 0.0F);
 
     // The slider is there, under its own ID, and its keys pick the next class down from Normal.
-    ImGuiWindow* blockForFocus = ImGui::FindWindowByID(block->ID);
-    const ImGuiID sliderId = ImHashStr(Detail::WINDOWS_PRIORITY_SLIDER_ID, 0, block->ID);
+    ImGuiWindow* cardForFocus = ImGui::FindWindowByID(card->ID);
+    const ImGuiID sliderId = ImHashStr(Detail::WINDOWS_PRIORITY_SLIDER_ID, 0, card->ID);
     bool focus = true;
     const auto body = [&]
     {
         if (focus)
         {
-            ImGui::SetFocusID(sliderId, blockForFocus);
+            ImGui::SetFocusID(sliderId, cardForFocus);
             focus = false;
         }
-        const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(WINDOWS_ACTIONS);
-        (void) ProcessActionsBlock::render(
-            h.context(WINDOWS_ACTIONS),
-            ProcessDetailsLayout::computeActionsBlockLayout(1000.0F, 776.0F, ImGui::GetStyle().ItemSpacing.x, widths.content()),
-            0.0F);
+        (void) ProcessActionsBlock::render(h.context(WINDOWS_ACTIONS), layoutFor(WINDOWS_ACTIONS, 1000.0F), 0.0F);
     };
     (void) runFrame(body);
     ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, true);
@@ -271,40 +304,54 @@ TEST_F(ProcessActionsBlockRenderTest, OnWindowsTheBlockDrawsTheClassSliderWhole)
 }
 #endif
 
-TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheBlockTakesItsContentHeight)
+TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheCardsShareTheTallerContentHeight)
 {
     Harness h;
-    // A pane too narrow for a third block beside a 776px row.
-    const auto layout = renderBlock(h, ALL_ACTIONS, 1000.0F, 776.0F, 0.0F);
+    // A pane too narrow for two more cards beside a 776px row, but wide enough for the two side by side.
+    const auto layout = renderBlock(h, ALL_ACTIONS, 1000.0F, INFO_ROW, 0.0F);
     ASSERT_FALSE(layout.besideInfo);
+    ASSERT_TRUE(layout.priorityBesideActions);
 
-    const ImGuiWindow* block = blockWindow();
-    ASSERT_NE(block, nullptr);
-    // Not the empty row's height it was handed: as tall as its content, with nothing to scroll.
-    EXPECT_GT(block->Size.y, rowChildHeight(0.0F));
-    EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
-    // And render() reports that height, for the next frame's placement.
-    EXPECT_NEAR(lastNeededHeight, block->Size.y, 1.0F);
-    // Still its content's width, left-aligned, not the pane's.
-    EXPECT_LT(block->Size.x, 1000.0F);
+    const ImGuiWindow* actions = actionsWindow();
+    const ImGuiWindow* priority = priorityWindow();
+    ASSERT_NE(actions, nullptr);
+    ASSERT_NE(priority, nullptr);
+    // Not the empty row's height: as tall as the taller card's content, both of them, nothing to scroll.
+    EXPECT_GT(actions->Size.y, infoCardHeight(0.0F));
+    EXPECT_FLOAT_EQ(lastCardHeight, std::max(lastHeights.actions, lastHeights.priority));
+    for (const ImGuiWindow* card : {actions, priority})
+    {
+        EXPECT_FLOAT_EQ(card->Size.y, lastCardHeight);
+        EXPECT_FLOAT_EQ(card->ScrollMax.y, 0.0F);
+        EXPECT_FLOAT_EQ(card->Pos.y, actions->Pos.y);
+    }
+    // Still their contents' widths, left-aligned, not the pane's.
+    EXPECT_LT(actions->Size.x + priority->Size.x, 1000.0F);
 }
 
-TEST_F(ProcessActionsBlockRenderTest, InANarrowPaneTheBlockIsHeldToItAndTheButtonsWrap)
+TEST_F(ProcessActionsBlockRenderTest, InANarrowPaneTheCardsStackHeldToItAndTheButtonsWrap)
 {
     Harness h;
-    const auto layout = renderBlock(h, NO_PRIORITY, 120.0F, 776.0F, 0.0F);
+    const auto layout = renderBlock(h, ALL_ACTIONS, 120.0F, INFO_ROW, 0.0F);
     ASSERT_FALSE(layout.besideInfo);
+    ASSERT_FALSE(layout.priorityBesideActions);
 
-    const ImGuiWindow* block = blockWindow();
-    ASSERT_NE(block, nullptr);
-    EXPECT_LE(block->Size.x, 120.0F);
+    const ImGuiWindow* actions = actionsWindow();
+    const ImGuiWindow* priority = priorityWindow();
+    ASSERT_NE(actions, nullptr);
+    ASSERT_NE(priority, nullptr);
+    EXPECT_LE(actions->Size.x, 120.0F);
+    EXPECT_LE(priority->Size.x, 120.0F);
+    // One under the other, never overlapping.
+    EXPECT_GE(priority->Pos.y, actions->Pos.y + actions->Size.y);
+    EXPECT_FLOAT_EQ(priority->Pos.x, actions->Pos.x);
     // Kill went to a row of its own rather than being clipped off the right edge: under the card's
     // header line (#1537), more than one framed row.
-    EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
-    EXPECT_GT(block->ContentSize.y, ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing());
+    EXPECT_FLOAT_EQ(actions->ScrollMax.x, 0.0F);
+    EXPECT_GT(actions->ContentSize.y, ImGui::GetTextLineHeightWithSpacing() + ImGui::GetFrameHeightWithSpacing());
 }
 
-TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndActsOnNothingYet)
+TEST_F(ProcessActionsBlockRenderTest, KillFromTheCardOpensTheSharedConfirmAndActsOnNothingYet)
 {
     Harness h;
     ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name));
@@ -312,10 +359,7 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndAc
     std::string modalName;
     const auto body = [&]
     {
-        const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(ALL_ACTIONS);
-        const auto layout =
-            ProcessDetailsLayout::computeActionsBlockLayout(1600.0F, 600.0F, ImGui::GetStyle().ItemSpacing.x, widths.content());
-        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
+        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F), infoCardHeight(6.0F));
         // As ProcessDetailsPanel does: the dialog from panel scope, every frame.
         h.actionsView.renderConfirmation(&h.mock, TARGET);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
@@ -335,26 +379,23 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheBlockOpensTheSharedConfirmAndAc
     EXPECT_EQ(h.mock.killCount(), 0);
 }
 
-TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheBlockIsScrolledOutOfView)
+TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheCardIsScrolledOutOfView)
 {
-    // The Overview scrolled so the Actions block is out of view: ImGui skips the block's child, and
+    // The Overview scrolled so the Actions card is out of view: ImGui skips the card's child, and
     // everything in it. The confirm dialog is submitted from outside it, so F9's Kill confirm still
     // opens (Copilot review on #1511) instead of staying pending with no dialog and refusing every
     // later F9.
     Harness h;
-    bool blockSkipped = false;
+    bool cardSkipped = false;
     std::string modalName;
     const auto body = [&]
     {
-        // A short scrolling Overview with the block far below its visible part.
+        // A short scrolling Overview with the cards far below its visible part.
         ImGui::BeginChild("##OverviewContent", ImVec2(1000.0F, 100.0F));
         ImGui::Dummy(ImVec2(10.0F, 2000.0F));
-        const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(ALL_ACTIONS);
-        const auto layout =
-            ProcessDetailsLayout::computeActionsBlockLayout(1000.0F, 0.0F, ImGui::GetStyle().ItemSpacing.x, widths.content());
-        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layout, rowChildHeight(6.0F));
-        const ImGuiWindow* block = blockWindow();
-        blockSkipped = block == nullptr || block->SkipItems;
+        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1000.0F, 0.0F), infoCardHeight(6.0F));
+        const ImGuiWindow* card = actionsWindow();
+        cardSkipped = card == nullptr || card->SkipItems;
         ImGui::EndChild();
         h.actionsView.renderConfirmation(&h.mock, TARGET);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
@@ -362,22 +403,20 @@ TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheBlockIsScroll
             modalName = modal->Name;
         }
     };
-    (void) runFrame(body); // Lays the Overview out, so the next frames know the block is clipped
+    (void) runFrame(body); // Lays the Overview out, so the next frames know the card is clipped
     ASSERT_FALSE(runFrame(body));
 
     ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name)); // F9
     EXPECT_TRUE(runFrame(body));
     EXPECT_TRUE(runFrame(body));
-    EXPECT_TRUE(blockSkipped) << "the block was drawn, so this does not test the scrolled-out case";
+    EXPECT_TRUE(cardSkipped) << "the card was drawn, so this does not test the scrolled-out case";
     EXPECT_TRUE(modalName.starts_with("Kill")) << modalName;
     EXPECT_EQ(h.mock.killCount(), 0);
 }
 
 // --- Trace system calls (#182) ---------------------------------------------------------------------
 
-/// The four buttons and the priority row with the trace button in @p availability. (Linux also has the
-/// I/O priority row, which makes the block too tall to sit beside the row; that placement is
-/// computeActionsBlockLayout()'s, tested in test_ProcessDetailsLayout.cpp.)
+/// The four buttons and the priority row with the trace button in @p availability.
 constexpr Platform::ProcessActionCapabilities withTrace(Platform::SyscallTraceAvailability availability)
 {
     Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
@@ -399,7 +438,7 @@ TEST_F(ProcessActionsBlockRenderTest, MeasureCountsTheTraceButtonWhereItIsShown)
             traceWidth = ProcessActionsView::syscallTraceButtonWidth(withTrace(Platform::SyscallTraceAvailability::Available));
             available = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::Available)).buttons;
             greyedOut = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::NoTracer)).buttons;
-            // A platform whose only button is the trace one: the block is as wide as that button.
+            // A platform whose only button is the trace one: the Actions card is as wide as that button.
             Platform::ProcessActionCapabilities traceOnly;
             traceOnly.syscallTrace = Platform::SyscallTraceAvailability::Available;
             traceOnlyButtons = ProcessActionsBlock::measure(traceOnly).buttons;
@@ -414,56 +453,38 @@ TEST_F(ProcessActionsBlockRenderTest, MeasureCountsTheTraceButtonWhereItIsShown)
         Platform::ProcessActionCapabilities{.syscallTrace = Platform::SyscallTraceAvailability::NoTerminal}));
 }
 
-TEST_F(ProcessActionsBlockRenderTest, TheTraceButtonFitsTheBlockWideOrNarrow)
+TEST_F(ProcessActionsBlockRenderTest, TheTraceButtonFitsTheCardWideOrNarrow)
 {
-    // Laid out as ProcessDetailsPanel does it, with the height the block reported last frame, so a
-    // block taller than the six-row Identity/Runtime row goes below it instead of scrolling beside it.
+    // Laid out as ProcessDetailsPanel does it, with the heights the cards reported last frame.
     constexpr Platform::ProcessActionCapabilities CAPS = withTrace(Platform::SyscallTraceAvailability::Available);
     for (const float paneWidth : {1900.0F, 1000.0F, 300.0F})
     {
         SCOPED_TRACE(paneWidth);
         Harness h;
-        ProcessDetailsLayout::ActionsBlockLayout layout;
-        float neededHeight = 0.0F;
-        const auto body = [&]
+        const auto layout = renderBlock(h, CAPS, paneWidth, INFO_ROW, 6.0F);
+        for (const ImGuiWindow* card : {actionsWindow(), priorityWindow()})
         {
-            const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(CAPS);
-            const float rowHeight = rowChildHeight(6.0F);
-            layout = ProcessDetailsLayout::computeActionsBlockLayout(
-                paneWidth, 776.0F, ImGui::GetStyle().ItemSpacing.x, widths.content(), neededHeight, rowHeight);
-            neededHeight = ProcessActionsBlock::render(h.context(CAPS), layout, rowHeight);
-        };
-        for (int frame = 0; frame < 3; ++frame)
-        {
-            (void) runFrame(body);
+            ASSERT_NE(card, nullptr);
+            // Nothing runs out of a card or makes it scroll, sideways or down: the button followed the
+            // row or started its own, and the row is as tall as its tallest card (#1789).
+            EXPECT_FLOAT_EQ(card->ScrollMax.x, 0.0F);
+            EXPECT_FLOAT_EQ(card->ScrollMax.y, 0.0F);
         }
-        const ImGuiWindow* block = blockWindow();
-        ASSERT_NE(block, nullptr);
-        // Nothing runs out of the block or makes it scroll sideways: the button followed the row or
-        // started its own.
-        EXPECT_FLOAT_EQ(block->ScrollMax.x, 0.0F);
-        // Nor down (#1511): beside the cards only when its content fits their height, card header
-        // and padding included (#1537); otherwise below them, at its content's height.
-        EXPECT_FLOAT_EQ(block->ScrollMax.y, 0.0F);
-        if (layout.besideInfo)
-        {
-            EXPECT_LE(neededHeight, rowChildHeight(6.0F));
-        }
-        EXPECT_LE(block->ContentSize.x, layout.width - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
+        EXPECT_LE(actionsWindow()->ContentSize.x, layout.actionsWidth - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
         EXPECT_EQ(h.mock.syscallTraceCount(), 0); // Drawing it launches nothing
     }
 }
 
 TEST_F(ProcessActionsBlockRenderTest, TheTraceButtonAddsARowOnlyWhereItIsShown)
 {
-    // Wrapped below the Identity/Runtime row, the block grows by the trace button's row on Linux and
-    // not at all where it is hidden.
+    // Wrapped below the Identity/Runtime row, the Actions card grows by the trace button's row on Linux
+    // and not at all where it is hidden.
     Harness hidden;
-    (void) renderBlock(hidden, withTrace(Platform::SyscallTraceAvailability::Unsupported), 1000.0F, 776.0F, 0.0F);
-    const float hiddenHeight = lastNeededHeight;
+    (void) renderBlock(hidden, withTrace(Platform::SyscallTraceAvailability::Unsupported), 1000.0F, INFO_ROW, 0.0F);
+    const float hiddenHeight = lastHeights.actions;
     Harness shown;
-    (void) renderBlock(shown, withTrace(Platform::SyscallTraceAvailability::Available), 1000.0F, 776.0F, 0.0F);
-    const float shownHeight = lastNeededHeight;
+    (void) renderBlock(shown, withTrace(Platform::SyscallTraceAvailability::Available), 1000.0F, INFO_ROW, 0.0F);
+    const float shownHeight = lastHeights.actions;
     EXPECT_GT(shownHeight, hiddenHeight);
     EXPECT_LE(shownHeight - hiddenHeight, ImGui::GetFrameHeightWithSpacing() + 1.0F);
 }
@@ -500,14 +521,18 @@ constexpr ImVec4 SENTINEL_CHILD_BG{0.0F, 1.0F, 1.0F, 1.0F};
     };
 }
 
-/// Identity and Runtime as ProcessDetailsPanel draws them, @p cardHeight tall and @p cardWidth wide,
-/// then the Actions block laid out for @p paneWidth, then a one-cell chart grid as CPU Cores draws
-/// its cells, for comparison. Returns the Actions block's layout.
-ProcessDetailsLayout::ActionsBlockLayout renderOverviewRow(ProcessActionsBlock::Context context, float paneWidth, float cardWidth)
+/// Identity and Runtime as ProcessDetailsPanel draws them, @p cardWidth wide, then the Actions and
+/// Priority cards laid out for @p paneWidth, the row's height the tallest card's as of @p last (updated
+/// to this frame's), then a one-cell chart grid as CPU Cores draws its cells, for comparison. Returns
+/// the cards' layout.
+ProcessDetailsLayout::TopRowLayout
+renderOverviewRow(ProcessActionsBlock::Context context, float paneWidth, float cardWidth, ProcessActionsBlock::Heights& last)
 {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float cardHeight =
-        ProcessDetailsLayout::computeInfoCardHeight(6.0F, ImGui::GetTextLineHeightWithSpacing(), ImGui::GetStyle().WindowPadding.y);
+    const float infoHeight = infoCardHeight(6.0F);
+    const auto layout = layoutFor(context.capabilities, paneWidth, cardWidth + spacing + cardWidth);
+    const float controlsHeight = controlsHeightFor(layout, infoHeight, last);
+    const float rowHeight = layout.besideInfo ? controlsHeight : infoHeight;
     const auto rows = []
     {
         for (int row = 0; row < 6; ++row)
@@ -516,19 +541,16 @@ ProcessDetailsLayout::ActionsBlockLayout renderOverviewRow(ProcessActionsBlock::
         }
     };
     (void) ProcessOverviewCard::render(
-        "BasicInfoLeft", ICON_FA_ID_CARD, "Identity", ImVec2(cardWidth, cardHeight), ImGuiChildFlags_None, rows);
+        "BasicInfoLeft", ICON_FA_ID_CARD, "Identity", ImVec2(cardWidth, rowHeight), ImGuiChildFlags_None, rows);
     ImGui::SameLine();
     (void) ProcessOverviewCard::render(
-        "BasicInfoRight", ICON_FA_CLOCK, "Runtime", ImVec2(cardWidth, cardHeight), ImGuiChildFlags_None, rows);
+        "BasicInfoRight", ICON_FA_CLOCK, "Runtime", ImVec2(cardWidth, rowHeight), ImGuiChildFlags_None, rows);
 
-    const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(context.capabilities);
-    const auto layout = ProcessDetailsLayout::computeActionsBlockLayout(
-        paneWidth, cardWidth + spacing + cardWidth, spacing, widths.content(), 0.0F, cardHeight);
     if (layout.besideInfo)
     {
         ImGui::SameLine();
     }
-    (void) ProcessActionsBlock::render(context, layout, cardHeight);
+    last = ProcessActionsBlock::render(context, layout, controlsHeight);
 
     UI::Widgets::ChartGridConfig grid;
     grid.availableWidth = 400.0F;
@@ -546,10 +568,11 @@ TEST_F(ProcessActionsBlockRenderTest, TheOverviewCardsLookLikeAChartGridCellBesi
     {
         SCOPED_TRACE(beside ? "beside the row" : "wrapped below it");
         Harness h;
-        ProcessDetailsLayout::ActionsBlockLayout layout;
+        ProcessDetailsLayout::TopRowLayout layout;
+        ProcessActionsBlock::Heights last;
         const auto body = [&]
         {
-            layout = renderOverviewRow(h.context(ALL_ACTIONS), beside ? 1900.0F : 1000.0F, 384.0F);
+            layout = renderOverviewRow(h.context(ALL_ACTIONS), beside ? 1900.0F : 1000.0F, 384.0F, last);
         };
         (void) runFrame(body);
         (void) runFrame(body);
@@ -562,7 +585,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheOverviewCardsLookLikeAChartGridCellBesi
         ASSERT_TRUE(cellLook.neverScrolls);
         ASSERT_FALSE(cellLook.drawnInTheSentinelColours);
 
-        for (const std::string_view id : {"BasicInfoLeft", "BasicInfoRight", "ProcessActionsBlock"})
+        for (const std::string_view id : {"BasicInfoLeft", "BasicInfoRight", "ProcessActionsBlock", "ProcessPriorityBlock"})
         {
             SCOPED_TRACE(id);
             const ImGuiWindow* card = childWindow(id);
@@ -575,55 +598,75 @@ TEST_F(ProcessActionsBlockRenderTest, TheOverviewCardsLookLikeAChartGridCellBesi
     }
 }
 
-TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheThreeCardsShareTheirTopAndBottomEdges)
+TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheFourCardsShareTheirTopAndBottomEdges)
 {
     Harness h;
-    ProcessDetailsLayout::ActionsBlockLayout layout;
+    ProcessDetailsLayout::TopRowLayout layout;
+    ProcessActionsBlock::Heights last;
     const auto body = [&]
     {
-        layout = renderOverviewRow(h.context(ALL_ACTIONS), 1900.0F, 384.0F);
+        layout = renderOverviewRow(h.context(ALL_ACTIONS), 1900.0F, 384.0F, last);
     };
-    (void) runFrame(body);
-    (void) runFrame(body);
+    // The first frame measures the cards, the second sizes the row by them, the third settles.
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        (void) runFrame(body);
+    }
     ASSERT_TRUE(layout.besideInfo);
 
     const ImGuiWindow* identity = childWindow("BasicInfoLeft");
     const ImGuiWindow* runtime = childWindow("BasicInfoRight");
-    const ImGuiWindow* actions = blockWindow();
+    const ImGuiWindow* actions = actionsWindow();
+    const ImGuiWindow* priority = priorityWindow();
     ASSERT_NE(identity, nullptr);
     ASSERT_NE(runtime, nullptr);
     ASSERT_NE(actions, nullptr);
-    for (const ImGuiWindow* card : {runtime, actions})
+    ASSERT_NE(priority, nullptr);
+    for (const ImGuiWindow* card : {runtime, actions, priority})
     {
         EXPECT_FLOAT_EQ(card->Pos.y, identity->Pos.y);
         EXPECT_FLOAT_EQ(card->Pos.y + card->Size.y, identity->Pos.y + identity->Size.y);
+        EXPECT_FLOAT_EQ(card->ScrollMax.y, 0.0F); // Every card's content fits the shared height
     }
+    // Left to right: Identity, Runtime, Actions, Priority, none overlapping.
+    EXPECT_GT(runtime->Pos.x, identity->Pos.x + identity->Size.x);
+    EXPECT_GT(actions->Pos.x, runtime->Pos.x + runtime->Size.x);
+    EXPECT_GT(priority->Pos.x, actions->Pos.x + actions->Size.x);
     // The header is inside each card, at its top (as a core's name heads its grid cell), so nothing
     // of the section is drawn above the card's top edge.
     EXPECT_FLOAT_EQ(identity->Pos.y, ImGui::GetStyle().WindowPadding.y);
 }
 
-TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheActionsCardTakesItsContentWidthAndHeight)
+TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheCardsStartARowOfTheirOwn)
 {
     Harness h;
-    ProcessDetailsLayout::ActionsBlockLayout layout;
+    ProcessDetailsLayout::TopRowLayout layout;
+    ProcessActionsBlock::Heights last;
     const auto body = [&]
     {
-        layout = renderOverviewRow(h.context(ALL_ACTIONS), 1000.0F, 384.0F);
+        layout = renderOverviewRow(h.context(ALL_ACTIONS), 1000.0F, 384.0F, last);
     };
-    (void) runFrame(body);
-    (void) runFrame(body);
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        (void) runFrame(body);
+    }
     ASSERT_FALSE(layout.besideInfo);
 
     const ImGuiWindow* identity = childWindow("BasicInfoLeft");
-    const ImGuiWindow* actions = blockWindow();
+    const ImGuiWindow* actions = actionsWindow();
+    const ImGuiWindow* priority = priorityWindow();
     ASSERT_NE(identity, nullptr);
     ASSERT_NE(actions, nullptr);
+    ASSERT_NE(priority, nullptr);
+    // Identity keeps its own height: the cards below do not stretch it.
+    EXPECT_FLOAT_EQ(identity->Size.y, infoCardHeight(6.0F));
     EXPECT_GE(actions->Pos.y, identity->Pos.y + identity->Size.y);
     EXPECT_FLOAT_EQ(actions->Pos.x, identity->Pos.x);
-    EXPECT_NEAR(actions->Size.x, layout.width, 1.0F);
-    EXPECT_NE(actions->ChildFlags & ImGuiChildFlags_AutoResizeY, 0);
+    EXPECT_NEAR(actions->Size.x, layout.actionsWidth, 1.0F);
+    EXPECT_FLOAT_EQ(priority->Pos.y, actions->Pos.y);
+    EXPECT_FLOAT_EQ(priority->Size.y, actions->Size.y);
     EXPECT_FLOAT_EQ(actions->ScrollMax.y, 0.0F);
+    EXPECT_FLOAT_EQ(priority->ScrollMax.y, 0.0F);
 }
 
 } // namespace

@@ -267,74 +267,115 @@ TEST(ProcessDetailsLayoutTest, ConfirmSizingSurvivesDegenerateInput)
     EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 20.0F, 28.0F), 0.0F); // budget smaller than the spacing
     EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 800.0F, nan), 400.0F);
 }
-// The Overview's Actions block (#1493): one stack of rows, as wide as its widest row. The Windows
-// block at the reference em: Priority [class] [Apply] current: Below Normal is about 430px, padded 16.
-constexpr float ACTIONS_CONTENT = 446.0F;
+
+// The Overview's top row (#1789): Identity, Runtime, then the Actions and Priority cards. The Windows
+// cards at the reference em: [Terminate] [Kill] about 200px and the five-stop class slider about 340px,
+// each padded 16.
+constexpr float ACTIONS_CARD = 216.0F;
+constexpr float PRIORITY_CARD = 356.0F;
 constexpr float INFO_ROW = 776.0F; // Identity and Runtime at their 384px cap, 8px apart
 constexpr float SPACING = 8.0F;
+// The width at which all four fit: Identity + Runtime (with their gap) + gap + Actions + gap + Priority.
+constexpr float ONE_ROW_WIDTH = INFO_ROW + SPACING + ACTIONS_CARD + SPACING + PRIORITY_CARD;
 
-[[nodiscard]] ProcessDetailsLayout::ActionsBlockLayout actionsLayoutIn(float paneWidth, float content = ACTIONS_CONTENT)
+[[nodiscard]] ProcessDetailsLayout::TopRowLayout topRowIn(float paneWidth, float actions = ACTIONS_CARD, float priority = PRIORITY_CARD)
 {
-    return ProcessDetailsLayout::computeActionsBlockLayout(paneWidth, INFO_ROW, SPACING, content);
+    return ProcessDetailsLayout::chooseTopRowLayout(paneWidth, INFO_ROW, SPACING, actions, priority);
 }
 
-// The issue's window: a wide pane leaves room to the right of Identity and Runtime, and the block takes
-// its content's width there -- not a share of the pane.
-TEST(ProcessDetailsLayoutTest, ActionsBlockSitsBesideIdentityAndRuntimeAtItsContentWidth)
+// The issue's window: wide enough, so Actions and Priority sit to the right of Identity and Runtime,
+// Priority to the right of Actions, each at its content width -- not a share of the pane.
+TEST(ProcessDetailsLayoutTest, TopRowHoldsAllFourCardsWhenTheyFit)
 {
-    const auto layout = actionsLayoutIn(1900.0F);
+    const auto layout = topRowIn(2000.0F);
     EXPECT_TRUE(layout.besideInfo);
-    EXPECT_FLOAT_EQ(layout.width, ACTIONS_CONTENT);
-    EXPECT_FLOAT_EQ(actionsLayoutIn(4000.0F).width, ACTIONS_CONTENT); // More room changes nothing
+    EXPECT_TRUE(layout.priorityBesideActions);
+    EXPECT_FLOAT_EQ(layout.actionsWidth, ACTIONS_CARD);
+    EXPECT_FLOAT_EQ(layout.priorityWidth, PRIORITY_CARD);
+    EXPECT_FLOAT_EQ(topRowIn(4000.0F).priorityWidth, PRIORITY_CARD); // More room changes nothing
 }
 
-// Exactly enough room still counts as room; a pixel less wraps it, still at its content width.
-TEST(ProcessDetailsLayoutTest, ActionsBlockWrapsAtTheFirstPixelItWouldNotFit)
+// Exactly enough room still counts as room; a pixel less wraps both cards to a row of their own, side
+// by side while the pane holds the two.
+TEST(ProcessDetailsLayoutTest, TopRowWrapsAtTheFirstPixelItWouldNotFit)
 {
-    const float exact = INFO_ROW + SPACING + ACTIONS_CONTENT;
-    EXPECT_TRUE(actionsLayoutIn(exact).besideInfo);
-    const auto wrapped = actionsLayoutIn(exact - 1.0F);
+    EXPECT_TRUE(topRowIn(ONE_ROW_WIDTH).besideInfo);
+    const auto wrapped = topRowIn(ONE_ROW_WIDTH - 1.0F);
     EXPECT_FALSE(wrapped.besideInfo);
-    EXPECT_FLOAT_EQ(wrapped.width, ACTIONS_CONTENT);
+    EXPECT_TRUE(wrapped.priorityBesideActions);
+    EXPECT_FLOAT_EQ(wrapped.actionsWidth, ACTIONS_CARD);
+    EXPECT_FLOAT_EQ(wrapped.priorityWidth, PRIORITY_CARD);
 }
 
-// Wrapped in a pane narrower than its content, the block is held to the pane, so nothing in it runs
-// out of reach to the right (the button row wraps inside it).
-TEST(ProcessDetailsLayoutTest, ActionsBlockIsHeldToANarrowPane)
+// Too narrow for Actions and Priority side by side: one under the other, each held to the pane, so
+// nothing in them runs out of reach to the right.
+TEST(ProcessDetailsLayoutTest, NarrowPaneStacksTheCardsHeldToIt)
 {
-    const auto layout = actionsLayoutIn(300.0F);
-    EXPECT_FALSE(layout.besideInfo);
-    EXPECT_FLOAT_EQ(layout.width, 300.0F);
+    const float sideBySide = ACTIONS_CARD + SPACING + PRIORITY_CARD;
+    EXPECT_TRUE(topRowIn(sideBySide).priorityBesideActions);
+    const auto stacked = topRowIn(sideBySide - 1.0F);
+    EXPECT_FALSE(stacked.besideInfo);
+    EXPECT_FALSE(stacked.priorityBesideActions);
+    EXPECT_FLOAT_EQ(stacked.actionsWidth, ACTIONS_CARD);
+    EXPECT_FLOAT_EQ(stacked.priorityWidth, PRIORITY_CARD);
+
+    const auto tiny = topRowIn(300.0F);
+    EXPECT_FALSE(tiny.priorityBesideActions);
+    EXPECT_FLOAT_EQ(tiny.actionsWidth, ACTIONS_CARD);
+    EXPECT_FLOAT_EQ(tiny.priorityWidth, 300.0F);
 }
 
-// Beside the row the block may be no taller than Identity/Runtime, so the charts keep their height; one
-// that would have to scroll there (Linux's slider and I/O priority rows) wraps below, shown whole. An
-// unknown height (before the first draw) does not keep it off the row.
-TEST(ProcessDetailsLayoutTest, ActionsBlockTallerThanTheRowWrapsBelowIt)
+// The rule is in the widths measured at the font in force: a larger font scale widens every card, and
+// the same pane that held them on one row wraps them.
+TEST(ProcessDetailsLayoutTest, TopRowFollowsTheFontScale)
 {
-    constexpr float ROW = 136.0F;
-    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, 64.0F, ROW).besideInfo);
-    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, ROW, ROW).besideInfo);
-    const auto tall = ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, ROW + 1.0F, ROW);
-    EXPECT_FALSE(tall.besideInfo);
-    EXPECT_FLOAT_EQ(tall.width, ACTIONS_CONTENT);
-    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, 0.0F, ROW).besideInfo);
-    EXPECT_TRUE(ProcessDetailsLayout::computeActionsBlockLayout(1900.0F, INFO_ROW, SPACING, ACTIONS_CONTENT, 500.0F, 0.0F).besideInfo);
+    constexpr float SCALE = 1.5F;
+    EXPECT_TRUE(topRowIn(ONE_ROW_WIDTH).besideInfo);
+    const auto scaled = ProcessDetailsLayout::chooseTopRowLayout(
+        ONE_ROW_WIDTH, INFO_ROW * SCALE, SPACING * SCALE, ACTIONS_CARD * SCALE, PRIORITY_CARD * SCALE);
+    EXPECT_FALSE(scaled.besideInfo);
+}
+
+// A card the platform does not have (no priority control, or no buttons) is not drawn and takes no gap.
+TEST(ProcessDetailsLayoutTest, AnAbsentCardTakesNoRoom)
+{
+    const float actionsOnly = INFO_ROW + SPACING + ACTIONS_CARD;
+    const auto noPriority = topRowIn(actionsOnly, ACTIONS_CARD, 0.0F);
+    EXPECT_TRUE(noPriority.besideInfo);
+    EXPECT_FLOAT_EQ(noPriority.priorityWidth, 0.0F);
+    EXPECT_FALSE(topRowIn(actionsOnly - 1.0F, ACTIONS_CARD, 0.0F).besideInfo);
+
+    const auto noButtons = topRowIn(INFO_ROW + SPACING + PRIORITY_CARD, 0.0F, PRIORITY_CARD);
+    EXPECT_TRUE(noButtons.besideInfo);
+    EXPECT_FLOAT_EQ(noButtons.actionsWidth, 0.0F);
 }
 
 // An unknown pane width (no frame yet) is unconstrained, like the helpers above; negative or non-finite
 // measurements count as zero rather than producing a NaN width.
-TEST(ProcessDetailsLayoutTest, ActionsBlockSurvivesDegenerateInput)
+TEST(ProcessDetailsLayoutTest, TopRowSurvivesDegenerateInput)
 {
-    const auto unknown = actionsLayoutIn(std::numeric_limits<float>::quiet_NaN());
+    const auto unknown = topRowIn(std::numeric_limits<float>::quiet_NaN());
     EXPECT_TRUE(unknown.besideInfo);
-    EXPECT_FLOAT_EQ(unknown.width, ACTIONS_CONTENT);
-    EXPECT_TRUE(actionsLayoutIn(0.0F).besideInfo);
+    EXPECT_FLOAT_EQ(unknown.actionsWidth, ACTIONS_CARD);
+    EXPECT_TRUE(topRowIn(0.0F).besideInfo);
 
-    const auto garbage = ProcessDetailsLayout::computeActionsBlockLayout(
-        1000.0F, std::numeric_limits<float>::infinity(), -5.0F, std::numeric_limits<float>::quiet_NaN());
-    EXPECT_FALSE(std::isnan(garbage.width));
-    EXPECT_FLOAT_EQ(garbage.width, 0.0F);
+    const auto garbage = ProcessDetailsLayout::chooseTopRowLayout(
+        1000.0F, std::numeric_limits<float>::infinity(), -5.0F, std::numeric_limits<float>::quiet_NaN(), -1.0F);
+    EXPECT_FALSE(std::isnan(garbage.actionsWidth));
+    EXPECT_FLOAT_EQ(garbage.actionsWidth, 0.0F);
+    EXPECT_FLOAT_EQ(garbage.priorityWidth, 0.0F);
+}
+
+// The cards on a row share the tallest one's height: a Priority card taller than Identity and Runtime
+// makes the whole row taller rather than wrapping (#1789), and an unknown height (0, not drawn yet)
+// counts for nothing.
+TEST(ProcessDetailsLayoutTest, RowCardHeightIsTheTallestCards)
+{
+    using ProcessDetailsLayout::computeRowCardHeight;
+    EXPECT_FLOAT_EQ(computeRowCardHeight(136.0F, 80.0F, 170.0F), 170.0F);
+    EXPECT_FLOAT_EQ(computeRowCardHeight(136.0F, 80.0F, 0.0F), 136.0F);
+    EXPECT_FLOAT_EQ(computeRowCardHeight(0.0F, 0.0F, 0.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeRowCardHeight(std::numeric_limits<float>::quiet_NaN(), -4.0F, 90.0F), 90.0F);
 }
 
 } // namespace
