@@ -488,6 +488,10 @@ class ShellKeysDriverLayer : public Core::Layer
             ImGui::ActivateItemByID(tabId("###ProcessesTab"));
             break;
         case 45:
+            // No key repeat: these shortcuts are read with IsKeyPressed(), which repeats a key held past
+            // KeyRepeatDelay, and one slow frame between a press and its release on a loaded runner did
+            // that -- Ctrl+= grew the font two presets and Ctrl+- shrank it one (fontShrankBack failed).
+            io.KeyRepeatDelay = 3600.0F;
             io.AddKeyEvent(ImGuiKey_F5, true); // the list/tree toggle, routed to the Processes tab
             break;
         case 46:
