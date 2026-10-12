@@ -336,6 +336,32 @@ TEST_F(AboutDialogRenderTest, HasNoShortcutsSection)
     EXPECT_EQ(ImGui::TableFindByID(ImHashStr("##Shortcuts", 0, body->ID)), nullptr);
 }
 
+// #1395: hovering a link shows the URL it opens as a tooltip.
+TEST_F(AboutDialogRenderTest, HoveringALinkShowsItsUrl)
+{
+    ASSERT_TRUE(openAndSettle().open);
+    const ImGuiWindow* body = aboutBody();
+    ASSERT_NE(body, nullptr);
+    const ImGuiID link = ImHashStr("##Link", 0, ImHashStr(HelpContent::USER_GUIDE_URL, 0, body->ID));
+    const ImVec2 origin = body->Pos;
+    const ImVec2 size = body->Size;
+    bool hovered = false;
+    for (int row = 0; row < 60 && !hovered; ++row)
+    {
+        for (int column = 0; column < 30 && !hovered; ++column)
+        {
+            ImGui::GetIO().AddMousePosEvent(origin.x + (size.x * (static_cast<float>(column) + 0.5F) / 30.0F),
+                                            origin.y + (size.y * (static_cast<float>(row) + 0.5F) / 60.0F));
+            static_cast<void>(runFrame());
+            hovered = GImGui->HoveredId == link;
+        }
+    }
+    ASSERT_TRUE(hovered);
+    static_cast<void>(runFrame());
+    const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+    EXPECT_TRUE(tooltip != nullptr && tooltip->Active);
+}
+
 TEST_F(AboutDialogRenderTest, HasTheHelpWindowsUserGuideAndReportAProblemLinks)
 {
     // #1600: About shows the same two links as the Help window, with the same URLs. Pressing one
