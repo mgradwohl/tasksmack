@@ -25,8 +25,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <future>
+#include <latch>
 #include <map>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1084,34 +1086,41 @@ TEST(GPUModelTest, ConcurrentReadsDuringRefresh)
     Domain::GPUModel model(std::move(probe));
     model.refresh();
 
-    std::atomic<bool> stop{false};
+    // No sleeps (#1797): the refreshes start once the reader has read, and each one waits for a
+    // read that finished after it began, so reads and refreshes interleave however a loaded
+    // machine schedules the two threads.
+    constexpr std::size_t REFRESHES = 10;
     std::atomic<std::size_t> readCount{0};
+    std::latch firstRead{1};
 
-    // Reader thread
     auto reader = std::jthread(
-        [&](std::stop_token st)
+        [&](const std::stop_token& st)
         {
-            while (!stop.load() && !st.stop_requested())
+            while (!st.stop_requested())
             {
-                auto snaps = model.snapshots();
+                const auto snaps = model.snapshots();
                 EXPECT_LE(snaps.size(), 1);
-                ++readCount;
-                std::this_thread::sleep_for(std::chrono::microseconds(10));
+                if (readCount.fetch_add(1) == 0)
+                {
+                    firstRead.count_down();
+                }
+                readCount.notify_all();
             }
         });
 
-    // Perform several refreshes
-    for (int i = 0; i < 10; ++i)
+    firstRead.wait();
+    for (std::size_t i = 0; i < REFRESHES; ++i)
     {
+        const std::size_t before = readCount.load();
         model.refresh();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        readCount.wait(before); // returns at once if a read already finished during the refresh
     }
 
-    stop.store(true);
+    reader.request_stop();
     reader.join();
 
-    // Verify readers executed
-    EXPECT_GT(readCount.load(), 0);
+    // The first read, then at least one more per refresh.
+    EXPECT_GT(readCount.load(), REFRESHES);
 }
 
 // =============================================================================

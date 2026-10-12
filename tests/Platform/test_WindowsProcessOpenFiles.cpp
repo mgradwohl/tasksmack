@@ -71,6 +71,29 @@ std::atomic<bool>& released()
     return flag;
 }
 
+/// Set once a namer is inside a hanging fake: the read is waiting on the handle that never answers.
+std::atomic<bool>& hangEntered()
+{
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+
+/// Polls @p done every 5 ms for up to 10 s. Only a bound against a hang: a passing test returns as
+/// soon as @p done holds, and a loaded machine (#1797) gets far longer than it needs.
+template<typename Predicate> [[nodiscard]] bool waitUntil(Predicate done)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done())
+    {
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
 HANDLE fakeProcessHandle()
 {
     static int token = 0;
@@ -159,6 +182,10 @@ DWORD WINAPI fakeGetFileType(HANDLE handle)
     {
         return FILE_TYPE_UNKNOWN;
     }
+    if (found->hangs)
+    {
+        hangEntered() = true;
+    }
     while (found->hangs && !released())
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -216,6 +243,7 @@ class WindowsProcessOpenFilesTest : public ::testing::Test
     void SetUp() override
     {
         released() = false;
+        hangEntered() = false;
         fake().openError = 0;
         fake().creationTicks = START_TICKS;
         fake().snapshotCalls = 0;
@@ -280,27 +308,15 @@ class WindowsProcessOpenFilesTest : public ::testing::Test
     {
         released() = true;
         // Every handle closed once. A namer thread drops its share of the read (and the process handle
-        // that goes with it) just after it finishes, so give it a moment.
-        const auto balanced = []
-        {
-            return fake().processOpens.load() + fake().duplicates.load() == fake().closes.load();
-        };
-        for (int i = 0; i < 200 && !balanced(); ++i)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        EXPECT_TRUE(balanced());
+        // that goes with it) just after it finishes, so wait for it.
+        EXPECT_TRUE(waitUntil([] { return fake().processOpens.load() + fake().duplicates.load() == fake().closes.load(); }));
     }
 
     /// Releases a hung fake and waits for @p reader's abandoned namers to finish.
     static void releaseAndDrain(WindowsProcessOpenFilesReader& reader)
     {
         released() = true;
-        for (int i = 0; i < 400 && reader.stuckNamerCount() > 0; ++i)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        EXPECT_EQ(reader.stuckNamerCount(), 0U);
+        EXPECT_TRUE(waitUntil([&reader] { return reader.stuckNamerCount() == 0; }));
     }
 };
 
@@ -351,12 +367,20 @@ TEST_F(WindowsProcessOpenFilesTest, DeniedReusedAndUnknownTargetsAreNotRead)
 
 TEST_F(WindowsProcessOpenFilesTest, AHandleThatNeverAnswersIsAbandonedAndSkippedAfter)
 {
+    // The per-handle timeout is measured from the namer's last answer, so it also has to cover the
+    // namer thread starting and naming 0x40 first. 50 ms did not on a loaded machine (#1797): 0x40
+    // was given up on in its place, and the second read left it unnamed. 2 s is far beyond any
+    // scheduling delay, and the read waits it out once, on the handle that hangs.
+    constexpr std::chrono::milliseconds HANDLE_TIMEOUT{2000};
     fake().handles[3].hangs = true; // the pipe at 0x48
-    WindowsProcessOpenFilesReader reader(fakeApi(), std::chrono::milliseconds(50));
+    WindowsProcessOpenFilesReader reader(fakeApi(), HANDLE_TIMEOUT);
     const OpenFilesReadResult first = reader.readOpenFiles(TARGET);
     ASSERT_EQ(first.status, OpenFilesReadStatus::Ok);
+    EXPECT_TRUE(hangEntered()); // abandoned on the handle that hangs, not before reaching it
     EXPECT_TRUE(first.namesIncomplete);
-    EXPECT_EQ(first.files.size(), 4U); // every handle still listed
+    ASSERT_EQ(first.files.size(), 4U);                       // every handle still listed
+    EXPECT_EQ(first.files[1].path, "C:\\Data\\My File.txt"); // named before the hang
+    EXPECT_EQ(first.files[2].kind, OpenFileKind::Other);     // the hung pipe, never typed
     EXPECT_EQ(reader.stuckNamerCount(), 1U);
 
     // Later reads skip that handle and name the rest.

@@ -96,7 +96,10 @@ endif()
 if(TASKSMACK_BASH)
     add_test(NAME BenchShScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_sh.py)
-    set_tests_properties(BenchShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 180)
+    # About 25 s idle, but over twenty bench.sh runs, each starting bash, Python and git: on a
+    # Windows machine busy with other builds it passed 180 s (#1797). 600 s is headroom for that,
+    # not the expected time.
+    set_tests_properties(BenchShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 600)
 endif()
 
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
@@ -105,10 +108,11 @@ add_test(NAME BenchmarkRegressionGateScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_benchmark_regression.py)
 
 # tools/tidy-changed-files.py picks the PR clang-tidy jobs' translation units (#1406, #1626). The tests
-# build throwaway git repositories (about 10 s); the 180 s limit keeps them clear of the CI --timeout.
+# build throwaway git repositories (about 10 s idle). On a loaded Windows machine each git process is
+# far slower and the run neared 180 s (#1797); 600 s keeps it clear of that and of the CI --timeout.
 add_test(NAME TidyChangedFilesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_changed_files.py)
-set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 180)
+set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 
 # tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
 add_test(NAME CoverageMismatchesScript
