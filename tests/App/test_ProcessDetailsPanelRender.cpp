@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -170,6 +171,81 @@ TEST_F(ProcessDetailsPanelRenderTest, ASelectedProcessShowsItsOverview)
     EXPECT_TRUE(text.contains("CPU")) << text;
     EXPECT_TRUE(text.contains("Memory")) << text;
     EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 2);
+}
+
+// #1395: the optional identity and runtime rows -- Publisher (Windows), Type (Windows) and Container
+// (Linux, #805) -- are shown when the process has them.
+TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    Domain::ProcessSample sample = sampleAt(1.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+    snapshot->publisher = "Example Corp";
+    snapshot->processType = "Background Process";
+    snapshot->container = "docker:1a2b3c4d5e6f";
+    sample.snapshot = std::move(snapshot);
+    const std::vector samples{sample};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Publisher")) << text;
+    EXPECT_TRUE(text.contains("Example Corp")) << text;
+    EXPECT_TRUE(text.contains("Background Process")) << text;
+    EXPECT_TRUE(text.contains("Container")) << text;
+    EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f")) << text;
+}
+
+// #1395: a shorter history window trims the history already held, so the charts span the new window.
+TEST_F(ProcessDetailsPanelRenderTest, AShorterHistoryWindowTrimsTheCharts)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    for (int second = 0; second < 120; second += 2)
+    {
+        const std::vector samples{sampleAt(static_cast<double>(second), 10.0)};
+        panel->updateWithSamples(samples, 1.0F);
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImPlotPlot* cpu = ImPlot::GetCurrentContext()->Plots.GetByIndex(0);
+    ASSERT_NE(cpu, nullptr);
+    const double before = cpu->Axes[ImAxis_X1].Range.Size();
+
+    Core::HistoryDurationChangedEvent shorter(30);
+    panel->onEvent(shorter);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const double after = cpu->Axes[ImAxis_X1].Range.Size();
+    EXPECT_LT(after, before);
+    EXPECT_NEAR(after, 30.0, 1.0);
+}
+
+// #1395: F9 (requestKillSelected()) opens the Kill confirmation for the process shown, without
+// killing it.
+TEST_F(ProcessDetailsPanelRenderTest, TheKillShortcutAsksFirst)
+{
+    auto actions = std::make_unique<TestMocks::MockProcessActions>();
+    Platform::ProcessActionCapabilities caps;
+    caps.canTerminate = true;
+    caps.canKill = true;
+    actions->setCapabilities(caps);
+    const TestMocks::MockProcessActions* mock = actions.get();
+    ProcessDetailsPanel panel(std::move(actions));
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    panel.updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(panel));
+
+    panel.requestKillSelected();
+    static_cast<void>(renderAndCapture(panel));
+    static_cast<void>(renderAndCapture(panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Kill")) << modal->Name;
+    EXPECT_EQ(mock->killCount(), 0); // asked, not done
 }
 
 TEST_F(ProcessDetailsPanelRenderTest, TheOverviewShowsTheExecutablesRecentCrashes)
