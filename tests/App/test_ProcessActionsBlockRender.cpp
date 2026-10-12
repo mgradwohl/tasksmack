@@ -379,6 +379,78 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheCardOpensTheSharedConfirmAndAct
     EXPECT_EQ(h.mock.killCount(), 0);
 }
 
+// #1395: confirming the dialog acts on the process and the card shows the result in its line; cancelling it
+// acts on nothing.
+TEST_F(ProcessActionsBlockRenderTest, ConfirmingActsAndShowsTheResultAndCancellingDoesNot)
+{
+    Harness h;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+
+    // Cancelled: nothing is done.
+    ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name));
+    ASSERT_TRUE(runFrame(body));
+    ASSERT_TRUE(runFrame(body));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("Cancel", 0, modal->ID));
+    (void) runFrame(body);
+    EXPECT_FALSE(runFrame(body));
+    EXPECT_EQ(h.mock.killCount(), 0);
+    EXPECT_EQ(h.actionsView.pendingAction(), Detail::ProcessAction::None);
+
+    // Confirmed: the process is killed and the result line is drawn in the card.
+    ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name));
+    ASSERT_TRUE(runFrame(body));
+    ASSERT_TRUE(runFrame(body));
+    modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Kill", 0, modal->ID)));
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_EQ(h.mock.killCount(), 1);
+    EXPECT_FALSE(h.actionsView.lastResult().text.empty());
+    EXPECT_TRUE(text.contains(h.actionsView.lastResult().text)) << text;
+}
+
+// #1395: each action button explains itself on hover; Kill names its key.
+TEST_F(ProcessActionsBlockRenderTest, TheActionButtonsExplainThemselvesOnHover)
+{
+    Harness h;
+    std::string seen;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        seen += GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    (void) runFrame(body);
+    (void) runFrame(body);
+    const ImGuiWindow* card = actionsWindow();
+    ASSERT_NE(card, nullptr);
+    const ImVec2 origin = card->Pos;
+    const ImVec2 size = card->Size;
+    seen.clear();
+    for (int row = 0; row < 24; ++row)
+    {
+        for (int column = 0; column < 24; ++column)
+        {
+            ImGui::GetIO().AddMousePosEvent(origin.x + (size.x * (static_cast<float>(column) + 0.5F) / 24.0F),
+                                            origin.y + (size.y * (static_cast<float>(row) + 0.5F) / 24.0F));
+            (void) runFrame(body);
+        }
+    }
+    EXPECT_TRUE(seen.contains("(F9)")) << seen; // Kill's tooltip names its key
+}
+
 TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheCardIsScrolledOutOfView)
 {
     // The Overview scrolled so the Actions card is out of view: ImGui skips the card's child, and
