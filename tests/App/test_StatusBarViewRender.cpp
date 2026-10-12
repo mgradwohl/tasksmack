@@ -152,9 +152,10 @@ TEST_F(StatusBarViewRenderTest, EachIconAndButtonExplainsItselfOnHover)
     const float y = bar->Pos.y + (bar->Size.y * 0.5F);
 
     std::string seen;
-    for (float x = bar->Pos.x + 2.0F; x < bar->Pos.x + bar->Size.x; x += 4.0F) // NOLINT(bugprone-float-loop-counter) - a pixel sweep
+    const int steps = static_cast<int>(bar->Size.x / 4.0F);
+    for (int step = 0; step < steps; ++step) // a 4 px sweep along the bar
     {
-        ImGui::GetIO().AddMousePosEvent(x, y);
+        ImGui::GetIO().AddMousePosEvent(bar->Pos.x + 2.0F + (4.0F * static_cast<float>(step)), y);
         static_cast<void>(frame());
         seen += frame();
     }
