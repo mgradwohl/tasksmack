@@ -16,6 +16,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 // NOLINTBEGIN(misc-include-cleaner) - Linux UAPI headers
@@ -128,7 +129,8 @@ doneDatagram(std::uint32_t sequence, std::uint32_t portId, std::int32_t status =
 }
 
 /// Plays the kernel: each request sent is answered with whatever `onRequest` returns, queued for
-/// receive(). A std::nullopt entry is a receive timeout (EAGAIN) at that point in the stream.
+/// receive(). A std::nullopt entry is a receive timeout (EAGAIN) at that point in the stream, and an
+/// empty datagram an orderly shutdown (a 0-byte read).
 class ScriptedNetlinkTransport final : public INetlinkTransport
 {
   public:
@@ -145,6 +147,9 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
     std::function<Reply(const Request&)> onRequest;
     std::vector<Request> requests;
     std::deque<std::optional<Datagram>> queued;
+    int sendError = 0;           ///< send() fails with this errno, when set
+    int interruptedDrains = 0;   ///< Non-blocking receive()s (the drain before a request) interrupted (EINTR) first
+    int interruptedReceives = 0; ///< Blocking receive()s after each request interrupted (EINTR) first
 
     [[nodiscard]] NetlinkIoResult send(std::span<const std::byte> request) override
     {
@@ -158,6 +163,11 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
         std::memcpy(&body, request.subspan(sizeof(header)).data(), sizeof(body));
         const Request parsed{.family = body.sdiag_family, .protocol = body.sdiag_protocol, .sequence = header.nlmsg_seq};
         requests.push_back(parsed);
+        if (sendError != 0)
+        {
+            return {.bytes = -1, .error = sendError};
+        }
+        m_PendingInterrupts = interruptedReceives;
         if (onRequest)
         {
             for (auto& datagram : onRequest(parsed))
@@ -168,8 +178,14 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
         return {.bytes = static_cast<std::int64_t>(request.size()), .error = 0};
     }
 
-    [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> buffer, bool /*nonBlocking*/) override
+    [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> buffer, bool nonBlocking) override
     {
+        int& interrupts = nonBlocking ? interruptedDrains : m_PendingInterrupts;
+        if (interrupts > 0)
+        {
+            --interrupts;
+            return {.bytes = -1, .error = EINTR};
+        }
         if (queued.empty())
         {
             return {.bytes = -1, .error = EAGAIN};
@@ -189,6 +205,9 @@ class ScriptedNetlinkTransport final : public INetlinkTransport
     {
         return PORT_ID;
     }
+
+  private:
+    int m_PendingInterrupts = 0; // interruptedReceives, re-armed by each request
 };
 
 /// A reply carrying `sockets` and the NLMSG_DONE for `request`, to this socket.

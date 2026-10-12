@@ -867,6 +867,107 @@ TEST(DumpInetSocketsTest, ATimeoutIsAFailedDump)
     EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
 }
 
+// #1395: the dump's I/O failure paths, scripted.
+
+/// A reply with one socket inode `inode` and the request's NLMSG_DONE, as dumpInetSockets() reads it.
+[[nodiscard]] ScriptedNetlinkTransport::Reply oneSocketReply(const ScriptedNetlinkTransport::Request& request, std::uint32_t inode)
+{
+    const std::array<inet_diag_msg, 1> messages{diagMessage(AF_INET, 1, inode, std::array<std::uint8_t, 4>{127, 0, 0, 1}, 80, {}, 0)};
+    ScriptedNetlinkTransport::Reply reply;
+    reply.emplace_back(TestSupport::diagMessagesDatagram(messages, request.sequence, ScriptedNetlinkTransport::PORT_ID));
+    reply.emplace_back(doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID));
+    return reply;
+}
+
+TEST(DumpInetSocketsTest, ARequestThatCantBeSentIsAFailedDump)
+{
+    ScriptedNetlinkTransport transport;
+    transport.sendError = ENOBUFS;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        return oneSocketReply(request, 7);
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+    EXPECT_TRUE(sockets.empty());
+}
+
+TEST(DumpInetSocketsTest, InterruptedReadsAreRetried)
+{
+    // EINTR, while draining an earlier dump's tail and while reading this one, is not a failure.
+    ScriptedNetlinkTransport transport;
+    transport.interruptedDrains = 2;
+    transport.interruptedReceives = 3;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        return oneSocketReply(request, 7);
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(sockets.size(), 1U);
+    EXPECT_EQ(sockets[0].inode, 7U);
+    EXPECT_EQ(transport.interruptedDrains, 0);
+}
+
+TEST(DumpInetSocketsTest, AnOrderlyShutdownBeforeDoneIsAFailedDump)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply = oneSocketReply(request, 7);
+        reply.back() = TestSupport::Datagram{}; // a 0-byte read where NLMSG_DONE would be
+        return reply;
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+}
+
+TEST(DumpInetSocketsTest, AMessageTooShortForASocketIsSkipped)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply = oneSocketReply(request, 7);
+        TestSupport::Datagram truncated;
+        const std::array<std::byte, 4> stub{};
+        TestSupport::appendMessage(truncated, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, stub);
+        reply.insert(reply.begin(), std::move(truncated));
+        return reply;
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete);
+    ASSERT_EQ(sockets.size(), 1U); // the stub added nothing
+    EXPECT_EQ(sockets[0].inode, 7U);
+}
+
+TEST(NetlinkSocketStatsScriptedTest, AMessageTooShortForASocketAddsNoCounters)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    const std::array ipv4{FakeSocket{.inode = 11, .bytesSent = 5}};
+    scripted.transport->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        ScriptedNetlinkTransport::Reply reply =
+            completeDump(request, request.family == AF_INET ? std::span<const FakeSocket>(ipv4) : std::span<const FakeSocket>{});
+        TestSupport::Datagram truncated;
+        const std::array<std::byte, 4> stub{};
+        TestSupport::appendMessage(truncated, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, stub);
+        reply.insert(reply.begin(), std::move(truncated));
+        return reply;
+    };
+    EXPECT_EQ(inodesOf(scripted.stats->queryAllSockets()), (std::vector<std::uint64_t>{11}));
+}
+
+TEST(NetlinkSocketStatsScriptedTest, ARequestThatCantBeSentIsAFailedReading)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    scripted.transport->sendError = EPERM;
+    std::chrono::steady_clock::time_point sampledAt;
+    EXPECT_TRUE(scripted.stats->queryAllSockets(&sampledAt).empty());
+    EXPECT_EQ(sampledAt, std::chrono::steady_clock::time_point{});
+}
+
 } // namespace
 } // namespace Platform
 
