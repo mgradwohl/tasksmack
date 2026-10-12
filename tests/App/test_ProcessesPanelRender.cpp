@@ -703,5 +703,56 @@ TEST_F(ProcessesPanelRenderTest, LeavingTheTreeViewShowsTheSortedListAgain)
     panel->onDetach();
 }
 
+TEST_F(ProcessesPanelRenderTest, ArrowKeysWalkAndFoldTheTree)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    if (!panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    // The tree: init (1) > server (100) > worker (101).
+    pressKey(*panel, ImGuiKey_Home);
+    EXPECT_EQ(panel->selectedPid(), 1);
+    pressKey(*panel, ImGuiKey_RightArrow); // expanded already: to its first child
+    EXPECT_EQ(panel->selectedPid(), 100);
+    pressKey(*panel, ImGuiKey_RightArrow);
+    EXPECT_EQ(panel->selectedPid(), 101);
+    pressKey(*panel, ImGuiKey_LeftArrow); // a leaf: to its parent
+    EXPECT_EQ(panel->selectedPid(), 100);
+
+    pressKey(*panel, ImGuiKey_LeftArrow); // expanded: collapses it, the selection stays
+    EXPECT_EQ(panel->selectedPid(), 100);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("worker"));
+
+    pressKey(*panel, ImGuiKey_RightArrow); // collapsed: expands it
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(renderAndCapture(*panel).contains("worker"));
+    EXPECT_EQ(panel->selectedPid(), 100);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, PageKeysJumpAPageAndStopAtTheEnds)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    pressKey(*panel, ImGuiKey_Home);
+    const std::int32_t first = panel->selectedPid();
+    pressKey(*panel, ImGuiKey_End);
+    const std::int32_t last = panel->selectedPid();
+    ASSERT_NE(first, last);
+    // Three rows fit in a page: Page Up from the last row lands on the first, Page Down goes back.
+    pressKey(*panel, ImGuiKey_PageUp);
+    EXPECT_EQ(panel->selectedPid(), first);
+    pressKey(*panel, ImGuiKey_PageDown);
+    EXPECT_EQ(panel->selectedPid(), last);
+    pressKey(*panel, ImGuiKey_PageDown); // already at the end: stays
+    EXPECT_EQ(panel->selectedPid(), last);
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App
