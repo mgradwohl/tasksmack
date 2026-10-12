@@ -14,6 +14,7 @@
 /// process data.
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -29,10 +30,13 @@
 #include <imgui_internal.h>
 #include <implot.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <regex>
@@ -241,6 +245,44 @@ class ProcessesPanelRenderTest : public ::testing::Test
         static_cast<void>(renderAndCapture(panel));
     }
 
+    /// Clicks the left mouse button at height @p y over the panel, with Ctrl and/or Shift held, one
+    /// frame down and one up.
+    static void clickAt(ProcessesPanel& panel, float y, bool ctrl = false, bool shift = false)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
+        io.AddKeyEvent(ImGuiMod_Shift, shift);
+        io.AddMousePosEvent(40.0F, y);
+        // Two frames: the rows allow overlap, and an overlapping item only takes the hover once it was
+        // already hovered the frame before, so a press on the first frame over a new row would miss it.
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(renderAndCapture(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        static_cast<void>(renderAndCapture(panel));
+        io.AddKeyEvent(ImGuiMod_Ctrl, false);
+        io.AddKeyEvent(ImGuiMod_Shift, false);
+        static_cast<void>(renderAndCapture(panel));
+    }
+
+    /// Each row's height on screen, by PID, found by plain clicks from the bottom up. Bottom-up so the
+    /// scan meets every row before it could reach the header, whose click would re-sort the rows.
+    [[nodiscard]] static std::map<std::int32_t, float> rowHeights(ProcessesPanel& panel, std::size_t rows)
+    {
+        std::map<std::int32_t, float> heights;
+        for (int step = 0; step <= 140 && heights.size() < rows; ++step) // 600 px up to 40 px, every 4 px
+        {
+            const float y = 600.0F - (4.0F * static_cast<float>(step));
+            clickAt(panel, y);
+            if (const std::int32_t pid = panel.selectedPid(); pid > 0 && !heights.contains(pid))
+            {
+                heights.emplace(pid, y);
+            }
+        }
+        return heights;
+    }
+
     static constexpr int LOAD_FRAMES = 200;
 
   private:
@@ -447,8 +489,26 @@ TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
     const ImGuiWindow* submenu = topPopup();
     ASSERT_NE(submenu, nullptr);
     EXPECT_TRUE(std::string_view(submenu->Name).contains("Show meter")) << submenu->Name;
-    pressPopupItem(*panel, "CPU %");
+    // A row per column, a radio button per style (#1612): under the table's ID and the column's index.
+    const auto pressStyle = [&panel](ProcessColumn col, const char* style)
+    {
+        const ImGuiWindow* menu = topPopup();
+        ASSERT_NE(menu, nullptr);
+        const int index = static_cast<int>(toIndex(col));
+        const ImGuiID row = ImHashData(&index, sizeof(index), ImHashStr("##meter_styles", 0, menu->ID));
+        ImGui::ActivateItemByID(ImHashStr(style, 0, row));
+        static_cast<void>(renderAndCapture(*panel));
+    };
+    pressStyle(ProcessColumn::CpuPercent, wasOn ? "Off" : "Bar");
     EXPECT_NE(UserConfig::get().settings().processMeters.isOn(ProcessColumn::CpuPercent), wasOn);
+
+    // A sparkline has the model keep that column's history, and only while one is shown.
+    pressStyle(ProcessColumn::CpuPercent, "Sparkline");
+    EXPECT_EQ(UserConfig::get().settings().processMeters.style(ProcessColumn::CpuPercent), ProcessRowMeter::Style::Sparkline);
+    EXPECT_NE(panel->processModel()->rowHistoryMetrics(), 0U);
+    pressStyle(ProcessColumn::CpuPercent, "Bar");
+    EXPECT_EQ(panel->processModel()->rowHistoryMetrics(), 0U);
+    UserConfig::get().settings().processMeters = ProcessRowMeter::Settings{}; // The singleton outlives this test
     panel->onDetach();
 }
 
@@ -579,6 +639,67 @@ TEST_F(ProcessesPanelRenderTest, TheSamplingIntervalFollowsInteractionAndTheTabO
     panel->onEvent(shown);
     panel->onUpdate(0.016F);
     EXPECT_EQ(panel->appliedSamplingInterval(), normal);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, PlainCtrlAndShiftClicksBuildTheSelection)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    ASSERT_EQ(panel->processCount(), 3U);
+    const std::map<std::int32_t, float> heights = rowHeights(*panel, 3);
+    ASSERT_EQ(heights.size(), 3U);
+    // The rows top to bottom.
+    std::vector<std::pair<float, std::int32_t>> byHeight;
+    byHeight.reserve(heights.size());
+    for (const auto& [pid, y] : heights)
+    {
+        byHeight.emplace_back(y, pid);
+    }
+    std::ranges::sort(byHeight);
+    const auto [topY, top] = byHeight.front();
+    const auto [middleY, middle] = byHeight[1];
+    const auto [bottomY, bottom] = byHeight.back();
+
+    // A plain click selects one row and announces it.
+    clickAt(*panel, topY);
+    EXPECT_EQ(panel->selectedPid(), top);
+    EXPECT_EQ(panel->selectionCount(), 1U);
+    ASSERT_FALSE(events.selected.empty());
+    EXPECT_EQ(events.selected.back(), top);
+
+    // Ctrl+click adds a row, which becomes the primary one.
+    clickAt(*panel, middleY, /*ctrl=*/true);
+    EXPECT_EQ(panel->selectionCount(), 2U);
+    EXPECT_EQ(panel->selectedPid(), middle);
+
+    // Ctrl+click on it again takes it out; the one left becomes the primary, so F9 still has a target.
+    clickAt(*panel, middleY, /*ctrl=*/true);
+    EXPECT_EQ(panel->selectionCount(), 1U);
+    EXPECT_EQ(panel->selectedPid(), top);
+
+    // Shift+click selects the range from the anchor down to the bottom row.
+    clickAt(*panel, bottomY, /*ctrl=*/false, /*shift=*/true);
+    EXPECT_GE(panel->selectionCount(), 2U);
+    EXPECT_EQ(panel->selectedPid(), bottom);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, LeavingTheTreeViewShowsTheSortedListAgain)
+{
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const bool wasTree = panel->treeViewEnabled();
+    panel->toggleTreeView();
+    static_cast<void>(renderAndCapture(*panel));
+    panel->toggleTreeView(); // back: the list is sorted again (#1174)
+    EXPECT_EQ(panel->treeViewEnabled(), wasTree);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("init")) << text;
+    EXPECT_TRUE(text.contains("server")) << text;
+    EXPECT_TRUE(text.contains("worker")) << text;
     panel->onDetach();
 }
 
