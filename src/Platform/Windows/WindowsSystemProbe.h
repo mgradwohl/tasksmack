@@ -28,15 +28,18 @@
 
 #include "Platform/Windows/WindowsNtQuery.h"
 
+// MIB_IF_TABLE2 (netioapi.h), declared here so this header needn't pull in winsock2.h and iphlpapi.h.
+struct _MIB_IF_TABLE2; // NOLINT(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,readability-identifier-naming) - the SDK's tag
+
 namespace Platform
 {
 
 class ProcessorPerformanceCounter;
 
-/// The Win32/NT calls WindowsSystemProbe makes for CPU, topology and memory (#1719): the system's by
-/// default (WindowsSystemProbe::systemFunctions()), fakes in tests, so each one failing alone, the
-/// per-core fallbacks and several processor groups can be tested. Grouped by area. Every member must
-/// be set, except the two NT exports, which are nullable as ntdll's lookups are.
+/// The Win32/NT calls WindowsSystemProbe makes for CPU, topology, memory (#1719) and network (#1395): the
+/// system's by default (WindowsSystemProbe::systemFunctions()), fakes in tests, so each one failing alone,
+/// the per-core fallbacks, several processor groups and removed network adapters can be tested. Grouped by
+/// area. Every member must be set, except the two NT exports, which are nullable as ntdll's lookups are.
 struct WindowsSystemProbeFunctions
 {
     struct Cpu
@@ -65,6 +68,18 @@ struct WindowsSystemProbeFunctions
         BOOL(WINAPI* globalMemoryStatusEx)(LPMEMORYSTATUSEX) = nullptr;
         BOOL(WINAPI* getPerformanceInfo)(PPERFORMANCE_INFORMATION, DWORD) = nullptr;
     } memory;
+
+    struct Network
+    {
+        /// GetIfTable2, and FreeMibTable, which frees the table it hands out.
+        DWORD(WINAPI* getIfTable2)(_MIB_IF_TABLE2** table) = nullptr;
+        void(WINAPI* freeMibTable)(PVOID memory) = nullptr;
+        /// The PnP device instance id of the adapter behind an interface, from the registry; empty when the
+        /// interface has none (Teredo, 6to4) or it can't be read (#1284).
+        std::wstring (*readAdapterDeviceInstanceId)(const GUID& interfaceGuid) = nullptr;
+        /// Whether the device with that id is in the system (CM_Locate_DevNodeW); Unknown for an empty id.
+        DevicePresence (*devicePresence)(const std::wstring& deviceInstanceId) = nullptr;
+    } network;
 };
 
 /// Windows implementation of ISystemProbe.
@@ -78,7 +93,7 @@ class WindowsSystemProbe : public ISystemProbe
     /// constructor reads the rated base (readNominalCpuBaseMHz in CpuBaseClock.h: CallNtPowerInformation's
     /// MaxMhz, else the registry's ~MHz; #1530) and opens pdh.dll's counter; tests inject fakes here.
     WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance);
-    /// As above, making every CPU, topology and memory call through @p functions (tests, #1719).
+    /// As above, making every CPU, topology, memory and network call through @p functions (tests, #1719).
     WindowsSystemProbe(std::uint64_t baseCpuMHz,
                        std::unique_ptr<ProcessorPerformanceCounter> processorPerformance,
                        const WindowsSystemProbeFunctions& functions);
@@ -122,7 +137,7 @@ class WindowsSystemProbe : public ISystemProbe
     void readCpuFreq(SystemCounters& counters);
     void readNetworkCounters(SystemCounters& counters);
 
-    WindowsSystemProbeFunctions m_Fns; // Every CPU, topology and memory call goes through these (#1719)
+    WindowsSystemProbeFunctions m_Fns; // Every CPU, topology, memory and network call goes through these (#1719)
     std::size_t m_NumCores{0};
     // Each processor group's first coreId, fixed for the boot session (#1107)
     std::vector<std::size_t> m_GroupFirstCoreIds;

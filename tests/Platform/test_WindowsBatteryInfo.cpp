@@ -36,6 +36,12 @@ struct FakeBattery
     int opens = 0;
     int closes = 0;
     int informationQueries = 0;
+    // GetSystemPowerStatus (#1395): on battery, discharging, 80% with an hour left
+    bool failPowerStatus = false;
+    BYTE acLineStatus = 0;
+    BYTE batteryFlag = 1; // BATTERY_FLAG_HIGH
+    BYTE batteryLifePercent = 80;
+    DWORD batteryLifeTime = 3'600;
 };
 
 FakeBattery& fake()
@@ -111,6 +117,22 @@ BOOL WINAPI fakeDeviceIoControl(
     EXPECT_LE(bytes, outBytes);
     std::memcpy(out, name.c_str(), bytes);
     *returned = bytes;
+    return TRUE;
+}
+
+BOOL WINAPI fakeGetSystemPowerStatus(LPSYSTEM_POWER_STATUS status)
+{
+    if (fake().failPowerStatus)
+    {
+        SetLastError(ERROR_GEN_FAILURE);
+        return FALSE;
+    }
+    *status = SYSTEM_POWER_STATUS{};
+    status->ACLineStatus = fake().acLineStatus;
+    status->BatteryFlag = fake().batteryFlag;
+    status->BatteryLifePercent = fake().batteryLifePercent;
+    status->BatteryLifeTime = fake().batteryLifeTime;
+    status->BatteryFullLifeTime = 0xFFFFFFFF;
     return TRUE;
 }
 
@@ -230,6 +252,79 @@ TEST_F(WindowsBatteryInfoTest, ProbeReadsTheStaticFactsOnceNotPerSample)
         }
     }
     // Five samples on an unchanged power source: no further device queries
+    EXPECT_EQ(fake().informationQueries, afterConstruction);
+}
+
+// With GetSystemPowerStatus faked too (#1395): a laptop on any machine, and the call failing.
+
+TEST_F(WindowsBatteryInfoTest, ProbeOnBatteryReportsTheChargeAndTheStaticFacts)
+{
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    const PowerCapabilities caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasBattery);
+    EXPECT_TRUE(caps.hasChargePercent);
+    EXPECT_TRUE(caps.hasTimeEstimates);
+
+    const PowerCounters counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Discharging);
+    EXPECT_FALSE(counters.isOnAc);
+    EXPECT_EQ(counters.chargePercent, 80);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 52.6);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 47.34);
+    EXPECT_EQ(counters.healthPercent, 90);
+    EXPECT_EQ(counters.cycleCount, 123U);
+    EXPECT_EQ(counters.technology, "Li-ion");
+    EXPECT_EQ(counters.manufacturer, "Contoso");
+    EXPECT_EQ(counters.model, "5B10W51");
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeRereadsTheStaticFactsWhenThePowerSourceChanges)
+{
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    (void) probe.read();
+    const int onBattery = fake().informationQueries;
+
+    fake().acLineStatus = 1; // Plugged in: the full-charge capacity is recalibrated across a charge
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    fake().fullCharged = 50'000;
+    PowerCounters counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Charging);
+    EXPECT_GT(fake().informationQueries, onBattery);
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 50.0);
+
+    const int onAc = fake().informationQueries;
+    counters = probe.read();
+    EXPECT_EQ(fake().informationQueries, onAc) << "the same source again: no re-read";
+    EXPECT_DOUBLE_EQ(counters.chargeFullWh, 50.0);
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeWithNoBatteryReadsNoDeviceFacts)
+{
+    fake().acLineStatus = 1;
+    fake().batteryFlag = BATTERY_FLAG_NO_BATTERY;
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+    const int afterConstruction = fake().informationQueries;
+    const PowerCounters counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::NotPresent);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 0.0);
+    EXPECT_TRUE(counters.manufacturer.empty());
+    EXPECT_EQ(fake().informationQueries, afterConstruction);
+}
+
+TEST_F(WindowsBatteryInfoTest, FailedPowerStatusIsNoBatteryAndAnUnknownState)
+{
+    fake().failPowerStatus = true;
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    const PowerCapabilities caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasBattery);
+    EXPECT_FALSE(caps.hasChargePercent);
+    EXPECT_FALSE(caps.hasTimeEstimates);
+
+    const int afterConstruction = fake().informationQueries;
+    const PowerCounters counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Unknown);
+    EXPECT_DOUBLE_EQ(counters.chargeDesignWh, 0.0) << "a failed read reports no battery facts";
     EXPECT_EQ(fake().informationQueries, afterConstruction);
 }
 

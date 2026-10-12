@@ -2,7 +2,8 @@
 /// @brief WindowsSystemProbe against fake Win32/NT calls (#1719): each CPU, memory, page-file and
 /// topology query failing on its own, the per-core fallbacks, several processor groups and a
 /// processor going on- or offline, none of which the real APIs can be made to show. The fakes are
-/// side-effect free; the probe's own hostname, registry, power and network reads stay real.
+/// side-effect free; the probe's own hostname, registry, power and network reads stay real (the network
+/// is faked in test_WindowsSystemProbeNetwork.cpp).
 
 #include "Platform/CpuDetails.h"
 #include "Platform/SystemTypes.h"
@@ -365,6 +366,7 @@ BOOL WINAPI fakeGetPerformanceInfo(PPERFORMANCE_INFORMATION info, DWORD /*size*/
     fns.nt.ntQuerySystemInformationEx = fake().exAvailable ? &fakeNtQuerySystemInformationEx : nullptr;
     fns.memory.globalMemoryStatusEx = &fakeGlobalMemoryStatusEx;
     fns.memory.getPerformanceInfo = &fakeGetPerformanceInfo;
+    fns.network = WindowsSystemProbe::systemFunctions().network; // Faked in test_WindowsSystemProbeNetwork.cpp
     return fns;
 }
 
@@ -712,6 +714,10 @@ TEST_F(WindowsSystemProbeSeamsTest, SystemFunctionsAreAllSet)
     EXPECT_NE(fns.nt.ntQuerySystemInformation, nullptr);
     EXPECT_NE(fns.memory.globalMemoryStatusEx, nullptr);
     EXPECT_NE(fns.memory.getPerformanceInfo, nullptr);
+    EXPECT_NE(fns.network.getIfTable2, nullptr);
+    EXPECT_NE(fns.network.freeMibTable, nullptr);
+    EXPECT_NE(fns.network.readAdapterDeviceInstanceId, nullptr);
+    EXPECT_NE(fns.network.devicePresence, nullptr);
 }
 
 } // namespace Platform

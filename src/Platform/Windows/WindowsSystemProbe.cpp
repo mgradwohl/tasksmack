@@ -322,6 +322,10 @@ readCpuDetails(const WindowsSystemProbeFunctions& fns, std::span<const std::size
     return readNominalCpuBaseMHz(&CallNtPowerInformation, readRegistryCpuMHz());
 }
 
+// The network readers systemFunctions() hands out, defined with readNetworkCounters() below.
+[[nodiscard]] std::wstring readAdapterDeviceInstanceId(const GUID& interfaceGuid);
+[[nodiscard]] DevicePresence devicePresence(const std::wstring& deviceInstanceId);
+
 } // namespace
 
 WindowsSystemProbe::~WindowsSystemProbe() = default;
@@ -347,6 +351,10 @@ WindowsSystemProbeFunctions WindowsSystemProbe::systemFunctions()
     fns.nt.ntQuerySystemInformationEx = Windows::ntQuerySystemInformationEx();
     fns.memory.globalMemoryStatusEx = &GlobalMemoryStatusEx;
     fns.memory.getPerformanceInfo = &GetPerformanceInfo;
+    fns.network.getIfTable2 = &GetIfTable2;
+    fns.network.freeMibTable = &FreeMibTable;
+    fns.network.readAdapterDeviceInstanceId = &readAdapterDeviceInstanceId;
+    fns.network.devicePresence = &devicePresence;
     return fns;
 }
 
@@ -789,7 +797,8 @@ constexpr std::chrono::seconds ADAPTER_ID_RETRY_INTERVAL{30};
 // written yet, or the read failed -- and is retried after ADAPTER_ID_RETRY_INTERVAL, so a phantom
 // adapter first seen too early is still recognised later rather than listed until restart.
 template<typename Cache>
-[[nodiscard]] const std::wstring& adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid)
+[[nodiscard]] const std::wstring&
+adapterDeviceInstanceId(Cache& cache, std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::wstring (*readId)(const GUID&))
 {
     const auto now = std::chrono::steady_clock::now();
     std::array<std::uint64_t, 2> guidHalves{};
@@ -806,7 +815,7 @@ template<typename Cache>
     }
     if (entry.id.empty() && now >= entry.retryAt)
     {
-        entry.id = readAdapterDeviceInstanceId(interfaceGuid);
+        entry.id = readId(interfaceGuid);
         entry.retryAt = now + ADAPTER_ID_RETRY_INTERVAL;
     }
     return entry.id;
@@ -819,7 +828,7 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     // GetIfTable2 allocates the buffer internally; we must free it with FreeMibTable.
     // Available since Windows Vista/Server 2008.
     MIB_IF_TABLE2* rawTable = nullptr;
-    const DWORD status = GetIfTable2(&rawTable);
+    const DWORD status = m_Fns.network.getIfTable2(&rawTable);
     if (status != NO_ERROR || rawTable == nullptr)
     {
         spdlog::warn("GetIfTable2 failed: {}", status);
@@ -828,9 +837,9 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
     // Owned from here, so an exception thrown while the rows are read (the device-id cache and
     // registry lookups allocate) still frees it; the sampler catches and carries on, so a raw
     // pointer leaked a table on every failed sample (#1369 review).
-    const auto freeTable = [](MIB_IF_TABLE2* t) noexcept
+    const auto freeTable = [freeMibTable = m_Fns.network.freeMibTable](MIB_IF_TABLE2* t) noexcept
     {
-        FreeMibTable(t);
+        freeMibTable(t);
     };
     const std::unique_ptr<MIB_IF_TABLE2, decltype(freeTable)> table(rawTable, freeTable);
 
@@ -848,7 +857,8 @@ void WindowsSystemProbe::readNetworkCounters(SystemCounters& counters)
         // device is looked up: down alone doesn't mean removed.
         const DevicePresence presence =
             needsDevicePresence(row.OperStatus)
-                ? devicePresence(adapterDeviceInstanceId(m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid))
+                ? m_Fns.network.devicePresence(adapterDeviceInstanceId(
+                      m_AdapterDeviceInstanceIds, row.InterfaceLuid.Value, row.InterfaceGuid, m_Fns.network.readAdapterDeviceInstanceId))
                 : DevicePresence::Unknown;
         if (isNotPresentNetworkRow(row.OperStatus, presence))
         {

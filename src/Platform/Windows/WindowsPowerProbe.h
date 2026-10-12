@@ -5,6 +5,16 @@
 
 #include <chrono>
 
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h> // GetSystemPowerStatus
+// clang-format on
+
 namespace Platform
 {
 
@@ -16,9 +26,13 @@ namespace Platform
 class WindowsPowerProbe : public IPowerProbe
 {
   public:
+    /// GetSystemPowerStatus's signature, so tests can report a battery, a failure or a power-source change.
+    using GetSystemPowerStatusFn = BOOL(WINAPI*)(LPSYSTEM_POWER_STATUS);
+
     WindowsPowerProbe();
-    /// With the battery device calls injected (tests).
-    explicit WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batteryApi);
+    /// With the battery device calls, and optionally GetSystemPowerStatus, injected (tests, #1395).
+    explicit WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batteryApi,
+                               GetSystemPowerStatusFn getSystemPowerStatus = &::GetSystemPowerStatus);
     ~WindowsPowerProbe() override = default;
 
     WindowsPowerProbe(const WindowsPowerProbe&) = delete;
@@ -34,6 +48,7 @@ class WindowsPowerProbe : public IPowerProbe
 
     PowerCapabilities m_Capabilities;
     Windows::BatteryDeviceFunctions m_BatteryApi;
+    GetSystemPowerStatusFn m_GetSystemPowerStatus;
     Windows::BatteryInfo m_BatteryInfo;
     std::chrono::steady_clock::time_point m_BatteryInfoReadAt;
     bool m_BatteryInfoOnAc = false;

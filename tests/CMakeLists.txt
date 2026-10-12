@@ -351,6 +351,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessProbeSeams.cpp
     Platform/test_WindowsSystemProbe.cpp
     Platform/test_WindowsSystemProbeSeams.cpp
+    Platform/test_WindowsSystemProbeNetwork.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessModules.cpp
@@ -373,6 +374,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsStartupActions.cpp
     Platform/test_WindowsSystemInfoProbe.cpp
     Platform/test_WindowsSystemInfoProbeSeams.cpp
+    Platform/test_WindowsSystemInfoLiveReaders.cpp
     Platform/test_WindowsServiceActions.cpp
     Platform/test_WindowsServiceProbe.cpp
     Platform/test_WindowsServiceConfig.cpp
