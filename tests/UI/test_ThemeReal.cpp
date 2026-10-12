@@ -118,5 +118,75 @@ TEST_F(ThemeRealTest, AnUnknownThemeIdKeepsTheCurrentOne)
     EXPECT_EQ(theme.currentThemeId(), "mocha");
 }
 
+TEST_F(ThemeRealTest, TheFontSizeStepsThroughEveryPresetAndStopsAtTheEnds)
+{
+    Theme& theme = Theme::get();
+    const FontSize original = theme.currentFontSize();
+    theme.setFontSize(FontSize::Small);
+    // Ctrl+= walks up one preset at a time, then has nowhere to go.
+    for (const FontSize expected : {FontSize::Medium, FontSize::Large, FontSize::ExtraLarge, FontSize::Huge, FontSize::EvenHuger})
+    {
+        EXPECT_TRUE(theme.increaseFontSize());
+        EXPECT_EQ(theme.currentFontSize(), expected);
+    }
+    EXPECT_FALSE(theme.increaseFontSize());
+    EXPECT_EQ(theme.currentFontSize(), FontSize::EvenHuger);
+    // Ctrl+- walks back down, then stops at Small.
+    for (const FontSize expected : {FontSize::Huge, FontSize::ExtraLarge, FontSize::Large, FontSize::Medium, FontSize::Small})
+    {
+        EXPECT_TRUE(theme.decreaseFontSize());
+        EXPECT_EQ(theme.currentFontSize(), expected);
+    }
+    EXPECT_FALSE(theme.decreaseFontSize());
+    EXPECT_EQ(theme.currentFontSize(), FontSize::Small);
+    theme.setFontSize(original);
+}
+
+TEST_F(ThemeRealTest, AnOutOfRangeThemeIndexChangesNothing)
+{
+    Theme& theme = Theme::get();
+    const std::string before = theme.currentThemeId();
+    const std::size_t count = theme.discoveredThemes().size();
+    theme.setTheme(count + 5);
+    static_cast<void>(theme.applyPendingStyleChanges());
+    EXPECT_EQ(theme.currentThemeId(), before);
+    EXPECT_EQ(theme.themeName(count + 5), "Unknown");
+}
+
+TEST_F(ThemeRealTest, AccentColorsWrapAround)
+{
+    const Theme& theme = Theme::get();
+    for (std::size_t i = 0; i < Theme::accentCount(); ++i)
+    {
+        const ImVec4 first = theme.accentColor(i);
+        const ImVec4 wrapped = theme.accentColor(i + Theme::accentCount());
+        EXPECT_FLOAT_EQ(first.x, wrapped.x) << i;
+        EXPECT_FLOAT_EQ(first.y, wrapped.y) << i;
+        EXPECT_FLOAT_EQ(first.z, wrapped.z) << i;
+        EXPECT_FLOAT_EQ(first.w, wrapped.w) << i;
+    }
+}
+
+TEST_F(ThemeRealTest, ClearingTheFontRegistrationsForgetsThemAndBumpsTheGeneration)
+{
+    Theme& theme = Theme::get();
+    ImFont* font = ImGui::GetIO().Fonts->AddFontDefault();
+    for (const FontSize size :
+         {FontSize::Small, FontSize::Medium, FontSize::Large, FontSize::ExtraLarge, FontSize::Huge, FontSize::EvenHuger})
+    {
+        theme.registerFonts(size, font, font, font);
+    }
+    theme.registerTitleFont(font);
+    EXPECT_EQ(theme.chartFont(), font);
+    EXPECT_EQ(theme.monospaceFont(), font);
+    const auto generation = theme.fontGeneration();
+
+    // UILayer's onDetach(): the atlas the fonts lived in is about to go, so nothing may keep them.
+    theme.clearFontRegistrations();
+    EXPECT_EQ(theme.chartFont(), nullptr);
+    EXPECT_EQ(theme.monospaceFont(), nullptr);
+    EXPECT_GT(theme.fontGeneration(), generation); // font-dependent caches rebuild
+}
+
 } // namespace
 } // namespace UI
