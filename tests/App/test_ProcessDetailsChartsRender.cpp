@@ -625,6 +625,100 @@ TEST_F(ProcessDetailsChartsRenderTest, TheNetworkChartsShowTooltips)
     EXPECT_TRUE(hoverPlot(SeriesLabels{"Sent", "Received"}, drawNetwork));
 }
 
+TEST_F(ProcessDetailsChartsRenderTest, TheGpuUsageCardListsEveryReadingAndEachGpu)
+{
+    // #1395: the current-values card with everything a busy multi-GPU process can show -- devices,
+    // engines, encoder and decoder, dedicated and shared memory -- and the per-GPU breakdown beneath.
+    ChartInputs inputs(busyPoint);
+    Domain::ProcessSnapshot& proc = inputs.snapshot;
+    proc.gpuDevices = "0,1";
+    proc.gpuEngines = {"3D", "Video Decode"};
+    proc.gpuEncoderUtil = 5.0;
+    proc.gpuDecoderUtil = 7.5;
+    proc.gpuDedicatedMemoryBytes = 600'000;
+    proc.gpuSharedMemoryBytes = 400'000;
+    proc.perGpuUsage = {
+        Domain::ProcessSnapshot::PerGPUUsage{.gpuId = "0",
+                                             .gpuName = "Test Discrete GPU",
+                                             .isIntegrated = false,
+                                             .utilPercent = 10.0,
+                                             .memoryBytes = 600'000,
+                                             .dedicatedMemoryBytes = 600'000,
+                                             .sharedMemoryBytes = 0,
+                                             .engines = {"3D"}},
+        Domain::ProcessSnapshot::PerGPUUsage{.gpuId = "1",
+                                             .gpuName = "Test Integrated GPU",
+                                             .isIntegrated = true,
+                                             .utilPercent = 2.0,
+                                             .memoryBytes = 400'000,
+                                             .dedicatedMemoryBytes = 0,
+                                             .sharedMemoryBytes = 400'000,
+                                             .engines = {"Video Decode"}},
+    };
+    ProcessDetailsCharts charts;
+    std::string text;
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                charts.renderGpuTab(inputs.ctx);
+                text = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+            });
+    }
+
+    for (const char* expected : {"GPU Device(s):",
+                                 "0,1",
+                                 "Active Engines:",
+                                 "3D, Video Decode",
+                                 "Video Encoder:",
+                                 "5.0%",
+                                 "Video Decoder:",
+                                 "7.5%",
+                                 "Dedicated:",
+                                 "Shared:",
+                                 "Per-GPU Breakdown:",
+                                 "Test Discrete GPU [Discrete]",
+                                 "Test Integrated GPU [Shared Memory]",
+                                 "Engines:"})
+    {
+        EXPECT_TRUE(text.contains(expected)) << "missing \"" << expected << "\" in:\n" << text;
+    }
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, OneGpuHasNoBreakdownAndNoEncoderRows)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.snapshot.gpuDedicatedMemoryBytes = inputs.snapshot.gpuMemoryBytes; // all of it dedicated
+    inputs.snapshot.perGpuUsage = {Domain::ProcessSnapshot::PerGPUUsage{.gpuId = "0",
+                                                                        .gpuName = "Only GPU",
+                                                                        .isIntegrated = false,
+                                                                        .utilPercent = 12.0,
+                                                                        .memoryBytes = 1'000'000,
+                                                                        .dedicatedMemoryBytes = 1'000'000,
+                                                                        .sharedMemoryBytes = 0,
+                                                                        .engines = {}}};
+    ProcessDetailsCharts charts;
+    std::string text;
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                charts.renderGpuTab(inputs.ctx);
+                text = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+            });
+    }
+    EXPECT_TRUE(text.contains("GPU Utilization:")) << text;
+    EXPECT_FALSE(text.contains("Per-GPU Breakdown:")) << text; // it would repeat the table (#1207)
+    EXPECT_FALSE(text.contains("Video Encoder:")) << text;
+    EXPECT_FALSE(text.contains("Dedicated:")) << text; // the total already is the dedicated bytes
+}
+
 #ifdef _WIN32
 /// busyPoint() with the newest few GDI readings missing: the series is drawn, its newest value is N/A.
 [[nodiscard]] Detail::ProcessHistoryPoint newestGdiGapPoint(std::size_t i)
