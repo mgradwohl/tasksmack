@@ -247,8 +247,20 @@ class FakeSystemBus
 
     bool connectService(const std::string& serviceName)
     {
-        if (sd_bus_new(&m_Service) < 0 || sd_bus_set_address(m_Service, address().c_str()) < 0 || sd_bus_set_bus_client(m_Service, 1) < 0 ||
-            sd_bus_start(m_Service) < 0)
+        // The socket file exists from the daemon's bind(), a moment before its listen(): a connection
+        // in between is refused, so it is tried again for a while (a loaded CI runner, #1835).
+        bool connected = false;
+        for (int attempt = 0; attempt < 200 && !connected; ++attempt)
+        {
+            if (m_Service != nullptr)
+            {
+                m_Service = sd_bus_flush_close_unref(m_Service);
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            connected = sd_bus_new(&m_Service) >= 0 && sd_bus_set_address(m_Service, address().c_str()) >= 0 &&
+                        sd_bus_set_bus_client(m_Service, 1) >= 0 && sd_bus_start(m_Service) >= 0;
+        }
+        if (!connected)
         {
             m_Error = "couldn't connect the fake service";
             return false;
