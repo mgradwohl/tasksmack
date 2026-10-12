@@ -252,6 +252,24 @@ TEST_F(SettingsLayerRenderTest, SaveWritesThePickedChoicesRaisesTheirEventsAndSa
     EXPECT_EQ(UserConfig::get().settings().maxHistorySeconds, 600);
 }
 
+// #1395: the process-icons choice (#1800) is saved when it changes.
+TEST_F(SettingsLayerRenderTest, SaveWritesTheProcessIconsChoice)
+{
+    UserSettings& settings = UserConfig::get().settings();
+    settings.showProcessIcons = true;
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::PROCESS_ICONS_LABEL); // unticks it
+    pressSave();
+    EXPECT_FALSE(settle());
+    EXPECT_FALSE(settings.showProcessIcons);
+
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::PROCESS_ICONS_LABEL); // and back on
+    pressSave();
+    EXPECT_FALSE(settle());
+    EXPECT_TRUE(settings.showProcessIcons);
+}
+
 TEST_F(SettingsLayerRenderTest, SaveWithNothingPickedRaisesNothing)
 {
     UserSettings& settings = UserConfig::get().settings();
