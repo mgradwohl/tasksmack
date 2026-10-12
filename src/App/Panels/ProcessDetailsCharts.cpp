@@ -622,6 +622,12 @@ void ProcessDetailsCharts::drawCpuBandsAndLines(std::span<const double> timeData
     const auto& theme = UI::Theme::get();
     const double nowSeconds = UI::Widgets::historyFrameNowSeconds(); // The frame's, as chartTimeAxis() took it
 
+    // What is drawn below is reduced, and the System line is a cumulative top: "Copy data as CSV"
+    // takes each series whole and as its own values instead (#808).
+    UI::Widgets::exportSeries(CPU_TOTAL_LABEL, timeData, total);
+    UI::Widgets::exportSeries(CPU_USER_LABEL, timeData, user);
+    UI::Widgets::exportSeries(CPU_SYSTEM_LABEL, timeData, system);
+
     // These bands and lines are drawn with ImPlot directly, so they are capped here like every
     // plotLineWithFill series (#1022). Reduced together, so the bands still line up with each other
     // and with the lines. Points are chosen by each drawn value -- User (also the user band's top),

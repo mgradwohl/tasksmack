@@ -659,6 +659,15 @@ void SystemMetricsPanel::renderOverview()
             UI::Widgets::drawCollectingHint(cpuData.size()); // The same "no data yet" state on every chart (#1013)
             if (breakdownCount > 0)
             {
+                // The band edges below are cumulative tops: "Copy data as CSV" takes each series'
+                // own values instead (#808).
+                UI::Widgets::exportSeries(CPU_USER_LABEL, breakdownTimeData, cpuUserData);
+                UI::Widgets::exportSeries(CPU_SYSTEM_LABEL, breakdownTimeData, cpuSystemData);
+                if (showIowait)
+                {
+                    UI::Widgets::exportSeries(CPU_IOWAIT_LABEL, breakdownTimeData, cpuIowaitData);
+                }
+
                 // The bands are drawn with ImPlot directly, so they are capped here like every
                 // plotLineWithFill series (#1022), reduced together so they still line up. Points are
                 // chosen by each band's own value (User is its own top), not by the cumulative tops:

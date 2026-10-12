@@ -6,6 +6,7 @@
 #include "UI/ChartSmoothing.h" // IWYU pragma: export
 #include "UI/ColorContrast.h"
 #include "UI/Format.h"
+#include "UI/HistoryCsv.h"
 #include "UI/InlineText.h"
 #include "UI/LineLayout.h"
 #include "UI/RateAxis.h"
@@ -1300,6 +1301,82 @@ inline ChartDataScope g_ActiveChartDataScope;
     return plotPointBudget(ImPlot::GetPlotSize().x, ImGui::GetIO().DisplayFramebufferScale.x, maxPoints);
 }
 
+// "Copy data as CSV" (#808): a history chart's right-click menu copies the series it is handed --
+// whole, before any reduction to the plot's width -- to the clipboard as CSV (UI::HistoryCsv). The
+// choice is made after the chart has drawn, so the copy is taken the next time it draws: HistoryChart
+// points g_CsvCapture at its own list for that one pass, and every series drawn through
+// plotLineWithFill() (so plotSeries(), plotStyledLine(), ...) adds itself. A chart that draws
+// something other than its readings -- a stacked band's cumulative top -- hands its real series to
+// exportSeries() first: the first series under a label is the one kept.
+
+namespace Detail
+{
+/// The series of the chart being copied, while it draws (HistoryChart::m_Csv).
+struct CsvCapture
+{
+    std::vector<HistoryCsv::Series> series;
+    std::vector<std::string> labels; // Each series' full ImGui label, "##" part included: one per item
+};
+
+// UI thread only. Named-namespace inline: one instance program-wide.
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
+inline CsvCapture* g_CsvCapture = nullptr; // Non-null only inside the chart being copied
+inline ImGuiID g_CsvRequestPlotId = 0;     // The chart whose menu asked for a copy; 0: none pending
+inline int g_CsvRequestFrame = -1;         // The frame it asked in
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+/// Frames a copy request waits for its chart to draw again before it is dropped: the next frame
+/// normally, a little more if a frame is skipped. A chart that has gone (its tab closed) never
+/// copies later, unasked.
+inline constexpr int CSV_REQUEST_FRAMES = 3;
+
+/// `label` as a CSV column header: the ImGui label without its "##" ID part or the right-hand-axis
+/// mark (SECONDARY_AXIS_MARK), both drawing details.
+[[nodiscard]] inline std::string csvSeriesLabel(std::string_view label)
+{
+    label = label.substr(0, label.find("##"));
+    if (label.ends_with(SECONDARY_AXIS_MARK))
+    {
+        label.remove_suffix(SECONDARY_AXIS_MARK.size());
+    }
+    return std::string(label);
+}
+} // namespace Detail
+
+/// Adds a series to the CSV copy of the chart being drawn, when one is being taken; otherwise does
+/// nothing. plotLineWithFill() calls it for every series it draws. Call it directly, before drawing,
+/// for a series whose drawn points are not its values (a stacked band's top): the first series
+/// under a label is kept. `x` is seconds before now, as every history chart plots it.
+template<typename TX, typename TY> inline void exportSeries(const char* label, const TX* x, const TY* y, int count)
+{
+    Detail::CsvCapture* capture = Detail::g_CsvCapture;
+    if ((capture == nullptr) || (count <= 0) || (label == nullptr))
+    {
+        return;
+    }
+    if (std::ranges::find(capture->labels, std::string_view(label)) != capture->labels.end())
+    {
+        return;
+    }
+    HistoryCsv::Series series{.label = Detail::csvSeriesLabel(label), .x = {}, .y = {}};
+    const auto n = static_cast<std::size_t>(count);
+    series.x.reserve(n);
+    series.y.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        series.x.push_back(static_cast<double>(x[i]));
+        series.y.push_back(static_cast<double>(y[i]));
+    }
+    capture->labels.emplace_back(label);
+    capture->series.push_back(std::move(series));
+}
+
+/// exportSeries() for spans; the shorter of the two sets the length.
+template<typename TX, typename TY> inline void exportSeries(const char* label, std::span<const TX> x, std::span<const TY> y)
+{
+    exportSeries(label, x.data(), y.data(), UI::Format::checkedCount(std::min(x.size(), y.size())));
+}
+
 /// @p lineThickness is authored at the reference configuration; it is scaled by lineWeight().
 /// A chart fills one series at most (#1198): a chart with several draws them with plotSeries() and
 /// their SeriesRole rather than passing `drawFill` by hand.
@@ -1331,6 +1408,7 @@ inline void plotLineWithFill(const char* label,
     {
         return;
     }
+    exportSeries(label, xData, yData, count); // Whole, before any reduction (#808)
 
     // ImPlot takes x and y of one type. The time axis is double (fillTimeAxis) while some series
     // are float, so y is drawn as TX: converted into reused buffers when the types differ.
@@ -2714,6 +2792,14 @@ class HistoryChart
         Detail::g_ActiveChartDataScope = ChartDataScope{.generation = config.dataGeneration, .plotId = plotId, .maxYTicks = maxYTicks};
         m_DataScopeSet = true;
 
+        // This chart's menu asked for its data last frame: gather the series it draws (#808).
+        m_PlotId = plotId;
+        if (csvRequestIsFor(plotId, ImGui::GetFrameCount()))
+        {
+            m_PreviousCsvCapture = std::exchange(Detail::g_CsvCapture, &m_Csv);
+            m_CsvCapturing = true;
+        }
+
         if (!chartAntiAliasingEnabled())
         {
             // ImPlot 1.0 has no per-plot AA flag of its own; it renders through the current
@@ -2768,8 +2854,15 @@ class HistoryChart
         {
             Detail::g_ActiveChartDataScope = m_PreviousDataScope;
         }
+        if (m_CsvCapturing)
+        {
+            Detail::g_CsvCapture = m_PreviousCsvCapture;
+            Detail::g_CsvRequestPlotId = 0;
+            copyCsvToClipboard();
+        }
         if (m_Active)
         {
+            renderContextMenu();
             ImPlot::EndPlot();
         }
 
@@ -2800,7 +2893,51 @@ class HistoryChart
         return m_Active;
     }
 
+    /// Whether a "Copy data as CSV" request made in frame Detail::g_CsvRequestFrame is for the chart
+    /// `plotId` drawn in frame `frame`: its own, and asked for at most CSV_REQUEST_FRAMES ago.
+    [[nodiscard]] static bool csvRequestIsFor(ImGuiID plotId, int frame) noexcept
+    {
+        return (plotId != 0) && (Detail::g_CsvRequestPlotId == plotId) && (frame > Detail::g_CsvRequestFrame) &&
+               (frame - Detail::g_CsvRequestFrame <= Detail::CSV_REQUEST_FRAMES);
+    }
+
   private:
+    /// The gathered series to the clipboard. noexcept, as the destructor calling it: a copy that
+    /// can't be built (out of memory) is left out, and the chart still ends its plot.
+    void copyCsvToClipboard() const noexcept
+    {
+        try
+        {
+            ImGui::SetClipboardText(HistoryCsv::build(m_Csv.series, std::chrono::system_clock::now()).c_str());
+        }
+        catch (...)
+        {
+            ImGui::SetClipboardText(""); // Not the previous clipboard, passed off as this chart's data
+        }
+    }
+
+    /// The chart's right-click menu, inside its plot (ImPlot's own menus are off, PLOT_FLAGS_DEFAULT).
+    void renderContextMenu() const
+    {
+        constexpr const char* MENU_ID = "##HistoryChartMenu";
+        if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+        {
+            ImGui::OpenPopup(MENU_ID);
+        }
+        if (ImGui::BeginPopup(MENU_ID))
+        {
+            if (ImGui::MenuItem("Copy data as CSV"))
+            {
+                // Taken the next time this chart draws (see exportSeries()); ask for that frame now.
+                Detail::g_CsvRequestPlotId = m_PlotId;
+                Detail::g_CsvRequestFrame = ImGui::GetFrameCount();
+                Core::AnimationRequest::request();
+            }
+            ImGui::SetItemTooltip("Copies every series in this chart, oldest sample first, for pasting into a spreadsheet");
+            ImGui::EndPopup();
+        }
+    }
+
     PlotFontGuard m_FontGuard;
     ImDrawList* m_DrawList = nullptr;
     std::chrono::steady_clock::time_point m_Start;
@@ -2812,6 +2949,10 @@ class HistoryChart
     bool m_Measure = false;
     bool m_Active = false;
     bool m_AntiAliasingOverridden = false;
+    ImGuiID m_PlotId = 0;
+    Detail::CsvCapture m_Csv;                           // This pass's series, when it is being copied
+    Detail::CsvCapture* m_PreviousCsvCapture = nullptr; // Restored in the destructor
+    bool m_CsvCapturing = false;
 };
 
 /// RAII scope that records draw-list geometry (and CPU time) added between construction and

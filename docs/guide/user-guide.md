@@ -156,6 +156,8 @@ All charts retain a bounded scrolling history window. Depending on the metric, T
 
 A chart with several series has a value strip on its heading line as its key: a swatch and the current value of each series. (Grid cells such as the CPU core charts show their one value in the cell instead.) A series drawn against the chart's right-hand axis has **→** after its value ("Page Faults: 3.2K/s →"), in the colour of that axis's labels; its chart tooltip rows read the same way.
 
+**Copy a chart's data:** right-click any history chart (System Overview, CPU Cores, Storage, Network, GPU, Process Details) and choose **Copy data as CSV**. Every series in that chart goes to the clipboard as comma-separated text, ready to paste into a spreadsheet. There is one row per sample, oldest first, with the sample's time in UTC (`2026-10-12T03:04:05.123Z`) and its age in seconds, then one column per series, named as in the chart's key. All the history the chart holds is copied, at every sample, even where the chart draws fewer points than that. The stacked CPU charts copy each band's own value (User, System, I/O Wait), not the band's top edge. A sample with no reading is an empty cell. Values are the plain figures behind the chart, not its axis labels: percent, bytes, bytes per second or watts, so 1.5 GiB is copied as 1610612736.
+
 ### Network Monitoring
 
 The System Overview and process views provide three levels of visibility:
