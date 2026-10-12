@@ -14,6 +14,8 @@
 #include <imgui.h>
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(): the bar and its buttons
 
+#include <string>
+
 namespace App
 {
 namespace
@@ -65,6 +67,44 @@ class TitleBarViewRenderTest : public ::testing::Test
         ASSERT_NE(bar, nullptr);
         ImGui::ActivateItemByID(ImHashStr(label, 0, bar->ID));
     }
+
+    /// One frame, returning every string drawn in it (tooltips included).
+    std::string frameText(bool maximized = false)
+    {
+        ImGui::NewFrame();
+        ImGui::LogToBuffer();
+        static_cast<void>(TitleBarView::render({.windowWidth = WIDTH,
+                                                .windowHeight = HEIGHT,
+                                                .barHeight = BAR,
+                                                .maximized = maximized,
+                                                .icon = &m_Icon,
+                                                .openSystemMenu = false}));
+        std::string text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::Render();
+        return text;
+    }
+
+    /// Rests the mouse on the middle of @p bounds long enough for a tooltip (ImGuiHoveredFlags_ForTooltip
+    /// waits for a short stationary hover), then returns what the next frame draws.
+    std::string hoverAndRead(const ButtonBounds& bounds)
+    {
+        ImGui::GetIO().AddMousePosEvent((bounds.minX + bounds.maxX) * 0.5F, BAR * 0.5F);
+        for (int i = 0; i < HOVER_FRAMES; ++i)
+        {
+            static_cast<void>(frame());
+        }
+        return frameText();
+    }
+
+    /// The open system menu's window, opened as Alt+Space opens it.
+    [[nodiscard]] const ImGuiWindow* openSystemMenu(bool maximized)
+    {
+        static_cast<void>(frame(maximized, true));
+        return GImGui->OpenPopupStack.empty() ? nullptr : GImGui->OpenPopupStack.back().Window;
+    }
+
+    static constexpr int HOVER_FRAMES = 60; // a second at 60 fps, well past ImGui's tooltip delay
 
     UI::Texture m_Icon; // Invalid: no GL context here, so no icon is drawn
 
@@ -136,6 +176,41 @@ TEST_F(TitleBarViewRenderTest, TheSystemMenuReportsItsWindowCommands)
     ASSERT_NE(popup, nullptr);
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_MINIMIZE "  Minimize", 0, popup->ID));
     EXPECT_EQ(frame().action, Action::Minimize);
+}
+
+TEST_F(TitleBarViewRenderTest, TheSystemMenuOfAMaximizedWindowOffersRestoreNotMaximize)
+{
+    const ImGuiWindow* menu = openSystemMenu(true);
+    ASSERT_NE(menu, nullptr);
+    // Maximize is shown but disabled: pressing it does nothing, and the menu stays open.
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_MAXIMIZE "  Maximize", 0, menu->ID));
+    EXPECT_EQ(frame(true).action, Action::None);
+    ASSERT_FALSE(GImGui->OpenPopupStack.empty());
+    // Restore is the way back.
+    menu = GImGui->OpenPopupStack.back().Window;
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_RESTORE "  Restore", 0, menu->ID));
+    EXPECT_EQ(frame(true).action, Action::Restore);
+}
+
+TEST_F(TitleBarViewRenderTest, TheSystemMenuOfANormalWindowOffersMaximizeAndClose)
+{
+    const ImGuiWindow* menu = openSystemMenu(false);
+    ASSERT_NE(menu, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_MAXIMIZE "  Maximize", 0, menu->ID));
+    EXPECT_EQ(frame().action, Action::Maximize);
+
+    menu = openSystemMenu(false);
+    ASSERT_NE(menu, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_XMARK "  Close", 0, menu->ID));
+    EXPECT_EQ(frame().action, Action::Close);
+}
+
+TEST_F(TitleBarViewRenderTest, TheAppButtonsSayWhatTheyDoOnHover)
+{
+    const TitleBarView::Output output = frame();
+    EXPECT_TRUE(hoverAndRead(output.layout.settings).contains(TitleBarButtons::SETTINGS_TOOLTIP));
+    EXPECT_TRUE(hoverAndRead(output.layout.help).contains(TitleBarButtons::HELP_TOOLTIP));
+    EXPECT_TRUE(hoverAndRead(output.layout.about).contains(TitleBarButtons::ABOUT_TOOLTIP));
 }
 
 } // namespace
