@@ -159,6 +159,10 @@ set(COMMON_TEST_SOURCES
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
+    Domain/test_LruMap.cpp
+    Domain/test_ProcessIconCache.cpp
+    # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
+    Platform/test_DesktopEntryIcons.cpp
     UI/test_ChartWidgets.cpp
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
@@ -188,6 +192,8 @@ set(COMMON_TEST_SOURCES
     UI/test_ThemeHeader.cpp
     UI/test_WidgetsHeader.cpp
     UI/test_IconLoader.cpp
+    UI/test_IconTextureCache.cpp
+    App/test_ProcessIconView.cpp
     UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
     UI/test_FontFileCache.cpp
@@ -341,6 +347,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
+    Platform/WindowsMath/test_WindowsProcessIconMath.cpp
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
@@ -356,6 +363,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSystemProbeNetwork.cpp
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessConnections.cpp
+    Platform/test_WindowsProcessIconSource.cpp
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsProcessSecurity.cpp
@@ -419,6 +427,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxROCmGPUProbe.cpp
     Platform/test_NetlinkSocketStats.cpp
     Platform/test_DRMGPUProbe.cpp
+    Platform/test_LinuxProcessIconSource.cpp
 )
 set(LINUX_INTEGRATION_TEST_SOURCES
     Integration/test_CrossLayer.cpp
@@ -527,6 +536,11 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDetailsPanel.cpp
     # The Processes panel as a whole, with a mock probe through its seam (test_ProcessesPanelRender.cpp, #1546)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanel.cpp
+    # The icon beside each process name (#1800): the panels draw it; test_ProcessIconView.cpp runs it
+    # headless with a fake texture backend
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIconView.cpp
+    ${CMAKE_SOURCE_DIR}/src/UI/IconTextureCache.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/ProcessIconCache.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/RenderMetrics.cpp
     # The Services tab's table (#800), run headless (test_ServicesViewRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ServiceActionsView.cpp
@@ -591,6 +605,8 @@ add_executable(TaskSmackTests
     # calls resolve against glad_gl_core_33 (linked below) - unlike Theme.cpp it doesn't need
     # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
+    # stb_image's implementation, which IconLoader.cpp and the Linux process icons call (#1800)
+    ${CMAKE_SOURCE_DIR}/src/Platform/StbImage.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
     # Marker glyphs for the value strip and series, drawn by test_FillPlotLayout.cpp and
     # test_ChartGeometryBudget.cpp under a live ImGui context

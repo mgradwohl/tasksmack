@@ -126,6 +126,7 @@ set(TASKSMACK_SOURCES
     src/UI/Theme.cpp
     src/UI/ThemeLoader.cpp
     src/UI/IconLoader.cpp
+    src/UI/IconTextureCache.cpp
     src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
     src/App/ElevationNoticeDialog.cpp
@@ -148,6 +149,7 @@ set(TASKSMACK_SOURCES
     src/App/UserConfig.cpp
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
+    src/App/Panels/ProcessIconView.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/ProcessDetailsCharts.cpp
     src/App/Panels/ProcessActionConfirm.cpp
@@ -188,8 +190,11 @@ set(TASKSMACK_SOURCES
     src/Domain/ServiceModel.cpp
     src/Domain/SystemInfoModel.cpp
     src/Domain/CrashHistory.cpp
+    src/Domain/ProcessIconCache.cpp
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
+    # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
+    src/Platform/StbImage.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
     src/Platform/Synthetic/SyntheticProbes.cpp
     src/Platform/Synthetic/SyntheticWorkload.cpp
@@ -199,6 +204,7 @@ set(TASKSMACK_SOURCES
 set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
     src/Platform/Linux/LinuxProcessActions.cpp
+    src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
@@ -224,6 +230,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
+    src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsProcessSecurity.cpp
@@ -306,6 +313,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessProbe.h
     src/Platform/IProcessActions.h
     src/Platform/IProcessEnvironment.h
+    src/Platform/IProcessIconSource.h
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
     src/Platform/IProcessModules.h
@@ -343,6 +351,10 @@ set(TASKSMACK_HEADERS
     src/Domain/ServiceModel.h
     src/Domain/SystemInfoModel.h
     src/Domain/CrashHistory.h
+    src/Domain/LruMap.h
+    src/Domain/ProcessIconCache.h
+    src/UI/IconTextureCache.h
+    src/App/Panels/ProcessIconView.h
 )
 
 # Platform-specific headers
@@ -350,6 +362,8 @@ if(UNIX AND NOT APPLE)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Linux/LinuxProcessProbe.h
         src/Platform/Linux/LinuxProcessEnvironmentReader.h
+        src/Platform/Linux/LinuxProcessIconSource.h
+        src/Platform/Linux/DesktopEntryIcons.h
         src/Platform/Linux/LinuxProcessConnectionsReader.h
         src/Platform/Linux/LinuxProcessModulesReader.h
         src/Platform/Linux/LinuxProcessSecurityReader.h
@@ -384,6 +398,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsProcessConnections.h
+        src/Platform/Windows/WindowsProcessIconSource.h
+        src/Platform/Windows/WindowsProcessIconMath.h
         src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsProcessSecurity.h

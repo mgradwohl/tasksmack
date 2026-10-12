@@ -200,6 +200,13 @@ void SettingsLayer::applySettings()
         spdlog::info("Settings: Show limited-data notice changed to {}", m_State.showPrivilegeNotice);
     }
 
+    // Process icons (#1800): the panels read the setting every frame, so it shows at once
+    if (m_State.showProcessIcons != settings.showProcessIcons)
+    {
+        settings.showProcessIcons = m_State.showProcessIcons;
+        spdlog::info("Settings: Show process icons changed to {}", m_State.showProcessIcons);
+    }
+
     // Save to disk
     config.save();
 }

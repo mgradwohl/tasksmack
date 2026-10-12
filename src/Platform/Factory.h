@@ -7,6 +7,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -28,6 +29,10 @@ namespace Platform
 
 /// Creates the platform-appropriate IProcessActions implementation.
 [[nodiscard]] std::unique_ptr<IProcessActions> makeProcessActions();
+
+/// Creates the platform-appropriate IProcessIconSource (#1800): executables' icons on Windows, desktop
+/// entries' PNG icons on Linux.
+[[nodiscard]] std::unique_ptr<IProcessIconSource> makeProcessIconSource();
 
 /// Creates the platform-appropriate IProcessEnvironmentReader implementation (#179). Windows returns
 /// an UnsupportedProcessEnvironmentReader (hasEnvironment() false).

@@ -902,7 +902,8 @@ void ProcessesPanel::onAttach()
     const Synthetic::Scenario* scenario = m_MakePlatform ? nullptr : Synthetic::activeScenario();
     ProcessesPanelPlatform platform = m_MakePlatform ? m_MakePlatform()
                                                      : ProcessesPanelPlatform{.probe = Synthetic::makeProcessProbe(scenario),
-                                                                              .actions = Synthetic::makeProcessActions(scenario)};
+                                                                              .actions = Synthetic::makeProcessActions(scenario),
+                                                                              .icons = Synthetic::makeProcessIconSource(scenario)};
     auto processProbe = std::move(platform.probe);
 
     const int socketStatsCacheTtlMs = UserConfig::get().settings().socketStatsCacheTtlMs;
@@ -914,6 +915,8 @@ void ProcessesPanel::onAttach()
     m_ProcessActions = std::move(platform.actions);
     m_ActionCapabilities = m_ProcessActions ? m_ProcessActions->actionCapabilities() : Platform::ProcessActionCapabilities{};
     m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
+    // The icons beside the names (#1800), loaded on their own worker as rows are first drawn.
+    m_IconView.attach(std::move(platform.icons));
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
     m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
     // The sparklines' histories (#1612), kept only for the columns that show one.
@@ -984,6 +987,8 @@ void ProcessesPanel::onDetach()
     // Save column settings to user config
     UserConfig::get().settings().processColumns = m_ColumnSettings;
     UserConfig::get().settings().processMeters = m_MeterSettings;
+    // While the GL context is current: deletes the icons' textures, and stops their loader (#1800).
+    m_IconView.detach();
     // Order doesn't matter for safety here, same as the destructor above: BackgroundSampler
     // observes m_ProcessModel via a weak_ptr, so it's never left holding a dangling pointer
     // regardless of which is reset first. Stopping the sampler first still avoids a sample()
@@ -1690,6 +1695,9 @@ void ProcessesPanel::renderContent()
         applyKeyboardInput(currentSnapshots, navCommand, killRequested, selectAllRequested);
 
         prepareRowMeters(currentSnapshots); // Inline meters (#1528)
+        // The Settings toggle, read each frame so a change shows at once; and the icons' size (#1800).
+        m_IconView.setEnabled(UserConfig::get().settings().showProcessIcons);
+        m_IconView.beginFrame();
 
         // Render process rows - tree view or flat list
         if (m_TreeViewEnabled)
@@ -2082,6 +2090,8 @@ void ProcessesPanel::renderNameCell(
         ImGui::SameLine();
     }
 
+    // The program's icon, or the generic one, before its name (#1800).
+    m_IconView.drawInline(proc);
     renderLeftAlignedText(proc.name, fmt.nameWidth);
 
     if (indented)

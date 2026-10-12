@@ -7,6 +7,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -23,6 +24,7 @@
 #include "WindowsPowerProbe.h"
 #include "WindowsProcessActions.h"
 #include "WindowsProcessConnections.h"
+#include "WindowsProcessIconSource.h"
 #include "WindowsProcessModules.h"
 #include "WindowsProcessOpenFiles.h"
 #include "WindowsProcessProbe.h"
@@ -47,6 +49,11 @@ std::unique_ptr<IProcessProbe> makeProcessProbe()
 std::unique_ptr<IProcessActions> makeProcessActions()
 {
     return std::make_unique<WindowsProcessActions>();
+}
+
+std::unique_ptr<IProcessIconSource> makeProcessIconSource()
+{
+    return std::make_unique<WindowsProcessIconSource>();
 }
 
 std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader()

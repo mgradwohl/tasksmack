@@ -89,7 +89,8 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
                     .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1))
                     .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
-                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
+                return ProcessesPanelPlatform{
+                    .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
             },
             std::move(raiseEvent),
             [] { return false; });
@@ -115,7 +116,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
                 mock->setCapabilities(
                     {.canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = true});
                 actions = mock.get();
-                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock)};
+                return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
             },
             std::move(raiseEvent));
         panel->onAttach();
@@ -601,7 +602,8 @@ TEST_F(ProcessesPanelRenderTest, TheSamplingIntervalFollowsInteractionAndTheTabO
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
             probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
-            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>()};
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
         },
         [](Core::Event&) {},
         [&interacting] { return interacting; });

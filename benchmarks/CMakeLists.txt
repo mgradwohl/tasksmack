@@ -63,6 +63,7 @@ add_executable(TaskSmackBenchmarks
     bench_ModelLimits.cpp
     bench_ProcessDetailsHistory.cpp
     bench_ProcessRowMeter.cpp
+    bench_ProcessIcons.cpp
     ${PLATFORM_BENCH_SOURCES}
     $<TARGET_OBJECTS:TaskSmackApp>
 )

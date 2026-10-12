@@ -29,6 +29,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessProbe.h"
@@ -105,6 +106,9 @@ class Scenario
 
 [[nodiscard]] std::unique_ptr<Platform::IProcessProbe> makeProcessProbe(const Scenario* scenario);
 [[nodiscard]] std::unique_ptr<Platform::IProcessActions> makeProcessActions(const Scenario* scenario);
+/// With a scenario, a source with no icons: synthetic PIDs are not real processes, and some may be the
+/// PIDs of real ones, whose icons must not be shown for them (#1800).
+[[nodiscard]] std::unique_ptr<Platform::IProcessIconSource> makeProcessIconSource(const Scenario* scenario);
 /// With a scenario, a reader that reports no environment support: synthetic PIDs are not real
 /// processes, and some may be the PIDs of real ones whose environment must not be shown for them.
 [[nodiscard]] std::unique_ptr<Platform::IProcessEnvironmentReader> makeProcessEnvironmentReader(const Scenario* scenario);

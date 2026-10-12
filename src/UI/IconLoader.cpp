@@ -5,26 +5,11 @@
 #include <glad/gl.h>
 #include <spdlog/spdlog.h>
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wsign-conversion"
-#pragma clang diagnostic ignored "-Wcast-align"
-#pragma clang diagnostic ignored "-Wdouble-promotion"
-#pragma clang diagnostic ignored "-Wimplicit-int-conversion"
-#pragma clang diagnostic ignored "-Wimplicit-fallthrough"
-#endif
-
-#define STB_IMAGE_IMPLEMENTATION
-#ifdef _WIN32
-// stbi_load() takes a UTF-8 file name and opens it with _wfopen, never through the code page (#1648).
-#define STBI_WINDOWS_UTF8
-#endif
+// The declarations only: the implementation is compiled once, in Platform/StbImage.cpp (#1800). It is
+// built with STBI_WINDOWS_UTF8, so stbi_load() takes a UTF-8 file name and opens it with _wfopen,
+// never through the code page (#1648).
 // NOLINTNEXTLINE(misc-include-cleaner) - stb_image.h macros generate scanner errors
 #include <stb_image.h>
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
 
 #include <filesystem>
 #include <utility>

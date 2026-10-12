@@ -73,6 +73,8 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md#cpu-compatibility) for build instruc
 
 The process table is the primary view. It lists all running processes with these columns:
 
+Each process's name has its program's icon beside it, as in Task Manager, and so does the Process Details tab's title. On Windows the icon is the executable's own; on Linux it comes from the application's desktop entry (`.desktop` file in `~/.local/share/applications`, `/usr/share/applications`, or Flatpak's and Snap's exported entries) and the hicolor icon theme, PNG icons only. A process with no icon, one TaskSmack can't read (another user's process without administrator or root rights), or one whose icon is still loading shows a generic window icon instead. Icons are read once per program, in the background, and kept in memory (at most 512 programs); turn them off with **Show process icons** in Settings.
+
 - **State** — what the process is doing (Running, Sleeping, and so on). Windows has no process state of its own, so there it comes from the process's threads: Running if any thread is running or ready to run, Stopped if every thread is suspended (a suspended app), otherwise Sleeping. The System Idle Process is Idle, and a process with no threads to judge by (Secure System) is Unknown. The column shows the state's one-letter code, as `ps` and `top` do: **R** Running, **S** Sleeping, **D** Disk Sleep (waiting on I/O), **Z** Zombie, **T** Stopped, **t** Tracing, **X** Dead, **I** Idle, **?** Unknown. Process Details spells the state out, in the same colour.
 - **CPU %** — percentage of total CPU time consumed since the last sample
 - **Mem %** — percentage of physical RAM used
@@ -521,7 +523,7 @@ If the saved position is no longer on any connected display (a monitor was unplu
 
 The Settings dialog (the gear icon) has three sections:
 
-- **Appearance:** Theme and Font size (Small to Largest).
+- **Appearance:** Theme, Font size (Small to Largest), and **Show process icons**, the programs' icons beside process names in the Processes table and Process Details (on by default).
 - **Performance:** Update interval (how often values are sampled) and History length (how much the charts keep).
 - **Advanced:** buttons that open `config.toml` and the user themes folder, and **Show limited-data notice**, which turns the startup notice about missing administrator or root rights back on after its "Don't show again" was ticked, and **About TaskSmack**, which closes Settings (without saving) and opens About.
 
