@@ -231,6 +231,10 @@ constexpr const char* PREVIOUS_OCCUPANT_UUID = "mock-nvml-previous-uuid";
 // #1353: which mock device's nvmlDeviceGetPciInfo_v3 fails (NO_FAILING_HANDLE: none). Set through
 // tasksmackNvmlMockSetFailingPciInfoDevice().
 unsigned int g_FailingPciInfoIndex = NO_FAILING_HANDLE; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
+// #1395: nvmlDeviceGetCount_v2 fails, and nvmlDeviceGetIndex fails. Set through tasksmackNvmlMockFailDeviceCount()
+// and tasksmackNvmlMockFailGetIndex().
+bool g_FailDeviceCount = false; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
+bool g_FailGetIndex = false;    // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - mock test control
 
 /// Whether `dev` currently presents as the previous occupant of device 0's slot.
 [[nodiscard]] bool isPreviousOccupant(const MockDevice* dev)
@@ -295,6 +299,10 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetCount_v2(unsigned int* count)
     {
+        if (g_FailDeviceCount)
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
+        }
         *count = g_DeviceCount;
         return NVML::NVML_SUCCESS;
     }
@@ -346,6 +354,10 @@ extern "C"
 
     NVML::nvmlReturn_t nvmlDeviceGetIndex(NVML::nvmlDevice_t device, unsigned int* index)
     {
+        if (g_FailGetIndex)
+        {
+            return NVML::NVML_ERROR_UNKNOWN;
+        }
         const auto idx = deviceIndex(device);
         if (idx == INVALID_DEVICE_INDEX)
         {
@@ -656,6 +668,17 @@ extern "C"
     void tasksmackNvmlMockSetFailingPciInfoDevice(unsigned int index)
     {
         g_FailingPciInfoIndex = index;
+    }
+
+    // Test controls (#1395): nvmlDeviceGetCount_v2, and nvmlDeviceGetIndex, fail while set.
+    void tasksmackNvmlMockFailDeviceCount(int fail)
+    {
+        g_FailDeviceCount = (fail != 0);
+    }
+
+    void tasksmackNvmlMockFailGetIndex(int fail)
+    {
+        g_FailGetIndex = (fail != 0);
     }
 
     const char* nvmlErrorString(NVML::nvmlReturn_t /*result*/)

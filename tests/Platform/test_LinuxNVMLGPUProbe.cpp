@@ -505,6 +505,8 @@ class NvmlMockControls
             m_QueriesForDevice = reinterpret_cast<QueriesForDeviceFn>(dlsym(m_Library, "tasksmackNvmlMockQueriesForDevice"));
             m_SetPreviousOccupant = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockSetPreviousOccupant"));
             m_SetFailingPciInfo = reinterpret_cast<SetIndexFn>(dlsym(m_Library, "tasksmackNvmlMockSetFailingPciInfoDevice"));
+            m_FailDeviceCount = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockFailDeviceCount"));
+            m_FailGetIndex = reinterpret_cast<FailSensorReadsFn>(dlsym(m_Library, "tasksmackNvmlMockFailGetIndex"));
             // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
         }
     }
@@ -538,6 +540,14 @@ class NvmlMockControls
         if (m_SetFailingPciInfo != nullptr)
         {
             m_SetFailingPciInfo(NO_FAILING_HANDLE);
+        }
+        if (m_FailDeviceCount != nullptr)
+        {
+            m_FailDeviceCount(0);
+        }
+        if (m_FailGetIndex != nullptr)
+        {
+            m_FailGetIndex(0);
         }
         if (m_Library != nullptr)
         {
@@ -627,8 +637,28 @@ class NvmlMockControls
     SetIndexFn m_FailInits = nullptr;
     FailSensorReadsFn m_SetPreviousOccupant = nullptr;
     SetIndexFn m_SetFailingPciInfo = nullptr;
+    FailSensorReadsFn m_FailDeviceCount = nullptr;
+    FailSensorReadsFn m_FailGetIndex = nullptr;
 
   public:
+    /// Whether the mock can fail nvmlDeviceGetCount_v2 and nvmlDeviceGetIndex (#1395).
+    [[nodiscard]] bool controlsCountAndIndex() const
+    {
+        return m_FailDeviceCount != nullptr && m_FailGetIndex != nullptr;
+    }
+
+    /// nvmlDeviceGetCount_v2 fails while set.
+    void failDeviceCount(bool fail) const
+    {
+        m_FailDeviceCount(fail ? 1 : 0);
+    }
+
+    /// nvmlDeviceGetIndex fails while set.
+    void failGetIndex(bool fail) const
+    {
+        m_FailGetIndex(fail ? 1 : 0);
+    }
+
     /// Calls that have addressed a device so far (NVML mock's tasksmackNvmlMockDeviceQueries).
     [[nodiscard]] unsigned int deviceQueries() const
     {
@@ -1846,6 +1876,52 @@ TEST(LinuxNVMLGPUProbeTest, AGpuAsleepThroughARestartKeepsItsSensors)
     EXPECT_TRUE(counters[1].suspended);
     EXPECT_EQ(counters[1].memoryTotalBytes, 16ULL * 1024ULL * 1024ULL * 1024ULL);
     EXPECT_FALSE(probe.rescanGPUs(GPURescan::Quick)); // nothing left to find
+}
+
+// #1395: NVML that starts but can't count its devices is not available, and an unavailable probe
+// reads nothing.
+TEST(LinuxNVMLGPUProbeTest, NvmlThatCantCountItsDevicesIsUnavailable)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsCountAndIndex());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_no_count");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+
+    controls.failDeviceCount(true);
+    NVMLGPUProbe probe(pciRoot.path.string());
+    EXPECT_FALSE(probe.isAvailable());
+    EXPECT_TRUE(probe.enumerateGPUs().empty());
+    EXPECT_TRUE(probe.readGPUCounters().empty());
+    EXPECT_TRUE(probe.readProcessGPUCounters().empty());
+}
+
+// #1395: a GPU whose index NVML won't give is still enumerated, in its place.
+TEST(LinuxNVMLGPUProbeTest, AGpuWhoseIndexCantBeReadKeepsItsPlace)
+{
+    const auto envGuard = TestSupport::checkMockGpuLibrariesPreloaded();
+    if (!envGuard.mocksPreloaded())
+    {
+        GTEST_SKIP() << "Mock NVML library not preloaded; run via CTest or set LD_LIBRARY_PATH=" TASKSMACK_TEST_GPU_MOCK_DIR;
+    }
+    const NvmlMockControls controls;
+    ASSERT_TRUE(controls.controlsCountAndIndex());
+    const TestSupport::ScopedTempDir pciRoot("tasksmack_nvml_no_index");
+    makePciDevice(pciRoot.path, "0000:01:00.0", "0x10de", "nvidia");
+    makePciDevice(pciRoot.path, "0000:41:00.0", "0x10de", "nvidia");
+
+    controls.failGetIndex(true);
+    NVMLGPUProbe probe(pciRoot.path.string());
+    ASSERT_TRUE(probe.isAvailable());
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 2U);
+    EXPECT_EQ(gpus[0].name, "Mock NVIDIA GPU 0");
+    EXPECT_EQ(gpus[1].name, "Mock NVIDIA GPU 1");
+    EXPECT_EQ(probe.readGPUCounters().size(), 2U);
 }
 
 // #1295 review: a restart that fails while the NVIDIA GPUs are still there reports no change, so
