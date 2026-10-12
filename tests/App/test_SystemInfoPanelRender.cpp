@@ -41,6 +41,7 @@ struct ProbeLog
     std::atomic<int> reads{0};
     std::atomic<bool> hold{false}; ///< While set, a read waits: a read "in flight".
     bool withSensors = false;      ///< The probe reports a temperature sensor.
+    bool allSensorKinds = false;   ///< With withSensors: a second device with a fan, power, voltage and current (#1395).
     std::atomic<int> sensorReads{0};
     bool wifiGated = false;               ///< The platform gates the Wi-Fi details behind location access (#1782).
     std::atomic<int> adapterReadsWith{0}; ///< readNetworkAdapters() calls that asked for the Wi-Fi details
@@ -115,6 +116,24 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
                                               .value = 40.0 + static_cast<double>(m_Log->sensorReads.load()),
                                               .high = std::nullopt,
                                               .critical = std::nullopt}}});
+        if (m_Log->allSensorKinds)
+        {
+            info.devices.push_back(
+                {.name = "nct6775",
+                 .readings = {
+                     {.kind = Platform::SensorKind::Fan, .label = "fan1", .value = 1200.0, .high = std::nullopt, .critical = std::nullopt},
+                     {.kind = Platform::SensorKind::Power,
+                      .label = "power1",
+                      .value = 35.0,
+                      .high = std::nullopt,
+                      .critical = std::nullopt},
+                     {.kind = Platform::SensorKind::Voltage, .label = "in0", .value = 1.2, .high = std::nullopt, .critical = std::nullopt},
+                     {.kind = Platform::SensorKind::Current,
+                      .label = "curr1",
+                      .value = 3.5,
+                      .high = std::nullopt,
+                      .critical = std::nullopt}}});
+        }
         return info;
     }
     [[nodiscard]] Platform::DevicesInfo readDevices() override
@@ -405,6 +424,38 @@ TEST_F(SystemInfoPanelRenderTest, ShowWifiDetailsReadsThemAndRefreshKeepsReading
     EXPECT_EQ(m_Log.adapterReadsWith.load(), 2) << "the choice holds for the session";
     EXPECT_EQ(m_Log.adapterReadsWithout.load(), 1);
     EXPECT_TRUE(frame().contains(WIFI_PHY));
+}
+
+// #1395: Copy all puts every section's text on the clipboard.
+TEST_F(SystemInfoPanelRenderTest, CopyAllPutsThePageOnTheClipboard)
+{
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    ImGui::SetClipboardText("");
+    const ImGuiWindow* window = ImGui::FindWindowByName("Panel");
+    ASSERT_NE(window, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_COPY "  Copy all", 0, window->ID));
+    static_cast<void>(frame());
+    static_cast<void>(frame());
+    const char* clipboard = ImGui::GetClipboardText();
+    ASSERT_NE(clipboard, nullptr);
+    EXPECT_TRUE(std::string_view(clipboard).contains("Fixture Linux 1")) << clipboard;
+}
+
+// #1395: a sensor of every kind -- fan, power, voltage, current beside the temperature -- is listed.
+TEST_F(SystemInfoPanelRenderTest, EverySensorKindIsListed)
+{
+    m_Log.withSensors = true;
+    m_Log.allSensorKinds = true;
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("nct6775"));
+    const std::string text = frame();
+    for (const char* label : {"fan1", "power1", "in0", "curr1", "Package id 0"})
+    {
+        EXPECT_TRUE(text.contains(label)) << label << " in:\n" << text;
+    }
 }
 
 // #1782: where the platform doesn't gate them (Linux), the Wi-Fi rows are read with the page, no button.
