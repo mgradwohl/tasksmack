@@ -19,6 +19,7 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
+#include "Domain/ProcessRowHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/IProcessActions.h"
@@ -360,7 +361,7 @@ class ProcessesPanel : public Panel
     // hides differently is the user's toggle in its header menu; before, it is a restored layout.
     bool m_TableShowsColumnSettings = false;
 
-    // Inline meters (#1528): which columns draw one (Columns > Show meter, saved in config.toml), the
+    // Inline meters (#1528): what each column draws (Columns > Show meter, saved in config.toml), the
     // absolute columns' maxima for the adopted generation (rebuilt once per generation, not per frame),
     // and this frame's heat colours. m_MetersShown is false on a frame with no meter on, so the rows
     // skip the per-cell check entirely.
@@ -369,6 +370,9 @@ class ProcessesPanel : public Panel
     std::uint64_t m_MeterMaximaVersion = std::numeric_limits<std::uint64_t>::max();
     ProcessRowMeter::Colors m_MeterColors;
     bool m_MetersShown = false;
+    // The sparklines' rings published with m_CachedRenderSnapshots' generation (#1612), row-aligned
+    // with it; null while no column shows a sparkline, when the model keeps none.
+    std::shared_ptr<const Domain::ProcessRowHistory::Generation> m_CachedRowHistory;
 
     // Tree view gives the Name column room (#1209): adjusted once when the view mode changes. The
     // width it had before, and the width tree view set (0 when it left it alone), so leaving tree
@@ -549,7 +553,7 @@ class ProcessesPanel : public Panel
     /// The toolbar's Columns menu: a check per column and "Reset columns" (#1209).
     void renderColumnsMenu();
 
-    /// The Columns menu's "Show meter" submenu (#1528): a check per meter column.
+    /// The Columns menu's "Show meter" submenu (#1528): off, bar or sparkline (#1612) per meter column.
     void renderMeterMenu();
 
     /// Readies this frame's meters (#1528): the maxima for a newly adopted generation, the theme's
@@ -628,7 +632,8 @@ class ProcessesPanel : public Panel
     /// @param depth Indentation depth in the tree.
     /// @param hasChildren Whether the process has children.
     /// @param isExpanded Whether the children are visible.
-    void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded);
+    /// @param procIdx The process's index in the adopted generation, which its sparklines are found by.
+    void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded, std::size_t procIdx);
 
     /// The PID cell: the row's selectable (entered even when the column is scrolled out of view, so
     /// the row stays clickable, #962) and, when `columnVisible`, the right-aligned PID.

@@ -40,15 +40,20 @@ runs:
     # below. Only runs on main save the entry (the same rule as the ccache and FetchContent
     # caches), so pull requests read main's copy and never add their own. Bump the -v suffix to
     # discard a bad entry; a new llvm-version gets a new key automatically.
+    #
+    # v2 leaves out ~1.2 GB of tools no job here runs (see "Stage LLVM install"), so the restore
+    # extracts ~40% less. restore-keys accepts an older -v entry of the same llvm-version: it is a
+    # complete install too, and main then re-stages and saves the current -v (#1406).
     - name: Restore cached LLVM install
       id: llvm-cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: C:\llvm-cache
-        key: windows-llvm-${{ inputs.llvm-version }}-${{ runner.arch }}-v1
+        key: windows-llvm-${{ inputs.llvm-version }}-${{ runner.arch }}-v2
+        restore-keys: windows-llvm-${{ inputs.llvm-version }}-${{ runner.arch }}-
 
     - name: Use cached LLVM install
-      if: steps.llvm-cache.outputs.cache-hit == 'true'
+      if: steps.llvm-cache.outputs.cache-matched-key != ''
       shell: pwsh
       # Renames the image's own LLVM aside and moves the cached tree into its place, retrying the
       # rename and falling back to copying over the image's tree when a held handle refuses it
@@ -56,7 +61,7 @@ runs:
       run: '& "$env:GITHUB_ACTION_PATH\use-cached-llvm.ps1"'
 
     - name: Install LLVM
-      if: steps.llvm-cache.outputs.cache-hit != 'true'
+      if: steps.llvm-cache.outputs.cache-matched-key == ''
       shell: pwsh
       env:
         LLVM_VERSION: ${{ inputs.llvm-version }}
@@ -82,7 +87,7 @@ runs:
       shell: pwsh
       env:
         LLVM_VERSION: ${{ inputs.llvm-version }}
-        LLVM_SOURCE: ${{ steps.llvm-cache.outputs.cache-hit == 'true' && 'cache' || 'chocolatey' }}
+        LLVM_SOURCE: ${{ steps.llvm-cache.outputs.cache-matched-key != '' && format('cache {0}', steps.llvm-cache.outputs.cache-matched-key) || 'chocolatey' }}
       run: |
         $clang = 'C:\Program Files\LLVM\bin\clang.exe'
         if (-not (Test-Path -LiteralPath $clang)) {
@@ -105,8 +110,16 @@ runs:
         echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         exit 0
 
-    # Save on main only, after a miss (a new llvm-version or an evicted entry). The staged copy
-    # is what the restore step above expects at C:\llvm-cache\LLVM.
+    # Save on main only, after a miss (a new llvm-version, an evicted entry, or an older -v restored
+    # through restore-keys). The staged copy is what the restore step above expects at
+    # C:\llvm-cache\LLVM.
+    #
+    # The copy leaves out what no workflow or tools/ script here runs, ~1.2 GB of the ~3 GB install:
+    # Fortran (flang, bbc, fir-*, tco), LLDB (lldb*, liblldb.dll), the offload/SYCL/CUDA link
+    # wrappers, clang-repl, the static analyzer's cross-TU mapper, clang-installapi (Apple TBD
+    # files), clang-ssaf-*, and the wasm/Mach-O linker copies of lld. The compilers, lld-link,
+    # ld.lld, clang-tidy, clang-format, clangd and every llvm-* tool (llvm-rc, llvm-ar, llvm-cov,
+    # llvm-profdata, llvm-symbolizer, ...) stay.
     - name: Stage LLVM install for the cache (main only)
       id: llvm-stage
       # Caching is an optimisation: a failed copy must not fail the build.
@@ -116,7 +129,12 @@ runs:
         github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
       shell: pwsh
       run: |
-        robocopy 'C:\Program Files\LLVM' 'C:\llvm-cache\LLVM' /E /COPY:DAT /DCOPY:DAT /R:2 /W:5 /NFL /NDL /NP
+        # After an older -v hit, the overlay fallback leaves the restored tree here; stage afresh.
+        if (Test-Path -LiteralPath 'C:\llvm-cache') { Remove-Item -LiteralPath 'C:\llvm-cache' -Recurse -Force }
+        robocopy 'C:\Program Files\LLVM' 'C:\llvm-cache\LLVM' /E /COPY:DAT /DCOPY:DAT /R:2 /W:5 /NFL /NDL /NP `
+          /XF flang*.exe bbc.exe fir-*.exe tco.exe lldb*.exe liblldb.dll clang-repl.exe `
+              clang-linker-wrapper.exe clang-nvlink-wrapper.exe clang-sycl-linker.exe clang-offload-*.exe `
+              clang-extdef-mapping.exe clang-installapi.exe clang-ssaf-*.exe wasm-ld.exe ld64.lld.exe
         # robocopy exit codes below 8 mean success.
         if ($LASTEXITCODE -ge 8) { exit 1 }
         exit 0
@@ -126,4 +144,4 @@ runs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: C:\llvm-cache
-        key: windows-llvm-${{ inputs.llvm-version }}-${{ runner.arch }}-v1
+        key: windows-llvm-${{ inputs.llvm-version }}-${{ runner.arch }}-v2

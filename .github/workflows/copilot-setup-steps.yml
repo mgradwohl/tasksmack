@@ -11,6 +11,12 @@ on:
         paths:
             - .github/workflows/copilot-setup-steps.yml
 
+# A new push to a branch or PR cancels its superseded validation run (#1406); pushes to main get one
+# group per commit and are never cancelled. Copilot itself only reads the job below.
+concurrency:
+    group: copilot-setup-steps-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+    cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
     LLVM_VERSION: '22'
 

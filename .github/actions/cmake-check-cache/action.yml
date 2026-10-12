@@ -1,0 +1,117 @@
+name: 'CMake configure-check cache'
+description: >-
+  Restore (mode: restore) or save (mode: save) the results of CMake's configure checks for one
+  preset, preloaded into the next configure with `cmake -C` so it skips their try_compiles (#1406).
+  On the Windows runners SDL3 alone runs ~180 checks at ~0.6 s each, which made Configure take
+  110-130 s; the same configure on Linux takes ~20 s, so only the Windows jobs use this.
+
+inputs:
+  mode:
+    description: "'restore' (before Configure) or 'save' (after Configure)"
+    required: true
+  preset:
+    description: 'The configure preset, part of the key (check flags differ between presets)'
+    required: true
+  toolchain:
+    description: 'The compiler version, part of the key (e.g. the Windows LLVM semver)'
+    required: true
+  build-dir:
+    description: 'mode: save only -- the configured build directory holding CMakeCache.txt'
+    required: false
+    default: ''
+  cache-hit:
+    description: "mode: save only -- the restore step's cache-hit output; a seeded configure is never re-exported"
+    required: false
+    default: 'false'
+
+outputs:
+  cache-hit:
+    description: 'mode: restore only -- true when results for this exact key were restored'
+    value: ${{ steps.restore.outputs.cache-hit }}
+  cmake-args:
+    description: "mode: restore only -- '-C <seed>' to append to the configure command on a hit, else empty"
+    value: ${{ steps.args.outputs.cmake-args }}
+
+runs:
+  using: 'composite'
+  steps:
+    # The key changes whenever a check could give a different answer, so a hit is always exact
+    # (no restore-keys fallback):
+    #  - the compiler (toolchain input) and the runner image (ImageOS/ImageVersion: the Windows SDK
+    #    headers and libraries the checks probe);
+    #  - every file that declares, pins, patches or configures a dependency or defines a check:
+    #    CMakePresets.json, the top-level CMakeLists.txt, everything under cmake/ (Dependencies.cmake,
+    #    patches, CompilerOptions.cmake's own checks), and the dependency preamble of
+    #    tests/ and benchmarks/CMakeLists.txt (everything up to their last FetchContent_MakeAvailable,
+    #    plus any later FetchContent or check line) -- not their source lists, which change with
+    #    every new test file;
+    #  - the export script, so a change to what it keeps discards old seeds.
+    # Bump the -v suffix to discard every entry by hand.
+    - name: Configure-check cache key
+      id: key
+      shell: bash
+      env:
+        PRESET: ${{ inputs.preset }}
+        TOOLCHAIN: ${{ inputs.toolchain }}
+      run: |
+        hash=$( {
+          printf '%s\n' "$PRESET" "$TOOLCHAIN" "${ImageOS:-}" "${ImageVersion:-}"
+          cat CMakePresets.json CMakeLists.txt
+          find cmake -type f | LC_ALL=C sort | while IFS= read -r f; do printf '%s\n' "$f"; cat "$f"; done
+          for f in tests/CMakeLists.txt benchmarks/CMakeLists.txt; do
+            printf '%s\n' "$f"
+            awk '{ line[NR] = $0 } /FetchContent_MakeAvailable/ { last = NR } END { for (i = 1; i <= last; i++) print line[i] }' "$f"
+            grep -E 'FetchContent_|check_[a-z_]+[[:space:]]*\(|try_(compile|run)|CMAKE_REQUIRED_' "$f" || true
+          done
+          cat "$GITHUB_ACTION_PATH/export-check-results.ps1"
+        } | sha256sum | cut -c1-16 )
+        echo "key=${RUNNER_OS}-cmake-checks-${PRESET}-${hash}-v1" >> "$GITHUB_OUTPUT"
+        echo "file=.cache/cmake-checks/${PRESET}.cmake" >> "$GITHUB_OUTPUT"
+        echo "Configure-check cache key: ${RUNNER_OS}-cmake-checks-${PRESET}-${hash}-v1"
+
+    - name: Restore configure-check results
+      id: restore
+      if: inputs.mode == 'restore'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.file }}
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Preload arguments
+      id: args
+      if: inputs.mode == 'restore'
+      shell: pwsh
+      env:
+        SEED: ${{ steps.key.outputs.file }}
+        HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: |
+        if ($env:HIT -eq 'true' -and (Test-Path -LiteralPath $env:SEED)) {
+          $path = (Resolve-Path -LiteralPath $env:SEED).Path -replace '\\', '/'
+          $count = @(Select-String -LiteralPath $path -Pattern '^set\(').Count
+          Write-Host "Preloading $count configure-check results from $path"
+          "cmake-args=-C $path" >> $env:GITHUB_OUTPUT
+        } else {
+          Write-Host 'No configure-check results for this key; Configure runs every check.'
+          'cmake-args=' >> $env:GITHUB_OUTPUT
+        }
+
+    # Saved from pull requests too, unlike the ccache/FetchContent/LLVM caches (#1554): an entry is a
+    # few KB, so it can't crowd main's entries out of the quota, and a PR that changes a key input
+    # (a CMake edit) then hits from its second push on.
+    - name: Export configure-check results
+      id: export
+      if: inputs.mode == 'save' && inputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        CACHE_FILE: ${{ inputs.build-dir }}/CMakeCache.txt
+        SEED: ${{ steps.key.outputs.file }}
+      run: |
+        & "$env:GITHUB_ACTION_PATH/export-check-results.ps1" -CachePath $env:CACHE_FILE -OutPath $env:SEED
+        "exported=$(Test-Path -LiteralPath $env:SEED)".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+
+    - name: Save configure-check results
+      if: steps.export.outputs.exported == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.file }}
+        key: ${{ steps.key.outputs.key }}

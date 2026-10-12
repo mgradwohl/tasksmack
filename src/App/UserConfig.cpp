@@ -367,14 +367,24 @@ void readSettings(const toml::table& config, UserSettings& settings)
         settings.processColumns.keepUnhideableColumnsVisible();
     }
 
-    // Inline meters (#1528): a key per meter column; one not listed keeps its default.
+    // Inline meters (#1528): a key per meter column, "off", "bar" or "sparkline" (#1612); the
+    // booleans saved before sparklines read as off and bar. One not listed, or not one of those, keeps
+    // its default.
     if (const auto* meters = config["process_meters"].as_table())
     {
         for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
         {
-            if (const auto val = (*meters)[getColumnInfo(col).configKey].value<bool>(); val.has_value())
+            const auto node = (*meters)[getColumnInfo(col).configKey];
+            if (const auto legacy = node.value<bool>(); legacy.has_value())
             {
-                settings.processMeters.set(col, *val);
+                settings.processMeters.setStyle(col, ProcessRowMeter::styleFromLegacyBool(*legacy));
+            }
+            else if (const auto key = node.value<std::string>(); key.has_value())
+            {
+                if (const auto style = ProcessRowMeter::parseStyle(*key); style.has_value())
+                {
+                    settings.processMeters.setStyle(col, *style);
+                }
             }
         }
     }
@@ -429,7 +439,8 @@ void readSettings(const toml::table& config, UserSettings& settings)
     auto processMetersTable = toml::table{};
     for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
     {
-        processMetersTable.insert(std::string(getColumnInfo(col).configKey), settings.processMeters.isOn(col));
+        processMetersTable.insert(std::string(getColumnInfo(col).configKey),
+                                  std::string(ProcessRowMeter::styleKey(settings.processMeters.style(col))));
     }
 
     // Build TOML document
@@ -836,7 +847,8 @@ void UserConfig::save()
     text << "#   config_version: the format of this file (written by TaskSmack; don't change it)\n";
     text << "#   [process_columns]: columns you showed (true) or hid (false); a column not listed follows the defaults, "
             "which hide one this system can't fill\n";
-    text << "#   [process_meters]: columns that draw a meter behind their value (true/false); Columns > Show meter\n";
+    text << "#   [process_meters]: what a column draws behind its value: \"off\", \"bar\" or \"sparkline\" (recent history); "
+            "Columns > Show meter\n";
     text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
     text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
     text << document;
