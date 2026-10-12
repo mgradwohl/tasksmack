@@ -15,6 +15,7 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -71,6 +72,7 @@ TEST(LinuxSystemInfoProbeTest, ReadsEverySectionOnThisMachine)
     LinuxSystemInfoProbe probe;
     EXPECT_TRUE(probe.capabilities().hasOs);
     EXPECT_TRUE(probe.capabilities().unavailableReason.empty());
+    EXPECT_FALSE(probe.capabilities().wifiDetailsGated); // no location gating: the Wi-Fi rows stay automatic (#1782)
 
     const OsInfo os = probe.readOs();
     EXPECT_EQ(os.family, OsFamily::Linux);
@@ -89,7 +91,7 @@ TEST(LinuxSystemInfoProbeTest, ReadsEverySectionOnThisMachine)
     EXPECT_TRUE(probe.readDrivers().available);
     EXPECT_TRUE(probe.readCrashes().available);
 
-    const NetworkAdaptersInfo network = probe.readNetworkAdapters();
+    const NetworkAdaptersInfo network = probe.readNetworkAdapters(/*includeWifiDetails=*/false);
     EXPECT_TRUE(network.available);
     EXPECT_TRUE(network.listed); // /sys/class/net is always there
     for (const NetworkAdapter& adapter : network.adapters)
@@ -119,7 +121,7 @@ TEST(LinuxSystemInfoProbeTest, AFixtureRootIsReadFromItsOwnFiles)
     EXPECT_TRUE(os.kernel.starts_with("Linux ")) << os.kernel;
 
     // Nothing else is in the root: every section is still read, and finds nothing.
-    const NetworkAdaptersInfo network = probe.readNetworkAdapters();
+    const NetworkAdaptersInfo network = probe.readNetworkAdapters(/*includeWifiDetails=*/false);
     EXPECT_TRUE(network.available);
     EXPECT_FALSE(network.listed); // no sys/class/net here
     EXPECT_TRUE(network.adapters.empty());
@@ -153,6 +155,32 @@ TEST(LinuxSystemInfoProbeTest, AFixtureRootIsReadFromItsOwnFiles)
     EXPECT_TRUE(probe.readGraphics().available);
     EXPECT_TRUE(probe.readPlatformSecurity().available);
     EXPECT_TRUE(probe.readDevices().available);
+}
+
+// #1782: Linux gates no Wi-Fi detail behind location access, so a read without the Wi-Fi details asked
+// for reads a Wi-Fi adapter just as one with them does, and withholds nothing.
+TEST(LinuxSystemInfoProbeTest, WifiRowsDontWaitForShowWifiDetails)
+{
+    const FixtureRoot root;
+    root.write("sys/class/net/wlp3s0/address", "3c:22:fb:00:11:22\n");
+    root.write("sys/class/net/wlp3s0/mtu", "1500\n");
+    root.write("sys/class/net/wlp3s0/operstate", "up\n");
+    std::filesystem::create_directories(root.path() / "sys/class/net/wlp3s0/wireless");
+    root.write("proc/net/wireless", "Inter-| sta-|\n face | tus |\nwlp3s0: 0000   54.  -61.  -256 0 0 0 0 0 0\n");
+    LinuxSystemInfoProbe probe(root.path());
+
+    const NetworkAdaptersInfo automatic = probe.readNetworkAdapters(/*includeWifiDetails=*/false);
+    const NetworkAdaptersInfo asked = probe.readNetworkAdapters(/*includeWifiDetails=*/true);
+    ASSERT_EQ(automatic.adapters.size(), 1U);
+    ASSERT_EQ(asked.adapters.size(), 1U);
+    const NetworkAdapter& wifi = automatic.adapters[0];
+    EXPECT_TRUE(wifi.wireless);
+    EXPECT_FALSE(wifi.wifiDetailsWithheld);
+    EXPECT_EQ(wifi.wifiSignalDbm, std::optional<int>(-61));
+    EXPECT_EQ(wifi.wifiSignalDbm, asked.adapters[0].wifiSignalDbm);
+    EXPECT_EQ(wifi.wifiLink.has_value(), asked.adapters[0].wifiLink.has_value());
+    EXPECT_EQ(wifi.wifiLinkUnavailable, asked.adapters[0].wifiLinkUnavailable);
+    EXPECT_FALSE(asked.adapters[0].wifiDetailsWithheld);
 }
 
 } // namespace

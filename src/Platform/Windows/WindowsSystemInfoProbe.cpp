@@ -1090,7 +1090,8 @@ SystemInfoFunctions WindowsSystemInfoProbe::systemFunctions()
 
 SystemInfoCapabilities WindowsSystemInfoProbe::capabilities() const
 {
-    return {.hasOs = true, .unavailableReason = {}};
+    // The Wi-Fi network name and BSS list need location access on Windows 11 24H2 and later (#1782).
+    return {.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = true};
 }
 
 OsInfo WindowsSystemInfoProbe::readOs()
@@ -1277,10 +1278,10 @@ BootPerformanceInfo WindowsSystemInfoProbe::readBootPerformance()
     return info;
 }
 
-NetworkAdaptersInfo WindowsSystemInfoProbe::readNetworkAdapters()
+NetworkAdaptersInfo WindowsSystemInfoProbe::readNetworkAdapters(bool includeWifiDetails)
 {
     NetworkAdaptersInfo info;
-    WindowsNetworkAdapters::readNetworkAdapters(info, WindowsNetworkAdapters::systemFunctions());
+    WindowsNetworkAdapters::readNetworkAdapters(info, WindowsNetworkAdapters::systemFunctions(), includeWifiDetails);
     return info;
 }
 

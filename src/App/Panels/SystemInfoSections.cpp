@@ -44,6 +44,7 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
         .unavailableReason = std::move(why),
         .isIdentifier = identifier,
         .sensorKind = std::nullopt,
+        .action = RowAction::None,
         .valueTooltip = {},
     };
 }
@@ -1725,7 +1726,7 @@ std::string formatDhcpLease(const Platform::DhcpLease& lease)
     return text;
 }
 
-Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network)
+Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network, bool wifiDetailsGated)
 {
     Section section{.title = "Network adapters", .icon = ICON_FA_ETHERNET, .rows = {}};
     auto& rows = section.rows;
@@ -1813,10 +1814,25 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         if (adapter.wireless)
         {
             rows.push_back(row(adapter.name + " Wi-Fi signal", formatWifiSignal(adapter), "Not reported by the driver, or not connected"));
-            // The network's name can place the machine, like a MAC address: an identifier.
-            const std::string_view linkReason = adapter.wifiLinkUnavailable.empty() ? NOT_REPORTED : adapter.wifiLinkUnavailable;
-            rows.push_back(
-                row(adapter.name + " Wi-Fi network", adapter.wifiLink ? adapter.wifiLink->ssid : std::string{}, linkReason, true));
+            if (wifiDetailsGated && adapter.wifiDetailsWithheld)
+            {
+                // Reading the network's name can raise a Windows location prompt, so it waits for a click
+                // (#1782). Not an identifier: the row names nothing, and its button must stay visible.
+                Row details = row(adapter.name + " Wi-Fi details",
+                                  {},
+                                  std::format("Not read yet: \"Show Wi-Fi details\" reads the network name, signal quality, "
+                                              "standard, band and rates ({})",
+                                              WIFI_DETAILS_NOTE));
+                details.action = RowAction::ShowWifiDetails;
+                rows.push_back(std::move(details));
+            }
+            else
+            {
+                // The network's name can place the machine, like a MAC address: an identifier.
+                const std::string_view linkReason = adapter.wifiLinkUnavailable.empty() ? NOT_REPORTED : adapter.wifiLinkUnavailable;
+                rows.push_back(
+                    row(adapter.name + " Wi-Fi network", adapter.wifiLink ? adapter.wifiLink->ssid : std::string{}, linkReason, true));
+            }
             if (adapter.wifiLink)
             {
                 rows.push_back(row(adapter.name + " Wi-Fi link", formatWifiLink(*adapter.wifiLink)));
@@ -1890,7 +1906,9 @@ Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot)
     return section;
 }
 
-std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot, const Core::GraphicsHostInfo& host)
+std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
+                                             const Core::GraphicsHostInfo& host,
+                                             const Platform::SystemInfoCapabilities& capabilities)
 {
     std::vector<Section> sections;
     if (snapshot.version == 0)
@@ -1931,7 +1949,7 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.adapters.available)
     {
-        sections.push_back(buildNetworkAdaptersSection(snapshot.adapters));
+        sections.push_back(buildNetworkAdaptersSection(snapshot.adapters, capabilities.wifiDetailsGated));
     }
     if (snapshot.boot.available)
     {

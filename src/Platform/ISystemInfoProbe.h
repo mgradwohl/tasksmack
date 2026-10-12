@@ -565,6 +565,10 @@ struct NetworkAdapter
     std::optional<int> wifiSignalDbm; ///< Wi-Fi: the signal level, when the driver reports one.
     std::optional<WifiLink> wifiLink; ///< Wi-Fi: the link, when it is connected and could be read.
     std::string wifiLinkUnavailable;  ///< Wi-Fi: why wifiLink is empty, for the UI; empty when unknown.
+    /// Wi-Fi, Windows: connected, but the details that need location access (the network name, signal
+    /// quality, standard, band and rates) were left out of this read because they weren't asked for
+    /// (#1782). The RSSI and channel number don't need location access and are still read.
+    bool wifiDetailsWithheld = false;
     /// The DNS servers set for this adapter alone; empty when there are none or they couldn't be read.
     /// Linux: systemd-resolved's per-link servers (which NetworkManager and systemd-networkd hand it).
     /// Windows: the adapter's DNS servers from GetAdaptersAddresses.
@@ -632,6 +636,9 @@ struct SystemInfoCapabilities
 {
     bool hasOs = false;            ///< readOs() and readFirmware() return facts.
     std::string unavailableReason; ///< Why hasOs is false, for the UI. Empty when it is true.
+    /// Reading the Wi-Fi details can ask the user for location access (Windows 11 24H2 and later), so
+    /// readNetworkAdapters() reads them only when asked (#1782). False where they are always read (Linux).
+    bool wifiDetailsGated = false;
 };
 
 /// Reads the System Information page's static facts. Called from one thread at a time, which may
@@ -683,8 +690,10 @@ class ISystemInfoProbe
     /// The Recent crashes & hangs facts (#1524); read when hasOs is true. Reads logs only: nothing is cleared or written.
     [[nodiscard]] virtual CrashesInfo readCrashes() = 0;
 
-    /// The Network adapters facts (#1518); read when hasOs is true.
-    [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters() = 0;
+    /// The Network adapters facts (#1518); read when hasOs is true. Where capabilities().wifiDetailsGated,
+    /// the Wi-Fi details that can raise a location prompt are read only with @p includeWifiDetails (#1782);
+    /// elsewhere it is ignored and they are always read.
+    [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters(bool includeWifiDetails) = 0;
 
     /// The Boot performance facts (#1525); read when hasOs is true.
     [[nodiscard]] virtual BootPerformanceInfo readBootPerformance() = 0;
@@ -754,7 +763,7 @@ class UnsupportedSystemInfoProbe final : public ISystemInfoProbe
         return {};
     }
 
-    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override
+    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters(bool /*includeWifiDetails*/) override
     {
         return {};
     }

@@ -4,6 +4,7 @@
 #include "Domain/PublicationSlot.h"
 #include "Platform/ISystemInfoProbe.h"
 
+#include <atomic>
 #include <cstdint>
 #include <format>
 #include <map>
@@ -76,6 +77,8 @@ struct SystemInfoSnapshot
     std::map<std::string, SensorRange> sensorRanges;
     /// Each sensor's recent readings, keyed as sensorRanges; appended to by the same reads (#1522).
     std::map<std::string, SensorHistory> sensorHistories;
+    /// This read asked the probe for the Wi-Fi details that can raise a location prompt (#1782).
+    bool wifiDetailsIncluded = false;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,
@@ -115,6 +118,20 @@ class SystemInfoModel
         return m_Slot.version();
     }
 
+    /// From now on, every read() asks the probe for the Wi-Fi details too, which can raise a Windows
+    /// location prompt (#1782): the user clicked "Show Wi-Fi details". The choice holds for the model's
+    /// life (the session). Thread-safe; takes effect from the next read() that starts.
+    void includeWifiDetails() noexcept
+    {
+        m_IncludeWifiDetails.store(true, std::memory_order_relaxed);
+    }
+
+    /// Whether includeWifiDetails() was called.
+    [[nodiscard]] bool wifiDetailsIncluded() const noexcept
+    {
+        return m_IncludeWifiDetails.load(std::memory_order_relaxed);
+    }
+
     /// What the probe can read, fixed at construction.
     [[nodiscard]] const Platform::SystemInfoCapabilities& capabilities() const noexcept
     {
@@ -124,7 +141,8 @@ class SystemInfoModel
   private:
     std::unique_ptr<Platform::ISystemInfoProbe> m_Probe; // used under m_ReadMutex only
     Platform::SystemInfoCapabilities m_Capabilities;
-    std::shared_ptr<CrashHistory> m_CrashHistory; // may be null
+    std::shared_ptr<CrashHistory> m_CrashHistory;  // may be null
+    std::atomic<bool> m_IncludeWifiDetails{false}; // set from the UI thread, read by read() (#1782)
     std::mutex m_ReadMutex;
     std::uint64_t m_LastVersion = 0;                        // guarded by m_ReadMutex
     std::map<std::string, SensorRange> m_SensorRanges;      // guarded by m_ReadMutex

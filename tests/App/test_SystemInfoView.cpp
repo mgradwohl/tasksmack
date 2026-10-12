@@ -868,6 +868,86 @@ TEST(SystemInfoSectionsTest, WifiNetworkAndLinkRows)
     EXPECT_EQ(findRow(section, "wlan1 Wi-Fi link"), nullptr);
 }
 
+// #1782: where the platform gates the Wi-Fi details behind location access, a wireless adapter whose
+// details weren't read gets a "Wi-Fi details" row with the "Show Wi-Fi details" button in place of its
+// network name; a wired adapter, a disconnected one, and every adapter where they aren't gated don't.
+TEST(SystemInfoSectionsTest, ShowWifiDetailsRowOnlyForWirelessAdaptersOnAGatedPlatform)
+{
+    Platform::NetworkAdaptersInfo network;
+    network.available = true;
+    network.family = Platform::OsFamily::Windows;
+    network.listed = true;
+    Platform::NetworkAdapter wifi;
+    wifi.name = "Wi-Fi";
+    wifi.up = true;
+    wifi.wireless = true;
+    wifi.wifiSignalDbm = -55;
+    wifi.wifiDetailsWithheld = true;
+    const auto channelOnly = [](std::string ssid)
+    {
+        return Platform::WifiLink{
+            .ssid = std::move(ssid),
+            .frequencyMhz = 0,
+            .bitrateKbps = 0,
+            .signalQuality = std::nullopt,
+            .phy = "",
+            .channel = 36,
+            .rxBitrateKbps = 0,
+        };
+    };
+    wifi.wifiLink = channelOnly("");
+    Platform::NetworkAdapter idle;
+    idle.name = "Wi-Fi 2";
+    idle.wireless = true;
+    idle.wifiLinkUnavailable = "Not connected";
+    Platform::NetworkAdapter ethernet;
+    ethernet.name = "Ethernet";
+    ethernet.up = true;
+    network.adapters = {ethernet, wifi, idle};
+
+    const Section gated = SystemInfo::buildNetworkAdaptersSection(network, /*wifiDetailsGated=*/true);
+    const Row* details = findRow(gated, "Wi-Fi Wi-Fi details");
+    ASSERT_NE(details, nullptr);
+    EXPECT_EQ(details->action, SystemInfo::RowAction::ShowWifiDetails);
+    EXPECT_FALSE(details->available());
+    EXPECT_FALSE(details->isIdentifier) << "the button stays visible with identifiers hidden";
+    EXPECT_TRUE(details->unavailableReason.contains("Show Wi-Fi details")) << details->unavailableReason;
+    EXPECT_TRUE(details->unavailableReason.contains(SystemInfo::WIFI_DETAILS_NOTE)) << details->unavailableReason;
+    EXPECT_EQ(findRow(gated, "Wi-Fi Wi-Fi network"), nullptr);
+    EXPECT_EQ(findRow(gated, "Wi-Fi Wi-Fi signal")->value, "-55 dBm") << "the RSSI needs no location access";
+    EXPECT_EQ(findRow(gated, "Wi-Fi Wi-Fi link")->value, "channel 36");
+    EXPECT_EQ(findRow(gated, "Wi-Fi 2 Wi-Fi details"), nullptr) << "not connected: nothing to show";
+    EXPECT_EQ(findRow(gated, "Wi-Fi 2 Wi-Fi network")->unavailableReason, "Not connected");
+    EXPECT_EQ(findRow(gated, "Ethernet Wi-Fi details"), nullptr);
+    const auto withButton = std::ranges::count(gated.rows, SystemInfo::RowAction::ShowWifiDetails, &Row::action);
+    EXPECT_EQ(withButton, 1);
+    EXPECT_TRUE(SystemInfo::sectionText(gated, false).contains("Wi-Fi Wi-Fi details: unavailable")) << "Copy says why";
+
+    // Not gated (Linux): no button, whatever the adapter says; the network row as before.
+    const Section ungated = SystemInfo::buildNetworkAdaptersSection(network, /*wifiDetailsGated=*/false);
+    EXPECT_EQ(std::ranges::count(ungated.rows, SystemInfo::RowAction::ShowWifiDetails, &Row::action), 0);
+    EXPECT_NE(findRow(ungated, "Wi-Fi Wi-Fi network"), nullptr);
+
+    // Once read with the details, the network row is back and there is no button.
+    wifi.wifiDetailsWithheld = false;
+    wifi.wifiLink = channelOnly("HomeNet");
+    network.adapters = {ethernet, wifi, idle};
+    const Section read = SystemInfo::buildNetworkAdaptersSection(network, /*wifiDetailsGated=*/true);
+    EXPECT_EQ(findRow(read, "Wi-Fi Wi-Fi details"), nullptr);
+    EXPECT_EQ(findRow(read, "Wi-Fi Wi-Fi network")->value, "HomeNet");
+
+    // Through the page's sections, the capability decides.
+    Domain::SystemInfoSnapshot snap = snapshot();
+    network.adapters = {ethernet, wifi, idle};
+    network.adapters[1].wifiDetailsWithheld = true;
+    snap.adapters = network;
+    const Platform::SystemInfoCapabilities windows{.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = true};
+    const auto sections = SystemInfo::buildSystemInfoSections(snap, {}, windows);
+    const auto adapters = std::ranges::find(sections, std::string("Network adapters"), &Section::title);
+    ASSERT_NE(adapters, sections.end());
+    EXPECT_NE(findRow(*adapters, "Wi-Fi Wi-Fi details"), nullptr);
+}
+
 TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)
 {
     Platform::NetworkAdaptersInfo network;

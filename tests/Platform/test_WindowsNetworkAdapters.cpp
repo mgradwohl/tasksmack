@@ -5,8 +5,9 @@
 /// collected from the up adapters without repeats or Windows' fec0 placeholders, DHCP, a list that grows
 /// between the size answer and the copy, the list failing or empty; then the Wi-Fi connection decoded
 /// (network name, quality, RSSI, PHY, band, channel, rates), the location-access denial, the channel
-/// alone, no wlanapi.dll, the service not running, and every WLAN answer freed. Plus one read of this
-/// machine through the real calls.
+/// alone, no wlanapi.dll, the service not running, and every WLAN answer freed; without the Wi-Fi details
+/// asked for, none of the location-gated calls made (#1782). Plus one read of this machine through the
+/// real calls, without the Wi-Fi details.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Windows/WindowsNetworkAdapters.h"
@@ -184,6 +185,9 @@ struct FakeState
     ULONG bssFrequencyKhz = 5'180'000;
     bool bssListFails = false;
 
+    std::map<WLAN_INTF_OPCODE, int> queries; ///< WlanQueryInterface calls, by opcode
+    int bssLists = 0;                        ///< WlanGetNetworkBssList calls
+
     int allocations = 0;
     int frees = 0;
     int opens = 0;
@@ -271,6 +275,7 @@ DWORD WINAPI fakeQuery(HANDLE /*client*/,
                        PWLAN_OPCODE_VALUE_TYPE /*type*/)
 {
     EXPECT_TRUE(IsEqualGUID(*guid, WIFI_GUID));
+    ++g_State.queries[opcode];
     if (const auto failed = g_State.queryStatus.find(opcode); failed != g_State.queryStatus.end())
     {
         return failed->second;
@@ -302,6 +307,7 @@ DWORD WINAPI fakeBssList(HANDLE /*client*/,
                          PVOID /*reserved*/,
                          PWLAN_BSS_LIST* list)
 {
+    ++g_State.bssLists;
     if (g_State.bssListFails)
     {
         return ERROR_ACCESS_DENIED;
@@ -327,6 +333,9 @@ VOID WINAPI fakeFree(PVOID memory)
 }
 
 constexpr std::uint64_t FAKE_NOW = 1'760'000'000;
+
+/// The reads that ask for the location-gated Wi-Fi details, as after "Show Wi-Fi details" (#1782).
+constexpr bool WITH_DETAILS = true;
 
 std::uint64_t fakeNow()
 {
@@ -419,7 +428,7 @@ TEST_F(WindowsNetworkAdaptersTest, WalksTheAdapterListsAndFormats)
     NetworkAdaptersInfo info;
     Functions fns = fakeFunctions();
     fns.wlanOpenHandle = nullptr; // no wlanapi.dll
-    readNetworkAdapters(info, fns);
+    readNetworkAdapters(info, fns, WITH_DETAILS);
 
     EXPECT_TRUE(info.available);
     EXPECT_EQ(info.family, OsFamily::Windows);
@@ -474,7 +483,7 @@ TEST_F(WindowsNetworkAdaptersTest, LowestMetricGatewayDnsFromUpAdaptersAndDhcp)
     g_State.adapters = {&lan, &down, &vpn};
 
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
 
     EXPECT_EQ(info.gatewayV4, "10.8.0.1") << "the up adapter with the lowest metric";
     EXPECT_EQ(info.gatewayV4Adapter, "VPN");
@@ -501,7 +510,7 @@ TEST_F(WindowsNetworkAdaptersTest, ListGrowsThenFailsOrIsEmpty)
     g_State.adapters = {&ethernet};
     g_State.overflowsFirst = 1;
     NetworkAdaptersInfo grown;
-    readNetworkAdapters(grown, fakeFunctions());
+    readNetworkAdapters(grown, fakeFunctions(), WITH_DETAILS);
     EXPECT_TRUE(grown.listed);
     EXPECT_EQ(grown.adapters.size(), 1U);
     ASSERT_EQ(g_State.bufferSizes.size(), 2U);
@@ -510,7 +519,7 @@ TEST_F(WindowsNetworkAdaptersTest, ListGrowsThenFailsOrIsEmpty)
     g_State.bufferSizes.clear();
     g_State.overflowsFirst = 100; // never settles
     NetworkAdaptersInfo unsettled;
-    readNetworkAdapters(unsettled, fakeFunctions());
+    readNetworkAdapters(unsettled, fakeFunctions(), WITH_DETAILS);
     EXPECT_TRUE(unsettled.available);
     EXPECT_FALSE(unsettled.listed);
     EXPECT_FALSE(unsettled.dnsRead);
@@ -519,14 +528,14 @@ TEST_F(WindowsNetworkAdaptersTest, ListGrowsThenFailsOrIsEmpty)
     g_State.overflowsFirst = 0;
     g_State.listStatus = ERROR_NOT_ENOUGH_MEMORY;
     NetworkAdaptersInfo failed;
-    readNetworkAdapters(failed, fakeFunctions());
+    readNetworkAdapters(failed, fakeFunctions(), WITH_DETAILS);
     EXPECT_FALSE(failed.listed);
     EXPECT_TRUE(failed.adapters.empty());
 
     g_State.listStatus = ERROR_SUCCESS;
     g_State.adapters.clear();
     NetworkAdaptersInfo none;
-    readNetworkAdapters(none, fakeFunctions());
+    readNetworkAdapters(none, fakeFunctions(), WITH_DETAILS);
     EXPECT_TRUE(none.listed) << "ERROR_NO_DATA: listed, and there are none";
     EXPECT_TRUE(none.adapters.empty());
 }
@@ -536,7 +545,7 @@ TEST_F(WindowsNetworkAdaptersTest, DecodesTheWifiLink)
     FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
     g_State.adapters = {&wifi};
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
 
     ASSERT_EQ(info.adapters.size(), 1U);
     const NetworkAdapter& adapter = info.adapters[0];
@@ -562,7 +571,7 @@ TEST_F(WindowsNetworkAdaptersTest, SsidBytesAreEscapedForDisplay)
     std::ranges::copy(bytes, std::begin(ssid.ucSSID));
     ssid.uSSIDLength = static_cast<ULONG>(bytes.size());
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
     EXPECT_EQ(wifiOf(info.adapters[0]).ssid, "Cafe \\xFF");
 }
 
@@ -572,7 +581,7 @@ TEST_F(WindowsNetworkAdaptersTest, SixGigahertzIsWifi6E)
     g_State.adapters = {&wifi};
     g_State.bssFrequencyKhz = 6'135'000;
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
     ASSERT_TRUE(info.adapters[0].wifiLink.has_value());
     EXPECT_EQ(wifiOf(info.adapters[0]).phy, "802.11ax (Wi-Fi 6E)");
     EXPECT_EQ(wifiOf(info.adapters[0]).frequencyMhz, 6135U);
@@ -584,7 +593,7 @@ TEST_F(WindowsNetworkAdaptersTest, LocationDeniedKeepsTheRssiAndChannel)
     g_State.adapters = {&wifi};
     g_State.queryStatus[wlan_intf_opcode_current_connection] = ERROR_ACCESS_DENIED;
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
 
     const NetworkAdapter& adapter = info.adapters[0];
     EXPECT_TRUE(adapter.wifiLinkUnavailable.contains("location")) << adapter.wifiLinkUnavailable;
@@ -603,7 +612,7 @@ TEST_F(WindowsNetworkAdaptersTest, BssListMissingFallsBackToTheChannelNumber)
     g_State.bssListFails = true;
     g_State.channel = 6;
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
     ASSERT_TRUE(info.adapters[0].wifiLink.has_value());
     EXPECT_EQ(wifiOf(info.adapters[0]).ssid, "HomeNet");
     EXPECT_EQ(wifiOf(info.adapters[0]).channel, 6U);
@@ -617,7 +626,7 @@ TEST_F(WindowsNetworkAdaptersTest, DisconnectedOrNoServiceOrNoDll)
     g_State.adapters = {&wifi};
     g_State.interfaceState = wlan_interface_state_disconnected;
     NetworkAdaptersInfo disconnected;
-    readNetworkAdapters(disconnected, fakeFunctions());
+    readNetworkAdapters(disconnected, fakeFunctions(), WITH_DETAILS);
     EXPECT_TRUE(disconnected.adapters[0].wireless);
     EXPECT_FALSE(disconnected.adapters[0].wifiLink.has_value());
     EXPECT_FALSE(disconnected.adapters[0].wifiSignalDbm.has_value());
@@ -626,7 +635,7 @@ TEST_F(WindowsNetworkAdaptersTest, DisconnectedOrNoServiceOrNoDll)
     g_State.interfaceState = wlan_interface_state_connected;
     g_State.openStatus = ERROR_SERVICE_NOT_ACTIVE;
     NetworkAdaptersInfo noService;
-    readNetworkAdapters(noService, fakeFunctions());
+    readNetworkAdapters(noService, fakeFunctions(), WITH_DETAILS);
     EXPECT_TRUE(noService.adapters[0].wireless) << "still Wi-Fi by its interface type";
     EXPECT_FALSE(noService.adapters[0].wifiLink.has_value());
     EXPECT_TRUE(noService.adapters[0].wifiLinkUnavailable.contains("WLAN AutoConfig")) << noService.adapters[0].wifiLinkUnavailable;
@@ -636,7 +645,7 @@ TEST_F(WindowsNetworkAdaptersTest, DisconnectedOrNoServiceOrNoDll)
     noDll.wlanQueryInterface = nullptr;
     const int opensBefore = g_State.opens;
     NetworkAdaptersInfo missing;
-    readNetworkAdapters(missing, noDll);
+    readNetworkAdapters(missing, noDll, WITH_DETAILS);
     EXPECT_FALSE(missing.adapters[0].wifiLink.has_value());
     EXPECT_EQ(g_State.opens, opensBefore) << "nothing opened without every export";
     EXPECT_TRUE(missing.adapters[0].wifiLinkUnavailable.contains("wlanapi.dll")) << missing.adapters[0].wifiLinkUnavailable;
@@ -648,7 +657,7 @@ TEST_F(WindowsNetworkAdaptersTest, WlanInterfaceMarksAnAdapterWireless)
     FakeAdapter wifi(L"Wi-Fi 2", WIFI_GUID_TEXT, IF_TYPE_ETHERNET_CSMACD);
     g_State.adapters = {&wifi};
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
     EXPECT_TRUE(info.adapters[0].wireless);
     EXPECT_TRUE(info.adapters[0].wifiLink.has_value());
 }
@@ -661,10 +670,72 @@ TEST_F(WindowsNetworkAdaptersTest, DownWirelessAdapterThatIsNoWlanInterfaceIsNot
     FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
     g_State.adapters = {&direct, &wifi};
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, fakeFunctions());
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
     ASSERT_EQ(info.adapters.size(), 2U);
     EXPECT_EQ(find(info, "Wi-Fi 2")->wifiLinkUnavailable, "Not connected");
     EXPECT_TRUE(find(info, "Wi-Fi")->wifiLinkUnavailable.empty());
+}
+
+TEST_F(WindowsNetworkAdaptersTest, WithoutWifiDetailsNoLocationGatedCallIsMade)
+{
+    // Opening the System tab must not raise a location prompt (#1782): neither the current connection
+    // nor the BSS list is asked for, only the RSSI and channel number, which need no location access.
+    FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
+    FakeAdapter ethernet(L"Ethernet", "{AAAAAAAA-0000-0000-0000-000000000002}");
+    ethernet.unicast("192.168.0.20", 24);
+    ethernet.gateway("192.168.0.1");
+    ethernet.dns("192.168.0.1");
+    wifi.unicast("192.168.1.20", 24);
+    g_State.adapters = {&ethernet, &wifi};
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctions(), /*includeWifiDetails=*/false);
+
+    EXPECT_EQ(g_State.queries[wlan_intf_opcode_current_connection], 0);
+    EXPECT_EQ(g_State.bssLists, 0);
+    EXPECT_EQ(g_State.queries[wlan_intf_opcode_rssi], 1);
+    EXPECT_EQ(g_State.queries[wlan_intf_opcode_channel_number], 1);
+
+    const NetworkAdapter* adapter = find(info, "Wi-Fi");
+    ASSERT_NE(adapter, nullptr);
+    EXPECT_TRUE(adapter->wireless);
+    EXPECT_TRUE(adapter->wifiDetailsWithheld);
+    EXPECT_TRUE(adapter->wifiLinkUnavailable.empty()) << "not refused: not asked";
+    EXPECT_EQ(adapter->wifiSignalDbm, std::optional<int>(-55));
+    EXPECT_TRUE(wifiOf(*adapter).ssid.empty());
+    EXPECT_FALSE(wifiOf(*adapter).signalQuality.has_value());
+    EXPECT_EQ(wifiOf(*adapter).channel, 36U);
+    EXPECT_EQ(adapter->addresses.size(), 1U) << "the rows that need no location stay automatic";
+    const NetworkAdapter* wired = find(info, "Ethernet");
+    ASSERT_NE(wired, nullptr);
+    EXPECT_FALSE(wired->wifiDetailsWithheld);
+    EXPECT_EQ(info.gatewayV4, "192.168.0.1");
+    EXPECT_EQ(info.dnsServers, (std::vector<std::string>{"192.168.0.1"}));
+}
+
+TEST_F(WindowsNetworkAdaptersTest, WithWifiDetailsTheLocationGatedCallsAreMade)
+{
+    FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
+    g_State.adapters = {&wifi};
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
+
+    EXPECT_EQ(g_State.queries[wlan_intf_opcode_current_connection], 1);
+    EXPECT_EQ(g_State.bssLists, 1);
+    EXPECT_FALSE(info.adapters[0].wifiDetailsWithheld);
+    EXPECT_EQ(wifiOf(info.adapters[0]).ssid, "HomeNet");
+}
+
+TEST_F(WindowsNetworkAdaptersTest, WithoutWifiDetailsADisconnectedAdapterIsStillNotConnected)
+{
+    FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
+    g_State.adapters = {&wifi};
+    g_State.interfaceState = wlan_interface_state_disconnected;
+    NetworkAdaptersInfo info;
+    readNetworkAdapters(info, fakeFunctions(), /*includeWifiDetails=*/false);
+    EXPECT_EQ(info.adapters[0].wifiLinkUnavailable, "Not connected");
+    EXPECT_FALSE(info.adapters[0].wifiDetailsWithheld) << "nothing to show: no button";
+    EXPECT_TRUE(g_State.queries.empty());
+    EXPECT_EQ(g_State.bssLists, 0);
 }
 
 TEST(WindowsNetworkAdaptersHelpers, Formatting)
@@ -690,7 +761,8 @@ TEST(WindowsNetworkAdaptersHelpers, Formatting)
 TEST(WindowsNetworkAdaptersReal, ReadsThisMachine)
 {
     NetworkAdaptersInfo info;
-    readNetworkAdapters(info, systemFunctions());
+    // Without the Wi-Fi details: the test run must never raise a Windows location prompt (#1782).
+    readNetworkAdapters(info, systemFunctions(), /*includeWifiDetails=*/false);
     EXPECT_TRUE(info.available);
     EXPECT_TRUE(info.listed) << "GetAdaptersAddresses works on every Windows machine";
     for (const NetworkAdapter& adapter : info.adapters)

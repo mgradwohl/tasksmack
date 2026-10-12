@@ -15,6 +15,14 @@
 //      location access is on for desktop apps; the RSSI and channel still read then. Without
 //      wlanapi.dll, or the WLAN AutoConfig service, the Wi-Fi network row says so.
 //
+//      The current connection (WlanQueryInterface's wlan_intf_opcode_current_connection) and the BSS
+//      list (WlanGetNetworkBssList) are on Microsoft's "Wi-Fi access location changes" list: the first
+//      call can raise a one-time location prompt. So they are made only when the read asks for the
+//      Wi-Fi details (#1782), which the System tab does once "Show Wi-Fi details" is clicked. Without
+//      them, a connected adapter is marked wifiDetailsWithheld. WlanOpenHandle, WlanEnumInterfaces and
+//      the RSSI and channel-number queries are not on that list and are always made. WlanScan and
+//      WlanGetAvailableNetworkList, also on it, are never called.
+//
 // The calls go through a table of function pointers, the system's by default (systemFunctions()), so
 // tests feed fake adapter lists and WLAN answers (test_WindowsNetworkAdapters.cpp).
 
@@ -81,8 +89,10 @@ struct Functions
 [[nodiscard]] Functions systemFunctions();
 
 /// Every adapter through @p fns into @p info (available, listed, adapters sorted by name, the default
-/// gateways and DNS servers). Never throws for a failed call: what couldn't be read stays empty.
-void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns);
+/// gateways and DNS servers). Never throws for a failed call: what couldn't be read stays empty. The
+/// location-gated Wi-Fi calls (the current connection and the BSS list) are made only with
+/// @p includeWifiDetails (#1782).
+void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns, bool includeWifiDetails);
 
 // ---- Pure helpers, exposed for tests ----
 

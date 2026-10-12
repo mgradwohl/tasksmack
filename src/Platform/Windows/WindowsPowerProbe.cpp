@@ -33,11 +33,12 @@ constexpr std::chrono::minutes BATTERY_INFO_REFRESH{5};
 WindowsPowerProbe::WindowsPowerProbe() : WindowsPowerProbe(Windows::BatteryDeviceFunctions{})
 {}
 
-WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batteryApi) : m_BatteryApi(batteryApi)
+WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batteryApi, GetSystemPowerStatusFn getSystemPowerStatus)
+    : m_BatteryApi(batteryApi), m_GetSystemPowerStatus(getSystemPowerStatus)
 {
     // Probe capabilities at construction time
     SYSTEM_POWER_STATUS sps{};
-    if (GetSystemPowerStatus(&sps) != 0)
+    if (m_GetSystemPowerStatus(&sps) != 0)
     {
         // Check if there's a battery. Must agree with parsePowerStatus()'s handling of
         // BATTERY_FLAG_UNKNOWN (0xFF): that sentinel reports BatteryState::Unknown from read(),
@@ -75,7 +76,7 @@ WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batt
 PowerCounters WindowsPowerProbe::read()
 {
     SYSTEM_POWER_STATUS sps{};
-    if (GetSystemPowerStatus(&sps) == 0)
+    if (m_GetSystemPowerStatus(&sps) == 0)
     {
         spdlog::warn("WindowsPowerProbe: GetSystemPowerStatus failed");
         PowerCounters counters;

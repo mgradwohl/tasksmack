@@ -21,7 +21,7 @@ namespace App
 
 /// The System tab (#1399): static facts about the machine, in titled sections. Owns the
 /// SystemInfoModel; the facts are read on a worker thread the first time the tab shows, and again
-/// only when Refresh is clicked: never per tick or per frame.
+/// only when Refresh or "Show Wi-Fi details" (#1782) is clicked: never per tick or per frame.
 class SystemInfoPanel : public Panel
 {
   public:
@@ -66,6 +66,8 @@ class SystemInfoPanel : public Panel
     // The read in flight, if any; it hands back only a failed read's message, copied on the worker.
     std::future<std::optional<std::string>> m_Pending;
     bool m_PendingSensorsOnly = false; // the read in flight is a sensors-only one
+    // "Show Wi-Fi details" was clicked and its read hasn't started yet (another read was in flight, #1782).
+    bool m_WifiDetailsReadDue = false;
     // When the last read started: the sensors are read again SENSOR_REFRESH after it, while the tab shows.
     std::chrono::steady_clock::time_point m_LastReadStart;
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;
