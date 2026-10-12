@@ -1,8 +1,10 @@
 /// @file test_SystemdBusFake.cpp
-/// @brief SystemdBus's NetworkManager readers (#1518) against a fake NetworkManager on a private bus
-/// (#1395, FakeSystemBus.h): the Wi-Fi link (SSID bytes made safe, frequency, bitrate), "not connected",
-/// an adapter NetworkManager doesn't know, the DHCPv4 lease from Options (skipping a non-string one), a
-/// device without DHCP, and a bus where NetworkManager isn't running at all.
+/// @brief SystemdBus's readers (#1518) against fake services on a private bus (#1395, FakeSystemBus.h).
+/// NetworkManager: the Wi-Fi link (SSID bytes made safe, frequency, bitrate), "not connected", an adapter
+/// it doesn't know, the DHCPv4 lease from Options (skipping a non-string one), a device without DHCP, and
+/// a bus where it isn't running. systemd-resolved: an adapter's DNS servers (IPv4 and IPv6) and search
+/// domains (a routing-only one marked "~"), an unknown link, and resolved not running. systemd-networkd:
+/// the DHCPv4 lease from a link's Describe() JSON, a link without DHCP, and an unknown link.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
@@ -151,6 +153,110 @@ TEST_F(SystemdBusFakeTest, WithoutNetworkManagerEveryAdapterSaysSo)
     // Remembered for the reader's other adapters rather than asked again.
     EXPECT_EQ(read("wlan1").error, "NetworkManager isn't running");
     EXPECT_FALSE(SystemdBus::makeDhcpLeaseReader()("wlan0").lease.has_value());
+}
+
+constexpr const char* RESOLVE = "org.freedesktop.resolve1";
+constexpr const char* RESOLVE_PATH = "/org/freedesktop/resolve1";
+constexpr const char* RESOLVE_MANAGER = "org.freedesktop.resolve1.Manager";
+constexpr const char* RESOLVE_LINK = "org.freedesktop.resolve1.Link";
+constexpr const char* RESOLVE_LINK_PATH = "/org/freedesktop/resolve1/link/_32";
+
+constexpr const char* NETWORKD = "org.freedesktop.network1";
+constexpr const char* NETWORKD_PATH = "/org/freedesktop/network1";
+constexpr const char* NETWORKD_MANAGER = "org.freedesktop.network1.Manager";
+constexpr const char* NETWORKD_LINK = "org.freedesktop.network1.Link";
+constexpr const char* DHCP_LINK_PATH = "/org/freedesktop/network1/link/_33";
+constexpr const char* STATIC_LINK_PATH = "/org/freedesktop/network1/link/_34";
+
+/// A trimmed systemd-networkd link description: a DHCPv4 address from 192.168.1.1, and the client's
+/// lease (as in test_NetworkdLinkJson.cpp).
+constexpr const char* DHCP_DESCRIPTION = R"({"Index": 3, "Name": "enp3s0",
+  "Addresses": [{"Family": 2, "Address": [192,168,1,20], "PrefixLength": 24, "ConfigSource": "DHCPv4",
+                 "ConfigProvider": [192,168,1,1], "ValidLifetimeUSec": 86412000000}],
+  "DHCPv4Client": {"Lease": {"LeaseTimestampUSec": 12000000}}})";
+
+TEST_F(SystemdBusFakeTest, ResolvedGivesAnAdaptersOwnServersAndDomains)
+{
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [](std::int32_t ifindex) -> MethodAnswer
+                       {
+                           if (ifindex == 2)
+                           {
+                               return {.path = ObjectPath{RESOLVE_LINK_PATH}, .errorName = {}};
+                           }
+                           return {.path = std::nullopt, .errorName = "org.freedesktop.resolve1.NoSuchLink"};
+                       });
+    auto& props = m_Bus.properties();
+    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["DNS"] = TestSupport::DnsServers{
+        {2, {192, 168, 1, 1}},
+        {10, {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}},
+    };
+    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["Domains"] = TestSupport::DnsDomains{{"lan", false}, {"corp.example", true}};
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
+    const LinuxNetworkAdapters::LinkDnsRead link = read(2);
+    ASSERT_TRUE(link.read) << link.error;
+    EXPECT_EQ(link.servers, (std::vector<std::string>{"192.168.1.1", "2001:db8::1"}));
+    EXPECT_EQ(link.domains, (std::vector<std::string>{"lan", "~corp.example"})); // "~": only routes lookups
+
+    const LinuxNetworkAdapters::LinkDnsRead unknown = read(9);
+    EXPECT_FALSE(unknown.read);
+    EXPECT_EQ(unknown.error, "systemd-resolved doesn't know this adapter");
+    EXPECT_TRUE(read(2).read); // about one adapter only
+}
+
+TEST_F(SystemdBusFakeTest, WithoutResolvedEveryAdapterSaysSo)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
+    EXPECT_EQ(read(2).error, "systemd-resolved isn't running");
+    EXPECT_EQ(read(3).error, "systemd-resolved isn't running");
+}
+
+TEST_F(SystemdBusFakeTest, NetworkdGivesTheLeaseFromALinksDescription)
+{
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t ifindex) -> MethodAnswer
+                       {
+                           if (ifindex == 3)
+                           {
+                               return {.path = ObjectPath{DHCP_LINK_PATH}, .errorName = {}, .name = "enp3s0"};
+                           }
+                           if (ifindex == 4)
+                           {
+                               return {.path = ObjectPath{STATIC_LINK_PATH}, .errorName = {}, .name = "enp4s0"};
+                           }
+                           return {.path = std::nullopt, .errorName = "org.freedesktop.network1.NoSuchLink"};
+                       });
+    m_Bus.addNoArgMethod(DHCP_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = DHCP_DESCRIPTION}; });
+    m_Bus.addNoArgMethod(STATIC_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer
+                         {
+                             return {.path = std::nullopt,
+                                     .errorName = {},
+                                     .text = R"({"Addresses": [{"Family": 2, "Address": [10,0,0,5], "ConfigSource": "static"}]})"};
+                         });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader read = SystemdBus::makeNetworkdLeaseReader();
+    const LinuxNetworkAdapters::DhcpLeaseRead dhcp = read(3);
+    ASSERT_TRUE(dhcp.lease.has_value()) << dhcp.error;
+    const DhcpLease lease = dhcp.lease.value_or(DhcpLease{});
+    EXPECT_EQ(lease.server, "192.168.1.1");
+    EXPECT_EQ(lease.leaseSeconds, 86'400U); // valid until 86412 s after boot, obtained at 12 s
+
+    EXPECT_EQ(read(4).error, "Not configured by DHCP");
+    EXPECT_EQ(read(9).error, "systemd-networkd doesn't manage this adapter");
 }
 
 } // namespace

@@ -3,7 +3,8 @@
 /// @file FakeSystemBus.h
 /// @brief A private D-Bus "system bus" for SystemdBus tests (#1395): starts its own dbus-daemon in a
 /// temporary directory, points DBUS_SYSTEM_BUS_ADDRESS at it, and serves made-up objects -- methods
-/// that return object paths, and org.freedesktop.DBus.Properties.Get -- from a thread, so the readers'
+/// with a string, int32 or no argument that return a path, a name and path, or a string, and
+/// org.freedesktop.DBus.Properties.Get -- from a thread, so the readers'
 /// reply parsing runs against known answers instead of whatever this machine (or CI runner) has.
 /// Linux with libsystemd only (TASKSMACK_HAS_SDBUS).
 
@@ -52,14 +53,23 @@ struct ObjectPath
 /// A{sv} entry values the fakes need: strings and unsigned 32-bit numbers.
 using DictValue = std::variant<std::string, std::uint32_t>;
 
-/// A property value: 's', 'o', 'u', 'ay' or 'a{sv}'.
-using PropertyValue = std::variant<std::string, ObjectPath, std::uint32_t, std::vector<std::uint8_t>, std::map<std::string, DictValue>>;
+/// systemd-resolved's DNS servers, a(iay): each one's address family and bytes.
+using DnsServers = std::vector<std::pair<std::int32_t, std::vector<std::uint8_t>>>;
+/// systemd-resolved's search domains, a(sb): each one and whether it only routes lookups.
+using DnsDomains = std::vector<std::pair<std::string, bool>>;
 
-/// What a fake method returns: an object path, or a D-Bus error by name.
+/// A property value: 's', 'o', 'u', 'ay', 'a{sv}', 'a(iay)' or 'a(sb)'.
+using PropertyValue = std::
+    variant<std::string, ObjectPath, std::uint32_t, std::vector<std::uint8_t>, std::map<std::string, DictValue>, DnsServers, DnsDomains>;
+
+/// What a fake method returns: an object path (with a name before it, for an "so" reply), a string
+/// (an "s" reply), or a D-Bus error by name.
 struct MethodAnswer
 {
     std::optional<ObjectPath> path;
     std::string errorName;
+    std::optional<std::string> name = std::nullopt; ///< with path: reply "so"
+    std::optional<std::string> text = std::nullopt; ///< reply "s"
 };
 
 class FakeSystemBus
@@ -69,6 +79,10 @@ class FakeSystemBus
     using Properties = std::map<std::string, std::map<std::string, std::map<std::string, PropertyValue>>>;
     /// Answers a call to (path, interface, member) with one string argument.
     using StringMethod = std::function<MethodAnswer(const std::string& argument)>;
+    /// Answers a call with one int32 argument (an interface index).
+    using IntMethod = std::function<MethodAnswer(std::int32_t argument)>;
+    /// Answers a call with no arguments.
+    using NoArgMethod = std::function<MethodAnswer()>;
 
     FakeSystemBus() = default;
     FakeSystemBus(const FakeSystemBus&) = delete;
@@ -107,6 +121,18 @@ class FakeSystemBus
 
     /// A method with one string argument returning an object path, before start().
     void addStringMethod(const std::string& path, const std::string& interface, const std::string& member, StringMethod method)
+    {
+        m_Methods[path + '\n' + interface + '\n' + member] = std::move(method);
+    }
+
+    /// A method with one int32 argument, before start().
+    void addIntMethod(const std::string& path, const std::string& interface, const std::string& member, IntMethod method)
+    {
+        m_Methods[path + '\n' + interface + '\n' + member] = std::move(method);
+    }
+
+    /// A method with no arguments, before start().
+    void addNoArgMethod(const std::string& path, const std::string& interface, const std::string& member, NoArgMethod method)
     {
         m_Methods[path + '\n' + interface + '\n' + member] = std::move(method);
     }
@@ -306,6 +332,52 @@ class FakeSystemBus
             }
             return result >= 0 ? sd_bus_message_close_container(reply) : result;
         }
+        if (const auto* servers = std::get_if<DnsServers>(&value))
+        {
+            result = sd_bus_message_open_container(reply, 'v', "a(iay)");
+            if (result >= 0)
+            {
+                result = sd_bus_message_open_container(reply, 'a', "(iay)");
+            }
+            for (auto it = servers->begin(); result >= 0 && it != servers->end(); ++it)
+            {
+                result = sd_bus_message_open_container(reply, 'r', "iay");
+                if (result >= 0)
+                {
+                    result = sd_bus_message_append(reply, "i", it->first);
+                }
+                if (result >= 0)
+                {
+                    result = sd_bus_message_append_array(reply, 'y', it->second.data(), it->second.size());
+                }
+                if (result >= 0)
+                {
+                    result = sd_bus_message_close_container(reply);
+                }
+            }
+            if (result >= 0)
+            {
+                result = sd_bus_message_close_container(reply);
+            }
+            return result >= 0 ? sd_bus_message_close_container(reply) : result;
+        }
+        if (const auto* domains = std::get_if<DnsDomains>(&value))
+        {
+            result = sd_bus_message_open_container(reply, 'v', "a(sb)");
+            if (result >= 0)
+            {
+                result = sd_bus_message_open_container(reply, 'a', "(sb)");
+            }
+            for (auto it = domains->begin(); result >= 0 && it != domains->end(); ++it)
+            {
+                result = sd_bus_message_append(reply, "(sb)", it->first.c_str(), static_cast<int>(it->second));
+            }
+            if (result >= 0)
+            {
+                result = sd_bus_message_close_container(reply);
+            }
+            return result >= 0 ? sd_bus_message_close_container(reply) : result;
+        }
         const auto& dict = std::get<std::map<std::string, DictValue>>(value);
         result = sd_bus_message_open_container(reply, 'v', "a{sv}");
         if (result >= 0)
@@ -379,12 +451,37 @@ class FakeSystemBus
         {
             return 0; // sd-bus answers UnknownMethod/UnknownObject
         }
-        const char* argument = nullptr;
-        if (sd_bus_message_read(message, "s", &argument) < 0)
+        MethodAnswer answer;
+        if (const auto* byString = std::get_if<StringMethod>(&method->second))
         {
-            return 0;
+            const char* argument = nullptr;
+            if (sd_bus_message_read(message, "s", &argument) < 0)
+            {
+                return 0;
+            }
+            answer = (*byString)(argument != nullptr ? argument : "");
         }
-        const MethodAnswer answer = method->second(argument != nullptr ? argument : "");
+        else if (const auto* byInt = std::get_if<IntMethod>(&method->second))
+        {
+            std::int32_t argument = 0;
+            if (sd_bus_message_read(message, "i", &argument) < 0)
+            {
+                return 0;
+            }
+            answer = (*byInt)(argument);
+        }
+        else
+        {
+            answer = std::get<NoArgMethod>(method->second)();
+        }
+        if (answer.text.has_value())
+        {
+            return sd_bus_reply_method_return(message, "s", answer.text->c_str());
+        }
+        if (answer.path.has_value() && answer.name.has_value())
+        {
+            return sd_bus_reply_method_return(message, "so", answer.name->c_str(), answer.path->path.c_str());
+        }
         if (answer.path.has_value())
         {
             return sd_bus_reply_method_return(message, "o", answer.path->path.c_str());
@@ -393,7 +490,7 @@ class FakeSystemBus
     }
 
     Properties m_Properties;
-    std::map<std::string, StringMethod> m_Methods;
+    std::map<std::string, std::variant<StringMethod, IntMethod, NoArgMethod>> m_Methods;
     std::filesystem::path m_Dir;
     pid_t m_Daemon = 0; // NOLINT(misc-include-cleaner) - pid_t comes with <spawn.h> and <unistd.h>
     sd_bus* m_Service = nullptr;
