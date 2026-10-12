@@ -557,6 +557,36 @@ TEST(SystemInfoSectionsTest, VulnerabilityNamesAndSummary)
     EXPECT_EQ(SystemInfo::formatVulnerabilitySummary(odd), "1 not affected, 1 unknown");
 }
 
+TEST(SystemInfoSectionsTest, WindowsUnknownVulnerabilitiesAreCountedAndExplained)
+{
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.family = Platform::OsFamily::Windows;
+    security.vulnerabilitiesRead = true;
+    security.vulnerabilities = {{.name = "l1tf", .status = "Unknown"},
+                                {.name = "mds", .status = "Unknown"},
+                                {.name = "meltdown", .status = "Not affected"},
+                                {.name = "spec_store_bypass", .status = "Vulnerable: Speculative Store Bypass Disable is off"},
+                                {.name = "spectre_v2", .status = "Mitigation: Enhanced IBRS"},
+                                {.name = "gather_data_sampling", .status = "Mitigation: Microcode"}};
+    const Section section = SystemInfo::buildSecuritySection(security);
+    EXPECT_EQ(findRow(section, "CPU vulnerabilities")->value, "1 vulnerable, 2 mitigated, 1 not affected, 2 unknown");
+    const Row* l1tf = findRow(section, "L1TF");
+    ASSERT_NE(l1tf, nullptr);
+    EXPECT_EQ(l1tf->value, "Unknown");
+    EXPECT_EQ(l1tf->valueTooltip, "Windows didn't report whether this CPU needs this mitigation");
+    EXPECT_FALSE(findRow(section, "MDS")->valueTooltip.empty());
+    EXPECT_TRUE(findRow(section, "Meltdown")->valueTooltip.empty());
+    EXPECT_TRUE(findRow(section, "Spectre v2")->valueTooltip.empty());
+
+    // The Linux kernel's own "Unknown: ..." wording explains itself; no tooltip there.
+    security.family = Platform::OsFamily::Linux;
+    security.vulnerabilities = {{.name = "mmio_stale_data", .status = "Unknown: No mitigations"}};
+    const Section onLinux = SystemInfo::buildSecuritySection(security);
+    EXPECT_EQ(findRow(onLinux, "CPU vulnerabilities")->value, "1 unknown");
+    EXPECT_TRUE(findRow(onLinux, "MMIO stale data")->valueTooltip.empty());
+}
+
 TEST(SystemInfoSectionsTest, SensorRows)
 {
     using Platform::SensorKind;

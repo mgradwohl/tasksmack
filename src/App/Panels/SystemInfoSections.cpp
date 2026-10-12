@@ -44,6 +44,7 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
         .unavailableReason = std::move(why),
         .isIdentifier = identifier,
         .sensorKind = std::nullopt,
+        .valueTooltip = {},
     };
 }
 
@@ -776,7 +777,7 @@ std::string formatVulnerabilitySummary(std::span<const Platform::CpuVulnerabilit
         }
         else
         {
-            ++other; // "Unknown: ...", or a status a newer kernel words differently
+            ++other; // "Unknown" (Windows, #1781), the kernel's "Unknown: ...", or a status a newer kernel words differently
         }
     }
     std::string text;
@@ -1050,7 +1051,12 @@ Section buildSecuritySection(const Platform::PlatformSecurityInfo& security)
                        windows ? "Windows reports none" : "The kernel lists none"));
     for (const Platform::CpuVulnerability& item : security.vulnerabilities)
     {
-        rows.push_back(row(formatVulnerabilityName(item.name), item.status));
+        Row vulnerability = row(formatVulnerabilityName(item.name), item.status);
+        if (windows && item.status == "Unknown")
+        {
+            vulnerability.valueTooltip = "Windows didn't report whether this CPU needs this mitigation";
+        }
+        rows.push_back(std::move(vulnerability));
     }
     return section;
 }
