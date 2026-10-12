@@ -617,8 +617,8 @@ runners) don't run NetworkManager, systemd-resolved, systemd-networkd or udisks2
   it, so the reader's own `sd_bus_open_system()` reaches it. The variable is restored and the daemon
   reaped afterwards.
 - Describe the service before `start()`:
-  - `properties()[path][interface][name] = value` answers `org.freedesktop.DBus.Properties.Get`, with
-    values of type `s`, `o` (`ObjectPath`), `u`, `ay`, `a{sv}`, `b`, `t`, `d`, `x`, `q`, `as`, and
+  - `properties()`, a map keyed by object path, then interface, then property name, answers
+    `org.freedesktop.DBus.Properties.Get`, with values of type `s`, `o` (`ObjectPath`), `u`, `ay`, `a{sv}`, `b`, `t`, `d`, `x`, `q`, `as`, and
     resolved's `a(iay)` and `a(sb)`;
   - `addStringMethod()`, `addIntMethod()` and `addNoArgMethod()` add methods returning a path (`o`), a
     name and path (`so`), a string (`s`), an `a{sv}`, or a named D-Bus error.
