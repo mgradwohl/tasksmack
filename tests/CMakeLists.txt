@@ -294,6 +294,7 @@ set(COMMON_TEST_SOURCES
     App/test_SamplingGate.cpp
     App/test_SettingsLayerDetail.cpp
     App/test_SettingsDialogRender.cpp
+    App/test_SettingsLayerRender.cpp
     App/test_NetInterfaceUtils.cpp
     App/test_PowerStatusText.cpp
     App/test_ElevationNoticeText.cpp
@@ -547,6 +548,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/TitleBarView.cpp
     # The Settings dialog (#1547), run headless (test_SettingsDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/SettingsDialog.cpp
+    # The Settings layer around it (#1395), run headless through its seam (test_SettingsLayerRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/SettingsLayer.cpp
     # The About dialog (#1490), run headless (test_AboutDialogRender.cpp), the layer that opens it on
     # Core::OpenAboutEvent (#1600), and the link opener they call
     ${CMAKE_SOURCE_DIR}/src/App/AboutDialog.cpp
