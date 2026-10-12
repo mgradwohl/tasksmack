@@ -57,7 +57,9 @@ class StatusBarViewRenderTest : public ::testing::Test
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-        ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        // Behind the bar, as ShellLayer's main window is (NoBringToFrontOnFocus), so the bar can be hovered.
+        ImGui::Begin(
+            "Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
         ImGui::LogToBuffer();
         m_LastAction = StatusBarView::render(m_Input);
         std::string captured = GImGui->LogBuffer.c_str();
@@ -134,6 +136,42 @@ TEST_F(StatusBarViewRenderTest, ANarrowWindowLeavesOutTheLowerPriorityParts)
     const std::string text = frame();
     EXPECT_FALSE(text.contains("Updates every")) << text; // the interval goes before the count
     EXPECT_FALSE(text.contains("FPS")) << text;
+}
+
+// #1395: hovering along the bar shows what each icon and button means.
+TEST_F(StatusBarViewRenderTest, EachIconAndButtonExplainsItselfOnHover)
+{
+    m_Input.reducedPrivileges = true;
+    m_Input.networkCountersBlocked = true;
+    m_Input.showControls = true;
+    static_cast<void>(frame());
+    ImGuiWindow* bar = ImGui::FindWindowByName("##StatusBar");
+    ASSERT_NE(bar, nullptr);
+    // Over the stand-in shell window, as it is over the app's main window.
+    ImGui::BringWindowToDisplayFront(bar);
+    const float y = bar->Pos.y + (bar->Size.y * 0.5F);
+
+    std::string seen;
+    for (float x = bar->Pos.x + 2.0F; x < bar->Pos.x + bar->Size.x; x += 4.0F) // NOLINT(bugprone-float-loop-counter) - a pixel sweep
+    {
+        ImGui::GetIO().AddMousePosEvent(x, y);
+        static_cast<void>(frame());
+        seen += frame();
+    }
+    EXPECT_TRUE(seen.contains("Limited data: some details of other users' processes are unavailable")) << seen;
+    EXPECT_TRUE(seen.contains("Per-process network counters are blocked on this system")) << seen;
+    EXPECT_TRUE(seen.contains("Settings (F2)")) << seen;
+    EXPECT_TRUE(seen.contains("Help: keyboard shortcuts, columns and tabs (F1)")) << seen;
+}
+
+// #1395: at the very narrowest the process count itself is cut short with an ellipsis, not drawn past
+// the bar.
+TEST_F(StatusBarViewRenderTest, AtTheNarrowestTheProcessCountIsCutShort)
+{
+    ImGui::GetIO().DisplaySize = ImVec2(90.0F, 400.0F);
+    const std::string text = frame();
+    EXPECT_FALSE(text.contains("412 processes")) << text;
+    EXPECT_TRUE(text.contains("\xE2\x80\xA6")) << text; // U+2026
 }
 
 } // namespace
