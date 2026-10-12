@@ -381,6 +381,57 @@ TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
     EXPECT_TRUE(view.hasPendingEdit());
 }
 
+// #1395: dragging the slider with the mouse sets the value from where the pointer is; past the ends it
+// gives the extremes.
+TEST_F(ProcessPriorityViewRenderTest, DraggingTheSliderSetsTheValue)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    ImGuiID sliderId = 0;
+    const auto body = [&]
+    {
+        sliderId = ImGui::GetID("##priority_slider");
+        view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+    };
+    runFrame(body);
+
+    // Find the slider by hovering down and across the pane.
+    ImGuiIO& io = ImGui::GetIO();
+    std::optional<ImVec2> over;
+    for (int row = 0; row < 120 && !over.has_value(); ++row)
+    {
+        for (int column = 0; column < 20 && !over.has_value(); ++column)
+        {
+            const ImVec2 pos(20.0F + (20.0F * static_cast<float>(column)), 4.0F * static_cast<float>(row));
+            io.AddMousePosEvent(pos.x, pos.y);
+            runFrame(body);
+            if (ImGui::GetCurrentContext()->HoveredId == sliderId)
+            {
+                over = pos;
+            }
+        }
+    }
+    ASSERT_TRUE(over.has_value());
+    const ImVec2 at = over.value_or(ImVec2{});
+    // (The keyboard-hints tooltip is not checked here: it follows the "Default" label, #1854.)
+
+    // Press on it and drag past each end.
+    io.AddMouseButtonEvent(0, true);
+    runFrame(body);
+    io.AddMousePosEvent(at.x + 2000.0F, at.y);
+    runFrame(body);
+    const std::int32_t right = view.niceValue();
+    io.AddMousePosEvent(0.0F, at.y);
+    runFrame(body);
+    const std::int32_t left = view.niceValue();
+    io.AddMouseButtonEvent(0, false);
+    runFrame(body);
+
+    EXPECT_NE(right, left);
+    EXPECT_TRUE((right == 19 && left == -20) || (right == -20 && left == 19)) << right << " / " << left;
+    EXPECT_TRUE(view.hasPendingEdit());
+}
+
 // In a pane narrower than the slider's authored width (the Overview Actions block is sized to its
 // content, #1511) the track is shortened until "Low" ends flush with the content edge. A container
 // that pushes a wrap position for its own lines used to split it into "Lo" / "w" once rounding put
