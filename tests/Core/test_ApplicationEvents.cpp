@@ -48,5 +48,19 @@ TEST(ApplicationEventsTest, ShowProcessDetailsHasItsOwnEventType)
     EXPECT_TRUE(handled);
 }
 
+// #1395: each event names itself and what it carries when logged.
+TEST(ApplicationEventsTest, EachEventDescribesItselfForTheLog)
+{
+    EXPECT_EQ(ProcessSelectedEvent(4242, 777).toString(), "ProcessSelectedEvent: pid=4242, startTimeTicks=777");
+    EXPECT_EQ(ShowProcessDetailsEvent().toString(), "ShowProcessDetailsEvent");
+    EXPECT_EQ(RefreshRateChangedEvent(500).toString(), "RefreshRateChangedEvent: 500ms");
+    EXPECT_EQ(HistoryDurationChangedEvent(600).toString(), "HistoryDurationChangedEvent: 600s");
+    EXPECT_EQ(ActiveTabChangedEvent("Processes").toString(), "ActiveTabChangedEvent: Processes");
+    EXPECT_EQ(OpenSettingsEvent().toString(), "OpenSettingsEvent");
+    EXPECT_EQ(OpenAboutEvent().toString(), "OpenAboutEvent");
+    EXPECT_EQ(OpenHelpEvent().toString(), "OpenHelpEvent");
+    EXPECT_EQ(OpenElevationNoticeEvent().toString(), "OpenElevationNoticeEvent");
+}
+
 } // namespace
 } // namespace Core

@@ -15,6 +15,8 @@
 #include <system_error>
 #include <utility>
 
+#include <unistd.h>
+
 namespace Core::RuntimeDir
 {
 namespace
@@ -129,6 +131,24 @@ TEST_F(RuntimeDirTest, AFileInPlaceOfTheFallbackIsRefused)
     std::ofstream(fallback) << "not a directory";
     EXPECT_FALSE(isUsableRuntimeDir(fallback));
     EXPECT_EQ(chooseRuntimeDir(path("no-such-run-user"), fallback), std::nullopt);
+}
+
+// #1395: a fallback that can't be created (a file where its parent should be) is refused.
+TEST_F(RuntimeDirTest, AFallbackThatCantBeCreatedIsRefused)
+{
+    std::ofstream(path("file")) << "not a directory";
+    EXPECT_EQ(chooseRuntimeDir(path("no-such-run-user"), path("file") + "/fallback"), std::nullopt);
+}
+
+// #1395: an existing fallback another user owns is left alone, not chmodded and used.
+TEST_F(RuntimeDirTest, AFallbackAnotherUserOwnsIsRefused)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "running as root: no root-owned directory belongs to another user";
+    }
+    // The filesystem root: a real directory, owned by root.
+    EXPECT_EQ(chooseRuntimeDir(path("no-such-run-user"), "/"), std::nullopt);
 }
 
 TEST_F(RuntimeDirTest, AMissingPathIsNotUsable)
