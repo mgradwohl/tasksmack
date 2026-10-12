@@ -6,6 +6,7 @@
 // shells and kernel threads -- has no icon, and shows the generic one.
 
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IconImageFile.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
 
 #include <chrono>
@@ -26,7 +27,7 @@ class LinuxProcessIconSource final : public IProcessIconSource
     static constexpr std::chrono::minutes INDEX_LIFETIME{10};
 
     /// The largest PNG decoded, per side; a larger one is skipped rather than held in memory.
-    static constexpr int MAX_DECODED_SIDE_PX = 1024;
+    static constexpr int MAX_DECODED_SIDE_PX = MAX_ICON_IMAGE_SIDE_PX;
 
     /// The XDG directories from the environment ($HOME, $XDG_DATA_HOME, $XDG_DATA_DIRS).
     LinuxProcessIconSource();

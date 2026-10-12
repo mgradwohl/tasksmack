@@ -1,7 +1,9 @@
 #include "StartupView.h"
 
+#include "App/Panels/ProcessIconView.h"
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/StartupActionsView.h"
+#include "Domain/ProcessIconCache.h"
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupProbe.h"
 #include "UI/EmptyState.h"
@@ -15,6 +17,7 @@
 #include <cctype>
 #include <compare>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -134,9 +137,12 @@ void rebuildRowsIfStale(const Domain::StartupPublication& publication, StartupVi
     {
         state.enabledLabels.clear();
         state.enabledLabels.reserve(publication.entries.size());
+        state.iconKeys.clear();
+        state.iconKeys.reserve(publication.entries.size());
         for (const auto& entry : publication.entries)
         {
             state.enabledLabels.push_back(startupEnabledLabel(entry));
+            state.iconKeys.push_back(Domain::iconFileKey(startupIconPath(entry)));
         }
     }
     state.rows = buildStartupRows(publication.entries, state.filter, state.sortColumn, state.ascending);
@@ -188,6 +194,19 @@ std::string startupEnabledLabel(const Platform::StartupEntry& entry)
     const std::string when = UI::Format::formatEpochDateTime(entry.disabledAtUnixSeconds);
     // "YYYY-MM-DD HH:MM:SS" in local time: the column shows the date.
     return when.empty() ? std::string("Disabled") : "Disabled since " + when.substr(0, when.find(' '));
+}
+
+std::string_view startupIconPath(const Platform::StartupEntry& entry) noexcept
+{
+    if (!entry.iconPath.empty())
+    {
+        return entry.iconPath;
+    }
+    if (entry.target == Platform::StartupTargetState::Missing)
+    {
+        return {}; // Nothing to read an icon from
+    }
+    return entry.executablePath;
 }
 
 std::vector<std::size_t>
@@ -286,12 +305,24 @@ void applySortSpecs(StartupViewState& state)
     return entry.location == state.selectedLocation && entry.name == state.selectedName;
 }
 
-/// The Name cell: a row-wide selectable (left or right click selects it), in the warning colour when
-/// the program is missing, with the entry's tooltip (straight away for a missing program, after the
-/// usual delay otherwise) and its action menu.
-void renderNameCell(
-    const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme, StartupViewState& state, StartupActionsView* actions)
+/// What a row draws besides its entry: the action menu, and the icon (#1800) filed under iconKey.
+struct RowExtras
 {
+    StartupActionsView* actions = nullptr;
+    ProcessIconView* icons = nullptr;
+    std::uint64_t iconKey = 0;
+};
+
+/// The Name cell: the entry's icon (#1800), then a row-wide selectable (left or right click selects
+/// it), in the warning colour when the program is missing, with the entry's tooltip (straight away
+/// for a missing program, after the usual delay otherwise) and its action menu.
+void renderNameCell(
+    const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme, StartupViewState& state, const RowExtras& extras)
+{
+    if (extras.icons != nullptr)
+    {
+        extras.icons->drawFileInline(extras.iconKey, startupIconPath(entry), entry.name);
+    }
     if (missing)
     {
         ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
@@ -310,9 +341,9 @@ void renderNameCell(
     {
         renderStartupTooltip(entry);
     }
-    if (actions != nullptr)
+    if (extras.actions != nullptr)
     {
-        actions->renderContextMenu(entry);
+        extras.actions->renderContextMenu(entry);
     }
 }
 
@@ -341,11 +372,11 @@ void renderStartupRow(const Platform::StartupEntry& entry,
                       const Platform::StartupCapabilities& capabilities,
                       const UI::ColorScheme& scheme,
                       StartupViewState& state,
-                      StartupActionsView* actions)
+                      const RowExtras& extras)
 {
     const bool missing = entry.target == Platform::StartupTargetState::Missing;
     ImGui::TableNextColumn();
-    renderNameCell(entry, missing, scheme, state, actions);
+    renderNameCell(entry, missing, scheme, state, extras);
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(entry.publisher.c_str());
     ImGui::TableNextColumn();
@@ -363,12 +394,13 @@ void renderStartupRow(const Platform::StartupEntry& entry,
     renderCommandCell(entry, missing, scheme);
 }
 
-/// The visible rows only (ImGuiListClipper), in the order state.rows holds.
+/// The visible rows only (ImGuiListClipper), in the order state.rows holds: only they look up icons.
 void renderStartupRows(const Domain::StartupPublication& publication,
                        const Platform::StartupCapabilities& capabilities,
                        StartupViewState& state,
                        const UI::ColorScheme& scheme,
-                       StartupActionsView* actions)
+                       StartupActionsView* actions,
+                       ProcessIconView* icons)
 {
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(state.rows.size()));
@@ -383,7 +415,8 @@ void renderStartupRows(const Domain::StartupPublication& publication,
             // move an open row menu onto another entry.
             ImGui::PushID(static_cast<int>(entry.location));
             ImGui::PushID(entry.name.c_str());
-            renderStartupRow(entry, state.enabledLabels[index], capabilities, scheme, state, actions);
+            const RowExtras extras{.actions = actions, .icons = icons, .iconKey = state.iconKeys[index]};
+            renderStartupRow(entry, state.enabledLabels[index], capabilities, scheme, state, extras);
             ImGui::PopID();
             ImGui::PopID();
         }
@@ -395,7 +428,8 @@ void renderStartupRows(const Domain::StartupPublication& publication,
 StartupViewContent renderStartupView(const Domain::StartupPublication* publication,
                                      const Platform::StartupCapabilities& capabilities,
                                      StartupViewState& state,
-                                     StartupActionsView* actions)
+                                     StartupActionsView* actions,
+                                     ProcessIconView* icons)
 {
     if (!capabilities.canEnumerate)
     {
@@ -436,7 +470,7 @@ StartupViewContent renderStartupView(const Domain::StartupPublication* publicati
     setupStartupColumns();
     applySortSpecs(state);
     rebuildRowsIfStale(*publication, state); // a header click may have changed the order
-    renderStartupRows(*publication, capabilities, state, scheme, actions);
+    renderStartupRows(*publication, capabilities, state, scheme, actions, icons);
     ImGui::EndTable();
     return StartupViewContent::Table;
 }

@@ -4,6 +4,7 @@
 
 #include "LinuxProcessProbe.h"
 
+#include "CgroupContainer.h"
 #include "CgroupFreezeStatus.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/CpuAffinity.h"
@@ -319,8 +320,8 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
     CmdlineCache seenCmdlines;
     seenCmdlines.reserve(previousCmdlines.size());
 
-    // Freeze states by /proc/[pid]/cgroup contents, for this pass only (see getProcessStatus()).
-    FrozenByCgroup frozenByCgroup;
+    // Freeze states and containers by /proc/[pid]/cgroup contents, for this pass only (see readCgroupFacts()).
+    FactsByCgroup factsByCgroup;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     // Whether this pass also rebuilds the socket inode-to-PID map (#1426): due every m_InodeMapTtl, it
@@ -393,7 +394,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        counters.status = getProcessStatus(pidDirFd.get(), m_CgroupRoot, frozenByCgroup); // Get cgroup freezer status
+        readCgroupFacts(pidDirFd.get(), m_CgroupRoot, factsByCgroup, counters); // cgroup freezer status, container
         processes.push_back(std::move(counters));
     }
 
@@ -466,6 +467,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
+                               .hasContainer = true,                      // From /proc/[pid]/cgroup paths
                                .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
                                .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
@@ -989,7 +991,10 @@ bool LinuxProcessProbe::checkIoCountersAvailability(const std::filesystem::path&
     return true;
 }
 
-std::string LinuxProcessProbe::getProcessStatus(int pidDirFd, const std::filesystem::path& cgroupRoot, FrozenByCgroup& frozenByCgroup)
+void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
+                                        const std::filesystem::path& cgroupRoot,
+                                        FactsByCgroup& factsByCgroup,
+                                        ProcessCounters& counters)
 {
     // /proc/<pid>/cgroup names the process's cgroups: the v2 "0::<path>" line and/or v1 lines,
     // including the freezer controller's. isCgroupFrozen() checks the matching freeze state.
@@ -1008,16 +1013,24 @@ std::string LinuxProcessProbe::getProcessStatus(int pidDirFd, const std::filesys
     }
     if (cgroups.empty())
     {
-        return {};
+        return;
     }
     // Processes in the same cgroups share one freeze-state read per pass: the state is a property of
     // the cgroup, and the answer for the first of them is the one a read microseconds later gives.
-    auto known = frozenByCgroup.find(cgroups);
-    if (known == frozenByCgroup.end())
+    auto known = factsByCgroup.find(cgroups);
+    if (known == factsByCgroup.end())
     {
-        known = frozenByCgroup.emplace(std::string(cgroups), CgroupPath::isCgroupFrozen(cgroups, cgroupRoot)).first;
+        known = factsByCgroup
+                    .emplace(std::string(cgroups),
+                             CgroupFacts{.frozen = CgroupPath::isCgroupFrozen(cgroups, cgroupRoot),
+                                         .container = CgroupContainer::containerFromCgroups(cgroups)})
+                    .first;
     }
-    return known->second ? std::string("Suspended") : std::string{}; // No special status unless frozen
+    if (known->second.frozen)
+    {
+        counters.status = "Suspended"; // No special status unless frozen
+    }
+    counters.container = known->second.container;
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {

@@ -228,6 +228,7 @@ struct ResolvedPackagedTask
     std::wstring taskId;
     std::string name;
     std::string executablePath;
+    std::string iconPath; ///< The manifest's logo under the package's folder (#1800); empty when it names none.
 };
 
 /// What a package's manifest gives its startup tasks' entries, names resolved.
@@ -532,6 +533,7 @@ std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
     {
         std::string executable;
         std::string displayName; ///< VisualElements DisplayName.
+        std::string logo;        ///< VisualElements Square44x44Logo (#1800).
     };
     struct Task
     {
@@ -563,12 +565,13 @@ std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
             const std::wstring parent = path.empty() ? std::wstring{} : path.back();
             if (name == L"Application" && parent == L"Applications")
             {
-                applications.push_back({.executable = attribute(attributes, L"Executable"), .displayName = {}});
+                applications.push_back({.executable = attribute(attributes, L"Executable"), .displayName = {}, .logo = {}});
                 applicationDepth = empty ? std::nullopt : std::optional(path.size() + 1);
             }
             else if (name == L"VisualElements" && applicationDepth && path.size() == *applicationDepth)
             {
                 applications.back().displayName = attribute(attributes, L"DisplayName");
+                applications.back().logo = attribute(attributes, L"Square44x44Logo");
             }
             else if (name == L"Extension" && attribute(attributes, L"Category") == "windows.startupTask")
             {
@@ -625,6 +628,10 @@ std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
                 {
                     manifest.publisherDisplayName += WinString::wideToUtf8(value);
                 }
+                else if (path.back() == L"Logo")
+                {
+                    manifest.logo += WinString::wideToUtf8(value);
+                }
             }
         }
         read = reader->Read(&type);
@@ -636,6 +643,7 @@ std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
 
     manifest.displayName = trimmed(std::move(manifest.displayName));
     manifest.publisherDisplayName = trimmed(std::move(manifest.publisherDisplayName));
+    manifest.logo = trimmed(std::move(manifest.logo));
     manifest.startupTasks.reserve(tasks.size());
     for (Task& task : tasks)
     {
@@ -650,6 +658,11 @@ std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
             {
                 task.task.executable = application.executable;
             }
+            task.task.logo = application.logo;
+        }
+        if (task.task.logo.empty())
+        {
+            task.task.logo = manifest.logo;
         }
         manifest.startupTasks.push_back(std::move(task.task));
     }
@@ -760,8 +773,15 @@ struct WindowsStartupProbe::Impl
             {
                 executablePath = WinString::wideToUtf8((root / WinString::utf8ToWide(task.executable)).make_preferred().wstring());
             }
-            resolved.tasks.push_back(
-                {.taskId = WinString::utf8ToWide(task.taskId), .name = std::move(name), .executablePath = std::move(executablePath)});
+            std::string iconPath;
+            if (!task.logo.empty())
+            {
+                iconPath = WinString::wideToUtf8((root / WinString::utf8ToWide(task.logo)).make_preferred().wstring());
+            }
+            resolved.tasks.push_back({.taskId = WinString::utf8ToWide(task.taskId),
+                                      .name = std::move(name),
+                                      .executablePath = std::move(executablePath),
+                                      .iconPath = std::move(iconPath)});
         }
         return &packages.insert_or_assign(key, std::move(resolved)).first->second;
     }
@@ -867,6 +887,7 @@ struct WindowsStartupProbe::Impl
         entry.scope = Windows::StartupMath::scopeOf(StartupLocation::PackagedApp);
         entry.enabled = Windows::StartupMath::packagedTaskEnabled(record.state);
         entry.disabledAtUnixSeconds = entry.enabled ? 0 : record.lastDisabledUnixSeconds;
+        entry.iconPath = task.iconPath;
         if (!task.executablePath.empty())
         {
             entry.executablePath = task.executablePath;

@@ -48,6 +48,11 @@ enum class ServiceColumn : std::uint8_t
 /// serviceStateSortRank() order (reversed when descending) and, within a state, sorted A to Z by
 /// display name (case-insensitively; the service name breaks ties) in either direction. Other
 /// columns' ties keep the name order the model sorted.
+/// The file a service's icon is read from (#1800): its program, unless that is the shared service
+/// host (svchost.exe, whose icon says nothing about the service) or couldn't be told. Empty: the
+/// generic service icon.
+[[nodiscard]] std::string_view serviceIconPath(const Platform::ServiceInfo& service) noexcept;
+
 [[nodiscard]] std::vector<std::size_t>
 buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_view filter, ServiceColumn column, bool ascending);
 
@@ -71,6 +76,10 @@ struct ServicesViewState
 
     std::vector<std::size_t> rows;
     std::uint64_t rowsVersion = 0;
+    /// Per service of the publication: Domain::iconFileKey(serviceIconPath(service)) (#1800), built
+    /// once per sample.
+    std::vector<std::uint64_t> iconKeys;
+    std::uint64_t iconKeysVersion = 0;
     std::string rowsFilter;
     ServiceColumn rowsColumn = ServiceColumn::State;
     bool rowsAscending = true;
@@ -81,13 +90,16 @@ struct ServicesViewState
 };
 
 class ServiceActionsView;
+class ProcessIconView;
 
 /// Draws the filter box and the table (or an empty state) into the current window, with @p actions'
-/// action bar, result line and row menus when it is given (#1577).
+/// action bar, result line and row menus when it is given (#1577), and each service's icon beside its
+/// name through @p icons when it is given (#1800; the visible rows only).
 /// @param publication Null is treated as no sample yet.
 ServicesViewContent renderServicesView(const Domain::ServicePublication* publication,
                                        const Platform::ServiceCapabilities& capabilities,
                                        ServicesViewState& state,
-                                       ServiceActionsView* actions = nullptr);
+                                       ServiceActionsView* actions = nullptr,
+                                       ProcessIconView* icons = nullptr);
 
 } // namespace App

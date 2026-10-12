@@ -55,6 +55,13 @@ class WindowsGPUProbe : public IGPUProbe
     [[nodiscard]] GPUCapabilities capabilities() const override;
     [[nodiscard]] bool rescanGPUs(GPURescan depth) override;
 
+    /// The last readProcessGPUCounters()'s per-process samples of adapters not listed as GPUs: an
+    /// NPU or another MCDM compute accelerator, or the Basic Render Driver, one per process and
+    /// adapter LUID (#1826). readProcessGPUCounters() leaves them out of every GPU figure; this keeps
+    /// them for NPU reporting (#1799), which nothing reads yet. Call it under the same serialization
+    /// as readProcessGPUCounters() (GPUModel's probe lock).
+    [[nodiscard]] std::vector<OtherAdapterProcessUsage> otherAdapterUsage() const;
+
   private:
     // Test-only: swaps in sub-probes backed by fakes (test_WindowsGPURescan.cpp).
     friend struct WindowsGPUProbeTestAccessor;
@@ -91,6 +98,16 @@ class WindowsGPUProbe : public IGPUProbe
     // Built during enumerateGPUs(), used in mergePDHAdapterUtilization()
     // to assign per-GPU utilization from PDH counters (which are keyed by LUID)
     std::unordered_map<std::string, std::string> m_DXGIIdToLuidId;
+
+    // The LUIDs of the adapters listed as GPUs at the last enumeration (listedGPULuids()), rebuilt
+    // with m_DXGIIdToLuidId, so a rescan or hot-plug updates it. Per-process PDH samples of any other
+    // adapter -- the NPU, other MCDM compute accelerators, the Basic Render Driver -- go to
+    // m_OtherAdapterUsage rather than being counted as GPU work (#1826); before the first
+    // enumeration no adapter is listed, so every sample goes there.
+    std::unordered_set<std::string> m_ListedGPULuids;
+
+    // The last readProcessGPUCounters()'s samples of adapters not in m_ListedGPULuids (#1826)
+    std::vector<OtherAdapterProcessUsage> m_OtherAdapterUsage;
 
     // Map DXGI GPU id ("GPU0") to whether it is integrated, which decides whether its memory in
     // use is the shared or the dedicated segment. Built during enumerateGPUs().

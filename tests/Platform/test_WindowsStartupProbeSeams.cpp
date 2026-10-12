@@ -721,6 +721,34 @@ TEST(WindowsPackageManifestTest, ReadsStartupTasksWhateverTheirPrefix)
     EXPECT_EQ(quiet.displayName, "Contoso Visual") << "no DisplayName: the Application's";
     EXPECT_EQ(quiet.executable, "app/Main.exe") << "no Executable: the Application's";
     EXPECT_FALSE(quiet.enabledByDefault);
+
+    // #1800: each task's logo is its Application's Square44x44Logo; the package's own is kept too.
+    EXPECT_EQ(manifest.logo, "Assets\\Logo.png");
+    EXPECT_EQ(starter.logo, "b.png");
+    EXPECT_EQ(quiet.logo, "b.png");
+}
+
+TEST(WindowsPackageManifestTest, ATaskWithoutAnApplicationLogoTakesThePackagesLogo)
+{
+    // #1800: no Square44x44Logo on the VisualElements, so the package's Store logo stands in.
+    const auto parsed = Windows::parsePackageManifest(R"(<?xml version="1.0" encoding="utf-8"?>
+<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+         xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5">
+  <Properties><DisplayName>Plain</DisplayName><Logo> Images\StoreLogo.png </Logo></Properties>
+  <Applications>
+    <Application Id="App" Executable="Plain.exe">
+      <VisualElements DisplayName="Plain" />
+      <Extensions>
+        <uap5:Extension Category="windows.startupTask"><uap5:StartupTask TaskId="Plain" Enabled="true" /></uap5:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>)");
+    ASSERT_TRUE(parsed.has_value());
+    const Windows::PackageManifest manifest = parsed.value_or(Windows::PackageManifest{});
+    ASSERT_EQ(manifest.startupTasks.size(), 1U);
+    EXPECT_EQ(manifest.logo, "Images\\StoreLogo.png") << "trimmed";
+    EXPECT_EQ(manifest.startupTasks[0].logo, "Images\\StoreLogo.png");
 }
 
 TEST(WindowsPackageManifestTest, MalformedOrTasklessManifests)
@@ -801,6 +829,8 @@ TEST_F(WindowsStartupProbeSeamsTest, ListsPackagedStartupTasksAsTaskManagerDoes)
     EXPECT_EQ(term->executablePath, WinString::wideToUtf8((terminal / L"app" / L"Main.exe").wstring()));
     EXPECT_EQ(term->command, std::format("\"{}\"", term->executablePath));
     EXPECT_EQ(term->target, StartupTargetState::Missing);
+    // #1800: the Application's Square44x44Logo under the package's folder, as the manifest names it.
+    EXPECT_EQ(term->iconPath, WinString::wideToUtf8((terminal / L"b.png").wstring()));
 
     const StartupEntry* chatEntry = find(entries, "Contoso Chat", StartupLocation::PackagedApp);
     ASSERT_NE(chatEntry, nullptr);

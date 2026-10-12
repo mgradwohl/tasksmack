@@ -998,5 +998,100 @@ TEST(ExcludeIdleNVMLMemoryTest, AnIdleAdaptersMemoryInUseIsPDHsCurrentFigure)
     EXPECT_EQ(dxgi[1].memoryUsedBytes, 1'000'000'000U) << "A device read this sample keeps NVML's memory";
 }
 
+// ==========================================================================
+// listedGPULuids / separateOtherAdapterUsage: per-process samples count only
+// the adapters listed as GPUs (#1826).
+// ==========================================================================
+
+TEST(ListedGPULuidsTest, IsEveryListedAdaptersLuid)
+{
+    std::vector<GPUInfo> gpus(3);
+    gpus[0].luidId = "GPU_0x00000000_0x00017C33";
+    gpus[1].luidId = "GPU_0x00000000_0x0001A000";
+    // gpus[2] has no LUID: nothing to match
+    EXPECT_EQ(listedGPULuids(gpus), (std::unordered_set<std::string>{"GPU_0x00000000_0x00017C33", "GPU_0x00000000_0x0001A000"}));
+    EXPECT_TRUE(listedGPULuids({}).empty());
+}
+
+// The NPU (Intel AI Boost, an MCDM adapter: engine type "Compute") and the Basic Render Driver have
+// PDH instances but aren't listed, so their samples move out of the GPU counters into the separate
+// per-adapter usage, figures intact; the listed GPU's stay, unchanged and in order.
+TEST(SeparateOtherAdapterUsageTest, MovesSamplesOfAdaptersNotListedOutOfTheGPUCounters)
+{
+    const std::string iGPU = "GPU_0x00000000_0x00017C33";
+    const std::string npu = "GPU_0x00000000_0x00018103";
+    const std::string basicRender = "GPU_0x00000000_0x0001809D";
+    std::vector<ProcessGPUCounters> counters(5);
+    counters[0] = {.pid = 10, .gpuId = npu, .gpuSharedMemoryBytes = 8192, .gpuUtilPercent = 80.0, .activeEngines = {"Compute"}};
+    counters[1] = {
+        .pid = 10,
+        .gpuId = iGPU,
+        .gpuMemoryBytes = 4096,
+        .gpuSharedMemoryBytes = 512,
+        .gpuUtilPercent = 20.0,
+        .activeEngines = {"3D"},
+    };
+    counters[2] = {.pid = 11, .gpuId = npu, .gpuMemoryBytes = 64, .gpuUtilPercent = 60.0, .activeEngines = {"Compute"}};
+    counters[3] = {.pid = 12, .gpuId = basicRender, .gpuUtilPercent = 30.0, .activeEngines = {"3D"}};
+    counters[4] = {.pid = 13, .gpuId = iGPU, .gpuUtilPercent = 5.0, .activeEngines = {"Copy"}};
+
+    const std::vector<OtherAdapterProcessUsage> other = separateOtherAdapterUsage(counters, {iGPU});
+
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].pid, 10);
+    EXPECT_EQ(counters[0].gpuId, iGPU);
+    EXPECT_DOUBLE_EQ(counters[0].gpuUtilPercent, 20.0) << "The iGPU's own figure, not the NPU's 80%";
+    EXPECT_EQ(counters[0].gpuMemoryBytes, 4096U);
+    EXPECT_EQ(counters[0].gpuSharedMemoryBytes, 512U) << "Without the NPU's shared memory";
+    EXPECT_EQ(counters[0].activeEngines, std::vector<std::string>{"3D"});
+    EXPECT_EQ(counters[1].pid, 13);
+    EXPECT_EQ(counters[1].activeEngines, std::vector<std::string>{"Copy"});
+
+    ASSERT_EQ(other.size(), 3U);
+    EXPECT_EQ(other[0].pid, 10);
+    EXPECT_EQ(other[0].adapterLuid, npu);
+    EXPECT_DOUBLE_EQ(other[0].utilPercent, 80.0);
+    EXPECT_EQ(other[0].dedicatedMemoryBytes, 0U);
+    EXPECT_EQ(other[0].sharedMemoryBytes, 8192U);
+    EXPECT_EQ(other[0].activeEngines, std::vector<std::string>{"Compute"});
+    EXPECT_EQ(other[1].pid, 11);
+    EXPECT_EQ(other[1].adapterLuid, npu);
+    EXPECT_DOUBLE_EQ(other[1].utilPercent, 60.0);
+    EXPECT_EQ(other[1].dedicatedMemoryBytes, 64U);
+    EXPECT_EQ(other[2].pid, 12);
+    EXPECT_EQ(other[2].adapterLuid, basicRender);
+    EXPECT_DOUBLE_EQ(other[2].utilPercent, 30.0);
+}
+
+TEST(SeparateOtherAdapterUsageTest, NothingListedMovesEverySample)
+{
+    std::vector<ProcessGPUCounters> counters(2);
+    counters[0].gpuId = "GPU_0x00000000_0x00017C33";
+    counters[1].gpuId = "GPU_0x00000000_0x00018103";
+    const auto other = separateOtherAdapterUsage(counters, {});
+    EXPECT_TRUE(counters.empty());
+    ASSERT_EQ(other.size(), 2U);
+    EXPECT_EQ(other[0].adapterLuid, "GPU_0x00000000_0x00017C33");
+    EXPECT_EQ(other[1].adapterLuid, "GPU_0x00000000_0x00018103");
+}
+
+TEST(SeparateOtherAdapterUsageTest, EverySampleListedIsKeptInOrder)
+{
+    std::vector<ProcessGPUCounters> counters(3);
+    const std::vector<std::string> gpuIds = {"GPU_0x00000000_0x00000001", "GPU_0x00000000_0x00000002", "GPU_0x00000000_0x00000001"};
+    std::size_t index = 0;
+    while (index < counters.size())
+    {
+        counters[index].pid = static_cast<std::int32_t>(index) + 1;
+        counters[index].gpuId = gpuIds[index];
+        ++index;
+    }
+    EXPECT_TRUE(separateOtherAdapterUsage(counters, {"GPU_0x00000000_0x00000001", "GPU_0x00000000_0x00000002"}).empty());
+    ASSERT_EQ(counters.size(), 3U);
+    EXPECT_EQ(counters[0].pid, 1);
+    EXPECT_EQ(counters[1].pid, 2);
+    EXPECT_EQ(counters[2].pid, 3);
+}
+
 } // namespace
 } // namespace Platform

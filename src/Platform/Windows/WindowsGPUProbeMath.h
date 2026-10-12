@@ -14,6 +14,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -631,6 +632,68 @@ inline void excludeIdleNVMLMemory(std::unordered_set<std::string>& nvmlMemoryIds
     }
     std::ranges::sort(fingerprint);
     return fingerprint;
+}
+
+/// The LUIDs ("GPU_0x{High}_0x{Low}", GPUInfo::luidId) of the adapters TaskSmack lists as GPUs, the
+/// ones per-process PDH samples are kept for (#1826).
+[[nodiscard]] inline std::unordered_set<std::string> listedGPULuids(const std::vector<GPUInfo>& gpus)
+{
+    std::unordered_set<std::string> luids;
+    for (const auto& gpu : gpus)
+    {
+        if (!gpu.luidId.empty())
+        {
+            luids.insert(gpu.luidId);
+        }
+    }
+    return luids;
+}
+
+/// Move the per-process samples of adapters TaskSmack doesn't list as GPUs out of @p counters (#1826).
+/// PDH's "GPU Engine" and "GPU Process Memory" have instances for every WDDM and MCDM adapter: the
+/// NPU (an MCDM compute-only adapter, whose engine type is "Compute", so only its LUID tells it from a
+/// GPU's compute engine), other compute accelerators, and the Basic Render Driver DXGI lists but
+/// TaskSmack skips. Left in, they were folded into a process's GPU % and GPU memory, and named by
+/// their raw "GPU_0x..." id in the GPU Device column.
+///
+/// They are kept apart rather than dropped: NPU reporting (#1799) builds on them. The listed GPUs'
+/// samples stay in @p counters, unchanged and in order.
+///
+/// @param counters Per-process samples, keyed by "GPU_<luid>" (PDHGPUProbe's gpuId format)
+/// @param listedLuids listedGPULuids() of the last enumeration
+/// @return The samples moved out, one per process and adapter, keyed by the adapter's LUID
+[[nodiscard]] inline std::vector<OtherAdapterProcessUsage> separateOtherAdapterUsage(std::vector<ProcessGPUCounters>& counters,
+                                                                                     const std::unordered_set<std::string>& listedLuids)
+{
+    std::vector<OtherAdapterProcessUsage> other;
+    std::size_t kept = 0;
+    std::size_t index = 0;
+    while (index < counters.size())
+    {
+        ProcessGPUCounters& counter = counters[index];
+        if (listedLuids.contains(counter.gpuId))
+        {
+            if (kept != index)
+            {
+                counters[kept] = std::move(counter);
+            }
+            ++kept;
+        }
+        else
+        {
+            other.push_back(OtherAdapterProcessUsage{
+                .pid = counter.pid,
+                .adapterLuid = std::move(counter.gpuId),
+                .utilPercent = counter.gpuUtilPercent,
+                .dedicatedMemoryBytes = counter.gpuMemoryBytes,
+                .sharedMemoryBytes = counter.gpuSharedMemoryBytes,
+                .activeEngines = std::move(counter.activeEngines),
+            });
+        }
+        ++index;
+    }
+    counters.resize(kept);
+    return other;
 }
 
 } // namespace Platform

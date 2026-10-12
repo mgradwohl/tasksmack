@@ -144,6 +144,29 @@ TEST(WindowsGPUProbeTest, ReadProcessGPUCountersReturnsValidList)
     }
 }
 
+// Per-process samples are this machine's listed GPUs' only (#1826): PDH also has instances for an
+// NPU (an MCDM adapter DXGI never lists) and the Basic Render Driver, which must not be counted as
+// GPU work or reach ProcessModel as an unknown "GPU_0x..." device.
+TEST(WindowsGPUProbeTest, ProcessCountersAreOnlyForListedGPUs)
+{
+    WindowsGPUProbe probe;
+    std::unordered_set<std::string> listedLuids;
+    for (const auto& gpu : probe.enumerateGPUs())
+    {
+        listedLuids.insert(gpu.luidId);
+    }
+    static_cast<void>(probe.readProcessGPUCounters()); // PDH's first collect only warms up its rates
+    for (const auto& counter : probe.readProcessGPUCounters())
+    {
+        EXPECT_TRUE(listedLuids.contains(counter.gpuId)) << "pid " << counter.pid << " on " << counter.gpuId;
+    }
+    // Those adapters' samples are kept apart instead (#1826)
+    for (const auto& usage : probe.otherAdapterUsage())
+    {
+        EXPECT_FALSE(listedLuids.contains(usage.adapterLuid)) << "pid " << usage.pid << " on " << usage.adapterLuid;
+    }
+}
+
 // ==========================================================================
 // State Consistency Tests
 // ==========================================================================

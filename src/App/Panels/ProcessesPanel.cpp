@@ -504,8 +504,9 @@ void leftAlignedCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& 
 /// Free text from the snapshot, left-aligned; blank when the process has none, and the unavailable
 /// dash when this system cannot fill the column at all (`Supported`, ProcessColumnAvailability::
 /// textCell(), #1210). Blank, not a dash, for an empty value: no status is a process in neither
-/// state the column names, no GPU device is one using none, and an empty publisher is either an
-/// executable without one or one that could not be read -- the probe cannot tell which.
+/// state the column names, no GPU device is one using none, no container is a process in none, and an
+/// empty publisher is either an executable without one or one that could not be read -- the probe
+/// cannot tell which.
 template<std::string Domain::ProcessSnapshot::* Text,
          ProcessRowFormat::LazyTextWidth RowFormatCache::* Width,
          bool RowFormatCache::* Supported>
@@ -629,6 +630,10 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::publisher,
                                        &RowFormatCache::publisherWidth,
                                        &RowFormatCache::publisherSupported>},
+    {.column = ProcessColumn::Container,
+     .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
+                                       &RowFormatCache::containerWidth,
+                                       &RowFormatCache::containerSupported>},
     // State
     {.column = ProcessColumn::State, .render = &stateCell},
     {.column = ProcessColumn::Status,

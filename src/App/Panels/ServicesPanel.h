@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessIconView.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/ServiceActionsView.h"
 #include "App/Panels/ServicesView.h"
@@ -47,6 +48,14 @@ class ServicesPanel : public Panel
     void onEvent(Core::Event& event) override;
     void renderContent() override;
 
+    /// The icons beside each row's name (#1800): the Processes tab's view, shared so every tab uses
+    /// one icon cache, one set of textures and the "Show process icons" setting (which ShellLayer
+    /// applies to it each frame). Set by ShellLayer, which owns both panels; nullptr: no icons.
+    void setIconView(ProcessIconView* icons) noexcept
+    {
+        m_Icons = icons;
+    }
+
   private:
     void setActive(bool active);
 
@@ -57,6 +66,7 @@ class ServicesPanel : public Panel
     std::shared_ptr<const Domain::ServicePublication> m_Publication;
     ServicesViewState m_ViewState;
     std::unique_ptr<ServiceActionsView> m_Actions; // the row actions and their worker (#1577)
+    ProcessIconView* m_Icons = nullptr;            // not owned: ShellLayer's Processes panel owns it
 };
 
 } // namespace App

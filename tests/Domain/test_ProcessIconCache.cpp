@@ -316,6 +316,113 @@ TEST_F(ProcessIconCacheTest, TheWorkerLoadsWithoutTheCallersHelp)
     cache.reset(); // Joins the worker
 }
 
+// #1800: files asked for by path -- the Startup and Services tabs' programs, packaged apps' logos.
+
+TEST_F(ProcessIconCacheTest, AFileIsLoadedByItsPathWithoutAProcess)
+{
+    m_State->iconSides["C:/Apps/Startup.exe"] = SIZE;
+    const auto cache = makeCache();
+    const std::uint64_t key = iconFileKey("C:/Apps/Startup.exe");
+
+    EXPECT_EQ(cache->lookupFile(key, "C:/Apps/Startup.exe", "Startup", SIZE), nullptr); // Loading
+    EXPECT_EQ(cache->lookupFile(key, "C:/Apps/Startup.exe", "Startup", SIZE), nullptr); // One load queued, not two
+    EXPECT_EQ(cache->stats().queued, 1U);
+    EXPECT_EQ(cache->loadPending(), 1U);
+
+    const auto icon = cache->lookupFile(key, "C:/Apps/Startup.exe", "Startup", SIZE);
+    ASSERT_NE(icon, nullptr);
+    EXPECT_EQ(icon->sizePx, SIZE);
+    EXPECT_EQ(m_State->pathReads.load(), 0) << "a file has no process to read a path from";
+    EXPECT_EQ(cache->stats().files, 1U);
+    EXPECT_EQ(cache->stats().processes, 0U);
+}
+
+TEST_F(ProcessIconCacheTest, AFileAndARunningProcessOfItShareOneIconAndOneRead)
+{
+    m_State->paths[10] = "C:/Apps/Startup.exe";
+    m_State->iconSides["C:/Apps/Startup.exe"] = SIZE;
+    const auto cache = makeCache();
+    const std::uint64_t key = iconFileKey("C:/Apps/Startup.exe");
+
+    static_cast<void>(cache->lookup(1, 10, "Startup.exe", SIZE));
+    static_cast<void>(cache->lookupFile(key, "C:/Apps/Startup.exe", "Startup", SIZE));
+    EXPECT_EQ(cache->loadPending(), 2U);
+
+    const auto fromProcess = cache->lookup(1, 10, "Startup.exe", SIZE);
+    const auto fromFile = cache->lookupFile(key, "C:/Apps/Startup.exe", "Startup", SIZE);
+    ASSERT_NE(fromProcess, nullptr);
+    EXPECT_EQ(fromProcess, fromFile);
+    EXPECT_EQ(m_State->iconReads.load(), 1);
+}
+
+TEST_F(ProcessIconCacheTest, AFileWithoutAnIconIsRememberedAndAnEmptyPathIsNeverRead)
+{
+    const auto cache = makeCache();
+    const std::uint64_t key = iconFileKey("C:/Apps/NoIcon.exe");
+    static_cast<void>(cache->lookupFile(key, "C:/Apps/NoIcon.exe", "NoIcon", SIZE));
+    static_cast<void>(cache->loadPending());
+    EXPECT_EQ(cache->lookupFile(key, "C:/Apps/NoIcon.exe", "NoIcon", SIZE), nullptr);
+    EXPECT_EQ(cache->stats().misses, 1U);
+    EXPECT_EQ(cache->stats().queued, 0U) << "answered from the files map, not queued again";
+
+    EXPECT_EQ(cache->lookupFile(iconFileKey(""), "", "Unresolved", SIZE), nullptr);
+    EXPECT_EQ(cache->stats().queued, 0U);
+    EXPECT_EQ(cache->stats().files, 1U);
+    EXPECT_EQ(m_State->iconReads.load(), 1);
+}
+
+TEST_F(ProcessIconCacheTest, AFileKeyAndAProcessKeyOfOneValueAreKeptApart)
+{
+    m_State->paths[10] = "/usr/bin/process";
+    m_State->iconSides["/usr/bin/process"] = SIZE;
+    m_State->iconSides["/opt/file"] = SIZE * 2;
+    const auto cache = makeCache();
+
+    static_cast<void>(cache->lookup(7, 10, "process", SIZE));
+    static_cast<void>(cache->lookupFile(7, "/opt/file", "file", SIZE));
+    static_cast<void>(cache->loadPending());
+    const auto process = cache->lookup(7, 10, "process", SIZE);
+    const auto file = cache->lookupFile(7, "/opt/file", "file", SIZE);
+    ASSERT_NE(process, nullptr);
+    ASSERT_NE(file, nullptr);
+    EXPECT_NE(process->id, file->id);
+}
+
+TEST_F(ProcessIconCacheTest, TheFilesMapIsBoundedAndAFullQueueDropsAFileToo)
+{
+    const auto cache = makeCache({.maxFiles = 2, .maxQueued = 1, .startWorker = false});
+    static_cast<void>(cache->lookupFile(1, "/a", "a", SIZE));
+    static_cast<void>(cache->lookupFile(2, "/b", "b", SIZE)); // Drops /a's request, and /a with it
+    EXPECT_EQ(cache->stats().queued, 1U);
+    EXPECT_EQ(cache->stats().files, 1U);
+    static_cast<void>(cache->lookupFile(3, "/c", "c", SIZE));
+    static_cast<void>(cache->lookupFile(4, "/d", "d", SIZE));
+    EXPECT_EQ(cache->stats().files, 1U);
+    static_cast<void>(cache->loadPending());
+    static_cast<void>(cache->lookupFile(5, "/e", "e", SIZE));
+    static_cast<void>(cache->lookupFile(6, "/f", "f", SIZE));
+    EXPECT_LE(cache->stats().files, 2U);
+}
+
+TEST_F(ProcessIconCacheTest, AThrowingSourceLeavesAFileForAnotherTry)
+{
+    m_State->throwOnLoad = true;
+    const auto cache = makeCache();
+    static_cast<void>(cache->lookupFile(1, "/a", "a", SIZE));
+    static_cast<void>(cache->loadPending());
+    EXPECT_EQ(cache->stats().files, 0U) << "forgotten, so the next lookup asks again";
+    static_cast<void>(cache->lookupFile(1, "/a", "a", SIZE));
+    EXPECT_EQ(cache->stats().queued, 1U);
+}
+
+TEST(IconFileKeyTest, IsFnv1aOfThePath)
+{
+    EXPECT_EQ(iconFileKey(""), 14695981039346656037ULL);
+    EXPECT_EQ(iconFileKey("a"), 0xAF63DC4C8601EC8CULL);
+    EXPECT_NE(iconFileKey("C:/Apps/One.exe"), iconFileKey("C:/Apps/Two.exe"));
+    static_assert(iconFileKey("x") == iconFileKey("x"));
+}
+
 TEST(ScaleIconToSquareTest, ShrinksByAveragingWithAlphaWeighting)
 {
     // 2x2: one opaque red pixel, three transparent (black) ones -> one pixel: red, a quarter opaque.

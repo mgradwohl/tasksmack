@@ -1,24 +1,18 @@
 #include "LinuxProcessIconSource.h"
 
 #include "Platform/IProcessIconSource.h"
+#include "Platform/IconImageFile.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
 
-// NOLINTNEXTLINE(misc-include-cleaner) - stb_image.h's declarations; the implementation is Platform/StbImage.cpp
-#include <stb_image.h>
-
-#include <algorithm>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace Platform
 {
@@ -33,15 +27,6 @@ namespace
     const char* value = std::getenv(name); // NOLINT(concurrency-mt-unsafe)
     return value != nullptr ? std::string_view(value) : std::string_view{};
 }
-
-/// Frees what stbi_load() returned.
-struct StbiFree
-{
-    void operator()(stbi_uc* pixels) const noexcept
-    {
-        stbi_image_free(pixels);
-    }
-};
 
 } // namespace
 
@@ -112,24 +97,7 @@ std::optional<IconPixels> LinuxProcessIconSource::loadIcon(std::string_view exec
 
 std::optional<IconPixels> LinuxProcessIconSource::decodePng(const std::filesystem::path& path)
 {
-    const std::string name = path.string();
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    if (stbi_info(name.c_str(), &width, &height, &channels) == 0 || width <= 0 || height <= 0 || width > MAX_DECODED_SIDE_PX ||
-        height > MAX_DECODED_SIDE_PX)
-    {
-        return std::nullopt;
-    }
-    const std::unique_ptr<stbi_uc, StbiFree> pixels(stbi_load(name.c_str(), &width, &height, &channels, STBI_rgb_alpha));
-    if (pixels == nullptr || width <= 0 || height <= 0)
-    {
-        return std::nullopt;
-    }
-    const std::size_t bytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
-    IconPixels icon{.width = width, .height = height, .rgba = std::vector<std::uint8_t>(bytes)};
-    std::copy_n(pixels.get(), bytes, icon.rgba.begin());
-    return icon;
+    return decodeIconImageFile(path.string());
 }
 
 } // namespace Platform

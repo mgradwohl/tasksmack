@@ -487,6 +487,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Priority",
             "Publisher",
             "Type",
+            "Container",
         });
 
         // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
@@ -521,10 +522,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         std::string_view value;
         ImVec4 color;
     };
-    // At most six rows a table (Publisher and Type are optional), held in place.
+    // At most seven rows a table (Publisher, Type and Container are optional), held in place.
     struct InfoRows
     {
-        std::array<InfoRow, 6> rows{};
+        std::array<InfoRow, 7> rows{};
         std::size_t count = 0;
 
         void add(InfoRow row) noexcept
@@ -626,6 +627,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     {
         // The same colour as the table's Type column (#1180)
         runtimeRows.add({.label = "Type", .value = proc.processType, .color = processTypeColor(proc.processType, theme.scheme())});
+    }
+    if (!proc.container.empty())
+    {
+        runtimeRows.add({.label = "Container", .value = proc.container, .color = theme.scheme().textMuted});
     }
     // Identity and Runtime are cards with their header inside (#1537), both as tall as the taller of
     // the two, so their edges line up -- or as tall as Actions or Priority beside them, if taller.

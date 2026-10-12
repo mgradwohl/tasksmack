@@ -458,11 +458,12 @@ TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
 
 TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
 {
-    // The per-column cell renderers (#1382) draw Status, Publisher, Type and the GPU text columns
+    // The per-column cell renderers (#1382) draw Status, Publisher, Container, Type and the GPU text columns
     // from the entry alone, so it carries whether this system can fill them (#1210).
     const RowFormatCache all = buildRowFormatCache(makeSnapshot());
     EXPECT_TRUE(all.statusSupported);
     EXPECT_TRUE(all.publisherSupported);
+    EXPECT_TRUE(all.containerSupported);
     EXPECT_TRUE(all.processTypeSupported);
     EXPECT_TRUE(all.gpuSupported);
 
@@ -475,6 +476,11 @@ TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
     EXPECT_FALSE(some.publisherSupported);
     EXPECT_FALSE(some.processTypeSupported);
     EXPECT_FALSE(some.gpuSupported);
+    EXPECT_TRUE(some.containerSupported);
+
+    ProcessRowFormat::RowFormatOptions windowsLike;
+    windowsLike.hasContainer = false;
+    EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).containerSupported);
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)

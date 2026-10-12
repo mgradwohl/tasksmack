@@ -85,6 +85,10 @@ struct ProcessCounters
     // Publisher / vendor info (optional, Windows-only via PE version info)
     std::string publisher; // CompanyName from PE file version info (empty if not available)
 
+    // Container (optional, Linux-only from /proc/[pid]/cgroup; see CgroupContainer.h)
+    // "<runtime>:<short id or name>", e.g. "docker:1a2b3c4d5e6f" (empty if in none)
+    std::string container;
+
     // Process type classification (optional, Windows-only)
     // Values: "App", "Background Process", "Windows Process" (empty if not available)
     std::string processType;
@@ -161,6 +165,7 @@ struct ProcessCapabilities
     bool hasPowerUsage = false;         // Whether power consumption metrics are available
     bool hasStatus = false;             // Whether process status (Suspended, Efficiency Mode) is available
     bool hasPublisher = false;          // Whether publisher/vendor string is available (Windows PE version info)
+    bool hasContainer = false;          // Whether the container a process runs in is available (Linux cgroups)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data (not

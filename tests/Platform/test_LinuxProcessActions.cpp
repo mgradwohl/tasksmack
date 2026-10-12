@@ -958,6 +958,47 @@ TEST_F(LinuxProcessActionsFaultTest, ASignalTheKernelRefusesSaysWhy)
     EXPECT_EQ(m_Actions.terminate(ownTarget()).errorMessage, "Process not found - may have already exited");
     plan().sendErrno = EPERM;
     EXPECT_EQ(m_Actions.kill(ownTarget()).errorMessage, "Permission denied - process belongs to another user");
+    plan().sendErrno = EINVAL;
+    EXPECT_EQ(m_Actions.stop(ownTarget()).errorMessage, "Invalid signal");
+    // Anything else: the system's own words for it.
+    plan().sendErrno = EIO;
+    EXPECT_EQ(m_Actions.resume(ownTarget()).errorMessage, std::system_category().message(EIO));
+}
+
+TEST_F(LinuxProcessActionsFaultTest, AProcessWhoseStartTimeCantBeReadIsNotFound)
+{
+    // The pidfd opens (the fake's), but there is no /proc/<pid>/stat to confirm the start time against
+    // (#1395): the PID is above any pid_max.
+    const ProcessTarget gone{.pid = 0x3FFFFFFF, .startTimeTicks = 12345};
+    EXPECT_EQ(m_Actions.kill(gone).errorMessage, "Process not found - may have already exited");
+    EXPECT_EQ(plan().sendCalls, 0);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, AnIoPriorityClassOutOfRangeIsRefused)
+{
+    // Out of range on purpose: the guard against a class no enumerator names is what is under test.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    const auto outOfRange = static_cast<IoPriorityClass>(200);
+    const ProcessActionResult result = m_Actions.setIoPriority(ownTarget(), outOfRange, 0);
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Invalid I/O priority class");
+    EXPECT_EQ(plan().setCalls, 0);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, ATraceWithoutAPidfdIsRefusedBeforeAnythingOpens)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_trace_nopidfd");
+    LinuxProcessActions actions(fakeTraceTools(dir.path),
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &fakePidfdSendSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .setPriority = &fakeSet,
+                                                     .ioprioSet = &fakeSet,
+                                                     .ioprioGet = &fakeIoprioGet});
+    plan().openErrno = ESRCH;
+    EXPECT_EQ(actions.launchSyscallTrace(ownTarget()).errorMessage, "Process not found - may have already exited");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
 }
 
 TEST_F(LinuxProcessActionsFaultTest, PriorityReachesEveryThreadAndIsConfirmed)
@@ -1172,6 +1213,14 @@ TEST(LinuxProcessSyscallsTest, TheRealTableIsComplete)
     EXPECT_NE(real.ioprioGet, nullptr);
     EXPECT_NE(real.listThreads, nullptr);
     EXPECT_NE(real.isThreadOf, nullptr);
+}
+
+TEST(LinuxProcessSyscallsTest, TheRealThreadListingOfAMissingProcessSaysWhy)
+{
+    const auto listed = realProcessSyscalls().listThreads(0x3FFFFFFF); // above any pid_max
+    ASSERT_FALSE(listed.has_value());
+    EXPECT_TRUE(static_cast<bool>(listed.error()));
+    EXPECT_FALSE(realProcessSyscalls().isThreadOf(0x3FFFFFFF, 1));
 }
 
 } // namespace

@@ -173,6 +173,8 @@ set(COMMON_TEST_SOURCES
     UI/test_FillPlotLayout.cpp
     UI/test_ChartGeometryBudget.cpp
     UI/test_NowBarsRender.cpp
+    UI/test_HistoryCsv.cpp
+    UI/test_HistoryChartCsvRender.cpp
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
     UI/test_SourceEncoding.cpp
@@ -199,6 +201,7 @@ set(COMMON_TEST_SOURCES
     UI/test_IconLoader.cpp
     UI/test_IconTextureCache.cpp
     App/test_ProcessIconView.cpp
+    App/test_StartupServicesIcons.cpp
     UI/test_MonospaceFontPath.cpp
     UI/test_DpiScale.cpp
     UI/test_FontFileCache.cpp
@@ -231,6 +234,7 @@ set(COMMON_TEST_SOURCES
     App/test_CpuDetailsText.cpp
     App/test_CpuDetailsBlockRender.cpp
     App/test_BatteryDetails.cpp
+    Platform/test_CgroupContainer.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp
@@ -354,6 +358,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessIconMath.cpp
+    Platform/WindowsMath/test_WindowsPackageLogoMath.cpp
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
@@ -371,6 +376,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessActions.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsProcessIconSource.cpp
+    Platform/test_WindowsPackageLogo.cpp
     Platform/test_WindowsProcessModules.cpp
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsProcessSecurity.cpp
@@ -470,6 +476,13 @@ set(THEME_REAL_TEST_SOURCES
 set(APP_REAL_TEST_SOURCES
     App/test_UiLayersOnDisplay.cpp
 )
+# Linux-only app tests, listed on every platform so the registration check below sees them
+set(APP_REAL_LINUX_TEST_SOURCES
+    App/test_PlatformOpen.cpp  # a fake xdg-open on PATH (#1395)
+)
+if(UNIX AND NOT APPLE)
+    list(APPEND APP_REAL_TEST_SOURCES ${APP_REAL_LINUX_TEST_SOURCES})
+endif()
 set(TASKSMACK_REGISTERED_TEST_SOURCES
     ${COMMON_TEST_SOURCES}
     ${WINDOWS_PLATFORM_TEST_SOURCES}
@@ -478,6 +491,7 @@ set(TASKSMACK_REGISTERED_TEST_SOURCES
     ${LINUX_INTEGRATION_TEST_SOURCES}
     ${THEME_REAL_TEST_SOURCES}
     ${APP_REAL_TEST_SOURCES}
+    ${APP_REAL_LINUX_TEST_SOURCES}
 )
 file(GLOB_RECURSE TASKSMACK_TEST_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/test_*.cpp")
@@ -616,6 +630,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
     # stb_image's implementation, which IconLoader.cpp and the Linux process icons call (#1800)
     ${CMAKE_SOURCE_DIR}/src/Platform/StbImage.cpp
+    # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)
+    ${CMAKE_SOURCE_DIR}/src/Platform/IconImageFile.cpp
     ${CMAKE_SOURCE_DIR}/src/UI/MonospaceFontPath.cpp
     # Marker glyphs for the value strip and series, drawn by test_FillPlotLayout.cpp and
     # test_ChartGeometryBudget.cpp under a live ImGui context

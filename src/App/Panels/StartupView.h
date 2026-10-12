@@ -34,6 +34,10 @@ enum class StartupColumn : std::uint8_t
 /// "Enabled", "Disabled since <local date>", or "Disabled" when no time is recorded.
 [[nodiscard]] std::string startupEnabledLabel(const Platform::StartupEntry& entry);
 
+/// The file the entry's icon is read from (#1800): a packaged app's logo, else the program it starts;
+/// empty -- the generic icon -- when that program wasn't found or couldn't be told.
+[[nodiscard]] std::string_view startupIconPath(const Platform::StartupEntry& entry) noexcept;
+
 /// Indices into `entries` of those whose name, publisher or command contains `filter` (ASCII case-
 /// insensitive; empty matches all), ordered by `column`. By Enabled, the enabled entries come first
 /// (last when descending) and each group is sorted A to Z by name (case-insensitively; the exact name
@@ -61,6 +65,7 @@ struct StartupViewState
 
     std::vector<std::size_t> rows;
     std::vector<std::string> enabledLabels; ///< Per entry of the publication, not per row.
+    std::vector<std::uint64_t> iconKeys;    ///< Per entry: Domain::iconFileKey(startupIconPath(entry)) (#1800).
     std::uint64_t rowsVersion = 0;
     std::string rowsFilter;
     StartupColumn rowsColumn = StartupColumn::Enabled;
@@ -75,13 +80,16 @@ struct StartupViewState
 };
 
 class StartupActionsView;
+class ProcessIconView;
 
 /// Draws the filter box and the table (or an empty state) into the current window, with @p actions'
-/// action bar, result line and row menus when it is given (#801, phase 2).
+/// action bar, result line and row menus when it is given (#801, phase 2), and each entry's icon
+/// beside its name through @p icons when it is given (#1800; the visible rows only).
 /// @param publication Null is treated as no sample yet.
 StartupViewContent renderStartupView(const Domain::StartupPublication* publication,
                                      const Platform::StartupCapabilities& capabilities,
                                      StartupViewState& state,
-                                     StartupActionsView* actions = nullptr);
+                                     StartupActionsView* actions = nullptr,
+                                     ProcessIconView* icons = nullptr);
 
 } // namespace App

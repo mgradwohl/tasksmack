@@ -21,6 +21,7 @@
 #include "WindowsHandles.h"
 #include "WindowsServiceConfig.h"
 #include "WindowsServiceProbeMath.h"
+#include "WindowsStartupProbe.h"
 
 #include <chrono>
 #include <memory>
@@ -66,6 +67,7 @@ struct CachedConfig
     std::chrono::steady_clock::time_point readAt; ///< When the last read was attempted, whatever its outcome.
     bool attempted = false;                       ///< False until the first read: a new or reappeared service.
     Windows::ServiceConfig config;
+    std::string executablePath; ///< The program config.binaryPath runs (#1800), resolved with the config.
 };
 
 /// Read access to the service list (ENUMERATE_SERVICE) and to each service (CONNECT: OpenServiceW
@@ -209,11 +211,14 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
             if (Windows::ServiceMath::shouldRefreshConfig(cached.readAt, now, cached.attempted))
             {
                 cached.config = Windows::readServiceConfig(m_Impl->api, m_Impl->scm.get(), entry.lpServiceName);
+                // The command line's program, as the Startup tab finds it: its icon is the row's (#1800).
+                cached.executablePath = Windows::resolveStartupExecutable(cached.config.binaryPath);
                 cached.attempted = true;
                 cached.readAt = now;
             }
             info.startType = cached.config.startType;
             info.binaryPath = cached.config.binaryPath;
+            info.executablePath = cached.executablePath;
             info.account = cached.config.account;
             info.description = cached.config.description;
             info.group = cached.config.group;

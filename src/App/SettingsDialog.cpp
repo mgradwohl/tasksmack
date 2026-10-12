@@ -323,10 +323,11 @@ Action render(State& state)
             ImGui::EndCombo();
         }
 
-        // The programs' icons beside process names in the Processes table and Process Details (#1800).
+        // The programs' icons beside the names in the Processes, Process Details, Services and Startup
+        // tabs (#1800).
         ImGui::Spacing();
         ImGui::Checkbox(PROCESS_ICONS_LABEL, &state.showProcessIcons);
-        ImGui::SetItemTooltip("Show each program's icon beside its name in the Processes table and Process Details");
+        ImGui::SetItemTooltip("Show each program's icon beside its name in the Processes, Services and Startup tabs and Process Details");
 
         UI::Widgets::sectionGap();
 

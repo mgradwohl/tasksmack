@@ -105,6 +105,8 @@ std::vector<GPUInfo> WindowsGPUProbe::enumerateGPUs()
                 spdlog::debug("WindowsGPUProbe: LUID mapping: {} → {}", gpu.id, gpu.luidId);
             }
         }
+        // Which adapters' per-process samples count (#1826)
+        m_ListedGPULuids = listedGPULuids(gpus);
 
         return gpus;
     }
@@ -298,12 +300,22 @@ void WindowsGPUProbe::mergePDHAdapterUtilization(std::vector<GPUCounters>& dxgiC
 std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()
 {
     std::vector<ProcessGPUCounters> allCounters;
+    m_OtherAdapterUsage.clear();
 
     // Use PDH for per-process GPU data (utilization + memory)
     // This is the same mechanism Task Manager uses - works cross-vendor
     if (m_PDHProbe && m_PDHProbe->isAvailable())
     {
         auto pdhCounters = m_PDHProbe->readProcessGPUCounters();
+        // Only the adapters listed as GPUs count as GPU work: PDH also has the NPU's, other compute
+        // accelerators' and the Basic Render Driver's instances, which are kept apart (#1826) for
+        // NPU reporting (#1799).
+        m_OtherAdapterUsage = separateOtherAdapterUsage(pdhCounters, m_ListedGPULuids);
+        if (!m_OtherAdapterUsage.empty())
+        {
+            spdlog::debug("WindowsGPUProbe: {} per-process sample(s) on adapters not listed as GPUs, kept out of GPU figures",
+                          m_OtherAdapterUsage.size());
+        }
         if (!pdhCounters.empty())
         {
             spdlog::debug("WindowsGPUProbe: Got {} per-process GPU entries from PDH (utilization + memory)", pdhCounters.size());
@@ -315,6 +327,11 @@ std::vector<ProcessGPUCounters> WindowsGPUProbe::readProcessGPUCounters()
     // No need to merge from other sources - PDH is the authoritative source for per-process data
 
     return allCounters;
+}
+
+std::vector<OtherAdapterProcessUsage> WindowsGPUProbe::otherAdapterUsage() const
+{
+    return m_OtherAdapterUsage;
 }
 
 GPUCapabilities WindowsGPUProbe::capabilities() const

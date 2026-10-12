@@ -148,6 +148,7 @@ struct RowFormatOptions
     bool gpuReadFailed = false;              ///< Supported, but this generation's per-process GPU read failed (#1210)
     bool hasStatus = true;
     bool hasPublisher = true;
+    bool hasContainer = true;
     bool hasProcessType = true;
 };
 
@@ -296,6 +297,7 @@ struct RowFormatCache
     LazyTextWidth gpuEnginesWidth; // of gpuEngines above
     LazyTextWidth gpuDevicesWidth;
     LazyTextWidth publisherWidth;
+    LazyTextWidth containerWidth;
     LazyTextWidth processTypeWidth;
 
     // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):
@@ -303,6 +305,7 @@ struct RowFormatCache
     // RowFormatOptions the entry was built with, so the cell renderers need no capabilities.
     bool statusSupported = true;
     bool publisherSupported = true;
+    bool containerSupported = true;
     bool processTypeSupported = true;
     bool gpuSupported = true;   // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
     bool gpuReadFailed = false; // Supported, but this generation's per-process GPU read failed (#1210)
@@ -327,6 +330,7 @@ struct RowFormatCache
     RowFormatCache fmt;
     fmt.statusSupported = options.hasStatus;
     fmt.publisherSupported = options.hasPublisher;
+    fmt.containerSupported = options.hasContainer;
     fmt.processTypeSupported = options.hasProcessType;
     fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;
