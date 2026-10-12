@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -3036,4 +3038,82 @@ TEST(ApplicationTest, RaiseWindowResizedEventReachesLayers)
     {
         FAIL() << "Application creation failed after the display probe passed: " << e.what();
     }
+}
+
+namespace
+{
+/// Drives the loop through what resize tracing reports (#1395): a programmatic resize (an interaction
+/// window), an onUpdate() over the slow-frame threshold, then stops.
+class ResizeTraceDriverLayer : public Core::Layer
+{
+  public:
+    ResizeTraceDriverLayer() : Layer("ResizeTraceDriver")
+    {}
+
+    void onUpdate(float /*deltaTime*/) override
+    {
+        ++m_Updates;
+        if (m_Updates == 3)
+        {
+            Core::Application::get().getWindow().setSize(800, 600);
+        }
+        else if (m_Updates == 6)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150)); // over the 100 ms slow-frame threshold
+        }
+        else if (m_Updates >= 30)
+        {
+            Core::Application::get().stop();
+        }
+    }
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+    }
+
+  private:
+    int m_Updates = 0;
+};
+} // namespace
+
+TEST(ApplicationTest, ResizePerfTracingFollowsTheLoopThroughAResizeAndASlowLayer)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    std::ostringstream output;
+    const std::shared_ptr<spdlog::logger> previousLogger = spdlog::default_logger();
+    auto logger = std::make_shared<spdlog::logger>("resize-trace-test", std::make_shared<spdlog::sinks::ostream_sink_mt>(output));
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(std::move(logger));
+    // Read once, when the Application is constructed.
+    ASSERT_EQ(SDL_setenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF", "1", 1), 0);
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "ResizeTraceTest";
+    spec.VSync = false;
+    try
+    {
+        Core::Application app(spec);
+        static_cast<void>(SDL_unsetenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF"));
+        app.pushLayer<ResizeTraceDriverLayer>();
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        static_cast<void>(SDL_unsetenv_unsafe("TASKSMACK_TRACE_RESIZE_PERF"));
+        spdlog::set_default_logger(previousLogger);
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+    spdlog::set_default_logger(previousLogger);
+
+    const std::string log = output.str();
+    EXPECT_TRUE(log.contains("Resize performance tracing enabled")) << log;
+    EXPECT_TRUE(log.contains("ResizePerfAnchor:")) << log;    // the clock anchor, at start and shutdown
+    EXPECT_TRUE(log.contains("ResizePerfSlowFrame:")) << log; // the 150 ms onUpdate()
+    EXPECT_TRUE(log.contains("ResizePerfSlowLayer[update]: rank=1 layer='ResizeTraceDriver'")) << log; // named as the slow layer
+    EXPECT_TRUE(log.contains("ResizePerf[shutdown]")) << log;                                          // the final summary
 }
