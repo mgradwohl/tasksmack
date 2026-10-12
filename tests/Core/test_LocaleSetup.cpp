@@ -3,10 +3,12 @@
 
 #include "Core/LocaleSetup.h"
 
+#include <SDL3/SDL_stdinc.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <clocale>
+#include <cstdlib>
 #include <exception>
 #include <locale>
 #include <string>
@@ -334,6 +336,87 @@ TEST(LocaleSetupOverrideTest, TriesTheUtf8VariantFirst)
     EXPECT_EQ(localeOverrideCandidates("de_DE.UTF-8"), (std::vector<std::string>{"de_DE.UTF-8"}));
     EXPECT_TRUE(localeOverrideCandidates("").empty());
 }
+
+#ifndef _WIN32
+// initialize() sets the process's C and C++ locales once, for good, so each of these runs it in a
+// death test's child process (forked, or re-executed under the threadsafe style) and reports through
+// the exit code: nothing here changes the locale every other test in this process runs under.
+
+/// Runs initialize() in a child with @p localeOverride as TASKSMACK_LOCALE (unset when empty) and
+/// LC_ALL=C.UTF-8, and exits 0 when @p check accepts what it did.
+template<typename Check> [[noreturn]] void initializeInChild(const char* localeOverride, Check check)
+{
+    static_cast<void>(SDL_setenv_unsafe("LC_ALL", "C.UTF-8", 1));
+    if (*localeOverride != '\0')
+    {
+        static_cast<void>(SDL_setenv_unsafe("TASKSMACK_LOCALE", localeOverride, 1));
+    }
+    else
+    {
+        static_cast<void>(SDL_unsetenv_unsafe("TASKSMACK_LOCALE"));
+    }
+    const Summary& summary = initialize(NumericFacets::Classic);
+    std::exit(check(summary) ? 0 : 1); // NOLINT(concurrency-mt-unsafe) - the death test's own child
+}
+
+[[nodiscard]] bool localeAvailable(const char* name)
+{
+    try
+    {
+        static_cast<void>(std::locale(name));
+        return true;
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+}
+
+TEST(LocaleSetupInitializeTest, SetsAUtf8UserLocaleAndKeepsClassicNumbers)
+{
+    EXPECT_EXIT(initializeInChild("",
+                                  [](const Summary& summary)
+                                  {
+                                      const auto& numbers = std::use_facet<std::numpunct<char>>(std::locale());
+                                      return !summary.cLocale.empty() && !summary.userLocaleOverridden && numbers.decimal_point() == '.' &&
+                                             userNumberPunctuation().decimalPoint == '.' && !describe(summary).empty();
+                                  }),
+                ::testing::ExitedWithCode(0),
+                "");
+}
+
+TEST(LocaleSetupInitializeTest, TheLocaleOverrideDecidesTheDisplayPunctuation)
+{
+    if (!localeAvailable("fr_FR.UTF-8"))
+    {
+        GTEST_SKIP() << "fr_FR.UTF-8 isn't installed here";
+    }
+    // fr_FR: a decimal comma for display, while the program's own numbers stay classic.
+    EXPECT_EXIT(initializeInChild("fr_FR",
+                                  [](const Summary& summary)
+                                  {
+                                      const auto& numbers = std::use_facet<std::numpunct<char>>(std::locale());
+                                      return summary.userLocaleOverridden && userNumberPunctuation().decimalPoint == ',' &&
+                                             numbers.decimal_point() == '.';
+                                  }),
+                ::testing::ExitedWithCode(0),
+                "");
+}
+
+TEST(LocaleSetupInitializeTest, AnOverrideNamingNoLocaleIsIgnoredWithAWarning)
+{
+    EXPECT_EXIT(initializeInChild("xx_NOWHERE",
+                                  [](const Summary& summary)
+                                  {
+                                      return !summary.userLocaleOverridden &&
+                                             std::ranges::any_of(summary.warnings,
+                                                                 [](const std::string& warning)
+                                                                 { return warning.contains("names no available locale"); });
+                                  }),
+                ::testing::ExitedWithCode(0),
+                "");
+}
+#endif
 
 } // namespace
 } // namespace Core::LocaleSetup
