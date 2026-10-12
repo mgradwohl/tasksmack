@@ -253,7 +253,7 @@ CrashesInfo LinuxSystemInfoProbe::readCrashes()
     return info;
 }
 
-NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters()
+NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters(bool /*includeWifiDetails*/)
 {
     NetworkAdaptersInfo info;
     // The addresses are this system's own (getifaddrs()); the rest is read under m_Root, so a fixture

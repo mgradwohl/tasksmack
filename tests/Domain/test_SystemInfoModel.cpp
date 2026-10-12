@@ -164,11 +164,17 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         return info;
     }
 
-    [[nodiscard]] Platform::NetworkAdaptersInfo readNetworkAdapters() override
+    [[nodiscard]] Platform::NetworkAdaptersInfo readNetworkAdapters(bool includeWifiDetails) override
     {
         Platform::NetworkAdaptersInfo info;
         info.available = true;
         info.gatewayV4 = "192.168.1.1";
+        // One Wi-Fi adapter whose details are withheld unless asked for, as Windows' are (#1782).
+        Platform::NetworkAdapter wifi;
+        wifi.name = "Wi-Fi";
+        wifi.wireless = true;
+        wifi.wifiDetailsWithheld = !includeWifiDetails;
+        info.adapters.push_back(std::move(wifi));
         return info;
     }
 
@@ -224,6 +230,31 @@ TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
     EXPECT_EQ(model.version(), 2U);
     EXPECT_EQ(model.snapshot()->os.build, "26100.2");
     EXPECT_EQ(first->os.build, "26100.1"); // the earlier snapshot is unchanged
+}
+
+// #1782: the Wi-Fi details that can raise a location prompt are left out of every read until asked for,
+// then included in every read after, Refresh too; a sensors-only read keeps what the last full read had.
+TEST(SystemInfoModelTest, WifiDetailsOnlyOnceAskedThenForTheSession)
+{
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
+    EXPECT_FALSE(model.wifiDetailsIncluded());
+    model.read();
+    ASSERT_EQ(model.snapshot()->adapters.adapters.size(), 1U);
+    EXPECT_TRUE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld) << "the first read doesn't ask";
+    EXPECT_FALSE(model.snapshot()->wifiDetailsIncluded);
+
+    model.includeWifiDetails();
+    EXPECT_TRUE(model.wifiDetailsIncluded());
+    model.read();
+    EXPECT_FALSE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld);
+    EXPECT_TRUE(model.snapshot()->wifiDetailsIncluded);
+
+    model.readSensors();
+    EXPECT_FALSE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld) << "kept from the last full read";
+    model.read(); // Refresh
+    EXPECT_FALSE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld) << "the choice holds";
+    EXPECT_TRUE(model.snapshot()->wifiDetailsIncluded);
 }
 
 // #1522: the sensors read again on their own, with every other fact (and when they were read) kept, and

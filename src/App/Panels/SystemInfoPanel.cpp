@@ -154,6 +154,18 @@ void SystemInfoPanel::renderContent()
     {
         startRead();
     }
+    if (result.wifiDetailsRequested)
+    {
+        // Every read from now on asks for the Wi-Fi details, which can raise a Windows location prompt
+        // (#1782); this one starts as soon as no other read is in flight (a quiet sensors read may be).
+        m_Model->includeWifiDetails();
+        m_WifiDetailsReadDue = true;
+    }
+    if (m_WifiDetailsReadDue && !m_Pending.valid())
+    {
+        startRead(); // if it can't start, Refresh still reads them: the model keeps the choice
+        m_WifiDetailsReadDue = false;
+    }
 }
 
 } // namespace App

@@ -52,7 +52,9 @@ void SystemInfoModel::read()
         next->devices = m_Probe->readDevices();
         next->drivers = m_Probe->readDrivers();
         next->crashes = m_Probe->readCrashes();
-        next->adapters = m_Probe->readNetworkAdapters();
+        // The Wi-Fi details that can raise a location prompt only once the user asked for them (#1782).
+        next->wifiDetailsIncluded = wifiDetailsIncluded();
+        next->adapters = m_Probe->readNetworkAdapters(next->wifiDetailsIncluded);
         next->boot = m_Probe->readBootPerformance();
     }
     addToSensorRanges(next->sensors);

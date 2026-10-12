@@ -26,6 +26,18 @@ namespace App::SystemInfo
 /// What an unavailable value shows: an em dash, muted, with the reason as its tooltip.
 inline constexpr std::string_view UNAVAILABLE_TEXT = "\xE2\x80\x94";
 
+/// A button a row draws in its value cell, in place of its value.
+enum class RowAction : std::uint8_t
+{
+    None,
+    /// "Show Wi-Fi details", with a note that Windows may ask for location access (#1782): asks every read
+    /// from then on for the Wi-Fi details that need it.
+    ShowWifiDetails,
+};
+
+/// The note beside the "Show Wi-Fi details" button (#1782).
+inline constexpr std::string_view WIFI_DETAILS_NOTE = "Windows may ask for location access";
+
 /// One label/value row. An empty value is unavailable; unavailableReason says why.
 struct Row
 {
@@ -36,6 +48,7 @@ struct Row
     /// A sensor row's kind (#1522): the row charts the history its label keys in the snapshot's
     /// sensorHistories, in this kind's colour. Empty for every other row.
     std::optional<Platform::SensorKind> sensorKind;
+    RowAction action = RowAction::None; ///< A button the view draws in the value cell.
 
     [[nodiscard]] bool available() const noexcept
     {
@@ -230,8 +243,6 @@ struct VisibleSection
 /// one row per event, newest first, labelled by its local time.
 [[nodiscard]] Section buildCrashesSection(const Platform::CrashesInfo& crashes);
 
-/// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
-/// for the Graphics & displays section, captured on the UI thread.
 /// One adapter's summary: "Up, Wi-Fi, MTU 1500, driver iwlwifi", unknown parts left out.
 [[nodiscard]] std::string formatAdapterSummary(const Platform::NetworkAdapter& adapter);
 
@@ -253,8 +264,10 @@ struct VisibleSection
 /// The Network adapters section (#1518): the default gateways and DNS servers, then per adapter its
 /// summary, addresses, DHCP lease where it has one, its own DNS servers and search domains (an
 /// identifier) where it has any, MAC address (an identifier), and for Wi-Fi its signal, network name
-/// (an identifier) and link.
-[[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network);
+/// (an identifier) and link. With @p wifiDetailsGated (Windows, SystemInfoCapabilities), a wireless adapter
+/// whose location-gated details weren't read has a "Wi-Fi details" row with the "Show Wi-Fi details"
+/// button in place of its network name (#1782).
+[[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network, bool wifiDetailsGated = false);
 
 /// A boot phase's length: "850 ms", "4.21 s", "1 min 12.3 s".
 [[nodiscard]] std::string formatBootDuration(std::uint64_t microseconds);
@@ -264,8 +277,11 @@ struct VisibleSection
 /// total, when the boot event was recorded, the main path (to the desktop) and the post-boot time.
 [[nodiscard]] Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot);
 
+/// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
+/// for the Graphics & displays section, captured on the UI thread; @p capabilities what the probe can read.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
-                                                           const Core::GraphicsHostInfo& host = {});
+                                                           const Core::GraphicsHostInfo& host = {},
+                                                           const Platform::SystemInfoCapabilities& capabilities = {});
 
 /// The sections and rows to draw: hidden identifiers left out, then, with a filter, a section whose
 /// title matches keeps all its rows and otherwise only rows whose label or value matches (ASCII case-

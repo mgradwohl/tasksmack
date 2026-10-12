@@ -314,11 +314,14 @@ connectedFrequencyMhz(const Functions& fns, HANDLE client, const GUID& guid, con
     return mhz;
 }
 
-/// The Wi-Fi link of the connected interface @p guid into @p adapter.
-void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdapter& adapter)
+/// The Wi-Fi link of the connected interface @p guid into @p adapter. The current connection and the
+/// BSS list need location access on Windows 11 24H2 and later, and the first ask can raise a location
+/// prompt, so they are read only with @p includeDetails (#1782); the RSSI and channel number need none.
+void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdapter& adapter, bool includeDetails)
 {
     WifiLink link;
     bool any = false;
+    if (includeDetails)
     {
         const WlanData connection(fns, client, guid, wlan_intf_opcode_current_connection);
         const auto* attributes = connection.as<WLAN_CONNECTION_ATTRIBUTES>();
@@ -345,6 +348,10 @@ void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdap
             adapter.wifiLinkUnavailable = "The WLAN API couldn't read the connection";
         }
     }
+    else
+    {
+        adapter.wifiDetailsWithheld = true; // "Show Wi-Fi details" asks for them
+    }
     {
         const WlanData rssi(fns, client, guid, wlan_intf_opcode_rssi);
         if (const auto* dbm = rssi.as<LONG>(); dbm != nullptr && *dbm < 0)
@@ -368,8 +375,8 @@ void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdap
 }
 
 /// Every Wi-Fi interface's link, into the adapter with its GUID; for a wireless adapter that can't be
-/// asked, why.
-void readWlan(const Functions& fns, std::vector<Listed>& listed)
+/// asked, why. Without @p includeDetails, only what needs no location access (#1782).
+void readWlan(const Functions& fns, std::vector<Listed>& listed, bool includeDetails)
 {
     const auto explainAll = [&listed](std::string_view reason)
     {
@@ -412,7 +419,7 @@ void readWlan(const Functions& fns, std::vector<Listed>& listed)
             match->adapter.wireless = true;
             if (info.isState == wlan_interface_state_connected)
             {
-                readWifi(fns, client, info.InterfaceGuid, match->adapter);
+                readWifi(fns, client, info.InterfaceGuid, match->adapter, includeDetails);
             }
             else
             {
@@ -464,7 +471,7 @@ Functions systemFunctions()
     return fns;
 }
 
-void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns)
+void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns, bool includeWifiDetails)
 {
     info.available = true;
     info.family = OsFamily::Windows;
@@ -497,7 +504,7 @@ void readNetworkAdapters(NetworkAdaptersInfo& info, const Functions& fns)
     pickGateway(listed, &Listed::gatewaysV4, &Listed::metricV4, info.gatewayV4, info.gatewayV4Adapter);
     pickGateway(listed, &Listed::gatewaysV6, &Listed::metricV6, info.gatewayV6, info.gatewayV6Adapter);
     collectDns(listed, info);
-    readWlan(fns, listed);
+    readWlan(fns, listed, includeWifiDetails);
 
     info.adapters.reserve(listed.size());
     for (Listed& entry : listed)

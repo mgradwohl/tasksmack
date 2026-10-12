@@ -45,12 +45,19 @@ struct SystemInfoViewState
     bool visibleShowIdentifiers = false;
 
     std::string copiedText; ///< What the last Copy put on the clipboard.
+
+    /// "Show Wi-Fi details" was clicked (#1782): its buttons stay disabled until a read without the
+    /// details withheld replaces them.
+    bool wifiDetailsClicked = false;
 };
 
 struct SystemInfoViewResult
 {
     SystemInfoViewContent content = SystemInfoViewContent::Loading;
     bool refreshRequested = false; ///< Refresh was clicked.
+    /// "Show Wi-Fi details" was clicked this frame (#1782): read again with the Wi-Fi details, and keep
+    /// reading them for the rest of the session.
+    bool wifiDetailsRequested = false;
 };
 
 /// Draws the page into the current window.

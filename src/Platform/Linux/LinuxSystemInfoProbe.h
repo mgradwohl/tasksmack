@@ -42,7 +42,8 @@ class LinuxSystemInfoProbe final : public ISystemInfoProbe
     [[nodiscard]] DevicesInfo readDevices() override;
     [[nodiscard]] DriversInfo readDrivers() override;
     [[nodiscard]] CrashesInfo readCrashes() override;
-    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters() override;
+    /// Linux gates no Wi-Fi detail behind location access: @p includeWifiDetails is ignored (#1782).
+    [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters(bool includeWifiDetails) override;
     [[nodiscard]] BootPerformanceInfo readBootPerformance() override;
 
   private:

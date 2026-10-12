@@ -2,11 +2,15 @@
 /// @brief The System tab's panel (#1399), headless with a fake probe through its test seam (#1395): no
 /// read until the tab first shows, then one on a worker thread, whose facts the page draws and whose
 /// graphics facts are asked for once; showing the tab again doesn't read again, Refresh does; a probe
-/// with nothing to read is never asked; and detaching waits for a read still in flight.
+/// with nothing to read is never asked; and detaching waits for a read still in flight. "Show Wi-Fi
+/// details" (#1782): only where the platform gates them, the first read leaves the Wi-Fi details out, the
+/// click reads them, and every read after (Refresh) keeps reading them.
 
 #include "App/Panels/SystemInfoPanel.h"
+#include "App/Panels/SystemInfoSections.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -17,10 +21,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace App
 {
@@ -34,7 +42,13 @@ struct ProbeLog
     std::atomic<bool> hold{false}; ///< While set, a read waits: a read "in flight".
     bool withSensors = false;      ///< The probe reports a temperature sensor.
     std::atomic<int> sensorReads{0};
+    bool wifiGated = false;               ///< The platform gates the Wi-Fi details behind location access (#1782).
+    std::atomic<int> adapterReadsWith{0}; ///< readNetworkAdapters() calls that asked for the Wi-Fi details
+    std::atomic<int> adapterReadsWithout{0};
 };
+
+/// The Wi-Fi link row's value, which only a read with the Wi-Fi details has.
+constexpr std::string_view WIFI_PHY = "802.11ax (Wi-Fi 6)";
 
 /// A probe with an OS to report and nothing else, counting its reads.
 class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
@@ -45,7 +59,8 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
 
     [[nodiscard]] Platform::SystemInfoCapabilities capabilities() const override
     {
-        return m_HasOs ? Platform::SystemInfoCapabilities{.hasOs = true, .unavailableReason = {}} : m_Default.capabilities();
+        return m_HasOs ? Platform::SystemInfoCapabilities{.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = m_Log->wifiGated}
+                       : m_Default.capabilities();
     }
     [[nodiscard]] Platform::OsInfo readOs() override
     {
@@ -114,9 +129,38 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     {
         return m_Default.readCrashes();
     }
-    [[nodiscard]] Platform::NetworkAdaptersInfo readNetworkAdapters() override
+    /// One connected Wi-Fi adapter. Where the platform gates them, its details only when asked for, as
+    /// Windows' reader does; elsewhere always, as Linux's does.
+    [[nodiscard]] Platform::NetworkAdaptersInfo readNetworkAdapters(bool includeWifiDetails) override
     {
-        return m_Default.readNetworkAdapters();
+        ++(includeWifiDetails ? m_Log->adapterReadsWith : m_Log->adapterReadsWithout);
+        Platform::NetworkAdaptersInfo info;
+        info.available = true;
+        info.listed = true;
+        info.family = Platform::OsFamily::Windows;
+        Platform::NetworkAdapter wifi;
+        wifi.name = "Wi-Fi";
+        wifi.up = true;
+        wifi.wireless = true;
+        wifi.wifiSignalDbm = -55;
+        if (m_Log->wifiGated && !includeWifiDetails)
+        {
+            wifi.wifiDetailsWithheld = true;
+        }
+        else
+        {
+            wifi.wifiLink = Platform::WifiLink{
+                .ssid = "HomeNet",
+                .frequencyMhz = 5180,
+                .bitrateKbps = 0,
+                .signalQuality = 82,
+                .phy = std::string(WIFI_PHY),
+                .channel = 0,
+                .rxBitrateKbps = 0,
+            };
+        }
+        info.adapters.push_back(std::move(wifi));
+        return info;
     }
     [[nodiscard]] Platform::BootPerformanceInfo readBootPerformance() override
     {
@@ -187,6 +231,45 @@ class SystemInfoPanelRenderTest : public ::testing::Test
         ImGui::End();
         ImGui::Render();
         return text;
+    }
+
+    /// The "Show Wi-Fi details" button's ID in the panel's page: built as SystemInfoView draws it, in the
+    /// sections child window, under the section's index, its rows table and the row's index (#1782).
+    /// The indices come from the same fake's sections.
+    [[nodiscard]] static ImGuiID wifiDetailsButtonId()
+    {
+        ProbeLog log;
+        log.wifiGated = true;
+        Domain::SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(log, true));
+        model.read();
+        const std::vector<SystemInfo::Section> sections = SystemInfo::buildSystemInfoSections(*model.snapshot(), {}, model.capabilities());
+        const ImGuiWindow* child = nullptr;
+        for (const ImGuiWindow* window : GImGui->Windows)
+        {
+            if (std::string_view(window->Name).starts_with("Panel/##SystemInfoSections"))
+            {
+                child = window;
+            }
+        }
+        std::size_t sectionIndex = 0;
+        while (child != nullptr && sectionIndex < sections.size())
+        {
+            const std::vector<SystemInfo::Row>& rows = sections[sectionIndex].rows;
+            std::size_t rowIndex = 0;
+            while (rowIndex < rows.size())
+            {
+                if (rows[rowIndex].action == SystemInfo::RowAction::ShowWifiDetails)
+                {
+                    const int section = static_cast<int>(sectionIndex);
+                    const int row = static_cast<int>(rowIndex);
+                    const ImGuiID table = ImHashStr("##Rows", 0, ImHashData(&section, sizeof(section), child->ID));
+                    return ImHashStr(ICON_FA_WIFI "  Show Wi-Fi details", 0, ImHashData(&row, sizeof(row), table));
+                }
+                ++rowIndex;
+            }
+            ++sectionIndex;
+        }
+        return 0;
     }
 
     /// Frames until the page draws @p text, for up to five seconds (the read runs on a worker thread).
@@ -287,6 +370,53 @@ TEST_F(SystemInfoPanelRenderTest, NothingIsDrawnBeforeAttach)
                                                 [] { return Core::GraphicsHostInfo{}; });
     EXPECT_TRUE(frame().empty());
     m_Panel.reset();
+}
+
+// #1782: where the platform gates them, opening the tab doesn't ask for the Wi-Fi details: a wireless
+// adapter shows "Show Wi-Fi details" and its location note instead. The click reads them on the worker,
+// and the choice holds for the session: Refresh reads them too.
+TEST_F(SystemInfoPanelRenderTest, ShowWifiDetailsReadsThemAndRefreshKeepsReadingThem)
+{
+    m_Log.wifiGated = true;
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    std::string text = frame();
+    EXPECT_TRUE(text.contains("Show Wi-Fi details")) << text;
+    EXPECT_TRUE(text.contains("Windows may ask for location access")) << text;
+    EXPECT_FALSE(text.contains(WIFI_PHY));
+    EXPECT_EQ(m_Log.adapterReadsWith.load(), 0);
+    EXPECT_EQ(m_Log.adapterReadsWithout.load(), 1);
+
+    const ImGuiID button = wifiDetailsButtonId();
+    ASSERT_NE(button, 0U);
+    ImGui::ActivateItemByID(button);
+    ASSERT_TRUE(frameUntil("Fixture Linux 2"));
+    text = frame();
+    EXPECT_TRUE(text.contains(WIFI_PHY)) << text;
+    EXPECT_FALSE(text.contains("Show Wi-Fi details")) << text;
+    EXPECT_EQ(m_Log.adapterReadsWith.load(), 1);
+    EXPECT_EQ(m_Log.adapterReadsWithout.load(), 1);
+
+    const ImGuiWindow* window = ImGui::FindWindowByName("Panel");
+    ASSERT_NE(window, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_ARROWS_ROTATE "  Refresh", 0, window->ID));
+    ASSERT_TRUE(frameUntil("Fixture Linux 3"));
+    EXPECT_EQ(m_Log.adapterReadsWith.load(), 2) << "the choice holds for the session";
+    EXPECT_EQ(m_Log.adapterReadsWithout.load(), 1);
+    EXPECT_TRUE(frame().contains(WIFI_PHY));
+}
+
+// #1782: where the platform doesn't gate them (Linux), the Wi-Fi rows are read with the page, no button.
+TEST_F(SystemInfoPanelRenderTest, NoWifiDetailsButtonWhereThePlatformDoesntGateThem)
+{
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    const std::string text = frame();
+    EXPECT_TRUE(text.contains(WIFI_PHY)) << text;
+    EXPECT_FALSE(text.contains("Show Wi-Fi details")) << text;
+    EXPECT_FALSE(text.contains("location access")) << text;
 }
 
 // #1522: while the tab is drawn the sensors are read again on their own every couple of seconds, without

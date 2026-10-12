@@ -39,11 +39,13 @@ void textView(std::string_view text)
 
 /// Rebuilds the sections when a new read is published, and the visible rows when that, the filter or
 /// the identifier toggle changed: never every frame (#580).
-void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot, SystemInfoViewState& state)
+void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot,
+                    const Platform::SystemInfoCapabilities& capabilities,
+                    SystemInfoViewState& state)
 {
     if (state.sectionsVersion != snapshot.version)
     {
-        state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host);
+        state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host, capabilities);
         state.sectionsVersion = snapshot.version;
         const std::string when = UI::Format::formatEpochDateTime(snapshot.readAtUnixSeconds);
         state.readAtText = when.empty() ? std::string{} : "Read at " + when.substr(when.find(' ') + 1);
@@ -95,6 +97,29 @@ bool renderToolbar(bool reading, SystemInfoViewState& state, const UI::ColorSche
     return refresh;
 }
 
+/// A row's button (#1782): "Show Wi-Fi details" and its note, muted. Disabled while a read is in flight
+/// or once clicked. Returns whether it was clicked.
+[[nodiscard]] bool renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& state, const UI::ColorScheme& scheme)
+{
+    if (row.action != SystemInfo::RowAction::ShowWifiDetails)
+    {
+        return false;
+    }
+    ImGui::BeginDisabled(reading || state.wifiDetailsClicked);
+    const bool clicked = ImGui::SmallButton(ICON_FA_WIFI "  Show Wi-Fi details");
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Read the network name, signal quality, standard, band and rates, now and on every Refresh");
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+    textView(SystemInfo::WIFI_DETAILS_NOTE);
+    ImGui::PopStyleColor();
+    if (clicked)
+    {
+        state.wifiDetailsClicked = true;
+    }
+    return clicked;
+}
+
 /// One value cell: the value, or a muted em dash whose tooltip says why there is none.
 void renderValue(const SystemInfo::Row& row, const UI::ColorScheme& scheme)
 {
@@ -138,12 +163,15 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
 
 /// A section: its header with a Copy button at the right, then a two-column table of its visible rows.
 /// Every section's label column is @p labelWidth wide, so the values line up down the page.
-void renderSection(const SystemInfo::VisibleSection& visible,
-                   float labelWidth,
-                   const std::map<std::string, Domain::SensorHistory>& sensorHistories,
-                   SystemInfoViewState& state,
-                   const UI::ColorScheme& scheme)
+/// Returns whether a row's "Show Wi-Fi details" button was clicked (#1782).
+[[nodiscard]] bool renderSection(const SystemInfo::VisibleSection& visible,
+                                 float labelWidth,
+                                 const std::map<std::string, Domain::SensorHistory>& sensorHistories,
+                                 bool reading,
+                                 SystemInfoViewState& state,
+                                 const UI::ColorScheme& scheme)
 {
+    bool wifiDetailsClicked = false;
     const SystemInfo::Section& section = state.sections[visible.section];
     ImGui::PushID(static_cast<int>(visible.section));
     (void) UI::Widgets::sectionHeader(section.icon, section.title);
@@ -186,7 +214,16 @@ void renderSection(const SystemInfo::VisibleSection& visible,
             textView(row.label);
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
-            renderValue(row, scheme);
+            if (row.action == SystemInfo::RowAction::None)
+            {
+                renderValue(row, scheme);
+            }
+            else
+            {
+                ImGui::PushID(static_cast<int>(index));
+                wifiDetailsClicked = renderRowAction(row, reading, state, scheme) || wifiDetailsClicked;
+                ImGui::PopID();
+            }
             const Domain::SensorHistory* recent = charts ? history(row) : nullptr;
             if (charts && ImGui::TableNextColumn() && recent != nullptr)
             {
@@ -204,6 +241,7 @@ void renderSection(const SystemInfo::VisibleSection& visible,
     }
     ImGui::PopID();
     ImGui::Spacing();
+    return wifiDetailsClicked;
 }
 
 } // namespace
@@ -217,20 +255,21 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
     {
         const std::string heading = std::string(ICON_FA_SERVER "  ") + capabilities.unavailableReason;
         UI::Widgets::renderEmptyState(heading.c_str());
-        return {.content = SystemInfoViewContent::Unsupported, .refreshRequested = false};
+        return {.content = SystemInfoViewContent::Unsupported, .refreshRequested = false, .wifiDetailsRequested = false};
     }
     if (snapshot == nullptr || snapshot->version == 0)
     {
         UI::Widgets::renderEmptyState(ICON_FA_SERVER "  Reading system information...");
-        return {.content = SystemInfoViewContent::Loading, .refreshRequested = false};
+        return {.content = SystemInfoViewContent::Loading, .refreshRequested = false, .wifiDetailsRequested = false};
     }
 
     const auto& scheme = UI::Theme::get().scheme();
-    rebuildIfStale(*snapshot, state); // Copy all copies the current read
+    rebuildIfStale(*snapshot, capabilities, state); // Copy all copies the current read
     const bool refresh = renderToolbar(reading, state, scheme);
-    rebuildIfStale(*snapshot, state); // the filter or toggle may have changed
+    rebuildIfStale(*snapshot, capabilities, state); // the filter or toggle may have changed
     ImGui::Spacing();
 
+    bool wifiDetails = false;
     if (ImGui::BeginChild("##SystemInfoSections", ImVec2(0.0F, 0.0F)))
     {
         float widestLabel = 0.0F;
@@ -244,7 +283,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         const float labelWidth = UI::LineLayout::labelColumnWidth(widestLabel, ImGui::GetFontSize());
         for (const auto& visible : state.visible)
         {
-            renderSection(visible, labelWidth, snapshot->sensorHistories, state, scheme);
+            wifiDetails = renderSection(visible, labelWidth, snapshot->sensorHistories, reading, state, scheme) || wifiDetails;
         }
         if (state.visible.empty())
         {
@@ -252,7 +291,7 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         }
     }
     ImGui::EndChild();
-    return {.content = SystemInfoViewContent::Sections, .refreshRequested = refresh};
+    return {.content = SystemInfoViewContent::Sections, .refreshRequested = refresh, .wifiDetailsRequested = wifiDetails};
 }
 
 } // namespace App
