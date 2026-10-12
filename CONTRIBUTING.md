@@ -594,8 +594,11 @@ Three established ways to get real coverage of such a file's logic:
    runs inside the frame after the others have drawn. Call `Core::AnimationRequest::request()` to
    keep frames coming, and press widgets by ID with `ImGui::ActivateItemByID()`. Skip the test when
    no display with GL 3.3 is available; with `TASKSMACK_REQUIRE_DISPLAY=1` (Linux CI, under Xvfb) a
-   missing display fails instead. `tools/coverage.sh` runs this binary too. Example:
-   `tests/App/test_UiLayersOnDisplay.cpp`, the title bar's buttons through `TitleBarLayer`.
+   missing display fails instead. Its own `main()` (`tests/App/AppTestsMain.cpp`) points
+   `TASKSMACK_CONFIG_DIR` at a fresh temporary directory before any test runs, so whatever the app
+   saves (`ShellLayer::onDetach()` writes `config.toml`) never reaches your own config.
+   `tools/coverage.sh` runs this binary too. Example: `tests/App/test_UiLayersOnDisplay.cpp`, the title
+   bar's buttons through `TitleBarLayer`, and the whole shell as `main.cpp` composes it.
 
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper - `TitleBarLayer.cpp` used to have its own private case-insensitive env-flag parser that
@@ -2280,7 +2283,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which kept the repository under its 10 GB Actions cache quota. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each CI, Sanitizers and Heavy Checks run on `main` and deletes all but the newest entry of each ccache and FetchContent family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The `clang-tidy` jobs don't use ccache (clang-tidy doesn't compile through it).
 
 ### Security & Fuzzing
-- **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly).
+- **`codeql.yml`**: Runs GitHub's CodeQL engine to trace execution and analyze the C/C++ codebase for semantic security vulnerabilities (pushes/PRs to main, weekly). It traces only the app's own compiles (TaskSmack's objects; the tests, the PGO UI training driver and the third-party libraries are not extracted), and its required `Analyze C++` check is skipped, which passes it, for docs-only pull requests (#1786).
 - **`osv-scanner.yml`**: Uses Google's OSV-Scanner to check dependencies against the Open Source Vulnerability database (pushes to main, weekly, manual dispatch).
 - **`renovate.yml`**: Self-hosted [Renovate](https://docs.renovatebot.com/) run, scoped to C++ `FetchContent` libraries and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache, pre-commit's own hook tools) -- the freshness gap Dependabot/OSV-Scanner don't cover (weekly, manual dispatch with dry-run options). See "Keeping Dependencies Current" below.
 - **`scorecard.yml`**: Evaluates the repository against OpenSSF security best practices (branch protection, pinned dependencies) and uploads results to the security dashboard (weekly, on branch-protection changes, and manual dispatch). Its SAST check counts a merged PR as scanned only if a code-scanning check run (GitHub Advanced Security's `CodeQL` or `osv-scanner`) has completed on the PR's head commit when Scorecard runs. It used to run on every push to `main`, seconds after the merge, which scored a PR merged before its CodeQL finished as unscanned (#1405); the weekly run sees those results long after they land (#1406).
