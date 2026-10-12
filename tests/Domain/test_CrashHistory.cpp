@@ -206,14 +206,18 @@ TEST(CrashHistoryTest, ASlowReadThatStartedEarlierDoesNotReplaceANewerList)
             std::this_thread::sleep_for(std::chrono::milliseconds(2100));
             return listed(OsFamily::Windows, {crash("old.exe", 1)});
         });
-    const std::uint64_t started = secondsNow();
     std::thread slow([&history] { history.read(); });
     while (!reading)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    // While it reads, a newer list arrives (the System Information read, a second or more later).
-    history.publish(listed(OsFamily::Windows, {crash("new.exe", 1)}), started + 1);
+    // While it reads, a newer list arrives (the System Information read, a second or more later). The
+    // time is taken now the read has started -- read() stamps itself before calling the reader -- so it
+    // is never earlier than the slow read's stamp. Taken before the thread started, a slow thread start
+    // across a second boundary stamped the read with the same second as this list, which counts as
+    // fresh, and the slow read won (a Windows CI flake on #1863).
+    const std::uint64_t newer = secondsNow() + 1;
+    history.publish(listed(OsFamily::Windows, {crash("new.exe", 1)}), newer);
     slow.join();
     ASSERT_FALSE(history.snapshot()->crashes.events.empty());
     EXPECT_EQ(history.snapshot()->crashes.events[0].application, "new.exe");
