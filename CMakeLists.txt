@@ -179,6 +179,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp
     src/Domain/ProcessModel.cpp
+    src/Domain/ProcessRowHistory.cpp
     src/Domain/BackgroundSampler.cpp
     src/Domain/SystemModel.cpp
     src/Domain/StorageModel.cpp

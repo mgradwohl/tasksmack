@@ -6,11 +6,17 @@
 // MetersOff/MetersOn pair isolates what the meters add per frame: one AddRectFilled per visible
 // meter cell, no allocation. The maxima benchmark is the once-per-generation scan the absolute
 // columns are scaled against.
+//
+// Sparklines (#1612): the SparklineCpu frame has CPU % as a sparkline and no other meter, the
+// SparklinesAll frame every meter column, each with a full 30-point history per row (one
+// AddPolyline per visible cell). RowHistoryAdvance is the once-per-generation ring maintenance on the
+// sampler thread, for 500 and 1000 processes; its "bytes" counter is what the tracker holds.
 
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
 #include "App/ProcessColumnConfig.h"
 #include "ChartGeometryScenes.h" // HeadlessChartContext
+#include "Domain/ProcessRowHistory.h"
 #include "Domain/ProcessSnapshot.h"
 
 #include <benchmark/benchmark.h>
@@ -18,6 +24,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace
@@ -25,14 +32,16 @@ namespace
 
 constexpr int PROCESS_COUNT = 1000;
 
-std::vector<Domain::ProcessSnapshot> makeSnapshots()
+/// @p count processes; @p generation shifts the values, so successive generations differ.
+std::vector<Domain::ProcessSnapshot> makeSnapshots(std::size_t count = PROCESS_COUNT, std::size_t generation = 0)
 {
-    std::vector<Domain::ProcessSnapshot> snapshots(PROCESS_COUNT);
+    std::vector<Domain::ProcessSnapshot> snapshots(count);
     for (std::size_t i = 0; i < snapshots.size(); ++i)
     {
         auto& proc = snapshots[i];
-        const auto n = static_cast<double>(i % 100);
+        const auto n = static_cast<double>((i + (generation * 7)) % 100);
         proc.pid = static_cast<std::int32_t>(i + 1);
+        proc.uniqueKey = i + 1;
         proc.cpuPercent = n;
         proc.memoryPercent = n * 0.5;
         proc.memoryBytes = static_cast<std::uint64_t>(i) * 1'048'576U;
@@ -49,7 +58,8 @@ std::vector<Domain::ProcessSnapshot> makeSnapshots()
 /// One frame of the table; returns the frame's vertex count.
 int renderTableFrame(const std::vector<Domain::ProcessSnapshot>& snapshots,
                      const App::ProcessRowMeter::Settings& settings,
-                     const App::ProcessRowMeter::ColumnMaxima& maxima)
+                     const App::ProcessRowMeter::ColumnMaxima& maxima,
+                     const Domain::ProcessRowHistory::Generation* history)
 {
     constexpr App::ProcessRowMeter::Colors COLORS{.low = ImVec4(1.0F, 0.8F, 0.2F, 0.15F), .high = ImVec4(1.0F, 0.2F, 0.2F, 0.30F)};
     const bool metersShown = settings.anyOn();
@@ -85,6 +95,7 @@ int renderTableFrame(const std::vector<Domain::ProcessSnapshot>& snapshots,
                     if (metersShown)
                     {
                         App::ProcessRowMeter::renderCellMeter(settings, col, proc, maxima, COLORS);
+                        App::ProcessRowMeter::renderCellSparkline(settings, col, history, static_cast<std::size_t>(i), COLORS);
                     }
                     ImGui::TextUnformatted("123.4 MiB");
                 }
@@ -97,37 +108,98 @@ int renderTableFrame(const std::vector<Domain::ProcessSnapshot>& snapshots,
     return ImGui::GetDrawData()->TotalVtxCount;
 }
 
-void runTable(benchmark::State& state, bool metersOn)
+void runTable(benchmark::State& state, const App::ProcessRowMeter::Settings& settings)
 {
     const ChartGeometry::HeadlessChartContext context;
-    const auto snapshots = makeSnapshots();
-    App::ProcessRowMeter::Settings settings;
-    for (const App::ProcessColumn col : App::ProcessRowMeter::METER_COLUMNS)
+    // A full ring for every process, for the sparkline columns (none when there are none).
+    Domain::ProcessRowHistory::Tracker tracker;
+    std::shared_ptr<const Domain::ProcessRowHistory::Generation> history;
+    std::size_t generation = 0;
+    while (generation < Domain::ProcessRowHistory::RING_CAPACITY)
     {
-        settings.set(col, metersOn);
+        history = tracker.advance(makeSnapshots(PROCESS_COUNT, generation), settings.sparklineMetrics());
+        ++generation;
     }
+    const auto snapshots = makeSnapshots(PROCESS_COUNT, generation);
     App::ProcessRowMeter::ColumnMaxima maxima;
     maxima.rebuild(snapshots);
-    int vertices = renderTableFrame(snapshots, settings, maxima); // Let the clipper measure the rows
+    int vertices = renderTableFrame(snapshots, settings, maxima, history.get()); // Let the clipper measure the rows
     for (auto _ : state)
     {
-        vertices = renderTableFrame(snapshots, settings, maxima);
+        vertices = renderTableFrame(snapshots, settings, maxima, history.get());
         benchmark::DoNotOptimize(vertices);
     }
     state.counters["vertices"] = benchmark::Counter(static_cast<double>(vertices));
 }
 
+App::ProcessRowMeter::Settings allColumns(App::ProcessRowMeter::Style style)
+{
+    App::ProcessRowMeter::Settings settings;
+    for (const App::ProcessColumn col : App::ProcessRowMeter::METER_COLUMNS)
+    {
+        settings.setStyle(col, style);
+    }
+    return settings;
+}
+
 void BM_ProcessRowMeter_TableFrame_MetersOff(benchmark::State& state)
 {
-    runTable(state, false);
+    runTable(state, allColumns(App::ProcessRowMeter::Style::Off));
 }
 BENCHMARK(BM_ProcessRowMeter_TableFrame_MetersOff)->Unit(benchmark::kMicrosecond);
 
 void BM_ProcessRowMeter_TableFrame_MetersOn(benchmark::State& state)
 {
-    runTable(state, true);
+    runTable(state, allColumns(App::ProcessRowMeter::Style::Bar));
 }
 BENCHMARK(BM_ProcessRowMeter_TableFrame_MetersOn)->Unit(benchmark::kMicrosecond);
+
+void BM_ProcessRowMeter_TableFrame_SparklineCpu(benchmark::State& state)
+{
+    App::ProcessRowMeter::Settings settings = allColumns(App::ProcessRowMeter::Style::Off);
+    settings.setStyle(App::ProcessColumn::CpuPercent, App::ProcessRowMeter::Style::Sparkline);
+    runTable(state, settings);
+}
+BENCHMARK(BM_ProcessRowMeter_TableFrame_SparklineCpu)->Unit(benchmark::kMicrosecond);
+
+void BM_ProcessRowMeter_TableFrame_SparklinesAll(benchmark::State& state)
+{
+    runTable(state, allColumns(App::ProcessRowMeter::Style::Sparkline));
+}
+BENCHMARK(BM_ProcessRowMeter_TableFrame_SparklinesAll)->Unit(benchmark::kMicrosecond);
+
+// The sparklines' ring maintenance, once per published generation (~1 Hz) on the sampler thread:
+// state.range(0) processes, state.range(1) metrics (1: CPU % only; 9: every meter column). Each
+// iteration carries every ring to a new generation and appends a value.
+void BM_ProcessRowMeter_RowHistoryAdvance(benchmark::State& state)
+{
+    const auto count = static_cast<std::size_t>(state.range(0));
+    const Domain::ProcessRowHistory::MetricSet metrics =
+        state.range(1) == 1 ? Domain::ProcessRowHistory::bitOf(Domain::ProcessRowHistory::Metric::CpuPercent)
+                            : static_cast<Domain::ProcessRowHistory::MetricSet>((1U << Domain::ProcessRowHistory::METRIC_COUNT) - 1U);
+    const auto first = makeSnapshots(count, 0);
+    const auto second = makeSnapshots(count, 1);
+    Domain::ProcessRowHistory::Tracker tracker;
+    std::size_t generation = 0;
+    while (generation < Domain::ProcessRowHistory::RING_CAPACITY)
+    {
+        (void) tracker.advance((generation % 2U) == 0U ? first : second, metrics);
+        ++generation;
+    }
+    for (auto _ : state)
+    {
+        auto history = tracker.advance((generation % 2U) == 0U ? first : second, metrics);
+        benchmark::DoNotOptimize(history.get());
+        ++generation;
+    }
+    state.counters["bytes"] = benchmark::Counter(static_cast<double>(tracker.bytes()));
+}
+BENCHMARK(BM_ProcessRowMeter_RowHistoryAdvance)
+    ->Args({500, 1})
+    ->Args({500, 9})
+    ->Args({1000, 1})
+    ->Args({1000, 9})
+    ->Unit(benchmark::kMicrosecond);
 
 // The absolute columns' maxima, rebuilt once per adopted generation (~1 Hz), not per frame.
 void BM_ProcessRowMeter_MaximaRebuild(benchmark::State& state)

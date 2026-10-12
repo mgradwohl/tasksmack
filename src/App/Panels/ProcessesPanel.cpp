@@ -916,6 +916,8 @@ void ProcessesPanel::onAttach()
     m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
     // Config-file only (not in Settings), so applied once here, before the first refresh (#1123).
     m_ProcessModel->setMaxSaneNetworkRate(UserConfig::get().settings().maxSaneRateBps);
+    // The sparklines' histories (#1612), kept only for the columns that show one.
+    m_ProcessModel->setRowHistoryMetrics(m_MeterSettings.sparklineMetrics());
 
     // The synthetic scenario starts with its whole history window filled (#1413), before the seed
     // read below continues it. Nothing happens without a scenario.
@@ -1129,7 +1131,7 @@ void ProcessesPanel::adoptNewerSnapshots()
     // published version lock-free first, so a call with nothing new costs one atomic load.
     std::uint64_t newVersion = m_CachedSnapshotVersion;
     if (m_ProcessModel->tryCopySnapshotsIfNewer(
-            m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport))
+            m_CachedSnapshotVersion, m_CachedRenderSnapshots, newVersion, &m_CachedCapabilities, &m_CachedGpuSupport, &m_CachedRowHistory))
     {
         m_CachedSnapshotVersion = newVersion;
         // Selected processes that have exited drop out of the selection (#804): once per generation,
@@ -1716,7 +1718,7 @@ void ProcessesPanel::renderContent()
                     {
                         continue;
                     }
-                    renderProcessRow(currentSnapshots[procIdx], 0, false, false);
+                    renderProcessRow(currentSnapshots[procIdx], 0, false, false, procIdx);
                 }
             }
         }
@@ -1823,7 +1825,8 @@ bool ProcessesPanel::watchedSamplesSince(std::uint64_t lastSeenVersion, std::vec
     return m_ProcessModel && m_ProcessModel->watchedSamplesSince(lastSeenVersion, outSamples);
 }
 
-void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded)
+void ProcessesPanel::renderProcessRow(
+    const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded, std::size_t procIdx)
 {
     ImGui::TableNextRow();
 
@@ -1887,11 +1890,12 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
             renderNameCell(proc, fmt, depth, hasChildren, isExpanded);
             continue;
         }
-        // The meter first, so the cell's text is drawn over it (#1528): one O(1) check per cell, and
-        // at most one rectangle.
+        // The meter first, so the cell's text is drawn over it (#1528): O(1) checks per cell, and at
+        // most one rectangle or one line (#1612).
         if (m_MetersShown)
         {
             ProcessRowMeter::renderCellMeter(m_MeterSettings, col, proc, m_MeterMaxima, m_MeterColors);
+            ProcessRowMeter::renderCellSparkline(m_MeterSettings, col, m_CachedRowHistory.get(), procIdx, m_MeterColors);
         }
         CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }
@@ -1900,6 +1904,10 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, int d
 void ProcessesPanel::prepareRowMeters(const std::vector<Domain::ProcessSnapshot>& snapshots)
 {
     m_MetersShown = m_MeterSettings.anyOn();
+    if (m_MeterSettings.sparklineMetrics() == 0)
+    {
+        m_CachedRowHistory.reset(); // No sparkline: hold no rings (the model publishes none from its next generation)
+    }
     if (!m_MetersShown)
     {
         return;
@@ -2111,7 +2119,7 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
             const ProcessTreeFlatten::ProcessTreeRow& row = rows[static_cast<std::size_t>(i)];
-            renderProcessRow(snapshots[row.procIdx], row.depth, row.hasChildren, row.isExpanded);
+            renderProcessRow(snapshots[row.procIdx], row.depth, row.hasChildren, row.isExpanded, row.procIdx);
         }
     }
 }
@@ -2165,24 +2173,46 @@ void ProcessesPanel::renderMeterMenu()
 {
     if (!ImGui::BeginMenu(ICON_FA_CHART_BAR " Show meter"))
     {
-        ImGui::SetItemTooltip("Draw a bar behind a column's value, proportional to it");
+        ImGui::SetItemTooltip("Draw a bar or a sparkline of recent values behind a column's value");
         return;
     }
     ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
-    for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
+    // A row per meter column, a radio button per style: every column's choice in view, one click to change.
+    constexpr auto STYLES = std::to_array<std::pair<ProcessRowMeter::Style, const char*>>({
+        {ProcessRowMeter::Style::Off, "Off"},
+        {ProcessRowMeter::Style::Bar, "Bar"},
+        {ProcessRowMeter::Style::Sparkline, "Sparkline"},
+    });
+    if (ImGui::BeginTable("##meter_styles", static_cast<int>(STYLES.size()) + 1, ImGuiTableFlags_SizingFixedFit))
     {
-        const auto info = getColumnInfo(col);
-        const bool on = m_MeterSettings.isOn(col);
-        // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - constexpr literals are null-terminated
-        if (ImGui::MenuItem(info.menuName.data(), nullptr, on))
+        for (const ProcessColumn col : ProcessRowMeter::METER_COLUMNS)
         {
-            m_MeterSettings.set(col, !on);
-            UserConfig::get().settings().processMeters = m_MeterSettings;
+            const auto info = getColumnInfo(col);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(info.menuName.data(), info.menuName.data() + info.menuName.size());
+            if (ProcessRowMeter::scaleOf(col) == ProcessRowMeter::Scale::Absolute)
+            {
+                ImGui::SetItemTooltip("Scaled against the largest value in the list (a sparkline: in its own history)");
+            }
+            ImGui::PushID(static_cast<int>(toIndex(col)));
+            for (const auto& [style, label] : STYLES)
+            {
+                ImGui::TableNextColumn();
+                if (ImGui::RadioButton(label, m_MeterSettings.style(col) == style))
+                {
+                    m_MeterSettings.setStyle(col, style);
+                    UserConfig::get().settings().processMeters = m_MeterSettings;
+                    if (m_ProcessModel)
+                    {
+                        m_ProcessModel->setRowHistoryMetrics(m_MeterSettings.sparklineMetrics());
+                    }
+                }
+            }
+            ImGui::PopID();
         }
-        if (ProcessRowMeter::scaleOf(col) == ProcessRowMeter::Scale::Absolute)
-        {
-            ImGui::SetItemTooltip("Scaled against the largest value in the list");
-        }
+        ImGui::EndTable();
     }
     ImGui::PopItemFlag();
     ImGui::EndMenu();

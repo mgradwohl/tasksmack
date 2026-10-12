@@ -3,17 +3,23 @@
 // Inline meters in the Processes table's rows (#1528): a bar behind a resource column's text,
 // proportional to the value, in a heat colour that deepens with it, as Task Manager shades its cells.
 //
+// A column's meter can instead be a sparkline of the process's recent values (#1612), drawn from the
+// rings Domain::ProcessRowHistory keeps while any column shows one.
+//
 // This header is the ImGui-free part, unit-tested on its own: which columns can carry a meter, how a
-// value becomes a fraction of the cell, the per-column toggles saved in config.toml, and the column
-// maxima the absolute columns are scaled against. ProcessRowMeterView.h draws the bar.
+// value becomes a fraction of the cell, the per-column styles saved in config.toml, and the column
+// maxima the absolute columns are scaled against. ProcessRowMeterView.h draws the bar and the line.
 
 #include "App/ProcessColumnConfig.h"
+#include "Domain/ProcessRowHistory.h"
 #include "Domain/ProcessSnapshot.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 namespace App::ProcessRowMeter
@@ -90,67 +96,145 @@ inline constexpr auto METER_COLUMNS = std::to_array<ProcessColumn>({
     return static_cast<float>(std::min(value / max, 1.0));
 }
 
+/// The per-process history metric that follows @p col, or none for a column without a meter.
+[[nodiscard]] constexpr std::optional<Domain::ProcessRowHistory::Metric> metricOf(ProcessColumn col) noexcept
+{
+    using Domain::ProcessRowHistory::Metric;
+    switch (col)
+    {
+    case ProcessColumn::CpuPercent:
+        return Metric::CpuPercent;
+    case ProcessColumn::MemPercent:
+        return Metric::MemPercent;
+    case ProcessColumn::Resident:
+        return Metric::Resident;
+    case ProcessColumn::IoRead:
+        return Metric::IoRead;
+    case ProcessColumn::IoWrite:
+        return Metric::IoWrite;
+    case ProcessColumn::NetSent:
+        return Metric::NetSent;
+    case ProcessColumn::NetReceived:
+        return Metric::NetReceived;
+    case ProcessColumn::GpuPercent:
+        return Metric::GpuPercent;
+    case ProcessColumn::GpuMemory:
+        return Metric::GpuMemory;
+    default:
+        return std::nullopt;
+    }
+}
+
 /// The value @p col shows for @p proc, as the meter scales it; 0 for a column without a meter or a
 /// value the probe could not read (the cell then shows a dash, and gets no bar).
 [[nodiscard]] inline double valueOf(const Domain::ProcessSnapshot& proc, ProcessColumn col) noexcept
 {
-    switch (col)
-    {
-    case ProcessColumn::CpuPercent:
-        return proc.cpuPercent;
-    case ProcessColumn::MemPercent:
-        return proc.memoryPercent;
-    case ProcessColumn::Resident:
-        return static_cast<double>(proc.memoryBytes);
-    case ProcessColumn::IoRead:
-        return proc.ioAvailable ? proc.ioReadBytesPerSec : 0.0;
-    case ProcessColumn::IoWrite:
-        return proc.ioAvailable ? proc.ioWriteBytesPerSec : 0.0;
-    case ProcessColumn::NetSent:
-        return proc.networkAvailable ? proc.netSentBytesPerSec : 0.0;
-    case ProcessColumn::NetReceived:
-        return proc.networkAvailable ? proc.netReceivedBytesPerSec : 0.0;
-    case ProcessColumn::GpuPercent:
-        return proc.gpuFieldsRead ? proc.gpuUtilPercent : 0.0;
-    case ProcessColumn::GpuMemory:
-        return proc.gpuFieldsRead ? static_cast<double>(proc.gpuMemoryBytes) : 0.0;
-    default:
-        return 0.0;
-    }
+    const auto metric = metricOf(col);
+    return metric.has_value() ? Domain::ProcessRowHistory::valueOf(proc, *metric) : 0.0;
 }
 
-/// Which columns show a meter, saved as [process_meters] in config.toml.
+/// What a meter column draws behind its text: nothing, a bar (#1528) or a sparkline (#1612).
+enum class Style : std::uint8_t
+{
+    Off,
+    Bar,
+    Sparkline,
+};
+
+/// @p style as [process_meters] saves it.
+[[nodiscard]] constexpr std::string_view styleKey(Style style) noexcept
+{
+    switch (style)
+    {
+    case Style::Bar:
+        return "bar";
+    case Style::Sparkline:
+        return "sparkline";
+    case Style::Off:
+        break;
+    }
+    return "off";
+}
+
+/// The style a [process_meters] string names, or none for anything else.
+[[nodiscard]] constexpr std::optional<Style> parseStyle(std::string_view key) noexcept
+{
+    for (const Style style : {Style::Off, Style::Bar, Style::Sparkline})
+    {
+        if (key == styleKey(style))
+        {
+            return style;
+        }
+    }
+    return std::nullopt;
+}
+
+/// The style a [process_meters] boolean, as saved before sparklines (#1528), stands for.
+[[nodiscard]] constexpr Style styleFromLegacyBool(bool on) noexcept
+{
+    return on ? Style::Bar : Style::Off;
+}
+
+/// What each column draws behind its text, saved as [process_meters] in config.toml.
 struct Settings
 {
-    std::array<bool, processColumnCount()> on{};
+    std::array<Style, processColumnCount()> styles{};
 
     Settings() noexcept
     {
         for (const ProcessColumn col : METER_COLUMNS)
         {
-            on[toIndex(col)] = defaultOn(col);
+            styles[toIndex(col)] = defaultOn(col) ? Style::Bar : Style::Off;
         }
     }
 
-    /// Whether @p col shows a meter; always false for a column that cannot have one.
-    [[nodiscard]] bool isOn(ProcessColumn col) const noexcept
+    /// What @p col draws; always Style::Off for a column that cannot have a meter.
+    [[nodiscard]] Style style(ProcessColumn col) const noexcept
     {
-        return on[toIndex(col)];
+        return styles[toIndex(col)];
     }
 
-    /// Turns @p col's meter on or off; ignored for a column that cannot have one.
-    void set(ProcessColumn col, bool enabled) noexcept
+    /// Sets what @p col draws; ignored for a column that cannot have a meter.
+    void setStyle(ProcessColumn col, Style style) noexcept
     {
         if (scaleOf(col) != Scale::None)
         {
-            on[toIndex(col)] = enabled;
+            styles[toIndex(col)] = style;
         }
     }
 
-    /// Whether any column shows a meter, so a frame with none skips the per-cell work.
+    /// Whether @p col draws anything, a bar or a sparkline.
+    [[nodiscard]] bool isOn(ProcessColumn col) const noexcept
+    {
+        return style(col) != Style::Off;
+    }
+
+    /// Turns @p col's bar on or off, as the [process_meters] booleans did; ignored for a column that
+    /// cannot have a meter.
+    void set(ProcessColumn col, bool enabled) noexcept
+    {
+        setStyle(col, styleFromLegacyBool(enabled));
+    }
+
+    /// Whether any column draws anything, so a frame with none skips the per-cell work.
     [[nodiscard]] bool anyOn() const noexcept
     {
-        return std::ranges::any_of(on, [](bool enabled) { return enabled; });
+        return std::ranges::any_of(styles, [](Style style) { return style != Style::Off; });
+    }
+
+    /// The histories the sparkline columns need kept (Domain::ProcessModel::setRowHistoryMetrics()):
+    /// none, and so no history at all, while no column shows a sparkline.
+    [[nodiscard]] Domain::ProcessRowHistory::MetricSet sparklineMetrics() const noexcept
+    {
+        Domain::ProcessRowHistory::MetricSet metrics = 0;
+        for (const ProcessColumn col : METER_COLUMNS)
+        {
+            if (const auto metric = metricOf(col); metric.has_value() && style(col) == Style::Sparkline)
+            {
+                metrics = static_cast<Domain::ProcessRowHistory::MetricSet>(metrics | Domain::ProcessRowHistory::bitOf(*metric));
+            }
+        }
+        return metrics;
     }
 
     friend bool operator==(const Settings&, const Settings&) = default;

@@ -7,6 +7,7 @@
 #include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "PriorityConfig.h"
+#include "ProcessRowHistory.h"
 #include "ProcessSnapshot.h"
 #include "ProcessState.h"
 #include "SamplingConfig.h"
@@ -565,6 +566,12 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // (control block + vector shell), and that allocator call must not happen while readers
     // are blocked on m_Mutex -- that would add allocator latency to exactly the
     // reader-blocking critical section this shared_ptr scheme exists to shrink.
+    // The sparklines' rings (#1612), carried over from the last generation and given this one's
+    // values; nullptr, with every ring dropped, while no sparkline is shown. Row-aligned with
+    // newSnapshots, so built before it is moved into the publication.
+    std::shared_ptr<const ProcessRowHistory::Generation> newRowHistory =
+        m_RowHistoryTracker.advance(newSnapshots, m_RowHistoryMetrics.load(std::memory_order_relaxed));
+
     auto newSnapshotsPublication = std::make_shared<const std::vector<ProcessSnapshot>>(std::move(newSnapshots));
 
     // Absolute time (since the clock's epoch), to match SystemModel's timestamp format. Also the
@@ -601,6 +608,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
         previousGeneration = std::move(m_Snapshots);      // move out, not destroy -- ownership transfers to the local
         m_Snapshots = std::move(newSnapshotsPublication); // pointer swap only, no allocation or destruction
+        m_RowHistory.swap(newRowHistory);                 // the outgoing rings are released after the lock, with newRowHistory
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
         m_PublishedCapabilities = m_Capabilities;
@@ -792,7 +800,8 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                            std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                            std::uint64_t& outVersion,
                                            Platform::ProcessCapabilities* outCapabilities,
-                                           GpuSupport* outGpuSupport) const
+                                           GpuSupport* outGpuSupport,
+                                           std::shared_ptr<const ProcessRowHistory::Generation>* outRowHistory) const
 {
     // Fast path: avoid the shared lock on the common case where no new snapshot exists.
     // m_PublishedSnapshotVersion is always equal to m_SnapshotVersion (written together
@@ -810,6 +819,7 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
     // -- while still holding the shared lock, continuing to block the writer's next unique_lock
     // for the deep-copy-equivalent cost this shared_ptr scheme exists to avoid.
     std::shared_ptr<const std::vector<ProcessSnapshot>> newSnapshots;
+    std::shared_ptr<const ProcessRowHistory::Generation> newRowHistory;
     std::uint64_t newVersion = 0;
     {
         std::shared_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
@@ -827,13 +837,31 @@ bool ProcessModel::tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
         {
             *outGpuSupport = m_PublishedGpuSupport;
         }
+        if (outRowHistory != nullptr)
+        {
+            newRowHistory = m_RowHistory; // refcount bump only, as newSnapshots
+        }
     }
 
     // The caller's previous generation, if this assignment drops its last reference, is
     // destroyed here -- after the lock above has already been released.
     outSnapshots = std::move(newSnapshots);
     outVersion = newVersion;
+    if (outRowHistory != nullptr)
+    {
+        *outRowHistory = std::move(newRowHistory);
+    }
     return true;
+}
+
+void ProcessModel::setRowHistoryMetrics(ProcessRowHistory::MetricSet metrics) noexcept
+{
+    m_RowHistoryMetrics.store(metrics, std::memory_order_relaxed);
+}
+
+ProcessRowHistory::MetricSet ProcessModel::rowHistoryMetrics() const noexcept
+{
+    return m_RowHistoryMetrics.load(std::memory_order_relaxed);
 }
 
 void ProcessModel::appendSystemHistory(const SystemHistorySource& next)

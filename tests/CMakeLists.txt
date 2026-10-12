@@ -140,6 +140,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SingleLineText.cpp
     Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp
+    Domain/test_ProcessRowHistory.cpp
     Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
     Domain/test_ProcessStatus.cpp
@@ -560,6 +561,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Training/UiTrainingPlan.cpp
     # Domain layer
     ${CMAKE_SOURCE_DIR}/src/Domain/ProcessModel.cpp
+    ${CMAKE_SOURCE_DIR}/src/Domain/ProcessRowHistory.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/GPUModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/SystemModel.cpp
     ${CMAKE_SOURCE_DIR}/src/Domain/StorageModel.cpp

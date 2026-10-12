@@ -14,12 +14,14 @@
 /// process data.
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Mocks/MockProbes.h"
 #include "UI/IconsFontAwesome6.h"
@@ -447,8 +449,26 @@ TEST_F(ProcessesPanelRenderTest, TheMeterMenuTurnsAMeterOn)
     const ImGuiWindow* submenu = topPopup();
     ASSERT_NE(submenu, nullptr);
     EXPECT_TRUE(std::string_view(submenu->Name).contains("Show meter")) << submenu->Name;
-    pressPopupItem(*panel, "CPU %");
+    // A row per column, a radio button per style (#1612): under the table's ID and the column's index.
+    const auto pressStyle = [&panel](ProcessColumn col, const char* style)
+    {
+        const ImGuiWindow* menu = topPopup();
+        ASSERT_NE(menu, nullptr);
+        const int index = static_cast<int>(toIndex(col));
+        const ImGuiID row = ImHashData(&index, sizeof(index), ImHashStr("##meter_styles", 0, menu->ID));
+        ImGui::ActivateItemByID(ImHashStr(style, 0, row));
+        static_cast<void>(renderAndCapture(*panel));
+    };
+    pressStyle(ProcessColumn::CpuPercent, wasOn ? "Off" : "Bar");
     EXPECT_NE(UserConfig::get().settings().processMeters.isOn(ProcessColumn::CpuPercent), wasOn);
+
+    // A sparkline has the model keep that column's history, and only while one is shown.
+    pressStyle(ProcessColumn::CpuPercent, "Sparkline");
+    EXPECT_EQ(UserConfig::get().settings().processMeters.style(ProcessColumn::CpuPercent), ProcessRowMeter::Style::Sparkline);
+    EXPECT_NE(panel->processModel()->rowHistoryMetrics(), 0U);
+    pressStyle(ProcessColumn::CpuPercent, "Bar");
+    EXPECT_EQ(panel->processModel()->rowHistoryMetrics(), 0U);
+    UserConfig::get().settings().processMeters = ProcessRowMeter::Settings{}; // The singleton outlives this test
     panel->onDetach();
 }
 
