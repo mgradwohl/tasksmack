@@ -164,6 +164,7 @@ set(COMMON_TEST_SOURCES
     UI/test_HistoryPlotHeight.cpp
     UI/test_FillPlotLayout.cpp
     UI/test_ChartGeometryBudget.cpp
+    UI/test_NowBarsRender.cpp
     UI/test_EmptyState.cpp
     UI/test_Format.cpp
     UI/test_SourceEncoding.cpp
