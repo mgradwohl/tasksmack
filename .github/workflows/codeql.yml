@@ -76,9 +76,9 @@ jobs:
     needs: [detect-docs-only]
     if: needs.detect-docs-only.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
-    # Only the production targets are traced (#1786), which took the job from 35-45+ minutes to
-    # well under 15; 30 leaves headroom for a busy runner. It was 45 (#1444) while the tests were
-    # traced too, and still timed out.
+    # Only the app's own compiles are traced (#1786), which took the job from 35-45+ minutes to
+    # about a third of that; 30 leaves headroom for a busy runner. It was 45 (#1444) while the
+    # tests were traced too, and still timed out.
     timeout-minutes: 30
     permissions:
       actions: read
@@ -130,15 +130,16 @@ jobs:
       # Doing this after init is what caused false-positive cpp/uninitialized-local
       # alerts in build/debug/CMakeFiles/CMakeScratch/TryCompile-*/src.c.
       #
-      # TASKSMACK_BUILD_TESTS=OFF (#1786): CodeQL analyzes the production code, src/ -- TaskSmack and
-      # the UI training driver, the default targets of a debug configure without the tests
-      # (benchmarks are already off in the debug preset). Tracing the ~300 test translation units
-      # too was most of the traced build and made the database, and so the query run, about three
-      # times bigger, which pushed the job past its 45-minute timeout.
+      # CodeQL analyzes the production code only (#1786): the app, TaskSmack. The tests (~300
+      # translation units, most of the traced build, and a database and query run about three times
+      # bigger) pushed the job past its 45-minute timeout, so they are not configured at all; nor is
+      # the PGO UI training driver (src/Training, a developer tool that is never shipped), whose
+      # build waits for TaskSmack's link and then links itself, ~2.5 serial minutes for 3 files.
+      # Benchmarks are already off in the debug preset.
       - name: Configure
         run: >-
           cmake --preset debug -DPython3_EXECUTABLE="$(which python)"
-          -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_BUILD_TESTS=OFF
+          -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_BUILD_TESTS=OFF -DTASKSMACK_BUILD_UI_TRAINING=OFF
           ${{ steps.cmake-checks.outputs.cmake-args }}
 
       - name: Save configure-check results
@@ -172,10 +173,13 @@ jobs:
           queries: security-and-quality
           config-file: ./.github/codeql/codeql-config.yml
 
-      # The traced build: the default targets of the test-less configure above, TaskSmack and
-      # TaskSmackUiTraining (both on the TaskSmackApp object library).
+      # The traced build: TaskSmack's object files only -- everything but main() in the
+      # TaskSmackApp object library, plus main.cpp's object (a Ninja output path; a wrong one fails
+      # loudly). CodeQL extracts compiles, not links, and the debug link alone took ~1 minute.
       - name: Build
-        run: cmake --build --preset debug
+        run: >-
+          cmake --build --preset debug --target
+          TaskSmackApp CMakeFiles/TaskSmack.dir/src/main.cpp.o
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
