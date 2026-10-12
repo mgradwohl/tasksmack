@@ -45,6 +45,11 @@ struct StartupEntry
     std::string command;        ///< The command line it runs (a shortcut's target and arguments).
     std::string executablePath; ///< The program the command runs, environment variables expanded.
     std::string sourcePath;     ///< For a Startup folder entry, the file in the folder (e.g. the .lnk).
+    /// The image a packaged app is shown with (#1800): its manifest's logo, as the manifest names it
+    /// under the package's folder ("...\Assets\Square44x44Logo.png"). The package holds it as
+    /// scale and target-size variants beside that name, so the file itself may not exist. Empty for
+    /// any other entry: its icon is executablePath's.
+    std::string iconPath;
     StartupLocation location = StartupLocation::RunUser;
     StartupScope scope = StartupScope::User;
     bool enabled = true;                     ///< From StartupApproved (entries it doesn't list are enabled), or a packaged task's state.

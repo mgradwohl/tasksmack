@@ -244,7 +244,8 @@ class ProcessesPanel : public Panel
         return m_ProcessModel;
     }
 
-    /// The process icons (#1800), shared with the Process Details tab, which ShellLayer draws.
+    /// The process icons (#1800), shared with the Process Details tab, which ShellLayer draws, and
+    /// with the Services and Startup tabs (one cache and texture set for every tab).
     [[nodiscard]] ProcessIconView& iconView() noexcept
     {
         return m_IconView;

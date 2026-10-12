@@ -5,7 +5,9 @@
 // call goes through a table of function pointers, the system's by default, so the tests drive the
 // alpha, mask-only, monochrome and failure paths with fakes (test_WindowsProcessIconSource.cpp) and
 // check that every icon, bitmap and DC is released. The pixel conversion is
-// WindowsProcessIconMath.h.
+// WindowsProcessIconMath.h. A packaged app's logo (a startup entry's, #1800) is a PNG, not an
+// executable: its variant nearest the size is picked (WindowsPackageLogoMath.h) and decoded with
+// stb_image.
 
 #ifdef _WIN32
 // clang-format off
@@ -77,6 +79,12 @@ class WindowsProcessIconSource final : public IProcessIconSource
     {
         return true;
     }
+
+    /// The pixels of packaged-app logo @p logoPath (as its manifest names it, under the package's
+    /// folder) for drawing @p sizePx square: the file among the logo's scale and target-size variants
+    /// in that folder that PackageLogo::pickLogo() picks, decoded. nullopt when the folder has no
+    /// variant TaskSmack draws, or it can't be read.
+    [[nodiscard]] static std::optional<IconPixels> loadPackageLogo(std::string_view logoPath, int sizePx);
 
     /// The pixels of @p icon, through @p fns; nullopt when its bitmaps can't be read. Releases the
     /// bitmaps GetIconInfo hands over, never the icon itself (the caller owns it).

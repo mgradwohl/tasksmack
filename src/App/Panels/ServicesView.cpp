@@ -1,7 +1,9 @@
 #include "ServicesView.h"
 
+#include "App/Panels/ProcessIconView.h"
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/ServiceActionsView.h"
+#include "Domain/ProcessIconCache.h"
 #include "Domain/ServiceModel.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/EmptyState.h"
@@ -118,6 +120,18 @@ void renderServiceTooltip(const Platform::ServiceInfo& service)
 /// filter edit, never every frame (#580).
 void rebuildRowsIfStale(const Domain::ServicePublication& publication, ServicesViewState& state)
 {
+    if (state.iconKeysVersion != publication.version || state.iconKeys.size() != publication.services.size())
+    {
+        state.iconKeys.clear();
+        state.iconKeys.reserve(publication.services.size());
+        std::size_t index = 0;
+        while (index < publication.services.size())
+        {
+            state.iconKeys.push_back(Domain::iconFileKey(serviceIconPath(publication.services[index])));
+            ++index;
+        }
+        state.iconKeysVersion = publication.version;
+    }
     if (state.rowsVersion == publication.version && state.rowsFilter == state.filter && state.rowsColumn == state.sortColumn &&
         state.rowsAscending == state.ascending)
     {
@@ -226,6 +240,23 @@ ImVec4 serviceStateColor(Platform::ServiceState state, const UI::ColorScheme& sc
     }
 }
 
+std::string_view serviceIconPath(const Platform::ServiceInfo& service) noexcept
+{
+    constexpr std::string_view SHARED_HOST = "svchost.exe";
+    const std::string_view path = service.executablePath;
+    const std::size_t separator = path.find_last_of("\\/");
+    // Built from a pointer and a length, not substr(), which may throw.
+    const std::string_view fileName =
+        (separator == std::string_view::npos) ? path : std::string_view(path.data() + separator + 1, path.size() - separator - 1);
+    const bool sharedHost =
+        fileName.size() == SHARED_HOST.size() &&
+        std::ranges::equal(fileName,
+                           SHARED_HOST,
+                           [](char a, char b)
+                           { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); });
+    return sharedHost ? std::string_view{} : path;
+}
+
 std::vector<std::size_t>
 buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_view filter, ServiceColumn column, bool ascending)
 {
@@ -256,7 +287,8 @@ buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_vi
 ServicesViewContent renderServicesView(const Domain::ServicePublication* publication,
                                        const Platform::ServiceCapabilities& capabilities,
                                        ServicesViewState& state,
-                                       ServiceActionsView* actions)
+                                       ServiceActionsView* actions,
+                                       ProcessIconView* icons)
 {
     if (!capabilities.canEnumerate)
     {
@@ -342,19 +374,26 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
 
     rebuildRowsIfStale(*publication, state);
 
+    // The visible rows only: only they look up icons (#1800).
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(state.rows.size()));
     while (clipper.Step())
     {
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
         {
-            const auto& service = publication->services[state.rows[static_cast<std::size_t>(row)]];
+            const std::size_t index = state.rows[static_cast<std::size_t>(row)];
+            const auto& service = publication->services[index];
             ImGui::TableNextRow();
             // Keyed by the service, not the row: a re-sort or a new sample must not move an open row
             // menu onto another service.
             ImGui::PushID(service.name.c_str());
 
             ImGui::TableNextColumn();
+            if (icons != nullptr)
+            {
+                // The service's program's icon, or a gear for svchost's and those without one.
+                icons->drawFileInline(state.iconKeys[index], serviceIconPath(service), service.name, ProcessIconView::SERVICE_GLYPH);
+            }
             if (ImGui::Selectable(service.name.c_str(), state.selectedName == service.name, ImGuiSelectableFlags_SpanAllColumns) ||
                 ImGui::IsItemClicked(ImGuiMouseButton_Right))
             {

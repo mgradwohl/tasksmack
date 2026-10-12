@@ -107,7 +107,12 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host)
                .eventName = "SystemInfo",
                .label = [] { return SYSTEM_INFO_TAB_LABEL; },
                .text = [] { return std::string_view(SYSTEM_INFO_TAB_TEXT); }}})
-{}
+{
+    // One icon cache and texture set for every tab's program icons (#1800): the Processes panel's,
+    // which outlives the others (declared before them).
+    m_ServicesPanel.setIconView(&m_ProcessesPanel.iconView());
+    m_StartupPanel.setIconView(&m_ProcessesPanel.iconView());
+}
 
 void ShellLayer::onAttach()
 {

@@ -49,6 +49,9 @@ TEST(WindowsServiceProbeTest, EnumeratesEventLogWithItsConfiguration)
     EXPECT_TRUE(eventLog->binaryPath.contains("svchost.exe")) << eventLog->binaryPath;
     EXPECT_FALSE(eventLog->account.empty());
     EXPECT_FALSE(eventLog->group.empty());
+    // #1800: the program the command line runs, for the row's icon.
+    EXPECT_TRUE(eventLog->executablePath.ends_with("svchost.exe") || eventLog->executablePath.ends_with("SVCHOST.EXE"))
+        << eventLog->executablePath;
 
     // A second call reuses the cached configuration. The list itself may change between calls
     // (services come and go), so only a service that is always there is compared.

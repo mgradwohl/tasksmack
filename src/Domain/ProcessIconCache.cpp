@@ -120,6 +120,7 @@ ProcessIconCache::ProcessIconCache(std::unique_ptr<Platform::IProcessIconSource>
       m_Config(config),
       m_FoldCase(m_Source != nullptr && m_Source->caseInsensitivePaths()),
       m_Processes(config.maxProcesses),
+      m_Files(config.maxFiles),
       m_Icons(config.maxIcons),
       m_Misses(config.maxMisses)
 {
@@ -141,26 +142,45 @@ ProcessIconCache::~ProcessIconCache()
 std::shared_ptr<const ProcessIconImage>
 ProcessIconCache::lookup(std::uint64_t uniqueKey, std::int32_t pid, std::string_view name, int sizePx)
 {
+    return lookupEntry(false, uniqueKey, pid, name, {}, sizePx);
+}
+
+std::shared_ptr<const ProcessIconImage>
+ProcessIconCache::lookupFile(std::uint64_t fileKey, std::string_view path, std::string_view name, int sizePx)
+{
+    if (path.empty())
+    {
+        return nullptr; // Nothing to read: the row shows its generic icon
+    }
+    return lookupEntry(true, fileKey, 0, name, path, sizePx);
+}
+
+std::shared_ptr<const ProcessIconImage>
+ProcessIconCache::lookupEntry(bool file, std::uint64_t key, std::int32_t pid, std::string_view name, std::string_view path, int sizePx)
+{
     if (m_Source == nullptr || sizePx <= 0)
     {
         return nullptr;
     }
     {
         const std::scoped_lock lock(m_Mutex);
-        if (const ProcessEntry* entry = m_Processes.find(uniqueKey); entry != nullptr && entry->sizePx == sizePx)
+        LruMap<std::uint64_t, ProcessEntry>& map = entries(file);
+        if (const ProcessEntry* entry = map.find(key); entry != nullptr && entry->sizePx == sizePx)
         {
-            return entry->icon; // nullptr while queued, or when the process has no icon
+            return entry->icon; // nullptr while queued, or when the process (or file) has no icon
         }
         // First seen, or seen at another size (the display scale changed): queue a load.
-        m_Processes.put(uniqueKey, ProcessEntry{.sizePx = sizePx, .icon = nullptr});
+        map.put(key, ProcessEntry{.sizePx = sizePx, .icon = nullptr});
         if (m_Queue.size() >= m_Config.maxQueued)
         {
             // The oldest request is the row least likely to still be on screen: forget it, so a later
             // lookup asks again rather than waiting on a load that will never run.
-            static_cast<void>(m_Processes.erase(m_Queue.front().uniqueKey));
+            const Request& oldest = m_Queue.front();
+            static_cast<void>(entries(oldest.file).erase(oldest.uniqueKey));
             m_Queue.pop_front();
         }
-        m_Queue.push_back(Request{.uniqueKey = uniqueKey, .pid = pid, .sizePx = sizePx, .name = std::string(name)});
+        m_Queue.push_back(
+            Request{.uniqueKey = key, .pid = pid, .sizePx = sizePx, .name = std::string(name), .file = file, .path = std::string(path)});
     }
     m_Wake.notify_one();
     return nullptr;
@@ -222,14 +242,15 @@ void ProcessIconCache::load(const Request& request)
 {
     try
     {
-        const std::string path = m_Source->executablePath(request.pid);
+        const std::string path = request.file ? request.path : m_Source->executablePath(request.pid);
         const std::string key = iconKey(path, request.name, request.sizePx);
         {
             const std::scoped_lock lock(m_Mutex);
             if (const auto* icon = m_Icons.find(key); icon != nullptr)
             {
                 std::shared_ptr<const ProcessIconImage> shared = *icon;
-                if (ProcessEntry* entry = m_Processes.find(request.uniqueKey); entry != nullptr && entry->sizePx == request.sizePx)
+                if (ProcessEntry* entry = entries(request.file).find(request.uniqueKey);
+                    entry != nullptr && entry->sizePx == request.sizePx)
                 {
                     entry->icon = std::move(shared);
                 }
@@ -263,7 +284,7 @@ void ProcessIconCache::load(const Request& request)
         {
             m_Misses.put(key, true);
         }
-        if (ProcessEntry* entry = m_Processes.find(request.uniqueKey); entry != nullptr && entry->sizePx == request.sizePx)
+        if (ProcessEntry* entry = entries(request.file).find(request.uniqueKey); entry != nullptr && entry->sizePx == request.sizePx)
         {
             entry->icon = std::move(image);
         }
@@ -272,26 +293,34 @@ void ProcessIconCache::load(const Request& request)
     {
         // An icon is decoration: a failed read leaves the generic icon, and is tried again the next
         // time the process is first seen.
-        spdlog::debug("Process icon for PID {} not read: {}", request.pid, e.what());
-        forget(request.uniqueKey);
+        if (request.file)
+        {
+            spdlog::debug("Icon of {} not read: {}", request.path, e.what());
+        }
+        else
+        {
+            spdlog::debug("Process icon for PID {} not read: {}", request.pid, e.what());
+        }
+        forget(request.file, request.uniqueKey);
     }
     catch (...)
     {
-        spdlog::debug("Process icon for PID {} not read", request.pid);
-        forget(request.uniqueKey);
+        spdlog::debug("Icon for PID {} (or file {}) not read", request.pid, request.path);
+        forget(request.file, request.uniqueKey);
     }
 }
 
-void ProcessIconCache::forget(std::uint64_t uniqueKey)
+void ProcessIconCache::forget(bool file, std::uint64_t key)
 {
     const std::scoped_lock lock(m_Mutex);
-    static_cast<void>(m_Processes.erase(uniqueKey));
+    static_cast<void>(entries(file).erase(key));
 }
 
 ProcessIconCache::Stats ProcessIconCache::stats() const
 {
     const std::scoped_lock lock(m_Mutex);
     Stats stats{.processes = m_Processes.size(),
+                .files = m_Files.size(),
                 .icons = m_Icons.size(),
                 .misses = m_Misses.size(),
                 .queued = m_Queue.size(),

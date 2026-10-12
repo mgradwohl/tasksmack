@@ -1,6 +1,7 @@
 #include "ServicesPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/ProcessIconView.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/ServiceActionsView.h"
 #include "App/Panels/ServicesView.h"
@@ -121,7 +122,11 @@ void ServicesPanel::renderContent()
             m_Sampler->requestRefresh();
         }
     }
-    static_cast<void>(renderServicesView(m_Publication.get(), m_Model->capabilities(), m_ViewState, m_Actions.get()));
+    if (m_Icons != nullptr)
+    {
+        m_Icons->beginFrame(); // The icons' size follows this tab's font
+    }
+    static_cast<void>(renderServicesView(m_Publication.get(), m_Model->capabilities(), m_ViewState, m_Actions.get(), m_Icons));
     m_Actions->renderConfirmation();
 }
 

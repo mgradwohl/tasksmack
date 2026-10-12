@@ -124,6 +124,24 @@ class ProcessIconViewTest : public ::testing::Test
         return nameX - startX;
     }
 
+    /// One frame drawing the icon of the file at @p path and its name, as the Startup and Services
+    /// tabs do (#1800); returns how far the name was pushed right.
+    float frameFile(std::string_view path, const char* glyph = ProcessIconView::GENERIC_GLYPH)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(400.0F, 300.0F));
+        ImGui::Begin("Icons", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        m_View->beginFrame();
+        const float startX = ImGui::GetCursorScreenPos().x;
+        m_View->drawFileInline(Domain::iconFileKey(path), path, "entry", glyph);
+        const float nameX = ImGui::GetCursorScreenPos().x;
+        ImGui::TextUnformatted("entry");
+        ImGui::End();
+        ImGui::Render();
+        return nameX - startX;
+    }
+
     /// Whether this frame's draw data drew texture @p texture.
     [[nodiscard]] static bool drew(std::uint32_t texture)
     {
@@ -208,6 +226,55 @@ TEST_F(ProcessIconViewTest, DetachDeletesEveryTexture)
     m_View->detach();
     EXPECT_EQ(m_Log->destroyed, 1);
     EXPECT_EQ(m_View->cache(), nullptr);
+}
+
+// #1800: the Startup and Services tabs' icons, by file path.
+
+TEST_F(ProcessIconViewTest, AFilesIconLoadsByPathBehindTheGenericGlyph)
+{
+    makeView(true);
+    const float offset = frameFile("/bin/withicon", ProcessIconView::SERVICE_GLYPH); // Queued: the glyph
+    EXPECT_GT(offset, m_View->iconSize());
+    EXPECT_EQ(m_Log->created, 0);
+
+    EXPECT_EQ(m_View->cache()->loadPending(), 1U);
+    EXPECT_FLOAT_EQ(frameFile("/bin/withicon", ProcessIconView::SERVICE_GLYPH), offset);
+    EXPECT_EQ(m_Log->created, 1);
+    EXPECT_TRUE(drew(FIRST_TEXTURE));
+    EXPECT_EQ(m_View->cache()->stats().files, 1U);
+}
+
+TEST_F(ProcessIconViewTest, AFileAndAProcessOfOneProgramShareATexture)
+{
+    makeView(true);
+    static_cast<void>(frame(process(1)));          // Runs /bin/withicon
+    static_cast<void>(frameFile("/bin/withicon")); // The same program, by path
+    static_cast<void>(m_View->cache()->loadPending());
+    static_cast<void>(frame(process(1)));
+    static_cast<void>(frameFile("/bin/withicon"));
+    EXPECT_EQ(m_Log->created, 1) << "one icon, one texture";
+    EXPECT_TRUE(drew(FIRST_TEXTURE));
+}
+
+TEST_F(ProcessIconViewTest, AFileWithoutAnIconOrAPathKeepsTheGenericGlyph)
+{
+    makeView(true);
+    static_cast<void>(frameFile("/bin/without"));
+    static_cast<void>(m_View->cache()->loadPending());
+    EXPECT_GT(frameFile("/bin/without"), m_View->iconSize());
+    EXPECT_EQ(m_Log->created, 0);
+
+    EXPECT_GT(frameFile("", ProcessIconView::SERVICE_GLYPH), m_View->iconSize()); // svchost's, or unresolved
+    EXPECT_EQ(m_View->cache()->stats().queued, 0U) << "an empty path is never looked up";
+    EXPECT_EQ(m_View->textureForFile(Domain::iconFileKey(""), "", "entry"), ImTextureID_Invalid);
+}
+
+TEST_F(ProcessIconViewTest, OffAFileDrawsAndLoadsNothing)
+{
+    makeView(true);
+    m_View->setEnabled(false);
+    EXPECT_FLOAT_EQ(frameFile("/bin/withicon"), 0.0F);
+    EXPECT_EQ(m_View->cache()->stats().queued, 0U);
 }
 
 TEST_F(ProcessIconViewTest, TheIconIsTheTextsLineHeight)

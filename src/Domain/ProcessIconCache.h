@@ -8,9 +8,14 @@
 // the size asked for, and files it. Later lookups of the process return the icon, or nothing for a
 // program without one, from an O(1) map lookup that does not allocate.
 //
-// Three bounded LRU maps hold the state:
+// lookupFile() does the same for a file named by path rather than a running process (#1800): a
+// startup entry's or a service's program, or a packaged app's logo. Its icons share the maps below
+// with the processes', so a program that is running and starts at sign-in is read once.
+//
+// Four bounded LRU maps hold the state:
 // - processes, by uniqueKey (pid + start time, so a reused PID is a new process): what each process
 //   resolved to, at what size;
+// - files, by iconFileKey(path): the same for files asked for by path;
 // - icons, by executable path (case-folded where the platform's paths are) and size: the decoded
 //   pixels, shared by every process running that executable;
 // - misses, the same keys: executables with no icon, so they are not read again on every new process.
@@ -50,6 +55,7 @@ struct ProcessIconCacheConfig
     std::size_t maxIcons = 512;      ///< Decoded icons kept by executable
     std::size_t maxMisses = 2048;    ///< Executables remembered as having no icon
     std::size_t maxProcesses = 4096; ///< Processes remembered
+    std::size_t maxFiles = 1024;     ///< Files asked for by path (lookupFile) remembered
     std::size_t maxQueued = 256;     ///< Loads waiting; the oldest is dropped (and asked again later)
     bool startWorker = true;         ///< false: no thread; loadPending() runs the loads (tests, benchmarks)
 };
@@ -75,12 +81,30 @@ struct ProcessIconCacheConfig
     return SIZES.back();
 }
 
+/// The key lookupFile() files @p path under: its 64-bit FNV-1a hash. Computed once per row when its
+/// list changes, not per frame.
+[[nodiscard]] constexpr std::uint64_t iconFileKey(std::string_view path) noexcept
+{
+    constexpr std::uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
+    constexpr std::uint64_t FNV_PRIME = 1099511628211ULL;
+    std::uint64_t hash = FNV_OFFSET_BASIS;
+    std::size_t index = 0;
+    while (index < path.size())
+    {
+        hash ^= static_cast<std::uint8_t>(path[index]);
+        hash *= FNV_PRIME;
+        ++index;
+    }
+    return hash;
+}
+
 class ProcessIconCache
 {
   public:
     struct Stats
     {
         std::size_t processes = 0;  ///< Processes remembered
+        std::size_t files = 0;      ///< Files asked for by path remembered
         std::size_t icons = 0;      ///< Decoded icons held by the icon map
         std::size_t misses = 0;     ///< Executables remembered as having no icon
         std::size_t queued = 0;     ///< Loads waiting
@@ -102,6 +126,14 @@ class ProcessIconCache
     [[nodiscard]] std::shared_ptr<const ProcessIconImage>
     lookup(std::uint64_t uniqueKey, std::int32_t pid, std::string_view name, int sizePx);
 
+    /// The icon of the file at @p path (a program, or an image such as a packaged app's logo; #1800),
+    /// filed under @p fileKey (iconFileKey(path)), at @p sizePx; nullptr while it loads, when it has
+    /// none, and for an empty path. @p name is what the row lists it as, for a source that finds
+    /// icons by name too (Linux). Queues the load the first time the file is asked for at that
+    /// size. UI thread; allocates only then.
+    [[nodiscard]] std::shared_ptr<const ProcessIconImage>
+    lookupFile(std::uint64_t fileKey, std::string_view path, std::string_view name, int sizePx);
+
     /// Runs the queued loads on the calling thread, newest first; how many ran. For a cache made with
     /// startWorker false; with a worker it races it harmlessly.
     std::size_t loadPending();
@@ -111,10 +143,12 @@ class ProcessIconCache
   private:
     struct Request
     {
-        std::uint64_t uniqueKey = 0;
+        std::uint64_t uniqueKey = 0; ///< The process's uniqueKey, or the file's key
         std::int32_t pid = 0;
         int sizePx = 0;
         std::string name;
+        bool file = false; ///< A lookupFile() request: path is the file, there is no process
+        std::string path;
     };
 
     struct ProcessEntry
@@ -123,11 +157,19 @@ class ProcessIconCache
         std::shared_ptr<const ProcessIconImage> icon; ///< nullptr while queued, and for a process without one
     };
 
+    /// lookup() and lookupFile(): the entry of @p key in the processes or the files map.
+    [[nodiscard]] std::shared_ptr<const ProcessIconImage>
+    lookupEntry(bool file, std::uint64_t key, std::int32_t pid, std::string_view name, std::string_view path, int sizePx);
+    /// The processes map, or the files map for a lookupFile() request. Called with the lock held.
+    [[nodiscard]] LruMap<std::uint64_t, ProcessEntry>& entries(bool file) noexcept
+    {
+        return file ? m_Files : m_Processes;
+    }
     void workerLoop(const std::stop_token& stopToken);
     /// Loads one request; the source is called without the lock held.
     void load(const Request& request);
-    /// Drops the process, so its next lookup queues a load again (after a load threw).
-    void forget(std::uint64_t uniqueKey);
+    /// Drops the process or file, so its next lookup queues a load again (after a load threw).
+    void forget(bool file, std::uint64_t key);
     [[nodiscard]] std::string iconKey(std::string_view executablePath, std::string_view name, int sizePx) const;
 
     std::unique_ptr<Platform::IProcessIconSource> m_Source;
@@ -137,6 +179,7 @@ class ProcessIconCache
     mutable std::mutex m_Mutex;
     std::condition_variable_any m_Wake;
     LruMap<std::uint64_t, ProcessEntry> m_Processes;
+    LruMap<std::uint64_t, ProcessEntry> m_Files;
     LruMap<std::string, std::shared_ptr<const ProcessIconImage>> m_Icons;
     LruMap<std::string, bool> m_Misses;
     std::deque<Request> m_Queue;

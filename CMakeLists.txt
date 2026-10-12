@@ -195,6 +195,8 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadName.cpp
     # stb_image's implementation, for UI/IconLoader.cpp and the Linux process icons (#1800)
     src/Platform/StbImage.cpp
+    # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)
+    src/Platform/IconImageFile.cpp
     # Synthetic probes (#1413): constructed only when TASKSMACK_SYNTHETIC is set
     src/Platform/Synthetic/SyntheticProbes.cpp
     src/Platform/Synthetic/SyntheticWorkload.cpp
@@ -314,6 +316,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IProcessActions.h
     src/Platform/IProcessEnvironment.h
     src/Platform/IProcessIconSource.h
+    src/Platform/IconImageFile.h
     src/Platform/ProcessEnvironment.h
     src/Platform/IProcessConnections.h
     src/Platform/IProcessModules.h
@@ -400,6 +403,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessIconSource.h
         src/Platform/Windows/WindowsProcessIconMath.h
+        src/Platform/Windows/WindowsPackageLogoMath.h
         src/Platform/Windows/WindowsProcessModules.h
         src/Platform/Windows/WindowsProcessOpenFiles.h
         src/Platform/Windows/WindowsProcessSecurity.h

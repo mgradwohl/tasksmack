@@ -15,12 +15,14 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <utility>
 
 namespace App
 {
 
 const char* const ProcessIconView::GENERIC_GLYPH = ICON_FA_WINDOW_MAXIMIZE;
+const char* const ProcessIconView::SERVICE_GLYPH = ICON_FA_GEAR;
 
 namespace
 {
@@ -75,8 +77,21 @@ ImTextureID ProcessIconView::textureFor(const Domain::ProcessSnapshot& proc)
     {
         return ImTextureID_Invalid;
     }
-    const std::shared_ptr<const Domain::ProcessIconImage> icon = m_Cache->lookup(proc.uniqueKey, proc.pid, proc.name, m_IconSizePx);
-    if (icon == nullptr)
+    return textureOf(m_Cache->lookup(proc.uniqueKey, proc.pid, proc.name, m_IconSizePx));
+}
+
+ImTextureID ProcessIconView::textureForFile(std::uint64_t fileKey, std::string_view path, std::string_view name)
+{
+    if (!m_Enabled || m_Cache == nullptr || m_Textures == nullptr || path.empty())
+    {
+        return ImTextureID_Invalid;
+    }
+    return textureOf(m_Cache->lookupFile(fileKey, path, name, m_IconSizePx));
+}
+
+ImTextureID ProcessIconView::textureOf(const std::shared_ptr<const Domain::ProcessIconImage>& icon)
+{
+    if (icon == nullptr || m_Textures == nullptr)
     {
         return ImTextureID_Invalid;
     }
@@ -85,13 +100,13 @@ ImTextureID ProcessIconView::textureFor(const Domain::ProcessSnapshot& proc)
     return static_cast<ImTextureID>(texture);
 }
 
-void ProcessIconView::drawGeneric(ImDrawList& drawList, ImVec2 min, float size)
+void ProcessIconView::drawGeneric(ImDrawList& drawList, ImVec2 min, float size, const char* glyph)
 {
     ImFont* font = ImGui::GetFont();
     const float glyphSize = size * GENERIC_GLYPH_SCALE;
-    const ImVec2 glyph = font->CalcTextSizeA(glyphSize, FLT_MAX, 0.0F, GENERIC_GLYPH);
-    const ImVec2 pos(std::floor(min.x + ((size - glyph.x) * 0.5F)), std::floor(min.y + ((size - glyph.y) * 0.5F)));
-    drawList.AddText(font, glyphSize, pos, ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().textMuted), GENERIC_GLYPH);
+    const ImVec2 extent = font->CalcTextSizeA(glyphSize, FLT_MAX, 0.0F, glyph);
+    const ImVec2 pos(std::floor(min.x + ((size - extent.x) * 0.5F)), std::floor(min.y + ((size - extent.y) * 0.5F)));
+    drawList.AddText(font, glyphSize, pos, ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().textMuted), glyph);
 }
 
 void ProcessIconView::drawAt(ImDrawList& drawList, ImVec2 min, float size, const Domain::ProcessSnapshot& proc)
@@ -110,7 +125,21 @@ void ProcessIconView::drawInline(const Domain::ProcessSnapshot& proc)
     {
         return;
     }
-    if (const ImTextureID texture = textureFor(proc); texture != ImTextureID_Invalid)
+    drawTextureInline(textureFor(proc), GENERIC_GLYPH);
+}
+
+void ProcessIconView::drawFileInline(std::uint64_t fileKey, std::string_view path, std::string_view name, const char* genericGlyph)
+{
+    if (!m_Enabled)
+    {
+        return;
+    }
+    drawTextureInline(textureForFile(fileKey, path, name), genericGlyph);
+}
+
+void ProcessIconView::drawTextureInline(ImTextureID texture, const char* genericGlyph) const
+{
+    if (texture != ImTextureID_Invalid)
     {
         ImGui::Image(ImTextureRef(texture), ImVec2(m_IconSize, m_IconSize));
     }
@@ -120,7 +149,7 @@ void ProcessIconView::drawInline(const Domain::ProcessSnapshot& proc)
         ImGui::Dummy(ImVec2(m_IconSize, m_IconSize));
         if (ImGui::IsItemVisible())
         {
-            drawGeneric(*ImGui::GetWindowDrawList(), min, m_IconSize);
+            drawGeneric(*ImGui::GetWindowDrawList(), min, m_IconSize, genericGlyph);
         }
     }
     ImGui::SameLine();

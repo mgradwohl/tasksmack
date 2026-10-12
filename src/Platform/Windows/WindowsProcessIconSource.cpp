@@ -17,16 +17,21 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 
+#include "Platform/IconImageFile.h"
 #include "WinString.h"
+#include "WindowsPackageLogoMath.h"
 #include "WindowsProcessIconMath.h"
 
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace Platform
@@ -37,6 +42,31 @@ namespace
 
 /// The largest icon read: Windows' own largest icon size. Anything bigger is refused, not scaled.
 constexpr int MAX_ICON_SIZE_PX = 256;
+
+/// The most file names read from a packaged app's logo folder: an Assets folder holds tens to a few
+/// hundred files, its logos' variants among them.
+constexpr std::size_t MAX_LOGO_FOLDER_ENTRIES = 4096;
+
+/// Whether @p path names a PNG (a packaged app's logo) rather than a program.
+[[nodiscard]] bool isPngPath(std::string_view path) noexcept
+{
+    constexpr std::string_view PNG = ".png";
+    if (path.size() < PNG.size())
+    {
+        return false;
+    }
+    const std::string_view extension = path.substr(path.size() - PNG.size());
+    std::size_t index = 0;
+    while (index < PNG.size())
+    {
+        if (std::tolower(static_cast<unsigned char>(extension[index])) != PNG[index])
+        {
+            return false;
+        }
+        ++index;
+    }
+    return true;
+}
 
 /// QueryFullProcessImageNameW's buffer: MAX_PATH first, then the long-path limit once.
 constexpr std::array<DWORD, 2> IMAGE_PATH_BUFFER_SIZES{MAX_PATH, 32767};
@@ -155,6 +185,10 @@ std::optional<IconPixels> WindowsProcessIconSource::loadIcon(std::string_view ex
     {
         return std::nullopt;
     }
+    if (isPngPath(executablePath))
+    {
+        return loadPackageLogo(executablePath, sizePx);
+    }
     const std::wstring widePath = WinString::utf8ToWide(executablePath);
     if (widePath.empty())
     {
@@ -171,6 +205,30 @@ std::optional<IconPixels> WindowsProcessIconSource::loadIcon(std::string_view ex
         return std::nullopt; // S_FALSE: the file has no icon
     }
     return pixelsOf(m_Fns, icon.get());
+}
+
+std::optional<IconPixels> WindowsProcessIconSource::loadPackageLogo(std::string_view logoPath, int sizePx)
+{
+    const std::filesystem::path logo(WinString::utf8ToWide(logoPath));
+    const std::filesystem::path folder = logo.parent_path();
+    if (logo.empty() || folder.empty())
+    {
+        return std::nullopt;
+    }
+    std::error_code error;
+    std::filesystem::directory_iterator entry(folder, std::filesystem::directory_options::skip_permission_denied, error);
+    std::vector<std::string> names;
+    while (!error && entry != std::filesystem::directory_iterator() && names.size() < MAX_LOGO_FOLDER_ENTRIES)
+    {
+        names.push_back(WinString::wideToUtf8(entry->path().filename().wstring()));
+        entry.increment(error);
+    }
+    const std::optional<std::size_t> pick = Windows::PackageLogo::pickLogo(WinString::wideToUtf8(logo.filename().wstring()), names, sizePx);
+    if (!pick.has_value())
+    {
+        return std::nullopt;
+    }
+    return decodeIconImageFile(WinString::wideToUtf8((folder / WinString::utf8ToWide(names[*pick])).wstring()));
 }
 
 std::optional<IconPixels> WindowsProcessIconSource::pixelsOf(const Windows::ProcessIconFunctions& fns, HICON icon)

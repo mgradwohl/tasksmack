@@ -47,8 +47,11 @@ struct ServiceInfo
     std::string serviceType; ///< e.g. "Own process", "Shared process".
     std::uint32_t pid = 0;   ///< 0 when not running.
     std::string binaryPath;  ///< Command line the service is started with.
-    std::string account;     ///< Account the service logs on as.
-    std::string group;       ///< svchost group (Windows "-k <group>"), when there is one.
+    /// The program binaryPath runs, environment variables expanded (#1800); empty when it couldn't
+    /// be told.
+    std::string executablePath;
+    std::string account; ///< Account the service logs on as.
+    std::string group;   ///< svchost group (Windows "-k <group>"), when there is one.
 };
 
 /// Which ServiceInfo fields this platform can fill at all, following ProcessCapabilities.

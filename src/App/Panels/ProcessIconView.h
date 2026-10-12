@@ -1,8 +1,8 @@
 #pragma once
 
 // The icon beside each process's name (#1800): the Processes table's Name column and the Process
-// Details tab. Composes the Platform icon source (handed in by the panel, the composition root), the
-// Domain cache that loads icons off the UI thread, and the UI texture cache that turns them into
+// Details tab, and beside each program the Startup and Services tabs list (drawFileInline). Composes the Platform icon source (handed in by
+// the panel, the composition root), the Domain cache that loads icons off the UI thread, and the UI texture cache that turns them into
 // textures on it. A process with no icon -- or whose icon is still loading -- shows a generic glyph
 // in the same slot, so names stay aligned.
 //
@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string_view>
 
 namespace Domain
 {
@@ -31,6 +32,8 @@ class ProcessIconView
   public:
     /// The generic icon: a blank window, like Task Manager's for a program without its own.
     static const char* const GENERIC_GLYPH;
+    /// A service's generic icon: a gear, for a service without its own (svchost's, or unreadable).
+    static const char* const SERVICE_GLYPH;
 
     /// @p backend makes the textures (OpenGL's by default; tests and benchmarks pass a fake), and
     /// @p cacheConfig bounds the Domain cache (tests and benchmarks run it without its worker).
@@ -81,6 +84,16 @@ class ProcessIconView
     /// loading, or icons are off.
     [[nodiscard]] ImTextureID textureFor(const Domain::ProcessSnapshot& proc);
 
+    /// Draws the icon of the file at @p path (a startup entry's or service's program, or a packaged
+    /// app's logo), filed under @p fileKey (Domain::iconFileKey(path)), at the cursor as an item, then
+    /// SameLine(); @p genericGlyph while it loads, when it has none and for an empty path. @p name is
+    /// the row's name, for a platform that finds icons by name (Linux). Draws nothing while disabled.
+    void drawFileInline(std::uint64_t fileKey, std::string_view path, std::string_view name, const char* genericGlyph = GENERIC_GLYPH);
+
+    /// The file's icon texture at the current size; ImTextureID_Invalid when it has none, is still
+    /// loading, @p path is empty, or icons are off.
+    [[nodiscard]] ImTextureID textureForFile(std::uint64_t fileKey, std::string_view path, std::string_view name);
+
     /// The Domain cache, for its statistics (benchmarks); nullptr before attach() with a source.
     [[nodiscard]] Domain::ProcessIconCache* cache() noexcept
     {
@@ -88,7 +101,11 @@ class ProcessIconView
     }
 
   private:
-    static void drawGeneric(ImDrawList& drawList, ImVec2 min, float size);
+    static void drawGeneric(ImDrawList& drawList, ImVec2 min, float size, const char* glyph = GENERIC_GLYPH);
+    /// @p texture, or @p genericGlyph when it is ImTextureID_Invalid, at the cursor, then SameLine().
+    void drawTextureInline(ImTextureID texture, const char* genericGlyph) const;
+    /// The texture of a loaded icon (made the first time it is drawn); ImTextureID_Invalid for nullptr.
+    [[nodiscard]] ImTextureID textureOf(const std::shared_ptr<const Domain::ProcessIconImage>& icon);
 
     UI::IconTextureBackend m_Backend;
     Domain::ProcessIconCacheConfig m_CacheConfig;

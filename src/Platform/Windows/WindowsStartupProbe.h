@@ -70,6 +70,9 @@ struct PackageStartupTask
     /// The extension's Executable, else its Application's.
     std::string executable;
     bool enabledByDefault = false; ///< The StartupTask's Enabled attribute.
+    /// Its Application's VisualElements Square44x44Logo (#1800), else the package's Logo; relative
+    /// to the package, e.g. "Assets\Square44x44Logo.png".
+    std::string logo;
 };
 
 /// What WindowsStartupProbe reads from a package's AppxManifest.xml.
@@ -77,6 +80,7 @@ struct PackageManifest
 {
     std::string displayName;          ///< Package/Properties/DisplayName.
     std::string publisherDisplayName; ///< Package/Properties/PublisherDisplayName.
+    std::string logo;                 ///< Package/Properties/Logo (the Store logo), relative to the package.
     std::vector<PackageStartupTask> startupTasks;
 };
 
