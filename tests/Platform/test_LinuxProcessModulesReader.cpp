@@ -68,6 +68,41 @@ TEST_F(LinuxProcessModulesReaderTest, RefusesAReusedPidAnUnknownIdentityAndAMiss
     EXPECT_EQ(reader.readModules({.pid = 101, .startTimeTicks = 4242}).status, ModulesReadStatus::ProcessExited);
 }
 
+// #1395: an invalid PID is no process; no maps file is a process that has gone; a maps that can't be read
+// as a file is a failed read that says why; and an empty one, the identity confirmed again, is no modules.
+TEST_F(LinuxProcessModulesReaderTest, WhatEachKindOfMissingOrBrokenMapsReadsAs)
+{
+    LinuxProcessModulesReader reader(m_Proc.path.string());
+    EXPECT_EQ(reader.readModules({.pid = 0, .startTimeTicks = 4242}).status, ModulesReadStatus::ProcessExited);
+
+    std::filesystem::remove(m_Proc.path / "100" / "maps");
+    EXPECT_EQ(reader.readModules(TARGET).status, ModulesReadStatus::ProcessExited);
+
+    std::filesystem::create_directory(m_Proc.path / "100" / "maps"); // read() on it fails (EISDIR)
+    const ModulesReadResult broken = reader.readModules(TARGET);
+    EXPECT_EQ(broken.status, ModulesReadStatus::Failed);
+    EXPECT_FALSE(broken.detail.empty());
+
+    std::filesystem::remove(m_Proc.path / "100" / "maps");
+    write("maps", "");
+    const ModulesReadResult empty = reader.readModules(TARGET);
+    EXPECT_EQ(empty.status, ModulesReadStatus::Ok);
+    EXPECT_TRUE(empty.modules.empty());
+}
+
+// #1395: a maps file this user can't read is permission denied (another user's process).
+TEST_F(LinuxProcessModulesReaderTest, AnUnreadableMapsIsPermissionDenied)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root reads any file";
+    }
+    std::filesystem::permissions(m_Proc.path / "100" / "maps", std::filesystem::perms::none);
+    LinuxProcessModulesReader reader(m_Proc.path.string());
+    EXPECT_EQ(reader.readModules(TARGET).status, ModulesReadStatus::PermissionDenied);
+    std::filesystem::permissions(m_Proc.path / "100" / "maps", std::filesystem::perms::owner_all);
+}
+
 TEST(LinuxProcessModulesReaderRealTest, ReadsThisProcess)
 {
     std::ifstream stat("/proc/self/stat");
