@@ -754,5 +754,31 @@ TEST_F(ProcessesPanelRenderTest, PageKeysJumpAPageAndStopAtTheEnds)
     panel->onDetach();
 }
 
+TEST_F(ProcessesPanelRenderTest, AColumnHeaderExplainsItsColumnOnHover)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    // The PID column's description, as its header's tooltip shows it (#1210).
+    const std::string description(getColumnInfo(ProcessColumn::PID).description);
+    ASSERT_FALSE(description.empty());
+    ImGuiIO& io = ImGui::GetIO();
+    // Down the header row's band, across the columns, holding still long enough for the tooltip.
+    bool shown = false;
+    for (int y = 20; y <= 140 && !shown; y += 6)
+    {
+        for (int x = 20; x <= 760 && !shown; x += 30)
+        {
+            io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+            for (int frame = 0; frame < 30 && !shown; ++frame) // past ImGuiHoveredFlags_DelayShort at 60 fps
+            {
+                shown = renderAndCapture(*panel).contains(description);
+            }
+        }
+    }
+    EXPECT_TRUE(shown);
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App
