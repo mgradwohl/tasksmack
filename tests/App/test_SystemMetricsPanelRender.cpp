@@ -60,6 +60,7 @@ using SeriesLabels = std::set<std::string>;
         eth0.rxBytes = 1'000'000;
         eth0.txBytes = 500'000;
         eth0.isUp = true;
+        eth0.linkSpeedMbps = 1000;
         counters.networkInterfaces.push_back(eth0);
     }
     probe->setCounters(std::move(counters));
@@ -343,6 +344,37 @@ TEST_F(SystemMetricsPanelRenderTest, TheChartsFollowTheHistoryAndRefreshSettings
     panel->onEvent(faster);
     panel->onUpdate(1.0F / 60.0F);
     EXPECT_TRUE(renderAndCapture(*panel).contains("CPU Usage"));
+    panel->onDetach();
+}
+
+TEST_F(SystemMetricsPanelRenderTest, PickingAnInterfaceShowsItsLinkAndState)
+{
+    const auto panel = attachedPanel(/*network=*/true);
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(selectTab("Network and I/O"));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("[Up]")); // "Total" picked: no single link to show
+
+    // The interface combo sits in whichever child window draws the section: open it from there.
+    const ImGuiWindow* combo = nullptr;
+    for (int i = 0; i < GImGui->Windows.Size && combo == nullptr; ++i)
+    {
+        ImGui::ActivateItemByID(ImHashStr("##NetworkInterface", 0, GImGui->Windows[i]->ID));
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        if (!GImGui->OpenPopupStack.empty() && std::string_view(GImGui->OpenPopupStack.back().Window->Name).contains("Combo"))
+        {
+            combo = GImGui->OpenPopupStack.back().Window;
+        }
+    }
+    ASSERT_NE(combo, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("eth0", 0, combo->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Link: 1 Gbit/s")) << text; // rated in bits, as the adapter is
+    EXPECT_TRUE(text.contains("[Up]")) << text;
     panel->onDetach();
 }
 
