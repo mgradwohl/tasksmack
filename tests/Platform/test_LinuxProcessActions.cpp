@@ -976,7 +976,10 @@ TEST_F(LinuxProcessActionsFaultTest, AProcessWhoseStartTimeCantBeReadIsNotFound)
 
 TEST_F(LinuxProcessActionsFaultTest, AnIoPriorityClassOutOfRangeIsRefused)
 {
-    const ProcessActionResult result = m_Actions.setIoPriority(ownTarget(), static_cast<IoPriorityClass>(200), 0);
+    // Out of range on purpose: the guard against a class no enumerator names is what is under test.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    const auto outOfRange = static_cast<IoPriorityClass>(200);
+    const ProcessActionResult result = m_Actions.setIoPriority(ownTarget(), outOfRange, 0);
     EXPECT_FALSE(result.success);
     EXPECT_EQ(result.errorMessage, "Invalid I/O priority class");
     EXPECT_EQ(plan().setCalls, 0);
