@@ -587,6 +587,16 @@ Three established ways to get real coverage of such a file's logic:
    `benchmarks/ChartGeometryScenes.h` (`HeadlessChartContext`, draw-data geometry counts).
    Colours come from the stub theme, which `ThemeStub.cpp` makes visible so charts emit geometry.
 
+4. **Need the whole app (a real window, GL, the real theme and fonts)?** Put the test in
+   `APP_REAL_TEST_SOURCES` in `tests/CMakeLists.txt`. It builds into `TaskSmackAppTests`, which links
+   the app's own objects (`TaskSmackApp`, the way the benchmarks do), so a real `Core::Application`
+   can run `UILayer` and other layers through `run()`. Push a driver layer last, so its `onRender()`
+   runs inside the frame after the others have drawn. Call `Core::AnimationRequest::request()` to
+   keep frames coming, and press widgets by ID with `ImGui::ActivateItemByID()`. Skip the test when
+   no display with GL 3.3 is available; with `TASKSMACK_REQUIRE_DISPLAY=1` (Linux CI, under Xvfb) a
+   missing display fails instead. `tools/coverage.sh` runs this binary too. Example:
+   `tests/App/test_UiLayersOnDisplay.cpp`, the title bar's buttons through `TitleBarLayer`.
+
 Before writing any of these tests, check whether the logic already exists as a shared, tested
 helper - `TitleBarLayer.cpp` used to have its own private case-insensitive env-flag parser that
 turned out to be a byte-for-byte duplicate of the already-shared, already-tested
