@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -88,6 +89,62 @@ TEST_F(LinuxProcessOpenFilesReaderTest, UnreadableFdDirectoryIsPermissionDenied)
     LinuxProcessOpenFilesReader reader(m_Proc.path.string());
     EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::PermissionDenied);
     std::filesystem::permissions(m_Proc.path / "100" / "fd", std::filesystem::perms::owner_all);
+}
+
+// #1395: an invalid PID is no process; a /proc entry that isn't a directory is a failed read that says why.
+TEST_F(LinuxProcessOpenFilesReaderTest, AnInvalidPidOrABrokenProcEntryIsNotRead)
+{
+    LinuxProcessOpenFilesReader reader(m_Proc.path.string());
+    EXPECT_EQ(reader.readOpenFiles({.pid = 0, .startTimeTicks = 4242}).status, OpenFilesReadStatus::ProcessExited);
+    EXPECT_EQ(reader.readOpenFiles({.pid = -3, .startTimeTicks = 4242}).status, OpenFilesReadStatus::ProcessExited);
+
+    std::ofstream(m_Proc.path / "102") << "not a directory";
+    const OpenFilesReadResult broken = reader.readOpenFiles({.pid = 102, .startTimeTicks = 4242});
+    EXPECT_EQ(broken.status, OpenFilesReadStatus::Failed);
+    EXPECT_FALSE(broken.detail.empty()); // the system's words for ENOTDIR
+}
+
+// #1395: without fdinfo/ the files are still listed, without their flags; an fd/ entry that isn't a link
+// (it can't be read as one) is skipped.
+TEST_F(LinuxProcessOpenFilesReaderTest, NoFdinfoMeansNoFlagsAndAnUnreadableEntryIsSkipped)
+{
+    std::filesystem::remove_all(m_Proc.path / "100" / "fdinfo");
+    std::ofstream(m_Proc.path / "100" / "fd" / "7") << "a regular file, not a link";
+    LinuxProcessOpenFilesReader reader(m_Proc.path.string());
+    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
+    ASSERT_EQ(result.files.size(), 3U); // 2, 3 and 10; not 7
+    for (const OpenFile& file : result.files)
+    {
+        EXPECT_NE(file.descriptor, 7U);
+        EXPECT_FALSE(file.flags.has_value()) << file.descriptor;
+    }
+}
+
+// #1395: a process with nothing open -- its identity confirmed again -- reads as no open files.
+TEST_F(LinuxProcessOpenFilesReaderTest, NothingOpenIsAnEmptyReading)
+{
+    std::filesystem::remove_all(m_Proc.path / "100" / "fd");
+    std::filesystem::create_directories(m_Proc.path / "100" / "fd");
+    LinuxProcessOpenFilesReader reader(m_Proc.path.string());
+    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    EXPECT_EQ(result.status, OpenFilesReadStatus::Ok);
+    EXPECT_TRUE(result.files.empty());
+    EXPECT_FALSE(result.truncated);
+}
+
+// #1395: past MAX_OPEN_FILES descriptors the reading stops and says it was cut short.
+TEST_F(LinuxProcessOpenFilesReaderTest, MoreThanTheCapIsTruncated)
+{
+    for (std::size_t fd = 100; fd < 100 + MAX_OPEN_FILES; ++fd)
+    {
+        std::filesystem::create_symlink("/dev/null", m_Proc.path / "100" / "fd" / std::to_string(fd));
+    }
+    LinuxProcessOpenFilesReader reader(m_Proc.path.string());
+    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
+    EXPECT_TRUE(result.truncated);
+    EXPECT_EQ(result.files.size(), MAX_OPEN_FILES);
 }
 
 TEST(LinuxProcessOpenFilesReaderRealTest, ReadsThisProcess)
