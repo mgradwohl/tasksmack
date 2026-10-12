@@ -175,6 +175,44 @@ struct PidfdOpen
 
 namespace
 {
+/// Whether thread `tid` is still in `pid`'s thread group. A TID belongs to one task at a time, so if
+/// it is still listed under /proc/<pid>/task after setpriority(2), the call reached a thread of the
+/// target: had the worker exited and its TID been reused by another process, it would be listed
+/// under that process instead (#1228 review).
+[[nodiscard]] bool realIsThreadOf(pid_t pid, id_t tid)
+{
+    std::error_code ec;
+    return std::filesystem::exists(std::filesystem::path("/proc") / std::to_string(pid) / "task" / std::to_string(tid), ec);
+}
+
+/// The thread IDs in /proc/<pid>/task, or why they couldn't be listed. There is no fallback to
+/// the PID alone: renicing just the main thread and reporting success is the bug this replaces.
+[[nodiscard]] std::expected<std::vector<id_t>, std::error_code> realListThreads(pid_t pid)
+{
+    std::vector<id_t> tids;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(std::filesystem::path("/proc") / std::to_string(pid) / "task", ec);
+    for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
+    {
+        const std::string name = it->path().filename().string();
+        id_t tid = 0;
+        const auto [ptr, parseError] = std::from_chars(name.data(), name.data() + name.size(), tid);
+        if (parseError == std::errc{} && ptr == name.data() + name.size() && tid > 0)
+        {
+            tids.push_back(tid);
+        }
+    }
+    if (ec)
+    {
+        return std::unexpected(ec);
+    }
+    if (tids.empty())
+    {
+        return std::unexpected(std::make_error_code(std::errc::no_such_process));
+    }
+    return tids;
+}
+
 // The real system calls (realProcessSyscalls()). pidfd_open, pidfd_send_signal and the ioprio calls have
 // no glibc wrappers, so they are raw syscalls; a kernel or libc without them says ENOSYS.
 int realPidfdOpen(pid_t pid)
@@ -247,7 +285,9 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .pollPidfd = &realPollPidfd,
             .setPriority = &realSetPriority,
             .ioprioSet = &realIoprioSet,
-            .ioprioGet = &realIoprioGet};
+            .ioprioGet = &realIoprioGet,
+            .listThreads = &realListThreads,
+            .isThreadOf = &realIsThreadOf};
 }
 
 LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls())
@@ -258,7 +298,17 @@ LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools) : Linux
 
 LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, LinuxProcessSyscalls syscalls)
     : m_TraceTools(std::move(traceTools)), m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
-{}
+{
+    // A table that fakes only the kernel calls keeps the real thread listing (see LinuxProcessSyscalls).
+    if (m_Syscalls.listThreads == nullptr)
+    {
+        m_Syscalls.listThreads = &realListThreads;
+    }
+    if (m_Syscalls.isThreadOf == nullptr)
+    {
+        m_Syscalls.isThreadOf = &realIsThreadOf;
+    }
+}
 
 ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
 {
@@ -309,66 +359,31 @@ ProcessActionResult LinuxProcessActions::resume(const ProcessTarget& target)
 namespace
 {
 
-/// Whether thread `tid` is still in `pid`'s thread group. A TID belongs to one task at a time, so if
-/// it is still listed under /proc/<pid>/task after setpriority(2), the call reached a thread of the
-/// target: had the worker exited and its TID been reused by another process, it would be listed
-/// under that process instead (#1228 review).
-[[nodiscard]] bool isThreadOf(int32_t pid, id_t tid)
-{
-    std::error_code ec;
-    return std::filesystem::exists(std::filesystem::path("/proc") / std::to_string(pid) / "task" / std::to_string(tid), ec);
-}
-
-/// The thread IDs in /proc/<pid>/task, or why they couldn't be listed. There is no fallback to
-/// the PID alone: renicing just the main thread and reporting success is the bug this replaces.
-[[nodiscard]] std::expected<std::vector<id_t>, std::error_code> threadIds(int32_t pid)
-{
-    std::vector<id_t> tids;
-    std::error_code ec;
-    std::filesystem::directory_iterator it(std::filesystem::path("/proc") / std::to_string(pid) / "task", ec);
-    for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
-    {
-        const std::string name = it->path().filename().string();
-        id_t tid = 0;
-        const auto [ptr, parseError] = std::from_chars(name.data(), name.data() + name.size(), tid);
-        if (parseError == std::errc{} && ptr == name.data() + name.size() && tid > 0)
-        {
-            tids.push_back(tid);
-        }
-    }
-    if (ec)
-    {
-        return std::unexpected(ec);
-    }
-    if (tids.empty())
-    {
-        return std::unexpected(std::make_error_code(std::errc::no_such_process));
-    }
-    return tids;
-}
-
-/// reniceThreads() against the real /proc and setpriority(2).
+/// reniceThreads() against /proc and setpriority(2), through the syscall table.
 [[nodiscard]] std::expected<PriorityChange, std::error_code>
 setPriorityOfEveryThread(const LinuxProcessSyscalls& syscalls, int32_t pid, int32_t nice)
 {
     return reniceThreads(
         pid,
-        threadIds,
+        syscalls.listThreads,
         [&syscalls, nice](id_t tid) -> int
         {
             // setpriority() returns 0 on success and -1 on error (per POSIX).
             return syscalls.setPriority(tid, nice) == 0 ? 0 : errno;
         },
-        isThreadOf);
+        syscalls.isThreadOf);
 }
 
-/// reniceThreads() against the real /proc and ioprio_set(2). I/O priority is per thread on Linux, as
+/// reniceThreads() against /proc and ioprio_set(2), through the syscall table. I/O priority is per thread on Linux, as
 /// nice is: ioprio_set(IOPRIO_WHO_PROCESS, pid) alone changes only the main thread (#803, as #1104).
 [[nodiscard]] std::expected<PriorityChange, std::error_code>
 setIoPriorityOfEveryThread(const LinuxProcessSyscalls& syscalls, int32_t pid, int ioprio)
 {
     return reniceThreads(
-        pid, threadIds, [&syscalls, ioprio](id_t tid) -> int { return syscalls.ioprioSet(tid, ioprio) == 0 ? 0 : errno; }, isThreadOf);
+        pid,
+        syscalls.listThreads,
+        [&syscalls, ioprio](id_t tid) -> int { return syscalls.ioprioSet(tid, ioprio) == 0 ? 0 : errno; },
+        syscalls.isThreadOf);
 }
 
 /// How the shared reporting below names the change: "priority" or "I/O priority".

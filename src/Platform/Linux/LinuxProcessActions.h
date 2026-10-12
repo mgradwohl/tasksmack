@@ -4,7 +4,10 @@
 #include "SyscallTrace.h"
 
 #include <cstdint>
+#include <expected>
 #include <string_view>
+#include <system_error>
+#include <vector>
 
 #include <sys/types.h>
 
@@ -24,6 +27,11 @@ struct LinuxProcessSyscalls
     int (*setPriority)(id_t tid, int nice) = nullptr; ///< setpriority(PRIO_PROCESS, tid, nice)
     int (*ioprioSet)(id_t tid, int ioprio) = nullptr; ///< ioprio_set(IOPRIO_WHO_PROCESS, tid, ioprio)
     int (*ioprioGet)(pid_t pid) = nullptr;            ///< ioprio_get(IOPRIO_WHO_PROCESS, pid): the value
+    /// The thread IDs listed under /proc/<pid>/task, or why they couldn't be (none listed: ESRCH). Left
+    /// null, the real listing is used: most tests fake only the calls above.
+    std::expected<std::vector<id_t>, std::error_code> (*listThreads)(pid_t pid) = nullptr;
+    /// Whether thread @p tid is still listed under /proc/<pid>/task. Left null, the real check is used.
+    bool (*isThreadOf)(pid_t pid, id_t tid) = nullptr;
 };
 
 /// The real system calls.
