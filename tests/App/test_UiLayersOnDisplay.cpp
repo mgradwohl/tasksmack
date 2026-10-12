@@ -41,7 +41,6 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -49,8 +48,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-#include <unistd.h>
 
 namespace
 {
@@ -460,7 +457,7 @@ struct ShellKeysObserved
     bool timedOut = false;
 };
 
-/// Pushed last over the whole shell: the row menu's Details for this test's own process (as
+/// Pushed last over the whole shell: the row menu's Details for a process (as
 /// ProcessesPanel raises it), F5 on the Processes tab, Ctrl+Shift+M twice, then Ctrl+= and Ctrl+-.
 class ShellKeysDriverLayer : public Core::Layer
 {
@@ -477,8 +474,10 @@ class ShellKeysDriverLayer : public Core::Layer
         {
         case 20:
         {
-            // As the Processes table's row menu does it (#1209): the selection first, then Details.
-            Core::ProcessSelectedEvent selected(static_cast<std::int32_t>(getpid()), 0);
+            // As the Processes table's row menu does it (#1209): the selection first, then Details. PID 1
+            // is init on Linux; elsewhere it isn't listed, which Process Details says, and the tab comes
+            // forward either way.
+            Core::ProcessSelectedEvent selected(1, 0);
             Core::Application::get().raiseEvent(selected);
             Core::ShowProcessDetailsEvent details;
             Core::Application::get().raiseEvent(details);
