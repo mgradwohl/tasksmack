@@ -7,6 +7,8 @@
 /// the DHCPv4 lease from a link's Describe() JSON, a link without DHCP, and an unknown link. udisks2: an
 /// ATA disk's SMART status, an NVMe controller's health log (and a failed one), a block device with no
 /// drive, one udisks2 doesn't list, and udisks2 not running.
+/// And what each reader says without a system bus at all, without systemd-networkd, on an unexpected
+/// error from networkd or resolved, and for objects missing the properties it reads.
 
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxDiskSmart.h"
@@ -20,10 +22,13 @@
 #include "FakeSystemBus.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <stdlib.h> // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv(), which <cstdlib> doesn't declare
 
 namespace Platform
 {
@@ -387,6 +392,147 @@ TEST_F(SystemdBusFakeTest, WithoutUdisksSmartCantBeRead)
     const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sda");
     EXPECT_FALSE(read.smart.has_value());
     EXPECT_EQ(read.error, "udisks2 isn't running, so SMART status can't be read");
+}
+
+// #1395: what each reader says when the bus, a service or an object isn't there as expected.
+
+TEST(SystemdBusNoBusTest, WithoutASystemBusEveryReaderSaysSo)
+{
+    // A bus address nothing listens on: every reader's first call fails to connect.
+    const char* saved = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    ASSERT_EQ(setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent/tasksmack-test-bus", 1), 0); // NOLINT(concurrency-mt-unsafe)
+
+    const std::string unreachable = "The system bus couldn't be reached";
+    EXPECT_FALSE(SystemdBus::readBootTimestamps().ok);
+    EXPECT_FALSE(SystemdBus::readBootTimestamps().error.empty());
+    const LinuxDiskSmart::DriveSmartRead smart = SystemdBus::makeDriveSmartReader()("sda");
+    EXPECT_TRUE(smart.error.starts_with(unreachable)) << smart.error;
+    const LinuxNetworkAdapters::WifiLinkRead wifi = SystemdBus::makeWifiLinkReader()("wlan0");
+    EXPECT_TRUE(wifi.error.starts_with(unreachable)) << wifi.error;
+    const LinuxNetworkAdapters::DhcpLeaseRead lease = SystemdBus::makeDhcpLeaseReader()("wlan0");
+    EXPECT_TRUE(lease.error.starts_with(unreachable)) << lease.error;
+    const LinuxNetworkAdapters::LinkDnsRead dns = SystemdBus::makeLinkDnsReader()(2);
+    EXPECT_TRUE(dns.error.starts_with(unreachable)) << dns.error;
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader networkd = SystemdBus::makeNetworkdLeaseReader();
+    EXPECT_TRUE(networkd(3).error.starts_with(unreachable)) << networkd(3).error;
+    EXPECT_TRUE(networkd(4).error.starts_with(unreachable)); // remembered for the reader's other adapters
+
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SYSTEM_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
+}
+
+TEST_F(SystemdBusFakeTest, BootTimestampsMissingOneAreAnError)
+{
+    auto& manager = m_Bus.properties()["/org/freedesktop/systemd1"]["org.freedesktop.systemd1.Manager"];
+    manager["FirmwareTimestampMonotonic"] = std::uint64_t{1'000'000};
+    manager["LoaderTimestampMonotonic"] = std::uint64_t{2'000'000}; // and nothing after it
+    ASSERT_TRUE(m_Bus.start("org.freedesktop.systemd1")) << m_Bus.error();
+    const SystemdBus::BootTimestampsRead read = SystemdBus::readBootTimestamps();
+    EXPECT_FALSE(read.ok);
+    EXPECT_FALSE(read.error.empty());
+}
+
+TEST_F(SystemdBusFakeTest, WithoutNetworkdEveryAdapterSaysSo)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader read = SystemdBus::makeNetworkdLeaseReader();
+    EXPECT_EQ(read(3).error, "systemd-networkd isn't running");
+    EXPECT_EQ(read(4).error, "systemd-networkd isn't running");
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromNetworkdIsPassedOn)
+{
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer
+                       { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+    const LinuxNetworkAdapters::DhcpLeaseRead lease = SystemdBus::makeNetworkdLeaseReader()(3);
+    EXPECT_TRUE(lease.error.starts_with("systemd-networkd couldn't be asked: ")) << lease.error;
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromResolvedIsPassedOn)
+{
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer
+                       { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+    const LinuxNetworkAdapters::LinkDnsRead dns = SystemdBus::makeLinkDnsReader()(2);
+    EXPECT_TRUE(dns.error.starts_with("systemd-resolved couldn't be asked: ")) << dns.error;
+}
+
+TEST_F(SystemdBusFakeTest, AResolvedLinkMissingItsServersOrDomainsIsAnError)
+{
+    constexpr const char* NO_DOMAINS = "/org/freedesktop/resolve1/link/_35";
+    constexpr const char* NO_SERVERS = "/org/freedesktop/resolve1/link/_36";
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [=](std::int32_t ifindex) -> MethodAnswer
+                       { return {.path = ObjectPath{ifindex == 5 ? NO_DOMAINS : NO_SERVERS}, .errorName = {}}; });
+    auto& props = m_Bus.properties();
+    props[NO_DOMAINS][RESOLVE_LINK]["DNS"] = TestSupport::DnsServers{{2, {192, 168, 1, 1}}};
+    props[NO_SERVERS][RESOLVE_LINK]["Domains"] = TestSupport::DnsDomains{{"lan", false}};
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
+    const LinuxNetworkAdapters::LinkDnsRead noDomains = read(5);
+    EXPECT_FALSE(noDomains.read);
+    EXPECT_FALSE(noDomains.error.empty());
+    const LinuxNetworkAdapters::LinkDnsRead noServers = read(6);
+    EXPECT_FALSE(noServers.read);
+    EXPECT_FALSE(noServers.error.empty());
+}
+
+TEST_F(SystemdBusFakeTest, ADeviceMissingItsWifiOrDhcpPropertiesIsAnError)
+{
+    // wlan2: a device NetworkManager knows with none of the properties asked for; wlan3: a DHCPv4
+    // config with no Options; wlan4: Options without the lease's fields.
+    constexpr const char* BARE_DEVICE = "/org/freedesktop/NetworkManager/Devices/5";
+    constexpr const char* NO_OPTIONS_DEVICE = "/org/freedesktop/NetworkManager/Devices/6";
+    constexpr const char* EMPTY_OPTIONS_DEVICE = "/org/freedesktop/NetworkManager/Devices/7";
+    constexpr const char* NO_OPTIONS_CONFIG = "/org/freedesktop/NetworkManager/DHCP4Config/2";
+    constexpr const char* EMPTY_OPTIONS_CONFIG = "/org/freedesktop/NetworkManager/DHCP4Config/3";
+    m_Bus.addStringMethod(NM_PATH,
+                          NM,
+                          "GetDeviceByIpIface",
+                          [=](const std::string& name) -> MethodAnswer
+                          {
+                              if (name == "wlan2")
+                              {
+                                  return {.path = ObjectPath{BARE_DEVICE}, .errorName = {}};
+                              }
+                              return {.path = ObjectPath{name == "wlan3" ? NO_OPTIONS_DEVICE : EMPTY_OPTIONS_DEVICE}, .errorName = {}};
+                          });
+    auto& props = m_Bus.properties();
+    props[BARE_DEVICE][DEVICE]["Interface"] = std::string("wlan2"); // served, but not the properties read
+    props[NO_OPTIONS_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{NO_OPTIONS_CONFIG};
+    props[NO_OPTIONS_CONFIG][DHCP4]["Unrelated"] = std::string("x");
+    props[EMPTY_OPTIONS_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{EMPTY_OPTIONS_CONFIG};
+    props[EMPTY_OPTIONS_CONFIG][DHCP4]["Options"] = std::map<std::string, TestSupport::DictValue>{{"domain_name", std::string("lan")}};
+    ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
+
+    EXPECT_FALSE(SystemdBus::makeWifiLinkReader()("wlan2").error.empty());
+    const LinuxNetworkAdapters::DhcpLeaseReader lease = SystemdBus::makeDhcpLeaseReader();
+    const LinuxNetworkAdapters::DhcpLeaseRead bare = lease("wlan2");
+    EXPECT_FALSE(bare.lease.has_value());
+    EXPECT_FALSE(bare.error.empty());
+    const LinuxNetworkAdapters::DhcpLeaseRead noOptions = lease("wlan3");
+    EXPECT_FALSE(noOptions.lease.has_value());
+    EXPECT_FALSE(noOptions.error.empty());
+    const LinuxNetworkAdapters::DhcpLeaseRead emptyOptions = lease("wlan4");
+    EXPECT_FALSE(emptyOptions.lease.has_value());
+    EXPECT_EQ(emptyOptions.error, "NetworkManager reported no lease details");
 }
 
 } // namespace
