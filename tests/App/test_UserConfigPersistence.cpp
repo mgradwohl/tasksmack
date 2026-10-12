@@ -1,5 +1,6 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 #include "App/Panels/ProcessColumnAvailability.h"
+#include "App/Panels/ProcessRowMeter.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
 #include "App/UserConfigHelpers.h"
@@ -745,6 +746,47 @@ TEST_F(UserConfigSaveLoadFixture, ProcessMetersMissingOrInvalidKeepDefaults)
     EXPECT_TRUE(meters.isOn(ProcessColumn::CpuPercent)); // Not a boolean: the default
     EXPECT_FALSE(meters.isOn(ProcessColumn::PID));       // No meter column: ignored
     EXPECT_FALSE(meters.isOn(ProcessColumn::IoWrite));   // Not listed: the default
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMetersSavedAsBooleansReadAsOffAndBar)
+{
+    // A config.toml written before sparklines (#1528's booleans) keeps its choices (#1612).
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_meters]\ncpu_percent = false\nresident = true\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    const ProcessRowMeter::Settings& meters = config.settings().processMeters;
+    EXPECT_EQ(meters.style(ProcessColumn::CpuPercent), ProcessRowMeter::Style::Off);
+    EXPECT_EQ(meters.style(ProcessColumn::Resident), ProcessRowMeter::Style::Bar);
+    EXPECT_EQ(meters.style(ProcessColumn::IoRead), ProcessRowMeter::Style::Off); // Not listed: the default
+    EXPECT_EQ(meters.sparklineMetrics(), 0U);
+    config.settings() = UserSettings{};
+}
+
+TEST_F(UserConfigSaveLoadFixture, ProcessMeterStylesAreSavedAndLoaded)
+{
+    {
+        std::ofstream file(m_ConfigPath);
+        file << "[process_meters]\ncpu_percent = \"sparkline\"\nresident = \"bar\"\nio_read = \"off\"\nnet_sent = \"line\"\n";
+    }
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    config.load();
+    ProcessRowMeter::Settings expected;
+    expected.setStyle(ProcessColumn::CpuPercent, ProcessRowMeter::Style::Sparkline);
+    expected.setStyle(ProcessColumn::Resident, ProcessRowMeter::Style::Bar);
+    EXPECT_EQ(config.settings().processMeters, expected); // "line" is not a style: net_sent keeps its default
+
+    config.settings().processMeters.setStyle(ProcessColumn::GpuPercent, ProcessRowMeter::Style::Sparkline);
+    const ProcessRowMeter::Settings saved = config.settings().processMeters;
+    config.save();
+    config.settings() = UserSettings{};
+    config.load();
+    EXPECT_EQ(config.settings().processMeters, saved);
+    config.settings() = UserSettings{}; // The singleton outlives this test
 }
 
 // ========== Process table layout persistence (#952) ==========

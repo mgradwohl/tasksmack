@@ -97,9 +97,11 @@ export LLVM_PROFILE_FILE="${BUILD_DIR}/coverage-%p.profraw"
 export LD_LIBRARY_PATH="${BUILD_DIR}/tests/mocks${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # Run the test executables directly to capture coverage. TaskSmackThemeTests links the real
-# UI/Theme.cpp, which TaskSmackTests replaces with a stub (#1547).
+# UI/Theme.cpp, which TaskSmackTests replaces with a stub (#1547); TaskSmackAppTests is built from the
+# app's own objects, for the layers that need the whole app on a display (#1395).
 ./tests/TaskSmackTests
 ./tests/TaskSmackThemeTests
+./tests/TaskSmackAppTests
 
 # Step 3: Merge profraw files into profdata
 echo "==> Merging coverage data..."
@@ -121,7 +123,7 @@ if [[ ! -x "$APP_BINARY" ]]; then
     echo "Error: ${APP_BINARY} not found; without it the report would only count files linked into TaskSmackTests." >&2
     exit 1
 fi
-COV_OBJECTS=("${BUILD_DIR}/tests/TaskSmackTests" -object "${BUILD_DIR}/tests/TaskSmackThemeTests" -object "$APP_BINARY")
+COV_OBJECTS=("${BUILD_DIR}/tests/TaskSmackTests" -object "${BUILD_DIR}/tests/TaskSmackThemeTests" -object "${BUILD_DIR}/tests/TaskSmackAppTests" -object "$APP_BINARY")
 
 # Step 4: Generate HTML report
 echo "==> Generating HTML report..."
@@ -163,7 +165,7 @@ elif ! "$PYTHON_EXE" -I -X utf8 "${SCRIPT_DIR}/coverage-mismatches.py" \
     --profdata "${BUILD_DIR}/default.profdata" \
     --llvm-profdata "$LLVM_PROFDATA" \
     --llvm-objcopy "$LLVM_OBJCOPY" \
-    "${BUILD_DIR}/tests/TaskSmackTests" "${BUILD_DIR}/tests/TaskSmackThemeTests" "$APP_BINARY"; then
+    "${BUILD_DIR}/tests/TaskSmackTests" "${BUILD_DIR}/tests/TaskSmackThemeTests" "${BUILD_DIR}/tests/TaskSmackAppTests" "$APP_BINARY"; then
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         echo "::warning title=Coverage::Some functions' coverage is missing from the report: a real record mismatched (see tools/coverage-mismatches.py, #1544)"
     fi

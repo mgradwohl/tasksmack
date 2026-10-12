@@ -15,9 +15,11 @@
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace App
 {
@@ -27,16 +29,46 @@ using Detail::HISTORY_OPTIONS;
 using Detail::pickedOption;
 using Detail::REFRESH_RATE_OPTIONS;
 
-namespace
+SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
+{}
+
+SettingsLayer::SettingsLayer(std::function<void(Core::Event&)> raiseEvent,
+                             std::function<bool(const std::filesystem::path&)> openPath,
+                             std::function<std::filesystem::path()> userConfigDir)
+    : Core::Layer("SettingsLayer"),
+      m_RaiseEvent(std::move(raiseEvent)),
+      m_OpenPath(std::move(openPath)),
+      m_UserConfigDir(std::move(userConfigDir))
+{}
+
+void SettingsLayer::raiseEvent(Core::Event& event) const
 {
+    if (m_RaiseEvent)
+    {
+        m_RaiseEvent(event);
+        return;
+    }
+    Core::Application::get().raiseEvent(event);
+}
+
+void SettingsLayer::openPath(const std::filesystem::path& path) const
+{
+    // Result intentionally ignored - openWithSystemHandler logs warnings on failure
+    if (m_OpenPath)
+    {
+        static_cast<void>(m_OpenPath(path));
+        return;
+    }
+    static_cast<void>(App::PlatformOpen::openWithSystemHandler(path));
+}
 
 // The user themes directory: the one UILayer scans and merges over the built-ins. The built-in
 // themes live in the install's assets directory, which is read-only and replaced on upgrade, so
 // that is not where users should add themes (#1127). Created on first use so the button always
 // opens something.
-[[nodiscard]] auto getUserThemesDir() -> std::filesystem::path
+auto SettingsLayer::userThemesDir() const -> std::filesystem::path
 {
-    auto dir = Core::Application::get().paths().userConfigDir() / "themes";
+    auto dir = (m_UserConfigDir ? m_UserConfigDir() : Core::Application::get().paths().userConfigDir()) / "themes";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec)
@@ -45,11 +77,6 @@ namespace
     }
     return dir;
 }
-
-} // namespace
-
-SettingsLayer::SettingsLayer() : Core::Layer("SettingsLayer")
-{}
 
 SettingsLayer::~SettingsLayer() = default;
 
@@ -66,16 +93,15 @@ void SettingsLayer::onRender()
         applySettings();
         break;
     case SettingsDialog::Action::EditConfig:
-        // Result intentionally ignored - openWithSystemHandler logs warnings on failure
-        (void) App::PlatformOpen::openWithSystemHandler(UserConfig::get().configPath());
+        openPath(UserConfig::get().configPath());
         break;
     case SettingsDialog::Action::OpenThemesFolder:
-        (void) App::PlatformOpen::openWithSystemHandler(getUserThemesDir());
+        openPath(userThemesDir());
         break;
     case SettingsDialog::Action::OpenAbout:
     {
         Core::OpenAboutEvent event;
-        Core::Application::get().raiseEvent(event);
+        raiseEvent(event);
         break;
     }
     case SettingsDialog::Action::None:
@@ -139,7 +165,7 @@ void SettingsLayer::applySettings()
         // Notify panels/samplers of interval change via event
         {
             Core::RefreshRateChangedEvent event(newRefreshMs);
-            Core::Application::get().raiseEvent(event);
+            raiseEvent(event);
         }
         spdlog::info("Settings: Refresh rate changed to {} ms", newRefreshMs);
     }
@@ -153,7 +179,7 @@ void SettingsLayer::applySettings()
         // Notify panels/models to adjust history window via event
         {
             Core::HistoryDurationChangedEvent event(newHistorySeconds);
-            Core::Application::get().raiseEvent(event);
+            raiseEvent(event);
         }
         spdlog::info("Settings: History duration changed to {} seconds", newHistorySeconds);
     }

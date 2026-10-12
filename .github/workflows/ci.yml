@@ -265,10 +265,12 @@ jobs:
           install-ccache: 'false'
 
       - name: Setup Python for GLAD
+        if: steps.select.outputs.mode != 'none'
         uses: ./.github/actions/setup-python-glad
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
+        if: steps.select.outputs.mode != 'none'
         uses: ./.github/actions/fetchcontent-cache
         with:
           mode: restore
@@ -355,20 +357,33 @@ jobs:
           llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Setup Python for GLAD
+        if: steps.select.outputs.mode != 'none'
         uses: ./.github/actions/setup-python-glad
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
+        if: steps.select.outputs.mode != 'none'
         uses: ./.github/actions/fetchcontent-cache
         with:
           mode: restore
+
+      # Restore only: build-windows-debug saves the win-debug results (#1406). The check results
+      # don't depend on ccache, which this job turns off.
+      - name: Restore configure-check results
+        id: cmake-checks
+        if: steps.select.outputs.mode != 'none'
+        uses: ./.github/actions/cmake-check-cache
+        with:
+          mode: restore
+          preset: win-debug
+          toolchain: llvm-${{ env.LLVM_SEMVER_VERSION }}
 
       - name: Configure
         if: steps.select.outputs.mode != 'none'
         shell: pwsh
         # No ccache in the tidy jobs (#1406); keep CMake from finding the stale ccache that
         # Strawberry Perl puts on the image PATH.
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF ${{ steps.cmake-checks.outputs.cmake-args }}
 
       - name: Build GLAD
         if: steps.select.outputs.mode != 'none'

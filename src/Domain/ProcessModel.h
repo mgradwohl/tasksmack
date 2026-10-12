@@ -4,6 +4,7 @@
 #include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
 #include "ProcessEnergyAttribution.h"
+#include "ProcessRowHistory.h"
 #include "ProcessSnapshot.h"
 #include "SamplingConfig.h"
 #include "SingleLineText.h"
@@ -130,12 +131,22 @@ class ProcessModel : public ISamplable
     /// are copied into it under the same lock (#1254), so a reader keeps them current at no extra cost.
     /// With @p outGpuSupport, likewise the GPU support that generation's GPU fields were read under
     /// (#1210): not the GPU model's current state, which can have moved on since its last
-    /// per-process publication (#1417).
+    /// per-process publication (#1417). With @p outRowHistory, likewise the per-process histories
+    /// published with that generation (#1612), row-aligned with it; nullptr while none are kept.
     [[nodiscard]] bool tryCopySnapshotsIfNewer(std::uint64_t lastSeenVersion,
                                                std::shared_ptr<const std::vector<ProcessSnapshot>>& outSnapshots,
                                                std::uint64_t& outVersion,
                                                Platform::ProcessCapabilities* outCapabilities = nullptr,
-                                               GpuSupport* outGpuSupport = nullptr) const;
+                                               GpuSupport* outGpuSupport = nullptr,
+                                               std::shared_ptr<const ProcessRowHistory::Generation>* outRowHistory = nullptr) const;
+
+    /// Which per-process histories to keep for the Processes table's sparklines (#1612): from the next
+    /// generation on, each publishes a ring per process per metric in @p metrics, row-aligned with its
+    /// snapshots (tryCopySnapshotsIfNewer()'s @p outRowHistory). An empty set -- the default -- keeps
+    /// none: the next generation drops every ring and publishes none. Thread-safe and lock-free.
+    void setRowHistoryMetrics(ProcessRowHistory::MetricSet metrics) noexcept;
+
+    [[nodiscard]] ProcessRowHistory::MetricSet rowHistoryMetrics() const noexcept;
 
     /// How many of the watched process's samples are kept for watchedSamplesSince(): every generation
     /// for 6.4 s at the fastest refresh interval, so a reader that polls once per UI frame -- 200 ms
@@ -307,6 +318,13 @@ class ProcessModel : public ISamplable
     std::mutex m_SamplingMutex;
     ProcessEnergy::Attributor m_EnergyAttributor; // guarded by m_SamplingMutex
     SocketTrafficAccumulator m_NetTraffic;        // guarded by m_SamplingMutex; per-process network bytes (#1099)
+
+    // Per-process histories for the sparklines (#1612): which metrics to keep (set from the UI
+    // thread), the rings carried between generations (sampling thread only), and the generation's
+    // published rings (guarded by m_Mutex, replaced with m_Snapshots so the two always match).
+    std::atomic<ProcessRowHistory::MetricSet> m_RowHistoryMetrics{0};
+    ProcessRowHistory::Tracker m_RowHistoryTracker; // guarded by m_SamplingMutex
+    std::shared_ptr<const ProcessRowHistory::Generation> m_RowHistory;
 
     // Helpers
     /// Requires m_SamplingMutex held.
