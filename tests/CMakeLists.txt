@@ -399,6 +399,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxSystemInfoProbe.cpp
     Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp
+    Core/test_RuntimeDir.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_SyscallTrace.cpp
     Platform/test_DetachedSpawn.cpp
