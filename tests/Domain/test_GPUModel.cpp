@@ -9,6 +9,7 @@
 /// - Thread-safe operations
 
 #include "Domain/GPUModel.h"
+#include "Domain/GPUSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SharedHistory.h"
 #include "Mocks/MockGPUProbe.h"

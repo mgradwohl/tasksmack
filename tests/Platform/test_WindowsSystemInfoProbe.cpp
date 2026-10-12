@@ -18,6 +18,7 @@
 #include "Platform/Windows/DXGIGPUProbeMath.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
 #include "Platform/Windows/WindowsDevices.h"
+#include "Platform/Windows/WindowsDriverNodes.h"
 #include "Platform/Windows/WindowsGraphics.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsInstalledMemory.h"

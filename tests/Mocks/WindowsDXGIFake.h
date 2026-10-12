@@ -15,6 +15,7 @@
 #include "Platform/Windows/ComPtr.h"
 #include "Platform/Windows/DXGIAdapterLocation.h"
 #include "Platform/Windows/DXGIGPUProbe.h"
+#include "Platform/Windows/DXGIGPUProbeMath.h"
 
 #include <algorithm>
 #include <cstddef>

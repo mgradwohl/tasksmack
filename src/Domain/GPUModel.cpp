@@ -803,12 +803,14 @@ void GPUModel::publishProcessGPUData(std::chrono::steady_clock::time_point now)
         publication->adapters.reserve(m_GPUInfo.size());
         for (const auto& info : m_GPUInfo)
         {
-            publication->adapters.push_back(GPUAdapterIdentity{.id = info.id,
-                                                               .luidId = info.luidId,
-                                                               .name = info.name,
-                                                               .kind = info.kind,
-                                                               .isIntegrated = info.isIntegrated,
-                                                               .memoryIsShared = info.memoryIsShared});
+            publication->adapters.push_back(GPUAdapterIdentity{
+                .id = info.id,
+                .luidId = info.luidId,
+                .name = info.name,
+                .kind = info.kind,
+                .isIntegrated = info.isIntegrated,
+                .memoryIsShared = info.memoryIsShared,
+            });
         }
         const std::uint64_t version = publication->version;
         m_ProcessPublication.commit(std::move(publication));

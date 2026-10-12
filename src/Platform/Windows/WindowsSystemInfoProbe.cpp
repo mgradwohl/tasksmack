@@ -57,6 +57,7 @@
 #include "WindowsCommitPaging.h"
 #include "WindowsCrashEvents.h"
 #include "WindowsDevices.h"
+#include "WindowsDriverNodes.h"
 #include "WindowsDrivers.h"
 #include "WindowsGraphics.h"
 #include "WindowsHandles.h"
