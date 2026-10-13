@@ -6,6 +6,7 @@
 #include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/Numeric.h"
@@ -239,6 +240,40 @@ ProcessChartContext ProcessDetailsPanel::chartContext() const
     };
 }
 
+void ProcessDetailsPanel::renderServicesSection(const Domain::ProcessSnapshot& proc)
+{
+    if (proc.services.empty() || !ImGui::CollapsingHeader(ICON_FA_GEARS "  Services###ProcessServices"))
+    {
+        return;
+    }
+    // One line per service ("a.service, b.service" on a platform that hosts several in one process).
+    std::string_view rest = proc.services;
+    while (!rest.empty())
+    {
+        const std::size_t comma = rest.find(", ");
+        const std::string name(rest.substr(0, comma));
+        rest = (comma == std::string_view::npos) ? std::string_view{} : rest.substr(comma + 2);
+        ImGui::PushID(name.c_str());
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(name.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton(ICON_FA_ARROW_RIGHT "  Show in Services"))
+        {
+            Core::ShowServiceEvent show(name);
+            if (m_RaiseEvent)
+            {
+                m_RaiseEvent(show);
+            }
+            else
+            {
+                Core::Application::get().raiseEvent(show);
+            }
+        }
+        ImGui::SetItemTooltip("Select %s in the Services tab", name.c_str());
+        ImGui::PopID();
+    }
+}
+
 const std::string& ProcessDetailsPanel::tabLabel() const
 {
     if (m_HasSnapshot && (m_SelectedPid != -1) && !cachedSnapshot().name.empty())
@@ -333,6 +368,8 @@ void ProcessDetailsPanel::renderContent()
                 m_SecurityView.render(m_HasSecurity);
                 // Likewise collapsed by default; hidden only in synthetic runs (#183)
                 m_OpenFilesView.render(m_HasOpenFiles);
+                // Likewise collapsed by default; only for a process that runs a service (#1886)
+                renderServicesSection(cachedSnapshot());
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick
                 if (!m_SmoothedUsage.initialized)

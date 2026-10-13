@@ -294,6 +294,14 @@ void ShellLayer::onEvent(Core::Event& event)
             m_ShowDetailsTabRequested = true;
             return false;
         });
+    // A request to see a service, from Process Details' Services section (#1886): the Services panel
+    // selects it from the same event.
+    dispatcher.dispatch<Core::ShowServiceEvent>(
+        [this](Core::ShowServiceEvent& /*e*/)
+        {
+            m_ShowServicesTabRequested = true;
+            return false;
+        });
     // The status bar says how often TaskSmack updates (#1200): the refresh rate every sampler follows.
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
         [this](Core::RefreshRateChangedEvent& e)
@@ -701,7 +709,9 @@ void ShellLayer::renderTabBar()
     {
         const bool details = tab.eventName == "ProcessDetails";
         m_TabBarItems.push_back({.label = tab.label(),
-                                 .selectRequested = (m_ShowDetailsTabRequested && details) || m_StartupTab.wantsSelected(tab.eventName),
+                                 .selectRequested = (m_ShowDetailsTabRequested && details) ||
+                                                    (m_ShowServicesTabRequested && tab.eventName == "Services") ||
+                                                    m_StartupTab.wantsSelected(tab.eventName),
                                  .icon = details ? m_DetailsTabIcon : ImTextureID_Invalid,
                                  .iconSize = details ? m_DetailsTabIconSize : 0.0F});
     }
@@ -722,6 +732,7 @@ void ShellLayer::renderTabBar()
         m_Tabs.select(*bar.selected);
     }
     m_ShowDetailsTabRequested = false;
+    m_ShowServicesTabRequested = false;
     if (const std::optional<std::string> dropped = m_StartupTab.onFrameEnd(); dropped.has_value())
     {
         spdlog::warn("{}: tab '{}' was not selected after {} frames; ignored",

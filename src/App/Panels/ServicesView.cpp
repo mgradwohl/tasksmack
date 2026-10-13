@@ -377,6 +377,20 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     // The visible rows only: only they look up icons (#1800).
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(state.rows.size()));
+    // A row asked to be shown (#1886) is drawn even while clipped, so it can scroll itself into view.
+    int scrollToRow = -1;
+    if (state.scrollToSelected && !state.selectedName.empty())
+    {
+        for (std::size_t row = 0; row < state.rows.size(); ++row)
+        {
+            if (publication->services[state.rows[row]].name == state.selectedName)
+            {
+                scrollToRow = static_cast<int>(row);
+                clipper.IncludeItemByIndex(scrollToRow);
+                break;
+            }
+        }
+    }
     while (clipper.Step())
     {
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
@@ -398,6 +412,11 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
                 ImGui::IsItemClicked(ImGuiMouseButton_Right))
             {
                 state.selectedName = service.name;
+            }
+            if (row == scrollToRow)
+            {
+                ImGui::SetScrollHereY(0.5F);
+                state.scrollToSelected = false;
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             {

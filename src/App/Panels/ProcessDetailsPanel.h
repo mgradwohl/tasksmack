@@ -31,6 +31,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -181,8 +182,18 @@ class ProcessDetailsPanel : public Panel
         m_KillShortcut.expire();
     }
 
+    /// Test seam (#1886): events the panel raises (Show in Services) go to @p raise instead of
+    /// Core::Application.
+    void setEventSinkForTesting(std::function<void(Core::Event&)> raise)
+    {
+        m_RaiseEvent = std::move(raise);
+    }
+
   private:
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
+    /// The Overview's collapsed Services section (#1886): each service the process runs, with a button
+    /// that shows it in the Services tab. Not drawn for a process that runs none.
+    void renderServicesSection(const Domain::ProcessSnapshot& proc);
     /// What the chart tabs draw this frame: the history, the smoothed now-bar values and the displayed
     /// snapshot, by pointer for this frame's calls only (ProcessDetailsCharts, #1179).
     [[nodiscard]] ProcessChartContext chartContext() const;
@@ -246,6 +257,7 @@ class ProcessDetailsPanel : public Panel
     // m_Charts'.
     UI::Widgets::PlotFillState m_OverviewFill;
 
+    std::function<void(Core::Event&)> m_RaiseEvent; // Set by the test seam only
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
 

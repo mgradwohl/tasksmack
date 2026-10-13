@@ -16,6 +16,7 @@
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <memory>
 #include <stop_token>
@@ -194,6 +195,39 @@ TEST_F(ServicesViewRenderTest, TableShowsRowsAndFilters)
     state.filter = "WINDOWS";
     static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
     EXPECT_EQ(state.rows, (std::vector<std::size_t>{0, 2}));
+}
+
+// #1886: a service asked for from Process Details is scrolled into view once, even when its row starts far
+// below the visible rows, and then left to the user's own scrolling.
+TEST_F(ServicesViewRenderTest, AServiceAskedForIsScrolledIntoViewOnce)
+{
+    Domain::ServicePublication publication;
+    publication.version = 1;
+    for (int i = 0; i < 300; ++i)
+    {
+        publication.services.push_back(service(std::format("unit{:03}.service", i).c_str(), "", ServiceState::Running, 0));
+    }
+    ServicesViewState state;
+    state.sortColumn = ServiceColumn::Name;
+    state.ascending = true;
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    state.selectedName = "unit250.service";
+    state.scrollToSelected = true;
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    EXPECT_FALSE(state.scrollToSelected) << "done once";
+    // A frame later the table has scrolled down to it (the log can't tell: logging turns clipping off).
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    const ImGuiWindow* table = nullptr;
+    for (const ImGuiWindow* window : GImGui->Windows)
+    {
+        if (std::string_view(window->Name).contains("##ServicesTable"))
+        {
+            table = window;
+        }
+    }
+    ASSERT_NE(table, nullptr);
+    const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+    EXPECT_GT(table->Scroll.y, 200.0F * rowHeight) << "row 250 is in view, not row 0";
 }
 
 TEST_F(ServicesViewRenderTest, AFailedReadKeepsTheLastRowsMarkedOutOfDate)

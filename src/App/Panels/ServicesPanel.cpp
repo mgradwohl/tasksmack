@@ -73,6 +73,14 @@ void ServicesPanel::onEvent(Core::Event& event)
             setActive(e.tabName() == "Services");
             return false;
         });
+    // Process Details' Services section asked to see a service (#1886): select it and bring it into view.
+    dispatcher.dispatch<Core::ShowServiceEvent>(
+        [this](Core::ShowServiceEvent& e)
+        {
+            m_ViewState.selectedName = e.name();
+            m_ViewState.scrollToSelected = true;
+            return false;
+        });
 }
 
 void ServicesPanel::setActive(bool active)
