@@ -539,15 +539,31 @@ class ShellKeysDriverLayer : public Core::Layer
         // After a key's release, wait for its effect rather than a fixed number of frames: on a loaded
         // runner the effect can take longer to show (#1917). A press that is lost still fails, at
         // WAIT_LIMIT; one taken twice fails the checks that the state came back.
-        const auto awaitThen = [&](bool done, Phase then)
+        // A press whose effect hasn't shown after RETRY_AFTER frames is pressed again, up to MAX_RETRIES
+        // times (#1950): CI's xvfb drops an injected key now and then (only a Ctrl+= was logged, never
+        // the Ctrl+- after it), as #1845's button presses were. A press taken twice still fails the
+        // checks that the state came back.
+        const auto awaitThen = [&](bool done, Phase then, Phase pressAgain)
         {
+            if (!done && frame >= m_RetryFrame && m_Retries < MAX_RETRIES)
+            {
+                ++m_Retries;
+                next(pressAgain, 1);
+                return false;
+            }
             if (!done && frame < m_WaitDeadline)
             {
                 next(m_Phase, 1);
                 return false;
             }
+            m_Retries = 0;
             next(then, STEP);
             return true;
+        };
+        const auto startWait = [&]
+        {
+            m_WaitDeadline = frame + WAIT_LIMIT;
+            m_RetryFrame = frame + RETRY_AFTER;
         };
         const auto pressCtrl = [&io](ImGuiKey key, bool shift, bool down)
         {
@@ -597,30 +613,33 @@ class ShellKeysDriverLayer : public Core::Layer
         case Phase::ReleaseMetricsOn:
         case Phase::ReleaseMetricsOff:
             pressCtrl(ImGuiKey_M, true, false);
-            m_WaitDeadline = frame + WAIT_LIMIT;
+            startWait();
             next(m_Phase == Phase::ReleaseMetricsOn ? Phase::AwaitMetricsOn : Phase::AwaitMetricsOff, 1);
             break;
         case Phase::AwaitMetricsOn:
             m_Observed.metricsOnAfterToggle = UI::RenderMetrics::get().enabled();
-            static_cast<void>(awaitThen(m_Observed.metricsOnAfterToggle, Phase::PressMetricsOff));
+            static_cast<void>(awaitThen(m_Observed.metricsOnAfterToggle, Phase::PressMetricsOff, Phase::PressMetricsOn));
             break;
         case Phase::AwaitMetricsOff:
             m_Observed.metricsOffAfterSecondToggle = UI::RenderMetrics::get().enabled();
-            static_cast<void>(awaitThen(!m_Observed.metricsOffAfterSecondToggle, Phase::PressGrow));
+            static_cast<void>(awaitThen(!m_Observed.metricsOffAfterSecondToggle, Phase::PressGrow, Phase::PressMetricsOff));
             break;
         case Phase::PressGrow:
-            m_FontBefore = UI::Theme::get().currentFontSize();
+            if (m_Retries == 0)
+            {
+                m_FontBefore = UI::Theme::get().currentFontSize(); // not again on a retry
+            }
             pressCtrl(ImGuiKey_Equal, false, true);
             next(Phase::ReleaseGrow, 1);
             break;
         case Phase::ReleaseGrow:
             pressCtrl(ImGuiKey_Equal, false, false);
-            m_WaitDeadline = frame + WAIT_LIMIT;
+            startWait();
             next(Phase::AwaitGrow, 1);
             break;
         case Phase::AwaitGrow:
             m_Observed.fontGrew = UI::Theme::get().currentFontSize() != m_FontBefore;
-            static_cast<void>(awaitThen(m_Observed.fontGrew, Phase::PressShrink));
+            static_cast<void>(awaitThen(m_Observed.fontGrew, Phase::PressShrink, Phase::PressGrow));
             break;
         case Phase::PressShrink:
             pressCtrl(ImGuiKey_Minus, false, true);
@@ -628,12 +647,12 @@ class ShellKeysDriverLayer : public Core::Layer
             break;
         case Phase::ReleaseShrink:
             pressCtrl(ImGuiKey_Minus, false, false);
-            m_WaitDeadline = frame + WAIT_LIMIT;
+            startWait();
             next(Phase::AwaitShrink, 1);
             break;
         case Phase::AwaitShrink:
             m_Observed.fontShrankBack = UI::Theme::get().currentFontSize() == m_FontBefore;
-            if (awaitThen(m_Observed.fontShrankBack, Phase::Done))
+            if (awaitThen(m_Observed.fontShrankBack, Phase::Done, Phase::PressShrink))
             {
                 Core::Application::get().stop();
             }
@@ -685,12 +704,16 @@ class ShellKeysDriverLayer : public Core::Layer
 
     static constexpr int STEP = 10;
     static constexpr int WAIT_LIMIT = 120; // frames to wait for a shortcut's effect
-    static constexpr int MAX_FRAMES = 1000;
+    static constexpr int RETRY_AFTER = 40; // frames without it before the key is pressed again
+    static constexpr int MAX_RETRIES = 3;
+    static constexpr int MAX_FRAMES = 1500;
 
     ShellKeysObserved& m_Observed;
     Phase m_Phase = Phase::ShowDetails;
     int m_NextFrame = 20;
     int m_WaitDeadline = 0;
+    int m_RetryFrame = 0;
+    int m_Retries = 0;
     UI::FontSize m_FontBefore = UI::FontSize::Medium;
 };
 
