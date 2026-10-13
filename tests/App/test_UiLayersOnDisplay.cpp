@@ -8,6 +8,7 @@
 /// Needs a display with a GL 3.3 core context (Xvfb in Linux CI, where TASKSMACK_REQUIRE_DISPLAY=1
 /// turns a missing one into a failure); skipped elsewhere, like the ApplicationTest suite.
 
+#include "App/AboutDialog.h"
 #include "App/AboutLayer.h"
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
@@ -488,6 +489,83 @@ TEST(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
     EXPECT_TRUE(observed.positionKeptAfterClick);           // a press and release without motion moves nothing
     EXPECT_TRUE(observed.sizeKeptAfterEdgePress);           // likewise on the resize edge
     EXPECT_TRUE(observed.systemMenuOpened);                 // Ctrl+Space opens the window menu
+}
+
+/// What the About driver saw.
+struct AboutObserved
+{
+    bool openAfterRequest = false;
+    bool largeFontLoaded = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and AboutLayer, so its onRender() runs in the same frame after the dialog's:
+/// raises Core::OpenAboutEvent, as Settings' "About TaskSmack" does, then checks the dialog is up
+/// (drawn with the icon AboutLayer loaded and the theme's large title font) and stops the app.
+class AboutDriverLayer : public Core::Layer
+{
+  public:
+    explicit AboutDriverLayer(AboutObserved& observed) : Layer("AboutDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame == SETTLE)
+        {
+            Core::OpenAboutEvent event;
+            Core::Application::get().raiseEvent(event);
+        }
+        else if (frame == SETTLE + STEP)
+        {
+            m_Observed.openAfterRequest = ImGui::IsPopupOpen(App::AboutDialog::POPUP_ID);
+            m_Observed.largeFontLoaded = UI::Theme::get().largeFont() != nullptr;
+            Core::Application::get().stop();
+        }
+        else if (frame >= MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+        }
+    }
+
+  private:
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 5;
+    static constexpr int MAX_FRAMES = 200;
+
+    AboutObserved& m_Observed;
+};
+
+TEST(UiLayersOnDisplayTest, AboutOpensWithItsIconAndTitleFont)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayAboutTest";
+    spec.VSync = false;
+    AboutObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<App::AboutLayer>();
+        app.pushLayer<AboutDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_TRUE(observed.largeFontLoaded);
+    EXPECT_TRUE(observed.openAfterRequest);
 }
 
 /// What the drag-and-resize driver saw.
