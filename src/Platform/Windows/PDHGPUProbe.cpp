@@ -404,6 +404,11 @@ GPUCapabilities PDHGPUProbe::capabilities() const
         const bool perProcess = m_Impl->role == Role::Process;
         caps.hasPerProcessMetrics = perProcess;
         caps.hasPerProcessUtilization = perProcess; // GPU Engine counters: the busiest engine per process
+        // The same counters are per adapter LUID and cover every WDDM/MCDM adapter, so an NPU's or
+        // compute accelerator's engines and memory come with them (WindowsGPUProbe tags those
+        // samples with the adapter's kind, #1799): per-process NPU data and utilization (#1973).
+        caps.hasPerProcessNpuMetrics = perProcess;
+        caps.hasPerProcessNpuUtilization = perProcess;
         caps.hasEngineUtilization = true;
         caps.supportsMultiGPU = true;
     }

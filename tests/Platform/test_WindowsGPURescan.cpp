@@ -1088,6 +1088,32 @@ TEST_F(WindowsGPUAcceleratorTest, ProcessSamplesOnAnEnumeratedNpuAreTaggedWithIt
     }
 }
 
+// The composite advertises per-process NPU data and utilization from its per-process PDH probe, as
+// it does the GPU's (#1973) -- without the per-process PDH probe, neither (DXGI and NVML never report
+// an NPU's per-process figures).
+TEST_F(WindowsGPUAcceleratorTest, PerProcessNpuCapabilitiesComeFromThePerProcessPDHProbe)
+{
+    setAdapters({intelIGPU()});
+    dxgiState().accelerators = {intelNPU()};
+    WindowsGPUProbe probe;
+    useAcceleratorFakes(probe);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 2U);
+
+    const GPUCapabilities caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasPerProcessMetrics);
+    EXPECT_TRUE(caps.hasPerProcessNpuMetrics);
+    EXPECT_TRUE(caps.hasPerProcessNpuUtilization);
+    EXPECT_TRUE(perProcessNpuMetricsSupported(caps));
+    EXPECT_TRUE(perProcessNpuUtilizationSupported(caps));
+
+    WindowsGPUProbeTestAccessor::dropPDH(probe);
+    const GPUCapabilities withoutPDH = probe.capabilities();
+    EXPECT_FALSE(withoutPDH.hasPerProcessMetrics);
+    EXPECT_FALSE(withoutPDH.hasPerProcessNpuMetrics);
+    EXPECT_FALSE(withoutPDH.hasPerProcessNpuUtilization);
+    EXPECT_FALSE(perProcessNpuMetricsSupported(withoutPDH));
+}
+
 // The accelerator set is compared at every full rescan: one removed, or back under a new LUID after
 // a driver reset, asks for a re-enumeration -- DXGI's factory stays current, as DXGI never lists them
 // -- and the NPU keeps its id, so its history carries on. A quick rescan doesn't look.

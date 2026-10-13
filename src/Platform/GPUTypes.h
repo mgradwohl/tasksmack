@@ -33,26 +33,16 @@ struct GPUCapabilities
     bool supportsMultiGPU = false;
 };
 
-// Whether @p caps report per-process NPU data, and NPU utilization among it (#1827). Transitional
-// (#1973): the Windows probes don't set the NPU flags yet, and their per-process GPU read (PDH, by
-// adapter LUID) carries the NPU's figures too, so on Windows the GPU flags still count. #1973 sets
-// the NPU flags in the Windows probes and removes the fallback.
+// Whether @p caps report per-process NPU data, and NPU utilization among it (#1827). Only the NPU
+// flags count, on every platform: the GPU's per-process support says nothing about the NPU's (#1973).
 [[nodiscard]] constexpr bool perProcessNpuMetricsSupported(const GPUCapabilities& caps) noexcept
 {
-#ifdef _WIN32
-    return caps.hasPerProcessNpuMetrics || caps.hasPerProcessMetrics;
-#else
     return caps.hasPerProcessNpuMetrics;
-#endif
 }
 
 [[nodiscard]] constexpr bool perProcessNpuUtilizationSupported(const GPUCapabilities& caps) noexcept
 {
-#ifdef _WIN32
-    return caps.hasPerProcessNpuUtilization || caps.hasPerProcessUtilization;
-#else
     return caps.hasPerProcessNpuUtilization;
-#endif
 }
 
 /// How thoroughly IGPUProbe::rescanGPUs() looks for changes to the GPU set (#1116).

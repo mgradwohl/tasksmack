@@ -306,6 +306,27 @@ TEST(GPUModelTest, UnsupportedPerProcessDataIsPublishedWithoutReadingTheProbe)
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0U);
 }
 
+// #1973: per-process NPU support is the NPU flags alone, on every platform -- the GPU's per-process
+// metrics and utilization no longer stand in for them (the transitional Windows fallback is gone).
+TEST(GPUModelTest, PerProcessNpuSupportIsTheNpuFlagsAloneOnEveryPlatform)
+{
+    Platform::GPUCapabilities gpuOnly;
+    gpuOnly.hasPerProcessMetrics = true;
+    gpuOnly.hasPerProcessUtilization = true;
+    EXPECT_FALSE(Platform::perProcessNpuMetricsSupported(gpuOnly));
+    EXPECT_FALSE(Platform::perProcessNpuUtilizationSupported(gpuOnly));
+
+    Platform::GPUCapabilities npuOnly;
+    npuOnly.hasPerProcessNpuMetrics = true;
+    EXPECT_TRUE(Platform::perProcessNpuMetricsSupported(npuOnly));
+    EXPECT_FALSE(Platform::perProcessNpuUtilizationSupported(npuOnly));
+    npuOnly.hasPerProcessNpuUtilization = true;
+    EXPECT_TRUE(Platform::perProcessNpuUtilizationSupported(npuOnly));
+
+    EXPECT_FALSE(Platform::perProcessNpuMetricsSupported(Platform::GPUCapabilities{}));
+    EXPECT_FALSE(Platform::perProcessNpuUtilizationSupported(Platform::GPUCapabilities{}));
+}
+
 // #1827: per-process NPU data on its own (an accel device's fdinfo on Linux, beside an iGPU with no
 // per-process data) is read and published, under the NPU's support and not the GPU's.
 TEST(GPUModelTest, PerProcessNpuDataAloneIsReadAndPublishedUnderItsOwnSupport)
@@ -329,13 +350,11 @@ TEST(GPUModelTest, PerProcessNpuDataAloneIsReadAndPublishedUnderItsOwnSupport)
     EXPECT_EQ(publication->counters.size(), 1U);
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
 
-#ifndef _WIN32
-    // And the GPU's per-process data does not stand in for the NPU's (outside Windows, #1973).
+    // And the GPU's per-process data does not stand in for the NPU's, on any platform (#1973).
     auto gpuOnly = makePerProcessProbe();
     const Domain::GPUModel gpuModel(std::move(gpuOnly));
     EXPECT_FALSE(gpuModel.perProcessMetricsKnownUnsupported());
     EXPECT_TRUE(gpuModel.perProcessNpuMetricsKnownUnsupported());
-#endif
 }
 
 TEST(GPUModelTest, AFailingPerProcessReadIsPublishedAsAFailedReadAndTheSystemStillUpdates)

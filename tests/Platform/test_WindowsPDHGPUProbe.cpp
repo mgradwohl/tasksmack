@@ -47,7 +47,8 @@ TEST(WindowsPDHGPUProbeTest, CapabilitiesRelationshipsAreConsistent)
     PDHGPUProbe probe;
     const auto caps = probe.capabilities();
 
-    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization); // Process role (the default)
+    EXPECT_EQ(caps.hasPerProcessMetrics, caps.hasEngineUtilization);    // Process role (the default)
+    EXPECT_EQ(caps.hasPerProcessNpuMetrics, caps.hasPerProcessMetrics); // The same per-LUID counters (#1973)
     EXPECT_FALSE(caps.hasTemperature);
     EXPECT_FALSE(caps.hasPowerMetrics);
     EXPECT_FALSE(caps.hasClockSpeeds);
@@ -62,6 +63,8 @@ TEST(WindowsPDHGPUProbeTest, AdapterRoleDoesNotAdvertisePerProcessCounters)
     const auto caps = probe.capabilities();
     EXPECT_FALSE(caps.hasPerProcessMetrics);
     EXPECT_FALSE(caps.hasPerProcessUtilization);
+    EXPECT_FALSE(caps.hasPerProcessNpuMetrics);
+    EXPECT_FALSE(caps.hasPerProcessNpuUtilization);
     if (probe.isAvailable())
     {
         EXPECT_TRUE(caps.hasEngineUtilization);
@@ -297,6 +300,31 @@ class WindowsPDHGPUProbeInjectedTest : public ::testing::Test
 
     std::unique_ptr<FakeScenario> m_scenario;
 };
+
+// The per-process counters are per adapter LUID, an NPU's or compute accelerator's among them, so a
+// Process-role probe advertises per-process NPU data and utilization with the GPU's; an Adapter-role
+// probe, which returns no per-process counters, advertises neither, and an uninitialised one nothing
+// (#1973).
+TEST_F(WindowsPDHGPUProbeInjectedTest, PerProcessNpuCapabilitiesFollowTheProcessRole)
+{
+    const PDHGPUProbe processProbe(makeInjectedImpl(PDHGPUProbe::Role::Process));
+    const auto processCaps = processProbe.capabilities();
+    EXPECT_TRUE(processCaps.hasPerProcessMetrics);
+    EXPECT_TRUE(processCaps.hasPerProcessNpuMetrics);
+    EXPECT_TRUE(processCaps.hasPerProcessNpuUtilization);
+    EXPECT_TRUE(perProcessNpuMetricsSupported(processCaps));
+    EXPECT_TRUE(perProcessNpuUtilizationSupported(processCaps));
+
+    const PDHGPUProbe adapterProbe(makeInjectedImpl(PDHGPUProbe::Role::Adapter));
+    const auto adapterCaps = adapterProbe.capabilities();
+    EXPECT_FALSE(adapterCaps.hasPerProcessNpuMetrics);
+    EXPECT_FALSE(adapterCaps.hasPerProcessNpuUtilization);
+
+    const PDHGPUProbe uninitialised(std::make_unique<Impl>());
+    const auto uninitialisedCaps = uninitialised.capabilities();
+    EXPECT_FALSE(uninitialisedCaps.hasPerProcessNpuMetrics);
+    EXPECT_FALSE(uninitialisedCaps.hasPerProcessNpuUtilization);
+}
 
 TEST_F(WindowsPDHGPUProbeInjectedTest, UninitializedImplReturnsEmptyWithoutTouchingFakes)
 {

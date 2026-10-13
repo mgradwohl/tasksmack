@@ -469,6 +469,9 @@ GPUCapabilities WindowsGPUProbe::capabilities() const
         caps.hasPerProcessMetrics = caps.hasPerProcessMetrics || pdhCaps.hasPerProcessMetrics;
         // Per-process counters come from PDH alone (readProcessGPUCounters()), so its utilization does too.
         caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || pdhCaps.hasPerProcessUtilization;
+        // ...and the NPUs' and compute accelerators' per-process data likewise (#1973)
+        caps.hasPerProcessNpuMetrics = caps.hasPerProcessNpuMetrics || pdhCaps.hasPerProcessNpuMetrics;
+        caps.hasPerProcessNpuUtilization = caps.hasPerProcessNpuUtilization || pdhCaps.hasPerProcessNpuUtilization;
         caps.supportsMultiGPU = caps.supportsMultiGPU || pdhCaps.supportsMultiGPU;
     }
 
