@@ -252,6 +252,17 @@ class ProcessesPanelRenderTest : public ::testing::Test
         static_cast<void>(renderAndCapture(panel));
     }
 
+    /// Presses the top-most modal's plain button labelled @p label (a non-destructive confirmation's:
+    /// UI::Widgets::dialogFooter() draws it with ImGui::Button()), then draws the frames that act on it.
+    static void pressModalButton(ProcessesPanel& panel, const std::string& label)
+    {
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(label.c_str(), 0, modal->ID));
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
+    }
+
     /// One frame of a window filling the display, drawing @p panel's content, and the text it drew.
     [[nodiscard]] static std::string renderAndCapture(ProcessesPanel& panel)
     {
@@ -512,6 +523,84 @@ TEST_F(ProcessesPanelRenderTest, CopyPidPutsThePidOnTheClipboard)
     pressPopupItem(*panel, ICON_FA_COPY " Copy PID");
     ASSERT_NE(ImGui::GetClipboardText(), nullptr);
     EXPECT_EQ(std::string(ImGui::GetClipboardText()), std::to_string(menuPid.value_or(-1)));
+    panel->onDetach();
+}
+
+// #1891: the row menu's Copy Name and Copy Command Line copy that process's, to the panel's clipboard.
+TEST_F(ProcessesPanelRenderTest, CopyNameAndCopyCommandLinePutThemOnTheClipboard)
+{
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            {
+                counters.command = "/usr/bin/" + counters.name + " --flag";
+                probe->withProcess(counters);
+            }
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    const std::map<std::int32_t, std::string> names{{1, "init"}, {100, "server"}, {101, "worker"}};
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    const std::string name = names.at(menuPid.value_or(1));
+    pressPopupItem(*panel, ICON_FA_COPY " Copy Name");
+    ASSERT_NE(ImGui::GetClipboardText(), nullptr);
+    EXPECT_EQ(std::string(ImGui::GetClipboardText()), name);
+
+    if (topPopup() != nullptr) // The item closed the menu, or a dialog it opened is still closing
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, ICON_FA_COPY " Copy Command Line");
+    ASSERT_NE(ImGui::GetClipboardText(), nullptr);
+    EXPECT_EQ(std::string(ImGui::GetClipboardText()), "/usr/bin/" + names.at(menuPid.value_or(1)) + " --flag");
+    panel->onDetach();
+}
+
+// #1891: Suspend and Resume from the row menu are confirmed, then sent for the process the menu was for.
+TEST_F(ProcessesPanelRenderTest, SuspendAndResumeFromTheRowMenuAreConfirmedThenSent)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+
+    std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, std::format("{} Suspend...###Suspend", ICON_FA_PAUSE));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    EXPECT_EQ(actions->stopCount(), 0);  // asked, not done
+    pressModalButton(*panel, "Suspend"); // Not destructive: a plain button, not the danger fill
+    EXPECT_EQ(actions->stopCount(), 1);
+    EXPECT_EQ(actions->lastStopPid(), menuPid.value_or(-1));
+
+    if (topPopup() != nullptr) // The item closed the menu, or a dialog it opened is still closing
+    {
+        closePopups(*panel);
+    }
+    menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, std::format("{} Resume...###Resume", ICON_FA_PLAY));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr);
+    pressModalButton(*panel, "Resume");
+    EXPECT_EQ(actions->resumeCount(), 1);
+    EXPECT_EQ(actions->lastResumePid(), menuPid.value_or(-1));
     panel->onDetach();
 }
 
