@@ -1026,7 +1026,7 @@ TEST_F(SystemSectionsRenderTest, NetworkTabSharesItsHeightWithTheDiskGrid)
     const ImGuiContext& g = *ImGui::GetCurrentContext();
     for (const ImGuiWindow* window : g.Windows)
     {
-        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string(window->Name).find("/" + id + "_") != std::string::npos)
+        if ((window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && std::string(window->Name).contains("/" + id + "_"))
         {
             return window;
         }
@@ -1078,6 +1078,45 @@ TEST_F(SystemSectionsRenderTest, NetworkSectionsAreCardsThatFillTheTab)
     const ImGuiWindow* tab = ImGui::FindWindowByName("System");
     ASSERT_NE(tab, nullptr);
     EXPECT_LE(tab->ScrollMax.y, 0.0F) << "the cards overflow the tab";
+}
+
+// With one disk, Disk I/O History is a card like Network Throughput above it, and the two charts
+// share their plot edges, so their time axes and NowBar columns line up (#1937). The disk's rates are
+// far larger than the network's, so its Y tick labels are wider: without the shared stack its plot
+// would start further right.
+TEST_F(SystemSectionsRenderTest, DiskHistoryIsACardAlignedWithTheNetworkChart)
+{
+    NetworkInputs inputs;
+    Domain::StoragePublication storage;
+    storage.timestamps = viewOf(timestampsToNow());
+    storage.totalReadHistory = viewOf(constant(250.0 * 1024.0 * 1024.0));
+    storage.totalWriteHistory = viewOf(constant(120.0 * 1024.0 * 1024.0));
+    inputs.ctx.storagePublication = &storage;
+    UI::Widgets::PlotFillState fillState;
+    inputs.ctx.fillState = &fillState;
+    for (int frame = 0; frame < 4; ++frame) // The fill layout and the stack measure from the previous frame
+    {
+        runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    }
+
+    const ImGuiWindow* throughput = findCard("##NetThroughputCard");
+    const ImGuiWindow* disk = findCard("##DiskIoHistoryCard");
+    ASSERT_NE(throughput, nullptr);
+    ASSERT_NE(disk, nullptr) << "Disk I/O History is not drawn as a card";
+    EXPECT_NE(disk->ChildFlags & ImGuiChildFlags_Borders, 0);
+    EXPECT_FLOAT_EQ(disk->Pos.x, throughput->Pos.x);
+    EXPECT_FLOAT_EQ(disk->Size.x, throughput->Size.x);
+
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    ASSERT_EQ(context.Plots.GetBufSize(), 2); // Network, then the disk chart
+    const ImPlotPlot* network = context.Plots.GetByIndex(0);
+    const ImPlotPlot* diskPlot = context.Plots.GetByIndex(1);
+    ASSERT_NE(network, nullptr);
+    ASSERT_NE(diskPlot, nullptr);
+    EXPECT_TRUE(disk->Rect().Contains(diskPlot->FrameRect)) << "the disk chart is drawn outside its card";
+    EXPECT_NEAR(diskPlot->PlotRect.Min.x, network->PlotRect.Min.x, 1.0F) << "the plots' left edges differ";
+    EXPECT_NEAR(diskPlot->PlotRect.Max.x, network->PlotRect.Max.x, 1.0F) << "the plots' right edges differ";
+    EXPECT_NEAR(diskPlot->FrameRect.Max.x, network->FrameRect.Max.x, 1.0F) << "the NowBar columns start at different x";
 }
 
 // A centred compact strip sits in the middle of its row (#1588): drawn under a Compact one with the

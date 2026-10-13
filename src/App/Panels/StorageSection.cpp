@@ -2,6 +2,7 @@
 
 #include "Domain/StorageModel.h"
 #include "Domain/StorageSnapshot.h"
+#include "UI/Card.h"
 #include "UI/ChartGrid.h"
 #include "UI/ChartGridLayout.h"
 #include "UI/ChartWidgets.h"
@@ -568,11 +569,16 @@ void renderStorageSection(RenderContext& ctx)
             }
         };
 
+        // A card like the Network Throughput card above it (#1587, #1937): the same inset, heading and
+        // NowBar column, so the two charts' plots and bars line up. Its contents are submitted whether
+        // or not it is visible; ImGui skips them when it isn't.
+        (void) UI::Widgets::beginChartCard("##DiskIoHistoryCard", plotHeight);
         (void) UI::Widgets::sectionHeader(ICON_FA_HARD_DRIVE, "Disk I/O History", {}, alignedDisk);
         renderHistoryWithNowBars("SystemDiskHistoryLayout", plotHeight, diskPlot, {readBar, writeBar}, false, STORAGE_NOW_BAR_COLUMNS);
+        UI::Widgets::endChartCard("##DiskIoHistoryCard", plotHeight);
         if (ctx.fill != nullptr)
         {
-            ctx.fill->addPlot();
+            ctx.fill->addPlot(); // After the card: the fill layout counts its chrome as non-chart height
         }
     }
 }

@@ -140,6 +140,7 @@ set(COMMON_TEST_SOURCES
     Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp
+    Core/test_SaveFileDialog.cpp
     Core/test_VideoBackend.cpp
     Core/test_Window.cpp
     Core/test_WindowEventRouting.cpp
@@ -422,6 +423,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
     Platform/test_WindowsNetworkAdapters.cpp
+    Platform/test_WindowsPublicIp.cpp
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
