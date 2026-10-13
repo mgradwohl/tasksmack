@@ -86,6 +86,8 @@ constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
 constexpr const char* MEM_PERCENT_LABEL = "Mem %";
 constexpr const char* MEM_PRIVATE_LABEL = "Private";              // the Processes table's column (#1885)
 constexpr const char* MEM_SWAP_LABEL = "Swap";                    // the Processes table's column (#1885)
+constexpr const char* MEM_PSS_LABEL = "PSS";                      // Proportional set size, smaps_rollup (#1885)
+constexpr const char* MEM_USS_LABEL = "USS";                      // Unique set size, smaps_rollup (#1885)
 constexpr const char* FAULTS_TOTAL_LABEL = "Page Faults (total)"; // the Processes table's Page Faults column (#1878)
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
@@ -964,7 +966,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
     (void) UI::Widgets::sectionHeader(ICON_FA_MEMORY, "Memory", {}, alignedCount);
     // Peak Memory is a line with a tooltip row but no bar; list it in the value strip too (#1193). Mem %,
     // the Processes table's column, is not plotted: a blank swatch, its share of RAM (#1878).
-    std::array<UI::Widgets::ValueStripEntry, 4> memoryExtras{};
+    std::array<UI::Widgets::ValueStripEntry, 6> memoryExtras{};
     std::size_t memoryExtraCount = 0;
     if (ctx.peakMemoryBytes > 0.0)
     {
@@ -1001,6 +1003,25 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
             .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->swapBytes)),
             .color = theme.scheme().chartMemorySwap,
             .tooltip = "How much of it is swapped out (VmSwap on Linux), as the Processes table's Swap column",
+        };
+    }
+    // PSS and USS (#1885), read for this process alone (ProcessSnapshot::memoryRollupRead): figures, not
+    // plotted, so blank swatches like Mem %.
+    if (ctx.snapshot != nullptr && ctx.snapshot->memoryRollupRead)
+    {
+        memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
+            .label = MEM_PSS_LABEL,
+            .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->pssBytes)),
+            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .tooltip = "Proportional set size: its own pages plus its share of the pages it shares with other processes "
+                       "(smaps_rollup Pss)",
+        };
+        memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
+            .label = MEM_USS_LABEL,
+            .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->ussBytes)),
+            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .tooltip = "Unique set size: the memory freed if it exited, the pages no other process maps "
+                       "(smaps_rollup Private_Clean + Private_Dirty)",
         };
     }
     const std::span<const UI::Widgets::ValueStripEntry> stripExtras(memoryExtras.data(), memoryExtraCount);

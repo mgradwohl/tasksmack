@@ -20,6 +20,7 @@
 #if TASKSMACK_HAS_UNISTD
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/Linux/LinuxProcessProbe.h"
 #include "Platform/Linux/ProcFdScan.h"
 #include "Platform/Linux/ProcPrivileges.h"
@@ -1042,6 +1043,43 @@ TEST(LinuxProcessProbeTest, PrivateAndSwapAreRssAnonAndVmSwapFromStatus)
     const ProcessCapabilities caps = probe.capabilities();
     EXPECT_TRUE(caps.hasPrivateBytes);
     EXPECT_TRUE(caps.hasSwapBytes);
+}
+
+TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)
+{
+    // #1885: smaps_rollup, read on demand for one process; its presence under self says the kernel has it.
+    ScopedTempDir proc("ts_test_proc_smaps_rollup");
+    const LinuxProcessProbe without(proc.path);
+    EXPECT_FALSE(without.capabilities().hasMemoryRollup); // No self/smaps_rollup: a kernel before 4.14
+    EXPECT_FALSE(without.readMemoryRollup(4242).has_value());
+
+    writeFile(proc.path / "self" / "smaps_rollup", "Pss: 1 kB\nPrivate_Clean: 0 kB\nPrivate_Dirty: 1 kB\n");
+    writeFile(proc.path / "4242" / "smaps_rollup",
+              "00400000-7ffd0000 ---p 00000000 00:00 0  [rollup]\nRss: 4096 kB\nPss: 2500 kB\nPrivate_Clean: 100 kB\n"
+              "Private_Dirty: 1900 kB\nSwapPss: 64 kB\n");
+    const LinuxProcessProbe probe(proc.path);
+    EXPECT_TRUE(probe.capabilities().hasMemoryRollup);
+    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(4242);
+    ASSERT_TRUE(rollup.has_value());
+    EXPECT_EQ(rollup.value_or(MemoryRollup{}).pssBytes, 2500U * 1024U);
+    EXPECT_EQ(rollup.value_or(MemoryRollup{}).ussBytes, 2000U * 1024U);
+    EXPECT_EQ(rollup.value_or(MemoryRollup{}).swapPssBytes, 64U * 1024U);
+    EXPECT_FALSE(probe.readMemoryRollup(4343).has_value()); // Gone, or never there
+    EXPECT_FALSE(probe.readMemoryRollup(0).has_value());
+}
+
+TEST(LinuxProcessProbeTest, ThisProcesssOwnPssAndUssReadFromTheRealProc)
+{
+    const LinuxProcessProbe probe;
+    if (!probe.capabilities().hasMemoryRollup)
+    {
+        GTEST_SKIP() << "This kernel has no smaps_rollup";
+    }
+    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(static_cast<std::int32_t>(::getpid()));
+    ASSERT_TRUE(rollup.has_value());
+    EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
+    EXPECT_GT(rollup.value_or(MemoryRollup{}).ussBytes, 0U);
+    EXPECT_LE(rollup.value_or(MemoryRollup{}).ussBytes, rollup.value_or(MemoryRollup{}).pssBytes); // USS is within PSS
 }
 
 void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)

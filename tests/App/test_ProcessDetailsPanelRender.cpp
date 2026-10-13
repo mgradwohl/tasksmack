@@ -284,6 +284,35 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     EXPECT_FALSE(text.contains("Swap")) << text;
 }
 
+// #1885: PSS and USS, read for the process Process Details shows (ProcessSnapshot::memoryRollupRead), are
+// in its Memory value strip; a sample without them has neither.
+TEST_F(ProcessDetailsPanelRenderTest, PssAndUssAreShownWhenTheyWereRead)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    Domain::ProcessSample sample = sampleAt(1.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+    snapshot->pssBytes = std::uint64_t{20} << 20U;
+    snapshot->ussBytes = std::uint64_t{12} << 20U;
+    snapshot->memoryRollupRead = true;
+    sample.snapshot = std::move(snapshot);
+    std::vector samples{sample};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("PSS")) << text;
+    EXPECT_TRUE(text.contains("20.0 MiB")) << text;
+    EXPECT_TRUE(text.contains("USS")) << text;
+    EXPECT_TRUE(text.contains("12.0 MiB")) << text;
+
+    samples = {sampleAt(2.0, 10.0)}; // Not read for this one
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_FALSE(text.contains("PSS")) << text;
+    EXPECT_FALSE(text.contains("USS")) << text;
+}
+
 // #1886: a process that runs a service has a collapsed Services section whose "Show in Services" asks the
 // shell to show that service; one that runs none has no section.
 TEST_F(ProcessDetailsPanelRenderTest, TheServicesSectionShowsTheServiceInTheServicesTab)

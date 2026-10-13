@@ -268,6 +268,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_CrashesInfo.cpp
     Platform/test_WindowsSystemInfoReaders.cpp
     Platform/test_ProcMapsParser.cpp
+    Platform/test_SmapsRollupParser.cpp
     Platform/test_ProcFdParser.cpp
     Platform/test_ProcStatusSecurityParser.cpp
     Platform/test_ProcessIdentity.cpp

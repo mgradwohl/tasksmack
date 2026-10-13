@@ -30,6 +30,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <stop_token>
@@ -304,6 +305,27 @@ class MockProcessProbe : public Platform::IProcessProbe
         return m_PackageEnergy;
     }
 
+    /// The PSS/USS readMemoryRollup() gives for @p pid (#1885); it also says the probe can read them
+    /// (ProcessCapabilities::hasMemoryRollup).
+    void setMemoryRollup(std::int32_t pid, Platform::MemoryRollup rollup)
+    {
+        m_Capabilities.hasMemoryRollup = true;
+        m_MemoryRollups[pid] = rollup;
+    }
+
+    [[nodiscard]] std::optional<Platform::MemoryRollup> readMemoryRollup(std::int32_t pid) const override
+    {
+        ++m_MemoryRollupReads;
+        const auto it = m_MemoryRollups.find(pid);
+        return it == m_MemoryRollups.end() ? std::nullopt : std::optional<Platform::MemoryRollup>(it->second);
+    }
+
+    /// How many times readMemoryRollup() was called.
+    [[nodiscard]] int memoryRollupReads() const
+    {
+        return m_MemoryRollupReads.load();
+    }
+
     /// Per-connection network reading for ProcessModel to accumulate (#1099); the default (empty,
     /// sampleTimeNs 0) means the probe reports per-process network counters itself.
     void setSocketTraffic(Platform::SocketTrafficReading reading)
@@ -373,6 +395,8 @@ class MockProcessProbe : public Platform::IProcessProbe
     std::atomic<int> m_EnumerateCount{0};
     std::optional<Platform::PackageEnergyReading> m_PackageEnergy;
     Platform::SocketTrafficReading m_SocketTraffic;
+    std::map<std::int32_t, Platform::MemoryRollup> m_MemoryRollups;
+    mutable std::atomic<int> m_MemoryRollupReads{0};
 };
 
 // =============================================================================

@@ -168,6 +168,7 @@ struct ProcessCapabilities
     bool hasPeakRss = false;            // Whether peak working set is available
     bool hasPrivateBytes = false;       // Whether ProcessCounters::privateBytes is filled (Linux: RssAnon, #1885)
     bool hasSwapBytes = false;          // Whether ProcessCounters::swapBytes is filled (Linux: VmSwap, #1885)
+    bool hasMemoryRollup = false;       // Whether IProcessProbe::readMemoryRollup() reads PSS/USS (Linux: smaps_rollup, #1885)
     bool hasCpuAffinity = false;        // Whether CPU affinity mask is available
     bool hasNetworkCounters = false;    // Whether per-process network counters are available
     bool hasUdpNetworkCounters = false; // Whether those counters include UDP (QUIC/HTTP3, WebRTC, games, DNS).

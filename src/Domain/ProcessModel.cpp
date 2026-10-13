@@ -649,6 +649,21 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // _Rep) returned by copyProcess() and reports a leak; ownership is a plain shared_ptr.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(*newSnapshotsPublication, watchedPid) : nullptr;
+    // Its PSS and USS (#1885), which cost the kernel a walk of every mapping: for this one process
+    // only, outside the lock. The rare re-copy under the lock below (the watch changed meanwhile)
+    // goes without them until the next refresh.
+    if (watchedSnapshot != nullptr && publishedCapabilities.hasMemoryRollup)
+    {
+        if (const std::optional<Platform::MemoryRollup> rollup = m_Probe->readMemoryRollup(watchedPid); rollup.has_value())
+        {
+            auto withRollup = std::make_shared<ProcessSnapshot>(*watchedSnapshot);
+            withRollup->pssBytes = rollup->pssBytes;
+            withRollup->ussBytes = rollup->ussBytes;
+            withRollup->swapPssBytes = rollup->swapPssBytes;
+            withRollup->memoryRollupRead = true;
+            watchedSnapshot = std::move(withRollup);
+        }
+    }
 
     // Holds the outgoing generation so its destruction (freeing however many hundred
     // ProcessSnapshots' worth of strings/vectors, if this write is what drops the last
