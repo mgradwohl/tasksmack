@@ -110,6 +110,10 @@ void renderStartupTooltip(const Platform::StartupEntry& entry)
     {
         ImGui::TextColored(scheme.textMuted, "%s", registration.c_str());
     }
+    if (const std::string program = startupProgramNameLabel(entry); !program.empty())
+    {
+        ImGui::TextColored(scheme.textMuted, "%s", program.c_str());
+    }
     if (entry.target == Platform::StartupTargetState::Missing)
     {
         ImGui::TextColored(scheme.textWarning, ICON_FA_TRIANGLE_EXCLAMATION "  The program this entry starts was not found");
@@ -228,6 +232,15 @@ std::string startupRegistrationLabel(const Platform::StartupEntry& entry)
     }
 }
 
+std::string startupProgramNameLabel(const Platform::StartupEntry& entry)
+{
+    if (entry.programName.empty() || entry.programName == entry.name)
+    {
+        return {};
+    }
+    return "Program name: " + entry.programName;
+}
+
 std::string startupEnabledLabel(const Platform::StartupEntry& entry)
 {
     if (entry.setByPolicy)
@@ -265,7 +278,8 @@ buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_vi
     {
         const auto& entry = entries[i];
         if (filter.empty() || containsIgnoringCase(entry.name, filter) || containsIgnoringCase(entry.registrationName, filter) ||
-            containsIgnoringCase(entry.publisher, filter) || containsIgnoringCase(entry.command, filter))
+            containsIgnoringCase(entry.programName, filter) || containsIgnoringCase(entry.publisher, filter) ||
+            containsIgnoringCase(entry.command, filter))
         {
             rows.push_back(i);
         }

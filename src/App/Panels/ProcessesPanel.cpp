@@ -15,6 +15,7 @@
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
+#include "App/Panels/ProcessRowSelection.h"
 #include "App/Panels/ProcessSelection.h"
 #include "App/Panels/ProcessSortUtils.h"
 #include "App/Panels/ProcessStateColor.h"
@@ -54,7 +55,7 @@
 
 // clang-format off
 #include <imgui.h>
-#include <imgui_internal.h> // ImGuiTable: the laid-out column widths have no public accessor
+#include <imgui_internal.h> // ImGuiTable: the laid-out column widths, and the table background channel, have no public accessor
 #include <misc/cpp/imgui_stdlib.h>
 #include <spdlog/spdlog.h>
 // clang-format on
@@ -156,6 +157,22 @@ bool viewModeSegment(std::string_view label, bool selected, float width)
         ImGui::PopStyleColor(3);
     }
     return pressed && !selected;
+}
+
+/// Marks the row just submitted -- a Selectable spanning all columns -- as a multi-selection's primary
+/// row (#1926): a bar at its left edge and an outline, in @p color, over its selection fill. Drawn in
+/// the table's background channel, where the Selectable drew that fill, so the cells' text stays on
+/// top, and held to the part of the row in view (ProcessRowSelection::markerFor()).
+void drawPrimaryRowMarker(const ImVec4& color)
+{
+    ImGui::TablePushBackgroundChannel();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const ProcessRowSelection::Marker marker = ProcessRowSelection::markerFor(
+        ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), drawList->GetClipRectMin().x, drawList->GetClipRectMax().x, ImGui::GetFontSize());
+    const ImU32 col = ImGui::ColorConvertFloat4ToU32(color);
+    drawList->AddRect(marker.outlineMin, marker.outlineMax, col, 0.0F, ImDrawFlags_None, marker.outlineThickness);
+    drawList->AddRectFilled(marker.barMin, marker.barMax, col);
+    ImGui::TablePopBackgroundChannel();
 }
 
 [[nodiscard]] auto lowerAscii(char ch) -> int
@@ -2009,6 +2026,8 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     // (#804), an O(1) lookup.
     const ProcessSelection::Identity id = ProcessSelection::identityOf(proc);
     const bool isSelected = m_Selection.contains(id);
+    // The primary row of a multi-selection -- the one Process Details shows -- is marked (#1926).
+    const ProcessRowSelection::RowState rowState = ProcessRowSelection::rowState(isSelected, id == primaryIdentity(), m_Selection.size());
 
     // The tree indent and expand/collapse button live in the Name column, not
     // here. This column is a fixed 60px, so indenting it pushed the PID text past
@@ -2042,6 +2061,10 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     if (isSelected)
     {
         ImGui::PopStyleColor();
+    }
+    if (rowState == ProcessRowSelection::RowState::Primary && ImGui::IsItemVisible())
+    {
+        drawPrimaryRowMarker(UI::Theme::get().scheme().selectionPrimary);
     }
     if (clicked)
     {

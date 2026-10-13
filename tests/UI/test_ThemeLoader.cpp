@@ -1812,6 +1812,9 @@ TEST(ThemeLoaderTest, MetricRolesFallBackToTheFieldsTheyBorrowed)
     expectSame(scheme->chartSwapFill, scheme->chartIoFill, "swap_fill");
     expectSame(scheme->chartMemoryVirtual, scheme->chartIo, "memory_virtual");
     expectSame(scheme->chartMemoryVirtualFill, scheme->chartIoFill, "memory_virtual_fill");
+    expectSame(scheme->chartMemoryPrivate, scheme->chartCpu, "memory_private");
+    expectSame(scheme->chartMemorySwap, scheme->chartIo, "memory_swap");
+    expectSame(scheme->chartMemorySwapFill, scheme->chartIoFill, "memory_swap_fill");
     expectSame(scheme->chartPower, scheme->chartCpu, "power");
     expectSame(scheme->chartPowerFill, scheme->chartCpuFill, "power_fill");
     expectSame(scheme->chartBattery, scheme->chartMemory, "battery");
@@ -1843,11 +1846,30 @@ TEST(ThemeLoaderTest, MetricRolesAreReadAndDeriveTheirFills)
     expectColorNear(scheme->chartSwap, ThemeLoader::hexToImVec4("#8000FF"));
     expectColorNear(scheme->chartSwapFill, ThemeLoader::hexToImVec4("#8000FF40"));
     expectColorNear(scheme->chartMemoryVirtual, ThemeLoader::hexToImVec4("#A040FF"));
+    // Process Private and Swap (#1885) borrow Shared and system Swap when they are left out.
+    expectColorNear(scheme->chartMemoryPrivate, scheme->chartMemoryShared);
+    expectColorNear(scheme->chartMemorySwap, scheme->chartSwap);
+    expectColorNear(scheme->chartMemorySwapFill, scheme->chartSwapFill);
     expectColorNear(scheme->chartPower, ThemeLoader::hexToImVec4("#FFE000"));
     expectColorNear(scheme->chartPageFaults, ThemeLoader::hexToImVec4("#FF80C0"));
     // Roles left out still borrow.
     expectColorNear(scheme->chartThreads, scheme->chartCpu);
     expectColorNear(scheme->chartGdi, scheme->accents[4]);
+}
+
+// #1885: process Private and Swap are read like the other roles, with fills derived from their lines.
+TEST(ThemeLoaderTest, ProcessPrivateAndSwapRolesAreRead)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(buildFullThemeWithCpuColor("\"#0078D4\"\n"
+                                                                                    "memory_private = \"#40C080\"\n"
+                                                                                    "memory_swap = \"#9060D0\"\n"
+                                                                                    "memory_swap_fill = \"#9060D040\""),
+                                                         "private-swap.toml");
+    ASSERT_TRUE(scheme.has_value());
+    expectColorNear(scheme->chartMemoryPrivate, ThemeLoader::hexToImVec4("#40C080"));
+    expectColorNear(scheme->chartMemoryPrivateFill, ThemeLoader::hexToImVec4("#40C08059")); // 0.35 alpha
+    expectColorNear(scheme->chartMemorySwap, ThemeLoader::hexToImVec4("#9060D0"));
+    expectColorNear(scheme->chartMemorySwapFill, ThemeLoader::hexToImVec4("#9060D040"));
 }
 
 // ========== frameBorder: the outline of checkboxes, text fields and combos (#1923) ==========
@@ -1905,6 +1927,68 @@ TEST(ThemeLoaderTest, FrameBorderFromTheThemeIsRaisedWhenTooFaint)
     for (const ImVec4& surface : controlSurfaces(*scheme))
     {
         EXPECT_GE(ColorContrast::contrastRatio(scheme->frameBorder, surface), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    }
+}
+
+// ========== selectionPrimary: the marker of a multi-selection's primary row (#1926) ==========
+
+/// The test theme body with @p line added to its [ui.table] table.
+std::string withTableLine(std::string_view line)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view table = "[ui.table]\n";
+    const auto at = toml.find(table);
+    EXPECT_NE(at, std::string::npos);
+    toml.insert(at + table.size(), std::string(line) + "\n");
+    return toml;
+}
+
+/// The selection fill of a plain and of a striped row, opaque: what the marker is drawn on.
+std::array<ImVec4, 2> selectedRows(const ColorScheme& scheme)
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    return {
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBg, window)),
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBgAlt, window)),
+    };
+}
+
+// A theme without ui.table.selection_primary gets its focus colour (nav_highlight), moved toward its
+// text until it reaches 3:1 on the selected rows, opaque, keeping its hue.
+TEST(ThemeLoaderTest, SelectionPrimaryIsTheFocusColourRaisedToTheFloor)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    ASSERT_LT(ColorContrast::contrastRatio(scheme.navHighlight, selectedRows(scheme)[0]), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    for (const ImVec4& row : selectedRows(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme.selectionPrimary, row), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    }
+    EXPECT_FLOAT_EQ(scheme.selectionPrimary.w, 1.0F);
+    // Still blue (#0078D4 lightened toward the white text), not the text colour itself.
+    EXPECT_GT(scheme.selectionPrimary.z, scheme.selectionPrimary.x);
+    EXPECT_GT(scheme.selectionPrimary.x, scheme.navHighlight.x);
+}
+
+// A theme's own ui.table.selection_primary is used as it is when it already stands out...
+TEST(ThemeLoaderTest, SelectionPrimaryFromTheThemeIsKeptWhenItStandsOut)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTableLine("selection_primary = \"#FFB900\""), "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    expectColorNear(scheme.selectionPrimary, ThemeLoader::hexToImVec4("#FFB900"));
+}
+
+// ...and raised to the floor when it does not.
+TEST(ThemeLoaderTest, SelectionPrimaryFromTheThemeIsRaisedWhenTooFaint)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTableLine("selection_primary = \"#3A3A3A\""), "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    for (const ImVec4& row : selectedRows(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme.selectionPrimary, row), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
     }
 }
 

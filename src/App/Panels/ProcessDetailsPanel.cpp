@@ -36,6 +36,7 @@
 #include "ProcessOpenFilesView.h"
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
+#include "ProcessRowSelection.h"
 #include "ProcessSecurityView.h"
 #include "ProcessSmoothedUsage.h"
 #include "ServicesView.h"
@@ -312,7 +313,13 @@ const std::string& ProcessDetailsPanel::tabLabel() const
 {
     if (m_HasSnapshot && (m_SelectedPid != -1) && !cachedSnapshot().name.empty())
     {
-        return cachedSnapshot().name;
+        if (m_SelectionCount < 2)
+        {
+            return cachedSnapshot().name;
+        }
+        // Several processes selected, often some of one name: the PID says which one this is (#1926).
+        ProcessRowSelection::formatDetailsTabText(m_TabLabelWithPid, cachedSnapshot().name, m_SelectedPid, m_SelectionCount);
+        return m_TabLabelWithPid;
     }
     // Use static string to avoid heap allocation every frame for the default label
     static const std::string defaultLabel{NO_SELECTION_TAB_TEXT};

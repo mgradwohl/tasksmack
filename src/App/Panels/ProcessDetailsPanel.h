@@ -31,6 +31,7 @@
 #include "UI/FillPlotLayout.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -119,10 +120,19 @@ class ProcessDetailsPanel : public Panel
     /// with it (#1939).
     static constexpr const char* NO_SELECTION_TAB_TEXT = "Select a process";
 
-    /// Get a label for this panel (process name or NO_SELECTION_TAB_TEXT).
+    /// Get a label for this panel (process name or NO_SELECTION_TAB_TEXT); with several processes
+    /// selected in the Processes table, "name (PID n)", so it says which of them is shown (#1926).
     /// Returned by reference so a caller can compare it against a cached copy every frame without
-    /// allocating. The reference is valid until the next updateWithSamples() or selection change.
+    /// allocating. The reference is valid until the next tabLabel(), updateWithSamples() or selection
+    /// change.
     [[nodiscard]] const std::string& tabLabel() const;
+
+    /// How many processes are selected in the Processes table (#804), each frame from the composition
+    /// root: with more than one, tabLabel() names the shown process's PID too (#1926).
+    void setSelectionCount(std::size_t count) noexcept
+    {
+        m_SelectionCount = count;
+    }
 
     /// Handle application events (process selection, active tab, refresh interval, history window)
     void onEvent(Core::Event& event) override;
@@ -289,7 +299,11 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
-    bool m_HasAccelerator = false; // Shows the NPU tab (setHasAccelerator(), #1869)
+    bool m_HasAccelerator = false;    // Shows the NPU tab (setHasAccelerator(), #1869)
+    std::size_t m_SelectionCount = 0; // Rows selected in the Processes table (setSelectionCount(), #1926)
+    // tabLabel()'s "name (PID n)" while several processes are selected (#1926): rebuilt in place on each
+    // call, its capacity kept, so a steady label allocates nothing.
+    mutable std::string m_TabLabelWithPid;
 
     // The Overview's Actions block (#1493): the buttons, confirm dialog and result line, and the
     // priority control beside them (#1179). Both act through m_ProcessActions, which the panel keeps

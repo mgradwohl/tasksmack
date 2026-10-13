@@ -130,6 +130,10 @@ struct ColorScheme
     ImVec4 chartMemorySharedFill;  // (fallback: charts.memory_cached_fill)
     ImVec4 chartMemoryVirtual;     // Process Memory: Virtual (fallback: charts.swap)
     ImVec4 chartMemoryVirtualFill; // (fallback: charts.swap_fill)
+    ImVec4 chartMemoryPrivate;     // Process Memory: Private (fallback: charts.memory_shared, #1885)
+    ImVec4 chartMemoryPrivateFill; // (fallback: charts.memory_shared_fill)
+    ImVec4 chartMemorySwap;        // Process Memory: Swap (fallback: charts.swap, #1885)
+    ImVec4 chartMemorySwapFill;    // (fallback: charts.swap_fill)
     ImVec4 chartSwap;              // System Memory: Swap (fallback: charts.io)
     ImVec4 chartSwapFill;          // (fallback: charts.io_fill)
     ImVec4 chartPower;             // System and process power draw (fallback: charts.cpu)
@@ -223,6 +227,12 @@ struct ColorScheme
     ImVec4 tableBorderLight;
     ImVec4 tableRowBg;
     ImVec4 tableRowBgAlt;
+    /// Marker of a multi-selection's primary row, the one Process Details shows (#1926): a bar at the
+    /// row's left edge and an outline round it. ui.table.selection_primary, else ui.misc.nav_highlight
+    /// (ImGui's focus colour), moved toward text_primary until it reaches
+    /// ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN on the selection fill of a plain and a striped row.
+    /// Opaque.
+    ImVec4 selectionPrimary;
     ImVec4 textSelectedBg;
     ImVec4 dragDropTarget;
     ImVec4 navHighlight;

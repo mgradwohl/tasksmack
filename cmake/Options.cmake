@@ -17,6 +17,8 @@ option(TASKSMACK_BUILD_BENCHMARKS "Build performance benchmarks" OFF)
 # objects (TaskSmackApp) and compiles only its few sources; ON so its ctest smoke test runs everywhere.
 option(TASKSMACK_BUILD_UI_TRAINING "Build the headless PGO UI training driver" ON)
 option(TASKSMACK_ENABLE_PCH "Enable precompiled headers" ON)
+# Windows clang Debug only: -gcodeview-ghash plus lld-link /DEBUG:GHASH for faster PDB links (#1875).
+option(TASKSMACK_ENABLE_GHASH "Windows clang Debug: global type hashes for faster lld-link PDB writes" OFF)
 option(TASKSMACK_ENABLE_CCACHE "Enable compiler caching (ccache/sccache)" ON)
 option(TASKSMACK_ENABLE_COVERAGE "Enable code coverage instrumentation" OFF)
 option(TASKSMACK_ENABLE_FETCHCONTENT_CACHE "Use a shared FetchContent/CPM cache directory instead of per-build _deps" ON)

@@ -26,6 +26,7 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -67,6 +68,8 @@ using SeriesLabels = std::set<std::string>;
     point.npuUtil = v * 0.5;
     point.npuDedicatedMemory = 0.0; // An NPU that maps system RAM (Intel AI Boost) has none
     point.npuSharedMemory = v * 2.0e5;
+    point.memoryPrivate = v * 4.0e5;
+    point.memorySwap = v * 1.0e5;
     return point;
 }
 
@@ -255,13 +258,20 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
     UI::Widgets::PlotFillState m_OverviewFill;
 };
 
+/// The Resources chart's handle count, on its own right-hand axis (#1916).
+#ifdef _WIN32
+constexpr std::string_view HANDLES_LABEL = "Handles →";
+#else
+constexpr std::string_view HANDLES_LABEL = "FDs →";
+#endif
+
 // The series each Overview chart draws. Functions, not statics: building a std::set can throw.
 [[nodiscard]] SeriesLabels resourceSeries()
 {
 #ifdef _WIN32
-    return {"Threads", "Handles", "Page Faults →", "GDI Objects"};
+    return {"Threads", std::string(HANDLES_LABEL), "Page Faults →", "GDI Objects"};
 #else
-    return {"Threads", "FDs", "Page Faults →"};
+    return {"Threads", std::string(HANDLES_LABEL), "Page Faults →"};
 #endif
 }
 
@@ -270,7 +280,7 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
 [[nodiscard]] SeriesLabels gapResourceSeries()
 {
 #ifdef _WIN32
-    return {"Threads", "Handles", "Page Faults →"};
+    return {"Threads", "Handles →", "Page Faults →"};
 #else
     return resourceSeries();
 #endif
@@ -315,6 +325,29 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewFollowsTheSharedMemoryAndPowerCap
     EXPECT_EQ(plots[1], (SeriesLabels{"Peak Memory", "Memory", "Virtual →"}));
     EXPECT_EQ(plots[2], (SeriesLabels{"Power"}));
     EXPECT_EQ(plots[3], resourceSeries());
+}
+
+// Where the platform reads Private and Swap (Linux, #1885), each is a line in the Memory chart, after
+// Shared and before Virtual, with a tooltip row.
+TEST_F(ProcessDetailsChartsRenderTest, TheMemoryChartPlotsPrivateAndSwapWhereTheyAreRead)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.ctx.hasPrivateBytes = true;
+    inputs.ctx.hasSwapBytes = true;
+    ProcessDetailsCharts charts;
+    const auto draw = [&]
+    {
+        renderOverview(charts, inputs.ctx);
+    };
+    draw();
+    draw();
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 3U);
+    const SeriesLabels withPrivateAndSwap{"Peak Memory", "Memory", "Shared", "Private", "Swap", "Virtual →"};
+    EXPECT_EQ(plots[1], withPrivateAndSwap);
+    EXPECT_TRUE(hoverPlot(withPrivateAndSwap, draw));
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 }
 
 // The child window drawn for the card @p id (an ImGui child is named "<parent>/<id>_<hash>").
@@ -914,6 +947,100 @@ TEST_F(ProcessDetailsChartsRenderTest, OneGpuHasNoBreakdownAndNoEncoderRows)
     EXPECT_FALSE(text.contains("Per-GPU Breakdown:")) << text; // it would repeat the table (#1207)
     EXPECT_FALSE(text.contains("Video Encoder:")) << text;
     EXPECT_FALSE(text.contains("Dedicated:")) << text; // the total already is the dedicated bytes
+}
+
+/// busyPoint() with a thread count that swings between 100 and 120 and a handle count fifty times
+/// that, as a real process's do (#1916).
+[[nodiscard]] Detail::ProcessHistoryPoint manyHandlesPoint(std::size_t i)
+{
+    Detail::ProcessHistoryPoint point = busyPoint(i);
+    point.threads = 100.0 + static_cast<double>((i * 7U) % 21U); // 100..120
+    point.handles = 6000.0 + static_cast<double>(i);
+    point.gdiObjects = 60.0;
+    return point;
+}
+
+/// The Overview's plot whose series are @p labels, or null.
+[[nodiscard]] ImPlotPlot* findPlot(const SeriesLabels& labels)
+{
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    int i = 0;
+    while (i < context.Plots.GetBufSize())
+    {
+        ImPlotPlot* plot = context.Plots.GetByIndex(i);
+        ++i;
+        if (plot == nullptr)
+        {
+            continue;
+        }
+        SeriesLabels found;
+        int item = 0;
+        while (item < plot->Items.GetLegendCount())
+        {
+            found.emplace(plot->Items.GetLegendLabel(item));
+            ++item;
+        }
+        if (found == labels)
+        {
+            return plot;
+        }
+    }
+    return nullptr;
+}
+
+// #1916: the Threads line is read on an axis of its own. A process holds tens of times more handles
+// than threads, and while the two shared the left axis it was sized to the handles and the Threads
+// line lay flat on the baseline. Now the left axis is sized to the threads (and GDI objects, of the
+// same order), so a thread count swinging between 100 and 120 moves its line visibly, and the handles
+// have their own right-hand axis (Y3), outside Page Faults' (Y2).
+TEST_F(ProcessDetailsChartsRenderTest, TheThreadsLineIsNotFlattenedByTheHandles)
+{
+    const ChartInputs inputs(manyHandlesPoint);
+    ProcessDetailsCharts charts;
+    renderOverview(charts, inputs.ctx);
+    renderOverview(charts, inputs.ctx);
+
+    ImPlotPlot* plot = findPlot(resourceSeries());
+    ASSERT_NE(plot, nullptr);
+    const ImPlotAxis& threadAxis = plot->Axes[ImAxis_Y1];
+    const ImPlotAxis& faultAxis = plot->Axes[ImAxis_Y2];
+    const ImPlotAxis& handleAxis = plot->Axes[ImAxis_Y3];
+    ASSERT_TRUE(faultAxis.Enabled);
+    ASSERT_TRUE(handleAxis.Enabled);
+
+    // The left axis covers the threads with some headroom, not the handles.
+    EXPECT_DOUBLE_EQ(threadAxis.Range.Min, 0.0);
+    EXPECT_GE(threadAxis.Range.Max, 120.0);
+    EXPECT_LT(threadAxis.Range.Max, 200.0);
+    // The handles' axis covers the handles.
+    EXPECT_DOUBLE_EQ(handleAxis.Range.Min, 0.0);
+    EXPECT_GE(handleAxis.Range.Max, 6000.0 + static_cast<double>(HISTORY_POINTS));
+    // Both right-hand axes are on the right: their tick labels sit right of the plot.
+    EXPECT_TRUE(faultAxis.IsOpposite());
+    EXPECT_TRUE(handleAxis.IsOpposite());
+
+    // The thread count's swing of 20 spans a readable share of the plot's height, where on the
+    // handles' scale it was well under one percent of it -- and the line sits well above the baseline.
+    const float plotHeight = plot->PlotRect.GetHeight();
+    ASSERT_GT(plotHeight, 0.0F);
+    const double swingShare = 20.0 / threadAxis.Range.Size();
+    EXPECT_GT(swingShare, 0.10);
+    EXPECT_GT(swingShare * static_cast<double>(plotHeight), 10.0);
+    EXPECT_GT(100.0 / threadAxis.Range.Size(), 0.5);
+
+    // Steady, both lines sit near the top of their own axes: Threads is drawn after Handles, on top.
+    int threadsAt = -1;
+    int handlesAt = -1;
+    int item = 0;
+    while (item < plot->Items.GetLegendCount())
+    {
+        const std::string_view label = plot->Items.GetLegendLabel(item);
+        threadsAt = (label == "Threads") ? item : threadsAt;
+        handlesAt = (label == HANDLES_LABEL) ? item : handlesAt;
+        ++item;
+    }
+    ASSERT_GE(handlesAt, 0);
+    EXPECT_GT(threadsAt, handlesAt);
 }
 
 #ifdef _WIN32

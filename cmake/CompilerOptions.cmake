@@ -8,6 +8,15 @@ if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
+# Windows clang Debug builds: global type hashes in the CodeView debug info (-gcodeview-ghash), which
+# lld-link then merges in parallel when writing the PDB (/DEBUG:GHASH). Debugging is unchanged; the
+# objects get a .debug$H section. Set before Dependencies.cmake so third-party objects carry the
+# hashes too. CI's Windows debug build turns it on (#1875).
+if(TASKSMACK_ENABLE_GHASH AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options("$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:C,CXX>>:-gcodeview-ghash>")
+    add_link_options("$<$<CONFIG:Debug>:LINKER:/DEBUG:GHASH>")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

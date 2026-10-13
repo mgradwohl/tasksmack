@@ -83,18 +83,19 @@ constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 // System chart's "Peak Used" tracks "Used" (#1342). The Processes table keeps its short "Peak Mem"
 // header for width, as it does "Mem %".
 constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
-constexpr const char* MEM_PERCENT_LABEL = "Mem %";
-constexpr const char* MEM_PRIVATE_LABEL = "Private"; // the Processes table's column (#1885)
-constexpr const char* MEM_SWAP_LABEL =
-    "Swap"; // the Processes table's column (#1885)                // the Processes table's column (#1878)
+constexpr const char* MEM_PERCENT_LABEL = "Mem %";                // the Processes table's column (#1878)
+constexpr const char* MEM_PRIVATE_LABEL = "Private";              // the Processes table's column (#1885)
+constexpr const char* MEM_SWAP_LABEL = "Swap";                    // the Processes table's column (#1885)
 constexpr const char* FAULTS_TOTAL_LABEL = "Page Faults (total)"; // the Processes table's Page Faults column (#1878)
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
 #ifdef _WIN32
 constexpr const char* GDI_LABEL = "GDI Objects";
-constexpr const char* HANDLE_LABEL = "Handles";
+// On the outer right-hand axis, its own scale (#1916): see ProcessDetailsChartHelpers.h's
+// handleAxisDataMax().
+constexpr const char* HANDLE_LABEL = "Handles →";
 #else
-constexpr const char* HANDLE_LABEL = "FDs";
+constexpr const char* HANDLE_LABEL = "FDs →";
 #endif
 constexpr const char* IO_READ_LABEL = "Read";
 constexpr const char* IO_WRITE_LABEL = "Write";
@@ -227,6 +228,8 @@ struct MemoryChartData
     std::span<const double> used;
     std::span<const double> shared; ///< Empty where Shared is not drawn (#1035)
     std::span<const double> virtualBytes;
+    std::span<const double> privateBytes; ///< Empty where the platform doesn't read Private (#1885)
+    std::span<const double> swapBytes;    ///< Empty where the platform doesn't read Swap (#1885)
     double peakBytes = 0.0;
     double percentPerByte = 0.0;
 };
@@ -260,6 +263,17 @@ void memoryTooltip(const ChartTimeAxis& axis, const MemoryChartData& data)
              .color = scheme.chartMemoryVirtual,
              .value = UI::Widgets::formatSampleOrNA(data.virtualBytes[*idxVal], [](double v) { return UI::Format::formatBytes(v); })});
     }
+    if (*idxVal < data.privateBytes.size())
+    {
+        rows.push_back({.label = MEM_PRIVATE_LABEL,
+                        .color = scheme.chartMemoryPrivate,
+                        .value = App::Detail::formatBytesWithRamShare(data.privateBytes[*idxVal], data.percentPerByte)});
+    }
+    if (*idxVal < data.swapBytes.size())
+    {
+        rows.push_back(
+            {.label = MEM_SWAP_LABEL, .color = scheme.chartMemorySwap, .value = UI::Format::formatBytes(data.swapBytes[*idxVal])});
+    }
     if (data.peakBytes > 0.0)
     {
         // The line's colour: this row was textWarning, which matched nothing (#1005).
@@ -268,8 +282,8 @@ void memoryTooltip(const ChartTimeAxis& axis, const MemoryChartData& data)
     UI::Widgets::renderHistoryTooltip(axis.timeData[*idxVal], rows);
 }
 
-/// The Memory chart's lines inside its plot: the peak reference line, Used and Shared on the left
-/// axis, Virtual on the right, and the tooltip.
+/// The Memory chart's lines inside its plot: the peak reference line, Used, Shared, Private and Swap
+/// on the left axis, Virtual on the right, and the tooltip.
 void drawMemorySeries(const ChartTimeAxis& axis, const MemoryChartData& data)
 {
     const auto& scheme = UI::Theme::get().scheme();
@@ -307,6 +321,28 @@ void drawMemorySeries(const ChartTimeAxis& axis, const MemoryChartData& data)
                    scheme.chartMemoryShared,
                    scheme.chartMemorySharedFill,
                    seriesStyle(SeriesRole::Secondary, 0));
+    }
+
+    // Private and Swap (#1885): lines in bytes beside Used and Shared, each with its own marker.
+    if (!data.privateBytes.empty())
+    {
+        plotSeries(MEM_PRIVATE_LABEL,
+                   axis.timeData.data(),
+                   data.privateBytes.data(),
+                   UI::Format::checkedCount(data.privateBytes.size()),
+                   scheme.chartMemoryPrivate,
+                   scheme.chartMemoryPrivateFill,
+                   seriesStyle(SeriesRole::Secondary, 2));
+    }
+    if (!data.swapBytes.empty())
+    {
+        plotSeries(MEM_SWAP_LABEL,
+                   axis.timeData.data(),
+                   data.swapBytes.data(),
+                   UI::Format::checkedCount(data.swapBytes.size()),
+                   scheme.chartMemorySwap,
+                   scheme.chartMemorySwapFill,
+                   seriesStyle(SeriesRole::Secondary, 3));
     }
 
     if (!data.virtualBytes.empty())
@@ -368,8 +404,9 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
     return memoryBars;
 }
 
-/// The Resources chart's series: Threads and Handles/FDs on the count axis, Page Faults on the right
-/// (#1024), and GDI Objects on Windows (possibly shorter, drawn from its offset, #1001).
+/// The Resources chart's series: Threads (and GDI Objects on Windows, possibly shorter, drawn from its
+/// offset, #1001) on the left axis, Page Faults on the right (#1024), and Handles/FDs on a right-hand
+/// axis of their own outside it (#1916).
 struct ResourceChartData
 {
     std::span<const double> threads;
@@ -414,13 +451,11 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
 {
     const auto& theme = UI::Theme::get();
     const int plotCount = UI::Format::checkedCount(axis.alignedCount);
-    plotSeries(THREADS_LABEL,
-               axis.timeData.data(),
-               data.threads.data(),
-               plotCount,
-               theme.scheme().chartThreads,
-               theme.scheme().chartThreadsFill,
-               seriesStyle(SeriesRole::Primary));
+    // Each line fills its own axis, so a steady thread count and a steady handle count sit at the same
+    // height: Threads, the chart's primary series, is drawn after Handles, on top of it (#1916). A CSV
+    // copy keeps the key's column order: a series' first export is the one kept.
+    UI::Widgets::exportSeries(THREADS_LABEL, axis.timeData, data.threads);
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y3);
     plotSeries(HANDLE_LABEL,
                axis.timeData.data(),
                data.handles.data(),
@@ -428,6 +463,14 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                theme.scheme().chartHandles,
                theme.scheme().chartHandlesFill,
                seriesStyle(SeriesRole::Secondary, 0));
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    plotSeries(THREADS_LABEL,
+               axis.timeData.data(),
+               data.threads.data(),
+               plotCount,
+               theme.scheme().chartThreads,
+               theme.scheme().chartThreadsFill,
+               seriesStyle(SeriesRole::Primary));
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
     plotSeries(FAULTS_LABEL,
                axis.timeData.data(),
@@ -455,28 +498,36 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
     resourceTooltip(axis, data);
 }
 
-/// The Resources chart's NowBars: Threads and Handles/FDs on the count axis (@p countAxisUpper), Page
-/// Faults on its own (@p faultAxisUpper), and GDI Objects on Windows -- four there, the
-/// PROCESS_OVERVIEW_NOW_BAR_COLUMNS the Overview reserves.
-[[nodiscard]] NowBarList resourceNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, double countAxisUpper, double faultAxisUpper)
+/// The Resources chart's axes' upper bounds, which its lines and NowBars are both scaled to.
+struct ResourceAxisBounds
+{
+    double threads = 0.0; ///< The left axis: Threads, and GDI Objects on Windows
+    double faults = 0.0;  ///< Y2: Page Faults/s (#1024)
+    double handles = 0.0; ///< Y3: Handles/FDs (#1916)
+};
+
+/// The Resources chart's NowBars, each scaled to its series' axis (#1003): Threads, Handles/FDs, Page
+/// Faults, and GDI Objects on Windows -- four there, the PROCESS_OVERVIEW_NOW_BAR_COLUMNS the
+/// Overview reserves.
+[[nodiscard]] NowBarList resourceNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, const ResourceAxisBounds& bounds)
 {
     const auto& theme = UI::Theme::get();
     const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(smoothed.threadCount)),
                             .label = THREADS_LABEL,
                             .tooltipText = {}, // The fallback, "Threads: <value>", says it all (#1019)
-                            .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.threadCount, countAxisUpper),
+                            .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.threadCount, bounds.threads),
                             .color = theme.scheme().chartThreads};
     // An unreadable count (#1110) shows N/A, as its line shows a gap.
     const NowBar handlesBar{
         .valueText = App::Detail::countTextOrNA(smoothed.handleCountAvailable, smoothed.handleCount),
         .label = HANDLE_LABEL,
         .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
-        .value01 = smoothed.handleCountAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.handleCount, countAxisUpper) : 0.0,
+        .value01 = smoothed.handleCountAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.handleCount, bounds.handles) : 0.0,
         .color = theme.scheme().chartHandles};
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(smoothed.pageFaultsPerSec),
                            .label = FAULTS_LABEL,
                            .tooltipText = {},
-                           .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.pageFaultsPerSec, faultAxisUpper),
+                           .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.pageFaultsPerSec, bounds.faults),
                            // The line's colour: this bar was chartIo while its line is accentColor(3) (#1004).
                            .color = theme.scheme().chartPageFaults};
 #ifdef _WIN32
@@ -487,7 +538,7 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                         .label = GDI_LABEL,
                         .tooltipText = {}, // The fallback, "GDI Objects: <value>", says it all (#1019)
                         .value01 =
-                            smoothed.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(smoothed.gdiObjectCount, countAxisUpper) : 0.0,
+                            smoothed.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(smoothed.gdiObjectCount, bounds.threads) : 0.0,
                         .color = theme.scheme().chartGdi};
 #endif
 
@@ -883,15 +934,18 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
         .used = tailSpan(history.series(ProcessSeries::MemoryUsed), alignedCount),
         .shared = showShared ? tailSpan(history.series(ProcessSeries::MemoryShared), alignedCount) : std::span<const double>{},
         .virtualBytes = tailSpan(history.series(ProcessSeries::Virtual), alignedCount),
+        .privateBytes =
+            ctx.hasPrivateBytes ? tailSpan(history.series(ProcessSeries::MemoryPrivate), alignedCount) : std::span<const double>{},
+        .swapBytes = ctx.hasSwapBytes ? tailSpan(history.series(ProcessSeries::MemorySwap), alignedCount) : std::span<const double>{},
         .peakBytes = ctx.peakMemoryBytes,
         .percentPerByte = smoothed.memoryPercentPerByte,
     };
 
-    // Used and Shared in bytes on an axis that scales to them (#1195), eased like a rate axis and
-    // shared with their bars.
+    // Used, Shared, Private and Swap in bytes on an axis that scales to them (#1195, #1885), eased like
+    // a rate axis and shared with their bars.
     const double memAxisUpper = UI::Widgets::easedRateAxisUpperBound(
         "##ProcOverviewMemory",
-        Detail::memoryAxisDataMax(axis.timeData, axis.axisConfig.xMin, data.used, data.shared, smoothed),
+        Detail::memoryAxisDataMax(axis.timeData, axis.axisConfig.xMin, data.used, data.shared, smoothed, data.privateBytes, data.swapBytes),
         UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
     // Virtual size in bytes on its own right-hand axis (#992), eased like a rate axis and shared with
     // its bar, whose smoothed value it covers too.
@@ -946,14 +1000,16 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
             .tooltip = "Its resident memory as a share of the system's RAM, as the Processes table's Mem % column",
         };
     }
-    // Private and Swap, the Processes table's columns (#1885), where the platform reads them: not
-    // plotted yet, so blank swatches like Mem %.
+    // Private and Swap, the Processes table's columns (#1885), where the platform reads them: lines
+    // without bars, so listed in the strip like Peak, in their lines' colours. Windows fills neither --
+    // its private bytes are the commit charge the Virtual line already draws, and it has no per-process
+    // swap -- so both are left out there, as Shared is (#1035, #1879).
     if (ctx.hasPrivateBytes && ctx.snapshot != nullptr)
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PRIVATE_LABEL,
             .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->privateBytes)),
-            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .color = theme.scheme().chartMemoryPrivate,
             .tooltip = "Memory no other process shares (RssAnon on Linux), as the Processes table's Private column",
         };
     }
@@ -962,7 +1018,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_SWAP_LABEL,
             .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->swapBytes)),
-            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .color = theme.scheme().chartMemorySwap,
             .tooltip = "How much of it is swapped out (VmSwap on Linux), as the Processes table's Swap column",
         };
     }
@@ -1009,32 +1065,39 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
     data.gdi = tailSpan(history.series(ProcessSeries::GdiObjects), gdiAlignedCount);
     data.gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, data.gdi.size());
     data.hasGdiSamples = Detail::hasAnySample(data.gdi);
-    const double countSeriesMax = Detail::countAxisDataMaxWithGdi(axis.timeData, xMin, data.threads, data.handles, data.gdi, smoothed);
+    const double threadSeriesMax = Detail::threadAxisDataMaxWithGdi(axis.timeData, xMin, data.threads, data.gdi, smoothed);
 #else
-    const double countSeriesMax = Detail::countAxisDataMax(axis.timeData, xMin, data.threads, data.handles, smoothed);
+    const double threadSeriesMax = Detail::threadAxisDataMax(axis.timeData, xMin, data.threads, smoothed);
 #endif
 
-    // Threads, handles (and GDI objects) are counts on the left axis; page faults are a rate, on their
-    // own right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each bound
-    // covers every series drawn on its axis and its bars' smoothed values (#1003, #1145).
-    const double countAxisUpper =
-        UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", countSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
-    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y2",
-                                                                       Detail::faultAxisDataMax(axis.timeData, xMin, data.faults, smoothed),
-                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+    // Three scales: Threads (and GDI objects) on the left axis; page faults, a rate, on the right-hand
+    // Y2 so a fault spike doesn't flatten the count lines (#1024); and handles/FDs on a right-hand Y3
+    // outside it, as a process holds tens of times more of them than threads, which lay flat on the
+    // baseline while the two shared an axis (#1916). Each bound covers every series drawn on its axis
+    // and its bars' smoothed values (#1003, #1145).
+    const ResourceAxisBounds bounds{
+        .threads = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", threadSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
+        .faults = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y2",
+                                                       Detail::faultAxisDataMax(axis.timeData, xMin, data.faults, smoothed),
+                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
+        .handles = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y3",
+                                                        Detail::handleAxisDataMax(axis.timeData, xMin, data.handles, smoothed),
+                                                        UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
+    };
 
-    const NowBarList bars = resourceNowBars(smoothed, countAxisUpper, faultAxisUpper);
+    const NowBarList bars = resourceNowBars(smoothed, bounds);
 
     auto plot = [&]()
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcThreadsFaults", xMin, axis.axisConfig.xMax, formatAxisLocalized, countAxisUpper),
+                                        "##ProcThreadsFaults", xMin, axis.axisConfig.xMax, formatAxisLocalized, bounds.threads),
                                     fill.plotHeight()),
             ctx.historyGeneration));
         if (chart.active())
         {
-            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.scheme().chartPageFaults);
+            UI::Widgets::setupSecondaryRateAxis(bounds.faults, formatAxisLocalized, theme.scheme().chartPageFaults);
+            UI::Widgets::setupRightRateAxis(ImAxis_Y3, bounds.handles, formatAxisLocalized, theme.scheme().chartHandles);
             UI::Widgets::drawCollectingHint(alignedCount);
             drawResourceSeries(axis, data);
         }

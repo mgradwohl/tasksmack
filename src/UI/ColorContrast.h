@@ -144,4 +144,9 @@ tintToContrast(const ImVec4& color, const ImVec4& toward, std::span<const ImVec4
 /// well below the theme's text (10:1 to 18:1 in the bundled themes) and reads as an edge, not a rule.
 inline constexpr float FRAME_BORDER_CONTRAST_MIN = 3.0F;
 
+/// Contrast floor for the marker of a multi-selection's primary row -- the one Process Details shows
+/// -- against the selection fill it is drawn on (#1926). WCAG 2.1 SC 1.4.11's 3:1 again: the marker
+/// is the only thing telling that row from the other selected ones.
+inline constexpr float SELECTION_PRIMARY_CONTRAST_MIN = 3.0F;
+
 } // namespace UI::ColorContrast

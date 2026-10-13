@@ -21,8 +21,9 @@ enum class AxisSide : std::uint8_t
 };
 
 /// A chart's Y axes as its labels see them (#1882): the side its primary (Y1) scale is drawn on. A
-/// second scale (UI::Widgets::setupSecondaryRateAxis()) is always drawn opposite it, and the series
-/// on it are the ones whose labels end in UI::Widgets::SECONDARY_AXIS_MARK.
+/// second scale (UI::Widgets::setupSecondaryRateAxis()) is always drawn opposite it, as is a third
+/// (UI::Widgets::setupRightRateAxis() on ImAxis_Y3, #1916), and the series on either are the ones
+/// whose labels end in UI::Widgets::SECONDARY_AXIS_MARK.
 struct ChartAxes
 {
     AxisSide primary = AxisSide::Left;

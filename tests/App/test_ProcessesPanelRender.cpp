@@ -7,13 +7,15 @@
 /// right-click opens the row menu for that process, whose Details, Copy PID and Kill (through its
 /// confirmation, to the mock actions) work; the Columns menu shows a hidden column and the meter menu
 /// turns a meter on. Ctrl+A selects every row, F9 then asks to kill them all in one confirmation, and
-/// the row menu on a selection sets one priority for all of it through the batch dialog (#804, #1484).
+/// the row menu on a selection sets one priority for all of it through the batch dialog (#804, #1484);
+/// the primary row of a selection, the one Process Details shows, is marked (#1926).
 /// The startup selection (TASKSMACK_SELECT, #1559) selects its process, by PID or by name, once it is
 /// listed, and opens Details and its tab when asked to. onUpdate() gives the sampler the refresh setting,
 /// slowed while the window is resized or moved and for a moment after, and relaxed on a tab with no
 /// process data.
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessesPanel.h"
@@ -33,6 +35,7 @@
 #include "Platform/GPUTypes.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -50,6 +53,7 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -833,6 +837,59 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
     panel->onDetach();
 }
 
+// #1879: where the probe fills neither (Windows; the mock reports neither), the Private and Swap columns
+// read as the dash in every row, and their headers and cells say why.
+TEST_F(ProcessesPanelRenderTest, PrivateAndSwapWithoutTheirFiguresShowTheDashAndSayWhy)
+{
+    ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (getColumnInfo(col).canHide)
+        {
+            // PID, Name, Private and Swap: both headers are in reach
+            columns.setVisible(col, col == ProcessColumn::Private || col == ProcessColumn::Swap);
+        }
+    }
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Private")) << text;
+    EXPECT_TRUE(text.contains("Swap")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+
+    // Over each point down the header and the first rows, across the whole width (the last column
+    // stretches, and its right-aligned dash sits at the far end). Tooltips show without a hover delay,
+    // so a few frames at each point are enough.
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    style.HoverStationaryDelay = 0.0F;
+    const auto hoverUntilShown = [&panel](std::string_view wanted)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        for (int y = 20; y <= 140; y += 6)
+        {
+            for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH); x += 6)
+            {
+                io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+                for (int frame = 0; frame < 3; ++frame)
+                {
+                    if (renderAndCapture(*panel).contains(wanted))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::PRIVATE_UNSUPPORTED_COLUMN_NOTE)) << "Private's header tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::PRIVATE_UNSUPPORTED_CELL_REASON)) << "a Private cell's tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE)) << "Swap's header tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::SWAP_UNSUPPORTED_CELL_REASON)) << "a Swap cell's tooltip";
+    panel->onDetach();
+}
+
 // #1880: the Services column, once a service list with PIDs is attached, lists each process's services
 // comma-joined -- blank for one hosting none -- and sorts by that text.
 TEST_F(ProcessesPanelRenderTest, TheServicesColumnListsEachProcesssServices)
@@ -1067,6 +1124,102 @@ TEST_F(ProcessesPanelRenderTest, PlainCtrlAndShiftClicksBuildTheSelection)
     EXPECT_GE(panel->selectionCount(), 2U);
     EXPECT_EQ(panel->selectedPid(), bottom);
     panel->onDetach();
+}
+
+/// The vertical extent of everything drawn in the primary row's marker colour (the theme stub's
+/// selectionPrimary, used by nothing else) in the last frame, or nullopt if nothing was. Only opaque
+/// vertices count, not the transparent fringe of anti-aliased strokes.
+[[nodiscard]] std::optional<std::pair<float, float>> primaryMarkerExtent()
+{
+    const ImU32 marker = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().selectionPrimary);
+    const ImDrawData* drawData = ImGui::GetDrawData();
+    std::optional<std::pair<float, float>> extent;
+    if (drawData == nullptr)
+    {
+        return extent;
+    }
+    for (const ImDrawList* list : drawData->CmdLists)
+    {
+        for (const ImDrawVert& vert : list->VtxBuffer)
+        {
+            if (vert.col != marker)
+            {
+                continue;
+            }
+            extent = extent.has_value() ? std::pair{std::min(extent->first, vert.pos.y), std::max(extent->second, vert.pos.y)}
+                                        : std::pair{vert.pos.y, vert.pos.y};
+        }
+    }
+    return extent;
+}
+
+// #1926: with several rows selected, the primary one -- the process Process Details shows -- is marked
+// (a bar and an outline in the theme's selectionPrimary), and the other selected rows are not; a lone
+// selected row is not marked. In the list and in the tree.
+TEST_F(ProcessesPanelRenderTest, ThePrimaryRowOfASelectionIsMarked)
+{
+    for (const bool tree : {false, true})
+    {
+        SCOPED_TRACE(tree ? "tree view" : "list view");
+        SelectionSink events;
+        const auto panel = attachedPanel(events.sink());
+        if (panel->treeViewEnabled() != tree)
+        {
+            panel->toggleTreeView();
+        }
+        renderUntilLoaded(*panel);
+        ASSERT_EQ(panel->processCount(), 3U);
+        const std::map<std::int32_t, float> heights = rowHeights(*panel, 3);
+        ASSERT_EQ(heights.size(), 3U);
+        std::vector<std::pair<float, std::int32_t>> byHeight;
+        byHeight.reserve(heights.size());
+        for (const auto& [pid, y] : heights)
+        {
+            byHeight.emplace_back(y, pid);
+        }
+        std::ranges::sort(byHeight);
+        const float topY = byHeight[0].first;
+        const float middleY = byHeight[1].first;
+        const float bottomY = byHeight[2].first;
+        const float rowPitch = (bottomY - topY) / 2.0F;
+
+        // One row selected: it is the only candidate, so nothing marks it.
+        clickAt(*panel, topY);
+        ASSERT_EQ(panel->selectionCount(), 1U);
+        EXPECT_FALSE(primaryMarkerExtent().has_value());
+
+        // Two more Ctrl+clicked: the last one is the primary, and the marker is on its row alone.
+        clickAt(*panel, middleY, /*ctrl=*/true);
+        clickAt(*panel, bottomY, /*ctrl=*/true);
+        ASSERT_EQ(panel->selectionCount(), 3U);
+        ASSERT_EQ(panel->selectedPid(), byHeight[2].second);
+        auto extent = primaryMarkerExtent();
+        ASSERT_TRUE(extent.has_value());
+        EXPECT_LE(extent->first, bottomY);
+        EXPECT_GE(extent->second, bottomY);
+        // One row tall, no more (the row pitch is only known to within the scan's 4 px, and the outline's
+        // anti-aliased stroke reaches a pixel past the row).
+        EXPECT_LT(extent->second - extent->first, 1.5F * rowPitch);
+        for (const float other : {topY, middleY})
+        {
+            EXPECT_TRUE(other < extent->first + 1.0F || other > extent->second - 1.0F) << other;
+        }
+
+        // The top row Ctrl+clicked out and back in becomes the primary: the marker follows it.
+        clickAt(*panel, topY, /*ctrl=*/true);
+        clickAt(*panel, topY, /*ctrl=*/true);
+        ASSERT_EQ(panel->selectionCount(), 3U);
+        ASSERT_EQ(panel->selectedPid(), byHeight[0].second);
+        extent = primaryMarkerExtent();
+        ASSERT_TRUE(extent.has_value());
+        EXPECT_LE(extent->first, topY);
+        EXPECT_GE(extent->second, topY);
+        for (const float other : {middleY, bottomY})
+        {
+            EXPECT_TRUE(other < extent->first + 1.0F || other > extent->second - 1.0F) << other;
+        }
+        panel->onDetach();
+    }
 }
 
 TEST_F(ProcessesPanelRenderTest, LeavingTheTreeViewShowsTheSortedListAgain)

@@ -8,6 +8,7 @@
 
 #include <initializer_list>
 #include <optional>
+#include <string_view>
 
 namespace App
 {
@@ -35,6 +36,8 @@ using ProcessColumnAvailability::unavailableValuesNote;
     caps.hasProcessType = true;
     caps.hasGdiObjects = true;
     caps.hasSharedMemory = false;
+    caps.hasPrivateBytes = false; // Private bytes are the commit size, Virtual (#1879)
+    caps.hasSwapBytes = false;    // No per-process swap figure (#1879)
     return caps;
 }
 
@@ -47,14 +50,33 @@ TEST(ProcessColumnAvailabilityTest, SharedMemoryIsUnsupportedOnWindows)
     EXPECT_FALSE(isSupported(ProcessColumn::Power, caps));
 }
 
-TEST(ProcessColumnAvailabilityTest, PrivateAndSwapFollowTheirCapabilities)
+TEST(ProcessColumnAvailabilityTest, WindowsHasNeitherPrivateNorSwap)
 {
-    // #1885: Linux reads RssAnon and VmSwap; a probe that doesn't (Windows until #1879) gets dashes and
-    // the header's note, and both columns stay hidden by default.
-    Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    // #1879: Windows' private bytes are the commit size, already the Virtual column, and it has no
+    // per-process swap figure. Both columns are all dashes, and each header says why rather than the
+    // generic note.
+    const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
     EXPECT_FALSE(isSupported(ProcessColumn::Private, caps));
     EXPECT_FALSE(isSupported(ProcessColumn::Swap, caps));
-    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Swap, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    const std::string_view privateNote = unavailableValuesNote(ProcessColumn::Private, caps);
+    const std::string_view swapNote = unavailableValuesNote(ProcessColumn::Swap, caps);
+    EXPECT_EQ(privateNote, ProcessColumnAvailability::PRIVATE_UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_EQ(swapNote, ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_TRUE(privateNote.contains("Virtual")) << privateNote;
+    EXPECT_TRUE(swapNote.contains("pagefile")) << swapNote;
+    EXPECT_FALSE(rowFormatOptions(caps).hasPrivateBytes);
+    EXPECT_FALSE(rowFormatOptions(caps).hasSwapBytes);
+}
+
+TEST(ProcessColumnAvailabilityTest, PrivateAndSwapFollowTheirCapabilities)
+{
+    // #1885: Linux reads RssAnon and VmSwap; a probe that doesn't gets dashes and the header's note, and
+    // both columns stay hidden by default. Each note says why Windows lacks it (#1879).
+    Platform::ProcessCapabilities caps;
+    EXPECT_FALSE(isSupported(ProcessColumn::Private, caps));
+    EXPECT_FALSE(isSupported(ProcessColumn::Swap, caps));
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Private, caps), ProcessColumnAvailability::PRIVATE_UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Swap, caps), ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE);
     caps.hasPrivateBytes = true;
     caps.hasSwapBytes = true;
     EXPECT_TRUE(isSupported(ProcessColumn::Private, caps));

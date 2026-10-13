@@ -10,8 +10,8 @@ to analyze, one per line (possibly none). Used by ci.yml's pull-request clang-ti
 the nightly CI run still analyzes every file.
 
 A full run is required when anything that changes how *every* file is analyzed changed: the
-clang-tidy config, the tidy scripts, CMake files/presets (compile flags), this script, ci.yml, or
-when a header was deleted or renamed. Otherwise the result is every changed .cpp under src/, plus
+clang-tidy config, the tidy scripts, CMake files/presets (compile flags), this script, ci.yml or
+reusable-build-test.yml, or when a header was deleted or renamed. Otherwise the result is every changed .cpp under src/, plus
 every src/ .cpp that includes a changed src/ header directly or through other src/ headers.
 Configure-time templates count as the header they generate: a changed src/**/X.h.in dirties X.h,
 and the embedded fallback theme (assets/themes/arctic-fire.toml) dirties FallbackTheme.h.
@@ -46,7 +46,8 @@ FULL_RUN_PATTERNS = (
     # The per-file result cache (#1785): a change to how keys are made must run (and re-key) every file.
     re.compile(r"^tools/tidy-cache\.py$"),
     re.compile(r"^\.github/actions/tidy-result-cache/"),
-    re.compile(r"^\.github/workflows/ci\.yml$"),
+    # ci.yml, and reusable-build-test.yml, which configures the tree the Windows tidy run analyzes (#1875).
+    re.compile(r"^\.github/workflows/(ci|reusable-build-test)\.yml$"),
     # The tidy jobs' toolchain: the LLVM/clang-tidy and GLAD setup actions and the GLAD generator's
     # pinned requirements. A PR that changes only these must still exercise them.
     re.compile(r"^\.github/actions/(setup-llvm|setup-windows-llvm|setup-python-glad)/"),

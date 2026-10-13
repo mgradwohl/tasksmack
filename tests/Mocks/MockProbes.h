@@ -148,6 +148,18 @@ class MockProcessProbe : public Platform::IProcessProbe
         return *this;
     }
 
+    /// The Private and Swap columns' figures (#1879, #1885): ProcessCounters::privateBytes and swapBytes.
+    MockProcessProbe& withMemoryBreakdown(int32_t pid, uint64_t privateBytes, uint64_t swapBytes)
+    {
+        findOrCreateProcess(pid,
+                            [privateBytes, swapBytes](Platform::ProcessCounters& c)
+                            {
+                                c.privateBytes = privateBytes;
+                                c.swapBytes = swapBytes;
+                            });
+        return *this;
+    }
+
     MockProcessProbe& withState(int32_t pid, char state)
     {
         for (auto& counter : m_Counters)

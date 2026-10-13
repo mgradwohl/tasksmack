@@ -182,6 +182,24 @@ TEST_F(ProcessDetailsPanelRenderTest, ASelectedProcessShowsItsOverview)
     EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 2);
 }
 
+// #1926: the Details tab is named after the process; with several processes selected in the table,
+// often some of one name, it gives the PID too, so it says which of them it shows.
+TEST_F(ProcessDetailsPanelRenderTest, TheTabLabelNamesThePidWhileSeveralAreSelected)
+{
+    const auto panel = activePanel();
+    EXPECT_EQ(panel->tabLabel(), "Select a process");
+    panel->setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(0.0, 10.0)};
+    panel->updateWithSamples(samples, 1.0F);
+    panel->setSelectionCount(1);
+    EXPECT_EQ(panel->tabLabel(), "server");
+    panel->setSelectionCount(3);
+    EXPECT_EQ(panel->tabLabel(), "server (PID 4242)");
+    EXPECT_EQ(panel->tabLabel(), "server (PID 4242)"); // Asked again, the same text
+    panel->setSelectionCount(1);
+    EXPECT_EQ(panel->tabLabel(), "server");
+}
+
 // #1395: the optional identity and runtime rows -- Publisher (Windows), Type (Windows) and Container
 // (Linux, #805) -- are shown when the process has them.
 TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
@@ -263,6 +281,33 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     EXPECT_FALSE(text.contains("Suspended")) << text;
     EXPECT_FALSE(text.contains("Affinity")) << text;
     EXPECT_FALSE(text.contains("Page Faults (total)")) << text;
+    EXPECT_FALSE(text.contains("Swap")) << text;
+}
+
+// #1879: on Windows the Memory strip has neither Private (its private bytes are the commit size, the
+// Virtual line) nor Swap (no per-process figure): both are left out, as Shared is, not shown as 0.
+TEST_F(ProcessDetailsPanelRenderTest, WindowsShowsNeitherPrivateNorSwap)
+{
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasPrivateBytes = false;
+    caps.hasSwapBytes = false;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+    for (int second = 0; second < 5; ++second)
+    {
+        Domain::ProcessSample sample = sampleAt(static_cast<double>(second), 10.0);
+        auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->privateBytes = std::uint64_t{72} << 20U;
+        sample.snapshot = std::move(snapshot);
+        const std::vector samples{sample};
+        panel->updateWithSamples(samples, 1.0F);
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Memory")) << text;
+    EXPECT_FALSE(text.contains("Private")) << text;
+    EXPECT_FALSE(text.contains("72.0 MiB")) << text;
     EXPECT_FALSE(text.contains("Swap")) << text;
 }
 

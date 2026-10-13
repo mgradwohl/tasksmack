@@ -120,6 +120,8 @@ one, the fill is the line at about 35% alpha, or the borrowed fill when the line
 | `memory_shared` | Process Memory: Shared | `memory_cached` |
 | `swap` | Memory: Swap | `io` |
 | `memory_virtual` | Process Memory: Virtual | `swap` |
+| `memory_private` | Process Memory: Private | `memory_shared` |
+| `memory_swap` | Process Memory: Swap | `swap` |
 | `power` | Power: system, process (use the same colour for `charts.gpu.power`) | `cpu` |
 | `battery` | Battery charge | `memory` |
 | `threads` | Threads | `cpu` |
@@ -248,6 +250,11 @@ outline is `[ui.frame] border` if the theme sets one, otherwise `[ui.window] bor
 moves it toward `text_primary` just far enough to reach 3:1 contrast (WCAG 1.4.11 for a control's
 boundary) on the window, child and popup backgrounds. Set `border` under `[ui.frame]` only to pick
 the outline's hue; it can't make the outline fainter than that.
+
+With several rows selected in the Processes table, the primary row -- the one Process Details shows --
+gets a bar at its left edge and an outline. Their colour is `[ui.table] selection_primary` if the theme
+sets one, otherwise `[ui.misc] nav_highlight`, moved toward `text_primary` just far enough to reach 3:1
+contrast on the selection fill (`[ui.header] normal`) of a plain and a striped row.
 
 ## Color Format
 

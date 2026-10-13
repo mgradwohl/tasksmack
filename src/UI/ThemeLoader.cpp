@@ -274,6 +274,23 @@ auto frameBorderFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
         ColorContrast::flattenOver(start, window), toward, surfaces, ColorContrast::FRAME_BORDER_CONTRAST_MIN);
 }
 
+/// The marker of a multi-selection's primary row (#1926): @p start (ui.table.selection_primary, else
+/// ui.misc.nav_highlight) made opaque over the selection fill, then moved toward text_primary just far
+/// enough to reach ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN on the selection fill (header) of a
+/// plain row and of a striped one, the backgrounds it is drawn on. Needs the scheme's text, window,
+/// header and table row colours loaded.
+auto selectionPrimaryFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 2> surfaces{
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBg, window)),
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBgAlt, window)),
+    };
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, surfaces[0]), toward, surfaces, ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+}
+
 /// Builds a ColorScheme from a parsed theme document. A missing or malformed colour becomes
 /// errorColor() (or its documented fallback) rather than failing the whole theme.
 auto schemeFromTable(const toml::table& tbl) -> ColorScheme
@@ -376,6 +393,13 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     const auto virt = getRoleColors(tbl, "charts.memory_virtual", "charts.memory_virtual_fill", swap.line, swap.fill);
     scheme.chartMemoryVirtual = virt.line;
     scheme.chartMemoryVirtualFill = virt.fill;
+    // Process Private and Swap (#1885) fall back to the colours they sit nearest: Shared, and system Swap.
+    const auto privateBytes = getRoleColors(tbl, "charts.memory_private", "charts.memory_private_fill", shared.line, shared.fill);
+    scheme.chartMemoryPrivate = privateBytes.line;
+    scheme.chartMemoryPrivateFill = privateBytes.fill;
+    const auto processSwap = getRoleColors(tbl, "charts.memory_swap", "charts.memory_swap_fill", swap.line, swap.fill);
+    scheme.chartMemorySwap = processSwap.line;
+    scheme.chartMemorySwapFill = processSwap.fill;
     const auto power = getRoleColors(tbl, "charts.power", "charts.power_fill", scheme.chartCpu, scheme.chartCpuFill);
     scheme.chartPower = power.line;
     scheme.chartPowerFill = power.fill;
@@ -507,6 +531,8 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
 
     // Control outlines (#1923), after the window, text and modal-backdrop colours they are fitted to.
     scheme.frameBorder = frameBorderFor(getColor(tbl, "ui.frame.border", scheme.border), scheme);
+    // The primary row's marker (#1926), after the header, table row and focus colours it is fitted to.
+    scheme.selectionPrimary = selectionPrimaryFor(getColor(tbl, "ui.table.selection_primary", scheme.navHighlight), scheme);
 
     // Inline meters (#1528), last: their fallbacks are fitted to the rows they are drawn on.
     scheme.processMeterLow = tbl.at_path("process_meter.low") ? getColor(tbl, "process_meter.low")

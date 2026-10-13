@@ -747,6 +747,24 @@ TEST(WindowsProcessProbeTest, MemoryIsThePrivateWorkingSetAndLeavesSharedPagesOu
     EXPECT_LE(ours.rssBytes + (SHARED_BYTES / 2), workingSet) << "Memory must leave the shared section's pages out";
 }
 
+TEST(WindowsProcessProbeTest, NeitherPrivateNorSwapIsClaimed)
+{
+    // #1879: Windows' private bytes (PrivatePageCount, GetProcessMemoryInfo's PrivateUsage) are the commit
+    // size, already the Virtual column, and Windows has no per-process swap figure. Neither is claimed,
+    // and no process carries either.
+    WindowsProcessProbe probe;
+    const ProcessCapabilities caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasPrivateBytes);
+    EXPECT_FALSE(caps.hasSwapBytes);
+    const auto processes = probe.enumerate();
+    ASSERT_FALSE(processes.empty());
+    for (const auto& proc : processes)
+    {
+        EXPECT_EQ(proc.privateBytes, 0U) << proc.name;
+        EXPECT_EQ(proc.swapBytes, 0U) << proc.name;
+    }
+}
+
 TEST(WindowsProcessProbeTest, UdpIsNeverClaimed)
 {
     // Windows has no user-mode per-process UDP byte counters; TCP EStats is all there is (#1258)
