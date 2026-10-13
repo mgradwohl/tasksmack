@@ -22,6 +22,7 @@
 #include <implot_internal.h>
 
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -30,6 +31,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -727,6 +729,102 @@ TEST_F(SystemMetricsPanelRenderTest, AResourceTotalTheProbeCannotCountHasAnUnava
         }
         panel->onDetach();
     }
+}
+
+// #1891: with an interface picked, its Network chart's tooltip lists the interface's rates beside the
+// totals behind them, and the link speed explains itself as a byte rate on hover.
+TEST_F(SystemMetricsPanelRenderTest, APickedInterfacesChartAndLinkSpeedShowTheirTooltips)
+{
+    const auto panel = attachedPanel(/*network=*/true);
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    static_cast<void>(renderAndCapture(*panel));
+    // The Overview's plots stay in ImPlot's pool once its tab is left, at their last place: only the
+    // plots this tab draws are hovered below.
+    std::set<ImGuiID> overviewPlots;
+    for (int i = 0; i < ImPlot::GetCurrentContext()->Plots.GetBufSize(); ++i)
+    {
+        if (const ImPlotPlot* plot = ImPlot::GetCurrentContext()->Plots.GetByIndex(i); plot != nullptr)
+        {
+            overviewPlots.insert(plot->ID);
+        }
+    }
+    ASSERT_TRUE(selectTab("Network and I/O"));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* combo = nullptr;
+    for (int i = 0; i < GImGui->Windows.Size && combo == nullptr; ++i)
+    {
+        ImGui::ActivateItemByID(ImHashStr("##NetworkInterface", 0, GImGui->Windows[i]->ID));
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        if (!GImGui->OpenPopupStack.empty() && std::string_view(GImGui->OpenPopupStack.back().Window->Name).contains("Combo"))
+        {
+            combo = GImGui->OpenPopupStack.back().Window;
+        }
+    }
+    ASSERT_NE(combo, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("eth0", 0, combo->ID));
+    // History for the interface's chart: several samples.
+    for (int frame = 0; frame < 40; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    std::vector<ImRect> rects;
+    ImPlotContext& plots = *ImPlot::GetCurrentContext();
+    for (int i = 0; i < plots.Plots.GetBufSize(); ++i)
+    {
+        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i); plot != nullptr && !overviewPlots.contains(plot->ID) &&
+                                                                plot->PlotRect.GetWidth() > 4.0F && plot->PlotRect.Max.y < DISPLAY_HEIGHT &&
+                                                                plot->PlotRect.Min.y >= 0.0F)
+        {
+            rects.push_back(plot->PlotRect);
+        }
+    }
+    ASSERT_FALSE(rects.empty());
+    int tooltips = 0;
+    for (const ImRect& rect : rects)
+    {
+        io.AddMousePosEvent(rect.Max.x - 3.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            panel->onUpdate(1.0F / 60.0F);
+            static_cast<void>(renderAndCapture(*panel));
+        }
+        if (const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00"); tooltip != nullptr && tooltip->Active)
+        {
+            ++tooltips;
+        }
+    }
+    // The Network chart shows one (its interface rows beside the totals); the Disk I/O chart beside it has
+    // no samples here, with no disk probe, so nothing to show.
+    EXPECT_GE(tooltips, 1) << "of " << rects.size() << " charts on the tab";
+
+    // The link speed's line sits above the charts: sweep the section's top for its tooltip.
+    bool byteRateShown = false;
+    for (float y = 0.0F; y < DISPLAY_HEIGHT * 0.5F && !byteRateShown; y += 4.0F)
+    {
+        for (const float x : {40.0F, 120.0F, 200.0F, 300.0F})
+        {
+            io.AddMousePosEvent(x, y);
+            static_cast<void>(renderAndCapture(*panel));
+            if (renderAndCapture(*panel).contains("Up to "))
+            {
+                byteRateShown = true;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(byteRateShown) << "1 Gbit/s explains itself as a byte rate";
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    panel->onDetach();
 }
 
 } // namespace
