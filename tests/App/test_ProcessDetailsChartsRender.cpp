@@ -447,6 +447,56 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewDrawsNothingWithoutHistory)
     EXPECT_TRUE(plotsDrawn().empty());
 }
 
+// #1891: without history the Network and I/O tab draws no chart either, as the Overview doesn't.
+TEST_F(ProcessDetailsChartsRenderTest, TheNetworkTabDrawsNothingWithoutHistory)
+{
+    ChartInputs inputs(busyPoint);
+    const Detail::ProcessDetailsHistory empty;
+    inputs.ctx.history = &empty;
+    ProcessDetailsCharts charts;
+    runFrame([&] { charts.renderNetworkTab(inputs.ctx); });
+    runFrame([&] { charts.renderNetworkTab(inputs.ctx); });
+    EXPECT_TRUE(plotsDrawn().empty());
+}
+
+// #1891: the Network card's heading explains its rate on hover: between readings of the process's open
+// connections, a cached reading repeating the last rate, and how many samples the chart holds.
+TEST_F(ProcessDetailsChartsRenderTest, TheNetworkHeadingExplainsItsRateOnHover)
+{
+    const ChartInputs inputs(busyPoint);
+    ProcessDetailsCharts charts;
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    std::string text;
+    const auto frame = [&]
+    {
+        runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                charts.renderNetworkTab(inputs.ctx);
+                text = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+            });
+    };
+    frame();
+    frame();
+    // The heading sits at the card's top-left, left of any plot: sweep down the left margin for it.
+    ImGuiIO& io = ImGui::GetIO();
+    bool explained = false;
+    for (int row = 0; row < static_cast<int>(DISPLAY_HEIGHT) / 4 && !explained; ++row)
+    {
+        io.AddMousePosEvent(24.0F, static_cast<float>(row * 4));
+        frame();
+        frame();
+        explained = text.contains("between readings of the process's open connections");
+    }
+    EXPECT_TRUE(explained) << text;
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, AMissingInputDrawsNothing)
 {
     ChartInputs inputs(busyPoint);
