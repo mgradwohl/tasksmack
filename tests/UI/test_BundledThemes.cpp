@@ -469,7 +469,6 @@ TEST(BundledThemesTest, ButtonsStandOutOnEverySurfaceAndKeepTheirLabelsReadable)
             std::pair{"card", flattenOver(scheme->childBg, bg.window)},
             std::pair{"popup", bg.popup},
         };
-        const ImVec4 resting = flattenOver(scheme->button, bg.window);
         for (const auto& [state, fill] : {
                  std::pair{"resting", scheme->button},
                  std::pair{"hovered", scheme->buttonHovered},
@@ -482,12 +481,14 @@ TEST(BundledThemesTest, ButtonsStandOutOnEverySurfaceAndKeepTheirLabelsReadable)
                     << name << " " << state << " button on the " << surface;
             }
         }
-        EXPECT_GE(contrastRatio(flattenOver(scheme->buttonHovered, bg.window), resting), ColorContrast::BUTTON_STATE_CONTRAST_MIN)
-            << name << " hovered button vs resting";
-        EXPECT_GE(contrastRatio(flattenOver(scheme->buttonActive, bg.window), resting), ColorContrast::BUTTON_STATE_CONTRAST_MIN)
-            << name << " pressed button vs resting";
         for (const auto& [surface, color] : surfaces)
         {
+            // Each state against resting as both are seen on this surface (either may be translucent).
+            const ImVec4 resting = flattenOver(scheme->button, color);
+            EXPECT_GE(contrastRatio(flattenOver(scheme->buttonHovered, color), resting), ColorContrast::BUTTON_STATE_CONTRAST_MIN)
+                << name << " hovered button vs resting on the " << surface;
+            EXPECT_GE(contrastRatio(flattenOver(scheme->buttonActive, color), resting), ColorContrast::BUTTON_STATE_CONTRAST_MIN)
+                << name << " pressed button vs resting on the " << surface;
             EXPECT_GE(contrastRatio(scheme->textPrimary, flattenOver(scheme->button, color)), TEXT_MIN)
                 << name << " button label on a resting button on the " << surface;
         }

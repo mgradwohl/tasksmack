@@ -278,7 +278,8 @@ auto frameBorderFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
 /// One of a plain button's fills (#1976): @p color as the theme gives it when it already reaches
 /// ColorContrast::BUTTON_FILL_CONTRAST_MIN on each surface a button is drawn on -- the window, a card
 /// and a popup or modal, as frameBorderFor() takes them -- and is ColorContrast::BUTTON_STATE_CONTRAST_MIN
-/// from each of @p distinctFrom (the resting fill, for the hovered and pressed ones). Otherwise it is
+/// from each of @p distinctFrom (the resting fill, for the hovered and pressed ones), both composited
+/// over each of those surfaces, since either may be translucent. Otherwise it is
 /// made opaque over the window and moved toward text_primary, in steps of
 /// 1 / ColorContrast::READABLE_TINT_STEPS, until it does -- but never past the last step on which
 /// text_primary, the button's label, still reaches ColorContrast::TEXT_CONTRAST_MIN: the label is
@@ -301,14 +302,20 @@ auto buttonFillFor(const ImVec4& color, const ColorScheme& scheme, std::span<con
                                     return ColorContrast::contrastRatio(ColorContrast::flattenOver(fill, surface), surface) >=
                                            ColorContrast::BUTTON_FILL_CONTRAST_MIN;
                                 });
-        const ImVec4 shown = ColorContrast::flattenOver(fill, window);
-        const bool fromStates =
-            std::ranges::all_of(distinctFrom,
-                                [&shown, &window](const ImVec4& other)
-                                {
-                                    return ColorContrast::contrastRatio(shown, ColorContrast::flattenOver(other, window)) >=
-                                           ColorContrast::BUTTON_STATE_CONTRAST_MIN;
-                                });
+        // Each state against the resting fill as both are seen on every surface: a translucent fill
+        // can differ enough over the window and blend into the resting one on a card or popup.
+        const bool fromStates = std::ranges::all_of(
+            surfaces,
+            [&fill, &distinctFrom](const ImVec4& surface)
+            {
+                const ImVec4 shown = ColorContrast::flattenOver(fill, surface);
+                return std::ranges::all_of(distinctFrom,
+                                           [&shown, &surface](const ImVec4& other)
+                                           {
+                                               return ColorContrast::contrastRatio(shown, ColorContrast::flattenOver(other, surface)) >=
+                                                      ColorContrast::BUTTON_STATE_CONTRAST_MIN;
+                                           });
+            });
         return onSurfaces && fromStates;
     };
     if (standsOut(color))

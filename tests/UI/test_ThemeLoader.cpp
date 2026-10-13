@@ -2016,6 +2016,29 @@ TEST(ThemeLoaderTest, ButtonFillsThatStandOutAreKept)
     expectColorNear(scheme.buttonActive, ThemeLoader::hexToImVec4("#0078D4"), 0.0F);
 }
 
+// A translucent hovered fill is judged against the resting fill on every surface, not only the window:
+// white at 20% is 1.27:1 from #5A5A5A over the window but blends to 1.05:1 on the popup, so it is
+// replaced by an opaque fill that stays apart everywhere.
+TEST(ThemeLoaderTest, ATranslucentHoverIsKeptApartFromRestingOnEverySurface)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withButtonFills("#5A5A5A", "#FFFFFF33", "#0078D4"), "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 themedHover = ThemeLoader::hexToImVec4("#FFFFFF33");
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    ASSERT_GE(
+        ColorContrast::contrastRatio(ColorContrast::flattenOver(themedHover, window), ColorContrast::flattenOver(scheme.button, window)),
+        ColorContrast::BUTTON_STATE_CONTRAST_MIN); // what the window-only check accepted
+
+    EXPECT_FLOAT_EQ(scheme.buttonHovered.w, 1.0F); // derived, not the theme's translucent fill
+    for (const ImVec4& surface : controlSurfaces(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(ColorContrast::flattenOver(scheme.buttonHovered, surface),
+                                               ColorContrast::flattenOver(scheme.button, surface)),
+                  ColorContrast::BUTTON_STATE_CONTRAST_MIN);
+    }
+}
+
 // The label comes first: with a dim grey text, raising the fill to the floor would take the label
 // below 4.5:1, so the fill moves only as far as the label allows.
 TEST(ThemeLoaderTest, ButtonFillStopsBeforeTheLabelBecomesHardToRead)
