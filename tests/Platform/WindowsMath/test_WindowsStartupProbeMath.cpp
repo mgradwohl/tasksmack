@@ -213,7 +213,8 @@ TEST(WindowsStartupProbeMathTest, ApprovedKeyFollowsLocationAndScope)
 TEST(WindowsStartupProbeMathTest, ApprovedValueNameIsTheRunNameOrTheFolderFileName)
 {
     StartupEntry run;
-    run.name = "OneDrive";
+    run.name = "Microsoft OneDrive"; // the program's FileDescription (#1873): not what StartupApproved records
+    run.registrationName = "OneDrive";
     run.location = StartupLocation::RunUser;
     EXPECT_EQ(approvedValueName(run), "OneDrive");
 
@@ -239,6 +240,34 @@ TEST(WindowsStartupProbeMathTest, PackagedTaskStateEnablesOnlyEnabledAndEnabledB
     EXPECT_FALSE(packagedTaskEnabled(3)); // DisabledByPolicy
     EXPECT_TRUE(packagedTaskEnabled(4));  // EnabledByPolicy
     EXPECT_FALSE(packagedTaskEnabled(5)); // unknown
+}
+
+// #1873: a policy's states can't be changed by the user; TaskSmack writes Settings' two states.
+TEST(WindowsStartupProbeMathTest, PackagedTaskStatesSetByPolicy)
+{
+    EXPECT_FALSE(packagedTaskSetByPolicy(0));
+    EXPECT_FALSE(packagedTaskSetByPolicy(1));
+    EXPECT_FALSE(packagedTaskSetByPolicy(2));
+    EXPECT_TRUE(packagedTaskSetByPolicy(3));
+    EXPECT_TRUE(packagedTaskSetByPolicy(4));
+    EXPECT_FALSE(packagedTaskSetByPolicy(5));
+    EXPECT_FALSE(packagedTaskEnabled(PACKAGED_TASK_DISABLED_BY_USER));
+    EXPECT_TRUE(packagedTaskEnabled(PACKAGED_TASK_ENABLED));
+}
+
+// #1873: a Run or Startup folder entry is shown by its program's name, as Settings shows it.
+TEST(WindowsStartupProbeMathTest, StartupDisplayNameIsTheDescriptionThenTheFileNameThenTheRegisteredName)
+{
+    EXPECT_EQ(startupDisplayName(
+                  "Microsoft Edge", R"(C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe)", "MicrosoftEdgeAutoLaunch_575A7C"),
+              "Microsoft Edge");
+    EXPECT_EQ(startupDisplayName("  Google Drive  ", R"(C:\Program Files\Google\Drive File Stream\GoogleDriveFS.exe)", "GoogleDriveFS"),
+              "Google Drive");
+    EXPECT_EQ(startupDisplayName("", R"(C:\Program Files\Waves\WavesSvc64.exe)", "WavesSvc"), "WavesSvc64.exe");
+    EXPECT_EQ(startupDisplayName("   ", "C:/tools/forward.exe", "Forward"), "forward.exe") << "a blank description is none";
+    EXPECT_EQ(startupDisplayName("", "bare-tool", "Bare"), "bare-tool") << "a name not found on the path";
+    EXPECT_EQ(startupDisplayName("", "", "Helper"), "Helper") << "no program: the registered name";
+    EXPECT_EQ(startupDisplayName("", R"(C:\dir\)", "Odd"), "Odd") << "a path with no file name";
 }
 
 TEST(WindowsStartupProbeMathTest, PackageNameIsTheFamilyWithoutItsPublisherId)

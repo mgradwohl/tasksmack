@@ -37,17 +37,22 @@ struct StartupActionCapabilities
     bool elevated = false;
 };
 
-/// Whether an entry registered at @p location has an enabled state that can be changed here: RunOnce
-/// entries run once and are removed, and have none; a packaged app's startup task has one, but it is
-/// kept by Windows' app model rather than StartupApproved, so TaskSmack only reads it (#1798).
+/// Whether an entry registered at @p location has an enabled state that can be changed: RunOnce entries
+/// run once and are removed, and have none. Run and Startup folder entries keep theirs in
+/// StartupApproved; a packaged app's startup task in the app model's per-user task state (#1873).
 [[nodiscard]] constexpr bool hasSwitchableState(StartupLocation location) noexcept
 {
-    return location != StartupLocation::RunOnceUser && location != StartupLocation::RunOnceMachine &&
-           location != StartupLocation::PackagedApp;
+    return location != StartupLocation::RunOnceUser && location != StartupLocation::RunOnceMachine;
 }
 
-/// Changes startup entries' enabled state. Every call is self-contained and quick (one registry write
-/// on Windows), but callers still run it off the UI thread. Called from one thread at a time.
+/// Whether @p entry's enabled state can be changed: its location has one, and no policy sets it.
+[[nodiscard]] constexpr bool hasSwitchableState(const StartupEntry& entry) noexcept
+{
+    return hasSwitchableState(entry.location) && !entry.setByPolicy;
+}
+
+/// Changes startup entries' enabled state. Every call is self-contained and quick (a registry write or
+/// two on Windows), but callers still run it off the UI thread. Called from one thread at a time.
 class IStartupActions
 {
   public:

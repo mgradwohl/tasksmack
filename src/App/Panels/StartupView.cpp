@@ -85,7 +85,16 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup a
     {
         return order;
     }
-    return a.location <=> b.location;
+    if (const std::strong_ordering order = a.location <=> b.location; order != 0)
+    {
+        return order;
+    }
+    // One program started by two values in one key shows one name twice (#1873).
+    if (const std::strong_ordering order = startupEntryKey(a) <=> startupEntryKey(b); order != 0)
+    {
+        return order;
+    }
+    return a.packageFamily <=> b.packageFamily;
 }
 
 void renderText(std::string_view text)
@@ -100,6 +109,10 @@ void renderStartupTooltip(const Platform::StartupEntry& entry)
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0F);
     ImGui::TextUnformatted(entry.name.c_str());
+    if (const std::string registration = startupRegistrationLabel(entry); !registration.empty())
+    {
+        ImGui::TextColored(scheme.textMuted, "%s", registration.c_str());
+    }
     if (entry.target == Platform::StartupTargetState::Missing)
     {
         ImGui::TextColored(scheme.textWarning, ICON_FA_TRIANGLE_EXCLAMATION "  The program this entry starts was not found");
@@ -185,8 +198,45 @@ std::string_view startupScopeLabel(Platform::StartupScope scope) noexcept
     return scope == Platform::StartupScope::Machine ? "All users" : "Current user";
 }
 
+std::string_view startupEntryKey(const Platform::StartupEntry& entry) noexcept
+{
+    return entry.registrationName.empty() ? std::string_view(entry.name) : std::string_view(entry.registrationName);
+}
+
+std::string startupRegistrationLabel(const Platform::StartupEntry& entry)
+{
+    using enum Platform::StartupLocation;
+    switch (entry.location)
+    {
+    case RunUser:
+    case RunMachine:
+    case RunMachine32:
+    case RunOnceUser:
+    case RunOnceMachine:
+        if (!entry.registrationName.empty() && entry.registrationName != entry.name)
+        {
+            return "Registry value: " + entry.registrationName;
+        }
+        return {};
+    case PackagedApp:
+        if (!entry.packageFamily.empty() && !entry.registrationName.empty())
+        {
+            return "Startup task: " + entry.packageFamily + "!" + entry.registrationName;
+        }
+        return {};
+    case StartupFolderUser:
+    case StartupFolderCommon:
+    default:
+        return {};
+    }
+}
+
 std::string startupEnabledLabel(const Platform::StartupEntry& entry)
 {
+    if (entry.setByPolicy)
+    {
+        return entry.enabled ? "Enabled by policy" : "Disabled by policy";
+    }
     if (entry.enabled)
     {
         return "Enabled";
@@ -217,8 +267,8 @@ buildStartupRows(std::span<const Platform::StartupEntry> entries, std::string_vi
     for (std::size_t i = 0; i < entries.size(); ++i)
     {
         const auto& entry = entries[i];
-        if (filter.empty() || containsIgnoringCase(entry.name, filter) || containsIgnoringCase(entry.publisher, filter) ||
-            containsIgnoringCase(entry.command, filter))
+        if (filter.empty() || containsIgnoringCase(entry.name, filter) || containsIgnoringCase(entry.registrationName, filter) ||
+            containsIgnoringCase(entry.publisher, filter) || containsIgnoringCase(entry.command, filter))
         {
             rows.push_back(i);
         }
@@ -302,7 +352,8 @@ void applySortSpecs(StartupViewState& state)
 
 [[nodiscard]] bool isSelected(const Platform::StartupEntry& entry, const StartupViewState& state)
 {
-    return entry.location == state.selectedLocation && entry.name == state.selectedName;
+    return entry.location == state.selectedLocation && startupEntryKey(entry) == state.selectedName &&
+           entry.packageFamily == state.selectedFamily;
 }
 
 /// What a row draws besides its entry: the action menu, and the icon (#1800) filed under iconKey.
@@ -330,8 +381,9 @@ void renderNameCell(
     if (ImGui::Selectable(entry.name.c_str(), isSelected(entry, state), ImGuiSelectableFlags_SpanAllColumns) ||
         ImGui::IsItemClicked(ImGuiMouseButton_Right))
     {
-        state.selectedName = entry.name;
+        state.selectedName = startupEntryKey(entry);
         state.selectedLocation = entry.location;
+        state.selectedFamily = entry.packageFamily;
     }
     if (missing)
     {
@@ -411,12 +463,15 @@ void renderStartupRows(const Domain::StartupPublication& publication,
             const std::size_t index = state.rows[static_cast<std::size_t>(row)];
             const auto& entry = publication.entries[index];
             ImGui::TableNextRow();
-            // Keyed by the entry (location and name), not the row: a re-sort or a new sample must not
-            // move an open row menu onto another entry.
+            // Keyed by the entry (location, package family and registered name), not the row: a re-sort
+            // or a new sample must not move an open row menu onto another entry.
             ImGui::PushID(static_cast<int>(entry.location));
-            ImGui::PushID(entry.name.c_str());
+            const std::string_view key = startupEntryKey(entry);
+            ImGui::PushID(entry.packageFamily.c_str());
+            ImGui::PushID(key.data(), key.data() + key.size());
             const RowExtras extras{.actions = actions, .icons = icons, .iconKey = state.iconKeys[index]};
             renderStartupRow(entry, state.enabledLabels[index], capabilities, scheme, state, extras);
+            ImGui::PopID();
             ImGui::PopID();
             ImGui::PopID();
         }

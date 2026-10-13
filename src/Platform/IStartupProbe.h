@@ -41,7 +41,17 @@ enum class StartupTargetState : std::uint8_t
 /// is false, or this entry's file could not be read) is left empty, 0 or Unresolved.
 struct StartupEntry
 {
-    std::string name;           ///< The registry value name, the Startup folder file name, or a packaged task's display name.
+    /// The name shown (#1873): for a Run, RunOnce or Startup folder entry, its program's version-resource
+    /// FileDescription, else the program's file name, else registrationName (as Settings > Apps > Startup
+    /// names them); for a packaged app's startup task, its display name from the manifest.
+    std::string name;
+    /// The name the entry is registered under, which identifies it (#1873): the Run or RunOnce value
+    /// name, the Startup folder file's name with its extension ("Tool.lnk"), or a packaged startup task's
+    /// TaskId. May equal name.
+    std::string registrationName;
+    /// For a packaged app's startup task, its package family name ("Contoso.Chat_8wekyb3d8bbwe"), which
+    /// with registrationName (the TaskId) identifies the task. Empty for any other entry.
+    std::string packageFamily;
     std::string command;        ///< The command line it runs (a shortcut's target and arguments).
     std::string executablePath; ///< The program the command runs, environment variables expanded.
     std::string sourcePath;     ///< For a Startup folder entry, the file in the folder (e.g. the .lnk).
@@ -52,7 +62,10 @@ struct StartupEntry
     std::string iconPath;
     StartupLocation location = StartupLocation::RunUser;
     StartupScope scope = StartupScope::User;
-    bool enabled = true;                     ///< From StartupApproved (entries it doesn't list are enabled), or a packaged task's state.
+    bool enabled = true; ///< From StartupApproved (entries it doesn't list are enabled), or a packaged task's state.
+    /// Whether an administrator or group policy sets the enabled state (a packaged task's
+    /// EnabledByPolicy or DisabledByPolicy), so the user can't change it.
+    bool setByPolicy = false;
     std::uint64_t disabledAtUnixSeconds = 0; ///< When it was disabled (Unix seconds); 0 when unknown or enabled.
     std::string publisher;                   ///< The executable's version-resource CompanyName, or the package's publisher.
     StartupTargetState target = StartupTargetState::Unresolved;

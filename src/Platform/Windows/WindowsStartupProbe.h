@@ -91,10 +91,10 @@ struct PackageManifest
 /// Reads the Run and RunOnce keys (HKCU, HKLM and HKLM's 32-bit view), the user and all-users
 /// Startup folders (shortcut targets through IShellLinkW, with COM initialised for the duration of
 /// each enumerate() on the calling thread), the enabled state and disable time from
-/// Explorer\StartupApproved, each executable's version-resource CompanyName (cached per file until its
-/// last-write time changes), and the current user's packaged apps' startup tasks (#1798): those whose
-/// state is recorded under StartupMath::PACKAGED_TASKS_KEY and whose installed package's manifest still
-/// declares them, named from the manifest (cached per package version).
+/// Explorer\StartupApproved, each executable's version-resource CompanyName and FileDescription (the
+/// publisher and the name shown, #1873; cached per file until its last-write time changes), and the current user's packaged apps' startup
+/// tasks (#1798): those whose state is recorded under StartupMath::PACKAGED_TASKS_KEY and whose installed package's manifest still declares
+/// them, named from the manifest (cached per package version).
 class WindowsStartupProbe : public IStartupProbe
 {
   public:
