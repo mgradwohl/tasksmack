@@ -65,6 +65,7 @@
 #include "WindowsNetworkAdapters.h"
 #include "WindowsOsInfoMath.h"
 #include "WindowsPlatformSecurity.h"
+#include "WindowsPublicIp.h"
 #include "WindowsServiceConfig.h"
 #include "WindowsStorage.h"
 #include "WindowsThermalZones.h"
@@ -1092,7 +1093,8 @@ SystemInfoFunctions WindowsSystemInfoProbe::systemFunctions()
 SystemInfoCapabilities WindowsSystemInfoProbe::capabilities() const
 {
     // The Wi-Fi network name and BSS list need location access on Windows 11 24H2 and later (#1782).
-    return {.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = true};
+    // The public IP lookup runs only once the user asks for it (#1894).
+    return {.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = true, .hasPublicIp = true};
 }
 
 OsInfo WindowsSystemInfoProbe::readOs()
@@ -1277,6 +1279,11 @@ BootPerformanceInfo WindowsSystemInfoProbe::readBootPerformance()
     BootPerformanceInfo info;
     WindowsBootPerformance::readBootPerformance(info, WindowsBootPerformance::systemFunctions());
     return info;
+}
+
+PublicIpInfo WindowsSystemInfoProbe::readPublicIp()
+{
+    return WindowsPublicIp::lookUp();
 }
 
 NetworkAdaptersInfo WindowsSystemInfoProbe::readNetworkAdapters(bool includeWifiDetails)
