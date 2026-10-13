@@ -18,6 +18,7 @@ BUILD_TYPE="debug"
 VERBOSE=false
 JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 CHANGED_ONLY=false
+CACHE_DIR=""
 FILES=()
 
 usage() {
@@ -35,6 +36,8 @@ Options:
   -v, --verbose     Show verbose output with per-file progress
   -j, --jobs N      Number of parallel jobs (default: $JOBS)
   -c, --changed-only Only analyze C++ files changed on this branch (vs. its merge-base with main, plus untracked)
+      --cache-dir DIR Skip files that passed before with identical inputs, and record clean results
+                    in DIR (tools/tidy-cache.py; needs python3 and clang-scan-deps)
   -h, --help        Show this help
 
 FILES:
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
         -v|--verbose) VERBOSE=true; shift ;;
         -j|--jobs) JOBS="$2"; shift 2 ;;
         -c|--changed-only) CHANGED_ONLY=true; shift ;;
+        --cache-dir) CACHE_DIR="$2"; shift 2 ;;
         -h|--help) usage ;;
         debug|relwithdebinfo) BUILD_TYPE="$1"; shift ;;
         *.cpp|*.h) FILES+=("$1"); shift ;;
@@ -185,15 +189,49 @@ if [[ ${#SOURCE_FILES[@]} -eq 0 ]]; then
     exit 1
 fi
 
+# Each task is "<cache key><TAB><file>"; the key is "-" when the file's result isn't cached.
+TASKS=()
+if [[ -n "$CACHE_DIR" ]]; then
+    # A whole-tree run prunes markers no current file has, so a saved cache holds only live keys.
+    PRUNE_ARGS=()
+    if [[ ${#FILES[@]} -eq 0 && "$CHANGED_ONLY" != "true" ]]; then
+        PRUNE_ARGS=(--prune)
+    fi
+    # The flags below must match run_clang_tidy's: they are part of every cache key.
+    if [[ -n "$PYTHON_EXE" ]] && SELECTED=$("$PYTHON_EXE" -I -X utf8 "$SCRIPT_DIR/tidy-cache.py" select \
+        --cache-dir "$CACHE_DIR" --compdb "$COMPILE_COMMANDS_TIDY" --clang-tidy "$CLANG_TIDY" \
+        --repo-root "$PROJECT_ROOT" --salt-file "$CONFIG_FILE" --salt-file "${BASH_SOURCE[0]}" \
+        --salt="$HEADER_FILTER_REGEX" --salt="$EXCLUDE_HEADER_FILTER_REGEX" \
+        --extra-arg=-std=c++23 --extra-arg=-Wno-unknown-warning-option \
+        "${PRUNE_ARGS[@]}" -- "${SOURCE_FILES[@]}"); then
+        if [[ -n "$SELECTED" ]]; then
+            mapfile -t TASKS <<<"$SELECTED"
+        fi
+        if [[ ${#TASKS[@]} -eq 0 ]]; then
+            echo "clang-tidy completed successfully (every file unchanged since a clean run)."
+            exit 0
+        fi
+    else
+        echo "Warning: clang-tidy result cache unavailable; analyzing every file." >&2
+        CACHE_DIR=""
+    fi
+fi
+if [[ ${#TASKS[@]} -eq 0 ]]; then
+    for f in "${SOURCE_FILES[@]}"; do
+        TASKS+=("-"$'\t'"$f")
+    done
+fi
+
 if $VERBOSE; then
-    echo "Running clang-tidy on ${#SOURCE_FILES[@]} files with $JOBS parallel jobs..."
+    echo "Running clang-tidy on ${#TASKS[@]} files with $JOBS parallel jobs..."
     echo ""
 fi
 
-# Function to run clang-tidy on a single file
+# Function to run clang-tidy on a single "<cache key><TAB><file>" task
 # shellcheck disable=SC2317  # Function is called via GNU parallel/find -exec
 run_clang_tidy() {
-    local file="$1"
+    local key="${1%%$'\t'*}"
+    local file="${1#*$'\t'}"
     local verbose="$2"
     local relative_path="${file#"${PROJECT_ROOT}"/}"
 
@@ -201,28 +239,38 @@ run_clang_tidy() {
         echo "  Analyzing: $relative_path"
     fi
 
-    "$CLANG_TIDY" \
+    local output rc=0
+    output=$("$CLANG_TIDY" \
         --config-file="$CONFIG_FILE" \
         --header-filter="$HEADER_FILTER_REGEX" \
         --exclude-header-filter="$EXCLUDE_HEADER_FILTER_REGEX" \
         -p "$COMPILE_COMMANDS_DIR_IN_USE" \
         --extra-arg=-std=c++23 \
         --extra-arg=-Wno-unknown-warning-option \
-        "$file" 2>&1
+        "$file" 2>&1) || rc=$?
+    if [[ -n "$output" ]]; then
+        printf '%s\n' "$output"
+    fi
+    # Record only a clean result (#1785); a file with findings is analyzed again next time.
+    if [[ $rc -eq 0 && "$key" != "-" && -n "$TIDY_CACHE_DIR" ]] && ! grep -qE '(warning|error):' <<<"$output"; then
+        printf '%s\n' "$relative_path" > "$TIDY_CACHE_DIR/$key" || true
+    fi
+    return "$rc"
 }
 export -f run_clang_tidy
-export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX COMPILE_COMMANDS_DIR_IN_USE
+TIDY_CACHE_DIR="$CACHE_DIR"
+export CLANG_TIDY CONFIG_FILE BUILD_DIR PROJECT_ROOT HEADER_FILTER_REGEX EXCLUDE_HEADER_FILTER_REGEX COMPILE_COMMANDS_DIR_IN_USE TIDY_CACHE_DIR
 
 # Run clang-tidy in parallel
 HAS_ERRORS=0
 if command -v parallel &>/dev/null; then
     # Use GNU parallel if available
-    if ! printf '%s\n' "${SOURCE_FILES[@]}" | parallel -j "$JOBS" run_clang_tidy {} "$VERBOSE"; then
+    if ! printf '%s\n' "${TASKS[@]}" | parallel -j "$JOBS" run_clang_tidy {} "$VERBOSE"; then
         HAS_ERRORS=1
     fi
 else
     # Fall back to xargs
-    if ! printf '%s\0' "${SOURCE_FILES[@]}" | xargs -0 -P "$JOBS" -I {} bash -c 'run_clang_tidy "$@"' _ {} "$VERBOSE"; then
+    if ! printf '%s\0' "${TASKS[@]}" | xargs -0 -P "$JOBS" -I {} bash -c 'run_clang_tidy "$@"' _ {} "$VERBOSE"; then
         HAS_ERRORS=1
     fi
 fi

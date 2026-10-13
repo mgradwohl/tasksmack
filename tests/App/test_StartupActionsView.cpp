@@ -124,11 +124,16 @@ TEST(StartupActionsDetailTest, WhichRowsCanChange)
     EXPECT_TRUE(AutoDetail::blockedReason(once, ADMIN).contains("Run-once"));
     EXPECT_FALSE(AutoDetail::isApplicable(false, once, ADMIN));
 
-    // A packaged app's startup task is listed with its state, but changed in Task Manager or Settings (#1798).
+    // A packaged app's startup task can be changed for the current user (#1873), unless a policy sets it.
     const auto packaged = entry("Microsoft Teams", StartupLocation::PackagedApp);
-    EXPECT_TRUE(AutoDetail::blockedReason(packaged, ADMIN).contains("packaged app"));
-    EXPECT_FALSE(AutoDetail::isApplicable(false, packaged, ADMIN));
-    EXPECT_FALSE(AutoDetail::isApplicable(true, entry("Spotify", StartupLocation::PackagedApp, false), USER));
+    EXPECT_TRUE(AutoDetail::blockedReason(packaged, USER).empty());
+    EXPECT_TRUE(AutoDetail::isApplicable(false, packaged, USER));
+    EXPECT_TRUE(AutoDetail::isApplicable(true, entry("Spotify", StartupLocation::PackagedApp, false), USER));
+    auto managed = entry("Company Portal", StartupLocation::PackagedApp);
+    managed.setByPolicy = true;
+    EXPECT_TRUE(AutoDetail::blockedReason(managed, ADMIN).contains("policy"));
+    EXPECT_FALSE(AutoDetail::isApplicable(false, managed, ADMIN));
+    EXPECT_FALSE(Platform::hasSwitchableState(managed));
     EXPECT_FALSE(AutoDetail::isApplicable(false, user, Platform::StartupActionCapabilities{}));
 }
 
@@ -138,6 +143,9 @@ TEST(StartupActionsDetailTest, TextsNameTheEntryAndTheOutcome)
     EXPECT_TRUE(AutoDetail::needsConfirm(disable));
     EXPECT_FALSE(AutoDetail::needsConfirm({.enable = true, .entry = disable.entry}));
     EXPECT_EQ(AutoDetail::confirmTitle(disable), "Disable OneDrive?");
+    EXPECT_TRUE(AutoDetail::confirmQuestion(disable).contains("registry entry or shortcut is kept"));
+    const StartupActionRequest packaged{.enable = false, .entry = entry("Spotify", StartupLocation::PackagedApp)};
+    EXPECT_TRUE(AutoDetail::confirmQuestion(packaged).contains("startup task are kept")) << "#1873";
     EXPECT_EQ(AutoDetail::progressText(disable), "Disabling OneDrive...");
     EXPECT_EQ(AutoDetail::resultMessage(disable, Platform::StartupActionResult::succeeded()).text, "Disabled OneDrive");
     const auto denied = AutoDetail::resultMessage(disable, Platform::StartupActionResult::failed("Requires administrator"));

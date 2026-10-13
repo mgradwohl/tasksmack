@@ -233,7 +233,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="GPU", .menuName="GPU Device", .configKey="gpu_device", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="Which GPU(s) the process is using"},
 
         // === NPU (#1799): NPUs and other compute accelerators, kept out of the GPU columns ===
-        // NPU Percent
+        // NPU Percent: also shown by default once an accelerator is known (ProcessColumnAvailability::defaultVisible(), #1870)
         {.name="NPU %", .menuName="NPU %", .configKey="npu_percent", .defaultWidth=60.0F, .defaultVisible=false, .canHide=true, .description="NPU utilization on the busiest NPU or compute accelerator the process uses (0-100%, as the NPU tab reports it)"},
         // NPU Memory
         {.name="NPU Mem", .menuName="NPU Memory", .configKey="npu_memory", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="NPU memory in use, counted as the NPU tab counts it: the shared memory an NPU maps from system RAM, or its dedicated memory"},

@@ -29,12 +29,15 @@ namespace Windows
 struct StartupRegistryFunctions
 {
     using RegCreateKeyExFn = LSTATUS(WINAPI*)(HKEY, LPCWSTR, DWORD, LPWSTR, DWORD, REGSAM, LPSECURITY_ATTRIBUTES, PHKEY, LPDWORD);
+    /// RegOpenKeyExW: a packaged startup task's key is opened, never created (#1873).
+    using RegOpenKeyExFn = LSTATUS(WINAPI*)(HKEY, LPCWSTR, DWORD, REGSAM, PHKEY);
     using RegQueryValueExFn = LSTATUS(WINAPI*)(HKEY, LPCWSTR, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
     using RegSetValueExFn = LSTATUS(WINAPI*)(HKEY, LPCWSTR, DWORD, DWORD, const BYTE*, DWORD);
     using RegCloseKeyFn = LSTATUS(WINAPI*)(HKEY);
     using GetSystemTimeAsFileTimeFn = void(WINAPI*)(LPFILETIME);
 
     RegCreateKeyExFn createKey = &::RegCreateKeyExW;
+    RegOpenKeyExFn openKey = &::RegOpenKeyExW;
     RegQueryValueExFn queryValue = &::RegQueryValueExW;
     RegSetValueExFn setValue = &::RegSetValueExW;
     RegCloseKeyFn closeKey = &::RegCloseKey;
@@ -46,7 +49,13 @@ struct StartupRegistryFunctions
 /// Writes StartupApproved values under HKCU or HKLM (Run, Run32 or StartupFolder, by the entry's
 /// location), keeping any bytes of an existing value it doesn't own. An all-users entry needs
 /// elevation; refused, it reports "Requires administrator". RunOnce entries are refused: they have no
-/// StartupApproved state. Stateless beyond its fixed function table, so safe from any thread.
+/// StartupApproved state.
+///
+/// A packaged app's startup task (#1873) is changed as Settings > Apps > Startup changes it: its State
+/// under StartupMath::PACKAGED_TASKS_KEY\<family>\<TaskId> becomes Enabled (2), or DisabledByUser (1)
+/// with LastDisabledTime set to now (Unix seconds); nothing else is written. The key is opened, never
+/// created, and a task whose State a policy sets (3 or 4) is refused. Stateless beyond its fixed
+/// function table, so safe from any thread.
 class WindowsStartupActions final : public IStartupActions
 {
   public:

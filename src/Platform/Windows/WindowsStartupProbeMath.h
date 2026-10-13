@@ -106,13 +106,13 @@ struct ApprovedKey
     return std::nullopt;
 }
 
-/// The StartupApproved value name for @p entry: a Run entry's value name, or a Startup folder entry's
-/// file name with its extension ("Tool.lnk"), as the probe matches them.
+/// The StartupApproved value name for @p entry: a Run entry's value name (its registrationName; #1873),
+/// or a Startup folder entry's file name with its extension ("Tool.lnk"), as the probe matches them.
 [[nodiscard]] inline std::string approvedValueName(const StartupEntry& entry)
 {
     if (entry.location != StartupLocation::StartupFolderUser && entry.location != StartupLocation::StartupFolderCommon)
     {
-        return entry.name;
+        return entry.registrationName;
     }
     const auto slash = entry.sourcePath.find_last_of("\\/");
     return (slash == std::string::npos) ? entry.sourcePath : entry.sourcePath.substr(slash + 1);
@@ -233,6 +233,34 @@ inline constexpr const wchar_t* PACKAGED_TASKS_KEY =
 [[nodiscard]] constexpr bool packagedTaskEnabled(std::uint32_t state) noexcept
 {
     return state == 2 || state == 4;
+}
+
+/// The StartupTaskState values TaskSmack writes to a packaged startup task's State (#1873), as
+/// Settings > Apps > Startup does: Enabled when the user turns it on, DisabledByUser when off.
+inline constexpr std::uint32_t PACKAGED_TASK_DISABLED_BY_USER = 1;
+inline constexpr std::uint32_t PACKAGED_TASK_ENABLED = 2;
+
+/// Whether a startup task's State is set by an administrator or group policy: DisabledByPolicy (3) or
+/// EnabledByPolicy (4). The user can't change such a task.
+[[nodiscard]] constexpr bool packagedTaskSetByPolicy(std::uint32_t state) noexcept
+{
+    return state == 3 || state == 4;
+}
+
+/// The name a Run, RunOnce or Startup folder entry is shown by (#1873), as Settings > Apps > Startup
+/// names it: its program's @p fileDescription (version resource), else the file name in
+/// @p executablePath ("msedge.exe"), else @p registrationName. Spaces around the description are dropped.
+[[nodiscard]] inline std::string
+startupDisplayName(std::string_view fileDescription, std::string_view executablePath, std::string_view registrationName)
+{
+    if (const auto first = fileDescription.find_first_not_of(' '); first != std::string_view::npos)
+    {
+        const auto last = fileDescription.find_last_not_of(' ');
+        return std::string(fileDescription.substr(first, last - first + 1));
+    }
+    const auto slash = executablePath.find_last_of("\\/");
+    const std::string_view fileName = (slash == std::string_view::npos) ? executablePath : executablePath.substr(slash + 1);
+    return std::string(fileName.empty() ? registrationName : fileName);
 }
 
 /// The package name in a package family name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe" gives

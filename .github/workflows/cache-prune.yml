@@ -2,7 +2,8 @@ name: Cache Prune
 
 # Deletes superseded Actions cache entries on main (#1583). ccache-action saves a new timestamped
 # entry (ccache-<key>-<ISO timestamp>) on every main run, and the FetchContent cache saves
-# <OS>-fetchcontent-<hash> whenever its key changes. Restores only ever use the newest entry of each
+# <OS>-fetchcontent-<hash> whenever its key changes; the clang-tidy result cache saves
+# <OS>-tidy-results-<run id>-<attempt> on every scheduled CI run (#1785). Restores only ever use the newest entry of each
 # family, but the old ones stayed until GitHub's quota eviction removed them: main alone reached
 # 12.4 GB of the 10 GB quota (2026-10-09). Keeping only the newest entry per family keeps usage under
 # quota, so least-recently-used eviction never has to touch a live entry (such as the Windows LLVM
@@ -62,6 +63,9 @@ jobs:
             } else if (family ~ /-cmake-checks-/) {
               # <OS>-cmake-checks-<preset>-<hash>-v<N> (.github/actions/cmake-check-cache)
               sub(/-[0-9a-f]+-v[0-9]+$/, "", family)
+            } else if (family ~ /-tidy-results-/) {
+              # <OS>-tidy-results-<run id>-<attempt> (.github/actions/tidy-result-cache, #1785)
+              sub(/-[0-9]+-[0-9]+$/, "", family)
             } else {
               next
             }

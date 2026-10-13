@@ -14,6 +14,9 @@
     Specific files to analyze (default: all source files)
 .PARAMETER ChangedOnly
     Only analyze files that have been modified according to git
+.PARAMETER CacheDir
+    Skip files that passed before with identical inputs, and record clean results in this
+    directory (tools/tidy-cache.py; needs python and clang-scan-deps)
 .EXAMPLE
     .\clang-tidy.ps1
 .EXAMPLE
@@ -35,7 +38,9 @@ param(
 
     [string[]]$Files = @(),
 
-    [switch]$ChangedOnly
+    [switch]$ChangedOnly,
+
+    [string]$CacheDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -188,12 +193,6 @@ if ($Jobs -le 0) {
     $Jobs = [Environment]::ProcessorCount
 }
 
-if ($ShowDetails) {
-    Write-Host "Running clang-tidy on $($SourceFiles.Count) files with $Jobs parallel jobs..."
-    Write-Host ""
-}
-
-# Run clang-tidy in parallel using PowerShell jobs
 $ConfigFile = Join-Path $ProjectRoot ".clang-tidy"
 
 # Windows-only check exclusions, appended to .clang-tidy's Checks (which Linux keeps in full).
@@ -203,9 +202,56 @@ $ConfigFile = Join-Path $ProjectRoot ".clang-tidy"
 #   a NOLINT (or [[clang::suppress]]) in our code can't silence it. Reached via App/UserConfig.cpp.
 $WindowsCheckExclusions = "-clang-analyzer-optin.core.EnumCastOutOfRange"
 
+# Each task carries the file's result-cache key ("-" when its result isn't cached).
+$Tasks = @($SourceFiles | ForEach-Object { [PSCustomObject]@{ Key = '-'; File = [string]$_ } })
+if ($CacheDir) {
+    $CacheDir = [System.IO.Path]::GetFullPath($CacheDir)
+    $fileList = New-TemporaryFile
+    $selected = $null
+    $cacheOk = $false
+    try {
+        Set-Content -LiteralPath $fileList -Value $SourceFiles -Encoding utf8
+        if ($Python) {
+            # A whole-tree run prunes markers no current file has, so a saved cache holds only live keys.
+            # The flags below must match the clang-tidy call's: they are part of every cache key.
+            $cacheArgs = @(
+                '-I', '-X', 'utf8', (Join-Path $ScriptDir "tidy-cache.py"), 'select',
+                '--cache-dir', $CacheDir, '--compdb', $CompileCommandsTidy, '--clang-tidy', $ClangTidy,
+                '--repo-root', $ProjectRoot, '--salt-file', $ConfigFile, '--salt-file', $PSCommandPath,
+                # --salt=VALUE, not --salt VALUE: a value starting with "-" would read as an option.
+                "--salt=$HeaderFilterRegex", "--salt=$ExcludeHeaderFilterRegex", "--salt=$WindowsCheckExclusions",
+                '--extra-arg=-std=c++23', '--extra-arg=-Wno-unknown-warning-option', '--files-from', $fileList)
+            if ($Files.Count -eq 0 -and -not $ChangedOnly) { $cacheArgs += '--prune' }
+            $selected = & $Python.Source @cacheArgs
+            $cacheOk = ($LASTEXITCODE -eq 0)
+        }
+    } finally {
+        Remove-Item -LiteralPath $fileList -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $cacheOk) {
+        Write-Warning "clang-tidy result cache unavailable; analyzing every file."
+        $CacheDir = ""
+    } else {
+        $Tasks = @($selected | Where-Object { $_ } | ForEach-Object {
+            $key, $file = $_ -split "`t", 2
+            [PSCustomObject]@{ Key = $key; File = $file }
+        })
+        if ($Tasks.Count -eq 0) {
+            Write-Host "clang-tidy completed successfully (every file unchanged since a clean run)." -ForegroundColor Green
+            exit 0
+        }
+    }
+}
+
+if ($ShowDetails) {
+    Write-Host "Running clang-tidy on $($Tasks.Count) files with $Jobs parallel jobs..."
+    Write-Host ""
+}
+
 # Process files in batches for parallel execution
-$results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
-    $file = $_
+$results = $Tasks | ForEach-Object -ThrottleLimit $Jobs -Parallel {
+    $file = $_.File
+    $key = $_.Key
     $clangTidy = $using:ClangTidy
     $configFile = $using:ConfigFile
     $buildDir = $using:TidyCompdbDir
@@ -236,6 +282,7 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 
     [PSCustomObject]@{
         File = $relativePath
+        Key = $key
         ExitCode = $exitCode
         Output = $output
     }
@@ -244,6 +291,10 @@ $results = $SourceFiles | ForEach-Object -ThrottleLimit $Jobs -Parallel {
 # Collect results
 $hasErrors = $false
 foreach ($result in $results) {
+    # Record only a clean result (#1785); a file with findings is analyzed again next time.
+    if ($CacheDir -and $result.Key -ne '-' -and $result.ExitCode -eq 0 -and -not ($result.Output -match "warning:|error:")) {
+        Set-Content -LiteralPath (Join-Path $CacheDir $result.Key) -Value $result.File -Encoding utf8 -ErrorAction SilentlyContinue
+    }
     if ($result.ExitCode -ne 0 -or ($result.Output -match "warning:|error:")) {
         if ($result.Output) {
             Write-Host $result.Output

@@ -1,0 +1,51 @@
+name: 'clang-tidy result cache'
+description: >-
+  Restore (mode: restore) or save (mode: save) the per-translation-unit clang-tidy result cache
+  (#1785): one marker file per file that passed, named by a hash of everything that can change its
+  result (tools/tidy-cache.py). tools/clang-tidy.sh --cache-dir / tools/clang-tidy.ps1 -CacheDir
+  skip a file whose marker exists, so unchanged files aren't analyzed again.
+
+inputs:
+  mode:
+    description: "'restore' (before clang-tidy) or 'save' (after it)"
+    required: true
+  fresh:
+    description: "mode: restore only -- 'true' starts from an empty cache (a ground-truth run that re-seeds it)"
+    required: false
+    default: 'false'
+
+outputs:
+  cache-dir:
+    description: 'The absolute cache directory to pass to the tidy script'
+    value: ${{ steps.dir.outputs.cache-dir }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Result cache directory
+      id: dir
+      shell: bash
+      run: |
+        dir="${GITHUB_WORKSPACE}/.cache/tidy-results"
+        mkdir -p "$dir"
+        echo "cache-dir=$dir" >> "$GITHUB_OUTPUT"
+
+    # Every marker is named by the hash of its inputs, so any older entry is safe to restore: a
+    # marker whose inputs changed is just never looked up. Hence the restore-keys fallback to the
+    # newest entry, from this branch or main.
+    - name: Restore clang-tidy results
+      if: inputs.mode == 'restore' && inputs.fresh != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .cache/tidy-results
+        key: ${{ runner.os }}-tidy-results-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ runner.os }}-tidy-results-
+
+    # A few hundred tiny files, so each save is a few KB. Callers save only outside pull requests,
+    # like the ccache/FetchContent caches (#1554); cache-prune.yml keeps main's newest entry.
+    - name: Save clang-tidy results
+      if: inputs.mode == 'save'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: .cache/tidy-results
+        key: ${{ runner.os }}-tidy-results-${{ github.run_id }}-${{ github.run_attempt }}

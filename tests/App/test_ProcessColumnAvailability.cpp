@@ -341,6 +341,80 @@ TEST(ProcessColumnAvailabilityTest, NpuColumnsNeedAnAcceleratorAndPerProcessMetr
     EXPECT_FALSE(ProcessColumnAvailability::gpuSupportOfGeneration(true, true, false, /*accelerator=*/false).accelerator);
 }
 
+/// Per-process GPU data on a system whose GPU model has listed an NPU (#1870).
+constexpr ProcessColumnAvailability::GpuSupport NPU_LISTED{
+    .perProcess = true,
+    .utilization = true,
+    .accelerator = true,
+    .acceleratorListed = true,
+};
+
+// #1870: NPU % is shown by default once an NPU or compute accelerator is known to be listed, and not
+// while that is unknown or on a system without one. NPU Memory and NPU Engine stay off either way.
+TEST(ProcessColumnAvailabilityTest, NpuPercentIsShownByDefaultOnlyWithAKnownAccelerator)
+{
+    using ProcessColumnAvailability::defaultColumns;
+    using ProcessColumnAvailability::gpuSupport;
+    const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+
+    const ProcessColumnSettings withNpu = defaultColumns(caps, NPU_LISTED);
+    EXPECT_TRUE(withNpu.isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(withNpu.isChosen(ProcessColumn::NpuPercent)); // A default, not a choice: not saved
+    EXPECT_FALSE(withNpu.isVisible(ProcessColumn::NpuMemory));
+    EXPECT_FALSE(withNpu.isVisible(ProcessColumn::NpuEngine));
+    EXPECT_TRUE(ProcessColumnAvailability::hasDefaultColumns(withNpu, caps, NPU_LISTED));
+    // Every other column keeps the default it has without an NPU.
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (col != ProcessColumn::NpuPercent)
+        {
+            EXPECT_EQ(withNpu.isVisible(col), defaultColumns(caps).isVisible(col)) << getColumnInfo(col).configKey;
+        }
+    }
+
+    // Unknown yet (the GPU model has not published), no accelerator, or no per-process utilization.
+    EXPECT_FALSE(defaultColumns(caps).isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(
+        defaultColumns(caps, {.perProcess = true, .utilization = true, .accelerator = false}).isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(defaultColumns(caps, {.perProcess = true, .utilization = false, .accelerator = true, .acceleratorListed = true})
+                     .isVisible(ProcessColumn::NpuPercent));
+
+    // The GPU model's word: listed only once known, and never when it lists none.
+    EXPECT_TRUE(gpuSupport(true, false, false, /*hasAccelerator=*/true, /*acceleratorListed=*/true).acceleratorListed);
+    EXPECT_FALSE(gpuSupport(true, false, false, /*hasAccelerator=*/true).acceleratorListed);
+    EXPECT_FALSE(gpuSupport(true, false, false, /*hasAccelerator=*/false, /*acceleratorListed=*/true).acceleratorListed);
+}
+
+// #1870: the accelerator is known only once the GPU probe has enumerated, so NPU % takes its default
+// then -- unless its visibility was chosen meanwhile, or in the config file, which always wins.
+TEST(ProcessColumnAvailabilityTest, AnAcceleratorBecomingKnownShowsNpuPercentOnlyIfUnchosen)
+{
+    const Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    const ProcessColumnSettings startup = ProcessColumnAvailability::defaultColumns(caps);
+    ASSERT_FALSE(startup.isVisible(ProcessColumn::NpuPercent));
+
+    const auto changed = ProcessColumnAvailability::capabilityDefaultChanges(startup, caps, NPU_LISTED);
+    ASSERT_TRUE(changed.has_value());
+    EXPECT_TRUE(changed.value_or(ProcessColumnSettings{}).isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(changed.value_or(ProcessColumnSettings{}).isChosen(ProcessColumn::NpuPercent));
+
+    // Turned off by the user (or "npu_percent = false" in the file): stays off.
+    ProcessColumnSettings off = startup;
+    off.requestVisible(ProcessColumn::NpuPercent, false);
+    EXPECT_FALSE(ProcessColumnAvailability::capabilityDefaultChanges(off, caps, NPU_LISTED).has_value());
+    ProcessColumnAvailability::applyCapabilityDefaults(off, caps, NPU_LISTED);
+    EXPECT_FALSE(off.isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(ProcessColumnAvailability::hasDefaultColumns(off, caps, NPU_LISTED)); // Reset would show it
+
+    // Turned on with no accelerator: stays on, its cells the unavailable dash.
+    ProcessColumnSettings on = startup;
+    on.setVisible(ProcessColumn::NpuPercent, true);
+    constexpr ProcessColumnAvailability::GpuSupport NO_ACCELERATOR{.perProcess = true, .utilization = true, .accelerator = false};
+    ProcessColumnAvailability::applyCapabilityDefaults(on, caps, NO_ACCELERATOR);
+    EXPECT_TRUE(on.isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(rowFormatOptions(caps, NO_ACCELERATOR).hasPerProcessNpu);
+}
+
 TEST(ProcessColumnAvailabilityTest, GpuColumnsShownByTheUserAreHiddenOnlyIfUnchosen)
 {
     const Platform::ProcessCapabilities caps = windowsLikeCapabilities();

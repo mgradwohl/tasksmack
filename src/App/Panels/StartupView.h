@@ -31,14 +31,25 @@ enum class StartupColumn : std::uint8_t
 [[nodiscard]] std::string_view startupLocationLabel(Platform::StartupLocation location) noexcept;
 [[nodiscard]] std::string_view startupScopeLabel(Platform::StartupScope scope) noexcept;
 
-/// "Enabled", "Disabled since <local date>", or "Disabled" when no time is recorded.
+/// "Enabled", "Disabled since <local date>", or "Disabled" when no time is recorded; "Enabled by
+/// policy" or "Disabled by policy" when a policy sets it (#1873).
 [[nodiscard]] std::string startupEnabledLabel(const Platform::StartupEntry& entry);
+
+/// The name that identifies @p entry within its location (#1873): the name it is registered under,
+/// else (an entry from a probe that gives none) the name shown.
+[[nodiscard]] std::string_view startupEntryKey(const Platform::StartupEntry& entry) noexcept;
+
+/// The tooltip's line for the name @p entry is registered under (#1873): "Registry value:
+/// MicrosoftEdgeAutoLaunch_..." for a Run or RunOnce entry whose value name differs from the name
+/// shown, or "Startup task: <family>!<TaskId>" for a packaged app. Empty otherwise (a Startup folder
+/// entry's tooltip shows its file's path already).
+[[nodiscard]] std::string startupRegistrationLabel(const Platform::StartupEntry& entry);
 
 /// The file the entry's icon is read from (#1800): a packaged app's logo, else the program it starts;
 /// empty -- the generic icon -- when that program wasn't found or couldn't be told.
 [[nodiscard]] std::string_view startupIconPath(const Platform::StartupEntry& entry) noexcept;
 
-/// Indices into `entries` of those whose name, publisher or command contains `filter` (ASCII case-
+/// Indices into `entries` of those whose name, registration name (#1873), publisher or command contains `filter` (ASCII case-
 /// insensitive; empty matches all), ordered by `column`. By Enabled, the enabled entries come first
 /// (last when descending) and each group is sorted A to Z by name (case-insensitively; the exact name
 /// and then the location break ties) in either direction. Other columns' ties keep the name order
@@ -73,10 +84,11 @@ struct StartupViewState
 
     std::string unavailableHeading; ///< The empty state's heading when there is no startup list.
 
-    /// The selected row (phase 2): its name and location together, since one name can be registered
-    /// in more than one place. Empty name when none.
+    /// The selected row (phase 2): its startupEntryKey, location and package family together, since one
+    /// name can be registered in more than one place. Empty name when none.
     std::string selectedName;
     Platform::StartupLocation selectedLocation = Platform::StartupLocation::RunUser;
+    std::string selectedFamily; ///< The selected packaged task's family (#1873); empty for other entries.
 };
 
 class StartupActionsView;

@@ -358,9 +358,41 @@ void applyApproved(StartupEntry& entry, const ApprovedMap& approved, const std::
     return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32U) | time.dwLowDateTime;
 }
 
-/// The CompanyName from a file's version resource: the first listed translation that has one, then
-/// US English in Unicode and Windows-1252. Empty when the file has no version resource.
-[[nodiscard]] std::string readCompanyName(const std::wstring& path)
+/// What WindowsStartupProbe reads from an executable's version resource.
+struct VersionStrings
+{
+    std::string companyName;     ///< The publisher.
+    std::string fileDescription; ///< The program's name, as Settings > Apps > Startup shows it (#1873).
+};
+
+/// One string from a version resource: the first listed translation that has it, then US English in
+/// Unicode and Windows-1252; trailing spaces dropped. Empty when no translation has it.
+[[nodiscard]] std::string
+readVersionString(std::span<const std::byte> block, const std::vector<std::pair<WORD, WORD>>& translations, const wchar_t* key)
+{
+    std::size_t index = 0;
+    while (index < translations.size())
+    {
+        const auto [language, codePage] = translations[index];
+        ++index;
+        const std::wstring query = std::format(L"\\StringFileInfo\\{:04x}{:04x}\\{}", language, codePage, key);
+        void* value = nullptr;
+        UINT chars = 0;
+        if (VerQueryValueW(block.data(), query.c_str(), &value, &chars) != FALSE && value != nullptr && chars > 0)
+        {
+            std::string text = WinString::wideToUtf8(static_cast<const wchar_t*>(value));
+            if (const auto end = text.find_last_not_of(' '); end != std::string::npos)
+            {
+                text.erase(end + 1);
+                return text;
+            }
+        }
+    }
+    return {};
+}
+
+/// The CompanyName and FileDescription from a file's version resource; empty when the file has none.
+[[nodiscard]] VersionStrings readVersionStrings(const std::wstring& path)
 {
     DWORD ignored = 0;
     const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);
@@ -379,41 +411,32 @@ void applyApproved(StartupEntry& entry, const ApprovedMap& approved, const std::
         WORD language;
         WORD codePage;
     };
-    std::vector<Translation> translations;
+    std::vector<std::pair<WORD, WORD>> translations;
     void* translationData = nullptr;
     UINT translationBytes = 0;
     if (VerQueryValueW(block.data(), L"\\VarFileInfo\\Translation", &translationData, &translationBytes) != FALSE &&
         translationData != nullptr)
     {
         const std::span listed(static_cast<const Translation*>(translationData), translationBytes / sizeof(Translation));
-        translations.assign(listed.begin(), listed.end());
-    }
-    translations.push_back({.language = 0x0409, .codePage = 0x04B0});
-    translations.push_back({.language = 0x0409, .codePage = 0x04E4});
-
-    for (const Translation& translation : translations)
-    {
-        const std::wstring query = std::format(L"\\StringFileInfo\\{:04x}{:04x}\\CompanyName", translation.language, translation.codePage);
-        void* value = nullptr;
-        UINT chars = 0;
-        if (VerQueryValueW(block.data(), query.c_str(), &value, &chars) != FALSE && value != nullptr && chars > 0)
+        translations.reserve(listed.size() + 2);
+        std::size_t index = 0;
+        while (index < listed.size())
         {
-            std::string company = WinString::wideToUtf8(static_cast<const wchar_t*>(value));
-            if (const auto end = company.find_last_not_of(' '); end != std::string::npos)
-            {
-                company.erase(end + 1);
-                return company;
-            }
+            translations.emplace_back(listed[index].language, listed[index].codePage);
+            ++index;
         }
     }
-    return {};
+    translations.emplace_back(WORD{0x0409}, WORD{0x04B0});
+    translations.emplace_back(WORD{0x0409}, WORD{0x04E4});
+    return {.companyName = readVersionString(block, translations, L"CompanyName"),
+            .fileDescription = readVersionString(block, translations, L"FileDescription")};
 }
 
-/// A publisher read for one file, kept until the file's last-write time changes.
-struct CachedPublisher
+/// The version strings read for one file, kept until the file's last-write time changes.
+struct CachedVersionStrings
 {
     std::uint64_t lastWrite = 0;
-    std::string publisher;
+    VersionStrings strings;
 };
 
 } // namespace
@@ -674,7 +697,7 @@ std::optional<PackageManifest> parsePackageManifest(std::string_view xml)
 struct WindowsStartupProbe::Impl
 {
     Windows::StartupProbeFunctions api;
-    std::unordered_map<std::wstring, CachedPublisher> publishers; ///< By lower-cased path.
+    std::unordered_map<std::wstring, CachedVersionStrings> versionStrings; ///< By lower-cased path.
     /// By lower-cased package full name, which names the version: an update reads the new manifest.
     std::unordered_map<std::wstring, ResolvedPackage> packages;
 
@@ -870,22 +893,27 @@ struct WindowsStartupProbe::Impl
                               {
                                   continue; // not installed, or no longer declared: Task Manager doesn't list it either
                               }
-                              entries.push_back(makePackagedEntry(*package, *task, record));
+                              entries.push_back(makePackagedEntry(*package, *task, record, familyUtf8));
                           }
                       });
         // Packages no longer installed (or updated to a new version) need no cached manifest.
         std::erase_if(packages, [&seenPackages](const auto& cached) { return !seenPackages.contains(cached.first); });
     }
 
-    [[nodiscard]] static StartupEntry
-    makePackagedEntry(const ResolvedPackage& package, const ResolvedPackagedTask& task, const PackagedTaskRecord& record)
+    [[nodiscard]] static StartupEntry makePackagedEntry(const ResolvedPackage& package,
+                                                        const ResolvedPackagedTask& task,
+                                                        const PackagedTaskRecord& record,
+                                                        const std::string& family)
     {
         StartupEntry entry;
         entry.name = task.name;
+        entry.registrationName = WinString::wideToUtf8(record.taskId); // the task key's name, as written
+        entry.packageFamily = family;
         entry.publisher = package.publisher;
         entry.location = StartupLocation::PackagedApp;
         entry.scope = Windows::StartupMath::scopeOf(StartupLocation::PackagedApp);
         entry.enabled = Windows::StartupMath::packagedTaskEnabled(record.state);
+        entry.setByPolicy = Windows::StartupMath::packagedTaskSetByPolicy(record.state);
         entry.disabledAtUnixSeconds = entry.enabled ? 0 : record.lastDisabledUnixSeconds;
         entry.iconPath = task.iconPath;
         if (!task.executablePath.empty())
@@ -900,10 +928,17 @@ struct WindowsStartupProbe::Impl
         return entry;
     }
 
-    /// Fills `entry`'s executable, target state and publisher from its command.
-    void resolveTarget(StartupEntry& entry, std::unordered_set<std::wstring>& seenPaths)
+    /// Fills `entry`'s executable, target state and publisher from its command, and names it (#1873):
+    /// its program's FileDescription, else the program's file name, else @p fallbackName.
+    void resolveTarget(StartupEntry& entry, std::string_view fallbackName, std::unordered_set<std::wstring>& seenPaths)
     {
+        entry.name = Windows::StartupMath::startupDisplayName({}, {}, fallbackName);
+        if (entry.command.empty())
+        {
+            return; // a shortcut whose target couldn't be read
+        }
         entry.executablePath = Windows::resolveStartupExecutable(entry.command);
+        entry.name = Windows::StartupMath::startupDisplayName({}, entry.executablePath, fallbackName);
         if (entry.executablePath.empty())
         {
             return;
@@ -921,12 +956,13 @@ struct WindowsStartupProbe::Impl
         const std::wstring key = toLower(path);
         seenPaths.insert(key);
         const std::uint64_t lastWrite = toUint64(attributes.ftLastWriteTime);
-        auto [it, inserted] = publishers.try_emplace(key);
+        auto [it, inserted] = versionStrings.try_emplace(key);
         if (inserted || it->second.lastWrite != lastWrite)
         {
-            it->second = {.lastWrite = lastWrite, .publisher = readCompanyName(path)};
+            it->second = {.lastWrite = lastWrite, .strings = readVersionStrings(path)};
         }
-        entry.publisher = it->second.publisher;
+        entry.publisher = it->second.strings.companyName;
+        entry.name = Windows::StartupMath::startupDisplayName(it->second.strings.fileDescription, entry.executablePath, fallbackName);
     }
 
     void readRunKeys(std::vector<StartupEntry>& entries, std::unordered_set<std::wstring>& seenPaths)
@@ -945,12 +981,12 @@ struct WindowsStartupProbe::Impl
                                  return; // the unnamed default value is not an entry
                              }
                              StartupEntry entry;
-                             entry.name = WinString::wideToUtf8(name);
+                             entry.registrationName = WinString::wideToUtf8(name);
                              entry.command = WinString::wideToUtf8(registryString(data));
                              entry.location = source.location;
                              entry.scope = Windows::StartupMath::scopeOf(source.location);
                              applyApproved(entry, approved, name);
-                             resolveTarget(entry, seenPaths);
+                             resolveTarget(entry, entry.registrationName, seenPaths);
                              entries.push_back(std::move(entry));
                          });
         }
@@ -987,7 +1023,7 @@ struct WindowsStartupProbe::Impl
             const bool isShortcut = toLower(file.extension().wstring()) == L".lnk";
 
             StartupEntry entry;
-            entry.name = WinString::wideToUtf8(isShortcut ? file.stem().wstring() : fileName);
+            entry.registrationName = WinString::wideToUtf8(fileName);
             entry.sourcePath = WinString::wideToUtf8(file.wstring());
             entry.location = location;
             entry.scope = Windows::StartupMath::scopeOf(location);
@@ -995,14 +1031,14 @@ struct WindowsStartupProbe::Impl
             if (!isShortcut)
             {
                 entry.command = std::format("\"{}\"", entry.sourcePath);
-                resolveTarget(entry, seenPaths);
             }
             else if (const auto command = comUsable ? Windows::readShortcutCommand(file) : std::nullopt)
             {
                 entry.command = *command;
-                resolveTarget(entry, seenPaths);
             }
-            // else: the shortcut's target couldn't be read; listed with target Unresolved.
+            // else: the shortcut's target couldn't be read; listed with target Unresolved, by its name.
+            // A shortcut is named without its extension when its program can't name it.
+            resolveTarget(entry, WinString::wideToUtf8(isShortcut ? file.stem().wstring() : fileName), seenPaths);
             entries.push_back(std::move(entry));
         }
     }
@@ -1048,7 +1084,7 @@ std::vector<StartupEntry> WindowsStartupProbe::enumerate()
     m_Impl->readPackagedTasks(entries);
 
     // Executables no longer started need no cached publisher.
-    std::erase_if(m_Impl->publishers, [&seenPaths](const auto& cached) { return !seenPaths.contains(cached.first); });
+    std::erase_if(m_Impl->versionStrings, [&seenPaths](const auto& cached) { return !seenPaths.contains(cached.first); });
     return entries;
 }
 

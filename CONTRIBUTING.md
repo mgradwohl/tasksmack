@@ -781,6 +781,14 @@ twice, both blocking: on Linux over what `tools/clang-tidy.sh` analyses (which e
 Run the Windows script before pushing a change to Windows-only code. The Windows script skips one check,
 `clang-analyzer-optin.core.EnumCastOutOfRange`, for an MSVC STL false positive it can't suppress in our code.
 
+Both scripts take a result cache, `--cache-dir DIR` / `-CacheDir DIR` (#1785): a file that passed before with
+identical inputs is skipped. `tools/tidy-cache.py` keys each file by its compile command, the content of every
+file it includes (from `clang-scan-deps`), `.clang-tidy`, the script's flags and the clang-tidy build; only
+clean results are recorded, and any cache problem means the file is analyzed. CI's tidy jobs use it (pull
+requests restore main's cache, the nightly run saves it), and the Sunday run ignores it, so every file is
+analyzed from scratch once a week. A nightly failure turns main red, which opens or updates main-health's
+single `ci-red-main` issue; the job summary counts the findings by check.
+
 Naming is enforced by `readability-identifier-naming` in `.clang-tidy`: `PascalCase` classes, structs,
 enums, enumerators, namespaces and type aliases; `camelCase` functions, methods and parameters;
 `m_PascalCase` private and protected members (`m_CurrentFontSize`, not `m_currentFontSize`); and

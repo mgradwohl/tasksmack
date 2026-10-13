@@ -382,5 +382,94 @@ TEST_F(StartupViewRenderTest, RightClickSelectsTheRowTheBarActsOn)
     EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a startup app"));
 }
 
+// #1873: a Run entry is shown by its program's name and registered under its value name.
+
+/// An Edge-style Run entry: shown as "Microsoft Edge", registered as an auto-launch value.
+[[nodiscard]] Platform::StartupEntry edgeEntry()
+{
+    auto edge = entry("Microsoft Edge", "Microsoft Corporation", StartupLocation::RunUser, true);
+    edge.registrationName = "MicrosoftEdgeAutoLaunch_575A7C";
+    return edge;
+}
+
+TEST(StartupViewTest, RegistrationLabelNamesTheValueOrTheTask)
+{
+    EXPECT_EQ(startupRegistrationLabel(edgeEntry()), "Registry value: MicrosoftEdgeAutoLaunch_575A7C");
+    EXPECT_EQ(startupEntryKey(edgeEntry()), "MicrosoftEdgeAutoLaunch_575A7C");
+
+    auto same = entry("OneDrive", "", StartupLocation::RunOnceUser, true);
+    same.registrationName = "OneDrive";
+    EXPECT_EQ(startupRegistrationLabel(same), "") << "nothing to add when the names agree";
+    EXPECT_EQ(startupEntryKey(entry("Legacy", "", StartupLocation::RunUser, true)), "Legacy") << "no registered name: the shown one";
+
+    auto shortcut = entry("Tool", "", StartupLocation::StartupFolderUser, true);
+    shortcut.registrationName = "Tool.lnk";
+    EXPECT_EQ(startupRegistrationLabel(shortcut), "") << "the tooltip shows the shortcut's path already";
+
+    auto packaged = entry("Spotify", "Spotify AB", StartupLocation::PackagedApp, false);
+    packaged.registrationName = "Spotify";
+    packaged.packageFamily = "SpotifyAB.SpotifyMusic_zpdnekdrzrea0";
+    EXPECT_EQ(startupRegistrationLabel(packaged), "Startup task: SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify");
+    packaged.packageFamily.clear();
+    EXPECT_EQ(startupRegistrationLabel(packaged), "");
+}
+
+TEST(StartupViewTest, FilterMatchesTheRegisteredNameAndPolicyIsLabelled)
+{
+    const std::vector<Platform::StartupEntry> entries = {edgeEntry(), entry("Discord", "", StartupLocation::RunUser, true)};
+    EXPECT_EQ(buildStartupRows(entries, "autolaunch", StartupColumn::Name, true), (std::vector<std::size_t>{0}));
+    EXPECT_EQ(buildStartupRows(entries, "microsoft edge", StartupColumn::Name, true), (std::vector<std::size_t>{0}));
+
+    auto managed = entry("Company Portal", "", StartupLocation::PackagedApp, true);
+    managed.setByPolicy = true;
+    EXPECT_EQ(startupEnabledLabel(managed), "Enabled by policy");
+    managed.enabled = false;
+    EXPECT_EQ(startupEnabledLabel(managed), "Disabled by policy");
+}
+
+TEST(StartupViewTest, OneProgramUnderTwoValuesSortsByTheValue)
+{
+    auto second = edgeEntry();
+    second.registrationName = "MicrosoftEdgeAutoLaunch_111111";
+    const std::vector<Platform::StartupEntry> entries = {edgeEntry(), second};
+    EXPECT_EQ(buildStartupRows(entries, "", StartupColumn::Enabled, true), (std::vector<std::size_t>{1, 0}));
+}
+
+TEST_F(StartupViewRenderTest, TheNameTooltipShowsTheRegistryValue)
+{
+    Domain::StartupPublication publication;
+    publication.version = 1;
+    publication.entries = {edgeEntry()};
+    StartupViewState state;
+    EXPECT_TRUE(captureFrame(publication, state).contains("Microsoft Edge"));
+    const ImVec2 row = firstRowCentre(publication, state);
+    ASSERT_GT(row.y, 0.0F);
+    const std::string text = hoverUntil(publication, state, row, "Registry value:");
+    EXPECT_TRUE(text.contains("Registry value: MicrosoftEdgeAutoLaunch_575A7C"));
+}
+
+TEST_F(StartupViewRenderTest, SelectionIsByTheRegisteredNameAndPackage)
+{
+    Domain::StartupPublication publication;
+    publication.version = 1;
+    auto music = entry("Music", "", StartupLocation::PackagedApp, true);
+    music.registrationName = "App";
+    music.packageFamily = "Contoso.Music_abc";
+    auto video = entry("Video", "", StartupLocation::PackagedApp, true);
+    video.registrationName = "App"; // the same TaskId in another package
+    video.packageFamily = "Contoso.Video_abc";
+    publication.entries = {music, video};
+    StartupActionsView actions(std::make_shared<IdleStartupActions>());
+    StartupViewState state;
+    state.selectedName = "App";
+    state.selectedLocation = StartupLocation::PackagedApp;
+    state.selectedFamily = "Contoso.Video_abc";
+    const std::string text = captureFrame(publication, state, &actions);
+    EXPECT_FALSE(text.contains("Select a startup app"));
+    EXPECT_TRUE(text.contains("Video"));
+    state.selectedFamily = "Contoso.Other_abc";
+    EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a startup app"));
+}
+
 } // namespace
 } // namespace App
