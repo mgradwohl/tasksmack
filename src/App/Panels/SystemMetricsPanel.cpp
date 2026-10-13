@@ -42,7 +42,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
