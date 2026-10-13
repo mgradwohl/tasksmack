@@ -67,9 +67,16 @@ void copy(std::string text, SystemInfoViewState& state)
     ImGui::SetClipboardText(state.copiedText.c_str());
 }
 
-/// The filter box, Show identifiers, Copy all, Refresh and when the facts were read. Returns whether
-/// Refresh was clicked.
-bool renderToolbar(bool reading, SystemInfoViewState& state, const UI::ColorScheme& scheme)
+/// What the toolbar's buttons asked for this frame.
+struct ToolbarClicks
+{
+    bool refresh = false;
+    bool saveReport = false;
+};
+
+/// The filter box, Show identifiers, Copy all, Save report..., Refresh and when the facts were read;
+/// under them, the last save's note.
+ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::ColorScheme& scheme)
 {
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
@@ -86,6 +93,11 @@ bool renderToolbar(bool reading, SystemInfoViewState& state, const UI::ColorSche
     }
     ImGui::SetItemTooltip("Copy every section as plain text%s", state.showIdentifiers ? "" : " (identifiers left out)");
     ImGui::SameLine();
+    ImGui::BeginDisabled(state.saveDialogOpen);
+    const bool saveReport = ImGui::Button(ICON_FA_FLOPPY_DISK "  Save report...");
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Save every section to a text or JSON file%s", state.showIdentifiers ? "" : " (identifiers left out)");
+    ImGui::SameLine();
     ImGui::BeginDisabled(reading);
     const bool refresh = ImGui::Button(ICON_FA_ARROWS_ROTATE "  Refresh");
     ImGui::EndDisabled();
@@ -93,8 +105,12 @@ bool renderToolbar(bool reading, SystemInfoViewState& state, const UI::ColorSche
     ImGui::AlignTextToFramePadding();
     ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
     textView(reading ? std::string_view{"Reading..."} : std::string_view{state.readAtText});
+    if (!state.saveNote.empty())
+    {
+        textView(state.saveNote); // its own line: a saved path can be long
+    }
     ImGui::PopStyleColor();
-    return refresh;
+    return {.refresh = refresh, .saveReport = saveReport};
 }
 
 /// A row's button and its note, muted: "Show Wi-Fi details" (#1782) or "Show public IP" (#1518).
@@ -289,7 +305,8 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         return {.content = SystemInfoViewContent::Unsupported,
                 .refreshRequested = false,
                 .wifiDetailsRequested = false,
-                .publicIpRequested = false};
+                .publicIpRequested = false,
+                .saveReportRequested = false};
     }
     if (snapshot == nullptr || snapshot->version == 0)
     {
@@ -297,12 +314,13 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         return {.content = SystemInfoViewContent::Loading,
                 .refreshRequested = false,
                 .wifiDetailsRequested = false,
-                .publicIpRequested = false};
+                .publicIpRequested = false,
+                .saveReportRequested = false};
     }
 
     const auto& scheme = UI::Theme::get().scheme();
     rebuildIfStale(*snapshot, capabilities, state); // Copy all copies the current read
-    const bool refresh = renderToolbar(reading, state, scheme);
+    const ToolbarClicks clicks = renderToolbar(reading, state, scheme);
     rebuildIfStale(*snapshot, capabilities, state); // the filter or toggle may have changed
     ImGui::Spacing();
 
@@ -332,9 +350,10 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
     }
     ImGui::EndChild();
     return {.content = SystemInfoViewContent::Sections,
-            .refreshRequested = refresh,
+            .refreshRequested = clicks.refresh,
             .wifiDetailsRequested = wifiDetails,
-            .publicIpRequested = publicIp};
+            .publicIpRequested = publicIp,
+            .saveReportRequested = clicks.saveReport};
 }
 
 } // namespace App

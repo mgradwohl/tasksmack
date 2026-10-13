@@ -10,6 +10,7 @@
 #include "App/Panels/SystemInfoSections.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Core/SaveFileDialog.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/IconsFontAwesome6.h"
@@ -22,10 +23,16 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <ios>
+#include <iterator>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -482,6 +489,91 @@ TEST_F(SystemInfoPanelRenderTest, ShowPublicIpLooksItUpAndRefreshKeepsLookingItU
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_ARROWS_ROTATE "  Refresh", 0, window->ID));
     ASSERT_TRUE(frameUntil("Fixture Linux 3"));
     EXPECT_EQ(m_Log.publicIpReads.load(), 2) << "the choice holds for the session";
+}
+
+// #1866: Save report... asks where to save (Text or JSON, a default name without identifiers), then
+// writes the page in the chosen format and says where; a cancel says nothing; a failed write says why.
+TEST_F(SystemInfoPanelRenderTest, SaveReportWritesTheChosenFormat)
+{
+    std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("tasksmack_save_report_" + std::to_string(std::random_device{}()));
+    ASSERT_TRUE(std::filesystem::create_directory(dir));
+
+    struct Ask
+    {
+        std::vector<Core::FileFilter> filters;
+        std::string defaultLocation;
+        Core::SaveFileCallback answer;
+    };
+    std::vector<Ask> asks;
+    makePanel(true);
+    m_Panel->setSaveFileDialog(
+        [&asks](std::vector<Core::FileFilter> filters, std::string defaultLocation, Core::SaveFileCallback answer)
+        { asks.push_back({.filters = std::move(filters), .defaultLocation = std::move(defaultLocation), .answer = std::move(answer)}); });
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    const ImGuiWindow* window = ImGui::FindWindowByName("Panel");
+    ASSERT_NE(window, nullptr);
+    const ImGuiID save = ImHashStr(ICON_FA_FLOPPY_DISK "  Save report...", 0, window->ID);
+    const auto click = [&]
+    {
+        ImGui::ActivateItemByID(save);
+        static_cast<void>(frame());
+        static_cast<void>(frame());
+    };
+    const auto slurp = [](const std::filesystem::path& path)
+    {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+
+    click();
+    ASSERT_EQ(asks.size(), 1U);
+    ASSERT_EQ(asks[0].filters.size(), 2U);
+    EXPECT_EQ(asks[0].filters[0].pattern, "txt");
+    EXPECT_EQ(asks[0].filters[1].pattern, "json");
+    EXPECT_TRUE(asks[0].defaultLocation.starts_with("tasksmack-system-info-machine-")) << asks[0].defaultLocation;
+    click();
+    EXPECT_EQ(asks.size(), 1U) << "disabled while the dialog is open";
+
+    // JSON through the filter, the name typed without an extension. The answer comes from another thread.
+    std::thread([&] { asks[0].answer({.path = (dir / "report").string(), .filter = 1, .error = {}}); }).join();
+    std::string text = frame();
+    const std::filesystem::path json = dir / "report.json";
+    ASSERT_TRUE(std::filesystem::exists(json));
+    EXPECT_TRUE(slurp(json).contains("\"title\": \"Operating system\"")) << slurp(json);
+    EXPECT_TRUE(slurp(json).contains("Fixture Linux 1"));
+    EXPECT_TRUE(text.contains("Saved to " + json.string())) << text;
+
+    // Cancelled: nothing written, nothing said.
+    click();
+    ASSERT_EQ(asks.size(), 2U);
+    asks[1].answer({});
+    text = frame();
+    EXPECT_FALSE(text.contains("Saved to")) << text;
+    EXPECT_FALSE(text.contains("Couldn't")) << text;
+
+    // Text by its extension; then a folder that doesn't exist.
+    click();
+    ASSERT_EQ(asks.size(), 3U);
+    asks[2].answer({.path = (dir / "report.txt").string(), .filter = -1, .error = {}});
+    static_cast<void>(frame());
+    EXPECT_TRUE(slurp(dir / "report.txt").starts_with("Operating system\n")) << slurp(dir / "report.txt");
+    click();
+    ASSERT_EQ(asks.size(), 4U);
+    asks[3].answer({.path = (dir / "missing" / "report.txt").string(), .filter = 0, .error = {}});
+    text = frame();
+    EXPECT_TRUE(text.contains("Couldn't save")) << text;
+
+    // The dialog itself failed.
+    click();
+    ASSERT_EQ(asks.size(), 5U);
+    asks[4].answer({.path = {}, .filter = -1, .error = "no portal"});
+    text = frame();
+    EXPECT_TRUE(text.contains("Couldn't show the save dialog: no portal")) << text;
+
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
 }
 
 // #1395: Copy all puts every section's text on the clipboard.

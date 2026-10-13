@@ -4,6 +4,7 @@
 #include "App/Panels/SystemInfoView.h"
 #include "Core/Event.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Core/SaveFileDialog.h"
 #include "Domain/CrashHistory.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -12,9 +13,11 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -47,6 +50,16 @@ class SystemInfoPanel : public Panel
         m_CrashHistory = std::move(crashHistory);
     }
 
+    /// Shows a save dialog (#1866): the file types, the starting location, and where the result goes,
+    /// called exactly once, maybe on another thread.
+    using SaveFileDialog = std::function<void(std::vector<Core::FileFilter>, std::string, Core::SaveFileCallback)>;
+
+    /// Test seam (#1866): Save report... asks @p dialog where to save, instead of SDL's dialog.
+    void setSaveFileDialog(SaveFileDialog dialog)
+    {
+        m_SaveFileDialog = std::move(dialog);
+    }
+
     void onAttach() override;
     void onDetach() override;
     void onEvent(Core::Event& event) override;
@@ -58,6 +71,18 @@ class SystemInfoPanel : public Panel
     void startRead(bool sensorsOnly = false);
     /// Takes in a finished read; with @p wait, waits for one in flight first.
     void finishRead(bool wait);
+    /// Save report... (#1866): asks where to save the page as it shows now.
+    void startSaveReport();
+    /// Writes the report once the dialog has answered, on the UI thread, and notes how it went.
+    void finishSaveReport();
+
+    /// Where the dialog's answer waits for the UI thread: the callback may run on another thread, and
+    /// after the panel is gone (it holds the slot, not the panel).
+    struct SaveSlot
+    {
+        std::mutex mutex;
+        std::optional<Core::SaveFileResult> result; // guarded by mutex
+    };
 
     std::function<std::unique_ptr<Platform::ISystemInfoProbe>()> m_MakeProbe; ///< Set by the test seam only
     std::function<Core::GraphicsHostInfo()> m_QueryHost;                      ///< Set by the test seam only
@@ -73,6 +98,9 @@ class SystemInfoPanel : public Panel
     std::chrono::steady_clock::time_point m_LastReadStart;
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;
     SystemInfoViewState m_ViewState;
+    SaveFileDialog m_SaveFileDialog; ///< Set by the test seam only
+    std::shared_ptr<SaveSlot> m_SaveSlot = std::make_shared<SaveSlot>();
+    bool m_SaveShowIdentifiers = false; // Show identifiers when Save report... was clicked
 };
 
 } // namespace App

@@ -1,28 +1,38 @@
 #include "SystemInfoPanel.h"
 
 #include "App/Panel.h"
+#include "App/Panels/SystemInfoSections.h"
 #include "App/Panels/SystemInfoView.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Core/SaveFileDialog.h"
+#include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/Factory.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ThreadName.h"
+#include "UI/Format.h"
 
 #include <spdlog/spdlog.h>
 
+#include <cerrno>
 #include <chrono>
+#include <format>
+#include <fstream>
 #include <functional>
 #include <future>
+#include <ios>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -124,6 +134,86 @@ void SystemInfoPanel::finishRead(bool wait)
     }
 }
 
+void SystemInfoPanel::startSaveReport()
+{
+    if (m_ViewState.saveDialogOpen || !m_Snapshot || m_Snapshot->version == 0)
+    {
+        return;
+    }
+    m_SaveShowIdentifiers = m_ViewState.showIdentifiers;
+    const std::string date = UI::Format::formatEpochDateTime(m_Snapshot->readAtUnixSeconds).substr(0, 10);
+    const std::string name =
+        SystemInfo::reportFileName(m_Snapshot->os.computerName, m_SaveShowIdentifiers, date, SystemInfo::ReportFormat::Text);
+    std::vector<Core::FileFilter> filters{{.name = "Text", .pattern = "txt"}, {.name = "JSON", .pattern = "json"}};
+    // The callback holds the slot, not the panel: it may run on SDL's thread, or after the panel is gone.
+    Core::SaveFileCallback deliver = [slot = std::weak_ptr<SaveSlot>(m_SaveSlot)](Core::SaveFileResult answer)
+    {
+        if (const std::shared_ptr<SaveSlot> target = slot.lock())
+        {
+            const std::scoped_lock lock(target->mutex);
+            target->result = std::move(answer);
+        }
+    };
+    m_ViewState.saveDialogOpen = true;
+    m_ViewState.saveNote.clear();
+    if (m_SaveFileDialog)
+    {
+        m_SaveFileDialog(std::move(filters), name, std::move(deliver));
+        return;
+    }
+    if (!Core::Application::get().hasWindow())
+    {
+        m_ViewState.saveDialogOpen = false;
+        m_ViewState.saveNote = "Couldn't save: there is no window to show a save dialog";
+        return;
+    }
+    Core::showSaveFileDialog(
+        Core::Application::get().getWindow().getHandle(), std::move(filters), Core::defaultSaveFolder() + name, std::move(deliver));
+}
+
+void SystemInfoPanel::finishSaveReport()
+{
+    std::optional<Core::SaveFileResult> answer;
+    {
+        const std::scoped_lock lock(m_SaveSlot->mutex);
+        answer.swap(m_SaveSlot->result);
+    }
+    if (!answer.has_value())
+    {
+        return;
+    }
+    m_ViewState.saveDialogOpen = false;
+    if (answer->path.empty())
+    {
+        if (!answer->error.empty())
+        {
+            m_ViewState.saveNote = "Couldn't show the save dialog: " + answer->error;
+        }
+        return; // cancelled
+    }
+    const SystemInfo::ReportFormat format = SystemInfo::reportFormatFor(answer->path, answer->filter);
+    const std::string path = SystemInfo::withReportExtension(answer->path, format);
+    // The page as it shows now: the newest read's sections, identifiers as they were at the click.
+    const std::string contents = format == SystemInfo::ReportFormat::Json
+                                   ? SystemInfo::allSectionsJson(m_ViewState.sections, m_SaveShowIdentifiers, m_ViewState.readAtText)
+                                   : SystemInfo::allSectionsText(m_ViewState.sections, m_SaveShowIdentifiers);
+    std::ofstream file(Core::utf8ToPath(path), std::ios::binary | std::ios::trunc);
+    if (file)
+    {
+        file.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        file.close();
+    }
+    if (!file)
+    {
+        const int error = errno;
+        m_ViewState.saveNote =
+            std::format("Couldn't save {}: {}", path, error != 0 ? std::generic_category().message(error) : "write failed");
+        spdlog::warn("System Information: {}", m_ViewState.saveNote);
+        return;
+    }
+    m_ViewState.saveNote = "Saved to " + path;
+}
+
 void SystemInfoPanel::renderContent()
 {
     if (!m_Model)
@@ -149,10 +239,15 @@ void SystemInfoPanel::renderContent()
     }
     // A sensors-only read is quiet: the page doesn't show "reading" for it.
     const bool reading = m_Pending.valid() && !m_PendingSensorsOnly;
+    finishSaveReport(); // before drawing, so its note shows this frame
     const SystemInfoViewResult result = renderSystemInfoView(m_Snapshot.get(), m_Model->capabilities(), reading, m_ViewState);
     if (result.refreshRequested)
     {
         startRead();
+    }
+    if (result.saveReportRequested)
+    {
+        startSaveReport();
     }
     if (result.wifiDetailsRequested)
     {

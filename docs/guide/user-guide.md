@@ -409,6 +409,11 @@ The **System** tab shows what this machine is, in titled sections of label/value
 - **Identifiers hidden:** the user name, the computer name, a domain name, serial numbers (system, board, disk, monitor and USB device) and the system UUID are hidden until you tick **Show identifiers**, and are left out of copies until then.
 - **Filter:** type to show only rows whose label or value contains the text, or every row of a section whose title does (case doesn't matter).
 - **Copy:** each section's **Copy** button, or **Copy all**, puts the section(s) on the clipboard as plain `Label: Value` lines, ready for a bug report. Copies include every row (not just the filtered ones), less hidden identifiers.
+- **Save report…:** writes the whole page to a file through the system's save dialog, as **Text** (`.txt`, the same lines as Copy all) or **JSON** (`.json`, for scripts and diffing).
+  - The JSON holds when the facts were read and whether identifiers are included, then each section's title and rows. Each row has its `label` and either its `value` or the reason it is `unavailable`.
+  - The format comes from the file type picked in the dialog, else from the name's extension. A name typed without an extension gets one.
+  - The suggested name is `tasksmack-system-info-<computer>-<date>`. The computer name is used only while **Show identifiers** is ticked, otherwise it is `machine`. Identifiers are left out of the file unless it was ticked when you clicked.
+  - The line under the toolbar then says where the report was saved, or why it couldn't be.
 - No administrator rights or network access are needed.
 
 ### Process Actions

@@ -146,6 +146,71 @@ TEST(SystemInfoSectionsTest, FilterNarrowsAndIdentifiersStayHidden)
     EXPECT_EQ(SystemInfo::visibleSections(sections, "operating", false)[0].rows.size(), all[0].rows.size());
 }
 
+// #1866: Save report's JSON: the same rows as Copy all, identifiers left out unless shown, unavailable
+// rows with their reason, strings escaped.
+TEST(SystemInfoSectionsTest, ReportJsonHasTheRowsCopyHas)
+{
+    const auto sections = SystemInfo::buildSystemInfoSections(snapshot());
+    const std::string hidden = SystemInfo::allSectionsJson(sections, false, "Read at 10:00:00");
+    EXPECT_TRUE(hidden.starts_with("{\n  \"readAt\": \"Read at 10:00:00\",\n  \"identifiersIncluded\": false,\n  \"sections\": [\n"))
+        << hidden;
+    EXPECT_TRUE(hidden.contains("\"title\": \"Operating system\"")) << hidden;
+    EXPECT_TRUE(hidden.contains("{\"label\": \"Edition\", \"value\": \"Windows 11 Home\"}")) << hidden;
+    EXPECT_TRUE(hidden.contains("{\"label\": \"Installed\", \"unavailable\": \"Not reported by this system\"}")) << hidden;
+    EXPECT_FALSE(hidden.contains("MATTS-PC"));
+    EXPECT_TRUE(hidden.ends_with("\n  ]\n}\n"));
+
+    const std::string shown = SystemInfo::allSectionsJson(sections, true, "");
+    EXPECT_TRUE(shown.contains("\"identifiersIncluded\": true"));
+    EXPECT_TRUE(shown.contains("{\"label\": \"User\", \"value\": \"MATTS-PC\\\\matt\"}")) << "the backslash escaped";
+
+    EXPECT_EQ(SystemInfo::allSectionsJson({}, false, "t"),
+              "{\n  \"readAt\": \"t\",\n  \"identifiersIncluded\": false,\n  \"sections\": []\n}\n");
+    const std::vector<Section> empty{{.title = "Empty", .icon = "", .rows = {}}};
+    EXPECT_TRUE(SystemInfo::allSectionsJson(empty, false, "").contains("\"title\": \"Empty\",\n      \"rows\": []\n    }"));
+}
+
+TEST(SystemInfoSectionsTest, JsonStringEscapes)
+{
+    EXPECT_EQ(SystemInfo::jsonString("plain"), "\"plain\"");
+    EXPECT_EQ(SystemInfo::jsonString("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    EXPECT_EQ(SystemInfo::jsonString("\n\r\t\b\f"), "\"\\n\\r\\t\\b\\f\"");
+    EXPECT_EQ(SystemInfo::jsonString(std::string_view("\x01\x1f", 2)), "\"\\u0001\\u001f\"");
+    EXPECT_EQ(SystemInfo::jsonString(std::string_view("\0", 1)), "\"\\u0000\"");
+    EXPECT_EQ(SystemInfo::jsonString("52,5 \xC2\xB0"
+                                     "C"),
+              "\"52,5 \xC2\xB0"
+              "C\"")
+        << "UTF-8 kept as it is";
+    EXPECT_EQ(SystemInfo::jsonString("\x7F"), "\"\x7F\"");
+}
+
+TEST(SystemInfoSectionsTest, ReportFileNameFormatAndExtension)
+{
+    using SystemInfo::ReportFormat;
+    EXPECT_EQ(SystemInfo::reportFileName("MATTS-PC", true, "2026-10-12", ReportFormat::Text),
+              "tasksmack-system-info-MATTS-PC-2026-10-12.txt");
+    EXPECT_EQ(SystemInfo::reportFileName("MATTS-PC", false, "2026-10-12", ReportFormat::Json),
+              "tasksmack-system-info-machine-2026-10-12.json")
+        << "the name is an identifier";
+    EXPECT_EQ(SystemInfo::reportFileName("my box/../x", true, "2026-10-12", ReportFormat::Text),
+              "tasksmack-system-info-my-box-..-x-2026-10-12.txt");
+    EXPECT_EQ(SystemInfo::reportFileName("..", true, "2026-10-12", ReportFormat::Text), "tasksmack-system-info-machine-2026-10-12.txt");
+    EXPECT_EQ(SystemInfo::reportFileName("", true, "", ReportFormat::Text), "tasksmack-system-info-machine.txt");
+
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.txt", 1), ReportFormat::Json) << "the dialog's filter wins";
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.json", 0), ReportFormat::Text);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.JSON", -1), ReportFormat::Json);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.json.txt", -1), ReportFormat::Text);
+    EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/dir.json/report", -1), ReportFormat::Text);
+    EXPECT_EQ(SystemInfo::reportFormatFor("C:\\Users\\m\\.json", -1), ReportFormat::Text) << "a dotfile, not an extension";
+
+    EXPECT_EQ(SystemInfo::withReportExtension("/tmp/report", ReportFormat::Json), "/tmp/report.json");
+    EXPECT_EQ(SystemInfo::withReportExtension("/tmp/report.txt", ReportFormat::Json), "/tmp/report.txt") << "a chosen extension stays";
+    EXPECT_EQ(SystemInfo::withReportExtension("/tmp/dir.d/report", ReportFormat::Text), "/tmp/dir.d/report.txt");
+    EXPECT_EQ(SystemInfo::withReportExtension("/tmp/.report", ReportFormat::Text), "/tmp/.report.txt");
+}
+
 TEST(SystemInfoSectionsTest, CopyTextLeavesHiddenIdentifiersOut)
 {
     const auto sections = SystemInfo::buildSystemInfoSections(snapshot());

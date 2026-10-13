@@ -52,6 +52,11 @@ struct SystemInfoViewState
     /// "Show public IP" was clicked (#1518): its button stays disabled until a read with the addresses
     /// replaces it.
     bool publicIpClicked = false;
+
+    /// A save dialog is open (#1866): Save report... is disabled until it closes. Set by the panel.
+    bool saveDialogOpen = false;
+    /// The last Save report's outcome, "Saved to ..." or why it failed, shown after the read time.
+    std::string saveNote;
 };
 
 struct SystemInfoViewResult
@@ -64,6 +69,8 @@ struct SystemInfoViewResult
     /// "Show public IP" was clicked this frame (#1518): read again with the public addresses, and keep
     /// looking them up for the rest of the session.
     bool publicIpRequested = false;
+    /// "Save report..." was clicked this frame (#1866): ask where to save the page.
+    bool saveReportRequested = false;
 };
 
 /// Draws the page into the current window.

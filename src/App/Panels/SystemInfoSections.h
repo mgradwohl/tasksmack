@@ -310,4 +310,33 @@ struct VisibleSection
 /// Every section's sectionText(), separated by blank lines.
 [[nodiscard]] std::string allSectionsText(std::span<const Section> sections, bool showIdentifiers);
 
+/// A saved report's format (#1866).
+enum class ReportFormat : std::uint8_t
+{
+    Text, ///< allSectionsText()
+    Json, ///< allSectionsJson()
+};
+
+/// Every section as JSON (#1866), for scripts and diffing: {"readAt", "identifiersIncluded",
+/// "sections": [{"title", "rows": [{"label", "value"} or {"label", "unavailable": reason}]}]}. Rows
+/// left out of Copy (identifiers, unless @p showIdentifiers) are left out here too. Strings are escaped
+/// as JSON requires; non-ASCII text stays UTF-8.
+[[nodiscard]] std::string allSectionsJson(std::span<const Section> sections, bool showIdentifiers, std::string_view readAt);
+
+/// @p text as a quoted JSON string: quotes, backslashes and control characters escaped.
+[[nodiscard]] std::string jsonString(std::string_view text);
+
+/// The report's default file name: "tasksmack-system-info-<computer>-<date>.<txt|json>", @p date as
+/// "YYYY-MM-DD" (left out when empty). The computer name only with @p showIdentifiers (it is an
+/// identifier), and only its letters, digits, '-', '_' and '.' (others become '-'); "machine"
+/// otherwise or when none is left.
+[[nodiscard]] std::string reportFileName(std::string_view computerName, bool showIdentifiers, std::string_view date, ReportFormat format);
+
+/// The format to save @p path in: the dialog's @p filter (0 text, 1 JSON) when it says, else the
+/// path's extension (".json" is JSON), else text.
+[[nodiscard]] ReportFormat reportFormatFor(std::string_view path, int filter);
+
+/// @p path with the format's extension added when it has none (a name typed without one).
+[[nodiscard]] std::string withReportExtension(std::string path, ReportFormat format);
+
 } // namespace App::SystemInfo

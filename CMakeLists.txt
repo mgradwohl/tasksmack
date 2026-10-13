@@ -115,6 +115,7 @@ set(TASKSMACK_SOURCES
     src/Core/PathService.cpp
     src/Core/VideoBackend.cpp
     src/Core/Window.cpp
+    src/Core/SaveFileDialog.cpp
     src/Core/X11WindowManager.cpp
     src/UI/AssetPath.cpp
     src/UI/ChartLegend.cpp

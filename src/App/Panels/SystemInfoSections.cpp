@@ -2067,4 +2067,147 @@ std::string allSectionsText(std::span<const Section> sections, bool showIdentifi
     return text;
 }
 
+std::string jsonString(std::string_view text)
+{
+    std::string out;
+    out.reserve(text.size() + 2);
+    out += '"';
+    for (const char c : text)
+    {
+        switch (c)
+        {
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        case '\b':
+            out += "\\b";
+            break;
+        case '\f':
+            out += "\\f";
+            break;
+        default:
+            if (static_cast<unsigned char>(c) < 0x20U)
+            {
+                out += std::format("\\u{:04x}", static_cast<unsigned>(static_cast<unsigned char>(c)));
+            }
+            else
+            {
+                out += c; // UTF-8 bytes pass through
+            }
+        }
+    }
+    out += '"';
+    return out;
+}
+
+std::string allSectionsJson(std::span<const Section> sections, bool showIdentifiers, std::string_view readAt)
+{
+    std::string json = "{\n";
+    json += std::format("  \"readAt\": {},\n", jsonString(readAt));
+    json += std::format("  \"identifiersIncluded\": {},\n", showIdentifiers ? "true" : "false");
+    json += "  \"sections\": [";
+    bool firstSection = true;
+    for (const Section& section : sections)
+    {
+        json += firstSection ? "\n" : ",\n";
+        firstSection = false;
+        json += std::format("    {{\n      \"title\": {},\n      \"rows\": [", jsonString(section.title));
+        bool firstRow = true;
+        for (const Row& item : section.rows)
+        {
+            if (item.isIdentifier && !showIdentifiers)
+            {
+                continue;
+            }
+            json += firstRow ? "\n" : ",\n";
+            firstRow = false;
+            json += item.available()
+                      ? std::format(R"(        {{"label": {}, "value": {}}})", jsonString(item.label), jsonString(item.value))
+                      : std::format(
+                            R"(        {{"label": {}, "unavailable": {}}})", jsonString(item.label), jsonString(item.unavailableReason));
+        }
+        json += firstRow ? "]\n    }" : "\n      ]\n    }";
+    }
+    json += firstSection ? "]\n}\n" : "\n  ]\n}\n";
+    return json;
+}
+
+std::string reportFileName(std::string_view computerName, bool showIdentifiers, std::string_view date, ReportFormat format)
+{
+    std::string machine;
+    if (showIdentifiers)
+    {
+        for (const char c : computerName)
+        {
+            const bool safe =
+                (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+            machine += safe ? c : '-';
+        }
+        // Not a hidden file, nor one that ends in a dot.
+        while (!machine.empty() && (machine.front() == '.' || machine.front() == '-'))
+        {
+            machine.erase(machine.begin());
+        }
+        while (!machine.empty() && (machine.back() == '.' || machine.back() == '-'))
+        {
+            machine.pop_back();
+        }
+    }
+    if (machine.empty())
+    {
+        machine = "machine";
+    }
+    return std::format(
+        "tasksmack-system-info-{}{}{}.{}", machine, date.empty() ? "" : "-", date, format == ReportFormat::Json ? "json" : "txt");
+}
+
+ReportFormat reportFormatFor(std::string_view path, int filter)
+{
+    if (filter == 0)
+    {
+        return ReportFormat::Text;
+    }
+    if (filter == 1)
+    {
+        return ReportFormat::Json;
+    }
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::string_view name = slash == std::string_view::npos ? path : path.substr(slash + 1);
+    const std::size_t dot = name.rfind('.');
+    if (dot != std::string_view::npos && dot != 0)
+    {
+        std::string extension(name.substr(dot + 1));
+        std::ranges::transform(extension, extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (extension == "json")
+        {
+            return ReportFormat::Json;
+        }
+    }
+    return ReportFormat::Text;
+}
+
+std::string withReportExtension(std::string path, ReportFormat format)
+{
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::size_t nameStart = slash == std::string::npos ? 0 : slash + 1;
+    const std::size_t dot = path.rfind('.');
+    if (dot == std::string::npos || dot <= nameStart)
+    {
+        path += format == ReportFormat::Json ? ".json" : ".txt";
+    }
+    return path;
+}
+
 } // namespace App::SystemInfo
