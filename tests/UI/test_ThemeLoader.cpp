@@ -7,6 +7,7 @@
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -1928,6 +1929,104 @@ TEST(ThemeLoaderTest, FrameBorderFromTheThemeIsRaisedWhenTooFaint)
     {
         EXPECT_GE(ColorContrast::contrastRatio(scheme->frameBorder, surface), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
     }
+}
+
+// ========== Button fills: a button stands out from the window, cards and dialogs (#1976) ==========
+
+/// The test theme body with its [ui.button] fills replaced by @p normal, @p hovered and @p active.
+std::string withButtonFills(std::string_view normal, std::string_view hovered, std::string_view active)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view fills = "[ui.button]\nnormal = \"#333337\"\nhovered = \"#3E3E42\"\nactive = \"#0078D4\"\n";
+    const auto at = toml.find(fills);
+    EXPECT_NE(at, std::string::npos);
+    toml.replace(at,
+                 fills.size(),
+                 "[ui.button]\nnormal = \"" + std::string(normal) + "\"\nhovered = \"" + std::string(hovered) + "\"\nactive = \"" +
+                     std::string(active) + "\"\n");
+    return toml;
+}
+
+/// The test theme body with its text_primary replaced by @p text.
+std::string withTextPrimary(std::string_view text)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view line = "text_primary = \"#FFFFFF\"";
+    const auto at = toml.find(line);
+    EXPECT_NE(at, std::string::npos);
+    toml.replace(at, line.size(), "text_primary = \"" + std::string(text) + "\"");
+    return toml;
+}
+
+/// The lowest contrast @p fill has on any of the surfaces a button is drawn on.
+float weakestButtonContrast(const ImVec4& fill, const ColorScheme& scheme)
+{
+    float weakest = 21.0F;
+    for (const ImVec4& surface : controlSurfaces(scheme))
+    {
+        weakest = std::min(weakest, ColorContrast::contrastRatio(ColorContrast::flattenOver(fill, surface), surface));
+    }
+    return weakest;
+}
+
+// The test theme fills its buttons with #333337, 1.05:1 on its popup: the fill is moved toward the
+// white text until it reaches the floor on every surface, opaque, with the label still readable.
+TEST(ThemeLoaderTest, ButtonFillIsRaisedUntilItStandsOutOnEverySurface)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 themed = ThemeLoader::hexToImVec4("#333337");
+    ASSERT_LT(weakestButtonContrast(themed, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN);
+
+    EXPECT_GE(weakestButtonContrast(scheme.button, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN);
+    EXPECT_FLOAT_EQ(scheme.button.w, 1.0F);
+    EXPECT_GE(ColorContrast::contrastRatio(scheme.textPrimary, scheme.button), ColorContrast::TEXT_CONTRAST_MIN);
+    // Lighter than the theme's fill, toward the white text, but nowhere near it.
+    EXPECT_GT(scheme.button.x, themed.x);
+    EXPECT_LT(scheme.button.x, 0.5F);
+}
+
+// Hovering and pressing stay visibly different from the raised resting fill, and stand out too.
+TEST(ThemeLoaderTest, ButtonHoverAndPressStayDistinctFromTheRaisedFill)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const ImVec4 resting = ColorContrast::flattenOver(scheme.button, window);
+    for (const ImVec4& state : std::array{scheme.buttonHovered, scheme.buttonActive})
+    {
+        EXPECT_GE(weakestButtonContrast(state, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN);
+        EXPECT_GE(ColorContrast::contrastRatio(ColorContrast::flattenOver(state, window), resting),
+                  ColorContrast::BUTTON_STATE_CONTRAST_MIN);
+    }
+    // The pressed fill (#0078D4) already stood out from everything, so it is the theme's own.
+    expectColorNear(scheme.buttonActive, ThemeLoader::hexToImVec4("#0078D4"));
+}
+
+// Fills that already stand out are the theme's own, exactly.
+TEST(ThemeLoaderTest, ButtonFillsThatStandOutAreKept)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withButtonFills("#5A5A5A", "#6A6A6A", "#0078D4"), "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    expectColorNear(scheme.button, ThemeLoader::hexToImVec4("#5A5A5A"), 0.0F);
+    expectColorNear(scheme.buttonHovered, ThemeLoader::hexToImVec4("#6A6A6A"), 0.0F);
+    expectColorNear(scheme.buttonActive, ThemeLoader::hexToImVec4("#0078D4"), 0.0F);
+}
+
+// The label comes first: with a dim grey text, raising the fill to the floor would take the label
+// below 4.5:1, so the fill moves only as far as the label allows.
+TEST(ThemeLoaderTest, ButtonFillStopsBeforeTheLabelBecomesHardToRead)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTextPrimary("#A8A8A8"), "button-fill.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    const ImVec4 themed = ThemeLoader::hexToImVec4("#333337");
+    EXPECT_GE(ColorContrast::contrastRatio(scheme.textPrimary, scheme.button), ColorContrast::TEXT_CONTRAST_MIN);
+    EXPECT_GT(scheme.button.x, themed.x);                                                             // moved as far as it could...
+    EXPECT_LT(weakestButtonContrast(scheme.button, scheme), ColorContrast::BUTTON_FILL_CONTRAST_MIN); // ...short of the floor
 }
 
 // ========== selectionPrimary: the marker of a multi-selection's primary row (#1926) ==========

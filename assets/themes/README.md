@@ -251,6 +251,12 @@ moves it toward `text_primary` just far enough to reach 3:1 contrast (WCAG 1.4.1
 boundary) on the window, child and popup backgrounds. Set `border` under `[ui.frame]` only to pick
 the outline's hue; it can't make the outline fainter than that.
 
+Buttons keep `[ui.button]`'s colours when they already stand out: the fill at least 1.5:1 from the
+window, child and popup backgrounds, and `hovered` and `active` at least 1.1:1 from `normal`. A fill
+that doesn't is moved toward `text_primary` until it does, but never so far that `text_primary`, the
+button's label, drops below 4.5:1 on it. So a `normal` equal to `popup_background` still gives a
+dialog's OK and Cancel a visible shape.
+
 With several rows selected in the Processes table, the primary row -- the one Process Details shows --
 gets a bar at its left edge and an outline. Their colour is `[ui.table] selection_primary` if the theme
 sets one, otherwise `[ui.misc] nav_highlight`, moved toward `text_primary` just far enough to reach 3:1

@@ -409,6 +409,52 @@ TEST(BundledThemesTest, ThePrimarySelectionMarkerStandsOutOnTheSelectedRows)
     }
 }
 
+// #1976: a button reads as a button wherever it is drawn -- the window, a card, a dialog -- resting,
+// hovered and pressed: its fill reaches BUTTON_FILL_CONTRAST_MIN on each, hovering and pressing stay
+// visibly different from resting, and the label (the theme's primary text) keeps 4.5:1 on the
+// resting fill. Nord and Solarized Dark filled buttons with the dialog's own colour (1.03:1).
+TEST(BundledThemesTest, ButtonsStandOutOnEverySurfaceAndKeepTheirLabelsReadable)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+        const std::array<std::pair<const char*, ImVec4>, 3> surfaces{
+            std::pair{"window", bg.window},
+            std::pair{"card", flattenOver(scheme->childBg, bg.window)},
+            std::pair{"popup", bg.popup},
+        };
+        const ImVec4 resting = flattenOver(scheme->button, bg.window);
+        for (const auto& [state, fill] : {
+                 std::pair{"resting", scheme->button},
+                 std::pair{"hovered", scheme->buttonHovered},
+                 std::pair{"pressed", scheme->buttonActive},
+             })
+        {
+            for (const auto& [surface, color] : surfaces)
+            {
+                EXPECT_GE(contrastRatio(flattenOver(fill, color), color), ColorContrast::BUTTON_FILL_CONTRAST_MIN)
+                    << name << " " << state << " button on the " << surface;
+            }
+        }
+        EXPECT_GE(contrastRatio(flattenOver(scheme->buttonHovered, bg.window), resting), ColorContrast::BUTTON_STATE_CONTRAST_MIN)
+            << name << " hovered button vs resting";
+        EXPECT_GE(contrastRatio(flattenOver(scheme->buttonActive, bg.window), resting), ColorContrast::BUTTON_STATE_CONTRAST_MIN)
+            << name << " pressed button vs resting";
+        for (const auto& [surface, color] : surfaces)
+        {
+            EXPECT_GE(contrastRatio(scheme->textPrimary, flattenOver(scheme->button, color)), TEXT_MIN)
+                << name << " button label on a resting button on the " << surface;
+        }
+    }
+}
+
 // #1528: a cell's text stays readable on its inline meter at either end of the heat gradient, on
 // plain, striped and selected rows, and the meter shows at all (it differs from the row).
 TEST(BundledThemesTest, ProcessMeterKeepsTextReadable)

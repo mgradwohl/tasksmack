@@ -196,6 +196,11 @@ struct ColorScheme
     ImVec4 checkMark;
     ImVec4 sliderGrab;
     ImVec4 sliderGrabActive;
+    /// Fills of a plain button (ImGuiCol_Button*) (#1976): ui.button.normal / hovered / active as the
+    /// theme gives them when they already reach ColorContrast::BUTTON_FILL_CONTRAST_MIN on the window, a
+    /// card and a popup (and hovered and active stay BUTTON_STATE_CONTRAST_MIN from normal), else moved
+    /// toward text_primary until they do -- never so far that text_primary drops below
+    /// ColorContrast::TEXT_CONTRAST_MIN on them. A moved fill is opaque.
     ImVec4 button;
     ImVec4 buttonHovered;
     ImVec4 buttonActive;

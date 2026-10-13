@@ -149,4 +149,23 @@ inline constexpr float FRAME_BORDER_CONTRAST_MIN = 3.0F;
 /// is the only thing telling that row from the other selected ones.
 inline constexpr float SELECTION_PRIMARY_CONTRAST_MIN = 3.0F;
 
+/// Contrast floor for a button's fill against the window, card or dialog it sits on (#1976). Below
+/// it, an OK or Cancel was a bare word: Nord and Solarized Dark fill buttons with their popup colour
+/// (1.03:1 on a dialog), and five more bundled themes were under 1.2:1.
+///
+/// Not WCAG 2.1 SC 1.4.11's 3:1. That criterion asks 3:1 of the visual information *needed* to
+/// identify a control, and a text button is identified by its label, which SC 1.4.3 already holds
+/// to TEXT_CONTRAST_MIN (W3C's Understanding 1.4.11 says such a button needs no visible boundary).
+/// A fill at 3:1 would also take its own label below 4.5:1 -- the fill sits between the surface and
+/// the label, so it can be 3:1 from one and 4.5:1 from the other only when the label is 13.5:1 on
+/// the surface -- in twelve of the twenty bundled themes. 1.5:1 is a clearly
+/// visible shape (Dracula's 1.56:1 and Arctic Fire's 2.04:1 read as buttons; Windows Dark's 1.28:1
+/// was "visible but faint") that every bundled theme reaches with its label still above 5:1.
+inline constexpr float BUTTON_FILL_CONTRAST_MIN = 1.5F;
+
+/// How far a button's hovered and pressed fills stay from its resting fill (#1976), so raising the
+/// resting fill to BUTTON_FILL_CONTRAST_MIN never leaves hovering without visible feedback. The
+/// bundled themes step their resting-to-hovered fills by 1.12:1 to 1.94:1.
+inline constexpr float BUTTON_STATE_CONTRAST_MIN = 1.1F;
+
 } // namespace UI::ColorContrast

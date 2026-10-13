@@ -16,6 +16,7 @@
 #include <exception>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -272,6 +273,68 @@ auto frameBorderFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
     const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
     return ColorContrast::tintToContrast(
         ColorContrast::flattenOver(start, window), toward, surfaces, ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+}
+
+/// One of a plain button's fills (#1976): @p color as the theme gives it when it already reaches
+/// ColorContrast::BUTTON_FILL_CONTRAST_MIN on each surface a button is drawn on -- the window, a card
+/// and a popup or modal, as frameBorderFor() takes them -- and is ColorContrast::BUTTON_STATE_CONTRAST_MIN
+/// from each of @p distinctFrom (the resting fill, for the hovered and pressed ones). Otherwise it is
+/// made opaque over the window and moved toward text_primary, in steps of
+/// 1 / ColorContrast::READABLE_TINT_STEPS, until it does -- but never past the last step on which
+/// text_primary, the button's label, still reaches ColorContrast::TEXT_CONTRAST_MIN: the label is
+/// what names the button, so it comes first. Nord and Solarized Dark filled buttons with their popup
+/// colour, so a dialog's OK was a bare word. Needs the scheme's text, window and misc colours loaded.
+auto buttonFillFor(const ImVec4& color, const ColorScheme& scheme, std::span<const ImVec4> distinctFrom) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 3> surfaces{
+        window,
+        ColorContrast::flattenOver(scheme.childBg, window),
+        ColorContrast::flattenOver(scheme.popupBg, ColorContrast::flattenOver(scheme.modalWindowDimBg, window)),
+    };
+    const auto standsOut = [&](const ImVec4& fill)
+    {
+        const bool onSurfaces =
+            std::ranges::all_of(surfaces,
+                                [&fill](const ImVec4& surface)
+                                {
+                                    return ColorContrast::contrastRatio(ColorContrast::flattenOver(fill, surface), surface) >=
+                                           ColorContrast::BUTTON_FILL_CONTRAST_MIN;
+                                });
+        const ImVec4 shown = ColorContrast::flattenOver(fill, window);
+        const bool fromStates =
+            std::ranges::all_of(distinctFrom,
+                                [&shown, &window](const ImVec4& other)
+                                {
+                                    return ColorContrast::contrastRatio(shown, ColorContrast::flattenOver(other, window)) >=
+                                           ColorContrast::BUTTON_STATE_CONTRAST_MIN;
+                                });
+        return onSurfaces && fromStates;
+    };
+    if (standsOut(color))
+    {
+        return color;
+    }
+
+    const ImVec4 start = ColorContrast::flattenOver(color, window);
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    ImVec4 fill = color;
+    for (int step = 1; step <= ColorContrast::READABLE_TINT_STEPS; ++step)
+    {
+        const float t = static_cast<float>(step) / static_cast<float>(ColorContrast::READABLE_TINT_STEPS);
+        const ImVec4 mix{
+            start.x + ((toward.x - start.x) * t), start.y + ((toward.y - start.y) * t), start.z + ((toward.z - start.z) * t), 1.0F};
+        if (ColorContrast::contrastRatio(scheme.textPrimary, mix) < ColorContrast::TEXT_CONTRAST_MIN)
+        {
+            break; // One step further would cost the label its contrast: keep the last that didn't
+        }
+        fill = mix;
+        if (standsOut(fill))
+        {
+            break;
+        }
+    }
+    return fill;
 }
 
 /// The marker of a multi-selection's primary row (#1926): @p start (ui.table.selection_primary, else
@@ -531,6 +594,11 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
 
     // Control outlines (#1923), after the window, text and modal-backdrop colours they are fitted to.
     scheme.frameBorder = frameBorderFor(getColor(tbl, "ui.frame.border", scheme.border), scheme);
+    // Button fills (#1976), likewise: the resting fill first, then hovered and pressed kept apart from it.
+    scheme.button = buttonFillFor(scheme.button, scheme, {});
+    const std::array<ImVec4, 1> resting{scheme.button};
+    scheme.buttonHovered = buttonFillFor(scheme.buttonHovered, scheme, resting);
+    scheme.buttonActive = buttonFillFor(scheme.buttonActive, scheme, resting);
     // The primary row's marker (#1926), after the header, table row and focus colours it is fitted to.
     scheme.selectionPrimary = selectionPrimaryFor(getColor(tbl, "ui.table.selection_primary", scheme.navHighlight), scheme);
 
