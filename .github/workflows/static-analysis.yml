@@ -126,7 +126,7 @@ jobs:
         # Strawberry Perl puts on the image PATH. The other options match ci.yml's Windows debug
         # build, whose tree its clang-tidy run analyzes (#1875), so both compute the same per-file
         # result-cache keys from the same compile commands.
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF -DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
 
       - name: Build GLAD
         shell: pwsh

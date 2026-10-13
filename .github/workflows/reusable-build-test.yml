@@ -70,6 +70,19 @@ jobs:
     env:
       # See the Configure steps: PCH stays on only for the weekly unity build.
       PCH: ${{ inputs.build_type == 'unity' && 'ON' || 'OFF' }}
+      # Windows debug only, build speed only (#1875); the presets, and so local builds, are
+      # unchanged. static-analysis.yml's Windows configure passes the same options, so both
+      # clang-tidy runs see the same compile commands.
+      #  - IPO off: the presets turn ThinLTO on for every configuration, so each debug link ran
+      #    LTO code generation over every object it links, again for each test executable, and
+      #    ccache only ever cached the bitcode. Release builds (Linux on every PR, Windows nightly)
+      #    still build with LTO.
+      #  - ghash: -gcodeview-ghash objects plus lld-link /DEBUG:GHASH, a faster PDB type merge.
+      #  - No C++20 module scanning: nothing here uses modules, and CMake otherwise runs
+      #    clang-scan-deps on every C++ file of every build, cache hit or not.
+      WIN_DEBUG_CI_ARGS: >-
+        ${{ startsWith(inputs.os, 'windows') && inputs.build_type == 'debug' &&
+        '-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -184,7 +197,7 @@ jobs:
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_ENABLE_CCACHE=${{ inputs.build && 'ON' || 'OFF' }} ${{ steps.cmake-checks.outputs.cmake-args }}
+        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_ENABLE_CCACHE=${{ inputs.build && 'ON' || 'OFF' }} ${{ env.WIN_DEBUG_CI_ARGS }} ${{ steps.cmake-checks.outputs.cmake-args }}
 
       # Each Windows build job saves its own preset's results (the debug job's configure also
       # serves its clang-tidy run), so two jobs never race for one key.
@@ -226,7 +239,31 @@ jobs:
         shell: bash
         env:
           BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
-        run: python -I -X utf8 tools/ninja-build-profile.py "$BUILD_DIR" >> "$GITHUB_STEP_SUMMARY"
+        run: python -I -X utf8 tools/ninja-build-profile.py "$BUILD_DIR" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: TEMP measure GHASH link (Windows debug)
+        if: runner.os == 'Windows' && inputs.build && inputs.build_type == 'debug'
+        continue-on-error: true
+        shell: pwsh
+        working-directory: build/win-debug
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: |
+          foreach ($target in 'tests/TaskSmackTests.exe', 'bin/TaskSmackUiTraining.exe', 'bin/TaskSmack.exe') {
+            $cmds = @(ninja -t commands $target)
+            $link = $cmds[-1]
+            if ($link -notmatch '/DEBUG:GHASH') { Write-Host "no GHASH in: $link"; continue }
+            $plain = $link -replace '-Xlinker /DEBUG:GHASH', ''
+            foreach ($round in 1, 2) {
+              foreach ($variant in @(@('plain', $plain), @('ghash', $link))) {
+                Set-Content -LiteralPath ab-link.bat -Value $variant[1] -Encoding ascii
+                $t = Measure-Command { cmd /c ab-link.bat | Out-Null }
+                if ($LASTEXITCODE -ne 0) { Write-Host "link failed ($LASTEXITCODE): $($variant[1])" }
+                Write-Host ("{0} {1} round {2}: {3:N1} s" -f $target, $variant[0], $round, $t.TotalSeconds)
+                "| $target | $($variant[0]) | $round | $([math]::Round($t.TotalSeconds, 1)) |" >> $env:GITHUB_STEP_SUMMARY
+              }
+            }
+          }
 
       - name: Install virtual display (Linux)
         # Xvfb plus Mesa's software GL (llvmpipe) gives the Application/Window/IconLoader GL
