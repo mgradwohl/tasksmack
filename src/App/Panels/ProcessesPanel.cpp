@@ -644,6 +644,9 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
                                        &RowFormatCache::containerWidth,
                                        &RowFormatCache::containerSupported>},
+    {.column = ProcessColumn::Services,
+     .render =
+         &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::services, &RowFormatCache::servicesWidth, &RowFormatCache::servicesSupported>},
     // State
     {.column = ProcessColumn::State, .render = &stateCell},
     {.column = ProcessColumn::Status,

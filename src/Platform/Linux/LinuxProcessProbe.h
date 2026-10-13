@@ -272,6 +272,7 @@ class LinuxProcessProbe : public IProcessProbe
     {
         bool frozen = false;
         std::string container; // CgroupContainer::containerFromCgroups()
+        std::string services;  // CgroupService::serviceFromCgroups() (#1886)
     };
     /// The facts of each set of cgroups seen, within one pass.
     using FactsByCgroup = std::unordered_map<std::string, CgroupFacts, StringHash, std::equal_to<>>;

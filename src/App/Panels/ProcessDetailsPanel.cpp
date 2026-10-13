@@ -503,6 +503,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Type",
             "Container",
             "Affinity",
+            "Services",
         });
 
         // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
@@ -537,10 +538,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         std::string_view value;
         ImVec4 color;
     };
-    // At most seven rows a table (Publisher, Type and Container are optional), held in place.
+    // At most eight rows a table (Publisher, Affinity, Services, Type and Container are optional), held in place.
     struct InfoRows
     {
-        std::array<InfoRow, 7> rows{};
+        std::array<InfoRow, 8> rows{};
         std::size_t count = 0;
 
         void add(InfoRow row) noexcept
@@ -642,6 +643,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!proc.publisher.empty())
     {
         identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
+    }
+    if (!proc.services.empty())
+    {
+        // The Processes table's Services column (#1886): the systemd service it runs under, on Linux.
+        identityRows.add({.label = "Services", .value = proc.services, .color = theme.scheme().textPrimary});
     }
     if (m_ProcessCapabilities.hasCpuAffinity)
     {

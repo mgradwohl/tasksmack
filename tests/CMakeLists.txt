@@ -246,6 +246,7 @@ set(COMMON_TEST_SOURCES
     App/test_CpuDetailsBlockRender.cpp
     App/test_BatteryDetails.cpp
     Platform/test_CgroupContainer.cpp
+    Platform/test_CgroupService.cpp
     Platform/test_CgroupFreezerPath.cpp
     Platform/test_CpuDetails.cpp
     Platform/test_LinuxCpuDetails.cpp

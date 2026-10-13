@@ -188,6 +188,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     snapshot->publisher = "Example Corp";
     snapshot->processType = "Background Process";
     snapshot->container = "docker:1a2b3c4d5e6f";
+    snapshot->services = "nginx.service"; // #1886
     sample.snapshot = std::move(snapshot);
     const std::vector samples{sample};
     panel->updateWithSamples(samples, 1.0F);
@@ -198,6 +199,8 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     EXPECT_TRUE(text.contains("Background Process")) << text;
     EXPECT_TRUE(text.contains("Container")) << text;
     EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f")) << text;
+    EXPECT_TRUE(text.contains("Services")) << text;
+    EXPECT_TRUE(text.contains("nginx.service")) << text;
 }
 
 // #1878: what the Processes table shows is on Process Details too: Status joined to State, Affinity in

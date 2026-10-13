@@ -64,6 +64,20 @@ TEST(ProcessColumnAvailabilityTest, PrivateAndSwapFollowTheirCapabilities)
     EXPECT_FALSE(getColumnInfo(ProcessColumn::Swap).defaultVisible);
 }
 
+TEST(ProcessColumnAvailabilityTest, ServicesFollowTheirCapability)
+{
+    // #1886: Linux reads the systemd service; Windows (until #1880) shows dashes and the header's note.
+    EXPECT_FALSE(isSupported(ProcessColumn::Services, windowsLikeCapabilities()));
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Services, windowsLikeCapabilities()),
+              ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    caps.hasServices = true;
+    EXPECT_TRUE(isSupported(ProcessColumn::Services, caps));
+    EXPECT_TRUE(rowFormatOptions(caps).hasServices);
+    EXPECT_FALSE(getColumnInfo(ProcessColumn::Services).defaultVisible);
+    EXPECT_EQ(columnAlignment(ProcessColumn::Services), ColumnAlign::Left);
+}
+
 TEST(ProcessColumnAvailabilityTest, ContainerIsLinuxOnly)
 {
     // #805: containers are read from cgroups, which Windows has none of.

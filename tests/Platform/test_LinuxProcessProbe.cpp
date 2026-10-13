@@ -1248,6 +1248,19 @@ TEST(LinuxProcessProbeTest, ACgroupFileLongerThanTheStackReadIsReadWhole)
     EXPECT_EQ(processes[0].container, "docker:1a2b3c4d5e6f");
 }
 
+TEST(LinuxProcessProbeTest, ServicesAreTheSystemdServiceFromTheCgroup)
+{
+    // #1886: from the same /proc/[pid]/cgroup read as the container.
+    ScopedTempDir proc("ts_test_proc_service");
+    writeVmHwmProcess(proc.path, "Name:\tsshd\nUid:\t0\t0\t0\t0\n");
+    writeFile(proc.path / "4242" / "cgroup", "0::/system.slice/ssh.service\n");
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].services, "ssh.service");
+    EXPECT_TRUE(probe.capabilities().hasServices);
+}
+
 TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)
 {
     // A readable CapEff decides for root too, so these hold whatever the test runs as.
