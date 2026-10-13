@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -682,6 +683,41 @@ TEST(NetlinkSocketStatsScriptedTest, NullTransportIsUnavailable)
     NetlinkSocketStats stats(nullptr, 0ms);
     EXPECT_FALSE(stats.isAvailable());
     EXPECT_TRUE(stats.queryAllSockets().empty());
+    EXPECT_TRUE(stats.queryAllSocketsUncached().empty()); // #1891: the uncached path too
+}
+
+/// A transport whose send throws, as an allocation failure while collecting results would (#773).
+template<bool StandardException> class ThrowingNetlinkTransport final : public INetlinkTransport
+{
+  public:
+    [[nodiscard]] NetlinkIoResult send(std::span<const std::byte> /*request*/) override
+    {
+        if constexpr (StandardException)
+        {
+            throw std::runtime_error("no memory");
+        }
+        else
+        {
+            // NOLINTNEXTLINE(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - intentionally not a std::exception
+            throw 42;
+        }
+    }
+    [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> /*buffer*/, bool /*nonBlocking*/) override
+    {
+        return {};
+    }
+    [[nodiscard]] std::uint32_t portId() const noexcept override
+    {
+        return 1;
+    }
+};
+
+// #1891 (#773): a warm-up query that throws, a std::exception or anything else, never escapes the constructor.
+TEST(NetlinkSocketStatsScriptedTest, AThrowingWarmUpQueryNeverEscapesTheConstructor)
+{
+    using namespace std::chrono_literals;
+    EXPECT_NO_THROW({ const NetlinkSocketStats stats(std::make_unique<ThrowingNetlinkTransport<true>>(), 0ms); });
+    EXPECT_NO_THROW({ const NetlinkSocketStats stats(std::make_unique<ThrowingNetlinkTransport<false>>(), 0ms); });
 }
 
 // ========== buildInodeToPidMap over a synthetic /proc (#1099) ==========
