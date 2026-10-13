@@ -143,9 +143,10 @@ jobs:
           # Include the LLVM version so caches from different toolchains don't mix.
           key: ${{ runner.os }}-${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
           # Windows debug outgrew 500M: full on every run, with 70-120 cleanups and ~60% hits on
-          # main. Without ThinLTO its objects hold machine code and CodeView rather than bitcode,
-          # and a cold build alone filled 750M (37 cleanups), so it gets 1G (#1875).
-          max-size: ${{ runner.os == 'Windows' && inputs.build_type == 'debug' && '1G' || '500M' }}
+          # main. Its working set without ThinLTO is ~0.35 GB compressed (a cold build on top of
+          # the restored cache), so 750M also holds the stale entries a flag change leaves behind
+          # until main's evict-old-files drops them (#1875).
+          max-size: ${{ runner.os == 'Windows' && inputs.build_type == 'debug' && '750M' || '500M' }}
           # Pull requests restore main's cache but never save their own: a PR-ref entry is
           # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
