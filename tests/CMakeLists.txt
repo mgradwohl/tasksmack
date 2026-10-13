@@ -759,7 +759,9 @@ if(UNIX AND NOT APPLE)
 endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
-target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
+# test_ElevationNoticeDialogRender.cpp lays the notice out in the bundled Inter at each font preset (#1986).
+target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"
+                                                  TASKSMACK_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 # The app's assets beside the test binaries, as the app has them beside itself (CMakeLists.txt): the
 # real-display tests then run UILayer with the app's fonts, title font, chrome icon font and window icon
 # instead of ImGui's built-in font and no icon ("Failed to load icon ... tests/assets/icons"), so the title

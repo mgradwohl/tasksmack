@@ -64,7 +64,9 @@ inline constexpr float HELP_MIN_HEIGHT_EM = 16.0F; // 171px
 // ---- Elevation notice (#937) ----
 
 /// Widest the notice may be. It fits itself to its text between ELEVATION_MIN_WIDTH_EM and this
-/// (#1601): the long Linux text wraps at this width, the short Windows text shrinks. Like the About
+/// (#1601): the long Linux text wraps at this width, the short Windows text shrinks. Where the text
+/// wraps, the width moves by up to a word either side of this so no paragraph ends in a lone word
+/// (#1986; UI::DialogMetrics::computeOrphanFreeWrapWidth()). Like the About
 /// box (#1490), the width is applied every frame the popup is open -- see ElevationNoticeLayer for
 /// why that distinction matters.
 inline constexpr float ELEVATION_WIDTH_EM = 45.0F; // 480px

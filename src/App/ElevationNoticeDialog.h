@@ -1,5 +1,9 @@
 #pragma once
 
+#include "App/ElevationNoticeText.h"
+
+#include <string_view>
+
 namespace App::ElevationNoticeDialog
 {
 
@@ -29,7 +33,15 @@ struct State
 /// @return true on the frame OK closed it; @p state.dontShowAgain then says whether to stop showing it.
 [[nodiscard]] bool render(State& state);
 
-/// Width the dialog's content needs unwrapped, window padding and title bar included (#1601).
-[[nodiscard]] float measureContentWidth();
+/// Width the dialog's content needs unwrapped, window padding and title bar included (#1601), with
+/// @p bodyText as its body.
+[[nodiscard]] float measureContentWidth(std::string_view bodyText = ElevationNoticeText::forCurrentPlatform());
+
+/// The dialog's width this frame, with @p bodyText as its body: fitted to its text between its floor
+/// and authored width (#1601), clamped to the viewport, and -- where the body has to wrap -- moved
+/// by up to a word either way so no paragraph ends in a lone word (#1986). A whole number of pixels
+/// wherever it matters: ImGui truncates a window's width, and a text that just fit then wrapped its
+/// last word. Needs a frame (it measures text in the current font).
+[[nodiscard]] float computeWidth(std::string_view bodyText, float viewportWidthPx);
 
 } // namespace App::ElevationNoticeDialog

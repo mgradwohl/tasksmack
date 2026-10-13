@@ -15,27 +15,91 @@
 #include <cmath>
 #include <ranges>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace App::ElevationNoticeDialog
 {
 
-float measureContentWidth()
+namespace
+{
+
+/// Widest of everything the dialog shows besides its body text, unwrapped, without the window padding.
+[[nodiscard]] float measureChromeWidth()
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float widest = ImGui::CalcTextSize(ICON_FA_LOCK "  Limited Data").x;
+    widest = std::max(widest, ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Don't show again").x);
+    return std::max(
+        widest, UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, ImGui::GetFontSize(), ELEVATION_BUTTON_MIN_EM));
+}
+
+/// The body's paragraphs, each as its words' measured widths: what the wrap is decided from (#1986).
+[[nodiscard]] std::vector<std::vector<float>> measureBodyWords(std::string_view bodyText)
+{
+    std::vector<std::vector<float>> paragraphs;
+    for (const auto paragraph : std::views::split(bodyText, '\n'))
+    {
+        std::vector<float> words;
+        for (const auto word : std::views::split(paragraph, ' '))
+        {
+            const std::string_view text(word.begin(), word.end());
+            if (!text.empty())
+            {
+                words.push_back(ImGui::CalcTextSize(text.data(), text.data() + text.size()).x);
+            }
+        }
+        if (!words.empty())
+        {
+            paragraphs.push_back(std::move(words));
+        }
+    }
+    return paragraphs;
+}
+
+} // namespace
+
+float measureContentWidth(std::string_view bodyText)
 {
     // Everything the dialog shows on one line, unwrapped: its widest is the width the text needs.
     const ImGuiStyle& style = ImGui::GetStyle();
-    float widest = ImGui::CalcTextSize(ICON_FA_LOCK "  Limited Data").x;
-    constexpr std::string_view bodyText = ElevationNoticeText::forCurrentPlatform();
+    float widest = measureChromeWidth();
     for (const auto paragraph : std::views::split(bodyText, '\n'))
     {
         const std::string_view line(paragraph.begin(), paragraph.end());
         widest = std::max(widest, ImGui::CalcTextSize(line.data(), line.data() + line.size()).x);
     }
-    widest = std::max(widest, ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Don't show again").x);
-    widest = std::max(
-        widest, UI::DialogMetrics::computeActionButtonWidth(ImGui::CalcTextSize("OK").x, ImGui::GetFontSize(), ELEVATION_BUTTON_MIN_EM));
     // The title bar holds the popup's name between its frame padding rather than the window padding.
     const float titleWidth = ImGui::CalcTextSize(POPUP_ID).x + (style.FramePadding.x * 2.0F);
     return std::max(widest + (style.WindowPadding.x * 2.0F), titleWidth);
+}
+
+float computeWidth(std::string_view bodyText, float viewportWidthPx)
+{
+    const float emPx = ImGui::GetFontSize();
+    const float contentPx = measureContentWidth(bodyText);
+    const float fittedPx =
+        UI::DialogMetrics::computeFittedDialogWidth(contentPx, emPx, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, viewportWidthPx);
+    if (fittedPx >= contentPx)
+    {
+        // Nothing wraps. ImGui truncates a window's width to a whole pixel, so a fractional width
+        // is rounded up: truncated, a line exactly as wide as the text wrapped its last word (#1986).
+        return std::ceil(fittedPx);
+    }
+    // The body wraps at the window's content width, inside the padding either side; ImGui truncates
+    // the window's width to a whole pixel, so that is the width it wraps at now.
+    const float paddingPx = ImGui::GetStyle().WindowPadding.x * 2.0F;
+    const float floorPx = std::max(
+        UI::DialogMetrics::computeFittedDialogWidth(0.0F, emPx, ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, viewportWidthPx) - paddingPx,
+        measureChromeWidth());
+    const float wrapPx =
+        UI::DialogMetrics::computeOrphanFreeWrapWidth(measureBodyWords(bodyText),
+                                                      ImGui::CalcTextSize(" ").x,
+                                                      std::floor(fittedPx) - paddingPx,
+                                                      floorPx,
+                                                      UI::DialogMetrics::computeDialogMaxExtent(viewportWidthPx) - paddingPx,
+                                                      paddingPx);
+    return wrapPx + paddingPx;
 }
 
 bool render(State& state)
@@ -57,7 +121,8 @@ bool render(State& state)
     // 480px at the reference configuration, which the long Linux text still fills (#1601) -- clamped
     // so a large font on a small window cannot push the dialog off-screen. This modal is the first thing a user
     // sees when running unelevated and it blocks input until dismissed, so its proportions matter
-    // more than the usual cosmetic case (#937).
+    // more than the usual cosmetic case (#937). Where the body wraps, the wrap width moves by up to a
+    // word either way so no paragraph ends in a lone word (#1986) -- see computeWidth().
     //
     // Reapplied on every frame the popup is open, not once with ImGuiCond_Appearing. ImGui only lets
     // SetNextWindowSize override ImGuiWindowFlags_AlwaysAutoResize on frames where the size was
@@ -67,8 +132,7 @@ bool render(State& state)
     if (ImGui::IsPopupOpen(POPUP_ID))
     {
         const ImGuiViewport* sizingViewport = ImGui::GetMainViewport();
-        const float widthPx = UI::DialogMetrics::computeFittedDialogWidth(
-            measureContentWidth(), ImGui::GetFontSize(), ELEVATION_MIN_WIDTH_EM, ELEVATION_WIDTH_EM, sizingViewport->WorkSize.x);
+        const float widthPx = computeWidth(ElevationNoticeText::forCurrentPlatform(), sizingViewport->WorkSize.x);
         ImGui::SetNextWindowSize(ImVec2(widthPx, 0.0F));
 
         // Centred on the TaskSmack window when it opens, and again whenever the window is resized or
@@ -114,15 +178,13 @@ bool render(State& state)
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Platform-specific body text
-        constexpr std::string_view bodyText = ElevationNoticeText::forCurrentPlatform();
-
         // Wrapped to the window, because the width above is now a real constraint rather than a
         // suggestion: on a narrow window the clamp can leave less content width than the longest
         // line needs, and unwrapped text is simply clipped. The text has line breaks only between
         // paragraphs; within one, the wrap decides where lines end (#1200), where a hard-coded break
         // used to cut a line short beside a wrapped one.
         ImGui::PushTextWrapPos(0.0F);
+        constexpr std::string_view bodyText = ElevationNoticeText::forCurrentPlatform();
         ImGui::TextUnformatted(bodyText.data(), bodyText.data() + bodyText.size());
         ImGui::PopTextWrapPos();
 

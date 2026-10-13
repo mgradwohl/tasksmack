@@ -6,16 +6,70 @@
 
 #include "App/DialogGeometry.h"
 #include "App/ElevationNoticeDialog.h"
+#include "App/ElevationNoticeText.h"
 #include "UI/DialogMetrics.h"
+#include "UI/DpiScale.h"
+#include "UI/StyleScale.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal and its controls
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <ranges>
+#include <string>
+#include <string_view>
+#include <vector>
+
 namespace App
 {
 namespace
 {
+
+/// The words on each line of @p text when ImGui wraps it at @p wrapWidthPx in @p font at @p sizePx,
+/// paragraph by paragraph: ImGui's own wrap, so the test sees the lines the notice draws.
+[[nodiscard]] std::vector<std::vector<std::size_t>>
+wrappedLineWordCounts(ImFont* font, float sizePx, std::string_view text, float wrapWidthPx)
+{
+    std::vector<std::vector<std::size_t>> paragraphs;
+    for (const auto paragraph : std::views::split(text, '\n'))
+    {
+        const std::string_view body(paragraph.begin(), paragraph.end());
+        if (body.empty())
+        {
+            continue;
+        }
+        std::vector<std::size_t>& lines = paragraphs.emplace_back();
+        const char* cursor = body.data();
+        const char* const end = body.data() + body.size();
+        while (cursor < end)
+        {
+            const char* lineEnd = font->CalcWordWrapPosition(sizePx, cursor, end, wrapWidthPx);
+            const std::string_view line(cursor, lineEnd);
+            lines.push_back(static_cast<std::size_t>(
+                std::ranges::count_if(std::views::split(line, ' '), [](const auto word) { return !std::ranges::empty(word); })));
+            cursor = lineEnd;
+            while (cursor < end && *cursor == ' ')
+            {
+                ++cursor; // A wrap skips the blanks it broke at
+            }
+        }
+    }
+    return paragraphs;
+}
+
+/// A paragraph wrapped onto more than one line with a line holding just one word (#1986).
+[[nodiscard]] bool hasALoneWordLine(const std::vector<std::vector<std::size_t>>& paragraphs)
+{
+    return std::ranges::any_of(paragraphs,
+                               [](const std::vector<std::size_t>& lines)
+                               { return lines.size() > 1 && std::ranges::any_of(lines, [](std::size_t words) { return words == 1; }); });
+}
 
 /// The open modal's geometry at the end of a frame, and what render() returned.
 struct Measured
@@ -236,6 +290,92 @@ TEST_F(ElevationNoticeDialogRenderTest, ReopensCentredAfterBeingDismissed)
     const Measured again = openAndSettle();
     ASSERT_TRUE(again.open);
     expectCentred(again);
+}
+
+// #1986: the notice in the app's own body font, Inter, at the Small and Medium presets over the common
+// display scales. At Small on a 175 % display the first sentence came out a whisker wider than the
+// 45 em cap and "privileges." wrapped onto a line of its own. The notice's own lines are checked
+// through ImGui's wrap at the width the dialog took; every platform's wording through computeWidth().
+class ElevationNoticeFontTest : public ElevationNoticeDialogRenderTest
+{
+  protected:
+    /// Inter at @p regularPt on a @p displayScale display, with the style sizes the notice reads scaled
+    /// as UI::Theme scales them (UI::computeStyleScale()).
+    void useInter(float regularPt, float displayScale)
+    {
+        const float sizePx = UI::computePointsToPixels(regularPt, displayScale);
+        const float styleScale = UI::computeStyleScale(regularPt, displayScale);
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.WindowPadding = ImVec2(8.0F * styleScale, 8.0F * styleScale);
+        style.FramePadding = ImVec2(UI::Theme::FRAME_PADDING_X * styleScale, UI::Theme::FRAME_PADDING_Y * styleScale);
+        style.ItemSpacing = ImVec2(8.0F * styleScale, 4.0F * styleScale);
+        style.ItemInnerSpacing = ImVec2(4.0F * styleScale, 4.0F * styleScale);
+
+        const std::filesystem::path inter = std::filesystem::path(TASKSMACK_SOURCE_ASSETS_DIR) / "fonts" / "Inter-Regular.ttf";
+        ASSERT_TRUE(std::filesystem::exists(inter)) << inter.string();
+        ImGuiIO& io = ImGui::GetIO();
+        if (m_Inter == nullptr)
+        {
+            m_Inter = io.Fonts->AddFontFromFileTTF(inter.string().c_str(), sizePx);
+            ASSERT_NE(m_Inter, nullptr);
+            io.FontDefault = m_Inter;
+        }
+        ImGui::GetStyle()._NextFrameFontSizeBase = sizePx; // NewFrame() applies the size from here
+    }
+
+    static constexpr std::array SCALES{1.0F, 1.25F, 1.5F, 1.75F, 2.0F};
+    static constexpr std::array PRESETS{UI::FontSize::Small, UI::FontSize::Medium};
+
+    ImFont* m_Inter = nullptr;
+};
+
+TEST_F(ElevationNoticeFontTest, NoLineIsALoneWordAtSmallOrMedium)
+{
+    ImGui::GetIO().DisplaySize = ImVec2(1200.0F, 800.0F); // The window #1986 was found in
+    m_State.openRequested = true;
+    for (const UI::FontSize preset : PRESETS)
+    {
+        for (const float scale : SCALES)
+        {
+            const auto& config = UI::FONT_SIZE_PRESETS.at(static_cast<std::size_t>(preset));
+            const float sizePx = UI::computePointsToPixels(config.regularPt, scale);
+            SCOPED_TRACE(std::string(config.name) + " at " + std::to_string(scale));
+            useInter(config.regularPt, scale);
+            const Measured measured = settle();
+            ASSERT_TRUE(measured.open);
+            ASSERT_NEAR(measured.emPx, sizePx, 1.0F); // ImGui rounds the size to a whole pixel
+            const ImGuiWindow* modal = ImGui::FindWindowByName(ElevationNoticeDialog::POPUP_ID);
+            ASSERT_NE(modal, nullptr);
+            const float wrapWidth = modal->WorkRect.GetWidth();
+            const auto lines = wrappedLineWordCounts(m_Inter, measured.emPx, ElevationNoticeText::forCurrentPlatform(), wrapWidth);
+            EXPECT_FALSE(hasALoneWordLine(lines)) << "wrap width " << wrapWidth;
+            expectInsideDisplay(measured);
+        }
+    }
+}
+
+TEST_F(ElevationNoticeFontTest, NoPlatformsWordingLeavesALoneWordAtSmallOrMedium)
+{
+    constexpr float VIEWPORT_WIDTH = 1200.0F;
+    for (const std::string_view text : {ElevationNoticeText::LINUX, ElevationNoticeText::WINDOWS, ElevationNoticeText::OTHER})
+    {
+        for (const UI::FontSize preset : PRESETS)
+        {
+            for (const float scale : SCALES)
+            {
+                const auto& config = UI::FONT_SIZE_PRESETS.at(static_cast<std::size_t>(preset));
+                SCOPED_TRACE(std::string(config.name) + " at " + std::to_string(scale) + ": " + std::string(text.substr(0, 24)));
+                useInter(config.regularPt, scale);
+                ImGui::NewFrame();
+                // ImGui truncates the window's width to a whole pixel; the body wraps inside the padding.
+                const float wrapWidth =
+                    std::floor(ElevationNoticeDialog::computeWidth(text, VIEWPORT_WIDTH)) - (ImGui::GetStyle().WindowPadding.x * 2.0F);
+                const float emPx = ImGui::GetFontSize();
+                ImGui::EndFrame();
+                EXPECT_FALSE(hasALoneWordLine(wrappedLineWordCounts(m_Inter, emPx, text, wrapWidth))) << "wrap width " << wrapWidth;
+            }
+        }
+    }
 }
 
 } // namespace
