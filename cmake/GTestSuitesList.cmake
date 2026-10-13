@@ -2,6 +2,9 @@
 # Google Test suites into SUITES_FILE as `set(_suites ...)`, for the ctest include file.
 #   -DTEST_EXECUTABLE=... -DTEST_WORKING_DIR=... -DDISCOVERY_TIMEOUT=... -DSUITES_FILE=...
 
+# A script run with -P starts with no policies set: if(IN_LIST) needs CMP0057 before CMake 4.
+cmake_minimum_required(VERSION 3.29)
+
 execute_process(
     COMMAND "${TEST_EXECUTABLE}" --gtest_list_tests
     WORKING_DIRECTORY "${TEST_WORKING_DIR}"
