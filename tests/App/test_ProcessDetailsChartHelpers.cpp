@@ -128,6 +128,18 @@ TEST(ProcessDetailsChartHelpersTest, MemoryAxisCoversUsedAndSharedButNotThePeakO
     EXPECT_DOUBLE_EQ(memoryAxisDataMax(f.x, f.xMin, used, std::span<const double>{}, smoothed), 500.0);
 }
 
+// Private and Swap (#1885) share the bytes axis: a process mostly swapped out has Swap above Used.
+TEST(ProcessDetailsChartHelpersTest, MemoryAxisCoversPrivateAndSwapWhereDrawn)
+{
+    const AxisFixture f;
+    const std::array<double, 4> used{100.0, 110.0, 120.0, 115.0};
+    const std::array<double, 4> privateBytes{80.0, 90.0, 95.0, 90.0};
+    const std::array<double, 4> swapBytes{300.0, 320.0, NOT_A_NUMBER, 310.0};
+    const ProcessSmoothedUsage smoothed;
+    EXPECT_DOUBLE_EQ(memoryAxisDataMax(f.x, f.xMin, used, std::span<const double>{}, smoothed, privateBytes, swapBytes), 320.0);
+    EXPECT_DOUBLE_EQ(memoryAxisDataMax(f.x, f.xMin, used, std::span<const double>{}, smoothed, privateBytes), 120.0);
+}
+
 TEST(ProcessDetailsChartHelpersTest, VirtualAxisCoversItsSeriesAndBar)
 {
     const AxisFixture f;

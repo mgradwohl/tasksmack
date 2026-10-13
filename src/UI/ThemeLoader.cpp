@@ -393,6 +393,13 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     const auto virt = getRoleColors(tbl, "charts.memory_virtual", "charts.memory_virtual_fill", swap.line, swap.fill);
     scheme.chartMemoryVirtual = virt.line;
     scheme.chartMemoryVirtualFill = virt.fill;
+    // Process Private and Swap (#1885) fall back to the colours they sit nearest: Shared, and system Swap.
+    const auto privateBytes = getRoleColors(tbl, "charts.memory_private", "charts.memory_private_fill", shared.line, shared.fill);
+    scheme.chartMemoryPrivate = privateBytes.line;
+    scheme.chartMemoryPrivateFill = privateBytes.fill;
+    const auto processSwap = getRoleColors(tbl, "charts.memory_swap", "charts.memory_swap_fill", swap.line, swap.fill);
+    scheme.chartMemorySwap = processSwap.line;
+    scheme.chartMemorySwapFill = processSwap.fill;
     const auto power = getRoleColors(tbl, "charts.power", "charts.power_fill", scheme.chartCpu, scheme.chartCpuFill);
     scheme.chartPower = power.line;
     scheme.chartPowerFill = power.fill;

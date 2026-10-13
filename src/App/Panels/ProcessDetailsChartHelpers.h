@@ -136,15 +136,19 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 }
 
 /// The Memory chart's left axis: Used and Shared bytes (@p shared empty where it is not drawn), with
-/// their bars' smoothed values. The lifetime peak is left out: one far above today's usage would
-/// flatten the lines; its value is in the value strip and the tooltip.
+/// their bars' smoothed values, and Private and Swap where they are drawn (#1885; empty otherwise). The lifetime peak is left out: one far
+/// above today's usage would flatten the lines; its value is in the value strip and the tooltip.
 [[nodiscard]] inline double memoryAxisDataMax(std::span<const double> timeData,
                                               double xMin,
                                               std::span<const double> used,
                                               std::span<const double> shared,
-                                              const ProcessSmoothedUsage& smoothed) noexcept
+                                              const ProcessSmoothedUsage& smoothed,
+                                              std::span<const double> privateBytes = {},
+                                              std::span<const double> swapBytes = {}) noexcept
 {
-    return std::max({UI::Widgets::maxOfSeriesSince(timeData, xMin, used, shared), smoothed.residentBytes, smoothed.memorySharedBytes});
+    return std::max({UI::Widgets::maxOfSeriesSince(timeData, xMin, used, shared, privateBytes, swapBytes),
+                     smoothed.residentBytes,
+                     smoothed.memorySharedBytes});
 }
 
 /// The Memory chart's right-hand Virtual axis (#992).

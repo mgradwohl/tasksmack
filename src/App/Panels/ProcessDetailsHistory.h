@@ -52,6 +52,8 @@ enum class ProcessSeries : std::uint8_t
     NpuUtil,            ///< NPU utilization % (busiest NPU or compute accelerator); NaN where the GPU probe gave none (#1869)
     NpuDedicatedMemory, ///< NPU dedicated memory bytes; NaN where the GPU probe gave none (#1869)
     NpuSharedMemory,    ///< NPU shared (system) memory bytes; NaN where the GPU probe gave none (#1869)
+    MemoryPrivate,      ///< Private bytes (Linux RssAnon, #1885); drawn only where the platform reads them
+    MemorySwap,         ///< Swapped-out bytes (Linux VmSwap, #1885); drawn only where the platform reads them
     Count,
 };
 
@@ -81,6 +83,8 @@ struct ProcessHistoryPoint
     double npuUtil = 0.0;
     double npuDedicatedMemory = 0.0;
     double npuSharedMemory = 0.0;
+    double memoryPrivate = 0.0;
+    double memorySwap = 0.0;
 };
 
 /// Which ProcessHistoryPoint field feeds each ProcessSeries, indexed by the series. A plain table
@@ -106,6 +110,8 @@ inline constexpr std::array<double ProcessHistoryPoint::*, PROCESS_SERIES_COUNT>
     &ProcessHistoryPoint::npuUtil,
     &ProcessHistoryPoint::npuDedicatedMemory,
     &ProcessHistoryPoint::npuSharedMemory,
+    &ProcessHistoryPoint::memoryPrivate,
+    &ProcessHistoryPoint::memorySwap,
 };
 
 // The table maps series to fields one-to-one. A missing entry is a null member pointer; a field
@@ -168,6 +174,8 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
         .npuUtil = readingOrGap(rateReadings.gpuUtilization, snapshot.npuUtilPercent),
         .npuDedicatedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuDedicatedMemoryBytes)),
         .npuSharedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuSharedMemoryBytes)),
+        .memoryPrivate = toDouble(snapshot.privateBytes),
+        .memorySwap = toDouble(snapshot.swapBytes),
     };
 }
 

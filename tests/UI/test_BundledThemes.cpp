@@ -272,6 +272,8 @@ TEST(BundledThemesTest, EverySeriesIsVisibleOnThePlotAndTheNowBarTrack)
             {"charts.memory_cached", scheme->chartMemoryCached},
             {"charts.memory_shared", scheme->chartMemoryShared},
             {"charts.memory_virtual", scheme->chartMemoryVirtual},
+            {"charts.memory_private", scheme->chartMemoryPrivate},
+            {"charts.memory_swap", scheme->chartMemorySwap},
             {"charts.swap", scheme->chartSwap},
             {"charts.power", scheme->chartPower},
             {"charts.battery", scheme->chartBattery},
@@ -506,13 +508,15 @@ TEST(BundledThemesTest, SeriesOnTheSameChartAreSeparable)
                     {"charts.swap", scheme->chartSwap},
                 },
             },
-            // Process Details' Memory chart: Used, Shared and Virtual.
+            // Process Details' Memory chart: Used, Shared, Virtual, and Private and Swap (#1885).
             {
                 "Process memory",
                 {
                     {"charts.memory", scheme->chartMemory},
                     {"charts.memory_shared", scheme->chartMemoryShared},
                     {"charts.memory_virtual", scheme->chartMemoryVirtual},
+                    {"charts.memory_private", scheme->chartMemoryPrivate},
+                    {"charts.memory_swap", scheme->chartMemorySwap},
                 },
             },
             // Power & Battery chart (SystemMetricsPanel.cpp).
@@ -724,6 +728,8 @@ auto dataSeries(const ColorScheme& s) -> std::vector<NamedColor>
         {"charts.memory_cached", s.chartMemoryCached},
         {"charts.memory_shared", s.chartMemoryShared},
         {"charts.memory_virtual", s.chartMemoryVirtual},
+        {"charts.memory_private", s.chartMemoryPrivate},
+        {"charts.memory_swap", s.chartMemorySwap},
         {"charts.swap", s.chartSwap},
         {"charts.io", s.chartIo},
         {"charts.io_write", s.chartIoWrite},
@@ -792,7 +798,7 @@ TEST(ThemePaletteTest, EveryFillIsItsLinesColour)
     {
         const std::string& name = theme.name;
         const ColorScheme& s = theme.scheme;
-        const std::array<std::tuple<std::string_view, ImVec4, ImVec4>, 21> fills{{
+        const std::array<std::tuple<std::string_view, ImVec4, ImVec4>, 23> fills{{
             {"charts.cpu_fill", s.chartCpuFill, s.chartCpu},
             {"charts.memory_fill", s.chartMemoryFill, s.chartMemory},
             {"charts.io_fill", s.chartIoFill, s.chartIo},
@@ -802,6 +808,8 @@ TEST(ThemePaletteTest, EveryFillIsItsLinesColour)
             {"charts.memory_cached_fill", s.chartMemoryCachedFill, s.chartMemoryCached},
             {"charts.memory_shared_fill", s.chartMemorySharedFill, s.chartMemoryShared},
             {"charts.memory_virtual_fill", s.chartMemoryVirtualFill, s.chartMemoryVirtual},
+            {"charts.memory_private_fill", s.chartMemoryPrivateFill, s.chartMemoryPrivate},
+            {"charts.memory_swap_fill", s.chartMemorySwapFill, s.chartMemorySwap},
             {"charts.swap_fill", s.chartSwapFill, s.chartSwap},
             {"charts.power_fill", s.chartPowerFill, s.chartPower},
             {"charts.battery_fill", s.chartBatteryFill, s.chartBattery},
@@ -832,16 +840,18 @@ TEST(ThemePaletteTest, MetricsKeepTheirHueFamilyInEveryTheme)
     {
         const std::string& name = theme.name;
         const ColorScheme& s = theme.scheme;
-        const std::array<std::tuple<std::string_view, ImVec4, HueRange>, 19> families{{
+        const std::array<std::tuple<std::string_view, ImVec4, HueRange>, 21> families{{
             {"charts.cpu", s.chartCpu, BLUE},
             {"charts.cpu_total", s.chartCpuTotal, BLUE},
             {"cpu_breakdown.user", s.cpuUser, BLUE},
             {"charts.memory", s.chartMemory, GREEN},
             {"charts.memory_cached", s.chartMemoryCached, GREEN},
             {"charts.memory_shared", s.chartMemoryShared, GREEN},
+            {"charts.memory_private", s.chartMemoryPrivate, GREEN},
             {"charts.gpu.memory", s.gpuMemory, GREEN},
             {"charts.swap", s.chartSwap, VIOLET},
             {"charts.memory_virtual", s.chartMemoryVirtual, VIOLET},
+            {"charts.memory_swap", s.chartMemorySwap, VIOLET},
             {"charts.io", s.chartIo, ORANGE},
             {"charts.io_write", s.chartIoWrite, BROWN_OLIVE},
             {"charts.net_tx", s.chartNetTx, AMBER},
