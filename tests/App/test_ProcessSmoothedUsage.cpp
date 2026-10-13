@@ -195,6 +195,43 @@ TEST(ProcessSmoothedUsageTest, AnUnavailableReadingHoldsItsValueAndTheNextStarts
     EXPECT_DOUBLE_EQ(usage.gdiObjectCount, 70.0);
 }
 
+// #1869: the NPU tab's bars follow the NPU figures, readings exactly when the GPU figures are (they
+// come from the same read): held, not eased toward zero, while unread, and taken afresh after.
+TEST(ProcessSmoothedUsageTest, TheNpuBarsAreReadWithTheGpuFigures)
+{
+    auto onNpu = sampleAt(0.0, 1000);
+    onNpu.npuUtilPercent = 60.0;
+    onNpu.npuMemoryBytes = 8192;
+    onNpu.npuDedicatedMemoryBytes = 1024;
+    onNpu.npuSharedMemoryBytes = 7168;
+    ProcessSmoothedUsage usage;
+    usage.update(onNpu, ALL_READINGS, FRAME_SECONDS, REFRESH);
+    EXPECT_DOUBLE_EQ(usage.npuUtilPercent, 60.0);
+    EXPECT_DOUBLE_EQ(usage.npuMemoryBytes, 8192.0);
+    EXPECT_DOUBLE_EQ(usage.npuDedicatedMemoryBytes, 1024.0);
+    EXPECT_DOUBLE_EQ(usage.npuSharedMemoryBytes, 7168.0);
+
+    const auto unread = sampleAt(0.0, 1000); // NPU figures 0, as an unread sample's are
+    usage.update(unread, SampleRateReadings{}, FRAME_SECONDS, REFRESH);
+    EXPECT_FALSE(usage.gpuUtilAvailable);
+    EXPECT_FALSE(usage.gpuMemoryAvailable);
+    EXPECT_DOUBLE_EQ(usage.npuUtilPercent, 60.0);
+    EXPECT_DOUBLE_EQ(usage.npuSharedMemoryBytes, 7168.0);
+
+    auto back = onNpu;
+    back.npuUtilPercent = 10.0;
+    back.npuSharedMemoryBytes = 100;
+    usage.update(back, ALL_READINGS, FRAME_SECONDS, REFRESH);
+    EXPECT_DOUBLE_EQ(usage.npuUtilPercent, 10.0);
+    EXPECT_DOUBLE_EQ(usage.npuSharedMemoryBytes, 100.0);
+
+    // A later reading eases, and stays within its range.
+    back.npuUtilPercent = 250.0;
+    usage.update(back, ALL_READINGS, LONG_GAP_SECONDS, REFRESH);
+    EXPECT_LE(usage.npuUtilPercent, 100.0);
+    EXPECT_GT(usage.npuUtilPercent, 10.0);
+}
+
 [[nodiscard]] Domain::ProcessSnapshot sampleWithNaNs()
 {
     auto sample = sampleAt(NOT_A_NUMBER, 1000);

@@ -96,8 +96,12 @@ constexpr const char* IO_WRITE_LABEL = "Write";
 constexpr const char* NET_SENT_LABEL = "Sent";
 constexpr const char* NET_RECV_LABEL = "Received";
 constexpr const char* POWER_LABEL = "Power";
-constexpr const char* GPU_UTIL_LABEL = "Utilization";
+// The GPU and NPU tabs' utilization series
+constexpr const char* UTIL_LABEL = "Utilization";
 constexpr const char* GPU_MEMORY_LABEL = "Memory";
+// The NPU tab's memory series (#1869)
+constexpr const char* NPU_DEDICATED_LABEL = "Dedicated";
+constexpr const char* NPU_SHARED_LABEL = "Shared";
 
 /// The time axis every chart of one frame shares: the newest history.size() samples, the window's
 /// x range, and each sample's x relative to the frame's now.
@@ -145,19 +149,36 @@ struct RateSeries
     ImVec4 fill;
 };
 
-/// Draws a two-series rate chart -- @p primary at the primary series' weight, @p secondary as the
-/// first secondary -- on a bytes/sec axis from 0 to @p upper, with its hover tooltip.
-void drawTwoRatePlot(const char* plotId,
-                     const ChartTimeAxis& axis,
-                     double upper,
-                     float plotHeight,
-                     std::uint64_t historyGeneration,
-                     const RateSeries& primary,
-                     const RateSeries& secondary)
+/// How a two-series chart's axis and tooltip values read: bytes/sec for I/O and Network, bytes for
+/// the NPU tab's memory (#1869).
+struct TwoSeriesUnits
+{
+    ImPlotFormatter axisFormatter = nullptr;
+    std::string (*valueText)(double) = nullptr; ///< A sample's tooltip text, N/A for a gap
+};
+
+[[nodiscard]] std::string bytesOrNA(double bytes)
+{
+    return UI::Widgets::formatSampleOrNA(bytes, [](double b) { return UI::Format::formatBytes(b); });
+}
+
+constexpr TwoSeriesUnits BYTES_PER_SEC_UNITS{.axisFormatter = formatAxisBytesPerSec, .valueText = UI::Format::formatBytesPerSecOrNA};
+constexpr TwoSeriesUnits BYTES_UNITS{.axisFormatter = UI::Widgets::formatAxisBytes, .valueText = bytesOrNA};
+
+/// Draws a two-series chart -- @p primary at the primary series' weight, @p secondary as the first
+/// secondary -- on an axis in @p units from 0 to @p upper, with its hover tooltip.
+void drawTwoSeriesPlot(const char* plotId,
+                       const ChartTimeAxis& axis,
+                       double upper,
+                       float plotHeight,
+                       std::uint64_t historyGeneration,
+                       const TwoSeriesUnits& units,
+                       const RateSeries& primary,
+                       const RateSeries& secondary)
 {
     const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
         UI::Widgets::withHeight(
-            UI::Widgets::rateHistoryConfigWithUpper(plotId, axis.axisConfig.xMin, axis.axisConfig.xMax, formatAxisBytesPerSec, upper),
+            UI::Widgets::rateHistoryConfigWithUpper(plotId, axis.axisConfig.xMin, axis.axisConfig.xMax, units.axisFormatter, upper),
             plotHeight),
         historyGeneration));
     if (!chart.active())
@@ -179,10 +200,8 @@ void drawTwoRatePlot(const char* plotId,
     if (const auto idx = hoveredSampleIndex(axis.timeData, axis.alignedCount))
     {
         const std::array rows{
-            UI::Widgets::TooltipRow{
-                .label = primary.label, .color = primary.color, .value = UI::Format::formatBytesPerSecOrNA(primary.data[*idx])},
-            UI::Widgets::TooltipRow{
-                .label = secondary.label, .color = secondary.color, .value = UI::Format::formatBytesPerSecOrNA(secondary.data[*idx])},
+            UI::Widgets::TooltipRow{.label = primary.label, .color = primary.color, .value = units.valueText(primary.data[*idx])},
+            UI::Widgets::TooltipRow{.label = secondary.label, .color = secondary.color, .value = units.valueText(secondary.data[*idx])},
         };
         UI::Widgets::renderHistoryTooltip(axis.timeData[*idx], rows);
     }
@@ -501,6 +520,143 @@ void drawGpuHistoryPlot(const UI::Widgets::HistoryChartConfig& config,
         const std::array rows{UI::Widgets::TooltipRow{.label = label, .color = color, .value = formatValue(data[*idx])}};
         UI::Widgets::renderHistoryTooltip(axis.timeData[*idx], rows);
     }
+}
+
+/// One label/value row of a usage table (the GPU and NPU tabs'): the value in @p color, or the default
+/// text colour without one.
+void labelValueRow(const char* label, const std::string& value, const ImVec4* color)
+{
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    if (color != nullptr)
+    {
+        ImGui::TextColored(*color, "%s", value.c_str());
+    }
+    else
+    {
+        ImGui::TextUnformatted(value.c_str());
+    }
+}
+
+/// What the GPU or NPU tab says when it has nothing to chart (#1210, #1869).
+struct DeviceTabEmptyText
+{
+    const char* unavailableHeading = nullptr;
+    const char* unavailableDetail = nullptr;
+    const char* noReadingsHeading = nullptr;
+    const char* noReadingsDetail = nullptr;
+    const char* noUsageHeading = nullptr;
+    std::string (*noUsageDetail)(double historySeconds) = nullptr; ///< Names the history window
+};
+
+constexpr DeviceTabEmptyText GPU_TAB_EMPTY_TEXT{
+    // Not "no usage": without per-process metrics none can be seen (#1210).
+    .unavailableHeading = ICON_FA_MICROCHIP "  Per-process GPU usage is not available",
+    .unavailableDetail = "This system's GPU monitoring does not report GPU usage per process.",
+    // Every retained read failed: nothing is known yet about this process's GPU use (#1210).
+    .noReadingsHeading = ICON_FA_MICROCHIP "  No GPU readings yet",
+    .noReadingsDetail = "Reading this process's GPU usage has not succeeded yet.",
+    .noUsageHeading = ICON_FA_MICROCHIP "  No GPU usage",
+    .noUsageDetail = App::Detail::noGpuUsageDetail,
+};
+
+constexpr DeviceTabEmptyText NPU_TAB_EMPTY_TEXT{
+    .unavailableHeading = ICON_FA_BRAIN "  Per-process NPU usage is not available",
+    .unavailableDetail = "This system's GPU monitoring does not report NPU usage per process.",
+    .noReadingsHeading = ICON_FA_BRAIN "  No NPU readings yet",
+    .noReadingsDetail = "Reading this process's NPU usage has not succeeded yet.",
+    .noUsageHeading = ICON_FA_BRAIN "  No NPU usage",
+    .noUsageDetail = App::Detail::noNpuUsageDetail,
+};
+
+/// Draws the GPU or NPU tab's empty state for @p content, and returns whether it did: false for
+/// GpuTabContent::Usage, which the tab charts instead. The "no usage" text names the history window
+/// (#1210), so it is kept in @p cachedDetail and rebuilt only when the window changes: its whole
+/// milliseconds, @p cachedKey, are an exact integer compare, not float equality (#1487).
+bool renderDeviceTabEmptyState(App::Detail::GpuTabContent content,
+                               const DeviceTabEmptyText& text,
+                               double historySeconds,
+                               std::string& cachedDetail,
+                               std::optional<std::int64_t>& cachedKey)
+{
+    switch (content)
+    {
+    case App::Detail::GpuTabContent::Unavailable:
+        UI::Widgets::renderEmptyState(text.unavailableHeading, text.unavailableDetail);
+        return true;
+    case App::Detail::GpuTabContent::NoReadings:
+        UI::Widgets::renderEmptyState(text.noReadingsHeading, text.noReadingsDetail);
+        return true;
+    case App::Detail::GpuTabContent::NoUsage:
+    {
+        const std::int64_t windowKey = App::Detail::historyWindowCacheKey(historySeconds);
+        if (!cachedKey.has_value() || *cachedKey != windowKey)
+        {
+            cachedDetail = text.noUsageDetail(historySeconds);
+            cachedKey = windowKey;
+        }
+        UI::Widgets::renderEmptyState(text.noUsageHeading, cachedDetail.c_str());
+        return true;
+    }
+    case App::Detail::GpuTabContent::Usage:
+        break;
+    }
+    return false;
+}
+
+/// One device tab's utilization history chart (the GPU's or the NPU's): its IDs and heading.
+struct UtilizationChartIds
+{
+    const char* plotId = nullptr;   ///< The plot's
+    const char* cardId = nullptr;   ///< Its card's
+    const char* layoutId = nullptr; ///< renderHistoryWithNowBars()' layout id
+    const char* heading = nullptr;  ///< The card's heading
+    std::size_t nowBarColumns = 1;  ///< The tab's NowBar columns (#1206)
+};
+
+/// A device tab's utilization history chart in its card, with its NowBar: @p data on a locked 0-100
+/// axis, and the bar at @p smoothedPercent, or N/A when it is not @p available (#1210).
+void renderUtilizationChartCard(const UtilizationChartIds& ids,
+                                const ChartTimeAxis& axis,
+                                std::span<const double> data,
+                                bool available,
+                                double smoothedPercent,
+                                std::uint64_t historyGeneration,
+                                UI::Widgets::FillPlotLayout& fill)
+{
+    const auto& scheme = UI::Theme::get().scheme();
+    auto plot = [&]()
+    {
+        drawGpuHistoryPlot(
+            UI::Widgets::withDataGeneration(
+                UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig(ids.plotId, axis.axisConfig.xMin, axis.axisConfig.xMax),
+                                        fill.plotHeight()),
+                historyGeneration),
+            axis,
+            data,
+            UTIL_LABEL,
+            UTIL_LABEL,
+            scheme.gpuUtilization,
+            scheme.gpuUtilizationFill,
+            [](double v) { return UI::Format::percentOneDecimal(v); });
+    };
+    const NowBar bar{
+        .valueText = App::Detail::gpuUtilizationText(available, smoothedPercent),
+        .label = UTIL_LABEL,
+        .tooltipText = {},
+        .value01 = available ? UI::Format::percent01(smoothedPercent) : 0.0,
+        .color = scheme.gpuUtilization,
+    };
+    // Each chart in its own card with its heading inside, as on the other Process Details tabs (#1594).
+    if (UI::Widgets::beginChartCard(ids.cardId, fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, ids.heading, {}, axis.alignedCount);
+        renderHistoryWithNowBars(ids.layoutId, fill.plotHeight(), plot, {bar}, false, ids.nowBarColumns);
+    }
+    UI::Widgets::endChartCard(ids.cardId, fill.plotHeight());
+    fill.addPlot();
 }
 
 } // namespace
@@ -976,12 +1132,13 @@ void ProcessDetailsCharts::renderIoStats(const ProcessChartContext& ctx, UI::Wid
     // lambda is rendered alongside the matching NowBars below.
     auto plot = [&]()
     {
-        drawTwoRatePlot(
+        drawTwoSeriesPlot(
             "##ProcIoHistory",
             axis,
             ioAxisUpper,
             fill.plotHeight(),
             ctx.historyGeneration,
+            BYTES_PER_SEC_UNITS,
             {.label = IO_READ_LABEL, .data = readData, .color = theme.scheme().chartIo, .fill = theme.scheme().chartIoFill},
             {.label = IO_WRITE_LABEL, .data = writeData, .color = theme.scheme().chartIoWrite, .fill = theme.scheme().chartIoWriteFill});
     };
@@ -1037,12 +1194,13 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
     // since the process was first seen, as the chart's heading says.
     auto plot = [&]()
     {
-        drawTwoRatePlot(
+        drawTwoSeriesPlot(
             "##ProcNetworkHistory",
             axis,
             netAxisUpper,
             fill.plotHeight(),
             ctx.historyGeneration,
+            BYTES_PER_SEC_UNITS,
             {.label = NET_SENT_LABEL, .data = sentData, .color = theme.scheme().chartNetTx, .fill = theme.scheme().chartNetTxFill},
             {.label = NET_RECV_LABEL, .data = recvData, .color = theme.scheme().chartNetRx, .fill = theme.scheme().chartNetRxFill});
     };
@@ -1077,42 +1235,37 @@ void ProcessDetailsCharts::renderGpuTab(const ProcessChartContext& ctx)
     {
         return;
     }
-    // A process using an NPU or compute accelerator has its NPU figures on top, whatever its GPU use (#1799).
-    renderNpuUsageCard(ctx);
-    // A failed read is not "not available on this system" (#1210).
+    // GPU only: a process's NPU use is on the NPU tab (#1869). A failed read is not "not available on
+    // this system" (#1210).
     const Detail::GpuTabContent gpuContent = Detail::gpuTabContentFor(*ctx.snapshot, *ctx.history, ctx.rateReadings.gpuSupported);
-    if (gpuContent == Detail::GpuTabContent::Unavailable)
+    if (renderDeviceTabEmptyState(gpuContent, GPU_TAB_EMPTY_TEXT, ctx.maxHistorySeconds, m_NoGpuUsageDetail, m_NoGpuUsageDetailKey))
     {
-        // Not "no usage": without per-process metrics none can be seen (#1210).
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  Per-process GPU usage is not available",
-                                      "This system's GPU monitoring does not report GPU usage per process.");
+        return;
     }
-    else if (gpuContent == Detail::GpuTabContent::NoReadings)
+    // The two history charts share the tab's height, like the other tabs' charts (#959). The
+    // metrics table and per-GPU breakdown above them count as non-plot.
+    UI::Widgets::FillPlotLayout fill(m_GpuFill);
+    const UI::Widgets::AlignedChartStack alignedCharts("##ProcGpuCharts"); // #1206
+    renderGpuUsage(ctx, fill);
+}
+
+void ProcessDetailsCharts::renderNpuTab(const ProcessChartContext& ctx)
+{
+    if (ctx.history == nullptr || ctx.smoothed == nullptr || ctx.snapshot == nullptr)
     {
-        // Every retained read failed: nothing is known yet about this process's GPU use (#1210).
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU readings yet", "Reading this process's GPU usage has not succeeded yet.");
+        return;
     }
-    else if (gpuContent == Detail::GpuTabContent::NoUsage)
+    // Decided as the GPU tab's, from the process's NPU figures and history (#1869).
+    const Detail::GpuTabContent npuContent = Detail::npuTabContentFor(*ctx.snapshot, *ctx.history, ctx.rateReadings.gpuSupported);
+    if (renderDeviceTabEmptyState(npuContent, NPU_TAB_EMPTY_TEXT, ctx.maxHistorySeconds, m_NoNpuUsageDetail, m_NoNpuUsageDetailKey))
     {
-        // Only the retained history is looked at, so the text names that window (#1210); rebuilt only
-        // when the window changes. The window's whole milliseconds are the cache key: an exact
-        // integer compare, not float equality (#1487).
-        const std::int64_t windowKey = Detail::historyWindowCacheKey(ctx.maxHistorySeconds);
-        if (!m_NoGpuUsageDetailKey.has_value() || *m_NoGpuUsageDetailKey != windowKey)
-        {
-            m_NoGpuUsageDetail = Detail::noGpuUsageDetail(ctx.maxHistorySeconds);
-            m_NoGpuUsageDetailKey = windowKey;
-        }
-        UI::Widgets::renderEmptyState(ICON_FA_MICROCHIP "  No GPU usage", m_NoGpuUsageDetail.c_str());
+        return;
     }
-    else
-    {
-        // The two history charts share the tab's height, like the other tabs' charts (#959). The
-        // metrics table and per-GPU breakdown above them count as non-plot.
-        UI::Widgets::FillPlotLayout fill(m_GpuFill);
-        const UI::Widgets::AlignedChartStack alignedCharts("##ProcGpuCharts"); // #1206
-        renderGpuUsage(ctx, fill);
-    }
+    // As the GPU tab: the usage card counts as non-plot, and the two charts share the rest (#959, #1206).
+    UI::Widgets::FillPlotLayout fill(m_NpuFill);
+    const UI::Widgets::AlignedChartStack alignedCharts("##ProcNpuCharts");
+    renderNpuUsageCard(ctx);
+    renderNpuHistoryGraphs(ctx, fill);
 }
 
 void ProcessDetailsCharts::renderGpuUsage(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill)
@@ -1172,22 +1325,7 @@ void ProcessDetailsCharts::renderGpuCurrentMetricsTable(const ProcessChartContex
     constexpr auto LABELS = std::to_array<const char*>(
         {LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_DEVICES, LABEL_ENGINES, LABEL_ENCODER, LABEL_DECODER});
 
-    // One label/value row; the value in @p color, or the default text colour without one.
-    const auto row = [](const char* label, const std::string& value, const ImVec4* color)
-    {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(label);
-        ImGui::TableNextColumn();
-        if (color != nullptr)
-        {
-            ImGui::TextColored(*color, "%s", value.c_str());
-        }
-        else
-        {
-            ImGui::TextUnformatted(value.c_str());
-        }
-    };
+    const auto row = labelValueRow;
 
     // Current GPU metrics
     if (!ImGui::BeginTable("GPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
@@ -1238,76 +1376,6 @@ void ProcessDetailsCharts::renderGpuCurrentMetricsTable(const ProcessChartContex
     ImGui::EndTable();
 }
 
-// Renders the process's NPU Usage card (#1799) when it uses an NPU or compute accelerator: its busiest
-// accelerator's utilization, its memory on them (dedicated and shared beneath where the total doesn't
-// show them), the devices and the active engines. Never counted in the GPU figures below it.
-void ProcessDetailsCharts::renderNpuUsageCard(const ProcessChartContext& ctx)
-{
-    const auto& proc = *ctx.snapshot;
-    if (!Detail::hasNpuUsage(proc))
-    {
-        return;
-    }
-    const auto& theme = UI::Theme::get();
-
-    // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
-    constexpr const char* LABEL_UTILIZATION = "NPU Utilization:";
-    constexpr const char* LABEL_MEMORY = "NPU Memory:";
-    constexpr const char* LABEL_DEDICATED = "  Dedicated:";
-    constexpr const char* LABEL_SHARED = "  Shared:";
-    constexpr const char* LABEL_DEVICES = "NPU Device(s):";
-    constexpr const char* LABEL_ENGINES = "Active Engines:";
-    constexpr auto LABELS =
-        std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_DEVICES, LABEL_ENGINES});
-
-    // One label/value row; the value in @p color, or the default text colour without one.
-    const auto row = [](const char* label, const std::string& value, const ImVec4* color)
-    {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(label);
-        ImGui::TableNextColumn();
-        if (color != nullptr)
-        {
-            ImGui::TextColored(*color, "%s", value.c_str());
-        }
-        else
-        {
-            ImGui::TextUnformatted(value.c_str());
-        }
-    };
-
-    if (UI::Widgets::beginCompactCard("##ProcNpuUsageCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY))
-    {
-        (void) UI::Widgets::sectionHeader(ICON_FA_BRAIN, "NPU Usage");
-        if (ImGui::BeginTable("NPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
-        {
-            ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
-            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F); // As the GPU table: no first-frame NaN
-
-            const ImVec4 utilColor = theme.scheme().gpuUtilization;
-            row(LABEL_UTILIZATION, Detail::gpuUtilizationText(ctx.rateReadings.gpuUtilization, proc.npuUtilPercent), &utilColor);
-            const ImVec4 memColor = theme.scheme().gpuMemory;
-            row(LABEL_MEMORY, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuMemoryBytes)), &memColor);
-            if (Detail::showsGpuMemoryKinds(proc.npuMemoryBytes, proc.npuDedicatedMemoryBytes, proc.npuSharedMemoryBytes))
-            {
-                row(LABEL_DEDICATED, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuDedicatedMemoryBytes)), &memColor);
-                row(LABEL_SHARED, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuSharedMemoryBytes)), &memColor);
-            }
-            if (!proc.npuDevices.empty())
-            {
-                row(LABEL_DEVICES, proc.npuDevices, nullptr);
-            }
-            if (!proc.npuEngines.empty())
-            {
-                row(LABEL_ENGINES, Detail::joinWithCommas(proc.npuEngines), nullptr);
-            }
-            ImGui::EndTable();
-        }
-    }
-    UI::Widgets::endCard();
-}
-
 // Renders a collapsible per-GPU breakdown (utilization, memory, engines) for each entry in
 // proc.perGpuUsage. No-op if that list is empty, regardless of how many GPUs the system has; the caller
 // skips it for a single GPU (#1207).
@@ -1336,22 +1404,7 @@ void ProcessDetailsCharts::renderPerGpuBreakdown(const ProcessChartContext& ctx)
     constexpr auto LABELS = std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_ENGINES});
     const float labelColumnWidth = UI::Widgets::measureLabelColumnWidth(LABELS);
 
-    // One label/value row; the value in @p color, or the default text colour without one.
-    const auto row = [](const char* label, const std::string& value, const ImVec4* color)
-    {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(label);
-        ImGui::TableNextColumn();
-        if (color != nullptr)
-        {
-            ImGui::TextColored(*color, "%s", value.c_str());
-        }
-        else
-        {
-            ImGui::TextUnformatted(value.c_str());
-        }
-    };
+    const auto row = labelValueRow;
 
     for (const auto& gpuUsage : proc.perGpuUsage)
     {
@@ -1403,25 +1456,20 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
     // Every series has one value per timestamp (Detail::ProcessDetailsHistory), so none can be read
     // past its end (#1149).
     const ChartTimeAxis axis = chartTimeAxis(history, ctx.maxHistorySeconds);
-    const auto gpuUtilVec = tailSpan(history.series(ProcessSeries::GpuUtil), axis.alignedCount);
     const auto gpuMemVec = tailSpan(history.series(ProcessSeries::GpuMemory), axis.alignedCount);
 
     // GPU Utilization graph (percent metric: locked 0-100 axis with percent formatter)
-    auto plotGpuUtil = [&]()
-    {
-        drawGpuHistoryPlot(
-            UI::Widgets::withDataGeneration(
-                UI::Widgets::withHeight(UI::Widgets::percentHistoryConfig("##GPUUtilPlot", axis.axisConfig.xMin, axis.axisConfig.xMax),
-                                        fill.plotHeight()),
-                ctx.historyGeneration),
-            axis,
-            gpuUtilVec,
-            GPU_UTIL_LABEL,
-            GPU_UTIL_LABEL,
-            theme.scheme().gpuUtilization,
-            theme.scheme().gpuUtilizationFill,
-            [](double v) { return UI::Format::percentOneDecimal(v); });
-    };
+    renderUtilizationChartCard({.plotId = "##GPUUtilPlot",
+                                .cardId = "##ProcGpuUtilCard",
+                                .layoutId = "ProcessGPUUtilHistory",
+                                .heading = "GPU Utilization History",
+                                .nowBarColumns = Detail::PROCESS_GPU_NOW_BAR_COLUMNS},
+                               axis,
+                               tailSpan(history.series(ProcessSeries::GpuUtil), axis.alignedCount),
+                               smoothed.gpuUtilAvailable,
+                               smoothed.gpuUtilPercent,
+                               ctx.historyGeneration,
+                               fill);
 
     // GPU Memory graph. One upper bound for its axis and its bar, so they agree (#1003), from the
     // samples in the window, not the one trimming keeps left of it (#1145), and the bar's smoothed
@@ -1445,17 +1493,10 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
             "GPU Memory",
             theme.scheme().gpuMemory,
             theme.scheme().gpuMemoryFill,
-            [](double v) { return UI::Widgets::formatSampleOrNA(v, [](double b) { return UI::Format::formatBytes(b); }); });
+            bytesOrNA);
     };
 
-    // Now bars for current values
-    const NowBar gpuUtilBar{
-        .valueText = Detail::gpuUtilizationText(smoothed.gpuUtilAvailable, smoothed.gpuUtilPercent),
-        .label = GPU_UTIL_LABEL,
-        .tooltipText = {},
-        .value01 = smoothed.gpuUtilAvailable ? UI::Format::percent01(smoothed.gpuUtilPercent) : 0.0,
-        .color = theme.scheme().gpuUtilization,
-    };
+    // The memory chart's now bar
     const NowBar gpuMemBar{
         .valueText = smoothed.gpuMemoryAvailable ? UI::Format::formatBytes(smoothed.gpuMemoryBytes) : std::string("N/A"),
         .label = GPU_MEMORY_LABEL,
@@ -1464,16 +1505,7 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
         .color = theme.scheme().gpuMemory,
     };
 
-    // Each chart in its own card with its heading inside, as on the other Process Details tabs (#1594).
-    if (UI::Widgets::beginChartCard("##ProcGpuUtilCard", fill.plotHeight()))
-    {
-        (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Utilization History", {}, axis.alignedCount);
-        renderHistoryWithNowBars(
-            "ProcessGPUUtilHistory", fill.plotHeight(), plotGpuUtil, {gpuUtilBar}, false, Detail::PROCESS_GPU_NOW_BAR_COLUMNS);
-    }
-    UI::Widgets::endChartCard("##ProcGpuUtilCard", fill.plotHeight());
-    fill.addPlot();
-
+    // In its own card, as the utilization chart above (#1594).
     if (UI::Widgets::beginChartCard("##ProcGpuMemCard", fill.plotHeight()))
     {
         (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "GPU Memory History", {}, axis.alignedCount);
@@ -1481,6 +1513,123 @@ void ProcessDetailsCharts::renderGpuHistoryGraphs(const ProcessChartContext& ctx
             "ProcessGPUMemHistory", fill.plotHeight(), plotGpuMem, {gpuMemBar}, false, Detail::PROCESS_GPU_NOW_BAR_COLUMNS);
     }
     UI::Widgets::endChartCard("##ProcGpuMemCard", fill.plotHeight());
+    fill.addPlot();
+}
+
+// Renders the NPU tab's usage card (#1799, #1869): the process's busiest NPU's or compute accelerator's
+// utilization, its memory on them (dedicated and shared beneath where the total doesn't show them),
+// the devices and the active engines. Laid out as the GPU tab's usage card.
+void ProcessDetailsCharts::renderNpuUsageCard(const ProcessChartContext& ctx)
+{
+    const auto& proc = *ctx.snapshot;
+    const auto& smoothed = *ctx.smoothed;
+    const auto& theme = UI::Theme::get();
+
+    // As in renderGpuCurrentMetricsTable(): the label column is measured from these (#966).
+    constexpr const char* LABEL_UTILIZATION = "NPU Utilization:";
+    constexpr const char* LABEL_MEMORY = "NPU Memory:";
+    constexpr const char* LABEL_DEDICATED = "  Dedicated:";
+    constexpr const char* LABEL_SHARED = "  Shared:";
+    constexpr const char* LABEL_DEVICES = "NPU Device(s):";
+    constexpr const char* LABEL_ENGINES = "Active Engines:";
+    constexpr auto LABELS =
+        std::to_array<const char*>({LABEL_UTILIZATION, LABEL_MEMORY, LABEL_DEDICATED, LABEL_SHARED, LABEL_DEVICES, LABEL_ENGINES});
+    const auto row = labelValueRow;
+
+    if (UI::Widgets::beginCompactCard("##ProcNpuUsageCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_BRAIN, "NPU Usage");
+        if (ImGui::BeginTable("NPUCurrentMetrics", 2, ImGuiTableFlags_SizingStretchProp))
+        {
+            ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed, UI::Widgets::measureLabelColumnWidth(LABELS));
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F); // As the GPU table: no first-frame NaN
+
+            const ImVec4 utilColor = theme.scheme().gpuUtilization;
+            row(LABEL_UTILIZATION, Detail::gpuUtilizationText(smoothed.gpuUtilAvailable, smoothed.npuUtilPercent), &utilColor);
+            const ImVec4 memColor = theme.scheme().gpuMemory;
+            row(LABEL_MEMORY,
+                smoothed.gpuMemoryAvailable ? UI::Format::formatBytes(smoothed.npuMemoryBytes) : std::string("N/A"),
+                &memColor);
+            if (Detail::showsGpuMemoryKinds(proc.npuMemoryBytes, proc.npuDedicatedMemoryBytes, proc.npuSharedMemoryBytes))
+            {
+                row(LABEL_DEDICATED, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuDedicatedMemoryBytes)), &memColor);
+                row(LABEL_SHARED, UI::Format::formatBytes(Domain::Numeric::toDouble(proc.npuSharedMemoryBytes)), &memColor);
+            }
+            if (!proc.npuDevices.empty())
+            {
+                row(LABEL_DEVICES, proc.npuDevices, nullptr);
+            }
+            if (!proc.npuEngines.empty())
+            {
+                row(LABEL_ENGINES, Detail::joinWithCommas(proc.npuEngines), nullptr);
+            }
+            ImGui::EndTable();
+        }
+    }
+    UI::Widgets::endCard();
+}
+
+// Renders the NPU tab's utilization and memory history charts (#1869), as the GPU tab's: the same
+// utilization chart, and a memory chart with dedicated and shared memory as two series, since an NPU
+// that maps system RAM (Intel AI Boost) has only shared memory.
+void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill)
+{
+    const auto& history = *ctx.history;
+    const auto& smoothed = *ctx.smoothed;
+    const auto& scheme = UI::Theme::get().scheme();
+
+    // Every series has one value per timestamp (Detail::ProcessDetailsHistory), as on the GPU tab (#1149).
+    const ChartTimeAxis axis = chartTimeAxis(history, ctx.maxHistorySeconds);
+    renderUtilizationChartCard({.plotId = "##NPUUtilPlot",
+                                .cardId = "##ProcNpuUtilCard",
+                                .layoutId = "ProcessNPUUtilHistory",
+                                .heading = "NPU Utilization History",
+                                .nowBarColumns = Detail::PROCESS_NPU_NOW_BAR_COLUMNS},
+                               axis,
+                               tailSpan(history.series(ProcessSeries::NpuUtil), axis.alignedCount),
+                               smoothed.gpuUtilAvailable,
+                               smoothed.npuUtilPercent,
+                               ctx.historyGeneration,
+                               fill);
+
+    const auto dedicated = tailSpan(history.series(ProcessSeries::NpuDedicatedMemory), axis.alignedCount);
+    const auto shared = tailSpan(history.series(ProcessSeries::NpuSharedMemory), axis.alignedCount);
+    // One upper bound for the axis and its bars, so they agree (#1003), as the GPU Memory chart's.
+    const double memAxisUpper =
+        UI::Widgets::easedRateAxisUpperBound("##NPUMemPlot",
+                                             Detail::npuMemoryAxisDataMax(axis.timeData, axis.axisConfig.xMin, dedicated, shared, smoothed),
+                                             UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
+    const auto memBar = [&smoothed, memAxisUpper](const char* label, double bytes, const ImVec4& color)
+    {
+        return NowBar{
+            .valueText = smoothed.gpuMemoryAvailable ? UI::Format::formatBytes(bytes) : std::string("N/A"),
+            .label = label,
+            .tooltipText = {},
+            .value01 = smoothed.gpuMemoryAvailable ? UI::Widgets::normalizeToUnitInterval(bytes, memAxisUpper) : 0.0,
+            .color = color,
+        };
+    };
+    const NowBar dedicatedBar = memBar(NPU_DEDICATED_LABEL, smoothed.npuDedicatedMemoryBytes, scheme.gpuMemory);
+    const NowBar sharedBar = memBar(NPU_SHARED_LABEL, smoothed.npuSharedMemoryBytes, scheme.chartMemoryShared);
+    auto plotMem = [&]()
+    {
+        drawTwoSeriesPlot(
+            "##NPUMemPlot",
+            axis,
+            memAxisUpper,
+            fill.plotHeight(),
+            ctx.historyGeneration,
+            BYTES_UNITS,
+            {.label = NPU_DEDICATED_LABEL, .data = dedicated, .color = scheme.gpuMemory, .fill = scheme.gpuMemoryFill},
+            {.label = NPU_SHARED_LABEL, .data = shared, .color = scheme.chartMemoryShared, .fill = scheme.chartMemorySharedFill});
+    };
+    if (UI::Widgets::beginChartCard("##ProcNpuMemCard", fill.plotHeight()))
+    {
+        (void) UI::Widgets::sectionHeader(ICON_FA_CHART_LINE, "NPU Memory History", {}, axis.alignedCount);
+        renderHistoryWithNowBars(
+            "ProcessNPUMemHistory", fill.plotHeight(), plotMem, {dedicatedBar, sharedBar}, false, Detail::PROCESS_NPU_NOW_BAR_COLUMNS);
+    }
+    UI::Widgets::endChartCard("##ProcNpuMemCard", fill.plotHeight());
     fill.addPlot();
 }
 

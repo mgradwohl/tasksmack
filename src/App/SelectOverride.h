@@ -5,7 +5,7 @@
 //
 //   TASKSMACK_SELECT_PID=1234 ./TaskSmack                 the process with PID 1234
 //   TASKSMACK_SELECT_NAME=explorer.exe ./TaskSmack        the first process with that name
-//   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|network)
+//   TASKSMACK_DETAILS_TAB=gpu                             and its GPU tab (overview|gpu|npu|network)
 //   TASKSMACK_OPEN=help                                   the Help window (help|about, #172)
 //
 // The variables are read once, at startup (ShellLayer::onAttach() calls active()). When the PID or
@@ -54,6 +54,7 @@ enum class DetailsTab : std::uint8_t
 {
     Overview,
     Gpu,
+    Npu, ///< Shown only on a machine with an NPU or compute accelerator (#1869); otherwise nothing is selected
     Network,
 };
 
@@ -120,7 +121,7 @@ namespace Detail
     return value;
 }
 
-/// "overview", "gpu" or "network", in any case, or nullopt.
+/// "overview", "gpu", "npu" or "network", in any case, or nullopt.
 [[nodiscard]] inline std::optional<DetailsTab> parseTab(const std::string_view text) noexcept
 {
     if (Detail::equalsIgnoreCase(text, "overview"))
@@ -130,6 +131,10 @@ namespace Detail
     if (Detail::equalsIgnoreCase(text, "gpu"))
     {
         return DetailsTab::Gpu;
+    }
+    if (Detail::equalsIgnoreCase(text, "npu"))
+    {
+        return DetailsTab::Npu;
     }
     if (Detail::equalsIgnoreCase(text, "network"))
     {
@@ -169,7 +174,7 @@ namespace Detail
         }
         else
         {
-            result.warnings.push_back(std::format("{}: '{}' is not overview, gpu or network; using overview", TAB_ENV_VAR, tabText));
+            result.warnings.push_back(std::format("{}: '{}' is not overview, gpu, npu or network; using overview", TAB_ENV_VAR, tabText));
         }
     }
     result.target = std::move(target);

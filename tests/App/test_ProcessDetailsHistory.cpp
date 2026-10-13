@@ -120,6 +120,9 @@ TEST(ProcessDetailsHistoryTest, SeriesAreInTheOrderTheChartsReadThem)
     point.gpuUtil = 15.0;
     point.gpuMemory = 16.0;
     point.gdiObjects = 17.0;
+    point.npuUtil = 18.0;
+    point.npuDedicatedMemory = 19.0;
+    point.npuSharedMemory = 20.0;
 
     ProcessDetailsHistory history;
     history.append(0.0, point, false);
@@ -141,6 +144,44 @@ TEST(ProcessDetailsHistoryTest, SeriesAreInTheOrderTheChartsReadThem)
     EXPECT_DOUBLE_EQ(history.series(ProcessSeries::GpuUtil)[0], 15.0);
     EXPECT_DOUBLE_EQ(history.series(ProcessSeries::GpuMemory)[0], 16.0);
     EXPECT_DOUBLE_EQ(history.series(ProcessSeries::GdiObjects)[0], 17.0);
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::NpuUtil)[0], 18.0);
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::NpuDedicatedMemory)[0], 19.0);
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::NpuSharedMemory)[0], 20.0);
+}
+
+// #1869: the NPU tab's series are kept on the same axis as every other: a trim drops their oldest
+// points with the axis's, keeping the anchor before the window, and a new selection clears them.
+TEST(ProcessDetailsHistoryTest, NpuSeriesAreTrimmedAndClearedWithTheAxis)
+{
+    ProcessDetailsHistory history;
+    int t = 0;
+    while (t <= 20)
+    {
+        ProcessHistoryPoint point;
+        point.npuUtil = static_cast<double>(t);
+        point.npuDedicatedMemory = 1000.0 + t;
+        point.npuSharedMemory = 2000.0 + t;
+        history.append(static_cast<double>(t), point, false);
+        ++t;
+    }
+    history.trimToWindow(10.0);
+
+    ASSERT_EQ(history.size(), 12U);
+    expectAligned(history);
+    EXPECT_EQ(toVector(history.series(ProcessSeries::NpuUtil)).front(), 9.0); // The anchor (#1016)
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::NpuUtil).back(), 20.0);
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::NpuDedicatedMemory).front(), 1009.0);
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::NpuSharedMemory).front(), 2009.0);
+    EXPECT_DOUBLE_EQ(history.series(ProcessSeries::NpuSharedMemory).back(), 2020.0);
+
+    // Trimmed again until the dead prefix is compacted away: the reads are unchanged by it.
+    history.trimToWindow(2.0);
+    ASSERT_EQ(history.size(), 4U);
+    EXPECT_EQ(toVector(history.series(ProcessSeries::NpuDedicatedMemory)), (std::vector<double>{1017.0, 1018.0, 1019.0, 1020.0}));
+
+    history.clear();
+    EXPECT_TRUE(history.series(ProcessSeries::NpuUtil).empty());
+    EXPECT_TRUE(history.series(ProcessSeries::NpuSharedMemory).empty());
 }
 
 // ========== Gap point (#1098) ==========
@@ -665,6 +706,9 @@ TEST(ProcessDetailsHistoryTest, HistoryPointCarriesReadingsAndGapsWhereUnread)
     snapshot.gpuUtilPercent = 33.0;
     snapshot.gpuMemoryBytes = 4096;
     snapshot.gdiObjectCount = 77;
+    snapshot.npuUtilPercent = 42.0;
+    snapshot.npuDedicatedMemoryBytes = 1024;
+    snapshot.npuSharedMemoryBytes = 8192;
 
     const ProcessHistoryPoint all =
         historyPointFrom(snapshot, {.io = true, .network = true, .gpuPerProcess = true, .gpuUtilization = true, .gpuSupported = true});
@@ -685,6 +729,10 @@ TEST(ProcessDetailsHistoryTest, HistoryPointCarriesReadingsAndGapsWhereUnread)
     EXPECT_DOUBLE_EQ(all.gpuUtil, 33.0);
     EXPECT_DOUBLE_EQ(all.gpuMemory, 4096.0);
     EXPECT_DOUBLE_EQ(all.gdiObjects, 77.0);
+    // #1869: the NPU figures, from the same per-process GPU read.
+    EXPECT_DOUBLE_EQ(all.npuUtil, 42.0);
+    EXPECT_DOUBLE_EQ(all.npuDedicatedMemory, 1024.0);
+    EXPECT_DOUBLE_EQ(all.npuSharedMemory, 8192.0);
 
     // Unread values are gaps (#1110, #1148, #1210), not measured-looking zeros.
     snapshot.handleCountAvailable = false;
@@ -698,12 +746,17 @@ TEST(ProcessDetailsHistoryTest, HistoryPointCarriesReadingsAndGapsWhereUnread)
     EXPECT_TRUE(std::isnan(none.gpuUtil));
     EXPECT_TRUE(std::isnan(none.gpuMemory));
     EXPECT_TRUE(std::isnan(none.gdiObjects));
+    EXPECT_TRUE(std::isnan(none.npuUtil));
+    EXPECT_TRUE(std::isnan(none.npuDedicatedMemory));
+    EXPECT_TRUE(std::isnan(none.npuSharedMemory));
     EXPECT_DOUBLE_EQ(none.cpuTotal, 12.5); // Always-read values stay readings
 
     // GPU memory without utilization (NVML on Linux): memory is a reading, utilization a gap.
     const ProcessHistoryPoint memoryOnly = historyPointFrom(snapshot, {.gpuPerProcess = true});
     EXPECT_DOUBLE_EQ(memoryOnly.gpuMemory, 4096.0);
     EXPECT_TRUE(std::isnan(memoryOnly.gpuUtil));
+    EXPECT_DOUBLE_EQ(memoryOnly.npuSharedMemory, 8192.0);
+    EXPECT_TRUE(std::isnan(memoryOnly.npuUtil));
 }
 
 } // namespace

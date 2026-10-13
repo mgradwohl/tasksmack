@@ -36,7 +36,8 @@ inline constexpr std::array<TabSummary, 4> TAB_OVERVIEW{{
                    "where there is one, Network and I/O)",
     },
     {.name = "Processes", .summary = "Every process, as a sortable list or a tree; filter it, pick columns, act on a selection"},
-    {.name = "Process Details", .summary = "The selected process: Overview (identity, runtime, actions, charts), GPU, and Network and I/O"},
+    {.name = "Process Details",
+     .summary = "The selected process: Overview (identity, runtime, actions, charts), GPU, NPU where there is one, and Network and I/O"},
     {.name = "Services", .summary = "The system's services and their state (read-only)"},
 }};
 

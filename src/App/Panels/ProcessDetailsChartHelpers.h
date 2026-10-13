@@ -1,6 +1,6 @@
 #pragma once
 
-// The pure pieces of Process Details' chart tabs (Overview, Network and I/O, GPU): the NowBar column
+// The pure pieces of Process Details' chart tabs (Overview, Network and I/O, GPU, NPU): the NowBar column
 // counts, the value text, each chart's axis target and the tabs' empty-state decisions. Extracted
 // with the charts themselves (ProcessDetailsCharts, #1179 slice 5) so they are unit-testable without
 // a live ImGui context, following CONTRIBUTING.md's "extract the pure decision logic into a small
@@ -40,6 +40,8 @@ inline constexpr std::size_t PROCESS_OVERVIEW_NOW_BAR_COLUMNS = 3;
 inline constexpr std::size_t PROCESS_NETWORK_IO_NOW_BAR_COLUMNS = 2;
 // GPU: Utilization, and Memory, one bar each.
 inline constexpr std::size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
+// NPU (#1869): Utilization's one bar, and Memory's Dedicated and Shared.
+inline constexpr std::size_t PROCESS_NPU_NOW_BAR_COLUMNS = 2;
 
 /// A count history sample as text, or N/A for a non-finite one (an unread value or a gap, #1110 /
 /// #1098): std::llround of NaN is unspecified, so it must not reach formatIntLocalized().
@@ -97,14 +99,6 @@ inline constexpr std::size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
 [[nodiscard]] constexpr bool showsGpuMemoryKinds(std::uint64_t totalBytes, std::uint64_t dedicatedBytes, std::uint64_t sharedBytes) noexcept
 {
     return sharedBytes > 0 || dedicatedBytes != totalBytes;
-}
-
-/// Whether the GPU tab shows the process's NPU Usage card (#1799): its GPU fields were read and it
-/// uses an NPU or compute accelerator -- listed on one, busy on one, or holding memory on one. A
-/// process that has used none, every Linux process until #1827, gets no card.
-[[nodiscard]] inline bool hasNpuUsage(const Domain::ProcessSnapshot& proc) noexcept
-{
-    return proc.gpuFieldsRead && (!proc.npuDevices.empty() || proc.npuUtilPercent > 0.0 || proc.npuMemoryBytes > 0);
 }
 
 // Each chart's axis target: the largest value it draws in the window (UI::Widgets::maxOfSeriesSince(),
@@ -228,6 +222,19 @@ inline constexpr std::size_t PROCESS_GPU_NOW_BAR_COLUMNS = 1;
                                           {UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.gpuMemoryBytes)});
 }
 
+/// The NPU Memory chart's (#1869): Dedicated and Shared, without the bars while the GPU probe gave no
+/// reading (the NPU figures come with the GPU ones).
+[[nodiscard]] inline double npuMemoryAxisDataMax(std::span<const double> timeData,
+                                                 double xMin,
+                                                 std::span<const double> dedicated,
+                                                 std::span<const double> shared,
+                                                 const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, dedicated, shared),
+                                          {UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
+                                           UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
+}
+
 /// What the GPU tab shows for @p proc and its retained @p history (gpuTabContent()). @p gpuSupported
 /// is whether the GPU probe supports per-process data at all (SampleRateReadings::gpuSupported): a
 /// failed read is not "not available on this system" (#1210).
@@ -239,6 +246,20 @@ gpuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistor
     return gpuTabContent(gpuSupported,
                          hasGpuUsageToShow(proc.gpuMemoryBytes, proc.gpuUtilPercent, !proc.gpuDevices.empty(), util, memory),
                          hasAnyReading(util) || hasAnyReading(memory));
+}
+
+/// What the NPU tab shows for @p proc and its retained @p history (#1869), decided as the GPU tab's
+/// (gpuTabContentFor()) from the process's NPU figures: its usage and charts while it uses an NPU or
+/// compute accelerator now or its retained history does, else why there is nothing to chart.
+[[nodiscard]] inline GpuTabContent
+npuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistory& history, bool gpuSupported)
+{
+    const std::span<const double> util = history.series(ProcessSeries::NpuUtil);
+    const std::span<const double> dedicated = history.series(ProcessSeries::NpuDedicatedMemory);
+    const std::span<const double> shared = history.series(ProcessSeries::NpuSharedMemory);
+    return gpuTabContent(gpuSupported,
+                         hasGpuUsageToShow(proc.npuMemoryBytes, proc.npuUtilPercent, !proc.npuDevices.empty(), util, dedicated, shared),
+                         hasAnyReading(util) || hasAnyReading(dedicated) || hasAnyReading(shared));
 }
 
 /// Whether the Network and I/O tab has anything to chart, rather than its empty state (#1210).

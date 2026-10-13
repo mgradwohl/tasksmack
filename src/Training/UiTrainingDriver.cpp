@@ -266,6 +266,7 @@ class TrainingShell : public Core::Layer
             m_ProcessDetails.requestTab(*startupTab);
         }
         m_ProcessDetails.setProcessCapabilities(m_Processes.processCapabilities());
+        m_ProcessDetails.setHasAccelerator(m_Processes.hasAccelerator());
 
         // The selected process's new samples, as ShellLayer hands them over.
         const std::int32_t selectedPid = m_ProcessDetails.selectedPid();

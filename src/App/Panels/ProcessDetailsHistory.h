@@ -32,23 +32,26 @@ namespace App::Detail
 /// Each per-process series Process Details charts, in storage order.
 enum class ProcessSeries : std::uint8_t
 {
-    CpuTotal,     ///< CPU % of the machine
-    CpuUser,      ///< User-mode CPU %
-    CpuSystem,    ///< Kernel-mode CPU %
-    MemoryUsed,   ///< Resident (used) bytes (#1195)
-    MemoryShared, ///< Shared bytes, best effort (#1195)
-    Virtual,      ///< Virtual bytes (#992)
-    Threads,      ///< Thread count
-    Handles,      ///< Handle / file descriptor count; NaN where unread (#1110)
-    PageFaults,   ///< Page faults per second
-    IoRead,       ///< Disk read bytes per second; NaN where not a reading (#1210)
-    IoWrite,      ///< Disk write bytes per second; NaN where not a reading (#1210)
-    NetSent,      ///< Network send bytes per second; NaN where not a reading (#1210)
-    NetReceived,  ///< Network receive bytes per second; NaN where not a reading (#1210)
-    Power,        ///< Watts
-    GpuUtil,      ///< GPU utilization %; NaN where the GPU probe gave none (#1210)
-    GpuMemory,    ///< GPU memory bytes; NaN where the GPU probe gave none (#1210)
-    GdiObjects,   ///< GDI object count (Windows); NaN where unread (#1148)
+    CpuTotal,           ///< CPU % of the machine
+    CpuUser,            ///< User-mode CPU %
+    CpuSystem,          ///< Kernel-mode CPU %
+    MemoryUsed,         ///< Resident (used) bytes (#1195)
+    MemoryShared,       ///< Shared bytes, best effort (#1195)
+    Virtual,            ///< Virtual bytes (#992)
+    Threads,            ///< Thread count
+    Handles,            ///< Handle / file descriptor count; NaN where unread (#1110)
+    PageFaults,         ///< Page faults per second
+    IoRead,             ///< Disk read bytes per second; NaN where not a reading (#1210)
+    IoWrite,            ///< Disk write bytes per second; NaN where not a reading (#1210)
+    NetSent,            ///< Network send bytes per second; NaN where not a reading (#1210)
+    NetReceived,        ///< Network receive bytes per second; NaN where not a reading (#1210)
+    Power,              ///< Watts
+    GpuUtil,            ///< GPU utilization %; NaN where the GPU probe gave none (#1210)
+    GpuMemory,          ///< GPU memory bytes; NaN where the GPU probe gave none (#1210)
+    GdiObjects,         ///< GDI object count (Windows); NaN where unread (#1148)
+    NpuUtil,            ///< NPU utilization % (busiest NPU or compute accelerator); NaN where the GPU probe gave none (#1869)
+    NpuDedicatedMemory, ///< NPU dedicated memory bytes; NaN where the GPU probe gave none (#1869)
+    NpuSharedMemory,    ///< NPU shared (system) memory bytes; NaN where the GPU probe gave none (#1869)
     Count,
 };
 
@@ -75,6 +78,9 @@ struct ProcessHistoryPoint
     double gpuUtil = 0.0;
     double gpuMemory = 0.0;
     double gdiObjects = 0.0;
+    double npuUtil = 0.0;
+    double npuDedicatedMemory = 0.0;
+    double npuSharedMemory = 0.0;
 };
 
 /// Which ProcessHistoryPoint field feeds each ProcessSeries, indexed by the series. A plain table
@@ -97,6 +103,9 @@ inline constexpr std::array<double ProcessHistoryPoint::*, PROCESS_SERIES_COUNT>
     &ProcessHistoryPoint::gpuUtil,
     &ProcessHistoryPoint::gpuMemory,
     &ProcessHistoryPoint::gdiObjects,
+    &ProcessHistoryPoint::npuUtil,
+    &ProcessHistoryPoint::npuDedicatedMemory,
+    &ProcessHistoryPoint::npuSharedMemory,
 };
 
 // The table maps series to fields one-to-one. A missing entry is a null member pointer; a field
@@ -154,6 +163,11 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
         .gpuMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.gpuMemoryBytes)),
         // NaN signals "no data" to the plot; ImPlot renders NaN as a gap in the line.
         .gdiObjects = snapshot.gdiObjectCount.has_value() ? toDouble(*snapshot.gdiObjectCount) : std::numeric_limits<double>::quiet_NaN(),
+        // The NPU figures come from the same per-process GPU read (ProcessSnapshot::gpuFieldsRead), so
+        // they are readings or gaps exactly as the GPU ones are (#1869).
+        .npuUtil = readingOrGap(rateReadings.gpuUtilization, snapshot.npuUtilPercent),
+        .npuDedicatedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuDedicatedMemoryBytes)),
+        .npuSharedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuSharedMemoryBytes)),
     };
 }
 
@@ -166,7 +180,7 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
 /// Trimming is lazy (#1179): trimToWindow() only advances a logical start offset shared by the axis
 /// and every series, and the points before it stay in the buffers, unread, until they are at least as
 /// many as the live points. Only then are they erased, in one pass per buffer. Erasing from the
-/// front on every sample used to shift the whole window of all eighteen buffers once per sample --
+/// front on every sample used to shift the whole window of every buffer once per sample --
 /// about 4 MB/s of memmove at 100 ms over the default 5 minutes, six times that at 30 minutes. Now
 /// each live point is moved about once per window's worth of samples, so the cost per sample is
 /// amortized O(1). The reads (timestamps(), series()) return spans that start at the logical start,
@@ -176,7 +190,7 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
 /// before it reaches the live count), and its capacity is held to about twice the most live points
 /// it has had (see append()) rather than growing by doubling, which could take it to nearly four
 /// times the window. At the largest window and fastest interval (30 minutes at 100 ms) that is
-/// 18,000 points x 18 buffers x 8 bytes, about 2.6 MB live and about 5.2 MB allocated per Process
+/// 18,000 points x 21 buffers x 8 bytes, about 3.0 MB live and about 6.0 MB allocated per Process
 /// Details history, plus the old buffer briefly while one grows. Capacity is never released, so a
 /// shorter window or clear() keeps the larger allocation for reuse.
 class ProcessDetailsHistory

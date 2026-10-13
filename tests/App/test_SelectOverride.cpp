@@ -80,6 +80,7 @@ TEST(SelectOverrideTest, ParsesTabsInAnyCase)
 {
     EXPECT_EQ(parse("1", nullptr, "overview").target, byPid(1, DetailsTab::Overview));
     EXPECT_EQ(parse("1", nullptr, " GPU ").target, byPid(1, DetailsTab::Gpu));
+    EXPECT_EQ(parse("1", nullptr, "npu").target, byPid(1, DetailsTab::Npu)); // #1869
     EXPECT_EQ(parse("1", nullptr, "Network").target, byPid(1, DetailsTab::Network));
     EXPECT_EQ(parse("1", nullptr, "").target, byPid(1, DetailsTab::Overview));
 }

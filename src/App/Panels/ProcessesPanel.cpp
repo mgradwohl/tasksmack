@@ -3,6 +3,7 @@
 #include "App/KeyboardInput.h"
 #include "App/Panel.h"
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/GpuSection.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessBatchAction.h"
@@ -1833,12 +1834,17 @@ ProcessColumnAvailability::GpuSupport ProcessesPanel::gpuSupport() const
     // An NPU or compute accelerator listed (#1799). Before the model's first publication that is
     // unknown, which counts as listed, as unknown per-process support counts as supported.
     const std::shared_ptr<const Domain::GPUPublication> publication = (gpuModel != nullptr) ? gpuModel->publication() : nullptr;
-    const bool hasAccelerator =
-        (publication == nullptr) || !publication->acceleratorInfo.empty() || !publication->acceleratorSnapshots.empty();
+    const bool hasAccelerator = (publication == nullptr) || GpuSection::showAcceleratorTab(publication.get());
     return ProcessColumnAvailability::gpuSupport(gpuModel != nullptr,
                                                  gpuModel != nullptr && gpuModel->perProcessMetricsKnownUnsupported(),
                                                  gpuModel != nullptr && gpuModel->perProcessUtilizationKnownUnsupported(),
                                                  hasAccelerator);
+}
+
+bool ProcessesPanel::hasAccelerator() const
+{
+    const std::shared_ptr<const Domain::GPUModel> gpuModel = m_GpuModel.lock();
+    return gpuModel != nullptr && GpuSection::showAcceleratorTab(gpuModel->publication().get());
 }
 
 bool ProcessesPanel::hasPerProcessGpuMetrics() const

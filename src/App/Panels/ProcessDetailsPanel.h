@@ -137,6 +137,14 @@ class ProcessDetailsPanel : public Panel
         m_CrashHistoryView.setHistory(std::move(crashHistory));
     }
 
+    /// Whether the machine has an NPU or compute accelerator: the NPU tab is shown beside the GPU tab
+    /// only then, on the machine view's NPU tab's condition (GpuSection::showAcceleratorTab(), #1869).
+    /// Set each frame by ShellLayer; false (the default) hides it, as on Linux until #1827.
+    void setHasAccelerator(bool hasAccelerator) noexcept
+    {
+        m_HasAccelerator = hasAccelerator;
+    }
+
     /// Brings @p tab forward the next time the tabs are drawn: the test hook's TASKSMACK_DETAILS_TAB (#1559).
     void requestTab(SelectOverride::DetailsTab tab)
     {
@@ -243,6 +251,7 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;
+    bool m_HasAccelerator = false; // Shows the NPU tab (setHasAccelerator(), #1869)
 
     // The Overview's Actions block (#1493): the buttons, confirm dialog and result line, and the
     // priority control beside them (#1179). Both act through m_ProcessActions, which the panel keeps
@@ -299,7 +308,7 @@ class ProcessDetailsPanel : public Panel
     // The smoothed NowBar values, eased toward each shown sample (#1179).
     Detail::ProcessSmoothedUsage m_SmoothedUsage;
 
-    // The Overview's charts and the GPU and Network and I/O tabs (#1179). They read m_History,
+    // The Overview's charts and the GPU, NPU and Network and I/O tabs (#1179, #1869). They read m_History,
     // m_SmoothedUsage and the snapshot through chartContext(), passed in each frame.
     ProcessDetailsCharts m_Charts;
 };

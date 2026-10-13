@@ -19,7 +19,9 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -305,6 +307,78 @@ TEST_F(ProcessDetailsPanelRenderTest, ARequestedTabIsSelected)
     EXPECT_TRUE(text.contains("I/O Statistics")) << text;
     EXPECT_TRUE(text.contains("Sent")) << text;
     EXPECT_FALSE(text.contains("Identity")) << text;
+}
+
+/// The labels of the tabs Process Details' tab bar drew.
+[[nodiscard]] std::vector<std::string> detailsTabLabels()
+{
+    std::vector<std::string> labels;
+    ImGuiContext& g = *GImGui;
+    for (int i = 0; i < g.TabBars.GetMapSize(); ++i)
+    {
+        ImGuiTabBar* bar = g.TabBars.TryGetMapData(i);
+        if (bar == nullptr)
+        {
+            continue;
+        }
+        for (ImGuiTabItem& tab : bar->Tabs)
+        {
+            labels.emplace_back(ImGui::TabBarGetTabName(bar, &tab));
+        }
+    }
+    return labels;
+}
+
+/// A sample of a process that uses the NPU, as an Intel AI Boost user does.
+[[nodiscard]] Domain::ProcessSample npuSampleAt(double seconds)
+{
+    Domain::ProcessSample sample = sampleAt(seconds, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+    snapshot->gpuFieldsRead = true;
+    snapshot->npuUtilPercent = 25.0;
+    snapshot->npuMemoryBytes = 4'194'304;
+    snapshot->npuSharedMemoryBytes = 4'194'304;
+    snapshot->npuDevices = "Intel(R) AI Boost";
+    snapshot->npuEngines = {"Compute"};
+    sample.snapshot = std::move(snapshot);
+    return sample;
+}
+
+// #1869: the NPU tab sits after the GPU tab only on a machine with an NPU or compute accelerator, as
+// the machine view's does; asked for without one, nothing NPU is drawn and the Overview stays.
+TEST_F(ProcessDetailsPanelRenderTest, TheNpuTabAppearsOnlyWithAnAccelerator)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    const std::vector samples{npuSampleAt(0.0), npuSampleAt(1.0)};
+    panel->updateWithSamples(samples, 1.0F);
+
+    panel->requestTab(SelectOverride::DetailsTab::Npu);
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    std::vector<std::string> tabs = detailsTabLabels();
+    EXPECT_FALSE(std::ranges::any_of(tabs, [](const std::string& label) { return label.contains("NPU"); })) << text;
+    EXPECT_FALSE(text.contains("NPU")) << text;
+    EXPECT_TRUE(text.contains("Identity")) << text;
+
+    panel->setHasAccelerator(true);
+    panel->requestTab(SelectOverride::DetailsTab::Npu);
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    tabs = detailsTabLabels();
+    const auto gpuTab = std::ranges::find_if(tabs, [](const std::string& label) { return label.contains("GPU"); });
+    const auto npuTab = std::ranges::find_if(tabs, [](const std::string& label) { return label.contains("NPU"); });
+    ASSERT_NE(npuTab, tabs.end()) << text;
+    ASSERT_NE(gpuTab, tabs.end()) << text;
+    EXPECT_EQ(std::ranges::distance(gpuTab, npuTab), 1) << "The NPU tab is next to the GPU tab";
+    EXPECT_TRUE(text.contains("NPU Usage")) << text;
+    EXPECT_TRUE(text.contains("Intel(R) AI Boost")) << text;
+    EXPECT_FALSE(text.contains("Identity")) << text;
+
+    panel->setHasAccelerator(false); // The accelerator goes away: so does the tab
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_FALSE(text.contains("NPU Usage")) << text;
 }
 
 TEST_F(ProcessDetailsPanelRenderTest, AProcessThatLeavesTheListIsReportedExited)

@@ -4,7 +4,6 @@
 /// draw no plot, the optional series (Shared, Power) follow the capabilities, and a gap-only
 /// history and a hovered gap render (the tooltip shows N/A rather than tripping on NaN).
 
-#include "App/Panels/ProcessDetailsChartHelpers.h"
 #include "App/Panels/ProcessDetailsCharts.h"
 #include "App/Panels/ProcessDetailsHistory.h"
 #include "App/Panels/ProcessDetailsPanel_HistoryHelpers.h"
@@ -65,6 +64,9 @@ using SeriesLabels = std::set<std::string>;
     point.gpuUtil = v;
     point.gpuMemory = v * 1.0e6;
     point.gdiObjects = 20.0;
+    point.npuUtil = v * 0.5;
+    point.npuDedicatedMemory = 0.0; // An NPU that maps system RAM (Intel AI Boost) has none
+    point.npuSharedMemory = v * 2.0e5;
     return point;
 }
 
@@ -82,6 +84,9 @@ using SeriesLabels = std::set<std::string>;
     point.gpuUtil = NOT_A_NUMBER;
     point.gpuMemory = NOT_A_NUMBER;
     point.gdiObjects = NOT_A_NUMBER;
+    point.npuUtil = NOT_A_NUMBER;
+    point.npuDedicatedMemory = NOT_A_NUMBER;
+    point.npuSharedMemory = NOT_A_NUMBER;
     return point;
 }
 
@@ -155,6 +160,14 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
         ImGui::DestroyContext(m_ImGui);
     }
 
+  public:
+    /// runFrame() for the free helpers below.
+    static void runFrameForText(const std::function<void()>& body)
+    {
+        runFrame(body);
+    }
+
+  protected:
     /// One frame of a window like the Process Details pane, running @p body inside it.
     static void runFrame(const std::function<void()>& body)
     {
@@ -689,59 +702,162 @@ TEST_F(ProcessDetailsChartsRenderTest, TheGpuUsageCardListsEveryReadingAndEachGp
     }
 }
 
-// #1799: a process using an NPU has an NPU Usage card on the GPU tab, above its GPU figures and apart
-// from them; one that uses none has no card. A process using only the NPU still gets the card above
-// the tab's "No GPU usage".
-TEST_F(ProcessDetailsChartsRenderTest, AProcessOnAnNpuHasAnNpuUsageCard)
+/// Gives @p inputs' process the NPU use of an Intel AI Boost user, its bars taken outright.
+void useTheNpu(ChartInputs& inputs)
 {
-    const auto renderText = [](ProcessDetailsCharts& charts, const ProcessChartContext& ctx)
-    {
-        std::string text;
-        for (int frame = 0; frame < 2; ++frame)
-        {
-            runFrame(
-                [&]
-                {
-                    ImGui::LogToBuffer();
-                    charts.renderGpuTab(ctx);
-                    text = GImGui->LogBuffer.c_str();
-                    ImGui::LogFinish();
-                });
-        }
-        return text;
-    };
-
-    ChartInputs inputs(busyPoint);
-    {
-        ProcessDetailsCharts charts;
-        const std::string text = renderText(charts, inputs.ctx);
-        EXPECT_FALSE(text.contains("NPU Usage")) << text;
-        EXPECT_EQ(findCard("##ProcNpuUsageCard"), nullptr);
-    }
-
     Domain::ProcessSnapshot& proc = inputs.snapshot;
     proc.npuUtilPercent = 42.0;
     proc.npuMemoryBytes = 8'388'608;
     proc.npuSharedMemoryBytes = 8'388'608;
     proc.npuDevices = "Intel(R) AI Boost";
     proc.npuEngines = {"Compute"};
+    inputs.smoothed.update(proc, inputs.ctx.rateReadings, 0.0F, std::chrono::milliseconds(1000));
+}
+
+/// The text the last of @p frames frames of @p render drew.
+[[nodiscard]] std::string tabText(const std::function<void()>& render, int frames = 2)
+{
+    std::string text;
+    int frame = 0;
+    while (frame < frames)
+    {
+        ProcessDetailsChartsRenderTest::runFrameForText(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                render();
+                text = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+            });
+        ++frame;
+    }
+    return text;
+}
+
+// #1869: the GPU tab is GPU-only again: a process using the NPU has no NPU card or figures there.
+TEST_F(ProcessDetailsChartsRenderTest, TheGpuTabNoLongerShowsTheNpu)
+{
+    ChartInputs inputs(busyPoint);
+    useTheNpu(inputs);
     ProcessDetailsCharts charts;
-    const std::string text = renderText(charts, inputs.ctx);
-    for (const char* expected :
-         {"NPU Usage", "NPU Utilization:", "42.0%", "NPU Memory:", "8.0 MiB", "NPU Device(s):", "Intel(R) AI Boost", "Compute"})
+    const std::string text = tabText([&] { charts.renderGpuTab(inputs.ctx); });
+    EXPECT_TRUE(text.contains("GPU Utilization:")) << text;
+    EXPECT_FALSE(text.contains("NPU")) << text;
+    EXPECT_FALSE(text.contains("AI Boost")) << text;
+    EXPECT_EQ(findCard("##ProcNpuUsageCard"), nullptr);
+}
+
+// #1869: the NPU tab, modeled on the GPU tab: the NPU Usage card with every NPU figure, then the
+// utilization chart and the memory chart with its dedicated and shared series, each in its own card.
+TEST_F(ProcessDetailsChartsRenderTest, TheNpuTabShowsItsUsageCardAndCharts)
+{
+    ChartInputs inputs(busyPoint);
+    useTheNpu(inputs);
+    ProcessDetailsCharts charts;
+    std::string text;
+    int frame = 0;
+    while (frame < 4) // The fill layout measures from the previous frame
+    {
+        text = tabText([&] { charts.renderNpuTab(inputs.ctx); }, 1);
+        if (const ImGuiWindow* card = findCard("##ProcNpuUsageCard"); card != nullptr)
+        {
+            EXPECT_TRUE(std::isfinite(card->ContentSize.x)) << "frame " << frame;
+        }
+        ++frame;
+    }
+    for (const char* expected : {"NPU Usage",
+                                 "NPU Utilization:",
+                                 "42.0%",
+                                 "NPU Memory:",
+                                 "8.0 MiB",
+                                 "Dedicated:",
+                                 "Shared:",
+                                 "NPU Device(s):",
+                                 "Intel(R) AI Boost",
+                                 "Active Engines:",
+                                 "Compute",
+                                 "NPU Utilization History",
+                                 "NPU Memory History"})
     {
         EXPECT_TRUE(text.contains(expected)) << "missing \"" << expected << "\" in:\n" << text;
     }
-    EXPECT_TRUE(text.contains("GPU Utilization:")) << "The GPU card is still there: " << text;
-    const ImGuiWindow* npuCard = findCard("##ProcNpuUsageCard");
-    const ImGuiWindow* gpuCard = findCard("##ProcGpuUsageCard");
-    ASSERT_NE(npuCard, nullptr);
-    ASSERT_NE(gpuCard, nullptr);
-    EXPECT_LE(npuCard->Pos.y + npuCard->Size.y, gpuCard->Pos.y);
+    EXPECT_FALSE(text.contains("GPU")) << text;
 
-    EXPECT_TRUE(Detail::hasNpuUsage(proc));
-    proc.gpuFieldsRead = false;
-    EXPECT_FALSE(Detail::hasNpuUsage(proc)) << "Unread, as the GPU fields are";
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 2U);
+    EXPECT_EQ(plots[0], (SeriesLabels{"Utilization"}));
+    EXPECT_EQ(plots[1], (SeriesLabels{"Dedicated", "Shared"}));
+
+    const ImGuiWindow* usage = findCard("##ProcNpuUsageCard");
+    const ImGuiWindow* utilization = findCard("##ProcNpuUtilCard");
+    ASSERT_NE(usage, nullptr);
+    ASSERT_NE(utilization, nullptr);
+    EXPECT_LE(usage->Pos.y + usage->Size.y, utilization->Pos.y); // The values above the charts
+    expectChartsInFillingCards({
+        {"##ProcNpuUtilCard", SeriesLabels{"Utilization"}},
+        {"##ProcNpuMemCard", SeriesLabels{"Dedicated", "Shared"}},
+    });
+}
+
+TEST_F(ProcessDetailsChartsRenderTest, TheNpuMemoryChartShowsATooltip)
+{
+    ChartInputs inputs(busyPoint);
+    useTheNpu(inputs);
+    ProcessDetailsCharts charts;
+    const auto drawNpu = [&]
+    {
+        runFrame([&] { charts.renderNpuTab(inputs.ctx); });
+    };
+    drawNpu();
+    drawNpu();
+    EXPECT_TRUE(hoverPlot(SeriesLabels{"Dedicated", "Shared"}, drawNpu));
+}
+
+// #1869: a process whose NPU history is all zero -- a GPU-busy one included -- gets the muted
+// explanation instead of charts, naming the history window; so does one whose reads failed, or a
+// system without per-process data, each in its own words.
+TEST_F(ProcessDetailsChartsRenderTest, TheNpuTabExplainsWhyItHasNoCharts)
+{
+    {
+        SCOPED_TRACE("idle");
+        // Busy on the GPU, never on the NPU
+        ChartInputs idle(
+            [](std::size_t i)
+            {
+                Detail::ProcessHistoryPoint point = busyPoint(i);
+                point.npuUtil = 0.0;
+                point.npuDedicatedMemory = 0.0;
+                point.npuSharedMemory = 0.0;
+                return point;
+            });
+        ProcessDetailsCharts charts;
+        std::string text = tabText([&] { charts.renderNpuTab(idle.ctx); });
+        EXPECT_TRUE(text.contains("No NPU usage")) << text;
+        EXPECT_TRUE(text.contains("This process hasn't used the NPU in its retained history (up to 5m).")) << text;
+        EXPECT_TRUE(plotsDrawn().empty());
+        EXPECT_EQ(findCard("##ProcNpuUsageCard"), nullptr);
+
+        idle.ctx.maxHistorySeconds = 60.0; // The text follows the window
+        text = tabText([&] { charts.renderNpuTab(idle.ctx); });
+        EXPECT_TRUE(text.contains("(up to 1m)")) << text;
+    }
+    {
+        SCOPED_TRACE("no readings");
+        ChartInputs inputs(gapPoint);
+        ProcessDetailsCharts charts;
+        const std::string text = tabText([&] { charts.renderNpuTab(inputs.ctx); });
+        EXPECT_TRUE(text.contains("No NPU readings yet")) << text;
+        EXPECT_TRUE(plotsDrawn().empty());
+    }
+    {
+        SCOPED_TRACE("unavailable");
+        ChartInputs inputs(busyPoint, false);
+        useTheNpu(inputs);
+        ProcessDetailsCharts charts;
+        const std::string text = tabText([&] { charts.renderNpuTab(inputs.ctx); });
+        EXPECT_TRUE(text.contains("Per-process NPU usage is not available")) << text;
+        EXPECT_TRUE(plotsDrawn().empty());
+    }
 }
 
 TEST_F(ProcessDetailsChartsRenderTest, OneGpuHasNoBreakdownAndNoEncoderRows)

@@ -24,12 +24,12 @@ namespace App::Detail
 /// used to disappear the moment the process went idle on the GPU, taking the history with them
 /// (#1014). Once the idle samples have pushed every non-zero sample out of the window, there is
 /// nothing left to chart and the message returns.
-template<std::ranges::input_range UtilHistory, std::ranges::input_range MemoryHistory>
-[[nodiscard]] bool hasGpuUsageToShow(std::uint64_t currentMemoryBytes,
-                                     double currentUtilPercent,
-                                     bool hasGpuDevices,
-                                     const UtilHistory& utilHistory,
-                                     const MemoryHistory& memoryHistory)
+///
+/// The NPU tab asks the same of the process's NPU figures and its NPU histories (#1869): utilization,
+/// then dedicated and shared memory.
+template<std::ranges::input_range... Histories>
+[[nodiscard]] bool
+hasGpuUsageToShow(std::uint64_t currentMemoryBytes, double currentUtilPercent, bool hasGpuDevices, const Histories&... histories)
 {
     if (currentMemoryBytes > 0 || currentUtilPercent > 0.0 || hasGpuDevices)
     {
@@ -39,7 +39,7 @@ template<std::ranges::input_range UtilHistory, std::ranges::input_range MemoryHi
     {
         return value > 0.0;
     };
-    return std::ranges::any_of(utilHistory, isUsed) || std::ranges::any_of(memoryHistory, isUsed);
+    return (std::ranges::any_of(histories, isUsed) || ...);
 }
 
 /// What the process details GPU tab shows (#1210).
@@ -86,7 +86,14 @@ enum class GpuTabContent : std::uint8_t
                        UI::Format::formatDuration(historySeconds, UI::Format::DurationStyle::Compact));
 }
 
-/// The cache key for noGpuUsageDetail()'s text: the history window in whole milliseconds, so the
+/// The NPU tab's "No NPU usage" explanation (#1869), worded and built as noGpuUsageDetail().
+[[nodiscard]] inline std::string noNpuUsageDetail(double historySeconds)
+{
+    return std::format("This process hasn't used the NPU in its retained history (up to {}).",
+                       UI::Format::formatDuration(historySeconds, UI::Format::DurationStyle::Compact));
+}
+
+/// The cache key for noGpuUsageDetail()'s and noNpuUsageDetail()'s text: the history window in whole milliseconds, so the
 /// cached text is compared by an exact integer rather than by float equality (#1487). Any change of
 /// a millisecond or more rebuilds the text; history lengths are whole seconds. A non-finite or
 /// out-of-range window maps to the lowest key, which no finite window shares.

@@ -1,11 +1,12 @@
 #pragma once
 
 // Process Details' chart tabs (#1179, slice 5): the Overview's CPU, Memory, Power and Resources
-// charts, the Network and I/O tab's two charts, and the GPU tab's usage table, per-GPU breakdown and
-// two charts, with their empty states.
+// charts, the Network and I/O tab's two charts, the GPU tab's usage table, per-GPU breakdown and
+// two charts, and the NPU tab's usage table and two charts (#1869), with their empty states.
 //
 // The view owns only its render state: the CPU chart's reduced points and scratch buffers, the
-// Network and GPU tabs' fill state, the GPU tab's "No GPU usage" text and its debug-log throttle. The
+// Network, GPU and NPU tabs' fill state, the GPU and NPU tabs' "No ... usage" text and the GPU tab's
+// debug-log throttle. The
 // history, the smoothed now-bar values and the snapshot stay the panel's, which passes them in each
 // frame (ProcessChartContext); nothing here keeps a pointer into the panel past the call.
 //
@@ -62,6 +63,11 @@ class ProcessDetailsCharts
     /// history charts.
     void renderGpuTab(const ProcessChartContext& ctx);
 
+    /// The NPU tab's body (#1869): its empty state, or the NPU usage table and the utilization and
+    /// memory history charts. The panel shows the tab only on a machine with an NPU or compute
+    /// accelerator.
+    void renderNpuTab(const ProcessChartContext& ctx);
+
     /// The Network and I/O tab's body: its empty state, or the I/O and Network charts.
     void renderNetworkTab(const ProcessChartContext& ctx);
 
@@ -80,8 +86,9 @@ class ProcessDetailsCharts
     void renderGpuUsage(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill);
     static void renderGpuCurrentMetricsTable(const ProcessChartContext& ctx);
     static void renderPerGpuBreakdown(const ProcessChartContext& ctx);
-    static void renderNpuUsageCard(const ProcessChartContext& ctx);
     static void renderGpuHistoryGraphs(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill);
+    static void renderNpuUsageCard(const ProcessChartContext& ctx);
+    static void renderNpuHistoryGraphs(const ProcessChartContext& ctx, UI::Widgets::FillPlotLayout& fill);
 
     // Render scratch buffers for the stacked CPU chart (reused across frames to avoid per-frame heap
     // allocation): only the reduced points, at most LINE_PLOT_MAX_POINTS_DENSE, are built into them
@@ -96,12 +103,16 @@ class ProcessDetailsCharts
     // Identity/Runtime block shares that tab's height.
     UI::Widgets::PlotFillState m_NetworkFill;
     UI::Widgets::PlotFillState m_GpuFill;
+    UI::Widgets::PlotFillState m_NpuFill;
 
     // The GPU tab's "No GPU usage" explanation, naming the history window (#1210): rebuilt only when
     // the window changes. Keyed by Detail::historyWindowCacheKey() (whole milliseconds, #1487); empty
     // until first built.
     std::string m_NoGpuUsageDetail;
     std::optional<std::int64_t> m_NoGpuUsageDetailKey;
+    // The NPU tab's "No NPU usage" explanation, kept the same way (#1869).
+    std::string m_NoNpuUsageDetail;
+    std::optional<std::int64_t> m_NoNpuUsageDetailKey;
 
     // GPU logging throttle state (per-panel tracking)
     std::int32_t m_LastGpuLogPid = -1;

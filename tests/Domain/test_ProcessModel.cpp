@@ -2782,6 +2782,51 @@ TEST(ProcessModelTest, MergeGPUDataRoutesNpuSamplesToTheNpuFields)
     EXPECT_EQ(both.npuDevices, "Intel(R) AI Boost");
 }
 
+// #1869: the watched process's samples, which Process Details' history is built from, carry its NPU
+// figures with every generation, as they do its GPU figures.
+TEST(ProcessModelTest, WatchedSamplesCarryTheNpuFigures)
+{
+    const std::string npuLuid = "GPU_0x00000000_0x00018103";
+    auto processProbe = std::make_unique<MockProcessProbe>();
+    processProbe->setCounters({makeCounter(100, "npu_user", 'R', 1000, 500)});
+    processProbe->setTotalCpuTime(100000);
+    auto counters = makeProcessGpuUsage(100, npuLuid, 35.0, 2048, 4096);
+    counters.kind = Platform::DeviceKind::Npu;
+    counters.activeEngines = {"Compute"};
+    auto gpuProbe = std::make_unique<MockGPUProbe>();
+    gpuProbe->withAccelerator("NPU", "Intel(R) AI Boost", npuLuid).withProcessGPUCounters(counters);
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessMetrics = true;
+    caps.hasPerProcessUtilization = true;
+    gpuProbe->withCapabilities(caps);
+
+    const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+    Domain::ProcessModel processModel(std::move(processProbe));
+    processModel.setGPUModel(gpuModel);
+    processModel.watchProcess(100);
+    processModel.refresh(); // Listed before the GPU read, as in the app (#1417): its GPU fields unread
+    gpuModel->refresh();
+    processModel.refresh();
+
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_EQ(samples.size(), 2U);
+    ASSERT_NE(samples[0].snapshot, nullptr);
+    EXPECT_FALSE(samples[0].snapshot->gpuFieldsRead);
+    EXPECT_DOUBLE_EQ(samples[0].snapshot->npuUtilPercent, 0.0);
+    ASSERT_NE(samples[1].snapshot, nullptr);
+    const Domain::ProcessSnapshot& watched = *samples[1].snapshot;
+    EXPECT_TRUE(watched.gpuFieldsRead);
+    EXPECT_TRUE(samples[1].gpuPerProcessSupported);
+    EXPECT_TRUE(samples[1].gpuUtilizationSupported);
+    EXPECT_DOUBLE_EQ(watched.npuUtilPercent, 35.0);
+    EXPECT_EQ(watched.npuDedicatedMemoryBytes, 2048U);
+    EXPECT_EQ(watched.npuSharedMemoryBytes, 4096U);
+    EXPECT_EQ(watched.npuEngines, std::vector<std::string>{"Compute"});
+    EXPECT_EQ(watched.npuDevices, "Intel(R) AI Boost");
+    EXPECT_DOUBLE_EQ(watched.gpuUtilPercent, 0.0) << "Never counted as GPU use";
+}
+
 // #1799: a sample on an adapter enumerated as an NPU is routed by the adapter's kind too, even
 // untagged, so a probe that doesn't tag its samples still never counts NPU work as GPU work.
 TEST(ProcessModelTest, MergeGPUDataRoutesAnUntaggedSampleOnAnEnumeratedNpuToTheNpuFields)

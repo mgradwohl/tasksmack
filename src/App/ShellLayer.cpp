@@ -371,6 +371,8 @@ void ShellLayer::onUpdate(float deltaTime)
     // The details pane follows the capabilities published with the latest generation (#1254): a
     // plain copy of what ProcessesPanel fetched with its snapshots, so no lock is taken here.
     m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
+    // Its NPU tab shows while the machine lists an NPU or compute accelerator, as the machine view's does (#1869).
+    m_ProcessDetailsPanel.setHasAccelerator(m_ProcessesPanel.hasAccelerator());
     // Per-process GPU support reaches the details pane with each sample, as of the generation it
     // came from (Domain::ProcessSample, #1210), not from here.
 

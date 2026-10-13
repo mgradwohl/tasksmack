@@ -39,6 +39,7 @@ TEST(ProcessDetailsChartHelpersTest, EachTabReservesTheMostBarsAnyOfItsChartsHas
 #endif
     EXPECT_EQ(PROCESS_NETWORK_IO_NOW_BAR_COLUMNS, 2U); // Read/Write, Sent/Received
     EXPECT_EQ(PROCESS_GPU_NOW_BAR_COLUMNS, 1U);        // Utilization, Memory: one each
+    EXPECT_EQ(PROCESS_NPU_NOW_BAR_COLUMNS, 2U);        // Utilization; Memory's Dedicated and Shared (#1869)
 }
 
 // ========== Value text ==========
@@ -240,6 +241,9 @@ template<typename Make> [[nodiscard]] ProcessDetailsHistory historyOf(std::size_
     point.netReceived = NOT_A_NUMBER;
     point.gpuUtil = NOT_A_NUMBER;
     point.gpuMemory = NOT_A_NUMBER;
+    point.npuUtil = NOT_A_NUMBER;
+    point.npuDedicatedMemory = NOT_A_NUMBER;
+    point.npuSharedMemory = NOT_A_NUMBER;
     return point;
 }
 
@@ -297,6 +301,82 @@ TEST(ProcessDetailsChartHelpersTest, GpuTabContentFollowsSupportReadingsAndUsage
     Domain::ProcessSnapshot withDevice;
     withDevice.gpuDevices = "GPU0";
     EXPECT_EQ(gpuTabContentFor(withDevice, zeros, true), GpuTabContent::Usage);
+}
+
+// #1869: the NPU tab decides as the GPU tab does, from the NPU figures and series only: GPU use is
+// not NPU use, and NPU use is not GPU use.
+TEST(ProcessDetailsChartHelpersTest, NpuTabContentFollowsSupportReadingsAndNpuUsage)
+{
+    const Domain::ProcessSnapshot idle;
+    const ProcessDetailsHistory zeros = historyOf(5, [](std::size_t) { return ProcessHistoryPoint{}; });
+
+    Domain::ProcessSnapshot onNpu;
+    onNpu.npuUtilPercent = 30.0;
+    EXPECT_EQ(npuTabContentFor(onNpu, zeros, false), GpuTabContent::Unavailable);
+    EXPECT_EQ(npuTabContentFor(idle, historyOf(5, gapsOnly), true), GpuTabContent::NoReadings);
+    EXPECT_EQ(npuTabContentFor(idle, zeros, true), GpuTabContent::NoUsage);
+    EXPECT_EQ(npuTabContentFor(onNpu, zeros, true), GpuTabContent::Usage);
+
+    // Memory alone, now or in the history, dedicated or shared; or a device listed.
+    Domain::ProcessSnapshot holdingMemory;
+    holdingMemory.npuMemoryBytes = 4096;
+    EXPECT_EQ(npuTabContentFor(holdingMemory, zeros, true), GpuTabContent::Usage);
+    for (double ProcessHistoryPoint::* const field :
+         {&ProcessHistoryPoint::npuUtil, &ProcessHistoryPoint::npuDedicatedMemory, &ProcessHistoryPoint::npuSharedMemory})
+    {
+        const auto usedEarlier = historyOf(5,
+                                           [field](std::size_t i)
+                                           {
+                                               ProcessHistoryPoint point;
+                                               point.*field = (i == 1) ? 4096.0 : 0.0;
+                                               return point;
+                                           });
+        EXPECT_EQ(npuTabContentFor(idle, usedEarlier, true), GpuTabContent::Usage);
+    }
+    Domain::ProcessSnapshot withDevice;
+    withDevice.npuDevices = "Intel(R) AI Boost";
+    EXPECT_EQ(npuTabContentFor(withDevice, zeros, true), GpuTabContent::Usage);
+
+    // A GPU-only process has no NPU usage, and an NPU-only one no GPU usage.
+    Domain::ProcessSnapshot onGpu;
+    onGpu.gpuUtilPercent = 50.0;
+    onGpu.gpuMemoryBytes = 1'000'000;
+    onGpu.gpuDevices = "GPU0";
+    const auto gpuHistory = historyOf(5,
+                                      [](std::size_t)
+                                      {
+                                          ProcessHistoryPoint point;
+                                          point.gpuUtil = 50.0;
+                                          point.gpuMemory = 1.0e6;
+                                          return point;
+                                      });
+    EXPECT_EQ(npuTabContentFor(onGpu, gpuHistory, true), GpuTabContent::NoUsage);
+    const auto npuHistory = historyOf(5,
+                                      [](std::size_t)
+                                      {
+                                          ProcessHistoryPoint point;
+                                          point.npuUtil = 40.0;
+                                          return point;
+                                      });
+    EXPECT_EQ(gpuTabContentFor(idle, npuHistory, true), GpuTabContent::NoUsage);
+}
+
+TEST(ProcessDetailsChartHelpersTest, NoNpuUsageNamesTheWindow)
+{
+    EXPECT_EQ(noNpuUsageDetail(300.0), "This process hasn't used the NPU in its retained history (up to 5m).");
+}
+
+TEST(ProcessDetailsChartHelpersTest, NpuMemoryAxisCoversBothSeriesAndReadBars)
+{
+    const std::vector<double> time{0.0, 1.0, 2.0};
+    const std::vector<double> dedicated{0.0, 100.0, 0.0};
+    const std::vector<double> shared{0.0, 50.0, 300.0};
+    ProcessSmoothedUsage smoothed;
+    EXPECT_DOUBLE_EQ(npuMemoryAxisDataMax(time, 0.0, dedicated, shared, smoothed), 300.0);
+    smoothed.npuSharedMemoryBytes = 900.0;
+    EXPECT_DOUBLE_EQ(npuMemoryAxisDataMax(time, 0.0, dedicated, shared, smoothed), 300.0) << "No reading: the bar shows N/A";
+    smoothed.gpuMemoryAvailable = true;
+    EXPECT_DOUBLE_EQ(npuMemoryAxisDataMax(time, 0.0, dedicated, shared, smoothed), 900.0);
 }
 
 } // namespace

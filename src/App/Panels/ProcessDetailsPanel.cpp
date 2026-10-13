@@ -352,7 +352,18 @@ void ProcessDetailsPanel::renderContent()
             ImGui::EndTabItem();
         }
 
-        // 3. Network and I/O. Always present, like the GPU tab, so the tab set does not change while a
+        // 3. NPU, beside the GPU tab, only on a machine with an NPU or compute accelerator, like the
+        // machine view's NPU tab (#1869). The GPU tab is GPU-only.
+        if (m_HasAccelerator && ImGui::BeginTabItem(ICON_FA_BRAIN "  NPU", nullptr, tabFlags(SelectOverride::DetailsTab::Npu)))
+        {
+            {
+                const UI::Widgets::TabContentScope content("##NpuContent");
+                m_Charts.renderNpuTab(chartContext());
+            }
+            ImGui::EndTabItem();
+        }
+
+        // 4. Network and I/O. Always present, like the GPU tab, so the tab set does not change while a
         // process stays selected; an empty state stands in until there is data (#1210).
         if (ImGui::BeginTabItem(ICON_FA_NETWORK_WIRED "  Network and I/O", nullptr, tabFlags(SelectOverride::DetailsTab::Network)))
         {
