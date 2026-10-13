@@ -114,6 +114,10 @@ add_test(NAME TidyChangedFilesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_changed_files.py)
 set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 
+# tools/tidy-cache.py keys the clang-tidy jobs' per-file result cache (#1785).
+add_test(NAME TidyCacheScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
+
 # tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
 add_test(NAME CoverageMismatchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_coverage_mismatches.py)
