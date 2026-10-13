@@ -500,6 +500,7 @@ TEST(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
 struct ShellKeysObserved
 {
     bool detailsTabShown = false;
+    bool servicesTabShown = false; // #1886: a ShowServiceEvent brings the Services tab forward
     bool metricsOnAfterToggle = false;
     bool metricsOffAfterSecondToggle = true;
     bool fontGrew = false;
@@ -573,7 +574,16 @@ class ShellKeysDriverLayer : public Core::Layer
             break;
         }
         case Phase::CheckDetails:
+        {
             m_Observed.detailsTabShown = selectedTab() == tabId("###ProcessDetailsTab");
+            // Process Details' Services section asks for a service as this does (#1886, #1891).
+            Core::ShowServiceEvent show("cron.service");
+            Core::Application::get().raiseEvent(show);
+            next(Phase::CheckServices, 15);
+            break;
+        }
+        case Phase::CheckServices:
+            m_Observed.servicesTabShown = selectedTab() == tabId("###ServicesTab");
             ImGui::ActivateItemByID(tabId("###ProcessesTab"));
             next(Phase::PressF5, STEP);
             break;
@@ -666,6 +676,7 @@ class ShellKeysDriverLayer : public Core::Layer
     {
         ShowDetails,
         CheckDetails,
+        CheckServices,
         PressF5,
         ReleaseF5,
         PressMetricsOn,
@@ -721,6 +732,7 @@ TEST(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
 
     EXPECT_FALSE(observed.timedOut);
     EXPECT_TRUE(observed.detailsTabShown);              // Details brings the Process Details tab forward
+    EXPECT_TRUE(observed.servicesTabShown);             // Show in Services brings the Services tab forward
     EXPECT_TRUE(observed.metricsOnAfterToggle);         // Ctrl+Shift+M turns the render metrics on...
     EXPECT_FALSE(observed.metricsOffAfterSecondToggle); // ...and off again
     EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one preset larger
