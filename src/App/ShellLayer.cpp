@@ -405,6 +405,8 @@ void ShellLayer::onUpdate(float deltaTime)
     m_ProcessDetailsPanel.setProcessCapabilities(m_ProcessesPanel.processCapabilities());
     // Its NPU tab shows while the machine lists an NPU or compute accelerator, as the machine view's does (#1869).
     m_ProcessDetailsPanel.setHasAccelerator(m_ProcessesPanel.hasAccelerator());
+    // With several processes selected, the Details tab names the shown one's PID (#1926).
+    m_ProcessDetailsPanel.setSelectionCount(m_ProcessesPanel.selectionCount());
     // Per-process GPU support reaches the details pane with each sample, as of the generation it
     // came from (Domain::ProcessSample, #1210), not from here.
 

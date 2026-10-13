@@ -1908,5 +1908,67 @@ TEST(ThemeLoaderTest, FrameBorderFromTheThemeIsRaisedWhenTooFaint)
     }
 }
 
+// ========== selectionPrimary: the marker of a multi-selection's primary row (#1926) ==========
+
+/// The test theme body with @p line added to its [ui.table] table.
+std::string withTableLine(std::string_view line)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view table = "[ui.table]\n";
+    const auto at = toml.find(table);
+    EXPECT_NE(at, std::string::npos);
+    toml.insert(at + table.size(), std::string(line) + "\n");
+    return toml;
+}
+
+/// The selection fill of a plain and of a striped row, opaque: what the marker is drawn on.
+std::array<ImVec4, 2> selectedRows(const ColorScheme& scheme)
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    return {
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBg, window)),
+        ColorContrast::flattenOver(scheme.header, ColorContrast::flattenOver(scheme.tableRowBgAlt, window)),
+    };
+}
+
+// A theme without ui.table.selection_primary gets its focus colour (nav_highlight), moved toward its
+// text until it reaches 3:1 on the selected rows, opaque, keeping its hue.
+TEST(ThemeLoaderTest, SelectionPrimaryIsTheFocusColourRaisedToTheFloor)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    ASSERT_LT(ColorContrast::contrastRatio(scheme.navHighlight, selectedRows(scheme)[0]), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    for (const ImVec4& row : selectedRows(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme.selectionPrimary, row), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    }
+    EXPECT_FLOAT_EQ(scheme.selectionPrimary.w, 1.0F);
+    // Still blue (#0078D4 lightened toward the white text), not the text colour itself.
+    EXPECT_GT(scheme.selectionPrimary.z, scheme.selectionPrimary.x);
+    EXPECT_GT(scheme.selectionPrimary.x, scheme.navHighlight.x);
+}
+
+// A theme's own ui.table.selection_primary is used as it is when it already stands out...
+TEST(ThemeLoaderTest, SelectionPrimaryFromTheThemeIsKeptWhenItStandsOut)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTableLine("selection_primary = \"#FFB900\""), "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    expectColorNear(scheme.selectionPrimary, ThemeLoader::hexToImVec4("#FFB900"));
+}
+
+// ...and raised to the floor when it does not.
+TEST(ThemeLoaderTest, SelectionPrimaryFromTheThemeIsRaisedWhenTooFaint)
+{
+    const auto loaded = ThemeLoader::loadThemeFromString(withTableLine("selection_primary = \"#3A3A3A\""), "selection-primary.toml");
+    ASSERT_TRUE(loaded.has_value());
+    const ColorScheme scheme = loaded.value_or(ColorScheme{});
+    for (const ImVec4& row : selectedRows(scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme.selectionPrimary, row), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
+    }
+}
+
 } // namespace
 } // namespace UI

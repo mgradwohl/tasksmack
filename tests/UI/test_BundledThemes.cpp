@@ -380,6 +380,33 @@ TEST(BundledThemesTest, ControlOutlinesStandOutOnEverySurfaceWithoutShouting)
     }
 }
 
+// #1926: with several rows selected, the primary row's marker (a bar and an outline) is the only thing
+// telling it from the other selected rows, so it reaches 3:1 (WCAG 1.4.11) on the selection fill of a
+// plain and of a striped row, and it is opaque.
+TEST(BundledThemesTest, ThePrimarySelectionMarkerStandsOutOnTheSelectedRows)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+        EXPECT_FLOAT_EQ(scheme->selectionPrimary.w, 1.0F) << name;
+        for (const auto& [row, color] : {
+                 std::pair{"selected row", bg.selected},
+                 std::pair{"selected striped row", bg.selectedStripe},
+             })
+        {
+            EXPECT_GE(contrastRatio(scheme->selectionPrimary, color), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN)
+                << name << " primary selection marker on the " << row;
+        }
+    }
+}
+
 // #1528: a cell's text stays readable on its inline meter at either end of the heat gradient, on
 // plain, striped and selected rows, and the meter shows at all (it differs from the row).
 TEST(BundledThemesTest, ProcessMeterKeepsTextReadable)
