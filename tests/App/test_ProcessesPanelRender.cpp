@@ -832,34 +832,42 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
     panel->onDetach();
 }
 
-// #1879: where the probe has no per-process swap figure (Windows; the mock reports none), the Swap column
-// reads as the dash in every row, and both its header and its cells say why.
-TEST_F(ProcessesPanelRenderTest, SwapWithoutAPerProcessFigureShowsTheDashAndSaysWhy)
+// #1879: where the probe fills neither (Windows; the mock reports neither), the Private and Swap columns
+// read as the dash in every row, and their headers and cells say why.
+TEST_F(ProcessesPanelRenderTest, PrivateAndSwapWithoutTheirFiguresShowTheDashAndSayWhy)
 {
     ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
     for (const ProcessColumn col : allProcessColumns())
     {
         if (getColumnInfo(col).canHide)
         {
-            columns.setVisible(col, col == ProcessColumn::Swap); // PID, Name and Swap: Swap's header is in reach
+            // PID, Name, Private and Swap: both headers are in reach
+            columns.setVisible(col, col == ProcessColumn::Private || col == ProcessColumn::Swap);
         }
     }
     const auto panel = attachedPanel();
     renderUntilLoaded(*panel);
     const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Private")) << text;
     EXPECT_TRUE(text.contains("Swap")) << text;
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
 
-    // Holding still over each point down the header and the first rows, long enough for a tooltip.
+    // Over each point down the header and the first rows, across the whole width (the last column
+    // stretches, and its right-aligned dash sits at the far end). Tooltips show without a hover delay,
+    // so a few frames at each point are enough.
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    style.HoverStationaryDelay = 0.0F;
     const auto hoverUntilShown = [&panel](std::string_view wanted)
     {
         ImGuiIO& io = ImGui::GetIO();
-        for (int y = 20; y <= 200; y += 6)
+        for (int y = 20; y <= 140; y += 6)
         {
-            for (int x = 20; x <= 600; x += 20)
+            for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH); x += 6)
             {
                 io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
-                for (int frame = 0; frame < 30; ++frame) // past ImGuiHoveredFlags_DelayShort at 60 fps
+                for (int frame = 0; frame < 3; ++frame)
                 {
                     if (renderAndCapture(*panel).contains(wanted))
                     {
@@ -870,8 +878,10 @@ TEST_F(ProcessesPanelRenderTest, SwapWithoutAPerProcessFigureShowsTheDashAndSays
         }
         return false;
     };
-    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE)) << "the header's tooltip";
-    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::SWAP_UNSUPPORTED_CELL_REASON)) << "a cell's tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::PRIVATE_UNSUPPORTED_COLUMN_NOTE)) << "Private's header tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::PRIVATE_UNSUPPORTED_CELL_REASON)) << "a Private cell's tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE)) << "Swap's header tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::SWAP_UNSUPPORTED_CELL_REASON)) << "a Swap cell's tooltip";
     panel->onDetach();
 }
 

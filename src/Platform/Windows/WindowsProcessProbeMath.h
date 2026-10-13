@@ -865,7 +865,6 @@ struct WindowsProcessMemoryFields
     std::uint64_t peakWorkingSetSize = 0;   ///< PeakWorkingSetSize
     std::uint64_t virtualSize = 0;          ///< VirtualSize: address space, reservations included
     std::uint64_t pagefileUsage = 0;        ///< PagefileUsage: the commit charge, PROCESS_MEMORY_COUNTERS_EX::PrivateUsage
-    std::uint64_t privatePageCount = 0;     ///< PrivatePageCount: the private bytes, committed (#1879)
 };
 
 /// The ProcessCounters memory fields a Windows process reports.
@@ -874,7 +873,6 @@ struct WindowsProcessMemory
     std::uint64_t rssBytes = 0;
     std::uint64_t peakRssBytes = 0;
     std::uint64_t virtualBytes = 0;
-    std::uint64_t privateBytes = 0;
 };
 
 /// Which Windows figure each memory column shows, matching Task Manager's Details tab (#1184).
@@ -886,18 +884,12 @@ struct WindowsProcessMemory
 ///   or a large reservation (Chromium, the JVM).
 /// - Peak Mem (peakRssBytes): PeakWorkingSetSize, the only peak Windows keeps. It counts shared
 ///   pages, so it can be above every private working set the process had.
-/// - Private (privateBytes, #1879): PrivatePageCount, the memory committed to this process alone,
-///   in RAM or in the pagefile -- Process Explorer's and perfmon's "Private Bytes". The private
-///   working set is already Memory, so Private as that would repeat it; this is the figure Windows
-///   tools call private. The kernel fills it from the same commit charge as PagefileUsage, so it
-///   reads as Virtual does (Task Manager's "Commit size") on today's Windows.
 [[nodiscard]] constexpr WindowsProcessMemory windowsProcessMemory(const WindowsProcessMemoryFields& fields) noexcept
 {
     return WindowsProcessMemory{
         .rssBytes = fields.workingSetPrivateSize > 0 ? static_cast<std::uint64_t>(fields.workingSetPrivateSize) : 0,
         .peakRssBytes = fields.peakWorkingSetSize,
         .virtualBytes = fields.pagefileUsage,
-        .privateBytes = fields.privatePageCount,
     };
 }
 

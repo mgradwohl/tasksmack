@@ -84,7 +84,7 @@ constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 // header for width, as it does "Mem %".
 constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
 constexpr const char* MEM_PERCENT_LABEL = "Mem %";                // the Processes table's column (#1878)
-constexpr const char* MEM_PRIVATE_LABEL = "Private";              // the Processes table's column (#1885, #1879)
+constexpr const char* MEM_PRIVATE_LABEL = "Private";              // the Processes table's column (#1885)
 constexpr const char* MEM_SWAP_LABEL = "Swap";                    // the Processes table's column (#1885)
 constexpr const char* FAULTS_TOTAL_LABEL = "Page Faults (total)"; // the Processes table's Page Faults column (#1878)
 constexpr const char* THREADS_LABEL = "Threads";
@@ -946,16 +946,16 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
         };
     }
     // Private and Swap, the Processes table's columns (#1885, #1879), where the platform reads them:
-    // not plotted, so blank swatches like Mem %. On Windows Private is the commit charge, which the
-    // Virtual line already draws, and Swap isn't read, so it's left out as Shared is (#1035).
+    // not plotted, so blank swatches like Mem %. Windows fills neither -- its private bytes are the
+    // commit charge the Virtual line already draws, and it has no per-process swap -- so both are left
+    // out there, as Shared is (#1035).
     if (ctx.hasPrivateBytes && ctx.snapshot != nullptr)
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PRIVATE_LABEL,
             .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->privateBytes)),
             .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
-            .tooltip = "Memory no other process shares (RssAnon on Linux; on Windows the private bytes committed, "
-                       "PrivatePageCount), as the Processes table's Private column",
+            .tooltip = "Memory no other process shares (RssAnon on Linux), as the Processes table's Private column",
         };
     }
     if (ctx.hasSwapBytes && ctx.snapshot != nullptr)

@@ -266,13 +266,13 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     EXPECT_FALSE(text.contains("Swap")) << text;
 }
 
-// #1879: on Windows the Memory strip has Private (PrivatePageCount) and no Swap, which Windows doesn't
-// report per process; it is left out, as Shared is, rather than shown as a permanent 0.
-TEST_F(ProcessDetailsPanelRenderTest, WindowsShowsPrivateButNoSwap)
+// #1879: on Windows the Memory strip has neither Private (its private bytes are the commit size, the
+// Virtual line) nor Swap (no per-process figure): both are left out, as Shared is, not shown as 0.
+TEST_F(ProcessDetailsPanelRenderTest, WindowsShowsNeitherPrivateNorSwap)
 {
     const auto panel = activePanel();
     Platform::ProcessCapabilities caps;
-    caps.hasPrivateBytes = true;
+    caps.hasPrivateBytes = false;
     caps.hasSwapBytes = false;
     panel->setProcessCapabilities(caps);
     panel->setSelectedPid(PID, START_TICKS);
@@ -287,8 +287,9 @@ TEST_F(ProcessDetailsPanelRenderTest, WindowsShowsPrivateButNoSwap)
     }
     static_cast<void>(renderAndCapture(*panel));
     const std::string text = renderAndCapture(*panel);
-    EXPECT_TRUE(text.contains("Private")) << text;
-    EXPECT_TRUE(text.contains("72.0 MiB")) << text;
+    EXPECT_TRUE(text.contains("Memory")) << text;
+    EXPECT_FALSE(text.contains("Private")) << text;
+    EXPECT_FALSE(text.contains("72.0 MiB")) << text;
     EXPECT_FALSE(text.contains("Swap")) << text;
 }
 

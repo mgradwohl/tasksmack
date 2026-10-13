@@ -2303,13 +2303,13 @@ TEST(ProcessModelTest, ShrinkingTheHistoryWindowPublishesTheTrimmedSystemHistori
 
 TEST(ProcessModelTest, PrivateAndSwapBytesReachTheSnapshotAndFollowEachSample)
 {
-    // Each sample's figures are the probe's, copied as they are: Windows' PrivatePageCount with no swap
-    // figure (#1879), Linux's RssAnon and VmSwap (#1885). Neither is a delta or kept as a peak.
+    // Each sample's figures are the probe's, copied as they are (Linux's RssAnon and VmSwap, #1885): a
+    // process with no swap reads 0. Neither is a delta or kept as a peak.
     auto probe = std::make_unique<MockProcessProbe>();
     probe->setTotalCpuTime(100000);
-    probe->withProcess(100, "windows_app")
+    probe->withProcess(100, "unswapped_app")
         .withMemoryBreakdown(100, 96ULL * 1024 * 1024, 0)
-        .withProcess(200, "linux_app")
+        .withProcess(200, "swapped_app")
         .withMemoryBreakdown(200, 40ULL * 1024 * 1024, 8ULL * 1024 * 1024);
     auto* rawProbe = probe.get();
     ManualClock clock;

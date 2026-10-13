@@ -267,10 +267,16 @@ enum class TextCell : std::uint8_t
 /// Header tooltip line for a column this system cannot fill.
 inline constexpr std::string_view UNSUPPORTED_COLUMN_NOTE = "Not available on this system: every row shows \xE2\x80\x94.";
 
+/// Header tooltip line for the Private column where the probe doesn't fill it (#1879): Windows' private
+/// bytes are the commit charge, which Virtual already shows.
+inline constexpr std::string_view PRIVATE_UNSUPPORTED_COLUMN_NOTE =
+    "Not available on this system: every row shows \xE2\x80\x94. Private bytes on Windows are the commit size, shown in the "
+    "Virtual column.";
+
 /// Header tooltip line for the Swap column where the probe has no per-process swap figure (#1879).
 inline constexpr std::string_view SWAP_UNSUPPORTED_COLUMN_NOTE =
     "Not available on this system: every row shows \xE2\x80\x94. Windows doesn't count how much of each process is in the "
-    "pagefile; Private, its committed private bytes, includes what is paged out.";
+    "pagefile; Virtual, the commit size, includes what is paged out.";
 
 /// Header tooltip line for a column whose value can be unreadable for some processes (#1110).
 inline constexpr std::string_view UNREADABLE_VALUES_NOTE =
@@ -285,7 +291,15 @@ unavailableValuesNote(ProcessColumn col, const Platform::ProcessCapabilities& ca
 {
     if (!isSupported(col, caps, gpu))
     {
-        return col == ProcessColumn::Swap ? SWAP_UNSUPPORTED_COLUMN_NOTE : UNSUPPORTED_COLUMN_NOTE;
+        switch (col)
+        {
+        case ProcessColumn::Private:
+            return PRIVATE_UNSUPPORTED_COLUMN_NOTE;
+        case ProcessColumn::Swap:
+            return SWAP_UNSUPPORTED_COLUMN_NOTE;
+        default:
+            return UNSUPPORTED_COLUMN_NOTE;
+        }
     }
     switch (col)
     {

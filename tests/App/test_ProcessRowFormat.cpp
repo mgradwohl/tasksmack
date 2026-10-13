@@ -252,7 +252,6 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
 
     for (const AlignedCellText* cell : {&fmt.power,
                                         &fmt.shared,
-                                        &fmt.privateMem,
                                         &fmt.ioRead,
                                         &fmt.ioWrite,
                                         &fmt.netSent,
@@ -265,7 +264,8 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
     {
         expectUnavailable(*cell, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
     }
-    // Swap's tooltip says why: Windows keeps no per-process pagefile figure (#1879).
+    // Private's and Swap's tooltips say why Windows lacks them (#1879).
+    expectUnavailable(fmt.privateMem, ProcessRowFormat::PRIVATE_UNSUPPORTED_CELL_REASON);
     expectUnavailable(fmt.swap, ProcessRowFormat::SWAP_UNSUPPORTED_CELL_REASON);
     // Columns every probe fills keep their values.
     EXPECT_EQ(fmt.resident.text, "512.0 MiB");
