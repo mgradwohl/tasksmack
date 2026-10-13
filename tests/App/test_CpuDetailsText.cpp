@@ -325,5 +325,74 @@ TEST(CpuDetailsTextTest, DegenerateInputsFallBackToOnePair)
     EXPECT_EQ(columnLayout({}, {}, 1000.0F, 0.0F).rowsPerPair, 0U);
 }
 
+TEST(CpuDetailsTextTest, EveryRowHasAPlaceAtEveryWidth)
+{
+    // The card is as tall as rowsPerPair rows; a layout with fewer places than rows hid the rest (#1919)
+    for (std::size_t count = 1; count <= 30; ++count)
+    {
+        std::vector<float> labels(count, 90.0F);
+        labels[count / 2] = 215.0F; // One long label, like "Virtualization-based security"
+        const std::vector<float> values(count, 60.0F);
+        for (int step = 0; step <= 2400 / 7; ++step)
+        {
+            const auto width = static_cast<float>(step * 7);
+            const auto layout = CpuDetailsText::fitColumns(labels, values, {.availableWidthPx = width, .perPairExtraPx = 16.0F});
+            ASSERT_GE(layout.pairs * layout.rowsPerPair, count) << count << " rows at " << width << " px";
+            ASSERT_LT((layout.pairs - 1) * layout.rowsPerPair, count) << "an empty pair at " << width << " px";
+            ASSERT_TRUE(layout.pairs == 1 || layout.totalWidth <= width) << count << " rows at " << width << " px";
+        }
+    }
+}
+
+TEST(CpuDetailsTextTest, TheIssue1919RowsTakeThreePairsOnlyWhenTheyFit)
+{
+    // 19 rows, as the issue's machine had: two pairs of 10 rows or three of 7, nothing in between
+    std::vector<float> labels(19, 150.0F);
+    labels[13] = 380.0F;
+    const std::vector<float> values(19, 120.0F);
+    const auto three =
+        CpuDetailsText::fitColumns(labels, values, {.availableWidthPx = 1200.0F, .perPairExtraPx = 20.0F}); // Four would need 1390 px
+    ASSERT_EQ(three.pairs, 3U);
+    EXPECT_EQ(three.rowsPerPair, 7U);
+    const auto two = CpuDetailsText::fitColumns(labels, values, {.availableWidthPx = three.totalWidth - 1.0F, .perPairExtraPx = 20.0F});
+    EXPECT_EQ(two.pairs, 2U);
+    EXPECT_EQ(two.rowsPerPair, 10U);
+}
+
+TEST(CpuDetailsTextTest, MorePairsNeedAMarginToSpareButFewerDoNot)
+{
+    const std::vector<float> labels(12, 100.0F);
+    const std::vector<float> values(12, 90.0F); // 200 px a pair with the 10 px extra
+    const auto fit = [&](float width, std::size_t current)
+    {
+        return CpuDetailsText::fitColumns(
+                   labels, values, {.availableWidthPx = width, .perPairExtraPx = 10.0F, .currentPairs = current, .growMarginPx = 20.0F})
+            .pairs;
+    };
+    // From nothing yet, the most pairs that fit
+    EXPECT_EQ(fit(600.0F, 0), 3U);
+    // From two pairs, three that fit with less than the margin to spare are not taken: a value a few
+    // pixels wider or narrower each sample cannot flip the layout
+    EXPECT_EQ(fit(600.0F, 2), 2U);
+    EXPECT_EQ(fit(619.0F, 2), 2U);
+    EXPECT_EQ(fit(620.0F, 2), 3U);
+    // Staying at three, or dropping to two once three stop fitting, needs no margin
+    EXPECT_EQ(fit(600.0F, 3), 3U);
+    EXPECT_EQ(fit(599.0F, 3), 2U);
+}
+
+TEST(CpuDetailsTextTest, SpreadingWidensTheValueColumnsToTheWidth)
+{
+    const std::vector<float> four(4, 50.0F);
+    auto layout = CpuDetailsText::fitColumns(four, four, {.availableWidthPx = 1000.0F});
+    EXPECT_FLOAT_EQ(layout.totalWidth, 400.0F); // Fitted, not yet spread
+    CpuDetailsText::spreadColumns(layout, 1000.0F);
+    EXPECT_FLOAT_EQ(layout.totalWidth, 1000.0F);
+    EXPECT_FLOAT_EQ(layout.valueWidths[0], 50.0F + 150.0F);
+    // Narrower than the columns: left as they are
+    CpuDetailsText::spreadColumns(layout, 500.0F);
+    EXPECT_FLOAT_EQ(layout.totalWidth, 1000.0F);
+}
+
 } // namespace
 } // namespace App

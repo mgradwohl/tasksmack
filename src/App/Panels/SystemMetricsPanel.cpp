@@ -625,15 +625,15 @@ void SystemMetricsPanel::renderOverview()
     // layout's scope, so the charts share whatever height it leaves, at either size.
     // Each Overview section is a card, as the CPU Cores grid draws its cells (#1586). The chart cards
     // are sized to their chart explicitly (UI::Widgets::beginChartCard()); this one, with no chart, to
-    // its content.
+    // the rows it lays out this frame (CpuDetailsBlock::beginCard(), #1919).
     auto& userSettings = UserConfig::get().settings();
-    const bool cpuDetailsVisible = UI::Widgets::beginCompactCard("##CpuDetailsCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY);
-    if (cpuDetailsVisible && CpuDetailsBlock::render({.cpuModel = snap.cpuModel,
-                                                      .collapsedSummary = m_CpuDetails.collapsedSummary,
-                                                      .rows = m_CpuDetails.rows,
-                                                      .rowsGeneration = m_CpuDetails.generation,
-                                                      .expanded = userSettings.cpuDetailsExpanded},
-                                                     m_CpuDetailsMeasured))
+    const CpuDetailsBlock::Content cpuDetailsContent{.cpuModel = snap.cpuModel,
+                                                     .collapsedSummary = m_CpuDetails.collapsedSummary,
+                                                     .rows = m_CpuDetails.rows,
+                                                     .rowsGeneration = m_CpuDetails.generation,
+                                                     .expanded = userSettings.cpuDetailsExpanded};
+    const bool cpuDetailsVisible = CpuDetailsBlock::beginCard("##CpuDetailsCard", cpuDetailsContent, m_CpuDetailsMeasured);
+    if (cpuDetailsVisible && CpuDetailsBlock::render(cpuDetailsContent, m_CpuDetailsMeasured))
     {
         userSettings.cpuDetailsExpanded = !userSettings.cpuDetailsExpanded;
         UserConfig::get().save();

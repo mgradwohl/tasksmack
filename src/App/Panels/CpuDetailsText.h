@@ -311,17 +311,29 @@ struct ColumnLayout
     float totalWidth = 0.0F;                           ///< Every pair's columns plus `perPairExtraPx`: the available width when it fits
 };
 
-/// The shallowest layout of the rows that fits `availableWidthPx`: the most column pairs (at most
-/// MAX_COLUMN_PAIRS) whose columns -- each pair sized to its own rows' widest label and value, plus
-/// `perPairExtraPx` of cell padding -- fit side by side; one pair when none does. The rows per pair
-/// are then evened out, so no pair is left empty or nearly so, and the width left over is shared out
-/// among the value columns, so the block spans the whole width. The fewer rows, the more height the
-/// charts below keep. `labelWidthsPx` and `valueWidthsPx` hold each row's measured width (the same
-/// length); pure arithmetic, so it costs nothing to run each frame.
-[[nodiscard]] inline ColumnLayout columnLayout(std::span<const float> labelWidthsPx,
-                                               std::span<const float> valueWidthsPx,
-                                               float availableWidthPx,
-                                               float perPairExtraPx) noexcept
+/// What fitColumns() fits the rows to.
+struct ColumnFit
+{
+    float availableWidthPx = 0.0F; ///< Width the pairs must fit in, side by side
+    float perPairExtraPx = 0.0F;   ///< Cell padding each pair adds to its two columns
+    /// Pairs the rows are laid out in now (last frame); 0 for none yet. More pairs than this are
+    /// taken only with `growMarginPx` to spare, so text that changes width by a few pixels each
+    /// sample (an up time, a process count) cannot flip the layout back and forth at a fixed window
+    /// width (#1919). Fewer pairs are taken as soon as the current ones stop fitting.
+    std::size_t currentPairs = 0;
+    float growMarginPx = 0.0F;
+};
+
+/// The shallowest layout of the rows that fits `fit.availableWidthPx`: the most column pairs (at
+/// most MAX_COLUMN_PAIRS) whose columns -- each pair sized to its own rows' widest label and value,
+/// plus `fit.perPairExtraPx` of cell padding -- fit side by side; one pair when none does. The rows
+/// per pair are then evened out, so no pair is left empty or nearly so. Every row is in the layout:
+/// `pairs * rowsPerPair` is never less than the row count, so a block as tall as `rowsPerPair` rows
+/// shows them all. The columns are at their measured widths; spreadColumns() widens them to a width.
+/// `labelWidthsPx` and `valueWidthsPx` hold each row's measured width (the same length); pure
+/// arithmetic, so it costs nothing to run each frame.
+[[nodiscard]] inline ColumnLayout
+fitColumns(std::span<const float> labelWidthsPx, std::span<const float> valueWidthsPx, const ColumnFit& fit) noexcept
 {
     const std::size_t rowCount = std::min(labelWidthsPx.size(), valueWidthsPx.size());
     ColumnLayout layout;
@@ -329,7 +341,8 @@ struct ColumnLayout
     {
         return layout;
     }
-    const float extra = (std::isfinite(perPairExtraPx) && perPairExtraPx > 0.0F) ? perPairExtraPx : 0.0F;
+    const float extra = (std::isfinite(fit.perPairExtraPx) && fit.perPairExtraPx > 0.0F) ? fit.perPairExtraPx : 0.0F;
+    const float growMargin = (std::isfinite(fit.growMarginPx) && fit.growMarginPx > 0.0F) ? fit.growMarginPx : 0.0F;
     const auto widthOf = [](float px)
     {
         return (std::isfinite(px) && px > 0.0F) ? px : 0.0F;
@@ -349,23 +362,43 @@ struct ColumnLayout
         {
             candidate.totalWidth += candidate.labelWidths[pair] + candidate.valueWidths[pair] + extra;
         }
-        const bool fits = std::isfinite(availableWidthPx) && candidate.totalWidth <= availableWidthPx;
+        const bool grows = fit.currentPairs > 0 && candidate.pairs > fit.currentPairs;
+        const float limit = fit.availableWidthPx - (grows ? growMargin : 0.0F);
+        const bool fits = std::isfinite(limit) && candidate.totalWidth <= limit;
         if (fits || tryPairs == 1)
         {
             layout = candidate;
             break;
         }
     }
-    // Spread what is left of the width over the value columns, so the block uses all of it
-    if (std::isfinite(availableWidthPx) && layout.totalWidth < availableWidthPx && layout.pairs > 0)
+    return layout;
+}
+
+/// Widens `layout`'s value columns to share out what is left of `widthPx`, so the block spans the
+/// whole width. A layout already as wide or wider is left as it is.
+inline void spreadColumns(ColumnLayout& layout, float widthPx) noexcept
+{
+    if (std::isfinite(widthPx) && layout.totalWidth < widthPx && layout.pairs > 0)
     {
-        const float share = (availableWidthPx - layout.totalWidth) / static_cast<float>(layout.pairs);
+        const float share = (widthPx - layout.totalWidth) / static_cast<float>(layout.pairs);
         for (std::size_t pair = 0; pair < layout.pairs; ++pair)
         {
             layout.valueWidths[pair] += share;
         }
-        layout.totalWidth = availableWidthPx;
+        layout.totalWidth = widthPx;
     }
+}
+
+/// fitColumns() at `availableWidthPx`, then spreadColumns() over it: the shallowest layout that fits,
+/// spanning the whole width. The fewer rows, the more height the charts below keep.
+[[nodiscard]] inline ColumnLayout columnLayout(std::span<const float> labelWidthsPx,
+                                               std::span<const float> valueWidthsPx,
+                                               float availableWidthPx,
+                                               float perPairExtraPx) noexcept
+{
+    ColumnLayout layout =
+        fitColumns(labelWidthsPx, valueWidthsPx, {.availableWidthPx = availableWidthPx, .perPairExtraPx = perPairExtraPx});
+    spreadColumns(layout, availableWidthPx);
     return layout;
 }
 

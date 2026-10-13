@@ -6,11 +6,14 @@
 #include "App/Panels/CpuDetailsBlock.h"
 #include "App/Panels/CpuDetailsText.h"
 #include "Domain/SystemSnapshot.h"
+#include "UI/Card.h"
 #include "UI/FillPlotLayout.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
@@ -22,6 +25,16 @@ namespace
 
 constexpr float WINDOW_WIDTH = 1900.0F;
 constexpr float WINDOW_HEIGHT = 1000.0F;
+
+/// What one frame of the card, in a scrolling tab body, came to.
+struct CardFrame
+{
+    float contentBottom = 0.0F; ///< Lowest edge of anything drawn in the card
+    float innerBottom = 0.0F;   ///< The card's bottom less its padding
+    std::size_t pairs = 0;      ///< Column pairs the rows were laid out in
+    std::size_t rowsPerPair = 0;
+    bool bodyScrollbar = false; ///< Whether the tab body showed its vertical scrollbar
+};
 
 class CpuDetailsBlockRenderTest : public ::testing::Test
 {
@@ -87,6 +100,36 @@ class CpuDetailsBlockRenderTest : public ::testing::Test
         return height;
     }
 
+    /// One frame of the CPU Details card at the top of a scrolling body @p bodyWidth wide, with
+    /// @p belowHeight of content under it (enough to scroll, or not).
+    CardFrame cardFrame(float bodyWidth, float belowHeight)
+    {
+        CardFrame result;
+        runFrame(
+            [&]
+            {
+                ImGui::BeginChild("##Body", ImVec2(bodyWidth, WINDOW_HEIGHT - 40.0F));
+                result.bodyScrollbar = ImGui::GetCurrentWindow()->ScrollbarY;
+                const CpuDetailsBlock::Content cardContent = content(true);
+                if (CpuDetailsBlock::beginCard("##CpuDetailsCard", cardContent, m_Measured))
+                {
+                    (void) CpuDetailsBlock::render(cardContent, m_Measured);
+                    const ImGuiWindow* card = ImGui::GetCurrentWindow();
+                    result.contentBottom = card->DC.CursorMaxPos.y;
+                    result.innerBottom = card->Pos.y + card->Size.y - card->WindowPadding.y;
+                }
+                UI::Widgets::endCard();
+                result.pairs = m_Measured.layout.pairs;
+                result.rowsPerPair = m_Measured.layout.rowsPerPair;
+                if (belowHeight > 0.0F)
+                {
+                    ImGui::Dummy(ImVec2(1.0F, belowHeight));
+                }
+                ImGui::EndChild();
+            });
+        return result;
+    }
+
     [[nodiscard]] CpuDetailsBlock::Content content(bool expanded) const
     {
         return {.cpuModel = m_Snapshot.cpuModel, .collapsedSummary = m_Summary, .rows = m_Rows, .rowsGeneration = 1, .expanded = expanded};
@@ -138,6 +181,41 @@ TEST_F(CpuDetailsBlockRenderTest, TheChartsHeightBudgetCountsTheBlocksActualHeig
     const float collapsed = measuredNonPlot(false);
     const float expanded = measuredNonPlot(true);
     EXPECT_LT(collapsed, expanded); // Collapsing gives the charts the difference
+}
+
+TEST_F(CpuDetailsBlockRenderTest, TheCardIsAsTallAsItsRowsAtEveryWidth)
+{
+    // Every fact is drawn inside the card -- none clipped below it -- with no gap under the last row,
+    // in the very frame the width changes: the card is sized from this frame's layout (#1919)
+    for (int step = 0; 120 + (step * 37) <= static_cast<int>(WINDOW_WIDTH); ++step)
+    {
+        const auto width = static_cast<float>(120 + (step * 37));
+        const CardFrame frame = cardFrame(width, 0.0F);
+        ASSERT_GE(frame.pairs * frame.rowsPerPair, m_Rows.size()) << width;
+        EXPECT_LE(frame.contentBottom, frame.innerBottom + 0.5F) << "rows clipped at " << width << " px";
+        EXPECT_LT(frame.innerBottom - frame.contentBottom, 1.5F) << "a gap under the rows at " << width << " px";
+    }
+}
+
+TEST_F(CpuDetailsBlockRenderTest, TheTabBodysScrollbarDoesNotChangeTheLayout)
+{
+    // The issue's loop: a taller layout showed the body's scrollbar, the narrower width took fewer
+    // pairs, and so on. The pairs are now decided at the width with the scrollbar shown, either way.
+    for (int step = 0; 200 + (step * 9) <= static_cast<int>(WINDOW_WIDTH); ++step)
+    {
+        const auto width = static_cast<float>(200 + (step * 9));
+        // A frame for the body's scrollbar to follow its content, then one laid out afresh, with no
+        // earlier layout to keep: the decision is the width's alone
+        (void) cardFrame(width, 0.0F);
+        m_Measured = {};
+        const CardFrame without = cardFrame(width, 0.0F);
+        (void) cardFrame(width, 2.0F * WINDOW_HEIGHT);
+        m_Measured = {};
+        const CardFrame with = cardFrame(width, 2.0F * WINDOW_HEIGHT);
+        ASSERT_FALSE(without.bodyScrollbar);
+        ASSERT_TRUE(with.bodyScrollbar);
+        EXPECT_EQ(without.pairs, with.pairs) << width;
+    }
 }
 
 TEST_F(CpuDetailsBlockRenderTest, ClickingTheHeadingIsReportedOnlyOnClick)
