@@ -47,6 +47,7 @@
 #include "Platform/ThreadName.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -1316,7 +1317,10 @@ void ProcessesPanel::renderContent()
     // The hint in the muted text colour: the running-process green read as a status (#1196).
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, theme.scheme().textMuted);
 
-    ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##search", FILTER_HINT, &m_SearchBuffer);
+    }
     ImGui::PopStyleColor();
 
     // Clear button
@@ -2288,7 +2292,12 @@ void ProcessesPanel::renderMeterMenu()
             for (const auto& [style, label] : STYLES)
             {
                 ImGui::TableNextColumn();
-                if (ImGui::RadioButton(label, m_MeterSettings.style(col) == style))
+                bool chosen = false;
+                {
+                    const UI::Widgets::FrameOutlineScope frameOutline;
+                    chosen = ImGui::RadioButton(label, m_MeterSettings.style(col) == style);
+                }
+                if (chosen)
                 {
                     m_MeterSettings.setStyle(col, style);
                     UserConfig::get().settings().processMeters = m_MeterSettings;

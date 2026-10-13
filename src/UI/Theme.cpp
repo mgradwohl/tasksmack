@@ -313,6 +313,9 @@ void Theme::applyImGuiStyle() const
     style.WindowBorderSize = 1.0F;
     style.ChildBorderSize = 1.0F;
     style.PopupBorderSize = 1.0F;
+    // Off by default: buttons, headers and chart frames carry their own fills. Checkboxes, text fields,
+    // combos and radio buttons, whose fill barely differs from the surface, turn it on with
+    // UI::Widgets::FrameOutlineScope and the scheme's frameBorder (#1923).
     style.FrameBorderSize = 0.0F;
     style.TabBorderSize = 0.0F;
 

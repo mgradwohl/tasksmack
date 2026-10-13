@@ -8,6 +8,7 @@
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
@@ -182,7 +183,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Index 0 is "Total", indices 1+ are interfaces. selectedInterface: -1 = Total, 0+ = interface index
     // Safe: selectedInterface is always >= -1, so selectedInterface + 1 is always >= 0
     const size_t comboIndex = (selectedInterface < 0) ? 0 : static_cast<size_t>(selectedInterface) + 1;
-    if (ImGui::BeginCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
+    if (UI::Widgets::beginOutlinedCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
     {
         for (size_t i = 0; i <= interfaceCount; ++i)
         {
@@ -207,7 +208,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 ImGui::SetItemDefaultFocus();
             }
         }
-        ImGui::EndCombo();
+        UI::Widgets::endOutlinedCombo();
     }
 
     ImGui::SameLine();
@@ -605,7 +606,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::SameLine();
             std::array<char, 64> showAllLabel{};
             std::format_to_n(showAllLabel.data(), showAllLabel.size() - 1, "Show all ({})##ShowAllInterfaces", hiddenCount);
-            ImGui::Checkbox(showAllLabel.data(), ctx.showAllInterfaces);
+            UI::Widgets::outlinedCheckbox(showAllLabel.data(), ctx.showAllInterfaces);
             if (ImGui::IsItemHovered())
             {
                 ImGui::SetTooltip("Also list the %zu down, virtual and Bluetooth interfaces hidden by default", hiddenCount);

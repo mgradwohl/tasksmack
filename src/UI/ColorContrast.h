@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <span>
 
 namespace UI::ColorContrast
 {
@@ -94,6 +95,37 @@ inline constexpr float TEXT_CONTRAST_MIN = 4.5F;
 /// How finely readableTint() mixes toward the readable colour: in steps of 1 / READABLE_TINT_STEPS.
 inline constexpr int READABLE_TINT_STEPS = 20;
 
+/// @p color moved toward @p toward just far enough to reach @p minRatio on every one of
+/// @p backgrounds: unchanged when it already does, else mixed in steps of 1 / READABLE_TINT_STEPS of
+/// the way, so it keeps as much of its own hue as the floor allows. @p toward itself if no mix gets
+/// there. An empty @p backgrounds asks nothing, so @p color is kept.
+[[nodiscard]] inline ImVec4
+tintToContrast(const ImVec4& color, const ImVec4& toward, std::span<const ImVec4> backgrounds, float minRatio) noexcept
+{
+    const auto reaches = [&backgrounds, minRatio](const ImVec4& candidate)
+    {
+        return std::ranges::all_of(backgrounds,
+                                   [&candidate, minRatio](const ImVec4& bg) { return contrastRatio(candidate, bg) >= minRatio; });
+    };
+    if (reaches(color))
+    {
+        return color;
+    }
+    for (int step = 1; step < READABLE_TINT_STEPS; ++step)
+    {
+        const float t = static_cast<float>(step) / static_cast<float>(READABLE_TINT_STEPS);
+        const ImVec4 mix{color.x + ((toward.x - color.x) * t),
+                         color.y + ((toward.y - color.y) * t),
+                         color.z + ((toward.z - color.z) * t),
+                         color.w + ((toward.w - color.w) * t)};
+        if (reaches(mix))
+        {
+            return mix;
+        }
+    }
+    return toward;
+}
+
 /// @p color as text on @p background: unchanged when it already reaches @p minRatio there, else
 /// mixed toward @p readable (a colour that does, such as the theme's primary text) just far enough to
 /// -- in steps of 1 / READABLE_TINT_STEPS of the way -- so it keeps as much of its hue as the floor allows. @p readable
@@ -101,23 +133,15 @@ inline constexpr int READABLE_TINT_STEPS = 20;
 /// the text that names it, such as a second axis's tick labels drawn in its series' colour (#1206).
 [[nodiscard]] inline ImVec4 readableTint(const ImVec4& color, const ImVec4& readable, const ImVec4& background, float minRatio) noexcept
 {
-    if (contrastRatio(color, background) >= minRatio)
-    {
-        return color;
-    }
-    for (int step = 1; step < READABLE_TINT_STEPS; ++step)
-    {
-        const float t = static_cast<float>(step) / static_cast<float>(READABLE_TINT_STEPS);
-        const ImVec4 mix{color.x + ((readable.x - color.x) * t),
-                         color.y + ((readable.y - color.y) * t),
-                         color.z + ((readable.z - color.z) * t),
-                         color.w + ((readable.w - color.w) * t)};
-        if (contrastRatio(mix, background) >= minRatio)
-        {
-            return mix;
-        }
-    }
-    return readable;
+    return tintToContrast(color, readable, std::span<const ImVec4>(&background, 1), minRatio);
 }
+
+/// Contrast floor for the outline of a checkbox, text field, combo box or radio button against the
+/// surface it sits on (#1923): WCAG 2.1 SC 1.4.11's 3:1 for the visual boundary of a UI component.
+/// That criterion applies here in full, not as a guideline: an unchecked checkbox has no other
+/// visual indicator, and a text field none but its placeholder, so a fainter outline leaves the
+/// control indistinguishable from its label. The floor is not raised past 3:1 so the outline stays
+/// well below the theme's text (10:1 to 18:1 in the bundled themes) and reads as an edge, not a rule.
+inline constexpr float FRAME_BORDER_CONTRAST_MIN = 3.0F;
 
 } // namespace UI::ColorContrast

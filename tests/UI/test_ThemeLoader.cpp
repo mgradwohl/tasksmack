@@ -1,3 +1,5 @@
+#include "UI/ColorContrast.h"
+#include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
 
 #include <gtest/gtest.h>
@@ -1846,6 +1848,64 @@ TEST(ThemeLoaderTest, MetricRolesAreReadAndDeriveTheirFills)
     // Roles left out still borrow.
     expectColorNear(scheme->chartThreads, scheme->chartCpu);
     expectColorNear(scheme->chartGdi, scheme->accents[4]);
+}
+
+// ========== frameBorder: the outline of checkboxes, text fields and combos (#1923) ==========
+
+/// The test theme body with @p line added to its [ui.frame] table.
+std::string withFrameLine(std::string_view line)
+{
+    std::string toml = k_FullThemeTomlBody;
+    const std::string_view table = "[ui.frame]\n";
+    const auto at = toml.find(table);
+    EXPECT_NE(at, std::string::npos);
+    toml.insert(at + table.size(), std::string(line) + "\n");
+    return toml;
+}
+
+/// The surfaces a frame-drawn control sits on: the window, a card and a popup, opaque.
+std::array<ImVec4, 3> controlSurfaces(const ColorScheme& scheme)
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    return {window,
+            ColorContrast::flattenOver(scheme.childBg, window),
+            ColorContrast::flattenOver(scheme.popupBg, ColorContrast::flattenOver(scheme.modalWindowDimBg, window))};
+}
+
+// A theme without ui.frame.border gets its window border, moved toward its text until the outline
+// reaches 3:1 on every surface, opaque.
+TEST(ThemeLoaderTest, FrameBorderIsTheWindowBorderRaisedToTheOutlineFloor)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "frame-border.toml");
+    ASSERT_TRUE(scheme.has_value());
+    ASSERT_LT(ColorContrast::contrastRatio(scheme->border, scheme->windowBg), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    for (const ImVec4& surface : controlSurfaces(*scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme->frameBorder, surface), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    }
+    EXPECT_FLOAT_EQ(scheme->frameBorder.w, 1.0F);
+    // Lighter than the border it started from (a dark theme), toward the white text, but short of it.
+    EXPECT_GT(scheme->frameBorder.x, scheme->border.x);
+    EXPECT_LT(scheme->frameBorder.x, scheme->textPrimary.x);
+}
+
+// A theme's own ui.frame.border is used as it is when it already stands out...
+TEST(ThemeLoaderTest, FrameBorderFromTheThemeIsKeptWhenItStandsOut)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(withFrameLine("border = \"#A0A0A0\""), "frame-border.toml");
+    ASSERT_TRUE(scheme.has_value());
+    expectColorNear(scheme->frameBorder, ThemeLoader::hexToImVec4("#A0A0A0"));
+}
+
+// ...and raised to the floor, like the window border, when it does not.
+TEST(ThemeLoaderTest, FrameBorderFromTheThemeIsRaisedWhenTooFaint)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(withFrameLine("border = \"#2A2A2A\""), "frame-border.toml");
+    ASSERT_TRUE(scheme.has_value());
+    for (const ImVec4& surface : controlSurfaces(*scheme))
+    {
+        EXPECT_GE(ColorContrast::contrastRatio(scheme->frameBorder, surface), ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    }
 }
 
 } // namespace

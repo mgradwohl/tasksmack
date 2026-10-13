@@ -7,6 +7,7 @@
 #include "Domain/ServiceModel.h"
 #include "Platform/IServiceProbe.h"
 #include "UI/EmptyState.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -319,7 +320,10 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
-    ImGui::InputTextWithHint("##ServiceFilter", FILTER_HINT, &state.filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##ServiceFilter", FILTER_HINT, &state.filter);
+    }
     ImGui::PopStyleColor();
     rebuildRowsIfStale(*publication, state);
     ImGui::SameLine();

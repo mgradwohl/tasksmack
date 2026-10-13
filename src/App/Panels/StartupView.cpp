@@ -8,6 +8,7 @@
 #include "Platform/IStartupProbe.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -312,7 +313,10 @@ void renderFilterBar(const Domain::StartupPublication& publication, StartupViewS
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
-    ImGui::InputTextWithHint("##StartupFilter", FILTER_HINT, &state.filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##StartupFilter", FILTER_HINT, &state.filter);
+    }
     ImGui::PopStyleColor();
     rebuildRowsIfStale(publication, state);
     ImGui::SameLine();

@@ -4,6 +4,7 @@
 #include "App/ElevationNoticeText.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -126,7 +127,7 @@ bool render(State& state)
         UI::Widgets::sectionGap();
 
         // "Don't show again" checkbox
-        ImGui::Checkbox("Don't show again", &state.dontShowAgain);
+        UI::Widgets::outlinedCheckbox("Don't show again", &state.dontShowAgain);
         ImGui::SetItemTooltip("Settings > Advanced > Show limited-data notice turns it back on");
 
         // The footer every dialog shares, OK on the right (#1200). The floor is 9.375 em, exactly the

@@ -1,6 +1,7 @@
 #include "ProcessModulesView.h"
 
 #include "Platform/IProcessModules.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -87,7 +88,10 @@ void ProcessModulesView::render(bool hasModules)
 void ProcessModulesView::renderTable()
 {
     ImGui::SetNextItemWidth(-1.0F);
-    ImGui::InputTextWithHint("##ModulesFilter", ICON_FA_FILTER "  Filter by name or path", &m_Filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##ModulesFilter", ICON_FA_FILTER "  Filter by name or path", &m_Filter);
+    }
     const std::span<const std::size_t> visible = filteredRows();
     if (visible.empty())
     {

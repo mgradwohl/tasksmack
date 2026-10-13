@@ -4,6 +4,8 @@
 /// from the bundled themes, switching by id (deferred to the frame boundary), font-size and display-scale
 /// changes, and applyImGuiStyle() against a live headless ImGui/ImPlot context.
 
+#include "UI/ColorContrast.h"
+#include "UI/FrameOutline.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
@@ -83,6 +85,30 @@ TEST_F(ThemeRealTest, ApplyImGuiStyleWritesTheSchemeIntoTheStyle)
     EXPECT_FLOAT_EQ(windowBg.x, scheme.x);
     EXPECT_FLOAT_EQ(windowBg.y, scheme.y);
     EXPECT_FLOAT_EQ(windowBg.z, scheme.z);
+}
+
+// #1923: frames stay borderless by default (buttons, headers, charts); a FrameOutlineScope outlines
+// the controls drawn inside it in the scheme's frameBorder, and puts the style back after.
+TEST_F(ThemeRealTest, FrameOutlineScopeOutlinesOnlyWhileAlive)
+{
+    Theme& theme = Theme::get();
+    theme.setThemeById("windows-light");
+    static_cast<void>(theme.applyPendingStyleChanges());
+    theme.applyImGuiStyle();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec4 windowBorder = style.Colors[ImGuiCol_Border];
+    EXPECT_FLOAT_EQ(style.FrameBorderSize, 0.0F);
+    {
+        const Widgets::FrameOutlineScope outline;
+        EXPECT_FLOAT_EQ(style.FrameBorderSize, Widgets::FRAME_OUTLINE_SIZE);
+        EXPECT_FLOAT_EQ(style.Colors[ImGuiCol_Border].x, theme.scheme().frameBorder.x);
+        EXPECT_FLOAT_EQ(style.Colors[ImGuiCol_Border].w, 1.0F);
+        EXPECT_GE(ColorContrast::contrastRatio(style.Colors[ImGuiCol_Border], style.Colors[ImGuiCol_WindowBg]),
+                  ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+    }
+    EXPECT_FLOAT_EQ(style.FrameBorderSize, 0.0F);
+    EXPECT_FLOAT_EQ(style.Colors[ImGuiCol_Border].x, windowBorder.x);
+    EXPECT_FLOAT_EQ(style.Colors[ImGuiCol_Border].w, windowBorder.w);
 }
 
 TEST_F(ThemeRealTest, FontSizeAndDisplayScaleScaleTheStyle)

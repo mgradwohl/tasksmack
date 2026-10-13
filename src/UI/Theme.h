@@ -176,6 +176,10 @@ struct ColorScheme
     ImVec4 frameBg;
     ImVec4 frameBgHovered;
     ImVec4 frameBgActive;
+    /// Outline of checkboxes, text fields, combo boxes and radio buttons (#1923): ui.frame.border, else
+    /// ui.window.border, moved toward text_primary until it reaches ColorContrast::FRAME_BORDER_CONTRAST_MIN
+    /// on the window, a card and a popup. Opaque. Drawn only inside UI::Widgets::FrameOutlineScope.
+    ImVec4 frameBorder;
     ImVec4 titleBg;
     ImVec4 titleBgActive;
     ImVec4 titleBgCollapsed;

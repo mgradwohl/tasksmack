@@ -8,6 +8,7 @@
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/LineLayout.h"
 #include "UI/Sparkline.h"
@@ -81,10 +82,13 @@ ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
-    ImGui::InputTextWithHint("##SystemInfoFilter", FILTER_HINT, &state.filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##SystemInfoFilter", FILTER_HINT, &state.filter);
+    }
     ImGui::PopStyleColor();
     ImGui::SameLine();
-    ImGui::Checkbox("Show identifiers", &state.showIdentifiers);
+    UI::Widgets::outlinedCheckbox("Show identifiers", &state.showIdentifiers);
     ImGui::SetItemTooltip("Show the user, computer and domain names, and include them when copying");
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_COPY "  Copy all"))

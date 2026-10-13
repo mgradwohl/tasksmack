@@ -7,6 +7,7 @@
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -219,7 +220,7 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
                 bool all = ticked == section.cpus.size();
                 ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, ticked > 0 && !all);
                 const std::string heading = std::format("{} ({})###Section", section.title, section.cpus.size());
-                if (ImGui::Checkbox(heading.c_str(), &all))
+                if (UI::Widgets::outlinedCheckbox(heading.c_str(), &all))
                 {
                     chooseSection(index, all);
                 }
@@ -232,7 +233,7 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
                     ImGui::TableNextColumn();
                     bool ticked = m_Chosen[cpu] != 0;
                     const std::string label = std::to_string(cpu);
-                    if (ImGui::Checkbox(label.c_str(), &ticked))
+                    if (UI::Widgets::outlinedCheckbox(label.c_str(), &ticked))
                     {
                         choose(cpu, ticked);
                     }
