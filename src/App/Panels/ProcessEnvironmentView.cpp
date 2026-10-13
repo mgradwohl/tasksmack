@@ -1,6 +1,7 @@
 #include "ProcessEnvironmentView.h"
 
 #include "Platform/IProcessEnvironment.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -115,7 +116,10 @@ void ProcessEnvironmentView::renderTable()
     if (showsFilterBox())
     {
         ImGui::SetNextItemWidth(-1.0F);
-        ImGui::InputTextWithHint("##EnvironmentFilter", ICON_FA_FILTER "  Filter by name or value", &m_Filter);
+        {
+            const UI::Widgets::FrameOutlineScope frameOutline;
+            ImGui::InputTextWithHint("##EnvironmentFilter", ICON_FA_FILTER "  Filter by name or value", &m_Filter);
+        }
     }
     const std::span<const std::size_t> visible = filteredRows();
     if (visible.empty())

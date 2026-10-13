@@ -1,12 +1,16 @@
 #include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <string_view>
 
 namespace App
@@ -1208,6 +1212,56 @@ TEST(TitleBarGeometryTest, ContentMinimumIgnoresUnusableInputs)
     EXPECT_FLOAT_EQ(computeContentMinimumWidth(0.0F, 0.0F, 10.0F, 0.0F), 150.0F);
 }
 
+// ========== Main tab bar width (#1939) ==========
+
+// Each tab is its label, frame padding either side and ImGui's one pixel; then the gaps between the
+// tabs and the gutter either side of the bar.
+TEST(TitleBarGeometryTest, MainTabBarWidthIsItsTabsGapsAndInsets)
+{
+    const std::array<float, 3> labels{100.0F, 50.0F, 80.0F};
+    const MainTabBarStyle style{
+        .framePaddingXPx = 16.0F, .tabSpacingPx = 4.0F, .minTabWidthPx = 1.0F, .maxTabWidthPx = 260.0F, .insetPx = 12.0F};
+    // Tabs: 133 + 83 + 113 = 329; two gaps: 8; insets: 24.
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, style), 361.0F);
+}
+
+// A tab is never narrower than TabMinWidthBase nor wider than ImGui's widest tab.
+TEST(TitleBarGeometryTest, MainTabBarWidthHoldsEachTabToImGuisLimits)
+{
+    const std::array<float, 2> labels{2.0F, 1000.0F};
+    const MainTabBarStyle style{
+        .framePaddingXPx = 4.0F, .tabSpacingPx = 0.0F, .minTabWidthPx = 30.0F, .maxTabWidthPx = 200.0F, .insetPx = 0.0F};
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, style), 230.0F);
+    // No cap given: the long tab keeps its whole label.
+    MainTabBarStyle uncapped = style;
+    uncapped.maxTabWidthPx = 0.0F;
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, uncapped), 30.0F + 1009.0F);
+}
+
+TEST(TitleBarGeometryTest, MainTabBarWidthIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const MainTabBarStyle style{
+        .framePaddingXPx = nan, .tabSpacingPx = -3.0F, .minTabWidthPx = nan, .maxTabWidthPx = -1.0F, .insetPx = nan};
+    const std::array<float, 2> labels{nan, 10.0F};
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, style), 1.0F + 11.0F);
+    // No tabs, no bar.
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(std::array<float, 0>{}, style), 0.0F);
+}
+
+// The window's minimum width is the wider of the panels' and the tab bar's (ShellLayer): with tabs
+// wider than the panels' content, the tab bar's whole width sets the minimum.
+TEST(TitleBarGeometryTest, MinimumWidthCoversTheMainTabBar)
+{
+    const std::array<float, 6> labels{180.0F, 90.0F, 140.0F, 85.0F, 75.0F, 70.0F};
+    const MainTabBarStyle style{
+        .framePaddingXPx = 28.0F, .tabSpacingPx = 7.0F, .minTabWidthPx = 1.0F, .maxTabWidthPx = 560.0F, .insetPx = 21.0F};
+    const float tabBar = computeMainTabBarWidth(labels, style);
+    const float panels = computeContentMinimumWidth(500.0F, 100.0F, 16.0F, 60.0F);
+    ASSERT_GT(tabBar, panels);
+    EXPECT_EQ(computeMinimumWindowSize(1.75F, 0.0F, std::max(panels, tabBar)).width, static_cast<int>(std::ceil(tabBar)));
+}
+
 // The old minimum ignored the panels: at the reference scale the window went down to 200 units
 // whatever they needed.
 TEST(TitleBarGeometryTest, MinimumWidthCoversThePanelContent)
@@ -1378,6 +1432,40 @@ TEST(TitleBarGeometryTest, MinimumIsCappedToTheDisplaysUsableBounds)
 
     EXPECT_EQ(capMinimumToUsable(WindowMinimumSize{.width = 900, .height = 1200}, 1920, 1040).height, 1040);
 }
+
+// #1945: the window grows to its minimum at startup and when the font, scale or display moved the
+// tab-independent part of it; a tab's measurement alone must not resize it.
+TEST(TitleBarGeometryTest, TheFirstMinimumMayGrowTheWindow)
+{
+    EXPECT_EQ(minimumSizeChangeFor(std::nullopt, WindowMinimumSize{.width = 1809, .height = 900}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+}
+
+TEST(TitleBarGeometryTest, AFontOrScaleChangeMayGrowTheWindow)
+{
+    // Huge -> Even Huger moves the tab-independent minimum: the tab strip and title bar must fit.
+    const std::optional<WindowMinimumSize> huge = WindowMinimumSize{.width = 1809, .height = 900};
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 2031, .height = 982}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+    // A smaller font moves it too; growing to a lower minimum resizes nothing.
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 1033, .height = 700}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+    // Either side alone counts.
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 1809, .height = 901}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+}
+
+TEST(TitleBarGeometryTest, ATabMeasurementAloneKeepsTheWindowsSize)
+{
+    // Showing the machine tab raised the full minimum to 1296 tall, but the tab-independent part is
+    // where it was: the window keeps the size it has.
+    const std::optional<WindowMinimumSize> huge = WindowMinimumSize{.width = 1809, .height = 900};
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 1809, .height = 900}),
+              Core::WindowGeometry::MinimumSizeChange::KeepSize);
+}
+
+static_assert(minimumSizeChangeFor(std::nullopt, WindowMinimumSize{}) == Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+static_assert(minimumSizeChangeFor(WindowMinimumSize{}, WindowMinimumSize{}) == Core::WindowGeometry::MinimumSizeChange::KeepSize);
 
 TEST(TitleBarGeometryTest, MinimumThatFitsTheDisplayIsUnchanged)
 {

@@ -44,6 +44,7 @@ struct HostLog
     std::vector<Core::EventType> events;
     int closeRequests = 0;
     std::vector<std::pair<int, int>> minimumSizes;
+    std::vector<Core::WindowGeometry::MinimumSizeChange> minimumSizeChanges;
     WindowOverride::CapturedWindow window; // what captureWindow() reports
 };
 
@@ -85,9 +86,10 @@ class FakeShellHost final : public IShellHost
     {
         return true;
     }
-    void setMinimumWindowSize(int width, int height) override
+    void setMinimumWindowSize(int width, int height, Core::WindowGeometry::MinimumSizeChange change) override
     {
         m_Log.minimumSizes.emplace_back(width, height);
+        m_Log.minimumSizeChanges.push_back(change);
     }
     [[nodiscard]] WindowOverride::CapturedWindow captureWindow() const override
     {
@@ -237,6 +239,10 @@ TEST_F(ShellLayerRenderTest, TheWindowsMinimumSizeFollowsThePanelsMeasurements)
     const std::size_t applied = m_Log.minimumSizes.size();
     frame();
     EXPECT_EQ(m_Log.minimumSizes.size(), applied);
+
+    // At startup there is no size of the user's to keep: the first minimum may grow the window (#1945).
+    ASSERT_FALSE(m_Log.minimumSizeChanges.empty());
+    EXPECT_EQ(m_Log.minimumSizeChanges.front(), Core::WindowGeometry::MinimumSizeChange::AllowGrow);
 }
 
 /// onDetach() against a config file of the test's own: UserConfig is redirected to a fresh temporary

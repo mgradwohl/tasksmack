@@ -2,6 +2,7 @@
 
 #include "Platform/IProcessOpenFiles.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -124,7 +125,10 @@ void ProcessOpenFilesView::render(bool hasOpenFiles)
 void ProcessOpenFilesView::renderTable()
 {
     ImGui::SetNextItemWidth(-1.0F);
-    ImGui::InputTextWithHint("##OpenFilesFilter", ICON_FA_FILTER "  Filter by path or type", &m_Filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##OpenFilesFilter", ICON_FA_FILTER "  Filter by path or type", &m_Filter);
+    }
     const std::span<const std::size_t> visible = filteredRows();
     if (visible.empty())
     {

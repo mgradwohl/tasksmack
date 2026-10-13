@@ -144,9 +144,11 @@ class StartupViewRenderTest : public ::testing::Test
         return captured;
     }
 
-    /// The centre of the table's first row's Name cell, from a frame that drew @p publication.
-    static ImVec2
-    firstRowCentre(const Domain::StartupPublication& publication, StartupViewState& state, StartupActionsView* actions = nullptr)
+    /// The centre of the table's first row's cell in @p column (Name by default), from a frame that drew @p publication.
+    static ImVec2 firstRowCentre(const Domain::StartupPublication& publication,
+                                 StartupViewState& state,
+                                 StartupActionsView* actions = nullptr,
+                                 int column = 0)
     {
         ImVec2 centre(-1.0F, -1.0F);
         static_cast<void>(runFrame(
@@ -156,7 +158,8 @@ class StartupViewRenderTest : public ::testing::Test
                 if (const ImGuiTable* table = ImGui::TableFindByID(ImGui::GetID("##StartupTable")); table != nullptr)
                 {
                     const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
-                    centre = ImVec2((table->Columns[0].MinX + table->Columns[0].MaxX) * 0.5F, table->OuterRect.Min.y + (rowHeight * 1.5F));
+                    centre = ImVec2((table->Columns[column].MinX + table->Columns[column].MaxX) * 0.5F,
+                                    table->OuterRect.Min.y + (rowHeight * 1.5F));
                 }
                 return content;
             }));
@@ -330,6 +333,33 @@ TEST_F(StartupViewRenderTest, AMissingProgramsTooltipShowsWithoutTheHoverDelay)
     EXPECT_TRUE(text.contains("The program this entry starts was not found"));
     EXPECT_TRUE(text.contains(R"(Command: "C:\Apps\Stale.exe" --background)"));
     EXPECT_TRUE(text.contains(R"(Program: C:\Apps\Stale.exe)"));
+}
+
+// #1920: a name or publisher too wide for its column ends in an ellipsis rather than being cut off, and
+// the whole of it is on hover -- for the Name cell in the entry's tooltip, for any other clipped cell
+// in its own tooltip, which stands in for the entry's.
+TEST_F(StartupViewRenderTest, ClippedCellsShowTheirWholeTextOnHover)
+{
+    const std::string LONG_NAME = "Windows Security notification icon with an even longer name";
+    const std::string LONG_PUBLISHER = "Intel(R) Management and Security Application Publisher Corporation";
+    Domain::StartupPublication publication;
+    publication.version = 1;
+    publication.entries = {entry(LONG_NAME.c_str(), LONG_PUBLISHER.c_str(), StartupLocation::RunUser, true)};
+    StartupViewState state;
+
+    const ImVec2 name = firstRowCentre(publication, state);
+    ASSERT_GT(name.y, 0.0F);
+    const std::string nameText = hoverUntil(publication, state, name, "Program: ");
+    EXPECT_TRUE(nameText.contains("Program: C:\\Apps\\" + LONG_NAME + ".exe")) << "the entry's tooltip";
+
+    // Column 1, Publisher: hovered for every frame (nothing draws the text waited for).
+    const ImVec2 publisher = firstRowCentre(publication, state, nullptr, 1);
+    const std::string publisherText = hoverUntil(publication, state, publisher, "not drawn: hover every frame");
+    const std::size_t first = publisherText.find(LONG_PUBLISHER);
+    ASSERT_NE(first, std::string::npos);
+    EXPECT_NE(publisherText.find(LONG_PUBLISHER, first + LONG_PUBLISHER.size()), std::string::npos)
+        << "drawn in the cell, then in its tooltip";
+    EXPECT_FALSE(publisherText.contains("Program: ")) << "the entry's tooltip gives way to the cell's";
 }
 
 TEST_F(StartupViewRenderTest, AnUnresolvedShortcutShowsItsOwnPath)

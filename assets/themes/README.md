@@ -242,6 +242,13 @@ The `[ui]` section contains colors for various UI elements:
 | `[ui.tab]` | Tab bars |
 | `[ui.table]` | Table elements |
 
+Checkboxes, text fields, combo boxes and radio buttons are drawn with a 1-pixel outline, because a
+frame fill close to the window colour leaves an unchecked checkbox looking like a plain label. The
+outline is `[ui.frame] border` if the theme sets one, otherwise `[ui.window] border`, and TaskSmack
+moves it toward `text_primary` just far enough to reach 3:1 contrast (WCAG 1.4.11 for a control's
+boundary) on the window, child and popup backgrounds. Set `border` under `[ui.frame]` only to pick
+the outline's hue; it can't make the outline fainter than that.
+
 ## Color Format
 
 Colors use hex format:

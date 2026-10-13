@@ -1,7 +1,9 @@
 #include "WindowsProcessActions.h"
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "WindowsAffinityMath.h"
 #include "WindowsHandles.h"
 #include "WindowsProcessActionsMath.h"
 
@@ -17,11 +19,15 @@
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
 // clang-format on
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -46,7 +52,8 @@ struct VerifiedProcess
 ///
 /// @param describeOpenFailure  Turns an OpenProcess error code into the message to show.
 template<typename DescribeOpenFailure>
-[[nodiscard]] VerifiedProcess openVerified(const ProcessTarget& target, DWORD access, DescribeOpenFailure describeOpenFailure)
+[[nodiscard]] VerifiedProcess
+openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DWORD access, DescribeOpenFailure describeOpenFailure)
 {
     if (target.pid <= 0)
     {
@@ -58,7 +65,7 @@ template<typename DescribeOpenFailure>
     }
 
     // Note: Windows APIs require DWORD for PIDs; explicit cast from a positive int32_t is safe.
-    Windows::UniqueHandle handle(OpenProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)));
+    Windows::UniqueHandle handle(fns.openProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(target.pid)));
     if (!handle)
     {
         return {.handle = {}, .result = ProcessActionResult::error(describeOpenFailure(GetLastError()))};
@@ -68,7 +75,7 @@ template<typename DescribeOpenFailure>
     FILETIME exitTime{};
     FILETIME kernelTime{};
     FILETIME userTime{};
-    if (GetProcessTimes(handle.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
+    if (fns.getProcessTimes(handle.get(), &creation, &exitTime, &kernelTime, &userTime) == 0)
     {
         return {
             .handle = {},
@@ -118,7 +125,136 @@ BOOL CALLBACK postCloseToProcessWindow(HWND window, LPARAM param)
     return TRUE;
 }
 
+std::vector<std::uint32_t> realReadGroupSizes()
+{
+    const WORD groups = GetMaximumProcessorGroupCount();
+    std::vector<std::uint32_t> sizes;
+    sizes.reserve(groups);
+    WORD group = 0;
+    while (group < groups)
+    {
+        sizes.push_back(GetMaximumProcessorCount(group));
+        ++group;
+    }
+    return sizes;
+}
+
+std::vector<ProcessorCoreRecord> realReadCores()
+{
+    DWORD length = 0;
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        length == 0)
+    {
+        return {};
+    }
+    std::vector<std::byte> buffer(length);
+    if (GetLogicalProcessorInformationEx(
+            RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &length) == FALSE)
+    {
+        return {};
+    }
+    const std::size_t total = std::min<std::size_t>(length, buffer.size());
+    std::vector<ProcessorCoreRecord> cores;
+    constexpr std::size_t RECORD_HEADER_BYTES = offsetof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, Processor);
+    std::size_t offset = 0;
+    while (offset + RECORD_HEADER_BYTES <= total)
+    {
+        // Copied out rather than cast in place, as WindowsSystemProbe does: records are variable-sized.
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX record{};
+        const std::size_t available = total - offset;
+        std::memcpy(&record, &buffer[offset], std::min(available, sizeof(record)));
+        if (record.Size == 0 || record.Size > available)
+        {
+            break;
+        }
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - Relationship selects the union member
+        if (record.Relationship == RelationProcessorCore && record.Processor.GroupCount > 0)
+        {
+            // A core's processors are in one group, so its first GroupMask is all of them.
+            cores.push_back({.group = record.Processor.GroupMask[0].Group,
+                             .mask = static_cast<std::uint64_t>(record.Processor.GroupMask[0].Mask),
+                             .efficiencyClass = record.Processor.EfficiencyClass});
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+        offset += record.Size;
+    }
+    return cores;
+}
+
+std::vector<CpuSetRecord> realReadCpuSets()
+{
+    ULONG length = 0;
+    if (GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0) != FALSE || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        length == 0)
+    {
+        return {};
+    }
+    std::vector<std::byte> buffer(length);
+    if (GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()), length, &length, GetCurrentProcess(), 0) ==
+        FALSE)
+    {
+        return {};
+    }
+    const std::size_t total = std::min<std::size_t>(length, buffer.size());
+    std::vector<CpuSetRecord> sets;
+    constexpr std::size_t RECORD_HEADER_BYTES = offsetof(SYSTEM_CPU_SET_INFORMATION, CpuSet);
+    std::size_t offset = 0;
+    while (offset + RECORD_HEADER_BYTES <= total)
+    {
+        SYSTEM_CPU_SET_INFORMATION record{};
+        const std::size_t available = total - offset;
+        std::memcpy(&record, &buffer[offset], std::min(available, sizeof(record)));
+        if (record.Size == 0 || record.Size > available)
+        {
+            break;
+        }
+        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - Type selects the union member
+        if (record.Type == CpuSetInformation)
+        {
+            sets.push_back(
+                {.id = record.CpuSet.Id, .group = record.CpuSet.Group, .logicalProcessorIndex = record.CpuSet.LogicalProcessorIndex});
+        }
+        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+        offset += record.Size;
+    }
+    return sets;
+}
+
+/// Why opening a process to change its CPU affinity failed.
+[[nodiscard]] std::string describeAffinityOpenFailure(const ProcessTarget& target, DWORD error)
+{
+    if (error == ERROR_ACCESS_DENIED)
+    {
+        return affinityAccessDeniedMessage(target.pid);
+    }
+    if (error == ERROR_INVALID_PARAMETER)
+    {
+        return "Process not found - may have already exited";
+    }
+    return std::format("Failed to open process {}: error {}", target.pid, error);
+}
+
 } // namespace
+
+WindowsProcessFunctions realWindowsProcessFunctions() noexcept
+{
+    return {
+        .openProcess = &OpenProcess,
+        .getProcessTimes = &GetProcessTimes,
+        .setProcessAffinityMask = &SetProcessAffinityMask,
+        .setProcessDefaultCpuSets = &SetProcessDefaultCpuSets,
+        .readGroupSizes = &realReadGroupSizes,
+        .readCores = &realReadCores,
+        .readCpuSets = &realReadCpuSets,
+    };
+}
+
+WindowsProcessActions::WindowsProcessActions() : WindowsProcessActions(realWindowsProcessFunctions())
+{}
+
+WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions)
+    : m_Fns(functions), m_GroupSizes((m_Fns.readGroupSizes != nullptr) ? m_Fns.readGroupSizes() : std::vector<std::uint32_t>{})
+{}
 
 ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
 {
@@ -129,6 +265,9 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canContinue = false,      // Windows doesn't have SIGCONT equivalent
         .canSetPriority = true,    // SetPriorityClass
         .canSetIoPriority = false, // No ionice equivalent (#803)
+        .canSetRealtimeIoPriority = false,
+        // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
+        .canSetAffinity = !m_GroupSizes.empty(),
     };
 }
 
@@ -140,8 +279,11 @@ ProcessActionResult WindowsProcessActions::terminate(const ProcessTarget& target
     spdlog::info("Asking process {} to close", target.pid);
     // The verified handle is held while the windows are enumerated, so the PID cannot be reused
     // by another process between the identity check and the close requests.
-    const VerifiedProcess process = openVerified(
-        target, SYNCHRONIZE, [&target](DWORD error) { return std::format("Failed to open process {}: error {}", target.pid, error); });
+    const VerifiedProcess process =
+        openVerified(m_Fns,
+                     target,
+                     SYNCHRONIZE,
+                     [&target](DWORD error) { return std::format("Failed to open process {}: error {}", target.pid, error); });
     if (!process.handle)
     {
         return process.result;
@@ -185,10 +327,11 @@ ProcessActionResult WindowsProcessActions::resume(const ProcessTarget& target)
     return ProcessActionResult::error("Resume (SIGCONT) is not supported on Windows");
 }
 
-ProcessActionResult WindowsProcessActions::terminateProcess(const ProcessTarget& target, uint32_t exitCode)
+ProcessActionResult WindowsProcessActions::terminateProcess(const ProcessTarget& target, uint32_t exitCode) const
 {
     VerifiedProcess process =
-        openVerified(target,
+        openVerified(m_Fns,
+                     target,
                      PROCESS_TERMINATE,
                      [&target](DWORD error) { return std::format("Failed to open process {}: error {}", target.pid, error); });
     if (!process.result.success)
@@ -219,7 +362,8 @@ ProcessActionResult WindowsProcessActions::setPriority(const ProcessTarget& targ
     const uint32_t priorityClass = niceToPriorityClass(clampedNice);
     spdlog::debug("Setting priority class {} (nice={}) for PID {}", priorityClass, clampedNice, target.pid);
 
-    VerifiedProcess process = openVerified(target,
+    VerifiedProcess process = openVerified(m_Fns,
+                                           target,
                                            PROCESS_SET_INFORMATION,
                                            [&target](DWORD error) -> std::string
                                            {
@@ -264,5 +408,68 @@ IoPriorityReadResult WindowsProcessActions::getIoPriority(const ProcessTarget& t
 {
     return std::unexpected(std::format("I/O priority is not supported on Windows (process {})", target.pid));
 }
+
+// NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
+ProcessActionResult WindowsProcessActions::setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)
+{
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    auto masks = groupMasksForAffinity(cpus, m_GroupSizes);
+    if (!masks.has_value())
+    {
+        return ProcessActionResult::error(std::move(masks.error()));
+    }
+    const bool useCpuSets = m_GroupSizes.size() > 1;
+
+    // CPU sets need only PROCESS_SET_LIMITED_INFORMATION; the affinity mask needs PROCESS_SET_INFORMATION.
+    VerifiedProcess process = openVerified(m_Fns,
+                                           target,
+                                           useCpuSets ? PROCESS_SET_LIMITED_INFORMATION : PROCESS_SET_INFORMATION,
+                                           [&target](DWORD error) { return describeAffinityOpenFailure(target, error); });
+    if (!process.result.success)
+    {
+        spdlog::warn("Not setting CPU affinity for PID {}: {}", target.pid, process.result.errorMessage);
+        return std::move(process.result);
+    }
+
+    BOOL ok = FALSE;
+    if (!useCpuSets)
+    {
+        // One group: masks holds exactly group 0's mask (an empty choice was refused above).
+        ok = m_Fns.setProcessAffinityMask(process.handle.get(), static_cast<DWORD_PTR>(masks->front().mask));
+    }
+    else if (cpus == affinityLayout().online)
+    {
+        // Every CPU: clear the default CPU sets rather than pin the process to today's processors.
+        ok = m_Fns.setProcessDefaultCpuSets(process.handle.get(), nullptr, 0);
+    }
+    else
+    {
+        auto ids = cpuSetIdsFor(*masks, m_Fns.readCpuSets());
+        if (!ids.has_value())
+        {
+            return ProcessActionResult::error(std::move(ids.error()));
+        }
+        const std::vector<ULONG> cpuSetIds(ids->begin(), ids->end()); // ULONG is 32 bits, but not uint32_t's type
+        ok = m_Fns.setProcessDefaultCpuSets(process.handle.get(), cpuSetIds.data(), static_cast<ULONG>(cpuSetIds.size()));
+    }
+    if (ok == FALSE)
+    {
+        std::string msg = affinitySetErrorMessage(GetLastError(), target.pid, useCpuSets);
+        spdlog::warn("{}", msg);
+        return ProcessActionResult::error(std::move(msg));
+    }
+    spdlog::info("Set CPU affinity ({} CPUs{}) for PID {}", cpus.count(), useCpuSets ? ", as CPU sets" : "", target.pid);
+    return ProcessActionResult::ok();
+}
+
+CpuAffinityLayout WindowsProcessActions::affinityLayout() const
+{
+    const std::vector<ProcessorCoreRecord> cores = (m_Fns.readCores != nullptr) ? m_Fns.readCores() : std::vector<ProcessorCoreRecord>{};
+    return affinityLayoutFromCores(m_GroupSizes, cores);
+}
+// NOLINTEND(misc-include-cleaner)
 
 } // namespace Platform

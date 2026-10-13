@@ -15,6 +15,7 @@
 #include "SelectOverride.h"
 #include "ShellHost.h"
 #include "TabLabel.h"
+#include "TitleBarGeometry.h"
 
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
@@ -72,7 +73,7 @@ class ShellLayer : public Core::Layer
     void updateDetailsTabIcon();
     void renderStatusBar() const;
     void applyBaseMinimumWindowSize();
-    void applyContentMinimumSize(float widthPx, float heightPx);
+    void applyContentMinimumSize(float widthPx, float heightPx, float estimatedHeightPx);
 
     // Panels
     // The application and window it runs in (#1547). Never null.
@@ -116,6 +117,10 @@ class ShellLayer : public Core::Layer
     // of the minimum applied here. Whole pixels, so it is re-applied only when it really changes.
     int m_ContentMinimumWidthPx = 0;
     int m_ContentMinimumHeightPx = 0;
+    // The height without what the tabs measured, and the capped tab-independent minimum the window's
+    // minimum was last set with: only a change in it may grow the window (minimumSizeChangeFor(), #1945).
+    int m_ContentEstimatedHeightPx = 0;
+    std::optional<WindowMinimumSize> m_GrowMinimumSize;
     TitleBarLayer* m_TitleBar = nullptr;
 
     // Render Metrics overlay (per-chart vertex count and CPU cost). Toggled with Ctrl+Shift+M. The
@@ -132,6 +137,7 @@ class ShellLayer : public Core::Layer
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;
+    bool m_ShowServicesTabRequested = false; // A ShowServiceEvent (#1886): bring the Services tab forward
     // TASKSMACK_TAB (#1559): the tab the tab bar selects at startup, resolved once in onAttach() to the
     // tab's registered id and kept until that tab reports selected (#1575).
     SelectOverride::PendingMainTab m_StartupTab;
@@ -151,6 +157,10 @@ class ShellLayer : public Core::Layer
 
     // The tab bar's items, rebuilt each frame into the same storage (no per-frame allocation once grown).
     std::vector<MainTabBarView::Tab> m_TabBarItems;
+    // The tab labels the minimum window width covers (#1939), built in onAttach(): the Process Details
+    // tab's as it reads with no process selected, so the minimum stays tab- and selection-independent.
+    std::string m_DetailsTabNoSelectionLabel;
+    std::vector<const char*> m_TabBarMinimumLabels;
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;

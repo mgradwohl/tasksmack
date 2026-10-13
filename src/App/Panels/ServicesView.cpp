@@ -6,7 +6,9 @@
 #include "Domain/ProcessIconCache.h"
 #include "Domain/ServiceModel.h"
 #include "Platform/IServiceProbe.h"
+#include "UI/CellText.h"
 #include "UI/EmptyState.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -89,13 +91,19 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services.
     return a.name <=> b.name;
 }
 
-/// The description, command line and group, as the row's tooltip.
+/// The listed name, the service name (when it differs: the Name cell may be cut short, #1920), the
+/// description, command line and group, as the row's tooltip.
 void renderServiceTooltip(const Platform::ServiceInfo& service)
 {
     const auto& scheme = UI::Theme::get().scheme();
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.0F);
-    ImGui::TextUnformatted(service.displayName.empty() ? service.name.c_str() : service.displayName.c_str());
+    const std::string_view listed = listedName(service);
+    ImGui::TextUnformatted(listed.data(), listed.data() + listed.size());
+    if (listed != service.name)
+    {
+        ImGui::TextColored(scheme.textMuted, "Service name: %s", service.name.c_str());
+    }
     if (!service.description.empty())
     {
         ImGui::TextColored(scheme.textMuted, "%s", service.description.c_str());
@@ -319,7 +327,10 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
-    ImGui::InputTextWithHint("##ServiceFilter", FILTER_HINT, &state.filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##ServiceFilter", FILTER_HINT, &state.filter);
+    }
     ImGui::PopStyleColor();
     rebuildRowsIfStale(*publication, state);
     ImGui::SameLine();
@@ -377,6 +388,20 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     // The visible rows only: only they look up icons (#1800).
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(state.rows.size()));
+    // A row asked to be shown (#1886) is drawn even while clipped, so it can scroll itself into view.
+    int scrollToRow = -1;
+    if (state.scrollToSelected && !state.selectedName.empty())
+    {
+        for (std::size_t row = 0; row < state.rows.size(); ++row)
+        {
+            if (publication->services[state.rows[row]].name == state.selectedName)
+            {
+                scrollToRow = static_cast<int>(row);
+                clipper.IncludeItemByIndex(scrollToRow);
+                break;
+            }
+        }
+    }
     while (clipper.Step())
     {
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
@@ -394,36 +419,47 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
                 // The service's program's icon, or a gear for svchost's and those without one.
                 icons->drawFileInline(state.iconKeys[index], serviceIconPath(service), service.name, ProcessIconView::SERVICE_GLYPH);
             }
-            if (ImGui::Selectable(service.name.c_str(), state.selectedName == service.name, ImGuiSelectableFlags_SpanAllColumns) ||
+            // The selectable spans the row with no label of its own: the name is drawn after it, cut
+            // short with an ellipsis when the column is too narrow (#1920).
+            if (ImGui::Selectable("##row", state.selectedName == service.name, ImGuiSelectableFlags_SpanAllColumns) ||
                 ImGui::IsItemClicked(ImGuiMouseButton_Right))
             {
                 state.selectedName = service.name;
             }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            if (row == scrollToRow)
             {
-                renderServiceTooltip(service);
+                ImGui::SetScrollHereY(0.5F);
+                state.scrollToSelected = false;
             }
+            const bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal);
             if (actions != nullptr)
             {
                 actions->renderContextMenu(service);
             }
+            ImGui::SameLine(0.0F, 0.0F);
+            // The row's tooltip carries the full name.
+            static_cast<void>(UI::Widgets::cellText(service.name, {.clippedTooltip = false}));
+            // A clipped cell's own tooltip (its full text) stands in for the row's while it shows.
+            bool cellTooltip = false;
             ImGui::TableNextColumn();
-            ImGui::TextUnformatted(service.displayName.c_str());
+            cellTooltip |= UI::Widgets::cellText(service.displayName).tooltipShown;
             ImGui::TableNextColumn();
-            const std::string_view stateLabel = serviceStateLabel(service.state);
             ImGui::PushStyleColor(ImGuiCol_Text, serviceStateColor(service.state, scheme));
-            ImGui::TextUnformatted(stateLabel.data(), stateLabel.data() + stateLabel.size());
+            cellTooltip |= UI::Widgets::cellText(serviceStateLabel(service.state)).tooltipShown;
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
-            const std::string_view startLabel = serviceStartTypeLabel(service.startType);
-            ImGui::TextUnformatted(startLabel.data(), startLabel.data() + startLabel.size());
+            cellTooltip |= UI::Widgets::cellText(serviceStartTypeLabel(service.startType)).tooltipShown;
             ImGui::TableNextColumn();
             if (service.pid != 0)
             {
                 ImGui::Text("%u", service.pid);
             }
             ImGui::TableNextColumn();
-            ImGui::TextUnformatted(service.account.c_str());
+            cellTooltip |= UI::Widgets::cellText(service.account).tooltipShown;
+            if (rowHovered && !cellTooltip)
+            {
+                renderServiceTooltip(service);
+            }
 
             ImGui::PopID();
         }

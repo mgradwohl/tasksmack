@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_video.h>
@@ -8,7 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
+#include <optional>
+#include <ranges>
 #include <span>
 
 namespace App
@@ -201,6 +205,50 @@ inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
     return std::max(atLeastZero(processesToolbarWidthPx), chartRow) + atLeastZero(horizontalChromePx);
 }
 
+/// Style metrics the main tab bar lays its tabs out with, in pixels (#1939).
+struct MainTabBarStyle
+{
+    float framePaddingXPx; ///< FramePadding.x pushed for the bar: either side of each label.
+    float tabSpacingPx;    ///< ImGuiStyle::ItemInnerSpacing.x: the gap between two tabs.
+    float minTabWidthPx;   ///< ImGuiStyle::TabMinWidthBase: no tab is narrower.
+    float maxTabWidthPx;   ///< ImGui's widest tab, 20 ems (TabBarCalcMaxTabWidth()); 0: no cap.
+    float insetPx;         ///< The bar's inset either side, the content gutter (ShellMetrics::CONTENT_PADDING_H).
+};
+
+/// Width the main tab bar needs to show every tab whole, its insets either side included (#1939):
+/// each tab as ImGui sizes a tab with no close button (TabItemCalcSize(): the label, frame padding
+/// either side and one pixel, at most maxTabWidthPx and at least minTabWidthPx), the spacing between
+/// them, and the inset on the left and the right. Narrower than this, ImGui shrinks the tabs and cuts
+/// their labels short. Unusable widths and metrics count as 0.
+///
+/// @param labelWidthsPx  Each tab's visible label (ImGui::CalcTextSize(label, nullptr, true).x): any
+///                       range of floats, so a caller can measure the labels as it goes, without a buffer.
+/// @param style          The bar's metrics.
+/// @return 0 with no tabs.
+template<std::ranges::input_range LabelWidths>
+    requires std::convertible_to<std::ranges::range_reference_t<LabelWidths>, float>
+[[nodiscard]] auto computeMainTabBarWidth(LabelWidths labelWidthsPx, const MainTabBarStyle& style) -> float
+{
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float maxTab = atLeastZero(style.maxTabWidthPx);
+    float width = 0.0F;
+    bool first = true;
+    for (const float labelWidth : labelWidthsPx)
+    {
+        float tab = atLeastZero(labelWidth) + (atLeastZero(style.framePaddingXPx) * 2.0F) + 1.0F;
+        if (maxTab > 0.0F)
+        {
+            tab = std::min(tab, maxTab);
+        }
+        width += std::max(tab, atLeastZero(style.minTabWidthPx)) + (first ? 0.0F : atLeastZero(style.tabSpacingPx));
+        first = false;
+    }
+    return first ? 0.0F : width + (atLeastZero(style.insetPx) * 2.0F);
+}
+
 /// The vertical pieces the window has to show at its shortest (#1278), in pixels.
 struct ContentMinimumHeightParts
 {
@@ -374,6 +422,26 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
         return std::max(usable, Core::WINDOW_MIN_DIMENSION);
     };
     return {.width = cap(minimum.width, usableWidth), .height = cap(minimum.height, usableHeight)};
+}
+
+/// Whether a new minimum window size may grow the window (#1945), from its tab-independent part:
+/// the minimum computeMinimumWindowSize() gives with the panels' estimated content height instead of
+/// what a tab measured (computeFirstChartBudget() with no measurement), capped like the minimum.
+///
+/// That part moves only with the font size, the display scale, the display, or at startup, when
+/// there is no previous one: then the window grows to the minimum, so the tab strip and the title
+/// bar fit the text the user picked. When only the measured part moved -- a tab shown for the first
+/// time measured a taller block above its first chart -- the window keeps the size the user gave it
+/// (Core::WindowGeometry::minimumKeepingSize()), or every tab switch could resize it.
+///
+/// @param previous  The tab-independent minimum the window's minimum was last set with; std::nullopt
+///                  before the first.
+/// @param current   The tab-independent minimum now.
+[[nodiscard]] constexpr auto minimumSizeChangeFor(const std::optional<WindowMinimumSize>& previous,
+                                                  const WindowMinimumSize current) noexcept -> Core::WindowGeometry::MinimumSizeChange
+{
+    return (!previous.has_value() || *previous != current) ? Core::WindowGeometry::MinimumSizeChange::AllowGrow
+                                                           : Core::WindowGeometry::MinimumSizeChange::KeepSize;
 }
 
 /// Screen-space rectangle for a title-bar button's hit area (icon, about, help, settings,

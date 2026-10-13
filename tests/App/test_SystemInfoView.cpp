@@ -2257,6 +2257,71 @@ TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
     EXPECT_TRUE(SystemInfo::buildSystemInfoSections(Domain::SystemInfoSnapshot{}).empty());
 }
 
+// #1922: the toolbar's read time is never cut off. The box narrows to its hint first, then the time
+// drops its "Read at", and only then does it wrap to its own line.
+[[nodiscard]] SystemInfo::ToolbarWidths toolbarAt(float rowPx)
+{
+    return {.rowPx = rowPx,
+            .filterWantedPx = 300.0F,
+            .filterHintPx = 200.0F,
+            .controlsPx = 450.0F,
+            .readAtFullPx = 120.0F,
+            .readAtShortPx = 60.0F};
+}
+
+TEST(SystemInfoToolbarLayoutTest, WideRowKeepsTheBoxAndTheFullTime)
+{
+    const auto layout = SystemInfo::computeToolbarLayout(toolbarAt(1000.0F));
+    EXPECT_EQ(layout.readAt, SystemInfo::ReadAtForm::Full);
+    EXPECT_FLOAT_EQ(layout.filterPx, 300.0F);
+}
+
+TEST(SystemInfoToolbarLayoutTest, BoxNarrowsBeforeTheTimeShortens)
+{
+    // 300 + 450 + 120 = 870: 30 px over, taken from the box.
+    const auto layout = SystemInfo::computeToolbarLayout(toolbarAt(840.0F));
+    EXPECT_EQ(layout.readAt, SystemInfo::ReadAtForm::Full);
+    EXPECT_FLOAT_EQ(layout.filterPx, 270.0F);
+}
+
+TEST(SystemInfoToolbarLayoutTest, TimeOnlyOnceTheBoxIsDownToItsHint)
+{
+    // The box at its hint leaves 750 - 200 - 450 = 100 px: not the full 120, but the 60 px time, and
+    // the box keeps what the time leaves.
+    const auto layout = SystemInfo::computeToolbarLayout(toolbarAt(750.0F));
+    EXPECT_EQ(layout.readAt, SystemInfo::ReadAtForm::TimeOnly);
+    EXPECT_FLOAT_EQ(layout.filterPx, 240.0F);
+}
+
+TEST(SystemInfoToolbarLayoutTest, WrapsWhenNotEvenTheTimeFits)
+{
+    const auto layout = SystemInfo::computeToolbarLayout(toolbarAt(690.0F));
+    EXPECT_EQ(layout.readAt, SystemInfo::ReadAtForm::NextLine);
+    EXPECT_FLOAT_EQ(layout.filterPx, 240.0F); // the time is off the row: the box takes what the controls leave
+}
+
+TEST(SystemInfoToolbarLayoutTest, ExactFitsEmptyTimesAndBadWidths)
+{
+    // A row the full form fills to within the cell-clip tolerance keeps it.
+    EXPECT_EQ(SystemInfo::computeToolbarLayout(toolbarAt(769.6F)).readAt, SystemInfo::ReadAtForm::Full);
+
+    // No read time (an empty text) fits wherever the box at its hint and the controls do.
+    SystemInfo::ToolbarWidths empty = toolbarAt(650.0F);
+    empty.readAtFullPx = 0.0F;
+    empty.readAtShortPx = 0.0F;
+    EXPECT_EQ(SystemInfo::computeToolbarLayout(empty).readAt, SystemInfo::ReadAtForm::Full);
+
+    // NaN widths count as zero, and the box never drops below its hint.
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    SystemInfo::ToolbarWidths bad = toolbarAt(nan);
+    bad.filterWantedPx = nan;
+    bad.controlsPx = nan;
+    bad.readAtShortPx = nan;
+    const auto layout = SystemInfo::computeToolbarLayout(bad);
+    EXPECT_EQ(layout.readAt, SystemInfo::ReadAtForm::NextLine);
+    EXPECT_FLOAT_EQ(layout.filterPx, 200.0F);
+}
+
 class SystemInfoViewRenderTest : public ::testing::Test
 {
   protected:
@@ -2277,11 +2342,11 @@ class SystemInfoViewRenderTest : public ::testing::Test
         ImGui::DestroyContext(m_Context);
     }
 
-    static SystemInfoViewResult runFrame(const std::function<SystemInfoViewResult()>& body)
+    static SystemInfoViewResult runFrame(const std::function<SystemInfoViewResult()>& body, float windowWidth = 1000.0F)
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(1000.0F, 700.0F));
+        ImGui::SetNextWindowSize(ImVec2(windowWidth, 700.0F));
         ImGui::Begin("System", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         const SystemInfoViewResult result = body();
         ImGui::End();
@@ -2329,6 +2394,47 @@ TEST_F(SystemInfoViewRenderTest, SectionsRenderFilterAndToggleIdentifiers)
     state.filter = "nothing matches this";
     static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, false, state); }));
     EXPECT_TRUE(state.visible.empty());
+}
+
+// #1922: as the window narrows the read time shortens, then wraps, rather than running off the edge.
+TEST_F(SystemInfoViewRenderTest, ToolbarReadTimeShortensThenWrapsAsTheWindowNarrows)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    const auto snap = snapshot();
+    SystemInfoViewState state;
+    const auto render = [&](float width, bool reading)
+    {
+        static_cast<void>(runFrame([&] { return renderSystemInfoView(&snap, supported, reading, state); }, width));
+        return state.readAtForm;
+    };
+    EXPECT_EQ(render(1000.0F, false), SystemInfo::ReadAtForm::Full);
+    ASSERT_TRUE(state.readAtText.starts_with("Read at "));
+
+    // Narrow a pixel at a time, so the test does not hard-code the default font's glyph widths.
+    float timeOnlyWidth = 0.0F;
+    float nextLineWidth = 0.0F;
+    for (int widthPx = 1000; widthPx >= 300; --widthPx)
+    {
+        const auto width = static_cast<float>(widthPx);
+        const SystemInfo::ReadAtForm form = render(width, false);
+        if (form == SystemInfo::ReadAtForm::TimeOnly && timeOnlyWidth == 0.0F)
+        {
+            timeOnlyWidth = width;
+        }
+        if (form == SystemInfo::ReadAtForm::NextLine)
+        {
+            nextLineWidth = width;
+            break;
+        }
+    }
+    ASSERT_GT(timeOnlyWidth, 0.0F);
+    ASSERT_GT(nextLineWidth, 0.0F);
+    // Dropping "Read at " buys about its width before the time has to wrap.
+    EXPECT_GT(timeOnlyWidth - nextLineWidth, ImGui::CalcTextSize("Read at ").x - 2.0F);
+
+    // While a read is in flight "Reading..." has no shorter form: it keeps the row or wraps.
+    EXPECT_NE(render(timeOnlyWidth, true), SystemInfo::ReadAtForm::TimeOnly);
+    EXPECT_EQ(render(nextLineWidth, true), SystemInfo::ReadAtForm::NextLine);
 }
 
 TEST_F(SystemInfoViewRenderTest, CommitPagingSectionRendersAndFilters)

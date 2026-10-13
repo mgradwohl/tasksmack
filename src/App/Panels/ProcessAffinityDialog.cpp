@@ -1,16 +1,19 @@
 #include "ProcessAffinityDialog.h"
 
+#include "App/Panels/ProcessAffinitySections.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
 #include <imgui.h>
+#include <imgui_internal.h> // ImGuiItemFlags_MixedValue: a section heading's box while only some of its CPUs are ticked
 
 #include <algorithm>
 #include <cfloat>
@@ -20,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -61,22 +65,30 @@ std::size_t affinityDialogCpuCount(const Platform::CpuAffinity& current, std::si
 void ProcessAffinityDialog::open(Platform::ProcessTarget target,
                                  std::string name,
                                  const Platform::CpuAffinity& current,
-                                 std::size_t cpuCount)
+                                 std::size_t cpuCount,
+                                 const Platform::CpuAffinityLayout& layout)
 {
     m_Target = target;
     m_Name = std::move(name);
-    m_Chosen.assign(affinityDialogCpuCount(current, cpuCount), 0);
-    for (std::size_t cpu = 0; cpu < m_Chosen.size(); ++cpu)
+    const std::vector<std::size_t> offered = affinityDialogOfferedCpus(current, cpuCount, layout);
+    m_Chosen.assign(offered.back() + 1, 0); // offered is ascending and never empty
+    m_Offered.assign(m_Chosen.size(), 0);
+    for (const std::size_t cpu : offered)
     {
+        m_Offered[cpu] = 1;
         // An affinity that couldn't be read starts with every box ticked: the process can run somewhere.
         m_Chosen[cpu] = (current.empty() || current.test(cpu)) ? 1 : 0;
     }
+    m_OfferedCount = offered.size();
+    m_Sections = affinityDialogSections(offered, layout);
+    m_GroupCount = layout.groupSizes.size();
+    m_AppliedAsCpuSets = layout.appliedAsCpuSets;
     m_ShowRequested = true;
 }
 
 void ProcessAffinityDialog::choose(std::size_t cpu, bool chosen) noexcept
 {
-    if (cpu < m_Chosen.size())
+    if (cpu < m_Chosen.size() && m_Offered[cpu] != 0)
     {
         m_Chosen[cpu] = chosen ? 1 : 0;
     }
@@ -84,22 +96,44 @@ void ProcessAffinityDialog::choose(std::size_t cpu, bool chosen) noexcept
 
 void ProcessAffinityDialog::chooseAll(bool chosen) noexcept
 {
-    std::ranges::fill(m_Chosen, chosen ? std::uint8_t{1} : std::uint8_t{0});
+    std::size_t cpu = 0;
+    while (cpu < m_Chosen.size())
+    {
+        m_Chosen[cpu] = (chosen && m_Offered[cpu] != 0) ? 1 : 0;
+        ++cpu;
+    }
+}
+
+void ProcessAffinityDialog::chooseSection(std::size_t index, bool chosen) noexcept
+{
+    if (index < m_Sections.size())
+    {
+        for (const std::size_t cpu : m_Sections[index].cpus)
+        {
+            choose(cpu, chosen);
+        }
+    }
+}
+
+bool ProcessAffinityDialog::canApply() const noexcept
+{
+    return std::ranges::any_of(m_Chosen, [](std::uint8_t ticked) { return ticked != 0; });
 }
 
 Platform::CpuAffinity ProcessAffinityDialog::choice() const
 {
     Platform::CpuAffinity cpus;
-    for (std::size_t cpu = 0; cpu < m_Chosen.size(); ++cpu)
+    std::size_t cpu = 0;
+    while (cpu < m_Chosen.size())
     {
         if (m_Chosen[cpu] != 0)
         {
             cpus.set(cpu);
         }
+        ++cpu;
     }
     return cpus;
 }
-
 std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
 {
     if (m_ShowRequested)
@@ -134,10 +168,20 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
         ImGui::EndPopup();
         return applied;
     }
+    // Escape cancels, as Cancel does: the affinity is left alone (#1944).
+    const bool escaped = UI::Widgets::dialogEscapePressed();
     const auto& theme = UI::Theme::get();
 
     ImGui::PushTextWrapPos(0.0F);
     ImGui::TextUnformatted("The CPUs this process may run on. Every thread is changed, and threads it starts later inherit it.");
+    if (m_AppliedAsCpuSets)
+    {
+        // One affinity mask can't span processor groups, so Windows gets the choice as CPU sets (#1881).
+        ImGui::TextColored(theme.scheme().textMuted,
+                           "This PC has %zu processor groups, so Windows sets the choice as the process's default CPU sets: threads "
+                           "the process has given CPUs of their own keep them, and the Affinity column keeps showing its affinity mask.",
+                           m_GroupCount);
+    }
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     if (ImGui::SmallButton(ALL_LABEL))
@@ -150,32 +194,56 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
         chooseAll(false);
     }
 
-    // The boxes in a grid, numbered as the CPU Cores section numbers them, in a bordered scrolling list.
-    const float boxWidth =
-        ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("0000").x + ImGui::GetStyle().ItemSpacing.x;
-    const auto columns = static_cast<int>(std::max(1.0F, ImGui::GetContentRegionAvail().x / boxWidth));
-    const std::size_t rowCount =
-        (m_Chosen.size() + static_cast<std::size_t>(columns) - 1) / static_cast<std::size_t>(columns); // rounded up
-    const auto rows = static_cast<float>(rowCount);
+    // The boxes in a grid per section, numbered as the CPU Cores section numbers them, in a bordered
+    // scrolling list. A titled section's heading is a box of its own, mixed while only some are ticked.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float boxWidth = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("0000").x + style.ItemSpacing.x;
+    const auto columns = static_cast<std::size_t>(std::max(1.0F, ImGui::GetContentRegionAvail().x / boxWidth));
+    std::size_t rowCount = 0;
+    for (const AffinityDialogSection& section : m_Sections)
+    {
+        rowCount += ((section.cpus.size() + columns - 1) / columns) + (section.title.empty() ? 0U : 1U); // rounded up, plus its heading
+    }
     const float gridHeight =
-        (std::min(rows, GRID_MAX_ROWS) * ImGui::GetFrameHeightWithSpacing()) + (ImGui::GetStyle().WindowPadding.y * 2.0F);
+        (std::min(static_cast<float>(rowCount), GRID_MAX_ROWS) * ImGui::GetFrameHeightWithSpacing()) + (style.WindowPadding.y * 2.0F);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme.scheme().childBg);
     ImGui::PushStyleColor(ImGuiCol_Border, theme.scheme().separator);
     if (ImGui::BeginChild("##AffinityCpus", ImVec2(-FLT_MIN, gridHeight), ImGuiChildFlags_Borders))
     {
-        if (ImGui::BeginTable("##AffinityGrid", columns, ImGuiTableFlags_SizingStretchSame))
+        std::size_t index = 0;
+        while (index < m_Sections.size())
         {
-            for (std::size_t cpu = 0; cpu < m_Chosen.size(); ++cpu)
+            const AffinityDialogSection& section = m_Sections[index];
+            ImGui::PushID(static_cast<int>(index));
+            if (!section.title.empty())
             {
-                ImGui::TableNextColumn();
-                bool ticked = m_Chosen[cpu] != 0;
-                const std::string label = std::to_string(cpu);
-                if (ImGui::Checkbox(label.c_str(), &ticked))
+                const auto ticked =
+                    static_cast<std::size_t>(std::ranges::count_if(section.cpus, [this](std::size_t cpu) { return m_Chosen[cpu] != 0; }));
+                bool all = ticked == section.cpus.size();
+                ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, ticked > 0 && !all);
+                const std::string heading = std::format("{} ({})###Section", section.title, section.cpus.size());
+                if (UI::Widgets::outlinedCheckbox(heading.c_str(), &all))
                 {
-                    choose(cpu, ticked);
+                    chooseSection(index, all);
                 }
+                ImGui::PopItemFlag();
             }
-            ImGui::EndTable();
+            if (ImGui::BeginTable("##AffinityGrid", static_cast<int>(columns), ImGuiTableFlags_SizingStretchSame))
+            {
+                for (const std::size_t cpu : section.cpus)
+                {
+                    ImGui::TableNextColumn();
+                    bool ticked = m_Chosen[cpu] != 0;
+                    const std::string label = std::to_string(cpu);
+                    if (UI::Widgets::outlinedCheckbox(label.c_str(), &ticked))
+                    {
+                        choose(cpu, ticked);
+                    }
+                }
+                ImGui::EndTable();
+            }
+            ImGui::PopID();
+            ++index;
         }
     }
     ImGui::EndChild();
@@ -189,7 +257,7 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
     }
     else
     {
-        ImGui::TextColored(theme.scheme().textMuted, "%zu of %zu CPUs", chosen.count(), m_Chosen.size());
+        ImGui::TextColored(theme.scheme().textMuted, "%zu of %zu CPUs", chosen.count(), m_OfferedCount);
     }
 
     const UI::Widgets::ButtonFills applyFills{
@@ -197,11 +265,17 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
         .hovered = theme.scheme().successButtonHovered,
         .pressed = theme.scheme().successButtonActive,
     };
-    // Apply with nothing chosen does nothing: the line above says why (the footer can't disable one button).
-    const UI::Widgets::DialogFooterButton applyButton{.label = APPLY_LABEL, .fills = &applyFills, .tooltip = nullptr};
+    // Apply is disabled while nothing is ticked; the line above says why (#1881).
+    const UI::Widgets::DialogFooterButton applyButton{
+        .label = APPLY_LABEL, .fills = &applyFills, .tooltip = anyChosen ? nullptr : "Choose at least one CPU", .disabled = !anyChosen};
     const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
-    switch (
-        UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM)))
+    UI::Widgets::DialogFooterAction pressed =
+        UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));
+    if (escaped)
+    {
+        pressed = UI::Widgets::DialogFooterAction::Secondary;
+    }
+    switch (pressed)
     {
     case UI::Widgets::DialogFooterAction::Primary:
         if (anyChosen)

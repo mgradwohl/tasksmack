@@ -774,5 +774,12 @@ TEST(ProcessRowFormatTest, CellsWithoutAUnitAreNotUnitAligned)
     EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
 }
 
+TEST(ProcessRowFormatTest, ServicesTooltipHeadingCountsTheServices)
+{
+    // #1880: the Services cell's tooltip lists the names under this line.
+    EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(1), "1 service");
+    EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(3), "3 services");
+}
+
 } // namespace
 } // namespace App

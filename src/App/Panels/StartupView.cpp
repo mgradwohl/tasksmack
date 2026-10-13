@@ -6,8 +6,10 @@
 #include "Domain/ProcessIconCache.h"
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupProbe.h"
+#include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -95,11 +97,6 @@ constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup a
         return order;
     }
     return a.packageFamily <=> b.packageFamily;
-}
-
-void renderText(std::string_view text)
-{
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
 }
 
 /// The entry's source, command and resolved program, and why it is flagged when its program is missing.
@@ -312,7 +309,10 @@ void renderFilterBar(const Domain::StartupPublication& publication, StartupViewS
     ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
         ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
-    ImGui::InputTextWithHint("##StartupFilter", FILTER_HINT, &state.filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##StartupFilter", FILTER_HINT, &state.filter);
+    }
     ImGui::PopStyleColor();
     rebuildRowsIfStale(publication, state);
     ImGui::SameLine();
@@ -365,60 +365,69 @@ struct RowExtras
 };
 
 /// The Name cell: the entry's icon (#1800), then a row-wide selectable (left or right click selects
-/// it), in the warning colour when the program is missing, with the entry's tooltip (straight away
-/// for a missing program, after the usual delay otherwise) and its action menu.
-void renderNameCell(
+/// it) and the name, in the warning colour when the program is missing and cut short with an ellipsis
+/// when the column is too narrow (#1920), and its action menu. Returns whether the entry's tooltip is
+/// due (straight away for a missing program, after the usual delay otherwise); the row draws it once
+/// its cells are drawn, unless a clipped cell's own tooltip shows instead.
+[[nodiscard]] bool renderNameCell(
     const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme, StartupViewState& state, const RowExtras& extras)
 {
     if (extras.icons != nullptr)
     {
         extras.icons->drawFileInline(extras.iconKey, startupIconPath(entry), entry.name);
     }
-    if (missing)
-    {
-        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
-    }
-    if (ImGui::Selectable(entry.name.c_str(), isSelected(entry, state), ImGuiSelectableFlags_SpanAllColumns) ||
+    if (ImGui::Selectable("##row", isSelected(entry, state), ImGuiSelectableFlags_SpanAllColumns) ||
         ImGui::IsItemClicked(ImGuiMouseButton_Right))
     {
         state.selectedName = startupEntryKey(entry);
         state.selectedLocation = entry.location;
         state.selectedFamily = entry.packageFamily;
     }
-    if (missing)
-    {
-        ImGui::PopStyleColor();
-    }
-    if (ImGui::IsItemHovered(missing ? ImGuiHoveredFlags_None : ImGuiHoveredFlags_DelayNormal))
-    {
-        renderStartupTooltip(entry);
-    }
+    const bool tooltipDue = ImGui::IsItemHovered(missing ? ImGuiHoveredFlags_None : ImGuiHoveredFlags_DelayNormal);
     if (extras.actions != nullptr)
     {
         extras.actions->renderContextMenu(entry);
     }
+    ImGui::SameLine(0.0F, 0.0F);
+    if (missing)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
+    }
+    // The entry's tooltip carries the full name.
+    static_cast<void>(UI::Widgets::cellText(entry.name, {.clippedTooltip = false}));
+    if (missing)
+    {
+        ImGui::PopStyleColor();
+    }
+    return tooltipDue;
 }
 
 /// The Command cell: in the warning colour when its program is missing; an unresolved shortcut shows
-/// its own path, muted, since it has no command.
-void renderCommandCell(const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme)
+/// its own path, muted, since it has no command. Returns whether a clipped command's own tooltip shows.
+[[nodiscard]] bool renderCommandCell(const Platform::StartupEntry& entry, bool missing, const UI::ColorScheme& scheme)
 {
     if (missing)
     {
-        ImGui::TextColored(scheme.textWarning, "%s", entry.command.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
+        const bool tooltip = UI::Widgets::cellText(entry.command).tooltipShown;
+        ImGui::PopStyleColor();
+        return tooltip;
     }
-    else if (entry.command.empty() && !entry.sourcePath.empty())
+    if (entry.command.empty() && !entry.sourcePath.empty())
     {
-        ImGui::TextColored(scheme.textMuted, "%s (target unresolved)", entry.sourcePath.c_str());
+        // Rare (a shortcut whose target can't be resolved), so built when drawn.
+        const std::string text = entry.sourcePath + " (target unresolved)";
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+        const bool tooltip = UI::Widgets::cellText(text).tooltipShown;
+        ImGui::PopStyleColor();
+        return tooltip;
     }
-    else
-    {
-        ImGui::TextUnformatted(entry.command.c_str());
-    }
+    return UI::Widgets::cellText(entry.command).tooltipShown;
 }
 
 /// One table row. `enabledLabel` is the cached Enabled text (built once per sample); it is drawn only
-/// where the platform reports an enabled state.
+/// where the platform reports an enabled state. A clipped cell ends in an ellipsis with its full text
+/// as its tooltip (#1920), which stands in for the entry's tooltip while it shows.
 void renderStartupRow(const Platform::StartupEntry& entry,
                       const std::string& enabledLabel,
                       const Platform::StartupCapabilities& capabilities,
@@ -428,22 +437,27 @@ void renderStartupRow(const Platform::StartupEntry& entry,
 {
     const bool missing = entry.target == Platform::StartupTargetState::Missing;
     ImGui::TableNextColumn();
-    renderNameCell(entry, missing, scheme, state, extras);
+    const bool rowTooltipDue = renderNameCell(entry, missing, scheme, state, extras);
+    bool cellTooltip = false;
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(entry.publisher.c_str());
+    cellTooltip |= UI::Widgets::cellText(entry.publisher).tooltipShown;
     ImGui::TableNextColumn();
     if (capabilities.hasEnabledState)
     {
         ImGui::PushStyleColor(ImGuiCol_Text, entry.enabled ? scheme.textPrimary : scheme.textMuted);
-        ImGui::TextUnformatted(enabledLabel.c_str());
+        cellTooltip |= UI::Widgets::cellText(enabledLabel).tooltipShown;
         ImGui::PopStyleColor();
     }
     ImGui::TableNextColumn();
-    renderText(startupScopeLabel(entry.scope));
+    cellTooltip |= UI::Widgets::cellText(startupScopeLabel(entry.scope)).tooltipShown;
     ImGui::TableNextColumn();
-    renderText(startupLocationLabel(entry.location));
+    cellTooltip |= UI::Widgets::cellText(startupLocationLabel(entry.location)).tooltipShown;
     ImGui::TableNextColumn();
-    renderCommandCell(entry, missing, scheme);
+    cellTooltip |= renderCommandCell(entry, missing, scheme);
+    if (rowTooltipDue && !cellTooltip)
+    {
+        renderStartupTooltip(entry);
+    }
 }
 
 /// The visible rows only (ImGuiListClipper), in the order state.rows holds: only they look up icons.

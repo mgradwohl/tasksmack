@@ -159,6 +159,14 @@ TEST(ProcessActionsContractTest, RefusesWhenThePidBelongsToADifferentProcess)
         EXPECT_FALSE(resume.success);
         EXPECT_NE(resume.errorMessage.find("different process"), std::string::npos) << resume.errorMessage;
     }
+
+    if (actions->actionCapabilities().canSetAffinity && !own.cpuAffinity.empty())
+    {
+        // Its own affinity, so even a wrongly accepted call would change nothing (#1881).
+        const auto affinity = actions->setAffinity(reused, own.cpuAffinity);
+        EXPECT_FALSE(affinity.success);
+        EXPECT_NE(affinity.errorMessage.find("different process"), std::string::npos) << affinity.errorMessage;
+    }
 }
 
 TEST(ProcessActionsContractTest, RefusesWhenTheStartTimeIsUnknown)

@@ -1,14 +1,17 @@
 #include "CpuDetailsBlock.h"
 
 #include "App/Panels/CpuDetailsText.h"
+#include "UI/Card.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/LineLayout.h"
+#include "UI/TabContent.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -23,6 +26,9 @@ namespace
 
 /// Space after each value column, in ems, so one pair's value stays clear of the next pair's label.
 constexpr float PAIR_GAP_EM = 1.5F;
+/// More column pairs than the rows have now are taken only with this much width to spare, in ems
+/// (CpuDetailsText::ColumnFit::growMarginPx): about a value's change of width from one sample to the next.
+constexpr float GROW_MARGIN_EM = 1.0F;
 /// A font-size change smaller than this is not a change (the size moves in whole preset steps).
 constexpr float FONT_SIZE_TOLERANCE_PX = 0.01F;
 
@@ -58,7 +64,56 @@ void measure(std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGenera
     measured.fontSize = em;
 }
 
+/// One table row of text: a text line and the cell padding above and below it (ImGui::TableNextRow()).
+[[nodiscard]] float tableRowHeight()
+{
+    return ImGui::GetTextLineHeight() + (2.0F * ImGui::GetStyle().CellPadding.y);
+}
+
+/// The rows' layout this frame: the one layOutRows() made, else one made now at the current width.
+const CpuDetailsText::ColumnLayout&
+currentLayout(std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGeneration, MeasuredRows& measured)
+{
+    const bool laidOut = measured.layoutFrame == ImGui::GetFrameCount() && measured.rowsGeneration == rowsGeneration &&
+                         measured.labelWidths.size() == rows.size();
+    if (!laidOut)
+    {
+        (void) layOutRows(rows, rowsGeneration, measured, UI::Widgets::availWidthWithVerticalScrollbar());
+    }
+    return measured.layout;
+}
+
 } // namespace
+
+float layOutRows(std::span<const CpuDetailsText::Row> rows, std::uint64_t rowsGeneration, MeasuredRows& measured, float fitWidthPx)
+{
+    measure(rows, rowsGeneration, measured);
+    const bool hasLayout = measured.layoutFrame >= 0;
+    measured.layout = CpuDetailsText::fitColumns(measured.labelWidths,
+                                                 measured.valueWidths,
+                                                 {
+                                                     .availableWidthPx = fitWidthPx,
+                                                     .perPairExtraPx = ImGui::GetStyle().CellPadding.x * 4.0F, // Two cells' padding a pair
+                                                     .currentPairs = hasLayout ? measured.layout.pairs : 0,
+                                                     .growMarginPx = GROW_MARGIN_EM * ImGui::GetFontSize(),
+                                                 });
+    measured.layoutFrame = ImGui::GetFrameCount();
+    return static_cast<float>(measured.layout.rowsPerPair) * tableRowHeight();
+}
+
+bool beginCard(const char* id, const Content& content, MeasuredRows& measured)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    // The compact card's padding (the frame padding above and below), then the heading line
+    float height = (2.0F * style.FramePadding.y) + ImGui::GetTextLineHeight();
+    if (content.expanded && !content.rows.empty())
+    {
+        // The card's content width: the compact card keeps the window padding at the sides
+        const float fitWidth = UI::Widgets::availWidthWithVerticalScrollbar() - (2.0F * style.WindowPadding.x);
+        height += style.ItemSpacing.y + layOutRows(content.rows, content.rowsGeneration, measured, fitWidth);
+    }
+    return UI::Widgets::beginCompactCard(id, ImVec2(-FLT_MIN, std::ceil(height)));
+}
 
 bool render(const Content& content, MeasuredRows& measured)
 {
@@ -97,12 +152,11 @@ void renderRows(const char* tableId, std::span<const CpuDetailsText::Row> rows, 
         return;
     }
     const auto& theme = UI::Theme::get();
-    measure(rows, rowsGeneration, measured);
-    const float perPairExtra = ImGui::GetStyle().CellPadding.x * 4.0F; // Two cells' padding a pair
-    const CpuDetailsText::ColumnLayout layout =
-        CpuDetailsText::columnLayout(measured.labelWidths, measured.valueWidths, ImGui::GetContentRegionAvail().x, perPairExtra);
+    // Decided at the width with the scrollbar shown, drawn across the width there is
+    CpuDetailsText::ColumnLayout layout = currentLayout(rows, rowsGeneration, measured);
+    CpuDetailsText::spreadColumns(layout, ImGui::GetContentRegionAvail().x);
 
-    // Sized to its columns (NoHostExtendX), which columnLayout() has widened to the full width.
+    // Sized to its columns (NoHostExtendX), which spreadColumns() has widened to the full width.
     constexpr ImGuiTableFlags TABLE_FLAGS =
         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_NoBordersInBody | ImGuiTableFlags_NoHostExtendX;
     if (!ImGui::BeginTable(tableId, static_cast<int>(layout.pairs * 2), TABLE_FLAGS))

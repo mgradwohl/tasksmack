@@ -48,6 +48,7 @@
 #include <optional>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace
@@ -128,7 +129,11 @@ class TitleBarDriverLayer : public Core::Layer
         case SETTLE + (7 * STEP):
             m_Observed.maximizedAfterRestore = window.isMaximized();
             // Unlabelled when the chrome icon font loaded, labelled when it fell back; one of them exists.
+            // Pressed on separate frames: ActivateItemByID() keeps only the last request of a frame, so
+            // pressing both at once only ever pressed the labelled one (#1954).
             press("##Close");
+            break;
+        case SETTLE + (7 * STEP) + 1:
             press(ICON_FA_XMARK "##Close");
             break;
         default:
@@ -406,6 +411,229 @@ TEST(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
     EXPECT_TRUE(observed.systemMenuOpened);                 // Ctrl+Space opens the window menu
 }
 
+/// What the drag-and-resize driver saw.
+struct WindowDragObserved
+{
+    bool positionsApply = true; ///< False under SDL's offscreen driver, which keeps a window where it was made.
+    bool movedByDrag = false;
+    bool widenedByResize = false;
+    bool maximizedBeforeDrag = false;
+    bool restoredByDrag = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: holds the left button down and moves the pointer through
+/// TitleBarLayer::setMouseStateQueryForTesting() -- a pushed event can't move SDL's own pointer -- so
+/// the drag and resize the press begins step each frame (#1891): a drag on the title bar moves the
+/// window, a drag from the right edge widens it, and a drag on a maximized window's title bar past
+/// the threshold restores it. Each step waits for its effect (the window manager applies a move,
+/// resize or restore some frames later on X11) up to WAIT_LIMIT frames, then lets go.
+class WindowDragDriverLayer : public Core::Layer
+{
+  public:
+    WindowDragDriverLayer(WindowDragObserved& observed, App::TitleBarLayer& titleBar)
+        : Layer("WindowDragDriver"), m_Observed(observed), m_TitleBar(titleBar)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        const auto [width, height] = window.getSize();
+        const auto [x, y] = window.getPosition();
+        const float titleX = static_cast<float>(width) * 0.5F; // empty title bar: the middle, clear of the buttons
+        constexpr float TITLE_Y = 16.0F;
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        const auto waiting = [this, frame]
+        {
+            return frame < m_Deadline;
+        };
+        switch (m_Phase)
+        {
+        case Phase::BeginDrag:
+        {
+            const char* driver = SDL_GetCurrentVideoDriver();
+            m_Observed.positionsApply = driver == nullptr || std::string_view(driver) != "offscreen";
+            m_Position = {x, y};
+            hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+            pushButton(titleX, TITLE_Y, true, 1);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMoved, 1);
+            break;
+        }
+        case Phase::AwaitMoved:
+            m_Observed.movedByDrag = std::pair{x, y} != m_Position;
+            if (!m_Observed.movedByDrag && m_Observed.positionsApply && waiting())
+            {
+                next(Phase::AwaitMoved, 1);
+                break;
+            }
+            release();
+            next(Phase::BeginResize, STEP);
+            break;
+        case Phase::BeginResize:
+        {
+            m_Size = {width, height};
+            const float edgeX = static_cast<float>(width) - 2.0F;
+            const float edgeY = static_cast<float>(height) * 0.5F;
+            hold(x + static_cast<int>(edgeX) + WIDEN_BY, y + static_cast<int>(edgeY));
+            pushButton(edgeX, edgeY, true, 1);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitWidened, 1);
+            break;
+        }
+        case Phase::AwaitWidened:
+            m_Observed.widenedByResize = width > m_Size.first;
+            if (!m_Observed.widenedByResize && waiting())
+            {
+                next(Phase::AwaitWidened, 1);
+                break;
+            }
+            release(); // ends the resize, committing the size it last held back
+            next(Phase::Maximize, STEP);
+            break;
+        case Phase::Maximize:
+            pushButton(titleX, TITLE_Y, true, 2); // double-click: maximize
+            pushButton(titleX, TITLE_Y, false, 2);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximized, 1);
+            break;
+        case Phase::AwaitMaximized:
+            m_Observed.maximizedBeforeDrag = window.isMaximized();
+            if (!m_Observed.maximizedBeforeDrag && waiting())
+            {
+                next(Phase::AwaitMaximized, 1);
+                break;
+            }
+            hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+            pushButton(titleX, TITLE_Y, true, 1);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitRestored, 1);
+            break;
+        case Phase::AwaitRestored:
+            m_Observed.restoredByDrag = !window.isMaximized();
+            if (!m_Observed.restoredByDrag && waiting())
+            {
+                next(Phase::AwaitRestored, 1);
+                break;
+            }
+            release();
+            next(Phase::Stop, STEP);
+            break;
+        case Phase::Stop:
+            m_TitleBar.setMouseStateQueryForTesting({});
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    /// The pointer at (@p globalX, @p globalY) with the left button down, until release().
+    void hold(int globalX, int globalY)
+    {
+        m_TitleBar.setMouseStateQueryForTesting([globalX, globalY]
+                                                { return std::tuple<int, int, SDL_MouseButtonFlags>{globalX, globalY, SDL_BUTTON_LMASK}; });
+    }
+
+    /// The button up where it was: the next update sees no button held and ends the interaction.
+    void release()
+    {
+        m_TitleBar.setMouseStateQueryForTesting([] { return std::tuple<int, int, SDL_MouseButtonFlags>{0, 0, 0U}; });
+    }
+
+    static void pushButton(float x, float y, bool down, int clicks)
+    {
+        SDL_Event event{};
+        event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = down;
+        event.button.clicks = static_cast<Uint8>(clicks);
+        event.button.x = x;
+        event.button.y = y;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    /// The steps, in order; each waits m_NextFrame before running.
+    enum class Phase : std::uint8_t
+    {
+        BeginDrag,
+        AwaitMoved,
+        BeginResize,
+        AwaitWidened,
+        Maximize,
+        AwaitMaximized,
+        AwaitRestored,
+        Stop,
+    };
+
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 10;
+    static constexpr int WAIT_LIMIT = 300; // frames to wait for an effect before going on
+    static constexpr int MAX_FRAMES = 1500;
+    static constexpr int DRAG_X = 40; // past DragTracker::DRAG_THRESHOLD_PX
+    static constexpr int DRAG_Y = 30;
+    static constexpr int WIDEN_BY = 60;
+
+    WindowDragObserved& m_Observed;
+    App::TitleBarLayer& m_TitleBar;
+    Phase m_Phase = Phase::BeginDrag;
+    int m_NextFrame = SETTLE;
+    int m_Deadline = 0;
+    std::pair<int, int> m_Position;
+    std::pair<int, int> m_Size;
+};
+
+TEST(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayDragTest";
+    spec.VSync = false;
+    WindowDragObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<WindowDragDriverLayer>(observed, titleBar);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    if (observed.positionsApply)
+    {
+        EXPECT_TRUE(observed.movedByDrag); // a title-bar drag moves the window
+    }
+    EXPECT_TRUE(observed.widenedByResize);     // a right-edge drag widens it
+    EXPECT_TRUE(observed.maximizedBeforeDrag); // (the double-click maximized it)
+    EXPECT_TRUE(observed.restoredByDrag);      // and a drag past the threshold restores it
+}
+
 /// What the UI-layer driver saw.
 struct UiLayerObserved
 {
@@ -500,6 +728,7 @@ TEST(UiLayersOnDisplayTest, UiLayerLoadsUserThemesAndCountsDrawCalls)
 struct ShellKeysObserved
 {
     bool detailsTabShown = false;
+    bool servicesTabShown = false; // #1886: a ShowServiceEvent brings the Services tab forward
     bool metricsOnAfterToggle = false;
     bool metricsOffAfterSecondToggle = true;
     bool fontGrew = false;
@@ -521,9 +750,62 @@ class ShellKeysDriverLayer : public Core::Layer
         Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
         ImGuiIO& io = ImGui::GetIO();
         const int frame = ++m_Observed.frames;
-        switch (frame)
+        if (frame > MAX_FRAMES)
         {
-        case 20:
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        // After a key's release, wait for its effect rather than a fixed number of frames: on a loaded
+        // runner the effect can take longer to show (#1917). A press that is lost still fails, at
+        // WAIT_LIMIT; one taken twice fails the checks that the state came back.
+        // A press whose effect hasn't shown after RETRY_AFTER frames is pressed again, up to MAX_RETRIES
+        // times (#1950): CI's xvfb drops an injected key now and then (only a Ctrl+= was logged, never
+        // the Ctrl+- after it), as #1845's button presses were. A press taken twice still fails the
+        // checks that the state came back.
+        const auto awaitThen = [&](bool done, Phase then, Phase pressAgain)
+        {
+            if (!done && frame >= m_RetryFrame && m_Retries < MAX_RETRIES)
+            {
+                ++m_Retries;
+                next(pressAgain, 1);
+                return false;
+            }
+            if (!done && frame < m_WaitDeadline)
+            {
+                next(m_Phase, 1);
+                return false;
+            }
+            m_Retries = 0;
+            next(then, STEP);
+            return true;
+        };
+        const auto startWait = [&]
+        {
+            m_WaitDeadline = frame + WAIT_LIMIT;
+            m_RetryFrame = frame + RETRY_AFTER;
+        };
+        const auto pressCtrl = [&io](ImGuiKey key, bool shift, bool down)
+        {
+            io.AddKeyEvent(ImGuiMod_Ctrl, down);
+            if (shift)
+            {
+                io.AddKeyEvent(ImGuiMod_Shift, down);
+            }
+            io.AddKeyEvent(key, down);
+        };
+        switch (m_Phase)
+        {
+        case Phase::ShowDetails:
         {
             // As the Processes table's row menu does it (#1209): the selection first, then Details. PID 1
             // is init on Linux; elsewhere it isn't listed, which Process Details says, and the tab comes
@@ -532,66 +814,88 @@ class ShellKeysDriverLayer : public Core::Layer
             Core::Application::get().raiseEvent(selected);
             Core::ShowProcessDetailsEvent details;
             Core::Application::get().raiseEvent(details);
+            next(Phase::CheckDetails, 15);
             break;
         }
-        case 35:
+        case Phase::CheckDetails:
+        {
             m_Observed.detailsTabShown = selectedTab() == tabId("###ProcessDetailsTab");
-            ImGui::ActivateItemByID(tabId("###ProcessesTab"));
+            // Process Details' Services section asks for a service as this does (#1886, #1891).
+            Core::ShowServiceEvent show("cron.service");
+            Core::Application::get().raiseEvent(show);
+            next(Phase::CheckServices, 15);
             break;
-        case 45:
+        }
+        case Phase::CheckServices:
+            m_Observed.servicesTabShown = selectedTab() == tabId("###ServicesTab");
+            ImGui::ActivateItemByID(tabId("###ProcessesTab"));
+            next(Phase::PressF5, STEP);
+            break;
+        case Phase::PressF5:
             // No key repeat: these shortcuts are read with IsKeyPressed(), which repeats a key held past
             // KeyRepeatDelay, and one slow frame between a press and its release on a loaded runner did
             // that -- Ctrl+= grew the font two presets and Ctrl+- shrank it one (fontShrankBack failed).
             io.KeyRepeatDelay = 3600.0F;
             io.AddKeyEvent(ImGuiKey_F5, true); // the list/tree toggle, routed to the Processes tab
+            next(Phase::ReleaseF5, 1);
             break;
-        case 46:
+        case Phase::ReleaseF5:
             io.AddKeyEvent(ImGuiKey_F5, false);
+            next(Phase::PressMetricsOn, STEP);
             break;
-        case 55:
-        case 70:
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
-            io.AddKeyEvent(ImGuiMod_Shift, true);
-            io.AddKeyEvent(ImGuiKey_M, true);
+        case Phase::PressMetricsOn:
+        case Phase::PressMetricsOff:
+            pressCtrl(ImGuiKey_M, true, true);
+            next(m_Phase == Phase::PressMetricsOn ? Phase::ReleaseMetricsOn : Phase::ReleaseMetricsOff, 1);
             break;
-        case 56:
-        case 71:
-            io.AddKeyEvent(ImGuiKey_M, false);
-            io.AddKeyEvent(ImGuiMod_Shift, false);
-            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+        case Phase::ReleaseMetricsOn:
+        case Phase::ReleaseMetricsOff:
+            pressCtrl(ImGuiKey_M, true, false);
+            startWait();
+            next(m_Phase == Phase::ReleaseMetricsOn ? Phase::AwaitMetricsOn : Phase::AwaitMetricsOff, 1);
             break;
-        case 65:
+        case Phase::AwaitMetricsOn:
             m_Observed.metricsOnAfterToggle = UI::RenderMetrics::get().enabled();
+            static_cast<void>(awaitThen(m_Observed.metricsOnAfterToggle, Phase::PressMetricsOff, Phase::PressMetricsOn));
             break;
-        case 80:
+        case Phase::AwaitMetricsOff:
             m_Observed.metricsOffAfterSecondToggle = UI::RenderMetrics::get().enabled();
-            m_FontBefore = UI::Theme::get().currentFontSize();
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
-            io.AddKeyEvent(ImGuiKey_Equal, true);
+            static_cast<void>(awaitThen(!m_Observed.metricsOffAfterSecondToggle, Phase::PressGrow, Phase::PressMetricsOff));
             break;
-        case 81:
-            io.AddKeyEvent(ImGuiKey_Equal, false);
-            io.AddKeyEvent(ImGuiMod_Ctrl, false);
-            break;
-        case 90:
-            m_Observed.fontGrew = UI::Theme::get().currentFontSize() != m_FontBefore;
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
-            io.AddKeyEvent(ImGuiKey_Minus, true);
-            break;
-        case 91:
-            io.AddKeyEvent(ImGuiKey_Minus, false);
-            io.AddKeyEvent(ImGuiMod_Ctrl, false);
-            break;
-        case 100:
-            m_Observed.fontShrankBack = UI::Theme::get().currentFontSize() == m_FontBefore;
-            Core::Application::get().stop();
-            break;
-        default:
-            if (frame > 1000)
+        case Phase::PressGrow:
+            if (m_Retries == 0)
             {
-                m_Observed.timedOut = true;
+                m_FontBefore = UI::Theme::get().currentFontSize(); // not again on a retry
+            }
+            pressCtrl(ImGuiKey_Equal, false, true);
+            next(Phase::ReleaseGrow, 1);
+            break;
+        case Phase::ReleaseGrow:
+            pressCtrl(ImGuiKey_Equal, false, false);
+            startWait();
+            next(Phase::AwaitGrow, 1);
+            break;
+        case Phase::AwaitGrow:
+            m_Observed.fontGrew = UI::Theme::get().currentFontSize() != m_FontBefore;
+            static_cast<void>(awaitThen(m_Observed.fontGrew, Phase::PressShrink, Phase::PressGrow));
+            break;
+        case Phase::PressShrink:
+            pressCtrl(ImGuiKey_Minus, false, true);
+            next(Phase::ReleaseShrink, 1);
+            break;
+        case Phase::ReleaseShrink:
+            pressCtrl(ImGuiKey_Minus, false, false);
+            startWait();
+            next(Phase::AwaitShrink, 1);
+            break;
+        case Phase::AwaitShrink:
+            m_Observed.fontShrankBack = UI::Theme::get().currentFontSize() == m_FontBefore;
+            if (awaitThen(m_Observed.fontShrankBack, Phase::Done, Phase::PressShrink))
+            {
                 Core::Application::get().stop();
             }
+            break;
+        case Phase::Done:
             break;
         }
     }
@@ -614,7 +918,41 @@ class ShellKeysDriverLayer : public Core::Layer
         return bar != nullptr ? bar->SelectedTabId : 0;
     }
 
+    /// The steps, in order; each waits for m_NextFrame.
+    enum class Phase : std::uint8_t
+    {
+        ShowDetails,
+        CheckDetails,
+        CheckServices,
+        PressF5,
+        ReleaseF5,
+        PressMetricsOn,
+        ReleaseMetricsOn,
+        AwaitMetricsOn,
+        PressMetricsOff,
+        ReleaseMetricsOff,
+        AwaitMetricsOff,
+        PressGrow,
+        ReleaseGrow,
+        AwaitGrow,
+        PressShrink,
+        ReleaseShrink,
+        AwaitShrink,
+        Done,
+    };
+
+    static constexpr int STEP = 10;
+    static constexpr int WAIT_LIMIT = 120; // frames to wait for a shortcut's effect
+    static constexpr int RETRY_AFTER = 40; // frames without it before the key is pressed again
+    static constexpr int MAX_RETRIES = 3;
+    static constexpr int MAX_FRAMES = 1500;
+
     ShellKeysObserved& m_Observed;
+    Phase m_Phase = Phase::ShowDetails;
+    int m_NextFrame = 20;
+    int m_WaitDeadline = 0;
+    int m_RetryFrame = 0;
+    int m_Retries = 0;
     UI::FontSize m_FontBefore = UI::FontSize::Medium;
 };
 
@@ -645,6 +983,7 @@ TEST(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
 
     EXPECT_FALSE(observed.timedOut);
     EXPECT_TRUE(observed.detailsTabShown);              // Details brings the Process Details tab forward
+    EXPECT_TRUE(observed.servicesTabShown);             // Show in Services brings the Services tab forward
     EXPECT_TRUE(observed.metricsOnAfterToggle);         // Ctrl+Shift+M turns the render metrics on...
     EXPECT_FALSE(observed.metricsOffAfterSecondToggle); // ...and off again
     EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one preset larger
@@ -682,7 +1021,8 @@ class ShellDriverLayer : public Core::Layer
             Core::Application::get().stop();
             return;
         }
-        if (frame < SETTLE || (frame - SETTLE) % STEP != 0)
+        afterTabs(frame);
+        if (frame < SETTLE || (frame - SETTLE) % STEP != 0 || m_F1ReleaseFrame != 0)
         {
             return;
         }
@@ -698,12 +1038,39 @@ class ShellDriverLayer : public Core::Layer
         else if (step == TABS.size())
         {
             ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, true);
+            m_F1ReleaseFrame = frame + 1;
         }
-        else if (step == TABS.size() + 1)
+    }
+
+    /// F1 is released on the frame after its press, then Close waits for its effect (the help request)
+    /// rather than a fixed number of frames, up to WAIT_LIMIT: on a loaded runner the shell can take
+    /// longer to answer (#1917). A press that is lost still fails the help count.
+    void afterTabs(int frame)
+    {
+        if (m_F1ReleaseFrame == 0 || frame < m_F1ReleaseFrame)
+        {
+            return;
+        }
+        if (frame == m_F1ReleaseFrame)
         {
             ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, false);
+            return;
+        }
+        if (m_Observed.help == 0 && frame < m_F1ReleaseFrame + WAIT_LIMIT)
+        {
+            return;
+        }
+        // The unlabelled Close (chrome icon font) on one frame and the labelled one on the next: one
+        // ActivateItemByID() request per frame is kept (#1954).
+        if (m_ClosePresses == 0)
+        {
             pressOnTitleBar("##Close");
+            ++m_ClosePresses;
+        }
+        else if (m_ClosePresses == 1)
+        {
             pressOnTitleBar(ICON_FA_XMARK "##Close");
+            ++m_ClosePresses;
         }
     }
 
@@ -747,8 +1114,11 @@ class ShellDriverLayer : public Core::Layer
     static constexpr int SETTLE = 20; // the panels' first samples and layout
     static constexpr int STEP = 15;   // frames per tab: the press lands, the tab draws a few frames
     static constexpr int MAX_FRAMES = 1200;
+    static constexpr int WAIT_LIMIT = 120; // frames Close waits for F1's help request
 
     ShellObserved& m_Observed;
+    int m_F1ReleaseFrame = 0; // 0 until F1 is pressed
+    int m_ClosePresses = 0;
 };
 
 TEST(UiLayersOnDisplayTest, TheWholeShellShowsEachTabAndSavesItsConfigOnClose)

@@ -11,6 +11,7 @@ namespace Platform
 {
 
 class NVMLGPUProbe;
+class AccelNpuProbe;
 class DRMGPUProbe;
 class ROCmGPUProbe;
 
@@ -24,7 +25,10 @@ class LinuxGPUProbe : public IGPUProbe
     /// `drmBasePath` and `pciDevicesRoot` are the sysfs roots the vendor probes read; tests pass a
     /// fake tree. Each adapter's GPUInfo::sensorCapabilities says which of the OR'd capabilities()
     /// it actually reports (#1112).
-    explicit LinuxGPUProbe(std::string drmBasePath = "/sys/class/drm", const std::string& pciDevicesRoot = "/sys/bus/pci/devices");
+    /// @param accelClassRoot where NPUs and compute accelerators are listed (#1827)
+    explicit LinuxGPUProbe(std::string drmBasePath = "/sys/class/drm",
+                           const std::string& pciDevicesRoot = "/sys/bus/pci/devices",
+                           std::string accelClassRoot = "/sys/class/accel");
     ~LinuxGPUProbe() override;
 
     // Rule of 5
@@ -45,6 +49,7 @@ class LinuxGPUProbe : public IGPUProbe
     std::unique_ptr<NVMLGPUProbe> m_NVMLProbe;
     std::unique_ptr<DRMGPUProbe> m_DRMProbe;
     std::unique_ptr<ROCmGPUProbe> m_ROCmProbe;
+    std::unique_ptr<AccelNpuProbe> m_AccelProbe; // NPUs and compute accelerators (#1827)
 };
 
 } // namespace Platform

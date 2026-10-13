@@ -87,6 +87,8 @@ class WindowsSystemInfoProbe final : public ISystemInfoProbe
     /// The adapters from GetAdaptersAddresses and the Wi-Fi connections from wlanapi.dll (WindowsNetworkAdapters.h, #1518);
     /// the Wi-Fi details that need location access only with @p includeWifiDetails (#1782).
     [[nodiscard]] NetworkAdaptersInfo readNetworkAdapters(bool includeWifiDetails) override;
+    /// The public addresses as OpenDNS sees them (WindowsPublicIp.h, #1894); only once the user asks.
+    [[nodiscard]] PublicIpInfo readPublicIp() override;
     /// The last boot's Diagnostics-Performance event 100 (WindowsBootPerformance.h, #1525).
     [[nodiscard]] BootPerformanceInfo readBootPerformance() override;
 

@@ -215,9 +215,9 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
         return plots;
     }
 
-    /// Hovers the centre of the plot whose series are @p labels and renders @p draw two more frames.
-    /// Returns whether a tooltip window was shown.
-    [[nodiscard]] static bool hoverPlot(const SeriesLabels& labels, const std::function<void()>& draw)
+    /// Hovers the plot whose series are @p labels, near its right edge (or its left one, if
+    /// @p atLeftEdge), and renders @p draw two more frames. Returns whether a tooltip window was shown.
+    [[nodiscard]] static bool hoverPlot(const SeriesLabels& labels, const std::function<void()>& draw, bool atLeftEdge = false)
     {
         ImPlotContext& context = *ImPlot::GetCurrentContext();
         for (int i = 0; i < context.Plots.GetBufSize(); ++i)
@@ -234,7 +234,7 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
             }
             // Near the right edge: the newest samples, the gap points' too.
             const ImRect rect = plot->PlotRect;
-            ImGui::GetIO().AddMousePosEvent(rect.Max.x - 2.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+            ImGui::GetIO().AddMousePosEvent(atLeftEdge ? rect.Min.x + 2.0F : rect.Max.x - 2.0F, (rect.Min.y + rect.Max.y) * 0.5F);
             draw();
             draw();
             const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
@@ -576,6 +576,25 @@ TEST_F(ProcessDetailsChartsRenderTest, TheMemoryChartShowsATooltip)
     draw();
     draw();
     EXPECT_TRUE(hoverPlot(memorySeries(), draw));
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+}
+
+// A history shorter than the window (60 s of 300 s) leaves the chart's left part empty: hovering
+// there shows no tooltip, not the oldest sample's values as if measured then (#1931).
+TEST_F(ProcessDetailsChartsRenderTest, HoveringBeforeTheFirstSampleShowsNoTooltip)
+{
+    const ChartInputs inputs(busyPoint);
+    ProcessDetailsCharts charts;
+    const auto draw = [&]
+    {
+        renderOverview(charts, inputs.ctx);
+    };
+    draw();
+    draw();
+    EXPECT_FALSE(hoverPlot(cpuSeries(), draw, true));
+    EXPECT_FALSE(hoverPlot(memorySeries(), draw, true));
+    EXPECT_FALSE(hoverPlot(resourceSeries(), draw, true));
+    EXPECT_TRUE(hoverPlot(cpuSeries(), draw)); // the sampled end still has one
     ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 }
 

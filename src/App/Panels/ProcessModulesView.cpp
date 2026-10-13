@@ -1,6 +1,8 @@
 #include "ProcessModulesView.h"
 
 #include "Platform/IProcessModules.h"
+#include "UI/CellText.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -11,29 +13,11 @@
 #include <format>
 #include <span>
 #include <string>
-#include <string_view>
 
 #include <misc/cpp/imgui_stdlib.h>
 
 namespace App
 {
-
-namespace
-{
-
-/// Draws @p text in the current cell, clipped by the column, with the whole of it in a tooltip when
-/// it does not fit (a long path in a narrow pane).
-void cellText(std::string_view text)
-{
-    const float available = ImGui::GetContentRegionAvail().x;
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && ImGui::CalcTextSize(text.data(), text.data() + text.size()).x > available)
-    {
-        ImGui::SetTooltip("%.*s", static_cast<int>(text.size()), text.data());
-    }
-}
-
-} // namespace
 
 void ProcessModulesView::render(bool hasModules)
 {
@@ -87,7 +71,10 @@ void ProcessModulesView::render(bool hasModules)
 void ProcessModulesView::renderTable()
 {
     ImGui::SetNextItemWidth(-1.0F);
-    ImGui::InputTextWithHint("##ModulesFilter", ICON_FA_FILTER "  Filter by name or path", &m_Filter);
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        ImGui::InputTextWithHint("##ModulesFilter", ICON_FA_FILTER "  Filter by name or path", &m_Filter);
+    }
     const std::span<const std::size_t> visible = filteredRows();
     if (visible.empty())
     {
@@ -148,18 +135,18 @@ void ProcessModulesView::renderTable()
             const Row& row = m_Rows[ordered[static_cast<std::size_t>(i)]];
             ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
             ImGui::TableNextColumn();
-            cellText(row.name);
+            UI::Widgets::cellText(row.name);
             if (versions)
             {
                 ImGui::TableNextColumn();
-                cellText(row.version);
+                UI::Widgets::cellText(row.version);
             }
             ImGui::TableNextColumn();
-            cellText(row.base);
+            UI::Widgets::cellText(row.base);
             ImGui::TableNextColumn();
-            cellText(row.size);
+            UI::Widgets::cellText(row.size);
             ImGui::TableNextColumn();
-            cellText(row.module.path);
+            UI::Widgets::cellText(row.module.path);
         }
     }
     ImGui::EndTable();

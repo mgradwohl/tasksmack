@@ -377,8 +377,10 @@ class ProcessActionsView
     bool renderButtons(const Platform::ProcessActionCapabilities& capabilities,
                        const std::string& processName,
                        const Platform::ProcessTarget& target);
-    /// Set affinity... (#1887): at the row's end at its own width, as the trace button is.
-    void renderSetAffinityButton(const Platform::ProcessActionCapabilities& capabilities,
+    /// Set affinity... (#1887): at the row's end at its own width, as the trace button is. A press reads
+    /// @p actions' affinityLayout() (null: none) to group the dialog's boxes (#1881).
+    void renderSetAffinityButton(const Platform::IProcessActions* actions,
+                                 const Platform::ProcessActionCapabilities& capabilities,
                                  const std::string& processName,
                                  const Platform::ProcessTarget& target,
                                  const Platform::CpuAffinity* currentAffinity,

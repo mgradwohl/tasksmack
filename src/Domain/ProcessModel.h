@@ -3,6 +3,7 @@
 #include "History.h"
 #include "ISamplable.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/ProcessTypes.h"
 #include "ProcessEnergyAttribution.h"
 #include "ProcessRowHistory.h"
 #include "ProcessSnapshot.h"
@@ -19,6 +20,7 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -27,6 +29,7 @@ namespace Domain
 
 // Forward declarations
 class GPUModel;
+class ServiceModel;
 struct ProcessGPUPublication;
 
 struct ProcessSystemHistories
@@ -214,10 +217,18 @@ class ProcessModel : public ISamplable
     /// never calls the GPU probe, so a slow GPU driver read doesn't hold up the process list (#1417).
     void setGPUModel(std::shared_ptr<GPUModel> gpuModel);
 
+    /// Set the service list that says which services each process hosts (#1880). When set, refresh()
+    /// fills each snapshot's services from the list the service model last published, if it is current
+    /// (ProcessServices::isCurrent()); it never samples the service model itself, whose own sampler
+    /// keeps it current while something needs it. Its PIDs also make ProcessCapabilities::hasServices
+    /// true. The Linux unit from the probe is merged whether or not one is set.
+    void setServiceModel(std::shared_ptr<const ServiceModel> serviceModel);
+
   private:
     std::unique_ptr<Platform::IProcessProbe> m_Probe;
     NowFunction m_Now;
-    std::shared_ptr<GPUModel> m_GPUModel; // For per-process GPU data
+    std::shared_ptr<GPUModel> m_GPUModel;               // For per-process GPU data
+    std::shared_ptr<const ServiceModel> m_ServiceModel; // For the services each process hosts (#1880), guarded by m_Mutex
     // The probe's capabilities as of the sample being computed: sampling thread only, under
     // m_SamplingMutex. m_PublishedCapabilities is the copy readers see, guarded by m_Mutex.
     Platform::ProcessCapabilities m_Capabilities;

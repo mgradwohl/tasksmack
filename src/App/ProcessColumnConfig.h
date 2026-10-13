@@ -24,9 +24,9 @@ enum class ProcessColumn : std::uint8_t
     User,
     PPID,
     Publisher, // Software publisher/vendor (Windows-only, empty on Linux)
-    Container,
-    Services, // The services it runs: the systemd service on Linux (#1886); #1880 on Windows // Container from cgroups:
-              // "docker:1a2b3c4d5e6f" (Linux-only) State - what is it doing?
+    Container, // Container from cgroups: "docker:1a2b3c4d5e6f" (Linux-only)
+    Services,  // Services the process hosts: "Dhcp, EventLog" (#1880)
+               // State - what is it doing?
     State,
     Status,
     Type, // Process type: App / Background Process / Windows Process (Windows-only)
@@ -169,8 +169,8 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="Publisher", .menuName="Publisher", .configKey="publisher", .defaultWidth=140.0F, .defaultVisible=false, .canHide=true, .description="Software publisher or vendor name from the process executable (Windows only)"},
         // Container (Linux-only)
         {.name="Container", .menuName="Container", .configKey="container", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="Container the process runs in, from its cgroup: runtime and short ID (docker, podman, containerd, cri-o, k8s) or name (lxc, nspawn, machine) (Linux only)"},
-        // Services (#1886)
-        {.name="Services", .menuName="Services", .configKey="services", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="The services the process runs: its systemd service on Linux, from its cgroup (empty for a session or an app, which run in a scope)"},
+        // Services (#1880): off by default; while shown, the service list is kept current
+        {.name="Services", .menuName="Services", .configKey="services", .defaultWidth=160.0F, .defaultVisible=false, .canHide=true, .description="Services the process hosts: on Windows those the service manager runs in it (several share an svchost.exe), on Linux the systemd service its cgroup is in. Hover a cell for the full list"},
 
         // === State ===
         // State

@@ -30,6 +30,8 @@ struct FakeCrt
     std::string codeset = "UTF-8";
     std::string envCtype = "en_US.UTF-8"; // what setlocale(LC_ALL, "") selects
     std::string ctype = "C";              // the current LC_CTYPE name
+    bool envFails = false;                // setlocale(LC_ALL, "") fails: the environment names a missing locale
+    bool classicNumericFails = false;     // setlocale(LC_NUMERIC, "C") fails
     std::vector<std::pair<int, std::string>> calls;
 };
 
@@ -48,6 +50,10 @@ const char* fakeSetLocale(const int category, const char* name)
     }
     crt.calls.emplace_back(category, name);
     const std::string requested(name);
+    if ((requested.empty() && crt.envFails) || (category == LC_NUMERIC && requested == "C" && crt.classicNumericFails))
+    {
+        return nullptr;
+    }
     if (requested.empty())
     {
         crt.ctype = crt.envCtype;
@@ -176,6 +182,41 @@ TEST_F(LocaleSetupTest, LinuxPosixLocaleFallsBackToCUtf8ThenEnUs)
     EXPECT_EQ(outcome.chosen, "en_US.UTF-8");
     EXPECT_TRUE(outcome.replacedCtype);
     EXPECT_EQ(fake().calls.back(), (std::pair<int, std::string>{LC_NUMERIC, "C"}));
+}
+
+// #1891: the environment naming a locale that isn't installed, a non-UTF-8 LC_CTYPE with no UTF-8 locale
+// to replace it, and a refused LC_NUMERIC reset each leave a warning, and the selection carries on.
+TEST_F(LocaleSetupTest, LinuxWarnsWhenTheEnvironmentLocaleOrEveryUtf8LocaleIsMissing)
+{
+    fake().envFails = true;
+    fake().ctype = "C";
+    fake().codeset = "ANSI_X3.4-1968";
+    fake().available = {};
+    const CLocaleOutcome outcome = applyLinuxCLocale(FAKE_CRT);
+    EXPECT_TRUE(outcome.chosen.empty());
+    EXPECT_FALSE(outcome.replacedCtype);
+    ASSERT_EQ(outcome.warnings.size(), 2U);
+    EXPECT_TRUE(outcome.warnings[0].contains("not installed")) << outcome.warnings[0];
+    EXPECT_TRUE(outcome.warnings[1].contains("no UTF-8 locale is available")) << outcome.warnings[1];
+    EXPECT_TRUE(outcome.warnings[1].contains("C.UTF-8")) << "it names what it tried: " << outcome.warnings[1];
+}
+
+TEST_F(LocaleSetupTest, ARefusedClassicNumericResetIsWarnedAbout)
+{
+    fake().envCtype = "de_DE.UTF-8";
+    fake().classicNumericFails = true;
+    const CLocaleOutcome outcome = applyLinuxCLocale(FAKE_CRT);
+    EXPECT_EQ(outcome.chosen, "de_DE.UTF-8");
+    ASSERT_EQ(outcome.warnings.size(), 1U);
+    EXPECT_EQ(outcome.warnings[0], R"(setlocale(LC_NUMERIC, "C") failed)");
+}
+
+TEST(LocaleSetupCppTest, UserNumericFacetsKeepTheUsersLocaleWhole)
+{
+    // NumericFacets::User (the UI's own numbers): the user's locale is the global one, numerics and all.
+    const std::locale& user = std::locale::classic();
+    const std::locale global = makeGlobalLocale(user, NumericFacets::User);
+    EXPECT_EQ(global.name(), user.name());
 }
 
 TEST(LocaleSetupCppTest, UnknownLocaleNamesFallBackToClassicWithAWarning)

@@ -8,7 +8,10 @@
 #include <SDL3/SDL_mouse.h>
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <tuple>
+#include <utility>
 
 struct SDL_Cursor;
 
@@ -51,11 +54,14 @@ class TitleBarLayer : public Core::Layer
 
     /// Size the panels below need, from computeContentMinimumWidth() (#1207) and
     /// computeContentMinimumHeight() (#1278). The window's minimum size covers it from the next frame
-    /// the bar is drawn. Set by ShellLayer every frame.
-    void setContentMinimumSize(float widthPx, float heightPx) noexcept
+    /// the bar is drawn. Set by ShellLayer every frame. @p estimatedHeightPx is the height without
+    /// what the tabs measured (the tab-independent part): a change there may grow the window, a
+    /// change in the measured part only may not (minimumSizeChangeFor(), #1945).
+    void setContentMinimumSize(float widthPx, float heightPx, float estimatedHeightPx) noexcept
     {
         m_ContentMinimumWidthPx = widthPx;
         m_ContentMinimumHeightPx = heightPx;
+        m_ContentEstimatedHeightPx = estimatedHeightPx;
     }
 
     // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
@@ -64,6 +70,15 @@ class TitleBarLayer : public Core::Layer
     /// True if (x, y) falls inside any title-bar button's bounds. Public so the
     /// free-function hit-test callback can use it directly.
     [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
+
+    /// Mouse state a drag or resize in progress reads instead of SDL's, as {x, y, buttonMask} in
+    /// global coordinates: tests hold the left button down and move the pointer, which a pushed
+    /// event can't do (SDL's own mouse state doesn't follow pushed events). An empty function
+    /// restores SDL's.
+    void setMouseStateQueryForTesting(std::function<std::tuple<int, int, SDL_MouseButtonFlags>()> query)
+    {
+        m_MouseStateQueryForTesting = std::move(query);
+    }
 
   private:
     enum class InteractionMode : std::uint8_t
@@ -122,16 +137,22 @@ class TitleBarLayer : public Core::Layer
     ResizeTracker m_Resize;
 
     // Smallest size the window may be resized to, from the title bar's own content and the display
-    // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn; applied to
-    // custom edge-drags here and handed to SDL for every other way a window gets resized (#970).
+    // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn and handed to
+    // Window::setMinimumSize() on a change (#970), growing the window only for a change in its
+    // tab-independent part (#1945); custom edge-drags use what that applied (Window::getMinimumSize()).
     WindowMinimumSize m_MinimumSize{};
     // The minimum before capMinimumToUsable(), and the display it was capped for: the display's
     // usable bounds are re-read only when one of them changes (#1207).
     WindowMinimumSize m_DesiredMinimumSize{};
+    // The same from the panels' estimated content height alone (setContentMinimumSize()), and the
+    // capped one the minimum was last set with: a change in it may grow the window (#1945).
+    WindowMinimumSize m_DesiredGrowMinimumSize{};
+    std::optional<WindowMinimumSize> m_GrowMinimumSize;
     SDL_DisplayID m_MinimumSizeDisplayId = 0;
     // The panels' share of that minimum (#1207, #1278), from setContentMinimumSize().
     float m_ContentMinimumWidthPx = 0.0F;
     float m_ContentMinimumHeightPx = 0.0F;
+    float m_ContentEstimatedHeightPx = 0.0F;
 
     ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseLocalX = 0;
@@ -150,6 +171,7 @@ class TitleBarLayer : public Core::Layer
     bool m_HasLoggedFocusMismatch = false;
 
     bool m_TraceEnabled = false;
+    std::function<std::tuple<int, int, SDL_MouseButtonFlags>()> m_MouseStateQueryForTesting;
 
     SDL_Cursor* m_DefaultCursor = nullptr;
     SDL_Cursor* m_NsResizeCursor = nullptr;

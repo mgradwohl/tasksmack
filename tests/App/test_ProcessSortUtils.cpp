@@ -135,6 +135,34 @@ TEST(ProcessSortUtilsTest, EqualSnapshotsNeverCompareLessForAnyColumn)
 // Column-specific edge cases not covered by the generic low/high pair
 // =============================================================================
 
+// #1880: the Services column sorts its text A to Z ignoring case, and keeps the processes hosting none
+// after those hosting some in both directions.
+TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
+{
+    using ProcessSortUtils::compareServicesText;
+    EXPECT_TRUE(compareServicesText("Appinfo", "bits", true)); // not "B" < "a" by byte value
+    EXPECT_FALSE(compareServicesText("bits", "Appinfo", true));
+    EXPECT_TRUE(compareServicesText("bits", "Appinfo", false));
+    EXPECT_TRUE(compareServicesText("Dhcp, EventLog", "Dhcp, EventLog, nsi", true));
+    // None sorts last, ascending and descending.
+    EXPECT_TRUE(compareServicesText("Zeta", "", true));
+    EXPECT_FALSE(compareServicesText("", "Zeta", true));
+    EXPECT_TRUE(compareServicesText("Alpha", "", false));
+    EXPECT_FALSE(compareServicesText("", "Alpha", false));
+    // Equal texts, two empty ones included, compare false both ways.
+    EXPECT_FALSE(compareServicesText("", "", true));
+    EXPECT_FALSE(compareServicesText("", "", false));
+    EXPECT_FALSE(compareServicesText("BFE", "bfe", true));
+    EXPECT_FALSE(compareServicesText("bfe", "BFE", true));
+
+    ProcessSnapshot host = makeSnapshot(false);
+    host.services = "Dhcp, EventLog";
+    ProcessSnapshot none = makeSnapshot(false);
+    none.services.clear();
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, true));
+    EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, false));
+}
+
 TEST(ProcessSortUtilsTest, GpuEngineComparesByCountBeforeFirstName)
 {
     ProcessSnapshot fewer;

@@ -23,11 +23,15 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
+#include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/ServiceModel.h"
 #include "Mocks/FakeClipboard.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IServiceProbe.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
@@ -353,6 +357,39 @@ TEST_F(ProcessesPanelRenderTest, TheTableListsTheProbesProcesses)
     panel->onDetach();
 }
 
+// #1891: every column's cell renderer draws its cells -- the hidden-by-default ones too, which no other
+// test turned on. A few at a time beside PID and Name, so none is scrolled out of the table's width.
+TEST_F(ProcessesPanelRenderTest, EveryColumnDrawsItsHeaderAndCells)
+{
+    constexpr std::size_t GROUP = 6;
+    const auto columns = allProcessColumns();
+    for (std::size_t first = 0; first < columns.size(); first += GROUP)
+    {
+        // As the config file would have it: only this group (and PID and Name) shown.
+        ProcessColumnSettings& settings = UserConfig::get().settings().processColumns;
+        std::vector<ProcessColumn> group;
+        for (std::size_t i = 0; i < columns.size(); ++i)
+        {
+            const bool inGroup = i >= first && i < first + GROUP;
+            settings.setVisible(columns[i], inGroup);
+            if (inGroup)
+            {
+                group.push_back(columns[i]);
+            }
+        }
+        const auto panel = attachedPanel();
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        const std::string text = renderAndCapture(*panel);
+        EXPECT_TRUE(text.contains("server")) << "the rows are still drawn";
+        for (const ProcessColumn col : group)
+        {
+            EXPECT_TRUE(text.contains(getColumnInfo(col).name)) << getColumnInfo(col).configKey << " in:\n" << text;
+        }
+        panel->onDetach();
+    }
+}
+
 TEST_F(ProcessesPanelRenderTest, TheTreeViewKeepsEveryProcess)
 {
     const auto panel = attachedPanel();
@@ -495,6 +532,75 @@ TEST_F(ProcessesPanelRenderTest, KillFromTheRowMenuIsConfirmedThenSentForThatPro
     EXPECT_EQ(actions->killCount(), 1);
     EXPECT_EQ(actions->lastKillPid(), menuPid.value_or(-1));
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, SetAffinityFromTheRowMenuAppliesTheDialogsCpus)
+{
+    // Every process may run on CPU 0 only, and the actions can set an affinity (#1887).
+    TestMocks::MockProcessActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            for (auto counters : {TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0),
+                                  TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1),
+                                  TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100)})
+            {
+                counters.cpuAffinity = Platform::CpuAffinity::fromMask(0b1U);
+                probe->withProcess(counters);
+            }
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canSetAffinity = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+
+    pressPopupItem(*panel, ICON_FA_MICROCHIP " Set affinity...###SetAffinity");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_NE(ImGui::GetTopMostPopupModal(), nullptr); // the dialog, with the process's own CPU ticked
+    EXPECT_EQ(actions->setAffinityCount(), 0);
+
+    pressModalFilledButton(*panel, "Apply");
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(actions->setAffinityCount(), 1);
+    EXPECT_EQ(actions->lastAffinity(), Platform::CpuAffinity::fromMask(0b1U));
+    EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1)); // the process the menu was for
+    EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+TEST_F(ProcessesPanelRenderTest, F9OnOneSelectedRowAsksToKillThatProcess)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::map<std::int32_t, float> heights = rowHeights(*panel, 1); // a plain click selects one row
+    ASSERT_EQ(heights.size(), 1U);
+    ASSERT_EQ(panel->selectionCount(), 1U);
+    const std::int32_t pid = heights.begin()->first;
+
+    panel->requestKillSelected(); // F9, as ShellLayer hands it to the tab on show
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with("Kill")) << modal->Name;
+    EXPECT_EQ(actions->killCount(), 0); // asked, not done
+
+    pressModalFilledButton(*panel, "Kill");
+    EXPECT_EQ(actions->killCount(), 1);
+    EXPECT_EQ(actions->lastKillPid(), pid); // the highlighted row's process
     panel->onDetach();
 }
 
@@ -721,6 +827,45 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
     EXPECT_TRUE(text.contains("Publisher")) << text;
     EXPECT_TRUE(text.contains("Container")) << text;
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+    panel->onDetach();
+}
+
+// #1880: the Services column, once a service list with PIDs is attached, lists each process's services
+// comma-joined -- blank for one hosting none -- and sorts by that text.
+TEST_F(ProcessesPanelRenderTest, TheServicesColumnListsEachProcesssServices)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Services, true);
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    // No service list yet: this system can't tell (the mock probe has no systemd units either).
+    EXPECT_FALSE(panel->processCapabilities().hasServices);
+
+    Platform::ServiceCapabilities listCaps;
+    listCaps.canEnumerate = true;
+    listCaps.hasPid = true;
+    auto serviceProbe = std::make_unique<TestMocks::MockServiceProbe>(listCaps);
+    Platform::ServiceInfo dhcp;
+    dhcp.name = "Dhcp";
+    dhcp.pid = 100;
+    Platform::ServiceInfo eventLog;
+    eventLog.name = "EventLog";
+    eventLog.pid = 100;
+    serviceProbe->setEnumeration(Platform::ServiceEnumeration::succeeded({eventLog, dhcp}));
+    const auto services = std::make_shared<Domain::ServiceModel>(std::move(serviceProbe));
+    services->sample();
+    panel->processModel()->setServiceModel(services);
+    panel->processModel()->refresh(); // the sampler's next refresh, now
+
+    std::string text;
+    int frame = 0;
+    while (!text.contains("Dhcp, EventLog") && frame < LOAD_FRAMES)
+    {
+        text = renderAndCapture(*panel);
+        ++frame;
+    }
+    EXPECT_TRUE(text.contains("Services")) << text;
+    EXPECT_TRUE(text.contains("Dhcp, EventLog")) << text; // the list's name order
+    EXPECT_TRUE(panel->processCapabilities().hasServices);
     panel->onDetach();
 }
 

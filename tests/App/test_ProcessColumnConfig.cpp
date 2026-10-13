@@ -468,11 +468,24 @@ TEST(ProcessColumnConfigTest, NumericColumnsAreRightAligned)
     }
 }
 
+// #1880: the Services column is off by default (keeping it current reads the service list), and can be
+// shown and saved like any other.
+TEST(ProcessColumnConfigTest, TheServicesColumnIsHiddenByDefault)
+{
+    const ProcessColumnInfo info = getColumnInfo(ProcessColumn::Services);
+    EXPECT_EQ(info.name, "Services");
+    EXPECT_EQ(info.configKey, "services");
+    EXPECT_FALSE(info.defaultVisible);
+    EXPECT_TRUE(info.canHide);
+    EXPECT_FALSE(ProcessColumnSettings{}.isVisible(ProcessColumn::Services));
+}
+
 TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
 {
     for (const ProcessColumn col : {ProcessColumn::Name,
                                     ProcessColumn::User,
                                     ProcessColumn::Publisher,
+                                    ProcessColumn::Services,
                                     ProcessColumn::Status,
                                     ProcessColumn::Type,
                                     ProcessColumn::GpuEngine,

@@ -6,8 +6,11 @@
 #include <gtest/gtest.h>
 #include <imgui.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
+#include <span>
 
 namespace UI::ColorContrast
 {
@@ -231,6 +234,60 @@ TEST(ReadableTintTest, FallsBackToTheReadableColourWhenNoMixReads)
     // Neither the colour nor any mix toward nearGrey reaches 4.5:1 on grey.
     const ImVec4 tinted = readableTint(grey, nearGrey, grey, TEXT_CONTRAST_MIN);
     EXPECT_FLOAT_EQ(tinted.x, nearGrey.x);
+}
+
+// #1923: a control's outline is fitted to every surface the control is drawn on at once -- the
+// window, a card and a popup -- not just one of them.
+TEST(TintToContrastTest, AnOutlineThatAlreadyStandsOutOnEverySurfaceIsKept)
+{
+    const std::array<ImVec4, 2> surfaces{rgb(0xF5, 0xF7, 0xFA), rgb(0xEC, 0xEF, 0xF4)};
+    const ImVec4 outline = rgb(0x60, 0x60, 0x60);
+    const ImVec4 tinted = tintToContrast(outline, BLACK, surfaces, FRAME_BORDER_CONTRAST_MIN);
+    EXPECT_FLOAT_EQ(tinted.x, outline.x);
+    EXPECT_FLOAT_EQ(tinted.y, outline.y);
+    EXPECT_FLOAT_EQ(tinted.z, outline.z);
+}
+
+TEST(TintToContrastTest, AFaintOutlineMovesJustFarEnoughForTheLeastContrastingSurface)
+{
+    // Windows Light-like: a near-white border, and a window, a white card and a tinted popup behind it.
+    const ImVec4 window = rgb(0xF5, 0xF7, 0xFA);
+    const std::array<ImVec4, 3> surfaces{window, WHITE, rgb(0xE1, 0xE5, 0xEA)};
+    const ImVec4 faint = rgb(0xE9, 0xED, 0xF2);
+    const ImVec4 text = rgb(0x0F, 0x0F, 0x0F);
+    ASSERT_LT(contrastRatio(faint, window), FRAME_BORDER_CONTRAST_MIN);
+
+    const ImVec4 tinted = tintToContrast(faint, text, surfaces, FRAME_BORDER_CONTRAST_MIN);
+    for (const ImVec4& surface : surfaces)
+    {
+        EXPECT_GE(contrastRatio(tinted, surface), FRAME_BORDER_CONTRAST_MIN);
+    }
+    // One step less of the mix would have missed on at least one surface: the darkest one here.
+    const float t = (tinted.x - faint.x) / (text.x - faint.x);
+    const float less = t - (1.0F / static_cast<float>(READABLE_TINT_STEPS));
+    const ImVec4 lessMixed{
+        faint.x + ((text.x - faint.x) * less), faint.y + ((text.y - faint.y) * less), faint.z + ((text.z - faint.z) * less), 1.0F};
+    EXPECT_TRUE(std::ranges::any_of(
+        surfaces, [&lessMixed](const ImVec4& surface) { return contrastRatio(lessMixed, surface) < FRAME_BORDER_CONTRAST_MIN; }));
+    // A quiet edge, not text: well short of the text colour it moved toward.
+    EXPECT_LT(contrastRatio(tinted, window), TEXT_CONTRAST_MIN);
+}
+
+TEST(TintToContrastTest, NoSurfacesKeepsTheColour)
+{
+    const ImVec4 grey{0.5F, 0.5F, 0.5F, 1.0F};
+    const ImVec4 tinted = tintToContrast(grey, BLACK, std::span<const ImVec4>{}, FRAME_BORDER_CONTRAST_MIN);
+    EXPECT_FLOAT_EQ(tinted.x, grey.x);
+}
+
+TEST(TintToContrastTest, FallsBackToTheTargetWhenNoMixReachesEverySurface)
+{
+    // Every mix between two greys either side of a mid-grey surface is within 3:1 of it.
+    const std::array<ImVec4, 2> surfaces{ImVec4{0.5F, 0.5F, 0.5F, 1.0F}, ImVec4{0.52F, 0.52F, 0.52F, 1.0F}};
+    const ImVec4 grey{0.45F, 0.45F, 0.45F, 1.0F};
+    const ImVec4 target{0.55F, 0.55F, 0.55F, 1.0F};
+    const ImVec4 tinted = tintToContrast(grey, target, surfaces, FRAME_BORDER_CONTRAST_MIN);
+    EXPECT_FLOAT_EQ(tinted.x, target.x);
 }
 
 } // namespace UI::ColorContrast

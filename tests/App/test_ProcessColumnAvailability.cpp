@@ -87,6 +87,22 @@ TEST(ProcessColumnAvailabilityTest, ContainerIsLinuxOnly)
     EXPECT_FALSE(rowFormatOptions(windowsLikeCapabilities()).hasContainer);
 }
 
+TEST(ProcessColumnAvailabilityTest, ServicesFollowTheCapabilityAndStayHiddenByDefault)
+{
+    // #1880: Linux's probe fills it from cgroups; on Windows, ProcessModel sets it once a service list
+    // with PIDs is attached. Supported or not, it is never shown by default.
+    Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    EXPECT_FALSE(isSupported(ProcessColumn::Services, caps));
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Services, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_FALSE(rowFormatOptions(caps).hasServices);
+    caps.hasServices = true;
+    EXPECT_TRUE(isSupported(ProcessColumn::Services, caps));
+    EXPECT_TRUE(unavailableValuesNote(ProcessColumn::Services, caps).empty());
+    EXPECT_TRUE(rowFormatOptions(caps).hasServices);
+    EXPECT_FALSE(ProcessColumnAvailability::defaultVisible(ProcessColumn::Services, caps));
+    EXPECT_FALSE(ProcessColumnAvailability::defaultColumns(caps).isVisible(ProcessColumn::Services));
+}
+
 TEST(ProcessColumnAvailabilityTest, StatusStaysSupportedWherePresent)
 {
     // Status is sparse on Windows (Suspended, Efficiency Mode), not unsupported.

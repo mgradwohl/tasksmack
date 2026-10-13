@@ -6,6 +6,7 @@
 #include "UI/ChromeLayout.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -135,8 +136,7 @@ Action render(State& state)
         // keyboard navigation on (UILayer), ImGui's own Escape handling in NewFrame() closes that
         // combo and hands focus back to this dialog within the same frame, so the same key press
         // would otherwise close the combo and then the whole dialog.
-        if (!state.comboOpenLastFrame && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        if (!state.comboOpenLastFrame && UI::Widgets::dialogEscapePressed())
         {
             ImGui::CloseCurrentPopup();
         }
@@ -268,7 +268,7 @@ Action render(State& state)
             const char* currentTheme = (state.themeChoice.index.has_value() && *state.themeChoice.index < state.themes.size())
                                          ? state.themes[*state.themeChoice.index].name.c_str()
                                          : state.customThemePreview.c_str();
-            if (ImGui::BeginCombo("##Theme", currentTheme))
+            if (UI::Widgets::beginOutlinedCombo("##Theme", currentTheme))
             {
                 comboOpen = true;
                 for (std::size_t i = 0; i < state.themes.size(); ++i)
@@ -287,7 +287,7 @@ Action render(State& state)
                     }
                     ImGui::PopID();
                 }
-                ImGui::EndCombo();
+                UI::Widgets::endOutlinedCombo();
             }
         }
 
@@ -305,7 +305,7 @@ Action render(State& state)
         const auto liveFontIndex = optionIndexOf(FONT_SIZE_OPTIONS, UserConfig::get().settings().fontSize, &Detail::FontSizeOption::value);
         const std::size_t fontPreviewIndex = (state.fontSizeChoice.touched ? state.fontSizeChoice.index : liveFontIndex).value_or(1);
         const char* currentFontSize = FONT_SIZE_OPTIONS[fontPreviewIndex].label.data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
-        if (ImGui::BeginCombo("##FontSize", currentFontSize))
+        if (UI::Widgets::beginOutlinedCombo("##FontSize", currentFontSize))
         {
             comboOpen = true;
             for (std::size_t i = 0; i < FONT_SIZE_OPTIONS.size(); ++i)
@@ -320,13 +320,13 @@ Action render(State& state)
                     ImGui::SetItemDefaultFocus();
                 }
             }
-            ImGui::EndCombo();
+            UI::Widgets::endOutlinedCombo();
         }
 
         // The programs' icons beside the names in the Processes, Process Details, Services and Startup
         // tabs (#1800).
         ImGui::Spacing();
-        ImGui::Checkbox(PROCESS_ICONS_LABEL, &state.showProcessIcons);
+        UI::Widgets::outlinedCheckbox(PROCESS_ICONS_LABEL, &state.showProcessIcons);
         ImGui::SetItemTooltip("Show each program's icon beside its name in the Processes, Services and Startup tabs and Process Details");
 
         UI::Widgets::sectionGap();
@@ -375,7 +375,7 @@ Action render(State& state)
             state.refreshRateChoice.index.has_value()
                 ? REFRESH_RATE_OPTIONS[*state.refreshRateChoice.index].label.data() // NOLINT(bugprone-suspicious-stringview-data-usage)
                 : state.customRefreshPreview.c_str();
-        if (ImGui::BeginCombo("##RefreshRate", currentRefresh))
+        if (UI::Widgets::beginOutlinedCombo("##RefreshRate", currentRefresh))
         {
             comboOpen = true;
             for (std::size_t i = 0; i < REFRESH_RATE_OPTIONS.size(); ++i)
@@ -391,7 +391,7 @@ Action render(State& state)
                     ImGui::SetItemDefaultFocus();
                 }
             }
-            ImGui::EndCombo();
+            UI::Widgets::endOutlinedCombo();
         }
 
         ImGui::Spacing();
@@ -406,7 +406,7 @@ Action render(State& state)
             state.historyChoice.index.has_value()
                 ? HISTORY_OPTIONS[*state.historyChoice.index].label.data() // NOLINT(bugprone-suspicious-stringview-data-usage)
                 : state.customHistoryPreview.c_str();
-        if (ImGui::BeginCombo("##History", currentHistory))
+        if (UI::Widgets::beginOutlinedCombo("##History", currentHistory))
         {
             comboOpen = true;
             for (std::size_t i = 0; i < HISTORY_OPTIONS.size(); ++i)
@@ -421,14 +421,14 @@ Action render(State& state)
                     ImGui::SetItemDefaultFocus();
                 }
             }
-            ImGui::EndCombo();
+            UI::Widgets::endOutlinedCombo();
         }
 
 #ifdef _WIN32
         // Per-process network counters are TCP only by default; UDP needs a kernel event trace,
         // which costs some CPU under heavy UDP and runs only as administrator (#1492).
         ImGui::Spacing();
-        ImGui::Checkbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
+        UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
         ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and with TaskSmack running as "
                               "administrator, TaskSmack starts a Windows network event trace (ETW) to count UDP too: QUIC/HTTP3, "
                               "video calls, games, DNS. It costs some CPU when there is a lot of UDP traffic.");
@@ -461,7 +461,7 @@ Action render(State& state)
         // The notice TaskSmack shows at startup when it runs without the rights to read every
         // process. Its "Don't show again" clears this; here it can be turned back on (#1273).
         ImGui::Spacing();
-        ImGui::Checkbox(PRIVILEGE_NOTICE_LABEL, &state.showPrivilegeNotice);
+        UI::Widgets::outlinedCheckbox(PRIVILEGE_NOTICE_LABEL, &state.showPrivilegeNotice);
         ImGui::SetItemTooltip("At startup, say when TaskSmack can't read every process's details without administrator or root rights");
 
         // About moved out of F1, which now opens Help (#172); it is reached from here and from Help.
@@ -483,7 +483,7 @@ Action render(State& state)
         if (Core::VideoBackend::isWayland())
         {
             ImGui::Spacing();
-            ImGui::Checkbox(NATIVE_DECORATIONS_LABEL, &state.forceNativeDecorationsOnWayland);
+            UI::Widgets::outlinedCheckbox(NATIVE_DECORATIONS_LABEL, &state.forceNativeDecorationsOnWayland);
             ImGui::TextColored(theme.scheme().textMuted, "Takes effect after restarting TaskSmack.");
         }
 #endif

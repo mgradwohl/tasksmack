@@ -32,7 +32,12 @@ struct Result
     std::optional<std::size_t> selected; ///< The tab ImGui shows selected, by index into the tabs given
 };
 
-/// Draw the main tab bar for this frame.
+/// Draw the main tab bar for this frame. The bar is inset from the window's left and right edges by
+/// the content gutter; in a window too narrow for every tab, ImGui shrinks them to fit inside it.
 [[nodiscard]] Result render(std::span<const Tab> tabs);
+
+/// Width the bar needs to show every one of `labels` whole at the current font and style, its insets
+/// included (computeMainTabBarWidth(), #1939). Call inside a frame, with the font the bar draws with.
+[[nodiscard]] float measureWidth(std::span<const char* const> labels);
 
 } // namespace App::MainTabBarView

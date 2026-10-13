@@ -1,5 +1,6 @@
 #include "LinuxGPUProbe.h"
 
+#include "AccelNpuProbe.h"
 #include "DRMGPUProbe.h"
 #include "NVMLGPUProbe.h"
 #include "Platform/GPUTypes.h"
@@ -16,10 +17,11 @@
 namespace Platform
 {
 
-LinuxGPUProbe::LinuxGPUProbe(std::string drmBasePath, const std::string& pciDevicesRoot)
+LinuxGPUProbe::LinuxGPUProbe(std::string drmBasePath, const std::string& pciDevicesRoot, std::string accelClassRoot)
     : m_NVMLProbe(std::make_unique<NVMLGPUProbe>(pciDevicesRoot)),
       m_DRMProbe(std::make_unique<DRMGPUProbe>(std::move(drmBasePath))),
-      m_ROCmProbe(std::make_unique<ROCmGPUProbe>(pciDevicesRoot))
+      m_ROCmProbe(std::make_unique<ROCmGPUProbe>(pciDevicesRoot)),
+      m_AccelProbe(std::make_unique<AccelNpuProbe>(std::move(accelClassRoot)))
 {
     std::vector<std::string> probes;
     if (m_NVMLProbe->isAvailable())
@@ -33,6 +35,10 @@ LinuxGPUProbe::LinuxGPUProbe(std::string drmBasePath, const std::string& pciDevi
     if (m_ROCmProbe->isAvailable())
     {
         probes.emplace_back("ROCm");
+    }
+    if (m_AccelProbe->isAvailable())
+    {
+        probes.emplace_back("accel");
     }
 
     std::string probeSummary = probes.empty() ? "None" : "";
@@ -75,6 +81,14 @@ std::vector<GPUInfo> LinuxGPUProbe::enumerateGPUs()
         gpus.insert(gpus.end(), rocmGPUs.begin(), rocmGPUs.end());
     }
 
+    // NPUs and compute accelerators, from the accel subsystem (#1827). Listed even when none is now:
+    // a rescan may find one.
+    if (m_AccelProbe)
+    {
+        auto accelerators = m_AccelProbe->enumerateGPUs();
+        gpus.insert(gpus.end(), accelerators.begin(), accelerators.end());
+    }
+
     if (gpus.empty())
     {
         spdlog::debug("LinuxGPUProbe: No GPU vendor libraries available");
@@ -108,6 +122,13 @@ std::vector<GPUCounters> LinuxGPUProbe::readGPUCounters()
         counters.insert(counters.end(), rocmCounters.begin(), rocmCounters.end());
     }
 
+    // NPU busy time (#1827)
+    if (m_AccelProbe)
+    {
+        auto accelCounters = m_AccelProbe->readGPUCounters();
+        counters.insert(counters.end(), accelCounters.begin(), accelCounters.end());
+    }
+
     return counters;
 }
 
@@ -139,7 +160,8 @@ bool LinuxGPUProbe::rescanGPUs(GPURescan depth)
     const bool nvmlChanged = m_NVMLProbe && m_NVMLProbe->rescanGPUs(depth);
     const bool drmChanged = m_DRMProbe && m_DRMProbe->rescanGPUs(depth);
     const bool rocmChanged = m_ROCmProbe && m_ROCmProbe->rescanGPUs(depth);
-    return nvmlChanged || drmChanged || rocmChanged;
+    const bool accelChanged = m_AccelProbe && m_AccelProbe->rescanGPUs(depth);
+    return nvmlChanged || drmChanged || rocmChanged || accelChanged;
 }
 
 GPUCapabilities LinuxGPUProbe::capabilities() const
@@ -192,6 +214,12 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         caps.hasPerProcessUtilization = caps.hasPerProcessUtilization || rocmCaps.hasPerProcessUtilization;
         caps.hasEncoderDecoder = caps.hasEncoderDecoder || rocmCaps.hasEncoderDecoder;
         caps.supportsMultiGPU = caps.supportsMultiGPU || rocmCaps.supportsMultiGPU;
+    }
+
+    // The accel devices add no sensor or per-process capability (#1827); several are still several.
+    if (m_AccelProbe && m_AccelProbe->isAvailable())
+    {
+        caps.supportsMultiGPU = caps.supportsMultiGPU || m_AccelProbe->capabilities().supportsMultiGPU;
     }
 
     return caps;

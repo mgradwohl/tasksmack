@@ -118,7 +118,8 @@ struct DialogFooterButton
 {
     const char* label = nullptr;        ///< Visible label and ID; nullptr: no button in this slot.
     const ButtonFills* fills = nullptr; ///< Its own fill (Save, a destructive confirm); nullptr: an ordinary button.
-    const char* tooltip = nullptr;      ///< Shown on hover; nullptr: none.
+    const char* tooltip = nullptr;      ///< Shown on hover, disabled or not; nullptr: none.
+    bool disabled = false;              ///< Drawn disabled, and never reported pressed (Apply with nothing chosen, #1881).
 };
 
 /// Which footer button was pressed this frame.
@@ -155,6 +156,7 @@ inline bool drawFooterButton(const DialogFooterButton& button, float width)
 {
     const auto& scheme = UI::Theme::get().scheme();
     bool clicked = false;
+    ImGui::BeginDisabled(button.disabled);
     if (button.fills != nullptr)
     {
         clicked = filledButton(button.label, ImVec2(width, 0.0F), *button.fills, scheme.textPrimary, scheme.windowBg);
@@ -165,11 +167,12 @@ inline bool drawFooterButton(const DialogFooterButton& button, float width)
         clicked = ImGui::Button(button.label, ImVec2(width, 0.0F));
         ImGui::PopStyleColor();
     }
+    ImGui::EndDisabled();
     if (button.tooltip != nullptr)
     {
-        ImGui::SetItemTooltip("%s", button.tooltip);
+        ImGui::SetItemTooltip("%s", button.tooltip); // ImGuiHoveredFlags_ForTooltip allows a disabled item
     }
-    return clicked;
+    return clicked && !button.disabled;
 }
 } // namespace Detail
 
@@ -262,6 +265,21 @@ inline DialogFooterAction dialogFooter(const DialogFooterButton& primary,
         action = DialogFooterAction::Primary;
     }
     return action;
+}
+
+/// Whether Escape was pressed this frame to dismiss the dialog being drawn: call it between the
+/// dialog's Begin()/BeginPopupModal() and its End. Every dialog takes Escape as its Cancel -- or as
+/// its only button, where that just acknowledges (About's OK) -- and never as its primary action
+/// (#1944); ImGui's own Escape handling leaves a modal open.
+///
+/// Only while the dialog (or a child of it) has focus, and not while a text field has the keyboard:
+/// there Escape belongs to the field, which reverts its edit. A dialog with a combo also skips the
+/// frame after one was open -- ImGui closes the combo on that same press and hands focus back to the
+/// dialog (see SettingsDialog's comboOpenLastFrame).
+[[nodiscard]] inline bool dialogEscapePressed()
+{
+    return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput &&
+           ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 }
 
 } // namespace UI::Widgets

@@ -4,10 +4,12 @@
 #include "App/Panels/StorageSection.h"
 #include "Domain/SharedHistory.h"
 #include "UI/Card.h"
+#include "UI/CellText.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
@@ -182,7 +184,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     // Index 0 is "Total", indices 1+ are interfaces. selectedInterface: -1 = Total, 0+ = interface index
     // Safe: selectedInterface is always >= -1, so selectedInterface + 1 is always >= 0
     const size_t comboIndex = (selectedInterface < 0) ? 0 : static_cast<size_t>(selectedInterface) + 1;
-    if (ImGui::BeginCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
+    if (UI::Widgets::beginOutlinedCombo("##NetworkInterface", interfaceNames[comboIndex].c_str()))
     {
         for (size_t i = 0; i <= interfaceCount; ++i)
         {
@@ -207,7 +209,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
                 ImGui::SetItemDefaultFocus();
             }
         }
-        ImGui::EndCombo();
+        UI::Widgets::endOutlinedCombo();
     }
 
     ImGui::SameLine();
@@ -605,7 +607,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
             ImGui::SameLine();
             std::array<char, 64> showAllLabel{};
             std::format_to_n(showAllLabel.data(), showAllLabel.size() - 1, "Show all ({})##ShowAllInterfaces", hiddenCount);
-            ImGui::Checkbox(showAllLabel.data(), ctx.showAllInterfaces);
+            UI::Widgets::outlinedCheckbox(showAllLabel.data(), ctx.showAllInterfaces);
             if (ImGui::IsItemHovered())
             {
                 ImGui::SetTooltip("Also list the %zu down, virtual and Bluetooth interfaces hidden by default", hiddenCount);
@@ -688,7 +690,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
                 // Name
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(iface.displayName.empty() ? iface.name.c_str() : iface.displayName.c_str());
+                // Cut short with an ellipsis, the whole name on hover, when the column is too narrow (#1920).
+                UI::Widgets::cellText(iface.displayName.empty() ? iface.name : iface.displayName);
 
                 // Status
                 ImGui::TableNextColumn();
@@ -762,6 +765,10 @@ void renderNetworkSection(RenderContext& ctx)
             fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U, gridMinimum);
             ctx.fill = &*fill;
         }
+        // The network chart and the one-disk chart below it share their plot edges (#1206), as their
+        // cards and NowBar columns do, so the two time axes and bars line up (#1937). The per-disk
+        // grid renders after this scope: its cells are not part of the stack.
+        const UI::Widgets::AlignedChartStack alignedCharts("##NetworkTabCharts");
 
         if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
         {

@@ -2039,9 +2039,6 @@ TEST(ChartWidgetsTimeAxisTest, FillTimeAxisDoublesRespectsDesiredCount)
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXHandlesBoundsAndMiddle)
 {
     const std::vector<double> axisD{-10.0, -5.0, 0.0};
-    const auto resD_out_lo = hoveredIndexFromPlotX(axisD, -99.0);
-    ASSERT_TRUE(resD_out_lo.has_value());
-    EXPECT_EQ(resD_out_lo.value(), 0U);
     const auto resD_hi = hoveredIndexFromPlotX(axisD, 99.0);
     ASSERT_TRUE(resD_hi.has_value());
     EXPECT_EQ(resD_hi.value(), 2U);
@@ -2059,6 +2056,37 @@ TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXTieSelectsLowerNeighbor)
     const auto resDTie = hoveredIndexFromPlotX(axisD, -7.5);
     ASSERT_TRUE(resDTie.has_value());
     EXPECT_EQ(resDTie.value(), 0U);
+}
+
+// A short history fills only the right end of the window: left of its first sample there is no
+// data, so no sample answers there -- not the oldest one, as if it had been measured then (#1931).
+TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXIsEmptyLeftOfTheFirstSample)
+{
+    const std::vector<double> shortHistory{-3.0, -2.0, -1.0, 0.0}; // 4 s of a 300 s window
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, -180.0).has_value());
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, -300.0).has_value());
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, -3.6).has_value()); // more than half an interval out
+    EXPECT_FALSE(hoveredIndexFromPlotX(shortHistory, std::numeric_limits<double>::quiet_NaN()).has_value());
+
+    // Within half an interval of the first sample, it is still the nearest one.
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -3.5), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -3.2), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -3.0), std::optional<size_t>{0U});
+    // Inside the sampled range: the nearest sample.
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -2.9), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -2.2), std::optional<size_t>{1U});
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, -0.4), std::optional<size_t>{3U});
+    // Right of the newest sample, the newest one.
+    EXPECT_EQ(hoveredIndexFromPlotX(shortHistory, 0.5), std::optional<size_t>{3U});
+}
+
+// One sample has no interval to give it slack: only the sample itself and the right of it answer.
+TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXWithOneSampleIsEmptyToItsLeft)
+{
+    const std::vector<double> oneSample{-1.0};
+    EXPECT_FALSE(hoveredIndexFromPlotX(oneSample, -1.5).has_value());
+    EXPECT_EQ(hoveredIndexFromPlotX(oneSample, -1.0), std::optional<size_t>{0U});
+    EXPECT_EQ(hoveredIndexFromPlotX(oneSample, 0.0), std::optional<size_t>{0U});
 }
 
 TEST(ChartWidgetsTimeAxisTest, HoveredIndexFromPlotXReturnsNulloptForEmptyInput)

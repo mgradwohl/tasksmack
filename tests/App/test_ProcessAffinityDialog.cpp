@@ -4,6 +4,7 @@
 /// ticked does nothing, and that Cancel hands on nothing.
 
 #include "App/Panels/ProcessAffinityDialog.h"
+#include "App/Panels/ProcessAffinitySections.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 
@@ -13,6 +14,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <vector>
 
 namespace App
 {
@@ -52,6 +54,104 @@ TEST(ProcessAffinityDialogTest, TicksTheCurrentAffinityAndAppliesTheBoxes)
     // An affinity that couldn't be read ticks every box.
     dialog.open({.pid = 43, .startTimeTicks = 8}, "other", Platform::CpuAffinity{}, 3);
     EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b111U));
+}
+
+// --- Sections by processor group and kind of core (#1881) ---
+
+[[nodiscard]] Platform::CpuAffinityLayout hybridLayout()
+{
+    // CPUs 0-3 performance (class 1), 4-7 efficiency (class 0).
+    Platform::CpuAffinityLayout layout;
+    layout.efficiencyClassByCpu = {1, 1, 1, 1, 0, 0, 0, 0};
+    layout.online = Platform::CpuAffinity::fromMask(0xFFU);
+    return layout;
+}
+
+TEST(ProcessAffinitySectionsTest, OneKindOfCoreInOneGroupIsOneUntitledSection)
+{
+    const std::vector<std::size_t> cpus = affinityDialogOfferedCpus(Platform::CpuAffinity{}, 4, Platform::CpuAffinityLayout{});
+    EXPECT_EQ(cpus, (std::vector<std::size_t>{0, 1, 2, 3}));
+    const auto sections = affinityDialogSections(cpus, Platform::CpuAffinityLayout{});
+    ASSERT_EQ(sections.size(), 1U);
+    EXPECT_TRUE(sections.front().title.empty());
+    EXPECT_EQ(sections.front().cpus, cpus);
+}
+
+TEST(ProcessAffinitySectionsTest, AHybridCpuListsPerformanceCoresFirst)
+{
+    Platform::CpuAffinityLayout layout = hybridLayout();
+    layout.efficiencyClassByCpu = {0, 0, 1, 1}; // E-cores numbered first, as on some parts
+    layout.online = Platform::CpuAffinity::fromMask(0b1111U);
+    const auto sections = affinityDialogSections(affinityDialogOfferedCpus(Platform::CpuAffinity{}, 0, layout), layout);
+    ASSERT_EQ(sections.size(), 2U);
+    EXPECT_EQ(sections[0].title, "Performance cores");
+    EXPECT_EQ(sections[0].cpus, (std::vector<std::size_t>{2, 3}));
+    EXPECT_EQ(sections[1].title, "Efficiency cores");
+    EXPECT_EQ(sections[1].cpus, (std::vector<std::size_t>{0, 1}));
+}
+
+TEST(ProcessAffinitySectionsTest, ProcessorGroupsEachGetASectionAndACpuPastThemIsOther)
+{
+    Platform::CpuAffinityLayout layout;
+    layout.groupSizes = {2, 2};
+    const std::vector<std::size_t> cpus{0, 1, 2, 3, 9};
+    const auto sections = affinityDialogSections(cpus, layout);
+    ASSERT_EQ(sections.size(), 3U);
+    EXPECT_EQ(sections[0].title, "Group 0");
+    EXPECT_EQ(sections[0].cpus, (std::vector<std::size_t>{0, 1}));
+    EXPECT_EQ(sections[1].title, "Group 1");
+    EXPECT_EQ(sections[1].cpus, (std::vector<std::size_t>{2, 3}));
+    EXPECT_EQ(sections[2].title, "Other CPUs");
+    EXPECT_EQ(sections[2].cpus, (std::vector<std::size_t>{9}));
+
+    layout.efficiencyClassByCpu = {1, 0, 1, 0};
+    const auto both = affinityDialogSections({0, 1, 2, 3}, layout);
+    ASSERT_EQ(both.size(), 4U);
+    EXPECT_EQ(both[0].title, "Group 0: Performance cores");
+    EXPECT_EQ(both[1].title, "Group 0: Efficiency cores");
+    EXPECT_EQ(both[2].title, "Group 1: Performance cores");
+    EXPECT_EQ(both[3].cpus, (std::vector<std::size_t>{3}));
+}
+
+TEST(ProcessAffinitySectionsTest, OffersTheOnlineCpusAndAnyOfflineOneTheAffinityNames)
+{
+    Platform::CpuAffinityLayout layout;
+    layout.online = Platform::CpuAffinity::fromMask(0b1011U); // CPU 2 offline
+    EXPECT_EQ(affinityDialogOfferedCpus(Platform::CpuAffinity::fromMask(0b0001U), 16, layout), (std::vector<std::size_t>{0, 1, 3}))
+        << "the online set wins over the count";
+    EXPECT_EQ(affinityDialogOfferedCpus(Platform::CpuAffinity::fromMask(0b0100U), 16, layout), (std::vector<std::size_t>{0, 1, 2, 3}));
+    EXPECT_EQ(affinityDialogOfferedCpus(Platform::CpuAffinity{}, 0, Platform::CpuAffinityLayout{}), (std::vector<std::size_t>{0}));
+}
+
+TEST(ProcessAffinityDialogTest, ASectionsBoxTicksItsCpusAndApplyNeedsOne)
+{
+    ProcessAffinityDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b0001U), 8, hybridLayout());
+    ASSERT_EQ(dialog.sections().size(), 2U);
+    EXPECT_EQ(dialog.cpuCount(), 8U);
+    EXPECT_TRUE(dialog.canApply());
+
+    dialog.chooseSection(1, true); // The efficiency cores
+    EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0xF1U));
+    dialog.chooseSection(0, false);
+    EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0xF0U));
+    dialog.chooseSection(5, true); // No such section: ignored
+    EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0xF0U));
+    dialog.chooseAll(false);
+    EXPECT_FALSE(dialog.canApply());
+}
+
+TEST(ProcessAffinityDialogTest, ACpuNotOfferedIsNeverTicked)
+{
+    Platform::CpuAffinityLayout layout;
+    layout.online = Platform::CpuAffinity::fromMask(0b1011U); // CPU 2 offline
+    ProcessAffinityDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity{}, 4, layout);
+    EXPECT_EQ(dialog.cpuCount(), 3U);
+    EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b1011U)) << "an unread affinity ticks every offered box";
+    dialog.choose(2, true);
+    dialog.chooseAll(true);
+    EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b1011U));
 }
 
 class ProcessAffinityDialogRenderTest : public ::testing::Test
@@ -142,6 +242,54 @@ TEST_F(ProcessAffinityDialogRenderTest, ApplyWithNothingTickedDoesNothingAndCanc
         EXPECT_FALSE(frame(dialog).has_value());
     }
     EXPECT_FALSE(dialog.isPending());
+}
+
+// Escape is Cancel (#1944): the dialog closes and hands on nothing, whatever was ticked.
+TEST_F(ProcessAffinityDialogRenderTest, EscapeCancelsAndHandsOnNothing)
+{
+    ProcessAffinityDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b11U), 4);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog));
+    ASSERT_TRUE(dialog.isPending());
+    dialog.choose(3, true);
+
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    EXPECT_FALSE(frame(dialog).has_value());
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    for (int i = 0; i < 3; ++i)
+    {
+        EXPECT_FALSE(frame(dialog).has_value());
+    }
+    EXPECT_FALSE(dialog.isPending());
+    EXPECT_FALSE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
+}
+
+TEST_F(ProcessAffinityDialogRenderTest, SectionsDrawAndApplyHandsOnASectionsChoice)
+{
+    Platform::CpuAffinityLayout layout;
+    layout.groupSizes = {4, 4};
+    layout.efficiencyClassByCpu = {1, 1, 0, 0, 1, 1, 0, 0};
+    layout.online = Platform::CpuAffinity::fromMask(0xFFU);
+    layout.appliedAsCpuSets = true; // The CPU sets note draws too
+    ProcessAffinityDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0x01U), 8, layout);
+    ASSERT_EQ(dialog.sections().size(), 4U);
+    EXPECT_FALSE(frame(dialog).has_value());
+    EXPECT_FALSE(frame(dialog).has_value());
+    dialog.chooseAll(false);
+    EXPECT_FALSE(dialog.canApply()) << "Apply is drawn disabled";
+    EXPECT_FALSE(frame(dialog).has_value());
+    dialog.chooseSection(2, true); // Group 1's performance cores, CPUs 4-5
+
+    press("Apply", true);
+    std::optional<Platform::CpuAffinity> applied;
+    for (int i = 0; i < 3 && !applied.has_value(); ++i)
+    {
+        applied = frame(dialog);
+    }
+    ASSERT_TRUE(applied.has_value());
+    EXPECT_EQ(applied.value_or(Platform::CpuAffinity{}), Platform::CpuAffinity::fromMask(0x30U));
 }
 
 } // namespace

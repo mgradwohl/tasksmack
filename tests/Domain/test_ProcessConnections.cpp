@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <string>
+#include <string_view>
 
 namespace Domain::Connections
 {
@@ -100,6 +102,23 @@ TEST(ProcessConnectionsFormatTest, EndpointsBracketIPv6AndShowPortZeroAsAStar)
     EXPECT_EQ(formatEndpoint(ConnectionFamily::IPv6, ConnectionEndpoint{.address = v6({0, 0, 0, 0, 0, 0, 0, 0}), .port = 22}), "[::]:22");
     EXPECT_EQ(formatEndpoint(ConnectionFamily::IPv6, ConnectionEndpoint{.address = v6({0x2001, 0xdb8, 0, 0, 0, 0, 0, 1}), .port = 443}),
               "[2001:db8::1]:443");
+}
+
+TEST(ProcessConnectionsFormatTest, AnEndpointsPortSuffixIsItsPortWithTheColonAndAnyClosingBracket)
+{
+    // What a cell too narrow for the endpoint keeps (#1942).
+    EXPECT_EQ(endpointPortSuffixLength("[2605:59ca:2160:bf10:6129:8032:850a:4a31]:50747"), std::string_view("]:50747").size());
+    EXPECT_EQ(endpointPortSuffixLength("[::]:*"), std::string_view("]:*").size());
+    EXPECT_EQ(endpointPortSuffixLength("[::ffff:192.0.2.1]:80"), std::string_view("]:80").size());
+    EXPECT_EQ(endpointPortSuffixLength("93.184.216.34:443"), std::string_view(":443").size());
+    EXPECT_EQ(endpointPortSuffixLength("0.0.0.0:*"), std::string_view(":*").size());
+    EXPECT_EQ(endpointPortSuffixLength("no port"), 0U);
+    EXPECT_EQ(endpointPortSuffixLength(""), 0U);
+
+    // Every formatted endpoint ends in its port suffix.
+    const std::string endpoint =
+        formatEndpoint(ConnectionFamily::IPv6, ConnectionEndpoint{.address = v6({0x2001, 0xdb8, 0, 0, 0, 0, 0, 1}), .port = 443});
+    EXPECT_EQ(std::string_view(endpoint).substr(endpoint.size() - endpointPortSuffixLength(endpoint)), "]:443");
 }
 
 TEST(ProcessConnectionsFormatTest, EndpointsCompareNumericallyNotAsText)

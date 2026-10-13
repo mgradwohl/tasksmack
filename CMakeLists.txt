@@ -118,6 +118,7 @@ set(TASKSMACK_SOURCES
     src/Core/SaveFileDialog.cpp
     src/Core/X11WindowManager.cpp
     src/UI/AssetPath.cpp
+    src/UI/CellText.cpp
     src/UI/ChartLegend.cpp
     src/UI/MonospaceFontPath.cpp
     src/UI/TabularDigits.cpp
@@ -224,6 +225,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/LinuxGPUProbe.cpp
+    src/Platform/Linux/AccelNpuProbe.cpp
     src/Platform/Linux/NVMLGPUProbe.cpp
     src/Platform/Linux/DRMGPUProbe.cpp
     src/Platform/Linux/ROCmGPUProbe.cpp
@@ -247,6 +249,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsPlatformSecurity.cpp
     src/Platform/Windows/WindowsThermalZones.cpp
     src/Platform/Windows/WindowsNetworkAdapters.cpp
+    src/Platform/Windows/WindowsPublicIp.cpp
     src/Platform/Windows/WindowsDiskProbe.cpp
     src/Platform/Windows/WindowsPathProvider.cpp
     src/Platform/Windows/WindowsBatteryInfo.cpp
@@ -445,6 +448,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsPlatformSecurity.h
         src/Platform/Windows/WindowsThermalZones.h
         src/Platform/Windows/WindowsNetworkAdapters.h
+        src/Platform/Windows/WindowsPublicIp.h
         src/Platform/Windows/ComScope.h
     )
 endif()

@@ -215,7 +215,7 @@ hasDefaultColumns(const ProcessColumnSettings& settings, const Platform::Process
     return settings == defaultColumns(caps, gpu);
 }
 
-/// What a free-text cell (Status, Publisher, Container) shows.
+/// What a free-text cell (Status, Publisher, Container, Services) shows.
 enum class TextCell : std::uint8_t
 {
     Text,        ///< The value

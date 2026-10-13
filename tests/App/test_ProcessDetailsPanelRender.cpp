@@ -7,13 +7,17 @@
 #include "App/Panels/ProcessDetailsPanel.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
+#include "Core/Event.h"
 #include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/ServiceModel.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ProcessTypes.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -22,6 +26,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <memory>
@@ -259,6 +264,148 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     EXPECT_FALSE(text.contains("Affinity")) << text;
     EXPECT_FALSE(text.contains("Page Faults (total)")) << text;
     EXPECT_FALSE(text.contains("Swap")) << text;
+}
+
+// #1886: a process that runs a service has a collapsed Services section whose "Show in Services" asks the
+// shell to show that service; one that runs none has no section.
+TEST_F(ProcessDetailsPanelRenderTest, TheServicesSectionShowsTheServiceInTheServicesTab)
+{
+    const auto panel = activePanel();
+    std::vector<std::string> shown;
+    panel->setEventSinkForTesting(
+        [&shown](Core::Event& event)
+        {
+            Core::EventDispatcher dispatcher(event);
+            dispatcher.dispatch<Core::ShowServiceEvent>(
+                [&shown](Core::ShowServiceEvent& show)
+                {
+                    shown.push_back(show.name());
+                    return false;
+                });
+        });
+    panel->setSelectedPid(PID, START_TICKS);
+    Domain::ProcessSample sample = sampleAt(1.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+    snapshot->services = "nginx.service";
+    sample.snapshot = std::move(snapshot);
+    const std::vector samples{sample};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Services")) << text;
+
+    // Open the section, then press its button.
+    ImGuiWindow* content = nullptr;
+    for (ImGuiWindow* window : GImGui->Windows)
+    {
+        // The Overview's own child, not the cards nested in it ("##OverviewContent_.../BasicInfoLeft_...").
+        const std::string_view name(window->Name);
+        if (const std::size_t at = name.find("##OverviewContent");
+            at != std::string_view::npos && name.find('/', at) == std::string_view::npos)
+        {
+            content = window;
+        }
+    }
+    ASSERT_NE(content, nullptr);
+    // The sections sit under the charts, out of view; a clipped item can't be activated.
+    ImGui::SetScrollY(content, content->ScrollMax.y);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::SetScrollY(content, content->ScrollMax.y);
+    static_cast<void>(renderAndCapture(*panel));
+    // Opened as a click leaves it: the header's open state in its window's storage.
+    content->StateStorage.SetInt(ImHashStr("###ProcessServices", 0, content->ID), 1);
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    ASSERT_TRUE(text.contains("Show in Services")) << text;
+    const ImGuiID button = ImHashStr(ICON_FA_ARROW_RIGHT "  Show in Services", 0, ImHashStr("nginx.service", 0, content->ID));
+    ImGui::SetScrollY(content, content->ScrollMax.y);
+    static_cast<void>(renderAndCapture(*panel));
+    ImGui::ActivateItemByID(button);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_EQ(shown, (std::vector<std::string>{"nginx.service"}));
+}
+
+// #1880: on Windows the section takes each service's display name and state from the service list, and
+// while it is open it asks for that list to be kept current.
+TEST_F(ProcessDetailsPanelRenderTest, TheServicesSectionShowsTheListsDisplayNamesAndStates)
+{
+    const auto panel = activePanel();
+    Platform::ServiceCapabilities listCaps;
+    listCaps.canEnumerate = true;
+    listCaps.hasPid = true;
+    listCaps.hasDisplayName = true;
+    auto probe = std::make_unique<TestMocks::MockServiceProbe>(listCaps);
+    Platform::ServiceInfo dhcp;
+    dhcp.name = "Dhcp";
+    dhcp.displayName = "DHCP Client";
+    dhcp.state = Platform::ServiceState::Running;
+    dhcp.pid = PID;
+    probe->setEnumeration(Platform::ServiceEnumeration::succeeded({dhcp}));
+    const auto serviceModel = std::make_shared<Domain::ServiceModel>(std::move(probe));
+    serviceModel->sample();
+    panel->setServiceModel(serviceModel);
+
+    panel->setSelectedPid(PID, START_TICKS);
+    Domain::ProcessSample sample = sampleAt(1.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+    snapshot->serviceNames = {"Dhcp"};
+    snapshot->services = "Dhcp";
+    sample.snapshot = std::move(snapshot);
+    const std::vector samples{sample};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("DHCP Client")); // collapsed
+    panel->updateWithSamples({}, 1.0F);
+    EXPECT_FALSE(panel->servicesSectionOpen());
+
+    ImGuiWindow* content = nullptr;
+    int windowIndex = 0;
+    while (windowIndex < GImGui->Windows.Size)
+    {
+        const std::string_view name(GImGui->Windows[windowIndex]->Name);
+        if (const std::size_t at = name.find("##OverviewContent");
+            at != std::string_view::npos && name.find('/', at) == std::string_view::npos)
+        {
+            content = GImGui->Windows[windowIndex];
+        }
+        ++windowIndex;
+    }
+    ASSERT_NE(content, nullptr);
+    content->StateStorage.SetInt(ImHashStr("###ProcessServices", 0, content->ID), 1);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("DHCP Client")) << text;
+    EXPECT_TRUE(text.contains("Running")) << text;
+    panel->updateWithSamples({}, 1.0F);
+    EXPECT_TRUE(panel->servicesSectionOpen()); // open: ShellLayer keeps the list sampled
+}
+
+// #1891: where the platform measures power, the Overview charts it: the Power card with its plot and value.
+TEST_F(ProcessDetailsPanelRenderTest, ThePowerChartIsDrawnWherePowerIsMeasured)
+{
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasPowerUsage = true;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+    for (int second = 0; second < 5; ++second)
+    {
+        Domain::ProcessSample sample = sampleAt(static_cast<double>(second), 10.0);
+        auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->powerWatts = 2.5 + second;
+        sample.snapshot = std::move(snapshot);
+        const std::vector samples{sample};
+        panel->updateWithSamples(samples, 1.0F);
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Power Usage")) << text;
+    EXPECT_TRUE(text.contains(" W")) << "a watts value (smoothed, so not the raw reading): " << text;
+
+    // Where it isn't measured, there is no Power card.
+    panel->setProcessCapabilities({});
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Power Usage"));
 }
 
 // #1395: a shorter history window trims the history already held, so the charts span the new window.

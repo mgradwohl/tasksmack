@@ -1,5 +1,6 @@
 #include "RenderMetrics.h"
 
+#include "UI/FrameOutline.h"
 #include "UI/LineLayout.h"
 
 // clang-format off
@@ -140,7 +141,12 @@ void RenderMetrics::renderOverlay(bool* open)
     // viewport narrower than the row, where a clipped hint beats a field running off the window.
     const float scenarioRoom = ImGui::GetContentRegionAvail().x - overlayStyle.ItemInnerSpacing.x - ImGui::CalcTextSize(SCENARIO_LABEL).x;
     ImGui::SetNextItemWidth(std::max(std::min(scenarioWanted, scenarioRoom), overlayEmPx));
-    if (ImGui::InputTextWithHint(SCENARIO_LABEL, SCENARIO_HINT, &scenarioInput))
+    bool scenarioEdited = false;
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        scenarioEdited = ImGui::InputTextWithHint(SCENARIO_LABEL, SCENARIO_HINT, &scenarioInput);
+    }
+    if (scenarioEdited)
     {
         setScenario(scenarioInput);
     }

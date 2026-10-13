@@ -8,6 +8,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/ServiceModel.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -31,6 +32,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -113,7 +115,11 @@ class ProcessDetailsPanel : public Panel
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent() override;
 
-    /// Get a label for this panel (process name or "Select a process").
+    /// The tab's text while no process is selected; the main tab bar's minimum width is measured
+    /// with it (#1939).
+    static constexpr const char* NO_SELECTION_TAB_TEXT = "Select a process";
+
+    /// Get a label for this panel (process name or NO_SELECTION_TAB_TEXT).
     /// Returned by reference so a caller can compare it against a cached copy every frame without
     /// allocating. The reference is valid until the next updateWithSamples() or selection change.
     [[nodiscard]] const std::string& tabLabel() const;
@@ -181,8 +187,32 @@ class ProcessDetailsPanel : public Panel
         m_KillShortcut.expire();
     }
 
+    /// The service list the Overview's Services section takes display names and states from (#1880), from
+    /// the composition root (ShellLayer: the Services panel's model). Null (the default): names alone.
+    void setServiceModel(std::shared_ptr<const Domain::ServiceModel> serviceModel) noexcept
+    {
+        m_ServiceModel = std::move(serviceModel);
+    }
+
+    /// Whether the Overview's Services section was drawn open on the last frame, as of the last
+    /// updateWithSamples() (#1880): ShellLayer then keeps the service list sampled.
+    [[nodiscard]] bool servicesSectionOpen() const noexcept
+    {
+        return m_ServicesSectionOpen;
+    }
+
+    /// Test seam (#1886): events the panel raises (Show in Services) go to @p raise instead of
+    /// Core::Application.
+    void setEventSinkForTesting(std::function<void(Core::Event&)> raise)
+    {
+        m_RaiseEvent = std::move(raise);
+    }
+
   private:
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
+    /// The Overview's collapsed Services section (#1886): each service the process runs, with a button
+    /// that shows it in the Services tab. Not drawn for a process that runs none.
+    void renderServicesSection(const Domain::ProcessSnapshot& proc);
     /// What the chart tabs draw this frame: the history, the smoothed now-bar values and the displayed
     /// snapshot, by pointer for this frame's calls only (ProcessDetailsCharts, #1179).
     [[nodiscard]] ProcessChartContext chartContext() const;
@@ -246,6 +276,12 @@ class ProcessDetailsPanel : public Panel
     // m_Charts'.
     UI::Widgets::PlotFillState m_OverviewFill;
 
+    std::function<void(Core::Event&)> m_RaiseEvent; // Set by the test seam only
+    // The Services section's display names and states (#1880), and whether it was drawn open: set by
+    // renderServicesSection(), taken into m_ServicesSectionOpen by updateWithSamples().
+    std::shared_ptr<const Domain::ServiceModel> m_ServiceModel;
+    bool m_ServicesDrawnOpen = false;
+    bool m_ServicesSectionOpen = false;
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
 

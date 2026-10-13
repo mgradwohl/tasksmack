@@ -202,6 +202,19 @@ TEST_F(ElevationNoticeDialogRenderTest, OkClosesItAndReportsTheChoice)
     EXPECT_FALSE(settle().open);
 }
 
+// Escape dismisses it as OK, its only button, does (#1944), keeping the box's choice.
+TEST_F(ElevationNoticeDialogRenderTest, EscapeClosesItAsOkDoes)
+{
+    ASSERT_TRUE(openAndSettle().open);
+    press("Don't show again");
+    EXPECT_FALSE(runFrame().dismissed);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    EXPECT_TRUE(runFrame().dismissed);
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    EXPECT_TRUE(m_State.dontShowAgain);
+    EXPECT_FALSE(settle().open);
+}
+
 TEST_F(ElevationNoticeDialogRenderTest, DontShowAgainIsReportedWithOk)
 {
     ASSERT_TRUE(openAndSettle().open);

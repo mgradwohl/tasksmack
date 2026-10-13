@@ -254,6 +254,26 @@ auto readableMeterFill(const ImVec4& color, float maxAlpha, const ColorScheme& s
     return withAlpha(color, 0.0F); // Text already below the minimum on a bare row: no meter would help
 }
 
+/// The outline of a frame-drawn control (#1923): @p start (ui.frame.border, else ui.window.border)
+/// made opaque over the window, then moved toward text_primary just far enough to reach
+/// ColorContrast::FRAME_BORDER_CONTRAST_MIN on each surface such a control is drawn on -- the window,
+/// a card (child_background over the window), and a popup or modal (popup_background over the modal
+/// backdrop, as Theme::applyImGuiStyle() flattens it). The frame fills themselves are within 1.0:1 to
+/// 1.8:1 of those surfaces in the bundled themes, so without an outline an unchecked checkbox read as
+/// a plain label. Needs the scheme's text, window and misc colours loaded.
+auto frameBorderFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 3> surfaces{
+        window,
+        ColorContrast::flattenOver(scheme.childBg, window),
+        ColorContrast::flattenOver(scheme.popupBg, ColorContrast::flattenOver(scheme.modalWindowDimBg, window)),
+    };
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, window), toward, surfaces, ColorContrast::FRAME_BORDER_CONTRAST_MIN);
+}
+
 /// Builds a ColorScheme from a parsed theme document. A missing or malformed colour becomes
 /// errorColor() (or its documented fallback) rather than failing the whole theme.
 auto schemeFromTable(const toml::table& tbl) -> ColorScheme
@@ -484,6 +504,9 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.navWindowingHighlight = getColor(tbl, "ui.misc.nav_windowing_highlight");
     scheme.navWindowingDimBg = getColor(tbl, "ui.misc.nav_windowing_dim_background");
     scheme.modalWindowDimBg = getColor(tbl, "ui.misc.modal_window_dim_background");
+
+    // Control outlines (#1923), after the window, text and modal-backdrop colours they are fitted to.
+    scheme.frameBorder = frameBorderFor(getColor(tbl, "ui.frame.border", scheme.border), scheme);
 
     // Inline meters (#1528), last: their fallbacks are fitted to the rows they are drawn on.
     scheme.processMeterLow = tbl.at_path("process_meter.low") ? getColor(tbl, "process_meter.low")

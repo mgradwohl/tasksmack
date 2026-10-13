@@ -1331,14 +1331,66 @@ TEST_F(LinuxProcessActionsFaultTest, AffinityErrorsSayWhy)
 
 TEST_F(LinuxProcessActionsFaultTest, AffinityWithoutTheCallIsUnavailable)
 {
-    const LinuxProcessActions actions{SyscallTrace::Tools{},
-                                      LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
-                                                           .pidfdSendSignal = &fakePidfdSendSignal,
-                                                           .pollPidfd = &fakePollPidfd,
-                                                           .setPriority = &fakeSet,
-                                                           .ioprioSet = &fakeSet,
-                                                           .ioprioGet = &fakeIoprioGet}};
+    LinuxProcessActions actions{SyscallTrace::Tools{},
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &fakePidfdSendSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .setPriority = &fakeSet,
+                                                     .ioprioSet = &fakeSet,
+                                                     .ioprioGet = &fakeIoprioGet}};
     EXPECT_FALSE(actions.actionCapabilities().canSetAffinity);
+    // #1891: and asked anyway, it refuses rather than calling a missing function.
+    EXPECT_EQ(actions.setAffinity(ownTarget(), CpuAffinity::fromMask(1)).errorMessage,
+              "Setting CPU affinity isn't available on this system");
+}
+
+/// A thread listing that fails with the error in g_ListThreadsError (#1891).
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) - a plain function pointer hook can't capture
+std::errc g_ListThreadsError = std::errc::no_such_file_or_directory;
+std::expected<std::vector<id_t>, std::error_code> failingListThreads(pid_t /*pid*/)
+{
+    return std::unexpected(std::make_error_code(g_ListThreadsError));
+}
+
+// #1891: when the target's threads can't be listed, affinity says so -- a vanished /proc entry as a process
+// gone, anything else naming the reason -- and nothing is set.
+TEST_F(LinuxProcessActionsFaultTest, AffinityWhenTheThreadsCantBeListedSaysWhy)
+{
+    LinuxProcessActions actions{SyscallTrace::Tools{},
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &fakePidfdSendSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .setPriority = &fakeSet,
+                                                     .ioprioSet = &fakeSet,
+                                                     .ioprioGet = &fakeIoprioGet,
+                                                     .setAffinity = &fakeSetAffinity,
+                                                     .listThreads = &failingListThreads}};
+    g_ListThreadsError = std::errc::no_such_file_or_directory;
+    EXPECT_EQ(actions.setAffinity(ownTarget(), CpuAffinity::fromMask(1)).errorMessage, "Process not found - may have already exited");
+    g_ListThreadsError = std::errc::permission_denied;
+    const std::string denied = actions.setAffinity(ownTarget(), CpuAffinity::fromMask(1)).errorMessage;
+    EXPECT_TRUE(denied.starts_with("Can't list the threads of process")) << denied;
+    EXPECT_EQ(plan().setCalls, 0);
+}
+
+// #1891: a trace aimed at a PID whose start time no longer matches is refused before anything is opened.
+TEST_F(LinuxProcessActionsFaultTest, ATraceOfAReusedPidIsRefused)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_trace_reused");
+    LinuxProcessActions actions(fakeTraceTools(dir.path),
+                                LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                     .pidfdSendSignal = &fakePidfdSendSignal,
+                                                     .pollPidfd = &fakePollPidfd,
+                                                     .setPriority = &fakeSet,
+                                                     .ioprioSet = &fakeSet,
+                                                     .ioprioGet = &fakeIoprioGet});
+    ProcessTarget reused = ownTarget();
+    reused.startTimeTicks += 1;
+    const ProcessActionResult result = actions.launchSyscallTrace(reused);
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.errorMessage.contains("different process")) << result.errorMessage;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
 }
 
 } // namespace

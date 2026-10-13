@@ -155,9 +155,16 @@ struct RowFormatOptions
     bool hasStatus = true;
     bool hasPublisher = true;
     bool hasContainer = true;
-    bool hasServices = true;
+    bool hasServices = true; ///< The Services column (#1880): ProcessCapabilities::hasServices
     bool hasProcessType = true;
 };
+
+/// The first line of a Services cell's tooltip (#1880), above the names one per line: "1 service",
+/// "3 services".
+[[nodiscard]] inline std::string servicesTooltipHeading(std::size_t count)
+{
+    return std::to_string(count) + (count == 1 ? " service" : " services");
+}
 
 /// A cell with no value: UNAVAILABLE_CELL_TEXT, with `reason` (a string literal) as its tooltip.
 [[nodiscard]] inline AlignedCellText unavailableCell(const char* reason)
@@ -328,7 +335,7 @@ struct RowFormatCache
     LazyTextWidth npuEnginesWidth; // of npuEngines above
     LazyTextWidth publisherWidth;
     LazyTextWidth containerWidth;
-    LazyTextWidth servicesWidth;
+    LazyTextWidth servicesWidth; // of the snapshot's services text
     LazyTextWidth processTypeWidth;
 
     // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):

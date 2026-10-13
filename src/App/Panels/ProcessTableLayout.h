@@ -5,6 +5,7 @@
 // logic into a small header" pattern (as ProcessTableFlags.h and ProcessTreeIndent.h do).
 
 #include "App/ProcessColumnConfig.h"
+#include "UI/CellText.h"
 
 #include <algorithm>
 #include <cmath>
@@ -52,29 +53,22 @@ namespace App::ProcessTableLayout
     return (needed > visibleWidthPx) ? needed : 0.0F;
 }
 
-/// Slack allowed before a cell's text counts as clipped, in pixels.
-///
-/// Text widths and column widths are both fractional and arrive by different arithmetic, so text
-/// that exactly fills its cell can measure a hair wider than the space. Without this, such a cell
-/// would trade its last glyph for an ellipsis, or flicker between the two as the layout settles.
-inline constexpr float CLIP_TOLERANCE_PX = 0.5F;
+/// Slack allowed before a cell's text counts as clipped, in pixels: the one every table's cells use
+/// (UI/CellText.h, #1920).
+inline constexpr float CLIP_TOLERANCE_PX = UI::Widgets::CELL_CLIP_TOLERANCE_PX;
 
 /// Whether text of the given width does not fit in the cell space left for it (#914).
 ///
 /// A clipped cell is drawn with an ellipsis and gets a tooltip carrying the full value, so a value
 /// that has been cut is distinguishable from one that is genuinely that short: "systemd-r" cut from
 /// "systemd-resolve" reads as a plausible name in its own right, and the row it identifies is what
-/// Terminate and Kill act on.
+/// Terminate and Kill act on. The same test as every table's cells (UI::Widgets::cellText(), #1920).
 ///
 /// @param textWidthPx   Measured width of the cell's text.
 /// @param availWidthPx  Width left in the cell from the cursor to its right edge.
 [[nodiscard]] inline bool isCellTextClipped(float textWidthPx, float availWidthPx) noexcept
 {
-    if (!std::isfinite(textWidthPx) || !std::isfinite(availWidthPx))
-    {
-        return false;
-    }
-    return textWidthPx > (availWidthPx + CLIP_TOLERANCE_PX);
+    return UI::Widgets::isCellTextClipped(textWidthPx, availWidthPx);
 }
 
 /// Where a decimal-aligned cell's number and unit go (#1201), in pixels from the cell's left edge.

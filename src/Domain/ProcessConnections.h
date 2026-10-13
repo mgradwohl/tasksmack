@@ -184,6 +184,24 @@ namespace Domain::Connections
     return std::format("{}:{}", address, port);
 }
 
+/// How many bytes at the end of a formatEndpoint() string are its port, with the ":" before it and,
+/// for IPv6, the "]" closing its address: "]:50747" of "[2605:59ca::4a31]:50747", ":443" of
+/// "93.184.216.34:443", ":*" of "0.0.0.0:*". It is what tells a process's sockets apart, so a cell too
+/// narrow for the endpoint cuts the address short rather than this (#1942). 0 for text with no ":".
+[[nodiscard]] constexpr std::size_t endpointPortSuffixLength(std::string_view endpoint) noexcept
+{
+    std::size_t colon = endpoint.rfind(':');
+    if (colon == std::string_view::npos)
+    {
+        return 0;
+    }
+    if (colon > 0 && endpoint[colon - 1] == ']')
+    {
+        --colon;
+    }
+    return endpoint.size() - colon;
+}
+
 /// Orders endpoints numerically: IPv4 before IPv6, then by address bytes, then by port -- so
 /// 10.0.0.9 sorts before 10.0.0.10, which a text comparison would not.
 [[nodiscard]] inline std::strong_ordering compareEndpoints(Platform::ConnectionFamily familyA,

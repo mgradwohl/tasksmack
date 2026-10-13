@@ -20,6 +20,29 @@
 namespace UI::Widgets
 {
 
+/// ImGui::GetContentRegionAvail().x as it is while the scrolling window around the current one shows
+/// its vertical scrollbar: the available width less the scrollbar's when it is hidden this frame.
+///
+/// A layout that picks its shape from the width (how many columns fit) changes its height with it,
+/// and in a tab body that fills its height (UI::Widgets::FillPlotLayout) a change of height shows or
+/// hides the body's scrollbar, which changes the width again. Choosing from this width instead, the
+/// same at either state of the scrollbar, breaks that loop: the CPU Details card flipped between two
+/// column counts every few seconds without it (#1919). Draw to the full width; decide from this one.
+///
+/// The scrolling window is the nearest one, the current included, that can show a scrollbar: cards
+/// (UI/Card.h) and other children that never scroll take their width from it.
+[[nodiscard]] inline float availWidthWithVerticalScrollbar()
+{
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const ImGuiWindow* window = ImGui::GetCurrentWindow();
+    while (window != nullptr && (window->Flags & ImGuiWindowFlags_ChildWindow) != 0 && (window->Flags & ImGuiWindowFlags_NoScrollbar) != 0)
+    {
+        window = window->ParentWindow;
+    }
+    const bool hiddenScrollbar = window != nullptr && !window->ScrollbarY && (window->Flags & ImGuiWindowFlags_NoScrollbar) == 0;
+    return hiddenScrollbar ? std::max(avail - ImGui::GetStyle().ScrollbarSize, 0.0F) : avail;
+}
+
 /// RAII scope for a tab item's body. Construct it right after ImGui::BeginTabItem() succeeds and
 /// let it go out of scope before ImGui::EndTabItem().
 ///

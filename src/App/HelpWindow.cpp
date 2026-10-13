@@ -7,6 +7,7 @@
 #include "App/ProcessColumnConfig.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -62,7 +63,12 @@ void renderShortcuts(State& state)
     (void) UI::Widgets::sectionHeader(ICON_FA_LIST, "Keyboard shortcuts");
 
     ImGui::SetNextItemWidth(-1.0F);
-    if (ImGui::InputTextWithHint(FILTER_ID, "Type to find a shortcut", state.filter.data(), state.filter.size()))
+    bool filterEdited = false;
+    {
+        const UI::Widgets::FrameOutlineScope frameOutline;
+        filterEdited = ImGui::InputTextWithHint(FILTER_ID, "Type to find a shortcut", state.filter.data(), state.filter.size());
+    }
+    if (filterEdited)
     {
         state.visible = HelpContent::matchingShortcuts(std::string_view{state.filter.data()});
         state.visibleCount = HelpContent::countMatches(state.visible);
@@ -231,8 +237,7 @@ Action render(State& state)
 
         // Escape closes it while it has focus, unless a text field (the filter) has the keyboard:
         // there Escape belongs to the field.
-        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput &&
-            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        if (UI::Widgets::dialogEscapePressed())
         {
             state.open = false;
         }

@@ -40,14 +40,16 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
     // goes under the block's last row (renderResultLine()).
     const bool anyButton = renderButtons(capabilities, processName, target);
     renderSyscallTraceButton(actions, capabilities, target, anyButton);
-    renderSetAffinityButton(capabilities,
+    renderSetAffinityButton(actions,
+                            capabilities,
                             processName,
                             target,
                             currentAffinity,
                             anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported);
 }
 
-void ProcessActionsView::renderSetAffinityButton(const Platform::ProcessActionCapabilities& capabilities,
+void ProcessActionsView::renderSetAffinityButton(const Platform::IProcessActions* actions,
+                                                 const Platform::ProcessActionCapabilities& capabilities,
                                                  const std::string& processName,
                                                  const Platform::ProcessTarget& target,
                                                  const Platform::CpuAffinity* currentAffinity,
@@ -78,7 +80,9 @@ void ProcessActionsView::renderSetAffinityButton(const Platform::ProcessActionCa
         m_AffinityDialog.open(target,
                               processName,
                               currentAffinity != nullptr ? *currentAffinity : Platform::CpuAffinity{},
-                              static_cast<std::size_t>(std::thread::hardware_concurrency()));
+                              static_cast<std::size_t>(std::thread::hardware_concurrency()),
+                              // Read once, on the press: the groups and core kinds to arrange the boxes by (#1881)
+                              actions != nullptr ? actions->affinityLayout() : Platform::CpuAffinityLayout{});
     }
     ImGui::SetItemTooltip("Choose the CPUs this process may run on");
 }

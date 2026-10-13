@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -22,7 +23,8 @@ enum class EventType : uint8_t
     OpenAbout,
     OpenHelp,
     OpenElevationNotice,
-    UdpEventTraceChanged
+    UdpEventTraceChanged,
+    ShowService
 };
 
 /// Macro to implement event type boilerplate

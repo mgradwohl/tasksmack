@@ -6,8 +6,10 @@
 /// tests safe and non-destructive.
 
 #include "Domain/PriorityConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/Windows/WindowsAffinityMath.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
 
@@ -30,6 +32,7 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace Platform
 {
@@ -586,6 +589,255 @@ TEST(WindowsProcessActionsTest, IoPriorityIsNotSupportedAndNothingIsSent)
     const auto get = actions.getIoPriority({.pid = 1234, .startTimeTicks = 1});
     ASSERT_FALSE(get.has_value());
     EXPECT_NE(get.error().find("not supported on Windows"), std::string::npos) << get.error();
+}
+
+// =============================================================================
+// setAffinity (#1881): through faked Win32 calls, then once against a real suspended child
+// =============================================================================
+
+namespace
+{
+
+/// What the faked calls do and saw. Function pointers can't capture, so the fakes share this state;
+/// each test starts from reset().
+struct FakeWin
+{
+    static inline std::uint64_t creationTicks = 0; // What GetProcessTimes reports
+    static inline DWORD openError = 0;             // OpenProcess fails with this, when not 0
+    static inline DWORD setError = 0;              // The setter fails with this, when not 0
+    static inline DWORD openedAccess = 0;
+    static inline int maskCalls = 0;
+    static inline DWORD_PTR lastMask = 0;
+    static inline int cpuSetCalls = 0;
+    static inline std::vector<ULONG> lastCpuSets;
+    static inline std::vector<std::uint32_t> groupSizes; // reset(): one group of 8
+    static inline std::vector<ProcessorCoreRecord> cores;
+    static inline std::vector<CpuSetRecord> cpuSets;
+
+    static void reset()
+    {
+        creationTicks = 1234;
+        openError = 0;
+        setError = 0;
+        openedAccess = 0;
+        maskCalls = 0;
+        lastMask = 0;
+        cpuSetCalls = 0;
+        lastCpuSets.clear();
+        groupSizes = {8};
+        cores.clear();
+        cpuSets.clear();
+    }
+
+    static HANDLE WINAPI openProcess(DWORD access, BOOL /*inherit*/, DWORD /*pid*/)
+    {
+        openedAccess = access;
+        if (openError != 0)
+        {
+            SetLastError(openError);
+            return nullptr;
+        }
+        // A real handle (to this test process), so the action's owner can close it.
+        return OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());
+    }
+    static BOOL WINAPI
+    getProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
+    {
+        creation->dwLowDateTime = static_cast<DWORD>(creationTicks & 0xFFFFFFFFU);
+        creation->dwHighDateTime = static_cast<DWORD>(creationTicks >> 32U);
+        return TRUE;
+    }
+    static BOOL WINAPI setProcessAffinityMask(HANDLE /*process*/, DWORD_PTR mask)
+    {
+        ++maskCalls;
+        lastMask = mask;
+        if (setError != 0)
+        {
+            SetLastError(setError);
+            return FALSE;
+        }
+        return TRUE;
+    }
+    static BOOL WINAPI setProcessDefaultCpuSets(HANDLE /*process*/, const ULONG* ids, ULONG count)
+    {
+        ++cpuSetCalls;
+        lastCpuSets.assign(ids, ids + count); // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the API's array
+        if (setError != 0)
+        {
+            SetLastError(setError);
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    [[nodiscard]] static WindowsProcessFunctions functions()
+    {
+        return {
+            .openProcess = &openProcess,
+            .getProcessTimes = &getProcessTimes,
+            .setProcessAffinityMask = &setProcessAffinityMask,
+            .setProcessDefaultCpuSets = &setProcessDefaultCpuSets,
+            .readGroupSizes = [] { return groupSizes; },
+            .readCores = [] { return cores; },
+            .readCpuSets = [] { return cpuSets; },
+        };
+    }
+};
+
+constexpr ProcessTarget FAKE_TARGET{.pid = 4242, .startTimeTicks = 1234};
+
+class WindowsSetAffinityTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        FakeWin::reset();
+    }
+};
+
+} // namespace
+
+TEST_F(WindowsSetAffinityTest, OneGroupSetsTheMaskThroughAVerifiedHandle)
+{
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_TRUE(actions.actionCapabilities().canSetAffinity);
+
+    const auto result = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1010U));
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 1);
+    EXPECT_EQ(FakeWin::lastMask, DWORD_PTR{0b1010U});
+    EXPECT_EQ(FakeWin::cpuSetCalls, 0);
+    EXPECT_NE(FakeWin::openedAccess & PROCESS_SET_INFORMATION, 0U);
+}
+
+TEST_F(WindowsSetAffinityTest, AReusedPidIsRefusedAndNothingIsSet)
+{
+    FakeWin::creationTicks = 9999; // The PID now belongs to a process started later
+    WindowsProcessActions actions(FakeWin::functions());
+    const auto result = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.errorMessage.find("different process"), std::string::npos) << result.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+
+    const auto unknown = actions.setAffinity({.pid = 4242, .startTimeTicks = 0}, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(unknown.success);
+    EXPECT_NE(unknown.errorMessage.find("Cannot confirm"), std::string::npos) << unknown.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+}
+
+TEST_F(WindowsSetAffinityTest, AccessDeniedSaysTheProcessMayBeProtectedOrElevated)
+{
+    FakeWin::openError = ERROR_ACCESS_DENIED;
+    WindowsProcessActions actions(FakeWin::functions());
+    const auto opened = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(opened.success);
+    EXPECT_NE(opened.errorMessage.find("Access denied"), std::string::npos) << opened.errorMessage;
+    EXPECT_NE(opened.errorMessage.find("protected"), std::string::npos) << opened.errorMessage;
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+
+    // Opened, but the set itself refused: the same message.
+    FakeWin::openError = 0;
+    FakeWin::setError = ERROR_ACCESS_DENIED;
+    const auto set = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(set.success);
+    EXPECT_NE(set.errorMessage.find("Access denied"), std::string::npos) << set.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, AGoneProcessAndARefusedMaskAreReported)
+{
+    FakeWin::openError = ERROR_INVALID_PARAMETER;
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_EQ(actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U)).errorMessage, "Process not found - may have already exited");
+
+    FakeWin::openError = 0;
+    FakeWin::setError = ERROR_INVALID_PARAMETER;
+    const auto refused = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_FALSE(refused.success);
+    EXPECT_NE(refused.errorMessage.find("processor group"), std::string::npos) << refused.errorMessage;
+
+    FakeWin::setError = ERROR_GEN_FAILURE;
+    const auto other = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1U));
+    EXPECT_NE(other.errorMessage.find(std::to_string(ERROR_GEN_FAILURE)), std::string::npos) << other.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, AnEmptyChoiceOrACpuThatDoesNotExistIsRefusedBeforeOpening)
+{
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_EQ(actions.setAffinity(FAKE_TARGET, CpuAffinity{}).errorMessage, "Choose at least one CPU");
+    Platform::CpuAffinity beyond;
+    beyond.set(8); // Group 0 has CPUs 0-7
+    EXPECT_FALSE(actions.setAffinity(FAKE_TARGET, beyond).success);
+    EXPECT_EQ(actions.setAffinity({.pid = 0, .startTimeTicks = 1}, CpuAffinity::fromMask(1U)).errorMessage, "Invalid PID");
+    EXPECT_EQ(FakeWin::openedAccess, 0U) << "nothing opened";
+}
+
+TEST_F(WindowsSetAffinityTest, SeveralGroupsSetCpuSetsAndEveryCpuClearsThem)
+{
+    FakeWin::groupSizes = {2, 2}; // CPUs 0-1 in group 0, 2-3 in group 1
+    FakeWin::cores = {{.group = 0, .mask = 0b11U, .efficiencyClass = 0}, {.group = 1, .mask = 0b11U, .efficiencyClass = 0}};
+    FakeWin::cpuSets = {{.id = 256, .group = 0, .logicalProcessorIndex = 0},
+                        {.id = 257, .group = 0, .logicalProcessorIndex = 1},
+                        {.id = 258, .group = 1, .logicalProcessorIndex = 0},
+                        {.id = 259, .group = 1, .logicalProcessorIndex = 1}};
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_TRUE(actions.affinityLayout().appliedAsCpuSets);
+
+    const auto result = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b0110U)); // CPU 1 (group 0) and 2 (group 1)
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_EQ(FakeWin::lastCpuSets, (std::vector<ULONG>{257, 258}));
+    EXPECT_EQ(FakeWin::maskCalls, 0);
+    EXPECT_NE(FakeWin::openedAccess & PROCESS_SET_LIMITED_INFORMATION, 0U);
+
+    EXPECT_TRUE(actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1111U)).success);
+    EXPECT_TRUE(FakeWin::lastCpuSets.empty()) << "every CPU clears the default CPU sets";
+
+    FakeWin::cpuSets.pop_back(); // CPU 3 went offline after the dialog opened
+    const auto missing = actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(0b1000U));
+    EXPECT_FALSE(missing.success);
+    EXPECT_NE(missing.errorMessage.find("0 of the 1"), std::string::npos) << missing.errorMessage;
+}
+
+TEST_F(WindowsSetAffinityTest, NoGroupSizesMeansNoAffinityAction)
+{
+    FakeWin::groupSizes.clear();
+    WindowsProcessActions actions(FakeWin::functions());
+    EXPECT_FALSE(actions.actionCapabilities().canSetAffinity);
+    EXPECT_FALSE(actions.setAffinity(FAKE_TARGET, CpuAffinity::fromMask(1U)).success);
+    EXPECT_EQ(FakeWin::openedAccess, 0U);
+}
+
+TEST(WindowsProcessActionsTest, SetAffinityPinsAMatchingChildAndRefusesAReusedPid)
+{
+    WindowsProcessActions actions;
+    if (actions.affinityLayout().appliedAsCpuSets)
+    {
+        GTEST_SKIP() << "several processor groups: CPU sets don't show in GetProcessAffinityMask";
+    }
+    const SuspendedChild child;
+    ASSERT_TRUE(child.started());
+
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+    EXPECT_FALSE(actions.setAffinity(reused, CpuAffinity::fromMask(1U)).success);
+
+    const auto result = actions.setAffinity(child.target(), CpuAffinity::fromMask(1U));
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(child.target().pid));
+    ASSERT_NE(process, nullptr);
+    DWORD_PTR processMask = 0;
+    DWORD_PTR systemMask = 0;
+    EXPECT_NE(GetProcessAffinityMask(process, &processMask, &systemMask), 0);
+    EXPECT_EQ(processMask, DWORD_PTR{1});
+    CloseHandle(process);
+}
+
+TEST(WindowsProcessActionsTest, AffinityLayoutListsThisMachinesCpus)
+{
+    const WindowsProcessActions actions;
+    const CpuAffinityLayout layout = actions.affinityLayout();
+    ASSERT_FALSE(layout.groupSizes.empty());
+    EXPECT_FALSE(layout.online.empty());
+    EXPECT_TRUE(layout.online.test(0));
 }
 
 } // namespace Platform

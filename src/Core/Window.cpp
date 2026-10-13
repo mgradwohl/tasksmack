@@ -520,19 +520,38 @@ void Window::setSize(int width, int height)
     m_Spec.Height = clampedHeight;
 }
 
-bool Window::setMinimumSize(int width, int height)
+bool Window::setMinimumSize(int width, int height, WindowGeometry::MinimumSizeChange change)
 {
     if (m_Handle == nullptr)
     {
         return false;
     }
 
+    m_WantedMinimum = {width, height};
+    if (change == WindowGeometry::MinimumSizeChange::AllowGrow)
+    {
+        return applyMinimumSize(m_WantedMinimum);
+    }
+    // A minimum the content on show moved (a tab measured on its first showing) must not resize the
+    // window, as SDL_SetWindowMinimumSize() would grow it (#1945). A side the window is smaller than
+    // keeps the window's size instead, until the user makes it that big (handleGeometryChanged()).
+    const std::pair<int, int> normalSize =
+        getNormalGeometry()
+            .transform([](const WindowGeometry::Rect& rect) { return std::pair{rect.width, rect.height}; })
+            .value_or(std::pair{0, 0});
+    return applyMinimumSize(WindowGeometry::minimumKeepingSize(m_WantedMinimum, normalSize, m_WantedMinimum));
+}
+
+bool Window::applyMinimumSize(std::pair<int, int> minimum)
+{
+    const auto [width, height] = minimum;
     const std::pair<int, int> current = getSize();
     if (!SDL_SetWindowMinimumSize(m_Handle, width, height))
     {
         spdlog::warn("SDL_SetWindowMinimumSize({}, {}) failed: {}", width, height, SDL_GetError());
         return false;
     }
+    m_AppliedMinimum = minimum;
     // SDL_SetWindowMinimumSize() has just resized the window to SDL's saved floating size, which
     // native Wayland leaves stale while the compositor tiles the window (#1777); put the size the
     // compositor gave back. X11 and Windows refresh the floating size on every configure, so there it
@@ -621,7 +640,21 @@ void Window::handleGeometryChanged()
     {
         return;
     }
-    m_Geometry.observe(liveRect(), getUnitScale(), isNormalNow());
+    const bool normalNow = isNormalNow();
+    m_Geometry.observe(liveRect(), getUnitScale(), normalNow);
+
+    // A side held below the wanted minimum (setMinimumSize(), #1945) takes it once the window has been
+    // made that big, and never holds the window bigger than it was resized to. Only from a normal
+    // window's own size: a maximized one's normal size has not changed, a minimized one's is not real.
+    if (normalNow && m_AppliedMinimum != m_WantedMinimum)
+    {
+        const auto [width, height] = getSize();
+        if (const std::pair<int, int> next = WindowGeometry::minimumKeepingSize(m_WantedMinimum, {width, height}, m_AppliedMinimum);
+            next != m_AppliedMinimum)
+        {
+            static_cast<void>(applyMinimumSize(next));
+        }
+    }
 }
 
 void Window::applySavedGeometry(std::optional<std::pair<int, int>> position, bool maximized, std::optional<float> savedScale)

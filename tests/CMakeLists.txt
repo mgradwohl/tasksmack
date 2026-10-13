@@ -140,6 +140,7 @@ set(COMMON_TEST_SOURCES
     Core/test_Event.cpp
     Core/test_Layer.cpp
     Core/test_PathService.cpp
+    Core/test_SaveFileDialog.cpp
     Core/test_VideoBackend.cpp
     Core/test_Window.cpp
     Core/test_WindowEventRouting.cpp
@@ -162,12 +163,14 @@ set(COMMON_TEST_SOURCES
     Domain/AllocationFailureHook.cpp
     Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_GPUModelAllocationFailure.cpp
+    Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
     Domain/test_SystemInfoModel.cpp
     Domain/test_CrashHistory.cpp
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
+    Domain/test_ProcessServices.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
@@ -192,6 +195,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RenderMetricsOverlay.cpp
     UI/test_RateAxis.cpp
     UI/test_InlineText.cpp
+    UI/test_CellText.cpp
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp
@@ -373,6 +377,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessIconMath.cpp
     Platform/WindowsMath/test_WindowsPackageLogoMath.cpp
+    Platform/WindowsMath/test_WindowsAffinityMath.cpp
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
@@ -418,6 +423,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsServiceConfig.cpp
     Platform/test_WindowsHandles.cpp
     Platform/test_WindowsNetworkAdapters.cpp
+    Platform/test_WindowsPublicIp.cpp
     Platform/test_WinString.cpp
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
@@ -458,6 +464,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxROCmGPUProbe.cpp
     Platform/test_NetlinkSocketStats.cpp
     Platform/test_DRMGPUProbe.cpp
+    Platform/test_AccelNpuProbe.cpp
     Platform/test_LinuxProcessIconSource.cpp
 )
 set(LINUX_INTEGRATION_TEST_SOURCES
@@ -654,6 +661,9 @@ add_executable(TaskSmackTests
     # Marker glyphs for the value strip and series, drawn by test_FillPlotLayout.cpp and
     # test_ChartGeometryBudget.cpp under a live ImGui context
     ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
+    # A table cell's text, ellipsized with its full text as a tooltip when clipped (#914, #1920):
+    # every table draws its cells with it; test_CellText.cpp runs it headless
+    ${CMAKE_SOURCE_DIR}/src/UI/CellText.cpp
     # Measures font files with FreeType (linked below), no ImGui context needed (#1201)
     ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context
@@ -748,6 +758,16 @@ endif()
 
 # test_BundledThemes.cpp checks the shipped theme files themselves, from the source tree.
 target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
+# The app's assets beside the test binaries, as the app has them beside itself (CMakeLists.txt): the
+# real-display tests then run UILayer with the app's fonts, title font, chrome icon font and window icon
+# instead of ImGui's built-in font and no icon ("Failed to load icon ... tests/assets/icons"), so the title
+# bar is drawn and pressed as users see it (#1954).
+add_custom_command(TARGET TaskSmackTests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/icons"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackTests>/assets/themes"
+    COMMENT "Copying assets (fonts, icons, themes) beside the test binaries"
+)
 
 if(WIN32)
     # The same Windows definitions and system libraries as the app's targets, from the one list in
@@ -836,6 +856,14 @@ tasksmack_configure_app_target(TaskSmackAppTests)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
 target_link_libraries(TaskSmackAppTests PRIVATE gtest)
 target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
+# The real-display tests are in this binary: the same assets beside it (see TaskSmackTests above), so
+# building this target alone still runs them with the app's fonts and icon (#1954).
+add_custom_command(TARGET TaskSmackAppTests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/fonts" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/icons" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/icons"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/themes" "$<TARGET_FILE_DIR:TaskSmackAppTests>/assets/themes"
+    COMMENT "Copying assets (fonts, icons, themes) beside TaskSmackAppTests"
+)
 tasksmack_gtest_add_suites(TaskSmackAppTests)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every

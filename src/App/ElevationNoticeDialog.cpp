@@ -4,6 +4,7 @@
 #include "App/ElevationNoticeText.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -103,6 +104,8 @@ bool render(State& state)
     {
         UI::Widgets::keepCurrentWindowInViewport();
         state.dialogHeight = ImGui::GetWindowHeight();
+        // Escape dismisses it, as OK -- its only button -- does (#1944).
+        const bool escaped = UI::Widgets::dialogEscapePressed();
         const auto& theme = UI::Theme::get();
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
 
@@ -126,7 +129,7 @@ bool render(State& state)
         UI::Widgets::sectionGap();
 
         // "Don't show again" checkbox
-        ImGui::Checkbox("Don't show again", &state.dontShowAgain);
+        UI::Widgets::outlinedCheckbox("Don't show again", &state.dontShowAgain);
         ImGui::SetItemTooltip("Settings > Advanced > Show limited-data notice turns it back on");
 
         // The footer every dialog shares, OK on the right (#1200). The floor is 9.375 em, exactly the
@@ -134,8 +137,9 @@ bool render(State& state)
         // if the label grows wider than that. A fixed-pixel button is a real interaction cost on a
         // HiDPI display (#937).
         const UI::Widgets::DialogFooterButton okButton{.label = "OK", .fills = nullptr, .tooltip = nullptr};
-        if (UI::Widgets::dialogFooter(okButton, {}, UI::Widgets::footerButtonWidth({"OK"}, ELEVATION_BUTTON_MIN_EM)) ==
-            UI::Widgets::DialogFooterAction::Primary)
+        if ((UI::Widgets::dialogFooter(okButton, {}, UI::Widgets::footerButtonWidth({"OK"}, ELEVATION_BUTTON_MIN_EM)) ==
+             UI::Widgets::DialogFooterAction::Primary) ||
+            escaped)
         {
             dismissed = true;
             ImGui::CloseCurrentPopup();
