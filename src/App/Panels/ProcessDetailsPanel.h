@@ -115,7 +115,11 @@ class ProcessDetailsPanel : public Panel
     /// Render content only (for embedding in tab, without window wrapper).
     void renderContent() override;
 
-    /// Get a label for this panel (process name or "Select a process").
+    /// The tab's text while no process is selected; the main tab bar's minimum width is measured
+    /// with it (#1939).
+    static constexpr const char* NO_SELECTION_TAB_TEXT = "Select a process";
+
+    /// Get a label for this panel (process name or NO_SELECTION_TAB_TEXT).
     /// Returned by reference so a caller can compare it against a cached copy every frame without
     /// allocating. The reference is valid until the next updateWithSamples() or selection change.
     [[nodiscard]] const std::string& tabLabel() const;

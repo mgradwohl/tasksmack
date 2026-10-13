@@ -315,7 +315,7 @@ const std::string& ProcessDetailsPanel::tabLabel() const
         return cachedSnapshot().name;
     }
     // Use static string to avoid heap allocation every frame for the default label
-    static const std::string defaultLabel{"Select a process"};
+    static const std::string defaultLabel{NO_SELECTION_TAB_TEXT};
     return defaultLabel;
 }
 

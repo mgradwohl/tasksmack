@@ -11,6 +11,7 @@
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
+#include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessIconView.h"
 #include "Panels/ProcessesPanel.h"
 #include "Panels/SystemMetricsPanel.h"
@@ -205,6 +206,16 @@ void ShellLayer::onAttach()
     // so the system tab label is built once here.
     m_CachedSystemTabLabel = TabLabel::make(ICON_FA_COMPUTER, m_SystemMetricsPanel.hostname(), TabLabel::SYSTEM_TAB_ID);
     m_DetailsTabLabel.get(m_ProcessDetailsPanel.tabLabel(), makeDetailsTabLabel);
+
+    // The labels the window's minimum width is measured with (#1939): every tab's own, but the Process
+    // Details tab's as it reads with nothing selected, so the minimum does not move with the selection.
+    // A longer process name shrinks the tabs to fit instead.
+    m_DetailsTabNoSelectionLabel = makeDetailsTabLabel(ProcessDetailsPanel::NO_SELECTION_TAB_TEXT);
+    m_TabBarMinimumLabels.clear();
+    for (const auto& tab : m_Tabs.tabs())
+    {
+        m_TabBarMinimumLabels.push_back(tab.eventName == "ProcessDetails" ? m_DetailsTabNoSelectionLabel.c_str() : tab.label());
+    }
 
     // Trigger the startup notice if needed. The status bar's lock icon reads the live value instead
     // (#1254); the notice itself is a one-off at startup.
@@ -616,13 +627,17 @@ void ShellLayer::onRender()
                 .chromePx = contentPaddingV * 2.0F,
             });
         };
+        // Nor narrower than the main tab bar with every tab whole, inside its insets (#1939): measured
+        // from fixed labels, so like the panels' width it moves only with the font and the scale.
+        const float mainTabBarWidth = MainTabBarView::measureWidth(m_TabBarMinimumLabels);
         // Also from the estimate alone: the tab-independent height, whose changes (font, scale) may
         // grow the window, where a tab's measurement may not (#1945).
         applyContentMinimumSize(
-            computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
-                                       m_SystemMetricsPanel.overviewNowBarColumnWidth(),
-                                       fontSize,
-                                       (contentPaddingH * 2.0F) + style.ScrollbarSize),
+            std::max(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
+                                                m_SystemMetricsPanel.overviewNowBarColumnWidth(),
+                                                fontSize,
+                                                (contentPaddingH * 2.0F) + style.ScrollbarSize),
+                     mainTabBarWidth),
             contentHeightFor(computeFirstChartBudget(
                 estimatedFirstChartBlock, m_SystemMetricsPanel.firstChartNonPlotHeight(viewport->Size.x, fontSize), plotMinHeight)),
             contentHeightFor(computeFirstChartBudget(estimatedFirstChartBlock, 0.0F, plotMinHeight)));

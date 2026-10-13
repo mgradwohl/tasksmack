@@ -157,6 +157,10 @@ class ShellLayer : public Core::Layer
 
     // The tab bar's items, rebuilt each frame into the same storage (no per-frame allocation once grown).
     std::vector<MainTabBarView::Tab> m_TabBarItems;
+    // The tab labels the minimum window width covers (#1939), built in onAttach(): the Process Details
+    // tab's as it reads with no process selected, so the minimum stays tab- and selection-independent.
+    std::string m_DetailsTabNoSelectionLabel;
+    std::vector<const char*> m_TabBarMinimumLabels;
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;
