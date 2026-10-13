@@ -409,8 +409,19 @@ TEST_F(SystemInfoPanelRenderTest, ShowWifiDetailsReadsThemAndRefreshKeepsReading
 
     const ImGuiID button = wifiDetailsButtonId();
     ASSERT_NE(button, 0U);
-    ImGui::ActivateItemByID(button);
-    ASSERT_TRUE(frameUntil("Fixture Linux 2"));
+    // Pressed again each frame until the second read shows: ActivateItemByID() is a one-shot request,
+    // dropped on a frame where the button is disabled (a read in flight), which left the test waiting
+    // for a read nothing started (#1845). Once pressed the button stays disabled, so pressing it again
+    // does nothing.
+    bool secondRead = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!secondRead && std::chrono::steady_clock::now() < deadline)
+    {
+        ImGui::ActivateItemByID(button);
+        secondRead = frame().contains("Fixture Linux 2");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(secondRead);
     text = frame();
     EXPECT_TRUE(text.contains(WIFI_PHY)) << text;
     EXPECT_FALSE(text.contains("Show Wi-Fi details")) << text;
