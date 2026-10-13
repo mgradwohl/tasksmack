@@ -218,6 +218,25 @@ TEST(LinuxProcessActionsTest, CapabilitiesReportedCorrectly)
 // Error Handling Tests
 // =============================================================================
 
+// #1881, #1891: the Set affinity dialog's layout, read from this machine's sysfs when it opens: the online
+// CPUs (at least the one this test runs on), and a class for each only where the CPU is hybrid.
+TEST(LinuxProcessActionsTest, TheAffinityLayoutListsThisMachinesOnlineCpus)
+{
+    const LinuxProcessActions actions;
+    const CpuAffinityLayout layout = actions.affinityLayout();
+    if (!std::filesystem::exists("/sys/devices/system/cpu/online"))
+    {
+        EXPECT_TRUE(layout.online.empty());
+        GTEST_SKIP() << "No /sys/devices/system/cpu/online here";
+    }
+    EXPECT_FALSE(layout.online.empty());
+    const int cpu = ::sched_getcpu();
+    ASSERT_GE(cpu, 0);
+    EXPECT_TRUE(layout.online.test(static_cast<std::size_t>(cpu))) << "the CPU this test runs on is online";
+    EXPECT_TRUE(layout.groupSizes.empty()) << "no processor groups on Linux";
+    EXPECT_FALSE(layout.appliedAsCpuSets);
+}
+
 TEST(LinuxProcessActionsTest, TerminateNonExistentProcess)
 {
     LinuxProcessActions actions;

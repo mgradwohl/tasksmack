@@ -1092,6 +1092,35 @@ TEST(LinuxProcessProbeTest, ThisProcessOwnPssAndUssReadFromTheRealProc)
     EXPECT_LE(rollup.value_or(MemoryRollup{}).ussBytes, rollup.value_or(MemoryRollup{}).pssBytes); // USS is within PSS
 }
 
+// #1891: a process whose cmdline reads empty is a kernel thread, shown as "[name]" -- the fixture's own,
+// so this holds wherever the suite runs (the real-proc test above skips where none is visible).
+TEST(LinuxProcessProbeTest, AnEmptyCmdlineIsAKernelThreadShownInBrackets)
+{
+    ScopedTempDir proc("ts_test_proc_kthread");
+    const auto writeProcess = [&proc](int pid, std::string_view name, std::string_view cmdline)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (" + std::string(name) +
+                      ") S 2 0 0 0 -1 69238880 0 0 0 0 0 1 0 0 20 0 1 0 50 0 0 "
+                      "18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", "Name:\t" + std::string(name) + "\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t0-3\n");
+        writeFile(dir / "statm", "0 0 0 0 0 0 0\n");
+        writeFile(dir / "cmdline", std::string(cmdline));
+    };
+    writeProcess(5151, "kworker/0:1", "");
+    writeProcess(5252, "app", std::string("/usr/bin/app\0--flag\0", 20));
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto commandOf = [&processes](std::int32_t pid)
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? std::string("<missing>") : it->command;
+    };
+    EXPECT_EQ(commandOf(5151), "[kworker/0:1]");
+    EXPECT_EQ(commandOf(5252), "/usr/bin/app --flag");
+}
+
 void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)
 {
     const auto dir = procRoot / "4242";
