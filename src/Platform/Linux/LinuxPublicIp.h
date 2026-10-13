@@ -32,6 +32,12 @@ struct Options
     std::string source = "OpenDNS (myip.opendns.com)";
 };
 
+namespace Detail
+{
+/// Why sending to, or hearing from, the resolver failed with @p errorNumber, for the UI.
+[[nodiscard]] std::string networkError(int errorNumber, bool v6);
+} // namespace Detail
+
 /// Looks the public addresses up. Always sets `read`; an address it couldn't find is empty with its
 /// *Unavailable reason set.
 [[nodiscard]] PublicIpInfo lookUp(const Options& options = {});

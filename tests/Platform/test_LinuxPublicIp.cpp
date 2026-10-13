@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +38,9 @@ enum class Behaviour : std::uint8_t
     StrayThenAnswer, ///< First a datagram with another ID, then the address
     Silent,          ///< Never
     ServerFailure,   ///< SERVFAIL
+    NameNotFound,    ///< NXDOMAIN (#1891)
+    NoRecords,       ///< A good reply with no answer in it (#1891)
+    Truncated,       ///< The TC flag set: the reply couldn't fit (#1891)
 };
 
 /// A UDP DNS server on a loopback address that answers one query per datagram, from a thread.
@@ -147,6 +151,19 @@ class FakeResolver
             case Behaviour::ServerFailure:
                 send(reply(query, /*rcode=*/2, {}));
                 break;
+            case Behaviour::NameNotFound:
+                send(reply(query, /*rcode=*/3, {}));
+                break;
+            case Behaviour::NoRecords:
+                send(reply(query, 0, {}));
+                break;
+            case Behaviour::Truncated:
+            {
+                Bytes truncated = reply(query, 0, m_Address);
+                truncated[2] = static_cast<std::uint8_t>(truncated[2] | 0x02U);
+                send(truncated);
+                break;
+            }
             case Behaviour::StrayThenAnswer:
             {
                 Bytes stray = reply(query, 0, m_Address);
@@ -272,6 +289,51 @@ TEST(LinuxPublicIpTest, AnErrorReplyAndAnInvalidResolver)
     const PublicIpInfo info = LinuxPublicIp::lookUp(bad);
     EXPECT_EQ(info.v4Unavailable, "The resolver answered with an error");
     EXPECT_EQ(info.v6Unavailable, "The resolver's address is invalid");
+}
+
+// #1891: each kind of reply that carries no address says why, and so do a bad resolver address and a name
+// that can't be asked for.
+TEST(LinuxPublicIpTest, EachReplyWithoutAnAddressSaysWhy)
+{
+    const FakeResolver notFound(false, Behaviour::NameNotFound, {});
+    const FakeResolver noRecords(true, Behaviour::NoRecords, {});
+    ASSERT_TRUE(notFound.ok());
+    if (!noRecords.ok())
+    {
+        GTEST_SKIP() << "no IPv6 loopback here";
+    }
+    PublicIpInfo info = LinuxPublicIp::lookUp(options(notFound.port(), noRecords.port(), std::chrono::milliseconds(1000)));
+    EXPECT_EQ(info.v4Unavailable, "The resolver answered with an error");
+    EXPECT_EQ(info.v6Unavailable, "No IPv6 address was returned");
+
+    const FakeResolver noRecords4(false, Behaviour::NoRecords, {});
+    const FakeResolver truncated(true, Behaviour::Truncated, v6Address());
+    ASSERT_TRUE(noRecords4.ok());
+    ASSERT_TRUE(truncated.ok());
+    info = LinuxPublicIp::lookUp(options(noRecords4.port(), truncated.port(), std::chrono::milliseconds(1000)));
+    EXPECT_EQ(info.v4Unavailable, "No IPv4 address was returned");
+    EXPECT_EQ(info.v6Unavailable, "The resolver's reply couldn't be read");
+
+    LinuxPublicIp::Options bad = options(1, 1, std::chrono::milliseconds(500));
+    bad.v4Resolver.address = "999.1.1.1";
+    bad.name = "my..name";
+    info = LinuxPublicIp::lookUp(bad);
+    EXPECT_EQ(info.v4Unavailable, "The name to look up is invalid") << "the name is checked first";
+    bad.name = "myip.opendns.com";
+    info = LinuxPublicIp::lookUp(bad);
+    EXPECT_EQ(info.v4Unavailable, "The resolver's address is invalid");
+}
+
+TEST(LinuxPublicIpTest, NetworkErrorsNameTheirCause)
+{
+    using LinuxPublicIp::Detail::networkError;
+    for (const int unreachable : {ENETUNREACH, EADDRNOTAVAIL, EAFNOSUPPORT, EHOSTUNREACH})
+    {
+        EXPECT_EQ(networkError(unreachable, true), "No IPv6 route to the internet");
+        EXPECT_EQ(networkError(unreachable, false), "No IPv4 route to the internet");
+    }
+    EXPECT_EQ(networkError(ECONNREFUSED, false), "The resolver refused the query");
+    EXPECT_TRUE(networkError(EIO, false).starts_with("Couldn't reach the resolver: ")) << networkError(EIO, false);
 }
 
 } // namespace

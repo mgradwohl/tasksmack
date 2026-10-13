@@ -63,23 +63,6 @@ struct Query
     return std::strerror(errorNumber); // NOLINT(concurrency-mt-unsafe): read from one thread at a time
 }
 
-/// Why sending to (or hearing from) the resolver failed, for the UI.
-[[nodiscard]] std::string networkError(int errorNumber, bool v6)
-{
-    switch (errorNumber)
-    {
-    case ENETUNREACH:
-    case EADDRNOTAVAIL:
-    case EAFNOSUPPORT:
-    case EHOSTUNREACH:
-        return v6 ? "No IPv6 route to the internet" : "No IPv4 route to the internet";
-    case ECONNREFUSED:
-        return "The resolver refused the query";
-    default:
-        return std::format("Couldn't reach the resolver: {}", errnoText(errorNumber));
-    }
-}
-
 /// Opens a UDP socket connected to @p resolver (so only its replies arrive) and sends @p query a
 /// query for @p name. Sets query.done with a reason on failure.
 void start(Query& query, const Resolver& resolver, const std::string& name, DnsMessage::RecordType type, std::uint16_t id)
@@ -122,18 +105,18 @@ void start(Query& query, const Resolver& resolver, const std::string& name, DnsM
     query.fd = ::socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (query.fd < 0)
     {
-        query.fail(networkError(errno, v6));
+        query.fail(Detail::networkError(errno, v6));
         return;
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): sockaddr API
     if (::connect(query.fd, reinterpret_cast<const sockaddr*>(&address), length) != 0)
     {
-        query.fail(networkError(errno, v6));
+        query.fail(Detail::networkError(errno, v6));
         return;
     }
     if (::send(query.fd, query.sent.data(), query.sent.size(), MSG_NOSIGNAL) < 0)
     {
-        query.fail(networkError(errno, v6));
+        query.fail(Detail::networkError(errno, v6));
     }
 }
 
@@ -164,7 +147,7 @@ void receive(Query& query, bool v6)
             {
                 return; // nothing more yet
             }
-            query.fail(networkError(errno, v6));
+            query.fail(Detail::networkError(errno, v6));
             return;
         }
         const auto answer =
@@ -197,6 +180,22 @@ void receive(Query& query, bool v6)
 }
 
 } // namespace
+
+std::string Detail::networkError(int errorNumber, bool v6)
+{
+    switch (errorNumber)
+    {
+    case ENETUNREACH:
+    case EADDRNOTAVAIL:
+    case EAFNOSUPPORT:
+    case EHOSTUNREACH:
+        return v6 ? "No IPv6 route to the internet" : "No IPv4 route to the internet";
+    case ECONNREFUSED:
+        return "The resolver refused the query";
+    default:
+        return std::format("Couldn't reach the resolver: {}", errnoText(errorNumber));
+    }
+}
 
 PublicIpInfo lookUp(const Options& options)
 {
