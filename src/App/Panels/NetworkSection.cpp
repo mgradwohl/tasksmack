@@ -4,6 +4,7 @@
 #include "App/Panels/StorageSection.h"
 #include "Domain/SharedHistory.h"
 #include "UI/Card.h"
+#include "UI/CellText.h"
 #include "UI/ChartWidgets.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
@@ -689,7 +690,8 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
                 // Name
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(iface.displayName.empty() ? iface.name.c_str() : iface.displayName.c_str());
+                // Cut short with an ellipsis, the whole name on hover, when the column is too narrow (#1920).
+                UI::Widgets::cellText(iface.displayName.empty() ? iface.name : iface.displayName);
 
                 // Status
                 ImGui::TableNextColumn();

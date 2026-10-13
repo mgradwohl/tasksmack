@@ -193,6 +193,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RenderMetricsOverlay.cpp
     UI/test_RateAxis.cpp
     UI/test_InlineText.cpp
+    UI/test_CellText.cpp
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp
@@ -657,6 +658,9 @@ add_executable(TaskSmackTests
     # Marker glyphs for the value strip and series, drawn by test_FillPlotLayout.cpp and
     # test_ChartGeometryBudget.cpp under a live ImGui context
     ${CMAKE_SOURCE_DIR}/src/UI/ChartLegend.cpp
+    # A table cell's text, ellipsized with its full text as a tooltip when clipped (#914, #1920):
+    # every table draws its cells with it; test_CellText.cpp runs it headless
+    ${CMAKE_SOURCE_DIR}/src/UI/CellText.cpp
     # Measures font files with FreeType (linked below), no ImGui context needed (#1201)
     ${CMAKE_SOURCE_DIR}/src/UI/TabularDigits.cpp
     # Stub: satisfies Theme symbols referenced by UserConfig.cpp without a live ImGui context

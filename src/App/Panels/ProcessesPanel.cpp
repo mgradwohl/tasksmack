@@ -45,6 +45,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/ThreadName.h"
+#include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
@@ -184,71 +185,23 @@ bool viewModeSegment(std::string_view label, bool selected, float width)
     return std::nullopt;
 }
 
-/// Tooltips for clipped cells wrap at this many ems, so a long command line reads as a paragraph
-/// instead of one line running off the screen.
-constexpr float CLIPPED_CELL_TOOLTIP_WRAP_EM = 60.0F;
+using UI::Widgets::CLIPPED_CELL_TOOLTIP_WRAP_EM;
 
 /// Column header tooltips wrap at this many ems.
 constexpr float HEADER_TOOLTIP_WRAP_EM = 32.0F;
 
 /// Draws `text` in the current table cell, left- or right-aligned, using an already-measured
-/// `textWidth`. When the text does not fit it is drawn with an ellipsis and gets a tooltip carrying
-/// the full value (#914): a hard-clipped value is indistinguishable from one that is genuinely that
-/// short, which is the wrong failure mode for a table whose rows Terminate and Kill act on.
-///
-/// This submits the item itself rather than calling ImGui::TextUnformatted(), which would measure
-/// the text a second time -- ImFontCalcTextSizeEx showed up as a real cost in interactive-frame
-/// profiling. The steps mirror ImGui::TextEx()'s common path: same position, same item size, so a
-/// cell that fits is laid out exactly as before.
+/// `textWidth`: ellipsized with the full value as its tooltip when it does not fit (#914), through
+/// the cell helper every table shares (UI::Widgets::cellText(), #1920). The text is measured once --
+/// ImFontCalcTextSizeEx showed up as a real cost in interactive-frame profiling -- and a clipped cell
+/// takes only its own width in the layout, as it always has here.
 ///
 /// @param clippedTooltip  Whether a clipped cell gets the full text as its tooltip; false for a cell
 ///                        that draws its own tooltip (the Services column's list, #1880).
 void renderCellText(std::string_view text, float textWidth, bool rightAligned, bool clippedTooltip = true)
 {
-    const ImGuiWindow* window = ImGui::GetCurrentWindow();
-    if (window->SkipItems)
-    {
-        return;
-    }
-
-    const float availWidth = ImGui::GetContentRegionAvail().x;
-    const bool clipped = ProcessTableLayout::isCellTextClipped(textWidth, availWidth);
-
-    // A clipped cell fills the space it has and starts at its left edge in either alignment: the
-    // leading characters are the ones that identify the value.
-    const float itemWidth = clipped ? std::max(availWidth, 0.0F) : textWidth;
-    const float offsetX = (rightAligned && !clipped) ? std::max(0.0F, availWidth - textWidth) : 0.0F;
-
-    const char* textBegin = text.data();
-    const char* textEnd = text.data() + text.size();
-    const ImVec2 textPos(window->DC.CursorPos.x + offsetX, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
-    const ImVec2 itemSize(itemWidth, ImGui::GetFontSize());
-    const ImRect bounds(textPos, ImVec2(textPos.x + itemSize.x, textPos.y + itemSize.y));
-
-    // Advance the layout cursor past the alignment offset as well as the text, as SetCursorPosX()
-    // followed by a text item did.
-    ImGui::ItemSize(ImVec2(offsetX + itemSize.x, itemSize.y), 0.0F);
-    if (!ImGui::ItemAdd(bounds, 0))
-    {
-        return;
-    }
-
-    if (!clipped)
-    {
-        ImGui::RenderText(textPos, textBegin, textEnd, false);
-        return;
-    }
-
-    const ImVec2 measuredSize(textWidth, itemSize.y);
-    ImGui::RenderTextEllipsis(window->DrawList, bounds.Min, bounds.Max, bounds.Max.x, textBegin, textEnd, &measuredSize);
-
-    if (clippedTooltip && ImGui::BeginItemTooltip())
-    {
-        ImGui::PushTextWrapPos(ImGui::GetFontSize() * CLIPPED_CELL_TOOLTIP_WRAP_EM);
-        ImGui::TextUnformatted(textBegin, textEnd);
-        ImGui::PopTextWrapPos();
-        ImGui::EndTooltip();
-    }
+    static_cast<void>(
+        UI::Widgets::cellText(text, textWidth, {.rightAligned = rightAligned, .clippedTooltip = clippedTooltip, .layoutFullText = false}));
 }
 
 /// Draws `text` (already measured as `textWidth`) at the cursor in at most `width`: as is when it

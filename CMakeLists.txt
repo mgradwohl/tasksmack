@@ -118,6 +118,7 @@ set(TASKSMACK_SOURCES
     src/Core/SaveFileDialog.cpp
     src/Core/X11WindowManager.cpp
     src/UI/AssetPath.cpp
+    src/UI/CellText.cpp
     src/UI/ChartLegend.cpp
     src/UI/MonospaceFontPath.cpp
     src/UI/TabularDigits.cpp

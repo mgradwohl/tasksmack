@@ -136,8 +136,8 @@ class ServicesViewRenderTest : public ::testing::Test
         return captured;
     }
 
-    /// The centre of the table's first row's Name cell, from a frame that drew @p publication.
-    static ImVec2 firstRowCentre(const Domain::ServicePublication& publication, ServicesViewState& state)
+    /// The centre of the table's first row's cell in @p column (Name by default), from a frame that drew @p publication.
+    static ImVec2 firstRowCentre(const Domain::ServicePublication& publication, ServicesViewState& state, int column = 0)
     {
         ImVec2 centre(-1.0F, -1.0F);
         static_cast<void>(runFrame(
@@ -147,7 +147,8 @@ class ServicesViewRenderTest : public ::testing::Test
                 if (const ImGuiTable* table = ImGui::TableFindByID(ImGui::GetID("##ServicesTable")); table != nullptr)
                 {
                     const float rowHeight = ImGui::GetTextLineHeight() + (ImGui::GetStyle().CellPadding.y * 2.0F);
-                    centre = ImVec2((table->Columns[0].MinX + table->Columns[0].MaxX) * 0.5F, table->OuterRect.Min.y + (rowHeight * 1.5F));
+                    centre = ImVec2((table->Columns[column].MinX + table->Columns[column].MaxX) * 0.5F,
+                                    table->OuterRect.Min.y + (rowHeight * 1.5F));
                 }
                 return content;
             }));
@@ -411,6 +412,51 @@ TEST_F(ServicesViewRenderTest, HoveringARowShowsItsDetails)
     static_cast<void>(captureFrame(publication, state));
     io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     EXPECT_EQ(state.selectedName, "Spooler");
+}
+
+// #1920: a name or account too wide for its column ends in an ellipsis rather than being cut off, and the
+// whole of it is on hover -- a clipped cell's own tooltip, or for the Name cell the row's tooltip.
+TEST_F(ServicesViewRenderTest, ClippedCellsShowTheirWholeTextOnHover)
+{
+    const std::string LONG_NAME = "BluetoothUserService_10b0a7c_with_a_per_user_suffix";
+    const std::string LONG_ACCOUNT = R"(NT AUTHORITY\LocalServiceNetworkRestrictedWithALongerName)";
+    Domain::ServicePublication publication;
+    publication.version = 1;
+    publication.services = {service(LONG_NAME.c_str(), "Bluetooth User Support Service", ServiceState::Running, 2200)};
+    publication.services[0].description = "Supports Bluetooth features for each user session";
+    publication.services[0].account = LONG_ACCOUNT;
+    ServicesViewState state;
+
+    ImGuiIO& io = ImGui::GetIO();
+    const auto hover = [&](ImVec2 at, std::string_view wanted)
+    {
+        io.AddMousePosEvent(at.x, at.y);
+        io.DeltaTime = 0.25F; // past the tooltip's hover delay in a few frames
+        std::string text;
+        for (int i = 0; i < 6 && !text.contains(wanted); ++i)
+        {
+            text = captureFrame(publication, state);
+        }
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        io.DeltaTime = 1.0F / 60.0F;
+        return text;
+    };
+
+    // The Name cell: the row's tooltip, which names the service in full.
+    const ImVec2 name = firstRowCentre(publication, state);
+    ASSERT_GT(name.y, 0.0F);
+    const std::string nameText = hover(name, "Supports Bluetooth");
+    EXPECT_TRUE(nameText.contains("Supports Bluetooth features for each user session"));
+    EXPECT_TRUE(nameText.contains("Service name: " + LONG_NAME));
+
+    // The Account cell (column 5): its own tooltip, the whole account, in place of the row's.
+    const ImVec2 account = firstRowCentre(publication, state, 5);
+    // Hovered for all six frames (nothing draws the text waited for), well past every hover delay.
+    const std::string accountText = hover(account, "not drawn: hover every frame");
+    const std::size_t first = accountText.find(LONG_ACCOUNT);
+    ASSERT_NE(first, std::string::npos);
+    EXPECT_NE(accountText.find(LONG_ACCOUNT, first + LONG_ACCOUNT.size()), std::string::npos) << "drawn in the cell, then in its tooltip";
+    EXPECT_FALSE(accountText.contains("Supports Bluetooth")) << "the row's tooltip gives way to the cell's";
 }
 
 TEST_F(ServicesViewRenderTest, ActionBarActsOnTheSelectedServiceByName)

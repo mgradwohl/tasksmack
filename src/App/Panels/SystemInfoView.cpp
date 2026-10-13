@@ -5,6 +5,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/SystemInfoModel.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "UI/CellText.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
@@ -162,14 +163,21 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
 }
 
 /// One value cell: the value (with its valueTooltip, if any), or a muted em dash whose tooltip says why
-/// there is none.
+/// there is none. A value too wide for the page ends in an ellipsis, the whole of it on hover (#1920).
 void renderValue(const SystemInfo::Row& row, const UI::ColorScheme& scheme)
 {
     if (row.available())
     {
-        textView(row.value);
-        if (!row.valueTooltip.empty() && ImGui::BeginItemTooltip())
+        const bool ownTooltip = !row.valueTooltip.empty();
+        const UI::Widgets::CellTextResult drawn = UI::Widgets::cellText(row.value, {.clippedTooltip = !ownTooltip});
+        if (ownTooltip && ImGui::BeginItemTooltip())
         {
+            if (drawn.clipped)
+            {
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * UI::Widgets::CLIPPED_CELL_TOOLTIP_WRAP_EM);
+                textView(row.value);
+                ImGui::PopTextWrapPos();
+            }
             textView(row.valueTooltip);
             ImGui::EndTooltip();
         }
