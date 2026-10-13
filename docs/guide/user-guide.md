@@ -438,7 +438,7 @@ In Process Details the Overview's Identity, Runtime and Actions sections are bor
 What the Processes table shows for a process is also on its Overview:
 - **Status:** the **State** row carries it after a middle dot ("Running · Efficiency Mode", "Sleeping · Suspended").
 - **Affinity:** the Identity card has an **Affinity** row, written as the Affinity column writes it ("0-3,8"). A list too long for the card is clipped, with the whole list in its tooltip. It reads "N/A" for a process whose affinity can't be read.
-- **Page faults and Mem %:** the Resources chart's value strip has **Page Faults (total)**, the cumulative count, beside the rate it plots. The Memory chart's strip has **Mem %**, its share of RAM. Neither is plotted, so their swatches are blank.
+- **Page faults and Mem %:** the Resources chart's value strip has **Page Faults (total)**, the cumulative count, beside the rate it plots. The Memory chart's strip has **Mem %**, its share of RAM, and on Linux **Private** and **Swap**, the Private and Swap columns' values. None of these is plotted, so their swatches are blank.
 
 Each appears only where the platform reads it.
 

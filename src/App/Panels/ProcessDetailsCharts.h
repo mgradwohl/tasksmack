@@ -50,6 +50,8 @@ struct ProcessChartContext
     bool hasSharedMemory = false; ///< ProcessCapabilities::hasSharedMemory: draw the Shared line (#1035)
     bool hasPowerUsage = false;   ///< ProcessCapabilities::hasPowerUsage: draw the Power chart (#1028)
     bool hasPageFaults = false;   ///< ProcessCapabilities::hasPageFaults: the Resources strip's total (#1878)
+    bool hasPrivateBytes = false; ///< ProcessCapabilities::hasPrivateBytes: the Memory strip's Private (#1885)
+    bool hasSwapBytes = false;    ///< ProcessCapabilities::hasSwapBytes: the Memory strip's Swap (#1885)
 };
 
 /// The chart tabs' content for the process Process Details shows.

@@ -234,6 +234,8 @@ ProcessChartContext ProcessDetailsPanel::chartContext() const
         .hasSharedMemory = m_ProcessCapabilities.hasSharedMemory,
         .hasPowerUsage = m_ProcessCapabilities.hasPowerUsage,
         .hasPageFaults = m_ProcessCapabilities.hasPageFaults,
+        .hasPrivateBytes = m_ProcessCapabilities.hasPrivateBytes,
+        .hasSwapBytes = m_ProcessCapabilities.hasSwapBytes,
     };
 }
 
