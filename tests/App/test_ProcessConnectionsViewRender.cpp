@@ -287,5 +287,49 @@ TEST_F(ProcessConnectionsViewRenderTest, StaysWithinANarrowPane)
     EXPECT_LE(geometry.outerMaxX, NARROW) << "the columns shrink to the pane; long addresses clip, with a tooltip";
 }
 
+TEST_F(ProcessConnectionsViewRenderTest, LongIPv6EndpointsKeepTheirPortsInANarrowPane)
+{
+    // #1942: five sockets on one temporary IPv6 address, told apart only by their local ports. Cut at
+    // the end, every row read "[2605:59ca:2160:bf10:6129:8032:850a:".
+    const std::array<std::uint8_t, 16> local{
+        0x26, 0x05, 0x59, 0xca, 0x21, 0x60, 0xbf, 0x10, 0x61, 0x29, 0x80, 0x32, 0x85, 0x0a, 0x4a, 0x31};
+    const std::array<std::uint8_t, 16> remote{0x26, 0x07, 0x6b, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10};
+    Platform::ConnectionsReadResult result{.status = Platform::ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
+    for (std::uint16_t port = 50747; port < 50752; ++port)
+    {
+        result.connections.push_back(ProcessConnection{.protocol = ConnectionProtocol::Tcp,
+                                                       .family = ConnectionFamily::IPv6,
+                                                       .local = {.address = local, .port = port},
+                                                       .remote = {.address = remote, .port = 443},
+                                                       .state = ConnectionState::Established});
+    }
+    ProcessConnectionsView view;
+    view.applyResult(result);
+    ASSERT_EQ(view.rows()[0].local, "[2605:59ca:2160:bf10:6129:8032:850a:4a31]:50747");
+
+    constexpr float NARROW = 560.0F;
+    std::string text;
+    for (int frame = 0; frame < 3; ++frame) // the table settles its column widths over the first frames
+    {
+        text.clear();
+        runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+                view.render(true);
+                text = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+            },
+            NARROW);
+    }
+    EXPECT_FALSE(text.contains("[2605:59ca:2160:bf10:6129:8032:850a:4a31]")) << "the pane is too narrow for it whole:\n" << text;
+    for (std::uint16_t port = 50747; port < 50752; ++port)
+    {
+        EXPECT_TRUE(text.contains("]:" + std::to_string(port))) << port << " is what tells the rows apart:\n" << text;
+    }
+    EXPECT_TRUE(text.contains("[2605:")) << "and the start of the address stays:\n" << text;
+}
+
 } // namespace
 } // namespace App

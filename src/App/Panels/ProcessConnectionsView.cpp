@@ -1,6 +1,8 @@
 #include "ProcessConnectionsView.h"
 
+#include "Domain/ProcessConnections.h"
 #include "Platform/IProcessConnections.h"
+#include "UI/CellText.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -17,21 +19,13 @@ namespace App
 namespace
 {
 
-/// Draws @p text in the current cell, clipped by the column, with the whole of it in a tooltip when
-/// it does not fit (a long IPv6 address in a narrow pane).
-void cellText(std::string_view text)
+/// Draws an endpoint in the current cell. One too long for its column ("[2605:59ca:...:4a31]:50747" in
+/// a narrow pane) is cut in the middle of its address, never its port: the port is what tells a
+/// process's sockets apart, and with it cut off, rows sharing an address read the same (#1942). The
+/// whole endpoint is the cell's tooltip.
+void endpointCell(std::string_view endpoint)
 {
-    // The width the text really has, taken before the text moves the cursor.
-    const float available = ImGui::GetContentRegionAvail().x;
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && ImGui::CalcTextSize(text.data(), text.data() + text.size()).x > available)
-    {
-        if (ImGui::BeginTooltip())
-        {
-            ImGui::TextUnformatted(text.data(), text.data() + text.size());
-            ImGui::EndTooltip();
-        }
-    }
+    UI::Widgets::cellTextKeepingTail(endpoint, Domain::Connections::endpointPortSuffixLength(endpoint));
 }
 
 } // namespace
@@ -121,13 +115,13 @@ void ProcessConnectionsView::renderTable()
             const Row& row = m_Rows[static_cast<std::size_t>(i)];
             ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
             ImGui::TableNextColumn();
-            cellText(row.protocol);
+            UI::Widgets::cellText(row.protocol);
             ImGui::TableNextColumn();
-            cellText(row.local);
+            endpointCell(row.local);
             ImGui::TableNextColumn();
-            cellText(row.remote);
+            endpointCell(row.remote);
             ImGui::TableNextColumn();
-            cellText(row.state);
+            UI::Widgets::cellText(row.state);
         }
     }
     ImGui::EndTable();

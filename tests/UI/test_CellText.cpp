@@ -9,6 +9,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // GImGui->LogBuffer
 
+#include <algorithm>
 #include <cfloat>
 #include <cstddef>
 #include <functional>
@@ -76,6 +77,150 @@ TEST(CellTextLayoutTest, NonFiniteWidthsNeverClip)
     const CellTextLayout layout = cellTextLayout(80.0F, NOT_A_NUMBER, /*rightAligned=*/true);
     EXPECT_FALSE(layout.clipped);
     EXPECT_FLOAT_EQ(layout.offsetX, 0.0F);
+}
+
+// ---- Cut in the middle, keeping the tail (#1942) ----
+
+/// One pixel per character (UTF-8 code point), the ellipsis included: widths a test can count.
+[[nodiscard]] float characterCount(std::string_view text)
+{
+    float count = 0.0F;
+    for (const char byte : text)
+    {
+        count += ((static_cast<unsigned char>(byte) & 0xC0U) != 0x80U) ? 1.0F : 0.0F;
+    }
+    return count;
+}
+
+/// Whether @p text is whole UTF-8 characters: no sequence cut short, no stray continuation byte.
+[[nodiscard]] bool isWholeUtf8(std::string_view text)
+{
+    std::size_t i = 0;
+    while (i < text.size())
+    {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        std::size_t length = 1;
+        if ((lead & 0xE0U) == 0xC0U)
+        {
+            length = 2;
+        }
+        else if ((lead & 0xF0U) == 0xE0U)
+        {
+            length = 3;
+        }
+        else if ((lead & 0xF8U) == 0xF0U)
+        {
+            length = 4;
+        }
+        else if ((lead & 0xC0U) == 0x80U)
+        {
+            return false;
+        }
+        if (i + length > text.size())
+        {
+            return false;
+        }
+        for (std::size_t j = 1; j < length; ++j)
+        {
+            if ((static_cast<unsigned char>(text[i + j]) & 0xC0U) != 0x80U)
+            {
+                return false;
+            }
+        }
+        i += length;
+    }
+    return true;
+}
+
+constexpr std::string_view LONG_IPV6 = "[2605:59ca:2160:bf10:6129:8032:850a:4a31]:50747";
+constexpr std::string_view IPV6_PORT_SUFFIX = "]:50747";
+constexpr std::string_view ELLIPSIS = MIDDLE_ELLIPSIS;
+
+/// "<head>…<tail>": what a cut reads as.
+[[nodiscard]] std::string cut(std::string_view head, std::string_view tail)
+{
+    return std::string(head).append(ELLIPSIS).append(tail);
+}
+
+[[nodiscard]] std::string fitByCount(std::string_view text, std::size_t tailBytes, float budget)
+{
+    return middleEllipsize(text, tailBytes, budget, characterCount);
+}
+
+TEST(MiddleEllipsizeTest, TextThatFitsIsUnchanged)
+{
+    EXPECT_EQ(fitByCount("[::]:22", 3, 7.0F), "[::]:22");
+    EXPECT_EQ(fitByCount("10.0.0.5:55026", 6, 40.0F), "10.0.0.5:55026");
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), characterCount(LONG_IPV6)), LONG_IPV6);
+    EXPECT_EQ(fitByCount("", 0, 0.0F), "");
+}
+
+TEST(MiddleEllipsizeTest, CutsTheMiddleSharingTheRoomBetweenStartAndEnd)
+{
+    // The issue's rows: the start of the address, its last groups, and the port.
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), 26.0F), cut("[2605:59c", "850a:4a31]:50747"));
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), 9.0F), cut("[", "]:50747"));
+}
+
+TEST(MiddleEllipsizeTest, ThePortStaysVisibleAtAnyWidthThatHoldsIt)
+{
+    const int wanted = 1 + static_cast<int>(IPV6_PORT_SUFFIX.size()); // "…]:50747"
+    for (int width = wanted; width < static_cast<int>(characterCount(LONG_IPV6)); ++width)
+    {
+        const auto budget = static_cast<float>(width);
+        const std::string fitted = fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), budget);
+        EXPECT_TRUE(fitted.ends_with(IPV6_PORT_SUFFIX)) << budget << ": " << fitted;
+        EXPECT_FLOAT_EQ(characterCount(fitted), budget) << "as much of the address as fits: " << fitted;
+        EXPECT_TRUE(LONG_IPV6.starts_with(fitted.substr(0, fitted.find(ELLIPSIS)))) << fitted;
+        EXPECT_EQ(fitted.find(ELLIPSIS), fitted.rfind(ELLIPSIS)) << "one cut: " << fitted;
+    }
+}
+
+TEST(MiddleEllipsizeTest, BelowThatTheEndOfThePortIsKeptLongest)
+{
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), 7.0F), cut("", ":50747"));
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), 6.0F), cut("", "50747"));
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), 2.0F), cut("", "7"));
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), 1.0F), cut("", ""));
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), 0.0F), cut("", "")) << "never an empty cell";
+    EXPECT_EQ(fitByCount(LONG_IPV6, IPV6_PORT_SUFFIX.size(), -5.0F), cut("", ""));
+}
+
+TEST(MiddleEllipsizeTest, IPv4KeepsItsPortToo)
+{
+    constexpr std::string_view ENDPOINT = "192.168.100.200:55026";
+    for (int width = 7; width < static_cast<int>(characterCount(ENDPOINT)); ++width)
+    {
+        const auto budget = static_cast<float>(width);
+        const std::string fitted = fitByCount(ENDPOINT, std::string_view(":55026").size(), budget);
+        EXPECT_TRUE(fitted.ends_with(":55026")) << budget << ": " << fitted;
+        EXPECT_FLOAT_EQ(characterCount(fitted), budget) << fitted;
+    }
+    EXPECT_EQ(fitByCount(ENDPOINT, 6, 12.0F), cut("192", "00:55026"));
+}
+
+TEST(MiddleEllipsizeTest, NeverSplitsAUtf8Character)
+{
+    // Two-, three- and four-byte characters on both sides of the cut, and a tail that starts inside one.
+    const std::string text = "\xC3\xA9\xC3\xA9\xE2\x82\xAC\xE2\x82\xAC\xF0\x9F\x98\x80\xF0\x9F\x98\x80\xC3\xA9:\xE2\x82\xAC\xE2\x82\xAC";
+    for (const std::size_t tailBytes : {std::size_t{0}, std::size_t{2}, std::size_t{7}, text.size(), text.size() + 4})
+    {
+        for (int width = -1; width <= static_cast<int>(characterCount(text)); ++width)
+        {
+            const auto budget = static_cast<float>(width);
+            const std::string fitted = fitByCount(text, tailBytes, budget);
+            EXPECT_TRUE(isWholeUtf8(fitted)) << "tail " << tailBytes << ", budget " << budget;
+            EXPECT_LE(characterCount(fitted), std::max(budget, 1.0F)) << "tail " << tailBytes << ", budget " << budget;
+        }
+    }
+    // A tail starting inside a character keeps that character whole.
+    EXPECT_EQ(fitByCount(text, 2, 2.0F), cut("", "\xE2\x82\xAC")) << "the last 2 bytes are part of a euro sign";
+}
+
+TEST(MiddleEllipsizeTest, UsesTheEllipsisItIsGiven)
+{
+    // The font's own ellipsis character, which cellTextKeepingTail() passes.
+    EXPECT_EQ(middleEllipsize("abcdefghij:42", 3, 7.0F, characterCount, "~"), "ab~j:42");
 }
 
 // ---- Drawn headless ----
@@ -307,6 +452,61 @@ TEST_F(CellTextRenderTest, AClippedCellReportsItsWholeWidthToTheLayoutUnlessAske
         }));
     EXPECT_FLOAT_EQ(fullAdvance, wholeText);
     EXPECT_LT(cellAdvance, wholeText);
+}
+
+TEST_F(CellTextRenderTest, AnEndpointTooWideIsCutInTheMiddleKeepingItsPort)
+{
+    // #1942: a trailing ellipsis would cut off the port, the part that tells rows apart.
+    float avail = 0.0F;
+    float drawnWidth = 0.0F;
+    std::string logged;
+    DrawnCell drawn;
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        logged = runFrame(
+            [&]
+            {
+                avail = ImGui::GetContentRegionAvail().x;
+                drawn.result = cellTextKeepingTail(LONG_IPV6, IPV6_PORT_SUFFIX.size());
+                drawn.itemRect = GImGui->LastItemData.Rect;
+            });
+    }
+    ASSERT_LT(avail, ImGui::CalcTextSize(LONG_IPV6.data(), LONG_IPV6.data() + LONG_IPV6.size()).x);
+    EXPECT_TRUE(drawn.result.clipped);
+    EXPECT_FLOAT_EQ(drawn.itemRect.GetWidth(), avail);
+    EXPECT_FALSE(logged.contains(LONG_IPV6)) << logged;
+    // What it drew: the start of the address, the font's ellipsis, and the port, within the cell.
+    const std::size_t port = logged.find(IPV6_PORT_SUFFIX);
+    ASSERT_NE(port, std::string::npos) << logged;
+    const std::size_t start = logged.find("[2");
+    ASSERT_LT(start, port) << logged;
+    const std::string shown = logged.substr(start, port + IPV6_PORT_SUFFIX.size() - start);
+    static_cast<void>(runFrame([&] { drawnWidth = ImGui::CalcTextSize(shown.c_str()).x; }));
+    EXPECT_LE(drawnWidth, avail + CELL_CLIP_TOLERANCE_PX) << shown;
+
+    // On hover, the whole endpoint.
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(drawn.itemRect.GetCenter().x, drawn.itemRect.GetCenter().y);
+    io.DeltaTime = 0.25F;
+    for (int frame = 0; frame < 6 && !drawn.result.tooltipShown; ++frame)
+    {
+        logged = runFrame([&] { drawn.result = cellTextKeepingTail(LONG_IPV6, IPV6_PORT_SUFFIX.size()); });
+    }
+    EXPECT_TRUE(drawn.result.tooltipShown);
+    EXPECT_TRUE(logged.contains(LONG_IPV6)) << logged;
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+}
+
+TEST_F(CellTextRenderTest, AnEndpointThatFitsIsDrawnWhole)
+{
+    std::string logged;
+    CellTextResult result;
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        logged = runFrame([&] { result = cellTextKeepingTail("[::]:22", 3); });
+    }
+    EXPECT_FALSE(result.clipped);
+    EXPECT_TRUE(logged.contains("[::]:22"));
 }
 
 } // namespace

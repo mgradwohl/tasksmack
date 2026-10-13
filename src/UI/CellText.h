@@ -5,10 +5,16 @@
 // genuinely that short: "systemd-r" cut from "systemd-resolve", or a hex address missing its last
 // digit, reads as a plausible value in its own right. The fit decision is pure and ImGui-free, so it
 // is unit-testable on its own; cellText() draws it.
+//
+// A value told apart by its end -- a network endpoint's port -- is cut in the middle instead
+// (#1942): middleEllipsize() fits it, keeping its tail, and cellTextKeepingTail() draws it.
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace UI::Widgets
 {
@@ -59,6 +65,108 @@ struct CellTextLayout
     return {.offsetX = offsetX, .itemWidth = textWidthPx, .clipped = false};
 }
 
+/// The ellipsis middleEllipsize() puts in place of what it cuts: U+2026 HORIZONTAL ELLIPSIS.
+inline constexpr std::string_view MIDDLE_ELLIPSIS = "\xE2\x80\xA6";
+
+/// @p text cut short in the middle to fit @p budgetPx: as much of its start as fits, an ellipsis, and
+/// its end, never fewer than its last @p tailBytes -- the part that tells one value from another, an
+/// endpoint's "]:50747" (#1942). What room there is beyond that tail is shared between the start and
+/// the rest of the end, a character at a time, so "[2605:59ca:2160:bf10:6129:8032:850a:4a31]:50747"
+/// reads as "[2605:59c…850a:4a31]:50747". Text that fits is returned whole.
+///
+/// The tail is given up last, from its front, only when not even "…<tail>" fits: what is left is
+/// still its end ("…50747"), and below that just the ellipsis. Cuts are made only at UTF-8
+/// character boundaries.
+///
+/// @param measure   The pixel width of a string, e.g. ImGui::CalcTextSize(...).x; widths are taken
+///                  to grow with the text, as a font's advances do.
+/// @param ellipsis  What marks the cut: MIDDLE_ELLIPSIS, or the font's own ellipsis character.
+template<typename Measure>
+[[nodiscard]] std::string middleEllipsize(
+    std::string_view text, std::size_t tailBytes, float budgetPx, const Measure& measure, std::string_view ellipsis = MIDDLE_ELLIPSIS)
+{
+    if (!isCellTextClipped(measure(text), budgetPx))
+    {
+        return std::string(text);
+    }
+
+    // Where each character starts, and the end: cuts go only there.
+    std::vector<std::size_t> starts;
+    starts.reserve(text.size() + 1);
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        if ((static_cast<unsigned char>(text[i]) & 0xC0U) != 0x80U)
+        {
+            starts.push_back(i);
+        }
+    }
+    starts.push_back(text.size());
+    const std::size_t characters = starts.size() - 1;
+
+    // The kept tail: whole characters, at least tailBytes of them.
+    const std::size_t tailFrom = text.size() - std::min(tailBytes, text.size());
+    std::size_t tailCharacters = 0;
+    while (tailCharacters < characters && starts[characters - tailCharacters - 1] >= tailFrom)
+    {
+        ++tailCharacters;
+    }
+    if (tailCharacters == 0 && tailFrom < text.size())
+    {
+        tailCharacters = 1; // the tail starts inside a character: keep that character whole
+    }
+
+    std::string candidate;
+    candidate.reserve(text.size() + ellipsis.size());
+    // The first @p head characters, the ellipsis, and the last @p tail.
+    const auto build = [&](std::size_t head, std::size_t tail) -> std::string_view
+    {
+        candidate.assign(text.substr(0, starts[head])).append(ellipsis).append(text.substr(starts[characters - tail]));
+        return candidate;
+    };
+    const auto fits = [&](std::string_view shown)
+    {
+        return !isCellTextClipped(measure(shown), budgetPx);
+    };
+    // The largest n in [0, limit] for which fitsWith(n) holds, given fitsWith(0) does and widths grow with n.
+    const auto largest = [](std::size_t limit, const auto& fitsWith)
+    {
+        std::size_t lo = 0;
+        std::size_t hi = limit;
+        while (lo < hi)
+        {
+            const std::size_t mid = lo + ((hi - lo + 1) / 2);
+            if (fitsWith(mid))
+            {
+                lo = mid;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
+        }
+        return lo;
+    };
+
+    if (!fits(build(0, tailCharacters)))
+    {
+        // Not even the ellipsis and the whole tail: as much of the tail's end as fits after it.
+        const std::size_t kept = largest(tailCharacters, [&](std::size_t n) { return n == 0 || fits(build(0, n)); });
+        static_cast<void>(build(0, kept));
+        return candidate;
+    }
+
+    // The tail fits: share the characters before it between the start and the end, the start taking
+    // the odd one. All of them would be the whole text, which does not fit.
+    const std::size_t spare = characters - tailCharacters;
+    const auto withSpare = [&](std::size_t n)
+    {
+        return build((n + 1) / 2, tailCharacters + (n / 2));
+    };
+    const std::size_t extra = largest(spare > 0 ? spare - 1 : 0, [&](std::size_t n) { return n == 0 || fits(withSpare(n)); });
+    static_cast<void>(withSpare(extra));
+    return candidate;
+}
+
 struct CellTextOptions
 {
     /// Flush right in the cell while the text fits (numbers); a clipped cell starts at its left edge.
@@ -87,5 +195,10 @@ CellTextResult cellText(std::string_view text, float textWidthPx, const CellText
 
 /// cellText() for text not yet measured: measures it in the current font first.
 CellTextResult cellText(std::string_view text, const CellTextOptions& options = {});
+
+/// cellText() for a value told apart by its end, such as a network endpoint's port (#1942): when it
+/// does not fit, it is cut in the middle by middleEllipsize(), keeping at least its last @p tailBytes,
+/// rather than at its end. The tooltip and layout are cellText()'s. Measures @p text first.
+CellTextResult cellTextKeepingTail(std::string_view text, std::size_t tailBytes, const CellTextOptions& options = {});
 
 } // namespace UI::Widgets
