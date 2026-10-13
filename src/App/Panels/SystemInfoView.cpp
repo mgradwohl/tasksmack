@@ -33,6 +33,13 @@ namespace
 {
 
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter system information...";
+constexpr const char* SHOW_IDENTIFIERS_LABEL = "Show identifiers";
+constexpr const char* COPY_ALL_LABEL = ICON_FA_COPY "  Copy all";
+constexpr const char* SAVE_REPORT_LABEL = ICON_FA_FLOPPY_DISK "  Save report...";
+constexpr const char* REFRESH_LABEL = ICON_FA_ARROWS_ROTATE "  Refresh";
+constexpr const char* READING_TEXT = "Reading...";
+/// The read time's label, dropped when the toolbar is too narrow for it (#1922).
+constexpr std::string_view READ_AT_PREFIX = "Read at ";
 
 void textView(std::string_view text)
 {
@@ -50,7 +57,7 @@ void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot,
         state.sections = SystemInfo::buildSystemInfoSections(snapshot, state.host, capabilities);
         state.sectionsVersion = snapshot.version;
         const std::string when = UI::Format::formatEpochDateTime(snapshot.readAtUnixSeconds);
-        state.readAtText = when.empty() ? std::string{} : "Read at " + when.substr(when.find(' ') + 1);
+        state.readAtText = when.empty() ? std::string{} : std::string{READ_AT_PREFIX} + when.substr(when.find(' ') + 1);
     }
     if (state.visibleVersion == state.sectionsVersion && state.visibleFilter == state.filter &&
         state.visibleShowIdentifiers == state.showIdentifiers)
@@ -77,11 +84,36 @@ struct ToolbarClicks
 };
 
 /// The filter box, Show identifiers, Copy all, Save report..., Refresh and when the facts were read;
-/// under them, the last save's note.
+/// under them, the last save's note. At narrow widths the box narrows, then the time drops its
+/// "Read at" (#1922): see SystemInfo::computeToolbarLayout().
 ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::ColorScheme& scheme)
 {
-    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
-        ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const auto textWidth = [](std::string_view text)
+    {
+        return ImGui::CalcTextSize(text.data(), text.data() + text.size()).x;
+    };
+    const auto buttonWidth = [&](std::string_view label)
+    {
+        return textWidth(label) + (style.FramePadding.x * 2.0F);
+    };
+    const std::string_view readAtFull = reading ? std::string_view{READING_TEXT} : std::string_view{state.readAtText};
+    const std::string_view readAtShort = readAtFull.starts_with(READ_AT_PREFIX) ? readAtFull.substr(READ_AT_PREFIX.size()) : readAtFull;
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    const float hintWidth = textWidth(FILTER_HINT);
+    const float checkboxWidth = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + textWidth(SHOW_IDENTIFIERS_LABEL);
+    const SystemInfo::ToolbarLayout layout = SystemInfo::computeToolbarLayout({
+        .rowPx = rowWidth,
+        .filterWantedPx = ProcessTableLayout::computeFilterWidth(hintWidth, style.FramePadding.x, ImGui::GetFontSize(), rowWidth),
+        .filterHintPx = hintWidth + (style.FramePadding.x * 2.0F),
+        .controlsPx = (style.ItemSpacing.x * 5.0F) + checkboxWidth + buttonWidth(COPY_ALL_LABEL) + buttonWidth(SAVE_REPORT_LABEL) +
+                      buttonWidth(REFRESH_LABEL),
+        .readAtFullPx = textWidth(readAtFull),
+        .readAtShortPx = textWidth(readAtShort),
+    });
+    state.readAtForm = layout.readAt;
+
+    ImGui::SetNextItemWidth(layout.filterPx);
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
@@ -89,27 +121,42 @@ ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::
     }
     ImGui::PopStyleColor();
     ImGui::SameLine();
-    UI::Widgets::outlinedCheckbox("Show identifiers", &state.showIdentifiers);
+    UI::Widgets::outlinedCheckbox(SHOW_IDENTIFIERS_LABEL, &state.showIdentifiers);
     ImGui::SetItemTooltip("Show the user, computer and domain names, and include them when copying");
     ImGui::SameLine();
-    if (ImGui::Button(ICON_FA_COPY "  Copy all"))
+    if (ImGui::Button(COPY_ALL_LABEL))
     {
         copy(SystemInfo::allSectionsText(state.sections, state.showIdentifiers), state);
     }
     ImGui::SetItemTooltip("Copy every section as plain text%s", state.showIdentifiers ? "" : " (identifiers left out)");
     ImGui::SameLine();
     ImGui::BeginDisabled(state.saveDialogOpen);
-    const bool saveReport = ImGui::Button(ICON_FA_FLOPPY_DISK "  Save report...");
+    const bool saveReport = ImGui::Button(SAVE_REPORT_LABEL);
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Save every section to a text or JSON file%s", state.showIdentifiers ? "" : " (identifiers left out)");
     ImGui::SameLine();
     ImGui::BeginDisabled(reading);
-    const bool refresh = ImGui::Button(ICON_FA_ARROWS_ROTATE "  Refresh");
+    const bool refresh = ImGui::Button(REFRESH_LABEL);
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
+    if (layout.readAt != SystemInfo::ReadAtForm::NextLine)
+    {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+    }
     ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
-    textView(reading ? std::string_view{"Reading..."} : std::string_view{state.readAtText});
+    if (layout.readAt == SystemInfo::ReadAtForm::TimeOnly)
+    {
+        textView(readAtShort);
+        if (ImGui::BeginItemTooltip())
+        {
+            textView(readAtFull);
+            ImGui::EndTooltip();
+        }
+    }
+    else
+    {
+        textView(readAtFull);
+    }
     if (!state.saveNote.empty())
     {
         textView(state.saveNote); // its own line: a saved path can be long
