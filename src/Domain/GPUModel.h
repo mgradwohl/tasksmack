@@ -287,10 +287,12 @@ class GPUModel : public ISamplable
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
     std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
     // The same two for per-process NPU data (Platform::perProcessNpuMetricsSupported() /
-    // perProcessNpuUtilizationSupported(), #1827). The per-process read's early exit needs both
-    // m_PerProcessKnownUnsupported and m_PerProcessNpuKnownUnsupported.
+    // perProcessNpuUtilizationSupported(), #1827).
     std::atomic<bool> m_PerProcessNpuKnownUnsupported{false};
     std::atomic<bool> m_PerProcessNpuUtilizationKnownUnsupported{false};
+    // Neither GPU nor NPU per-process data, once the capabilities are known: the per-process read's
+    // early exit (#1322), one flag so a rescan between the two above never reads as "neither" (#1827).
+    std::atomic<bool> m_NoPerProcessSourceKnown{false};
 
     /// One sample of a GPU's history, as its series record it: a field that was not read, or a
     /// placeholder for a refresh the GPU was missing from, is NaN (#1111, #1146).

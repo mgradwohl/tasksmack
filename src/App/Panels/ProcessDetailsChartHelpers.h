@@ -258,8 +258,8 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
                                                  const ProcessSmoothedUsage& smoothed) noexcept
 {
     return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, dedicated, shared),
-                                          {UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
-                                           UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
+                                          {UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
+                                           UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
 }
 
 /// What the GPU tab shows for @p proc and its retained @p history (gpuTabContent()). @p gpuSupported

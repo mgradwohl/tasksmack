@@ -61,8 +61,10 @@ struct ProcessSmoothedUsage
     // leaves the value where it was and shows N/A, like the I/O and network readings above.
     bool gpuUtilAvailable = false;
     bool gpuMemoryAvailable = false;
-    // The NPU tab's bars (#1869): read with the GPU figures, so gpuUtilAvailable says whether
-    // npuUtilPercent is a reading and gpuMemoryAvailable whether the NPU memory figures are.
+    // The NPU tab's bars (#1869): read under the NPU's own support (#1827), so npuUtilAvailable says
+    // whether npuUtilPercent is a reading and npuMemoryAvailable whether the NPU memory figures are.
+    bool npuUtilAvailable = false;
+    bool npuMemoryAvailable = false;
     double npuUtilPercent = 0.0;
     double npuMemoryBytes = 0.0;
     double npuDedicatedMemoryBytes = 0.0;
@@ -149,20 +151,22 @@ struct ProcessSmoothedUsage
         // reading starts afresh rather than easing up from placeholder zeros.
         smoothReading(gpuUtilPercent, gpuUtilAvailable, readings.gpuUtilization, targetGpuUtil);
         gpuUtilPercent = UI::Format::clampPercent(gpuUtilPercent);
-        // The NPU figures come from the same read, so they are readings exactly when the GPU ones are (#1869).
-        smoothReading(npuUtilPercent, gpuUtilAvailable, readings.gpuUtilization, UI::Format::clampPercent(snapshot.npuUtilPercent));
-        npuUtilPercent = UI::Format::clampPercent(npuUtilPercent);
         gpuUtilAvailable = readings.gpuUtilization;
+        // The NPU figures come from the same read, under the NPU's own support (#1869, #1827).
+        smoothReading(npuUtilPercent, npuUtilAvailable, readings.npuUtilization, UI::Format::clampPercent(snapshot.npuUtilPercent));
+        npuUtilPercent = UI::Format::clampPercent(npuUtilPercent);
+        npuUtilAvailable = readings.npuUtilization;
         smoothReading(gpuMemoryBytes, gpuMemoryAvailable, readings.gpuPerProcess, targetGpuMem);
         gpuMemoryBytes = std::max(0.0, gpuMemoryBytes);
         const auto smoothNpuBytes = [&](double& value, std::uint64_t reading)
         {
-            smoothReading(value, gpuMemoryAvailable, readings.gpuPerProcess, Domain::Numeric::toDouble(reading));
+            smoothReading(value, npuMemoryAvailable, readings.npuPerProcess, Domain::Numeric::toDouble(reading));
             value = std::max(0.0, value);
         };
         smoothNpuBytes(npuMemoryBytes, snapshot.npuMemoryBytes);
         smoothNpuBytes(npuDedicatedMemoryBytes, snapshot.npuDedicatedMemoryBytes);
         smoothNpuBytes(npuSharedMemoryBytes, snapshot.npuSharedMemoryBytes);
+        npuMemoryAvailable = readings.npuPerProcess;
         gpuMemoryAvailable = readings.gpuPerProcess;
         // A sample with no GDI reading isn't smoothed toward 0: the NowBar shows N/A for it instead,
         // matching the gap in the line, and the next reading starts afresh (#1148).

@@ -526,6 +526,12 @@ TEST(ProcessRowFormatTest, NpuCellsAreUnavailableWithoutAnAcceleratorOrAReading)
     expectUnavailable(failedRead.npuPercent, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
     expectUnavailable(failedRead.npuMemory, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
 
+    // NPU data alone (#1827): a failed read is still why its cells are empty, not a measured zero.
+    ProcessRowFormat::RowFormatOptions npuOnlyFailed;
+    npuOnlyFailed.hasPerProcessGpu = false;
+    npuOnlyFailed.gpuReadFailed = true;
+    expectUnavailable(buildRowFormatCache(snap, npuOnlyFailed).npuMemory, ProcessRowFormat::GPU_READ_FAILED_CELL_REASON);
+
     snap.gpuFieldsRead = false;
     const RowFormatCache notYet = buildRowFormatCache(snap);
     expectUnavailable(notYet.npuPercent, ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);

@@ -1688,10 +1688,10 @@ void ProcessDetailsCharts::renderNpuUsageCard(const ProcessChartContext& ctx)
             ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 1.0F); // As the GPU table: no first-frame NaN
 
             const ImVec4 utilColor = theme.scheme().gpuUtilization;
-            row(LABEL_UTILIZATION, Detail::gpuUtilizationText(smoothed.gpuUtilAvailable, smoothed.npuUtilPercent), &utilColor);
+            row(LABEL_UTILIZATION, Detail::gpuUtilizationText(smoothed.npuUtilAvailable, smoothed.npuUtilPercent), &utilColor);
             const ImVec4 memColor = theme.scheme().gpuMemory;
             row(LABEL_MEMORY,
-                smoothed.gpuMemoryAvailable ? UI::Format::formatBytes(smoothed.npuMemoryBytes) : std::string("N/A"),
+                smoothed.npuMemoryAvailable ? UI::Format::formatBytes(smoothed.npuMemoryBytes) : std::string("N/A"),
                 &memColor);
             if (Detail::showsGpuMemoryKinds(proc.npuMemoryBytes, proc.npuDedicatedMemoryBytes, proc.npuSharedMemoryBytes))
             {
@@ -1730,7 +1730,7 @@ void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx
                                 .nowBarColumns = Detail::PROCESS_NPU_NOW_BAR_COLUMNS},
                                axis,
                                tailSpan(history.series(ProcessSeries::NpuUtil), axis.alignedCount),
-                               smoothed.gpuUtilAvailable,
+                               smoothed.npuUtilAvailable,
                                smoothed.npuUtilPercent,
                                ctx.historyGeneration,
                                fill);
@@ -1745,10 +1745,10 @@ void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx
     const auto memBar = [&smoothed, memAxisUpper](const char* label, double bytes, const ImVec4& color)
     {
         return NowBar{
-            .valueText = smoothed.gpuMemoryAvailable ? UI::Format::formatBytes(bytes) : std::string("N/A"),
+            .valueText = smoothed.npuMemoryAvailable ? UI::Format::formatBytes(bytes) : std::string("N/A"),
             .label = label,
             .tooltipText = {},
-            .value01 = smoothed.gpuMemoryAvailable ? UI::Widgets::normalizeToUnitInterval(bytes, memAxisUpper) : 0.0,
+            .value01 = smoothed.npuMemoryAvailable ? UI::Widgets::normalizeToUnitInterval(bytes, memAxisUpper) : 0.0,
             .color = color,
         };
     };

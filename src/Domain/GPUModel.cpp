@@ -318,6 +318,7 @@ GPUModel::GPUModel(std::unique_ptr<Platform::IGPUProbe> probe)
         m_PerProcessUtilizationKnownUnsupported.store(true, std::memory_order_release);
         m_PerProcessNpuKnownUnsupported.store(true, std::memory_order_release);
         m_PerProcessNpuUtilizationKnownUnsupported.store(true, std::memory_order_release);
+        m_NoPerProcessSourceKnown.store(true, std::memory_order_release);
         return;
     }
 
@@ -707,7 +708,7 @@ Platform::GPUCapabilities GPUModel::capabilities() const
 std::vector<Platform::ProcessGPUCounters> GPUModel::readProcessGPUCounters() const
 {
     // m_Capabilities and m_CapabilitiesKnown can be re-read by the sampler thread (rescanGPUs()),
-    // so this reads m_PerProcessKnownUnsupported, the atomic flag written alongside them -- not
+    // so this reads m_NoPerProcessSourceKnown, the atomic flag written alongside them -- not
     // the fields under a shared m_Mutex, which cost this hot early exit ~60% (#1322), nor the
     // probe lock, which a slow probe read holds.
     // The flag folds in m_CapabilitiesKnown deliberately: if the capabilities() query
@@ -732,8 +733,11 @@ GPUModel::ProcessGPUReading GPUModel::readProcessGPUData() const
     {
         return {};
     }
-    // The hot early exit described above: neither GPU nor NPU per-process data, and nothing read.
-    if (m_PerProcessKnownUnsupported.load(std::memory_order_acquire) && m_PerProcessNpuKnownUnsupported.load(std::memory_order_acquire))
+    // The hot early exit described above: neither GPU nor NPU per-process data, and nothing read. One
+    // flag for both, stored in one go: two loads could see a rescan that moves support from the GPU
+    // to the NPU half-way, as neither (#1827). The flags the read then runs under are taken under the
+    // probe lock, which a rescan holds.
+    if (m_NoPerProcessSourceKnown.load(std::memory_order_acquire))
     {
         return {};
     }
@@ -748,6 +752,8 @@ void GPUModel::storePerProcessSupport() noexcept
     m_PerProcessNpuKnownUnsupported.store(!Platform::perProcessNpuMetricsSupported(m_Capabilities), std::memory_order_release);
     m_PerProcessNpuUtilizationKnownUnsupported.store(!Platform::perProcessNpuUtilizationSupported(m_Capabilities),
                                                      std::memory_order_release);
+    m_NoPerProcessSourceKnown.store(!m_Capabilities.hasPerProcessMetrics && !Platform::perProcessNpuMetricsSupported(m_Capabilities),
+                                    std::memory_order_release);
 }
 
 GPUModel::ProcessGPUReading GPUModel::readProcessGPUDataLocked() const

@@ -431,7 +431,9 @@ TEST(ProcessDetailsChartHelpersTest, NpuMemoryAxisCoversBothSeriesAndReadBars)
     EXPECT_DOUBLE_EQ(npuMemoryAxisDataMax(time, 0.0, dedicated, shared, smoothed), 300.0);
     smoothed.npuSharedMemoryBytes = 900.0;
     EXPECT_DOUBLE_EQ(npuMemoryAxisDataMax(time, 0.0, dedicated, shared, smoothed), 300.0) << "No reading: the bar shows N/A";
-    smoothed.gpuMemoryAvailable = true;
+    smoothed.gpuMemoryAvailable = true; // The GPU's reading isn't the NPU's (#1827)
+    EXPECT_DOUBLE_EQ(npuMemoryAxisDataMax(time, 0.0, dedicated, shared, smoothed), 300.0);
+    smoothed.npuMemoryAvailable = true;
     EXPECT_DOUBLE_EQ(npuMemoryAxisDataMax(time, 0.0, dedicated, shared, smoothed), 900.0);
 }
 

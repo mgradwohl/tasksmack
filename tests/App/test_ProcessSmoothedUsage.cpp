@@ -28,7 +28,14 @@ constexpr float LONG_GAP_SECONDS = 60.0F;
 constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
 
 /// Every reading available, as from a probe that supports them all.
-constexpr SampleRateReadings ALL_READINGS{.io = true, .network = true, .gpuPerProcess = true, .gpuUtilization = true, .gpuSupported = true};
+constexpr SampleRateReadings ALL_READINGS{.io = true,
+                                          .network = true,
+                                          .gpuPerProcess = true,
+                                          .gpuUtilization = true,
+                                          .gpuSupported = true,
+                                          .npuPerProcess = true,
+                                          .npuUtilization = true,
+                                          .npuSupported = true};
 
 [[nodiscard]] Domain::ProcessSnapshot sampleAt(double cpuPercent, std::uint64_t memoryBytes)
 {
@@ -197,7 +204,7 @@ TEST(ProcessSmoothedUsageTest, AnUnavailableReadingHoldsItsValueAndTheNextStarts
 
 // #1869: the NPU tab's bars follow the NPU figures, readings exactly when the GPU figures are (they
 // come from the same read): held, not eased toward zero, while unread, and taken afresh after.
-TEST(ProcessSmoothedUsageTest, TheNpuBarsAreReadWithTheGpuFigures)
+TEST(ProcessSmoothedUsageTest, TheNpuBarsAreReadUnderTheNpusOwnSupport)
 {
     auto onNpu = sampleAt(0.0, 1000);
     onNpu.npuUtilPercent = 60.0;
@@ -213,10 +220,23 @@ TEST(ProcessSmoothedUsageTest, TheNpuBarsAreReadWithTheGpuFigures)
 
     const auto unread = sampleAt(0.0, 1000); // NPU figures 0, as an unread sample's are
     usage.update(unread, SampleRateReadings{}, FRAME_SECONDS, REFRESH);
-    EXPECT_FALSE(usage.gpuUtilAvailable);
-    EXPECT_FALSE(usage.gpuMemoryAvailable);
+    EXPECT_FALSE(usage.npuUtilAvailable);
+    EXPECT_FALSE(usage.npuMemoryAvailable);
     EXPECT_DOUBLE_EQ(usage.npuUtilPercent, 60.0);
     EXPECT_DOUBLE_EQ(usage.npuSharedMemoryBytes, 7168.0);
+
+    // GPU readings without the NPU's (#1827): the NPU bars stay unread, not the GPU's zeros.
+    usage.update(unread, {.gpuPerProcess = true, .gpuUtilization = true, .gpuSupported = true}, FRAME_SECONDS, REFRESH);
+    EXPECT_TRUE(usage.gpuUtilAvailable);
+    EXPECT_FALSE(usage.npuUtilAvailable);
+    EXPECT_FALSE(usage.npuMemoryAvailable);
+    EXPECT_DOUBLE_EQ(usage.npuSharedMemoryBytes, 7168.0);
+    // And NPU memory alone (an fdinfo read) is a reading while NPU utilization is not.
+    usage.update(onNpu, {.npuPerProcess = true, .npuSupported = true}, FRAME_SECONDS, REFRESH);
+    EXPECT_TRUE(usage.npuMemoryAvailable);
+    EXPECT_FALSE(usage.npuUtilAvailable);
+    EXPECT_FALSE(usage.gpuMemoryAvailable);
+    usage.update(unread, SampleRateReadings{}, FRAME_SECONDS, REFRESH); // Unread again: the next reading starts afresh
 
     auto back = onNpu;
     back.npuUtilPercent = 10.0;

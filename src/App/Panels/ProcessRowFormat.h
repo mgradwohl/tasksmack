@@ -386,7 +386,9 @@ struct RowFormatCache
     fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.npuSupported = options.hasPerProcessNpu; // Apart from the GPU's (#1827)
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;
-    if (options.hasPerProcessGpu)
+    // One read for the GPU and NPU figures: why it has none applies to the NPU cells too, also where only
+    // the NPU's per-process data is supported (#1827).
+    if (options.hasPerProcessGpu || options.hasPerProcessNpu)
     {
         if (options.gpuReadFailed)
         {
