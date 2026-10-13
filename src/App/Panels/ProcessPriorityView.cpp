@@ -575,13 +575,16 @@ PriorityPick renderPriorityPicker(std::int32_t shown)
 
     // Make the slider interactive with an invisible button
     ImGui::InvisibleButton("##priority_slider", ImVec2(metrics.sliderWidth, metrics.sliderHeight));
+    // Asked now, while the slider is the last item: the scale labels below are items too, and asked after
+    // them it was the "Default" label that showed the slider's tooltip (#1854).
+    const bool sliderHovered = ImGui::IsItemHovered();
     const std::int32_t picked = sliderInputNice(ctx, shown);
 
     // Draw "Low" label and "Default" label
     drawPriorityScaleLabels(ctx);
 
     // Tooltip on hover with keyboard shortcut hints
-    if (ImGui::IsItemHovered())
+    if (sliderHovered)
     {
         ImGui::SetTooltip("Nice value: -20 (highest priority) to 19 (lowest priority)\n"
                           "Lower values = higher priority (more CPU time)\n"

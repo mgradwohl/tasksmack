@@ -382,7 +382,7 @@ TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
 }
 
 // #1395: dragging the slider with the mouse sets the value from where the pointer is; past the ends it
-// gives the extremes.
+// gives the extremes. Hovering it shows its keyboard hints (#1854).
 TEST_F(ProcessPriorityViewRenderTest, DraggingTheSliderSetsTheValue)
 {
     TestMocks::MockProcessActions mock;
@@ -413,7 +413,10 @@ TEST_F(ProcessPriorityViewRenderTest, DraggingTheSliderSetsTheValue)
     }
     ASSERT_TRUE(over.has_value());
     const ImVec2 at = over.value_or(ImVec2{});
-    // (The keyboard-hints tooltip is not checked here: it follows the "Default" label, #1854.)
+    // Hovering the slider shows its keyboard hints (#1854: they used to follow the "Default" label).
+    runFrame(body);
+    const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+    EXPECT_TRUE(tooltip != nullptr && tooltip->Active);
 
     // Press on it and drag past each end.
     io.AddMouseButtonEvent(0, true);
