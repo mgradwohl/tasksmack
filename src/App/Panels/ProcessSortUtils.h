@@ -4,8 +4,11 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 
+#include <algorithm>
+#include <cctype>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace App::ProcessSortUtils
@@ -34,12 +37,30 @@ template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(boo
     return false;
 }
 
+/// The Services column's text as it sorts (#1880): A to Z ignoring case (Windows names services in
+/// mixed case: "Appinfo", "BFE", "bits"), Z to A descending; a process hosting none sorts after every
+/// one hosting some in either direction, so the hosts stay together at the top. Equal texts, and two
+/// empty ones, compare false both ways.
+[[nodiscard]] inline bool compareServicesText(std::string_view a, std::string_view b, bool ascending)
+{
+    if (a.empty() != b.empty())
+    {
+        return !a.empty();
+    }
+    const auto lessIgnoringCase = [](std::string_view lhs, std::string_view rhs)
+    {
+        return std::ranges::lexicographical_compare(
+            lhs, rhs, [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
+    };
+    return ascending ? lessIgnoringCase(a, b) : lessIgnoringCase(b, a);
+}
+
 /// The column's own key comparison, with no tie-breaker: equal keys compare false both ways.
 /// @return true if `a`'s key for `column` sorts before `b`'s in the given direction.
 [[nodiscard]] inline bool
 compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot& b, ProcessColumn column, bool ascending)
 {
-    auto compare = [ascending](const auto& lhs, const auto& rhs) -> bool
+    const auto compare = [ascending](const auto& lhs, const auto& rhs) -> bool
     {
         return ascending ? (lhs < rhs) : (rhs < lhs);
     };
@@ -117,6 +138,8 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compare(a.publisher, b.publisher);
     case ProcessColumn::Container:
         return compare(a.container, b.container);
+    case ProcessColumn::Services:
+        return compareServicesText(a.servicesText, b.servicesText, ascending);
     case ProcessColumn::Type:
         return compare(a.processType, b.processType);
     case ProcessColumn::GdiObjects:

@@ -394,7 +394,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        readCgroupFacts(pidDirFd.get(), m_CgroupRoot, factsByCgroup, counters); // cgroup freezer status, container
+        readCgroupFacts(pidDirFd.get(), m_CgroupRoot, factsByCgroup, counters); // freezer status, container, unit
         processes.push_back(std::move(counters));
     }
 
@@ -468,6 +468,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
                                .hasContainer = true,                      // From /proc/[pid]/cgroup paths
+                               .hasServices = true,                       // The systemd unit, from the same paths (#1880)
                                .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
                                .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
@@ -1023,7 +1024,8 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
         known = factsByCgroup
                     .emplace(std::string(cgroups),
                              CgroupFacts{.frozen = CgroupPath::isCgroupFrozen(cgroups, cgroupRoot),
-                                         .container = CgroupContainer::containerFromCgroups(cgroups)})
+                                         .container = CgroupContainer::containerFromCgroups(cgroups),
+                                         .serviceUnit = CgroupContainer::serviceUnitFromCgroups(cgroups)})
                     .first;
     }
     if (known->second.frozen)
@@ -1031,6 +1033,7 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
         counters.status = "Suspended"; // No special status unless frozen
     }
     counters.container = known->second.container;
+    counters.serviceUnit = known->second.serviceUnit;
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {

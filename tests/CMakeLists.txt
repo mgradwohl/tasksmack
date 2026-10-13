@@ -163,6 +163,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_CrashHistory.cpp
     Domain/test_StorageModelAllocationFailure.cpp
     Domain/test_ServiceModel.cpp
+    Domain/test_ProcessServices.cpp
     Domain/test_BackgroundSampler.cpp
     Domain/test_PriorityConfig.cpp
     Domain/test_SamplingConfig.cpp
@@ -308,6 +309,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessOpenFilesViewRender.cpp
     App/test_LazyBackgroundRead.cpp
     App/test_ProcessSecurityViewRender.cpp
+    App/test_ProcessServicesViewRender.cpp
     App/test_ServiceActionsView.cpp
     App/test_ServicesViewRender.cpp
     App/test_StartupViewRender.cpp
@@ -552,6 +554,8 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessCrashHistoryView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessOpenFilesView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessSecurityView.cpp
+    # Process Details' Services section (#1880), run headless (test_ProcessServicesViewRender.cpp)
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessServicesView.cpp
     # The Overview's CPU Details block, run headless (test_CpuDetailsBlockRender.cpp, #809)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/CpuDetailsBlock.cpp
     # The System Metrics tab's Memory & Swap, CPU Cores, Disk I/O and Network sections and the render-metrics

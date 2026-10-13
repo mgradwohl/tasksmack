@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <format>
+#include <string>
+#include <utility>
 
 namespace Core
 {
@@ -55,6 +57,32 @@ class ShowProcessDetailsEvent : public Event
     }
 
     EVENT_CLASS_TYPE(ShowProcessDetails)
+};
+
+/// Show-service request (#1880) - emitted when the user asks to see a service from somewhere other
+/// than the Services tab, e.g. Process Details' Services section. The shell switches to that tab, and
+/// the Services panel selects the service and scrolls it into view.
+class ShowServiceEvent : public Event
+{
+  public:
+    explicit ShowServiceEvent(std::string serviceName) : m_ServiceName(std::move(serviceName))
+    {}
+
+    /// The service's name (Platform::ServiceInfo::name), the key the Services table selects by.
+    [[nodiscard]] auto serviceName() const -> const std::string&
+    {
+        return m_ServiceName;
+    }
+
+    [[nodiscard]] auto toString() const -> std::string override
+    {
+        return std::format("ShowServiceEvent: {}", m_ServiceName);
+    }
+
+    EVENT_CLASS_TYPE(ShowService)
+
+  private:
+    std::string m_ServiceName;
 };
 
 /// Refresh rate changed event - emitted when user changes the sampling interval

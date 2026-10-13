@@ -6,17 +6,21 @@
 #include "App/SelectOverride.h"
 #include "App/ShellMetrics.h"
 #include "App/SyntheticScenario.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/Numeric.h"
+#include "Domain/ProcessServices.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/ServiceModel.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/IProcessSecurity.h"
+#include "Platform/IServiceProbe.h"
 #include "ProcessActionsBlock.h"
 #include "ProcessActionsView.h"
 #include "ProcessConnectionsView.h"
@@ -33,6 +37,7 @@
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSecurityView.h"
+#include "ProcessServicesView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
@@ -122,6 +127,10 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
 
     // Fade out action result message
     m_ActionsView.tick(deltaTime);
+
+    // The Services section wants the service list kept current only while it was drawn open on the
+    // last frame (#1880): not while collapsed, on another Details tab, or with this tab hidden.
+    m_ServicesSectionOpen = m_ServicesView.takeDrawnOpen();
 
     if (m_SelectedPid == -1)
     {
@@ -331,6 +340,8 @@ void ProcessDetailsPanel::renderContent()
                 m_SecurityView.render(m_HasSecurity);
                 // Likewise collapsed by default; hidden only in synthetic runs (#183)
                 m_OpenFilesView.render(m_HasOpenFiles);
+                // Likewise collapsed by default; hidden where processes' services can't be told (#1880)
+                renderServicesSection();
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick
                 if (!m_SmoothedUsage.initialized)
@@ -384,6 +395,44 @@ void ProcessDetailsPanel::renderContent()
     // block's child is skipped while the Overview is scrolled so that it is out of view, which left
     // an F9 Kill confirm pending with no dialog, refusing further F9 presses (#1493).
     m_ActionsView.renderConfirmation(m_ProcessActions.get(), selectedTarget());
+}
+
+void ProcessDetailsPanel::renderServicesSection()
+{
+    if (!m_ProcessCapabilities.hasServices)
+    {
+        return; // no section: this platform cannot tell which services a process hosts
+    }
+    // The current list's display names and states; one older than SERVICES_DATA_MAX_AGE_MS is no longer
+    // being refreshed and is not shown as current (the snapshot's names come from the same rule).
+    ProcessServicesView::ServiceList list;
+    std::shared_ptr<const Domain::ServicePublication> publication;
+    if (m_ServiceModel != nullptr)
+    {
+        const Platform::ServiceCapabilities& capabilities = m_ServiceModel->capabilities();
+        list.expected = capabilities.canEnumerate && capabilities.hasPid;
+        publication = m_ServiceModel->publication();
+        if (Domain::ProcessServices::isCurrent(*publication, std::chrono::steady_clock::now()))
+        {
+            list.publication = publication.get();
+        }
+    }
+    if (const std::optional<std::string> shown = m_ServicesView.render(true, cachedSnapshot().services, list); shown.has_value())
+    {
+        // The Services tab, with this service selected (#1880); the shell brings the tab forward.
+        Core::ShowServiceEvent event(*shown);
+        raiseEvent(event);
+    }
+}
+
+void ProcessDetailsPanel::raiseEvent(Core::Event& event)
+{
+    if (m_RaiseEvent)
+    {
+        m_RaiseEvent(event);
+        return;
+    }
+    Core::Application::get().raiseEvent(event);
 }
 
 void ProcessDetailsPanel::onEvent(Core::Event& event)
@@ -464,6 +513,7 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTi
     m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
     m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
     m_OpenFilesView.onSelectionChanged();   // Drops the previous process's open files (#183)
+    m_ServicesView.onSelectionChanged();    // Drops the previous process's services (#1880)
 
     if (pid != -1)
     {

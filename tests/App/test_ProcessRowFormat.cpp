@@ -763,5 +763,23 @@ TEST(ProcessRowFormatTest, CellsWithoutAUnitAreNotUnitAligned)
     EXPECT_EQ(fmt.ioRead.text, UNAVAILABLE_CELL_TEXT);
 }
 
+TEST(ProcessRowFormatTest, ServicesTooltipHeadingCountsTheServices)
+{
+    // #1880: the Services cell's tooltip lists the names under this line.
+    EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(1), "1 service");
+    EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(3), "3 services");
+}
+
+TEST(ProcessRowFormatTest, ServicesSupportFollowsTheOptions)
+{
+    // #1880: where the system cannot tell, the cell is the unavailable dash rather than blank.
+    const ProcessSnapshot proc;
+    ProcessRowFormat::RowFormatOptions options;
+    options.hasServices = false;
+    EXPECT_FALSE(buildRowFormatCache(proc, options).servicesSupported);
+    options.hasServices = true;
+    EXPECT_TRUE(buildRowFormatCache(proc, options).servicesSupported);
+}
+
 } // namespace
 } // namespace App

@@ -20,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <misc/cpp/imgui_stdlib.h>
@@ -144,7 +145,49 @@ void rebuildRowsIfStale(const Domain::ServicePublication& publication, ServicesV
     state.rowsAscending = state.ascending;
 }
 
+/// The row requestShowService() asked to scroll to, or -1 for none (#1880). A filter hiding a listed
+/// service is cleared and the rows rebuilt; a service the list does not have drops the request.
+[[nodiscard]] int resolveScrollRow(const Domain::ServicePublication& publication, ServicesViewState& state)
+{
+    if (!state.scrollToSelected)
+    {
+        return -1;
+    }
+    int row = serviceRowOf(state.rows, publication.services, state.selectedName);
+    if (row < 0 && !state.filter.empty() && Domain::findService(publication, state.selectedName) != nullptr)
+    {
+        state.filter.clear();
+        rebuildRowsIfStale(publication, state);
+        row = serviceRowOf(state.rows, publication.services, state.selectedName);
+    }
+    if (row < 0)
+    {
+        state.scrollToSelected = false; // not listed (any more): nothing to scroll to
+    }
+    return row;
+}
+
 } // namespace
+
+void requestShowService(ServicesViewState& state, std::string name)
+{
+    state.selectedName = std::move(name);
+    state.scrollToSelected = true;
+}
+
+int serviceRowOf(std::span<const std::size_t> rows, std::span<const Platform::ServiceInfo> services, std::string_view name) noexcept
+{
+    std::size_t row = 0;
+    while (row < rows.size())
+    {
+        if (rows[row] < services.size() && services[rows[row]].name == name)
+        {
+            return static_cast<int>(row);
+        }
+        ++row;
+    }
+    return -1;
+}
 
 std::string_view serviceStateLabel(Platform::ServiceState state) noexcept
 {
@@ -373,10 +416,17 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     }
 
     rebuildRowsIfStale(*publication, state);
+    // A service asked for from Process Details (#1880): its row is drawn even if out of view, and
+    // scrolled to.
+    const int scrollRow = resolveScrollRow(*publication, state);
 
     // The visible rows only: only they look up icons (#1800).
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(state.rows.size()));
+    if (scrollRow >= 0)
+    {
+        clipper.IncludeItemByIndex(scrollRow);
+    }
     while (clipper.Step())
     {
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row)
@@ -398,6 +448,11 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
                 ImGui::IsItemClicked(ImGuiMouseButton_Right))
             {
                 state.selectedName = service.name;
+            }
+            if (row == scrollRow)
+            {
+                ImGui::SetScrollHereY(0.5F);
+                state.scrollToSelected = false;
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             {

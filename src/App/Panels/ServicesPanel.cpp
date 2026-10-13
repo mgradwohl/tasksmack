@@ -60,6 +60,8 @@ void ServicesPanel::onDetach()
     m_Actions.reset();
     m_Sampler.reset(); // joins the sampler thread: the one place it is waited for
     m_Gate.reset();
+    m_TabShown = false;
+    m_BackgroundDemand = false;
     m_Publication.reset();
     m_Model.reset();
 }
@@ -70,26 +72,56 @@ void ServicesPanel::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
-            setActive(e.tabName() == "Services");
+            const bool shown = e.tabName() == "Services";
+            const bool showing = shown && !m_TabShown;
+            m_TabShown = shown;
+            updateSampling(showing); // current as soon as the tab shows again
+            return false;
+        });
+    // Process Details' Services section asked for a service (#1880); ShellLayer brings the tab forward.
+    dispatcher.dispatch<Core::ShowServiceEvent>(
+        [this](Core::ShowServiceEvent& e)
+        {
+            selectService(e.serviceName());
             return false;
         });
 }
 
-void ServicesPanel::setActive(bool active)
+void ServicesPanel::setBackgroundDemand(bool wanted)
+{
+    if (wanted == m_BackgroundDemand)
+    {
+        return;
+    }
+    m_BackgroundDemand = wanted;
+    updateSampling(false);
+}
+
+void ServicesPanel::selectService(std::string name)
+{
+    requestShowService(m_ViewState, std::move(name));
+}
+
+void ServicesPanel::updateSampling(bool refreshNow)
 {
     if (!m_Gate || !m_Model->capabilities().canEnumerate)
     {
         return;
     }
+    const bool wanted = m_TabShown || m_BackgroundDemand;
+    const bool opening = wanted && !m_Gate->isOpen();
     // Closing the gate returns at once; a sample in progress finishes on the sampler thread.
-    m_Gate->setOpen(active);
-    if (!active)
+    m_Gate->setOpen(wanted);
+    if (!wanted)
     {
         return;
     }
     if (m_Sampler)
     {
-        m_Sampler->requestRefresh(); // current as soon as the tab shows again
+        if (opening || refreshNow)
+        {
+            m_Sampler->requestRefresh();
+        }
         return;
     }
     // The first sample runs straight away, so the list is current as soon as the tab first shows.

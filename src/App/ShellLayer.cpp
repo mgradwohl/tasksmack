@@ -16,6 +16,7 @@
 #include "Platform/Factory.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ProcessTypes.h"
+#include "ProcessColumnConfig.h"
 #include "SelectOverride.h"
 #include "ShellHost.h"
 #include "ShellMetrics.h"
@@ -185,6 +186,16 @@ void ShellLayer::onAttach()
             // Its probe also decides whether the GPU columns can be filled at all (#1210).
             m_ProcessesPanel.setGpuModel(gpuModel);
         }
+
+        // The Services tab's list says which services each process hosts (#1880): the Services column
+        // and Process Details' Services section. Sampled by the Services panel alone, while one of them
+        // or the tab needs it (onUpdate()). Not in synthetic runs: their processes are made up, and a
+        // real service's PID would match one by accident.
+        if (Synthetic::activeScenario() == nullptr)
+        {
+            processModel->setServiceModel(m_ServicesPanel.serviceModel());
+            m_ProcessDetailsPanel.setServiceModel(m_ServicesPanel.serviceModel());
+        }
     }
 
     spdlog::info("Panels initialized");
@@ -294,6 +305,14 @@ void ShellLayer::onEvent(Core::Event& event)
             m_ShowDetailsTabRequested = true;
             return false;
         });
+    // A service asked for from Process Details' Services section (#1880): the Services panel selects
+    // it (it gets this event below, with every panel), and the next tab bar brings its tab forward.
+    dispatcher.dispatch<Core::ShowServiceEvent>(
+        [this](Core::ShowServiceEvent& /*e*/)
+        {
+            m_ShowServicesTabRequested = true;
+            return false;
+        });
     // The status bar says how often TaskSmack updates (#1200): the refresh rate every sampler follows.
     dispatcher.dispatch<Core::RefreshRateChangedEvent>(
         [this](Core::RefreshRateChangedEvent& e)
@@ -392,6 +411,12 @@ void ShellLayer::onUpdate(float deltaTime)
         static_cast<void>(m_ProcessesPanel.watchedSamplesSince(m_ProcessDetailsPanel.lastSampleVersion(), m_PendingSamples));
     }
     m_ProcessDetailsPanel.updateWithSamples(m_PendingSamples, deltaTime);
+
+    // The service list is read while the Services tab is shown, and also while the Processes table
+    // shows its Services column or Process Details' Services section is open (#1880) -- at the tab's
+    // cadence, on its sampler, and not at all once none of them needs it. Only a change does anything.
+    m_ServicesPanel.setBackgroundDemand(m_ProcessesPanel.columnSettings().isVisible(ProcessColumn::Services) ||
+                                        m_ProcessDetailsPanel.servicesSectionOpen());
 
     // Debug: Log when GPU data becomes available for the selected PID.
     // This avoids spamming logs every frame while a GPU-using process is selected.
@@ -700,8 +725,10 @@ void ShellLayer::renderTabBar()
     for (const auto& tab : m_Tabs.tabs())
     {
         const bool details = tab.eventName == "ProcessDetails";
+        const bool services = tab.eventName == "Services";
         m_TabBarItems.push_back({.label = tab.label(),
-                                 .selectRequested = (m_ShowDetailsTabRequested && details) || m_StartupTab.wantsSelected(tab.eventName),
+                                 .selectRequested = (m_ShowDetailsTabRequested && details) || (m_ShowServicesTabRequested && services) ||
+                                                    m_StartupTab.wantsSelected(tab.eventName),
                                  .icon = details ? m_DetailsTabIcon : ImTextureID_Invalid,
                                  .iconSize = details ? m_DetailsTabIconSize : 0.0F});
     }
@@ -722,6 +749,7 @@ void ShellLayer::renderTabBar()
         m_Tabs.select(*bar.selected);
     }
     m_ShowDetailsTabRequested = false;
+    m_ShowServicesTabRequested = false;
     if (const std::optional<std::string> dropped = m_StartupTab.onFrameEnd(); dropped.has_value())
     {
         spdlog::warn("{}: tab '{}' was not selected after {} frames; ignored",

@@ -134,6 +134,8 @@ gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = fals
         return caps.hasPublisher;
     case ProcessColumn::Container:
         return caps.hasContainer;
+    case ProcessColumn::Services:
+        return caps.hasServices;
     case ProcessColumn::Type:
         return caps.hasProcessType;
     default:
@@ -209,7 +211,7 @@ hasDefaultColumns(const ProcessColumnSettings& settings, const Platform::Process
     return settings == defaultColumns(caps, gpu);
 }
 
-/// What a free-text cell (Status, Publisher, Container) shows.
+/// What a free-text cell (Status, Publisher, Container, Services) shows.
 enum class TextCell : std::uint8_t
 {
     Text,        ///< The value
@@ -251,6 +253,7 @@ enum class TextCell : std::uint8_t
     options.hasStatus = caps.hasStatus;
     options.hasPublisher = caps.hasPublisher;
     options.hasContainer = caps.hasContainer;
+    options.hasServices = caps.hasServices;
     options.hasProcessType = caps.hasProcessType;
     return options;
 }

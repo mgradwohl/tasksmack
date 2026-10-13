@@ -299,6 +299,88 @@ TEST_F(ServicesStartupPanelsRenderTest, ServicesUnsupportedProbeShowsItsReasonAn
     EXPECT_EQ(fakes.probe->enumerations.count(), 0) << "no sampler is started for a probe that cannot list";
 }
 
+// #1880: the Processes table's Services column or Process Details' Services section keeps the list
+// sampled with the tab hidden, at the tab's own cadence; once neither needs it, nor the tab, it stops.
+TEST_F(ServicesStartupPanelsRenderTest, ServicesBackgroundDemandSamplesWithTheTabHidden)
+{
+    ServiceFakes fakes;
+    const auto panel = attachedServices(fakes, Platform::ServiceEnumeration::succeeded({service("Spooler", ServiceState::Running)}));
+    EXPECT_FALSE(panel->isSampling());
+
+    panel->setBackgroundDemand(true);
+    EXPECT_TRUE(panel->isSampling());
+    ASSERT_TRUE(fakes.probe->enumerations.waitFor(1)) << "the first read runs straight away";
+    panel->setBackgroundDemand(true); // every frame: only a change does anything
+    EXPECT_TRUE(panel->isSampling());
+
+    panel->setBackgroundDemand(false);
+    EXPECT_FALSE(panel->isSampling());
+
+    // The tab alone keeps it sampled; the demand going away does not stop that, the tab hiding does.
+    showTab(*panel, "Services");
+    EXPECT_TRUE(panel->isSampling());
+    panel->setBackgroundDemand(true);
+    panel->setBackgroundDemand(false);
+    EXPECT_TRUE(panel->isSampling());
+    showTab(*panel, "Processes");
+    EXPECT_FALSE(panel->isSampling());
+
+    // Wanted again later: a read straight away rather than at the next interval.
+    const int before = fakes.probe->enumerations.count();
+    panel->setBackgroundDemand(true);
+    EXPECT_TRUE(fakes.probe->enumerations.waitFor(before + 1));
+
+    panel->onDetach();
+    EXPECT_FALSE(panel->isSampling());
+    EXPECT_EQ(panel->serviceModel(), nullptr);
+}
+
+TEST_F(ServicesStartupPanelsRenderTest, ServicesBackgroundDemandNeverSamplesAProbeThatCannotList)
+{
+    Platform::ServiceCapabilities unsupported = Platform::UnsupportedServiceProbe{}.capabilities();
+    ServiceFakes fakes;
+    const auto panel = attachedServices(
+        fakes, Platform::ServiceEnumeration::failed("unsupported"), std::move(unsupported), Platform::ServiceActionCapabilities{});
+    panel->setBackgroundDemand(true);
+    EXPECT_FALSE(panel->isSampling());
+    EXPECT_EQ(fakes.probe->enumerations.count(), 0);
+}
+
+// #1880: Process Details' link raises a ShowServiceEvent: the service is selected and scrolled into view,
+// a filter hiding it cleared.
+TEST_F(ServicesStartupPanelsRenderTest, ServicesShowServiceEventSelectsAndScrollsToTheService)
+{
+    std::vector<Platform::ServiceInfo> many;
+    int index = 0;
+    while (index < 200)
+    {
+        many.push_back(service(("svc" + std::to_string(1000 + index)).c_str(), ServiceState::Running));
+        ++index;
+    }
+    ServiceFakes fakes;
+    const auto panel = attachedServices(fakes, Platform::ServiceEnumeration::succeeded(std::move(many)));
+    showTab(*panel, "Services");
+    ASSERT_TRUE(fakes.probe->enumerations.waitFor(1));
+    static_cast<void>(renderUntil(*panel, "svc1000 service"));
+    // The table's own scroll: the text log can't tell, as ImGui draws every row while it logs.
+    const auto tableScrollY = []
+    {
+        const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+        const ImGuiTable* table = (shell != nullptr) ? ImGui::TableFindByID(ImHashStr("##ServicesTable", 0, shell->ID)) : nullptr;
+        return (table != nullptr && table->InnerWindow != nullptr) ? table->InnerWindow->Scroll.y : -1.0F;
+    };
+    const std::string top = renderFrame(*panel);
+    EXPECT_TRUE(top.contains("Select a service"));
+    EXPECT_FLOAT_EQ(tableScrollY(), 0.0F);
+
+    Core::ShowServiceEvent show("svc1180");
+    panel->onEvent(show);
+    static_cast<void>(renderFrame(*panel)); // scrolled this frame
+    const std::string scrolled = renderFrame(*panel);
+    EXPECT_FALSE(scrolled.contains("Select a service")) << "the service is selected";
+    EXPECT_GT(tableScrollY(), 0.0F) << "scrolled down to row 180";
+}
+
 TEST_F(ServicesStartupPanelsRenderTest, ServicesEmptyListShowsAnEmptyTable)
 {
     ServiceFakes fakes;

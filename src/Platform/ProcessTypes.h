@@ -89,6 +89,11 @@ struct ProcessCounters
     // "<runtime>:<short id or name>", e.g. "docker:1a2b3c4d5e6f" (empty if in none)
     std::string container;
 
+    // The systemd service the process belongs to (optional, Linux-only from /proc/[pid]/cgroup; see
+    // CgroupContainer::serviceUnitFromCgroups(), #1880): "sshd.service" (empty if in none). Windows
+    // leaves it empty: its services are matched to processes by PID from the service list instead.
+    std::string serviceUnit;
+
     // Process type classification (optional, Windows-only)
     // Values: "App", "Background Process", "Windows Process" (empty if not available)
     std::string processType;
@@ -166,6 +171,9 @@ struct ProcessCapabilities
     bool hasStatus = false;             // Whether process status (Suspended, Efficiency Mode) is available
     bool hasPublisher = false;          // Whether publisher/vendor string is available (Windows PE version info)
     bool hasContainer = false;          // Whether the container a process runs in is available (Linux cgroups)
+    bool hasServices = false;           // Whether the services a process hosts are available (#1880): Linux, the
+                                        // systemd unit from its cgroup (ProcessCounters::serviceUnit); Windows,
+                                        // set by Domain::ProcessModel once a service list with PIDs is attached
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data (not

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FpsCounter.h"
@@ -132,6 +133,8 @@ class ShellLayer : public Core::Layer
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;
+    // Set by a ShowServiceEvent (#1880): the next tab bar selects the Services tab.
+    bool m_ShowServicesTabRequested = false;
     // TASKSMACK_TAB (#1559): the tab the tab bar selects at startup, resolved once in onAttach() to the
     // tab's registered id and kept until that tab reports selected (#1575).
     SelectOverride::PendingMainTab m_StartupTab;

@@ -196,7 +196,10 @@ constexpr float HEADER_TOOLTIP_WRAP_EM = 32.0F;
 /// the text a second time -- ImFontCalcTextSizeEx showed up as a real cost in interactive-frame
 /// profiling. The steps mirror ImGui::TextEx()'s common path: same position, same item size, so a
 /// cell that fits is laid out exactly as before.
-void renderCellText(std::string_view text, float textWidth, bool rightAligned)
+///
+/// @param clippedTooltip  Whether a clipped cell gets the full text as its tooltip; false for a cell
+///                        that draws its own tooltip (the Services column's list, #1880).
+void renderCellText(std::string_view text, float textWidth, bool rightAligned, bool clippedTooltip = true)
 {
     const ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems)
@@ -235,7 +238,7 @@ void renderCellText(std::string_view text, float textWidth, bool rightAligned)
     const ImVec2 measuredSize(textWidth, itemSize.y);
     ImGui::RenderTextEllipsis(window->DrawList, bounds.Min, bounds.Max, bounds.Max.x, textBegin, textEnd, &measuredSize);
 
-    if (ImGui::BeginItemTooltip())
+    if (clippedTooltip && ImGui::BeginItemTooltip())
     {
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * CLIPPED_CELL_TOOLTIP_WRAP_EM);
         ImGui::TextUnformatted(textBegin, textEnd);
@@ -517,6 +520,33 @@ void leftAlignedOrBlankCell(const Domain::ProcessSnapshot& proc, const RowFormat
         ProcessColumnAvailability::textCell(fmt.*Supported, !(proc.*Text).empty()), proc.*Text, fmt.*Width, widths.unavailableText);
 }
 
+/// The services the process hosts (#1880): their names comma-joined, left-aligned; blank for none, and
+/// the unavailable dash where this system cannot tell. Hovering the names lists them one per line,
+/// whether or not the cell had room for them all.
+void servicesCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
+{
+    const ProcessColumnAvailability::TextCell content = ProcessColumnAvailability::textCell(fmt.servicesSupported, !proc.services.empty());
+    if (content != ProcessColumnAvailability::TextCell::Text)
+    {
+        renderTextCell(content, proc.servicesText, fmt.servicesWidth, widths.unavailableText);
+        return;
+    }
+    renderCellText(
+        proc.servicesText, cachedTextWidth(proc.servicesText, fmt.servicesWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
+    if (ImGui::BeginItemTooltip())
+    {
+        const std::string heading = ProcessRowFormat::servicesTooltipHeading(proc.services.size());
+        ImGui::TextColored(UI::Theme::get().scheme().textMuted, "%s", heading.c_str());
+        std::size_t index = 0;
+        while (index < proc.services.size())
+        {
+            ImGui::TextUnformatted(proc.services[index].c_str());
+            ++index;
+        }
+        ImGui::EndTooltip();
+    }
+}
+
 /// A GPU or NPU text cell (engines, devices): blank for none, the "not available on this system" dash
 /// where per-process usage cannot be observed (@p supported false), and the unreadable dash where it
 /// can but this generation's read failed or the process started since the last read (#1210).
@@ -642,6 +672,7 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
                                        &RowFormatCache::containerWidth,
                                        &RowFormatCache::containerSupported>},
+    {.column = ProcessColumn::Services, .render = &servicesCell},
     // State
     {.column = ProcessColumn::State, .render = &stateCell},
     {.column = ProcessColumn::Status,

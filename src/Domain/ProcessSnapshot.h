@@ -3,6 +3,7 @@
 #include "Platform/CpuAffinity.h"
 #include "PriorityConfig.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -103,6 +104,13 @@ struct ProcessSnapshot
     std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
     std::string container;    // Container: "docker:1a2b3c4d5e6f", "lxc:web" (Linux cgroups; empty if in none)
     std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
+
+    // The services the process hosts (#1880), by name: Windows, those the service list gives its PID
+    // (in the list's name order); Linux, the systemd unit its cgroup names. Empty for none, or while no
+    // current service list is attached (ProcessServices::mergeInto()). servicesText is them joined with
+    // ", ", as the Services column shows and sorts them.
+    std::vector<std::string> services;
+    std::string servicesText;
 
     // Tree hierarchy (computed once per snapshot)
     std::vector<std::size_t> childrenIndices; // Indices of children within the same snapshot vector

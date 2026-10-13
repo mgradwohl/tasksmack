@@ -1198,6 +1198,22 @@ TEST(LinuxProcessProbeTest, ACgroupFileLongerThanTheStackReadIsReadWhole)
     const auto processes = probe.enumerate();
     ASSERT_EQ(processes.size(), 1U);
     EXPECT_EQ(processes[0].container, "docker:1a2b3c4d5e6f");
+    EXPECT_EQ(processes[0].serviceUnit, ""); // a container's scope is no service (#1880)
+}
+
+TEST(LinuxProcessProbeTest, TheSystemdServiceComesFromTheCgroupFile)
+{
+    // #1880: the unit the process's cgroup path names, as the Services column and Process Details show it.
+    ScopedTempDir proc("ts_test_proc_service_unit");
+    writeVmHwmProcess(proc.path, "Name:\tsshd\nUid:\t0\t0\t0\t0\n");
+    writeFile(proc.path / "4242" / "cgroup", "0::/system.slice/ssh.service\n");
+
+    LinuxProcessProbe probe(proc.path);
+    EXPECT_TRUE(probe.capabilities().hasServices);
+    const auto processes = probe.enumerate();
+    ASSERT_EQ(processes.size(), 1U);
+    EXPECT_EQ(processes[0].serviceUnit, "ssh.service");
+    EXPECT_EQ(processes[0].container, "");
 }
 
 TEST(LinuxProcessProbeTest, ReducedPrivilegesReadsCapEffUnderTheProcRoot)

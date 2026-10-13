@@ -196,6 +196,42 @@ TEST_F(ServicesViewRenderTest, TableShowsRowsAndFilters)
     EXPECT_EQ(state.rows, (std::vector<std::size_t>{0, 2}));
 }
 
+// #1880: a service asked for from Process Details is selected, and a filter hiding it is cleared so
+// its row can be scrolled to; one the list does not have drops the request.
+TEST_F(ServicesViewRenderTest, AShowRequestClearsAFilterHidingTheService)
+{
+    const auto publication = makePublication();
+    ServicesViewState state;
+    state.filter = "Windows"; // hides Spooler (Print Spooler)
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    EXPECT_EQ(serviceRowOf(state.rows, publication.services, "Spooler"), -1);
+
+    requestShowService(state, "Spooler");
+    EXPECT_EQ(state.selectedName, "Spooler");
+    EXPECT_TRUE(state.scrollToSelected);
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    EXPECT_TRUE(state.filter.empty());
+    EXPECT_GE(serviceRowOf(state.rows, publication.services, "Spooler"), 0);
+    EXPECT_FALSE(state.scrollToSelected) << "the row was drawn and scrolled to";
+
+    // A service the list doesn't have: selected, the filter kept, the request dropped.
+    state.filter = "Windows";
+    requestShowService(state, "Gone");
+    static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
+    EXPECT_EQ(state.filter, "Windows");
+    EXPECT_FALSE(state.scrollToSelected);
+}
+
+TEST(ServicesViewTest, ServiceRowOfFindsTheRowByName)
+{
+    const auto publication = makePublication();
+    const std::vector<std::size_t> rows{2, 0};
+    EXPECT_EQ(serviceRowOf(rows, publication.services, "Winmgmt"), 0);
+    EXPECT_EQ(serviceRowOf(rows, publication.services, "EventLog"), 1);
+    EXPECT_EQ(serviceRowOf(rows, publication.services, "Spooler"), -1); // filtered out
+    EXPECT_EQ(serviceRowOf({}, publication.services, "EventLog"), -1);
+}
+
 TEST_F(ServicesViewRenderTest, AFailedReadKeepsTheLastRowsMarkedOutOfDate)
 {
     auto publication = makePublication();

@@ -141,6 +141,12 @@ inline constexpr std::size_t SENSOR_HISTORY_CAPACITY =
 // tab is shown; a service changes state far less often than a process's counters do.
 inline constexpr int SERVICES_REFRESH_MS = 2000;
 
+// How old a service list may be and still say which services each process hosts (#1880): three
+// refreshes. The list is re-read at SERVICES_REFRESH_MS while the Services tab, the Processes table's
+// Services column or Process Details' Services section needs it; once none does, it stops being read,
+// and an older list is not passed off as current in the column.
+inline constexpr int SERVICES_DATA_MAX_AGE_MS = 3 * SERVICES_REFRESH_MS;
+
 // How often the Startup tab re-reads the startup entries (milliseconds) (#801). Sampled only while the
 // tab is shown; entries change only when something installs, removes or toggles one, so this is slow.
 // Within the BackgroundSampler's interval range, which clamps anything longer.

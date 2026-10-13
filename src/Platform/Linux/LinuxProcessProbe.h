@@ -271,13 +271,14 @@ class LinuxProcessProbe : public IProcessProbe
     struct CgroupFacts
     {
         bool frozen = false;
-        std::string container; // CgroupContainer::containerFromCgroups()
+        std::string container;   // CgroupContainer::containerFromCgroups()
+        std::string serviceUnit; // CgroupContainer::serviceUnitFromCgroups() (#1880)
     };
     /// The facts of each set of cgroups seen, within one pass.
     using FactsByCgroup = std::unordered_map<std::string, CgroupFacts, StringHash, std::equal_to<>>;
 
-    /// Fill `counters`' status (Suspended, from the cgroup freezer) and container from its cgroups;
-    /// /proc/[pid]/cgroup is read through `pidDirFd`. Both are worked out once per pass for each
+    /// Fill `counters`' status (Suspended, from the cgroup freezer), container and systemd service
+    /// (#1880) from its cgroups; /proc/[pid]/cgroup is read through `pidDirFd`. All are worked out once per pass for each
     /// distinct set of cgroups (`factsByCgroup`): processes sharing a cgroup share the answer.
     static void
     readCgroupFacts(int pidDirFd, const std::filesystem::path& cgroupRoot, FactsByCgroup& factsByCgroup, ProcessCounters& counters);

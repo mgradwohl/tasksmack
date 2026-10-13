@@ -6,12 +6,15 @@
 #include "Numeric.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IProcessProbe.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "PriorityConfig.h"
 #include "ProcessRowHistory.h"
+#include "ProcessServices.h"
 #include "ProcessSnapshot.h"
 #include "ProcessState.h"
 #include "SamplingConfig.h"
+#include "ServiceModel.h"
 #include "SingleLineText.h"
 
 #include <spdlog/spdlog.h>
@@ -370,11 +373,13 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // tell a process the GPU sampler's last read could have seen from one that started since (#1417).
     std::vector<Clock::time_point> firstSeen;
     std::shared_ptr<GPUModel> gpuModel;
+    std::shared_ptr<const ServiceModel> serviceModel;
     std::size_t reserveSize = 0;
 
     {
-        std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel and m_Snapshots
+        std::shared_lock const lock(m_Mutex); // Only lock to safely read m_GPUModel, m_ServiceModel and m_Snapshots
         gpuModel = m_GPUModel;
+        serviceModel = m_ServiceModel;
         // Only the previous generation's size is needed (to reserve), so no copy of it is taken.
         reserveSize = std::max(counters.size(), m_Snapshots->size());
     }
@@ -566,6 +571,23 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         gpuSupport = mergeGPUDataContained(newSnapshots, firstSeen, *gpuModel, currentSampleTime);
     }
 
+    // The services each process hosts (#1880): its own systemd unit (Linux), and those the service
+    // model's last list gives its PID, if that list is current. A snapshot read, like the GPU merge's:
+    // the service model's own sampler reads the services, never this one.
+    Platform::ProcessCapabilities publishedCapabilities = m_Capabilities;
+    {
+        std::shared_ptr<const ServicePublication> services;
+        if (serviceModel != nullptr)
+        {
+            const Platform::ServiceCapabilities& serviceCapabilities = serviceModel->capabilities();
+            publishedCapabilities.hasServices =
+                publishedCapabilities.hasServices || (serviceCapabilities.canEnumerate && serviceCapabilities.hasPid);
+            services = serviceModel->publication();
+        }
+        const bool current = services != nullptr && ProcessServices::isCurrent(*services, currentSampleTime);
+        ProcessServices::mergeInto(newSnapshots, counters, firstSeen, current ? services.get() : nullptr);
+    }
+
     // --- Build Process Tree Hierarchy ---
     {
         std::unordered_map<std::int32_t, std::size_t> pidToIndex;
@@ -652,7 +674,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         m_RowHistory.swap(newRowHistory);                 // the outgoing rings are released after the lock, with newRowHistory
         ++m_SnapshotVersion;
         ++m_SystemHistoryVersion;
-        m_PublishedCapabilities = m_Capabilities;
+        m_PublishedCapabilities = publishedCapabilities;
         m_PublishedGpuSupport = gpuSupport;
         m_SnapshotSampleTimeSeconds = sampleTimeSeconds;
 
@@ -969,6 +991,12 @@ void ProcessModel::setGPUModel(std::shared_ptr<GPUModel> gpuModel)
 {
     std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
     m_GPUModel = std::move(gpuModel);
+}
+
+void ProcessModel::setServiceModel(std::shared_ptr<const ServiceModel> serviceModel)
+{
+    std::unique_lock lock(m_Mutex); // NOLINT(misc-const-correctness) - lock guard pattern
+    m_ServiceModel = std::move(serviceModel);
 }
 
 void ProcessModel::mergeGPUData(std::vector<ProcessSnapshot>& snapshots,

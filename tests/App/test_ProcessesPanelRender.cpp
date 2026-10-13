@@ -23,11 +23,14 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Domain/GPUModel.h"
+#include "Domain/ProcessModel.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/ServiceModel.h"
 #include "Mocks/FakeClipboard.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IServiceProbe.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
@@ -721,6 +724,45 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
     EXPECT_TRUE(text.contains("Publisher")) << text;
     EXPECT_TRUE(text.contains("Container")) << text;
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+    panel->onDetach();
+}
+
+// #1880: the Services column, once a service list with PIDs is attached, lists each process's services
+// comma-joined -- blank for one hosting none -- and sorts by that text.
+TEST_F(ProcessesPanelRenderTest, TheServicesColumnListsEachProcesssServices)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Services, true);
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    // No service list yet: this system can't tell (the mock probe has no systemd units either).
+    EXPECT_FALSE(panel->processCapabilities().hasServices);
+
+    Platform::ServiceCapabilities listCaps;
+    listCaps.canEnumerate = true;
+    listCaps.hasPid = true;
+    auto serviceProbe = std::make_unique<TestMocks::MockServiceProbe>(listCaps);
+    Platform::ServiceInfo dhcp;
+    dhcp.name = "Dhcp";
+    dhcp.pid = 100;
+    Platform::ServiceInfo eventLog;
+    eventLog.name = "EventLog";
+    eventLog.pid = 100;
+    serviceProbe->setEnumeration(Platform::ServiceEnumeration::succeeded({eventLog, dhcp}));
+    const auto services = std::make_shared<Domain::ServiceModel>(std::move(serviceProbe));
+    services->sample();
+    panel->processModel()->setServiceModel(services);
+    panel->processModel()->refresh(); // the sampler's next refresh, now
+
+    std::string text;
+    int frame = 0;
+    while (!text.contains("Dhcp, EventLog") && frame < LOAD_FRAMES)
+    {
+        text = renderAndCapture(*panel);
+        ++frame;
+    }
+    EXPECT_TRUE(text.contains("Services")) << text;
+    EXPECT_TRUE(text.contains("Dhcp, EventLog")) << text; // the list's name order
+    EXPECT_TRUE(panel->processCapabilities().hasServices);
     panel->onDetach();
 }
 

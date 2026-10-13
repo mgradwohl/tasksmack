@@ -165,6 +165,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessCrashHistoryView.cpp
     src/App/Panels/ProcessOpenFilesView.cpp
     src/App/Panels/ProcessSecurityView.cpp
+    src/App/Panels/ProcessServicesView.cpp
     src/App/Panels/SystemMetricsPanel.cpp
     src/App/Panels/CpuCoresSection.cpp
     src/App/Panels/CpuDetailsBlock.cpp

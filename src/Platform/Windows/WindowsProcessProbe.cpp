@@ -1293,6 +1293,7 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasStatus = true,      // From NtQueryInformationProcess ProcessExtendedBasicInformation
         .hasPublisher = true,   // From GetFileVersionInfo on process image path
         .hasContainer = false,  // cgroup containers are Linux's
+        .hasServices = false,   // Matched by PID from the service list, by Domain::ProcessModel (#1880)
         .hasProcessType = true, // Classified from path + GetGuiResources
         .hasGdiObjects = true,  // From GetGuiResources(GR_GDIOBJECTS)
         // Non-admin + EStats access-denied: network data unavailable due to privilege. Never true

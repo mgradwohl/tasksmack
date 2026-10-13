@@ -115,10 +115,11 @@ TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
 TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
 {
     constexpr auto expected = std::to_array<std::string_view>({
-        "pid",         "name",        "user",       "ppid",       "publisher",  "container",     "state",       "status",     "type",
-        "cpu_percent", "mem_percent", "resident",   "virtual",    "shared",     "peak_resident", "nice",        "affinity",   "threads",
-        "handles",     "gdi_objects", "cpu_time",   "start_time", "io_read",    "io_write",      "page_faults", "net_sent",   "net_recv",
-        "power",       "gpu_percent", "gpu_memory", "gpu_engine", "gpu_device", "npu_percent",   "npu_memory",  "npu_engine", "command",
+        "pid",        "name",        "user",        "ppid",        "publisher",   "container",   "services",   "state",
+        "status",     "type",        "cpu_percent", "mem_percent", "resident",    "virtual",     "shared",     "peak_resident",
+        "nice",       "affinity",    "threads",     "handles",     "gdi_objects", "cpu_time",    "start_time", "io_read",
+        "io_write",   "page_faults", "net_sent",    "net_recv",    "power",       "gpu_percent", "gpu_memory", "gpu_engine",
+        "gpu_device", "npu_percent", "npu_memory",  "npu_engine",  "command",
     });
     ASSERT_EQ(expected.size(), processColumnCount());
     for (const auto col : allProcessColumns())
@@ -218,9 +219,10 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     EXPECT_EQ(toIndex(ProcessColumn::PID), 0);
     EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
     EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);   // Windows publisher — after User(2) and PPID(3)
-    EXPECT_EQ(toIndex(ProcessColumn::Container), 5);   // Linux container — last of the identity columns (#805)
-    EXPECT_EQ(toIndex(ProcessColumn::Type), 8);        // Process type — after State(6) and Status(7)
-    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 19); // GDI count — after Handles(18)
+    EXPECT_EQ(toIndex(ProcessColumn::Container), 5);   // Linux container (#805)
+    EXPECT_EQ(toIndex(ProcessColumn::Services), 6);    // Hosted services — last of the identity columns (#1880)
+    EXPECT_EQ(toIndex(ProcessColumn::Type), 9);        // Process type — after State(7) and Status(8)
+    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 20); // GDI count — after Handles(19)
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)
@@ -466,11 +468,24 @@ TEST(ProcessColumnConfigTest, NumericColumnsAreRightAligned)
     }
 }
 
+// #1880: the Services column is off by default (keeping it current reads the service list), and can be
+// shown and saved like any other.
+TEST(ProcessColumnConfigTest, TheServicesColumnIsHiddenByDefault)
+{
+    const ProcessColumnInfo info = getColumnInfo(ProcessColumn::Services);
+    EXPECT_EQ(info.name, "Services");
+    EXPECT_EQ(info.configKey, "services");
+    EXPECT_FALSE(info.defaultVisible);
+    EXPECT_TRUE(info.canHide);
+    EXPECT_FALSE(ProcessColumnSettings{}.isVisible(ProcessColumn::Services));
+}
+
 TEST(ProcessColumnConfigTest, TextColumnsAreLeftAlignedAndStateIsCentred)
 {
     for (const ProcessColumn col : {ProcessColumn::Name,
                                     ProcessColumn::User,
                                     ProcessColumn::Publisher,
+                                    ProcessColumn::Services,
                                     ProcessColumn::Status,
                                     ProcessColumn::Type,
                                     ProcessColumn::GpuEngine,

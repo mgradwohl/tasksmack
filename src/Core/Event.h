@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -15,6 +16,7 @@ enum class EventType : uint8_t
     // Application events (for UI coordination)
     ProcessSelected,
     ShowProcessDetails,
+    ShowService,
     RefreshRateChanged,
     HistoryDurationChanged,
     ActiveTabChanged,

@@ -153,15 +153,41 @@ namespace Detail
     return innermost;
 }
 
-} // namespace Detail
+/// The systemd service a cgroup path is in (#1880): the innermost unit component -- a "<name>.service"
+/// or "<name>.scope" -- when it is a service. Empty when it is a scope (a login session, an app the
+/// desktop launched, a container: "session-2.scope", "docker-<id>.scope", PID 1's "init.scope") or
+/// when no component names a unit. A subgroup a service made under its own cgroup is still the
+/// service's ("/system.slice/foo.service/worker"), and a user service under the user manager names
+/// itself ("/user.slice/user-1000.slice/user@1000.service/app.slice/pipewire.service").
+[[nodiscard]] inline std::string pathServiceUnit(std::string_view path)
+{
+    constexpr std::string_view SERVICE_SUFFIX = ".service";
+    constexpr std::string_view SCOPE_SUFFIX = ".scope";
+    std::string_view innermostUnit;
+    std::size_t start = 0;
+    while (start <= path.size())
+    {
+        std::size_t end = path.find('/', start);
+        if (end == std::string_view::npos)
+        {
+            end = path.size();
+        }
+        const std::string_view component = path.substr(start, end - start);
+        const bool isService = component.size() > SERVICE_SUFFIX.size() && component.ends_with(SERVICE_SUFFIX);
+        const bool isScope = component.size() > SCOPE_SUFFIX.size() && component.ends_with(SCOPE_SUFFIX);
+        if (isService || isScope)
+        {
+            innermostUnit = component;
+        }
+        start = end + 1;
+    }
+    return innermostUnit.ends_with(SERVICE_SUFFIX) ? std::string(innermostUnit) : std::string{};
+}
 
-/// The container a process is in, from its /proc/[pid]/cgroup contents: "<runtime>:<id>" with the
-/// id's first 12 hex characters ("docker:1a2b3c4d5e6f", "podman:…", "containerd:…", "cri-o:…",
-/// "k8s:…") or "<runtime>:<name>" ("lxc:web", "nspawn:debian", "machine:fedora"). The cgroup v2
-/// ("0::") path is read first, then the first v1 line naming a container. Empty for a
-/// process in no container -- including one inside a container whose cgroup namespace hides the
-/// path above it, where every process reads "0::/".
-[[nodiscard]] inline std::string containerFromCgroups(std::string_view cgroups)
+/// What @p fromPath makes of a /proc/[pid]/cgroup file's paths: the cgroup v2 ("0::") path's answer
+/// when it has one, else the first v1 line's ("hierarchy:controllers:path") that has one; empty when
+/// none does. A hybrid hierarchy's v2 path can be systemd's alone, the answer in the v1 lines.
+template<typename PathFunction> [[nodiscard]] std::string fromCgroups(std::string_view cgroups, PathFunction fromPath)
 {
     std::string fromV1;
     std::size_t lineStart = 0;
@@ -175,10 +201,9 @@ namespace Detail
         const std::string_view line = cgroups.substr(lineStart, lineEnd - lineStart);
         if (line.starts_with("0::"))
         {
-            // A hybrid hierarchy's v2 path can be systemd's alone, the container's in the v1 lines.
-            if (std::string label = Detail::pathLabel(line.substr(3)); !label.empty())
+            if (std::string answer = fromPath(line.substr(3)); !answer.empty())
             {
-                return label;
+                return answer;
             }
         }
         // v1: "hierarchy:controllers:path"; the path is after the second ':'.
@@ -186,12 +211,34 @@ namespace Detail
         {
             if (const std::size_t second = line.find(':', first + 1); second != std::string_view::npos)
             {
-                fromV1 = Detail::pathLabel(line.substr(second + 1));
+                fromV1 = fromPath(line.substr(second + 1));
             }
         }
         lineStart = lineEnd + 1;
     }
     return fromV1;
+}
+
+} // namespace Detail
+
+/// The container a process is in, from its /proc/[pid]/cgroup contents: "<runtime>:<id>" with the
+/// id's first 12 hex characters ("docker:1a2b3c4d5e6f", "podman:…", "containerd:…", "cri-o:…",
+/// "k8s:…") or "<runtime>:<name>" ("lxc:web", "nspawn:debian", "machine:fedora"). The cgroup v2
+/// ("0::") path is read first, then the first v1 line naming a container. Empty for a
+/// process in no container -- including one inside a container whose cgroup namespace hides the
+/// path above it, where every process reads "0::/".
+[[nodiscard]] inline std::string containerFromCgroups(std::string_view cgroups)
+{
+    return Detail::fromCgroups(cgroups, &Detail::pathLabel);
+}
+
+/// The systemd service a process belongs to, from the same /proc/[pid]/cgroup contents and the same
+/// walk as containerFromCgroups() (#1880): "sshd.service", "pipewire.service", or empty for a process
+/// in none -- a session or app scope, a container, a kernel thread, a system without systemd. With
+/// cgroup v1, the "name=systemd" hierarchy's line names it.
+[[nodiscard]] inline std::string serviceUnitFromCgroups(std::string_view cgroups)
+{
+    return Detail::fromCgroups(cgroups, &Detail::pathServiceUnit);
 }
 
 } // namespace Platform::CgroupContainer
