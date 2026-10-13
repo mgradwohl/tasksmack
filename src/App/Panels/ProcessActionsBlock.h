@@ -12,6 +12,7 @@
 // measure() reports; render() draws them there. Neither creates a probe: the IProcessActions stays
 // owned by ProcessDetailsPanel and is passed in each frame.
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 
@@ -33,7 +34,7 @@ namespace ProcessActionsBlock
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
-           capabilities.canSetPriority || capabilities.canSetIoPriority ||
+           capabilities.canSetPriority || capabilities.canSetIoPriority || capabilities.canSetAffinity ||
            capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
 }
 
@@ -70,6 +71,7 @@ struct Context
     const std::string* processName = nullptr;
     Platform::ProcessTarget target{.pid = -1, .startTimeTicks = 0};
     std::optional<std::int32_t> currentNice;
+    const Platform::CpuAffinity* currentAffinity = nullptr; ///< Ticks the affinity dialog's boxes (#1887); null: every CPU
 };
 
 /// What each card's content needs down, header and padding included, as render() drew it: for the

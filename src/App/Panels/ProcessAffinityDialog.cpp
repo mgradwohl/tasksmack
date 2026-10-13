@@ -2,8 +2,10 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
+#include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -125,6 +127,13 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
         return applied;
     }
     UI::Widgets::keepCurrentWindowInViewport();
+    if (std::exchange(m_DismissRequested, false))
+    {
+        m_Open = false;
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return applied;
+    }
     const auto& theme = UI::Theme::get();
 
     ImGui::PushTextWrapPos(0.0F);
@@ -212,6 +221,19 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
     }
     ImGui::EndPopup();
     return applied;
+}
+
+Detail::ActionResultMessage affinityResultMessage(const std::string& name,
+                                                  std::int32_t pid,
+                                                  const Platform::CpuAffinity& cpus,
+                                                  const Platform::ProcessActionResult& result)
+{
+    if (!result.success)
+    {
+        return {.ok = false, .text = result.errorMessage};
+    }
+    return {.ok = true,
+            .text = std::format("CPU affinity of {} (PID {}) set to {}", name, pid, UI::Format::formatCpuAffinity(cpus.words()))};
 }
 
 } // namespace App
