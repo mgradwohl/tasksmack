@@ -222,6 +222,61 @@ TEST_F(ProcessAffinityDialogRenderTest, ApplyHandsOnTheTickedCpusOnceAndCloses)
     EXPECT_FALSE(dialog.isPending());
 }
 
+// #1891: the dialog's All and None buttons tick and clear every box; Apply then hands on what they left.
+TEST_F(ProcessAffinityDialogRenderTest, AllAndNoneTickAndClearEveryBox)
+{
+    ProcessAffinityDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b1U), 4);
+    EXPECT_FALSE(frame(dialog).has_value());
+    EXPECT_FALSE(frame(dialog).has_value());
+
+    press("None", false);
+    EXPECT_FALSE(frame(dialog).has_value());
+    press("Apply", true); // Nothing ticked: Apply does nothing, the dialog stays
+    EXPECT_FALSE(frame(dialog).has_value());
+    EXPECT_FALSE(frame(dialog).has_value());
+    EXPECT_TRUE(dialog.isPending());
+
+    press("All", false);
+    EXPECT_FALSE(frame(dialog).has_value());
+    press("Apply", true);
+    std::optional<Platform::CpuAffinity> applied;
+    for (int i = 0; i < 3 && !applied.has_value(); ++i)
+    {
+        applied = frame(dialog);
+    }
+    ASSERT_TRUE(applied.has_value());
+    EXPECT_EQ(applied.value_or(Platform::CpuAffinity{}), Platform::CpuAffinity::fromMask(0b1111U)); // CPUs 0-3
+}
+
+// #1881, #1891: where the choice is set as CPU sets (Windows with several processor groups), the dialog
+// says so, and how many groups there are.
+TEST_F(ProcessAffinityDialogRenderTest, ChoicesAppliedAsCpuSetsAreExplained)
+{
+    ProcessAffinityDialog dialog;
+    Platform::CpuAffinityLayout layout;
+    layout.groupSizes = {64, 64};
+    layout.online = Platform::CpuAffinity::fromMask(0b11U);
+    layout.appliedAsCpuSets = true;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b1U), 128, layout);
+    std::string text;
+    for (int i = 0; i < 3; ++i)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("Processes", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::LogToBuffer();
+        static_cast<void>(dialog.render());
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::End();
+        ImGui::Render();
+    }
+    EXPECT_TRUE(text.contains("2 processor groups")) << text;
+    EXPECT_TRUE(text.contains("default CPU sets")) << text;
+}
+
 TEST_F(ProcessAffinityDialogRenderTest, ApplyWithNothingTickedDoesNothingAndCancelHandsOnNothing)
 {
     ProcessAffinityDialog dialog;
