@@ -219,6 +219,92 @@ TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     EXPECT_GT(observed.minimumHeight, 0);
 }
 
+/// What the display-scale driver saw.
+struct DisplayScaleObserved
+{
+    float measured = 0.0F;
+    float afterRebuild = 0.0F;
+    std::uint64_t fontGenerationBefore = 0;
+    std::uint64_t fontGenerationAfter = 0;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer: once the frame has settled, records the scale UILayer measured, moves the
+/// Theme's scale off it and queues SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED, as dragging the window to a
+/// differently scaled monitor does (#943). UILayer rebuilds the fonts and style at the next frame
+/// boundary, back at the measured scale; then it stops the app.
+class DisplayScaleDriverLayer : public Core::Layer
+{
+  public:
+    explicit DisplayScaleDriverLayer(DisplayScaleObserved& observed) : Layer("DisplayScaleDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        UI::Theme& theme = UI::Theme::get();
+        if (frame == SETTLE)
+        {
+            m_Observed.measured = theme.displayScale();
+            m_Observed.fontGenerationBefore = theme.fontGeneration();
+            theme.setDisplayScale(m_Observed.measured + 0.5F);
+            SDL_Event event{};
+            event.type = SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED;
+            event.window.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+            SDL_PushEvent(&event);
+        }
+        else if (frame == SETTLE + STEP)
+        {
+            m_Observed.afterRebuild = theme.displayScale();
+            m_Observed.fontGenerationAfter = theme.fontGeneration();
+            Core::Application::get().stop();
+        }
+        else if (frame >= MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+        }
+    }
+
+  private:
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 5;
+    static constexpr int MAX_FRAMES = 200;
+
+    DisplayScaleObserved& m_Observed;
+};
+
+TEST(UiLayersOnDisplayTest, ADisplayScaleChangeRebuildsTheFontsAtTheMeasuredScale)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayScaleTest";
+    spec.VSync = false;
+    DisplayScaleObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        app.pushLayer<DisplayScaleDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    EXPECT_GT(observed.measured, 0.0F);
+    EXPECT_FLOAT_EQ(observed.afterRebuild, observed.measured); // back at what the window reports
+    EXPECT_GT(observed.fontGenerationAfter, observed.fontGenerationBefore) << "the fonts weren't rebuilt";
+}
+
 /// What the window-event driver saw.
 struct WindowEventsObserved
 {
