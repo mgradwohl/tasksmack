@@ -7,11 +7,13 @@
 #include "App/Panels/SystemMetricsPanel.h"
 #include "Core/ApplicationEvents.h"
 #include "Domain/ProcessModel.h"
+#include "Mocks/MockDiskProbe.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/StorageTypes.h"
 #include "Platform/SystemTypes.h"
 #include "UI/Theme.h"
 
@@ -889,6 +891,79 @@ TEST_F(SystemMetricsPanelRenderTest, APickedInterfacesChartAndLinkSpeedShowTheir
         }
     }
     EXPECT_TRUE(byteRateShown) << "1 Gbit/s explains itself as a byte rate";
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    panel->onDetach();
+}
+
+// #1891: with a disk probe, the Network and I/O tab's Disk I/O chart has samples too, and resting the
+// pointer on each of the tab's charts shows its tooltip: Read/Write, and the Network chart's totals.
+TEST_F(SystemMetricsPanelRenderTest, TheDiskAndNetworkChartsShowTheirTooltips)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        []
+        {
+            auto disk = std::make_unique<Mocks::MockDiskProbe>();
+            Platform::SystemDiskCounters counters;
+            Platform::DiskCounters sda;
+            sda.deviceName = "sda";
+            sda.readSectors = 2'000;
+            sda.writeSectors = 1'000;
+            counters.disks.push_back(sda);
+            disk->setNextCounters(counters);
+            return SystemMetricsProbes{.system = mockSystem(/*network=*/true), .power = nullptr, .disk = std::move(disk), .gpu = nullptr};
+        });
+    panel->onAttach();
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    static_cast<void>(renderAndCapture(*panel));
+    // The Overview's plots stay in ImPlot's pool at their last place: only this tab's are hovered.
+    std::set<ImGuiID> overviewPlots;
+    for (int i = 0; i < ImPlot::GetCurrentContext()->Plots.GetBufSize(); ++i)
+    {
+        if (const ImPlotPlot* plot = ImPlot::GetCurrentContext()->Plots.GetByIndex(i); plot != nullptr)
+        {
+            overviewPlots.insert(plot->ID);
+        }
+    }
+    ASSERT_TRUE(selectTab("Network and I/O"));
+    for (int frame = 0; frame < 40; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    std::vector<ImRect> rects;
+    ImPlotContext& plots = *ImPlot::GetCurrentContext();
+    for (int i = 0; i < plots.Plots.GetBufSize(); ++i)
+    {
+        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i); plot != nullptr && !overviewPlots.contains(plot->ID) &&
+                                                                plot->PlotRect.GetWidth() > 4.0F && plot->PlotRect.Max.y < DISPLAY_HEIGHT &&
+                                                                plot->PlotRect.Min.y >= 0.0F)
+        {
+            rects.push_back(plot->PlotRect);
+        }
+    }
+    ASSERT_GE(rects.size(), 2U); // Disk I/O and Network
+    int tooltips = 0;
+    for (const ImRect& rect : rects)
+    {
+        io.AddMousePosEvent(rect.Max.x - 3.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            panel->onUpdate(1.0F / 60.0F);
+            static_cast<void>(renderAndCapture(*panel));
+        }
+        if (const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00"); tooltip != nullptr && tooltip->Active)
+        {
+            ++tooltips;
+        }
+    }
+    EXPECT_EQ(tooltips, static_cast<int>(rects.size())) << "every chart on the tab shows its tooltip";
     io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     panel->onDetach();
 }
