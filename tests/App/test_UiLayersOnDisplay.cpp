@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -239,51 +240,82 @@ class WindowEventDriverLayer : public Core::Layer
     {
         Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
         const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
         const Core::Window& window = Core::Application::get().getWindow();
         const auto [width, height] = window.getSize();
         const float titleX = static_cast<float>(width) * 0.5F; // empty title bar: the middle, clear of the buttons
         constexpr float TITLE_Y = 16.0F;
-        switch (frame)
+        const float edgeX = static_cast<float>(width) - 2.0F;
+        const float edgeY = static_cast<float>(height) * 0.5F;
+        const auto next = [this, frame](Phase phase, int frames)
         {
-        case SETTLE:
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        switch (m_Phase)
+        {
+        case Phase::Maximize:
             pushButton(titleX, TITLE_Y, true, 2); // double-click: maximize
             pushButton(titleX, TITLE_Y, false, 2);
+            next(Phase::Restore, STEP);
             break;
-        case SETTLE + STEP:
+        case Phase::Restore:
             m_Observed.maximizedAfterDoubleClick = window.isMaximized();
             pushButton(titleX, TITLE_Y, true, 2); // and again: restore
             pushButton(titleX, TITLE_Y, false, 2);
+            m_SettleDeadline = frame + SETTLE_LIMIT;
+            next(Phase::AwaitRestored, STEP);
             break;
-        case SETTLE + (2 * STEP):
+        case Phase::AwaitRestored:
+        {
+            // On X11 the restore is a request: the window manager un-maximizes the window and moves it
+            // back some frames later, later still under load. Wait until it is restored and has kept its
+            // position for STABLE_FRAMES frames, so the click below is the only thing that could move it
+            // (#1907). A window that never settles goes on at SETTLE_LIMIT and fails the checks.
             m_Observed.maximizedAfterSecondDoubleClick = window.isMaximized();
-            m_Position = window.getPosition();
+            const auto position = window.getPosition();
+            m_StableFrames = (!m_Observed.maximizedAfterSecondDoubleClick && position == m_Position) ? m_StableFrames + 1 : 0;
+            m_Position = position;
+            if (m_StableFrames < STABLE_FRAMES && frame < m_SettleDeadline)
+            {
+                next(Phase::AwaitRestored, 1);
+                break;
+            }
             pushButton(titleX, TITLE_Y, true, 1); // a drag begins...
+            next(Phase::EndDrag, 2);
             break;
-        case SETTLE + (2 * STEP) + 2:
+        }
+        case Phase::EndDrag:
             pushButton(titleX, TITLE_Y, false, 1); // ...and ends without moving
+            next(Phase::CheckPosition, STEP - 2);
             break;
-        case SETTLE + (3 * STEP):
+        case Phase::CheckPosition:
             m_Observed.positionKeptAfterClick = window.getPosition() == m_Position;
             m_Size = window.getSize();
-            pushButton(static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, true, 1); // a right-edge resize begins...
+            pushButton(edgeX, edgeY, true, 1); // a right-edge resize begins...
+            next(Phase::EndResize, 2);
             break;
-        case SETTLE + (3 * STEP) + 2:
-            pushButton(static_cast<float>(width) - 2.0F, static_cast<float>(height) * 0.5F, false, 1); // ...and ends
+        case Phase::EndResize:
+            pushButton(edgeX, edgeY, false, 1); // ...and ends
+            next(Phase::CheckSize, STEP - 2);
             break;
-        case SETTLE + (4 * STEP):
+        case Phase::CheckSize:
             m_Observed.sizeKeptAfterEdgePress = window.getSize() == m_Size;
             pushKey(SDLK_SPACE, SDL_SCANCODE_SPACE, SDL_KMOD_LCTRL); // Ctrl+Space: the system menu
+            next(Phase::CheckMenu, STEP);
             break;
-        case SETTLE + (5 * STEP):
+        case Phase::CheckMenu:
             m_Observed.systemMenuOpened = !GImGui->OpenPopupStack.empty();
             Core::Application::get().stop();
-            break;
-        default:
-            if (frame > MAX_FRAMES)
-            {
-                m_Observed.timedOut = true;
-                Core::Application::get().stop();
-            }
             break;
         }
     }
@@ -314,11 +346,30 @@ class WindowEventDriverLayer : public Core::Layer
         static_cast<void>(SDL_PushEvent(&event));
     }
 
+    /// The steps, in order; each waits m_NextFrame before running.
+    enum class Phase : std::uint8_t
+    {
+        Maximize,
+        Restore,
+        AwaitRestored,
+        EndDrag,
+        CheckPosition,
+        EndResize,
+        CheckSize,
+        CheckMenu,
+    };
+
     static constexpr int SETTLE = 10;
     static constexpr int STEP = 10;
-    static constexpr int MAX_FRAMES = 600;
+    static constexpr int STABLE_FRAMES = 5;  // frames the restored window must hold still
+    static constexpr int SETTLE_LIMIT = 300; // frames to wait for that before going on
+    static constexpr int MAX_FRAMES = 900;
 
     WindowEventsObserved& m_Observed;
+    Phase m_Phase = Phase::Maximize;
+    int m_NextFrame = SETTLE;
+    int m_SettleDeadline = 0;
+    int m_StableFrames = 0;
     std::pair<int, int> m_Position;
     std::pair<int, int> m_Size;
 };
