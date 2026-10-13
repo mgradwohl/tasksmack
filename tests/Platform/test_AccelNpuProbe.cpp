@@ -215,6 +215,61 @@ TEST(AccelNpuProbeTest, ProcessesHoldingTheNpuOpenGetItsMemoryPerClient)
     now += AccelNpuProbe::CLIENT_DISCOVERY_INTERVAL_NS;
     counters = probe.readProcessGPUCounters();
     EXPECT_EQ(memoryOf(counters, 400), std::optional<std::uint64_t>{4ULL << 20U});
+
+    // An fd closed since the walk and its number reused for another file isn't the client any more,
+    // even before the next walk: 200's fds 5 and 6 now open a GPU node.
+    for (const int fd : {5, 6})
+    {
+        std::filesystem::remove(proc / "200" / "fd" / std::to_string(fd));
+        std::filesystem::create_symlink("/dev/dri/renderD128", proc / "200" / "fd" / std::to_string(fd));
+    }
+    now += 1'000'000'000;
+    counters = probe.readProcessGPUCounters();
+    EXPECT_FALSE(memoryOf(counters, 200).has_value());
+    EXPECT_TRUE(memoryOf(counters, 100).has_value());
+}
+
+// A device that comes back under another accelN keeps its id (its PCI slot); its clients are found by
+// the new node after the rescan (#1827).
+TEST(AccelNpuProbeTest, ADeviceRenumberedOnARescanIsFoundByItsNewNode)
+{
+    const ScopedTempDir dir("tasksmack_accel_npu_renumber");
+    addDevice(dir.path, 0, "0000:00:0b.0", "intel_vpu", "0x8086", std::nullopt);
+    const std::filesystem::path proc = dir.path / "proc";
+    std::uint64_t now = 1'000'000'000;
+    AccelNpuProbe probe(dir.path / "class", [&now] { return now; }, proc);
+    ASSERT_EQ(probe.enumerateGPUs().size(), 1U);
+
+    // Removed and re-added as accel1; its client opens the new node.
+    std::filesystem::remove(dir.path / "class" / "accel0" / "device");
+    std::filesystem::remove(dir.path / "class" / "accel0");
+    std::filesystem::create_directories(dir.path / "class" / "accel1");
+    std::filesystem::create_directory_symlink(dir.path / "pci" / "0000:00:0b.0", dir.path / "class" / "accel1" / "device");
+    addFd(proc, 100, 3, "/dev/accel/accel1", "drm-client-id:\t1\ndrm-resident-memory:\t8 MiB\n");
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full)) << "same id, another node: a change";
+    const std::vector<ProcessGPUCounters> counters = probe.readProcessGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].pid, 100);
+    EXPECT_EQ(counters[0].gpuId, "ACCEL_0000:00:0b.0");
+    EXPECT_EQ(counters[0].gpuSharedMemoryBytes, 8ULL << 20U);
+}
+
+// An accelerator with memory of its own (Gaudi's habanalabs): its clients' memory is dedicated (#1827).
+TEST(AccelNpuProbeTest, AnAcceleratorsOwnMemoryIsDedicatedNotShared)
+{
+    const ScopedTempDir dir("tasksmack_accel_dedicated");
+    addDevice(dir.path, 0, "0000:4d:00.0", "habanalabs", "0x1da3", std::nullopt);
+    const std::filesystem::path proc = dir.path / "proc";
+    addFd(proc, 100, 3, "/dev/accel/accel0", "drm-client-id:\t1\ndrm-resident-memory:\t2 GiB\n");
+    AccelNpuProbe probe(dir.path / "class", {}, proc);
+    const std::vector<GPUInfo> devices = probe.enumerateGPUs();
+    ASSERT_EQ(devices.size(), 1U);
+    EXPECT_EQ(devices[0].kind, DeviceKind::ComputeAccelerator);
+    EXPECT_FALSE(devices[0].memoryIsShared);
+    const std::vector<ProcessGPUCounters> counters = probe.readProcessGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters[0].gpuMemoryBytes, 2ULL << 30U);
+    EXPECT_EQ(counters[0].gpuSharedMemoryBytes, 0U);
 }
 
 } // namespace

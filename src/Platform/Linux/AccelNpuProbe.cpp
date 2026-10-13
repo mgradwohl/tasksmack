@@ -236,8 +236,10 @@ std::vector<AccelNpuProbe::Device> AccelNpuProbe::scan() const
         device.info.vendor = vendorName(deviceDir);
         device.info.driverVersion = driver.empty() ? std::string("Unknown") : driver;
         device.info.kind = AccelNpu::kindOf(driver);
-        device.info.isIntegrated = true;   // Both NPUs today sit in the processor package
-        device.info.memoryIsShared = true; // ...and map system memory: a client's is shared memory (#1827)
+        device.info.isIntegrated = true; // Both NPUs today sit in the processor package
+        // ...and map system memory, so a client's is shared memory (#1827); another accelerator (Gaudi's
+        // habanalabs) has memory of its own, so its clients' is dedicated.
+        device.info.memoryIsShared = device.info.kind == DeviceKind::Npu;
         std::uint32_t index = 0;
         static_cast<void>(std::from_chars(name.data() + 5, name.data() + name.size(), index));
         device.info.deviceIndex = index;
@@ -266,13 +268,15 @@ bool AccelNpuProbe::rescanGPUs(GPURescan depth)
         return false;
     }
     std::vector<Device> found = scan();
+    // A device keeps its id (its PCI slot) when it comes back under another accelN, so its node is part
+    // of what is compared: the clients are found by the node their fds link to (#1827).
     const auto ids = [](const std::vector<Device>& list)
     {
-        std::vector<std::string> out;
+        std::vector<std::pair<std::string, std::string>> out;
         out.reserve(list.size());
         for (const Device& device : list)
         {
-            out.push_back(device.info.id);
+            out.emplace_back(device.info.id, device.nodePath);
         }
         return out;
     };
@@ -364,6 +368,7 @@ void AccelNpuProbe::discoverClients()
             if (device != m_Devices.end())
             {
                 found.push_back({.pid = pid,
+                                 .fd = fdIt->path(),
                                  .fdinfo = procIt->path() / "fdinfo" / fdIt->path().filename(),
                                  .device = static_cast<std::size_t>(device - m_Devices.begin())});
             }
@@ -392,6 +397,14 @@ std::vector<ProcessGPUCounters> AccelNpuProbe::readProcessGPUCounters()
     std::set<std::tuple<std::int32_t, std::size_t, std::uint64_t>> clientsSeen;
     for (const Client& client : m_Clients)
     {
+        // The fd found by the last walk may since have been closed and its number reused for another
+        // file (or the PID for another process): only while it still links to the device is it this
+        // client (#1827), as DRMGPUProbe checks its clients' links.
+        std::error_code linkError;
+        if (std::filesystem::read_symlink(client.fd, linkError).native() != m_Devices[client.device].nodePath || linkError)
+        {
+            continue;
+        }
         std::ifstream file(client.fdinfo);
         if (!file)
         {
@@ -416,7 +429,8 @@ std::vector<ProcessGPUCounters> AccelNpuProbe::readProcessGPUCounters()
         c.pid = key.first;
         c.gpuId = device.info.id;
         c.kind = device.info.kind;
-        c.gpuSharedMemoryBytes = bytes; // System memory the NPU maps for it
+        // System memory an NPU maps for it, or an accelerator's own memory (Device::info.memoryIsShared).
+        (device.info.memoryIsShared ? c.gpuSharedMemoryBytes : c.gpuMemoryBytes) = bytes;
         counters.push_back(std::move(c));
     }
     return counters;

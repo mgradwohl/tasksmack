@@ -8,8 +8,9 @@
 // figures. Neither driver reports per-process utilization. Per-process memory comes from DRM fdinfo
 // (#1827 PR 2b): the processes holding /dev/accel/accelN open are found by a walk of /proc/*/fd every
 // CLIENT_DISCOVERY_INTERVAL_NS, and each sample reads only those clients' fdinfo -- drm-resident-memory
-// (or drm-total-memory), once per drm-client-id however many fds share it. The NPUs map system memory,
-// so it is the processes' shared memory. The class and proc roots are injectable, so the tests read
+// (or drm-total-memory), once per drm-client-id however many fds share it, while the fd still links to
+// the device. The NPUs map system memory, so theirs is the processes' shared memory; another accelerator's
+// is dedicated. The class and proc roots are injectable, so the tests read
 // fixture trees.
 
 #include "Platform/GPUTypes.h"
@@ -99,6 +100,7 @@ class AccelNpuProbe final : public IGPUProbe
     struct Client
     {
         std::int32_t pid = 0;
+        std::filesystem::path fd;     ///< <proc>/<pid>/fd/<fd>: checked to still link to the device each read
         std::filesystem::path fdinfo; ///< <proc>/<pid>/fdinfo/<fd>
         std::size_t device = 0;       ///< Index into m_Devices
     };
