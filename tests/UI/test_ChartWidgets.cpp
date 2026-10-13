@@ -1381,7 +1381,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedHandlesSuffixes)
 
     len = formatAxisLocalized(2'000'000.0, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "2.0M");
+    EXPECT_EQ(std::string(buf), "2M");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedReturnsZeroWhenBufferTooSmall)
@@ -1396,7 +1396,7 @@ TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedClampsTinyValueToZero)
     char buf[32]{};
     const int len = formatAxisLocalized(0.1, buf, static_cast<int>(sizeof(buf)), nullptr);
     EXPECT_GT(len, 0);
-    EXPECT_EQ(std::string(buf), "0.0");
+    EXPECT_EQ(std::string(buf), "0");
 }
 
 TEST(ChartWidgetsFormattersTest, FormatAxisBytesPerSecScalesUnits)
@@ -1441,7 +1441,88 @@ namespace
     const int len = formatter(value, buf.data(), static_cast<int>(buf.size()), nullptr);
     return {buf.data(), static_cast<std::size_t>(std::max(len, 0))};
 }
+
+/// The labels of a count axis drawn from 0 to @p upper, as setupNiceAxisTicks() places its ticks.
+[[nodiscard]] std::vector<std::string> countAxisLabels(double upper, int maxTicks)
+{
+    const double step = niceAxisStep(upper, maxTicks);
+    const AxisTickRange ticks = axisTickRange(upper, step);
+    std::vector<std::string> labels;
+    labels.reserve(static_cast<std::size_t>(std::max(ticks.count, 0)));
+    for (int i = 0; i < ticks.count; ++i)
+    {
+        labels.push_back(axisLabel(formatAxisLocalized, static_cast<double>(i) * step));
+    }
+    return labels;
+}
 } // namespace
+
+// #1928: a count axis writes its ticks as integers ("integers for counts", #1202), and after a K/M/G
+// suffix only the decimal the step needs.
+TEST(ChartWidgetsFormattersTest, CountAxisWritesPlainTicksAsIntegers)
+{
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 0.0), "0");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, -0.0), "0");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2.0), "2");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 50.0), "50");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 200.0), "200");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 999.0), "999");
+    // A process's threads and handles (0-200 by 50) and its page faults/s (0-10 by 2).
+    EXPECT_EQ(countAxisLabels(200.0, 5), (std::vector<std::string>{"0", "50", "100", "150", "200"}));
+    EXPECT_EQ(countAxisLabels(10.0, 6), (std::vector<std::string>{"0", "2", "4", "6", "8", "10"}));
+}
+
+TEST(ChartWidgetsFormattersTest, CountAxisGivesASuffixedTickADecimalOnlyWhereItNeedsOne)
+{
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 500'000.0), "500K");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'000.0), "1K");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2'000'000.0), "2M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'500'000.0), "1.5M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'200.0), "1.2K");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 3'000'000'000.0), "3G");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2'500'000'000.0), "2.5G");
+    // The system's handles (0-2.5M by 500K) and page faults/s (0-400K by 100K).
+    EXPECT_EQ(countAxisLabels(2'500'000.0, 6), (std::vector<std::string>{"0", "500K", "1M", "1.5M", "2M", "2.5M"}));
+    EXPECT_EQ(countAxisLabels(400'000.0, 5), (std::vector<std::string>{"0", "100K", "200K", "300K", "400K"}));
+    // A step of 200 across 1K: whole thousands drop the decimal, the ticks between keep it.
+    EXPECT_EQ(countAxisLabels(1'400.0, 8), (std::vector<std::string>{"0", "200", "400", "600", "800", "1K", "1.2K", "1.4K"}));
+}
+
+TEST(ChartWidgetsFormattersTest, CountAxisDecimalFollowsTheRoundedDigits)
+{
+    // Whether a tick keeps its decimal is read from the digits it would print, rounding included,
+    // so a value that rounds to a whole unit drops it rather than printing "2.0M".
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'960'000.0), "2M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'940'000.0), "1.9M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, -1'500'000.0), "-1.5M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, -2'000'000.0), "-2M");
+    EXPECT_EQ(Detail::countAxisDecimals(200.0, false), 0);
+    EXPECT_EQ(Detail::countAxisDecimals(2.0, true), 0);
+    EXPECT_EQ(Detail::countAxisDecimals(1.5, true), 1);
+}
+
+TEST(ChartWidgetsFormattersTest, CountAxisLabelsLargeValuesWithTheirGroupingAndNoDecimal)
+{
+    const UI::Format::ScopedDisplayPunctuation enUs({.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"});
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1.5e12), "1,500G");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1.25e12), "1,250G");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1.0e15), "1,000,000G");
+
+    const UI::Format::ScopedDisplayPunctuation deDe({.decimalPoint = ',', .thousandsSep = ".", .grouping = "\3"});
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 1'500'000.0), "1,5M");
+    EXPECT_EQ(axisLabel(formatAxisLocalized, 2'000'000.0), "2M");
+}
+
+// The count axis's integers are its own: a byte axis keeps its one decimal on every tick.
+TEST(ChartWidgetsFormattersTest, CountAxisChangeLeavesByteAndOtherAxesAlone)
+{
+    const UI::Format::ScopedDisplayPunctuation enUs({.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"});
+    EXPECT_EQ(axisLabel(formatAxisBytes, 2.0 * 1024.0 * 1024.0), "2.0 MiB");
+    EXPECT_EQ(axisLabel(formatAxisBytes, 0.0), "0.0 B");
+    EXPECT_EQ(axisLabel(formatAxisBytesPerSec, 2048.0), "2.0 KiB/s");
+    EXPECT_EQ(axisLabel(formatAxisWatts, 45.0), "45.0 W");
+    EXPECT_EQ(axisLabel(formatAxisPercent, 40.0), "40%");
+}
 
 // #1648, slice E: chart axis labels take the user's decimal mark and digit grouping, and keep their
 // units and SI/IEC prefixes. The real locales' punctuation, skipped where the machine lacks one.
@@ -1469,7 +1550,7 @@ TEST(ChartWidgetsFormattersTest, AxisLabelsFollowTheDisplayLocale)
         const std::string dp = c.decimal;
         EXPECT_EQ(axisLabel(formatAxisLocalized, 1500.0), "1" + dp + "5K");
         EXPECT_EQ(axisLabel(formatAxisLocalized, 2'500'000.0), "2" + dp + "5M");
-        EXPECT_EQ(axisLabel(formatAxisLocalized, 1.5e12), std::format("1{}500{}0G", sep, dp));
+        EXPECT_EQ(axisLabel(formatAxisLocalized, 1.5e12), std::format("1{}500G", sep));
         EXPECT_EQ(axisLabel(formatAxisBytes, 1.5 * 1024.0 * 1024.0 * 1024.0), "1" + dp + "5 GiB");
         EXPECT_EQ(axisLabel(formatAxisBytesPerSec, 2048.0), "2" + dp + "0 KiB/s");
         EXPECT_EQ(axisLabel(formatAxisPercent, 2.5), "2" + dp + "5%");
@@ -1561,20 +1642,26 @@ TEST(ChartWidgetsFormattersTest, FormatAxisLocalizedMatchesItsStdFormatDefinitio
         {
             value = 0.0;
         }
+        // A suffixed tick keeps its one decimal unless it is 0 (#1928): "1.5M", "2M".
+        const auto suffixed = [](double scaled, std::string_view suffix)
+        {
+            const std::string withDecimal = std::format("{:.1Lf}", scaled);
+            return (withDecimal.ends_with('0') ? std::format("{:.0Lf}", scaled) : withDecimal) + std::string{suffix};
+        };
         const double absValue = std::abs(value);
         if (absValue >= 1'000'000'000.0)
         {
-            return std::format("{:.1Lf}G", value / 1'000'000'000.0);
+            return suffixed(value / 1'000'000'000.0, "G");
         }
         if (absValue >= 1'000'000.0)
         {
-            return std::format("{:.1Lf}M", value / 1'000'000.0);
+            return suffixed(value / 1'000'000.0, "M");
         }
         if (absValue >= 1'000.0)
         {
-            return std::format("{:.1Lf}K", value / 1'000.0);
+            return suffixed(value / 1'000.0, "K");
         }
-        return std::format("{:.1Lf}", value);
+        return std::format("{:.0Lf}", value); // Counts are integers (#1202)
     };
     std::array<char, 32> buf{};
     for (const double value : {0.0,

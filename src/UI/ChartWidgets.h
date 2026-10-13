@@ -1913,7 +1913,32 @@ inline int copyAxisLabel(const std::string& str, char* buff, int size)
 }
 } // namespace Detail
 
-/// Format large numbers with K/M/G suffixes (e.g., 400000 -> "400.0K")
+namespace Detail
+{
+/// Fraction digits for a count axis tick whose value, scaled to its K/M/G suffix, is `scaled`
+/// (formatAxisLocalized()). Counts are integers (#1202), so a tick without a suffix has none; one
+/// with a suffix has one only where the step puts it between whole units ("1.5M", but "2M" and
+/// "500K"), the tenths digit it would print being 0 otherwise (#1928). One is all a count axis's step
+/// needs: its 1-2-5 step (niceAxisStep()) spaces at most AXIS_MAX_TICKS labels across a span of at
+/// least RATE_AXIS_MIN_SPAN_COUNT, so the step is at least a seventh of the axis's top -- a whole
+/// number below 1K, and at least 0.2 of the unit of any suffixed tick.
+[[nodiscard]] inline int countAxisDecimals(double scaled, bool suffixed) noexcept
+{
+    if (!suffixed)
+    {
+        return 0;
+    }
+    // The digits formatFixedLocalizedTo() prints with one decimal, its rounding included, so the label
+    // reads "2M" exactly where it would have read "2.0M". A value too long for the buffer keeps it.
+    std::array<char, 64> text{};
+    const std::size_t length = Format::formatFixedLocalizedTo(text.data(), text.size(), scaled, 1);
+    return std::string_view{text.data(), length}.ends_with('0') ? 0 : 1;
+}
+} // namespace Detail
+
+/// Format a count axis's ticks -- threads, handles, GDI objects, page faults/s -- as integers, with a
+/// K/M/G suffix on large ones and a decimal only where the tick needs it (Detail::countAxisDecimals()):
+/// 200 -> "200", 500000 -> "500K", 1500000 -> "1.5M", 2000000 -> "2M" (#1928).
 /// Use with ImPlot::SetupAxisFormat(ImAxis_Y1, formatAxisLocalized)
 inline int formatAxisLocalized(double value, char* buff, int size, void* /*userData*/)
 {
@@ -1942,11 +1967,12 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
         suffix = "K";
     }
 
+    const int decimals = Detail::countAxisDecimals(scaled, !suffix.empty());
     // Straight into ImPlot's buffer, keeping one byte for the terminator (#1334).
     if (size > 1)
     {
         const auto capacity = static_cast<std::size_t>(size - 1);
-        std::size_t length = Format::formatFixedLocalizedTo(buff, capacity, scaled, 1);
+        std::size_t length = Format::formatFixedLocalizedTo(buff, capacity, scaled, decimals);
         if (length > 0)
         {
             Format::appendText(buff, capacity, length, suffix);
@@ -1958,7 +1984,7 @@ inline int formatAxisLocalized(double value, char* buff, int size, void* /*userD
         }
         buff[0] = '\0'; // A partial label never reaches ImPlot, which reads the buffer up to its NUL
     }
-    return Detail::copyAxisLabel(Format::formatFixedLocalized(scaled, 1, suffix), buff, size);
+    return Detail::copyAxisLabel(Format::formatFixedLocalized(scaled, decimals, suffix), buff, size);
 }
 
 /// The unit a byte axis is labelled in, as ImPlot formatter user data: a pointer to one of the
