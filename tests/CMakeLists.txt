@@ -336,6 +336,7 @@ set(COMMON_TEST_SOURCES
     Training/test_UiTrainingPlan.cpp
     App/test_ProcessBatchAction.cpp
     App/test_ProcessBatchPriorityDialogRender.cpp
+    App/test_ProcessAffinityDialog.cpp
     App/test_AboutDialogRender.cpp
     App/test_ElevationNoticeDialogRender.cpp
     App/test_HelpContent.cpp
@@ -545,6 +546,7 @@ add_executable(TaskSmackTests
     # test_ProcessBatchPriorityDialogRender.cpp)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionConfirm.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
