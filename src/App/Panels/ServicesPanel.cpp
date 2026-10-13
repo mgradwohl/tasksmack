@@ -78,11 +78,12 @@ void ServicesPanel::onEvent(Core::Event& event)
             updateSampling(showing); // current as soon as the tab shows again
             return false;
         });
-    // Process Details' Services section asked for a service (#1880); ShellLayer brings the tab forward.
+    // Process Details' Services section asked to see a service (#1886): select it and bring it into view.
     dispatcher.dispatch<Core::ShowServiceEvent>(
         [this](Core::ShowServiceEvent& e)
         {
-            selectService(e.serviceName());
+            m_ViewState.selectedName = e.name();
+            m_ViewState.scrollToSelected = true;
             return false;
         });
 }
@@ -95,11 +96,6 @@ void ServicesPanel::setBackgroundDemand(bool wanted)
     }
     m_BackgroundDemand = wanted;
     updateSampling(false);
-}
-
-void ServicesPanel::selectService(std::string name)
-{
-    requestShowService(m_ViewState, std::move(name));
 }
 
 void ServicesPanel::updateSampling(bool refreshNow)

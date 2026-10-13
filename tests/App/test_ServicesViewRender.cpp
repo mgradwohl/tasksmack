@@ -16,6 +16,7 @@
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <functional>
 #include <memory>
 #include <stop_token>
@@ -196,40 +197,37 @@ TEST_F(ServicesViewRenderTest, TableShowsRowsAndFilters)
     EXPECT_EQ(state.rows, (std::vector<std::size_t>{0, 2}));
 }
 
-// #1880: a service asked for from Process Details is selected, and a filter hiding it is cleared so
-// its row can be scrolled to; one the list does not have drops the request.
-TEST_F(ServicesViewRenderTest, AShowRequestClearsAFilterHidingTheService)
+// #1886: a service asked for from Process Details is scrolled into view once, even when its row starts far
+// below the visible rows, and then left to the user's own scrolling.
+TEST_F(ServicesViewRenderTest, AServiceAskedForIsScrolledIntoViewOnce)
 {
-    const auto publication = makePublication();
+    Domain::ServicePublication publication;
+    publication.version = 1;
+    for (int i = 0; i < 300; ++i)
+    {
+        publication.services.push_back(service(std::format("unit{:03}.service", i).c_str(), "", ServiceState::Running, 0));
+    }
     ServicesViewState state;
-    state.filter = "Windows"; // hides Spooler (Print Spooler)
+    state.sortColumn = ServiceColumn::Name;
+    state.ascending = true;
     static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
-    EXPECT_EQ(serviceRowOf(state.rows, publication.services, "Spooler"), -1);
-
-    requestShowService(state, "Spooler");
-    EXPECT_EQ(state.selectedName, "Spooler");
-    EXPECT_TRUE(state.scrollToSelected);
+    state.selectedName = "unit250.service";
+    state.scrollToSelected = true;
     static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
-    EXPECT_TRUE(state.filter.empty());
-    EXPECT_GE(serviceRowOf(state.rows, publication.services, "Spooler"), 0);
-    EXPECT_FALSE(state.scrollToSelected) << "the row was drawn and scrolled to";
-
-    // A service the list doesn't have: selected, the filter kept, the request dropped.
-    state.filter = "Windows";
-    requestShowService(state, "Gone");
+    EXPECT_FALSE(state.scrollToSelected) << "done once";
+    // A frame later the table has scrolled down to it (the log can't tell: logging turns clipping off).
     static_cast<void>(runFrame([&] { return renderServicesView(&publication, enumerable(), state); }));
-    EXPECT_EQ(state.filter, "Windows");
-    EXPECT_FALSE(state.scrollToSelected);
-}
-
-TEST(ServicesViewTest, ServiceRowOfFindsTheRowByName)
-{
-    const auto publication = makePublication();
-    const std::vector<std::size_t> rows{2, 0};
-    EXPECT_EQ(serviceRowOf(rows, publication.services, "Winmgmt"), 0);
-    EXPECT_EQ(serviceRowOf(rows, publication.services, "EventLog"), 1);
-    EXPECT_EQ(serviceRowOf(rows, publication.services, "Spooler"), -1); // filtered out
-    EXPECT_EQ(serviceRowOf({}, publication.services, "EventLog"), -1);
+    const ImGuiWindow* table = nullptr;
+    for (const ImGuiWindow* window : GImGui->Windows)
+    {
+        if (std::string_view(window->Name).contains("##ServicesTable"))
+        {
+            table = window;
+        }
+    }
+    ASSERT_NE(table, nullptr);
+    const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+    EXPECT_GT(table->Scroll.y, 200.0F * rowHeight) << "row 250 is in view, not row 0";
 }
 
 TEST_F(ServicesViewRenderTest, AFailedReadKeepsTheLastRowsMarkedOutOfDate)

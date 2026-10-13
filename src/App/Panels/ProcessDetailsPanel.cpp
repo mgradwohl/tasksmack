@@ -37,8 +37,8 @@
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSecurityView.h"
-#include "ProcessServicesView.h"
 #include "ProcessSmoothedUsage.h"
+#include "ServicesView.h"
 #include "UI/ChartWidgets.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
@@ -128,9 +128,9 @@ void ProcessDetailsPanel::updateWithSamples(std::span<const Domain::ProcessSampl
     // Fade out action result message
     m_ActionsView.tick(deltaTime);
 
-    // The Services section wants the service list kept current only while it was drawn open on the
-    // last frame (#1880): not while collapsed, on another Details tab, or with this tab hidden.
-    m_ServicesSectionOpen = m_ServicesView.takeDrawnOpen();
+    // The Services section wants the service list kept current only while it was drawn open on the last
+    // frame (#1880): not while collapsed, on another Details tab, or with this tab hidden.
+    m_ServicesSectionOpen = std::exchange(m_ServicesDrawnOpen, false);
 
     if (m_SelectedPid == -1)
     {
@@ -248,6 +248,66 @@ ProcessChartContext ProcessDetailsPanel::chartContext() const
     };
 }
 
+void ProcessDetailsPanel::renderServicesSection(const Domain::ProcessSnapshot& proc)
+{
+    if (proc.services.empty() || !ImGui::CollapsingHeader(ICON_FA_GEARS "  Services###ProcessServices"))
+    {
+        return;
+    }
+    // Open: ShellLayer keeps the service list current (#1880), whose display names and states are shown
+    // beside the names when it lists them (Windows; on Linux until systemd's list is read, the names alone).
+    m_ServicesDrawnOpen = true;
+    std::shared_ptr<const Domain::ServicePublication> list;
+    if (m_ServiceModel != nullptr)
+    {
+        list = m_ServiceModel->publication();
+        if (!Domain::ProcessServices::isCurrent(*list, std::chrono::steady_clock::now()))
+        {
+            list.reset();
+        }
+    }
+    const auto& scheme = UI::Theme::get().scheme();
+    // One line per service ("a.service, b.service" on a platform that hosts several in one process).
+    std::string_view rest = proc.services;
+    while (!rest.empty())
+    {
+        const std::size_t comma = rest.find(", ");
+        const std::string name(rest.substr(0, comma));
+        rest = (comma == std::string_view::npos) ? std::string_view{} : rest.substr(comma + 2);
+        ImGui::PushID(name.c_str());
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(name.c_str());
+        if (const Platform::ServiceInfo* service = (list != nullptr) ? Domain::findService(*list, name) : nullptr; service != nullptr)
+        {
+            if (!service->displayName.empty())
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(scheme.textMuted, "%s", service->displayName.c_str());
+            }
+            ImGui::SameLine();
+            const std::string_view state = serviceStateLabel(service->state);
+            ImGui::PushStyleColor(ImGuiCol_Text, serviceStateColor(service->state, scheme));
+            ImGui::TextUnformatted(state.data(), state.data() + state.size());
+            ImGui::PopStyleColor();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(ICON_FA_ARROW_RIGHT "  Show in Services"))
+        {
+            Core::ShowServiceEvent show(name);
+            if (m_RaiseEvent)
+            {
+                m_RaiseEvent(show);
+            }
+            else
+            {
+                Core::Application::get().raiseEvent(show);
+            }
+        }
+        ImGui::SetItemTooltip("Select %s in the Services tab", name.c_str());
+        ImGui::PopID();
+    }
+}
+
 const std::string& ProcessDetailsPanel::tabLabel() const
 {
     if (m_HasSnapshot && (m_SelectedPid != -1) && !cachedSnapshot().name.empty())
@@ -342,8 +402,8 @@ void ProcessDetailsPanel::renderContent()
                 m_SecurityView.render(m_HasSecurity);
                 // Likewise collapsed by default; hidden only in synthetic runs (#183)
                 m_OpenFilesView.render(m_HasOpenFiles);
-                // Likewise collapsed by default; hidden where processes' services can't be told (#1880)
-                renderServicesSection();
+                // Likewise collapsed by default; only for a process that runs a service (#1886)
+                renderServicesSection(cachedSnapshot());
                 ImGui::Separator();
                 // Ensure smoothing is initialized even if render is called before an update tick
                 if (!m_SmoothedUsage.initialized)
@@ -397,44 +457,6 @@ void ProcessDetailsPanel::renderContent()
     // block's child is skipped while the Overview is scrolled so that it is out of view, which left
     // an F9 Kill confirm pending with no dialog, refusing further F9 presses (#1493).
     m_ActionsView.renderConfirmation(m_ProcessActions.get(), selectedTarget());
-}
-
-void ProcessDetailsPanel::renderServicesSection()
-{
-    if (!m_ProcessCapabilities.hasServices)
-    {
-        return; // no section: this platform cannot tell which services a process hosts
-    }
-    // The current list's display names and states; one older than SERVICES_DATA_MAX_AGE_MS is no longer
-    // being refreshed and is not shown as current (the snapshot's names come from the same rule).
-    ProcessServicesView::ServiceList list;
-    std::shared_ptr<const Domain::ServicePublication> publication;
-    if (m_ServiceModel != nullptr)
-    {
-        const Platform::ServiceCapabilities& capabilities = m_ServiceModel->capabilities();
-        list.expected = capabilities.canEnumerate && capabilities.hasPid;
-        publication = m_ServiceModel->publication();
-        if (Domain::ProcessServices::isCurrent(*publication, std::chrono::steady_clock::now()))
-        {
-            list.publication = publication.get();
-        }
-    }
-    if (const std::optional<std::string> shown = m_ServicesView.render(true, cachedSnapshot().serviceNames, list); shown.has_value())
-    {
-        // The Services tab, with this service selected (#1880); the shell brings the tab forward.
-        Core::ShowServiceEvent event(*shown);
-        raiseEvent(event);
-    }
-}
-
-void ProcessDetailsPanel::raiseEvent(Core::Event& event)
-{
-    if (m_RaiseEvent)
-    {
-        m_RaiseEvent(event);
-        return;
-    }
-    Core::Application::get().raiseEvent(event);
 }
 
 void ProcessDetailsPanel::onEvent(Core::Event& event)
@@ -515,7 +537,6 @@ void ProcessDetailsPanel::setSelectedPid(std::int32_t pid, std::uint64_t startTi
     m_ModulesView.onSelectionChanged();     // Drops the previous process's modules (#802)
     m_SecurityView.onSelectionChanged();    // Drops the previous process's security context (#1526)
     m_OpenFilesView.onSelectionChanged();   // Drops the previous process's open files (#183)
-    m_ServicesView.onSelectionChanged();    // Drops the previous process's services (#1880)
 
     if (pid != -1)
     {

@@ -346,8 +346,8 @@ TEST_F(ServicesStartupPanelsRenderTest, ServicesBackgroundDemandNeverSamplesAPro
     EXPECT_EQ(fakes.probe->enumerations.count(), 0);
 }
 
-// #1880: Process Details' link raises a ShowServiceEvent: the service is selected and scrolled into view,
-// a filter hiding it cleared.
+// #1886: Process Details' Show in Services raises a ShowServiceEvent: the service is selected and scrolled into
+// view (the Services tab's own select-and-scroll, exercised through the whole panel).
 TEST_F(ServicesStartupPanelsRenderTest, ServicesShowServiceEventSelectsAndScrollsToTheService)
 {
     std::vector<Platform::ServiceInfo> many;

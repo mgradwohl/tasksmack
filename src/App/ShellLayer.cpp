@@ -187,10 +187,10 @@ void ShellLayer::onAttach()
             m_ProcessesPanel.setGpuModel(gpuModel);
         }
 
-        // The Services tab's list says which services each process hosts (#1880): the Services column
-        // and Process Details' Services section. Sampled by the Services panel alone, while one of them
-        // or the tab needs it (onUpdate()). Not in synthetic runs: their processes are made up, and a
-        // real service's PID would match one by accident.
+        // The Services tab's list says which services each process hosts on Windows (#1880): the Services
+        // column, and the display names and states in Process Details' Services section. Sampled by the
+        // Services panel alone, while one of them or the tab needs it (onUpdate()). Not in synthetic runs:
+        // their processes are made up, and a real service's PID would match one by accident.
         if (Synthetic::activeScenario() == nullptr)
         {
             processModel->setServiceModel(m_ServicesPanel.serviceModel());
@@ -305,8 +305,8 @@ void ShellLayer::onEvent(Core::Event& event)
             m_ShowDetailsTabRequested = true;
             return false;
         });
-    // A service asked for from Process Details' Services section (#1880): the Services panel selects
-    // it (it gets this event below, with every panel), and the next tab bar brings its tab forward.
+    // A request to see a service, from Process Details' Services section (#1886): the Services panel
+    // selects it from the same event.
     dispatcher.dispatch<Core::ShowServiceEvent>(
         [this](Core::ShowServiceEvent& /*e*/)
         {
@@ -725,9 +725,9 @@ void ShellLayer::renderTabBar()
     for (const auto& tab : m_Tabs.tabs())
     {
         const bool details = tab.eventName == "ProcessDetails";
-        const bool services = tab.eventName == "Services";
         m_TabBarItems.push_back({.label = tab.label(),
-                                 .selectRequested = (m_ShowDetailsTabRequested && details) || (m_ShowServicesTabRequested && services) ||
+                                 .selectRequested = (m_ShowDetailsTabRequested && details) ||
+                                                    (m_ShowServicesTabRequested && tab.eventName == "Services") ||
                                                     m_StartupTab.wantsSelected(tab.eventName),
                                  .icon = details ? m_DetailsTabIcon : ImTextureID_Invalid,
                                  .iconSize = details ? m_DetailsTabIconSize : 0.0F});

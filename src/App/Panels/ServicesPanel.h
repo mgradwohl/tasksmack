@@ -13,7 +13,6 @@
 
 #include <functional>
 #include <memory>
-#include <string>
 
 namespace App
 {
@@ -71,10 +70,6 @@ class ServicesPanel : public Panel
     /// is then read at the tab's own cadence, SERVICES_REFRESH_MS, never per frame; false again, it is
     /// read only while the tab is shown. Cheap to call every frame: only a change does anything.
     void setBackgroundDemand(bool wanted);
-
-    /// Selects the service named @p name and scrolls it into view the next time the table is drawn
-    /// (#1880). A ShowServiceEvent does this too.
-    void selectService(std::string name);
 
     /// Whether the list is being sampled now: the tab is shown or setBackgroundDemand() wants it, and
     /// the platform can list services (tests).

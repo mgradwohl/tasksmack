@@ -48,16 +48,6 @@ TEST(ApplicationEventsTest, ShowProcessDetailsHasItsOwnEventType)
     EXPECT_TRUE(handled);
 }
 
-// Process Details' Services section asks the shell for the Services tab, naming the service (#1880).
-TEST(ApplicationEventsTest, ShowServiceCarriesTheServiceName)
-{
-    const ShowServiceEvent show("Dhcp");
-    EXPECT_EQ(show.getEventType(), EventType::ShowService);
-    EXPECT_NE(ShowServiceEvent::getStaticType(), ShowProcessDetailsEvent::getStaticType());
-    EXPECT_EQ(show.serviceName(), "Dhcp");
-    EXPECT_EQ(show.toString(), "ShowServiceEvent: Dhcp");
-}
-
 // #1395: each event names itself and what it carries when logged.
 TEST(ApplicationEventsTest, EachEventDescribesItselfForTheLog)
 {

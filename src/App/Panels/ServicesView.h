@@ -86,19 +86,9 @@ struct ServicesViewState
 
     std::string unavailableHeading; ///< The empty state's heading when the list can't be read.
 
-    std::string selectedName; ///< The selected row's service (#1577); empty when none.
-    /// Scroll selectedName's row into view the next time the table is drawn (#1880): set by
-    /// requestShowService(), cleared once the row is drawn or the list is known not to have it.
-    bool scrollToSelected = false;
+    std::string selectedName;      ///< The selected row's service (#1577); empty when none.
+    bool scrollToSelected = false; ///< Scroll the selected row into view on the next draw (#1886)
 };
-
-/// Selects @p name and has the next table drawn scroll its row into view (#1880): the Services tab
-/// opened from Process Details' Services section. A filter that hides the service is cleared then.
-void requestShowService(ServicesViewState& state, std::string name);
-
-/// Where @p name is among @p rows (indices into @p services), or -1 when it is not.
-[[nodiscard]] int
-serviceRowOf(std::span<const std::size_t> rows, std::span<const Platform::ServiceInfo> services, std::string_view name) noexcept;
 
 class ServiceActionsView;
 class ProcessIconView;

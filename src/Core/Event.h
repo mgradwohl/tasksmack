@@ -16,7 +16,6 @@ enum class EventType : uint8_t
     // Application events (for UI coordination)
     ProcessSelected,
     ShowProcessDetails,
-    ShowService,
     RefreshRateChanged,
     HistoryDurationChanged,
     ActiveTabChanged,
@@ -24,7 +23,8 @@ enum class EventType : uint8_t
     OpenAbout,
     OpenHelp,
     OpenElevationNotice,
-    UdpEventTraceChanged
+    UdpEventTraceChanged,
+    ShowService
 };
 
 /// Macro to implement event type boilerplate

@@ -27,7 +27,6 @@
 #include "ProcessOpenFilesView.h"
 #include "ProcessPriorityView.h"
 #include "ProcessSecurityView.h"
-#include "ProcessServicesView.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
 
@@ -148,28 +147,6 @@ class ProcessDetailsPanel : public Panel
         m_HasAccelerator = hasAccelerator;
     }
 
-    /// The service list the Overview's Services section takes display names and states from (#1880),
-    /// from the composition root (ShellLayer: the Services panel's model); null (the default) leaves
-    /// the section to the names in the snapshot alone, with no links to the Services tab.
-    void setServiceModel(std::shared_ptr<const Domain::ServiceModel> serviceModel) noexcept
-    {
-        m_ServiceModel = std::move(serviceModel);
-    }
-
-    /// Whether the Overview's Services section was drawn open on the last frame, as of the last
-    /// updateWithSamples() (#1880): ShellLayer then keeps the service list sampled.
-    [[nodiscard]] bool servicesSectionOpen() const noexcept
-    {
-        return m_ServicesSectionOpen;
-    }
-
-    /// Where the Services section's links raise their ShowServiceEvent (#1880). Tests: a recorder;
-    /// unset (the default), Core::Application's event dispatch, as ProcessesPanel raises its events.
-    void setEventSink(std::function<void(Core::Event&)> raiseEvent)
-    {
-        m_RaiseEvent = std::move(raiseEvent);
-    }
-
     /// Brings @p tab forward the next time the tabs are drawn: the test hook's TASKSMACK_DETAILS_TAB (#1559).
     void requestTab(SelectOverride::DetailsTab tab)
     {
@@ -206,11 +183,32 @@ class ProcessDetailsPanel : public Panel
         m_KillShortcut.expire();
     }
 
+    /// The service list the Overview's Services section takes display names and states from (#1880), from
+    /// the composition root (ShellLayer: the Services panel's model). Null (the default): names alone.
+    void setServiceModel(std::shared_ptr<const Domain::ServiceModel> serviceModel) noexcept
+    {
+        m_ServiceModel = std::move(serviceModel);
+    }
+
+    /// Whether the Overview's Services section was drawn open on the last frame, as of the last
+    /// updateWithSamples() (#1880): ShellLayer then keeps the service list sampled.
+    [[nodiscard]] bool servicesSectionOpen() const noexcept
+    {
+        return m_ServicesSectionOpen;
+    }
+
+    /// Test seam (#1886): events the panel raises (Show in Services) go to @p raise instead of
+    /// Core::Application.
+    void setEventSinkForTesting(std::function<void(Core::Event&)> raise)
+    {
+        m_RaiseEvent = std::move(raise);
+    }
+
   private:
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
-    /// The Overview's Services section (#1880), and the ShowServiceEvent its link raises.
-    void renderServicesSection();
-    void raiseEvent(Core::Event& event);
+    /// The Overview's collapsed Services section (#1886): each service the process runs, with a button
+    /// that shows it in the Services tab. Not drawn for a process that runs none.
+    void renderServicesSection(const Domain::ProcessSnapshot& proc);
     /// What the chart tabs draw this frame: the history, the smoothed now-bar values and the displayed
     /// snapshot, by pointer for this frame's calls only (ProcessDetailsCharts, #1179).
     [[nodiscard]] ProcessChartContext chartContext() const;
@@ -274,6 +272,12 @@ class ProcessDetailsPanel : public Panel
     // m_Charts'.
     UI::Widgets::PlotFillState m_OverviewFill;
 
+    std::function<void(Core::Event&)> m_RaiseEvent; // Set by the test seam only
+    // The Services section's display names and states (#1880), and whether it was drawn open: set by
+    // renderServicesSection(), taken into m_ServicesSectionOpen by updateWithSamples().
+    std::shared_ptr<const Domain::ServiceModel> m_ServiceModel;
+    bool m_ServicesDrawnOpen = false;
+    bool m_ServicesSectionOpen = false;
     bool m_HasSnapshot = false;
     bool m_ProcessExited = false; // Had a snapshot of the selected process, and it has gone missing (#927)
 
@@ -328,14 +332,6 @@ class ProcessDetailsPanel : public Panel
     std::unique_ptr<Platform::IProcessOpenFilesReader> m_OpenFilesReader;
     bool m_HasOpenFiles = false; // m_OpenFilesReader can list open files here (Windows, Linux; not synthetic runs)
     ProcessOpenFilesView m_OpenFilesView;
-
-    // The Overview's Services section (#1880): the names from the displayed snapshot, the display names
-    // and states from m_ServiceModel's current list. Nothing is read for it here: while it is drawn
-    // open (m_ServicesSectionOpen), ShellLayer has the Services panel keep that list sampled.
-    std::shared_ptr<const Domain::ServiceModel> m_ServiceModel;
-    ProcessServicesView m_ServicesView;
-    bool m_ServicesSectionOpen = false;
-    std::function<void(Core::Event&)> m_RaiseEvent; // setEventSink(); unset: Core::Application's
 
     // The Overview's Recent crashes line (#1675): the selected executable's crashes and hangs from the
     // shared Domain::CrashHistory, read on a worker at most once a refresh interval while the line is
