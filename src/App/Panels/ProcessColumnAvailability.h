@@ -110,6 +110,10 @@ gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = fals
         return npuSupported(gpu);
     case ProcessColumn::Shared:
         return caps.hasSharedMemory;
+    case ProcessColumn::Private:
+        return caps.hasPrivateBytes;
+    case ProcessColumn::Swap:
+        return caps.hasSwapBytes;
     case ProcessColumn::Power:
         return caps.hasPowerUsage;
     case ProcessColumn::IoRead:
@@ -239,6 +243,8 @@ enum class TextCell : std::uint8_t
     ProcessRowFormat::RowFormatOptions options;
     options.hasPowerUsage = caps.hasPowerUsage;
     options.hasSharedMemory = caps.hasSharedMemory;
+    options.hasPrivateBytes = caps.hasPrivateBytes;
+    options.hasSwapBytes = caps.hasSwapBytes;
     options.hasIoCounters = caps.hasIoCounters;
     options.hasNetworkCounters = caps.hasNetworkCounters;
     options.hasThreadCount = caps.hasThreadCount;

@@ -150,20 +150,20 @@ TEST(ProcessServicesTest, MergeFillsEverySnapshotByFirstSeen)
     snapshots[1].pid = 900;
     snapshots[2].pid = 77;
     std::vector<Platform::ProcessCounters> counters(3);
-    counters[2].serviceUnit = "cron.service";
+    counters[2].services = "cron.service";
     // 900 was first listed after the read: its entry may be another process's.
     const std::vector<Clock::time_point> firstSeen{read - milliseconds(10), read + milliseconds(10), read};
 
     ProcessServices::mergeInto(snapshots, counters, firstSeen, &publication);
-    EXPECT_EQ(snapshots[0].servicesText, "Dhcp, EventLog, nsi");
-    EXPECT_TRUE(snapshots[1].services.empty());
-    EXPECT_EQ(snapshots[1].servicesText, "");
-    EXPECT_EQ(snapshots[2].servicesText, "cron.service");
+    EXPECT_EQ(snapshots[0].services, "Dhcp, EventLog, nsi");
+    EXPECT_TRUE(snapshots[1].serviceNames.empty());
+    EXPECT_EQ(snapshots[1].services, "");
+    EXPECT_EQ(snapshots[2].services, "cron.service");
 
     // No current list: only the units are left.
     ProcessServices::mergeInto(snapshots, counters, firstSeen, nullptr);
-    EXPECT_EQ(snapshots[0].servicesText, "");
-    EXPECT_EQ(snapshots[2].servicesText, "cron.service");
+    EXPECT_EQ(snapshots[0].services, "");
+    EXPECT_EQ(snapshots[2].services, "cron.service");
 }
 
 // ---- Through ProcessModel, with ServiceModel's own publication ------------------------------------
@@ -215,8 +215,8 @@ TEST(ProcessServicesModelTest, AReusedPidDoesNotInheritTheServicesOfThePidsEarli
     clock.advance(milliseconds(500));
     model.refresh();
     ASSERT_EQ(snapshotOf(model, 1200).pid, 1200);
-    EXPECT_EQ(snapshotOf(model, 1200).servicesText, "Dhcp, EventLog");
-    EXPECT_EQ(snapshotOf(model, 1200).services.size(), 2U);
+    EXPECT_EQ(snapshotOf(model, 1200).services, "Dhcp, EventLog");
+    EXPECT_EQ(snapshotOf(model, 1200).serviceNames.size(), 2U);
 
     // The svchost exits and another process starts with its PID -- a new start time -- before the list
     // is read again: the old list's entry for 1200 is not this process's.
@@ -225,7 +225,7 @@ TEST(ProcessServicesModelTest, AReusedPidDoesNotInheritTheServicesOfThePidsEarli
     model.refresh();
     ASSERT_EQ(snapshotOf(model, 1200).pid, 1200);
     EXPECT_EQ(snapshotOf(model, 1200).name, "notepad.exe");
-    EXPECT_TRUE(snapshotOf(model, 1200).services.empty());
+    EXPECT_TRUE(snapshotOf(model, 1200).serviceNames.empty());
 
     // A list read after it started speaks for it: the services moved to a new svchost, notepad hosts
     // nothing.
@@ -234,7 +234,7 @@ TEST(ProcessServicesModelTest, AReusedPidDoesNotInheritTheServicesOfThePidsEarli
     services->sample();
     clock.advance(milliseconds(500));
     model.refresh();
-    EXPECT_TRUE(snapshotOf(model, 1200).services.empty());
+    EXPECT_TRUE(snapshotOf(model, 1200).serviceNames.empty());
 }
 
 TEST(ProcessServicesModelTest, AListNoLongerRefreshedStopsCounting)
@@ -251,12 +251,12 @@ TEST(ProcessServicesModelTest, AListNoLongerRefreshedStopsCounting)
     model.setServiceModel(services);
     services->sample();
     model.refresh();
-    EXPECT_EQ(snapshotOf(model, 900).servicesText, "BFE");
+    EXPECT_EQ(snapshotOf(model, 900).services, "BFE");
 
     // Nothing needs the list any more, so it is not read again; once too old it is not shown as current.
     clock.advance(milliseconds(Sampling::SERVICES_DATA_MAX_AGE_MS + 1));
     model.refresh();
-    EXPECT_EQ(snapshotOf(model, 900).servicesText, "");
+    EXPECT_EQ(snapshotOf(model, 900).services, "");
 }
 
 TEST(ProcessServicesModelTest, AListWithPidsMakesTheCapabilityTrue)
@@ -283,12 +283,12 @@ TEST(ProcessServicesModelTest, AListWithPidsMakesTheCapabilityTrue)
 TEST(ProcessServicesModelTest, TheLinuxUnitNeedsNoServiceList)
 {
     Platform::ProcessCounters sshd = TestMocks::makeProcessCounters(812, "sshd");
-    sshd.serviceUnit = "ssh.service";
+    sshd.services = "ssh.service";
     auto processProbe = std::make_unique<TestMocks::MockProcessProbe>();
     processProbe->withProcess(sshd);
     ProcessModel model(std::move(processProbe));
     model.refresh();
-    EXPECT_EQ(snapshotOf(model, 812).servicesText, "ssh.service");
+    EXPECT_EQ(snapshotOf(model, 812).services, "ssh.service");
 }
 
 } // namespace

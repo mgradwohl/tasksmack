@@ -54,6 +54,11 @@ struct ProcessCounters
     std::uint64_t rssBytes = 0;
     std::uint64_t peakRssBytes = 0; // OS-reported peak resident size, 0 = unknown (Linux: VmHWM, which resets on
                                     // exec; Windows: PeakWorkingSetSize). Domain keeps the highest peak it observed.
+    // The Private column (#1879, #1885): memory no other process shares. Linux: RssAnon from
+    // /proc/[pid]/status, the resident anonymous pages (heap, stacks, private mappings).
+    std::uint64_t privateBytes = 0;
+    // The Swap column (#1879, #1885): the part of it swapped out. Linux: VmSwap from /proc/[pid]/status.
+    std::uint64_t swapBytes = 0;
     // The Virtual column (#1184). Linux: vsize from /proc/[pid]/stat, the whole address space. Windows: the commit size
     // (PrivateUsage), as Task Manager shows it; its VirtualSize counts reservations, terabytes for
     // any process using Control Flow Guard.
@@ -89,10 +94,10 @@ struct ProcessCounters
     // "<runtime>:<short id or name>", e.g. "docker:1a2b3c4d5e6f" (empty if in none)
     std::string container;
 
-    // The systemd service the process belongs to (optional, Linux-only from /proc/[pid]/cgroup; see
-    // CgroupContainer::serviceUnitFromCgroups(), #1880): "sshd.service" (empty if in none). Windows
-    // leaves it empty: its services are matched to processes by PID from the service list instead.
-    std::string serviceUnit;
+    // The services the process runs (#1880, #1886). Linux: its systemd service, from /proc/[pid]/cgroup
+    // (see CgroupService.h), e.g. "sshd.service" (empty if in none). Windows leaves it empty: its services
+    // are matched to processes by PID from the service list instead (Domain::ProcessModel).
+    std::string services;
 
     // Process type classification (optional, Windows-only)
     // Values: "App", "Background Process", "Windows Process" (empty if not available)
@@ -161,6 +166,8 @@ struct ProcessCapabilities
     bool hasNice = false;               // Whether nice/priority value is available
     bool hasPageFaults = false;         // Whether page fault count is available
     bool hasPeakRss = false;            // Whether peak working set is available
+    bool hasPrivateBytes = false;       // Whether ProcessCounters::privateBytes is filled (Linux: RssAnon, #1885)
+    bool hasSwapBytes = false;          // Whether ProcessCounters::swapBytes is filled (Linux: VmSwap, #1885)
     bool hasCpuAffinity = false;        // Whether CPU affinity mask is available
     bool hasNetworkCounters = false;    // Whether per-process network counters are available
     bool hasUdpNetworkCounters = false; // Whether those counters include UDP (QUIC/HTTP3, WebRTC, games, DNS).
@@ -171,9 +178,9 @@ struct ProcessCapabilities
     bool hasStatus = false;             // Whether process status (Suspended, Efficiency Mode) is available
     bool hasPublisher = false;          // Whether publisher/vendor string is available (Windows PE version info)
     bool hasContainer = false;          // Whether the container a process runs in is available (Linux cgroups)
-    bool hasServices = false;           // Whether the services a process hosts are available (#1880): Linux, the
-                                        // systemd unit from its cgroup (ProcessCounters::serviceUnit); Windows,
-                                        // set by Domain::ProcessModel once a service list with PIDs is attached
+    bool hasServices = false;           // Whether the services a process runs are available: Linux, the systemd
+                                        // unit from its cgroups (ProcessCounters::services, #1886); Windows, set by
+                                        // Domain::ProcessModel once a service list with PIDs is attached (#1880)
     bool hasProcessType = false;        // Whether process type classification is available (Windows: App/Background/Windows)
     bool hasGdiObjects = false;         // Whether GDI object count is available (Windows-only via GetGuiResources)
     bool hasReducedPrivileges = false;  // True when the process lacks the privileges to read some data (not

@@ -65,4 +65,24 @@ namespace Platform
     }
 }
 
+/// The message shown when sched_setaffinity(2) fails with @p err for process @p pid (#1887).
+///
+/// EPERM: the process belongs to another user and TaskSmack lacks CAP_SYS_NICE. EINVAL: none of the
+/// CPUs asked for is one the thread may use -- offline, or outside the cpuset of its cgroup.
+[[nodiscard]] inline std::string affinityErrorMessage(int err, std::int32_t pid)
+{
+    switch (err)
+    {
+    case EPERM:
+        return std::format("Permission denied: process {} belongs to another user. Changing its CPU affinity needs root or CAP_SYS_NICE.",
+                           pid);
+    case EINVAL:
+        return std::format("None of those CPUs can run process {}: they are offline, or outside the CPUs its cgroup allows.", pid);
+    case ESRCH:
+        return "Process not found - may have already exited";
+    default:
+        return std::system_category().message(err);
+    }
+}
+
 } // namespace Platform

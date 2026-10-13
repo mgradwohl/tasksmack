@@ -115,11 +115,11 @@ TEST(ProcessColumnConfigTest, NoHeaderIsASingleLetterOrContainsPlus)
 TEST(ProcessColumnConfigTest, ConfigKeysAreUnchanged)
 {
     constexpr auto expected = std::to_array<std::string_view>({
-        "pid",        "name",        "user",        "ppid",        "publisher",   "container",   "services",   "state",
-        "status",     "type",        "cpu_percent", "mem_percent", "resident",    "virtual",     "shared",     "peak_resident",
-        "nice",       "affinity",    "threads",     "handles",     "gdi_objects", "cpu_time",    "start_time", "io_read",
-        "io_write",   "page_faults", "net_sent",    "net_recv",    "power",       "gpu_percent", "gpu_memory", "gpu_engine",
-        "gpu_device", "npu_percent", "npu_memory",  "npu_engine",  "command",
+        "pid",        "name",       "user",        "ppid",        "publisher",  "container",  "services",    "state",
+        "status",     "type",       "cpu_percent", "mem_percent", "resident",   "virtual",    "shared",      "peak_resident",
+        "private",    "swap",       "nice",        "affinity",    "threads",    "handles",    "gdi_objects", "cpu_time",
+        "start_time", "io_read",    "io_write",    "page_faults", "net_sent",   "net_recv",   "power",       "gpu_percent",
+        "gpu_memory", "gpu_engine", "gpu_device",  "npu_percent", "npu_memory", "npu_engine", "command",
     });
     ASSERT_EQ(expected.size(), processColumnCount());
     for (const auto col : allProcessColumns())
@@ -220,9 +220,9 @@ TEST(ProcessColumnConfigTest, ToIndexReturnsCorrectValues)
     EXPECT_EQ(toIndex(ProcessColumn::Name), 1);
     EXPECT_EQ(toIndex(ProcessColumn::Publisher), 4);   // Windows publisher — after User(2) and PPID(3)
     EXPECT_EQ(toIndex(ProcessColumn::Container), 5);   // Linux container (#805)
-    EXPECT_EQ(toIndex(ProcessColumn::Services), 6);    // Hosted services — last of the identity columns (#1880)
+    EXPECT_EQ(toIndex(ProcessColumn::Services), 6);    // Services (#1886) — last of the identity columns
     EXPECT_EQ(toIndex(ProcessColumn::Type), 9);        // Process type — after State(7) and Status(8)
-    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 20); // GDI count — after Handles(19)
+    EXPECT_EQ(toIndex(ProcessColumn::GdiObjects), 22); // GDI count — after Handles(21); Private and Swap (#1885) sit before them
 }
 
 TEST(ProcessColumnConfigTest, ToIndexIsMonotonic)
@@ -461,7 +461,7 @@ TEST(ProcessColumnConfigTest, NumericColumnsAreRightAligned)
              ProcessColumn::GdiObjects, ProcessColumn::CpuTime,    ProcessColumn::StartTime,  ProcessColumn::IoRead,
              ProcessColumn::IoWrite,    ProcessColumn::PageFaults, ProcessColumn::NetSent,    ProcessColumn::NetReceived,
              ProcessColumn::Power,      ProcessColumn::GpuPercent, ProcessColumn::GpuMemory,  ProcessColumn::NpuPercent,
-             ProcessColumn::NpuMemory,
+             ProcessColumn::NpuMemory,  ProcessColumn::Private,    ProcessColumn::Swap,
          })
     {
         EXPECT_EQ(columnAlignment(col), ColumnAlign::Right) << getColumnInfo(col).configKey;

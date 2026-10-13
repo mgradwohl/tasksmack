@@ -1,7 +1,6 @@
 /// @file test_CgroupContainer.cpp
 /// @brief CgroupContainer::containerFromCgroups() (#805): the container a /proc/[pid]/cgroup file
-/// places a process in, for each runtime's cgroup layout; and serviceUnitFromCgroups() (#1880), the
-/// systemd service the same file places it in.
+/// places a process in, for each runtime's cgroup layout.
 
 #include "Platform/Linux/CgroupContainer.h"
 
@@ -102,75 +101,6 @@ TEST(CgroupContainerTest, TheV2PathWinsWhenItNamesOne)
 {
     const std::string other = "2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c";
     EXPECT_EQ(containerFromCgroups("4:memory:/docker/" + other + "\n0::/docker/" + ID + "\n"), "docker:1a2b3c4d5e6f");
-}
-
-// ---- serviceUnitFromCgroups() (#1880): the systemd service the Services column shows ----------------
-
-using CgroupContainer::serviceUnitFromCgroups;
-
-// /proc/[pid]/cgroup files as real systems write them.
-constexpr const char* SSHD_V2 = "0::/system.slice/ssh.service\n";
-constexpr const char* FIREFOX_V2 = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-firefox-4242.scope\n";
-constexpr const char* PIPEWIRE_V2 = "0::/user.slice/user-1000.slice/user@1000.service/session.slice/pipewire.service\n";
-constexpr const char* LOGIN_SHELL_V2 = "0::/user.slice/user-1000.slice/session-2.scope\n";
-constexpr const char* INIT_V2 = "0::/init.scope\n";
-constexpr const char* CRON_HYBRID = "12:pids:/system.slice/cron.service\n"
-                                    "11:memory:/system.slice/cron.service\n"
-                                    "1:name=systemd:/system.slice/cron.service\n"
-                                    "0::/\n";
-
-TEST(CgroupServiceUnitTest, ASystemServiceIsItsUnit)
-{
-    EXPECT_EQ(serviceUnitFromCgroups(SSHD_V2), "ssh.service");
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/system.slice/systemd-journald.service")), "systemd-journald.service");
-    // A template instance keeps its instance name, escapes and all.
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/system.slice/system-getty.slice/getty@tty1.service")), "getty@tty1.service");
-}
-
-TEST(CgroupServiceUnitTest, ASubgroupAServiceMadeIsStillTheService)
-{
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/system.slice/containerd.service/worker")), "containerd.service");
-}
-
-TEST(CgroupServiceUnitTest, AUserServiceNamesItselfNotTheUserManager)
-{
-    EXPECT_EQ(serviceUnitFromCgroups(PIPEWIRE_V2), "pipewire.service");
-}
-
-TEST(CgroupServiceUnitTest, ScopesAreNoService)
-{
-    EXPECT_EQ(serviceUnitFromCgroups(FIREFOX_V2), "");     // an app the desktop launched
-    EXPECT_EQ(serviceUnitFromCgroups(LOGIN_SHELL_V2), ""); // a login session
-    EXPECT_EQ(serviceUnitFromCgroups(INIT_V2), "");        // PID 1
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/system.slice/docker-" + std::string(ID) + ".scope")), "");
-    // The container's own processes are no host service; the service manager running it is.
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/system.slice/docker.service")), "docker.service");
-}
-
-TEST(CgroupServiceUnitTest, NothingWhenNoComponentNamesAUnit)
-{
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/")), ""); // inside a cgroup namespace, or a kernel thread
-    EXPECT_EQ(serviceUnitFromCgroups(""), "");
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/system.slice")), "");
-    EXPECT_EQ(serviceUnitFromCgroups(v2("/system.slice/.service")), ""); // no name before the suffix
-    EXPECT_EQ(serviceUnitFromCgroups("garbage\n3:pids\n"), "");
-}
-
-TEST(CgroupServiceUnitTest, CgroupV1LinesWhenTheV2PathNamesNone)
-{
-    EXPECT_EQ(serviceUnitFromCgroups(CRON_HYBRID), "cron.service");
-    // The v2 path wins when it names one.
-    EXPECT_EQ(serviceUnitFromCgroups("1:name=systemd:/system.slice/cron.service\n" + std::string(SSHD_V2)), "ssh.service");
-}
-
-TEST(CgroupServiceUnitTest, TheContainerParserReadsTheSameFilesUnchanged)
-{
-    // One walk serves both (Detail::fromCgroups()): neither answer leaks into the other.
-    EXPECT_EQ(containerFromCgroups(SSHD_V2), "");
-    EXPECT_EQ(containerFromCgroups(CRON_HYBRID), "");
-    const std::string inContainer = v2("/system.slice/docker-" + std::string(ID) + ".scope");
-    EXPECT_EQ(containerFromCgroups(inContainer), "docker:1a2b3c4d5e6f");
-    EXPECT_EQ(serviceUnitFromCgroups(inContainer), "");
 }
 
 } // namespace

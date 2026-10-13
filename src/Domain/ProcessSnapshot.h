@@ -50,6 +50,8 @@ struct ProcessSnapshot
 
     std::uint64_t peakMemoryBytes = 0; // Peak RSS (from OS on Windows, tracked on Linux)
     std::uint64_t sharedBytes = 0;     // Shared memory
+    std::uint64_t privateBytes = 0;    // Private memory (Linux: RssAnon, #1885)
+    std::uint64_t swapBytes = 0;       // Swapped out (Linux: VmSwap, #1885)
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     Platform::CpuAffinity cpuAffinity; // Logical processors it may run on (empty = not available)
 
@@ -103,14 +105,14 @@ struct ProcessSnapshot
     std::string gpuDevices;   // Comma-separated GPU IDs: "0" or "0,1"
     std::string publisher;    // Software publisher/vendor (Windows PE version info; empty if not available)
     std::string container;    // Container: "docker:1a2b3c4d5e6f", "lxc:web" (Linux cgroups; empty if in none)
+    std::string services;     // Services it runs, comma-joined: "sshd.service", "Dhcp, EventLog" (#1886, #1880)
     std::string processType;  // Process type: "App", "Background Process", "Windows Process" (Windows-only)
 
-    // The services the process hosts (#1880), by name: Windows, those the service list gives its PID
-    // (in the list's name order); Linux, the systemd unit its cgroup names. Empty for none, or while no
-    // current service list is attached (ProcessServices::mergeInto()). servicesText is them joined with
-    // ", ", as the Services column shows and sorts them.
-    std::vector<std::string> services;
-    std::string servicesText;
+    // The services the process runs, by name (#1880): Windows, those the service list gives its PID (in
+    // the list's name order); Linux, the systemd unit its cgroup names (#1886). Empty for none, or on
+    // Windows while no current service list is attached (ProcessServices::mergeInto()). `services` above is
+    // them joined with ", ", as the Services column shows and sorts them.
+    std::vector<std::string> serviceNames;
 
     // Tree hierarchy (computed once per snapshot)
     std::vector<std::size_t> childrenIndices; // Indices of children within the same snapshot vector

@@ -83,6 +83,10 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
         return compare(a.peakMemoryBytes, b.peakMemoryBytes);
     case ProcessColumn::Shared:
         return compare(a.sharedBytes, b.sharedBytes);
+    case ProcessColumn::Private:
+        return compare(a.privateBytes, b.privateBytes);
+    case ProcessColumn::Swap:
+        return compare(a.swapBytes, b.swapBytes);
     case ProcessColumn::CpuTime:
         return compare(a.cpuTimeSeconds, b.cpuTimeSeconds);
     case ProcessColumn::StartTime:
@@ -139,7 +143,7 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::Container:
         return compare(a.container, b.container);
     case ProcessColumn::Services:
-        return compareServicesText(a.servicesText, b.servicesText, ascending);
+        return compareServicesText(a.services, b.services, ascending);
     case ProcessColumn::Type:
         return compare(a.processType, b.processType);
     case ProcessColumn::GdiObjects:

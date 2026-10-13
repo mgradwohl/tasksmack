@@ -6,6 +6,7 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
+#include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
@@ -39,6 +40,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
@@ -70,6 +72,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -525,22 +528,22 @@ void leftAlignedOrBlankCell(const Domain::ProcessSnapshot& proc, const RowFormat
 /// whether or not the cell had room for them all.
 void servicesCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
 {
-    const ProcessColumnAvailability::TextCell content = ProcessColumnAvailability::textCell(fmt.servicesSupported, !proc.services.empty());
+    const ProcessColumnAvailability::TextCell content =
+        ProcessColumnAvailability::textCell(fmt.servicesSupported, !proc.serviceNames.empty());
     if (content != ProcessColumnAvailability::TextCell::Text)
     {
-        renderTextCell(content, proc.servicesText, fmt.servicesWidth, widths.unavailableText);
+        renderTextCell(content, proc.services, fmt.servicesWidth, widths.unavailableText);
         return;
     }
-    renderCellText(
-        proc.servicesText, cachedTextWidth(proc.servicesText, fmt.servicesWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
+    renderCellText(proc.services, cachedTextWidth(proc.services, fmt.servicesWidth), /*rightAligned=*/false, /*clippedTooltip=*/false);
     if (ImGui::BeginItemTooltip())
     {
-        const std::string heading = ProcessRowFormat::servicesTooltipHeading(proc.services.size());
+        const std::string heading = ProcessRowFormat::servicesTooltipHeading(proc.serviceNames.size());
         ImGui::TextColored(UI::Theme::get().scheme().textMuted, "%s", heading.c_str());
         std::size_t index = 0;
-        while (index < proc.services.size())
+        while (index < proc.serviceNames.size())
         {
-            ImGui::TextUnformatted(proc.services[index].c_str());
+            ImGui::TextUnformatted(proc.serviceNames[index].c_str());
             ++index;
         }
         ImGui::EndTooltip();
@@ -685,6 +688,8 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::Virtual, .render = &unitAlignedCell<&RowFormatCache::virtualMem, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::Shared, .render = &unitAlignedCell<&RowFormatCache::shared, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::PeakResident, .render = &unitAlignedCell<&RowFormatCache::peakRss, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Private, .render = &unitAlignedCell<&RowFormatCache::privateMem, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Swap, .render = &unitAlignedCell<&RowFormatCache::swap, &ProcessCellWidths::unitBytes>},
     // Scheduling
     {.column = ProcessColumn::Priority, .render = &priorityCell},
     {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},
@@ -1533,6 +1538,8 @@ void ProcessesPanel::renderContent()
 
     // The row menu's batch priority dialog (#1484); a picked value goes on to the confirmation below.
     renderBatchPriorityDialog();
+    // The row menu's Set affinity... (#1887), applied on its own Apply.
+    renderAffinityDialog();
 
     // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209), or a
     // batch priority change (#1484)
@@ -2553,7 +2560,8 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
     // the one highlighted row, when it is visible.
     // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
-    const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending();
+    const bool rowActionPending =
+        m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() || m_AffinityDialog.isPending();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -2736,6 +2744,18 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             requestSelectionPriority();
         }
     }
+    // One process's CPUs (#1887), in its own dialog: a selection's processes rarely want the same set.
+    if (can.canSetAffinity && batchCount == 0)
+    {
+        ImGui::Separator();
+        if (ImGui::MenuItem(ICON_FA_MICROCHIP " Set affinity...###SetAffinity"))
+        {
+            m_AffinityDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                                  proc.name,
+                                  proc.cpuAffinity,
+                                  static_cast<std::size_t>(std::thread::hardware_concurrency()));
+        }
+    }
     if (can.canTerminate || can.canKill)
     {
         // Ending a process can lose its work: in the danger colour, and confirmed in the dialog's
@@ -2830,6 +2850,24 @@ void ProcessesPanel::renderBatchPriorityDialog()
     if (anySucceeded)
     {
         requestRefresh(); // Show the new priorities without waiting for the next sample
+    }
+}
+
+void ProcessesPanel::renderAffinityDialog()
+{
+    const std::optional<Platform::CpuAffinity> cpus = m_AffinityDialog.render();
+    if (!cpus.has_value())
+    {
+        return;
+    }
+    const Platform::ProcessTarget& target = m_AffinityDialog.target();
+    const Platform::ProcessActionResult result = m_ProcessActions ? m_ProcessActions->setAffinity(target, *cpus)
+                                                                  : Platform::ProcessActionResult::error("Process actions unavailable");
+    m_RowActionResult = affinityResultMessage(m_AffinityDialog.name(), target.pid, *cpus, result);
+    m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
+    if (result.success)
+    {
+        requestRefresh(); // Show the new affinity without waiting for the next sample
     }
 }
 

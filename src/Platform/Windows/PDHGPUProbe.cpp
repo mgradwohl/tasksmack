@@ -2,6 +2,7 @@
 
 #include "Platform/GPUTypes.h"
 #include "Platform/Windows/PDHGPUProbeImpl.h"
+#include "Platform/Windows/PerfProviderApartment.h"
 
 #include <spdlog/spdlog.h>
 
@@ -44,6 +45,8 @@ PDHGPUProbe::PDHGPUProbe(Role role) : m_Impl(std::make_unique<Impl>())
 {
     m_Impl->role = role;
     m_Impl->initialize();
+    // Initialising connected PDH, which may have loaded perf providers holding COM objects (#1898).
+    Windows::keepComForPerfProviders();
 }
 
 PDHGPUProbe::PDHGPUProbe(std::unique_ptr<Impl> impl) : m_Impl(std::move(impl))

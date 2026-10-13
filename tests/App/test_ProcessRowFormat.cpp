@@ -46,6 +46,8 @@ using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
     snap.memoryBytes = 512ULL * 1024 * 1024;     // 512 MB
     snap.peakMemoryBytes = 768ULL * 1024 * 1024; // 768 MB
     snap.sharedBytes = 64ULL * 1024 * 1024;      // 64 MB
+    snap.privateBytes = 384ULL * 1024 * 1024;    // 384 MB (#1885)
+    snap.swapBytes = 32ULL * 1024 * 1024;        // 32 MB (#1885)
     snap.ioReadBytesPerSec = 1024.0 * 1024.0;    // 1 MB/s
     snap.ioWriteBytesPerSec = 2048.0 * 1024.0;   // 2 MB/s
     snap.netSentBytesPerSec = 512.0;             // 512 B/s
@@ -164,6 +166,8 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
     EXPECT_EQ(fmt.resident.text, "512.0 MiB");
     EXPECT_EQ(fmt.peakRss.text, "768.0 MiB");
     EXPECT_EQ(fmt.shared.text, "64.0 MiB");
+    EXPECT_EQ(fmt.privateMem.text, "384.0 MiB");
+    EXPECT_EQ(fmt.swap.text, "32.0 MiB");
     EXPECT_EQ(fmt.ioRead.text, "1.0 MiB/s");
     EXPECT_EQ(fmt.ioWrite.text, "2.0 MiB/s");
     EXPECT_EQ(fmt.netSent.text, "512.0 B/s");
@@ -234,6 +238,8 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
     ProcessRowFormat::RowFormatOptions none;
     none.hasPowerUsage = false;
     none.hasSharedMemory = false;
+    none.hasPrivateBytes = false;
+    none.hasSwapBytes = false;
     none.hasIoCounters = false;
     none.hasNetworkCounters = false;
     none.hasThreadCount = false;
@@ -246,6 +252,8 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
 
     for (const AlignedCellText* cell : {&fmt.power,
                                         &fmt.shared,
+                                        &fmt.privateMem,
+                                        &fmt.swap,
                                         &fmt.ioRead,
                                         &fmt.ioWrite,
                                         &fmt.netSent,
@@ -553,7 +561,10 @@ TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
 
     ProcessRowFormat::RowFormatOptions windowsLike;
     windowsLike.hasContainer = false;
+    windowsLike.hasServices = false;
     EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).containerSupported);
+    EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).servicesSupported);
+    EXPECT_TRUE(all.servicesSupported);
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)
@@ -768,17 +779,6 @@ TEST(ProcessRowFormatTest, ServicesTooltipHeadingCountsTheServices)
     // #1880: the Services cell's tooltip lists the names under this line.
     EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(1), "1 service");
     EXPECT_EQ(ProcessRowFormat::servicesTooltipHeading(3), "3 services");
-}
-
-TEST(ProcessRowFormatTest, ServicesSupportFollowsTheOptions)
-{
-    // #1880: where the system cannot tell, the cell is the unavailable dash rather than blank.
-    const ProcessSnapshot proc;
-    ProcessRowFormat::RowFormatOptions options;
-    options.hasServices = false;
-    EXPECT_FALSE(buildRowFormatCache(proc, options).servicesSupported);
-    options.hasServices = true;
-    EXPECT_TRUE(buildRowFormatCache(proc, options).servicesSupported);
 }
 
 } // namespace

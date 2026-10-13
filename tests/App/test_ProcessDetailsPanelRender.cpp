@@ -192,6 +192,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     snapshot->publisher = "Example Corp";
     snapshot->processType = "Background Process";
     snapshot->container = "docker:1a2b3c4d5e6f";
+    snapshot->services = "nginx.service"; // #1886
     sample.snapshot = std::move(snapshot);
     const std::vector samples{sample};
     panel->updateWithSamples(samples, 1.0F);
@@ -202,6 +203,8 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     EXPECT_TRUE(text.contains("Background Process")) << text;
     EXPECT_TRUE(text.contains("Container")) << text;
     EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f")) << text;
+    EXPECT_TRUE(text.contains("Services")) << text;
+    EXPECT_TRUE(text.contains("nginx.service")) << text;
 }
 
 // #1878: what the Processes table shows is on Process Details too: Status joined to State, Affinity in
@@ -214,6 +217,8 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     caps.hasStatus = true;
     caps.hasCpuAffinity = true;
     caps.hasPageFaults = true;
+    caps.hasPrivateBytes = true;
+    caps.hasSwapBytes = true;
     panel->setProcessCapabilities(caps);
     panel->setSelectedPid(PID, START_TICKS);
     for (int second = 0; second < 5; ++second)
@@ -224,6 +229,8 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
         snapshot->cpuAffinity = Platform::CpuAffinity::fromMask(0x0FU);
         snapshot->pageFaults = 4321;
         snapshot->memoryPercent = 1.5;
+        snapshot->privateBytes = std::uint64_t{48} << 20U; // #1885
+        snapshot->swapBytes = std::uint64_t{3} << 20U;
         sample.snapshot = std::move(snapshot);
         const std::vector samples{sample};
         panel->updateWithSamples(samples, 1.0F);
@@ -237,6 +244,10 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     EXPECT_TRUE(text.contains("4,321") || text.contains("4321")) << text;
     EXPECT_TRUE(text.contains("Mem %")) << text;
     EXPECT_TRUE(text.contains("1.5%")) << text;
+    EXPECT_TRUE(text.contains("Private")) << text;
+    EXPECT_TRUE(text.contains("48.0 MiB")) << text;
+    EXPECT_TRUE(text.contains("Swap")) << text;
+    EXPECT_TRUE(text.contains("3.0 MiB")) << text;
 
     // Where the platform reads none of them: no Affinity row, no total, the State alone.
     panel->setProcessCapabilities({});
@@ -251,6 +262,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     EXPECT_FALSE(text.contains("Suspended")) << text;
     EXPECT_FALSE(text.contains("Affinity")) << text;
     EXPECT_FALSE(text.contains("Page Faults (total)")) << text;
+    EXPECT_FALSE(text.contains("Swap")) << text;
 }
 
 // #1880: the Overview's Services section -- only where the platform can tell which services a process
@@ -286,8 +298,8 @@ TEST_F(ProcessDetailsPanelRenderTest, TheServicesSectionListsTheHostedServicesAn
     panel->setSelectedPid(PID, START_TICKS);
     Domain::ProcessSample sample = sampleAt(1.0, 10.0);
     auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
-    snapshot->services = {"Dhcp"};
-    snapshot->servicesText = "Dhcp";
+    snapshot->serviceNames = {"Dhcp"};
+    snapshot->services = "Dhcp";
     sample.snapshot = std::move(snapshot);
     const std::vector samples{sample};
     panel->updateWithSamples(samples, 1.0F);

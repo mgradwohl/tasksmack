@@ -5,6 +5,7 @@
 /// of process actions. We avoid actually terminating processes to keep
 /// tests safe and non-destructive.
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Linux/IoPriority.h"
 #include "Platform/Linux/LinuxProcessActions.h"
@@ -34,6 +35,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <sys/poll.h>
 #include <sys/resource.h>
@@ -510,6 +512,62 @@ TEST(LinuxProcessActionsTest, SetPriorityChangesEveryThread)
 }
 
 // =============================================================================
+// CPU affinity (#1887), against a real child process: narrowing its own user's process needs no
+// privilege. The CPU chosen is one this test may run on, so a cpuset or taskset around the test
+// doesn't refuse it.
+// =============================================================================
+
+TEST(LinuxProcessActionsTest, SetAffinityChangesEveryThread)
+{
+    cpu_set_t own;
+    CPU_ZERO(&own);
+    ASSERT_EQ(sched_getaffinity(0, sizeof(own), &own), 0);
+    int cpu = -1;
+    for (int i = 0; i < CPU_SETSIZE && cpu < 0; ++i)
+    {
+        if (CPU_ISSET(i, &own))
+        {
+            cpu = i;
+        }
+    }
+    ASSERT_GE(cpu, 0);
+
+    const SleepingChild child(2);
+    ASSERT_TRUE(child.started());
+    ASSERT_TRUE(child.threadsReady());
+    const ProcessTarget target = child.target();
+    const std::vector<id_t> tids = listThreads(target.pid);
+    ASSERT_GE(tids.size(), 3U);
+
+    CpuAffinity only;
+    only.set(static_cast<std::size_t>(cpu));
+    LinuxProcessActions actions;
+    EXPECT_TRUE(actions.actionCapabilities().canSetAffinity);
+    const auto result = actions.setAffinity(target, only);
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    for (const id_t tid : tids)
+    {
+        cpu_set_t now;
+        CPU_ZERO(&now);
+        ASSERT_EQ(sched_getaffinity(static_cast<pid_t>(tid), sizeof(now), &now), 0) << "thread " << tid;
+        EXPECT_EQ(CPU_COUNT(&now), 1) << "thread " << tid;
+        EXPECT_TRUE(CPU_ISSET(cpu, &now)) << "thread " << tid;
+    }
+}
+
+TEST(LinuxProcessActionsTest, SetAffinityRefusesAnEmptySetAndAnInvalidPid)
+{
+    LinuxProcessActions actions;
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    EXPECT_EQ(actions.setAffinity(child.target(), CpuAffinity{}).errorMessage, "Choose at least one CPU");
+    EXPECT_EQ(actions.setAffinity({.pid = 0, .startTimeTicks = 1}, CpuAffinity::fromMask(1)).errorMessage, "Invalid PID");
+    // A different start time: the PID now names another process, and nothing is changed.
+    const ProcessTarget other{.pid = child.target().pid, .startTimeTicks = child.target().startTimeTicks + 1};
+    EXPECT_FALSE(actions.setAffinity(other, CpuAffinity::fromMask(1)).success);
+}
+
+// =============================================================================
 // I/O priority (#803), against real child processes. Lowering a process of this user to the Idle
 // class or to a lower best-effort level needs no privilege.
 // =============================================================================
@@ -837,14 +895,15 @@ TEST(LinuxProcessActionsTest, SyscallTraceOpensTheTerminalWithStraceOrExplainsPt
 /// What the fake system calls do, and what they were asked.
 struct FaultPlan
 {
-    int openErrno = 0;      ///< pidfd_open fails with this, when set
-    int sendErrno = 0;      ///< pidfd_send_signal fails with this, when set
-    int pollEintrs = 0;     ///< poll() is interrupted this many times first
-    int pollErrno = 0;      ///< then fails with this, when set
-    int pollResult = 0;     ///< else 1 (the process exited) or 0
-    int setErrno = 0;       ///< setpriority / ioprio_set fail with this, when set
-    int ioprioGetValue = 0; ///< ioprio_get returns this
-    int ioprioGetErrno = 0; ///< or fails with this, when set
+    int openErrno = 0;                     ///< pidfd_open fails with this, when set
+    int sendErrno = 0;                     ///< pidfd_send_signal fails with this, when set
+    int pollEintrs = 0;                    ///< poll() is interrupted this many times first
+    int pollErrno = 0;                     ///< then fails with this, when set
+    int pollResult = 0;                    ///< else 1 (the process exited) or 0
+    int setErrno = 0;                      ///< setpriority / ioprio_set / sched_setaffinity fail with this, when set
+    std::vector<std::size_t> lastAffinity; ///< The CPUs the last sched_setaffinity was given
+    int ioprioGetValue = 0;                ///< ioprio_get returns this
+    int ioprioGetErrno = 0;                ///< or fails with this, when set
     int sendCalls = 0;
     int lastSignal = 0;
     int setCalls = 0;
@@ -894,6 +953,20 @@ int fakeSet(id_t /*tid*/, int /*value*/)
     return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
 }
 
+int fakeSetAffinity(id_t /*tid*/, std::size_t setSize, const cpu_set_t* set)
+{
+    ++plan().setCalls;
+    plan().lastAffinity.clear();
+    for (std::size_t cpu = 0; cpu < setSize * 8; ++cpu)
+    {
+        if (CPU_ISSET_S(cpu, setSize, set))
+        {
+            plan().lastAffinity.push_back(cpu);
+        }
+    }
+    return plan().setErrno != 0 ? fail(plan().setErrno) : 0;
+}
+
 int fakeIoprioGet(pid_t /*pid*/)
 {
     return plan().ioprioGetErrno != 0 ? fail(plan().ioprioGetErrno) : plan().ioprioGetValue;
@@ -913,7 +986,8 @@ class LinuxProcessActionsFaultTest : public ::testing::Test
                                                        .pollPidfd = &fakePollPidfd,
                                                        .setPriority = &fakeSet,
                                                        .ioprioSet = &fakeSet,
-                                                       .ioprioGet = &fakeIoprioGet}};
+                                                       .ioprioGet = &fakeIoprioGet,
+                                                       .setAffinity = &fakeSetAffinity}};
 };
 
 TEST_F(LinuxProcessActionsFaultTest, SignalsGoThroughThePidfd)
@@ -1221,6 +1295,50 @@ TEST(LinuxProcessSyscallsTest, TheRealThreadListingOfAMissingProcessSaysWhy)
     ASSERT_FALSE(listed.has_value());
     EXPECT_TRUE(static_cast<bool>(listed.error()));
     EXPECT_FALSE(realProcessSyscalls().isThreadOf(0x3FFFFFFF, 1));
+}
+
+// #1887: affinity goes to every thread as one dynamically sized set -- a CPU past the fixed
+// cpu_set_t's 1024 kept -- and is confirmed through the pidfd like the other per-thread changes.
+TEST_F(LinuxProcessActionsFaultTest, AffinityReachesEveryThreadWithEveryCpu)
+{
+    CpuAffinity cpus;
+    cpus.set(0);
+    cpus.set(2);
+    cpus.set(1100);
+    const ProcessActionResult result = m_Actions.setAffinity(ownTarget(), cpus);
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    EXPECT_GE(plan().setCalls, 1); // One per thread of this process
+    EXPECT_EQ(plan().pollCalls, 1);
+    EXPECT_EQ(plan().lastAffinity, (std::vector<std::size_t>{0, 2, 1100}));
+    EXPECT_TRUE(m_Actions.actionCapabilities().canSetAffinity);
+}
+
+TEST_F(LinuxProcessActionsFaultTest, AffinityErrorsSayWhy)
+{
+    plan().setErrno = EPERM;
+    const ProcessActionResult denied = m_Actions.setAffinity(ownTarget(), CpuAffinity::fromMask(1));
+    EXPECT_FALSE(denied.success);
+    EXPECT_TRUE(denied.errorMessage.contains("CAP_SYS_NICE")) << denied.errorMessage;
+    plan().setErrno = EINVAL;
+    const ProcessActionResult invalid = m_Actions.setAffinity(ownTarget(), CpuAffinity::fromMask(1));
+    EXPECT_TRUE(invalid.errorMessage.contains("cgroup")) << invalid.errorMessage;
+    plan().setErrno = 0;
+    plan().openErrno = ENOSYS;
+    const int callsBefore = plan().setCalls;
+    EXPECT_TRUE(m_Actions.setAffinity(ownTarget(), CpuAffinity::fromMask(1)).errorMessage.contains("pidfd"));
+    EXPECT_EQ(plan().setCalls, callsBefore) << "never sent to the bare PID";
+}
+
+TEST_F(LinuxProcessActionsFaultTest, AffinityWithoutTheCallIsUnavailable)
+{
+    const LinuxProcessActions actions{SyscallTrace::Tools{},
+                                      LinuxProcessSyscalls{.pidfdOpen = &fakePidfdOpen,
+                                                           .pidfdSendSignal = &fakePidfdSendSignal,
+                                                           .pollPidfd = &fakePollPidfd,
+                                                           .setPriority = &fakeSet,
+                                                           .ioprioSet = &fakeSet,
+                                                           .ioprioGet = &fakeIoprioGet}};
+    EXPECT_FALSE(actions.actionCapabilities().canSetAffinity);
 }
 
 } // namespace

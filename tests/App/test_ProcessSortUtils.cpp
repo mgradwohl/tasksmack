@@ -53,6 +53,8 @@ using Domain::ProcessSnapshot;
 
     snap.peakMemoryBytes = u;
     snap.sharedBytes = u;
+    snap.privateBytes = u;
+    snap.swapBytes = u;
     snap.pageFaults = u;
     snap.cpuAffinity = Platform::CpuAffinity::fromMask(u);
 
@@ -69,7 +71,6 @@ using Domain::ProcessSnapshot;
     snap.gpuDevices = s;
     snap.publisher = s;
     snap.container = s;
-    snap.servicesText = s;
     snap.processType = s;
 
     // Same size (1) for both, so the generic per-column loop below exercises the
@@ -155,9 +156,9 @@ TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
     EXPECT_FALSE(compareServicesText("bfe", "BFE", true));
 
     ProcessSnapshot host = makeSnapshot(false);
-    host.servicesText = "Dhcp, EventLog";
+    host.services = "Dhcp, EventLog";
     ProcessSnapshot none = makeSnapshot(false);
-    none.servicesText.clear();
+    none.services.clear();
     EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, true));
     EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, false));
 }

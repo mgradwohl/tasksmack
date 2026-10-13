@@ -6,6 +6,7 @@
 
 #include "CgroupContainer.h"
 #include "CgroupFreezeStatus.h"
+#include "CgroupService.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
@@ -394,7 +395,7 @@ std::vector<ProcessCounters> LinuxProcessProbe::enumerate()
         {
             counters.ioCountersAvailable = false; // not read at all (capabilities() reports hasIoCounters = false)
         }
-        readCgroupFacts(pidDirFd.get(), m_CgroupRoot, factsByCgroup, counters); // freezer status, container, unit
+        readCgroupFacts(pidDirFd.get(), m_CgroupRoot, factsByCgroup, counters); // cgroup freezer status, container
         processes.push_back(std::move(counters));
     }
 
@@ -462,13 +463,15 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasNice = true,                           // From /proc/[pid]/stat
                                .hasPageFaults = true,                     // From /proc/[pid]/stat (minflt + majflt)
                                .hasPeakRss = true,                        // From /proc/[pid]/status VmHWM (kernel threads have none)
+                               .hasPrivateBytes = true,                   // From /proc/[pid]/status RssAnon (#1885)
+                               .hasSwapBytes = true,                      // From /proc/[pid]/status VmSwap (#1885)
                                .hasCpuAffinity = true,                    // From status Cpus_allowed_list
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
                                .hasContainer = true,                      // From /proc/[pid]/cgroup paths
-                               .hasServices = true,                       // The systemd unit, from the same paths (#1880)
+                               .hasServices = true,                       // The systemd service, from the same paths (#1886)
                                .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
                                .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
@@ -609,6 +612,8 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
     // Read /proc/[pid]/status, key:value pairs one per line, for:
     //   Uid:               <real> <effective> <saved> <filesystem>  -- the owner
     //   VmHWM:             <n> kB                                    -- peak resident set size (#1184)
+    //   RssAnon:           <n> kB                                    -- private (anonymous) resident memory (#1885)
+    //   VmSwap:            <n> kB                                    -- swapped out (#1885)
     //   Cpus_allowed_list: <kernel CPU list, e.g. 0-3,64-127>        -- the CPU affinity
     // A kernel thread has no Vm* lines at all. The affinity used to come from sched_getaffinity(),
     // packed into a 64-bit mask that dropped every CPU from 64 up (#1247). The list here has no width
@@ -628,6 +633,8 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
     }
     constexpr std::string_view UID_PREFIX = "Uid:";
     constexpr std::string_view VM_HWM_PREFIX = "VmHWM:";
+    constexpr std::string_view RSS_ANON_PREFIX = "RssAnon:";
+    constexpr std::string_view VM_SWAP_PREFIX = "VmSwap:";
     constexpr std::string_view CPUS_ALLOWED_LIST_PREFIX = "Cpus_allowed_list:";
     constexpr std::uint64_t BYTES_PER_KIB = 1024;
 
@@ -659,10 +666,23 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
 
     bool haveUid = false;
     bool havePeakRss = false;
+    bool havePrivate = false;
+    bool haveSwap = false;
     bool haveAffinity = false;
+    // A kibibyte count on a whole line (newline-terminated: one cut off by the read could hold a
+    // truncated number), in bytes; nullopt otherwise.
+    const auto kibLine = [end = text.data() + text.size()](const char* value, const char* lineEnd) -> std::optional<std::uint64_t>
+    {
+        std::uint64_t kib = 0;
+        if (lineEnd < end && parseNum(value, lineEnd, kib) && kib <= (std::numeric_limits<std::uint64_t>::max() / BYTES_PER_KIB))
+        {
+            return kib * BYTES_PER_KIB;
+        }
+        return std::nullopt;
+    };
     const char* p = text.data();
     const char* const end = text.data() + text.size();
-    while (p < end && !(haveUid && havePeakRss && haveAffinity))
+    while (p < end && !(haveUid && havePeakRss && havePrivate && haveSwap && haveAffinity))
     {
         const char* lineEnd = p;
         while (lineEnd < end && *lineEnd != '\n')
@@ -695,6 +715,16 @@ void LinuxProcessProbe::parseProcessStatus(int pidDirFd,
                 // are batched per CPU, so the two reads can disagree by a little.
                 counters.peakRssBytes = std::max(peakKib * BYTES_PER_KIB, counters.rssBytes);
             }
+        }
+        else if (!havePrivate && line.starts_with(RSS_ANON_PREFIX))
+        {
+            havePrivate = true;
+            counters.privateBytes = kibLine(p + RSS_ANON_PREFIX.size(), lineEnd).value_or(0);
+        }
+        else if (!haveSwap && line.starts_with(VM_SWAP_PREFIX))
+        {
+            haveSwap = true;
+            counters.swapBytes = kibLine(p + VM_SWAP_PREFIX.size(), lineEnd).value_or(0);
         }
         else if (!haveAffinity && line.starts_with(CPUS_ALLOWED_LIST_PREFIX))
         {
@@ -1025,7 +1055,7 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
                     .emplace(std::string(cgroups),
                              CgroupFacts{.frozen = CgroupPath::isCgroupFrozen(cgroups, cgroupRoot),
                                          .container = CgroupContainer::containerFromCgroups(cgroups),
-                                         .serviceUnit = CgroupContainer::serviceUnitFromCgroups(cgroups)})
+                                         .services = CgroupService::serviceFromCgroups(cgroups)})
                     .first;
     }
     if (known->second.frozen)
@@ -1033,7 +1063,7 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
         counters.status = "Suspended"; // No special status unless frozen
     }
     counters.container = known->second.container;
-    counters.serviceUnit = known->second.serviceUnit;
+    counters.services = known->second.services;
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {

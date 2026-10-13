@@ -2,7 +2,7 @@
 
 // Which services each process hosts (#1880), merged into the process snapshots by ProcessModel from the
 // latest service list (Windows: the PID each service reports) and the process's own systemd unit
-// (Linux: ProcessCounters::serviceUnit, from its cgroup). Pure: no locking, no probes, so the PID-reuse
+// (Linux: ProcessCounters::services, from its cgroup, #1886). Pure: no locking, no probes, so the PID-reuse
 // and staleness rules are tested on their own.
 
 #include "Domain/ProcessSnapshot.h"
@@ -22,7 +22,7 @@
 namespace Domain::ProcessServices
 {
 
-/// Between the names in ProcessSnapshot::servicesText.
+/// Between the names in ProcessSnapshot::services.
 inline constexpr std::string_view SEPARATOR = ", ";
 
 /// Whether @p publication says which services the processes listed at @p now host: it has been read,
@@ -82,7 +82,7 @@ hostedServiceNames(std::string_view serviceUnit, const ServicePublication* publi
     return joined;
 }
 
-/// Fills every snapshot's services and servicesText. @p snapshots, @p counters (the probe's, for the
+/// Fills every snapshot's serviceNames and services (their joined text). @p snapshots, @p counters (the probe's, for the
 /// Linux unit) and @p firstSeen (when the model first listed each process) are parallel. @p publication
 /// is the current service list, or null for none (isCurrent()).
 inline void mergeInto(std::span<ProcessSnapshot> snapshots,
@@ -94,10 +94,10 @@ inline void mergeInto(std::span<ProcessSnapshot> snapshots,
     while (index < snapshots.size())
     {
         ProcessSnapshot& snapshot = snapshots[index];
-        const std::string_view unit = index < counters.size() ? std::string_view(counters[index].serviceUnit) : std::string_view{};
+        const std::string_view unit = index < counters.size() ? std::string_view(counters[index].services) : std::string_view{};
         const bool listedAtCapture = publication != nullptr && index < firstSeen.size() && firstSeen[index] <= publication->captureTime;
-        snapshot.services = hostedServiceNames(unit, publication, snapshot.pid, listedAtCapture);
-        snapshot.servicesText = joinNames(snapshot.services);
+        snapshot.serviceNames = hostedServiceNames(unit, publication, snapshot.pid, listedAtCapture);
+        snapshot.services = joinNames(snapshot.serviceNames);
         ++index;
     }
 }

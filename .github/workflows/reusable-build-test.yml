@@ -184,12 +184,24 @@ jobs:
         shell: pwsh
         run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
+      # ctest runs one entry per gtest suite (#1871); each entry also writes gtest's own report, one
+      # testcase per case, to gtest-results/. Fold those into one JUnit file so the artifact and the
+      # Job Summary still list every case. A missing ctest report (the build failed) writes nothing.
+      - name: Merge test results
+        if: always()
+        shell: bash
+        env:
+          BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
+        run: python tools/merge-gtest-results.py "$BUILD_DIR/test-results.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
+
       - name: Upload test results (Linux)
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: linux-${{ inputs.build_type }}-test-results
-          path: build/${{ inputs.build_type }}/test-results.xml
+          path: |
+            build/${{ inputs.build_type }}/test-results.xml
+            build/${{ inputs.build_type }}/test-results-cases.xml
           retention-days: 5
 
       - name: Upload test results (Windows)
@@ -197,7 +209,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-${{ inputs.build_type }}-test-results
-          path: build/win-${{ inputs.build_type }}/test-results.xml
+          path: |
+            build/win-${{ inputs.build_type }}/test-results.xml
+            build/win-${{ inputs.build_type }}/test-results-cases.xml
           retention-days: 5
 
       - name: Publish test results to Job Summary
@@ -209,8 +223,8 @@ jobs:
         with:
           name: Test Results (${{ inputs.os }} ${{ inputs.build_type }})
           path: |
-            build/${{ inputs.build_type }}/test-results.xml
-            build/win-${{ inputs.build_type }}/test-results.xml
+            build/${{ inputs.build_type }}/test-results-cases.xml
+            build/win-${{ inputs.build_type }}/test-results-cases.xml
           reporter: java-junit
           fail-on-error: false
           fail-on-empty: false

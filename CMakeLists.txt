@@ -155,6 +155,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessDetailsCharts.cpp
     src/App/Panels/ProcessActionConfirm.cpp
     src/App/Panels/ProcessBatchPriorityDialog.cpp
+    src/App/Panels/ProcessAffinityDialog.cpp
     src/App/Panels/ProcessActionsView.cpp
     src/App/Panels/ProcessActionsBlock.cpp
     src/App/Panels/ProcessPriorityView.cpp
@@ -255,6 +256,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/DXGIGPUProbe.cpp
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp
+    src/Platform/Windows/PerfProviderApartment.cpp
     src/Platform/Windows/WindowsStartupProbe.cpp
     src/Platform/Windows/WindowsStartupActions.cpp
     src/Platform/Windows/WindowsServiceActions.cpp

@@ -243,6 +243,8 @@ ProcessChartContext ProcessDetailsPanel::chartContext() const
         .hasSharedMemory = m_ProcessCapabilities.hasSharedMemory,
         .hasPowerUsage = m_ProcessCapabilities.hasPowerUsage,
         .hasPageFaults = m_ProcessCapabilities.hasPageFaults,
+        .hasPrivateBytes = m_ProcessCapabilities.hasPrivateBytes,
+        .hasSwapBytes = m_ProcessCapabilities.hasSwapBytes,
     };
 }
 
@@ -417,7 +419,7 @@ void ProcessDetailsPanel::renderServicesSection()
             list.publication = publication.get();
         }
     }
-    if (const std::optional<std::string> shown = m_ServicesView.render(true, cachedSnapshot().services, list); shown.has_value())
+    if (const std::optional<std::string> shown = m_ServicesView.render(true, cachedSnapshot().serviceNames, list); shown.has_value())
     {
         // The Services tab, with this service selected (#1880); the shell brings the tab forward.
         Core::ShowServiceEvent event(*shown);
@@ -551,6 +553,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Type",
             "Container",
             "Affinity",
+            "Services",
         });
 
         // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
@@ -585,10 +588,10 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         std::string_view value;
         ImVec4 color;
     };
-    // At most seven rows a table (Publisher, Type and Container are optional), held in place.
+    // At most eight rows a table (Publisher, Affinity, Services, Type and Container are optional), held in place.
     struct InfoRows
     {
-        std::array<InfoRow, 7> rows{};
+        std::array<InfoRow, 8> rows{};
         std::size_t count = 0;
 
         void add(InfoRow row) noexcept
@@ -690,6 +693,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     if (!proc.publisher.empty())
     {
         identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
+    }
+    if (!proc.services.empty())
+    {
+        // The Processes table's Services column (#1886): the systemd service it runs under, on Linux.
+        identityRows.add({.label = "Services", .value = proc.services, .color = theme.scheme().textPrimary});
     }
     if (m_ProcessCapabilities.hasCpuAffinity)
     {
@@ -800,6 +808,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .processName = &proc.name,
             .target = selectedTarget(),
             .currentNice = m_HasSnapshot ? std::optional<std::int32_t>{proc.nice} : std::nullopt,
+            .currentAffinity = m_HasSnapshot ? &proc.cpuAffinity : nullptr,
         };
         // Kept for the next frame's row height; a card scrolled out of view reports 0 and keeps its last.
         const ProcessActionsBlock::Heights needed = ProcessActionsBlock::render(actions, controlsLayout, controlsHeight);

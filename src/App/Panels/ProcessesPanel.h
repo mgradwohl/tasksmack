@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessBatchPriorityDialog.h"
 #include "App/Panels/ProcessColumnAvailability.h"
@@ -437,6 +438,7 @@ class ProcessesPanel : public Panel
     // The row menu's "Set priority for N processes..." (#1484): picks the value, then the batch
     // confirmation above sets it.
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
+    ProcessAffinityDialog m_AffinityDialog;        // The row menu's Set affinity... (#1887)
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the
@@ -654,6 +656,10 @@ class ProcessesPanel : public Panel
     /// The batch priority dialog (#1484), which lists the processes and is its own confirmation
     /// (#1539); on Apply, sets the picked value on each of them by identity.
     void renderBatchPriorityDialog();
+
+    /// The row menu's Set affinity... dialog (#1887), its own confirmation; on Apply, sets the chosen
+    /// CPUs on the process it was opened for, by identity, and shows the result in the toolbar.
+    void renderAffinityDialog();
 
     /// The confirmation dialog for a row-menu action, and the action once confirmed.
     void renderRowActionConfirm();
