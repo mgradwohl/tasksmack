@@ -137,6 +137,8 @@ struct RowFormatOptions
 {
     bool hasPowerUsage = true;
     bool hasSharedMemory = true;
+    bool hasPrivateBytes = true;
+    bool hasSwapBytes = true;
     bool hasIoCounters = true;
     bool hasNetworkCounters = true;
     bool hasThreadCount = true;
@@ -295,6 +297,8 @@ struct RowFormatCache
     AlignedCellText resident;   // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText peakRss;    // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText shared;     // pre-formatted to avoid per-frame decimal alignment work
+    AlignedCellText privateMem; // pre-formatted to avoid per-frame decimal alignment work (#1885)
+    AlignedCellText swap;       // pre-formatted to avoid per-frame decimal alignment work (#1885)
     AlignedCellText ioRead;     // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText ioWrite;    // pre-formatted to avoid per-frame decimal alignment work
     AlignedCellText netSent;    // pre-formatted to avoid per-frame decimal alignment work
@@ -389,6 +393,8 @@ struct RowFormatCache
     // Not gated on ProcessCapabilities::hasPeakRss: where the OS has no peak, the model tracks one.
     fmt.peakRss = bytesCell(proc.peakMemoryBytes);
     fmt.shared = options.hasSharedMemory ? bytesCell(proc.sharedBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
+    fmt.privateMem = options.hasPrivateBytes ? bytesCell(proc.privateBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
+    fmt.swap = options.hasSwapBytes ? bytesCell(proc.swapBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
     // An idle rate is a measured "0.0 B/s"; one the probe could not read is unavailable (#1110) --
     // without root, every other user's process used to look as idle as a process that was.
     const auto rateCell = [](bool supported, bool available, double bytesPerSec) -> AlignedCellText

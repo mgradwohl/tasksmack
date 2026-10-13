@@ -653,6 +653,8 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
     {.column = ProcessColumn::Virtual, .render = &unitAlignedCell<&RowFormatCache::virtualMem, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::Shared, .render = &unitAlignedCell<&RowFormatCache::shared, &ProcessCellWidths::unitBytes>},
     {.column = ProcessColumn::PeakResident, .render = &unitAlignedCell<&RowFormatCache::peakRss, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Private, .render = &unitAlignedCell<&RowFormatCache::privateMem, &ProcessCellWidths::unitBytes>},
+    {.column = ProcessColumn::Swap, .render = &unitAlignedCell<&RowFormatCache::swap, &ProcessCellWidths::unitBytes>},
     // Scheduling
     {.column = ProcessColumn::Priority, .render = &priorityCell},
     {.column = ProcessColumn::Affinity, .render = &rightAlignedCell<&RowFormatCache::affinity>},

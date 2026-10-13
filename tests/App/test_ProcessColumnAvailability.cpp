@@ -46,6 +46,24 @@ TEST(ProcessColumnAvailabilityTest, SharedMemoryIsUnsupportedOnWindows)
     EXPECT_FALSE(isSupported(ProcessColumn::Power, caps));
 }
 
+TEST(ProcessColumnAvailabilityTest, PrivateAndSwapFollowTheirCapabilities)
+{
+    // #1885: Linux reads RssAnon and VmSwap; a probe that doesn't (Windows until #1879) gets dashes and
+    // the header's note, and both columns stay hidden by default.
+    Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    EXPECT_FALSE(isSupported(ProcessColumn::Private, caps));
+    EXPECT_FALSE(isSupported(ProcessColumn::Swap, caps));
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Swap, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    caps.hasPrivateBytes = true;
+    caps.hasSwapBytes = true;
+    EXPECT_TRUE(isSupported(ProcessColumn::Private, caps));
+    EXPECT_TRUE(isSupported(ProcessColumn::Swap, caps));
+    EXPECT_TRUE(rowFormatOptions(caps).hasPrivateBytes);
+    EXPECT_TRUE(rowFormatOptions(caps).hasSwapBytes);
+    EXPECT_FALSE(getColumnInfo(ProcessColumn::Private).defaultVisible);
+    EXPECT_FALSE(getColumnInfo(ProcessColumn::Swap).defaultVisible);
+}
+
 TEST(ProcessColumnAvailabilityTest, ContainerIsLinuxOnly)
 {
     // #805: containers are read from cgroups, which Windows has none of.
@@ -473,6 +491,8 @@ TEST(ProcessColumnAvailabilityTest, RowFormatOptionsMirrorTheCapabilities)
     EXPECT_EQ(noneOptions.hasIoCounters, isSupported(ProcessColumn::IoRead, none));
     EXPECT_EQ(noneOptions.hasGdiObjects, isSupported(ProcessColumn::GdiObjects, none));
     EXPECT_EQ(noneOptions.hasSharedMemory, isSupported(ProcessColumn::Shared, none));
+    EXPECT_EQ(noneOptions.hasPrivateBytes, isSupported(ProcessColumn::Private, none));
+    EXPECT_EQ(noneOptions.hasSwapBytes, isSupported(ProcessColumn::Swap, none));
 }
 
 } // namespace

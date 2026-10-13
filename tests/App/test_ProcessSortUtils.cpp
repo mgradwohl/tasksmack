@@ -53,6 +53,8 @@ using Domain::ProcessSnapshot;
 
     snap.peakMemoryBytes = u;
     snap.sharedBytes = u;
+    snap.privateBytes = u;
+    snap.swapBytes = u;
     snap.pageFaults = u;
     snap.cpuAffinity = Platform::CpuAffinity::fromMask(u);
 

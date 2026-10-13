@@ -1157,6 +1157,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.memoryBytes = current.rssBytes;
     snapshot.virtualBytes = current.virtualBytes;
     snapshot.sharedBytes = current.sharedBytes;
+    snapshot.privateBytes = current.privateBytes;
+    snapshot.swapBytes = current.swapBytes;
     snapshot.threadCount = current.threadCount;
     snapshot.handleCount = current.handleCountAvailable ? current.handleCount : 0;
     snapshot.handleCountAvailable = current.handleCountAvailable;

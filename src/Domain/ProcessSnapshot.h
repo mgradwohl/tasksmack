@@ -49,6 +49,8 @@ struct ProcessSnapshot
 
     std::uint64_t peakMemoryBytes = 0; // Peak RSS (from OS on Windows, tracked on Linux)
     std::uint64_t sharedBytes = 0;     // Shared memory
+    std::uint64_t privateBytes = 0;    // Private memory (Linux: RssAnon, #1885)
+    std::uint64_t swapBytes = 0;       // Swapped out (Linux: VmSwap, #1885)
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     Platform::CpuAffinity cpuAffinity; // Logical processors it may run on (empty = not available)
 

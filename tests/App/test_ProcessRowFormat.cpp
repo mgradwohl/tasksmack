@@ -46,6 +46,8 @@ using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
     snap.memoryBytes = 512ULL * 1024 * 1024;     // 512 MB
     snap.peakMemoryBytes = 768ULL * 1024 * 1024; // 768 MB
     snap.sharedBytes = 64ULL * 1024 * 1024;      // 64 MB
+    snap.privateBytes = 384ULL * 1024 * 1024;    // 384 MB (#1885)
+    snap.swapBytes = 32ULL * 1024 * 1024;        // 32 MB (#1885)
     snap.ioReadBytesPerSec = 1024.0 * 1024.0;    // 1 MB/s
     snap.ioWriteBytesPerSec = 2048.0 * 1024.0;   // 2 MB/s
     snap.netSentBytesPerSec = 512.0;             // 512 B/s
@@ -164,6 +166,8 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
     EXPECT_EQ(fmt.resident.text, "512.0 MiB");
     EXPECT_EQ(fmt.peakRss.text, "768.0 MiB");
     EXPECT_EQ(fmt.shared.text, "64.0 MiB");
+    EXPECT_EQ(fmt.privateMem.text, "384.0 MiB");
+    EXPECT_EQ(fmt.swap.text, "32.0 MiB");
     EXPECT_EQ(fmt.ioRead.text, "1.0 MiB/s");
     EXPECT_EQ(fmt.ioWrite.text, "2.0 MiB/s");
     EXPECT_EQ(fmt.netSent.text, "512.0 B/s");
@@ -234,6 +238,8 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
     ProcessRowFormat::RowFormatOptions none;
     none.hasPowerUsage = false;
     none.hasSharedMemory = false;
+    none.hasPrivateBytes = false;
+    none.hasSwapBytes = false;
     none.hasIoCounters = false;
     none.hasNetworkCounters = false;
     none.hasThreadCount = false;
@@ -246,6 +252,8 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
 
     for (const AlignedCellText* cell : {&fmt.power,
                                         &fmt.shared,
+                                        &fmt.privateMem,
+                                        &fmt.swap,
                                         &fmt.ioRead,
                                         &fmt.ioWrite,
                                         &fmt.netSent,

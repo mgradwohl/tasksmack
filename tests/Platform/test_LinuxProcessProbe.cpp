@@ -996,6 +996,54 @@ TEST(LinuxProcessProbeTest, PeakRssIsVmHwmFromStatus)
     EXPECT_EQ(peakOf(4444), 100U * page);
 }
 
+TEST(LinuxProcessProbeTest, PrivateAndSwapAreRssAnonAndVmSwapFromStatus)
+{
+    // #1885: the Private and Swap columns, from the status file enumerate() already reads.
+    ScopedTempDir proc("ts_test_proc_private_swap");
+    const auto writeProcess = [&proc](int pid, std::string_view status)
+    {
+        const auto dir = proc.path / std::to_string(pid);
+        writeFile(dir / "stat",
+                  std::to_string(pid) + " (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+                                        "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
+        writeFile(dir / "status", status);
+        writeFile(dir / "statm", "500 100 10 1 0 50 0\n");
+    };
+    // Lines in the kernel's order: RssAnon in the Rss* block after VmRSS, VmSwap after the page tables.
+    writeProcess(4242,
+                 "Name:\tapp\nUid:\t0\t0\t0\t0\nVmHWM:\t    8192 kB\nVmRSS:\t    4096 kB\nRssAnon:\t    3000 kB\n"
+                 "RssFile:\t    1000 kB\nRssShmem:\t      96 kB\nVmPTE:\t      48 kB\nVmSwap:\t     512 kB\n"
+                 "Cpus_allowed_list:\t0-3\n");
+    // A kernel thread has no Vm* or Rss* lines: none of either.
+    writeProcess(4343, "Name:\tkworker/0:1\nUid:\t0\t0\t0\t0\nCpus_allowed_list:\t0-3\n");
+    // A file cut off inside VmSwap's line (no newline): its number may be cut too, so it is not used.
+    writeProcess(4444, "Name:\tapp\nUid:\t0\t0\t0\t0\nRssAnon:\t      12 kB\nVmSwap:\t     12");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto processes = probe.enumerate();
+    const auto find = [&processes](std::int32_t pid) -> const ProcessCounters*
+    {
+        const auto it = std::ranges::find_if(processes, [pid](const ProcessCounters& p) { return p.pid == pid; });
+        return it == processes.end() ? nullptr : &*it;
+    };
+    const ProcessCounters* app = find(4242);
+    const ProcessCounters* kernel = find(4343);
+    const ProcessCounters* cut = find(4444);
+    ASSERT_NE(app, nullptr);
+    ASSERT_NE(kernel, nullptr);
+    ASSERT_NE(cut, nullptr);
+    EXPECT_EQ(app->privateBytes, 3000U * 1024U);
+    EXPECT_EQ(app->swapBytes, 512U * 1024U);
+    EXPECT_EQ(kernel->privateBytes, 0U);
+    EXPECT_EQ(kernel->swapBytes, 0U);
+    EXPECT_EQ(cut->privateBytes, 12U * 1024U);
+    EXPECT_EQ(cut->swapBytes, 0U);
+
+    const ProcessCapabilities caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasPrivateBytes);
+    EXPECT_TRUE(caps.hasSwapBytes);
+}
+
 void writeVmHwmProcess(const std::filesystem::path& procRoot, std::string_view status)
 {
     const auto dir = procRoot / "4242";

@@ -1204,6 +1204,8 @@ void Workload::processesAt(double uptime, std::vector<ProcessCounters>& out) con
             counters.peakRssBytes = 0;
             counters.virtualBytes = 0;
             counters.sharedBytes = 0;
+            counters.privateBytes = 0;
+            counters.swapBytes = 0;
         }
         else
         {
@@ -1212,6 +1214,8 @@ void Workload::processesAt(double uptime, std::vector<ProcessCounters>& out) con
             counters.peakRssBytes = toCounter(slot.rssBytes * 1.05);
             counters.virtualBytes = toCounter((rss * 3.0) + (256.0 * MIB));
             counters.sharedBytes = toCounter(rss * 0.12);
+            counters.privateBytes = toCounter(rss * 0.85); // the rest file-backed (#1885)
+            counters.swapBytes = 0;                        // a machine with room to spare
         }
         counters.readBytes = toCounter(slot.readBytes.integral(uptime) - slot.readBytes.integral(start));
         counters.writeBytes = toCounter(slot.writeBytes.integral(uptime) - slot.writeBytes.integral(start));
@@ -1373,6 +1377,8 @@ ProcessCapabilities Workload::processCapabilities() noexcept
     caps.hasNetworkCounters = true;
     caps.hasPowerUsage = true;
     caps.hasSharedMemory = true;
+    caps.hasPrivateBytes = true;
+    caps.hasSwapBytes = true;
     caps.pageFaultCountBits = 64;
     return caps;
 }
