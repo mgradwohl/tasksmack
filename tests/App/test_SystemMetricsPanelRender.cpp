@@ -809,8 +809,10 @@ TEST_F(SystemMetricsPanelRenderTest, APickedInterfacesChartAndLinkSpeedShowTheir
 
     // The link speed's line sits above the charts: sweep the section's top for its tooltip.
     bool byteRateShown = false;
-    for (float y = 0.0F; y < DISPLAY_HEIGHT * 0.5F && !byteRateShown; y += 4.0F)
+    constexpr int SWEEP_STEP_PX = 4;
+    for (int row = 0; row * SWEEP_STEP_PX < static_cast<int>(DISPLAY_HEIGHT * 0.5F) && !byteRateShown; ++row)
     {
+        const auto y = static_cast<float>(row * SWEEP_STEP_PX);
         for (const float x : {40.0F, 120.0F, 200.0F, 300.0F})
         {
             io.AddMousePosEvent(x, y);
