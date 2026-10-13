@@ -241,6 +241,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_LinuxCpuDetails.cpp
     Platform/test_LinuxOsInfo.cpp
     Platform/test_NetworkdLinkJson.cpp
+    Platform/test_DnsMessage.cpp
     Platform/test_LinuxDiskSmart.cpp
     Platform/test_SmbiosParser.cpp
     Platform/test_PartitionTable.cpp
@@ -418,6 +419,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_PowerProbeContract.cpp
     Platform/test_LinuxProcessProbe.cpp
     Platform/test_LinuxSystemInfoProbe.cpp
+    Platform/test_LinuxPublicIp.cpp
     Platform/test_NetworkTextProperties.cpp
     Platform/test_LinuxSystemProbe.cpp
     Core/test_RuntimeDir.cpp

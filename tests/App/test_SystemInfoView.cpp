@@ -948,6 +948,63 @@ TEST(SystemInfoSectionsTest, ShowWifiDetailsRowOnlyForWirelessAdaptersOnAGatedPl
     EXPECT_NE(findRow(*adapters, "Wi-Fi Wi-Fi details"), nullptr);
 }
 
+// #1518: the public IP rows: none without a lookup; the "Show public IP" button until asked (not an
+// identifier, so it stays visible); then a Public IPv4 and IPv6 row, identifiers both, with the source as
+// the tooltip and each missing address's own reason.
+TEST(SystemInfoSectionsTest, PublicIpRowsWaitForTheButtonThenAreIdentifiers)
+{
+    EXPECT_TRUE(SystemInfo::buildPublicIpRows(/*hasPublicIp=*/false, /*included=*/true, {}).empty());
+
+    const std::vector<Row> ask = SystemInfo::buildPublicIpRows(true, false, {});
+    ASSERT_EQ(ask.size(), 1U);
+    EXPECT_EQ(ask[0].label, "Public IP");
+    EXPECT_EQ(ask[0].action, SystemInfo::RowAction::ShowPublicIp);
+    EXPECT_FALSE(ask[0].available());
+    EXPECT_FALSE(ask[0].isIdentifier) << "the button stays visible with identifiers hidden";
+    EXPECT_TRUE(ask[0].unavailableReason.contains(SystemInfo::PUBLIC_IP_NOTE)) << ask[0].unavailableReason;
+
+    const Platform::PublicIpInfo found{.read = true,
+                                       .v4 = "203.0.113.7",
+                                       .v6 = {},
+                                       .v4Unavailable = {},
+                                       .v6Unavailable = "No IPv6 route to the internet",
+                                       .source = "OpenDNS (myip.opendns.com)"};
+    const std::vector<Row> rows = SystemInfo::buildPublicIpRows(true, true, found);
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].label, "Public IPv4");
+    EXPECT_EQ(rows[0].value, "203.0.113.7");
+    EXPECT_TRUE(rows[0].isIdentifier);
+    EXPECT_EQ(rows[0].valueTooltip, "As seen by OpenDNS (myip.opendns.com)");
+    EXPECT_EQ(rows[0].action, SystemInfo::RowAction::None);
+    EXPECT_EQ(rows[1].label, "Public IPv6");
+    EXPECT_FALSE(rows[1].available());
+    EXPECT_TRUE(rows[1].isIdentifier);
+    EXPECT_EQ(rows[1].unavailableReason, "No IPv6 route to the internet");
+
+    // Through the page's sections: first in Network adapters, where the capability allows.
+    Domain::SystemInfoSnapshot snap = snapshot();
+    snap.adapters.available = true;
+    const Platform::SystemInfoCapabilities withLookup{
+        .hasOs = true, .unavailableReason = {}, .wifiDetailsGated = false, .hasPublicIp = true};
+    auto sections = SystemInfo::buildSystemInfoSections(snap, {}, withLookup);
+    auto adapters = std::ranges::find(sections, std::string("Network adapters"), &Section::title);
+    ASSERT_NE(adapters, sections.end());
+    ASSERT_FALSE(adapters->rows.empty());
+    EXPECT_EQ(adapters->rows[0].action, SystemInfo::RowAction::ShowPublicIp);
+    snap.publicIpIncluded = true;
+    snap.publicIp = found;
+    sections = SystemInfo::buildSystemInfoSections(snap, {}, withLookup);
+    adapters = std::ranges::find(sections, std::string("Network adapters"), &Section::title);
+    ASSERT_NE(adapters, sections.end());
+    EXPECT_EQ(findRow(*adapters, "Public IPv4")->value, "203.0.113.7");
+    EXPECT_FALSE(SystemInfo::sectionText(*adapters, false).contains("203.0.113.7")) << "Copy leaves identifiers out";
+    const Platform::SystemInfoCapabilities without{.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = false, .hasPublicIp = false};
+    sections = SystemInfo::buildSystemInfoSections(snap, {}, without);
+    adapters = std::ranges::find(sections, std::string("Network adapters"), &Section::title);
+    ASSERT_NE(adapters, sections.end());
+    EXPECT_EQ(findRow(*adapters, "Public IPv4"), nullptr);
+}
+
 TEST(SystemInfoSectionsTest, NetworkAdaptersUnknownsAndTheStub)
 {
     Platform::NetworkAdaptersInfo network;

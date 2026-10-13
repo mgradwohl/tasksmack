@@ -1906,6 +1906,41 @@ Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot)
     return section;
 }
 
+std::vector<Row> buildPublicIpRows(bool hasPublicIp, bool included, const Platform::PublicIpInfo& publicIp)
+{
+    std::vector<Row> rows;
+    if (!hasPublicIp)
+    {
+        return rows;
+    }
+    if (!included)
+    {
+        // Looking the addresses up sends a query off the machine, so it waits for a click. Not an
+        // identifier: the row names nothing, and its button must stay visible.
+        Row ask = row("Public IP",
+                      {},
+                      std::format("Not looked up: \"Show public IP\" asks OpenDNS's resolver what address this machine's "
+                                  "queries come from ({})",
+                                  PUBLIC_IP_NOTE));
+        ask.action = RowAction::ShowPublicIp;
+        rows.push_back(std::move(ask));
+        return rows;
+    }
+    // A public address can place the machine: an identifier, like a MAC address.
+    const auto address = [&](const char* label, const std::string& value, const std::string& unavailable)
+    {
+        Row line = row(label, value, unavailable.empty() ? NOT_REPORTED : std::string_view(unavailable), true);
+        if (line.available() && !publicIp.source.empty())
+        {
+            line.valueTooltip = std::format("As seen by {}", publicIp.source);
+        }
+        return line;
+    };
+    rows.push_back(address("Public IPv4", publicIp.v4, publicIp.v4Unavailable));
+    rows.push_back(address("Public IPv6", publicIp.v6, publicIp.v6Unavailable));
+    return rows;
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
                                              const Core::GraphicsHostInfo& host,
                                              const Platform::SystemInfoCapabilities& capabilities)
@@ -1949,7 +1984,10 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.adapters.available)
     {
-        sections.push_back(buildNetworkAdaptersSection(snapshot.adapters, capabilities.wifiDetailsGated));
+        Section network = buildNetworkAdaptersSection(snapshot.adapters, capabilities.wifiDetailsGated);
+        std::vector<Row> publicIp = buildPublicIpRows(capabilities.hasPublicIp, snapshot.publicIpIncluded, snapshot.publicIp);
+        network.rows.insert(network.rows.begin(), std::make_move_iterator(publicIp.begin()), std::make_move_iterator(publicIp.end()));
+        sections.push_back(std::move(network));
     }
     if (snapshot.boot.available)
     {

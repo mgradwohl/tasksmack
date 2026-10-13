@@ -159,12 +159,18 @@ void SystemInfoPanel::renderContent()
         // Every read from now on asks for the Wi-Fi details, which can raise a Windows location prompt
         // (#1782); this one starts as soon as no other read is in flight (a quiet sensors read may be).
         m_Model->includeWifiDetails();
-        m_WifiDetailsReadDue = true;
+        m_OptInReadDue = true;
     }
-    if (m_WifiDetailsReadDue && !m_Pending.valid())
+    if (result.publicIpRequested)
+    {
+        // Likewise for the public addresses, which ask a resolver off the machine (#1518).
+        m_Model->includePublicIp();
+        m_OptInReadDue = true;
+    }
+    if (m_OptInReadDue && !m_Pending.valid())
     {
         startRead(); // if it can't start, Refresh still reads them: the model keeps the choice
-        m_WifiDetailsReadDue = false;
+        m_OptInReadDue = false;
     }
 }
 

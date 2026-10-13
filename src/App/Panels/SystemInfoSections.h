@@ -33,10 +33,15 @@ enum class RowAction : std::uint8_t
     /// "Show Wi-Fi details", with a note that Windows may ask for location access (#1782): asks every read
     /// from then on for the Wi-Fi details that need it.
     ShowWifiDetails,
+    /// "Show public IP", with a note that it asks OpenDNS (#1518): looks the public addresses up on every
+    /// read from then on.
+    ShowPublicIp,
 };
 
 /// The note beside the "Show Wi-Fi details" button (#1782).
 inline constexpr std::string_view WIFI_DETAILS_NOTE = "Windows may ask for location access";
+/// The note beside the "Show public IP" button (#1518).
+inline constexpr std::string_view PUBLIC_IP_NOTE = "Sends a DNS query to OpenDNS";
 
 /// One label/value row. An empty value is unavailable; unavailableReason says why.
 struct Row
@@ -273,6 +278,11 @@ struct VisibleSection
 /// whose location-gated details weren't read has a "Wi-Fi details" row with the "Show Wi-Fi details"
 /// button in place of its network name (#1782).
 [[nodiscard]] Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network, bool wifiDetailsGated = false);
+
+/// The Network adapters section's public IP rows (#1518): none where the probe can't look them up
+/// (@p hasPublicIp false); before the user asks (@p included false), one "Public IP" row with the
+/// "Show public IP" button; after, a Public IPv4 and a Public IPv6 row, identifiers both.
+[[nodiscard]] std::vector<Row> buildPublicIpRows(bool hasPublicIp, bool included, const Platform::PublicIpInfo& publicIp);
 
 /// A boot phase's length: "850 ms", "4.21 s", "1 min 12.3 s".
 [[nodiscard]] std::string formatBootDuration(std::uint64_t microseconds);

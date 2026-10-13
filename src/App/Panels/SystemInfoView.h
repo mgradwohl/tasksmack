@@ -49,6 +49,9 @@ struct SystemInfoViewState
     /// "Show Wi-Fi details" was clicked (#1782): its buttons stay disabled until a read without the
     /// details withheld replaces them.
     bool wifiDetailsClicked = false;
+    /// "Show public IP" was clicked (#1518): its button stays disabled until a read with the addresses
+    /// replaces it.
+    bool publicIpClicked = false;
 };
 
 struct SystemInfoViewResult
@@ -58,6 +61,9 @@ struct SystemInfoViewResult
     /// "Show Wi-Fi details" was clicked this frame (#1782): read again with the Wi-Fi details, and keep
     /// reading them for the rest of the session.
     bool wifiDetailsRequested = false;
+    /// "Show public IP" was clicked this frame (#1518): read again with the public addresses, and keep
+    /// looking them up for the rest of the session.
+    bool publicIpRequested = false;
 };
 
 /// Draws the page into the current window.
