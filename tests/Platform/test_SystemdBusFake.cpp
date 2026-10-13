@@ -632,8 +632,9 @@ class SystemdBusFakeServicesTest : public SystemdBusFakeTest
                                              {"/usr/lib/systemd/system/dbus.socket", "static"},
                                          }};
                              });
-        m_Bus.properties()[CRON_PATH][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{161};
-        m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{208};
+        // try_emplace: a test may have set its own first.
+        m_Bus.properties()[CRON_PATH][SYSTEMD_SERVICE].try_emplace("MainPID", std::uint32_t{161});
+        m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE].try_emplace("MainPID", std::uint32_t{208});
         ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
     }
 };
@@ -694,6 +695,47 @@ TEST_F(SystemdBusFakeTest, AFailedListUnitFilesFailsTheRead)
     const SystemdBus::ServicesRead read = SystemdBus::readServices();
     EXPECT_FALSE(read.ok);
     EXPECT_TRUE(read.error.starts_with("systemd couldn't be asked: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeTest, AListUnitsReplyThatIsntAUnitListFailsTheRead)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = "not a unit list"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd's unit list couldn't be read: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeTest, AListUnitFilesReplyThatIsntAFileListFailsTheRead)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer
+                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<TestSupport::UnitRow>{}}; });
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnitFiles",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = "not a file list"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd's unit files couldn't be read: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeServicesTest, ARunningServiceWithoutAMainPidIsListedWithoutOne)
+{
+    // cron's MainPID isn't a number, so it can't be read; getty's is 0, no main process. Both are still listed.
+    m_Bus.properties()[CRON_PATH][SYSTEMD_SERVICE]["MainPID"] = std::string("161");
+    m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{0};
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.units.size(), 3U);
+    EXPECT_TRUE(read.listing.mainPids.empty());
 }
 
 } // namespace
