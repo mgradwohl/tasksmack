@@ -16,9 +16,11 @@
 #include <expected>
 #include <filesystem>
 #include <optional>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -506,6 +508,115 @@ TEST(ProcessDumpViewTest, ShutdownWaitsForTheFolderDialog)
 // --- The remembered folder (#2001) ----------------------------------------------------------------
 
 /// A folder of this test's own under the temp folder, removed on scope exit.
+/// createDump() and chooseDumpFolder() throwing, as a platform's might: a standard exception, or anything else.
+class ThrowingActions : public TestMocks::MockProcessActions
+{
+  public:
+    explicit ThrowingActions(bool standard) : m_Standard(standard)
+    {
+        setCapabilities(folderCapable());
+    }
+
+    [[nodiscard]] Platform::ProcessDumpResult createDump(const Platform::ProcessTarget& /*target*/,
+                                                         const std::filesystem::path& /*directory*/,
+                                                         const std::stop_token& /*stopToken*/) override
+    {
+        throwIt("the dump writer broke");
+        return std::unexpected(std::string("unreachable"));
+    }
+
+    [[nodiscard]] Platform::FolderChoice chooseDumpFolder(const std::filesystem::path& /*initial*/, void* /*ownerWindow*/) override
+    {
+        throwIt("the folder dialog broke");
+        return std::unexpected(std::string("unreachable"));
+    }
+
+  private:
+    void throwIt(const char* what) const
+    {
+        if (m_Standard)
+        {
+            throw std::runtime_error(what);
+        }
+        throw 42; // NOLINT(hicpp-exception-baseclass) - not a std::exception, on purpose
+    }
+
+    bool m_Standard;
+};
+
+TEST(ProcessDumpViewTest, ADumpThatThrowsIsAFailureThatSaysWhy)
+{
+    for (const bool standard : {true, false})
+    {
+        SCOPED_TRACE(standard ? "std::exception" : "anything else");
+        ThrowingActions actions(standard);
+        ProcessDumpView view([](const std::filesystem::path&) {});
+        view.request(TARGET, "big.exe", someFolder(), &actions);
+        view.confirm(&actions);
+        ASSERT_TRUE(view.takeFinished(true));
+        ASSERT_TRUE(view.result().has_value());
+        const DumpDetail::DumpMessage message = view.result().value_or(DumpDetail::DumpMessage{});
+        EXPECT_FALSE(message.ok);
+        EXPECT_TRUE(message.text.ends_with(standard ? "the dump writer broke" : "Unknown error")) << message.text;
+    }
+}
+
+TEST(ProcessDumpViewTest, AFolderDialogThatThrowsSaysWhyInTheConfirm)
+{
+    for (const bool standard : {true, false})
+    {
+        SCOPED_TRACE(standard ? "std::exception" : "anything else");
+        ThrowingActions actions(standard);
+        int remembered = 0;
+        ProcessDumpView view([&remembered](const std::filesystem::path&) { ++remembered; });
+        view.request(TARGET, "big.exe", someFolder(), &actions);
+        view.chooseFolder(&actions, nullptr);
+        ASSERT_TRUE(view.takeFolderChoice(&actions, true));
+        EXPECT_EQ(view.directory(), someFolder());
+        EXPECT_EQ(remembered, 0);
+        EXPECT_TRUE(view.confirmQuestion().contains(standard ? "the folder dialog broke" : "Unknown error")) << view.confirmQuestion();
+    }
+}
+
+TEST(ProcessDumpViewTest, AFolderFailureFollowsTheSpaceWarning)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setDumpSpace({.freeBytes = 512 * MIB, .processBytes = 3 * GIB});
+    mock.setFolderChoice(std::unexpected(std::string("Show failed (0x80004005)")));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    const std::string& question = view.confirmQuestion();
+    const auto space = question.find("may not fit");
+    const auto failure = question.find("\n\nShow failed (0x80004005)");
+    ASSERT_NE(space, std::string::npos) << question;
+    ASSERT_NE(failure, std::string::npos) << question;
+    EXPECT_LT(space, failure);
+}
+
+TEST(ProcessDumpViewTest, AMovedViewKeepsItsConfirm)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setDumpSpace({.freeBytes = 512 * MIB, .processBytes = 3 * GIB});
+    ProcessDumpView from([](const std::filesystem::path&) {});
+    from.request(TARGET, "big.exe", someFolder(), &mock);
+    const std::string question = from.confirmQuestion();
+
+    ProcessDumpView to([](const std::filesystem::path&) {});
+    to = std::move(from);
+    EXPECT_TRUE(to.confirmPending());
+    EXPECT_EQ(to.directory(), someFolder());
+    EXPECT_EQ(to.confirmQuestion(), question);
+
+    // The moved-to view runs the dump.
+    mock.setDumpResult(std::unexpected(std::string("Not enough disk space")));
+    to.confirm(&mock);
+    ASSERT_TRUE(to.takeFinished(true));
+    EXPECT_EQ(mock.createDumpCount(), 1);
+}
+
 class TempFolder
 {
   public:
