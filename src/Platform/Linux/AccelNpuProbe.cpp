@@ -7,12 +7,19 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <limits>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -48,6 +55,97 @@ std::string displayName(const std::string& driver)
 DeviceKind kindOf(const std::string& driver) noexcept
 {
     return (driver == "intel_vpu" || driver == "amdxdna") ? DeviceKind::Npu : DeviceKind::ComputeAccelerator;
+}
+
+namespace
+{
+
+/// A drm-usage-stats memory value ("4096 KiB", "12 MiB", "512") in bytes; nullopt in another form or
+/// when too large.
+[[nodiscard]] std::optional<std::uint64_t> memoryBytes(std::string_view value)
+{
+    const std::size_t start = value.find_first_not_of(" \t");
+    if (start == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+    value.remove_prefix(start);
+    std::uint64_t number = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (error != std::errc{} || end == value.data())
+    {
+        return std::nullopt;
+    }
+    value.remove_prefix(static_cast<std::size_t>(end - value.data()));
+    const std::size_t unitStart = value.find_first_not_of(" \t");
+    const std::string_view unit = (unitStart == std::string_view::npos) ? std::string_view{} : value.substr(unitStart);
+    std::uint64_t scale = 1;
+    if (unit == "KiB")
+    {
+        scale = 1024ULL;
+    }
+    else if (unit == "MiB")
+    {
+        scale = 1024ULL * 1024ULL;
+    }
+    else if (unit == "GiB")
+    {
+        scale = 1024ULL * 1024ULL * 1024ULL;
+    }
+    else if (!unit.empty())
+    {
+        return std::nullopt;
+    }
+    if (number > std::numeric_limits<std::uint64_t>::max() / scale)
+    {
+        return std::nullopt;
+    }
+    return number * scale;
+}
+
+} // namespace
+
+ClientMemory parseFdinfo(std::string_view text)
+{
+    ClientMemory memory;
+    std::optional<std::uint64_t> resident;
+    std::optional<std::uint64_t> total;
+    while (!text.empty())
+    {
+        const std::size_t end = text.find('\n');
+        std::string_view line = text.substr(0, end);
+        text.remove_prefix(end == std::string_view::npos ? text.size() : end + 1);
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.remove_suffix(1);
+        }
+        const std::size_t colon = line.find(':');
+        if (colon == std::string_view::npos)
+        {
+            continue;
+        }
+        const std::string_view key = line.substr(0, colon);
+        const std::string_view value = line.substr(colon + 1);
+        if (key == "drm-client-id")
+        {
+            std::uint64_t id = 0;
+            const std::string_view digits = value.substr(std::min(value.size(), value.find_first_not_of(" \t")));
+            if (const auto [ptr, error] = std::from_chars(digits.data(), digits.data() + digits.size(), id); error == std::errc{})
+            {
+                memory.clientId = id;
+            }
+        }
+        else if (key == "drm-resident-memory")
+        {
+            resident = memoryBytes(value);
+        }
+        else if (key == "drm-total-memory")
+        {
+            total = memoryBytes(value);
+        }
+    }
+    memory.bytes = resident.has_value() ? resident : total;
+    return memory;
 }
 
 } // namespace AccelNpu
@@ -94,8 +192,8 @@ namespace
 
 } // namespace
 
-AccelNpuProbe::AccelNpuProbe(std::filesystem::path accelClassRoot, Clock clock)
-    : m_Root(std::move(accelClassRoot)), m_Clock(std::move(clock)), m_Devices(scan())
+AccelNpuProbe::AccelNpuProbe(std::filesystem::path accelClassRoot, Clock clock, std::filesystem::path procRoot)
+    : m_Root(std::move(accelClassRoot)), m_Clock(std::move(clock)), m_ProcRoot(std::move(procRoot)), m_Devices(scan())
 {
     if (!m_Devices.empty())
     {
@@ -132,12 +230,14 @@ std::vector<AccelNpuProbe::Device> AccelNpuProbe::scan() const
         const std::string slot = std::filesystem::canonical(deviceDir, canonicalError).filename().string();
         Device device;
         device.deviceDir = deviceDir;
+        device.nodePath = "/dev/accel/" + name;
         device.info.id = "ACCEL_" + (canonicalError || slot.empty() ? name : slot);
         device.info.name = AccelNpu::displayName(driver);
         device.info.vendor = vendorName(deviceDir);
         device.info.driverVersion = driver.empty() ? std::string("Unknown") : driver;
         device.info.kind = AccelNpu::kindOf(driver);
-        device.info.isIntegrated = true; // Both NPUs today sit in the processor package
+        device.info.isIntegrated = true;   // Both NPUs today sit in the processor package
+        device.info.memoryIsShared = true; // ...and map system memory: a client's is shared memory (#1827)
         std::uint32_t index = 0;
         static_cast<void>(std::from_chars(name.data() + 5, name.data() + name.size(), index));
         device.info.deviceIndex = index;
@@ -191,6 +291,9 @@ bool AccelNpuProbe::rescanGPUs(GPURescan depth)
         }
     }
     m_Devices = std::move(found);
+    // The clients' device indices were into the old list: look for them again on the next read.
+    m_Clients.clear();
+    m_LastDiscoveryNs.reset();
     return true;
 }
 
@@ -231,14 +334,98 @@ std::vector<GPUCounters> AccelNpuProbe::readGPUCounters()
     return counters;
 }
 
+void AccelNpuProbe::discoverClients()
+{
+    std::vector<Client> found;
+    std::error_code procError;
+    for (std::filesystem::directory_iterator procIt(m_ProcRoot, procError), procEnd; !procError && procIt != procEnd;
+         procIt.increment(procError))
+    {
+        const std::string name = procIt->path().filename().string();
+        std::int32_t pid = 0;
+        if (const auto [end, error] = std::from_chars(name.data(), name.data() + name.size(), pid);
+            error != std::errc{} || end != name.data() + name.size() || pid <= 0)
+        {
+            continue;
+        }
+        // Another user's process can't be looked into without privileges, and a process can exit
+        // mid-walk: either just has no fds here.
+        std::error_code fdError;
+        for (std::filesystem::directory_iterator fdIt(procIt->path() / "fd", fdError), fdEnd; !fdError && fdIt != fdEnd;
+             fdIt.increment(fdError))
+        {
+            std::error_code linkError;
+            const std::filesystem::path target = std::filesystem::read_symlink(fdIt->path(), linkError);
+            if (linkError || !target.native().starts_with("/dev/accel/"))
+            {
+                continue;
+            }
+            const auto device = std::ranges::find(m_Devices, target.native(), &Device::nodePath);
+            if (device != m_Devices.end())
+            {
+                found.push_back({.pid = pid,
+                                 .fdinfo = procIt->path() / "fdinfo" / fdIt->path().filename(),
+                                 .device = static_cast<std::size_t>(device - m_Devices.begin())});
+            }
+        }
+    }
+    m_Clients = std::move(found);
+}
+
 std::vector<ProcessGPUCounters> AccelNpuProbe::readProcessGPUCounters()
 {
-    return {}; // Neither driver reports per-process utilization; fdinfo memory is a follow-up (#1827)
+    if (m_Devices.empty())
+    {
+        return {};
+    }
+    const std::uint64_t now = nowNs();
+    if (!m_LastDiscoveryNs.has_value() || now - *m_LastDiscoveryNs >= CLIENT_DISCOVERY_INTERVAL_NS)
+    {
+        discoverClients();
+        m_LastDiscoveryNs = now;
+    }
+
+    // Each process's memory on each device: a client's fds share its drm-client-id, so it is counted
+    // once; an fd whose fdinfo prints no id is its own client. Neither driver gives per-process
+    // utilization, so only memory is read (GPUCapabilities::hasPerProcessNpuUtilization is false).
+    std::map<std::pair<std::int32_t, std::size_t>, std::uint64_t> bytesByProcess;
+    std::set<std::tuple<std::int32_t, std::size_t, std::uint64_t>> clientsSeen;
+    for (const Client& client : m_Clients)
+    {
+        std::ifstream file(client.fdinfo);
+        if (!file)
+        {
+            continue; // Closed, or the process exited, since the walk
+        }
+        const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        const AccelNpu::ClientMemory memory = AccelNpu::parseFdinfo(text);
+        if (memory.clientId.has_value() && !clientsSeen.emplace(client.pid, client.device, *memory.clientId).second)
+        {
+            continue;
+        }
+        std::uint64_t& bytes = bytesByProcess[{client.pid, client.device}];
+        bytes += memory.bytes.value_or(0);
+    }
+
+    std::vector<ProcessGPUCounters> counters;
+    counters.reserve(bytesByProcess.size());
+    for (const auto& [key, bytes] : bytesByProcess)
+    {
+        const Device& device = m_Devices[key.second];
+        ProcessGPUCounters c;
+        c.pid = key.first;
+        c.gpuId = device.info.id;
+        c.kind = device.info.kind;
+        c.gpuSharedMemoryBytes = bytes; // System memory the NPU maps for it
+        counters.push_back(std::move(c));
+    }
+    return counters;
 }
 
 GPUCapabilities AccelNpuProbe::capabilities() const
 {
-    return GPUCapabilities{.supportsMultiGPU = m_Devices.size() > 1};
+    // Per-process NPU memory where there is an accel device to read it from (#1827); never utilization.
+    return GPUCapabilities{.hasPerProcessNpuMetrics = !m_Devices.empty(), .supportsMultiGPU = m_Devices.size() > 1};
 }
 
 } // namespace Platform

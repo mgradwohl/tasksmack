@@ -151,6 +151,13 @@ std::vector<ProcessGPUCounters> LinuxGPUProbe::readProcessGPUCounters()
         counters.insert(counters.end(), rocmCounters.begin(), rocmCounters.end());
     }
 
+    // NPU and compute-accelerator memory per process, from the accel clients' fdinfo (#1827).
+    if (m_AccelProbe && m_AccelProbe->isAvailable())
+    {
+        auto accelCounters = m_AccelProbe->readProcessGPUCounters();
+        counters.insert(counters.end(), accelCounters.begin(), accelCounters.end());
+    }
+
     return counters;
 }
 
@@ -216,10 +223,13 @@ GPUCapabilities LinuxGPUProbe::capabilities() const
         caps.supportsMultiGPU = caps.supportsMultiGPU || rocmCaps.supportsMultiGPU;
     }
 
-    // The accel devices add no sensor or per-process capability (#1827); several are still several.
+    // The accel devices add per-process NPU memory, apart from the GPUs' per-process data, and no sensor
+    // (#1827); several are still several.
     if (m_AccelProbe && m_AccelProbe->isAvailable())
     {
-        caps.supportsMultiGPU = caps.supportsMultiGPU || m_AccelProbe->capabilities().supportsMultiGPU;
+        const GPUCapabilities accelCaps = m_AccelProbe->capabilities();
+        caps.hasPerProcessNpuMetrics = caps.hasPerProcessNpuMetrics || accelCaps.hasPerProcessNpuMetrics;
+        caps.supportsMultiGPU = caps.supportsMultiGPU || accelCaps.supportsMultiGPU;
     }
 
     return caps;
