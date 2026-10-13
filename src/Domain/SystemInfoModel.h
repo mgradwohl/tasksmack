@@ -79,6 +79,10 @@ struct SystemInfoSnapshot
     std::map<std::string, SensorHistory> sensorHistories;
     /// This read asked the probe for the Wi-Fi details that can raise a location prompt (#1782).
     bool wifiDetailsIncluded = false;
+    /// This read looked the public addresses up (#1518): the user asked, and the probe can.
+    bool publicIpIncluded = false;
+    /// The public addresses, when publicIpIncluded.
+    Platform::PublicIpInfo publicIp;
 };
 
 /// Reads the static facts on demand (once when the page first shows, and on Refresh), never per tick,
@@ -132,6 +136,20 @@ class SystemInfoModel
         return m_IncludeWifiDetails.load(std::memory_order_relaxed);
     }
 
+    /// From now on, every read() also looks the public addresses up (#1518), which sends a query to a
+    /// DNS resolver off the machine: the user clicked "Show public IP". The choice holds for the model's
+    /// life (the session). Thread-safe; takes effect from the next read() that starts.
+    void includePublicIp() noexcept
+    {
+        m_IncludePublicIp.store(true, std::memory_order_relaxed);
+    }
+
+    /// Whether includePublicIp() was called.
+    [[nodiscard]] bool publicIpIncluded() const noexcept
+    {
+        return m_IncludePublicIp.load(std::memory_order_relaxed);
+    }
+
     /// What the probe can read, fixed at construction.
     [[nodiscard]] const Platform::SystemInfoCapabilities& capabilities() const noexcept
     {
@@ -143,6 +161,7 @@ class SystemInfoModel
     Platform::SystemInfoCapabilities m_Capabilities;
     std::shared_ptr<CrashHistory> m_CrashHistory;  // may be null
     std::atomic<bool> m_IncludeWifiDetails{false}; // set from the UI thread, read by read() (#1782)
+    std::atomic<bool> m_IncludePublicIp{false};    // set from the UI thread, read by read() (#1518)
     std::mutex m_ReadMutex;
     std::uint64_t m_LastVersion = 0;                        // guarded by m_ReadMutex
     std::map<std::string, SensorRange> m_SensorRanges;      // guarded by m_ReadMutex

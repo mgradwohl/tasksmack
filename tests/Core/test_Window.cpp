@@ -110,6 +110,19 @@ void waitForWindowSize(const Window& window, int width, int height)
     }
 }
 
+// Pumps events until the window's size differs from @p before, or a timeout (#1896).
+void waitForWindowSizeChange(const Window& window, std::pair<int, int> before)
+{
+    constexpr auto RESIZE_TIMEOUT = std::chrono::seconds{5};
+    constexpr auto POLL_INTERVAL = std::chrono::milliseconds{10};
+    const auto deadline = std::chrono::steady_clock::now() + RESIZE_TIMEOUT;
+    while (window.getSize() == before && std::chrono::steady_clock::now() < deadline)
+    {
+        SDL_PumpEvents();
+        std::this_thread::sleep_for(POLL_INTERVAL);
+    }
+}
+
 // True when the window's display is smaller than width x height on either axis.
 bool displaySmallerThan(const Window& window, int width, int height)
 {
@@ -677,7 +690,17 @@ TEST_F(WindowTest, ASavedSizeLargerThanTheDisplayIsShrunkToFit)
             GTEST_SKIP() << "No display bounds available";
         }
         // A size saved on a bigger monitor, now gone: kept within this display rather than off its edges.
+        const auto sizeBefore = window.getSize();
         window.setSize(std::min(usable.w * 2, 16'000), std::min(usable.h * 2, 16'000));
+        // On X11 the resize is only a request: applySavedGeometry() reads the current size, so wait until
+        // the resize lands, or the fit sees 640x480, has nothing to shrink, and the 2x size lands after
+        // it (#1896). A window manager may clamp the grow at the display (WSLg's XWM), so wait for any
+        // change, not the exact size.
+        waitForWindowSizeChange(window, sizeBefore);
+        if (window.getSize() == sizeBefore && !TestSupport::displayRequired())
+        {
+            GTEST_SKIP() << "Window manager declined to grow the window; nothing to shrink";
+        }
         window.applySavedGeometry(std::nullopt, false, std::nullopt);
         waitForWindowSize(window, usable.w, usable.h);
         const auto [width, height] = window.getSize();

@@ -65,6 +65,8 @@ TEST(WindowsStartupProbeTest, EnumeratesWithoutFailing)
     for (const StartupEntry& entry : entries)
     {
         EXPECT_FALSE(entry.name.empty());
+        EXPECT_FALSE(entry.registrationName.empty()) << entry.name; // #1873: every entry is registered under a name
+        EXPECT_EQ(entry.packageFamily.empty(), entry.location != StartupLocation::PackagedApp) << entry.name;
         EXPECT_EQ(entry.scope, Windows::StartupMath::scopeOf(entry.location)) << entry.name;
         EXPECT_LE(entry.location, StartupLocation::PackagedApp) << entry.name;
         if (entry.enabled)

@@ -31,9 +31,9 @@ std::string_view blockedReason(const Platform::StartupEntry& entry, const Platfo
     {
         return "Startup apps can't be changed on this platform yet";
     }
-    if (entry.location == Platform::StartupLocation::PackagedApp)
+    if (entry.setByPolicy)
     {
-        return "Change a packaged app's startup in Task Manager or Settings > Apps > Startup";
+        return "Set by your administrator or group policy";
     }
     if (!Platform::hasSwitchableState(entry.location))
     {
@@ -58,9 +58,11 @@ std::string confirmTitle(const StartupActionRequest& request)
 
 std::string confirmQuestion(const StartupActionRequest& request)
 {
-    return std::format("Disable {}? It won't start when you sign in until it is enabled again. Its registry entry or shortcut is "
-                       "kept, so nothing is removed.",
-                       request.entry.name);
+    return std::format("Disable {}? It won't start when you sign in until it is enabled again. {}",
+                       request.entry.name,
+                       request.entry.location == Platform::StartupLocation::PackagedApp
+                           ? "The app and its startup task are kept, so nothing is removed."
+                           : "Its registry entry or shortcut is kept, so nothing is removed.");
 }
 
 std::string progressText(const StartupActionRequest& request)

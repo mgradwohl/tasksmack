@@ -56,6 +56,12 @@ void SystemInfoModel::read()
         next->wifiDetailsIncluded = wifiDetailsIncluded();
         next->adapters = m_Probe->readNetworkAdapters(next->wifiDetailsIncluded);
         next->boot = m_Probe->readBootPerformance();
+        // The public addresses go off the machine to ask, so only once the user asked for them (#1518).
+        next->publicIpIncluded = m_Capabilities.hasPublicIp && publicIpIncluded();
+        if (next->publicIpIncluded)
+        {
+            next->publicIp = m_Probe->readPublicIp();
+        }
     }
     addToSensorRanges(next->sensors);
     next->sensorRanges = m_SensorRanges;

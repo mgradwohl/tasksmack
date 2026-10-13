@@ -397,9 +397,11 @@ HRESULT WINAPI fakeLoadIndirectString(PCWSTR source, PWSTR text, UINT textChars,
     return std::filesystem::path(directory) / L"cmd.exe";
 }
 
-[[nodiscard]] const StartupEntry* find(const std::vector<StartupEntry>& entries, const std::string& name, StartupLocation location)
+[[nodiscard]] const StartupEntry*
+find(const std::vector<StartupEntry>& entries, const std::string& registrationName, StartupLocation location)
 {
-    const auto it = std::ranges::find_if(entries, [&](const StartupEntry& e) { return e.name == name && e.location == location; });
+    const auto it = std::ranges::find_if(
+        entries, [&](const StartupEntry& e) { return e.registrationName == registrationName && e.location == location; });
     return it == entries.end() ? nullptr : &*it;
 }
 
@@ -499,11 +501,16 @@ TEST_F(WindowsStartupProbeSeamsTest, ReadsRunValuesAndSkipsWhatIsNotAnEntry)
     EXPECT_EQ(lower(alpha->executablePath), lower(WinString::wideToUtf8(cmd.wstring())));
     EXPECT_EQ(alpha->target, StartupTargetState::Present);
     EXPECT_FALSE(alpha->publisher.empty()); // cmd.exe's CompanyName
+    // #1873: shown by cmd.exe's FileDescription ("Windows Command Processor", localised), not the value name.
+    EXPECT_FALSE(alpha->name.empty());
+    EXPECT_NE(alpha->name, "Alpha");
+    EXPECT_NE(lower(alpha->name), "cmd.exe") << "the description, not the file name";
     EXPECT_FALSE(alpha->enabled);
     EXPECT_EQ(alpha->disabledAtUnixSeconds, DISABLED_AT);
 
     const StartupEntry* gone = find(entries, "Gone", StartupLocation::RunUser);
     ASSERT_NE(gone, nullptr);
+    EXPECT_EQ(gone->name, "gone.exe") << "a missing program is named by its file name";
     EXPECT_EQ(gone->target, StartupTargetState::Missing);
     EXPECT_FALSE(gone->executablePath.contains('%')) << "expanded: " << gone->executablePath;
     EXPECT_TRUE(gone->enabled);
@@ -512,20 +519,29 @@ TEST_F(WindowsStartupProbeSeamsTest, ReadsRunValuesAndSkipsWhatIsNotAnEntry)
     const StartupEntry* unicode = find(entries, UNICODE_NAME, StartupLocation::RunUser);
     ASSERT_NE(unicode, nullptr) << "a non-ASCII value name round-trips as UTF-8";
     EXPECT_EQ(unicode->executablePath, "C:\\TaskSmack-1722\\caf\xC3\xA9.exe");
+    EXPECT_EQ(unicode->name, "caf\xC3\xA9.exe");
     EXPECT_TRUE(unicode->enabled);
 
     const StartupEntry* once = find(entries, "Once", StartupLocation::RunOnceUser);
     ASSERT_NE(once, nullptr);
     EXPECT_EQ(once->command, "C:\\once.exe");
+    EXPECT_EQ(once->name, "once.exe");
 
     const StartupEntry* blank = find(entries, "Blank", StartupLocation::RunOnceUser);
     ASSERT_NE(blank, nullptr);
+    EXPECT_EQ(blank->name, "Blank") << "no program: named by its value";
     EXPECT_TRUE(blank->executablePath.empty());
     EXPECT_EQ(blank->target, StartupTargetState::Unresolved);
 
     const StartupEntry* bare = find(entries, "Bare", StartupLocation::RunOnceUser);
     ASSERT_NE(bare, nullptr);
     EXPECT_EQ(bare->executablePath, "tasksmack-1722-no-such-tool") << "a name the search path doesn't find is kept as written";
+    EXPECT_EQ(bare->name, "tasksmack-1722-no-such-tool");
+    for (const StartupEntry& entry : entries)
+    {
+        EXPECT_TRUE(entry.packageFamily.empty()) << entry.registrationName;
+        EXPECT_FALSE(entry.setByPolicy) << entry.registrationName;
+    }
     EXPECT_EQ(bare->target, StartupTargetState::Missing);
 
     // A second pass reads the cached publisher, and a value that's gone drops its cache entry.
@@ -563,6 +579,7 @@ TEST_F(WindowsStartupProbeSeamsTest, ListsTheStartupFolders)
 
     const StartupEntry* tool = find(entries, "Tool.exe", StartupLocation::StartupFolderUser);
     ASSERT_NE(tool, nullptr);
+    EXPECT_EQ(tool->name, "Tool.exe") << "no version resource: its file name";
     EXPECT_EQ(tool->scope, StartupScope::User);
     EXPECT_EQ(tool->sourcePath, WinString::wideToUtf8((user / L"Tool.exe").wstring()));
     EXPECT_EQ(tool->command, std::format("\"{}\"", tool->sourcePath));
@@ -576,19 +593,23 @@ TEST_F(WindowsStartupProbeSeamsTest, ListsTheStartupFolders)
     EXPECT_EQ(site->target, StartupTargetState::Present);
     EXPECT_TRUE(site->enabled);
 
-    const StartupEntry* good = find(entries, "Good", StartupLocation::StartupFolderUser);
-    ASSERT_NE(good, nullptr) << "a shortcut is named without its extension";
+    const StartupEntry* good = find(entries, "Good.lnk", StartupLocation::StartupFolderUser);
+    ASSERT_NE(good, nullptr) << "a shortcut is registered by its file name, extension included";
+    EXPECT_NE(good->name, "Good") << "#1873: named by its target's FileDescription";
+    EXPECT_FALSE(good->name.empty());
     EXPECT_EQ(lower(good->command), lower(std::format("\"{}\" /c exit", WinString::wideToUtf8(systemCmd().wstring()))));
     EXPECT_EQ(good->target, StartupTargetState::Present);
     EXPECT_TRUE(good->enabled);
     EXPECT_FALSE(good->publisher.empty());
 
-    const StartupEntry* dangling = find(entries, "Dangling", StartupLocation::StartupFolderUser);
+    const StartupEntry* dangling = find(entries, "Dangling.lnk", StartupLocation::StartupFolderUser);
     ASSERT_NE(dangling, nullptr);
     EXPECT_EQ(dangling->target, StartupTargetState::Missing);
+    EXPECT_EQ(dangling->name, "no-such-target.exe");
 
-    const StartupEntry* broken = find(entries, "Broken", StartupLocation::StartupFolderUser);
+    const StartupEntry* broken = find(entries, "Broken.lnk", StartupLocation::StartupFolderUser);
     ASSERT_NE(broken, nullptr);
+    EXPECT_EQ(broken->name, "Broken") << "an unread shortcut is named without its extension";
     EXPECT_EQ(broken->target, StartupTargetState::Unresolved);
     EXPECT_TRUE(broken->command.empty());
     EXPECT_TRUE(broken->executablePath.empty());
@@ -601,6 +622,7 @@ TEST_F(WindowsStartupProbeSeamsTest, ListsTheStartupFolders)
 
     const StartupEntry* shared = find(entries, "Shared.bat", StartupLocation::StartupFolderCommon);
     ASSERT_NE(shared, nullptr);
+    EXPECT_EQ(shared->name, "Shared.bat");
     EXPECT_EQ(shared->scope, StartupScope::Machine);
     EXPECT_TRUE(shared->enabled);
 
@@ -820,8 +842,11 @@ TEST_F(WindowsStartupProbeSeamsTest, ListsPackagedStartupTasksAsTaskManagerDoes)
     const std::vector<StartupEntry> entries = probe.enumerate();
     ASSERT_EQ(entries.size(), 3U);
 
-    const StartupEntry* term = find(entries, "Terminal", StartupLocation::PackagedApp);
-    ASSERT_NE(term, nullptr) << "named from its resolved ms-resource DisplayName";
+    const StartupEntry* term = find(entries, "StartOnLogin", StartupLocation::PackagedApp);
+    ASSERT_NE(term, nullptr);
+    EXPECT_EQ(term->name, "Terminal") << "named from its resolved ms-resource DisplayName";
+    EXPECT_EQ(term->packageFamily, "Contoso.Terminal_8wekyb3d8bbwe") << "#1873: the task is found again by family and TaskId";
+    EXPECT_FALSE(term->setByPolicy);
     EXPECT_EQ(term->scope, StartupScope::User);
     EXPECT_EQ(term->publisher, "Contoso Corporation");
     EXPECT_FALSE(term->enabled);
@@ -832,17 +857,21 @@ TEST_F(WindowsStartupProbeSeamsTest, ListsPackagedStartupTasksAsTaskManagerDoes)
     // #1800: the Application's Square44x44Logo under the package's folder, as the manifest names it.
     EXPECT_EQ(term->iconPath, WinString::wideToUtf8((terminal / L"b.png").wstring()));
 
-    const StartupEntry* chatEntry = find(entries, "Contoso Chat", StartupLocation::PackagedApp);
-    ASSERT_NE(chatEntry, nullptr);
+    const StartupEntry* chatEntry = find(entries, "chat", StartupLocation::PackagedApp);
+    ASSERT_NE(chatEntry, nullptr) << "registered by the task key's own name, whatever the manifest's case";
+    EXPECT_EQ(chatEntry->name, "Contoso Chat");
+    EXPECT_EQ(chatEntry->packageFamily, "Contoso.Chat_abc123");
     EXPECT_EQ(chatEntry->publisher, "Contoso Chat Ltd.");
     EXPECT_FALSE(chatEntry->enabled);
     EXPECT_EQ(chatEntry->disabledAtUnixSeconds, DISABLED_AT);
     EXPECT_EQ(chatEntry->executablePath, WinString::wideToUtf8((chat / L"bin" / L"Starter.exe").wstring()));
     EXPECT_EQ(chatEntry->target, StartupTargetState::Present);
 
-    const StartupEntry* policy = find(entries, "Contoso Chat Package", StartupLocation::PackagedApp);
-    ASSERT_NE(policy, nullptr) << "an unloadable DisplayName falls back to the package's";
+    const StartupEntry* policy = find(entries, "Policy", StartupLocation::PackagedApp);
+    ASSERT_NE(policy, nullptr);
+    EXPECT_EQ(policy->name, "Contoso Chat Package") << "an unloadable DisplayName falls back to the package's";
     EXPECT_TRUE(policy->enabled);
+    EXPECT_TRUE(policy->setByPolicy) << "EnabledByPolicy (#1873)";
     EXPECT_EQ(policy->disabledAtUnixSeconds, 0U);
 
     // A second pass reads the cached manifests: only the resource package, which has no folder, is

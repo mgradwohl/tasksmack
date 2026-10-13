@@ -47,6 +47,8 @@ struct ProbeLog
     bool wifiGated = false;               ///< The platform gates the Wi-Fi details behind location access (#1782).
     std::atomic<int> adapterReadsWith{0}; ///< readNetworkAdapters() calls that asked for the Wi-Fi details
     std::atomic<int> adapterReadsWithout{0};
+    bool publicIp = false;             ///< The platform can look the public addresses up (#1518).
+    std::atomic<int> publicIpReads{0}; ///< readPublicIp() calls
 };
 
 /// The Wi-Fi link row's value, which only a read with the Wi-Fi details has.
@@ -61,8 +63,16 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
 
     [[nodiscard]] Platform::SystemInfoCapabilities capabilities() const override
     {
-        return m_HasOs ? Platform::SystemInfoCapabilities{.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = m_Log->wifiGated}
+        return m_HasOs ? Platform::SystemInfoCapabilities{.hasOs = true,
+                                                          .unavailableReason = {},
+                                                          .wifiDetailsGated = m_Log->wifiGated,
+                                                          .hasPublicIp = m_Log->publicIp}
                        : m_Default.capabilities();
+    }
+    [[nodiscard]] Platform::PublicIpInfo readPublicIp() override
+    {
+        ++m_Log->publicIpReads;
+        return {.read = true, .v4 = "203.0.113.7", .v6 = "2001:db8::7", .v4Unavailable = {}, .v6Unavailable = {}, .source = "OpenDNS"};
     }
     [[nodiscard]] Platform::OsInfo readOs() override
     {
@@ -254,13 +264,14 @@ class SystemInfoPanelRenderTest : public ::testing::Test
         return text;
     }
 
-    /// The "Show Wi-Fi details" button's ID in the panel's page: built as SystemInfoView draws it, in the
-    /// sections child window, under the section's index, its rows table and the row's index (#1782).
-    /// The indices come from the same fake's sections.
-    [[nodiscard]] static ImGuiID wifiDetailsButtonId()
+    /// The ID of the button @p label on the row with @p action in the panel's page: built as SystemInfoView
+    /// draws it, in the sections child window, under the section's index, its rows table and the row's
+    /// index (#1782, #1518). The indices come from the same fake's sections, configured as m_Log is.
+    [[nodiscard]] ImGuiID rowButtonId(SystemInfo::RowAction action, const char* label) const
     {
         ProbeLog log;
-        log.wifiGated = true;
+        log.wifiGated = m_Log.wifiGated;
+        log.publicIp = m_Log.publicIp;
         Domain::SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(log, true));
         model.read();
         const std::vector<SystemInfo::Section> sections = SystemInfo::buildSystemInfoSections(*model.snapshot(), {}, model.capabilities());
@@ -279,12 +290,12 @@ class SystemInfoPanelRenderTest : public ::testing::Test
             std::size_t rowIndex = 0;
             while (rowIndex < rows.size())
             {
-                if (rows[rowIndex].action == SystemInfo::RowAction::ShowWifiDetails)
+                if (rows[rowIndex].action == action)
                 {
                     const int section = static_cast<int>(sectionIndex);
                     const int row = static_cast<int>(rowIndex);
                     const ImGuiID table = ImHashStr("##Rows", 0, ImHashData(&section, sizeof(section), child->ID));
-                    return ImHashStr(ICON_FA_WIFI "  Show Wi-Fi details", 0, ImHashData(&row, sizeof(row), table));
+                    return ImHashStr(label, 0, ImHashData(&row, sizeof(row), table));
                 }
                 ++rowIndex;
             }
@@ -410,7 +421,7 @@ TEST_F(SystemInfoPanelRenderTest, ShowWifiDetailsReadsThemAndRefreshKeepsReading
     EXPECT_EQ(m_Log.adapterReadsWith.load(), 0);
     EXPECT_EQ(m_Log.adapterReadsWithout.load(), 1);
 
-    const ImGuiID button = wifiDetailsButtonId();
+    const ImGuiID button = rowButtonId(SystemInfo::RowAction::ShowWifiDetails, ICON_FA_WIFI "  Show Wi-Fi details");
     ASSERT_NE(button, 0U);
     // Pressed again each frame until the second read shows: ActivateItemByID() is a one-shot request,
     // dropped on a frame where the button is disabled (a read in flight), which left the test waiting
@@ -438,6 +449,42 @@ TEST_F(SystemInfoPanelRenderTest, ShowWifiDetailsReadsThemAndRefreshKeepsReading
     EXPECT_EQ(m_Log.adapterReadsWith.load(), 2) << "the choice holds for the session";
     EXPECT_EQ(m_Log.adapterReadsWithout.load(), 1);
     EXPECT_TRUE(frame().contains(WIFI_PHY));
+}
+
+// #1518: "Show public IP" looks the addresses up and every Refresh after looks them up again; until it's
+// clicked nothing is asked.
+TEST_F(SystemInfoPanelRenderTest, ShowPublicIpLooksItUpAndRefreshKeepsLookingItUp)
+{
+    m_Log.publicIp = true;
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    std::string text = frame();
+    EXPECT_TRUE(text.contains("Show public IP")) << text;
+    EXPECT_TRUE(text.contains("Sends a DNS query to OpenDNS")) << text;
+    EXPECT_EQ(m_Log.publicIpReads.load(), 0);
+
+    const ImGuiID button = rowButtonId(SystemInfo::RowAction::ShowPublicIp, ICON_FA_NETWORK_WIRED "  Show public IP");
+    ASSERT_NE(button, 0U);
+    // Pressed until the second read shows, as "Show Wi-Fi details" is (#1845).
+    bool secondRead = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!secondRead && std::chrono::steady_clock::now() < deadline)
+    {
+        ImGui::ActivateItemByID(button);
+        secondRead = frame().contains("Fixture Linux 2");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_TRUE(secondRead);
+    text = frame();
+    EXPECT_FALSE(text.contains("Show public IP")) << text;
+    EXPECT_EQ(m_Log.publicIpReads.load(), 1);
+
+    const ImGuiWindow* window = ImGui::FindWindowByName("Panel");
+    ASSERT_NE(window, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_ARROWS_ROTATE "  Refresh", 0, window->ID));
+    ASSERT_TRUE(frameUntil("Fixture Linux 3"));
+    EXPECT_EQ(m_Log.publicIpReads.load(), 2) << "the choice holds for the session";
 }
 
 // #1395: Copy all puts every section's text on the clipboard.

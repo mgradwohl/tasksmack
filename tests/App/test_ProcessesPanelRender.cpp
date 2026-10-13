@@ -22,9 +22,12 @@
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
+#include "Domain/GPUModel.h"
 #include "Domain/SamplingConfig.h"
 #include "Mocks/FakeClipboard.h"
+#include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/GPUTypes.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
@@ -83,7 +86,10 @@ class ProcessesPanelRenderTest : public ::testing::Test
 
     /// An attached panel reading three processes: init (1), server (100) and its child worker (101). The
     /// events it raises go to @p raiseEvent, when given; onUpdate() is told no interaction redraw is on.
-    [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanel(std::function<void(Core::Event&)> raiseEvent = {})
+    /// Its GPU model, which says whether per-process GPU data and an NPU are there, is @p gpuModel, or
+    /// none.
+    [[nodiscard]] static std::unique_ptr<ProcessesPanel> attachedPanel(std::function<void(Core::Event&)> raiseEvent = {},
+                                                                       const std::shared_ptr<const Domain::GPUModel>& gpuModel = nullptr)
     {
         auto panel = std::make_unique<ProcessesPanel>(
             []
@@ -97,6 +103,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
             },
             std::move(raiseEvent),
             [] { return false; });
+        panel->setGpuModel(gpuModel);
         panel->onAttach();
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
@@ -126,6 +133,44 @@ class ProcessesPanelRenderTest : public ::testing::Test
         Core::ActiveTabChangedEvent shown("Processes");
         panel->onEvent(shown);
         return panel;
+    }
+
+    /// A GPU model with one GPU whose probe reports per-process metrics and utilization, and with
+    /// @p withNpu, an NPU too (#1870). It publishes what it lists on its first refresh(), as the GPU
+    /// sampler's first sample does; until then whether there is an NPU is unknown.
+    [[nodiscard]] static std::shared_ptr<Domain::GPUModel> gpuModel(bool withNpu)
+    {
+        Platform::GPUCapabilities caps;
+        caps.hasPerProcessMetrics = true;
+        caps.hasPerProcessUtilization = true;
+        auto probe = std::make_unique<TestMocks::MockGPUProbe>();
+        probe->withGPU("gpu0", "Test GPU").withCapabilities(caps);
+        if (withNpu)
+        {
+            probe->withAccelerator("npu0", "Intel(R) AI Boost", "0x00000000_0x0000abcd");
+        }
+        return std::make_shared<Domain::GPUModel>(std::move(probe));
+    }
+
+    /// Opens the toolbar's Columns menu.
+    static void openColumnsMenu(ProcessesPanel& panel)
+    {
+        const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+        ASSERT_NE(shell, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(ICON_FA_TABLE_COLUMNS " Columns", 0, shell->ID));
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
+        ASSERT_NE(topPopup(), nullptr);
+    }
+
+    /// Closes every popup, so the next frame's text is the table's alone (the Columns menu lists every
+    /// column); the table has any column it changed from the next frame.
+    static void closePopups(ProcessesPanel& panel)
+    {
+        ImGui::ClosePopupToLevel(0, /*restore_focus_to_window_under_popup=*/true);
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
+        ASSERT_EQ(topPopup(), nullptr);
     }
 
     /// The popup open on top, if any.
@@ -516,6 +561,107 @@ TEST_F(ProcessesPanelRenderTest, TheColumnsMenuListsTheNpuColumnsOffByDefault)
     };
     EXPECT_GE(dashes(after), dashes(before) + 3) << after;
     EXPECT_TRUE(UserConfig::get().settings().processColumns.isVisible(ProcessColumn::NpuMemory));
+    panel->onDetach();
+}
+
+// #1870: on a machine with an NPU, NPU % is shown by default -- once the GPU model has listed the NPU,
+// not before -- and NPU Memory and NPU Engine are not. A default, not a choice, so it is not saved.
+TEST_F(ProcessesPanelRenderTest, NpuPercentIsShownByDefaultOnceTheNpuIsKnown)
+{
+    const auto gpu = gpuModel(/*withNpu=*/true);
+    const auto panel = attachedPanel({}, gpu);
+    renderUntilLoaded(*panel);
+    const std::string before = renderAndCapture(*panel);
+    EXPECT_FALSE(before.contains("NPU")) << before; // Not known yet: not shown, then withdrawn
+
+    gpu->refresh();                              // The GPU sampler's first sample lists the NPU
+    static_cast<void>(renderAndCapture(*panel)); // Queues the new default
+    static_cast<void>(renderAndCapture(*panel)); // The table applies it
+    const std::string after = renderAndCapture(*panel);
+    EXPECT_TRUE(after.contains("NPU %")) << after;
+    EXPECT_FALSE(after.contains("NPU Mem")) << after;
+    EXPECT_FALSE(after.contains("NPU Engine")) << after;
+    const ProcessColumnSettings& saved = UserConfig::get().settings().processColumns;
+    EXPECT_TRUE(saved.isVisible(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(saved.isChosen(ProcessColumn::NpuPercent));
+
+    // Turned off in the Columns menu: a choice, saved as such, and the column goes.
+    openColumnsMenu(*panel);
+    pressPopupItem(*panel, "NPU %");
+    closePopups(*panel);
+    EXPECT_FALSE(renderAndCapture(*panel).contains("NPU %"));
+    EXPECT_TRUE(UserConfig::get().settings().processColumns.isChosen(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(UserConfig::get().settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    panel->onDetach();
+}
+
+// #1870: a choice made in the Columns menu before the NPU is known is not overridden when it is.
+TEST_F(ProcessesPanelRenderTest, AColumnsMenuChoiceMadeBeforeTheNpuIsKnownIsKept)
+{
+    const auto gpu = gpuModel(/*withNpu=*/true);
+    const auto panel = attachedPanel({}, gpu);
+    renderUntilLoaded(*panel);
+    openColumnsMenu(*panel);
+    pressPopupItem(*panel, "NPU %"); // On...
+    pressPopupItem(*panel, "NPU %"); // ...and off again: off, as a choice
+    closePopups(*panel);
+
+    gpu->refresh();
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("NPU %"));
+    EXPECT_TRUE(UserConfig::get().settings().processColumns.isChosen(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(UserConfig::get().settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    panel->onDetach();
+}
+
+// #1870: "npu_percent = false" in the config file wins over the NPU's default.
+TEST_F(ProcessesPanelRenderTest, AnExplicitNpuPercentOffWinsOverTheNpu)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::NpuPercent, false);
+    const auto gpu = gpuModel(/*withNpu=*/true);
+    gpu->refresh();
+    const auto panel = attachedPanel({}, gpu);
+    renderUntilLoaded(*panel);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("NPU %"));
+    EXPECT_FALSE(UserConfig::get().settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    panel->onDetach();
+}
+
+// #1870: without an NPU, NPU % is off by default; shown by the user -- in the Columns menu, or the
+// config file next time -- it stays, and each row's cell is the unavailable dash.
+TEST_F(ProcessesPanelRenderTest, NpuPercentShownWithoutAnNpuReadsAsTheDash)
+{
+    const auto gpu = gpuModel(/*withNpu=*/false);
+    gpu->refresh();
+    {
+        const auto panel = attachedPanel({}, gpu);
+        renderUntilLoaded(*panel);
+        static_cast<void>(renderAndCapture(*panel));
+        const std::string before = renderAndCapture(*panel);
+        EXPECT_FALSE(before.contains("NPU")) << before;
+
+        openColumnsMenu(*panel);
+        pressPopupItem(*panel, "NPU %");
+        closePopups(*panel);
+        const std::string after = renderAndCapture(*panel);
+        EXPECT_TRUE(after.contains("NPU %")) << after;
+        const auto dashes = [](const std::string& text)
+        {
+            return std::ranges::count(text, '\x94');
+        };
+        EXPECT_GE(dashes(after), dashes(before) + 3) << after;
+        EXPECT_TRUE(UserConfig::get().settings().processColumns.isChosen(ProcessColumn::NpuPercent));
+        panel->onDetach();
+    }
+
+    // As the config file has it next time: still shown.
+    ASSERT_TRUE(UserConfig::get().settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    const auto panel = attachedPanel({}, gpu);
+    renderUntilLoaded(*panel);
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(renderAndCapture(*panel).contains("NPU %"));
     panel->onDetach();
 }
 

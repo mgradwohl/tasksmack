@@ -18,7 +18,10 @@
 #include "WinString.h"
 #include "WindowsStartupProbeMath.h"
 
+#include <array>
 #include <cstdint>
+#include <cstring>
+#include <format>
 #include <memory>
 #include <span>
 #include <string>
@@ -51,6 +54,72 @@ using InjectableKey = std::unique_ptr<std::remove_pointer_t<HKEY>, InjectedKeyCl
     return StartupActionResult::failed(Math::approvedErrorText(static_cast<std::uint32_t>(status)));
 }
 
+/// @p value's bytes, little-endian as the registry stores a REG_DWORD or REG_QWORD.
+template<typename T> [[nodiscard]] std::array<std::uint8_t, sizeof(T)> numberBytes(T value) noexcept
+{
+    std::array<std::uint8_t, sizeof(T)> bytes{};
+    std::memcpy(bytes.data(), &value, sizeof(T));
+    return bytes;
+}
+
+/// Sets packaged startup task @p entry's State (#1873), as Settings > Apps > Startup does.
+[[nodiscard]] StartupActionResult
+setPackagedTaskEnabled(const Windows::StartupRegistryFunctions& api, const StartupEntry& entry, bool enabled)
+{
+    if (entry.packageFamily.empty() || entry.registrationName.empty())
+    {
+        return StartupActionResult::failed("The startup task has no package or task id to record its state under");
+    }
+    const std::wstring subkey = std::format(
+        L"{}\\{}\\{}", Math::PACKAGED_TASKS_KEY, WinString::utf8ToWide(entry.packageFamily), WinString::utf8ToWide(entry.registrationName));
+    // Opened, never created: a task Windows keeps no state for (its package was removed since the list
+    // was read) isn't made up.
+    HKEY rawKey = nullptr;
+    const LSTATUS opened = api.openKey(HKEY_CURRENT_USER, subkey.c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &rawKey);
+    if (opened == ERROR_FILE_NOT_FOUND)
+    {
+        return StartupActionResult::failed("The startup task is no longer registered");
+    }
+    if (opened != ERROR_SUCCESS)
+    {
+        return failure(opened);
+    }
+    const InjectableKey key(rawKey, InjectedKeyCloser{.close = api.closeKey});
+
+    // Read again here: a policy may have taken the task over since the list was read.
+    std::array<std::uint8_t, sizeof(std::uint32_t)> stateBytes{};
+    DWORD type = 0;
+    auto size = static_cast<DWORD>(stateBytes.size());
+    const LSTATUS queried = api.queryValue(key.get(), L"State", nullptr, &type, stateBytes.data(), &size);
+    if (queried != ERROR_SUCCESS || type != REG_DWORD || size != stateBytes.size())
+    {
+        return StartupActionResult::failed("The startup task's state couldn't be read");
+    }
+    std::uint32_t state = 0;
+    std::memcpy(&state, stateBytes.data(), sizeof(state));
+    if (Math::packagedTaskSetByPolicy(state))
+    {
+        return StartupActionResult::failed("Set by your administrator or group policy");
+    }
+
+    if (!enabled)
+    {
+        // The time first: a stale LastDisabledTime beside an enabled State is what Windows leaves too.
+        FILETIME now{};
+        api.now(&now);
+        const std::uint64_t fileTime = (static_cast<std::uint64_t>(now.dwHighDateTime) << 32U) | now.dwLowDateTime;
+        const auto time = numberBytes(Math::fileTimeToUnixSeconds(fileTime));
+        const LSTATUS timed = api.setValue(key.get(), L"LastDisabledTime", 0, REG_QWORD, time.data(), static_cast<DWORD>(time.size()));
+        if (timed != ERROR_SUCCESS)
+        {
+            return failure(timed);
+        }
+    }
+    const auto newState = numberBytes(enabled ? Math::PACKAGED_TASK_ENABLED : Math::PACKAGED_TASK_DISABLED_BY_USER);
+    const LSTATUS written = api.setValue(key.get(), L"State", 0, REG_DWORD, newState.data(), static_cast<DWORD>(newState.size()));
+    return written == ERROR_SUCCESS ? StartupActionResult::succeeded() : failure(written);
+}
+
 } // namespace
 
 WindowsStartupActions::WindowsStartupActions(bool elevated, Windows::StartupRegistryFunctions api) : m_Elevated(elevated), m_Api(api)
@@ -65,7 +134,7 @@ StartupActionResult WindowsStartupActions::setEnabled(const StartupEntry& entry,
 {
     if (entry.location == StartupLocation::PackagedApp)
     {
-        return StartupActionResult::failed("Packaged apps' startup can't be changed here");
+        return setPackagedTaskEnabled(m_Api, entry, enabled);
     }
     const auto approvedKey = Math::approvedKeyFor(entry.location);
     if (!approvedKey)

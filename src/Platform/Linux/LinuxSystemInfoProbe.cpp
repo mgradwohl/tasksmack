@@ -10,6 +10,7 @@
 #include "LinuxNetworkAdapters.h"
 #include "LinuxOsInfo.h"
 #include "LinuxPlatformSecurity.h"
+#include "LinuxPublicIp.h"
 #include "LinuxSensors.h"
 #include "LinuxStorage.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -127,7 +128,7 @@ namespace
 
 SystemInfoCapabilities LinuxSystemInfoProbe::capabilities() const
 {
-    return {.hasOs = true, .unavailableReason = {}};
+    return {.hasOs = true, .unavailableReason = {}, .wifiDetailsGated = false, .hasPublicIp = true};
 }
 
 OsInfo LinuxSystemInfoProbe::readOs()
@@ -251,6 +252,11 @@ CrashesInfo LinuxSystemInfoProbe::readCrashes()
                                    info,
                                    m_Root == "/" ? SystemdJournal::makeCoredumpJournalReader() : LinuxCoredumps::JournalReader{});
     return info;
+}
+
+PublicIpInfo LinuxSystemInfoProbe::readPublicIp()
+{
+    return LinuxPublicIp::lookUp();
 }
 
 NetworkAdaptersInfo LinuxSystemInfoProbe::readNetworkAdapters(bool /*includeWifiDetails*/)

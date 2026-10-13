@@ -34,23 +34,31 @@ struct GpuSupport
     /// the NPU columns need one as well as per-process metrics. None on Linux yet (#1827), where they
     /// read UNAVAILABLE_CELL_TEXT as the GPU columns do without per-process data.
     bool accelerator = true;
+    /// An NPU or compute accelerator is known to be listed: the GPU model has published its devices and
+    /// one is an accelerator. Unlike `accelerator`, unknown counts as none, so NPU % -- shown by default
+    /// only with one (defaultVisible()) -- is not shown while the probe starts and then withdrawn on a
+    /// system without one; it appears once the accelerator is known (#1870).
+    bool acceleratorListed = false;
 
     friend constexpr bool operator==(const GpuSupport&, const GpuSupport&) = default;
 };
 
 /// GpuSupport from the GPU model's "known unsupported" flags (Domain::GPUModel::
 /// perProcessMetricsKnownUnsupported() / perProcessUtilizationKnownUnsupported()) and whether it lists
-/// an NPU or compute accelerator (@p hasAccelerator, #1799).
+/// an NPU or compute accelerator: @p hasAccelerator with unknown counted as listed (#1799),
+/// @p acceleratorListed only once one is known to be (#1870).
 [[nodiscard]] constexpr GpuSupport gpuSupport(bool hasGpuModel,
                                               bool perProcessKnownUnsupported,
                                               bool perProcessUtilizationKnownUnsupported,
-                                              bool hasAccelerator = true) noexcept
+                                              bool hasAccelerator = true,
+                                              bool acceleratorListed = false) noexcept
 {
     const bool perProcess = hasGpuModel && !perProcessKnownUnsupported;
     return {
         .perProcess = perProcess,
         .utilization = perProcess && !perProcessUtilizationKnownUnsupported,
         .accelerator = hasAccelerator, // Needed with perProcess, which a missing model already lacks
+        .acceleratorListed = hasAccelerator && acceleratorListed,
     };
 }
 
@@ -133,19 +141,33 @@ gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = fals
     }
 }
 
-/// The default columns on this system (#1210): getColumnInfo()'s defaults, less any column the probe
-/// cannot fill, so no column shown by default is all dashes -- Power without RAPL on Linux, say. It is
-/// what "Reset columns" restores. A hidden column can still be shown from the Columns menu, where it
-/// says it is not available on this system.
+/// Whether `col` is shown by default on this system (#1210): getColumnInfo()'s default, unless the probe
+/// cannot fill it, so no column shown by default is all dashes -- Power without RAPL on Linux, say.
+/// NPU % is the exception the other way: off in getColumnInfo(), it is shown by default once an NPU
+/// or compute accelerator is known to be listed (GpuSupport::acceleratorListed, #1870), so a Copilot+
+/// PC shows NPU activity without the user going looking, and a machine without one spends no width on it.
+[[nodiscard]] constexpr bool defaultVisible(ProcessColumn col, const Platform::ProcessCapabilities& caps, GpuSupport gpu = {}) noexcept
+{
+    if (!isSupported(col, caps, gpu))
+    {
+        return false;
+    }
+    if (col == ProcessColumn::NpuPercent)
+    {
+        return gpu.acceleratorListed;
+    }
+    return getColumnInfo(col).defaultVisible;
+}
+
+/// The default columns on this system (defaultVisible()). It is what "Reset columns" restores. A
+/// hidden column can still be shown from the Columns menu, which says when it is not available on
+/// this system.
 [[nodiscard]] inline ProcessColumnSettings defaultColumns(const Platform::ProcessCapabilities& caps, GpuSupport gpu = {})
 {
     ProcessColumnSettings settings;
     for (const ProcessColumn col : allProcessColumns())
     {
-        if (!isSupported(col, caps, gpu))
-        {
-            settings.setDefaultVisible(col, false);
-        }
+        settings.setDefaultVisible(col, defaultVisible(col, caps, gpu));
     }
     return settings;
 }
