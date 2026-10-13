@@ -8,6 +8,7 @@
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
+#include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -227,10 +228,12 @@ TEST_F(ProcessIoPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)
         {
             view.render(&mock, NICE_AND_IO, NICE, TARGET_A);
             applyWidth = ImGui::GetItemRectSize().x; // The I/O Apply is the last item while no error line shows
-            labelWidth = ImGui::CalcTextSize("Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
+            labelWidth = ImGui::CalcTextSize(ICON_FA_CHECK "  Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
         });
     EXPECT_GT(applyWidth, 0.0F);
     EXPECT_LE(applyWidth, std::ceil(labelWidth));
+    // The nice control's label, check mark included (#2005): as wide as that, not as a bare "Apply".
+    EXPECT_GE(applyWidth, std::floor(labelWidth));
 }
 
 TEST_F(ProcessIoPriorityViewRenderTest, ApplyStaysInsideANarrowPanel)

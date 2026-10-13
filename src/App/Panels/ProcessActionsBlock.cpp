@@ -59,7 +59,7 @@ namespace
         width = std::max({width,
                           ImGui::CalcTextSize("I/O priority").x,
                           ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx,
-                          applyButtonWidth("Reset to default") + spacing + applyButtonWidth("Apply")});
+                          applyButtonWidth("Reset to default") + spacing + applyButtonWidth(ICON_FA_CHECK "  Apply")});
     }
     return width;
 }

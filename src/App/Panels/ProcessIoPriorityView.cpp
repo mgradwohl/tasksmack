@@ -23,7 +23,7 @@ namespace App
 namespace
 {
 
-constexpr const char* APPLY_LABEL = "Apply";
+constexpr const char* APPLY_LABEL = ICON_FA_CHECK "  Apply"; // As the nice control's Apply above it (#2005)
 constexpr const char* RESET_LABEL = "Reset to default";
 
 } // namespace
