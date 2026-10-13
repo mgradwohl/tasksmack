@@ -220,6 +220,28 @@ void renderCellText(std::string_view text, float textWidth, bool rightAligned, b
         UI::Widgets::cellText(text, textWidth, {.rightAligned = rightAligned, .clippedTooltip = clippedTooltip, .layoutFullText = false}));
 }
 
+/// The depth guide lines of a tree row at `depth` (#838), drawn from the start of its Name cell, where
+/// the cursor is: one subtle vertical line per ancestor level, through the middle of that ancestor's
+/// expander, from the row's top to its bottom, so the lines of consecutive rows join. In the theme's
+/// tree-line colour (ImGuiCol_TreeLines, held to a contrast floor on the rows) and ImGui's tree-line
+/// thickness, scaled with the style.
+void drawTreeGuideLines(int depth, float indentPerLevel, float expanderWidth)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 cellStart = ImGui::GetCursorScreenPos();
+    const float top = cellStart.y - style.CellPadding.y;
+    const float bottom = cellStart.y + ImGui::GetTextLineHeight() + style.CellPadding.y;
+    const ImU32 color = ImGui::GetColorU32(UI::Theme::get().scheme().treeLines);
+    const float thickness = std::max(1.0F, std::round(style.TreeLinesSize));
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    for (int level = 0; level < depth; ++level)
+    {
+        // On a pixel centre, so a 1px line is crisp rather than smeared over two columns.
+        const float x = std::floor(cellStart.x + ProcessTreeIndent::guideLineX(level, indentPerLevel, expanderWidth)) + 0.5F;
+        drawList->AddLine(ImVec2(x, top), ImVec2(x, bottom), color, thickness);
+    }
+}
+
 /// Draws `text` (already measured as `textWidth`) at the cursor in at most `width`: as is when it
 /// fits, otherwise ellipsized with the full text as its tooltip, as a clipped table cell is. For the
 /// toolbar's status text, which must not grow past its slot (#1209).
@@ -2124,7 +2146,8 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
     // after it -- both the button and the leaf Dummy are followed by
     // SameLine(), so the spacing is always paid and must be reserved or the
     // name keeps less room than promised.
-    const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
+    const float expanderWidth = ImGui::GetFrameHeight();
+    const float expanderSlotWidth = expanderWidth + ImGui::GetStyle().ItemSpacing.x;
     const float treeEmPx = ImGui::GetFontSize();
     const float reservedForControls = expanderSlotWidth + (ProcessTreeIndent::MIN_NAME_WIDTH_EM * treeEmPx);
     const float cellWidth = ImGui::GetContentRegionAvail().x;
@@ -2132,6 +2155,10 @@ void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
         ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, m_TreeRowsCache.maxDepth(), cellWidth, reservedForControls);
     const float indentWidth =
         m_TreeViewEnabled ? ProcessTreeIndent::clampedIndent(depth, indentPerLevel, cellWidth, reservedForControls) : 0.0F;
+    if (m_TreeViewEnabled && depth > 0)
+    {
+        drawTreeGuideLines(depth, indentPerLevel, expanderWidth);
+    }
     const bool indented = indentWidth > 0.0F;
     if (indented)
     {

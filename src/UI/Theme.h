@@ -242,6 +242,10 @@ struct ColorScheme
     /// ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN on the selection fill of a plain and a striped row.
     /// Opaque.
     ImVec4 selectionPrimary;
+    /// The Processes tree's depth guide lines (#838), also ImGui's ImGuiCol_TreeLines: ui.table.border_light
+    /// made opaque over the window, then moved toward text_primary until it reaches
+    /// ColorContrast::TREE_LINES_CONTRAST_MIN on a plain and a striped row. Opaque.
+    ImVec4 treeLines;
     ImVec4 textSelectedBg;
     ImVec4 dragDropTarget;
     ImVec4 navHighlight;

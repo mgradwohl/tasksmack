@@ -280,6 +280,7 @@ void Theme::applyImGuiStyle() const
     style.Colors[ImGuiCol_TableBorderLight] = s.tableBorderLight;
     style.Colors[ImGuiCol_TableRowBg] = s.tableRowBg;
     style.Colors[ImGuiCol_TableRowBgAlt] = s.tableRowBgAlt;
+    style.Colors[ImGuiCol_TreeLines] = s.treeLines;
     style.Colors[ImGuiCol_TextSelectedBg] = s.textSelectedBg;
     style.Colors[ImGuiCol_DragDropTarget] = s.dragDropTarget;
     style.Colors[ImGuiCol_NavHighlight] = s.navHighlight;

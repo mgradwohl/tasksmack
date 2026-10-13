@@ -18,6 +18,7 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
+#include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
@@ -1802,6 +1803,70 @@ TEST_F(ProcessesPanelRenderTest, ACollapsedParentShowsItsChildCountAndAnExpanded
     text = renderAndCapture(*panel);
     EXPECT_TRUE(text.contains("worker")) << text;
     EXPECT_FALSE(text.contains("(1)")) << text;
+    panel->onDetach();
+}
+
+/// The x positions of the tree's guide lines (the theme stub's treeLines, used by nothing else) in the
+/// last frame: one per line, the middle of each run of opaque vertices less than a few pixels apart.
+[[nodiscard]] std::vector<float> guideLineXs()
+{
+    const ImU32 lineColor = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().treeLines);
+    std::vector<float> xs;
+    if (const ImDrawData* drawData = ImGui::GetDrawData(); drawData != nullptr)
+    {
+        for (const ImDrawList* list : drawData->CmdLists)
+        {
+            for (const ImDrawVert& vert : list->VtxBuffer)
+            {
+                if (vert.col == lineColor)
+                {
+                    xs.push_back(vert.pos.x);
+                }
+            }
+        }
+    }
+    std::ranges::sort(xs);
+    std::vector<float> lines;
+    float runStart = 0.0F;
+    for (std::size_t i = 0; i < xs.size(); ++i)
+    {
+        if (i == 0 || xs[i] - xs[i - 1] > 3.0F)
+        {
+            runStart = xs[i];
+            lines.push_back(xs[i]);
+        }
+        lines.back() = (runStart + xs[i]) * 0.5F;
+    }
+    return lines;
+}
+
+// #838: each tree row draws a guide line for every level above it, through its ancestors' carets: worker
+// (depth 2) shares init's line with server and adds server's. The roots and the list draw none.
+TEST_F(ProcessesPanelRenderTest, TheTreeDrawsAGuideLineForEachLevelAboveARow)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    if (!panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const std::vector<float> lines = guideLineXs();
+    ASSERT_EQ(lines.size(), 2U);
+    const ImGuiTable* table = processTable();
+    ASSERT_NE(table, nullptr);
+    const ImGuiTableColumn& name = table->Columns[static_cast<int>(toIndex(ProcessColumn::Name))];
+    const float step = ProcessTreeIndent::INDENT_PER_LEVEL_EM * ImGui::GetFontSize();
+    EXPECT_NEAR(lines[1] - lines[0], step, 1.5F); // one level apart, at the font's indent step
+    EXPECT_GT(lines[0], name.MinX);
+    EXPECT_LT(lines[0], name.MinX + ImGui::GetStyle().CellPadding.x + ImGui::GetFrameHeight()); // in init's caret slot
+
+    panel->toggleTreeView(); // the list: no tree, no lines
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_TRUE(guideLineXs().empty());
     panel->onDetach();
 }
 

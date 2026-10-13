@@ -46,8 +46,9 @@ constexpr float GRID_MAX = 1.8F;                  // ...but quieter than any ser
 constexpr float SERIES_MIN = 3.0F;                // a series colour (line, NowBar, strip swatch) on its background
 constexpr float FRAME_OUTLINE_MIN = ColorContrast::FRAME_BORDER_CONTRAST_MIN; // control outline on its surface (#1923)...
 constexpr float FRAME_OUTLINE_MAX = 4.5F;                                     // ...an edge, short of text contrast
-constexpr double SAME_CHART_MIN_DE = 12.0;                                    // CIEDE2000 between series drawn together (#1197)...
-constexpr double SAME_CHART_MIN_DE_CVD = 8.0;                                 // ...and as a protanope or deuteranope sees them
+constexpr float TREE_LINES_MAX = 2.0F;        // tree guide lines on a row: quieter than a control outline (#838)
+constexpr double SAME_CHART_MIN_DE = 12.0;    // CIEDE2000 between series drawn together (#1197)...
+constexpr double SAME_CHART_MIN_DE_CVD = 8.0; // ...and as a protanope or deuteranope sees them
 
 /// CIELAB L* (0..100) of an opaque colour. L* depends only on relative luminance.
 auto lightness(const ImVec4& color) -> float
@@ -378,6 +379,30 @@ TEST(BundledThemesTest, ControlOutlinesStandOutOnEverySurfaceWithoutShouting)
             const float ratio = contrastRatio(scheme->frameBorder, color);
             EXPECT_GE(ratio, FRAME_OUTLINE_MIN) << name << " control outline on the " << surface;
             EXPECT_LT(ratio, FRAME_OUTLINE_MAX) << name << " control outline on the " << surface;
+        }
+    }
+}
+
+// #838: the Processes tree's depth guide lines can be seen on a plain and a striped row, like chart
+// grid lines, and stay well short of a control's outline: they only echo the indent.
+TEST(BundledThemesTest, TreeGuideLinesAreVisibleButQuietOnEveryRow)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+        EXPECT_FLOAT_EQ(scheme->treeLines.w, 1.0F) << name;
+        for (const auto& [surface, color] : {std::pair{"row", bg.row}, std::pair{"striped row", bg.stripe}})
+        {
+            const float ratio = contrastRatio(scheme->treeLines, color);
+            EXPECT_GE(ratio, ColorContrast::TREE_LINES_CONTRAST_MIN) << name << " tree lines on a " << surface;
+            EXPECT_LE(ratio, TREE_LINES_MAX) << name << " tree lines on a " << surface;
         }
     }
 }

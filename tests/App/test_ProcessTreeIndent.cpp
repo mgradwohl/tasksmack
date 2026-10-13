@@ -167,6 +167,15 @@ TEST(ProcessTreeIndentTest, EveryLevelStepsAlikeAtEveryFontSize)
     EXPECT_FLOAT_EQ(uniformIndentPerLevel(INDENT_PER_LEVEL, 5, 50.0F, RESERVED), 0.0F);                  // no room at all
 }
 
+TEST(ProcessTreeIndentTest, EachGuideLineRunsThroughItsAncestorsCaret)
+{
+    using ProcessTreeIndent::guideLineX;
+    constexpr float EXPANDER = 20.0F;
+    EXPECT_FLOAT_EQ(guideLineX(0, INDENT_PER_LEVEL, EXPANDER), 10.0F); // the root's caret
+    // A level's line is where that level's caret is: its indent plus half the expander.
+    EXPECT_FLOAT_EQ(guideLineX(3, INDENT_PER_LEVEL, EXPANDER), clampedIndent(3, INDENT_PER_LEVEL, ROOMY_CELL, RESERVED) + 10.0F);
+}
+
 TEST(ProcessTreeBadgeTest, TheBadgeIsTheCountInParentheses)
 {
     ProcessTreeBadge::BadgeBuffer buffer{};

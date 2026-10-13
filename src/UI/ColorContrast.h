@@ -173,4 +173,11 @@ inline constexpr float BUTTON_STATE_CONTRAST_MIN = 1.1F;
 /// 3:1 for a graphical object: the hatch is all that tells an N/A bar from an empty track.
 inline constexpr float UNAVAILABLE_HATCH_CONTRAST_MIN = 3.0F;
 
+/// Contrast floor for the Processes tree's depth guide lines against the rows they cross (#838): the
+/// floor chart grid lines are held to (#1191), as visible and as quiet. The lines only echo what the
+/// indent and the carets already show, so they are decoration, not WCAG 1.4.11's information; but
+/// ui.table.border_light, which they start from, fell to 1.0:1 on a striped row in Nord Light and
+/// Windows Light, where they would vanish.
+inline constexpr float TREE_LINES_CONTRAST_MIN = 1.3F;
+
 } // namespace UI::ColorContrast

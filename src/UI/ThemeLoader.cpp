@@ -382,6 +382,21 @@ auto selectionPrimaryFor(const ImVec4& start, const ColorScheme& scheme) -> ImVe
         ColorContrast::flattenOver(start, surfaces[0]), toward, surfaces, ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
 }
 
+/// The Processes tree's depth guide lines (#838): @p start (ui.table.border_light) made opaque over the
+/// window, then moved toward text_primary just far enough to reach ColorContrast::TREE_LINES_CONTRAST_MIN
+/// on a plain and a striped row, the backgrounds they cross. Needs the scheme's text, window and table
+/// row colours loaded.
+auto treeLinesFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const std::array<ImVec4, 2> rows{
+        ColorContrast::flattenOver(scheme.tableRowBg, window),
+        ColorContrast::flattenOver(scheme.tableRowBgAlt, window),
+    };
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, window), withAlpha(scheme.textPrimary, 1.0F), rows, ColorContrast::TREE_LINES_CONTRAST_MIN);
+}
+
 /// Builds a ColorScheme from a parsed theme document. A missing or malformed colour becomes
 /// errorColor() (or its documented fallback) rather than failing the whole theme.
 auto schemeFromTable(const toml::table& tbl) -> ColorScheme
@@ -631,6 +646,8 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
     scheme.unavailableHatch = unavailableHatchFor(scheme.textDisabled, scheme);
     // The primary row's marker (#1926), after the header, table row and focus colours it is fitted to.
     scheme.selectionPrimary = selectionPrimaryFor(getColor(tbl, "ui.table.selection_primary", scheme.navHighlight), scheme);
+    // The tree's guide lines (#838), fitted to the table rows they cross.
+    scheme.treeLines = treeLinesFor(scheme.tableBorderLight, scheme);
 
     // Inline meters (#1528), last: their fallbacks are fitted to the rows they are drawn on.
     scheme.processMeterLow = tbl.at_path("process_meter.low") ? getColor(tbl, "process_meter.low")

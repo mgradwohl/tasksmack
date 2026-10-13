@@ -55,7 +55,7 @@ inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
 /// The indent per level every row of the tree shares (#838): @p indentPerLevel, or, when the deepest
 /// row would then push its expander and name reservation out of the cell, the same smaller step at
 /// every level. clampedIndent() alone stopped each over-deep row at one x, so depths 7, 8 and 9 lined
-/// up and a child sat level with its parent.
+/// up, a child sat level with its parent, and the guide lines missed their parents' carets.
 ///
 /// @param maxDepth  The deepest row in the tree (ProcessTreeRowsCache::maxDepth()); 0 for no indent.
 [[nodiscard]] constexpr float uniformIndentPerLevel(float indentPerLevel, int maxDepth, float cellWidth, float reservedWidth) noexcept
@@ -70,6 +70,13 @@ inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
     }
     const float allowed = std::max(0.0F, cellWidth - reservedWidth);
     return std::min(indentPerLevel, allowed / static_cast<float>(maxDepth));
+}
+
+/// Where the guide line of tree level @p level (an ancestor's depth) runs, from the start of the Name
+/// cell (#838): through the middle of that ancestor's expander slot, so each line drops from a caret.
+[[nodiscard]] constexpr float guideLineX(int level, float indentPerLevel, float expanderWidth) noexcept
+{
+    return (indentPerLevel * static_cast<float>(level)) + (expanderWidth * 0.5F);
 }
 
 /// Name column width tree view asks for, in ems: twice the list's default (11.25 em, 120px at the
