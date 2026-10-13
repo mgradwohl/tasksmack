@@ -106,7 +106,8 @@ void ProcessIconView::drawGeneric(ImDrawList& drawList, ImVec2 min, float size, 
     const float glyphSize = size * GENERIC_GLYPH_SCALE;
     const ImVec2 extent = font->CalcTextSizeA(glyphSize, FLT_MAX, 0.0F, glyph);
     const ImVec2 pos(std::floor(min.x + ((size - extent.x) * 0.5F)), std::floor(min.y + ((size - extent.y) * 0.5F)));
-    drawList.AddText(font, glyphSize, pos, ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().textMuted), glyph);
+    // GetColorU32(): with the style's alpha, so a dimmed row (#838) dims its icon too.
+    drawList.AddText(font, glyphSize, pos, ImGui::GetColorU32(UI::Theme::get().scheme().textMuted), glyph);
 }
 
 void ProcessIconView::drawAt(ImDrawList& drawList, ImVec2 min, float size, const Domain::ProcessSnapshot& proc)

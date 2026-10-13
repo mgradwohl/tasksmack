@@ -1673,5 +1673,103 @@ TEST_F(ProcessesPanelRenderTest, TheTreeViewDrawsOnlyTheRowsInView)
     panel->onDetach();
 }
 
+// #838: tree view's Collapse all folds every parent, leaving the roots, and Expand all opens them again.
+TEST_F(ProcessesPanelRenderTest, TheTreeViewsCollapseAllAndExpandAllFoldEveryParent)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    if (!panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    std::string text = renderAndCapture(*panel);
+    ASSERT_TRUE(text.contains("worker")) << text;
+
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_ANGLES_UP "##CollapseAll", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("init")) << text;
+    EXPECT_FALSE(text.contains("server")) << text;
+    EXPECT_FALSE(text.contains("worker")) << text;
+
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_ANGLES_DOWN "##ExpandAll", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("server")) << text;
+    EXPECT_TRUE(text.contains("worker")) << text;
+    panel->onDetach();
+}
+
+// #838: a filtered tree keeps a match under its ancestors, which do not match and are drawn dimmed,
+// rather than promoting the match to a root; the list still shows the match alone.
+TEST_F(ProcessesPanelRenderTest, AFilteredTreeShowsTheMatchUnderItsDimmedAncestors)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    if (!panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    // Where each row is, found before filtering: the filtered tree has the same rows in the same places.
+    const std::map<std::int32_t, float> heights = rowHeights(*panel, 3);
+    ASSERT_EQ(heights.size(), 3U);
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##search", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    for (const char* character : {"w", "o", "r", "k"})
+    {
+        ImGui::GetIO().AddInputCharactersUTF8(character);
+        static_cast<void>(renderAndCapture(*panel));
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    ASSERT_TRUE(text.contains("worker")) << text;
+    EXPECT_LT(text.find("init"), text.find("server")) << text;
+    EXPECT_LT(text.find("server"), text.find("worker")) << text;
+
+    // The brightest vertex in each row's Name cell: the ancestors' are about half the match's.
+    const ImGuiTable* table = processTable();
+    ASSERT_NE(table, nullptr);
+    const ImGuiTableColumn& name = table->Columns[static_cast<int>(toIndex(ProcessColumn::Name))];
+    const ImDrawList* drawList = table->InnerWindow->DrawList;
+    const float rowHeight = heights.at(101) - heights.at(100);
+    ASSERT_GT(rowHeight, 0.0F);
+    const auto brightest = [&](std::int32_t pid)
+    {
+        const float bottom = heights.at(pid);
+        unsigned int alpha = 0;
+        for (const ImDrawVert& vert : drawList->VtxBuffer)
+        {
+            if (vert.pos.x >= name.MinX && vert.pos.x <= name.MaxX && vert.pos.y > bottom - rowHeight + 4.0F && vert.pos.y <= bottom)
+            {
+                alpha = std::max(alpha, (vert.col >> IM_COL32_A_SHIFT) & 0xFFU);
+            }
+        }
+        return alpha;
+    };
+    const unsigned int match = brightest(101);
+    EXPECT_GT(match, 200U);
+    EXPECT_LT(brightest(1), match * 3 / 4);
+    EXPECT_GT(brightest(1), 0U);
+    EXPECT_LT(brightest(100), match * 3 / 4);
+
+    panel->toggleTreeView(); // the list: the match alone
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string list = renderAndCapture(*panel);
+    EXPECT_TRUE(list.contains("worker")) << list;
+    EXPECT_FALSE(list.contains("server")) << list;
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App

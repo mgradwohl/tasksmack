@@ -83,6 +83,8 @@ inline constexpr uint32_t ICON_MAX_FA = 0xf8ff;
 #define ICON_FA_SORT_DOWN "\xef\x83\x9d"   // U+f0dd - Sort descending
 #define ICON_FA_CARET_RIGHT "\xef\x83\x9a" // U+f0da - Collapsed tree node
 #define ICON_FA_CARET_DOWN "\xef\x83\x97"  // U+f0d7 - Expanded tree node
+#define ICON_FA_ANGLES_DOWN "\xef\x84\x83" // U+f103 - Expand all tree nodes
+#define ICON_FA_ANGLES_UP "\xef\x84\x82"   // U+f102 - Collapse all tree nodes
 
 // ============================================================================
 // UI & Display Icons

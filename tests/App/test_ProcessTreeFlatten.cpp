@@ -463,6 +463,112 @@ TEST(ProcessTreeRowsCacheTest, RebuildsOnlyWhenTheSnapshotFilterSortOrCollapseSt
     cache.invalidate();
     std::ignore = cache.rows(key, snapshots, filtered, collapsed);
     EXPECT_EQ(cache.buildCount(), 6U);
+
+    // A filter turned on shows the matches' ancestors (#838): the context is part of the key.
+    key.context = ProcessTreeFlatten::FilterContext::WithAncestors;
+    filtered = {6};
+    EXPECT_EQ(cache.rows(key, snapshots, filtered, collapsed).size(), 2U); // 5, then 6 under it
+    EXPECT_EQ(cache.buildCount(), 7U);
+}
+
+// =============================================================================
+// A filtered tree's ancestors (#838): a match keeps its place under its dimmed ancestors
+// =============================================================================
+
+/// (procIdx, depth, isContext) of each row.
+[[nodiscard]] std::vector<std::tuple<std::size_t, int, bool>> contextShape(const std::vector<ProcessTreeRow>& rows)
+{
+    std::vector<std::tuple<std::size_t, int, bool>> out;
+    out.reserve(rows.size());
+    for (const ProcessTreeRow& row : rows)
+    {
+        out.emplace_back(row.procIdx, row.depth, row.isContext);
+    }
+    return out;
+}
+
+TEST(ProcessTreeFlattenTest, AFilteredTreeShowsEachMatchUnderItsAncestors)
+{
+    // 0 -> {1 -> {3, 4}, 2}, 5 -> {6}, 7; the filter matches 3 and 6. Their ancestors 0, 1 and 5 are
+    // shown as context; 2, 4 and 7 match nothing and lead to no match, so they stay hidden.
+    const auto snapshots = forest();
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {3, 6}, {}, ProcessTreeFlatten::FilterContext::WithAncestors, scratch, rows);
+    const std::vector<std::tuple<std::size_t, int, bool>> expected = {
+        {0, 0, true}, {1, 1, true}, {3, 2, false}, {5, 0, true}, {6, 1, false}};
+    EXPECT_EQ(contextShape(rows), expected);
+
+    // Without the context the same matches are roots, as before (#838's old behaviour, still there).
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {3, 6}, {}, ProcessTreeFlatten::FilterContext::MatchesOnly, scratch, rows);
+    const std::vector<std::tuple<std::size_t, int, bool>> roots = {{3, 0, false}, {6, 0, false}};
+    EXPECT_EQ(contextShape(rows), roots);
+}
+
+TEST(ProcessTreeFlattenTest, AnAncestorThatMatchesIsNotContext)
+{
+    const auto snapshots = forest();
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {1, 3}, {}, ProcessTreeFlatten::FilterContext::WithAncestors, scratch, rows);
+    const std::vector<std::tuple<std::size_t, int, bool>> expected = {{0, 0, true}, {1, 1, false}, {3, 2, false}};
+    EXPECT_EQ(contextShape(rows), expected);
+}
+
+TEST(ProcessTreeFlattenTest, AContextAncestorSortsWhereItsFirstMatchDoes)
+{
+    // Sorted with 6 before 3: 5's branch (leading to 6) comes before 0's (leading to 3).
+    const auto snapshots = forest();
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {6, 3}, {}, ProcessTreeFlatten::FilterContext::WithAncestors, scratch, rows);
+    const std::vector<std::pair<std::size_t, int>> expected = {{5, 0}, {6, 1}, {0, 0}, {1, 1}, {3, 2}};
+    EXPECT_EQ(shape(rows), expected);
+}
+
+TEST(ProcessTreeFlattenTest, AParentCycleEndsTheClimbToAncestors)
+{
+    // 0 and 1 list each other as children: a corrupt snapshot. The climb stops, and the build ends.
+    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {1}), makeSnapshot(11, {0}), makeSnapshot(12)};
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {0, 2}, {}, ProcessTreeFlatten::FilterContext::WithAncestors, scratch, rows);
+    ASSERT_FALSE(rows.empty());
+    EXPECT_EQ(rows.back().procIdx, 2U); // the unrelated match is still drawn
+    EXPECT_LE(rows.size(), 3U);
+}
+
+// =============================================================================
+// Expand all / Collapse all, and exited processes' collapse state (#838)
+// =============================================================================
+
+TEST(ProcessTreeFlattenTest, CollapseAllCollapsesEveryParentSoOnlyRootsShow)
+{
+    const auto snapshots = forest();
+    std::unordered_set<std::uint64_t> collapsed;
+    EXPECT_TRUE(ProcessTreeFlatten::collapseAll(snapshots, collapsed));
+    EXPECT_EQ(collapsed, (std::unordered_set<std::uint64_t>{100, 101, 105}));
+    EXPECT_FALSE(ProcessTreeFlatten::collapseAll(snapshots, collapsed)); // already all collapsed
+
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {0, 1, 2, 3, 4, 5, 6, 7}, collapsed, scratch, rows);
+    const std::vector<std::pair<std::size_t, int>> roots = {{0, 0}, {5, 0}, {7, 0}};
+    EXPECT_EQ(shape(rows), roots);
+
+    // Expand all is an empty set: the whole tree again.
+    collapsed.clear();
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {0, 1, 2, 3, 4, 5, 6, 7}, collapsed, scratch, rows);
+    EXPECT_EQ(rows.size(), 8U);
+}
+
+TEST(ProcessTreeFlattenTest, PruningDropsOnlyTheKeysOfExitedProcesses)
+{
+    std::unordered_set<std::uint64_t> collapsed = {101, 105, 999};
+    const std::unordered_set<std::uint64_t> live = {100, 101, 102, 105};
+    EXPECT_TRUE(ProcessTreeFlatten::pruneCollapsedKeys(collapsed, live));
+    EXPECT_EQ(collapsed, (std::unordered_set<std::uint64_t>{101, 105}));
+    EXPECT_FALSE(ProcessTreeFlatten::pruneCollapsedKeys(collapsed, live)); // nothing left to drop
 }
 
 } // namespace

@@ -466,7 +466,10 @@ class ProcessesPanel : public Panel
     float m_OtherColumnsWidth = 0.0F;                  // Everything but the Command column's own content
     float m_TableVisibleWidth = 0.0F;                  // Visible width of the table's scrolling area
     std::unordered_set<std::uint64_t> m_CollapsedKeys; // uniqueKeys that are collapsed in tree view
-    std::uint64_t m_CollapseGeneration = 0;            // Advanced whenever m_CollapsedKeys changes (#1138)
+    // Those collapsed while a filter is on (#838). It starts empty, so a filtered tree opens with every
+    // match's ancestors expanded, and is cleared with the filter, so m_CollapsedKeys comes back as it was.
+    std::unordered_set<std::uint64_t> m_FilterCollapsedKeys;
+    std::uint64_t m_CollapseGeneration = 0; // Advanced whenever either set changes (#1138)
 
     // Snapshot cache: only re-fetch from ProcessModel when version changes (data updates at 1Hz,
     // but render runs at 60fps). A shared_ptr to ProcessModel's immutable published vector, not
@@ -524,6 +527,7 @@ class ProcessesPanel : public Panel
         float columnsLabelWidth = 0.0F;
         float caretRightWidth = 0.0F; // Tree expanders (#1209)
         float caretDownWidth = 0.0F;
+        float foldIconWidth = 0.0F; // The wider of Expand all's and Collapse all's icons (#838)
 
         // Font pointer and font-atlas generation used when cache was populated (for invalidation)
         const ImFont* fontPtr = nullptr;
@@ -585,6 +589,16 @@ class ProcessesPanel : public Panel
     void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& sortedIndices);
     /// What the tree view's cached rows are built from this frame.
     [[nodiscard]] ProcessTreeFlatten::ProcessTreeRowsKey treeRowsKey() const noexcept;
+
+    /// The collapsed set the tree draws and folds: m_FilterCollapsedKeys while a filter is on, else
+    /// m_CollapsedKeys (#838).
+    [[nodiscard]] std::unordered_set<std::uint64_t>& activeCollapsedKeys() noexcept
+    {
+        return m_CachedSearchTerm.empty() ? m_CollapsedKeys : m_FilterCollapsedKeys;
+    }
+
+    /// The toolbar's Expand all and Collapse all, beside the List | Tree control in tree view (#838).
+    void renderTreeFoldButtons(const std::vector<Domain::ProcessSnapshot>& snapshots, float buttonWidth);
 
     /// The toolbar's Columns menu: a check per column and "Reset columns" (#1209).
     void renderColumnsMenu();

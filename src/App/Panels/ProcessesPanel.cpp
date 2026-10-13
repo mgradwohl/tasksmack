@@ -62,7 +62,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -107,7 +106,12 @@ constexpr std::string_view TREE_VIEW_LABEL = ICON_FA_SITEMAP " Tree";
 constexpr std::string_view COLUMNS_LABEL = ICON_FA_TABLE_COLUMNS " Columns";
 constexpr const char* COLUMNS_POPUP_ID = "##ColumnsMenu";
 constexpr const char* ROW_MENU_POPUP_ID = "##ProcessRowMenu";
-constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name...";
+constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter by name or command...";
+// Tree view's Expand all and Collapse all (#838): icon buttons, explained by their tooltips.
+constexpr const char* EXPAND_ALL_BUTTON = ICON_FA_ANGLES_DOWN "##ExpandAll";
+constexpr const char* COLLAPSE_ALL_BUTTON = ICON_FA_ANGLES_UP "##CollapseAll";
+// How opaque a filtered tree draws an ancestor that is there only to place a match (#838).
+constexpr float CONTEXT_ROW_ALPHA = 0.5F;
 // Shown beside the process count while a held Ctrl freezes the pane (#928).
 constexpr const char* FROZEN_LABEL = ICON_FA_PAUSE " Paused (Ctrl)";
 // The narrow-window form: measureToolbarMinimumWidth() reserves room for this one.
@@ -173,13 +177,6 @@ void drawPrimaryRowMarker(const ImVec4& color)
     drawList->AddRect(marker.outlineMin, marker.outlineMax, col, 0.0F, ImDrawFlags_None, marker.outlineThickness);
     drawList->AddRectFilled(marker.barMin, marker.barMax, col);
     ImGui::TablePopBackgroundChannel();
-}
-
-[[nodiscard]] auto lowerAscii(char ch) -> int
-{
-    // Safe/necessary: std::tolower is undefined for negative signed char values (except EOF).
-    // Cast to unsigned char to avoid UB when char is signed.
-    return std::tolower(static_cast<unsigned char>(ch));
 }
 
 [[nodiscard]] constexpr auto toImGuiId(ProcessColumn col) noexcept -> ImGuiID
@@ -817,6 +814,7 @@ void ProcessesPanel::TextSizeCache::populate()
     columnsLabelWidth = measureTextWidth(COLUMNS_LABEL);
     caretRightWidth = measureTextWidth(ICON_FA_CARET_RIGHT);
     caretDownWidth = measureTextWidth(ICON_FA_CARET_DOWN);
+    foldIconWidth = std::max(measureTextWidth(ICON_FA_ANGLES_DOWN), measureTextWidth(ICON_FA_ANGLES_UP));
     cells.unavailableText = measureTextWidth(ProcessRowFormat::UNAVAILABLE_CELL_TEXT);
 
     // Cache Domain::Priority::getProcessPriorityLabel()'s fixed label widths
@@ -845,11 +843,15 @@ float ProcessesPanel::measureToolbarMinimumWidth()
     // The Columns button and the two view-mode segments, which sit flush against each other (#1209).
     const float columnsButton = measureTextWidth(COLUMNS_LABEL) + (style.FramePadding.x * 2.0F);
     const float viewModeControl = measureTextWidth(LIST_VIEW_LABEL) + measureTextWidth(TREE_VIEW_LABEL) + (style.FramePadding.x * 4.0F);
+    // Tree view's Expand all and Collapse all after it (#838), reserved in both views so the minimum
+    // stays put when the view changes.
+    const float foldButtons =
+        (std::max(measureTextWidth(ICON_FA_ANGLES_DOWN), measureTextWidth(ICON_FA_ANGLES_UP)) + (style.FramePadding.x * 2.0F)) * 2.0F;
     // While Ctrl freezes the pane the paused indicator joins the row (#928). Only its icon-only form
     // is reserved: the full label shows when the real count leaves room, which the worst-case count
     // above nearly always does (ProcessTableLayout::choosePausedLabelForm()).
     const float pausedIcon = ImGui::CalcTextSize(FROZEN_ICON).x;
-    const float rest = (style.ItemSpacing.x * 5.0F) + clearButton + pausedIcon + count + columnsButton + viewModeControl;
+    const float rest = (style.ItemSpacing.x * 7.0F) + clearButton + pausedIcon + count + columnsButton + viewModeControl + foldButtons;
     return ProcessTableLayout::computeToolbarMinimumWidth(filterWanted, filterForHint, rest);
 }
 
@@ -1304,6 +1306,13 @@ void ProcessesPanel::renderContent()
             liveKeys.insert(proc.uniqueKey);
         }
         std::erase_if(m_RowFormatCache, [&liveKeys](const auto& entry) { return !liveKeys.contains(entry.first); });
+        // And the tree's collapsed nodes that have exited (#838). A uniqueKey is never reused, so one
+        // gone from the snapshot can never be drawn again.
+        const bool prunedCollapsed = ProcessTreeFlatten::pruneCollapsedKeys(m_CollapsedKeys, liveKeys);
+        if (ProcessTreeFlatten::pruneCollapsedKeys(m_FilterCollapsedKeys, liveKeys) || prunedCollapsed)
+        {
+            ++m_CollapseGeneration;
+        }
         m_RowFormatCachePrunedVersion = m_CachedSnapshotVersion;
     }
 
@@ -1345,42 +1354,17 @@ void ProcessesPanel::renderContent()
         m_CachedFilteredIndices.clear();
         m_CachedFilteredIndices.reserve(currentSnapshots.size());
 
+        // Case-insensitive, in the name or the command line, as the user guide says (#838)
         for (size_t i = 0; i < currentSnapshots.size(); ++i)
         {
-            if (searchTerm.empty())
+            if (ProcessFilterCache::matches(currentSnapshots[i].name, currentSnapshots[i].command, searchTerm))
             {
                 m_CachedFilteredIndices.push_back(i);
             }
-            else
-            {
-                // Case-insensitive search in process name
-                const auto& name = currentSnapshots[i].name;
-                bool found = false;
-                if (name.size() >= searchTerm.size())
-                {
-                    for (size_t j = 0; j <= name.size() - searchTerm.size(); ++j)
-                    {
-                        bool match = true;
-                        for (size_t k = 0; k < searchTerm.size(); ++k)
-                        {
-                            if (lowerAscii(name[j + k]) != lowerAscii(searchTerm[k]))
-                            {
-                                match = false;
-                                break;
-                            }
-                        }
-                        if (match)
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if (found)
-                {
-                    m_CachedFilteredIndices.push_back(i);
-                }
-            }
+        }
+        if (searchTerm.empty())
+        {
+            m_FilterCollapsedKeys.clear(); // The next filter opens fully expanded (#838)
         }
 
         m_CachedRunningCount = 0;
@@ -1423,7 +1407,10 @@ void ProcessesPanel::renderContent()
     const float columnsButtonWidth = m_TextSizeCache.columnsLabelWidth + (style.FramePadding.x * 2.0F);
     const float listSegmentWidth = m_TextSizeCache.listViewLabelWidth + (style.FramePadding.x * 2.0F);
     const float treeSegmentWidth = m_TextSizeCache.treeViewLabelWidth + (style.FramePadding.x * 2.0F);
-    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth;
+    // In tree view, Expand all and Collapse all follow the List | Tree control (#838).
+    const float foldButtonWidth = m_TextSizeCache.foldIconWidth + (style.FramePadding.x * 2.0F);
+    const float foldButtonsWidth = m_TreeViewEnabled ? (style.ItemSpacing.x + foldButtonWidth) * 2.0F : 0.0F;
+    const float controlsWidth = columnsButtonWidth + style.ItemSpacing.x + listSegmentWidth + treeSegmentWidth + foldButtonsWidth;
 
     // An action's result takes no more room than the count text it stands in for, ellipsized with
     // the full text as its tooltip, so a long platform error cannot push the controls off-screen.
@@ -1508,6 +1495,10 @@ void ProcessesPanel::renderContent()
         setTreeView(true);
     }
     ImGui::SetItemTooltip("Tree view (F5): processes under their parents, siblings sorted by the column you click");
+    if (m_TreeViewEnabled)
+    {
+        renderTreeFoldButtons(currentSnapshots, foldButtonWidth);
+    }
 
     // The row menu's batch priority dialog (#1484); a picked value goes on to the confirmation below.
     renderBatchPriorityDialog();
@@ -2149,19 +2140,19 @@ void ProcessesPanel::renderNameCell(
         const auto& scheme = UI::Theme::get().scheme();
         const float caretWidth = isExpanded ? m_TextSizeCache.caretDownWidth : m_TextSizeCache.caretRightWidth;
         ImGui::GetWindowDrawList()->AddText(ImVec2(slotPos.x + std::floor((slotWidth - caretWidth) * 0.5F), slotPos.y),
-                                            ImGui::ColorConvertFloat4ToU32(ImGui::IsItemHovered() ? scheme.textPrimary : scheme.textMuted),
+                                            ImGui::GetColorU32(ImGui::IsItemHovered() ? scheme.textPrimary : scheme.textMuted),
                                             isExpanded ? ICON_FA_CARET_DOWN : ICON_FA_CARET_RIGHT);
         ImGui::SetItemTooltip(isExpanded ? "Collapse" : "Expand");
         if (toggled)
         {
-            // Toggle collapsed state using uniqueKey
+            // Toggle collapsed state using uniqueKey, in the filter's own set while one is on (#838)
             if (isExpanded)
             {
-                m_CollapsedKeys.insert(proc.uniqueKey);
+                activeCollapsedKeys().insert(proc.uniqueKey);
             }
             else
             {
-                m_CollapsedKeys.erase(proc.uniqueKey);
+                activeCollapsedKeys().erase(proc.uniqueKey);
             }
             ++m_CollapseGeneration; // The tree's rows are rebuilt next frame (#1138)
         }
@@ -2190,7 +2181,30 @@ ProcessTreeFlatten::ProcessTreeRowsKey ProcessesPanel::treeRowsKey() const noexc
         .filterGeneration = m_FilterGeneration,
         .sortGeneration = m_SortGeneration,
         .collapseGeneration = m_CollapseGeneration,
+        // A filtered tree shows each match's ancestors, dimmed, rather than making it a root (#838).
+        .context =
+            m_CachedSearchTerm.empty() ? ProcessTreeFlatten::FilterContext::MatchesOnly : ProcessTreeFlatten::FilterContext::WithAncestors,
     };
+}
+
+void ProcessesPanel::renderTreeFoldButtons(const std::vector<Domain::ProcessSnapshot>& snapshots, float buttonWidth)
+{
+    ImGui::SameLine();
+    if (ImGui::Button(EXPAND_ALL_BUTTON, ImVec2(buttonWidth, 0.0F)))
+    {
+        activeCollapsedKeys().clear();
+        ++m_CollapseGeneration;
+    }
+    ImGui::SetItemTooltip("Expand all");
+    ImGui::SameLine();
+    if (ImGui::Button(COLLAPSE_ALL_BUTTON, ImVec2(buttonWidth, 0.0F)))
+    {
+        if (ProcessTreeFlatten::collapseAll(snapshots, activeCollapsedKeys()))
+        {
+            ++m_CollapseGeneration;
+        }
+    }
+    ImGui::SetItemTooltip("Collapse all: only the top-level processes stay in view");
 }
 
 void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& sortedIndices)
@@ -2203,7 +2217,7 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
     // Held by reference while rendering: an expander toggled below only advances
     // m_CollapseGeneration, so the rows are rebuilt next frame, never during this loop.
     const std::vector<ProcessTreeFlatten::ProcessTreeRow>& rows =
-        m_TreeRowsCache.rows(treeRowsKey(), snapshots, sortedIndices, m_CollapsedKeys);
+        m_TreeRowsCache.rows(treeRowsKey(), snapshots, sortedIndices, activeCollapsedKeys());
 
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(rows.size()));
@@ -2216,7 +2230,16 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
         {
             const ProcessTreeFlatten::ProcessTreeRow& row = rows[static_cast<std::size_t>(i)];
+            // An ancestor shown only to place a match below it is drawn dimmed (#838).
+            if (row.isContext)
+            {
+                ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * CONTEXT_ROW_ALPHA);
+            }
             renderProcessRow(snapshots[row.procIdx], row.depth, row.hasChildren, row.isExpanded, row.procIdx);
+            if (row.isContext)
+            {
+                ImGui::PopStyleVar();
+            }
         }
     }
 }
@@ -2422,7 +2445,7 @@ void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapsho
     }
     if (m_TreeViewEnabled)
     {
-        const auto& rows = m_TreeRowsCache.rows(treeRowsKey(), snapshots, m_CachedSortedIndices, m_CollapsedKeys);
+        const auto& rows = m_TreeRowsCache.rows(treeRowsKey(), snapshots, m_CachedSortedIndices, activeCollapsedKeys());
         visible.reserve(rows.size());
         if (shapes != nullptr)
         {
@@ -2594,11 +2617,11 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
         case Nav::TreeStepKind::Collapse:
             // Tree collapse state stays keyed by uniqueKey: it only decides what is drawn, never
             // which process is selected or acted on.
-            m_CollapsedKeys.insert(snapshots[visible[step.index]].uniqueKey);
+            activeCollapsedKeys().insert(snapshots[visible[step.index]].uniqueKey);
             ++m_CollapseGeneration; // renderTreeView() rebuilds the rows from it this frame (#1138)
             break;
         case Nav::TreeStepKind::Expand:
-            m_CollapsedKeys.erase(snapshots[visible[step.index]].uniqueKey);
+            activeCollapsedKeys().erase(snapshots[visible[step.index]].uniqueKey);
             ++m_CollapseGeneration;
             break;
         case Nav::TreeStepKind::Select:
