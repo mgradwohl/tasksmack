@@ -1264,7 +1264,8 @@ void ProcessesPanel::renderContent()
 
     // The probe's capabilities can change mid-run (#1254): columns whose visibility was not chosen
     // follow them, through the same request path as the Columns menu (#1210).
-    // Per-process GPU support comes from the GPU probe, known only once it has started (#1210).
+    // Per-process GPU support comes from the GPU probe, known only once it has started (#1210), as is
+    // whether an accelerator is listed, which shows NPU % by default unless the user chose it (#1870).
     m_GpuSupport = gpuSupport();
     if (const Platform::ProcessCapabilities caps = processCapabilities();
         caps != m_ColumnDefaultsCapabilities || m_GpuSupport != m_ColumnDefaultsGpuSupport)
@@ -1832,19 +1833,23 @@ ProcessColumnAvailability::GpuSupport ProcessesPanel::gpuSupport() const
 {
     const std::shared_ptr<const Domain::GPUModel> gpuModel = m_GpuModel.lock();
     // An NPU or compute accelerator listed (#1799). Before the model's first publication that is
-    // unknown, which counts as listed, as unknown per-process support counts as supported.
+    // unknown, which counts as listed for the NPU columns' support, as unknown per-process support
+    // counts as supported -- but not for NPU %'s default, which waits until one is known (#1870).
     const std::shared_ptr<const Domain::GPUPublication> publication = (gpuModel != nullptr) ? gpuModel->publication() : nullptr;
-    const bool hasAccelerator = (publication == nullptr) || GpuSection::showAcceleratorTab(publication.get());
+    // Known to be listed: the machine view's NPU tab's condition, which Process Details' NPU tab follows
+    // too (hasAccelerator(), #1869). False while there is no publication yet.
+    const bool acceleratorListed = GpuSection::showAcceleratorTab(publication.get());
     return ProcessColumnAvailability::gpuSupport(gpuModel != nullptr,
                                                  gpuModel != nullptr && gpuModel->perProcessMetricsKnownUnsupported(),
                                                  gpuModel != nullptr && gpuModel->perProcessUtilizationKnownUnsupported(),
-                                                 hasAccelerator);
+                                                 (publication == nullptr) || acceleratorListed,
+                                                 acceleratorListed);
 }
 
 bool ProcessesPanel::hasAccelerator() const
 {
-    const std::shared_ptr<const Domain::GPUModel> gpuModel = m_GpuModel.lock();
-    return gpuModel != nullptr && GpuSection::showAcceleratorTab(gpuModel->publication().get());
+    // One condition with the NPU % column's default (#1870) and the machine view's NPU tab (#1799).
+    return gpuSupport().acceleratorListed;
 }
 
 bool ProcessesPanel::hasPerProcessGpuMetrics() const

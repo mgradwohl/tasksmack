@@ -8,9 +8,9 @@
 #include "UI/Format.h"
 #include "UI/HistoryCsv.h"
 #include "UI/InlineText.h"
-#include "UI/LineLayout.h"
 #include "UI/RateAxis.h"
 #include "UI/RenderMetrics.h"
+#include "UI/SeriesLabelAlignment.h"
 #include "UI/StyleScale.h"
 #include "UI/TailAlignedSeries.h" // IWYU pragma: export
 #include "UI/Theme.h"
@@ -3157,17 +3157,24 @@ enum class ValueStripLayout : std::uint8_t
 /// records for its label this frame, cut in once the chart has drawn (Detail::drawPendingStripMarkers();
 /// renderHistoryWithNowBars() does it after the chart). @p layoutId keys the entries' slots.
 ///
-/// With @p chartReservedRight (what the layout takes beside its chart, nowBarsReservedWidth()), a Wrap
-/// strip is placed like a heading's trailing status: on the line of the item just drawn -- the chart's
-/// heading -- right-aligned to the chart's right edge (not its NowBars), or on a line of its own still
-/// right-aligned when the heading leaves no room (placeTrailingBlock()). Only a strip wider than the
-/// chart wraps, left-aligned within the chart's width. Bar strings are already built for the frame.
+/// A Wrap strip aligns each entry to the side of the Y axis its series is read against (#1882;
+/// SeriesLabelAlignment::labelSide() from @p axes): on a chart with one Y axis every entry takes that
+/// axis's side, and on a dual-axis chart the series of the primary (left) axis are left-aligned and
+/// those of the secondary axis -- labels ending in SECONDARY_AXIS_MARK -- right-aligned. With
+/// @p chartReservedRight (what the layout takes beside its chart, nowBarsReservedWidth()) the strip
+/// shares the line of the item just drawn -- the chart's heading -- when it fits there, the left group
+/// just after the heading and the right group flush with the chart's right edge (not its NowBars);
+/// otherwise it takes a line of its own, the left group at its start (SeriesLabelAlignment::placeStrip()).
+/// A strip wider than the chart wraps within the chart's width, the right group on a row of its own.
+/// Bar strings are already built for the frame.
 inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                                    std::span<const ValueStripEntry> extras = {},
                                    ValueStripLayout layout = ValueStripLayout::Wrap,
                                    const char* layoutId = nullptr,
-                                   float chartReservedRight = -1.0F)
+                                   float chartReservedRight = -1.0F,
+                                   SeriesLabelAlignment::ChartAxes axes = {})
 {
+    using SeriesLabelAlignment::AxisSide;
     struct Entry
     {
         std::string_view head;
@@ -3180,8 +3187,9 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
         // "label: valueText", where head/tail may hold its richer tooltipText.
         std::string_view compactHead;
         std::string_view compactTail;
-        bool rightAxis = false;   // Drawn on the chart's right-hand axis: SECONDARY_AXIS_MARK after the value
-        std::string_view tooltip; // An extra's hover text (ValueStripEntry::tooltip)
+        bool rightAxis = false;         // Drawn on the chart's right-hand axis: SECONDARY_AXIS_MARK after the value
+        std::string_view tooltip;       // An extra's hover text (ValueStripEntry::tooltip)
+        AxisSide side = AxisSide::Left; // The side of the axis the series is read against (#1882)
     };
     static std::vector<Entry> entries; // UI thread only; reused
     entries.clear();
@@ -3209,7 +3217,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                            .compactHead = label.name,
                            .compactTail = bar.valueText,
                            .rightAxis = label.rightAxis,
-                           .tooltip = {}});
+                           .tooltip = {},
+                           .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
     }
     for (const ValueStripEntry& entry : extras)
     {
@@ -3221,7 +3230,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
                            .compactHead = label.name,
                            .compactTail = entry.value,
                            .rightAxis = label.rightAxis,
-                           .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{}});
+                           .tooltip = (entry.tooltip != nullptr) ? std::string_view(entry.tooltip) : std::string_view{},
+                           .side = SeriesLabelAlignment::labelSide(axes, label.rightAxis)});
     }
     if (entries.empty())
     {
@@ -3262,7 +3272,8 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
     }
 
     // Each entry's slot: its width, held for a while when its value narrows (settleStripSlot()), so
-    // the strip -- right-aligned, where every entry moves with the ones after it -- stays still.
+    // the strip -- where every entry moves with its neighbours, toward the side its group aligns to
+    // -- stays still.
     // A strip with no layout to remember slots by uses each entry's own width.
     const double now = ImGui::GetTime();
     std::vector<Detail::StripSlot>* slots = nullptr;
@@ -3290,59 +3301,102 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float entryGap = style.ItemSpacing.x * 2.0F;
-    float rowRight = contentRight;
-    bool rowWraps = wrap;
-    if (wrap && chartReservedRight >= 0.0F)
-    {
-        float stripWidth = 0.0F;
-        for (std::size_t i = 0; i < entries.size(); ++i)
-        {
-            stripWidth += entries[i].slotWidth + ((i > 0) ? entryGap : 0.0F);
-        }
-        if (stripWidth <= chartRight - lineStartX)
-        {
-            // Window-local X of the heading's right edge: the space SameLine() and SetCursorPosX() take.
-            const float headingEndX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-            const auto placement = UI::LineLayout::placeTrailingBlock(lineStartX, headingEndX, chartRight, stripWidth, entryGap);
-            if (placement.sameLine)
-            {
-                ImGui::SameLine(placement.x);
-            }
-            else
-            {
-                ImGui::SetCursorPosX(placement.x);
-            }
-            rowWraps = false;
-        }
-        rowRight = chartRight;
-    }
-    else if (layout == ValueStripLayout::CompactCentered)
-    {
-        float stripWidth = 0.0F;
-        for (std::size_t i = 0; i < entries.size(); ++i)
-        {
-            stripWidth += entries[i].slotWidth + ((i > 0) ? entryGap : 0.0F);
-        }
-        // Whole pixels, so the text stays crisp; a strip wider than the row starts at its left edge.
-        ImGui::SetCursorPosX(lineStartX + std::floor(std::max(0.0F, rowWidth - stripWidth) * 0.5F));
-    }
     const ImVec4 muted = UI::Theme::get().scheme().textMuted;
-    bool first = true;
-    for (const Entry& entry : entries)
+    // Draws the entries on @p side (all of them without one) in order: the first where the cursor
+    // is, each next one after it, starting a new row at the chart's right edge when @p wraps.
+    const auto drawEntries = [&](std::optional<AxisSide> side, bool wraps)
     {
-        Detail::drawValueStripEntry(entry.head,
-                                    entry.tail,
-                                    entry.color,
-                                    first,
-                                    rowWraps,
-                                    rowRight,
-                                    muted,
-                                    entry.marker,
-                                    entry.slotWidth,
-                                    entry.seriesLabel,
-                                    entry.rightAxis,
-                                    entry.tooltip);
-        first = false;
+        bool first = true;
+        std::size_t index = 0;
+        while (index < entries.size())
+        {
+            const Entry& entry = entries[index];
+            ++index;
+            if (side.has_value() && entry.side != *side)
+            {
+                continue;
+            }
+            Detail::drawValueStripEntry(entry.head,
+                                        entry.tail,
+                                        entry.color,
+                                        first,
+                                        wraps,
+                                        chartRight,
+                                        muted,
+                                        entry.marker,
+                                        entry.slotWidth,
+                                        entry.seriesLabel,
+                                        entry.rightAxis,
+                                        entry.tooltip);
+            first = false;
+        }
+    };
+
+    if (!wrap)
+    {
+        if (layout == ValueStripLayout::CompactCentered)
+        {
+            float stripWidth = 0.0F;
+            std::size_t index = 0;
+            while (index < entries.size())
+            {
+                stripWidth += entries[index].slotWidth + ((index > 0) ? entryGap : 0.0F);
+                ++index;
+            }
+            // Whole pixels, so the text stays crisp; a strip wider than the row starts at its left edge.
+            ImGui::SetCursorPosX(lineStartX + std::floor(std::max(0.0F, rowWidth - stripWidth) * 0.5F));
+        }
+        drawEntries(std::nullopt, false);
+        return;
+    }
+
+    // Each entry on the side of the axis its series is read against (#1882): the width of each
+    // side's group, its entries' slots and the gaps between them.
+    float leftWidth = 0.0F;
+    float rightWidth = 0.0F;
+    bool hasLeft = false;
+    bool hasRight = false;
+    std::size_t index = 0;
+    while (index < entries.size())
+    {
+        const bool onRight = entries[index].side == AxisSide::Right;
+        float& groupWidth = onRight ? rightWidth : leftWidth;
+        bool& groupStarted = onRight ? hasRight : hasLeft;
+        groupWidth += entries[index].slotWidth + (groupStarted ? entryGap : 0.0F);
+        groupStarted = true;
+        ++index;
+    }
+    // Window-local X of the heading's right edge: the space SameLine() and SetCursorPosX() take.
+    // Without chartReservedRight the strip is not placed beside a heading.
+    const float headingEndX = (chartReservedRight >= 0.0F) ? ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX()
+                                                           : std::numeric_limits<float>::max();
+    const SeriesLabelAlignment::StripPlacement placement =
+        SeriesLabelAlignment::placeStrip(lineStartX, headingEndX, chartRight, leftWidth, rightWidth, entryGap);
+    if (hasLeft)
+    {
+        if (placement.sameLine)
+        {
+            ImGui::SameLine(placement.leftX);
+        }
+        else
+        {
+            ImGui::SetCursorPosX(placement.leftX);
+        }
+        drawEntries(AxisSide::Left, !placement.oneRow);
+    }
+    if (hasRight)
+    {
+        // On the left group's row (or the heading's), flush with the chart's right edge; a strip too
+        // wide for one row puts the right group on a row of its own, still flush right if it fits.
+        if (placement.oneRow && (hasLeft || placement.sameLine))
+        {
+            ImGui::SameLine(placement.rightX);
+        }
+        else
+        {
+            ImGui::SetCursorPosX(placement.rightX);
+        }
+        drawEntries(AxisSide::Right, !placement.oneRow);
     }
 }
 
@@ -3438,7 +3492,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      size_t minBarColumns = 0,
                                      bool compactSpacing = false,
                                      NowBarValues values = NowBarValues::Strip,
-                                     std::span<const ValueStripEntry> stripExtras = {})
+                                     std::span<const ValueStripEntry> stripExtras = {},
+                                     SeriesLabelAlignment::ChartAxes axes = {})
 {
     // Renders a history plot side-by-side with a compact "now" bar column. When barsOnly is true we
     // skip the ImPlot area and show only the bars (used when history is unavailable). The table layout
@@ -3465,9 +3520,13 @@ inline void renderHistoryWithNowBars(const char* tableId,
     if (values == NowBarValues::Strip)
     {
         // stripExtras: series the chart draws without a bar (a peak line), so the strip lists every
-        // series its tooltip does. On the heading's line, right-aligned to the chart.
-        renderNowBarValueStrip(
-            bars, stripExtras, ValueStripLayout::Wrap, tableId, nowBarsReservedWidth(bars.size(), minBarColumns, compactSpacing, rowWidth));
+        // series its tooltip does. On the heading's line, each entry aligned to its series' axis (#1882).
+        renderNowBarValueStrip(bars,
+                               stripExtras,
+                               ValueStripLayout::Wrap,
+                               tableId,
+                               nowBarsReservedWidth(bars.size(), minBarColumns, compactSpacing, rowWidth),
+                               axes);
     }
 
     if (barsOnly)
@@ -3592,7 +3651,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
                                      size_t minBarColumns = 0,
                                      bool compactSpacing = false,
                                      NowBarValues values = NowBarValues::Strip,
-                                     std::span<const ValueStripEntry> stripExtras = {})
+                                     std::span<const ValueStripEntry> stripExtras = {},
+                                     SeriesLabelAlignment::ChartAxes axes = {})
 {
     renderHistoryWithNowBars(tableId,
                              plotHeight,
@@ -3602,7 +3662,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
                              minBarColumns,
                              compactSpacing,
                              values,
-                             stripExtras);
+                             stripExtras,
+                             axes);
 }
 
 } // namespace UI::Widgets

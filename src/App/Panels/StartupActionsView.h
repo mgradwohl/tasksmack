@@ -40,7 +40,8 @@ namespace StartupActionsDetail
 inline constexpr float RESULT_SECONDS = 8.0F;
 
 /// Why no action applies to @p entry at all: "" when one may, else the reason the menu and the bar
-/// show ("Requires administrator" for an all-users entry when not elevated; RunOnce has no state).
+/// show ("Requires administrator" for an all-users entry when not elevated; RunOnce has no state; a
+/// policy may set a packaged app's startup task).
 [[nodiscard]] std::string_view blockedReason(const Platform::StartupEntry& entry, const Platform::StartupActionCapabilities& caps);
 
 /// Whether enabling (@p enable) or disabling @p entry applies: it isn't blocked and isn't already so.

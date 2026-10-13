@@ -313,6 +313,17 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
 2. **New model**: `Domain/XxxModel.cpp` (computes deltas from probe counters)
 3. **New panel**: `App/Panels/XxxPanel.cpp` (owns model, drives refresh via `onUpdate()`). Implement `Panel::renderContent()`, add the owned panel member to `ShellLayer`, and register it once in the constructor's `PanelTabs` list with its event name and label provider. Registration order drives tabs and lifecycle forwarding; detach runs in reverse. Keep panel-specific model/snapshot coordination explicit in `ShellLayer`. Registry tests live in `tests/App/test_PanelTabs.cpp`.
 4. Update `CMakeLists.txt` (`TASKSMACK_SOURCES`), add tests, run clang-format/tidy
+5. **System / process parity (maintainer guideline):** a metric that gets a system-wide tab or section
+   (for example GPU, NPU, Network and I/O) should usually also get (a) a tab in Process Details for the
+   selected process, with that process's history, and (b) a column in the Processes table, off by default
+   unless the metric is common. These are three views of one data stream: plan the per-process data
+   (probe → Domain → `ProcessSnapshot` and the watched-process history) with the system view, not as an
+   afterthought. If one of the three doesn't make sense for a metric (no per-process attribution exists,
+   as for battery health), say why in the PR.
+6. **Processes table / Process Details parity (maintainer guideline):** anything the Processes table can show
+   for a process (a column, a cell's tooltip, a row-menu action) should also be on its Process Details tab.
+   A fact that is in the table but missing from Process Details is probably a bug: file it, or add it in the
+   same PR.
 
 **CMake layout:** the root `CMakeLists.txt` is declarative; build logic lives in focused modules under `cmake/` — `Options.cmake` (cache options), `CompilerOptions.cmake` (toolchain/warnings/hardening, must precede dependencies), `Dependencies.cmake` (FetchContent + third-party targets), `StaticAnalysis.cmake` (clang-tidy/format targets, included before the Windows `.rc` is appended to sources), `InstallRules.cmake`, and `Packaging.cmake` (CPack). New dependencies go in `cmake/Dependencies.cmake`; new tooling targets in `cmake/StaticAnalysis.cmake`.
 

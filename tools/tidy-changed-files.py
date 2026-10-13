@@ -43,6 +43,9 @@ FULL_RUN_PATTERNS = (
     re.compile(r"^tools/clang-tidy\.(sh|ps1)$"),
     re.compile(r"^tools/common\.(sh|ps1)$"),
     re.compile(r"^tools/tidy-changed-files\.py$"),
+    # The per-file result cache (#1785): a change to how keys are made must run (and re-key) every file.
+    re.compile(r"^tools/tidy-cache\.py$"),
+    re.compile(r"^\.github/actions/tidy-result-cache/"),
     re.compile(r"^\.github/workflows/ci\.yml$"),
     # The tidy jobs' toolchain: the LLVM/clang-tidy and GLAD setup actions and the GLAD generator's
     # pinned requirements. A PR that changes only these must still exercise them.

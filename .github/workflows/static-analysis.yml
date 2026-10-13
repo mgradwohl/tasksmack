@@ -2,9 +2,15 @@ name: Static Analysis
 
 # Manual full clang-tidy run (Linux + Windows) on any branch. It no longer runs on every push to
 # main (#1406): the PR's own clang-tidy already checked the merge tree, and ci.yml's nightly
-# schedule runs the full analysis on main.
+# schedule runs the full analysis on main. Both use the per-file result cache (#1785) unless this
+# run's `cache` input is off, which analyzes every file from scratch and re-seeds the cache.
 on:
   workflow_dispatch:
+    inputs:
+      cache:
+        description: 'Skip files unchanged since a clean run (off: analyze every file and re-seed the cache)'
+        type: boolean
+        default: true
 
 # Pushes to main get one group per commit and are never cancelled, so back-to-back merges each get a
 # complete run and a regression is blamed on the commit that caused it (#1187). A run on any other
@@ -51,11 +57,32 @@ jobs:
       - name: Build GLAD
         run: cmake --build --preset debug --target glad_gl_core_33
 
+      - name: Restore clang-tidy results
+        id: tidy-cache
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: restore
+          fresh: ${{ !inputs.cache }}
+
       - name: Run clang-tidy
         shell: bash
+        env:
+          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
         run: |
-          ./tools/clang-tidy.sh debug 2>&1 | tee clang-tidy-output.txt
+          ./tools/clang-tidy.sh --cache-dir "$RESULT_CACHE" debug 2>&1 | tee clang-tidy-output.txt
           test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Summarize clang-tidy findings
+        if: always()
+        shell: bash
+        run: python3 -I -X utf8 tools/tidy-findings.py clang-tidy-output.txt --title 'clang-tidy findings (Linux)' >> "$GITHUB_STEP_SUMMARY"
+
+      # Clean results are valid whether or not other files failed, so save after a failure too.
+      - name: Save clang-tidy results
+        if: always() && steps.tidy-cache.outcome == 'success'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: save
 
       - name: Upload clang-tidy results
         if: always()
@@ -103,11 +130,31 @@ jobs:
         shell: pwsh
         run: cmake --build --preset win-debug --target glad_gl_core_33
 
+      - name: Restore clang-tidy results
+        id: tidy-cache
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: restore
+          fresh: ${{ !inputs.cache }}
+
       - name: Run clang-tidy (Windows)
         shell: pwsh
+        env:
+          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
         run: |
-          pwsh -File tools/clang-tidy.ps1 debug 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          pwsh -File tools/clang-tidy.ps1 debug -CacheDir $env:RESULT_CACHE 2>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
           exit $LASTEXITCODE
+
+      - name: Summarize clang-tidy findings (Windows)
+        if: always()
+        shell: bash
+        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-windows-output.txt --title 'clang-tidy findings (Windows)' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save clang-tidy results
+        if: always() && steps.tidy-cache.outcome == 'success'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: save
 
       - name: Upload clang-tidy results (Windows)
         if: always()

@@ -47,7 +47,30 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
 
     [[nodiscard]] Platform::SystemInfoCapabilities capabilities() const override
     {
-        return {.hasOs = m_HasOs, .unavailableReason = m_HasOs ? std::string{} : std::string{"not here"}};
+        return {.hasOs = m_HasOs,
+                .unavailableReason = m_HasOs ? std::string{} : std::string{"not here"},
+                .wifiDetailsGated = false,
+                .hasPublicIp = m_PublicIpReads != nullptr};
+    }
+
+    /// Reports a public IP lookup (#1518), counting its calls in @p reads.
+    void lookUpPublicIp(int* reads) noexcept
+    {
+        m_PublicIpReads = reads;
+    }
+
+    [[nodiscard]] Platform::PublicIpInfo readPublicIp() override
+    {
+        if (m_PublicIpReads != nullptr)
+        {
+            ++*m_PublicIpReads;
+        }
+        return {.read = true,
+                .v4 = "203.0.113.7",
+                .v6 = {},
+                .v4Unavailable = {},
+                .v6Unavailable = "No IPv6 route to the internet",
+                .source = "OpenDNS"};
     }
 
     [[nodiscard]] Platform::OsInfo readOs() override
@@ -193,6 +216,7 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
     ReadOsThrows m_Throws;
     std::chrono::milliseconds m_ReadOsDelay;
     std::size_t m_SensorReads = 0;
+    int* m_PublicIpReads = nullptr;
 };
 
 TEST(SystemInfoModelTest, ReadsOnlyWhenAskedAndPublishesEachRead)
@@ -255,6 +279,49 @@ TEST(SystemInfoModelTest, WifiDetailsOnlyOnceAskedThenForTheSession)
     model.read(); // Refresh
     EXPECT_FALSE(model.snapshot()->adapters.adapters[0].wifiDetailsWithheld) << "the choice holds";
     EXPECT_TRUE(model.snapshot()->wifiDetailsIncluded);
+}
+
+// #1518: the public addresses are looked up (a query off the machine) only once asked for, then on every
+// read after, Refresh too; a sensors-only read keeps what the last full read had.
+TEST(SystemInfoModelTest, PublicIpOnlyOnceAskedThenForTheSession)
+{
+    int reads = 0;
+    int lookups = 0;
+    auto probe = std::make_unique<FakeSystemInfoProbe>(true, &reads);
+    probe->lookUpPublicIp(&lookups);
+    SystemInfoModel model(std::move(probe));
+    EXPECT_TRUE(model.capabilities().hasPublicIp);
+    EXPECT_FALSE(model.publicIpIncluded());
+    model.read();
+    EXPECT_EQ(lookups, 0) << "the first read doesn't ask";
+    EXPECT_FALSE(model.snapshot()->publicIpIncluded);
+    EXPECT_FALSE(model.snapshot()->publicIp.read);
+
+    model.includePublicIp();
+    EXPECT_TRUE(model.publicIpIncluded());
+    model.read();
+    EXPECT_EQ(lookups, 1);
+    EXPECT_TRUE(model.snapshot()->publicIpIncluded);
+    EXPECT_EQ(model.snapshot()->publicIp.v4, "203.0.113.7");
+    EXPECT_EQ(model.snapshot()->publicIp.v6Unavailable, "No IPv6 route to the internet");
+
+    model.readSensors();
+    EXPECT_EQ(lookups, 1) << "a sensors read doesn't look it up again";
+    EXPECT_EQ(model.snapshot()->publicIp.v4, "203.0.113.7") << "kept from the last full read";
+    model.read(); // Refresh
+    EXPECT_EQ(lookups, 2) << "the choice holds";
+}
+
+// #1518: a probe without a lookup is never asked, even once the user asked.
+TEST(SystemInfoModelTest, PublicIpNeverAskedOfAProbeWithoutALookup)
+{
+    int reads = 0;
+    SystemInfoModel model(std::make_unique<FakeSystemInfoProbe>(true, &reads));
+    EXPECT_FALSE(model.capabilities().hasPublicIp);
+    model.includePublicIp();
+    model.read();
+    EXPECT_FALSE(model.snapshot()->publicIpIncluded);
+    EXPECT_FALSE(model.snapshot()->publicIp.read);
 }
 
 // #1522: the sensors read again on their own, with every other fact (and when they were read) kept, and

@@ -608,6 +608,19 @@ struct NetworkAdaptersInfo
     bool dnsIsLocalStub = false; ///< Linux: only systemd-resolved's local stub (127.0.0.53) was found.
 };
 
+/// This machine's public addresses (#1518): what the internet sees it as, asked of a DNS resolver
+/// (OpenDNS's myip.opendns.com) only when the user asks, since it sends a query off the machine. Each
+/// address is an identifier (it places the machine).
+struct PublicIpInfo
+{
+    bool read = false;         ///< The lookup ran (it was asked for and the platform has one).
+    std::string v4;            ///< "203.0.113.7"; empty when there is none or it couldn't be found
+    std::string v6;            ///< "2001:db8::7"; empty when there is none or it couldn't be found
+    std::string v4Unavailable; ///< Why v4 is empty, for the UI
+    std::string v6Unavailable; ///< Why v6 is empty, for the UI
+    std::string source;        ///< Who answered: "OpenDNS (myip.opendns.com)"
+};
+
 /// How long the last boot took and where the time went (#1525), in microseconds. A phase the
 /// platform doesn't measure (firmware and loader without UEFI's boot-time variables, initrd without
 /// an initramfs) is nullopt. Windows measures other phases: the total, main path and post-boot times of
@@ -639,6 +652,8 @@ struct SystemInfoCapabilities
     /// Reading the Wi-Fi details can ask the user for location access (Windows 11 24H2 and later), so
     /// readNetworkAdapters() reads them only when asked (#1782). False where they are always read (Linux).
     bool wifiDetailsGated = false;
+    /// readPublicIp() looks the public addresses up (#1518). False where it isn't implemented.
+    bool hasPublicIp = false;
 };
 
 /// Reads the System Information page's static facts. Called from one thread at a time, which may
@@ -694,6 +709,14 @@ class ISystemInfoProbe
     /// the Wi-Fi details that can raise a location prompt are read only with @p includeWifiDetails (#1782);
     /// elsewhere it is ignored and they are always read.
     [[nodiscard]] virtual NetworkAdaptersInfo readNetworkAdapters(bool includeWifiDetails) = 0;
+
+    /// The public addresses (#1518), asked of a DNS resolver off the machine: called only when the user
+    /// asked, and where capabilities().hasPublicIp. Takes up to a few seconds. Platforms without a lookup
+    /// keep this default, which reports nothing.
+    [[nodiscard]] virtual PublicIpInfo readPublicIp()
+    {
+        return {};
+    }
 
     /// The Boot performance facts (#1525); read when hasOs is true.
     [[nodiscard]] virtual BootPerformanceInfo readBootPerformance() = 0;

@@ -42,11 +42,12 @@ concurrency:
 env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.7'
-  # Warn-only floors for LINE coverage (see the "Check coverage threshold" steps, #1543): the
-  # honest baseline on 2026-10-08 (Linux 68.9%, Windows 63.8% of lines) minus about 3 points,
-  # so the warning means a real drop. codecov.yml's `auto` target is the per-change ratchet.
-  LINUX_COVERAGE_THRESHOLD: '66'
-  WINDOWS_COVERAGE_THRESHOLD: '61'
+  # Warn-only floors for LINE coverage (see the "Check coverage threshold" steps, #1543): 85% on
+  # both platforms (maintainer, 2026-10-12), set when the nightly run read Linux 93.9% and Windows
+  # 89.8% of lines. They were 66% and 61%, from the 2026-10-08 baseline (68.9%, 63.8%). A warning now
+  # means a real drop. codecov.yml's `auto` target is the per-change ratchet.
+  LINUX_COVERAGE_THRESHOLD: '85'
+  WINDOWS_COVERAGE_THRESHOLD: '85'
 
 permissions: {}
 

@@ -190,6 +190,8 @@ class UserConfig
         m_Synced = UserSettings{};
         m_IsLoaded = false;
         m_TempNameSource = nullptr;
+        m_FailingSaveStep = SaveStep::None;
+        m_FailingSaveErrno = 0;
     }
 
     /// Replaces the random number that names save()'s staging file, so a test can make every
@@ -197,6 +199,29 @@ class UserConfig
     void setTempNameSourceForTesting(std::function<std::uint32_t()> source)
     {
         m_TempNameSource = std::move(source);
+    }
+
+    /// A step of save() a test can make fail (#1395): the errors no real filesystem gives on demand.
+    enum class SaveStep : std::uint8_t
+    {
+        None,
+        OwnerStat,     ///< Reading the existing config's owner (POSIX)
+        AclRead,       ///< Reading its access ACL (Linux)
+        CreateStaging, ///< Creating the staging file (POSIX)
+        Write,         ///< Writing the staging file (POSIX)
+        Chown,         ///< Giving it the original's owner (POSIX)
+        Acl,           ///< Giving it the original's access ACL (Linux)
+        Chmod,         ///< Giving it the original's mode (POSIX)
+        Close,         ///< Closing it (POSIX)
+        Rename,        ///< Renaming it over the config
+    };
+
+    /// Testing only: save()'s @p step fails from now on with @p errorNumber, as if its system call had
+    /// returned that error. SaveStep::None for none. Reset by resetConfigPathForTesting().
+    void failSaveStepForTesting(SaveStep step, int errorNumber)
+    {
+        m_FailingSaveStep = step;
+        m_FailingSaveErrno = errorNumber;
     }
 
   private:
@@ -212,6 +237,11 @@ class UserConfig
     // so a file created or repaired before the first save only gets what TaskSmack changed.
     UserSettings m_Synced;
     std::function<std::uint32_t()> m_TempNameSource; // Testing only; empty means std::random_device
+    SaveStep m_FailingSaveStep = SaveStep::None;     // Testing only (failSaveStepForTesting())
+    int m_FailingSaveErrno = 0;
+
+    /// Whether @p step is the one a test made fail; sets errno to its error if so.
+    [[nodiscard]] bool saveStepFails(SaveStep step) const noexcept;
 
     static auto getConfigDirectory() -> std::filesystem::path;
 };

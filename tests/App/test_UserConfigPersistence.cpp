@@ -15,6 +15,7 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -1849,6 +1850,52 @@ TEST_F(UserConfigSaveLoadFixture, NewerFormatVersionIsKept)
     EXPECT_EQ(document["process_columns"]["power"].value<bool>(), true);
 }
 
+// #1870: NPU % shown by default because the machine has an NPU is not a choice, so it is not written
+// and keeps following the default; "npu_percent = false" in the file is one, and keeps it off.
+TEST_F(UserConfigSaveLoadFixture, NpuPercentShownByDefaultIsNotSavedButAnExplicitChoiceIs)
+{
+    const Platform::ProcessCapabilities caps = capabilitiesWithoutPower();
+    constexpr ProcessColumnAvailability::GpuSupport NPU_LISTED{
+        .perProcess = true,
+        .utilization = true,
+        .accelerator = true,
+        .acceleratorListed = true,
+    };
+    auto& config = UserConfig::get();
+    config.settings() = UserSettings{};
+    ProcessColumnAvailability::applyCapabilityDefaults(config.settings().processColumns, caps, NPU_LISTED);
+    ASSERT_TRUE(config.settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"]["npu_percent"].node(), nullptr);
+
+    // Read back: unchosen, so it follows the system again -- hidden on one without an NPU.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_FALSE(config.settings().processColumns.isChosen(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(config.settings().processColumns.isVisible(ProcessColumn::NpuPercent));
+
+    // The user turns it off: written, read back as a choice, and kept off with an NPU.
+    config.settings().processColumns.requestVisible(ProcessColumn::NpuPercent, false);
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["process_columns"]["npu_percent"].value<bool>(), false);
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    ProcessColumnSettings columns = config.settings().processColumns;
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::NpuPercent));
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, caps, NPU_LISTED);
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::NpuPercent));
+
+    // A file written before #1870 that lists "npu_percent = false" keeps it off too.
+    writeFile(m_ConfigPath, "config_version = 2\n\n[process_columns]\nnpu_percent = false\n");
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    columns = config.settings().processColumns;
+    ProcessColumnAvailability::applyCapabilityDefaults(columns, caps, NPU_LISTED);
+    EXPECT_TRUE(columns.isChosen(ProcessColumn::NpuPercent));
+    EXPECT_FALSE(columns.isVisible(ProcessColumn::NpuPercent));
+    config.settings() = UserSettings{}; // The singleton outlives this test
+}
+
 TEST_F(UserConfigSaveLoadFixture, ResetColumnsRemovesThemFromTheFile)
 {
     writeFile(m_ConfigPath, "config_version = 2\n\n[process_columns]\nuser = false\n");
@@ -2174,6 +2221,43 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
     EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
 }
 #endif
+
+// #1395: whichever step of save() fails -- through the fault seam, so each error path runs in this
+// process -- the existing config is left byte for byte, the staging file goes, and the next save that
+// works still writes the change.
+TEST_F(UserConfigSaveLoadFixture, AnyStepOfSaveThatFailsLeavesTheConfigIntact)
+{
+    using SaveStep = UserConfig::SaveStep;
+    // POSIX only, like the rest of this block.
+    std::vector<SaveStep> steps{
+        SaveStep::Rename, SaveStep::OwnerStat, SaveStep::CreateStaging, SaveStep::Write, SaveStep::Chown, SaveStep::Chmod, SaveStep::Close};
+#if defined(__linux__)
+    steps.insert(steps.end(), {SaveStep::AclRead, SaveStep::Acl});
+#endif
+    for (const SaveStep step : steps)
+    {
+        SCOPED_TRACE(static_cast<int>(step));
+        auto& config = UserConfig::get();
+        config.resetConfigPathForTesting(m_ConfigPath);
+        const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+        writeFile(m_ConfigPath, original);
+        config.load();
+        config.settings().themeId = "mocha";
+
+        config.failSaveStepForTesting(step, EIO);
+        config.save();
+        std::ifstream in(m_ConfigPath, std::ios::binary);
+        EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), original);
+        for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+        {
+            EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+        }
+
+        config.failSaveStepForTesting(SaveStep::None, 0);
+        config.save();
+        EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "mocha");
+    }
+}
 
 TEST_F(UserConfigSaveLoadFixture, FailedStagingLeavesAnExistingFileAlone)
 {

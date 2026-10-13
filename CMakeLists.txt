@@ -217,6 +217,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/SystemdBus.cpp
     src/Platform/Linux/SystemdJournal.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
+    src/Platform/Linux/LinuxPublicIp.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/LinuxPowerProbe.cpp

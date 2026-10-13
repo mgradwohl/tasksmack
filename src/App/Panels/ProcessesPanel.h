@@ -281,12 +281,14 @@ class ProcessesPanel : public Panel
     /// has not been found to lack per-process metrics (ProcessColumnAvailability::perProcessGpuSupported()).
     [[nodiscard]] bool hasPerProcessGpuMetrics() const;
 
-    /// What per-process GPU data can be observed: metrics at all, and utilization among them (#1210).
+    /// What per-process GPU data can be observed: metrics at all, and utilization among them (#1210),
+    /// and whether an NPU or compute accelerator is listed (#1799), or known to be (#1870).
     [[nodiscard]] ProcessColumnAvailability::GpuSupport gpuSupport() const;
 
-    /// Whether the GPU model lists an NPU or compute accelerator, on the machine view's NPU tab's
-    /// condition (GpuSection::showAcceleratorTab()): false before its first publication, unlike
-    /// gpuSupport().accelerator, which counts unknown as listed. Process Details' NPU tab follows it (#1869).
+    /// Whether the GPU model is known to list an NPU or compute accelerator: gpuSupport().acceleratorListed,
+    /// the machine view's NPU tab's condition (GpuSection::showAcceleratorTab()), false before its first
+    /// publication, unlike gpuSupport().accelerator, which counts unknown as listed. Process Details' NPU
+    /// tab follows it (#1869), as NPU %'s default does (#1870).
     [[nodiscard]] bool hasAccelerator() const;
 
     /// Whether the table shows the process tree rather than the flat list.

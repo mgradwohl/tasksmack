@@ -66,8 +66,9 @@ class SystemInfoPanel : public Panel
     // The read in flight, if any; it hands back only a failed read's message, copied on the worker.
     std::future<std::optional<std::string>> m_Pending;
     bool m_PendingSensorsOnly = false; // the read in flight is a sensors-only one
-    // "Show Wi-Fi details" was clicked and its read hasn't started yet (another read was in flight, #1782).
-    bool m_WifiDetailsReadDue = false;
+    // "Show Wi-Fi details" (#1782) or "Show public IP" (#1518) was clicked and its read hasn't started yet
+    // (another read was in flight).
+    bool m_OptInReadDue = false;
     // When the last read started: the sensors are read again SENSOR_REFRESH after it, while the tab shows.
     std::chrono::steady_clock::time_point m_LastReadStart;
     std::shared_ptr<const Domain::SystemInfoSnapshot> m_Snapshot;

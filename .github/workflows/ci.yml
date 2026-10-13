@@ -7,10 +7,13 @@ on:
     branches: [main]
   schedule:
     # Nightly at 06:00 UTC, Monday to Saturday: the full clang-tidy runs (PRs only check what they
-    # touch), Linux and Windows release builds (no longer run on every push to main, #1406).
+    # touch; files unchanged since a clean run are skipped, #1785), Linux and Windows release
+    # builds (no longer run on every push to main, #1406). A red nightly opens or updates
+    # main-health.yml's single `ci-red-main` issue, and the tidy jobs' summaries count findings by check.
     - cron: '0 6 * * 1-6'
-    # Sundays at 09:00 UTC: the same full run plus the unity build. Sunday is left out of the
-    # nightly cron above, which would otherwise run the full checks twice that day.
+    # Sundays at 09:00 UTC: the same full run plus the unity build, with clang-tidy's per-file result
+    # cache ignored, so every file is analyzed from scratch once a week (#1785). Sunday is left out
+    # of the nightly cron above, which would otherwise run the full checks twice that day.
     - cron: '0 9 * * 0'
   workflow_dispatch:
 
@@ -283,16 +286,42 @@ jobs:
         if: steps.select.outputs.mode != 'none'
         run: cmake --build --preset debug --target glad_gl_core_33
 
+      # Per-file result cache (#1785): a file that passed before with identical inputs (its
+      # includes, flags, config, clang-tidy build) is skipped. Sunday's full run starts empty, a
+      # weekly ground truth that re-seeds the cache.
+      - name: Restore clang-tidy results
+        id: tidy-cache
+        if: steps.select.outputs.mode != 'none'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: restore
+          fresh: ${{ github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0' }}
+
       - name: Run clang-tidy
         if: steps.select.outputs.mode != 'none'
         shell: bash
+        env:
+          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
         run: |
           files=()
           if [[ "${{ steps.select.outputs.mode }}" == 'list' ]]; then
             mapfile -t files < tidy-files.txt
           fi
-          ./tools/clang-tidy.sh debug "${files[@]}" 2>&1 | tee clang-tidy-output.txt
+          ./tools/clang-tidy.sh --cache-dir "$RESULT_CACHE" debug "${files[@]}" 2>&1 | tee clang-tidy-output.txt
           test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Summarize clang-tidy findings
+        if: always() && steps.select.outputs.mode != 'none'
+        shell: bash
+        run: python3 -I -X utf8 tools/tidy-findings.py clang-tidy-output.txt --title 'clang-tidy findings (Linux)' >> "$GITHUB_STEP_SUMMARY"
+
+      # Clean results are valid whether or not other files failed, so save after a failure too.
+      # Never from a pull request (#1554).
+      - name: Save clang-tidy results
+        if: always() && steps.tidy-cache.outcome == 'success' && github.event_name != 'pull_request'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: save
 
       - name: Upload clang-tidy results
         if: always()
@@ -390,18 +419,41 @@ jobs:
         shell: pwsh
         run: cmake --build --preset win-debug --target glad_gl_core_33
 
+      # Per-file result cache (#1785), as in the Linux job.
+      - name: Restore clang-tidy results
+        id: tidy-cache
+        if: steps.select.outputs.mode != 'none'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: restore
+          fresh: ${{ github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0' }}
+
       - name: Run clang-tidy (Windows)
         if: steps.select.outputs.mode != 'none'
         shell: pwsh
+        env:
+          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
         run: |
           if ('${{ steps.select.outputs.mode }}' -eq 'list') {
             $files = @(Get-Content tidy-files.txt | Where-Object { $_ })
             # *>&1, not 2>&1: the script prints findings with Write-Host (information stream).
-            & ./tools/clang-tidy.ps1 debug -Files $files *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+            & ./tools/clang-tidy.ps1 debug -Files $files -CacheDir $env:RESULT_CACHE *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
           } else {
-            & ./tools/clang-tidy.ps1 debug *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+            & ./tools/clang-tidy.ps1 debug -CacheDir $env:RESULT_CACHE *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
           }
           exit $LASTEXITCODE
+
+      - name: Summarize clang-tidy findings (Windows)
+        if: always() && steps.select.outputs.mode != 'none'
+        shell: bash
+        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-windows-output.txt --title 'clang-tidy findings (Windows)' >> "$GITHUB_STEP_SUMMARY"
+
+      # As in the Linux job: save after a failure too, never from a pull request (#1554).
+      - name: Save clang-tidy results
+        if: always() && steps.tidy-cache.outcome == 'success' && github.event_name != 'pull_request'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: save
 
       - name: Upload clang-tidy results (Windows)
         if: always()

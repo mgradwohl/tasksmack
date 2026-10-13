@@ -2,7 +2,8 @@
 /// @brief WindowsStartupActions (#801, phase 2) against a fake registry: disabling and enabling write
 /// the StartupApproved value under the key the entry's location and scope choose, keep unknown bytes,
 /// map a denied HKLM write to "Requires administrator", and refuse RunOnce entries without touching
-/// the registry. The real registry is never written.
+/// the registry; a packaged app's startup task gets its State and LastDisabledTime (#1873), never when a
+/// policy sets it or its key is gone. The real registry is never written.
 
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
@@ -11,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -36,8 +38,9 @@ struct FakeRegistry
 {
     LSTATUS createError = ERROR_SUCCESS; ///< RegCreateKeyExW fails with this for HKLM, when set.
     std::map<std::pair<std::wstring, std::wstring>, std::pair<DWORD, std::vector<std::uint8_t>>> values;
-    std::vector<std::wstring> keys; ///< Index + 1 is a fake HKEY's value.
-    int opened = 0;                 ///< Open minus closed.
+    std::vector<std::wstring> keys;     ///< Index + 1 is a fake HKEY's value.
+    std::vector<std::wstring> existing; ///< Keys RegOpenKeyExW finds (#1873); every other open fails.
+    int opened = 0;                     ///< Open minus closed.
     int creates = 0;
     int writes = 0;
 };
@@ -66,6 +69,20 @@ LSTATUS WINAPI fakeCreate(HKEY root,
         return fake().createError;
     }
     fake().keys.push_back(std::wstring(machine ? L"HKLM\\" : L"HKCU\\") + subkey);
+    *result = reinterpret_cast<HKEY>(fake().keys.size()); // NOLINT(performance-no-int-to-ptr): a fake handle
+    ++fake().opened;
+    return ERROR_SUCCESS;
+}
+
+LSTATUS WINAPI fakeOpen(HKEY root, LPCWSTR subkey, DWORD /*options*/, REGSAM access, PHKEY result)
+{
+    EXPECT_EQ(access, static_cast<REGSAM>(KEY_QUERY_VALUE | KEY_SET_VALUE));
+    std::wstring name = std::wstring(root == HKEY_LOCAL_MACHINE ? L"HKLM\\" : L"HKCU\\") + subkey;
+    if (std::ranges::find(fake().existing, name) == fake().existing.end())
+    {
+        return ERROR_FILE_NOT_FOUND;
+    }
+    fake().keys.push_back(std::move(name));
     *result = reinterpret_cast<HKEY>(fake().keys.size()); // NOLINT(performance-no-int-to-ptr): a fake handle
     ++fake().opened;
     return ERROR_SUCCESS;
@@ -130,14 +147,22 @@ class WindowsStartupActionsTest : public ::testing::Test
 
     [[nodiscard]] static WindowsStartupActions actions(bool elevated = false)
     {
-        return WindowsStartupActions(
-            elevated, {.createKey = &fakeCreate, .queryValue = &fakeQuery, .setValue = &fakeSet, .closeKey = &fakeClose, .now = &fakeNow});
+        return WindowsStartupActions(elevated,
+                                     {.createKey = &fakeCreate,
+                                      .openKey = &fakeOpen,
+                                      .queryValue = &fakeQuery,
+                                      .setValue = &fakeSet,
+                                      .closeKey = &fakeClose,
+                                      .now = &fakeNow});
     }
 
+    /// An entry registered as @p name, shown by another name (its program's, #1873): the actions
+    /// must record its state under the registered one.
     [[nodiscard]] static StartupEntry entry(const char* name, StartupLocation location)
     {
         StartupEntry e;
-        e.name = name;
+        e.name = std::string("Shown ") + name;
+        e.registrationName = name;
         e.location = location;
         e.scope = Math::scopeOf(location);
         return e;
@@ -221,10 +246,10 @@ TEST_F(WindowsStartupActionsTest, DeniedMachineEntryRequiresAdministrator)
     EXPECT_EQ(fake().writes, 0);
 }
 
-TEST_F(WindowsStartupActionsTest, RunOnceAndPackagedAppsAreUnsupportedAndNeverTouchTheRegistry)
+TEST_F(WindowsStartupActionsTest, RunOnceIsUnsupportedAndNeverTouchesTheRegistry)
 {
     auto subject = actions(true);
-    for (const StartupLocation location : {StartupLocation::RunOnceUser, StartupLocation::RunOnceMachine, StartupLocation::PackagedApp})
+    for (const StartupLocation location : {StartupLocation::RunOnceUser, StartupLocation::RunOnceMachine})
     {
         const StartupActionResult result = subject.setEnabled(entry("Setup", location), false);
         EXPECT_FALSE(result.ok);
@@ -232,6 +257,99 @@ TEST_F(WindowsStartupActionsTest, RunOnceAndPackagedAppsAreUnsupportedAndNeverTo
     }
     EXPECT_EQ(fake().creates, 0);
     EXPECT_EQ(fake().writes, 0);
+}
+
+// Packaged apps' startup tasks (#1873): State and LastDisabledTime as Settings > Apps > Startup writes them.
+
+constexpr const wchar_t* MUSIC_FAMILY = L"Contoso.Music_abc123";
+
+[[nodiscard]] std::wstring packagedTaskKey(const wchar_t* family, const wchar_t* taskId)
+{
+    return hkcu(Math::PACKAGED_TASKS_KEY) + L"\\" + family + L"\\" + taskId;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> dword(std::uint32_t value)
+{
+    std::vector<std::uint8_t> bytes(sizeof(value));
+    std::memcpy(bytes.data(), &value, sizeof(value));
+    return bytes;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> qword(std::uint64_t value)
+{
+    std::vector<std::uint8_t> bytes(sizeof(value));
+    std::memcpy(bytes.data(), &value, sizeof(value));
+    return bytes;
+}
+
+[[nodiscard]] StartupEntry packagedEntry(const char* taskId)
+{
+    StartupEntry e;
+    e.name = "Contoso Music";
+    e.registrationName = taskId;
+    e.packageFamily = "Contoso.Music_abc123";
+    e.location = StartupLocation::PackagedApp;
+    e.scope = StartupScope::User;
+    return e;
+}
+
+TEST_F(WindowsStartupActionsTest, DisableThenEnableAPackagedStartupTask)
+{
+    const std::wstring key = packagedTaskKey(MUSIC_FAMILY, L"Music");
+    fake().existing.push_back(key);
+    fake().values[{key, L"State"}] = {REG_DWORD, dword(2)};
+    fake().values[{key, L"UserEnabledStartupOnce"}] = {REG_DWORD, dword(1)};
+    auto subject = actions();
+
+    ASSERT_TRUE(subject.setEnabled(packagedEntry("Music"), false).ok);
+    EXPECT_EQ(fake().values.at({key, L"State"}), (std::pair<DWORD, std::vector<std::uint8_t>>{REG_DWORD, dword(1)})) << "DisabledByUser";
+    EXPECT_EQ(fake().values.at({key, L"LastDisabledTime"}), (std::pair<DWORD, std::vector<std::uint8_t>>{REG_QWORD, qword(UNIX_SECONDS)}))
+        << "Unix seconds, as Settings writes it";
+
+    ASSERT_TRUE(subject.setEnabled(packagedEntry("Music"), true).ok);
+    EXPECT_EQ(fake().values.at({key, L"State"}), (std::pair<DWORD, std::vector<std::uint8_t>>{REG_DWORD, dword(2)})) << "Enabled";
+    EXPECT_EQ(fake().values.at({key, L"LastDisabledTime"}).second, qword(UNIX_SECONDS)) << "kept on enable, as Settings keeps it";
+    EXPECT_EQ(fake().values.at({key, L"UserEnabledStartupOnce"}).second, dword(1)) << "never written";
+    EXPECT_EQ(fake().values.size(), 3U);
+    EXPECT_EQ(fake().creates, 0) << "the task's key is opened, never created";
+}
+
+TEST_F(WindowsStartupActionsTest, APackagedTaskSetByPolicyIsRefused)
+{
+    for (const std::uint32_t state : {3U, 4U})
+    {
+        const std::wstring key = packagedTaskKey(MUSIC_FAMILY, L"Managed");
+        fake().existing = {key};
+        fake().values[{key, L"State"}] = {REG_DWORD, dword(state)};
+        auto subject = actions(true);
+        const StartupActionResult result = subject.setEnabled(packagedEntry("Managed"), state == 3);
+        EXPECT_FALSE(result.ok);
+        EXPECT_TRUE(result.message.contains("policy")) << result.message;
+    }
+    EXPECT_EQ(fake().writes, 0);
+}
+
+TEST_F(WindowsStartupActionsTest, APackagedTaskThatCantBeFoundOrReadIsNotWritten)
+{
+    auto subject = actions();
+    // No key: the package was removed since the list was read.
+    const StartupActionResult gone = subject.setEnabled(packagedEntry("Gone"), false);
+    EXPECT_FALSE(gone.ok);
+    EXPECT_EQ(gone.message, "The startup task is no longer registered");
+
+    // A key without a DWORD State.
+    const std::wstring key = packagedTaskKey(MUSIC_FAMILY, L"Odd");
+    fake().existing.push_back(key);
+    fake().values[{key, L"State"}] = {REG_SZ, {'2', 0}};
+    EXPECT_FALSE(subject.setEnabled(packagedEntry("Odd"), false).ok);
+
+    // No family or task id to find it by.
+    auto unnamed = packagedEntry("Odd");
+    unnamed.packageFamily.clear();
+    EXPECT_FALSE(subject.setEnabled(unnamed, true).ok);
+
+    EXPECT_EQ(fake().writes, 0);
+    EXPECT_EQ(fake().creates, 0);
 }
 
 } // namespace
