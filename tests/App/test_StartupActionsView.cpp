@@ -172,6 +172,25 @@ TEST(StartupActionsViewTest, ActionThatThrowsANonStandardExceptionBecomesAGeneri
     EXPECT_EQ(view.lastResult().text, "Could not enable OneDrive: Unknown error");
 }
 
+// #1891: a request while an action is still running (its result not yet taken) is ignored rather than
+// queued, and the result line goes once its RESULT_SECONDS are up.
+TEST(StartupActionsViewTest, ARequestWhileBusyIsIgnoredAndTheResultExpires)
+{
+    const auto fake = std::make_shared<FakeStartupActions>();
+    StartupActionsView view(fake);
+    view.request({.enable = true, .entry = entry("OneDrive", StartupLocation::RunUser, false)});
+    EXPECT_TRUE(view.busy());
+    view.request({.enable = true, .entry = entry("Teams", StartupLocation::RunUser, false)}); // Ignored: busy
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(fake->enables.load(), 1);
+    EXPECT_EQ(view.lastResult().text, "Enabled OneDrive");
+
+    view.tick(AutoDetail::RESULT_SECONDS - 1.0F);
+    EXPECT_EQ(view.lastResult().text, "Enabled OneDrive"); // Still showing
+    view.tick(2.0F);
+    EXPECT_TRUE(view.lastResult().text.empty());
+}
+
 TEST(StartupActionsViewTest, UnsupportedPlatformHasNoActions)
 {
     const StartupActionsView view(std::make_shared<Platform::UnsupportedStartupActions>());
