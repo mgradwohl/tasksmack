@@ -28,6 +28,10 @@ Architecture: `Platform` (raw OS counters only) → `Domain` (deltas/rates/histo
 only composition root allowed to call `Platform::make*Probe()`/`Platform::makeProcessActions()`, only at
 construction/`onAttach`, never in render loops). OpenGL calls confined to `Core`/`UI`.
 
+Feature parity: a metric with a system-wide tab should usually also get a Process Details tab for the
+selected process and a Processes-table column (off by default unless common). See "Adding New Features" in
+[.github/copilot-instructions.md](.github/copilot-instructions.md).
+
 Build (CMake Presets, `cmake --list-presets` for the full set):
 ```bash
 cmake --workflow --preset dev        # Linux: configure+build+test
