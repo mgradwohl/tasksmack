@@ -189,6 +189,21 @@ class TidyChangedFilesTest(unittest.TestCase):
         self.commit("remove B.cpp")
         self.assertEqual(self.run_script(), [])
 
+    # -- the workflows that configure the analyzed tree: full run ---------------------------------
+
+    def test_ci_workflows_are_a_full_run(self) -> None:
+        # reusable-build-test.yml configures the tree the Windows clang-tidy run analyzes (#1875).
+        for workflow in ("ci.yml", "reusable-build-test.yml"):
+            with self.subTest(workflow=workflow):
+                self.write(f".github/workflows/{workflow}", f"name: {workflow}\n")
+                self.commit(workflow)
+                self.assertEqual(self.run_script("windows"), ["ALL"])
+
+    def test_other_workflow_is_not_a_full_run(self) -> None:
+        self.write(".github/workflows/pr-labeler.yml", "name: labeler\n")
+        self.commit("labeler")
+        self.assertEqual(self.run_script(), [])
+
     # -- anything else in a CMakeLists.txt: full run ----------------------------------------------
 
     def test_compile_option_change_is_a_full_run(self) -> None:

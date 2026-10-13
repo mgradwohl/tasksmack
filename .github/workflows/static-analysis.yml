@@ -93,8 +93,8 @@ jobs:
           retention-days: 5
 
   # Windows-only code (src/Platform/Windows/, the _WIN32 branches of shared files). Blocking,
-  # like the Linux job: ci.yml runs the same job on pull requests and gates CI Success on it
-  # (#1233); this one covers push to main, which ci.yml leaves to this workflow.
+  # like the Linux job. ci.yml runs the same analysis inside its Windows debug job on pull requests
+  # and nightly, and gates CI Success on it (#1233, #1875); this one is the manual full run.
   static-analysis-windows:
     name: Static Analysis (Windows)
     runs-on: windows-2025
@@ -123,8 +123,10 @@ jobs:
       - name: Configure
         shell: pwsh
         # No ccache in the tidy jobs (#1406); keep CMake from finding the stale ccache that
-        # Strawberry Perl puts on the image PATH.
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF
+        # Strawberry Perl puts on the image PATH. The other options match ci.yml's Windows debug
+        # build, whose tree its clang-tidy run analyzes (#1875), so both compute the same per-file
+        # result-cache keys from the same compile commands.
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF
 
       - name: Build GLAD
         shell: pwsh

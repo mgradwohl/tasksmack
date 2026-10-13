@@ -28,6 +28,28 @@ on:
         required: false
         type: boolean
         default: false
+      build:
+        description: >-
+          Build and test. Off for ci.yml's nightly Windows debug job, which only runs clang-tidy
+          (the nightly builds Windows release instead)
+        required: false
+        type: boolean
+        default: true
+      clang_tidy:
+        description: >-
+          Windows debug only: also run clang-tidy (tools/clang-tidy.ps1) on the configured tree,
+          after the tests, and report its result in the tidy-outcome output. A failure doesn't fail
+          this job; ci.yml's "Static Analysis (Windows)" job reports it (#1875)
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      tidy-mode:
+        description: "clang-tidy's file selection: all, list, none (nothing to analyze), or empty (not run)"
+        value: ${{ jobs.build-test.outputs.tidy-mode }}
+      tidy-outcome:
+        description: "The clang-tidy step's outcome: success, failure, skipped, or empty (never reached)"
+        value: ${{ jobs.build-test.outputs.tidy-outcome }}
 
 # Deny all permissions by default; each job must explicitly declare what it needs.
 permissions: {}
@@ -36,18 +58,51 @@ jobs:
   build-test:
     name: Build & Test (${{ inputs.os }} ${{ inputs.build_type }})
     runs-on: ${{ inputs.os }}
-    timeout-minutes: 35
+    # clang-tidy runs after the tests in the same job; a full-tree run (a CMake, tidy-config or
+    # workflow change) adds up to ~15 min on a cold result cache.
+    timeout-minutes: ${{ inputs.clang_tidy && 55 || 35 }}
     permissions:
       contents: read
       checks: write
+    outputs:
+      tidy-mode: ${{ steps.select.outputs.mode }}
+      tidy-outcome: ${{ steps.tidy.outcome }}
     env:
       # See the Configure steps: PCH stays on only for the weekly unity build.
       PCH: ${{ inputs.build_type == 'unity' && 'ON' || 'OFF' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # clang-tidy's changed-file selection diffs the PR merge commit against its first parent.
+          fetch-depth: ${{ inputs.clang_tidy && 2 || 1 }}
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
+
+      # On a PR, check only the translation units the change can affect (#1406): changed src/ .cpp
+      # files plus every .cpp that includes a changed src/ header, or everything when the tidy
+      # config, tidy scripts, CMake files or a workflow changed (tools/tidy-changed-files.py).
+      # The nightly schedule and manual runs analyze every file.
+      - name: Select files for clang-tidy
+        id: select
+        if: inputs.clang_tidy
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          python -I -X utf8 tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform windows > tidy-files.txt
+          # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
+          sed -i 's/\r$//' tidy-files.txt
+          if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
+            echo "mode=all" >> "$GITHUB_OUTPUT"
+          elif [[ ! -s tidy-files.txt ]]; then
+            echo "mode=none" >> "$GITHUB_OUTPUT"
+            echo "No translation unit affected by this change; clang-tidy skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "mode=list" >> "$GITHUB_OUTPUT"
+            { echo "clang-tidy on $(wc -l < tidy-files.txt) changed/affected file(s):"; echo '```'; cat tidy-files.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Setup LLVM
         if: runner.os == 'Linux'
@@ -62,7 +117,10 @@ jobs:
         with:
           llvm-version: ${{ inputs.llvm-semver-version }}
 
+      # Skipped when nothing is built (the nightly clang-tidy-only run): with evict-old-files a
+      # build-less main run would save an empty cache.
       - name: Setup ccache
+        if: inputs.build
         uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           # The action's pinned, SHA-256-verified ccache (4.13.6) on both OSes: Ubuntu's apt ccache
@@ -71,12 +129,25 @@ jobs:
           install: binary
           # Include the LLVM version so caches from different toolchains don't mix.
           key: ${{ runner.os }}-${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
-          max-size: 500M
+          # Windows debug outgrew 500M: full on every run, with 70-120 cleanups and ~60% hits on
+          # main (#1875).
+          max-size: ${{ runner.os == 'Windows' && inputs.build_type == 'debug' && '750M' || '500M' }}
           # Pull requests restore main's cache but never save their own: a PR-ref entry is
           # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
           save: ${{ github.ref == 'refs/heads/main' }}
           evict-old-files: job
+          # The post step prints `ccache -s -vv`: hits, misses and why calls were uncacheable.
+          verbose: 2
+
+      # inode_cache: remember each source and header's hash by file ID and timestamps, so a hit
+      # doesn't re-hash every include. ccache leaves it off by default on Windows (#1875).
+      - name: Configure ccache (Windows)
+        if: inputs.build && runner.os == 'Windows'
+        shell: bash
+        run: |
+          ccache --set-config=inode_cache=true
+          ccache -p | grep -E 'inode_cache|max_size|sloppiness|compiler_check'
 
       - name: Restore FetchContent dependencies
         id: fetchcontent
@@ -104,15 +175,19 @@ jobs:
           preset: win-${{ inputs.build_type }}
           toolchain: llvm-${{ inputs.llvm-semver-version }}
 
+      # Without a build (the nightly clang-tidy-only run) there is no ccache; keep CMake from
+      # finding the stale one Strawberry Perl puts on the image PATH. The launcher isn't part of
+      # compile_commands.json, so clang-tidy sees the same commands either way.
       - name: Configure (Windows)
+        id: configure-windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
-        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} ${{ steps.cmake-checks.outputs.cmake-args }}
+        run: cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_ENABLE_CCACHE=${{ inputs.build && 'ON' || 'OFF' }} ${{ steps.cmake-checks.outputs.cmake-args }}
 
-      # Each Windows build job saves its own preset's results; Static Analysis (Windows) only
-      # restores the win-debug ones, so two jobs never race for one key.
+      # Each Windows build job saves its own preset's results (the debug job's configure also
+      # serves its clang-tidy run), so two jobs never race for one key.
       - name: Save configure-check results (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/cmake-check-cache
@@ -134,26 +209,35 @@ jobs:
           cache-hit: ${{ steps.fetchcontent.outputs.cache-hit }}
 
       - name: Build (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && inputs.build
         run: cmake --build --preset ${{ inputs.build_type }}
 
       - name: Build (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.build
         shell: pwsh
         env:
           LLVM_ROOT: C:\Program Files\LLVM
         run: cmake --build --preset win-${{ inputs.build_type }}
+
+      # Where the build's time went (scans, compiles, links, the slowest links), from .ninja_log,
+      # so a flag change can be measured from the job summary (#1875).
+      - name: Build profile
+        if: always() && inputs.build
+        shell: bash
+        env:
+          BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
+        run: python -I -X utf8 tools/ninja-build-profile.py "$BUILD_DIR" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install virtual display (Linux)
         # Xvfb plus Mesa's software GL (llvmpipe) gives the Application/Window/IconLoader GL
         # suites a real X11 display with a GL 3.3 core context, the same setup heavy-checks.yml's
         # coverage job already runs the suite under (#1132). The Mesa packages are listed
         # explicitly rather than relied on as transitive runner-image dependencies.
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && inputs.build
         run: sudo timeout --kill-after=10s 300s apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0
 
       - name: Test (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && inputs.build
         env:
           # A display is guaranteed here, so the display-dependent suites must fail rather than
           # skip if it goes missing or construction throws (tests/Core/HeadlessVideoDriverTestUtils.h).
@@ -166,7 +250,7 @@ jobs:
       # benchmark-only break doesn't hide test results; reconfiguring the same tree only adds the
       # benchmarks subdirectory, so the targets already built stay up to date.
       - name: Build benchmarks (Linux)
-        if: runner.os == 'Linux' && inputs.build_benchmarks
+        if: runner.os == 'Linux' && inputs.build && inputs.build_benchmarks
         run: |
           cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_BUILD_BENCHMARKS=ON
           cmake --build --preset ${{ inputs.build_type }} --target TaskSmackBenchmarks
@@ -180,7 +264,7 @@ jobs:
           cache-hit: ${{ steps.fetchcontent.outputs.cache-hit }}
 
       - name: Test (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.build
         shell: pwsh
         run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
@@ -188,14 +272,14 @@ jobs:
       # testcase per case, to gtest-results/. Fold those into one JUnit file so the artifact and the
       # Job Summary still list every case. A missing ctest report (the build failed) writes nothing.
       - name: Merge test results
-        if: always()
+        if: always() && inputs.build
         shell: bash
         env:
           BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
         run: python tools/merge-gtest-results.py "$BUILD_DIR/test-results.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
 
       - name: Upload test results (Linux)
-        if: always() && runner.os == 'Linux'
+        if: always() && runner.os == 'Linux' && inputs.build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: linux-${{ inputs.build_type }}-test-results
@@ -205,7 +289,7 @@ jobs:
           retention-days: 5
 
       - name: Upload test results (Windows)
-        if: always() && runner.os == 'Windows'
+        if: always() && runner.os == 'Windows' && inputs.build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-${{ inputs.build_type }}-test-results
@@ -216,7 +300,7 @@ jobs:
 
       - name: Publish test results to Job Summary
         if: >-
-          always() &&
+          always() && inputs.build &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
@@ -228,3 +312,78 @@ jobs:
           reporter: java-junit
           fail-on-error: false
           fail-on-empty: false
+
+      # -- clang-tidy (Windows) --------------------------------------------------------------------
+      # This was its own "Static Analysis (Windows)" job, which restored LLVM, Python and the
+      # FetchContent sources and configured the same win-debug tree a second time per PR head
+      # (#1875). It now analyzes the tree configured above, after the tests, and runs whether or
+      # not the build or tests passed, as the separate job did. A tidy failure doesn't fail this
+      # job (continue-on-error); ci.yml's "Static Analysis (Windows)" job turns the outcome into
+      # the required check of that name.
+
+      # A full build already built it; the nightly clang-tidy-only run builds just the generated
+      # GL loader the sources include.
+      - name: Build GLAD for clang-tidy
+        if: >-
+          !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
+          steps.configure-windows.outcome == 'success'
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: cmake --build --preset win-${{ inputs.build_type }} --target glad_gl_core_33
+
+      # Per-file result cache (#1785): a file that passed before with identical inputs (its
+      # includes, flags, config, clang-tidy build) is skipped. Sunday's full run starts empty, a
+      # weekly ground truth that re-seeds the cache.
+      - name: Restore clang-tidy results
+        id: tidy-cache
+        if: >-
+          !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
+          steps.configure-windows.outcome == 'success'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: restore
+          fresh: ${{ github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0' }}
+
+      - name: Run clang-tidy (Windows)
+        id: tidy
+        if: >-
+          !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
+          steps.configure-windows.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
+          TIDY_MODE: ${{ steps.select.outputs.mode }}
+        run: |
+          if ($env:TIDY_MODE -eq 'list') {
+            $files = @(Get-Content tidy-files.txt | Where-Object { $_ })
+            # *>&1, not 2>&1: the script prints findings with Write-Host (information stream).
+            & ./tools/clang-tidy.ps1 ${{ inputs.build_type }} -Files $files -CacheDir $env:RESULT_CACHE *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          } else {
+            & ./tools/clang-tidy.ps1 ${{ inputs.build_type }} -CacheDir $env:RESULT_CACHE *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
+          }
+          exit $LASTEXITCODE
+
+      - name: Summarize clang-tidy findings (Windows)
+        if: always() && (steps.tidy.outcome == 'success' || steps.tidy.outcome == 'failure')
+        shell: bash
+        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-windows-output.txt --title 'clang-tidy findings (Windows)' >> "$GITHUB_STEP_SUMMARY"
+
+      # Clean results are valid whether or not other files failed, so save after a failure too.
+      # Never from a pull request (#1554).
+      - name: Save clang-tidy results
+        if: always() && steps.tidy-cache.outcome == 'success' && github.event_name != 'pull_request'
+        uses: ./.github/actions/tidy-result-cache
+        with:
+          mode: save
+
+      - name: Upload clang-tidy results (Windows)
+        if: always() && inputs.clang_tidy
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: clang-tidy-results-windows
+          path: clang-tidy-windows-output.txt
+          if-no-files-found: ignore
+          retention-days: 5
