@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_video.h>
@@ -9,6 +10,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace App
@@ -374,6 +376,26 @@ inline constexpr ChartBlockLead NETWORK_FIRST_CHART_LEAD{.textLines = 1, .frameR
         return std::max(usable, Core::WINDOW_MIN_DIMENSION);
     };
     return {.width = cap(minimum.width, usableWidth), .height = cap(minimum.height, usableHeight)};
+}
+
+/// Whether a new minimum window size may grow the window (#1945), from its tab-independent part:
+/// the minimum computeMinimumWindowSize() gives with the panels' estimated content height instead of
+/// what a tab measured (computeFirstChartBudget() with no measurement), capped like the minimum.
+///
+/// That part moves only with the font size, the display scale, the display, or at startup, when
+/// there is no previous one: then the window grows to the minimum, so the tab strip and the title
+/// bar fit the text the user picked. When only the measured part moved -- a tab shown for the first
+/// time measured a taller block above its first chart -- the window keeps the size the user gave it
+/// (Core::WindowGeometry::minimumKeepingSize()), or every tab switch could resize it.
+///
+/// @param previous  The tab-independent minimum the window's minimum was last set with; std::nullopt
+///                  before the first.
+/// @param current   The tab-independent minimum now.
+[[nodiscard]] constexpr auto minimumSizeChangeFor(const std::optional<WindowMinimumSize>& previous,
+                                                  const WindowMinimumSize current) noexcept -> Core::WindowGeometry::MinimumSizeChange
+{
+    return (!previous.has_value() || *previous != current) ? Core::WindowGeometry::MinimumSizeChange::AllowGrow
+                                                           : Core::WindowGeometry::MinimumSizeChange::KeepSize;
 }
 
 /// Screen-space rectangle for a title-bar button's hit area (icon, about, help, settings,

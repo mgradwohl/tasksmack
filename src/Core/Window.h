@@ -78,15 +78,15 @@ class Window
     [[nodiscard]] static bool supportsPositioning() noexcept;
 
     void setSize(int width, int height);
-    /// Set the smallest size the user can resize the window to, in window coordinates. Unlike a bare
-    /// SDL_SetWindowMinimumSize(), it never resizes the window: a side the window is smaller than
-    /// keeps its size until the user makes it at least that big (WindowGeometry::minimumKeepingSize(),
-    /// #1945), and on native Wayland a tiled window keeps the size the compositor gave it rather than
-    /// SDL's stale floating size (#1777). False, with the SDL error logged, when SDL rejects the
-    /// minimum. Cheap: no SDL_SyncWindow().
-    bool setMinimumSize(int width, int height);
-    /// The minimum size handed to SDL by setMinimumSize() (and raised by handleGeometryChanged() as
-    /// the window grows to the wanted one), in window coordinates; {0, 0} before any. A client-side
+    /// Set the smallest size the user can resize the window to, in window coordinates. With
+    /// MinimumSizeChange::AllowGrow a smaller window grows to it, as with SDL_SetWindowMinimumSize();
+    /// with KeepSize a side the window is smaller than keeps its size until the user makes it at least
+    /// that big (WindowGeometry::minimumKeepingSize(), #1945). Either way a tiled native Wayland window
+    /// keeps the size the compositor gave it rather than SDL's stale floating size (#1777). False,
+    /// with the SDL error logged, when SDL rejects the minimum. Cheap: no SDL_SyncWindow().
+    bool setMinimumSize(int width, int height, WindowGeometry::MinimumSizeChange change);
+    /// The minimum size handed to SDL by setMinimumSize() (and, after a KeepSize change, raised by
+    /// handleGeometryChanged() as the window grows to the wanted one), in window coordinates; {0, 0} before any. A client-side
     /// resize holds the window to it, as the OS does for a native one.
     [[nodiscard]] auto getMinimumSize() const noexcept -> std::pair<int, int>
     {
@@ -216,8 +216,9 @@ class Window
     // restore whoever starts it (#1250). Its state is the only maximized signal for a borderless
     // window on a client-side-maximize backend (see isMaximized()).
     WindowGeometry::NormalGeometryTracker m_Geometry;
-    // The minimum size the app wants (setMinimumSize()) and the one handed to SDL, which is smaller on
-    // a side the window has not yet been made that big (#1945). {0, 0} before any.
+    // The minimum size the app wants (setMinimumSize()) and the one handed to SDL, which after a
+    // KeepSize change is smaller on a side the window has not yet been made that big (#1945).
+    // {0, 0} before any.
     std::pair<int, int> m_WantedMinimum{0, 0};
     std::pair<int, int> m_AppliedMinimum{0, 0};
     // See setShellRestoreKeysReader(); nullptr reads the keyboard.

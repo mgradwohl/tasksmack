@@ -4,6 +4,7 @@
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 #include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "FontSizeChange.h"
@@ -230,22 +231,31 @@ void ShellLayer::applyBaseMinimumWindowSize()
         // Held inside the display's usable bounds, so a large font on a small display cannot leave
         // a window that does not fit on-screen (#1207).
         const auto [usableWidth, usableHeight] = m_Host->usableDisplaySize().value_or(std::pair{0, 0});
-        const WindowMinimumSize baseMinimum = capMinimumToUsable(
-            computeMinimumWindowSize(
-                m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx), static_cast<float>(m_ContentMinimumHeightPx)),
-            usableWidth,
-            usableHeight);
-        m_Host->setMinimumWindowSize(baseMinimum.width, baseMinimum.height);
+        const auto minimumFor = [&](const int contentHeightPx)
+        {
+            return capMinimumToUsable(
+                computeMinimumWindowSize(
+                    m_MinimumSizeDisplayScale, 0.0F, static_cast<float>(m_ContentMinimumWidthPx), static_cast<float>(contentHeightPx)),
+                usableWidth,
+                usableHeight);
+        };
+        const WindowMinimumSize baseMinimum = minimumFor(m_ContentMinimumHeightPx);
+        // Grows the window at startup and when the font, the scale or the display moved the minimum;
+        // keeps its size when a tab's measurement alone did (#1945).
+        const WindowMinimumSize growMinimum = minimumFor(m_ContentEstimatedHeightPx);
+        const Core::WindowGeometry::MinimumSizeChange change = minimumSizeChangeFor(m_GrowMinimumSize, growMinimum);
+        m_GrowMinimumSize = growMinimum;
+        m_Host->setMinimumWindowSize(baseMinimum.width, baseMinimum.height, change);
     }
 }
 
-void ShellLayer::applyContentMinimumSize(float widthPx, float heightPx)
+void ShellLayer::applyContentMinimumSize(float widthPx, float heightPx, float estimatedHeightPx)
 {
     // With the custom title bar, it owns the minimum: hand it over, it re-derives the minimum every
     // frame and calls SDL only on a change. Otherwise apply it here when the whole-pixel width moves.
     if (m_TitleBar != nullptr)
     {
-        m_TitleBar->setContentMinimumSize(widthPx, heightPx);
+        m_TitleBar->setContentMinimumSize(widthPx, heightPx, estimatedHeightPx);
         return;
     }
     const auto toWholePx = [](const float px)
@@ -255,10 +265,13 @@ void ShellLayer::applyContentMinimumSize(float widthPx, float heightPx)
     };
     const int wholeWidth = toWholePx(widthPx);
     const int wholeHeight = toWholePx(heightPx);
-    if (wholeWidth != m_ContentMinimumWidthPx || wholeHeight != m_ContentMinimumHeightPx)
+    const int wholeEstimatedHeight = toWholePx(estimatedHeightPx);
+    if (wholeWidth != m_ContentMinimumWidthPx || wholeHeight != m_ContentMinimumHeightPx ||
+        wholeEstimatedHeight != m_ContentEstimatedHeightPx)
     {
         m_ContentMinimumWidthPx = wholeWidth;
         m_ContentMinimumHeightPx = wholeHeight;
+        m_ContentEstimatedHeightPx = wholeEstimatedHeight;
         applyBaseMinimumWindowSize();
     }
 }
@@ -584,28 +597,35 @@ void ShellLayer::onRender()
         // is what is pushed here, outside the tab bars -- or as the tabs last measured it, which also
         // counts a value strip wrapped onto extra rows at this width. Only measurements taken at this
         // window width and font size count: a hidden tab's goes stale when either changes (#1370 review).
-        const float firstChartBudget = computeFirstChartBudget(computeTallestFirstChartBlock({
-                                                                   .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
-                                                                   .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
-                                                                   .itemSpacingYPx = style.ItemSpacing.y,
-                                                                   .cellPaddingYPx = style.CellPadding.y,
-                                                                   .plotMinHeightPx = plotMinHeight,
-                                                               }),
-                                                               m_SystemMetricsPanel.firstChartNonPlotHeight(viewport->Size.x, fontSize),
-                                                               plotMinHeight);
-        applyContentMinimumSize(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
-                                                           m_SystemMetricsPanel.overviewNowBarColumnWidth(),
-                                                           fontSize,
-                                                           (contentPaddingH * 2.0F) + style.ScrollbarSize),
-                                computeContentMinimumHeight({
-                                    .titleBarPx = titleBarHeight,
-                                    .mainTabsPx = mainTabsHeight,
-                                    // As the panels draw them: a tab bar at SUB_TAB_PADDING_Y, then the item spacing below it.
-                                    .subTabsPx = fontSize + (ShellMetrics::SUB_TAB_PADDING_Y * styleScale * 2.0F) + style.ItemSpacing.y,
-                                    .chartPx = firstChartBudget,
-                                    .statusBarPx = statusBarHeight,
-                                    .chromePx = contentPaddingV * 2.0F,
-                                }));
+        const float estimatedFirstChartBlock = computeTallestFirstChartBlock({
+            .textLineWithSpacingPx = ImGui::GetTextLineHeightWithSpacing(),
+            .frameHeightWithSpacingPx = ImGui::GetFrameHeightWithSpacing(),
+            .itemSpacingYPx = style.ItemSpacing.y,
+            .cellPaddingYPx = style.CellPadding.y,
+            .plotMinHeightPx = plotMinHeight,
+        });
+        const auto contentHeightFor = [&](const float firstChartBudget)
+        {
+            return computeContentMinimumHeight({
+                .titleBarPx = titleBarHeight,
+                .mainTabsPx = mainTabsHeight,
+                // As the panels draw them: a tab bar at SUB_TAB_PADDING_Y, then the item spacing below it.
+                .subTabsPx = fontSize + (ShellMetrics::SUB_TAB_PADDING_Y * styleScale * 2.0F) + style.ItemSpacing.y,
+                .chartPx = firstChartBudget,
+                .statusBarPx = statusBarHeight,
+                .chromePx = contentPaddingV * 2.0F,
+            });
+        };
+        // Also from the estimate alone: the tab-independent height, whose changes (font, scale) may
+        // grow the window, where a tab's measurement may not (#1945).
+        applyContentMinimumSize(
+            computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
+                                       m_SystemMetricsPanel.overviewNowBarColumnWidth(),
+                                       fontSize,
+                                       (contentPaddingH * 2.0F) + style.ScrollbarSize),
+            contentHeightFor(computeFirstChartBudget(
+                estimatedFirstChartBlock, m_SystemMetricsPanel.firstChartNonPlotHeight(viewport->Size.x, fontSize), plotMinHeight)),
+            contentHeightFor(computeFirstChartBudget(estimatedFirstChartBlock, 0.0F, plotMinHeight)));
     }
     else
     {

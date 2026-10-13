@@ -8,6 +8,7 @@
 #include <SDL3/SDL_mouse.h>
 
 #include <cstdint>
+#include <optional>
 #include <tuple>
 
 struct SDL_Cursor;
@@ -51,11 +52,14 @@ class TitleBarLayer : public Core::Layer
 
     /// Size the panels below need, from computeContentMinimumWidth() (#1207) and
     /// computeContentMinimumHeight() (#1278). The window's minimum size covers it from the next frame
-    /// the bar is drawn. Set by ShellLayer every frame.
-    void setContentMinimumSize(float widthPx, float heightPx) noexcept
+    /// the bar is drawn. Set by ShellLayer every frame. @p estimatedHeightPx is the height without
+    /// what the tabs measured (the tab-independent part): a change there may grow the window, a
+    /// change in the measured part only may not (minimumSizeChangeFor(), #1945).
+    void setContentMinimumSize(float widthPx, float heightPx, float estimatedHeightPx) noexcept
     {
         m_ContentMinimumWidthPx = widthPx;
         m_ContentMinimumHeightPx = heightPx;
+        m_ContentEstimatedHeightPx = estimatedHeightPx;
     }
 
     // Cached button bounds for hit testing - see App::ButtonBounds (TitleBarGeometry.h).
@@ -123,16 +127,21 @@ class TitleBarLayer : public Core::Layer
 
     // Smallest size the window may be resized to, from the title bar's own content and the display
     // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn and handed to
-    // Window::setMinimumSize() on a change (#970), which never resizes the window to it (#1945);
-    // custom edge-drags use what that applied (Window::getMinimumSize()).
+    // Window::setMinimumSize() on a change (#970), growing the window only for a change in its
+    // tab-independent part (#1945); custom edge-drags use what that applied (Window::getMinimumSize()).
     WindowMinimumSize m_MinimumSize{};
     // The minimum before capMinimumToUsable(), and the display it was capped for: the display's
     // usable bounds are re-read only when one of them changes (#1207).
     WindowMinimumSize m_DesiredMinimumSize{};
+    // The same from the panels' estimated content height alone (setContentMinimumSize()), and the
+    // capped one the minimum was last set with: a change in it may grow the window (#1945).
+    WindowMinimumSize m_DesiredGrowMinimumSize{};
+    std::optional<WindowMinimumSize> m_GrowMinimumSize;
     SDL_DisplayID m_MinimumSizeDisplayId = 0;
     // The panels' share of that minimum (#1207, #1278), from setContentMinimumSize().
     float m_ContentMinimumWidthPx = 0.0F;
     float m_ContentMinimumHeightPx = 0.0F;
+    float m_ContentEstimatedHeightPx = 0.0F;
 
     ResizeEdge m_CachedHoverEdge = ResizeEdge::None;
     int m_LastCursorMouseLocalX = 0;

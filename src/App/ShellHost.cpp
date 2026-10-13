@@ -2,6 +2,7 @@
 
 #include "Core/Application.h"
 #include "Core/Event.h"
+#include "Core/WindowGeometry.h"
 #include "ShellLayer.h"
 #include "TitleBarLayer.h"
 #include "WindowOverride.h"
@@ -59,10 +60,10 @@ class ApplicationShellHost final : public IShellHost
         return Core::Application::get().getWindow().getHandle() != nullptr;
     }
 
-    void setMinimumWindowSize(int width, int height) override
+    void setMinimumWindowSize(int width, int height, Core::WindowGeometry::MinimumSizeChange change) override
     {
-        // Logs its own failure; never resizes the window (#1945), nor shrinks a tiled Wayland one (#1777).
-        static_cast<void>(Core::Application::get().getWindow().setMinimumSize(width, height));
+        // Logs its own failure; keeps the current size on a tiled Wayland window (#1777).
+        static_cast<void>(Core::Application::get().getWindow().setMinimumSize(width, height, change));
     }
 
     [[nodiscard]] WindowOverride::CapturedWindow captureWindow() const override

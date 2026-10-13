@@ -10,6 +10,7 @@
 #include "Core/Utf8Path.h"
 #include "Core/VideoBackend.h"
 #include "Core/WindowEvents.h"
+#include "Core/WindowGeometry.h"
 #include "UI/AssetPath.h"
 #include "UI/IconLoader.h"
 #include "UI/Theme.h"
@@ -930,24 +931,35 @@ void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
     // drawing, so it cannot drift from them, and handed to SDL only when it changes (#970). ShellLayer has already set the scaled base
     // minimum at attach; this widens it to cover the bar.
     auto& window = Core::Application::get().getWindow();
+    const float displayScale = UI::Theme::get().displayScale();
     const WindowMinimumSize desiredMinimumSize =
-        computeMinimumWindowSize(UI::Theme::get().displayScale(), contentWidth, m_ContentMinimumWidthPx, m_ContentMinimumHeightPx);
+        computeMinimumWindowSize(displayScale, contentWidth, m_ContentMinimumWidthPx, m_ContentMinimumHeightPx);
+    // Without what the tabs measured: the part that moves only with the font, the scale or the
+    // display, and may grow the window (#1945).
+    const WindowMinimumSize desiredGrowMinimumSize =
+        computeMinimumWindowSize(displayScale, contentWidth, m_ContentMinimumWidthPx, m_ContentEstimatedHeightPx);
     // Held inside the current display's usable bounds, or a large font on a small display would
     // leave a window that cannot fit on-screen or be maximized (#1207). The bounds are read only
     // when the wanted minimum or the display changes.
     const SDL_DisplayID displayId = window.getDisplayId();
-    if (desiredMinimumSize != m_DesiredMinimumSize || displayId != m_MinimumSizeDisplayId)
+    if (desiredMinimumSize != m_DesiredMinimumSize || desiredGrowMinimumSize != m_DesiredGrowMinimumSize ||
+        displayId != m_MinimumSizeDisplayId)
     {
         m_DesiredMinimumSize = desiredMinimumSize;
+        m_DesiredGrowMinimumSize = desiredGrowMinimumSize;
         m_MinimumSizeDisplayId = displayId;
         const auto [usableWidth, usableHeight] = window.getUsableDisplaySize().value_or(std::pair{0, 0});
         const WindowMinimumSize minimumSize = capMinimumToUsable(desiredMinimumSize, usableWidth, usableHeight);
-        if (minimumSize != m_MinimumSize)
+        const WindowMinimumSize growMinimumSize = capMinimumToUsable(desiredGrowMinimumSize, usableWidth, usableHeight);
+        // Grows the window at startup and when the font, the scale or the display moved the minimum;
+        // keeps its size when a tab's measurement alone did (#1945).
+        const Core::WindowGeometry::MinimumSizeChange change = minimumSizeChangeFor(m_GrowMinimumSize, growMinimumSize);
+        if (minimumSize != m_MinimumSize || change == Core::WindowGeometry::MinimumSizeChange::AllowGrow)
         {
             m_MinimumSize = minimumSize;
-            // Logs its own failure. Never resizes the window: a tab switch or a font change must not
-            // grow it (#1945), nor shrink a tiled Wayland window (#1777).
-            static_cast<void>(window.setMinimumSize(minimumSize.width, minimumSize.height));
+            m_GrowMinimumSize = growMinimumSize;
+            // Logs its own failure; keeps the current size on a tiled Wayland window (#1777).
+            static_cast<void>(window.setMinimumSize(minimumSize.width, minimumSize.height, change));
         }
     }
 }

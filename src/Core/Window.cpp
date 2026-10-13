@@ -520,18 +520,21 @@ void Window::setSize(int width, int height)
     m_Spec.Height = clampedHeight;
 }
 
-bool Window::setMinimumSize(int width, int height)
+bool Window::setMinimumSize(int width, int height, WindowGeometry::MinimumSizeChange change)
 {
     if (m_Handle == nullptr)
     {
         return false;
     }
 
-    // The wanted minimum follows the content on show, so it rises on a tab switch or a font change;
-    // handed to SDL as it is, SDL_SetWindowMinimumSize() would grow the window to it (#1945). A side
-    // the window is smaller than keeps the window's size instead, until the user makes it that big
-    // (handleGeometryChanged()).
     m_WantedMinimum = {width, height};
+    if (change == WindowGeometry::MinimumSizeChange::AllowGrow)
+    {
+        return applyMinimumSize(m_WantedMinimum);
+    }
+    // A minimum the content on show moved (a tab measured on its first showing) must not resize the
+    // window, as SDL_SetWindowMinimumSize() would grow it (#1945). A side the window is smaller than
+    // keeps the window's size instead, until the user makes it that big (handleGeometryChanged()).
     const std::pair<int, int> normalSize =
         getNormalGeometry()
             .transform([](const WindowGeometry::Rect& rect) { return std::pair{rect.width, rect.height}; })

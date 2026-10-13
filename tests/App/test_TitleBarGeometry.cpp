@@ -1,12 +1,14 @@
 #include "App/TitleBarButtons.h"
 #include "App/TitleBarGeometry.h"
 #include "Core/WindowConstants.h"
+#include "Core/WindowGeometry.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <string_view>
 
 namespace App
@@ -1378,6 +1380,40 @@ TEST(TitleBarGeometryTest, MinimumIsCappedToTheDisplaysUsableBounds)
 
     EXPECT_EQ(capMinimumToUsable(WindowMinimumSize{.width = 900, .height = 1200}, 1920, 1040).height, 1040);
 }
+
+// #1945: the window grows to its minimum at startup and when the font, scale or display moved the
+// tab-independent part of it; a tab's measurement alone must not resize it.
+TEST(TitleBarGeometryTest, TheFirstMinimumMayGrowTheWindow)
+{
+    EXPECT_EQ(minimumSizeChangeFor(std::nullopt, WindowMinimumSize{.width = 1809, .height = 900}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+}
+
+TEST(TitleBarGeometryTest, AFontOrScaleChangeMayGrowTheWindow)
+{
+    // Huge -> Even Huger moves the tab-independent minimum: the tab strip and title bar must fit.
+    const std::optional<WindowMinimumSize> huge = WindowMinimumSize{.width = 1809, .height = 900};
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 2031, .height = 982}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+    // A smaller font moves it too; growing to a lower minimum resizes nothing.
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 1033, .height = 700}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+    // Either side alone counts.
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 1809, .height = 901}),
+              Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+}
+
+TEST(TitleBarGeometryTest, ATabMeasurementAloneKeepsTheWindowsSize)
+{
+    // Showing the machine tab raised the full minimum to 1296 tall, but the tab-independent part is
+    // where it was: the window keeps the size it has.
+    const std::optional<WindowMinimumSize> huge = WindowMinimumSize{.width = 1809, .height = 900};
+    EXPECT_EQ(minimumSizeChangeFor(huge, WindowMinimumSize{.width = 1809, .height = 900}),
+              Core::WindowGeometry::MinimumSizeChange::KeepSize);
+}
+
+static_assert(minimumSizeChangeFor(std::nullopt, WindowMinimumSize{}) == Core::WindowGeometry::MinimumSizeChange::AllowGrow);
+static_assert(minimumSizeChangeFor(WindowMinimumSize{}, WindowMinimumSize{}) == Core::WindowGeometry::MinimumSizeChange::KeepSize);
 
 TEST(TitleBarGeometryTest, MinimumThatFitsTheDisplayIsUnchanged)
 {
