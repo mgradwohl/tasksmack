@@ -93,6 +93,20 @@ class ProcessPriorityView
                 std::optional<std::int32_t> currentNice,
                 const Platform::ProcessTarget& target);
 
+    /// Whether render() labels its rows: only when it draws two, the priority and the I/O priority
+    /// (Linux), which the labels tell apart. With the priority row alone (Windows) the Priority card's
+    /// header is its label, and the caller puts setCurrentPriorityTooltip() on that header (#1874).
+    [[nodiscard]] static constexpr bool labelsRows(const Platform::ProcessActionCapabilities& capabilities) noexcept
+    {
+        return capabilities.canSetPriority && capabilities.canSetIoPriority;
+    }
+
+    /// Gives the last item drawn the process's current priority as its tooltip: the priority class on
+    /// Windows, the nice value elsewhere (from @p currentNice, 0 before the first snapshot). It is the
+    /// "Priority" row label's tooltip, or the card header's when the rows are unlabelled (labelsRows()).
+    /// Needs an ImGui frame.
+    static void setCurrentPriorityTooltip(std::optional<std::int32_t> currentNice);
+
     /// A different process was selected: drop the edit, its target and the error line, and the I/O
     /// priority control's.
     void onSelectionChanged() noexcept
@@ -236,10 +250,13 @@ class ProcessPriorityView
     static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
 
     /// Draws the priority slider (a stop per class on Windows); returns where it ends, for right-aligning Apply.
-    float renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
-    /// Draws the priority slider, its Apply button and its error line.
-    void
-    renderNiceControl(Platform::IProcessActions* actions, std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
+    /// @p labelled draws the "Priority" row label, with its tooltip, above it (labelsRows()).
+    float renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target, bool labelled);
+    /// Draws the priority slider, its Apply button and its error line; @p labelled as for renderSlider().
+    void renderNiceControl(Platform::IProcessActions* actions,
+                           std::optional<std::int32_t> currentNice,
+                           const Platform::ProcessTarget& target,
+                           bool labelled);
     void renderApplyButton(Platform::IProcessActions* actions,
                            std::optional<std::int32_t> currentNice,
                            const Platform::ProcessTarget& target,

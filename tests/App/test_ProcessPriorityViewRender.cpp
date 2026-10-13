@@ -237,8 +237,9 @@ TEST_F(ProcessPriorityViewRenderTest, TheRowRepeatsNoCurrentValue)
             ImGui::LogFinish();
             drawList = ImGui::GetWindowDrawList();
         });
-    // Text drawn as an item (Linux's label line) is in the frame's log.
-    EXPECT_TRUE(logged.contains("Priority")) << logged;
+    // Text drawn as an item is in the frame's log. The row alone has no "Priority" label: the card's
+    // header is its label (#1874).
+    EXPECT_FALSE(logged.contains("Priority")) << logged;
     EXPECT_FALSE(logged.contains("current")) << logged;
     // Text drawn straight into the window after Apply, as Windows' class note was, is not an item:
     // nothing at all is drawn to the right of Apply on its row.

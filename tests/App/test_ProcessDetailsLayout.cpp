@@ -378,5 +378,20 @@ TEST(ProcessDetailsLayoutTest, RowCardHeightIsTheTallestCards)
     EXPECT_FLOAT_EQ(computeRowCardHeight(std::numeric_limits<float>::quiet_NaN(), -4.0F, 90.0F), 90.0F);
 }
 
+// A card's rows are centred in the room under its header (#1874): half the room they leave, in whole
+// pixels, and nothing while their height is unknown or they fill the room.
+TEST(ProcessDetailsLayoutTest, CentredRowsOffsetIsHalfTheRoomLeft)
+{
+    using ProcessDetailsLayout::computeCentredRowsOffset;
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(120.0F, 40.0F), 40.0F);
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(121.0F, 40.0F), 40.0F); // Floored to a whole pixel
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(40.0F, 40.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(30.0F, 40.0F), 0.0F); // Rows taller than the room
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(120.0F, 0.0F), 0.0F); // Not measured yet
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(std::numeric_limits<float>::quiet_NaN(), 40.0F), 0.0F);
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(120.0F, std::numeric_limits<float>::infinity()), 0.0F);
+    EXPECT_FLOAT_EQ(computeCentredRowsOffset(-5.0F, 40.0F), 0.0F);
+}
+
 } // namespace
 } // namespace App

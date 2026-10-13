@@ -190,6 +190,24 @@ chooseTopRowLayout(float paneWidthPx, float infoRowWidthPx, float spacingPx, flo
     return std::max({nonNegative(baseHeightPx), nonNegative(actionsHeightPx), nonNegative(priorityHeightPx)});
 }
 
+/// How far down to move a card's rows (everything under its header) to centre them in the room left
+/// under the header (#1874): half the room they leave, in whole pixels so text stays on the pixel grid.
+/// The Actions card's one row of buttons used to sit at the top of a row as tall as Identity and
+/// Runtime, over a block of empty card.
+///
+/// @param availableHeightPx  The room under the header, to the card's bottom padding
+///                           (ImGui::GetContentRegionAvail().y where the rows start).
+/// @param rowsHeightPx       What the rows need down, last row's bottom included; 0 when not yet known.
+/// @return 0 when the rows' height is unknown, or they fill the room or more.
+[[nodiscard]] inline float computeCentredRowsOffset(float availableHeightPx, float rowsHeightPx) noexcept
+{
+    if (!std::isfinite(availableHeightPx) || !std::isfinite(rowsHeightPx) || rowsHeightPx <= 0.0F || availableHeightPx <= rowsHeightPx)
+    {
+        return 0.0F;
+    }
+    return std::floor((availableHeightPx - rowsHeightPx) * 0.5F);
+}
+
 /// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).
 ///
 /// PIDs are reused. A process is selected by PID together with its start time, and a snapshot

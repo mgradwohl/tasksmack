@@ -38,15 +38,19 @@ namespace
     if (capabilities.canSetPriority)
     {
 #ifdef _WIN32
-        // Priority, over the class slider at the narrowest that shows all five stop names (#1538), and
-        // Apply under it. Runtime's Priority row shows the current class, not this row (#1537).
-        width = std::max({ImGui::CalcTextSize("Priority").x,
-                          Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER),
-                          applyButtonWidth(ICON_FA_CHECK "  Apply")});
+        // The class slider at the narrowest that shows all five stop names (#1538), and Apply under it.
+        // Runtime's Priority row shows the current class, not this row (#1537).
+        width =
+            std::max(Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER), applyButtonWidth(ICON_FA_CHECK "  Apply"));
 #else
         // The gradient slider row, which fits itself to the width it is given.
         width = ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx;
 #endif
+        if (ProcessPriorityView::labelsRows(capabilities))
+        {
+            // Its "Priority" row label, drawn only beside the I/O priority row (#1874).
+            width = std::max(width, ImGui::CalcTextSize("Priority").x);
+        }
     }
     if (capabilities.canSetIoPriority)
     {
@@ -58,6 +62,32 @@ namespace
                           applyButtonWidth("Reset to default") + spacing + applyButtonWidth("Apply")});
     }
     return width;
+}
+
+/// Draws @p rows, a card's content under its header, and returns what the card needs down for them:
+/// from its top to their bottom, and the bottom padding. In a card given a fixed height (@p centred)
+/// they are centred in the room left under the header (#1874), from their height the frame before,
+/// which the card keeps in its state storage: a card on a row taller than it -- Actions' one row of
+/// buttons beside Identity and Runtime -- no longer leaves all its spare room in one block under them.
+/// The height returned leaves that offset out, so the row's height (computeRowCardHeight()) does not
+/// feed on it.
+template<typename Rows> [[nodiscard]] float renderRows(bool centred, const Rows& rows)
+{
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    const ImGuiID key = ImGui::GetID("##RowsHeight");
+    const float top = ImGui::GetCursorPosY();
+    const float offset =
+        centred ? ProcessDetailsLayout::computeCentredRowsOffset(ImGui::GetContentRegionAvail().y, storage->GetFloat(key, 0.0F)) : 0.0F;
+    if (offset > 0.0F)
+    {
+        ImGui::SetCursorPosY(top + offset);
+    }
+    rows();
+    // The last row's bottom: the cursor is an item spacing below it.
+    const float rowsHeight = std::max(0.0F, ImGui::GetCursorPosY() - style.ItemSpacing.y - (top + offset));
+    storage->SetFloat(key, rowsHeight);
+    return top + rowsHeight + style.WindowPadding.y;
 }
 
 } // namespace
@@ -84,12 +114,6 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
     const bool fixedHeight = std::isfinite(cardHeight) && cardHeight > 0.0F;
     const ImGuiChildFlags childFlags = fixedHeight ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY;
     const float height = fixedHeight ? cardHeight : 0.0F;
-    // The last row's bottom (the cursor is an item spacing below it) and the bottom padding.
-    const auto contentHeight = []
-    {
-        const ImGuiStyle& style = ImGui::GetStyle();
-        return ImGui::GetCursorPosY() - style.ItemSpacing.y + style.WindowPadding.y;
-    };
 
     const bool drawActions = layout.actionsWidth > 0.0F;
     if (drawActions)
@@ -101,13 +125,19 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
                                            childFlags,
                                            [&]
                                            {
-                                               // The result line wraps at the card's edge instead of running out of it.
-                                               ImGui::PushTextWrapPos(0.0F);
-                                               context.actionsView->renderControls(
-                                                   context.actions, context.capabilities, *context.processName, context.target);
-                                               context.actionsView->renderResultLine();
-                                               ImGui::PopTextWrapPos();
-                                               heights.actions = contentHeight();
+                                               heights.actions = renderRows(fixedHeight,
+                                                                            [&]
+                                                                            {
+                                                                                // The result line wraps at the card's edge
+                                                                                // instead of running out of it.
+                                                                                ImGui::PushTextWrapPos(0.0F);
+                                                                                context.actionsView->renderControls(context.actions,
+                                                                                                                    context.capabilities,
+                                                                                                                    *context.processName,
+                                                                                                                    context.target);
+                                                                                context.actionsView->renderResultLine();
+                                                                                ImGui::PopTextWrapPos();
+                                                                            });
                                            });
     }
 
@@ -117,20 +147,30 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
         {
             ImGui::SameLine();
         }
-        (void) ProcessOverviewCard::render("ProcessPriorityBlock",
-                                           ICON_FA_GAUGE_HIGH,
-                                           "Priority",
-                                           ImVec2(layout.priorityWidth, height),
-                                           childFlags,
-                                           [&]
-                                           {
-                                               // The error lines wrap at the card's edge too.
-                                               ImGui::PushTextWrapPos(0.0F);
-                                               context.priorityView->render(
-                                                   context.actions, context.capabilities, context.currentNice, context.target);
-                                               ImGui::PopTextWrapPos();
-                                               heights.priority = contentHeight();
-                                           });
+        (void) ProcessOverviewCard::render(
+            "ProcessPriorityBlock",
+            ICON_FA_GAUGE_HIGH,
+            "Priority",
+            ImVec2(layout.priorityWidth, height),
+            childFlags,
+            [&]
+            {
+                // With the priority row alone (Windows) the header is its label, and so
+                // shows the current priority on hover, as the row label did (#1874).
+                if (context.capabilities.canSetPriority && !ProcessPriorityView::labelsRows(context.capabilities))
+                {
+                    ProcessPriorityView::setCurrentPriorityTooltip(context.currentNice);
+                }
+                heights.priority =
+                    renderRows(fixedHeight,
+                               [&]
+                               {
+                                   // The error lines wrap at the card's edge too.
+                                   ImGui::PushTextWrapPos(0.0F);
+                                   context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
+                                   ImGui::PopTextWrapPos();
+                               });
+            });
     }
     return heights;
 }

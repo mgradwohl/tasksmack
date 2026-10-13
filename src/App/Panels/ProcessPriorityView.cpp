@@ -337,10 +337,11 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
         return;
     }
 
-    // Rows of the Overview's Actions block (#1493), under its header: no separator or header of its own.
+    // Rows of the Overview's Priority card (#1493, #1789), under its header: no separator or header of
+    // their own, and a row label only where there are two rows to tell apart (#1874).
     if (capabilities.canSetPriority)
     {
-        renderNiceControl(actions, currentNice, target);
+        renderNiceControl(actions, currentNice, target, labelsRows(capabilities));
     }
     // The I/O priority (#803) under the nice control, with its own edit and Apply; Linux only.
     if (capabilities.canSetIoPriority)
@@ -351,7 +352,8 @@ void ProcessPriorityView::render(Platform::IProcessActions* actions,
 
 void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
                                             std::optional<std::int32_t> currentNice,
-                                            const Platform::ProcessTarget& target)
+                                            const Platform::ProcessTarget& target,
+                                            bool labelled)
 {
     // An edit made for another process is never shown for, or applied to, this one.
     (void) dropEditIfTargetMoved(target);
@@ -359,7 +361,7 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     // Initialize the control from the current process nice value if not changed
     syncToProcess(currentNice);
 
-    const float controlRightEdge = renderSlider(currentNice, target);
+    const float controlRightEdge = renderSlider(currentNice, target, labelled);
     ImGui::Spacing();
     renderApplyButton(actions, currentNice, target, controlRightEdge);
 
@@ -372,18 +374,27 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     }
 }
 
-float ProcessPriorityView::renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target)
+void ProcessPriorityView::setCurrentPriorityTooltip(std::optional<std::int32_t> currentNice)
 {
-    // A row label rather than a header: the Actions block's row (#1493). The process's current priority
-    // is Runtime's Priority row and this label's tooltip, not repeated beside it (#1537); the slider's
-    // badge shows the value picked.
-    ImGui::TextUnformatted("Priority");
 #ifdef _WIN32
     const std::string_view currentClass = Detail::windowsPriorityClassName(Detail::windowsPriorityClassFromNice(currentNice.value_or(0)));
     ImGui::SetItemTooltip("Current priority class: %.*s", static_cast<int>(currentClass.size()), currentClass.data());
 #else
     ImGui::SetItemTooltip("Current nice value: %d", currentNice.value_or(0));
 #endif
+}
+
+float ProcessPriorityView::renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target, bool labelled)
+{
+    // A row label rather than a header: the Priority card's row (#1493), and only above the I/O priority
+    // row it has to be told from (#1874); alone, the card's "Priority" header is its label and carries
+    // the tooltip. The process's current priority is Runtime's Priority row and that tooltip, not
+    // repeated beside it (#1537); the slider's badge shows the value picked.
+    if (labelled)
+    {
+        ImGui::TextUnformatted("Priority");
+        setCurrentPriorityTooltip(currentNice);
+    }
 
     const Detail::PriorityPick pick = Detail::renderPriorityPicker(m_NiceValue);
     editNice(pick.nice, target);

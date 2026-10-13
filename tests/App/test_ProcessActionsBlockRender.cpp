@@ -486,6 +486,123 @@ TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheCardIsScrolle
     EXPECT_EQ(h.mock.killCount(), 0);
 }
 
+// --- Priority label and centred rows (#1874) -------------------------------------------------------
+
+/// How many times @p needle occurs in @p text.
+[[nodiscard]] std::size_t occurrences(std::string_view text, std::string_view needle)
+{
+    std::size_t count = 0;
+    std::size_t at = text.find(needle);
+    while (at != std::string_view::npos)
+    {
+        ++count;
+        at = text.find(needle, at + needle.size());
+    }
+    return count;
+}
+
+/// Windows' actions: [Terminate] [Kill] and the priority row alone.
+constexpr Platform::ProcessActionCapabilities PRIORITY_ONLY_ROW{
+    .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = true};
+/// Linux's: the priority row and the I/O priority row under it.
+constexpr Platform::ProcessActionCapabilities WITH_IO_PRIORITY{
+    .canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = true, .canSetIoPriority = true};
+
+TEST_F(ProcessActionsBlockRenderTest, ThePriorityRowAloneHasNoLabelOfItsOwnAndTheHeaderShowsTheCurrentPriority)
+{
+    // The issue (#1874): "Priority" was both the card's header and the row's label above the slider.
+    // Alone, the row is unlabelled and the header carries the label's tooltip.
+    Harness h;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(PRIORITY_ONLY_ROW), layoutFor(PRIORITY_ONLY_ROW, 1900.0F), infoCardHeight(6.0F));
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_EQ(occurrences(text, "Priority"), 1U) << text; // The header's
+    EXPECT_FALSE(ProcessPriorityView::labelsRows(PRIORITY_ONLY_ROW));
+
+    // Hovering the header shows the current priority, as hovering the row label did.
+    const ImGuiWindow* card = priorityWindow();
+    ASSERT_NE(card, nullptr);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGui::GetIO().AddMousePosEvent(card->Pos.x + style.WindowPadding.x + 4.0F,
+                                    card->Pos.y + style.WindowPadding.y + (ImGui::GetTextLineHeight() * 0.5F));
+    std::string hovered;
+    int frame = 0;
+    while (frame < 4) // The tooltip waits for the hover delay
+    {
+        ImGui::GetIO().DeltaTime = 0.5F;
+        (void) runFrame(body);
+        hovered += text;
+        ++frame;
+    }
+#ifdef _WIN32
+    EXPECT_TRUE(hovered.contains("Current priority class: Normal")) << hovered;
+#else
+    EXPECT_TRUE(hovered.contains("Current nice value: 0")) << hovered;
+#endif
+}
+
+TEST_F(ProcessActionsBlockRenderTest, BesideTheIoPriorityRowThePriorityRowKeepsItsLabel)
+{
+    // Linux's two rows stay told apart: the header, the nice row's "Priority" label and "I/O priority".
+    Harness h;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(WITH_IO_PRIORITY), layoutFor(WITH_IO_PRIORITY, 1000.0F), 0.0F);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_TRUE(ProcessPriorityView::labelsRows(WITH_IO_PRIORITY));
+    EXPECT_EQ(occurrences(text, "Priority"), 2U) << text; // The header and the nice row's label
+    EXPECT_TRUE(text.contains("I/O priority")) << text;
+}
+
+TEST_F(ProcessActionsBlockRenderTest, OnARowTallerThanItTheActionsCardCentresItsButtonsUnderTheHeader)
+{
+    // The issue (#1874): beside Identity and Runtime the Actions card is the row's height, and its one
+    // row of buttons sat at the top over a block of empty card. They are now centred in the room under
+    // the header, as much card above them as below, and the height reported stays their own.
+    Harness h;
+    const auto layout = renderBlock(h, PRIORITY_ONLY_ROW, 1900.0F, INFO_ROW, 8.0F);
+    ASSERT_TRUE(layout.besideInfo);
+    const ImGuiWindow* card = actionsWindow();
+    ASSERT_NE(card, nullptr);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ASSERT_GT(lastCardHeight, lastHeights.actions + ImGui::GetFrameHeight()); // Room enough to show it
+
+    // In the card's own coordinates: where the rows end as drawn, and where they would end at the top.
+    const float rowsBottom = style.WindowPadding.y + card->ContentSize.y;
+    const float topAlignedBottom = lastHeights.actions - style.WindowPadding.y;
+    const float above = rowsBottom - topAlignedBottom; // The offset added under the header
+    const float below = (card->Size.y - style.WindowPadding.y) - rowsBottom;
+    EXPECT_GT(above, 0.0F);
+    EXPECT_NEAR(above, below, 1.5F);
+    EXPECT_FLOAT_EQ(card->ScrollMax.y, 0.0F);
+    // The header is still at the top, where every card's is.
+    EXPECT_LT(lastHeights.actions, lastCardHeight);
+}
+
+TEST_F(ProcessActionsBlockRenderTest, SizedToTheirContentTheCardsAddNoOffset)
+{
+    // Stacked in a narrow pane each card is as tall as its content: nothing to centre in.
+    Harness h;
+    const auto layout = renderBlock(h, PRIORITY_ONLY_ROW, 120.0F, INFO_ROW, 0.0F);
+    ASSERT_FALSE(layout.priorityBesideActions);
+    const ImGuiWindow* card = actionsWindow();
+    ASSERT_NE(card, nullptr);
+    EXPECT_NEAR(card->Size.y, lastHeights.actions, 1.0F);
+}
+
 // --- Trace system calls (#182) ---------------------------------------------------------------------
 
 /// The four buttons and the priority row with the trace button in @p availability.

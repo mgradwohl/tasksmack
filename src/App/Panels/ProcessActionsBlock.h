@@ -83,8 +83,11 @@ struct Heights
 /// Draws the cards at the cursor, each a ProcessOverviewCard (#1537) as wide as @p layout says (a
 /// card of width 0 is not drawn): Actions -- the "Actions" header, the button row and the result
 /// line -- then Priority -- the "Priority" header and the priority row(s) -- to its right
-/// (layout.priorityBesideActions) or under it. Both are @p cardHeight tall when it is positive, so
-/// they share the edges of the row they are on, and as tall as their content when it is 0. Text in
+/// (layout.priorityBesideActions) or under it. The priority row has no label of its own unless the
+/// I/O priority row is under it to tell it from; otherwise the header is its label and shows the
+/// current priority on hover (#1874). Both cards are @p cardHeight tall when it is positive, so they
+/// share the edges of the row they are on, with their rows centred down the room under the header
+/// (#1874), and as tall as their content when it is 0. Text in
 /// them (the result and error lines) wraps at the card's edge rather than being clipped. The caller
 /// puts the cursor beside Runtime first (ImGui::SameLine()) when layout.besideInfo.
 ///
