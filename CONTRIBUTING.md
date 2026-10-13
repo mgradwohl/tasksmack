@@ -419,6 +419,35 @@ ctest --preset debug
 ctest --preset win-debug
 ```
 
+ctest runs each Google Test **suite** as one entry, in one process (#1871), not each case: on Windows,
+starting a process for each of the ~5,000 cases took most of the test time. `cmake/GTestSuites.cmake`
+registers the entries from the binaries' suite lists when they link. `ctest -R` matches suite names, and
+`-L gtest` / `-LE gtest` picks or skips all of them (the script tests have no `gtest` label):
+
+```bash
+ctest --preset debug -R ProcessModelTest       # one suite (ApplicationTest runs as ApplicationTest/shard1of3 ...)
+ctest --preset debug -LE gtest                 # only the script tests (BenchScript, TidyCacheScript, ...)
+```
+
+To run one case, or a pattern of them, run the binary with `--gtest_filter`:
+
+```bash
+build/debug/tests/TaskSmackTests --gtest_filter='ProcessModelTest.WhenConstructedWithNullProbe'
+build\win-debug\tests\TaskSmackTests.exe --gtest_filter=ProcessModelTest.*Gpu*
+```
+
+- **Output and results.** `--output-on-failure` prints the whole suite's gtest output. Each entry also
+  writes gtest's own XML report, one testcase per case, to `build/<preset>/gtest-results/`. CI folds
+  those into one JUnit file (`tools/merge-gtest-results.py`) for the Job Summary and the test-results
+  artifact, so each case is still listed.
+- **Isolation.** Cases in one suite share a process. A case must not depend on running alone, or leave
+  state behind that breaks the next case (a static, an environment variable, a library left loaded).
+- **Timeouts.** An entry's 300 s `TIMEOUT` covers its whole suite.
+- **Options.** `tasksmack_gtest_add_suites()` takes `SHARDS <Suite>=<n>` to split a slow suite into `n`
+  entries (via gtest's own sharding), `ISOLATE <Suite>` to run each case of a suite in its own process,
+  as `gtest_discover_tests()` did, and `SUITE_PROPERTIES <Suite> <name> <value>` for one suite's entries
+  (the suites that read back the Windows system clipboard share a `RESOURCE_LOCK`).
+
 ### Integration tests
 
 Integration tests live under `tests/Integration/` and are built into the main test target (so they run via the same `ctest --preset ...` commands). Some integration tests are OS-specific and are conditionally included/skipped depending on platform.

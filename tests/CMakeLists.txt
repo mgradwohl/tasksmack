@@ -53,7 +53,8 @@ foreach(_gtest_target gtest gtest_main gmock gmock_main)
     endif()
 endforeach()
 
-include(GoogleTest)
+# tasksmack_gtest_add_suites(): one ctest entry per gtest suite, not per case (#1871)
+include(../cmake/GTestSuites.cmake)
 
 if(WIN32)
     find_program(TASKSMACK_PWSH NAMES pwsh)
@@ -117,6 +118,10 @@ set_tests_properties(TidyChangedFilesScript PROPERTIES TIMEOUT 600)
 # tools/tidy-cache.py keys the clang-tidy jobs' per-file result cache (#1785).
 add_test(NAME TidyCacheScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_tidy_cache.py)
+
+# tools/merge-gtest-results.py folds the per-suite entries' gtest reports into CI's JUnit report (#1871).
+add_test(NAME MergeGtestResultsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_gtest_results.py)
 
 # tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
 add_test(NAME CoverageMismatchesScript
@@ -757,13 +762,17 @@ if(TASKSMACK_ENABLE_PCH)
     target_precompile_headers(TaskSmackTests PRIVATE ${TASKSMACK_TEST_PCH_HEADERS})
 endif()
 
-# Increase test discovery timeout on Windows runners to avoid spurious timeouts
-# when the test executable links many platform libraries and starts slowly.
-if(WIN32)
-    gtest_discover_tests(TaskSmackTests
-        DISCOVERY_TIMEOUT 30
-    )
-else()
+# One ctest entry per gtest suite, not per case (#1871): see cmake/GTestSuites.cmake. Most suites take
+# well under a second in one Windows debug process. ApplicationTest, about 12 s of many cases that
+# each open a window, is split so it isn't a long pole for `ctest -j`. The next slowest are about 8 s
+# and are one or two slow cases (SyntheticWorkloadTest.SystemBusyCoversProcessWorkWithinCapacity,
+# WindowsSystemInfoProbeTest's driver reads), which shards would not split.
+#
+# An entry's TIMEOUT covers its whole suite, so it is set here rather than left to the CI steps'
+# per-entry --timeout (60 s, 120 s under the sanitizers), which was sized for one case: a suite under
+# TSan can run several times its debug time. It still ends a hung suite.
+set(TASKSMACK_GTEST_PROPERTIES TIMEOUT 300)
+if(NOT WIN32)
     # Prepend the mocks directory to LD_LIBRARY_PATH before the test process starts so
     # dlopen("libnvidia-ml.so.1") and dlopen("librocm_smi64.so.6") find the mock shared
     # libraries built in the mocks/ directory. The dynamic linker caches LD_LIBRARY_PATH at
@@ -771,11 +780,19 @@ else()
     # path must be injected via CTest's ENVIRONMENT_MODIFICATION test property.
     # ENVIRONMENT_MODIFICATION prepends rather than replacing, preserving any SDL/driver/system
     # library paths already set by the developer or CI runner.
-    gtest_discover_tests(TaskSmackTests
-        PROPERTIES
-            ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}/mocks"
-    )
+    list(APPEND TASKSMACK_GTEST_PROPERTIES
+        ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}/mocks")
 endif()
+# On Windows, ImGui's clipboard is the system clipboard, which every process shares: suites that
+# copy and read it back take turns, or one reads what another just wrote.
+tasksmack_gtest_add_suites(TaskSmackTests
+    SHARDS ApplicationTest=3
+    PROPERTIES ${TASKSMACK_GTEST_PROPERTIES}
+    SUITE_PROPERTIES
+        HistoryChartCsvRenderTest RESOURCE_LOCK clipboard
+        ProcessesPanelRenderTest RESOURCE_LOCK clipboard
+        SystemInfoPanelRenderTest RESOURCE_LOCK clipboard
+)
 
 # The real UI::Theme (#1547), in its own executable: TaskSmackTests links Mocks/ThemeStub.cpp, which
 # defines the same symbols, so Theme.cpp can't be linked there. Headless ImGui/ImPlot, no SDL or GL.
@@ -796,7 +813,7 @@ target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_D
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
 tasksmack_apply_text_encoding(TaskSmackThemeTests)
-gtest_discover_tests(TaskSmackThemeTests DISCOVERY_TIMEOUT 30)
+tasksmack_gtest_add_suites(TaskSmackThemeTests PROPERTIES TIMEOUT 300)
 
 # Tests that need the whole app (#1395): a real Core::Application with the real UI::Theme, UILayer and
 # TitleBarLayer on a display. Built from the app's own objects (TaskSmackApp, everything but main()),
@@ -811,7 +828,9 @@ tasksmack_configure_app_target(TaskSmackAppTests)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
 target_link_libraries(TaskSmackAppTests PRIVATE gtest)
 target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
-gtest_discover_tests(TaskSmackAppTests DISCOVERY_TIMEOUT 30)
+# Each case in its own process, as gtest_discover_tests() ran them: on Windows a second whole shell in
+# one process crashed in a performance-counter DLL's teardown (bitsperf.dll, #1898).
+tasksmack_gtest_add_suites(TaskSmackAppTests ISOLATE UiLayersOnDisplayTest)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small

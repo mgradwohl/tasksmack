@@ -1,0 +1,145 @@
+# One ctest entry per Google Test suite (#1871), instead of the one entry per test case that
+# gtest_discover_tests() registers. Each entry runs `<binary> --gtest_filter=<Suite>.*`, so the
+# ~5,000 cases start ~540 processes rather than ~5,000; on Windows process start-up was most of
+# the CI Test step.
+#
+#   tasksmack_gtest_add_suites(<target>
+#       [DISCOVERY_TIMEOUT <seconds>]               # for `<binary> --gtest_list_tests`; default 30
+#       [SHARDS <Suite>=<n> ...]                    # split a slow suite into n entries
+#       [ISOLATE <Suite> ...]                       # one entry, and process, per case, as before
+#       [PROPERTIES <name> <value> ...]             # set on every entry
+#       [SUITE_PROPERTIES <Suite> <name> <value> ...])  # set on one suite's entries; no ';' in values
+#
+# Entries are named after the suite (`ctest -R ProcessModelTest`); a sharded suite registers
+# `<Suite>/shard<i>of<n>`, and gtest's own sharding (GTEST_TOTAL_SHARDS / GTEST_SHARD_INDEX) picks
+# each shard's cases, round-robin over the suite. An isolated suite registers `<Suite>.<Case>`
+# entries, for cases that can't share a process. Every entry carries the label `gtest` and writes
+# gtest's XML report, one testcase per case, to <build>/gtest-results/<entry>.xml (the entry name
+# with every character other than [A-Za-z0-9_] replaced by `_`). tools/merge-gtest-results.py
+# folds those into ctest's --output-junit file, so CI still reports each case. Run one case with
+# the binary itself: `<build>/tests/TaskSmackTests --gtest_filter=Suite.Case`.
+#
+# As with gtest_discover_tests() (POST_BUILD mode), the suite list is read when the target is
+# linked: a post-build step writes it to <target>_suites.cmake, and a ctest include file turns it
+# into entries each time ctest runs. Until the target is built, ctest shows a failing
+# <target>_NOT_BUILT entry.
+
+set(_TASKSMACK_GTEST_SUITES_LIST_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/GTestSuitesList.cmake")
+
+function(tasksmack_gtest_add_suites target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "DISCOVERY_TIMEOUT" "SHARDS;ISOLATE;PROPERTIES;SUITE_PROPERTIES")
+    if(arg_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "tasksmack_gtest_add_suites: unknown arguments ${arg_UNPARSED_ARGUMENTS}")
+    endif()
+    if(NOT arg_DISCOVERY_TIMEOUT)
+        set(arg_DISCOVERY_TIMEOUT 30)
+    endif()
+    # The shard variables go in ENVIRONMENT; a caller's own ENVIRONMENT would replace them.
+    if(arg_SHARDS AND ("ENVIRONMENT" IN_LIST arg_PROPERTIES OR "ENVIRONMENT" IN_LIST arg_SUITE_PROPERTIES))
+        message(FATAL_ERROR "tasksmack_gtest_add_suites: SHARDS sets ENVIRONMENT; pass ENVIRONMENT_MODIFICATION instead")
+    endif()
+
+    set(suites_file "${CMAKE_CURRENT_BINARY_DIR}/${target}_suites.cmake")
+    set(include_file "${CMAKE_CURRENT_BINARY_DIR}/${target}_suites_include.cmake")
+    set(xml_dir "${CMAKE_BINARY_DIR}/gtest-results")
+
+    add_custom_command(TARGET ${target} POST_BUILD
+        BYPRODUCTS "${suites_file}"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DTEST_EXECUTABLE=$<TARGET_FILE:${target}>"
+            "-DTEST_WORKING_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DDISCOVERY_TIMEOUT=${arg_DISCOVERY_TIMEOUT}"
+            "-DSUITES_FILE=${suites_file}"
+            -P "${_TASKSMACK_GTEST_SUITES_LIST_SCRIPT}"
+        VERBATIM)
+
+    # SHARDS as two parallel lists the include file can walk: suite names and shard counts.
+    set(shard_suites "")
+    set(shard_counts "")
+    foreach(spec IN LISTS arg_SHARDS)
+        if(NOT spec MATCHES "^([^=]+)=([1-9][0-9]*)$")
+            message(FATAL_ERROR "tasksmack_gtest_add_suites: SHARDS entry '${spec}' is not <Suite>=<n>")
+        endif()
+        list(APPEND shard_suites "${CMAKE_MATCH_1}")
+        list(APPEND shard_counts "${CMAKE_MATCH_2}")
+        if(CMAKE_MATCH_1 IN_LIST arg_ISOLATE)
+            message(FATAL_ERROR "tasksmack_gtest_add_suites: ${CMAKE_MATCH_1} is in both SHARDS and ISOLATE")
+        endif()
+    endforeach()
+
+    # Each property name and value as its own bracket argument, so values keep their spaces and ';'.
+    set(props "LABELS [==[gtest]==]")
+    foreach(item IN LISTS arg_PROPERTIES)
+        string(APPEND props " [==[${item}]==]")
+    endforeach()
+
+    # SUITE_PROPERTIES as one list variable per suite, _suite_props_<target>_<suite>.
+    string(MAKE_C_IDENTIFIER "${target}" target_id)
+    set(suite_props "")
+    list(LENGTH arg_SUITE_PROPERTIES count)
+    math(EXPR remainder "${count} % 3")
+    if(NOT remainder EQUAL 0)
+        message(FATAL_ERROR "tasksmack_gtest_add_suites: SUITE_PROPERTIES takes <Suite> <name> <value> triples")
+    endif()
+    while(arg_SUITE_PROPERTIES)
+        list(POP_FRONT arg_SUITE_PROPERTIES suite name value)
+        string(MAKE_C_IDENTIFIER "${suite}" suite_id)
+        string(APPEND suite_props "list(APPEND _suite_props_${target_id}_${suite_id} [==[${name}]==] [==[${value}]==])\n")
+    endwhile()
+
+    file(GENERATE OUTPUT "${include_file}" CONTENT
+"# Generated by tasksmack_gtest_add_suites() (cmake/GTestSuites.cmake); do not edit.
+if(NOT EXISTS [==[${suites_file}]==])
+  add_test([==[${target}_NOT_BUILT]==] [==[${target}_NOT_BUILT]==])
+  return()
+endif()
+include([==[${suites_file}]==])
+set(_shard_suites [==[${shard_suites}]==])
+set(_shard_counts [==[${shard_counts}]==])
+set(_isolate [==[${arg_ISOLATE}]==])
+${suite_props}foreach(_suite IN LISTS _suites)
+  string(MAKE_C_IDENTIFIER \"\${_suite}\" _id)
+  # This suite's entries: names, --gtest_filter patterns and shard indexes (0 when not sharded).
+  set(_names \"\")
+  set(_filters \"\")
+  set(_shard_indexes \"\")
+  set(_shards 1)
+  if(_suite IN_LIST _isolate)
+    foreach(_case IN LISTS _cases_\${_id})
+      list(APPEND _names \"\${_suite}.\${_case}\")
+      list(APPEND _filters \"\${_suite}.\${_case}\")
+      list(APPEND _shard_indexes 0)
+    endforeach()
+  else()
+    list(FIND _shard_suites \"\${_suite}\" _at)
+    if(_at GREATER -1)
+      list(GET _shard_counts \${_at} _shards)
+    endif()
+    foreach(_index RANGE 1 \${_shards})
+      if(_shards EQUAL 1)
+        list(APPEND _names \"\${_suite}\")
+      else()
+        list(APPEND _names \"\${_suite}/shard\${_index}of\${_shards}\")
+      endif()
+      list(APPEND _filters \"\${_suite}.*\")
+      list(APPEND _shard_indexes \${_index})
+    endforeach()
+  endif()
+  foreach(_name _filter _shard_index IN ZIP_LISTS _names _filters _shard_indexes)
+    string(MAKE_C_IDENTIFIER \"\${_name}\" _xml)
+    add_test(\"\${_name}\" [==[$<TARGET_FILE:${target}>]==] \"--gtest_filter=\${_filter}\"
+             \"--gtest_output=xml:${xml_dir}/\${_xml}.xml\")
+    set_tests_properties(\"\${_name}\" PROPERTIES WORKING_DIRECTORY [==[${CMAKE_CURRENT_BINARY_DIR}]==] ${props})
+    if(DEFINED _suite_props_${target_id}_\${_id})
+      set_tests_properties(\"\${_name}\" PROPERTIES \${_suite_props_${target_id}_\${_id}})
+    endif()
+    if(_shards GREATER 1)
+      math(EXPR _shard_index \"\${_shard_index} - 1\")
+      set_tests_properties(\"\${_name}\" PROPERTIES
+        ENVIRONMENT \"GTEST_TOTAL_SHARDS=\${_shards};GTEST_SHARD_INDEX=\${_shard_index}\")
+    endif()
+  endforeach()
+endforeach()
+")
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${include_file}")
+endfunction()
