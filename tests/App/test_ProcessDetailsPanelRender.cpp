@@ -10,8 +10,10 @@
 #include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -194,6 +196,55 @@ TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)
     EXPECT_TRUE(text.contains("Background Process")) << text;
     EXPECT_TRUE(text.contains("Container")) << text;
     EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f")) << text;
+}
+
+// #1878: what the Processes table shows is on Process Details too: Status joined to State, Affinity in
+// Identity, the cumulative Page Faults and Mem % in the Resources and Memory value strips; each only where
+// the platform reads it.
+TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercentAreShown)
+{
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasStatus = true;
+    caps.hasCpuAffinity = true;
+    caps.hasPageFaults = true;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+    for (int second = 0; second < 5; ++second)
+    {
+        Domain::ProcessSample sample = sampleAt(static_cast<double>(second), 10.0);
+        auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->status = "Suspended";
+        snapshot->cpuAffinity = Platform::CpuAffinity::fromMask(0x0FU);
+        snapshot->pageFaults = 4321;
+        snapshot->memoryPercent = 1.5;
+        sample.snapshot = std::move(snapshot);
+        const std::vector samples{sample};
+        panel->updateWithSamples(samples, 1.0F);
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Running \xC2\xB7 Suspended")) << text;
+    EXPECT_TRUE(text.contains("Affinity")) << text;
+    EXPECT_TRUE(text.contains("0-3")) << text;
+    EXPECT_TRUE(text.contains("Page Faults (total)")) << text;
+    EXPECT_TRUE(text.contains("4,321") || text.contains("4321")) << text;
+    EXPECT_TRUE(text.contains("Mem %")) << text;
+    EXPECT_TRUE(text.contains("1.5%")) << text;
+
+    // Where the platform reads none of them: no Affinity row, no total, the State alone.
+    panel->setProcessCapabilities({});
+    Domain::ProcessSample later = sampleAt(5.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*later.snapshot);
+    snapshot->status = "Suspended";
+    later.snapshot = std::move(snapshot);
+    const std::vector samples{later};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_FALSE(text.contains("Suspended")) << text;
+    EXPECT_FALSE(text.contains("Affinity")) << text;
+    EXPECT_FALSE(text.contains("Page Faults (total)")) << text;
 }
 
 // #1395: a shorter history window trims the history already held, so the charts span the new window.

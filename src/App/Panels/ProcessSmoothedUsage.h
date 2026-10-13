@@ -70,9 +70,9 @@ struct ProcessSmoothedUsage
     // was (not eased toward 0) and the NowBar shows N/A, as the line shows a gap (#1148).
     bool gdiInitialized = false;
     // Memory bars, in bytes like the Memory chart (#1195); Used is residentBytes above. Their share
-    // of system RAM is shown only in the hover text, via memoryPercentPerByte.
+    // of system RAM is in their hover text and the strip's Mem % (#1878), via memoryPercentPerByte.
     double memorySharedBytes = 0.0;
-    double memoryPercentPerByte = 0.0; ///< Latest, not smoothed: converts bytes to a share of RAM
+    double memoryPercentPerByte = 0.0; ///< Latest, not smoothed: converts bytes to a share of RAM (also the Memory strip's Mem %, #1878)
     bool initialized = false;          ///< Set by the first update(); cleared by reset()
 
     /// Back to the defaults, so the next update() starts from its sample instead of easing from the

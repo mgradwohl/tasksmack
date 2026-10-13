@@ -233,6 +233,7 @@ ProcessChartContext ProcessDetailsPanel::chartContext() const
         .rateReadings = m_CachedRateReadings,
         .hasSharedMemory = m_ProcessCapabilities.hasSharedMemory,
         .hasPowerUsage = m_ProcessCapabilities.hasPowerUsage,
+        .hasPageFaults = m_ProcessCapabilities.hasPageFaults,
     };
 }
 
@@ -488,6 +489,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             "Publisher",
             "Type",
             "Container",
+            "Affinity",
         });
 
         // Measured, with the em-scaled gap every label column has (UI::LineLayout::labelColumnWidth()),
@@ -557,6 +559,11 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
                 ImGui::PopStyleColor();
                 ImGui::TableNextColumn();
                 rightAlignedText(row.value, row.color);
+                // A value wider than its column (a long affinity list, #1878) is clipped: its tooltip has it all.
+                if (ImGui::CalcTextSize(row.value.data(), row.value.data() + row.value.size()).x > ImGui::GetColumnWidth())
+                {
+                    ImGui::SetItemTooltip("%.*s", static_cast<int>(row.value.size()), row.value.data());
+                }
             }
 
             ImGui::EndTable();
@@ -596,6 +603,15 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         }
         fresh.cpuTime = UI::Format::formatDuration(proc.cpuTimeSeconds);
         fresh.priority = Detail::priorityDisplayText(proc.nice, Detail::PRIORITY_USES_WINDOWS_CLASSES); // No nice on Windows (#1204)
+        // The Processes table's Status column (Suspended, Efficiency Mode) joins the State it qualifies,
+        // as the Runtime card is full (#1878).
+        fresh.state = proc.displayState;
+        if (m_ProcessCapabilities.hasStatus && !proc.status.empty())
+        {
+            fresh.state += (fresh.state.empty() ? "" : " \xC2\xB7 ") + proc.status; // a middle dot
+        }
+        // An empty affinity was not read (another user's process), as the Affinity column says.
+        fresh.affinity = proc.cpuAffinity.empty() ? std::string("N/A") : UI::Format::formatCpuAffinity(proc.cpuAffinity.words());
         fresh.keepAlive = ownedSnapshot ? m_CachedSnapshot : nullptr;
         fresh.key = ownedSnapshot ? &proc : nullptr;
         text = std::move(fresh);
@@ -614,11 +630,16 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     {
         identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
     }
+    if (m_ProcessCapabilities.hasCpuAffinity)
+    {
+        // The Processes table's Affinity column (#1878); a long list is clipped, its tooltip in full.
+        identityRows.add({.label = "Affinity", .value = text.affinity, .color = theme.scheme().textPrimary});
+    }
 
     // Build runtime rows (conditionally include Type if available)
     InfoRows runtimeRows;
     // Same name as the table's State column (#1203)
-    runtimeRows.add({.label = "State", .value = proc.displayState, .color = processStateColor(proc.displayState, theme.scheme())});
+    runtimeRows.add({.label = "State", .value = text.state, .color = processStateColor(proc.displayState, theme.scheme())});
     runtimeRows.add({.label = "Threads", .value = text.threads, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = handleLabel, .value = text.handles, .color = theme.scheme().textPrimary});
     runtimeRows.add({.label = "CPU Time", .value = text.cpuTime, .color = theme.scheme().textPrimary});

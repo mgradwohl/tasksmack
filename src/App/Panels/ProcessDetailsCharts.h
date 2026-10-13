@@ -48,6 +48,7 @@ struct ProcessChartContext
     Detail::SampleRateReadings rateReadings;
     bool hasSharedMemory = false; ///< ProcessCapabilities::hasSharedMemory: draw the Shared line (#1035)
     bool hasPowerUsage = false;   ///< ProcessCapabilities::hasPowerUsage: draw the Power chart (#1028)
+    bool hasPageFaults = false;   ///< ProcessCapabilities::hasPageFaults: the Resources strip's total (#1878)
 };
 
 /// The chart tabs' content for the process Process Details shows.

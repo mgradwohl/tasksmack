@@ -231,6 +231,8 @@ class ProcessDetailsPanel : public Panel
         std::string handles;
         std::string cpuTime;
         std::string priority;
+        std::string state;    ///< The State with its Status: "Sleeping · Suspended" (#1878)
+        std::string affinity; ///< The CPUs it may run on, as the Affinity column writes them (#1878)
     } m_BasicInfoText;
     // The Overview's state for the shared chart-height rule (#959); the Network and GPU tabs' are
     // m_Charts'.
