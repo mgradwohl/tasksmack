@@ -176,6 +176,24 @@ TEST(LinuxOsInfoTest, VirtualizationHints)
     EXPECT_EQ(virtualizationHint(root.path()), "Container (Podman)");
 }
 
+// #2004: WSL 2 is a Hyper-V VM with no DMI at all, so its kernel release names it; WSL 1 is not a VM. A
+// VM no vendor names shows by the CPU's hypervisor flag.
+TEST(LinuxOsInfoTest, WslAndUnnamedHypervisorsAreVirtualMachines)
+{
+    const FixtureRoot root;
+    root.write("proc/cpuinfo", "processor\t: 0\nflags\t\t: fpu vme de pse tsc msr sse2 ht\n");
+    EXPECT_EQ(virtualizationHint(root.path()), "None detected") << "bare metal: no hypervisor flag";
+    root.write("proc/cpuinfo", "processor\t: 0\nflags\t\t: fpu vme de pse tsc hypervisor sse2\n");
+    EXPECT_EQ(virtualizationHint(root.path()), "Virtual machine");
+    root.write("proc/sys/kernel/osrelease", "4.4.0-19041-Microsoft\n");
+    EXPECT_EQ(virtualizationHint(root.path()), "Windows Subsystem for Linux (WSL 1)");
+    root.write("proc/sys/kernel/osrelease", "6.18.54.1-microsoft-standard-WSL2\n");
+    EXPECT_EQ(virtualizationHint(root.path()), "Virtual machine (WSL 2)");
+    // A named hypervisor still wins.
+    root.write("sys/class/dmi/id/sys_vendor", "QEMU");
+    EXPECT_EQ(virtualizationHint(root.path()), "Virtual machine (QEMU)");
+}
+
 void writeDmi(const FixtureRoot& root)
 {
     const std::string dmi = "sys/class/dmi/id/";

@@ -160,7 +160,9 @@ struct OsRelease
 }
 
 /// A container or VM hint, all unprivileged: Podman's /run/.containerenv, Docker's /.dockerenv, then
-/// the DMI system vendor and product names known hypervisors set. "None detected" otherwise.
+/// the DMI system vendor and product names known hypervisors set, then WSL's kernel release (WSL 2 is a
+/// Hyper-V VM without DMI, #2004), then the CPU's hypervisor flag (a VM of no hypervisor named above).
+/// "None detected" otherwise.
 [[nodiscard]] inline std::string virtualizationHint(const std::filesystem::path& root)
 {
     std::error_code ec;
@@ -188,6 +190,26 @@ struct OsRelease
         if (dmi.contains(needle))
         {
             return std::string(label);
+        }
+    }
+    // WSL's kernels name themselves: "...-microsoft-standard-WSL2" (WSL 2, a VM), "...-Microsoft" (WSL 1,
+    // a translation layer, not a VM).
+    if (const std::string release = readLine(root / "proc/sys/kernel/osrelease");
+        release.contains("microsoft") || release.contains("Microsoft"))
+    {
+        return release.contains("WSL2") ? "Virtual machine (WSL 2)" : "Windows Subsystem for Linux (WSL 1)";
+    }
+    // The flag every hypervisor sets in the guest's CPUID: a VM, though not one named above.
+    std::ifstream cpuinfo(root / "proc/cpuinfo");
+    for (std::string line; std::getline(cpuinfo, line);)
+    {
+        if (line.starts_with("flags"))
+        {
+            if (line.contains(" hypervisor"))
+            {
+                return "Virtual machine";
+            }
+            break; // Every CPU lists the same flags
         }
     }
     return "None detected";
