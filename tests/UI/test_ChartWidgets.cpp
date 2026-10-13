@@ -1496,9 +1496,18 @@ TEST(ChartWidgetsFormattersTest, CountAxisDecimalFollowsTheRoundedDigits)
     EXPECT_EQ(axisLabel(formatAxisLocalized, 1'940'000.0), "1.9M");
     EXPECT_EQ(axisLabel(formatAxisLocalized, -1'500'000.0), "-1.5M");
     EXPECT_EQ(axisLabel(formatAxisLocalized, -2'000'000.0), "-2M");
-    EXPECT_EQ(Detail::countAxisDecimals(200.0, false), 0);
-    EXPECT_EQ(Detail::countAxisDecimals(2.0, true), 0);
-    EXPECT_EQ(Detail::countAxisDecimals(1.5, true), 1);
+    // The tenths go only when they are 0 after the locale's decimal mark.
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("2.0", 3, '.'), 1U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("1.5", 3, '.'), 3U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("2,0", 3, ','), 1U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("2.0", 3, ','), 3U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("200", 3, '.'), 3U);
+    EXPECT_EQ(Detail::lengthWithoutZeroTenths("0", 1, '.'), 1U);
+
+    // "2K" fits a 3-byte buffer although "2.0", written first, does not.
+    std::array<char, 3> small{};
+    EXPECT_EQ(formatAxisLocalized(2'000.0, small.data(), static_cast<int>(small.size()), nullptr), 2);
+    EXPECT_EQ(std::string(small.data()), "2K");
 }
 
 TEST(ChartWidgetsFormattersTest, CountAxisLabelsLargeValuesWithTheirGroupingAndNoDecimal)
