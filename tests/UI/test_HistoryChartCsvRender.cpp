@@ -3,6 +3,7 @@
 /// the item, and the next frame's series -- whole, as they were handed to the chart, the real values
 /// a stacked chart registers with exportSeries() rather than its drawn tops -- are on the clipboard.
 
+#include "Mocks/FakeClipboard.h"
 #include "UI/ChartWidgets.h"
 
 #include <gtest/gtest.h>
@@ -30,6 +31,7 @@ class HistoryChartCsvRenderTest : public ::testing::Test
     {
         m_ImGui = ImGui::CreateContext();
         m_ImPlot = ImPlot::CreateContext();
+        m_Clipboard.install(); // never the system clipboard, which other processes share (#1890)
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
@@ -38,7 +40,6 @@ class HistoryChartCsvRenderTest : public ::testing::Test
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
         io.Fonts->AddFontDefault();
-        ImGui::SetClipboardText("");
     }
 
     void TearDown() override
@@ -102,6 +103,7 @@ class HistoryChartCsvRenderTest : public ::testing::Test
     }
 
   private:
+    TestMocks::FakeClipboard m_Clipboard;
     ImGuiContext* m_ImGui = nullptr;
     ImPlotContext* m_ImPlot = nullptr;
 };

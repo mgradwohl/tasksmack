@@ -11,6 +11,7 @@
 #include "Core/ApplicationEvents.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Domain/SystemInfoModel.h"
+#include "Mocks/FakeClipboard.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -199,6 +200,7 @@ class SystemInfoPanelRenderTest : public ::testing::Test
     {
         m_Context = ImGui::CreateContext();
         m_PlotContext = ImPlot::CreateContext(); // the Sensors rows' charts (#1522)
+        m_Clipboard.install();                   // never the system clipboard (#1890)
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
@@ -311,6 +313,7 @@ class SystemInfoPanelRenderTest : public ::testing::Test
     std::unique_ptr<SystemInfoPanel> m_Panel;
 
   private:
+    TestMocks::FakeClipboard m_Clipboard;
     ImGuiContext* m_Context = nullptr;
     ImPlotContext* m_PlotContext = nullptr;
 };
