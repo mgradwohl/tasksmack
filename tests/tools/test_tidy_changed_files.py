@@ -87,6 +87,12 @@ class TidyChangedFilesTest(unittest.TestCase):
         run_git(cls.template, "config", "user.email", "test@example.invalid")
         run_git(cls.template, "config", "user.name", "Test")
         run_git(cls.template, "config", "core.autocrlf", "false")
+        # No background housekeeping: after a commit git can start "git maintenance --auto" detached, which
+        # holds .git/objects/maintenance.lock for a moment -- copytree() below then listed a lock file that
+        # was gone by the time it was copied (#1847). The copies inherit this config, so their commits
+        # don't start it either.
+        run_git(cls.template, "config", "maintenance.auto", "false")
+        run_git(cls.template, "config", "gc.auto", "0")
         write_file(cls.template, "CMakeLists.txt", ROOT_CMAKE)
         for path, text in FILES.items():
             write_file(cls.template, path, text)
@@ -100,7 +106,8 @@ class TidyChangedFilesTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self._tmp.name) / "repo"
-        shutil.copytree(self.template, self.repo)
+        # Lock files are transient by nature; never copy one (#1847).
+        shutil.copytree(self.template, self.repo, ignore=shutil.ignore_patterns("*.lock"))
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
