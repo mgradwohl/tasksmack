@@ -128,7 +128,11 @@ class TitleBarDriverLayer : public Core::Layer
         case SETTLE + (7 * STEP):
             m_Observed.maximizedAfterRestore = window.isMaximized();
             // Unlabelled when the chrome icon font loaded, labelled when it fell back; one of them exists.
+            // Pressed on separate frames: ActivateItemByID() keeps only the last request of a frame, so
+            // pressing both at once only ever pressed the labelled one (#1954).
             press("##Close");
+            break;
+        case SETTLE + (7 * STEP) + 1:
             press(ICON_FA_XMARK "##Close");
             break;
         default:
@@ -832,11 +836,17 @@ class ShellDriverLayer : public Core::Layer
         {
             return;
         }
-        if (!m_ClosePressed)
+        // The unlabelled Close (chrome icon font) on one frame and the labelled one on the next: one
+        // ActivateItemByID() request per frame is kept (#1954).
+        if (m_ClosePresses == 0)
         {
-            m_ClosePressed = true;
             pressOnTitleBar("##Close");
+            ++m_ClosePresses;
+        }
+        else if (m_ClosePresses == 1)
+        {
             pressOnTitleBar(ICON_FA_XMARK "##Close");
+            ++m_ClosePresses;
         }
     }
 
@@ -884,7 +894,7 @@ class ShellDriverLayer : public Core::Layer
 
     ShellObserved& m_Observed;
     int m_F1ReleaseFrame = 0; // 0 until F1 is pressed
-    bool m_ClosePressed = false;
+    int m_ClosePresses = 0;
 };
 
 TEST(UiLayersOnDisplayTest, TheWholeShellShowsEachTabAndSavesItsConfigOnClose)

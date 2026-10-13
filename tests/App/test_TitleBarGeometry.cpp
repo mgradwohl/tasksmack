@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -1208,6 +1210,56 @@ TEST(TitleBarGeometryTest, ContentMinimumIgnoresUnusableInputs)
     const float nan = std::numeric_limits<float>::quiet_NaN();
     EXPECT_FLOAT_EQ(computeContentMinimumWidth(nan, -5.0F, nan, -1.0F), 0.0F);
     EXPECT_FLOAT_EQ(computeContentMinimumWidth(0.0F, 0.0F, 10.0F, 0.0F), 150.0F);
+}
+
+// ========== Main tab bar width (#1939) ==========
+
+// Each tab is its label, frame padding either side and ImGui's one pixel; then the gaps between the
+// tabs and the gutter either side of the bar.
+TEST(TitleBarGeometryTest, MainTabBarWidthIsItsTabsGapsAndInsets)
+{
+    const std::array<float, 3> labels{100.0F, 50.0F, 80.0F};
+    const MainTabBarStyle style{
+        .framePaddingXPx = 16.0F, .tabSpacingPx = 4.0F, .minTabWidthPx = 1.0F, .maxTabWidthPx = 260.0F, .insetPx = 12.0F};
+    // Tabs: 133 + 83 + 113 = 329; two gaps: 8; insets: 24.
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, style), 361.0F);
+}
+
+// A tab is never narrower than TabMinWidthBase nor wider than ImGui's widest tab.
+TEST(TitleBarGeometryTest, MainTabBarWidthHoldsEachTabToImGuisLimits)
+{
+    const std::array<float, 2> labels{2.0F, 1000.0F};
+    const MainTabBarStyle style{
+        .framePaddingXPx = 4.0F, .tabSpacingPx = 0.0F, .minTabWidthPx = 30.0F, .maxTabWidthPx = 200.0F, .insetPx = 0.0F};
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, style), 230.0F);
+    // No cap given: the long tab keeps its whole label.
+    MainTabBarStyle uncapped = style;
+    uncapped.maxTabWidthPx = 0.0F;
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, uncapped), 30.0F + 1009.0F);
+}
+
+TEST(TitleBarGeometryTest, MainTabBarWidthIgnoresUnusableInputs)
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const MainTabBarStyle style{
+        .framePaddingXPx = nan, .tabSpacingPx = -3.0F, .minTabWidthPx = nan, .maxTabWidthPx = -1.0F, .insetPx = nan};
+    const std::array<float, 2> labels{nan, 10.0F};
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(labels, style), 1.0F + 11.0F);
+    // No tabs, no bar.
+    EXPECT_FLOAT_EQ(computeMainTabBarWidth(std::array<float, 0>{}, style), 0.0F);
+}
+
+// The window's minimum width is the wider of the panels' and the tab bar's (ShellLayer): with tabs
+// wider than the panels' content, the tab bar's whole width sets the minimum.
+TEST(TitleBarGeometryTest, MinimumWidthCoversTheMainTabBar)
+{
+    const std::array<float, 6> labels{180.0F, 90.0F, 140.0F, 85.0F, 75.0F, 70.0F};
+    const MainTabBarStyle style{
+        .framePaddingXPx = 28.0F, .tabSpacingPx = 7.0F, .minTabWidthPx = 1.0F, .maxTabWidthPx = 560.0F, .insetPx = 21.0F};
+    const float tabBar = computeMainTabBarWidth(labels, style);
+    const float panels = computeContentMinimumWidth(500.0F, 100.0F, 16.0F, 60.0F);
+    ASSERT_GT(tabBar, panels);
+    EXPECT_EQ(computeMinimumWindowSize(1.75F, 0.0F, std::max(panels, tabBar)).width, static_cast<int>(std::ceil(tabBar)));
 }
 
 // The old minimum ignored the panels: at the reference scale the window went down to 200 units

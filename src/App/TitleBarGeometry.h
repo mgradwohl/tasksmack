@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <optional>
+#include <ranges>
 #include <span>
 
 namespace App
@@ -201,6 +203,50 @@ inline constexpr float MIN_PLOT_WIDTH_EM = 15.0F;
     };
     const float chartRow = atLeastZero(nowBarColumnWidthPx) + (MIN_PLOT_WIDTH_EM * atLeastZero(emPx));
     return std::max(atLeastZero(processesToolbarWidthPx), chartRow) + atLeastZero(horizontalChromePx);
+}
+
+/// Style metrics the main tab bar lays its tabs out with, in pixels (#1939).
+struct MainTabBarStyle
+{
+    float framePaddingXPx; ///< FramePadding.x pushed for the bar: either side of each label.
+    float tabSpacingPx;    ///< ImGuiStyle::ItemInnerSpacing.x: the gap between two tabs.
+    float minTabWidthPx;   ///< ImGuiStyle::TabMinWidthBase: no tab is narrower.
+    float maxTabWidthPx;   ///< ImGui's widest tab, 20 ems (TabBarCalcMaxTabWidth()); 0: no cap.
+    float insetPx;         ///< The bar's inset either side, the content gutter (ShellMetrics::CONTENT_PADDING_H).
+};
+
+/// Width the main tab bar needs to show every tab whole, its insets either side included (#1939):
+/// each tab as ImGui sizes a tab with no close button (TabItemCalcSize(): the label, frame padding
+/// either side and one pixel, at most maxTabWidthPx and at least minTabWidthPx), the spacing between
+/// them, and the inset on the left and the right. Narrower than this, ImGui shrinks the tabs and cuts
+/// their labels short. Unusable widths and metrics count as 0.
+///
+/// @param labelWidthsPx  Each tab's visible label (ImGui::CalcTextSize(label, nullptr, true).x): any
+///                       range of floats, so a caller can measure the labels as it goes, without a buffer.
+/// @param style          The bar's metrics.
+/// @return 0 with no tabs.
+template<std::ranges::input_range LabelWidths>
+    requires std::convertible_to<std::ranges::range_reference_t<LabelWidths>, float>
+[[nodiscard]] auto computeMainTabBarWidth(LabelWidths labelWidthsPx, const MainTabBarStyle& style) -> float
+{
+    const auto atLeastZero = [](const float value)
+    {
+        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
+    };
+    const float maxTab = atLeastZero(style.maxTabWidthPx);
+    float width = 0.0F;
+    bool first = true;
+    for (const float labelWidth : labelWidthsPx)
+    {
+        float tab = atLeastZero(labelWidth) + (atLeastZero(style.framePaddingXPx) * 2.0F) + 1.0F;
+        if (maxTab > 0.0F)
+        {
+            tab = std::min(tab, maxTab);
+        }
+        width += std::max(tab, atLeastZero(style.minTabWidthPx)) + (first ? 0.0F : atLeastZero(style.tabSpacingPx));
+        first = false;
+    }
+    return first ? 0.0F : width + (atLeastZero(style.insetPx) * 2.0F);
 }
 
 /// The vertical pieces the window has to show at its shortest (#1278), in pixels.

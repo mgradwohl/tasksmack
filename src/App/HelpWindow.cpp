@@ -237,8 +237,7 @@ Action render(State& state)
 
         // Escape closes it while it has focus, unless a text field (the filter) has the keyboard:
         // there Escape belongs to the field.
-        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::GetIO().WantTextInput &&
-            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        if (UI::Widgets::dialogEscapePressed())
         {
             state.open = false;
         }

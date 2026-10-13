@@ -136,8 +136,7 @@ Action render(State& state)
         // keyboard navigation on (UILayer), ImGui's own Escape handling in NewFrame() closes that
         // combo and hands focus back to this dialog within the same frame, so the same key press
         // would otherwise close the combo and then the whole dialog.
-        if (!state.comboOpenLastFrame && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-            ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+        if (!state.comboOpenLastFrame && UI::Widgets::dialogEscapePressed())
         {
             ImGui::CloseCurrentPopup();
         }

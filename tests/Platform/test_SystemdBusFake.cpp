@@ -394,6 +394,26 @@ TEST_F(SystemdBusFakeTest, WithoutUdisksSmartCantBeRead)
     EXPECT_EQ(read.error, "udisks2 isn't running, so SMART status can't be read");
 }
 
+TEST_F(SystemdBusFakeTest, AnAtaDiskMissingASmartPropertyIsAnError)
+{
+    // sdb's drive says SMART is supported but stops short of the bad-sector count: the read fails as a whole.
+    constexpr const char* PARTIAL_ATA_DRIVE = "/org/freedesktop/UDisks2/drives/Disk2";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("sdb")][UDISKS_BLOCK]["Drive"] = ObjectPath{PARTIAL_ATA_DRIVE};
+    auto& ata = props[PARTIAL_ATA_DRIVE][UDISKS_ATA];
+    ata["SmartSupported"] = true;
+    ata["SmartEnabled"] = true;
+    ata["SmartFailing"] = false;
+    ata["SmartUpdated"] = std::uint64_t{1'760'000'000};
+    ata["SmartTemperature"] = 308.15;
+    ata["SmartPowerOnSeconds"] = std::uint64_t{3'600'000};
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("sdb");
+    EXPECT_FALSE(read.smart.has_value());
+    // An unknown property isn't one of the errors put in the user's terms, so udisks2's own is passed on.
+    EXPECT_TRUE(read.error.starts_with("udisks2 couldn't be asked: ")) << read.error;
+}
+
 // #1395: what each reader says when the bus, a service or an object isn't there as expected.
 
 TEST(SystemdBusNoBusTest, WithoutASystemBusEveryReaderSaysSo)
@@ -469,6 +489,22 @@ TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromResolvedIsPassedOn)
     ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
     const LinuxNetworkAdapters::LinkDnsRead dns = SystemdBus::makeLinkDnsReader()(2);
     EXPECT_TRUE(dns.error.starts_with("systemd-resolved couldn't be asked: ")) << dns.error;
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromNetworkManagerIsPassedOn)
+{
+    m_Bus.addStringMethod(NM_PATH,
+                          NM,
+                          "GetDeviceByIpIface",
+                          [](const std::string& /*name*/) -> MethodAnswer
+                          { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
+    const LinuxNetworkAdapters::WifiLinkReader read = SystemdBus::makeWifiLinkReader();
+    const LinuxNetworkAdapters::WifiLinkRead wlan0 = read("wlan0");
+    EXPECT_FALSE(wlan0.link.has_value());
+    EXPECT_TRUE(wlan0.error.starts_with("NetworkManager couldn't be asked: ")) << wlan0.error;
+    // That answer is about one adapter: the next is still asked, not told NetworkManager stopped.
+    EXPECT_TRUE(read("wlan1").error.starts_with("NetworkManager couldn't be asked: "));
 }
 
 TEST_F(SystemdBusFakeTest, AResolvedLinkMissingItsServersOrDomainsIsAnError)
