@@ -2346,6 +2346,12 @@ inline void trimFrameCaches()
     return buffer;
 }
 
+/// The index of the sample in @p timeData (ascending plot x) nearest to the pointer at @p mouseX, for
+/// a chart's hover tooltip; ties go to the older sample. Left of the first sample there is no data:
+/// a short history leaves the rest of the window empty, so a pointer there gets nothing rather than
+/// the oldest sample, which would read as a value for a time nothing was measured (#1931). The first
+/// sample still answers within half a sample interval to its left, where it is the nearest sample.
+/// Right of the last sample the newest one answers: the window ends at "now".
 inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouseX) -> std::optional<size_t>
 {
     if (timeData.empty())
@@ -2357,6 +2363,12 @@ inline auto hoveredIndexFromPlotX(std::span<const double> timeData, double mouse
 
     if (it == timeData.begin())
     {
+        const double first = timeData.front();
+        const double halfInterval = timeData.size() > 1 ? (timeData[1] - first) * 0.5 : 0.0;
+        if (!(mouseX >= first - halfInterval)) // also rejects a NaN pointer
+        {
+            return std::nullopt;
+        }
         return 0U;
     }
 
