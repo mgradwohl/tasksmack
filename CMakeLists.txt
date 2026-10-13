@@ -224,6 +224,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxPathProvider.cpp
     src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/LinuxGPUProbe.cpp
+    src/Platform/Linux/AccelNpuProbe.cpp
     src/Platform/Linux/NVMLGPUProbe.cpp
     src/Platform/Linux/DRMGPUProbe.cpp
     src/Platform/Linux/ROCmGPUProbe.cpp

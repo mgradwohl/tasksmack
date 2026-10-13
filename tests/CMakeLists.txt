@@ -459,6 +459,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_LinuxROCmGPUProbe.cpp
     Platform/test_NetlinkSocketStats.cpp
     Platform/test_DRMGPUProbe.cpp
+    Platform/test_AccelNpuProbe.cpp
     Platform/test_LinuxProcessIconSource.cpp
 )
 set(LINUX_INTEGRATION_TEST_SOURCES
