@@ -22,6 +22,7 @@
 #include <implot_internal.h>
 
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -30,6 +31,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace App
 {
@@ -362,6 +364,70 @@ TEST_F(SystemMetricsPanelRenderTest, OverviewChartsDrawTheirHistoryAsSamplesArri
         panel->onUpdate(1.0F / 60.0F);
         static_cast<void>(renderAndCapture(*panel));
     }
+    panel->onDetach();
+}
+
+// #1891: resting the pointer on each Overview chart shows its tooltip -- CPU, Memory, Power & Battery and
+// Threads/Page Faults/Handles each list their series at the hovered sample. Each plot is found by its
+// rectangle and the pointer held there for two frames (a plot is hovered from the frame after the pointer
+// arrives), rather than swept down one line of the window, which never rested on a plot.
+TEST_F(SystemMetricsPanelRenderTest, EachOverviewChartShowsItsTooltipWhenHovered)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        [] { return SystemMetricsProbes{.system = mockSystem(), .power = mockBattery(), .disk = nullptr, .gpu = nullptr}; });
+    panel->onAttach();
+    const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel();
+    panel->setProcessModel(processes);
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+
+    // History to hover: several samples of every chart.
+    std::string text;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (int frames = 0; std::chrono::steady_clock::now() < deadline; ++frames)
+    {
+        processes->refresh();
+        panel->onUpdate(1.0F / 60.0F);
+        text = renderAndCapture(*panel);
+        if (frames > 40 && text.contains("Battery") && text.contains("Threads, Page Faults"))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImPlotContext& plots = *ImPlot::GetCurrentContext();
+    int tooltips = 0;
+    std::vector<ImRect> rects;
+    for (int i = 0; i < plots.Plots.GetBufSize(); ++i)
+    {
+        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i);
+            plot != nullptr && plot->PlotRect.GetWidth() > 4.0F && plot->PlotRect.Max.y < DISPLAY_HEIGHT && plot->PlotRect.Min.y >= 0.0F)
+        {
+            rects.push_back(plot->PlotRect);
+        }
+    }
+    ASSERT_GE(rects.size(), 4U); // CPU, memory, power, resources
+    for (const ImRect& rect : rects)
+    {
+        // Near the right edge: the newest samples.
+        io.AddMousePosEvent(rect.Max.x - 3.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+        for (int frame = 0; frame < 3; ++frame)
+        {
+            panel->onUpdate(1.0F / 60.0F);
+            static_cast<void>(renderAndCapture(*panel));
+        }
+        if (const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00"); tooltip != nullptr && tooltip->Active)
+        {
+            ++tooltips;
+        }
+    }
+    EXPECT_GE(tooltips, 4) << "of " << rects.size() << " charts";
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     panel->onDetach();
 }
 
