@@ -3,6 +3,7 @@
 #include "DetachedSpawn.h"
 #include "Domain/PriorityConfig.h"
 #include "IoPriority.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "PosixGuards.h"
 #include "PriorityErrorMessage.h"
@@ -23,6 +24,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -32,6 +34,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sched.h>
 
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill() function, csignal does not
 #include <signal.h>
@@ -266,6 +269,11 @@ int realIoprioSet(id_t tid, int ioprio)
 #endif
 }
 
+int realSetAffinity(id_t tid, std::size_t setSize, const cpu_set_t* set)
+{
+    return ::sched_setaffinity(static_cast<pid_t>(tid), setSize, set);
+}
+
 int realIoprioGet(pid_t pid)
 {
 #ifdef SYS_ioprio_get
@@ -286,6 +294,7 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .setPriority = &realSetPriority,
             .ioprioSet = &realIoprioSet,
             .ioprioGet = &realIoprioGet,
+            .setAffinity = &realSetAffinity,
             .listThreads = &realListThreads,
             .isThreadOf = &realIsThreadOf};
 }
@@ -329,6 +338,7 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
         .canSetPriority = true,
         .canSetIoPriority = true, // ioprio_set(2) (#803)
         .canSetRealtimeIoPriority = m_CanSetRealtimeIoPriority,
+        .canSetAffinity = m_Syscalls.setAffinity != nullptr, // sched_setaffinity(2) (#1887)
         .syscallTrace = syscallTrace,
     };
 }
@@ -395,6 +405,7 @@ struct ChangeWording
 
 constexpr ChangeWording NICE_WORDING{.lower = "priority", .leading = "Priority"};
 constexpr ChangeWording IO_WORDING{.lower = "I/O priority", .leading = "I/O priority"};
+constexpr ChangeWording AFFINITY_WORDING{.lower = "CPU affinity", .leading = "CPU affinity"};
 
 /// The error for a failed first listing of the target's threads, for either change.
 [[nodiscard]] ProcessActionResult threadListError(const ProcessTarget& target, std::error_code listError, ChangeWording wording)
@@ -594,6 +605,88 @@ ProcessActionResult LinuxProcessActions::setIoPriority(const ProcessTarget& targ
     }
     return reportThreadChange(
         m_Syscalls, *result, pidfd, target, IO_WORDING, setting, ioPriorityErrorMessage(result->firstError, ioClass, target.pid));
+}
+
+namespace
+{
+
+/// A CPU_ALLOC()ed cpu_set_t, freed with CPU_FREE().
+struct CpuSetDeleter
+{
+    void operator()(cpu_set_t* set) const noexcept
+    {
+        CPU_FREE(set);
+    }
+};
+
+} // namespace
+
+ProcessActionResult LinuxProcessActions::setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)
+{
+    if (target.pid <= 0)
+    {
+        return ProcessActionResult::error("Invalid PID");
+    }
+    if (cpus.empty())
+    {
+        return ProcessActionResult::error("Choose at least one CPU");
+    }
+    if (m_Syscalls.setAffinity == nullptr)
+    {
+        return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
+    }
+
+    // A dynamically sized set (CPU_ALLOC), so a CPU at 1024 or above -- past the fixed cpu_set_t -- is
+    // kept: the affinity read from Cpus_allowed_list has no width limit either (#1247).
+    const std::size_t cpuCount = cpus.words().size() * CpuAffinity::BITS_PER_WORD;
+    const std::unique_ptr<cpu_set_t, CpuSetDeleter> set(CPU_ALLOC(cpuCount));
+    if (!set)
+    {
+        return ProcessActionResult::error("Out of memory");
+    }
+    const std::size_t setSize = CPU_ALLOC_SIZE(cpuCount);
+    CPU_ZERO_S(setSize, set.get());
+    for (std::size_t cpu = 0; cpu < cpuCount; ++cpu)
+    {
+        if (cpus.test(cpu))
+        {
+            CPU_SET_S(cpu, setSize, set.get());
+        }
+    }
+    const std::string setting = std::format("{} CPUs", cpus.count());
+    spdlog::debug("Setting CPU affinity ({}) for PID {}", setting, target.pid);
+
+    // As setPriority(): sched_setaffinity(2) has no pidfd form, so the pidfd opened before the
+    // identity check is asked afterwards whether the target survived the call.
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
+    if (opened.fd < 0)
+    {
+        spdlog::warn("Failed to set CPU affinity for PID {}: {}", target.pid, opened.refusal);
+        return ProcessActionResult::error(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+
+    ProcessActionResult identity = verifyIdentity(target);
+    if (!identity.success)
+    {
+        spdlog::warn("Not setting CPU affinity for PID {}: {}", target.pid, identity.errorMessage);
+        return identity;
+    }
+
+    // Affinity is per thread, as nice is: sched_setaffinity(2) with the PID changes only the main
+    // thread, so every thread is set, threads started meanwhile included (#1887, as #1104).
+    const cpu_set_t* const cpuSet = set.get();
+    const auto result = reniceThreads(
+        target.pid,
+        m_Syscalls.listThreads,
+        [this, setSize, cpuSet](id_t tid) -> int { return m_Syscalls.setAffinity(tid, setSize, cpuSet) == 0 ? 0 : errno; },
+        m_Syscalls.isThreadOf);
+    if (!result.has_value())
+    {
+        return threadListError(target, result.error(), AFFINITY_WORDING);
+    }
+    return reportThreadChange(
+        m_Syscalls, *result, pidfd, target, AFFINITY_WORDING, setting, affinityErrorMessage(result->firstError, target.pid));
 }
 
 IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& target)

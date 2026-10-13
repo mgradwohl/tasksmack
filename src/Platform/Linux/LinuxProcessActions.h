@@ -1,14 +1,17 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "SyscallTrace.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <string_view>
 #include <system_error>
 #include <vector>
 
+#include <sched.h>
 #include <sys/types.h>
 
 namespace Platform
@@ -27,6 +30,8 @@ struct LinuxProcessSyscalls
     int (*setPriority)(id_t tid, int nice) = nullptr; ///< setpriority(PRIO_PROCESS, tid, nice)
     int (*ioprioSet)(id_t tid, int ioprio) = nullptr; ///< ioprio_set(IOPRIO_WHO_PROCESS, tid, ioprio)
     int (*ioprioGet)(pid_t pid) = nullptr;            ///< ioprio_get(IOPRIO_WHO_PROCESS, pid): the value
+    /// sched_setaffinity(tid, setSize, set): the set is a CPU_ALLOC()ed cpu_set_t of setSize bytes (#1887).
+    int (*setAffinity)(id_t tid, std::size_t setSize, const cpu_set_t* set) = nullptr;
     /// The thread IDs listed under /proc/<pid>/task, or why they couldn't be (none listed: ESRCH). Left
     /// null, the real listing is used: most tests fake only the calls above.
     std::expected<std::vector<id_t>, std::error_code> (*listThreads)(pid_t pid) = nullptr;
@@ -75,6 +80,7 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] ProcessActionResult setIoPriority(const ProcessTarget& target, IoPriorityClass ioClass, int32_t level) override;
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult launchSyscallTrace(const ProcessTarget& target) override;
+    [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
 
     /// strace and the terminal to run it in, from this process's PATH and $TERMINAL.
     [[nodiscard]] static SyscallTrace::Tools discoverSyscallTraceTools();

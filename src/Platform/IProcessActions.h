@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/CpuAffinity.h"
+
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -128,6 +130,9 @@ struct ProcessActionCapabilities
     /// The Realtime I/O class too: ioprio_set(IOPRIO_CLASS_RT) needs CAP_SYS_NICE (or CAP_SYS_ADMIN) in
     /// TaskSmack's own effective set, read once at construction (Linux only, #1540).
     bool canSetRealtimeIoPriority = false;
+    /// setAffinity(): which processors the process may run on (#1887 Linux: sched_setaffinity;
+    /// #1881 Windows).
+    bool canSetAffinity = false;
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
 };
@@ -189,6 +194,18 @@ class IProcessActions
     {
         static_cast<void>(target);
         return ProcessActionResult::error(syscallTraceUnavailableReason(SyscallTraceAvailability::Unsupported));
+    }
+
+    /// Lets the target run only on @p cpus (#1887), numbered as CpuAffinity and the per-core figures
+    /// number them; refused when @p cpus is empty. Refused, as every action is, unless the process at
+    /// the target's PID is the target. The default refuses it as unsupported, matching
+    /// ProcessActionCapabilities::canSetAffinity's default (false), which an implementation that does
+    /// not override this must leave as it is.
+    [[nodiscard]] virtual ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus)
+    {
+        static_cast<void>(target);
+        static_cast<void>(cpus);
+        return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
     }
 };
 
