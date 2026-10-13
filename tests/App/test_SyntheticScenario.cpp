@@ -9,6 +9,14 @@
 #include "Domain/SystemModel.h"
 #include "Mocks/MockDiskProbe.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/Factory.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
+#include "Platform/IProcessIconSource.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessSecurity.h"
+#include "Platform/IUdpTrafficCollector.h"
 #include "Platform/Synthetic/SyntheticProbes.h"
 #include "Platform/Synthetic/SyntheticWorkload.h"
 #include "Platform/SystemTypes.h"
@@ -21,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <typeinfo>
 #include <vector>
 
 namespace
@@ -150,6 +159,7 @@ TEST(SyntheticScenarioParseTest, BadValuesWarnAndKeepTheScenarioOn)
           Case{.value = "processes=-5", .processes = defaults.workload.processes, .cores = defaults.workload.cores},
           Case{.value = "processes=99999999999", .processes = Platform::Synthetic::MAX_PROCESSES, .cores = defaults.workload.cores},
           Case{.value = "cores=100000", .processes = defaults.workload.processes, .cores = Platform::Synthetic::MAX_CORES},
+          Case{.value = "seed=x", .processes = defaults.workload.processes, .cores = defaults.workload.cores},
           Case{.value = "colour=blue", .processes = defaults.workload.processes, .cores = defaults.workload.cores},
           Case{.value = "bogus", .processes = defaults.workload.processes, .cores = defaults.workload.cores}})
     {
@@ -228,6 +238,36 @@ TEST(SyntheticScenarioTest, WithoutAScenarioProbesAreThePlatformsOwn)
     EXPECT_EQ(App::Synthetic::startupRefreshIntervalMs(nullptr, 1000), 1000);
 }
 
+namespace
+{
+/// Whether @p made is an object of the same dynamic type as @p platforms: what Platform's factory makes.
+template<typename Interface, typename Pointer> bool sameKind(const Pointer& made, const Pointer& platforms)
+{
+    if (made == nullptr || platforms == nullptr)
+    {
+        return made == nullptr && platforms == nullptr;
+    }
+    const Interface& madeRef = *made;
+    const Interface& platformsRef = *platforms;
+    return typeid(madeRef) == typeid(platformsRef);
+}
+} // namespace
+
+TEST(SyntheticScenarioTest, WithoutAScenarioDetailReadersAreThePlatformsOwn)
+{
+    using namespace App::Synthetic;
+    EXPECT_TRUE(sameKind<Platform::IProcessIconSource>(makeProcessIconSource(nullptr), Platform::makeProcessIconSource()));
+    EXPECT_TRUE(
+        sameKind<Platform::IProcessEnvironmentReader>(makeProcessEnvironmentReader(nullptr), Platform::makeProcessEnvironmentReader()));
+    EXPECT_TRUE(
+        sameKind<Platform::IProcessConnectionsReader>(makeProcessConnectionsReader(nullptr), Platform::makeProcessConnectionsReader()));
+    EXPECT_TRUE(sameKind<Platform::IProcessModulesReader>(makeProcessModulesReader(nullptr), Platform::makeProcessModulesReader()));
+    EXPECT_TRUE(sameKind<Platform::IProcessOpenFilesReader>(makeProcessOpenFilesReader(nullptr), Platform::makeProcessOpenFilesReader()));
+    EXPECT_TRUE(sameKind<Platform::IProcessSecurityReader>(makeProcessSecurityReader(nullptr), Platform::makeProcessSecurityReader()));
+    // Linux has no UDP collector (nullptr); Windows has one.
+    EXPECT_TRUE(sameKind<Platform::IUdpTrafficCollector>(makeUdpTrafficCollector(nullptr), Platform::makeUdpTrafficCollector()));
+}
+
 TEST(SyntheticScenarioTest, WithoutAScenarioPreloadDoesNothing)
 {
     Domain::SystemModel system(std::make_unique<TestMocks::MockSystemProbe>());
@@ -267,6 +307,24 @@ TEST(SyntheticScenarioTest, ScenarioProbesAreSynthetic)
     // Nothing real is mixed in: no power or GPU probe.
     EXPECT_EQ(App::Synthetic::makePowerProbe(&scenario), nullptr);
     EXPECT_EQ(App::Synthetic::makeGPUProbe(&scenario), nullptr);
+}
+
+TEST(SyntheticScenarioTest, ScenarioDetailReadersAreTheUnsupportedStandIns)
+{
+    // A synthetic process has no real environment, sockets, modules, files or token to read: each
+    // Details reader is the platform-neutral "unsupported" one, and no UDP traffic is collected.
+    const Scenario scenario = smallScenario(0);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessIconSource*>(App::Synthetic::makeProcessIconSource(&scenario).get()), nullptr);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessEnvironmentReader*>(App::Synthetic::makeProcessEnvironmentReader(&scenario).get()),
+              nullptr);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessConnectionsReader*>(App::Synthetic::makeProcessConnectionsReader(&scenario).get()),
+              nullptr);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessModulesReader*>(App::Synthetic::makeProcessModulesReader(&scenario).get()), nullptr);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessOpenFilesReader*>(App::Synthetic::makeProcessOpenFilesReader(&scenario).get()),
+              nullptr);
+    EXPECT_NE(dynamic_cast<Platform::UnsupportedProcessSecurityReader*>(App::Synthetic::makeProcessSecurityReader(&scenario).get()),
+              nullptr);
+    EXPECT_EQ(App::Synthetic::makeUdpTrafficCollector(&scenario), nullptr);
 }
 
 TEST(SyntheticScenarioTest, StartupOverridesComeFromTheScenario)
