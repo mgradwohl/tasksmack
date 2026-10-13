@@ -10,7 +10,8 @@
 //   Private_Dirty:    200 kB
 //   SwapPss:           50 kB
 // PSS is Pss; USS is Private_Clean + Private_Dirty, the pages mapped by this process alone. SwapPss
-// is absent on kernels before 4.3 and then reads 0.
+// is absent on kernels before 4.3 and then reads 0; present but unreadable, it makes the rollup
+// unreadable as the others do.
 
 #include "Platform/IProcessProbe.h"
 
@@ -45,7 +46,19 @@ namespace Detail
         return std::nullopt;
     }
     rest.remove_prefix(static_cast<std::size_t>(ptr - rest.data()));
-    if (rest.find_first_not_of(" \t") == std::string_view::npos || rest.substr(rest.find_first_not_of(" \t"), 2) != "kB")
+    // The unit, "kB" exactly, then nothing but whitespace.
+    const std::size_t unit = rest.find_first_not_of(" \t");
+    if (unit == std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+    rest.remove_prefix(unit);
+    if (!rest.starts_with("kB"))
+    {
+        return std::nullopt;
+    }
+    rest.remove_prefix(2);
+    if (rest.find_first_not_of(" \t\r") != std::string_view::npos)
     {
         return std::nullopt;
     }
@@ -59,13 +72,14 @@ namespace Detail
 } // namespace Detail
 
 /// The PSS, USS and swap PSS in @p text, the contents of /proc/[pid]/smaps_rollup; nullopt when Pss or
-/// either Private line is missing or unreadable (not a rollup, or a truncated read).
+/// either Private line is missing, or when any of those or a present SwapPss is unreadable (not a
+/// rollup, or a truncated read).
 [[nodiscard]] inline std::optional<MemoryRollup> parse(std::string_view text)
 {
     std::optional<std::uint64_t> pss;
     std::optional<std::uint64_t> privateClean;
     std::optional<std::uint64_t> privateDirty;
-    std::uint64_t swapPss = 0;
+    std::optional<std::uint64_t> swapPss = 0; // nullopt once a present SwapPss line fails to read
     while (!text.empty())
     {
         const std::size_t end = text.find('\n');
@@ -92,10 +106,10 @@ namespace Detail
         }
         else if (key == "SwapPss")
         {
-            swapPss = Detail::kilobytes(rest).value_or(0);
+            swapPss = Detail::kilobytes(rest);
         }
     }
-    if (!pss.has_value() || !privateClean.has_value() || !privateDirty.has_value())
+    if (!pss.has_value() || !privateClean.has_value() || !privateDirty.has_value() || !swapPss.has_value())
     {
         return std::nullopt;
     }
@@ -103,7 +117,7 @@ namespace Detail
     {
         return std::nullopt;
     }
-    return MemoryRollup{.pssBytes = *pss, .ussBytes = *privateClean + *privateDirty, .swapPssBytes = swapPss};
+    return MemoryRollup{.pssBytes = *pss, .ussBytes = *privateClean + *privateDirty, .swapPssBytes = *swapPss};
 }
 
 } // namespace Platform::SmapsRollup

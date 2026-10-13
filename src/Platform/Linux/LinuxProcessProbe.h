@@ -68,7 +68,7 @@ class LinuxProcessProbe : public IProcessProbe
     [[nodiscard]] long ticksPerSecond() const override;
     [[nodiscard]] uint64_t systemTotalMemory() const override;
     [[nodiscard]] std::optional<PackageEnergyReading> readPackageEnergy() const override;
-    [[nodiscard]] std::optional<MemoryRollup> readMemoryRollup(std::int32_t pid) const override;
+    [[nodiscard]] std::optional<MemoryRollup> readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override;
 
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     /// Set the socket stats cache TTL (Linux only)

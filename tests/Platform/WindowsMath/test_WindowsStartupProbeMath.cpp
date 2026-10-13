@@ -270,6 +270,52 @@ TEST(WindowsStartupProbeMathTest, StartupDisplayNameIsTheDescriptionThenTheFileN
     EXPECT_EQ(startupDisplayName("", R"(C:\dir\)", "Odd"), "Odd") << "a path with no file name";
 }
 
+// #1971: RunOnce entries are shown by their registry value name; every other location by the program's name.
+constexpr std::string_view CMD_NAME = "Windows Command Processor";
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfAUserRunEntryIsTheProgramName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::RunUser, "Microsoft Edge", "MicrosoftEdgeAutoLaunch_575A7C"), "Microsoft Edge");
+}
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfAMachineRunEntryIsTheProgramName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::RunMachine, "Windows Security notification icon", "SecurityHealth"),
+              "Windows Security notification icon");
+}
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfA32BitMachineRunEntryIsTheProgramName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::RunMachine32, "Steam", "Steam Client"), "Steam");
+}
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfAUserRunOnceEntryIsTheValueName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::RunOnceUser, CMD_NAME, "Uninstall 24.1.0.1"), "Uninstall 24.1.0.1");
+    EXPECT_EQ(startupEntryName(StartupLocation::RunOnceUser, CMD_NAME, ""), CMD_NAME) << "no value name: the program's";
+}
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfAMachineRunOnceEntryIsTheValueName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::RunOnceMachine, CMD_NAME, "DeleteTempInstaller"), "DeleteTempInstaller");
+    EXPECT_EQ(startupEntryName(StartupLocation::RunOnceMachine, CMD_NAME, ""), CMD_NAME) << "no value name: the program's";
+}
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfAUserStartupFolderEntryIsTheProgramName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::StartupFolderUser, "Google Drive", "Google Drive.lnk"), "Google Drive");
+}
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfAnAllUsersStartupFolderEntryIsTheProgramName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::StartupFolderCommon, "tool.exe", "Tool.lnk"), "tool.exe");
+}
+
+TEST(WindowsStartupProbeMathTest, EntryNameOfAPackagedAppIsItsManifestName)
+{
+    EXPECT_EQ(startupEntryName(StartupLocation::PackagedApp, "Spotify", "SpotifyStartupTask"), "Spotify");
+}
+
 TEST(WindowsStartupProbeMathTest, PackageNameIsTheFamilyWithoutItsPublisherId)
 {
     EXPECT_EQ(packageNameOfFamily("Microsoft.WindowsTerminal_8wekyb3d8bbwe"), "Microsoft.WindowsTerminal");

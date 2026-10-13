@@ -654,7 +654,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // goes without them until the next refresh.
     if (watchedSnapshot != nullptr && publishedCapabilities.hasMemoryRollup)
     {
-        if (const std::optional<Platform::MemoryRollup> rollup = m_Probe->readMemoryRollup(watchedPid); rollup.has_value())
+        if (const std::optional<Platform::MemoryRollup> rollup = m_Probe->readMemoryRollup(watchedPid, watchedSnapshot->startTimeTicks);
+            rollup.has_value())
         {
             auto withRollup = std::make_shared<ProcessSnapshot>(*watchedSnapshot);
             withRollup->pssBytes = rollup->pssBytes;

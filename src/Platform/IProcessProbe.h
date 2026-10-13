@@ -86,10 +86,13 @@ class IProcessProbe
         return {};
     }
 
-    /// Reads process @p pid's PSS and USS (#1885), where ProcessCapabilities::hasMemoryRollup says the
-    /// platform can: nullopt otherwise, and when the process is gone or unreadable. Costly, so
-    /// ProcessModel reads it only for its watched process (the one Process Details shows).
-    [[nodiscard]] virtual std::optional<MemoryRollup> readMemoryRollup([[maybe_unused]] std::int32_t pid) const
+    /// Reads the PSS and USS (#1885) of process @p pid started at @p startTimeTicks (ProcessCounters::
+    /// startTimeTicks), where ProcessCapabilities::hasMemoryRollup says the platform can: nullopt
+    /// otherwise, when the process is gone or unreadable, and when @p pid now names another process
+    /// (reused since the snapshot), whose figures would be shown as this one's. Costly, so ProcessModel
+    /// reads it only for its watched process (the one Process Details shows).
+    [[nodiscard]] virtual std::optional<MemoryRollup> readMemoryRollup([[maybe_unused]] std::int32_t pid,
+                                                                       [[maybe_unused]] std::uint64_t startTimeTicks) const
     {
         return std::nullopt;
     }

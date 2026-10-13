@@ -160,33 +160,41 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
     return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, virtualBytes), {smoothed.virtualBytes});
 }
 
-/// The Resources chart's count axis: Threads and Handles/FDs (#1024). An unreadable handle count
-/// (#1110) is left out.
-[[nodiscard]] inline double countAxisDataMax(std::span<const double> timeData,
-                                             double xMin,
-                                             std::span<const double> threads,
-                                             std::span<const double> handles,
-                                             const ProcessSmoothedUsage& smoothed) noexcept
+/// The Resources chart's left axis: Threads alone (#1916). Handles/FDs have their own right-hand
+/// axis (handleAxisDataMax()): a process holds tens of times more of them than threads, so on one
+/// shared axis the Threads line lay flat on the baseline.
+[[nodiscard]] inline double threadAxisDataMax(std::span<const double> timeData,
+                                              double xMin,
+                                              std::span<const double> threads,
+                                              const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(
-        UI::Widgets::maxOfSeriesSince(timeData, xMin, threads, handles),
-        {smoothed.threadCount, UI::Widgets::currentIfAvailable(smoothed.handleCountAvailable, smoothed.handleCount)});
+    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), {smoothed.threadCount});
 }
 
-/// countAxisDataMax() with the GDI Objects series too (Windows, #1000). @p gdi can be shorter than
-/// the others; it ends at the same newest sample. A GDI bar with no reading is left out.
-[[nodiscard]] inline double countAxisDataMaxWithGdi(std::span<const double> timeData,
-                                                    double xMin,
-                                                    std::span<const double> threads,
-                                                    std::span<const double> handles,
-                                                    std::span<const double> gdi,
-                                                    const ProcessSmoothedUsage& smoothed) noexcept
+/// threadAxisDataMax() with the GDI Objects series too (Windows, #1000), which shares the Threads
+/// axis: a process's GDI objects run to the same order of magnitude as its threads, far closer than
+/// its handles do (#1916). @p gdi can be shorter than the others; it ends at the same newest sample.
+/// A GDI bar with no reading is left out.
+[[nodiscard]] inline double threadAxisDataMaxWithGdi(std::span<const double> timeData,
+                                                     double xMin,
+                                                     std::span<const double> threads,
+                                                     std::span<const double> gdi,
+                                                     const ProcessSmoothedUsage& smoothed) noexcept
 {
     return UI::Widgets::withCurrentValues(
-        std::max(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads, handles), UI::Widgets::maxOfSeriesSince(timeData, xMin, gdi)),
-        {smoothed.threadCount,
-         UI::Widgets::currentIfAvailable(smoothed.handleCountAvailable, smoothed.handleCount),
-         UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
+        std::max(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), UI::Widgets::maxOfSeriesSince(timeData, xMin, gdi)),
+        {smoothed.threadCount, UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
+}
+
+/// The Resources chart's Handles/FDs axis, the outer right-hand one (#1916). An unreadable handle
+/// count (#1110) is left out.
+[[nodiscard]] inline double handleAxisDataMax(std::span<const double> timeData,
+                                              double xMin,
+                                              std::span<const double> handles,
+                                              const ProcessSmoothedUsage& smoothed) noexcept
+{
+    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, handles),
+                                          {UI::Widgets::currentIfAvailable(smoothed.handleCountAvailable, smoothed.handleCount)});
 }
 
 /// The Resources chart's right-hand Page Faults axis (#1024).

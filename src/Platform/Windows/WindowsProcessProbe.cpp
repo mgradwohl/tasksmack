@@ -1302,6 +1302,9 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         // Elevated + EStats access-denied: blocked by policy or a driver; elevating can't help (#1358).
         .networkCountersBlocked = denial.blocked,
         .hasSharedMemory = false,
+        // hasPrivateBytes and hasSwapBytes stay false (#1879): Windows' private bytes (PrivatePageCount)
+        // are the commit charge, already the Virtual column, and Windows doesn't report how much of one
+        // process is in the pagefile.
         .pageFaultCountBits = 32, // SYSTEM_PROCESS_INFORMATION::PageFaultCount is a ULONG (#1184)
     };
 }

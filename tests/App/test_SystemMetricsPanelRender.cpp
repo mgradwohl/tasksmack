@@ -290,8 +290,9 @@ TEST_F(SystemMetricsPanelRenderTest, AnInactivePanelDrawsNothingAndADetachedOneS
     return probe;
 }
 
-/// A process model over two processes whose threads, page faults, descriptors and energy it can read.
-[[nodiscard]] std::shared_ptr<Domain::ProcessModel> mockProcessModel()
+/// A process model over two processes whose threads, page faults, descriptors and energy it can read;
+/// the second holds @p serverHandles handles (descriptors on Linux).
+[[nodiscard]] std::shared_ptr<Domain::ProcessModel> mockProcessModel(std::int32_t serverHandles = 40)
 {
     auto probe = std::make_unique<TestMocks::MockProcessProbe>();
     Platform::ProcessCapabilities caps;
@@ -305,7 +306,7 @@ TEST_F(SystemMetricsPanelRenderTest, AnInactivePanelDrawsNothingAndADetachedOneS
     init.handleCount = 12;
     Platform::ProcessCounters server = TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
     server.threadCount = 8;
-    server.handleCount = 40;
+    server.handleCount = serverHandles;
     probe->withProcess(init).withProcess(server);
     return std::make_shared<Domain::ProcessModel>(std::move(probe));
 }
@@ -564,6 +565,83 @@ TEST_F(SystemMetricsPanelRenderTest, PickingAnInterfaceShowsItsLinkAndState)
     const std::string text = renderAndCapture(*panel);
     EXPECT_TRUE(text.contains("Link: 1 Gbit/s")) << text; // rated in bits, as the adapter is
     EXPECT_TRUE(text.contains("[Up]")) << text;
+    panel->onDetach();
+}
+
+/// The Overview's plot whose series are @p labels, or null.
+[[nodiscard]] const ImPlotPlot* findPlot(const SeriesLabels& labels)
+{
+    ImPlotContext& context = *ImPlot::GetCurrentContext();
+    int i = 0;
+    while (i < context.Plots.GetBufSize())
+    {
+        ImPlotPlot* plot = context.Plots.GetByIndex(i);
+        ++i;
+        if (plot == nullptr)
+        {
+            continue;
+        }
+        SeriesLabels found;
+        int item = 0;
+        while (item < plot->Items.GetLegendCount())
+        {
+            found.emplace(plot->Items.GetLegendLabel(item));
+            ++item;
+        }
+        if (found == labels)
+        {
+            return plot;
+        }
+    }
+    return nullptr;
+}
+
+// #1916: the machine's handles (descriptors on Linux) no longer set the Threads line's axis. A machine
+// holds tens to hundreds of times more handles than threads, so on one shared axis the Threads line
+// and NowBar were flat at zero. The left axis now covers the threads alone, and the handles have a
+// right-hand axis of their own (Y3), outside Page Faults' (Y2).
+TEST_F(SystemMetricsPanelRenderTest, TheResourcesChartGivesHandlesTheirOwnAxis)
+{
+    constexpr std::int32_t SERVER_HANDLES = 100'000; // Against 9 threads in all
+    constexpr double ALL_HANDLES = 12.0 + SERVER_HANDLES;
+#ifdef _WIN32
+    const SeriesLabels resources{"Threads", "Page Faults →", "Handles →"};
+#else
+    const SeriesLabels resources{"Threads", "Page Faults →", "FDs →"};
+#endif
+    const auto panel = std::make_unique<SystemMetricsPanel>(
+        [] { return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
+    panel->onAttach();
+    const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel(SERVER_HANDLES);
+    panel->setProcessModel(processes);
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+
+    // Until the handle count's axis has eased up to the samples.
+    const ImPlotPlot* plot = nullptr;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        processes->refresh();
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        plot = findPlot(resources);
+        if (plot != nullptr && plot->Axes[ImAxis_Y3].Range.Max >= ALL_HANDLES)
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_NE(plot, nullptr);
+    const ImPlotAxis& threadAxis = plot->Axes[ImAxis_Y1];
+    const ImPlotAxis& handleAxis = plot->Axes[ImAxis_Y3];
+    ASSERT_TRUE(handleAxis.Enabled);
+    EXPECT_TRUE(handleAxis.IsOpposite());
+    EXPECT_GE(handleAxis.Range.Max, ALL_HANDLES);
+    // The threads' axis is its smallest span, 10, with 9 threads near its top -- not 0 to 100K, where
+    // they were a flat line on the baseline.
+    EXPECT_DOUBLE_EQ(threadAxis.Range.Min, 0.0);
+    EXPECT_LE(threadAxis.Range.Max, 20.0);
+    EXPECT_GT(9.0 / threadAxis.Range.Size(), 0.4);
     panel->onDetach();
 }
 

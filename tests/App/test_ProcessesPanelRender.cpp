@@ -15,6 +15,7 @@
 /// process data.
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessesPanel.h"
@@ -52,6 +53,7 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -829,6 +831,59 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
     EXPECT_TRUE(text.contains("Publisher")) << text;
     EXPECT_TRUE(text.contains("Container")) << text;
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+    panel->onDetach();
+}
+
+// #1879: where the probe fills neither (Windows; the mock reports neither), the Private and Swap columns
+// read as the dash in every row, and their headers and cells say why.
+TEST_F(ProcessesPanelRenderTest, PrivateAndSwapWithoutTheirFiguresShowTheDashAndSayWhy)
+{
+    ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (getColumnInfo(col).canHide)
+        {
+            // PID, Name, Private and Swap: both headers are in reach
+            columns.setVisible(col, col == ProcessColumn::Private || col == ProcessColumn::Swap);
+        }
+    }
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Private")) << text;
+    EXPECT_TRUE(text.contains("Swap")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+
+    // Over each point down the header and the first rows, across the whole width (the last column
+    // stretches, and its right-aligned dash sits at the far end). Tooltips show without a hover delay,
+    // so a few frames at each point are enough.
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    style.HoverStationaryDelay = 0.0F;
+    const auto hoverUntilShown = [&panel](std::string_view wanted)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        for (int y = 20; y <= 140; y += 6)
+        {
+            for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH); x += 6)
+            {
+                io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+                for (int frame = 0; frame < 3; ++frame)
+                {
+                    if (renderAndCapture(*panel).contains(wanted))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::PRIVATE_UNSUPPORTED_COLUMN_NOTE)) << "Private's header tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::PRIVATE_UNSUPPORTED_CELL_REASON)) << "a Private cell's tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE)) << "Swap's header tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::SWAP_UNSUPPORTED_CELL_REASON)) << "a Swap cell's tooltip";
     panel->onDetach();
 }
 

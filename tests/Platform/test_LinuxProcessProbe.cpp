@@ -1051,31 +1051,41 @@ TEST(LinuxProcessProbeTest, PssAndUssAreReadFromSmapsRollupForOneProcess)
     ScopedTempDir proc("ts_test_proc_smaps_rollup");
     const LinuxProcessProbe without(proc.path);
     EXPECT_FALSE(without.capabilities().hasMemoryRollup); // No self/smaps_rollup: a kernel before 4.14
-    EXPECT_FALSE(without.readMemoryRollup(4242).has_value());
+    EXPECT_FALSE(without.readMemoryRollup(4242, 12345).has_value());
 
     writeFile(proc.path / "self" / "smaps_rollup", "Pss: 1 kB\nPrivate_Clean: 0 kB\nPrivate_Dirty: 1 kB\n");
+    // Started at tick 12345 (stat field 22).
+    writeFile(proc.path / "4242" / "stat",
+              "4242 (app) S 1 1 1 0 -1 4194304 0 0 0 0 10 5 0 0 20 0 1 0 12345 0 0 "
+              "18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n");
     writeFile(proc.path / "4242" / "smaps_rollup",
               "00400000-7ffd0000 ---p 00000000 00:00 0  [rollup]\nRss: 4096 kB\nPss: 2500 kB\nPrivate_Clean: 100 kB\n"
               "Private_Dirty: 1900 kB\nSwapPss: 64 kB\n");
     const LinuxProcessProbe probe(proc.path);
     EXPECT_TRUE(probe.capabilities().hasMemoryRollup);
-    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(4242);
+    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(4242, 12345);
     ASSERT_TRUE(rollup.has_value());
     EXPECT_EQ(rollup.value_or(MemoryRollup{}).pssBytes, 2500U * 1024U);
     EXPECT_EQ(rollup.value_or(MemoryRollup{}).ussBytes, 2000U * 1024U);
     EXPECT_EQ(rollup.value_or(MemoryRollup{}).swapPssBytes, 64U * 1024U);
-    EXPECT_FALSE(probe.readMemoryRollup(4343).has_value()); // Gone, or never there
-    EXPECT_FALSE(probe.readMemoryRollup(0).has_value());
+    // The PID now names a process started at another time (reused): not that process's figures.
+    EXPECT_FALSE(probe.readMemoryRollup(4242, 999).has_value());
+    EXPECT_FALSE(probe.readMemoryRollup(4343, 12345).has_value()); // Gone, or never there
+    EXPECT_FALSE(probe.readMemoryRollup(0, 0).has_value());
 }
 
-TEST(LinuxProcessProbeTest, ThisProcesssOwnPssAndUssReadFromTheRealProc)
+TEST(LinuxProcessProbeTest, ThisProcessOwnPssAndUssReadFromTheRealProc)
 {
-    const LinuxProcessProbe probe;
+    LinuxProcessProbe probe;
     if (!probe.capabilities().hasMemoryRollup)
     {
         GTEST_SKIP() << "This kernel has no smaps_rollup";
     }
-    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(static_cast<std::int32_t>(::getpid()));
+    const auto self = static_cast<std::int32_t>(::getpid());
+    const auto processes = probe.enumerate();
+    const auto me = std::ranges::find_if(processes, [self](const ProcessCounters& p) { return p.pid == self; });
+    ASSERT_NE(me, processes.end());
+    const std::optional<MemoryRollup> rollup = probe.readMemoryRollup(self, me->startTimeTicks);
     ASSERT_TRUE(rollup.has_value());
     EXPECT_GT(rollup.value_or(MemoryRollup{}).pssBytes, 0U);
     EXPECT_GT(rollup.value_or(MemoryRollup{}).ussBytes, 0U);

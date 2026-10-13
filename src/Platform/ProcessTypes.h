@@ -55,9 +55,11 @@ struct ProcessCounters
     std::uint64_t peakRssBytes = 0; // OS-reported peak resident size, 0 = unknown (Linux: VmHWM, which resets on
                                     // exec; Windows: PeakWorkingSetSize). Domain keeps the highest peak it observed.
     // The Private column (#1879, #1885): memory no other process shares. Linux: RssAnon from
-    // /proc/[pid]/status, the resident anonymous pages (heap, stacks, private mappings).
+    // /proc/[pid]/status, the resident anonymous pages (heap, stacks, private mappings). Windows: not
+    // filled; its private bytes are the commit charge, already virtualBytes (#1879).
     std::uint64_t privateBytes = 0;
     // The Swap column (#1879, #1885): the part of it swapped out. Linux: VmSwap from /proc/[pid]/status.
+    // Windows: not reported (ProcessCapabilities::hasSwapBytes is false), always 0.
     std::uint64_t swapBytes = 0;
     // The Virtual column (#1184). Linux: vsize from /proc/[pid]/stat, the whole address space. Windows: the commit size
     // (PrivateUsage), as Task Manager shows it; its VirtualSize counts reservations, terabytes for
@@ -166,8 +168,10 @@ struct ProcessCapabilities
     bool hasNice = false;               // Whether nice/priority value is available
     bool hasPageFaults = false;         // Whether page fault count is available
     bool hasPeakRss = false;            // Whether peak working set is available
-    bool hasPrivateBytes = false;       // Whether ProcessCounters::privateBytes is filled (Linux: RssAnon, #1885)
-    bool hasSwapBytes = false;          // Whether ProcessCounters::swapBytes is filled (Linux: VmSwap, #1885)
+    bool hasPrivateBytes = false;       // Whether ProcessCounters::privateBytes is filled (Linux: RssAnon, #1885;
+                                        // not on Windows, where it would repeat Virtual, #1879)
+    bool hasSwapBytes = false;          // Whether ProcessCounters::swapBytes is filled (Linux: VmSwap, #1885; Windows
+                                        // has no per-process figure, #1879)
     bool hasMemoryRollup = false;       // Whether IProcessProbe::readMemoryRollup() reads PSS/USS (Linux: smaps_rollup, #1885)
     bool hasCpuAffinity = false;        // Whether CPU affinity mask is available
     bool hasNetworkCounters = false;    // Whether per-process network counters are available

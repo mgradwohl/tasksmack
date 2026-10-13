@@ -54,13 +54,18 @@ TEST(SmapsRollupParserTest, AKernelWithoutSwapPssReadsZeroSwapPss)
 
 TEST(SmapsRollupParserTest, AMissingOrUnreadableFieldIsNoRollup)
 {
-    EXPECT_FALSE(parse("").has_value());                                                        // an empty read (the process exited)
-    EXPECT_FALSE(parse("Private_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());              // no Pss
-    EXPECT_FALSE(parse("Pss: 10 kB\nPrivate_Dirty: 2 kB\n").has_value());                       // no Private_Clean
-    EXPECT_FALSE(parse("Pss: 10 kB\nPrivate_Clean: 1 kB\n").has_value());                       // no Private_Dirty
-    EXPECT_FALSE(parse("Pss: ten kB\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value()); // not a number
-    EXPECT_FALSE(parse("Pss: 10\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());     // no unit
-    EXPECT_FALSE(parse("Pss: 10 MB\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());  // another unit
+    EXPECT_FALSE(parse("").has_value());                                                           // an empty read (the process exited)
+    EXPECT_FALSE(parse("Private_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());                 // no Pss
+    EXPECT_FALSE(parse("Pss: 10 kB\nPrivate_Dirty: 2 kB\n").has_value());                          // no Private_Clean
+    EXPECT_FALSE(parse("Pss: 10 kB\nPrivate_Clean: 1 kB\n").has_value());                          // no Private_Dirty
+    EXPECT_FALSE(parse("Pss: ten kB\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());    // not a number
+    EXPECT_FALSE(parse("Pss: 10\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());        // no unit
+    EXPECT_FALSE(parse("Pss: 10 MB\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());     // another unit
+    EXPECT_FALSE(parse("Pss: 10 kBytes\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value()); // more after kB
+    EXPECT_FALSE(parse("Pss: 10 kB x\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\n").has_value());
+    // A SwapPss line that is there but unreadable makes the rollup unreadable, not a zero.
+    EXPECT_FALSE(parse("Pss: 10 kB\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\nSwapPss: lots kB\n").has_value());
+    EXPECT_FALSE(parse("Pss: 10 kB\nPrivate_Clean: 1 kB\nPrivate_Dirty: 2 kB\nSwapPss: 18446744073709551615 kB\n").has_value());
 }
 
 TEST(SmapsRollupParserTest, AValueThatWouldOverflowIsNoRollup)

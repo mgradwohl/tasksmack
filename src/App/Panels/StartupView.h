@@ -45,6 +45,11 @@ enum class StartupColumn : std::uint8_t
 /// entry's tooltip shows its file's path already).
 [[nodiscard]] std::string startupRegistrationLabel(const Platform::StartupEntry& entry);
 
+/// The tooltip's line for the program's own name (#1971): "Program name: Windows Command Processor"
+/// for an entry shown by another name (a RunOnce entry, shown by its registry value name). Empty when
+/// the program's name is unknown or is the name shown.
+[[nodiscard]] std::string startupProgramNameLabel(const Platform::StartupEntry& entry);
+
 /// The file the entry's icon is read from (#1800): a packaged app's logo, else the program it starts;
 /// empty -- the generic icon -- when that program wasn't found or couldn't be told.
 [[nodiscard]] std::string_view startupIconPath(const Platform::StartupEntry& entry) noexcept;

@@ -2299,6 +2299,50 @@ TEST(ProcessModelTest, ShrinkingTheHistoryWindowPublishesTheTrimmedSystemHistori
 }
 
 // =============================================================================
+// Memory Breakdown (Private and Swap columns, #1879, #1885)
+// =============================================================================
+
+TEST(ProcessModelTest, PrivateAndSwapBytesReachTheSnapshotAndFollowEachSample)
+{
+    // Each sample's figures are the probe's, copied as they are (Linux's RssAnon and VmSwap, #1885): a
+    // process with no swap reads 0. Neither is a delta or kept as a peak.
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setTotalCpuTime(100000);
+    probe->withProcess(100, "unswapped_app")
+        .withMemoryBreakdown(100, 96ULL * 1024 * 1024, 0)
+        .withProcess(200, "swapped_app")
+        .withMemoryBreakdown(200, 40ULL * 1024 * 1024, 8ULL * 1024 * 1024);
+    auto* rawProbe = probe.get();
+    ManualClock clock;
+    Domain::ProcessModel model(std::move(probe), clock.now());
+    model.refresh();
+
+    // A process's {privateBytes, swapBytes}, or both the maximum if it is missing.
+    using Breakdown = std::pair<std::uint64_t, std::uint64_t>;
+    const auto breakdown = [&model](std::int32_t pid) -> Breakdown
+    {
+        for (const auto& snap : model.snapshots())
+        {
+            if (snap.pid == pid)
+            {
+                return {snap.privateBytes, snap.swapBytes};
+            }
+        }
+        constexpr std::uint64_t MISSING = std::numeric_limits<std::uint64_t>::max();
+        return {MISSING, MISSING};
+    };
+    EXPECT_EQ(breakdown(100), Breakdown(96ULL * 1024 * 1024, 0));
+    EXPECT_EQ(breakdown(200), Breakdown(40ULL * 1024 * 1024, 8ULL * 1024 * 1024));
+
+    // A later sample replaces them, down as well as up.
+    clock.advance(std::chrono::milliseconds(10));
+    rawProbe->withMemoryBreakdown(100, 64ULL * 1024 * 1024, 0).withMemoryBreakdown(200, 48ULL * 1024 * 1024, 2ULL * 1024 * 1024);
+    model.refresh();
+    EXPECT_EQ(breakdown(100), Breakdown(64ULL * 1024 * 1024, 0));
+    EXPECT_EQ(breakdown(200), Breakdown(48ULL * 1024 * 1024, 2ULL * 1024 * 1024));
+}
+
+// =============================================================================
 // Peak RSS Tracking Tests
 // =============================================================================
 
@@ -4491,6 +4535,11 @@ TEST(ProcessModelTest, OnlyTheWatchedProcessHasItsPssAndUssRead)
     model.watchProcess(100);
     model.refresh();
     EXPECT_EQ(rawProbe->memoryRollupReads(), 1); // The watched process alone
+    // Asked for the process the snapshot is of, by its start time, so a reused PID reads nothing.
+    const auto rows = model.snapshots();
+    const auto watchedRow = std::ranges::find(rows, 100, &Domain::ProcessSnapshot::pid);
+    ASSERT_NE(watchedRow, rows.end());
+    EXPECT_EQ(rawProbe->lastMemoryRollupStartTime(), watchedRow->startTimeTicks);
     std::vector<Domain::ProcessSample> samples;
     ASSERT_TRUE(model.watchedSamplesSince(0, samples));
     ASSERT_FALSE(samples.empty());

@@ -149,6 +149,18 @@ class MockProcessProbe : public Platform::IProcessProbe
         return *this;
     }
 
+    /// The Private and Swap columns' figures (#1879, #1885): ProcessCounters::privateBytes and swapBytes.
+    MockProcessProbe& withMemoryBreakdown(int32_t pid, uint64_t privateBytes, uint64_t swapBytes)
+    {
+        findOrCreateProcess(pid,
+                            [privateBytes, swapBytes](Platform::ProcessCounters& c)
+                            {
+                                c.privateBytes = privateBytes;
+                                c.swapBytes = swapBytes;
+                            });
+        return *this;
+    }
+
     MockProcessProbe& withState(int32_t pid, char state)
     {
         for (auto& counter : m_Counters)
@@ -313,11 +325,18 @@ class MockProcessProbe : public Platform::IProcessProbe
         m_MemoryRollups[pid] = rollup;
     }
 
-    [[nodiscard]] std::optional<Platform::MemoryRollup> readMemoryRollup(std::int32_t pid) const override
+    [[nodiscard]] std::optional<Platform::MemoryRollup> readMemoryRollup(std::int32_t pid, std::uint64_t startTimeTicks) const override
     {
         ++m_MemoryRollupReads;
+        m_LastMemoryRollupStartTime = startTimeTicks;
         const auto it = m_MemoryRollups.find(pid);
         return it == m_MemoryRollups.end() ? std::nullopt : std::optional<Platform::MemoryRollup>(it->second);
+    }
+
+    /// The start time the last readMemoryRollup() was asked to verify.
+    [[nodiscard]] std::uint64_t lastMemoryRollupStartTime() const
+    {
+        return m_LastMemoryRollupStartTime.load();
     }
 
     /// How many times readMemoryRollup() was called.
@@ -397,6 +416,7 @@ class MockProcessProbe : public Platform::IProcessProbe
     Platform::SocketTrafficReading m_SocketTraffic;
     std::map<std::int32_t, Platform::MemoryRollup> m_MemoryRollups;
     mutable std::atomic<int> m_MemoryRollupReads{0};
+    mutable std::atomic<std::uint64_t> m_LastMemoryRollupStartTime{0};
 };
 
 // =============================================================================
