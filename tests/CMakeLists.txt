@@ -162,6 +162,7 @@ set(COMMON_TEST_SOURCES
     Domain/AllocationFailureHook.cpp
     Domain/test_SystemModelAllocationFailure.cpp
     Domain/test_GPUModelAllocationFailure.cpp
+    Domain/test_ProcessModelAllocationFailure.cpp
     Domain/test_StorageModel.cpp
     Domain/test_StartupModel.cpp
     Domain/test_SystemInfoModel.cpp
