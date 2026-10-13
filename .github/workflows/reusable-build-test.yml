@@ -143,8 +143,9 @@ jobs:
           # Include the LLVM version so caches from different toolchains don't mix.
           key: ${{ runner.os }}-${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
           # Windows debug outgrew 500M: full on every run, with 70-120 cleanups and ~60% hits on
-          # main (#1875).
-          max-size: ${{ runner.os == 'Windows' && inputs.build_type == 'debug' && '750M' || '500M' }}
+          # main. Without ThinLTO its objects hold machine code and CodeView rather than bitcode,
+          # and a cold build alone filled 750M (37 cleanups), so it gets 1G (#1875).
+          max-size: ${{ runner.os == 'Windows' && inputs.build_type == 'debug' && '1G' || '500M' }}
           # Pull requests restore main's cache but never save their own: a PR-ref entry is
           # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
           # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
@@ -240,30 +241,6 @@ jobs:
         env:
           BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
         run: python -I -X utf8 tools/ninja-build-profile.py "$BUILD_DIR" | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: TEMP measure GHASH link (Windows debug)
-        if: runner.os == 'Windows' && inputs.build && inputs.build_type == 'debug'
-        continue-on-error: true
-        shell: pwsh
-        working-directory: build/win-debug
-        env:
-          LLVM_ROOT: C:\Program Files\LLVM
-        run: |
-          foreach ($target in 'tests/TaskSmackTests.exe', 'bin/TaskSmackUiTraining.exe', 'bin/TaskSmack.exe') {
-            $cmds = @(ninja -t commands $target)
-            $link = $cmds[-1]
-            if ($link -notmatch '/DEBUG:GHASH') { Write-Host "no GHASH in: $link"; continue }
-            $plain = $link -replace '-Xlinker /DEBUG:GHASH', ''
-            foreach ($round in 1, 2) {
-              foreach ($variant in @(@('plain', $plain), @('ghash', $link))) {
-                Set-Content -LiteralPath ab-link.bat -Value $variant[1] -Encoding ascii
-                $t = Measure-Command { cmd /c ab-link.bat | Out-Null }
-                if ($LASTEXITCODE -ne 0) { Write-Host "link failed ($LASTEXITCODE): $($variant[1])" }
-                Write-Host ("{0} {1} round {2}: {3:N1} s" -f $target, $variant[0], $round, $t.TotalSeconds)
-                "| $target | $($variant[0]) | $round | $([math]::Round($t.TotalSeconds, 1)) |" >> $env:GITHUB_STEP_SUMMARY
-              }
-            }
-          }
 
       - name: Install virtual display (Linux)
         # Xvfb plus Mesa's software GL (llvmpipe) gives the Application/Window/IconLoader GL
