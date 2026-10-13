@@ -729,6 +729,8 @@ struct ShellKeysObserved
 {
     bool detailsTabShown = false;
     bool servicesTabShown = false; // #1886: a ShowServiceEvent brings the Services tab forward
+    bool treeViewToggled = false;  // F5 on the Processes tab: list to tree or back (#1891)
+    bool treeViewToggledBack = false;
     bool metricsOnAfterToggle = false;
     bool metricsOffAfterSecondToggle = true;
     bool fontGrew = false;
@@ -738,11 +740,12 @@ struct ShellKeysObserved
 };
 
 /// Pushed last over the whole shell: the row menu's Details for a process (as
-/// ProcessesPanel raises it), F5 on the Processes tab, Ctrl+Shift+M twice, then Ctrl+= and Ctrl+-.
+/// ProcessesPanel raises it), F5 twice on the Processes tab, Ctrl+Shift+M twice, then Ctrl+= and Ctrl+-.
 class ShellKeysDriverLayer : public Core::Layer
 {
   public:
-    explicit ShellKeysDriverLayer(ShellKeysObserved& observed) : Layer("ShellKeysDriver"), m_Observed(observed)
+    ShellKeysDriverLayer(ShellKeysObserved& observed, const App::ShellLayer& shell)
+        : Layer("ShellKeysDriver"), m_Observed(observed), m_Shell(shell)
     {}
 
     void onRender() override
@@ -829,19 +832,40 @@ class ShellKeysDriverLayer : public Core::Layer
         case Phase::CheckServices:
             m_Observed.servicesTabShown = selectedTab() == tabId("###ServicesTab");
             ImGui::ActivateItemByID(tabId("###ProcessesTab"));
-            next(Phase::PressF5, STEP);
+            startWait();
+            next(Phase::AwaitProcessesTab, 1);
+            break;
+        case Phase::AwaitProcessesTab:
+            // F5 goes to the tab drawn this frame: wait until that is Processes (#1891). A lost activation
+            // is pressed again, as a lost key is.
+            static_cast<void>(awaitThen(selectedTab() == tabId("###ProcessesTab"), Phase::PressF5, Phase::CheckServices));
             break;
         case Phase::PressF5:
+        case Phase::PressF5Back:
             // No key repeat: these shortcuts are read with IsKeyPressed(), which repeats a key held past
             // KeyRepeatDelay, and one slow frame between a press and its release on a loaded runner did
             // that -- Ctrl+= grew the font two presets and Ctrl+- shrank it one (fontShrankBack failed).
             io.KeyRepeatDelay = 3600.0F;
+            if (m_Phase == Phase::PressF5 && m_Retries == 0)
+            {
+                m_TreeBefore = m_Shell.processesTreeViewForTesting(); // not again on a retry
+            }
             io.AddKeyEvent(ImGuiKey_F5, true); // the list/tree toggle, routed to the Processes tab
-            next(Phase::ReleaseF5, 1);
+            next(m_Phase == Phase::PressF5 ? Phase::ReleaseF5 : Phase::ReleaseF5Back, 1);
             break;
         case Phase::ReleaseF5:
+        case Phase::ReleaseF5Back:
             io.AddKeyEvent(ImGuiKey_F5, false);
-            next(Phase::PressMetricsOn, STEP);
+            startWait();
+            next(m_Phase == Phase::ReleaseF5 ? Phase::AwaitTree : Phase::AwaitTreeBack, 1);
+            break;
+        case Phase::AwaitTree:
+            m_Observed.treeViewToggled = m_Shell.processesTreeViewForTesting() != m_TreeBefore;
+            static_cast<void>(awaitThen(m_Observed.treeViewToggled, Phase::PressF5Back, Phase::PressF5));
+            break;
+        case Phase::AwaitTreeBack:
+            m_Observed.treeViewToggledBack = m_Shell.processesTreeViewForTesting() == m_TreeBefore;
+            static_cast<void>(awaitThen(m_Observed.treeViewToggledBack, Phase::PressMetricsOn, Phase::PressF5Back));
             break;
         case Phase::PressMetricsOn:
         case Phase::PressMetricsOff:
@@ -924,8 +948,13 @@ class ShellKeysDriverLayer : public Core::Layer
         ShowDetails,
         CheckDetails,
         CheckServices,
+        AwaitProcessesTab,
         PressF5,
         ReleaseF5,
+        AwaitTree,
+        PressF5Back,
+        ReleaseF5Back,
+        AwaitTreeBack,
         PressMetricsOn,
         ReleaseMetricsOn,
         AwaitMetricsOn,
@@ -945,9 +974,11 @@ class ShellKeysDriverLayer : public Core::Layer
     static constexpr int WAIT_LIMIT = 120; // frames to wait for a shortcut's effect
     static constexpr int RETRY_AFTER = 40; // frames without it before the key is pressed again
     static constexpr int MAX_RETRIES = 3;
-    static constexpr int MAX_FRAMES = 1500;
+    static constexpr int MAX_FRAMES = 2400; // room for every wait to run out
 
     ShellKeysObserved& m_Observed;
+    const App::ShellLayer& m_Shell;
+    bool m_TreeBefore = false;
     Phase m_Phase = Phase::ShowDetails;
     int m_NextFrame = 20;
     int m_WaitDeadline = 0;
@@ -971,8 +1002,9 @@ TEST(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
         Core::Application app(spec);
         app.pushLayer<UI::UILayer>();
         auto& titleBar = app.pushLayer<App::TitleBarLayer>();
-        app.pushLayer<App::ShellLayer>().setTitleBar(&titleBar);
-        app.pushLayer<ShellKeysDriverLayer>(observed);
+        auto& shell = app.pushLayer<App::ShellLayer>();
+        shell.setTitleBar(&titleBar);
+        app.pushLayer<ShellKeysDriverLayer>(observed, shell);
         app.run();
     }
     catch (const std::exception& e)
@@ -984,6 +1016,8 @@ TEST(UiLayersOnDisplayTest, TheShellsShortcutsAndTheDetailsRequestDoWhatTheySay)
     EXPECT_FALSE(observed.timedOut);
     EXPECT_TRUE(observed.detailsTabShown);              // Details brings the Process Details tab forward
     EXPECT_TRUE(observed.servicesTabShown);             // Show in Services brings the Services tab forward
+    EXPECT_TRUE(observed.treeViewToggled);              // F5 on the Processes tab switches list and tree...
+    EXPECT_TRUE(observed.treeViewToggledBack);          // ...and back
     EXPECT_TRUE(observed.metricsOnAfterToggle);         // Ctrl+Shift+M turns the render metrics on...
     EXPECT_FALSE(observed.metricsOffAfterSecondToggle); // ...and off again
     EXPECT_TRUE(observed.fontGrew);                     // Ctrl+= one preset larger

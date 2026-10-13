@@ -61,6 +61,12 @@ class ShellLayer : public Core::Layer
         m_TitleBar = titleBar;
     }
 
+    /// Whether the Processes tab shows its tree, for tests driving F5 through the whole shell (#1891).
+    [[nodiscard]] bool processesTreeViewForTesting() const noexcept
+    {
+        return m_ProcessesPanel.treeViewEnabled();
+    }
+
   private:
     /// The htop-style function keys (#170) that do not depend on the tab: F1 Help (with the shortcut
     /// list, #172), F2 Settings, F10 Quit (the normal close request). At the start of onRender().
