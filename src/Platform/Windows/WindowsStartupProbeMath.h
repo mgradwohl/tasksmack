@@ -263,6 +263,33 @@ startupDisplayName(std::string_view fileDescription, std::string_view executable
     return std::string(fileName.empty() ? registrationName : fileName);
 }
 
+/// The Name column's text for an entry at @p location (#1971): a RunOnce entry (HKCU or HKLM) is
+/// shown by its @p registrationName, the registry value name, since RunOnce clean-up commands often
+/// share one program (cmd.exe) and neither Task Manager nor Settings lists them under any other name;
+/// every other entry by @p programName (startupDisplayName's result, or a packaged app's manifest
+/// name). A RunOnce entry with no value name falls back to @p programName.
+[[nodiscard]] inline std::string startupEntryName(StartupLocation location, std::string_view programName, std::string_view registrationName)
+{
+    switch (location)
+    {
+    case StartupLocation::RunOnceUser:
+    case StartupLocation::RunOnceMachine:
+        if (!registrationName.empty())
+        {
+            return std::string(registrationName);
+        }
+        break;
+    case StartupLocation::RunUser:
+    case StartupLocation::RunMachine:
+    case StartupLocation::RunMachine32:
+    case StartupLocation::StartupFolderUser:
+    case StartupLocation::StartupFolderCommon:
+    case StartupLocation::PackagedApp:
+        break;
+    }
+    return std::string(programName);
+}
+
 /// The package name in a package family name: "Microsoft.WindowsTerminal_8wekyb3d8bbwe" gives
 /// "Microsoft.WindowsTerminal". A name without the "_publisherId" suffix is returned whole.
 [[nodiscard]] constexpr std::string_view packageNameOfFamily(std::string_view family) noexcept

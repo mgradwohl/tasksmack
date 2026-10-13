@@ -928,17 +928,27 @@ struct WindowsStartupProbe::Impl
         return entry;
     }
 
+    /// Sets `entry`'s program name and the name it is shown by (#1971): the program name, except that a
+    /// RunOnce entry is shown by its registry value name. The entry's location and registrationName
+    /// must be set first.
+    static void nameEntry(StartupEntry& entry, std::string programName)
+    {
+        entry.name = Windows::StartupMath::startupEntryName(entry.location, programName, entry.registrationName);
+        entry.programName = std::move(programName);
+    }
+
     /// Fills `entry`'s executable, target state and publisher from its command, and names it (#1873):
-    /// its program's FileDescription, else the program's file name, else @p fallbackName.
+    /// its program's FileDescription, else the program's file name, else @p fallbackName. A RunOnce
+    /// entry is shown by its value name instead, with the program's name kept in programName (#1971).
     void resolveTarget(StartupEntry& entry, std::string_view fallbackName, std::unordered_set<std::wstring>& seenPaths)
     {
-        entry.name = Windows::StartupMath::startupDisplayName({}, {}, fallbackName);
+        nameEntry(entry, Windows::StartupMath::startupDisplayName({}, {}, fallbackName));
         if (entry.command.empty())
         {
             return; // a shortcut whose target couldn't be read
         }
         entry.executablePath = Windows::resolveStartupExecutable(entry.command);
-        entry.name = Windows::StartupMath::startupDisplayName({}, entry.executablePath, fallbackName);
+        nameEntry(entry, Windows::StartupMath::startupDisplayName({}, entry.executablePath, fallbackName));
         if (entry.executablePath.empty())
         {
             return;
@@ -962,7 +972,7 @@ struct WindowsStartupProbe::Impl
             it->second = {.lastWrite = lastWrite, .strings = readVersionStrings(path)};
         }
         entry.publisher = it->second.strings.companyName;
-        entry.name = Windows::StartupMath::startupDisplayName(it->second.strings.fileDescription, entry.executablePath, fallbackName);
+        nameEntry(entry, Windows::StartupMath::startupDisplayName(it->second.strings.fileDescription, entry.executablePath, fallbackName));
     }
 
     void readRunKeys(std::vector<StartupEntry>& entries, std::unordered_set<std::wstring>& seenPaths)

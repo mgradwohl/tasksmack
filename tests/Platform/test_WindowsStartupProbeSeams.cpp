@@ -489,11 +489,15 @@ TEST_F(WindowsStartupProbeSeamsTest, ReadsRunValuesAndSkipsWhatIsNotAnEntry)
         {.name = L"Once", .type = REG_SZ, .data = stringData(L"C:\\once.exe")},
         {.name = L"Blank", .type = REG_SZ, .data = stringData(L"")},                               // no program
         {.name = L"Bare", .type = REG_SZ, .data = stringData(L"tasksmack-1722-no-such-tool --x")}, // not on the path
+        {.name = L"Cleanup", .type = REG_SZ, .data = stringData(std::format(L"\"{}\" /c exit", cmd.wstring()))},
+    };
+    addKey(HKEY_LOCAL_MACHINE, RUN_ONCE_KEY, KEY_WOW64_64KEY).values = {
+        {.name = L"MachineCleanup", .type = REG_SZ, .data = stringData(std::format(L"\"{}\" /c exit", cmd.wstring()))},
     };
 
     WindowsStartupProbe probe(fakeFunctions());
     const std::vector<StartupEntry> entries = probe.enumerate();
-    ASSERT_EQ(entries.size(), 6U);
+    ASSERT_EQ(entries.size(), 8U);
 
     const StartupEntry* alpha = find(entries, "Alpha", StartupLocation::RunUser);
     ASSERT_NE(alpha, nullptr);
@@ -505,6 +509,7 @@ TEST_F(WindowsStartupProbeSeamsTest, ReadsRunValuesAndSkipsWhatIsNotAnEntry)
     EXPECT_FALSE(alpha->name.empty());
     EXPECT_NE(alpha->name, "Alpha");
     EXPECT_NE(lower(alpha->name), "cmd.exe") << "the description, not the file name";
+    EXPECT_EQ(alpha->programName, alpha->name);
     EXPECT_FALSE(alpha->enabled);
     EXPECT_EQ(alpha->disabledAtUnixSeconds, DISABLED_AT);
 
@@ -525,18 +530,31 @@ TEST_F(WindowsStartupProbeSeamsTest, ReadsRunValuesAndSkipsWhatIsNotAnEntry)
     const StartupEntry* once = find(entries, "Once", StartupLocation::RunOnceUser);
     ASSERT_NE(once, nullptr);
     EXPECT_EQ(once->command, "C:\\once.exe");
-    EXPECT_EQ(once->name, "once.exe");
+    // #1971: a RunOnce entry is shown by its value name, with its program's name kept for the tooltip.
+    EXPECT_EQ(once->name, "Once");
+    EXPECT_EQ(once->programName, "once.exe");
+
+    for (const auto& [value, location] :
+         {std::pair{"Cleanup", StartupLocation::RunOnceUser}, std::pair{"MachineCleanup", StartupLocation::RunOnceMachine}})
+    {
+        const StartupEntry* cleanup = find(entries, value, location);
+        ASSERT_NE(cleanup, nullptr) << value;
+        EXPECT_EQ(cleanup->name, value) << "the value name, not cmd.exe's description";
+        EXPECT_EQ(cleanup->programName, alpha->name) << "cmd.exe's description, as the Run entry shows it";
+    }
 
     const StartupEntry* blank = find(entries, "Blank", StartupLocation::RunOnceUser);
     ASSERT_NE(blank, nullptr);
     EXPECT_EQ(blank->name, "Blank") << "no program: named by its value";
+    EXPECT_EQ(blank->programName, "Blank");
     EXPECT_TRUE(blank->executablePath.empty());
     EXPECT_EQ(blank->target, StartupTargetState::Unresolved);
 
     const StartupEntry* bare = find(entries, "Bare", StartupLocation::RunOnceUser);
     ASSERT_NE(bare, nullptr);
     EXPECT_EQ(bare->executablePath, "tasksmack-1722-no-such-tool") << "a name the search path doesn't find is kept as written";
-    EXPECT_EQ(bare->name, "tasksmack-1722-no-such-tool");
+    EXPECT_EQ(bare->name, "Bare");
+    EXPECT_EQ(bare->programName, "tasksmack-1722-no-such-tool");
     for (const StartupEntry& entry : entries)
     {
         EXPECT_TRUE(entry.packageFamily.empty()) << entry.registrationName;
@@ -545,9 +563,9 @@ TEST_F(WindowsStartupProbeSeamsTest, ReadsRunValuesAndSkipsWhatIsNotAnEntry)
     EXPECT_EQ(bare->target, StartupTargetState::Missing);
 
     // A second pass reads the cached publisher, and a value that's gone drops its cache entry.
-    EXPECT_EQ(probe.enumerate().size(), 6U);
+    EXPECT_EQ(probe.enumerate().size(), 8U);
     fake().keys.front().values.erase(fake().keys.front().values.begin());
-    EXPECT_EQ(probe.enumerate().size(), 5U);
+    EXPECT_EQ(probe.enumerate().size(), 7U);
 }
 
 TEST_F(WindowsStartupProbeSeamsTest, ListsTheStartupFolders)

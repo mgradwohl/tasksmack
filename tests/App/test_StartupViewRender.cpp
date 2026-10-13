@@ -478,6 +478,49 @@ TEST_F(StartupViewRenderTest, TheNameTooltipShowsTheRegistryValue)
     EXPECT_TRUE(text.contains("Registry value: MicrosoftEdgeAutoLaunch_575A7C"));
 }
 
+// #1971: a RunOnce entry is shown by its value name; its program's name goes in the tooltip.
+
+/// A RunOnce clean-up entry that runs cmd.exe, as the probe names it.
+[[nodiscard]] Platform::StartupEntry cleanupEntry()
+{
+    auto cleanup = entry("Uninstall 24.1.0.1", "Microsoft Corporation", StartupLocation::RunOnceUser, true);
+    cleanup.registrationName = "Uninstall 24.1.0.1";
+    cleanup.programName = "Windows Command Processor";
+    return cleanup;
+}
+
+TEST(StartupViewTest, ProgramNameLabelShowsOnlyWhenTheNameShownIsAnother)
+{
+    EXPECT_EQ(startupProgramNameLabel(cleanupEntry()), "Program name: Windows Command Processor");
+    EXPECT_EQ(startupRegistrationLabel(cleanupEntry()), "") << "the value name is the name shown";
+
+    auto edge = edgeEntry();
+    edge.programName = edge.name;
+    EXPECT_EQ(startupProgramNameLabel(edge), "") << "a Run entry is shown by its program's name already";
+    EXPECT_EQ(startupProgramNameLabel(entry("Spotify", "Spotify AB", StartupLocation::PackagedApp, true)), "") << "no program name";
+}
+
+TEST(StartupViewTest, FilterMatchesARunOnceEntrysProgramName)
+{
+    const std::vector<Platform::StartupEntry> entries = {cleanupEntry(), entry("Discord", "", StartupLocation::RunUser, true)};
+    EXPECT_EQ(buildStartupRows(entries, "command processor", StartupColumn::Name, true), (std::vector<std::size_t>{0}));
+    EXPECT_EQ(buildStartupRows(entries, "uninstall", StartupColumn::Name, true), (std::vector<std::size_t>{0}));
+}
+
+TEST_F(StartupViewRenderTest, ARunOnceNameTooltipShowsTheProgramName)
+{
+    Domain::StartupPublication publication;
+    publication.version = 1;
+    publication.entries = {cleanupEntry()};
+    StartupViewState state;
+    EXPECT_TRUE(captureFrame(publication, state).contains("Uninstall 24.1.0.1"));
+    const ImVec2 row = firstRowCentre(publication, state);
+    ASSERT_GT(row.y, 0.0F);
+    const std::string text = hoverUntil(publication, state, row, "Program name:");
+    EXPECT_TRUE(text.contains("Program name: Windows Command Processor"));
+    EXPECT_FALSE(text.contains("Registry value:"));
+}
+
 TEST_F(StartupViewRenderTest, SelectionIsByTheRegisteredNameAndPackage)
 {
     Domain::StartupPublication publication;

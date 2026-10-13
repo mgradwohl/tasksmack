@@ -41,10 +41,14 @@ enum class StartupTargetState : std::uint8_t
 /// is false, or this entry's file could not be read) is left empty, 0 or Unresolved.
 struct StartupEntry
 {
-    /// The name shown (#1873): for a Run, RunOnce or Startup folder entry, its program's version-resource
-    /// FileDescription, else the program's file name, else registrationName (as Settings > Apps > Startup
-    /// names them); for a packaged app's startup task, its display name from the manifest.
+    /// The name shown (#1873): for a Run or Startup folder entry, programName (as Settings > Apps >
+    /// Startup names them); for a RunOnce entry, registrationName, its registry value name (#1971);
+    /// for a packaged app's startup task, its display name from the manifest.
     std::string name;
+    /// The program's own name (#1971), for a Run, RunOnce or Startup folder entry: its version-resource
+    /// FileDescription, else the program's file name, else registrationName. Equals name except for a
+    /// RunOnce entry, whose tooltip shows it. Empty for a packaged app's startup task.
+    std::string programName;
     /// The name the entry is registered under, which identifies it (#1873): the Run or RunOnce value
     /// name, the Startup folder file's name with its extension ("Tool.lnk"), or a packaged startup task's
     /// TaskId. May equal name.
