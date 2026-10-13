@@ -30,6 +30,7 @@
 #undef min
 
 #include "CpuBaseClock.h"
+#include "PerfProviderApartment.h"
 #include "ProcessorPerformanceCounter.h"
 #include "WinString.h"
 #include "WindowsNtQuery.h"
@@ -331,7 +332,10 @@ readCpuDetails(const WindowsSystemProbeFunctions& fns, std::span<const std::size
 WindowsSystemProbe::~WindowsSystemProbe() = default;
 
 WindowsSystemProbe::WindowsSystemProbe() : WindowsSystemProbe(readBaseCpuMHz(), ProcessorPerformanceCounter::open())
-{}
+{
+    // Opening the counter connected PDH, which may have loaded perf providers holding COM objects (#1898).
+    Windows::keepComForPerfProviders();
+}
 
 WindowsSystemProbe::WindowsSystemProbe(std::uint64_t baseCpuMHz, std::unique_ptr<ProcessorPerformanceCounter> processorPerformance)
     : WindowsSystemProbe(baseCpuMHz, std::move(processorPerformance), systemFunctions())

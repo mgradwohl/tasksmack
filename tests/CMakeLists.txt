@@ -394,6 +394,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessSecurity.cpp
     Platform/test_WindowsDiskProbe.cpp
     Platform/test_WindowsDiskProbeSeams.cpp
+    Platform/test_PerfProviderApartment.cpp
     Platform/test_WindowsPathProvider.cpp
     Platform/test_WindowsBatteryInfo.cpp
     Platform/test_WindowsPowerProbe.cpp
@@ -832,9 +833,7 @@ tasksmack_configure_app_target(TaskSmackAppTests)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
 target_link_libraries(TaskSmackAppTests PRIVATE gtest)
 target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes")
-# Each case in its own process, as gtest_discover_tests() ran them: on Windows a second whole shell in
-# one process crashed in a performance-counter DLL's teardown (bitsperf.dll, #1898).
-tasksmack_gtest_add_suites(TaskSmackAppTests ISOLATE UiLayersOnDisplayTest)
+tasksmack_gtest_add_suites(TaskSmackAppTests)
 
 # The headless PGO UI training driver (#880) runs its whole plan for a few frames and exits 0: every
 # main tab drawn by the real panels, with no window, once on the real probes and once on a small

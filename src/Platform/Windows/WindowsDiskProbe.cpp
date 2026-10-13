@@ -24,6 +24,7 @@
 
 #pragma comment(lib, "pdh.lib")
 
+#include "PerfProviderApartment.h"
 #include "WinString.h"
 #include "WindowsDiskProbeMath.h"
 #include "WindowsHandles.h"
@@ -232,7 +233,10 @@ void WindowsDiskProbe::Impl::enumerate()
 }
 
 WindowsDiskProbe::WindowsDiskProbe() : WindowsDiskProbe(systemFunctions())
-{}
+{
+    // The enumeration connected PDH, which may have loaded perf providers holding COM objects (#1898).
+    Windows::keepComForPerfProviders();
+}
 
 WindowsDiskProbeFunctions WindowsDiskProbe::systemFunctions()
 {

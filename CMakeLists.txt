@@ -254,6 +254,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/DXGIGPUProbe.cpp
     src/Platform/Windows/NVMLGPUProbe.cpp
     src/Platform/Windows/PDHGPUProbe.cpp
+    src/Platform/Windows/PerfProviderApartment.cpp
     src/Platform/Windows/WindowsStartupProbe.cpp
     src/Platform/Windows/WindowsStartupActions.cpp
     src/Platform/Windows/WindowsServiceActions.cpp

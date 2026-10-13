@@ -1,5 +1,6 @@
 #include "WindowsThermalZones.h"
 
+#include "PerfProviderApartment.h"
 #include "WinString.h"
 
 // clang-format off
@@ -81,6 +82,8 @@ namespace
         status = readCounterArray(counter, zones);
     }
     PdhCloseQuery(query);
+    // PDH's connection, and the perf providers it loaded, outlive the query (#1898).
+    Windows::keepComForPerfProviders();
     return static_cast<std::uint32_t>(status);
 }
 
