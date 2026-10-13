@@ -26,6 +26,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <stdlib.h> // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv(), which <cstdlib> doesn't declare
@@ -569,6 +570,130 @@ TEST_F(SystemdBusFakeTest, ADeviceMissingItsWifiOrDhcpPropertiesIsAnError)
     const LinuxNetworkAdapters::DhcpLeaseRead emptyOptions = lease("wlan4");
     EXPECT_FALSE(emptyOptions.lease.has_value());
     EXPECT_EQ(emptyOptions.error, "NetworkManager reported no lease details");
+}
+
+// #2006: systemd's services, as SystemdBus::readServices() reads them: ListUnits, ListUnitFiles, then each
+// running service's MainPID.
+constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
+constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
+constexpr const char* SYSTEMD_MANAGER = "org.freedesktop.systemd1.Manager";
+constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
+constexpr const char* CRON_PATH = "/org/freedesktop/systemd1/unit/cron_2eservice";
+constexpr const char* GETTY_PATH = "/org/freedesktop/systemd1/unit/getty_40tty1_2eservice";
+
+/// One ListUnits row.
+[[nodiscard]] TestSupport::UnitRow
+unit(const char* name, const char* description, const char* activeState, const char* subState, const char* path)
+{
+    TestSupport::UnitRow row;
+    row.name = name;
+    row.description = description;
+    row.activeState = activeState;
+    row.subState = subState;
+    row.path = path;
+    return row;
+}
+
+class SystemdBusFakeServicesTest : public SystemdBusFakeTest
+{
+  protected:
+    void serveSystemd()
+    {
+        m_Bus.addNoArgMethod(
+            SYSTEMD_PATH,
+            SYSTEMD_MANAGER,
+            "ListUnits",
+            []() -> MethodAnswer
+            {
+                return {.path = std::nullopt,
+                        .errorName = {},
+                        .units = std::vector<TestSupport::UnitRow>{
+                            unit("cron.service", "Regular background program processing daemon", "active", "running", CRON_PATH),
+                            unit("getty@tty1.service", "Getty on tty1", "active", "running", GETTY_PATH),
+                            unit("apt-daily.service",
+                                 "Daily apt download activities",
+                                 "inactive",
+                                 "dead",
+                                 "/org/freedesktop/systemd1/unit/apt_2ddaily_2eservice"),
+                            unit("dbus.socket", "D-Bus Socket", "active", "running", "/s"),
+                        }};
+            });
+        m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                             SYSTEMD_MANAGER,
+                             "ListUnitFiles",
+                             []() -> MethodAnswer
+                             {
+                                 return {.path = std::nullopt,
+                                         .errorName = {},
+                                         .unitFiles = std::vector<std::pair<std::string, std::string>>{
+                                             {"/usr/lib/systemd/system/cron.service", "enabled"},
+                                             {"/usr/lib/systemd/system/getty@.service", "enabled"},
+                                             {"/usr/lib/systemd/system/ssh.service", "disabled"},
+                                             {"/usr/lib/systemd/system/dbus.socket", "static"},
+                                         }};
+                             });
+        m_Bus.properties()[CRON_PATH][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{161};
+        m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{208};
+        ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    }
+};
+
+TEST_F(SystemdBusFakeServicesTest, TheServicesTheirFilesAndTheRunningOnesMainPidsAreRead)
+{
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    ASSERT_EQ(read.listing.units.size(), 3U) << "the services, not the socket";
+    EXPECT_EQ(read.listing.units[0].name, "cron.service");
+    EXPECT_EQ(read.listing.units[0].description, "Regular background program processing daemon");
+    EXPECT_EQ(read.listing.units[0].activeState, "active");
+    EXPECT_EQ(read.listing.units[0].subState, "running");
+    EXPECT_EQ(read.listing.units[0].objectPath, CRON_PATH);
+    // Unit files by file name, the template kept (its instances take its enablement), the socket's not.
+    const std::vector<std::pair<std::string, std::string>> files{
+        {"cron.service", "enabled"}, {"getty@.service", "enabled"}, {"ssh.service", "disabled"}};
+    EXPECT_EQ(read.listing.unitFiles, files);
+    // Running services' main processes only: apt-daily is inactive, so it isn't asked.
+    EXPECT_EQ(read.listing.mainPids.size(), 2U);
+    EXPECT_EQ(read.listing.mainPids.at("cron.service"), 161U);
+    EXPECT_EQ(read.listing.mainPids.at("getty@tty1.service"), 208U);
+}
+
+TEST_F(SystemdBusFakeTest, WithoutSystemdOnTheBusTheServicesSaySo)
+{
+    ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd isn't running");
+}
+
+TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromListUnitsIsPassedOn)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd couldn't be asked: ")) << read.error;
+}
+
+TEST_F(SystemdBusFakeTest, AFailedListUnitFilesFailsTheRead)
+{
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnits",
+                         []() -> MethodAnswer
+                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<TestSupport::UnitRow>{}}; });
+    m_Bus.addNoArgMethod(SYSTEMD_PATH,
+                         SYSTEMD_MANAGER,
+                         "ListUnitFiles",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_TRUE(read.error.starts_with("systemd couldn't be asked: ")) << read.error;
 }
 
 } // namespace

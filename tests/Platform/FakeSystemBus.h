@@ -76,15 +76,32 @@ using PropertyValue = std::variant<std::string,
                                    std::uint16_t,
                                    std::vector<std::string>>;
 
+/// One row of systemd's ListUnits reply, "(ssssssouso)" (#2006).
+struct UnitRow
+{
+    std::string name;
+    std::string description;
+    std::string loadState = "loaded";
+    std::string activeState;
+    std::string subState;
+    std::string following;
+    std::string path; ///< The unit's object path
+    std::uint32_t jobId = 0;
+    std::string jobType;
+    std::string jobPath = "/";
+};
+
 /// What a fake method returns: an object path (with a name before it, for an "so" reply), a string
-/// (an "s" reply), or a D-Bus error by name.
+/// (an "s" reply), a dictionary, systemd's unit or unit-file lists, or a D-Bus error by name.
 struct MethodAnswer
 {
     std::optional<ObjectPath> path;
     std::string errorName;
-    std::optional<std::string> name = std::nullopt;                      ///< with path: reply "so"
-    std::optional<std::string> text = std::nullopt;                      ///< reply "s"
-    std::optional<std::map<std::string, DictValue>> dict = std::nullopt; ///< reply "a{sv}"
+    std::optional<std::string> name = std::nullopt;                                           ///< with path: reply "so"
+    std::optional<std::string> text = std::nullopt;                                           ///< reply "s"
+    std::optional<std::map<std::string, DictValue>> dict = std::nullopt;                      ///< reply "a{sv}"
+    std::optional<std::vector<UnitRow>> units = std::nullopt;                                 ///< reply "a(ssssssouso)" (ListUnits)
+    std::optional<std::vector<std::pair<std::string, std::string>>> unitFiles = std::nullopt; ///< reply "a(ss)" (ListUnitFiles)
 };
 
 class FakeSystemBus
@@ -451,6 +468,45 @@ class FakeSystemBus
     }
 
     /// An a{sv} into @p reply.
+    static int appendUnits(sd_bus_message* reply, const std::vector<UnitRow>& units)
+    {
+        int result = sd_bus_message_open_container(reply, 'a', "(ssssssouso)");
+        for (const UnitRow& unit : units)
+        {
+            if (result < 0)
+            {
+                break;
+            }
+            result = sd_bus_message_append(reply,
+                                           "(ssssssouso)",
+                                           unit.name.c_str(),
+                                           unit.description.c_str(),
+                                           unit.loadState.c_str(),
+                                           unit.activeState.c_str(),
+                                           unit.subState.c_str(),
+                                           unit.following.c_str(),
+                                           unit.path.c_str(),
+                                           unit.jobId,
+                                           unit.jobType.c_str(),
+                                           unit.jobPath.c_str());
+        }
+        return result < 0 ? result : sd_bus_message_close_container(reply);
+    }
+
+    static int appendUnitFiles(sd_bus_message* reply, const std::vector<std::pair<std::string, std::string>>& files)
+    {
+        int result = sd_bus_message_open_container(reply, 'a', "(ss)");
+        for (const auto& [path, state] : files)
+        {
+            if (result < 0)
+            {
+                break;
+            }
+            result = sd_bus_message_append(reply, "(ss)", path.c_str(), state.c_str());
+        }
+        return result < 0 ? result : sd_bus_message_close_container(reply);
+    }
+
     static int appendDict(sd_bus_message* reply, const std::map<std::string, DictValue>& dict)
     {
         int result = sd_bus_message_open_container(reply, 'a', "{sv}");
@@ -562,6 +618,21 @@ class FakeSystemBus
             if (result >= 0)
             {
                 result = appendDict(reply, *answer.dict);
+            }
+            if (result >= 0)
+            {
+                result = sd_bus_send(nullptr, reply, nullptr);
+            }
+            sd_bus_message_unref(reply);
+            return result >= 0 ? 1 : result;
+        }
+        if (answer.units.has_value() || answer.unitFiles.has_value())
+        {
+            sd_bus_message* reply = nullptr;
+            int result = sd_bus_message_new_method_return(message, &reply);
+            if (result >= 0)
+            {
+                result = answer.units.has_value() ? appendUnits(reply, *answer.units) : appendUnitFiles(reply, *answer.unitFiles);
             }
             if (result >= 0)
             {
