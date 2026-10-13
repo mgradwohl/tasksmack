@@ -145,35 +145,17 @@ constexpr int WINDOW_POS_ABS_MAX = 100'000;
     return std::string(value);
 }
 
-[[nodiscard]] auto sanitizeConfigDir(const std::filesystem::path& candidate, const std::filesystem::path& fallback) -> std::filesystem::path
+/// This user's home directory from the passwd entry (thread-safe getpwuid_r), for when $HOME is unset.
+[[nodiscard]] auto passwdHomeDirectory() -> std::optional<std::filesystem::path>
 {
-    auto normalized = candidate.lexically_normal();
-    if (!UserConfigHelpers::isValidConfigDir(normalized))
-    {
-        spdlog::warn("Ignoring unsafe config directory {}; using {}", Core::pathToUtf8(normalized), Core::pathToUtf8(fallback));
-        return fallback;
-    }
-
-    return normalized;
-}
-
-[[nodiscard]] auto resolveHomeConfigDir() -> std::filesystem::path
-{
-    if (auto homeEnv = readEnvVarString("HOME"))
-    {
-        return std::filesystem::path(*homeEnv) / ".config" / "tasksmack";
-    }
-
-    // Last resort: use passwd entry (thread-safe version)
     struct passwd pwBuf = {};
     struct passwd* pwResult = nullptr;
     std::array<char, 1024> buffer{};
     if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
     {
-        return std::filesystem::path(pwResult->pw_dir) / ".config" / "tasksmack";
+        return std::filesystem::path(pwResult->pw_dir);
     }
-
-    return std::filesystem::current_path();
+    return std::nullopt;
 }
 #endif
 
@@ -539,22 +521,14 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     // Fallback to current directory
     return std::filesystem::current_path();
 #else
-    // Linux: XDG_CONFIG_HOME or ~/.config
-    // Ensure fallback is always safe; it comes from resolveHomeConfigDir() which returns absolute paths
-    auto fallback = resolveHomeConfigDir();
-    if (!fallback.is_absolute())
+    // Linux: XDG_CONFIG_HOME or ~/.config, decided by UserConfigHelpers::configDirectoryFrom() (#1891).
+    const UserConfigHelpers::ConfigDirectoryChoice choice = UserConfigHelpers::configDirectoryFrom(
+        readEnvVarString("XDG_CONFIG_HOME"), readEnvVarString("HOME"), passwdHomeDirectory, std::filesystem::current_path());
+    if (!choice.warning.empty())
     {
-        spdlog::error("Fallback config directory is not absolute: {}", Core::pathToUtf8(fallback));
-        return std::filesystem::current_path();
+        spdlog::warn("{}", choice.warning);
     }
-
-    if (auto xdgConfig = readEnvVarString("XDG_CONFIG_HOME"))
-    {
-        return sanitizeConfigDir(std::filesystem::path(*xdgConfig) / "tasksmack", fallback);
-    }
-
-    // Fallback is guaranteed absolute, so just return it directly
-    return fallback;
+    return choice.directory;
 #endif
 }
 

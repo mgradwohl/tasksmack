@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -90,6 +91,51 @@ inline void loadAndNarrowIntWithClamp(
         return false;
     }
     return !std::ranges::any_of(normalized, [](const auto& part) { return part == ".."; });
+}
+
+/// Where the config lives on Linux and other XDG systems, and why a candidate was passed over:
+/// configDirectoryFrom()'s answer. `warning` is empty when nothing was.
+struct ConfigDirectoryChoice
+{
+    std::filesystem::path directory;
+    std::string warning;
+};
+
+/// The XDG config directory (#1891): $XDG_CONFIG_HOME/tasksmack, else the home directory's
+/// .config/tasksmack -- from $HOME, else @p passwdHome (the passwd entry's directory, asked only when
+/// $HOME is unset), else @p currentPath. @p xdgConfigHome and @p home are the variables' values, nullopt
+/// when unset or empty. An XDG directory that isn't absolute or climbs with ".." (isValidConfigDir())
+/// is passed over for the home one; a home one that isn't absolute, for @p currentPath. Purely lexical:
+/// the caller reads the environment and logs the warning.
+[[nodiscard]] inline auto configDirectoryFrom(const std::optional<std::string>& xdgConfigHome,
+                                              const std::optional<std::string>& home,
+                                              const std::function<std::optional<std::filesystem::path>()>& passwdHome,
+                                              const std::filesystem::path& currentPath) -> ConfigDirectoryChoice
+{
+    std::filesystem::path fallback = currentPath;
+    if (home.has_value())
+    {
+        fallback = std::filesystem::path(*home) / ".config" / "tasksmack";
+    }
+    else if (const std::optional<std::filesystem::path> passwd = passwdHome ? passwdHome() : std::nullopt; passwd.has_value())
+    {
+        fallback = *passwd / ".config" / "tasksmack";
+    }
+    if (!fallback.is_absolute())
+    {
+        return {.directory = currentPath, .warning = "Fallback config directory is not absolute: " + fallback.string()};
+    }
+    if (xdgConfigHome.has_value())
+    {
+        const std::filesystem::path candidate = (std::filesystem::path(*xdgConfigHome) / "tasksmack").lexically_normal();
+        if (!isValidConfigDir(candidate))
+        {
+            return {.directory = fallback,
+                    .warning = "Ignoring unsafe config directory " + candidate.string() + "; using " + fallback.string()};
+        }
+        return {.directory = candidate, .warning = {}};
+    }
+    return {.directory = fallback, .warning = {}};
 }
 
 /// Three-way merge of TaskSmack's own settings into `document`, the config file as it is now
