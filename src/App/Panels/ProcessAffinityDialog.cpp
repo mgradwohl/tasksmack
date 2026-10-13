@@ -168,6 +168,8 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
         ImGui::EndPopup();
         return applied;
     }
+    // Escape cancels, as Cancel does: the affinity is left alone (#1944).
+    const bool escaped = UI::Widgets::dialogEscapePressed();
     const auto& theme = UI::Theme::get();
 
     ImGui::PushTextWrapPos(0.0F);
@@ -267,8 +269,13 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
     const UI::Widgets::DialogFooterButton applyButton{
         .label = APPLY_LABEL, .fills = &applyFills, .tooltip = anyChosen ? nullptr : "Choose at least one CPU", .disabled = !anyChosen};
     const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
-    switch (
-        UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM)))
+    UI::Widgets::DialogFooterAction pressed =
+        UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));
+    if (escaped)
+    {
+        pressed = UI::Widgets::DialogFooterAction::Secondary;
+    }
+    switch (pressed)
     {
     case UI::Widgets::DialogFooterAction::Primary:
         if (anyChosen)

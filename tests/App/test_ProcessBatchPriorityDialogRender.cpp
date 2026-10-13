@@ -271,6 +271,26 @@ TEST_F(ProcessBatchPriorityDialogRenderTest, CancelSetsNothing)
     EXPECT_FALSE(flow.result.has_value());
 }
 
+// Escape is Cancel (#1944): the dialog closes and nothing is set, whatever value was picked.
+TEST_F(ProcessBatchPriorityDialogRenderTest, EscapeCancelsAndSetsNothing)
+{
+    FlowHarness flow;
+    flow.chooseMenuItem(runFrame);
+    ASSERT_TRUE(flow.dialogOpen);
+    flow.dialog.pickNice(10);
+
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    runFrame([&] { flow.frame(); });
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    runFrame([&] { flow.frame(); });
+    runFrame([&] { flow.frame(); });
+    EXPECT_FALSE(flow.dialogOpen);
+    EXPECT_FALSE(flow.dialog.isPending());
+    EXPECT_FALSE(flow.confirmEverOpened);
+    EXPECT_EQ(flow.mock.setPriorityCount(), 0);
+    EXPECT_FALSE(flow.result.has_value());
+}
+
 TEST_F(ProcessBatchPriorityDialogRenderTest, ApplySetsThePickedValueOnceOnEveryTargetWithNoSecondDialog)
 {
     FlowHarness flow;

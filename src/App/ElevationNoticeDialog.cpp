@@ -104,6 +104,8 @@ bool render(State& state)
     {
         UI::Widgets::keepCurrentWindowInViewport();
         state.dialogHeight = ImGui::GetWindowHeight();
+        // Escape dismisses it, as OK -- its only button -- does (#1944).
+        const bool escaped = UI::Widgets::dialogEscapePressed();
         const auto& theme = UI::Theme::get();
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
 
@@ -135,8 +137,9 @@ bool render(State& state)
         // if the label grows wider than that. A fixed-pixel button is a real interaction cost on a
         // HiDPI display (#937).
         const UI::Widgets::DialogFooterButton okButton{.label = "OK", .fills = nullptr, .tooltip = nullptr};
-        if (UI::Widgets::dialogFooter(okButton, {}, UI::Widgets::footerButtonWidth({"OK"}, ELEVATION_BUTTON_MIN_EM)) ==
-            UI::Widgets::DialogFooterAction::Primary)
+        if ((UI::Widgets::dialogFooter(okButton, {}, UI::Widgets::footerButtonWidth({"OK"}, ELEVATION_BUTTON_MIN_EM)) ==
+             UI::Widgets::DialogFooterAction::Primary) ||
+            escaped)
         {
             dismissed = true;
             ImGui::CloseCurrentPopup();

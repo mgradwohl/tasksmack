@@ -15,6 +15,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(): the open modal's window, for its title and width
 
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <vector>
@@ -113,6 +114,15 @@ class ProcessActionConfirmPopupTest : public ::testing::Test
         static_cast<void>(runFrame(draw));
         static_cast<void>(runFrame(draw));
         return mock.syscallTraceCount();
+    }
+
+    /// Presses and releases Escape over two frames of @p body.
+    static void pressEscape(const std::function<void()>& body)
+    {
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+        static_cast<void>(runFrame(body));
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+        static_cast<void>(runFrame(body));
     }
 
   private:
@@ -278,6 +288,80 @@ TEST_F(ProcessActionConfirmPopupTest, ViewKeepsTheModalOpenForTheSameTarget)
     EXPECT_TRUE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "a", TARGET_A); }));
     EXPECT_TRUE(view.confirmRequested());
     EXPECT_EQ(mock.stopCount(), 0);
+}
+
+// --- Escape is Cancel (#1944) ----------------------------------------------------------------------
+
+TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsTheTerminateAndKillConfirmationsWithoutActing)
+{
+    for (const ProcessAction action : {ProcessAction::Terminate, ProcessAction::Kill, ProcessAction::Stop})
+    {
+        SCOPED_TRACE(static_cast<int>(action));
+        TestMocks::MockProcessActions mock;
+        ProcessActionsView view;
+        view.requestAction(action, TARGET_A, "a");
+        const auto draw = [&]
+        {
+            view.render(&mock, ALL_ACTIONS, "a", TARGET_A);
+        };
+        ASSERT_TRUE(runFrame(draw));
+        ASSERT_TRUE(runFrame(draw));
+
+        pressEscape(draw);
+        EXPECT_FALSE(runFrame(draw));
+        EXPECT_FALSE(runFrame(draw)) << "and stays closed";
+        EXPECT_FALSE(view.confirmRequested());
+        EXPECT_EQ(view.pendingAction(), ProcessAction::None);
+        EXPECT_EQ(mock.terminateCount(), 0);
+        EXPECT_EQ(mock.killCount(), 0);
+        EXPECT_EQ(mock.stopCount(), 0);
+    }
+}
+
+TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsTheBatchConfirmation)
+{
+    std::vector<ProcessBatch::BatchTarget> targets;
+    targets.push_back({.target = TARGET_A, .name = "a", .priority = {}});
+    targets.push_back({.target = TARGET_B, .name = "b", .priority = {}});
+    for (const ProcessAction action : {ProcessAction::Terminate, ProcessAction::Kill})
+    {
+        SCOPED_TRACE(static_cast<int>(action));
+        const std::string title = ProcessBatch::confirmTitle(action, targets.size());
+        const std::string question = ProcessBatch::confirmBody(action, targets, 0);
+        bool show = true;
+        std::vector<ProcessActionConfirm::Outcome> outcomes;
+        const auto draw = [&]
+        {
+            outcomes.push_back(ProcessActionConfirm::renderText(show, action, title, question));
+        };
+        ASSERT_TRUE(runFrame(draw));
+        ASSERT_TRUE(runFrame(draw));
+
+        pressEscape(draw);
+        EXPECT_FALSE(runFrame(draw));
+        EXPECT_FALSE(show);
+        EXPECT_EQ(std::ranges::count(outcomes, ProcessActionConfirm::Outcome::Cancelled), 1);
+        EXPECT_EQ(std::ranges::count(outcomes, ProcessActionConfirm::Outcome::Confirmed), 0);
+    }
+}
+
+TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsALabelledConfirmation)
+{
+    // The service and startup actions' confirmations (ServiceActionsView, StartupActionsView).
+    bool show = true;
+    std::vector<ProcessActionConfirm::Outcome> outcomes;
+    const auto draw = [&]
+    {
+        outcomes.push_back(ProcessActionConfirm::renderLabelled(show, "Disable", true, "Disable a?", "Disable a at startup?"));
+    };
+    ASSERT_TRUE(runFrame(draw));
+    ASSERT_TRUE(runFrame(draw));
+
+    pressEscape(draw);
+    EXPECT_FALSE(runFrame(draw));
+    EXPECT_FALSE(show);
+    EXPECT_EQ(std::ranges::count(outcomes, ProcessActionConfirm::Outcome::Cancelled), 1);
+    EXPECT_EQ(std::ranges::count(outcomes, ProcessActionConfirm::Outcome::Confirmed), 0);
 }
 
 // --- Trace system calls (#182) ---------------------------------------------------------------------

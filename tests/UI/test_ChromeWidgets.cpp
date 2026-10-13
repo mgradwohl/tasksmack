@@ -8,7 +8,9 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <array>
 #include <functional>
+#include <utility>
 
 namespace UI::Widgets
 {
@@ -97,6 +99,50 @@ TEST_F(ChromeWidgetsTest, LoneOkIsRightAlignedNotCentred)
             ok = lastItem();
         });
     EXPECT_FLOAT_EQ(ok.maxX, contentRight);
+}
+
+// Escape dismisses the focused dialog (#1944), except while a text field in it has the keyboard:
+// there Escape belongs to the field, and only the next press closes the dialog.
+TEST_F(ChromeWidgetsTest, EscapeDismissesTheDialogButNotFromAnActiveTextField)
+{
+    std::array<char, 32> text{};
+    bool focusField = false;
+    bool escaped = false;
+    const auto body = [&]
+    {
+        if (std::exchange(focusField, false))
+        {
+            ImGui::SetKeyboardFocusHere();
+        }
+        ImGui::InputText("##field", text.data(), text.size());
+        escaped = dialogEscapePressed();
+    };
+    const auto pressEscape = [&]
+    {
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+        runFrame(body);
+        const bool pressed = escaped;
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+        runFrame(body);
+        EXPECT_FALSE(escaped) << "once per press";
+        return pressed;
+    };
+    runFrame(body);
+    runFrame(body);
+    EXPECT_FALSE(escaped);
+    EXPECT_TRUE(pressEscape());
+
+    // io.WantTextInput reports the frame before: the field is focused, activated, then reported.
+    focusField = true;
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        runFrame(body);
+    }
+    ASSERT_TRUE(ImGui::GetIO().WantTextInput);
+    EXPECT_FALSE(pressEscape()) << "the field takes it";
+    runFrame(body);
+    EXPECT_FALSE(ImGui::GetIO().WantTextInput) << "and lets go of the keyboard";
+    EXPECT_TRUE(pressEscape());
 }
 
 // The header is one item, so a chart's value strip can share its line with SameLine(), and it

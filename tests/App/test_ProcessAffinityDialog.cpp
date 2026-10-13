@@ -244,6 +244,27 @@ TEST_F(ProcessAffinityDialogRenderTest, ApplyWithNothingTickedDoesNothingAndCanc
     EXPECT_FALSE(dialog.isPending());
 }
 
+// Escape is Cancel (#1944): the dialog closes and hands on nothing, whatever was ticked.
+TEST_F(ProcessAffinityDialogRenderTest, EscapeCancelsAndHandsOnNothing)
+{
+    ProcessAffinityDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b11U), 4);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog));
+    ASSERT_TRUE(dialog.isPending());
+    dialog.choose(3, true);
+
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    EXPECT_FALSE(frame(dialog).has_value());
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    for (int i = 0; i < 3; ++i)
+    {
+        EXPECT_FALSE(frame(dialog).has_value());
+    }
+    EXPECT_FALSE(dialog.isPending());
+    EXPECT_FALSE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
+}
+
 TEST_F(ProcessAffinityDialogRenderTest, SectionsDrawAndApplyHandsOnASectionsChoice)
 {
     Platform::CpuAffinityLayout layout;

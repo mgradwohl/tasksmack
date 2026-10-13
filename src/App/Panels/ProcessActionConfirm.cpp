@@ -85,6 +85,8 @@ Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructi
     if (ImGui::BeginPopupModal(popupTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         UI::Widgets::keepCurrentWindowInViewport();
+        // Escape cancels, as Cancel does: it never confirms (#1944).
+        const bool escaped = UI::Widgets::dialogEscapePressed();
         // The dialog auto-fits, so it is bounded here: neither the question (which carries the
         // process name) nor the button row may be wider than the main window can show. See
         // ProcessDetailsLayout::computeConfirmContentBudget().
@@ -141,7 +143,13 @@ Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructi
         const UI::Widgets::DialogFooterButton confirmButton{
             .label = confirmLabel, .fills = destructive ? &dangerFills : nullptr, .tooltip = nullptr};
         const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel", .fills = nullptr, .tooltip = nullptr};
-        switch (UI::Widgets::dialogFooter(confirmButton, cancelButton, confirmButtonWidth, {}, contentBudget))
+        UI::Widgets::DialogFooterAction pressed =
+            UI::Widgets::dialogFooter(confirmButton, cancelButton, confirmButtonWidth, {}, contentBudget);
+        if (escaped)
+        {
+            pressed = UI::Widgets::DialogFooterAction::Secondary; // Even if a button was clicked in the same frame
+        }
+        switch (pressed)
         {
         case UI::Widgets::DialogFooterAction::Primary:
             outcome = Outcome::Confirmed;

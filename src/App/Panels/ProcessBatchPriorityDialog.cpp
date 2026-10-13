@@ -145,6 +145,8 @@ std::optional<std::int32_t> ProcessBatchPriorityDialog::render()
         return chosen;
     }
     UI::Widgets::keepCurrentWindowInViewport();
+    // Escape cancels, as Cancel does: nothing is changed (#1944).
+    const bool escaped = UI::Widgets::dialogEscapePressed();
     const auto& theme = UI::Theme::get();
 
     // What will happen: Process Details' own control, so the batch is picked exactly as one process is
@@ -180,8 +182,13 @@ std::optional<std::int32_t> ProcessBatchPriorityDialog::render()
     };
     const UI::Widgets::DialogFooterButton applyButton{.label = m_ApplyLabel.c_str(), .fills = &applyFills, .tooltip = nullptr};
     const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
-    switch (UI::Widgets::dialogFooter(
-        applyButton, cancelButton, UI::Widgets::footerButtonWidth({m_ApplyLabel.c_str(), CANCEL_LABEL}, BUTTON_MIN_EM)))
+    UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
+        applyButton, cancelButton, UI::Widgets::footerButtonWidth({m_ApplyLabel.c_str(), CANCEL_LABEL}, BUTTON_MIN_EM));
+    if (escaped)
+    {
+        pressed = UI::Widgets::DialogFooterAction::Secondary;
+    }
+    switch (pressed)
     {
     case UI::Widgets::DialogFooterAction::Primary:
         chosen = m_Nice;

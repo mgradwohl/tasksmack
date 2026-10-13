@@ -297,7 +297,7 @@ std::string_view render(bool& openRequested, const UI::Texture& icon)
     ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);
 
     // Escape closes the dialog, as OK does; ImGui's own Escape handling leaves modals open.
-    bool close = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    bool close = UI::Widgets::dialogEscapePressed();
 
     // Everything above the OK row scrolls in a child fitted to its content but never taller than
     // leaves room for that row, so the button stays in the dialog at any font size in any window
