@@ -6,6 +6,7 @@
 #include "App/Panels/GpuSection.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessActionsView.h"
+#include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
@@ -644,6 +645,9 @@ constexpr std::array<ProcessCellEntry, processColumnCount()> CELL_RENDERERS = {{
      .render = &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::container,
                                        &RowFormatCache::containerWidth,
                                        &RowFormatCache::containerSupported>},
+    {.column = ProcessColumn::Services,
+     .render =
+         &leftAlignedOrBlankCell<&Domain::ProcessSnapshot::services, &RowFormatCache::servicesWidth, &RowFormatCache::servicesSupported>},
     // State
     {.column = ProcessColumn::State, .render = &stateCell},
     {.column = ProcessColumn::Status,
@@ -2833,12 +2837,7 @@ void ProcessesPanel::renderAffinityDialog()
     const Platform::ProcessTarget& target = m_AffinityDialog.target();
     const Platform::ProcessActionResult result = m_ProcessActions ? m_ProcessActions->setAffinity(target, *cpus)
                                                                   : Platform::ProcessActionResult::error("Process actions unavailable");
-    m_RowActionResult = result.success ? Detail::ActionResultMessage{.ok = true,
-                                                                     .text = std::format("CPU affinity of {} (PID {}) set to {}",
-                                                                                         m_AffinityDialog.name(),
-                                                                                         target.pid,
-                                                                                         UI::Format::formatCpuAffinity(cpus->words()))}
-                                       : Detail::ActionResultMessage{.ok = false, .text = result.errorMessage};
+    m_RowActionResult = affinityResultMessage(m_AffinityDialog.name(), target.pid, *cpus, result);
     m_RowActionResultSeconds = ROW_ACTION_RESULT_SECONDS;
     if (result.success)
     {

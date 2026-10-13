@@ -9,11 +9,13 @@
 
 #include "App/Panels/ProcessActionsBlock.h"
 #include "App/Panels/ProcessActionsView.h"
+#include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessOverviewCard.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "UI/Card.h"
 #include "UI/ChartGrid.h"
@@ -377,6 +379,61 @@ TEST_F(ProcessActionsBlockRenderTest, KillFromTheCardOpensTheSharedConfirmAndAct
     h.actionsView.onSelectionChanged();
     EXPECT_FALSE(runFrame(body));
     EXPECT_EQ(h.mock.killCount(), 0);
+}
+
+// #1887: where the platform can set affinity, the Actions card has Set affinity...; it opens the affinity
+// dialog with the process's CPUs ticked, Apply sets them on that process and the card's line says so, and
+// a selection change closes the dialog unapplied.
+TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndAppliesToTheProcess)
+{
+    Harness h;
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.canSetAffinity = true;
+    const Platform::CpuAffinity current = Platform::CpuAffinity::fromMask(0b11U);
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        ProcessActionsBlock::Context context = h.context(caps);
+        context.currentAffinity = &current;
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_TRUE(text.contains("Set affinity...")) << text;
+    const ImGuiWindow* actions = actionsWindow();
+    ASSERT_NE(actions, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_AFFINITY_LABEL, 0, actions->ID));
+    static_cast<void>(runFrame(body));
+    ASSERT_TRUE(runFrame(body));
+    ProcessAffinityDialog& dialog = h.actionsView.affinityDialog();
+    EXPECT_EQ(dialog.target().pid, TARGET.pid);
+    EXPECT_EQ(dialog.choice(), current);
+
+    dialog.choose(2, true);
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Apply", 0, modal->ID)));
+    for (int i = 0; i < 3 && h.mock.setAffinityCount() == 0; ++i)
+    {
+        static_cast<void>(runFrame(body));
+    }
+    EXPECT_EQ(h.mock.setAffinityCount(), 1);
+    EXPECT_EQ(h.mock.lastAffinity(), Platform::CpuAffinity::fromMask(0b111U));
+    EXPECT_EQ(h.mock.lastTarget().pid, TARGET.pid);
+    static_cast<void>(runFrame(body));
+    EXPECT_TRUE(text.contains("CPU affinity of victim (PID 1001) set to 0-2")) << text;
+
+    // Opened again, then the selection moves on: closed, nothing applied.
+    ImGui::ActivateItemByID(ImHashStr(Detail::SET_AFFINITY_LABEL, 0, actionsWindow()->ID));
+    static_cast<void>(runFrame(body));
+    ASSERT_TRUE(runFrame(body));
+    h.actionsView.onSelectionChanged();
+    static_cast<void>(runFrame(body));
+    EXPECT_FALSE(runFrame(body));
+    EXPECT_EQ(h.mock.setAffinityCount(), 1);
 }
 
 // #1395: confirming the dialog acts on the process and the card shows the result in its line; cancelling it

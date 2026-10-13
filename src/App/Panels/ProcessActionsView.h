@@ -12,6 +12,8 @@
 // Everything but render() is defined here, free of ImGui, so the confirm and result state can be
 // tested against a mock IProcessActions without an ImGui context (test_ProcessActionsView.cpp).
 
+#include "App/Panels/ProcessAffinityDialog.h"
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/IconsFontAwesome6.h"
@@ -95,6 +97,8 @@ inline constexpr float ACTION_RESULT_SECONDS = 5.0F;
 
 /// The "Trace system calls (strace)" button's label, also its ImGui ID.
 inline constexpr const char* SYSCALL_TRACE_LABEL = ICON_FA_TERMINAL " Trace system calls (strace)";
+/// The Actions card's Set affinity... button (#1887), opening ProcessAffinityDialog.
+inline constexpr const char* SET_AFFINITY_LABEL = ICON_FA_MICROCHIP " Set affinity...";
 
 /// How the trace button is drawn.
 enum class SyscallTraceButtonState : std::uint8_t
@@ -181,10 +185,14 @@ class ProcessActionsView
     /// The row ends with "Trace system calls (strace)" where the platform has it (#182), at its own
     /// label's width; like any button that does not fit, it starts a new row. It has no confirm, so a
     /// press launches through @p actions at once (null: the result says actions are unavailable).
+    ///
+    /// Then "Set affinity..." where the platform can (#1887), placed the same way; it opens the affinity
+    /// dialog with @p currentAffinity's CPUs ticked (null: every CPU), for the process captured now.
     void renderControls(Platform::IProcessActions* actions,
                         const Platform::ProcessActionCapabilities& capabilities,
                         const std::string& processName,
-                        const Platform::ProcessTarget& target);
+                        const Platform::ProcessTarget& target,
+                        const Platform::CpuAffinity* currentAffinity = nullptr);
 
     /// Draws the last action's result line, when there is one.
     void renderResultLine() const
@@ -202,14 +210,27 @@ class ProcessActionsView
     /// where it is hidden (Detail::SyscallTraceButtonState::Hidden).
     [[nodiscard]] static float syscallTraceButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
 
+    /// Width of the Set affinity... button for @p capabilities at the current font, or 0 where the
+    /// platform can't set affinity (#1887).
+    [[nodiscard]] static float setAffinityButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
+
     /// Submits the confirm dialog while a confirm is pending, and closes it unconfirmed after a
     /// selection change or when @p liveTarget is no longer the captured process; a confirmed action is
     /// dispatched to @p actions. Kept apart from the buttons so it runs even when they are not drawn:
     /// ProcessDetailsPanel calls it at panel scope, since the Actions block's child is skipped while it
     /// is scrolled out of view, and F9 must still open its Kill confirm then (#1493).
+    /// The affinity dialog (#1887) runs here too, and is closed unapplied when @p liveTarget is no
+    /// longer the process it was opened for.
     void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
     {
         renderConfirmDialog(actions, liveTarget);
+        renderAffinityDialog(actions, liveTarget);
+    }
+
+    /// The affinity dialog, for tests: open after Set affinity... is pressed.
+    [[nodiscard]] ProcessAffinityDialog& affinityDialog() noexcept
+    {
+        return m_AffinityDialog;
     }
 
     /// Advances the result line's timeout by @p deltaSeconds, clearing the line once it runs out.
@@ -233,6 +254,7 @@ class ProcessActionsView
     {
         m_DismissPending = m_DismissPending || confirmPending();
         cancelConfirm();
+        m_AffinityDialog.dismiss();
         m_LastResult = {};
     }
 
@@ -355,6 +377,17 @@ class ProcessActionsView
     bool renderButtons(const Platform::ProcessActionCapabilities& capabilities,
                        const std::string& processName,
                        const Platform::ProcessTarget& target);
+    /// Set affinity... (#1887): at the row's end at its own width, as the trace button is. A press reads
+    /// @p actions' affinityLayout() (null: none) to group the dialog's boxes (#1881).
+    void renderSetAffinityButton(const Platform::IProcessActions* actions,
+                                 const Platform::ProcessActionCapabilities& capabilities,
+                                 const std::string& processName,
+                                 const Platform::ProcessTarget& target,
+                                 const Platform::CpuAffinity* currentAffinity,
+                                 bool afterButtons);
+    /// The affinity dialog while it is open; closed unapplied once @p liveTarget moves on. Apply sets
+    /// the CPUs through @p actions (null: unavailable) and shows the result line.
+    void renderAffinityDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget);
     void renderSyscallTraceButton(Platform::IProcessActions* actions,
                                   const Platform::ProcessActionCapabilities& capabilities,
                                   const Platform::ProcessTarget& target,
@@ -365,6 +398,7 @@ class ProcessActionsView
     Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
     ConfirmTarget m_ConfirmTarget;
     Detail::ActionResultMessage m_LastResult;
+    ProcessAffinityDialog m_AffinityDialog; // Set affinity... (#1887)
     float m_ResultSecondsLeft = 0.0F;
 };
 

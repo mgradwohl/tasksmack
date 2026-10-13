@@ -1,7 +1,9 @@
 #include "ProcessActionsView.h"
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessActionConfirm.h"
+#include "ProcessAffinityDialog.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
 #include "UI/Theme.h"
@@ -11,7 +13,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <string>
+#include <thread>
 
 namespace App
 {
@@ -28,13 +32,77 @@ void ProcessActionsView::render(Platform::IProcessActions* actions,
 void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
                                         const Platform::ProcessActionCapabilities& capabilities,
                                         const std::string& processName,
-                                        const Platform::ProcessTarget& target)
+                                        const Platform::ProcessTarget& target,
+                                        const Platform::CpuAffinity* currentAffinity)
 {
     // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
     // block's header and beside the Identity block that names the process (#1493). Its result line
     // goes under the block's last row (renderResultLine()).
     const bool anyButton = renderButtons(capabilities, processName, target);
     renderSyscallTraceButton(actions, capabilities, target, anyButton);
+    renderSetAffinityButton(actions,
+                            capabilities,
+                            processName,
+                            target,
+                            currentAffinity,
+                            anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported);
+}
+
+void ProcessActionsView::renderSetAffinityButton(const Platform::IProcessActions* actions,
+                                                 const Platform::ProcessActionCapabilities& capabilities,
+                                                 const std::string& processName,
+                                                 const Platform::ProcessTarget& target,
+                                                 const Platform::CpuAffinity* currentAffinity,
+                                                 bool afterButtons)
+{
+    if (!capabilities.canSetAffinity)
+    {
+        return;
+    }
+    // As the trace button: on the row at its own width when it fits, else on a row of its own.
+    const float width = setAffinityButtonWidth(capabilities);
+    if (afterButtons)
+    {
+        const float rowEnd = ImGui::GetItemRectMax().x;
+        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
+        {
+            ImGui::SameLine();
+        }
+    }
+    const bool noTarget = target.pid <= 0;
+    ImGui::BeginDisabled(noTarget);
+    const bool pressed = ImGui::Button(Detail::SET_AFFINITY_LABEL, ImVec2(width, 0.0F));
+    ImGui::EndDisabled();
+    if (pressed && !noTarget)
+    {
+        // The process is captured now; the dialog acts only on it (renderAffinityDialog()).
+        m_AffinityDialog.open(target,
+                              processName,
+                              currentAffinity != nullptr ? *currentAffinity : Platform::CpuAffinity{},
+                              static_cast<std::size_t>(std::thread::hardware_concurrency()),
+                              // Read once, on the press: the groups and core kinds to arrange the boxes by (#1881)
+                              actions != nullptr ? actions->affinityLayout() : Platform::CpuAffinityLayout{});
+    }
+    ImGui::SetItemTooltip("Choose the CPUs this process may run on");
+}
+
+void ProcessActionsView::renderAffinityDialog(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
+{
+    if (m_AffinityDialog.isPending() && !Detail::isSameProcessTarget(m_AffinityDialog.target(), liveTarget))
+    {
+        m_AffinityDialog.dismiss(); // another process is shown now: never act on the old one
+    }
+    const std::optional<Platform::CpuAffinity> cpus = m_AffinityDialog.render();
+    if (!cpus.has_value())
+    {
+        return;
+    }
+    const Platform::ProcessTarget& target = m_AffinityDialog.target();
+    const Platform::ProcessActionResult result =
+        actions != nullptr ? actions->setAffinity(target, *cpus) : Platform::ProcessActionResult::error("Process actions unavailable");
+    m_LastResult = affinityResultMessage(m_AffinityDialog.name(), target.pid, *cpus, result);
+    m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
 }
 
 void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* actions,
@@ -150,6 +218,16 @@ float ProcessActionsView::syscallTraceButtonWidth(const Platform::ProcessActionC
                                                           ImGui::GetStyle().FramePadding.x);
 }
 
+float ProcessActionsView::setAffinityButtonWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    if (!capabilities.canSetAffinity)
+    {
+        return 0.0F;
+    }
+    return ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(Detail::SET_AFFINITY_LABEL).x,
+                                                          ImGui::GetStyle().FramePadding.x);
+}
+
 float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     std::size_t count = 0;
@@ -159,7 +237,9 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
     }
     const float actionRow =
         ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
-    return ProcessDetailsLayout::computeActionButtonsWidth(actionRow, syscallTraceButtonWidth(capabilities));
+    // The trace and affinity buttons each take a row of their own when they don't fit after the others.
+    return ProcessDetailsLayout::computeActionButtonsWidth(
+        actionRow, std::max(syscallTraceButtonWidth(capabilities), setAffinityButtonWidth(capabilities)));
 }
 
 bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,

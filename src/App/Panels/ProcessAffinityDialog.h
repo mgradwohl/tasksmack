@@ -7,6 +7,7 @@
 // by processor group and, on a hybrid CPU, by kind of core (#1881).
 
 #include "App/Panels/ProcessAffinitySections.h"
+#include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 
@@ -46,6 +47,14 @@ class ProcessAffinityDialog
     /// closes; set them on target()), and nullopt otherwise -- Cancel included. Apply is disabled
     /// while no CPU is chosen.
     [[nodiscard]] std::optional<Platform::CpuAffinity> render();
+
+    /// Closes the dialog unapplied on the next render() (the selection moved to another process); a
+    /// request not yet opened is dropped.
+    void dismiss() noexcept
+    {
+        m_ShowRequested = false;
+        m_DismissRequested = m_Open;
+    }
 
     /// Ticks or clears @p cpu's box, as a click does; a CPU the dialog doesn't offer is ignored.
     void choose(std::size_t cpu, bool chosen) noexcept;
@@ -97,8 +106,16 @@ class ProcessAffinityDialog
     bool m_AppliedAsCpuSets = false; // Platform::CpuAffinityLayout::appliedAsCpuSets
     ImVec2 m_LastWorkSize;           // For UI::Widgets::centerNextDialog()
     bool m_ShowRequested = false;
+    bool m_DismissRequested = false;
     bool m_Open = false; // As of the last render()
 };
+
+/// The result line for setting @p cpus on @p name (PID @p pid): "CPU affinity of server (PID 4242) set
+/// to 0-3", or the platform's error. Shared by the row menu and Process Details' Actions card.
+[[nodiscard]] Detail::ActionResultMessage affinityResultMessage(const std::string& name,
+                                                                std::int32_t pid,
+                                                                const Platform::CpuAffinity& cpus,
+                                                                const Platform::ProcessActionResult& result);
 
 /// The CPUs to offer for a process whose affinity is @p current, on a machine with @p onlineCpus logical
 /// CPUs (0 when unknown): every online one, and any higher one its affinity already names (one

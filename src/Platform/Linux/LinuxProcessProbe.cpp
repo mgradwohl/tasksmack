@@ -6,6 +6,7 @@
 
 #include "CgroupContainer.h"
 #include "CgroupFreezeStatus.h"
+#include "CgroupService.h"
 #include "Domain/SamplingConfig.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
@@ -470,6 +471,7 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
                                .hasPowerUsage = m_HasPowerCap,            // Available if RAPL is detected
                                .hasStatus = true,                         // From cgroup freezer state
                                .hasContainer = true,                      // From /proc/[pid]/cgroup paths
+                               .hasServices = true,                       // The systemd service, from the same paths (#1886)
                                .hasReducedPrivileges = reducedPrivileges, // Incomplete FD/IO/network data
                                .networkCountersBlocked = false,           // Linux gaps are privilege gaps (#1358)
                                .hasSharedMemory = true};                  // From /proc/[pid]/statm
@@ -1052,7 +1054,8 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
         known = factsByCgroup
                     .emplace(std::string(cgroups),
                              CgroupFacts{.frozen = CgroupPath::isCgroupFrozen(cgroups, cgroupRoot),
-                                         .container = CgroupContainer::containerFromCgroups(cgroups)})
+                                         .container = CgroupContainer::containerFromCgroups(cgroups),
+                                         .services = CgroupService::serviceFromCgroups(cgroups)})
                     .first;
     }
     if (known->second.frozen)
@@ -1060,6 +1063,7 @@ void LinuxProcessProbe::readCgroupFacts(int pidDirFd,
         counters.status = "Suspended"; // No special status unless frozen
     }
     counters.container = known->second.container;
+    counters.services = known->second.services;
 }
 uint64_t LinuxProcessProbe::readTotalCpuTime() const
 {

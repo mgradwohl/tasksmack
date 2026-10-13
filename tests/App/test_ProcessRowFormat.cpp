@@ -561,7 +561,10 @@ TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
 
     ProcessRowFormat::RowFormatOptions windowsLike;
     windowsLike.hasContainer = false;
+    windowsLike.hasServices = false;
     EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).containerSupported);
+    EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).servicesSupported);
+    EXPECT_TRUE(all.servicesSupported);
 }
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeasured)

@@ -155,6 +155,7 @@ struct RowFormatOptions
     bool hasStatus = true;
     bool hasPublisher = true;
     bool hasContainer = true;
+    bool hasServices = true;
     bool hasProcessType = true;
 };
 
@@ -327,6 +328,7 @@ struct RowFormatCache
     LazyTextWidth npuEnginesWidth; // of npuEngines above
     LazyTextWidth publisherWidth;
     LazyTextWidth containerWidth;
+    LazyTextWidth servicesWidth;
     LazyTextWidth processTypeWidth;
 
     // Whether this system can fill the free-text columns drawn straight from the snapshot (#1210):
@@ -335,6 +337,7 @@ struct RowFormatCache
     bool statusSupported = true;
     bool publisherSupported = true;
     bool containerSupported = true;
+    bool servicesSupported = true;
     bool processTypeSupported = true;
     bool gpuSupported = true;   // GPU Engine and GPU Device; GPU % and GPU Memory carry their own tone
     bool npuSupported = true;   // NPU Engine (#1799); NPU % and NPU Memory carry their own tone
@@ -361,6 +364,7 @@ struct RowFormatCache
     fmt.statusSupported = options.hasStatus;
     fmt.publisherSupported = options.hasPublisher;
     fmt.containerSupported = options.hasContainer;
+    fmt.servicesSupported = options.hasServices;
     fmt.processTypeSupported = options.hasProcessType;
     fmt.gpuSupported = options.hasPerProcessGpu;
     fmt.npuSupported = options.hasPerProcessGpu && options.hasPerProcessNpu;

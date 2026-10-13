@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "Platform/CpuAffinity.h"
 #include "Platform/IPowerProbe.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
@@ -580,6 +581,24 @@ class MockProcessActions : public Platform::IProcessActions
         return m_IoPriorityReadResult;
     }
 
+    /// setAffinity() (#1887): records the target and CPUs, and succeeds.
+    [[nodiscard]] Platform::ProcessActionResult setAffinity(const Platform::ProcessTarget& target,
+                                                            const Platform::CpuAffinity& cpus) override
+    {
+        m_LastTarget = target;
+        m_LastAffinity = cpus;
+        ++m_SetAffinityCount;
+        return Platform::ProcessActionResult::ok();
+    }
+    [[nodiscard]] int setAffinityCount() const
+    {
+        return m_SetAffinityCount;
+    }
+    [[nodiscard]] const Platform::CpuAffinity& lastAffinity() const
+    {
+        return m_LastAffinity;
+    }
+
     [[nodiscard]] int32_t lastTerminatePid() const
     {
         return m_LastTerminatePid;
@@ -690,6 +709,8 @@ class MockProcessActions : public Platform::IProcessActions
     int m_ResumeCount = 0;
     int m_SetPriorityCount = 0;
     int m_SetIoPriorityCount = 0;
+    int m_SetAffinityCount = 0;
+    Platform::CpuAffinity m_LastAffinity;
     int m_GetIoPriorityCount = 0;
     Platform::IoPriority m_LastSetIoPriority;
     Platform::ProcessTarget m_LastIoPriorityReadTarget;

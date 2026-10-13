@@ -138,6 +138,8 @@ gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = fals
         return caps.hasPublisher;
     case ProcessColumn::Container:
         return caps.hasContainer;
+    case ProcessColumn::Services:
+        return caps.hasServices;
     case ProcessColumn::Type:
         return caps.hasProcessType;
     default:
@@ -257,6 +259,7 @@ enum class TextCell : std::uint8_t
     options.hasStatus = caps.hasStatus;
     options.hasPublisher = caps.hasPublisher;
     options.hasContainer = caps.hasContainer;
+    options.hasServices = caps.hasServices;
     options.hasProcessType = caps.hasProcessType;
     return options;
 }
