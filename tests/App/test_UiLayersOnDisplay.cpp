@@ -521,9 +521,46 @@ class ShellKeysDriverLayer : public Core::Layer
         Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
         ImGuiIO& io = ImGui::GetIO();
         const int frame = ++m_Observed.frames;
-        switch (frame)
+        if (frame > MAX_FRAMES)
         {
-        case 20:
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        // After a key's release, wait for its effect rather than a fixed number of frames: on a loaded
+        // runner the effect can take longer to show (#1917). A press that is lost still fails, at
+        // WAIT_LIMIT; one taken twice fails the checks that the state came back.
+        const auto awaitThen = [&](bool done, Phase then)
+        {
+            if (!done && frame < m_WaitDeadline)
+            {
+                next(m_Phase, 1);
+                return false;
+            }
+            next(then, STEP);
+            return true;
+        };
+        const auto pressCtrl = [&io](ImGuiKey key, bool shift, bool down)
+        {
+            io.AddKeyEvent(ImGuiMod_Ctrl, down);
+            if (shift)
+            {
+                io.AddKeyEvent(ImGuiMod_Shift, down);
+            }
+            io.AddKeyEvent(key, down);
+        };
+        switch (m_Phase)
+        {
+        case Phase::ShowDetails:
         {
             // As the Processes table's row menu does it (#1209): the selection first, then Details. PID 1
             // is init on Linux; elsewhere it isn't listed, which Process Details says, and the tab comes
@@ -532,66 +569,76 @@ class ShellKeysDriverLayer : public Core::Layer
             Core::Application::get().raiseEvent(selected);
             Core::ShowProcessDetailsEvent details;
             Core::Application::get().raiseEvent(details);
+            next(Phase::CheckDetails, 15);
             break;
         }
-        case 35:
+        case Phase::CheckDetails:
             m_Observed.detailsTabShown = selectedTab() == tabId("###ProcessDetailsTab");
             ImGui::ActivateItemByID(tabId("###ProcessesTab"));
+            next(Phase::PressF5, STEP);
             break;
-        case 45:
+        case Phase::PressF5:
             // No key repeat: these shortcuts are read with IsKeyPressed(), which repeats a key held past
             // KeyRepeatDelay, and one slow frame between a press and its release on a loaded runner did
             // that -- Ctrl+= grew the font two presets and Ctrl+- shrank it one (fontShrankBack failed).
             io.KeyRepeatDelay = 3600.0F;
             io.AddKeyEvent(ImGuiKey_F5, true); // the list/tree toggle, routed to the Processes tab
+            next(Phase::ReleaseF5, 1);
             break;
-        case 46:
+        case Phase::ReleaseF5:
             io.AddKeyEvent(ImGuiKey_F5, false);
+            next(Phase::PressMetricsOn, STEP);
             break;
-        case 55:
-        case 70:
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
-            io.AddKeyEvent(ImGuiMod_Shift, true);
-            io.AddKeyEvent(ImGuiKey_M, true);
+        case Phase::PressMetricsOn:
+        case Phase::PressMetricsOff:
+            pressCtrl(ImGuiKey_M, true, true);
+            next(m_Phase == Phase::PressMetricsOn ? Phase::ReleaseMetricsOn : Phase::ReleaseMetricsOff, 1);
             break;
-        case 56:
-        case 71:
-            io.AddKeyEvent(ImGuiKey_M, false);
-            io.AddKeyEvent(ImGuiMod_Shift, false);
-            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+        case Phase::ReleaseMetricsOn:
+        case Phase::ReleaseMetricsOff:
+            pressCtrl(ImGuiKey_M, true, false);
+            m_WaitDeadline = frame + WAIT_LIMIT;
+            next(m_Phase == Phase::ReleaseMetricsOn ? Phase::AwaitMetricsOn : Phase::AwaitMetricsOff, 1);
             break;
-        case 65:
+        case Phase::AwaitMetricsOn:
             m_Observed.metricsOnAfterToggle = UI::RenderMetrics::get().enabled();
+            static_cast<void>(awaitThen(m_Observed.metricsOnAfterToggle, Phase::PressMetricsOff));
             break;
-        case 80:
+        case Phase::AwaitMetricsOff:
             m_Observed.metricsOffAfterSecondToggle = UI::RenderMetrics::get().enabled();
+            static_cast<void>(awaitThen(!m_Observed.metricsOffAfterSecondToggle, Phase::PressGrow));
+            break;
+        case Phase::PressGrow:
             m_FontBefore = UI::Theme::get().currentFontSize();
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
-            io.AddKeyEvent(ImGuiKey_Equal, true);
+            pressCtrl(ImGuiKey_Equal, false, true);
+            next(Phase::ReleaseGrow, 1);
             break;
-        case 81:
-            io.AddKeyEvent(ImGuiKey_Equal, false);
-            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+        case Phase::ReleaseGrow:
+            pressCtrl(ImGuiKey_Equal, false, false);
+            m_WaitDeadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitGrow, 1);
             break;
-        case 90:
+        case Phase::AwaitGrow:
             m_Observed.fontGrew = UI::Theme::get().currentFontSize() != m_FontBefore;
-            io.AddKeyEvent(ImGuiMod_Ctrl, true);
-            io.AddKeyEvent(ImGuiKey_Minus, true);
+            static_cast<void>(awaitThen(m_Observed.fontGrew, Phase::PressShrink));
             break;
-        case 91:
-            io.AddKeyEvent(ImGuiKey_Minus, false);
-            io.AddKeyEvent(ImGuiMod_Ctrl, false);
+        case Phase::PressShrink:
+            pressCtrl(ImGuiKey_Minus, false, true);
+            next(Phase::ReleaseShrink, 1);
             break;
-        case 100:
+        case Phase::ReleaseShrink:
+            pressCtrl(ImGuiKey_Minus, false, false);
+            m_WaitDeadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitShrink, 1);
+            break;
+        case Phase::AwaitShrink:
             m_Observed.fontShrankBack = UI::Theme::get().currentFontSize() == m_FontBefore;
-            Core::Application::get().stop();
-            break;
-        default:
-            if (frame > 1000)
+            if (awaitThen(m_Observed.fontShrankBack, Phase::Done))
             {
-                m_Observed.timedOut = true;
                 Core::Application::get().stop();
             }
+            break;
+        case Phase::Done:
             break;
         }
     }
@@ -614,7 +661,36 @@ class ShellKeysDriverLayer : public Core::Layer
         return bar != nullptr ? bar->SelectedTabId : 0;
     }
 
+    /// The steps, in order; each waits for m_NextFrame.
+    enum class Phase : std::uint8_t
+    {
+        ShowDetails,
+        CheckDetails,
+        PressF5,
+        ReleaseF5,
+        PressMetricsOn,
+        ReleaseMetricsOn,
+        AwaitMetricsOn,
+        PressMetricsOff,
+        ReleaseMetricsOff,
+        AwaitMetricsOff,
+        PressGrow,
+        ReleaseGrow,
+        AwaitGrow,
+        PressShrink,
+        ReleaseShrink,
+        AwaitShrink,
+        Done,
+    };
+
+    static constexpr int STEP = 10;
+    static constexpr int WAIT_LIMIT = 120; // frames to wait for a shortcut's effect
+    static constexpr int MAX_FRAMES = 1000;
+
     ShellKeysObserved& m_Observed;
+    Phase m_Phase = Phase::ShowDetails;
+    int m_NextFrame = 20;
+    int m_WaitDeadline = 0;
     UI::FontSize m_FontBefore = UI::FontSize::Medium;
 };
 
@@ -682,7 +758,8 @@ class ShellDriverLayer : public Core::Layer
             Core::Application::get().stop();
             return;
         }
-        if (frame < SETTLE || (frame - SETTLE) % STEP != 0)
+        afterTabs(frame);
+        if (frame < SETTLE || (frame - SETTLE) % STEP != 0 || m_F1ReleaseFrame != 0)
         {
             return;
         }
@@ -698,10 +775,31 @@ class ShellDriverLayer : public Core::Layer
         else if (step == TABS.size())
         {
             ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, true);
+            m_F1ReleaseFrame = frame + 1;
         }
-        else if (step == TABS.size() + 1)
+    }
+
+    /// F1 is released on the frame after its press, then Close waits for its effect (the help request)
+    /// rather than a fixed number of frames, up to WAIT_LIMIT: on a loaded runner the shell can take
+    /// longer to answer (#1917). A press that is lost still fails the help count.
+    void afterTabs(int frame)
+    {
+        if (m_F1ReleaseFrame == 0 || frame < m_F1ReleaseFrame)
+        {
+            return;
+        }
+        if (frame == m_F1ReleaseFrame)
         {
             ImGui::GetIO().AddKeyEvent(ImGuiKey_F1, false);
+            return;
+        }
+        if (m_Observed.help == 0 && frame < m_F1ReleaseFrame + WAIT_LIMIT)
+        {
+            return;
+        }
+        if (!m_ClosePressed)
+        {
+            m_ClosePressed = true;
             pressOnTitleBar("##Close");
             pressOnTitleBar(ICON_FA_XMARK "##Close");
         }
@@ -747,8 +845,11 @@ class ShellDriverLayer : public Core::Layer
     static constexpr int SETTLE = 20; // the panels' first samples and layout
     static constexpr int STEP = 15;   // frames per tab: the press lands, the tab draws a few frames
     static constexpr int MAX_FRAMES = 1200;
+    static constexpr int WAIT_LIMIT = 120; // frames Close waits for F1's help request
 
     ShellObserved& m_Observed;
+    int m_F1ReleaseFrame = 0; // 0 until F1 is pressed
+    bool m_ClosePressed = false;
 };
 
 TEST(UiLayersOnDisplayTest, TheWholeShellShowsEachTabAndSavesItsConfigOnClose)
