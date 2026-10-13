@@ -538,7 +538,7 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
     (void) UI::Widgets::sectionHeader(ICON_FA_NETWORK_WIRED, "Network Throughput", plotTitle, aligned);
     if (interfaceHistoryUnavailable)
     {
-        // No spacing after it: the value strip below shares this line, right-aligned to the chart.
+        // No spacing after it: the value strip below shares this line, aligned to the chart's axis (#1882).
         ImGui::TextColored(theme.scheme().textMuted, "Per-interface history unavailable; showing total network history below.");
     }
     constexpr size_t NETWORK_NOW_BAR_COLUMNS = 2; // Sent, Recv

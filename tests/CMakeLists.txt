@@ -191,6 +191,7 @@ set(COMMON_TEST_SOURCES
     UI/test_ChromeLayout.cpp
     UI/test_ChromeWidgets.cpp
     UI/test_LineLayout.cpp
+    UI/test_SeriesLabelAlignment.cpp
     UI/test_IconEncoding.cpp
     App/test_DialogGeometry.cpp
     UI/test_ThemeCatalog.cpp

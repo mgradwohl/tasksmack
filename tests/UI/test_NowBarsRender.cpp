@@ -3,10 +3,12 @@
 /// unavailable: no chart, one bar per value, each with its tooltip on hover), no bars (just the chart),
 /// RenderMetrics capture (the Ctrl+Shift+M overlay's per-chart samples), a value strip in a row too
 /// narrow for it, which falls back to compact labels, the table layout with compact spacing (its bars'
-/// tooltips), and a history chart drawn with anti-aliasing off.
+/// tooltips), a history chart drawn with anti-aliasing off, and where the value strip puts each label:
+/// on the side of its series' Y axis, for a single-axis and a dual-axis chart (#1882).
 
 #include "UI/ChartWidgets.h"
 #include "UI/RenderMetrics.h"
+#include "UI/SeriesLabelAlignment.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -14,8 +16,10 @@
 #include <implot.h>
 
 #include <array>
+#include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace UI::Widgets
 {
@@ -25,6 +29,26 @@ namespace
 constexpr float DISPLAY_WIDTH = 800.0F;
 constexpr float DISPLAY_HEIGHT = 600.0F;
 constexpr float PLOT_HEIGHT = 120.0F;
+
+/// Where a frame of NowBarsRenderTest::stripFrame() put the chart's heading, its plot and its row.
+struct StripGeometry
+{
+    float rowLeft = 0.0F;
+    float headingRight = 0.0F;
+    float headingTop = 0.0F;
+    float headingBottom = 0.0F;
+    float chartRight = 0.0F; ///< The chart's right edge: the row less the NowBar column
+    float plotTop = 0.0F;
+    float measuredEntryWidth = 0.0F; ///< Detail::valueStripEntryWidth() of the measured entry
+};
+
+/// The entry stripFrame() measures the width of: its head, tail and whether it is on the right axis.
+struct MeasuredEntry
+{
+    std::string_view head;
+    std::string_view tail;
+    bool rightAxis = false;
+};
 
 class NowBarsRenderTest : public ::testing::Test
 {
@@ -101,6 +125,74 @@ class NowBarsRenderTest : public ::testing::Test
             drawn.vertices += list->VtxBuffer.Size;
         }
         return drawn;
+    }
+
+    /// One frame: a heading, then renderHistoryWithNowBars() under @p tableId with its value strip
+    /// for @p bars, on a chart whose axes are @p axes. Leaves the frame's draw data for swatchAt().
+    static StripGeometry
+    stripFrame(const char* tableId, std::span<const NowBar> bars, SeriesLabelAlignment::ChartAxes axes = {}, MeasuredEntry measured = {})
+    {
+        StripGeometry geometry;
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::Begin("Charts", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        geometry.rowLeft = ImGui::GetCursorScreenPos().x;
+        const float rowWidth = ImGui::GetContentRegionAvail().x;
+        geometry.chartRight = geometry.rowLeft + rowWidth - nowBarsReservedWidth(bars.size(), 0, false, rowWidth);
+        geometry.measuredEntryWidth = Detail::valueStripEntryWidth(measured.head, measured.tail, measured.rightAxis);
+        ImGui::TextUnformatted("Heading");
+        geometry.headingRight = ImGui::GetItemRectMax().x;
+        geometry.headingTop = ImGui::GetItemRectMin().y;
+        geometry.headingBottom = ImGui::GetItemRectMax().y;
+        renderHistoryWithNowBars(
+            tableId,
+            PLOT_HEIGHT,
+            [&geometry]
+            {
+                geometry.plotTop = ImGui::GetCursorScreenPos().y;
+                if (ImPlot::BeginPlot("##StripPlot", ImVec2(-1.0F, PLOT_HEIGHT)))
+                {
+                    ImPlot::EndPlot();
+                }
+            },
+            bars,
+            false,
+            0,
+            false,
+            NowBarValues::Strip,
+            {},
+            axes);
+        ImGui::End();
+        ImGui::Render();
+        return geometry;
+    }
+
+    /// The top-left corner of the value-strip swatch drawn in @p color above @p belowY (the plot's top,
+    /// so the NowBar in the same colour is left out), from the last frame's draw data; FLT_MAX in both
+    /// coordinates if none was drawn.
+    [[nodiscard]] static ImVec2 swatchAt(const ImVec4& color, float belowY)
+    {
+        const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
+        ImVec2 corner(std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
+        const ImVector<ImDrawList*>& lists = ImGui::GetDrawData()->CmdLists;
+        int listIndex = 0;
+        while (listIndex < lists.Size)
+        {
+            const ImVector<ImDrawVert>& vertices = lists[listIndex]->VtxBuffer;
+            int vertexIndex = 0;
+            while (vertexIndex < vertices.Size)
+            {
+                const ImDrawVert& vertex = vertices[vertexIndex];
+                if (vertex.col == packed && vertex.pos.y < belowY && vertex.pos.x < corner.x)
+                {
+                    corner = vertex.pos;
+                }
+                ++vertexIndex;
+            }
+            ++listIndex;
+        }
+        return corner;
     }
 
   private:
@@ -184,6 +276,74 @@ TEST_F(NowBarsRenderTest, ABarBesideTheChartSaysWhatItIsOnHoverInACompactTable)
         }
     }
     EXPECT_TRUE(shown);
+}
+
+// #1882: on a chart with one Y axis, its scale on the left, the value strip's labels are left-aligned:
+// the first follows the chart's heading on its line, the next after it, all in the chart's left half.
+TEST_F(NowBarsRenderTest, ASingleAxisChartsLabelsAreLeftAligned)
+{
+    const std::array<NowBar, 2> bars = twoBars();
+    static_cast<void>(stripFrame("SingleAxisStrip", bars));
+    const StripGeometry geometry = stripFrame("SingleAxisStrip", bars);
+    const auto total = swatchAt(bars[0].color, geometry.plotTop);
+    const auto user = swatchAt(bars[1].color, geometry.plotTop);
+    ASSERT_LT(total.x, DISPLAY_WIDTH); // drawn
+    ASSERT_LT(user.x, DISPLAY_WIDTH);  // drawn
+
+    const float entryGap = ImGui::GetStyle().ItemSpacing.x * 2.0F;
+    EXPECT_NEAR(total.x, geometry.headingRight + entryGap, 1.0F);
+    EXPECT_GE(total.y, geometry.headingTop); // on the heading's line
+    EXPECT_LT(total.y, geometry.headingBottom);
+    EXPECT_GT(user.x, total.x);
+    EXPECT_NEAR(user.y, total.y, 0.5F);
+    EXPECT_LT(user.x, (geometry.rowLeft + geometry.chartRight) * 0.5F);
+}
+
+// #1882: on a dual-axis chart the left axis's series is left-aligned, after the heading, and the
+// right axis's series (its label ends in SECONDARY_AXIS_MARK) right-aligned, its entry ending at the
+// chart's right edge -- on the same line.
+TEST_F(NowBarsRenderTest, ADualAxisChartsLabelsAlignToTheirOwnAxes)
+{
+    const std::array<NowBar, 2> bars{
+        NowBar{.valueText = "512", .label = "Threads", .tooltipText = {}, .value01 = 0.5, .color = ImVec4(0.2F, 0.6F, 1.0F, 1.0F)},
+        NowBar{.valueText = "12.0/s",
+               .label = "Page Faults \xE2\x86\x92", // " →": SECONDARY_AXIS_MARK
+               .tooltipText = {},
+               .value01 = 0.1,
+               .color = ImVec4(1.0F, 0.6F, 0.2F, 1.0F)}};
+    const MeasuredEntry faults{.head = "Page Faults", .tail = "12.0/s", .rightAxis = true};
+    static_cast<void>(stripFrame("DualAxisStrip", bars, {}, faults));
+    const StripGeometry geometry = stripFrame("DualAxisStrip", bars, {}, faults);
+    const auto threads = swatchAt(bars[0].color, geometry.plotTop);
+    const auto faultsSwatch = swatchAt(bars[1].color, geometry.plotTop);
+    ASSERT_LT(threads.x, DISPLAY_WIDTH);      // drawn
+    ASSERT_LT(faultsSwatch.x, DISPLAY_WIDTH); // drawn
+
+    const float entryGap = ImGui::GetStyle().ItemSpacing.x * 2.0F;
+    EXPECT_NEAR(threads.x, geometry.headingRight + entryGap, 1.0F);
+    EXPECT_NEAR(faultsSwatch.x, geometry.chartRight - geometry.measuredEntryWidth, 1.0F);
+    EXPECT_GE(faultsSwatch.y, geometry.headingTop); // both on the heading's line
+    EXPECT_LT(faultsSwatch.y, geometry.headingBottom);
+    EXPECT_NEAR(faultsSwatch.y, threads.y, 0.5F);
+}
+
+// #1882: a chart whose only scale is on the right right-aligns every label, the last ending at the
+// chart's right edge.
+TEST_F(NowBarsRenderTest, ARightAxisChartsLabelsAreRightAligned)
+{
+    const std::array<NowBar, 2> bars = twoBars();
+    const SeriesLabelAlignment::ChartAxes rightAxis{.primary = SeriesLabelAlignment::AxisSide::Right};
+    const MeasuredEntry user{.head = "CPU User", .tail = "30%", .rightAxis = false};
+    static_cast<void>(stripFrame("RightAxisStrip", bars, rightAxis, user));
+    const StripGeometry geometry = stripFrame("RightAxisStrip", bars, rightAxis, user);
+    const auto total = swatchAt(bars[0].color, geometry.plotTop);
+    const auto userSwatch = swatchAt(bars[1].color, geometry.plotTop);
+    ASSERT_LT(total.x, DISPLAY_WIDTH);      // drawn
+    ASSERT_LT(userSwatch.x, DISPLAY_WIDTH); // drawn
+
+    EXPECT_NEAR(userSwatch.x, geometry.chartRight - geometry.measuredEntryWidth, 1.0F);
+    EXPECT_LT(total.x, userSwatch.x);
+    EXPECT_GT(total.x, (geometry.rowLeft + geometry.chartRight) * 0.5F);
 }
 
 TEST_F(NowBarsRenderTest, AChartWithAntiAliasingOffClearsItsLinesFlagsOnlyWhileItDraws)
