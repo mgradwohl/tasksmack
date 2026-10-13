@@ -8,8 +8,10 @@
 #include <SDL3/SDL_mouse.h>
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <tuple>
+#include <utility>
 
 struct SDL_Cursor;
 
@@ -68,6 +70,15 @@ class TitleBarLayer : public Core::Layer
     /// True if (x, y) falls inside any title-bar button's bounds. Public so the
     /// free-function hit-test callback can use it directly.
     [[nodiscard]] auto isPointInControlArea(float x, float y) const -> bool;
+
+    /// Mouse state a drag or resize in progress reads instead of SDL's, as {x, y, buttonMask} in
+    /// global coordinates: tests hold the left button down and move the pointer, which a pushed
+    /// event can't do (SDL's own mouse state doesn't follow pushed events). An empty function
+    /// restores SDL's.
+    void setMouseStateQueryForTesting(std::function<std::tuple<int, int, SDL_MouseButtonFlags>()> query)
+    {
+        m_MouseStateQueryForTesting = std::move(query);
+    }
 
   private:
     enum class InteractionMode : std::uint8_t
@@ -160,6 +171,7 @@ class TitleBarLayer : public Core::Layer
     bool m_HasLoggedFocusMismatch = false;
 
     bool m_TraceEnabled = false;
+    std::function<std::tuple<int, int, SDL_MouseButtonFlags>()> m_MouseStateQueryForTesting;
 
     SDL_Cursor* m_DefaultCursor = nullptr;
     SDL_Cursor* m_NsResizeCursor = nullptr;

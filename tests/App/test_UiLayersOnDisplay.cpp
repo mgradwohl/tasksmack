@@ -48,6 +48,7 @@
 #include <optional>
 #include <string_view>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace
@@ -408,6 +409,229 @@ TEST(UiLayersOnDisplayTest, TitleBarMouseAndKeyEventsDoWhatTheySay)
     EXPECT_TRUE(observed.positionKeptAfterClick);           // a press and release without motion moves nothing
     EXPECT_TRUE(observed.sizeKeptAfterEdgePress);           // likewise on the resize edge
     EXPECT_TRUE(observed.systemMenuOpened);                 // Ctrl+Space opens the window menu
+}
+
+/// What the drag-and-resize driver saw.
+struct WindowDragObserved
+{
+    bool positionsApply = true; ///< False under SDL's offscreen driver, which keeps a window where it was made.
+    bool movedByDrag = false;
+    bool widenedByResize = false;
+    bool maximizedBeforeDrag = false;
+    bool restoredByDrag = false;
+    int frames = 0;
+    bool timedOut = false;
+};
+
+/// Pushed after UILayer and TitleBarLayer: holds the left button down and moves the pointer through
+/// TitleBarLayer::setMouseStateQueryForTesting() -- a pushed event can't move SDL's own pointer -- so
+/// the drag and resize the press begins step each frame (#1891): a drag on the title bar moves the
+/// window, a drag from the right edge widens it, and a drag on a maximized window's title bar past
+/// the threshold restores it. Each step waits for its effect (the window manager applies a move,
+/// resize or restore some frames later on X11) up to WAIT_LIMIT frames, then lets go.
+class WindowDragDriverLayer : public Core::Layer
+{
+  public:
+    WindowDragDriverLayer(WindowDragObserved& observed, App::TitleBarLayer& titleBar)
+        : Layer("WindowDragDriver"), m_Observed(observed), m_TitleBar(titleBar)
+    {}
+
+    void onRender() override
+    {
+        Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
+        const int frame = ++m_Observed.frames;
+        if (frame > MAX_FRAMES)
+        {
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        const auto [width, height] = window.getSize();
+        const auto [x, y] = window.getPosition();
+        const float titleX = static_cast<float>(width) * 0.5F; // empty title bar: the middle, clear of the buttons
+        constexpr float TITLE_Y = 16.0F;
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        const auto waiting = [this, frame]
+        {
+            return frame < m_Deadline;
+        };
+        switch (m_Phase)
+        {
+        case Phase::BeginDrag:
+        {
+            const char* driver = SDL_GetCurrentVideoDriver();
+            m_Observed.positionsApply = driver == nullptr || std::string_view(driver) != "offscreen";
+            m_Position = {x, y};
+            hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+            pushButton(titleX, TITLE_Y, true, 1);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMoved, 1);
+            break;
+        }
+        case Phase::AwaitMoved:
+            m_Observed.movedByDrag = std::pair{x, y} != m_Position;
+            if (!m_Observed.movedByDrag && m_Observed.positionsApply && waiting())
+            {
+                next(Phase::AwaitMoved, 1);
+                break;
+            }
+            release();
+            next(Phase::BeginResize, STEP);
+            break;
+        case Phase::BeginResize:
+        {
+            m_Size = {width, height};
+            const float edgeX = static_cast<float>(width) - 2.0F;
+            const float edgeY = static_cast<float>(height) * 0.5F;
+            hold(x + static_cast<int>(edgeX) + WIDEN_BY, y + static_cast<int>(edgeY));
+            pushButton(edgeX, edgeY, true, 1);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitWidened, 1);
+            break;
+        }
+        case Phase::AwaitWidened:
+            m_Observed.widenedByResize = width > m_Size.first;
+            if (!m_Observed.widenedByResize && waiting())
+            {
+                next(Phase::AwaitWidened, 1);
+                break;
+            }
+            release(); // ends the resize, committing the size it last held back
+            next(Phase::Maximize, STEP);
+            break;
+        case Phase::Maximize:
+            pushButton(titleX, TITLE_Y, true, 2); // double-click: maximize
+            pushButton(titleX, TITLE_Y, false, 2);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximized, 1);
+            break;
+        case Phase::AwaitMaximized:
+            m_Observed.maximizedBeforeDrag = window.isMaximized();
+            if (!m_Observed.maximizedBeforeDrag && waiting())
+            {
+                next(Phase::AwaitMaximized, 1);
+                break;
+            }
+            hold(x + static_cast<int>(titleX) + DRAG_X, y + static_cast<int>(TITLE_Y) + DRAG_Y);
+            pushButton(titleX, TITLE_Y, true, 1);
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitRestored, 1);
+            break;
+        case Phase::AwaitRestored:
+            m_Observed.restoredByDrag = !window.isMaximized();
+            if (!m_Observed.restoredByDrag && waiting())
+            {
+                next(Phase::AwaitRestored, 1);
+                break;
+            }
+            release();
+            next(Phase::Stop, STEP);
+            break;
+        case Phase::Stop:
+            m_TitleBar.setMouseStateQueryForTesting({});
+            Core::Application::get().stop();
+            break;
+        }
+    }
+
+  private:
+    /// The pointer at (@p globalX, @p globalY) with the left button down, until release().
+    void hold(int globalX, int globalY)
+    {
+        m_TitleBar.setMouseStateQueryForTesting([globalX, globalY]
+                                                { return std::tuple<int, int, SDL_MouseButtonFlags>{globalX, globalY, SDL_BUTTON_LMASK}; });
+    }
+
+    /// The button up where it was: the next update sees no button held and ends the interaction.
+    void release()
+    {
+        m_TitleBar.setMouseStateQueryForTesting([] { return std::tuple<int, int, SDL_MouseButtonFlags>{0, 0, 0U}; });
+    }
+
+    static void pushButton(float x, float y, bool down, int clicks)
+    {
+        SDL_Event event{};
+        event.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.windowID = SDL_GetWindowID(Core::Application::get().getWindow().getHandle());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = down;
+        event.button.clicks = static_cast<Uint8>(clicks);
+        event.button.x = x;
+        event.button.y = y;
+        static_cast<void>(SDL_PushEvent(&event));
+    }
+
+    /// The steps, in order; each waits m_NextFrame before running.
+    enum class Phase : std::uint8_t
+    {
+        BeginDrag,
+        AwaitMoved,
+        BeginResize,
+        AwaitWidened,
+        Maximize,
+        AwaitMaximized,
+        AwaitRestored,
+        Stop,
+    };
+
+    static constexpr int SETTLE = 10;
+    static constexpr int STEP = 10;
+    static constexpr int WAIT_LIMIT = 300; // frames to wait for an effect before going on
+    static constexpr int MAX_FRAMES = 1500;
+    static constexpr int DRAG_X = 40; // past DragTracker::DRAG_THRESHOLD_PX
+    static constexpr int DRAG_Y = 30;
+    static constexpr int WIDEN_BY = 60;
+
+    WindowDragObserved& m_Observed;
+    App::TitleBarLayer& m_TitleBar;
+    Phase m_Phase = Phase::BeginDrag;
+    int m_NextFrame = SETTLE;
+    int m_Deadline = 0;
+    std::pair<int, int> m_Position;
+    std::pair<int, int> m_Size;
+};
+
+TEST(UiLayersOnDisplayTest, TitleBarDragsAndResizesStepWhileTheButtonIsHeld)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayDragTest";
+    spec.VSync = false;
+    WindowDragObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<UI::UILayer>();
+        auto& titleBar = app.pushLayer<App::TitleBarLayer>();
+        app.pushLayer<WindowDragDriverLayer>(observed, titleBar);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    EXPECT_FALSE(observed.timedOut);
+    if (observed.positionsApply)
+    {
+        EXPECT_TRUE(observed.movedByDrag); // a title-bar drag moves the window
+    }
+    EXPECT_TRUE(observed.widenedByResize);     // a right-edge drag widens it
+    EXPECT_TRUE(observed.maximizedBeforeDrag); // (the double-click maximized it)
+    EXPECT_TRUE(observed.restoredByDrag);      // and a drag past the threshold restores it
 }
 
 /// What the UI-layer driver saw.

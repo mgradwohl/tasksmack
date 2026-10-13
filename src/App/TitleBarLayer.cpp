@@ -532,7 +532,13 @@ void TitleBarLayer::updateWindowInteraction()
     SDL_MouseButtonFlags mouseButtons = 0U;
     int globalMouseX = 0;
     int globalMouseY = 0;
-    timedOp(m_TraceEnabled, mouseStateMs, [&] { std::tie(globalMouseX, globalMouseY, mouseButtons) = queryMouseState(); });
+    timedOp(m_TraceEnabled,
+            mouseStateMs,
+            [&]
+            {
+                std::tie(globalMouseX, globalMouseY, mouseButtons) =
+                    m_MouseStateQueryForTesting ? m_MouseStateQueryForTesting() : queryMouseState();
+            });
 
     if ((mouseButtons & SDL_BUTTON_LMASK) == 0U)
     {
