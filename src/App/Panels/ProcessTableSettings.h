@@ -366,11 +366,11 @@ inline void appendColumnLine(std::string& out, const ColumnLine& column)
 
 /// Returns `captured` with the sort from `source` restored to any column that has lost it.
 ///
-/// Tree View renders in parent/child order and drops ImGuiTableFlags_Sortable, and ImGui leaves the
-/// sort out of a table's settings while it is not sortable. A layout captured in Tree View would
-/// therefore overwrite the saved one with no sort at all, and the user's list-view sort would be
-/// gone after a restart. `source` is the layout as it stood in list view; its sort is carried
-/// across onto the freshly captured widths and order.
+/// Tree View used to render in parent/child order and drop ImGuiTableFlags_Sortable (it sorts
+/// since #838), and ImGui leaves the sort out of a table's settings while it is not sortable. A
+/// layout captured in Tree View would therefore overwrite the saved one with no sort at all, and the
+/// user's list-view sort would be gone after a restart. `source` is the layout as it stood in list
+/// view; its sort is carried across onto the freshly captured widths and order.
 ///
 /// Only a capture with no sort at all is changed. If `captured` has a sort on any column, that sort
 /// is newer than `source`'s and is returned as it is -- adding `source`'s on top would turn a

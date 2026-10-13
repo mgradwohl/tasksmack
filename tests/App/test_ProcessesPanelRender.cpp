@@ -34,6 +34,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/GPUTypes.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/ProcessTypes.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -352,6 +353,68 @@ class ProcessesPanelRenderTest : public ::testing::Test
             }
         }
         return heights;
+    }
+
+    /// An attached panel reading @p processes, rendered until it has read them all, in tree view.
+    [[nodiscard]] static std::unique_ptr<ProcessesPanel> loadedTreePanel(std::vector<Platform::ProcessCounters> processes)
+    {
+        const std::size_t count = processes.size();
+        auto panel = std::make_unique<ProcessesPanel>(
+            [processes = std::move(processes)]
+            {
+                auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+                for (const Platform::ProcessCounters& process : processes)
+                {
+                    probe->withProcess(process);
+                }
+                return ProcessesPanelPlatform{
+                    .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+            },
+            [](Core::Event& /*event*/) {}, // selection events, which these tests do not read
+            [] { return false; });
+        panel->onAttach();
+        Core::ActiveTabChangedEvent shown("Processes");
+        panel->onEvent(shown);
+        for (int frame = 0; frame < LOAD_FRAMES && panel->processCount() < count; ++frame)
+        {
+            static_cast<void>(renderAndCapture(*panel));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!panel->treeViewEnabled())
+        {
+            panel->toggleTreeView();
+        }
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        return panel;
+    }
+
+    /// The Processes table: the one table in the context with a column for every ProcessColumn.
+    [[nodiscard]] static const ImGuiTable* processTable()
+    {
+        for (int n = 0; n < GImGui->Tables.GetMapSize(); ++n)
+        {
+            const ImGuiTable* table = GImGui->Tables.TryGetMapData(n);
+            if (table != nullptr && table->ColumnsCount == static_cast<int>(ProcessColumn::Count))
+            {
+                return table;
+            }
+        }
+        return nullptr;
+    }
+
+    /// Clicks the left mouse button at (@p x, @p y), with the frames a click over a table needs.
+    static void clickAtPoint(ProcessesPanel& panel, float x, float y)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(x, y);
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        static_cast<void>(renderAndCapture(panel));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        static_cast<void>(renderAndCapture(panel));
+        static_cast<void>(renderAndCapture(panel));
     }
 
     static constexpr int LOAD_FRAMES = 200;
@@ -1477,6 +1540,136 @@ TEST_F(ProcessesPanelRenderTest, AColumnHeaderExplainsItsColumnOnHover)
         }
     }
     EXPECT_TRUE(shown);
+    panel->onDetach();
+}
+
+// #838: tree view sorts each parent's children by the clicked column, and every child stays right
+// under its parent; the list sorts the same processes flat.
+TEST_F(ProcessesPanelRenderTest, TheTreeViewSortsSiblingsUnderTheirParents)
+{
+    using TestMocks::makeProcessCounters;
+    constexpr std::uint64_t RSS = std::uint64_t{1} << 20U;
+    const auto panel = loadedTreePanel({
+        makeProcessCounters(1, "tree-root", 'S', 10, 5, 100, RSS, 0),
+        makeProcessCounters(300, "alpha", 'S', 10, 5, 1000, RSS, 1),
+        makeProcessCounters(200, "charlie", 'S', 10, 5, 1000, RSS, 1),
+        makeProcessCounters(100, "bravo", 'S', 10, 5, 1000, RSS, 1),
+        makeProcessCounters(400, "zulu", 'S', 10, 5, 2000, RSS, 300),
+    });
+    ASSERT_EQ(panel->processCount(), 5U);
+    const ImGuiTable* table = processTable();
+    ASSERT_NE(table, nullptr);
+    const ImGuiTableColumn& name = table->Columns[static_cast<int>(toIndex(ProcessColumn::Name))];
+    clickAtPoint(*panel, (name.MinX + name.MaxX) * 0.5F, table->OuterRect.Min.y + (ImGui::GetFrameHeight() * 0.5F));
+
+    std::string text = renderAndCapture(*panel);
+    const auto at = [&text](std::string_view label)
+    {
+        return text.find(label);
+    };
+    ASSERT_NE(at("zulu"), std::string::npos) << text;
+    // tree-root, then its children by name, zulu under alpha though it sorts last by name.
+    EXPECT_LT(at("tree-root"), at("alpha")) << text;
+    EXPECT_LT(at("alpha"), at("zulu")) << text;
+    EXPECT_LT(at("zulu"), at("bravo")) << text;
+    EXPECT_LT(at("bravo"), at("charlie")) << text;
+
+    panel->toggleTreeView(); // the list: the same sort, flat
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_LT(at("alpha"), at("bravo")) << text;
+    EXPECT_LT(at("bravo"), at("charlie")) << text;
+    EXPECT_LT(at("charlie"), at("tree-root")) << text;
+    EXPECT_LT(at("tree-root"), at("zulu")) << text;
+    panel->onDetach();
+}
+
+// #838 audit (#906, #911): the expander is drawn in the Name column, so a click at the start of a
+// parent's Name cell folds it, while a click in its PID cell only selects the row.
+TEST_F(ProcessesPanelRenderTest, TheTreeExpanderSitsInTheNameColumn)
+{
+    SelectionSink events; // a click selects a row, which raises an event
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    if (!panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiTable* table = processTable();
+    ASSERT_NE(table, nullptr);
+    const ImGuiTableColumn& pid = table->Columns[static_cast<int>(toIndex(ProcessColumn::PID))];
+    const ImGuiTableColumn& name = table->Columns[static_cast<int>(toIndex(ProcessColumn::Name))];
+    ASSERT_LT(pid.MaxX, name.MinX + 1.0F) << "PID before Name, as by default";
+
+    // Every row is found by clicks in the PID column, none of which folds anything.
+    const std::map<std::int32_t, float> heights = rowHeights(*panel, 3);
+    ASSERT_EQ(heights.size(), 3U);
+    EXPECT_TRUE(renderAndCapture(*panel).contains("worker"));
+
+    // The root's expander: the start of its Name cell (no indent at depth 0), a text line high. The
+    // height found for the row is the lowest point in it, so half a line up is about its middle.
+    const float rootMiddle = heights.at(1) - (ImGui::GetTextLineHeight() * 0.5F);
+    clickAtPoint(*panel, name.MinX + ImGui::GetStyle().CellPadding.x + (ImGui::GetFontSize() * 0.5F), rootMiddle);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("init")) << text;
+    EXPECT_FALSE(text.contains("server")) << text;
+    EXPECT_FALSE(text.contains("worker")) << text;
+    panel->onDetach();
+}
+
+// #838 audit (#852, #1138): the tree view goes through ImGuiListClipper, so only the rows in view
+// submit draw calls: a frame of 2000 processes draws about what a frame of 100 does, at the top and
+// after End scrolls to the bottom. Measured in vertices, not logged text: ImGui turns clipping off
+// while logging.
+TEST_F(ProcessesPanelRenderTest, TheTreeViewDrawsOnlyTheRowsInView)
+{
+    // A root and @p children processes under it.
+    const auto tree = [](int children)
+    {
+        constexpr std::uint64_t RSS = std::uint64_t{1} << 20U;
+        std::vector<Platform::ProcessCounters> processes;
+        processes.reserve(static_cast<std::size_t>(children) + 1);
+        processes.push_back(TestMocks::makeProcessCounters(1, "tree-root", 'S', 10, 5, 100, RSS, 0));
+        for (int i = 0; i < children; ++i)
+        {
+            const int pid = 1000 + i;
+            processes.push_back(TestMocks::makeProcessCounters(pid, std::format("proc-{}", pid), 'S', 10, 5, 1000, RSS, 1));
+        }
+        return processes;
+    };
+    // The vertices one frame of @p panel draws, without logging.
+    const auto frameVertices = [](ProcessesPanel& panel)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        panel.renderContent();
+        ImGui::End();
+        ImGui::Render();
+        return ImGui::GetIO().MetricsRenderVertices;
+    };
+
+    // 100 children already overflow the 1200 px table, so its frame is a screenful of rows.
+    const auto screenful = loadedTreePanel(tree(99));
+    ASSERT_EQ(screenful->processCount(), 100U);
+    const int screenfulVertices = frameVertices(*screenful);
+    screenful->onDetach();
+
+    const auto panel = loadedTreePanel(tree(1999));
+    ASSERT_EQ(panel->processCount(), 2000U);
+    const int atTop = frameVertices(*panel);
+    EXPECT_GT(atTop, 0);
+    EXPECT_LT(atTop, screenfulVertices * 3 / 2) << "20 times the rows, about the same drawing";
+
+    pressKey(*panel, ImGuiKey_End); // the last row, scrolled into view
+    static_cast<void>(frameVertices(*panel));
+    const ImGuiTable* table = processTable();
+    ASSERT_NE(table, nullptr);
+    EXPECT_GT(table->InnerWindow->Scroll.y, 0.0F);
+    EXPECT_FLOAT_EQ(table->InnerWindow->Scroll.y, table->InnerWindow->ScrollMax.y);
+    EXPECT_LT(frameVertices(*panel), screenfulVertices * 3 / 2);
     panel->onDetach();
 }
 

@@ -101,11 +101,11 @@ Column visibility is toggled via the column header context menu and persisted ac
 
 A cell reading **-** is a value of 0 (or one that doesn't apply). A cell reading **N/A** is a value TaskSmack could not read for that process: on Linux, for other users' processes, the FD count without `CAP_DAC_READ_SEARCH`, and the I/O and network rates without both `CAP_DAC_READ_SEARCH` and `CAP_SYS_PTRACE` (root with its normal capabilities has both; see the FAQ); on Windows, without administrator rights, every process's network rates (handle counts and I/O rates are read for every process). Process Details shows the same values as N/A, with a gap in their charts and a hatched bar beside them (an empty bar with a thin coloured line at its foot is a measured 0); a Network or I/O chart with no readings at all says it is not available for the process. The system totals leave them out. Sorting puts N/A below every reading.
 
-**Sorting** is available on any column with a single click. Click again to reverse order.
+**Sorting** is available on any column with a single click, in list and tree view. Click again to reverse order.
 
 **Filtering** narrows the list to processes whose names or command lines match typed text.
 
-**Tree view** shows the parent–child process hierarchy when enabled.
+**Tree view** shows the parent–child process hierarchy when enabled. Each process's children are sorted by the column you sort by, and every child stays under its parent: sorting by CPU % puts each parent's busiest child first, under that parent, rather than the busiest process at the top of the whole list.
 
 **Selecting several processes.** A click selects one process, and Process Details shows it. **Ctrl+click** adds a process to the selection, or removes it; **Shift+click** selects every row from the last one clicked to this one, in the order the rows are shown (sorted, filtered, and in tree view with collapsed branches skipped), and **Ctrl+Shift+click** adds that range to the selection. **Ctrl+A**, with the pointer over the table (or after clicking in it), selects every row shown. Every selected row is highlighted. Process Details keeps showing the process you clicked last: with several rows selected, that row has a bar at its left edge and an outline, and the Details tab gives its PID after its name (for example "rust-analyzer (PID 3476)"), since several processes often share a name. A process is selected as itself, not by its PID: when a selected process exits it drops out of the selection, and a new process that is later given the same PID is not selected. A keyboard move (arrows, Page Up / Down, Home / End) or a plain click selects just that one row again.
 

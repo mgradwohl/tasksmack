@@ -294,7 +294,134 @@ TEST(ProcessTreeFlattenTest, WholeTreeBuildIgnoresAChildIndexOutOfRange)
     EXPECT_EQ(rows[1].depth, 1);
 }
 
-TEST(ProcessTreeRowsCacheTest, RebuildsOnlyWhenTheSnapshotFilterOrCollapseStateChanges)
+// =============================================================================
+// Sibling sorting (#838): the order given sorts every set of siblings, the hierarchy stays
+// =============================================================================
+
+/// (procIdx, depth) of each row, for comparing a whole render order at once.
+[[nodiscard]] std::vector<std::pair<std::size_t, int>> shape(const std::vector<ProcessTreeRow>& rows)
+{
+    std::vector<std::pair<std::size_t, int>> out;
+    out.reserve(rows.size());
+    for (const ProcessTreeRow& row : rows)
+    {
+        out.emplace_back(row.procIdx, row.depth);
+    }
+    return out;
+}
+
+TEST(ProcessTreeFlattenTest, ASortedOrderSortsEachSetOfSiblingsUnderItsParent)
+{
+    // 0 -> {1 -> {3, 4}, 2}, 5 -> {6}, 7; walked in reverse snapshot order.
+    const auto snapshots = forest();
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {7, 6, 5, 4, 3, 2, 1, 0}, {}, scratch, rows);
+
+    // Roots 7, 5, 0 in that order; 0's children 2 then 1; 1's children 4 then 3. Every child is
+    // still drawn right under its parent, one level deeper.
+    const std::vector<std::pair<std::size_t, int>> expected = {{7, 0}, {5, 0}, {6, 1}, {0, 0}, {2, 1}, {1, 1}, {4, 2}, {3, 2}};
+    EXPECT_EQ(shape(rows), expected);
+    EXPECT_TRUE(rows[3].hasChildren);
+    EXPECT_FALSE(rows[4].hasChildren);
+}
+
+TEST(ProcessTreeFlattenTest, NaturalOrderGivesTheTreeInSnapshotOrder)
+{
+    // Snapshot order is what tree view showed before it sorted: children in the order their parent
+    // lists them, which is snapshot order (ProcessModel appends them as it meets them).
+    const auto snapshots = forest();
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {0, 1, 2, 3, 4, 5, 6, 7}, {}, scratch, rows);
+    const std::vector<std::pair<std::size_t, int>> expected = {{0, 0}, {1, 1}, {3, 2}, {4, 2}, {2, 1}, {5, 0}, {6, 1}, {7, 0}};
+    EXPECT_EQ(shape(rows), expected);
+}
+
+TEST(ProcessTreeFlattenTest, ASortedFilteredTreePromotesOrphansToRootsInSortedPlace)
+{
+    // 0 filtered out: its shown children 1 and 2 become roots, placed among the other roots by the
+    // order, and 1 still has its own children under it, sorted.
+    const auto snapshots = forest();
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    const std::unordered_set<std::uint64_t> collapsed = {105}; // 5 is collapsed: 6 is hidden
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {2, 4, 5, 1, 3, 6}, collapsed, scratch, rows);
+    const std::vector<std::pair<std::size_t, int>> expected = {{2, 0}, {5, 0}, {1, 0}, {4, 1}, {3, 1}};
+    EXPECT_EQ(shape(rows), expected);
+    EXPECT_TRUE(rows[1].hasChildren); // collapsed, but still has a child to show
+    EXPECT_FALSE(rows[1].isExpanded);
+}
+
+TEST(ProcessTreeFlattenTest, MalformedChildListsDrawEveryProcessOnce)
+{
+    // 0 lists 2 as its child, and so does 1; 1 lists itself; the order repeats 2. Each process is
+    // drawn exactly once: 2 under 0 (the first parent in snapshot order), 1 as a root.
+    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {2}), makeSnapshot(11, {1, 2}), makeSnapshot(12)};
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, {1, 2, 0, 2}, {}, scratch, rows);
+    const std::vector<std::pair<std::size_t, int>> expected = {{1, 0}, {0, 0}, {2, 1}};
+    EXPECT_EQ(shape(rows), expected);
+    EXPECT_FALSE(rows[0].hasChildren); // its only other child is drawn under 0
+}
+
+TEST(ProcessTreeFlattenTest, ABigSortedTreeKeepsEveryChildUnderItsParentInOrder)
+{
+    // 2000 processes in one tree (each one's parent an earlier process, a few with many children),
+    // walked in a scrambled order. Every process is drawn once; each row's parent is the nearest row
+    // above it one level up; and within each parent, the children come in the given order.
+    constexpr std::size_t COUNT = 2000;
+    std::vector<ProcessSnapshot> snapshots;
+    snapshots.reserve(COUNT);
+    std::vector<std::size_t> parentOf(COUNT, ProcessTreeFlatten::NOT_SHOWN);
+    for (std::size_t i = 0; i < COUNT; ++i)
+    {
+        snapshots.push_back(makeSnapshot(1000 + i));
+    }
+    for (std::size_t i = 1; i < COUNT; ++i)
+    {
+        parentOf[i] = (i * 2'654'435'761U) % i;
+        snapshots[parentOf[i]].childrenIndices.push_back(i);
+    }
+    std::vector<std::size_t> order(COUNT);
+    std::vector<std::size_t> rank(COUNT);
+    for (std::size_t pos = 0; pos < COUNT; ++pos)
+    {
+        order[pos] = (pos * 7919U) % COUNT; // 7919 is prime, so this visits every index once
+        rank[order[pos]] = pos;
+    }
+
+    ProcessTreeFlatten::TreeFlattenScratch scratch;
+    std::vector<ProcessTreeRow> rows;
+    ProcessTreeFlatten::buildProcessTreeRows(snapshots, order, {}, scratch, rows);
+
+    ASSERT_EQ(rows.size(), COUNT);
+    std::vector<std::size_t> ancestors; // the row's ancestors, by depth
+    std::vector<std::size_t> lastChildRank(COUNT, 0);
+    std::vector<char> seen(COUNT, 0);
+    for (const ProcessTreeRow& row : rows)
+    {
+        ASSERT_EQ(seen[row.procIdx], 0) << row.procIdx;
+        seen[row.procIdx] = 1;
+        ASSERT_LE(static_cast<std::size_t>(row.depth), ancestors.size());
+        ancestors.resize(static_cast<std::size_t>(row.depth));
+        if (row.depth == 0)
+        {
+            EXPECT_EQ(parentOf[row.procIdx], ProcessTreeFlatten::NOT_SHOWN) << row.procIdx;
+        }
+        else
+        {
+            const std::size_t parent = ancestors.back();
+            ASSERT_EQ(parentOf[row.procIdx], parent) << row.procIdx;
+            EXPECT_GT(rank[row.procIdx] + 1, lastChildRank[parent]) << "siblings out of order under " << parent;
+            lastChildRank[parent] = rank[row.procIdx] + 1;
+        }
+        ancestors.push_back(row.procIdx);
+    }
+}
+
+TEST(ProcessTreeRowsCacheTest, RebuildsOnlyWhenTheSnapshotFilterSortOrCollapseStateChanges)
 {
     const auto snapshots = forest();
     std::vector<std::size_t> filtered = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -327,9 +454,15 @@ TEST(ProcessTreeRowsCacheTest, RebuildsOnlyWhenTheSnapshotFilterOrCollapseStateC
     std::ignore = cache.rows(key, snapshots, filtered, collapsed);
     EXPECT_EQ(cache.buildCount(), 4U);
 
+    // Re-sorted (#838): the panel advances sortGeneration with the order.
+    filtered = {7, 6, 5};
+    ++key.sortGeneration;
+    EXPECT_EQ(cache.rows(key, snapshots, filtered, collapsed).front().procIdx, 7U);
+    EXPECT_EQ(cache.buildCount(), 5U);
+
     cache.invalidate();
     std::ignore = cache.rows(key, snapshots, filtered, collapsed);
-    EXPECT_EQ(cache.buildCount(), 5U);
+    EXPECT_EQ(cache.buildCount(), 6U);
 }
 
 } // namespace

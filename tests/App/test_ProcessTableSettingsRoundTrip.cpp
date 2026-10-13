@@ -65,7 +65,7 @@ class HeadlessImGui
         ImGui::SetNextWindowSize(ImVec2(1900.0F, 1000.0F));
         ImGui::Begin("Processes");
         std::uint32_t tableId = 0;
-        if (ImGui::BeginTable("ProcessTable", COLUMN_COUNT, ProcessTableFlags::forProcessTable(false)))
+        if (ImGui::BeginTable("ProcessTable", COLUMN_COUNT, ProcessTableFlags::forProcessTable()))
         {
             for (int column = 0; column < COLUMN_COUNT; ++column)
             {

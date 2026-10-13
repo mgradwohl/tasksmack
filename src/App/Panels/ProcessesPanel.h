@@ -458,8 +458,8 @@ class ProcessesPanel : public Panel
 
     // Tree view state
     bool m_TreeViewEnabled = false;
-    // m_CachedSortedIndices is in natural order and the list view must re-sort it on its next frame,
-    // even though ImGui's SpecsDirty is not set (e.g. the rows were reset while in tree view) (#1174).
+    // m_CachedSortedIndices is in natural order and must be sorted again on the next frame, even
+    // though ImGui's SpecsDirty is not set (the filter result was rebuilt, #1174).
     bool m_SortPending = true;
 
     // Previous frame's table layout, feeding ProcessTableLayout::computeInnerWidth() (#924)
@@ -501,9 +501,10 @@ class ProcessesPanel : public Panel
     std::string m_CachedSearchTerm;
     std::string m_CachedSummaryStr;
     std::uint64_t m_FilterGeneration = 0; // Advanced whenever m_CachedFilteredIndices is rebuilt (#1138)
+    std::uint64_t m_SortGeneration = 0;   // Advanced whenever m_CachedSortedIndices is sorted (#838)
 
-    // The tree view's flattened rows, rebuilt only when the snapshot version, m_FilterGeneration or
-    // m_CollapseGeneration changes rather than every frame (#1138).
+    // The tree view's flattened rows, rebuilt only when the snapshot version, m_FilterGeneration,
+    // m_SortGeneration or m_CollapseGeneration changes rather than every frame (#1138).
     ProcessTreeFlatten::ProcessTreeRowsCache m_TreeRowsCache;
 
     /// Cache for text size measurements to avoid repeated ImGui::CalcTextSize calls.
@@ -581,7 +582,9 @@ class ProcessesPanel : public Panel
     /// renderProcessRow() -- see perf-plan #843's tree-view virtualization item.
     /// @param snapshots The full list of process snapshots.
     /// @param filteredIndices Indices into snapshots for processes matching the current filter.
-    void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices);
+    void renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& sortedIndices);
+    /// What the tree view's cached rows are built from this frame.
+    [[nodiscard]] ProcessTreeFlatten::ProcessTreeRowsKey treeRowsKey() const noexcept;
 
     /// The toolbar's Columns menu: a check per column and "Reset columns" (#1209).
     void renderColumnsMenu();

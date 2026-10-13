@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <ranges>
 #include <unordered_set>
 #include <vector>
@@ -45,7 +46,7 @@ struct StackFrame
     int depth;
 };
 
-/// The walk behind collectProcessTreeRows() and buildProcessTreeRows(), with filter membership as a
+/// The walk behind collectProcessTreeRows(), with filter membership as a
 /// predicate (`isFiltered(index)`) and the walk's stack supplied by the caller so it can be reused.
 // isFiltered is called once per child, so it is used as an lvalue rather than forwarded.
 template<typename IsFiltered>
@@ -134,76 +135,141 @@ inline void collectProcessTreeRows(const std::vector<Domain::ProcessSnapshot>& s
         outRows);
 }
 
+/// Marks a process that is not in a build's `order`, or one with no parent among those that are.
+inline constexpr std::size_t NOT_SHOWN = std::numeric_limits<std::size_t>::max();
+
 /// Buffers buildProcessTreeRows() reuses from one build to the next, so a rebuild allocates nothing
-/// once they have grown to the process count.
+/// once they have grown to the process count. All but `children` and `stack` are indexed by snapshot
+/// index.
 struct TreeFlattenScratch
 {
-    std::vector<char> inFiltered;      // indexed by snapshot index: passes the filter
-    std::vector<char> isFilteredChild; // indexed by snapshot index: a child of a process that passes it
+    std::vector<std::size_t> rank;       // position in the build's `order`; NOT_SHOWN if filtered out
+    std::vector<std::size_t> parent;     // the shown process this one is drawn under; NOT_SHOWN for a root
+    std::vector<std::size_t> childStart; // count + 1 offsets: process i's children are children[childStart[i], childStart[i + 1])
+    std::vector<std::size_t> childFill;  // next free slot in each process's group of `children` while it is filled
+    std::vector<std::size_t> children;   // every shown process with a parent, grouped by parent, each group in `order`
     std::vector<Detail::StackFrame> stack;
 };
 
-/// The whole tree view in render order: every filtered process that is not the child of another
-/// filtered process is a root, walked in `filteredIndices` order (collectProcessTreeRows()).
-/// `outRows` is cleared first. Filter membership is a bitmap over the snapshot indices rather than
-/// a hash set, and the buffers come from `scratch`, so building the rows of a few thousand processes
-/// is a few linear passes with no allocation once warmed (#1138). A child index out of range of
-/// `snapshots` counts as filtered out.
+/// The whole tree view in render order. `order` is the filtered processes in the order the table
+/// shows them: snapshot order, or the table's sort (#838). A process whose parent is in `order` is
+/// drawn under it; the rest are roots. Roots come out in `order`, and so does each parent's group of
+/// children, so sorting `order` sorts every set of siblings while every child stays under its parent.
+///
+/// Each parent's shown children are gathered once into one flat array (offsets per parent, then the
+/// children grouped by parent), so the walk reads them instead of filtering the snapshot's own child
+/// lists at every node. With the buffers from `scratch`, building the rows of a few thousand
+/// processes is a few linear passes with no allocation once warmed (#1138). `outRows` is cleared first.
+///
+/// A process listed as a child by more than one shown process is drawn once, under the first of them
+/// in snapshot order, and one listed as its own child is not. A child index out of range of
+/// `snapshots`, and a repeat of an index already in `order`, are ignored.
 inline void buildProcessTreeRows(const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                 const std::vector<std::size_t>& filteredIndices,
+                                 const std::vector<std::size_t>& order,
                                  const std::unordered_set<std::uint64_t>& collapsedKeys,
                                  TreeFlattenScratch& scratch,
                                  std::vector<ProcessTreeRow>& outRows)
 {
     outRows.clear();
-    outRows.reserve(filteredIndices.size());
+    outRows.reserve(order.size());
     const std::size_t count = snapshots.size();
-    scratch.inFiltered.assign(count, 0);
-    scratch.isFilteredChild.assign(count, 0);
-    for (const std::size_t idx : filteredIndices)
+
+    scratch.rank.assign(count, NOT_SHOWN);
+    for (std::size_t pos = 0; pos < order.size(); ++pos)
     {
-        if (idx < count)
+        if (const std::size_t idx = order[pos]; idx < count && scratch.rank[idx] == NOT_SHOWN)
         {
-            scratch.inFiltered[idx] = 1;
+            scratch.rank[idx] = pos;
         }
     }
-    const auto isFiltered = [&scratch, count](std::size_t index)
+    const auto isShown = [&scratch, count](std::size_t index)
     {
-        return index < count && scratch.inFiltered[index] != 0;
+        return index < count && scratch.rank[index] != NOT_SHOWN;
+    };
+    // Whether order[pos] is that process's first listing; a repeat is skipped, so nothing is drawn twice.
+    const auto isFirstListing = [&scratch, &order, count](std::size_t pos)
+    {
+        return order[pos] < count && scratch.rank[order[pos]] == pos;
     };
 
-    // A process listed as a child of another filtered process is rendered under it, so it is not a
-    // root: descents start only from the rest, which avoids rendering anything twice.
-    for (const std::size_t idx : filteredIndices)
+    // Each shown process's shown parent, counted into the slot after the parent's in childStart.
+    scratch.parent.assign(count, NOT_SHOWN);
+    scratch.childStart.assign(count + 1, 0);
+    for (std::size_t idx = 0; idx < count; ++idx)
     {
-        if (idx >= count)
+        if (!isShown(idx))
         {
             continue;
         }
         for (const std::size_t childIdx : snapshots[idx].childrenIndices)
         {
-            if (isFiltered(childIdx))
+            if (childIdx != idx && isShown(childIdx) && scratch.parent[childIdx] == NOT_SHOWN)
             {
-                scratch.isFilteredChild[childIdx] = 1;
+                scratch.parent[childIdx] = idx;
+                ++scratch.childStart[idx + 1];
             }
         }
     }
-
-    for (const std::size_t idx : filteredIndices)
+    for (std::size_t idx = 0; idx < count; ++idx)
     {
-        if (idx < count && scratch.isFilteredChild[idx] == 0)
+        scratch.childStart[idx + 1] += scratch.childStart[idx];
+    }
+
+    // The children, filled in `order`, so each parent's group is in it too.
+    scratch.childFill.assign(scratch.childStart.begin(), scratch.childStart.end() - 1);
+    scratch.children.resize(scratch.childStart[count]);
+    for (std::size_t pos = 0; pos < order.size(); ++pos)
+    {
+        if (isFirstListing(pos) && scratch.parent[order[pos]] != NOT_SHOWN)
         {
-            Detail::walkProcessTree(snapshots, isFiltered, collapsedKeys, idx, 0, scratch.stack, outRows);
+            scratch.children[scratch.childFill[scratch.parent[order[pos]]]++] = order[pos];
+        }
+    }
+
+    // Pre-order from each root. Every shown process has at most one parent, so no walk comes back round
+    // to a process it already drew; the depth limit only guards against a corrupt snapshot.
+    for (std::size_t pos = 0; pos < order.size(); ++pos)
+    {
+        if (!isFirstListing(pos) || scratch.parent[order[pos]] != NOT_SHOWN)
+        {
+            continue;
+        }
+        scratch.stack.clear();
+        scratch.stack.push_back(Detail::StackFrame{.procIdx = order[pos], .depth = 0});
+        while (!scratch.stack.empty())
+        {
+            const Detail::StackFrame frame = scratch.stack.back();
+            scratch.stack.pop_back();
+            if (frame.depth >= MAX_DEPTH)
+            {
+                spdlog::warn("ProcessTreeFlatten: Maximum tree depth ({}) exceeded, possible cycle or malformed data", MAX_DEPTH);
+                continue;
+            }
+
+            const std::size_t first = scratch.childStart[frame.procIdx];
+            const std::size_t last = scratch.childStart[frame.procIdx + 1];
+            const bool isExpanded = !collapsedKeys.contains(snapshots[frame.procIdx].uniqueKey);
+            if (isExpanded)
+            {
+                // Pushed in reverse, so they pop off -- and are drawn -- in their group's order.
+                for (std::size_t k = last; k > first; --k)
+                {
+                    scratch.stack.push_back(Detail::StackFrame{.procIdx = scratch.children[k - 1], .depth = frame.depth + 1});
+                }
+            }
+            outRows.push_back(
+                ProcessTreeRow{.procIdx = frame.procIdx, .depth = frame.depth, .hasChildren = last > first, .isExpanded = isExpanded});
         }
     }
 }
 
-/// What the tree view's rows are built from: a snapshot generation, a filter result and a set of
-/// collapsed nodes, each named by a number that changes whenever its input does.
+/// What the tree view's rows are built from: a snapshot generation, a filter result, its order and a
+/// set of collapsed nodes, each named by a number that changes whenever its input does.
 struct ProcessTreeRowsKey
 {
     std::uint64_t snapshotVersion = 0;    // the snapshots the indices refer to
     std::uint64_t filterGeneration = 0;   // advanced whenever the filtered indices are rebuilt
+    std::uint64_t sortGeneration = 0;     // advanced whenever they are sorted (#838)
     std::uint64_t collapseGeneration = 0; // advanced whenever a node is collapsed or expanded
 
     [[nodiscard]] bool operator==(const ProcessTreeRowsKey&) const = default;
@@ -211,8 +277,8 @@ struct ProcessTreeRowsKey
 
 /// The tree view's flattened rows, rebuilt only when their inputs change (#1138). They used to be
 /// rebuilt every frame -- two hash sets of the filtered indices plus a vector per node -- although
-/// they change only when a sample arrives, the filter changes, or a node is expanded or collapsed.
-/// Rendering the rows (ImGuiListClipper) still happens every frame; building them does not.
+/// they change only when a sample arrives, the filter or sort changes, or a node is expanded or
+/// collapsed. Rendering the rows (ImGuiListClipper) still happens every frame; building them does not.
 class ProcessTreeRowsCache
 {
   public:
@@ -221,12 +287,12 @@ class ProcessTreeRowsCache
     /// whenever any of the inputs changes. Valid until the next call or invalidate().
     [[nodiscard]] const std::vector<ProcessTreeRow>& rows(const ProcessTreeRowsKey& key,
                                                           const std::vector<Domain::ProcessSnapshot>& snapshots,
-                                                          const std::vector<std::size_t>& filteredIndices,
+                                                          const std::vector<std::size_t>& order,
                                                           const std::unordered_set<std::uint64_t>& collapsedKeys)
     {
         if (!m_Valid || key != m_Key)
         {
-            buildProcessTreeRows(snapshots, filteredIndices, collapsedKeys, m_Scratch, m_Rows);
+            buildProcessTreeRows(snapshots, order, collapsedKeys, m_Scratch, m_Rows);
             m_Key = key;
             m_Valid = true;
             ++m_BuildCount;

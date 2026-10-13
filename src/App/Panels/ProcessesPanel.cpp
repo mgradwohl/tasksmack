@@ -1409,10 +1409,9 @@ void ProcessesPanel::renderContent()
         m_CachedSearchTerm = std::string(searchTerm);
         ++m_FilterGeneration; // The tree's rows are rebuilt from the new indices (#1138)
 
-        // Reset sorted indices to natural order so the next list-view sort starts from scratch.
-        // This keeps m_CachedFilteredIndices always in natural order for tree view.
+        // Reset sorted indices to natural order; the sort below sorts them again this frame (#1174).
         m_CachedSortedIndices = m_CachedFilteredIndices;
-        m_SortPending = true; // In tree view the sort below is skipped; leaving it must still sort (#1174)
+        m_SortPending = true;
     }
 
     // Process count with state summary (filtered/total), or for a few seconds the result of an action
@@ -1502,13 +1501,13 @@ void ProcessesPanel::renderContent()
     {
         setTreeView(false);
     }
-    ImGui::SetItemTooltip("List view (F5): every process, sortable by any column");
+    ImGui::SetItemTooltip("List view (F5): every process, sorted by the column you click");
     ImGui::SameLine(0.0F, 0.0F);
     if (viewModeSegment(TREE_VIEW_LABEL, m_TreeViewEnabled, treeSegmentWidth))
     {
         setTreeView(true);
     }
-    ImGui::SetItemTooltip("Tree view (F5): processes under their parents");
+    ImGui::SetItemTooltip("Tree view (F5): processes under their parents, siblings sorted by the column you click");
 
     // The row menu's batch priority dialog (#1484); a picked value goes on to the confirmation below.
     renderBatchPriorityDialog();
@@ -1543,8 +1542,6 @@ void ProcessesPanel::renderContent()
     // This adapts to whichever parent layout is active instead of assuming a fixed child height contract.
     const ImVec2 tableOuterSize = ImGui::GetContentRegionAvail();
 
-    // Sortable only in list view -- tree view ignores sort specs entirely, so offering sortable
-    // headers there would accept the click and do nothing (#926).
     // Command absorbs whatever width the other columns leave, but never shrinks below its default;
     // past that point the table scrolls instead. See ProcessTableLayout.h for why this takes an
     // explicit inner width rather than just a stretch column (#924).
@@ -1556,8 +1553,7 @@ void ProcessesPanel::renderContent()
         m_ColumnSettings.isVisible(ProcessColumn::Command) ? scaledDefaultWidth(getColumnInfo(ProcessColumn::Command), emPx) : 0.0F;
     const float tableInnerWidth = ProcessTableLayout::computeInnerWidth(m_OtherColumnsWidth, commandMinWidth, m_TableVisibleWidth);
 
-    if (ImGui::BeginTable(
-            "ProcessTable", totalColumns, ProcessTableFlags::forProcessTable(m_TreeViewEnabled), tableOuterSize, tableInnerWidth))
+    if (ImGui::BeginTable("ProcessTable", totalColumns, ProcessTableFlags::forProcessTable(), tableOuterSize, tableInnerWidth))
     {
         ImGui::TableSetupScrollFreeze(0, 1); // Freeze header row
 
@@ -1645,8 +1641,8 @@ void ProcessesPanel::renderContent()
             }
 
             const auto info = getColumnInfo(col);
-            // ImGui draws the sort arrow at the sorted header's right edge; tree view is not sortable.
-            const bool showsSortArrow = !m_TreeViewEnabled && (ImGui::TableGetColumnFlags(headerIdx) & ImGuiTableColumnFlags_IsSorted) != 0;
+            // ImGui draws the sort arrow at the sorted header's right edge, in either view (#838).
+            const bool showsSortArrow = (ImGui::TableGetColumnFlags(headerIdx) & ImGuiTableColumnFlags_IsSorted) != 0;
             // The header item keeps the whole cell as its sort and right-click target: it is submitted
             // at the cell's start with a hidden label, and the name is drawn at its aligned position
             // over it. Moving the cursor before TableHeader() moved the item's start too, so an
@@ -1718,43 +1714,42 @@ void ProcessesPanel::renderContent()
             m_TableVisibleWidth = table->InnerClipRect.GetWidth();
         }
 
-        // Handle sorting: Disable in tree view mode to maintain parent-child hierarchy
-        if (!m_TreeViewEnabled)
+        // Sorting, in both views: the list shows the sorted indices as they are, and the tree view
+        // walks them, so each parent's children come out in this order under it (#838).
+        if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
         {
-            if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs())
+            // Only re-sort when the sort spec changed (SpecsDirty) or when the filtered data
+            // changed (filterDirty). Clearing SpecsDirty prevents a redundant O(n log n) sort
+            // on every frame when neither the data nor the sort column has changed.
+            // m_SortPending covers rows reset to natural order with no sort spec change (#1174).
+            if (sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty || m_SortPending))
             {
-                // Only re-sort when the sort spec changed (SpecsDirty) or when the filtered data
-                // changed (filterDirty). Clearing SpecsDirty prevents a redundant O(n log n) sort
-                // on every frame when neither the data nor the sort column has changed.
-                // m_SortPending covers rows reset to natural order while in tree view (#1174).
-                if (sortSpecs->SpecsCount > 0 && (sortSpecs->SpecsDirty || filterDirty || m_SortPending))
+                const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
+                const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+
+                // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
+                const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
+                if (!sortColOpt.has_value())
                 {
-                    const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
-                    const bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
-
-                    // Use ColumnUserID to get ProcessColumn (we set user_id = enum value)
-                    const std::optional<ProcessColumn> sortColOpt = columnFromUserId(spec.ColumnUserID);
-                    if (!sortColOpt.has_value())
-                    {
-                        sortSpecs->SpecsDirty = true;
-                        ImGui::EndTable();
-                        return;
-                    }
-
-                    const ProcessColumn sortCol = *sortColOpt;
-
-                    // Sort m_CachedSortedIndices (a copy of natural order) so that
-                    // m_CachedFilteredIndices remains in PID/natural order for tree view.
-                    m_CachedSortedIndices = m_CachedFilteredIndices;
-                    std::ranges::sort(
-                        m_CachedSortedIndices,
-                        [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
-                        { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
-                    sortSpecs->SpecsDirty = false;
-                    m_SortPending = false;
+                    sortSpecs->SpecsDirty = true;
+                    ImGui::EndTable();
+                    return;
                 }
+
+                const ProcessColumn sortCol = *sortColOpt;
+
+                // Sort m_CachedSortedIndices (a copy of natural order), leaving m_CachedFilteredIndices
+                // in natural order for the next sort to start from.
+                m_CachedSortedIndices = m_CachedFilteredIndices;
+                std::ranges::sort(
+                    m_CachedSortedIndices,
+                    [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
+                    { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
+                sortSpecs->SpecsDirty = false;
+                m_SortPending = false;
+                ++m_SortGeneration; // The tree's rows are rebuilt in the new order (#838)
             }
-        } // End of sorting (disabled in tree view mode)
+        }
 
         // Arrow keys, j/k, Page Up/Down, Home/End, g/G and F9, against the rows as they will be drawn
         applyKeyboardInput(currentSnapshots, navCommand, killRequested, selectAllRequested);
@@ -1768,7 +1763,7 @@ void ProcessesPanel::renderContent()
         if (m_TreeViewEnabled)
         {
             // Render tree view (tree is rebuilt in onUpdate on refresh timer)
-            renderTreeView(currentSnapshots, m_CachedFilteredIndices);
+            renderTreeView(currentSnapshots, m_CachedSortedIndices);
         }
         else
         {
@@ -2188,24 +2183,27 @@ void ProcessesPanel::renderNameCell(
         ImGui::Unindent(indentWidth);
     }
 }
-void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& filteredIndices)
+ProcessTreeFlatten::ProcessTreeRowsKey ProcessesPanel::treeRowsKey() const noexcept
 {
-    // The expanded, filtered tree flattened into render order (roots in the order of filteredIndices,
-    // to respect PID/natural order), so ImGuiListClipper below can bound the expensive part --
-    // renderProcessRow(), which measures/renders every column -- to visible rows only. The rows are
-    // rebuilt only when a new snapshot is adopted, the filter result is rebuilt, or a node is
-    // collapsed or expanded, not every frame (#1138); see ProcessTreeFlatten::ProcessTreeRowsCache.
+    return {
+        .snapshotVersion = m_CachedSnapshotVersion,
+        .filterGeneration = m_FilterGeneration,
+        .sortGeneration = m_SortGeneration,
+        .collapseGeneration = m_CollapseGeneration,
+    };
+}
+
+void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& snapshots, const std::vector<std::size_t>& sortedIndices)
+{
+    // The expanded, filtered tree flattened into render order -- the roots, and each parent's
+    // children, in the table's sort order (#838) -- so ImGuiListClipper below can bound the expensive
+    // part, renderProcessRow(), which measures/renders every column, to visible rows only. The rows
+    // are rebuilt only when a new snapshot is adopted, the filter result is rebuilt or sorted, or a
+    // node is collapsed or expanded, not every frame (#1138); see ProcessTreeFlatten::ProcessTreeRowsCache.
     // Held by reference while rendering: an expander toggled below only advances
     // m_CollapseGeneration, so the rows are rebuilt next frame, never during this loop.
-    const std::vector<ProcessTreeFlatten::ProcessTreeRow>& rows = m_TreeRowsCache.rows(
-        {
-            .snapshotVersion = m_CachedSnapshotVersion,
-            .filterGeneration = m_FilterGeneration,
-            .collapseGeneration = m_CollapseGeneration,
-        },
-        snapshots,
-        filteredIndices,
-        m_CollapsedKeys);
+    const std::vector<ProcessTreeFlatten::ProcessTreeRow>& rows =
+        m_TreeRowsCache.rows(treeRowsKey(), snapshots, sortedIndices, m_CollapsedKeys);
 
     ImGuiListClipper clipper;
     clipper.Begin(static_cast<int>(rows.size()));
@@ -2397,11 +2395,9 @@ void ProcessesPanel::setTreeView(bool enabled)
     m_NameWidthSyncPending = true;
     if (m_TreeViewEnabled)
     {
-        // Tree view is not sortable, and ImGui leaves the sort out of a table's settings while
-        // it is not. Keep the layout as it stands now, in list view, so a layout saved later
-        // can still carry the user's sort (#952). Kept after returning to list view too: a
-        // resize made in tree view leaves ImGui's stored settings without a sort, and merely
-        // becoming sortable again does not rewrite them, so the gap outlasts tree view itself.
+        // Keep the layout as it stands now, in list view, so a layout saved later still carries the
+        // user's sort if a capture has lost it (#952). Tree view used to drop the sort from ImGui's
+        // settings by not being sortable; it sorts too now (#838), so this is only a safety net.
         m_SortBackupLayout = captureTableLayout();
         spdlog::debug("ProcessesPanel: Switched to tree view");
     }
@@ -2426,15 +2422,7 @@ void ProcessesPanel::collectVisibleRows(const std::vector<Domain::ProcessSnapsho
     }
     if (m_TreeViewEnabled)
     {
-        const auto& rows = m_TreeRowsCache.rows(
-            {
-                .snapshotVersion = m_CachedSnapshotVersion,
-                .filterGeneration = m_FilterGeneration,
-                .collapseGeneration = m_CollapseGeneration,
-            },
-            snapshots,
-            m_CachedFilteredIndices,
-            m_CollapsedKeys);
+        const auto& rows = m_TreeRowsCache.rows(treeRowsKey(), snapshots, m_CachedSortedIndices, m_CollapsedKeys);
         visible.reserve(rows.size());
         if (shapes != nullptr)
         {
