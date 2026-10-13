@@ -14,6 +14,7 @@
 /// process data.
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
+#include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessesPanel.h"
@@ -49,6 +50,7 @@
 #include <optional>
 #include <regex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -757,6 +759,49 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
     EXPECT_TRUE(text.contains("Publisher")) << text;
     EXPECT_TRUE(text.contains("Container")) << text;
     EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+    panel->onDetach();
+}
+
+// #1879: where the probe has no per-process swap figure (Windows; the mock reports none), the Swap column
+// reads as the dash in every row, and both its header and its cells say why.
+TEST_F(ProcessesPanelRenderTest, SwapWithoutAPerProcessFigureShowsTheDashAndSaysWhy)
+{
+    ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (getColumnInfo(col).canHide)
+        {
+            columns.setVisible(col, col == ProcessColumn::Swap); // PID, Name and Swap: Swap's header is in reach
+        }
+    }
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Swap")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << text;
+
+    // Holding still over each point down the header and the first rows, long enough for a tooltip.
+    const auto hoverUntilShown = [&panel](std::string_view wanted)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        for (int y = 20; y <= 200; y += 6)
+        {
+            for (int x = 20; x <= 600; x += 20)
+            {
+                io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+                for (int frame = 0; frame < 30; ++frame) // past ImGuiHoveredFlags_DelayShort at 60 fps
+                {
+                    if (renderAndCapture(*panel).contains(wanted))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+    EXPECT_TRUE(hoverUntilShown(ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE)) << "the header's tooltip";
+    EXPECT_TRUE(hoverUntilShown(ProcessRowFormat::SWAP_UNSUPPORTED_CELL_REASON)) << "a cell's tooltip";
     panel->onDetach();
 }
 

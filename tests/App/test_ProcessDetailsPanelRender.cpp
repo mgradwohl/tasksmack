@@ -266,6 +266,32 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
     EXPECT_FALSE(text.contains("Swap")) << text;
 }
 
+// #1879: on Windows the Memory strip has Private (PrivatePageCount) and no Swap, which Windows doesn't
+// report per process; it is left out, as Shared is, rather than shown as a permanent 0.
+TEST_F(ProcessDetailsPanelRenderTest, WindowsShowsPrivateButNoSwap)
+{
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasPrivateBytes = true;
+    caps.hasSwapBytes = false;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+    for (int second = 0; second < 5; ++second)
+    {
+        Domain::ProcessSample sample = sampleAt(static_cast<double>(second), 10.0);
+        auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->privateBytes = std::uint64_t{72} << 20U;
+        sample.snapshot = std::move(snapshot);
+        const std::vector samples{sample};
+        panel->updateWithSamples(samples, 1.0F);
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Private")) << text;
+    EXPECT_TRUE(text.contains("72.0 MiB")) << text;
+    EXPECT_FALSE(text.contains("Swap")) << text;
+}
+
 // #1886: a process that runs a service has a collapsed Services section whose "Show in Services" asks the
 // shell to show that service; one that runs none has no section.
 TEST_F(ProcessDetailsPanelRenderTest, TheServicesSectionShowsTheServiceInTheServicesTab)

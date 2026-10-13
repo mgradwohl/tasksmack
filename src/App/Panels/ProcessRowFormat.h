@@ -130,6 +130,11 @@ inline constexpr const char* GPU_NOT_READ_YET_CELL_REASON = "Not available yet: 
 /// Tooltip of a cell in a column this system's process probe cannot fill at all (#1028, #1035).
 inline constexpr const char* UNSUPPORTED_CELL_REASON = "Not available on this system.";
 
+/// Tooltip of a Swap cell where the probe has no per-process swap figure (#1879): Windows pages a
+/// process's memory out to the pagefile but doesn't count how much of each process is there.
+inline constexpr const char* SWAP_UNSUPPORTED_CELL_REASON =
+    "Not available on this system: Windows doesn't count how much of each process is in the pagefile.";
+
 /// Which optional fields the process probe can fill (Platform::ProcessCapabilities). A column it
 /// cannot reads UNAVAILABLE_CELL_TEXT on every row, rather than a column of zeros that reads like a
 /// measurement (#1028, #1035).
@@ -405,7 +410,7 @@ struct RowFormatCache
     fmt.peakRss = bytesCell(proc.peakMemoryBytes);
     fmt.shared = options.hasSharedMemory ? bytesCell(proc.sharedBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
     fmt.privateMem = options.hasPrivateBytes ? bytesCell(proc.privateBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
-    fmt.swap = options.hasSwapBytes ? bytesCell(proc.swapBytes) : unavailableCell(UNSUPPORTED_CELL_REASON);
+    fmt.swap = options.hasSwapBytes ? bytesCell(proc.swapBytes) : unavailableCell(SWAP_UNSUPPORTED_CELL_REASON);
     // An idle rate is a measured "0.0 B/s"; one the probe could not read is unavailable (#1110) --
     // without root, every other user's process used to look as idle as a process that was.
     const auto rateCell = [](bool supported, bool available, double bytesPerSec) -> AlignedCellText

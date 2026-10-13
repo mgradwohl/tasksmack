@@ -1379,12 +1379,29 @@ TEST(WindowsProcessMemoryTest, NegativePrivateWorkingSetReadsAsZero)
     EXPECT_EQ(memory.rssBytes, 0U);
 }
 
+TEST(WindowsProcessMemoryTest, PrivateIsThePrivatePageCount)
+{
+    // #1879: Private is PrivatePageCount, the private bytes committed whether in RAM or in the pagefile;
+    // not the private working set, which Memory already shows.
+    const WindowsProcessMemory memory = windowsProcessMemory({
+        .workingSetPrivateSize = static_cast<std::int64_t>(40 * ONE_MIB),
+        .workingSetSize = 200 * ONE_MIB,
+        .peakWorkingSetSize = 250 * ONE_MIB,
+        .virtualSize = 2 * ONE_GIB,
+        .pagefileUsage = 60 * ONE_MIB,
+        .privatePageCount = 72 * ONE_MIB,
+    });
+    EXPECT_EQ(memory.privateBytes, 72 * ONE_MIB);
+    EXPECT_EQ(memory.rssBytes, 40 * ONE_MIB);
+}
+
 TEST(WindowsProcessMemoryTest, KernelPseudoProcessWithNoMemoryReadsZero)
 {
     const WindowsProcessMemory memory = windowsProcessMemory({});
     EXPECT_EQ(memory.rssBytes, 0U);
     EXPECT_EQ(memory.peakRssBytes, 0U);
     EXPECT_EQ(memory.virtualBytes, 0U);
+    EXPECT_EQ(memory.privateBytes, 0U);
 }
 
 } // namespace

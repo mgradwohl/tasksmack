@@ -83,10 +83,9 @@ constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 // System chart's "Peak Used" tracks "Used" (#1342). The Processes table keeps its short "Peak Mem"
 // header for width, as it does "Mem %".
 constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
-constexpr const char* MEM_PERCENT_LABEL = "Mem %";
-constexpr const char* MEM_PRIVATE_LABEL = "Private"; // the Processes table's column (#1885)
-constexpr const char* MEM_SWAP_LABEL =
-    "Swap"; // the Processes table's column (#1885)                // the Processes table's column (#1878)
+constexpr const char* MEM_PERCENT_LABEL = "Mem %";                // the Processes table's column (#1878)
+constexpr const char* MEM_PRIVATE_LABEL = "Private";              // the Processes table's column (#1885, #1879)
+constexpr const char* MEM_SWAP_LABEL = "Swap";                    // the Processes table's column (#1885)
 constexpr const char* FAULTS_TOTAL_LABEL = "Page Faults (total)"; // the Processes table's Page Faults column (#1878)
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
@@ -946,15 +945,17 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
             .tooltip = "Its resident memory as a share of the system's RAM, as the Processes table's Mem % column",
         };
     }
-    // Private and Swap, the Processes table's columns (#1885), where the platform reads them: not
-    // plotted yet, so blank swatches like Mem %.
+    // Private and Swap, the Processes table's columns (#1885, #1879), where the platform reads them:
+    // not plotted, so blank swatches like Mem %. On Windows Private is the commit charge, which the
+    // Virtual line already draws, and Swap isn't read, so it's left out as Shared is (#1035).
     if (ctx.hasPrivateBytes && ctx.snapshot != nullptr)
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PRIVATE_LABEL,
             .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->privateBytes)),
             .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
-            .tooltip = "Memory no other process shares (RssAnon on Linux), as the Processes table's Private column",
+            .tooltip = "Memory no other process shares (RssAnon on Linux; on Windows the private bytes committed, "
+                       "PrivatePageCount), as the Processes table's Private column",
         };
     }
     if (ctx.hasSwapBytes && ctx.snapshot != nullptr)

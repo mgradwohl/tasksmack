@@ -37,7 +37,7 @@ enum class ProcessColumn : std::uint8_t
     Virtual,
     Shared,
     PeakResident,
-    // Private and Swap: RssAnon and VmSwap on Linux (#1885); the Windows half is #1879
+    // Private and Swap: RssAnon and VmSwap on Linux (#1885); PrivatePageCount and no swap figure on Windows (#1879)
     Private,
     Swap,
     // Scheduling - how is it scheduled?
@@ -193,9 +193,9 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         {.name="Shared", .menuName="Shared Memory", .configKey="shared", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="Shared memory size"},
         // PEAK RES
         {.name="Peak Mem", .menuName="Peak Memory", .configKey="peak_resident", .defaultWidth=85.0F, .defaultVisible=false, .canHide=true, .description="Peak resident memory (historical maximum): the peak working set on Windows, shared pages included; VmHWM on Linux"},
-        // Private (#1885)
-        {.name="Private", .menuName="Private Memory", .configKey="private", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Memory no other process shares: the resident anonymous pages (RssAnon: heap, stacks, private mappings) on Linux"},
-        // Swap (#1885)
+        // Private (#1885, #1879)
+        {.name="Private", .menuName="Private Memory", .configKey="private", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="Memory no other process shares. Linux: the resident anonymous pages (RssAnon: heap, stacks, private mappings). Windows: the private bytes committed, in RAM or the pagefile (PrivatePageCount, Task Manager's Commit size)"},
+        // Swap (#1885, #1879)
         {.name="Swap", .menuName="Swap", .configKey="swap", .defaultWidth=70.0F, .defaultVisible=false, .canHide=true, .description="The part of the process swapped out to disk or zram (VmSwap) on Linux"},
 
         // === Scheduling ===

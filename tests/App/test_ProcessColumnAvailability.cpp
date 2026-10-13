@@ -7,6 +7,7 @@
 
 #include <initializer_list>
 #include <optional>
+#include <string_view>
 
 namespace App
 {
@@ -34,6 +35,8 @@ using ProcessColumnAvailability::unavailableValuesNote;
     caps.hasProcessType = true;
     caps.hasGdiObjects = true;
     caps.hasSharedMemory = false;
+    caps.hasPrivateBytes = true; // PrivatePageCount (#1879)
+    caps.hasSwapBytes = false;   // No per-process swap figure (#1879)
     return caps;
 }
 
@@ -46,14 +49,31 @@ TEST(ProcessColumnAvailabilityTest, SharedMemoryIsUnsupportedOnWindows)
     EXPECT_FALSE(isSupported(ProcessColumn::Power, caps));
 }
 
+TEST(ProcessColumnAvailabilityTest, WindowsHasPrivateButNoSwap)
+{
+    // #1879: Windows reads PrivatePageCount for Private; it has no per-process swap figure, so Swap is all
+    // dashes and its header explains that Windows doesn't count it, rather than the generic note.
+    Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    EXPECT_TRUE(isSupported(ProcessColumn::Private, caps));
+    EXPECT_TRUE(unavailableValuesNote(ProcessColumn::Private, caps).empty());
+    EXPECT_FALSE(isSupported(ProcessColumn::Swap, caps));
+    const std::string_view note = unavailableValuesNote(ProcessColumn::Swap, caps);
+    EXPECT_EQ(note, ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_TRUE(note.contains("pagefile")) << note;
+    EXPECT_TRUE(rowFormatOptions(caps).hasPrivateBytes);
+    EXPECT_FALSE(rowFormatOptions(caps).hasSwapBytes);
+    EXPECT_FALSE(ProcessColumnAvailability::defaultVisible(ProcessColumn::Private, caps));
+}
+
 TEST(ProcessColumnAvailabilityTest, PrivateAndSwapFollowTheirCapabilities)
 {
-    // #1885: Linux reads RssAnon and VmSwap; a probe that doesn't (Windows until #1879) gets dashes and
-    // the header's note, and both columns stay hidden by default.
-    Platform::ProcessCapabilities caps = windowsLikeCapabilities();
+    // #1885: Linux reads RssAnon and VmSwap; a probe that doesn't gets dashes and the header's note, and
+    // both columns stay hidden by default. Swap's note says why (#1879): Windows keeps no per-process figure.
+    Platform::ProcessCapabilities caps;
     EXPECT_FALSE(isSupported(ProcessColumn::Private, caps));
     EXPECT_FALSE(isSupported(ProcessColumn::Swap, caps));
-    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Swap, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Private, caps), ProcessColumnAvailability::UNSUPPORTED_COLUMN_NOTE);
+    EXPECT_EQ(unavailableValuesNote(ProcessColumn::Swap, caps), ProcessColumnAvailability::SWAP_UNSUPPORTED_COLUMN_NOTE);
     caps.hasPrivateBytes = true;
     caps.hasSwapBytes = true;
     EXPECT_TRUE(isSupported(ProcessColumn::Private, caps));

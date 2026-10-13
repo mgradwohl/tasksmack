@@ -267,6 +267,11 @@ enum class TextCell : std::uint8_t
 /// Header tooltip line for a column this system cannot fill.
 inline constexpr std::string_view UNSUPPORTED_COLUMN_NOTE = "Not available on this system: every row shows \xE2\x80\x94.";
 
+/// Header tooltip line for the Swap column where the probe has no per-process swap figure (#1879).
+inline constexpr std::string_view SWAP_UNSUPPORTED_COLUMN_NOTE =
+    "Not available on this system: every row shows \xE2\x80\x94. Windows doesn't count how much of each process is in the "
+    "pagefile; Private, its committed private bytes, includes what is paged out.";
+
 /// Header tooltip line for a column whose value can be unreadable for some processes (#1110).
 inline constexpr std::string_view UNREADABLE_VALUES_NOTE =
     "\xE2\x80\x94 means TaskSmack could not read the value for that process, usually for lack of privileges; "
@@ -280,7 +285,7 @@ unavailableValuesNote(ProcessColumn col, const Platform::ProcessCapabilities& ca
 {
     if (!isSupported(col, caps, gpu))
     {
-        return UNSUPPORTED_COLUMN_NOTE;
+        return col == ProcessColumn::Swap ? SWAP_UNSUPPORTED_COLUMN_NOTE : UNSUPPORTED_COLUMN_NOTE;
     }
     switch (col)
     {

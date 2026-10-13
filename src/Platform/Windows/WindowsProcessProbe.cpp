@@ -930,10 +930,12 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
             .peakWorkingSetSize = info->peakWorkingSetSize,
             .virtualSize = info->virtualSize,
             .pagefileUsage = info->pagefileUsage,
+            .privatePageCount = info->privatePageCount,
         });
         counters.rssBytes = memory.rssBytes;
         counters.peakRssBytes = memory.peakRssBytes;
         counters.virtualBytes = memory.virtualBytes;
+        counters.privateBytes = memory.privateBytes; // Private (#1879); Windows has no per-process swap figure
         counters.pageFaultCount = Domain::Numeric::narrowOr<std::uint64_t>(info->pageFaultCount, std::uint64_t{0});
 
         // Safe and necessary: cumulative transfer counts are non-negative; LARGE_INTEGER is signed.
@@ -1275,11 +1277,14 @@ ProcessCapabilities WindowsProcessProbe::capabilities() const
         .hasHandleCount = true, // From the SystemProcessInformation snapshot
         .hasUserSystemTime = true,
         .hasStartTime = true,
-        .hasUser = true,        // From OpenProcessToken + LookupAccountSid
-        .hasCommand = true,     // NtQueryInformationProcess(ProcessCommandLineInformation), else the image path (#1156)
-        .hasNice = true,        // From GetPriorityClass
-        .hasPageFaults = true,  // From the SystemProcessInformation snapshot
-        .hasPeakRss = true,     // From the SystemProcessInformation snapshot (PeakWorkingSetSize)
+        .hasUser = true,         // From OpenProcessToken + LookupAccountSid
+        .hasCommand = true,      // NtQueryInformationProcess(ProcessCommandLineInformation), else the image path (#1156)
+        .hasNice = true,         // From GetPriorityClass
+        .hasPageFaults = true,   // From the SystemProcessInformation snapshot
+        .hasPeakRss = true,      // From the SystemProcessInformation snapshot (PeakWorkingSetSize)
+        .hasPrivateBytes = true, // From the SystemProcessInformation snapshot (PrivatePageCount, #1879)
+        // No per-process swap: Windows doesn't report how much of one process is in the pagefile (#1879)
+        .hasSwapBytes = false,
         .hasCpuAffinity = true, // From GetProcessAffinityMask, per processor group (#1247)
         // Network counters: TCP EStats (GetPerTcpConnectionEStats), which needs Administrator
         .hasNetworkCounters = hasNetworkCounters,

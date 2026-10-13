@@ -747,6 +747,40 @@ TEST(WindowsProcessProbeTest, MemoryIsThePrivateWorkingSetAndLeavesSharedPagesOu
     EXPECT_LE(ours.rssBytes + (SHARED_BYTES / 2), workingSet) << "Memory must leave the shared section's pages out";
 }
 
+TEST(WindowsProcessProbeTest, PrivateIsThePrivateBytesAndSwapIsNotClaimed)
+{
+    // #1879: Private is PrivatePageCount from the same SystemProcessInformation snapshot, the private
+    // bytes committed (GetProcessMemoryInfo's PrivateUsage). Windows has no per-process swap figure.
+    WindowsProcessProbe probe;
+    const ProcessCapabilities caps = probe.capabilities();
+    EXPECT_TRUE(caps.hasPrivateBytes);
+    EXPECT_FALSE(caps.hasSwapBytes);
+
+    const ProcessCounters before = sampleOurProcess(probe);
+    ASSERT_NE(before.pid, 0);
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the documented way to pass the _EX struct
+    ASSERT_NE(K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)), 0);
+    const std::uint64_t privateUsage = pmc.PrivateUsage;
+    const std::uint64_t slack = 64 * TEST_MIB; // the test's own churn between the two reads
+    EXPECT_GT(before.privateBytes, 0U);
+    EXPECT_LE(before.privateBytes, privateUsage + slack);
+    EXPECT_GE(before.privateBytes + slack, privateUsage);
+    EXPECT_EQ(before.swapBytes, 0U);
+
+    // Committed but never touched: private bytes at once, though none of it is in the working set yet,
+    // so Private moves where Memory (the private working set) does not.
+    constexpr std::uint64_t COMMIT_BYTES = 256 * TEST_MIB;
+    ScopedMemory commit;
+    commit.region = VirtualAlloc(nullptr, static_cast<SIZE_T>(COMMIT_BYTES), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    ASSERT_NE(commit.region, nullptr);
+    const ProcessCounters after = sampleOurProcess(probe);
+    ASSERT_NE(after.pid, 0);
+    EXPECT_GE(after.privateBytes, before.privateBytes + (COMMIT_BYTES / 2)) << "committed memory is private bytes";
+    EXPECT_LT(after.rssBytes, before.rssBytes + (COMMIT_BYTES / 2)) << "untouched pages are not in the working set";
+}
+
 TEST(WindowsProcessProbeTest, UdpIsNeverClaimed)
 {
     // Windows has no user-mode per-process UDP byte counters; TCP EStats is all there is (#1258)
