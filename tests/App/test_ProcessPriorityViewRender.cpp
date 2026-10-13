@@ -25,6 +25,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -558,6 +559,53 @@ constexpr std::array<Detail::PrioritySliderStop, 5> STOPS{
 };
 constexpr Detail::DiscretePrioritySlider SLIDER{.stops = STOPS, .beyondStart = nullptr, .tooltip = "", .bandStarts = {}};
 } // namespace LongStops
+
+// #1891: the discrete slider's keys on every platform (the Windows class slider's test runs on Windows
+// alone): Left/Up step toward the high end, Right/Down toward the low end, held at both ends, and
+// Home/End jump to them. Its band dividers and an inherited (hollow) thumb are drawn on the way.
+TEST_F(ProcessPriorityViewRenderTest, TheDiscreteSlidersKeysStepThroughItsStops)
+{
+    static constexpr std::array<std::int32_t, 1> BANDS{2};
+    constexpr Detail::DiscretePrioritySlider BANDED{.stops = LongStops::STOPS, .beyondStart = nullptr, .tooltip = "", .bandStarts = BANDS};
+    std::int32_t shown = 2;
+    bool focus = true;
+    bool inherited = true;
+    const auto body = [&]
+    {
+        if (focus)
+        {
+            ImGui::SetFocusID(ImGui::GetID(LongStops::STOPS[static_cast<std::size_t>(shown)].itemLabel), ImGui::GetCurrentWindow());
+            focus = false;
+        }
+        shown = Detail::renderDiscretePrioritySlider(BANDED, shown, inherited).index;
+    };
+    runFrame(body);
+    runFrame(body);
+    inherited = false;
+
+    struct Step
+    {
+        ImGuiKey key;
+        std::int32_t expected;
+    };
+    const std::array<Step, 9> steps{{
+        {.key = ImGuiKey_RightArrow, .expected = 3},
+        {.key = ImGuiKey_DownArrow, .expected = 4},
+        {.key = ImGuiKey_RightArrow, .expected = 4}, // Held at the low end
+        {.key = ImGuiKey_Home, .expected = 0},
+        {.key = ImGuiKey_LeftArrow, .expected = 0}, // Held at the high end
+        {.key = ImGuiKey_UpArrow, .expected = 0},
+        {.key = ImGuiKey_End, .expected = 4},
+        {.key = ImGuiKey_UpArrow, .expected = 3},
+        {.key = ImGuiKey_LeftArrow, .expected = 2},
+    }};
+    for (const Step& step : steps)
+    {
+        SCOPED_TRACE(ImGui::GetKeyName(step.key));
+        pressKey(step.key, body);
+        EXPECT_EQ(shown, step.expected);
+    }
+}
 
 TEST_F(ProcessPriorityViewRenderTest, TheStopNamesShowAtEveryDisplayScaleWhenTheCardHasRoom)
 {
