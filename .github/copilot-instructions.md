@@ -320,6 +320,10 @@ pwsh tools/coverage.ps1    # Generates coverage/index.html
    (probe → Domain → `ProcessSnapshot` and the watched-process history) with the system view, not as an
    afterthought. If one of the three doesn't make sense for a metric (no per-process attribution exists,
    as for battery health), say why in the PR.
+6. **Processes table / Process Details parity (maintainer guideline):** anything the Processes table can show
+   for a process (a column, a cell's tooltip, a row-menu action) should also be on its Process Details tab.
+   A fact that is in the table but missing from Process Details is probably a bug: file it, or add it in the
+   same PR.
 
 **CMake layout:** the root `CMakeLists.txt` is declarative; build logic lives in focused modules under `cmake/` — `Options.cmake` (cache options), `CompilerOptions.cmake` (toolchain/warnings/hardening, must precede dependencies), `Dependencies.cmake` (FetchContent + third-party targets), `StaticAnalysis.cmake` (clang-tidy/format targets, included before the Windows `.rc` is appended to sources), `InstallRules.cmake`, and `Packaging.cmake` (CPack). New dependencies go in `cmake/Dependencies.cmake`; new tooling targets in `cmake/StaticAnalysis.cmake`.
 
