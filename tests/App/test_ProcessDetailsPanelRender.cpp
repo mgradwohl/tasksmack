@@ -380,6 +380,34 @@ TEST_F(ProcessDetailsPanelRenderTest, TheServicesSectionShowsTheListsDisplayName
     EXPECT_TRUE(panel->servicesSectionOpen()); // open: ShellLayer keeps the list sampled
 }
 
+// #1891: where the platform measures power, the Overview charts it: the Power card with its plot and value.
+TEST_F(ProcessDetailsPanelRenderTest, ThePowerChartIsDrawnWherePowerIsMeasured)
+{
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasPowerUsage = true;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+    for (int second = 0; second < 5; ++second)
+    {
+        Domain::ProcessSample sample = sampleAt(static_cast<double>(second), 10.0);
+        auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+        snapshot->powerWatts = 2.5 + second;
+        sample.snapshot = std::move(snapshot);
+        const std::vector samples{sample};
+        panel->updateWithSamples(samples, 1.0F);
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Power Usage")) << text;
+    EXPECT_TRUE(text.contains(" W")) << "a watts value (smoothed, so not the raw reading): " << text;
+
+    // Where it isn't measured, there is no Power card.
+    panel->setProcessCapabilities({});
+    static_cast<void>(renderAndCapture(*panel));
+    EXPECT_FALSE(renderAndCapture(*panel).contains("Power Usage"));
+}
+
 // #1395: a shorter history window trims the history already held, so the charts span the new window.
 TEST_F(ProcessDetailsPanelRenderTest, AShorterHistoryWindowTrimsTheCharts)
 {
