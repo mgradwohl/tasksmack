@@ -553,6 +553,43 @@ TEST_F(SystemMetricsPanelRenderTest, TheGpuTabMarksReadingsItDoesntHave)
 
 // #1395: an interface whose link speed is unknown reads as a dash in the Interface Status table's Speed
 // column, not "0 bit/s".
+// #1891: a GPU that reports its memory in use but no total (a shared-memory device without a budget)
+// still has a Memory bar -- its percent alone, not "unavailable".
+TEST_F(SystemMetricsPanelRenderTest, AGpuMemoryReadingWithoutATotalStillHasItsBar)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        []
+        {
+            auto gpu = std::make_unique<TestMocks::MockGPUProbe>();
+            gpu->withGPU("GPU0", "Test GPU");
+            Platform::GPUCounters counters = TestMocks::makeGPUCounters("GPU0");
+            counters.memoryUsedBytes = std::uint64_t{512} << 20U;
+            counters.memoryTotalBytes = 0; // No total to set it against
+            gpu->withGPUCounters("GPU0", counters);
+            return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = std::move(gpu)};
+        });
+    panel->onAttach();
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(selectTab("GPU"));
+    std::string text;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (int frames = 0; std::chrono::steady_clock::now() < deadline; ++frames)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        text = renderAndCapture(*panel);
+        if (frames > 20 && text.contains("Test GPU"))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(text.contains("Test GPU")) << text;
+    EXPECT_TRUE(text.contains("Memory")) << text;
+    EXPECT_FALSE(text.contains("Memory : unavailable this sample")) << text;
+    panel->onDetach();
+}
+
 TEST_F(SystemMetricsPanelRenderTest, AnInterfaceWithoutALinkSpeedSaysSo)
 {
     auto panel = std::make_unique<SystemMetricsPanel>(
