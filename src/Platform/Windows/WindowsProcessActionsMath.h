@@ -150,6 +150,34 @@ isCloseRequestWindow(uint32_t windowPid, uint32_t targetPid, bool visible, bool 
                        firstError);
 }
 
+/// Set affinity refused for lack of access (#1881): a protected process (anti-malware, DRM, some
+/// system services) refuses even an administrator, and an elevated or another user's process needs
+/// TaskSmack to run elevated.
+[[nodiscard]] inline std::string affinityAccessDeniedMessage(int32_t pid)
+{
+    return std::format("Access denied: can't change the CPU affinity of process {}. It may be protected, or run elevated or as another "
+                       "user (run TaskSmack as administrator for those).",
+                       pid);
+}
+
+/// The message when SetProcessAffinityMask() (or, with @p cpuSets, SetProcessDefaultCpuSets()) fails
+/// with @p error for process @p pid (#1881).
+[[nodiscard]] inline std::string affinitySetErrorMessage(uint32_t error, int32_t pid, bool cpuSets)
+{
+    switch (error)
+    {
+    case ERROR_ACCESS_DENIED:
+        return affinityAccessDeniedMessage(pid);
+    case ERROR_INVALID_PARAMETER:
+        return cpuSets ? std::format("Windows refused those CPU sets for process {}", pid)
+                       : std::format("Windows refused those CPUs for process {}: they must be in its processor group, and a process "
+                                     "whose threads run in several groups can't be given one mask",
+                                     pid);
+    default:
+        return std::format("Failed to set the CPU affinity of process {}: error {}", pid, error);
+    }
+}
+
 } // namespace Platform
 
 #endif // _WIN32

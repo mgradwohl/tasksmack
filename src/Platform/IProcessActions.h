@@ -7,6 +7,7 @@
 #include <format>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -118,6 +119,24 @@ enum class SyscallTraceAvailability : std::uint8_t
     return "";
 }
 
+/// How the machine's logical processors are grouped, for the Set affinity dialog (#1881): read on
+/// demand, when the dialog opens, never per frame. Each part may be empty, meaning unknown; the dialog
+/// then offers CPUs 0 to N-1 in one plain grid.
+struct CpuAffinityLayout
+{
+    /// Windows processor groups' sizes (their maximum processor counts), in CPU order: group 0's CPUs
+    /// come first, numbered as CpuAffinity numbers them. Empty (Linux) or one entry: no groups to show.
+    std::vector<std::uint32_t> groupSizes;
+    /// The CPUs that exist now, numbered as CpuAffinity numbers them; empty when unknown.
+    CpuAffinity online;
+    /// Each CPU's efficiency class on a hybrid CPU (higher is more performant), as
+    /// CpuDetails::efficiencyClassByCoreId has it; empty on a CPU with one kind of core.
+    std::vector<std::uint8_t> efficiencyClassByCpu;
+    /// setAffinity() sets the choice as the process's default CPU sets rather than a hard affinity:
+    /// Windows with more than one processor group, where one affinity mask can't span groups.
+    bool appliedAsCpuSets = false;
+};
+
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
@@ -206,6 +225,14 @@ class IProcessActions
         static_cast<void>(target);
         static_cast<void>(cpus);
         return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
+    }
+
+    /// The processor groups, the CPUs online and the core kinds, for the Set affinity dialog (#1881).
+    /// Reads the system each call, so call it when the dialog opens, not per frame. The default
+    /// knows nothing (every part empty).
+    [[nodiscard]] virtual CpuAffinityLayout affinityLayout() const
+    {
+        return {};
     }
 };
 

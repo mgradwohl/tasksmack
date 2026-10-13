@@ -372,6 +372,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessIconMath.cpp
     Platform/WindowsMath/test_WindowsPackageLogoMath.cpp
+    Platform/WindowsMath/test_WindowsAffinityMath.cpp
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES

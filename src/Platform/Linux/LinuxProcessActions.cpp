@@ -3,6 +3,7 @@
 #include "DetachedSpawn.h"
 #include "Domain/PriorityConfig.h"
 #include "IoPriority.h"
+#include "LinuxCpuDetails.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "PosixGuards.h"
@@ -687,6 +688,20 @@ ProcessActionResult LinuxProcessActions::setAffinity(const ProcessTarget& target
     }
     return reportThreadChange(
         m_Syscalls, *result, pidfd, target, AFFINITY_WORDING, setting, affinityErrorMessage(result->firstError, target.pid));
+}
+
+CpuAffinityLayout LinuxProcessActions::affinityLayout() const
+{
+    // No processor groups on Linux. The online CPUs and, on a hybrid CPU, each one's class, read
+    // when the Set affinity dialog opens (#1881), as the system probe reads them (#809).
+    const std::filesystem::path cpuSysfsRoot("/sys/devices/system/cpu");
+    CpuAffinityLayout layout;
+    if (const auto online = LinuxCpuDetails::Detail::readFile(cpuSysfsRoot / "online"); online.has_value())
+    {
+        layout.online = CpuAffinity::fromCpuList(*online).value_or(CpuAffinity{});
+    }
+    layout.efficiencyClassByCpu = LinuxCpuDetails::readEfficiencyClasses(cpuSysfsRoot, std::nullopt);
+    return layout;
 }
 
 IoPriorityReadResult LinuxProcessActions::getIoPriority(const ProcessTarget& target)

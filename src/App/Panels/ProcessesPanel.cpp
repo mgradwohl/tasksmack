@@ -2721,7 +2721,9 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
             m_AffinityDialog.open({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
                                   proc.name,
                                   proc.cpuAffinity,
-                                  static_cast<std::size_t>(std::thread::hardware_concurrency()));
+                                  static_cast<std::size_t>(std::thread::hardware_concurrency()),
+                                  // Read once, on the click: the groups and core kinds to arrange the boxes by (#1881)
+                                  m_ProcessActions ? m_ProcessActions->affinityLayout() : Platform::CpuAffinityLayout{});
         }
     }
     if (can.canTerminate || can.canKill)

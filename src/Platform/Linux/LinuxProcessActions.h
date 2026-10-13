@@ -81,6 +81,8 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult launchSyscallTrace(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
+    /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
+    [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
 
     /// strace and the terminal to run it in, from this process's PATH and $TERMINAL.
     [[nodiscard]] static SyscallTrace::Tools discoverSyscallTraceTools();

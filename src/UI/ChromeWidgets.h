@@ -118,7 +118,8 @@ struct DialogFooterButton
 {
     const char* label = nullptr;        ///< Visible label and ID; nullptr: no button in this slot.
     const ButtonFills* fills = nullptr; ///< Its own fill (Save, a destructive confirm); nullptr: an ordinary button.
-    const char* tooltip = nullptr;      ///< Shown on hover; nullptr: none.
+    const char* tooltip = nullptr;      ///< Shown on hover, disabled or not; nullptr: none.
+    bool disabled = false;              ///< Drawn disabled, and never reported pressed (Apply with nothing chosen, #1881).
 };
 
 /// Which footer button was pressed this frame.
@@ -155,6 +156,7 @@ inline bool drawFooterButton(const DialogFooterButton& button, float width)
 {
     const auto& scheme = UI::Theme::get().scheme();
     bool clicked = false;
+    ImGui::BeginDisabled(button.disabled);
     if (button.fills != nullptr)
     {
         clicked = filledButton(button.label, ImVec2(width, 0.0F), *button.fills, scheme.textPrimary, scheme.windowBg);
@@ -165,11 +167,12 @@ inline bool drawFooterButton(const DialogFooterButton& button, float width)
         clicked = ImGui::Button(button.label, ImVec2(width, 0.0F));
         ImGui::PopStyleColor();
     }
+    ImGui::EndDisabled();
     if (button.tooltip != nullptr)
     {
-        ImGui::SetItemTooltip("%s", button.tooltip);
+        ImGui::SetItemTooltip("%s", button.tooltip); // ImGuiHoveredFlags_ForTooltip allows a disabled item
     }
-    return clicked;
+    return clicked && !button.disabled;
 }
 } // namespace Detail
 
