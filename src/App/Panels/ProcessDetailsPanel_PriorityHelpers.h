@@ -517,6 +517,45 @@ template<typename LabelWidth>
     return widestSpacing * static_cast<float>(count - 1);
 }
 
+/// How far short of discreteStopLabelsMinWidth() a track may be and still get its labels: float noise
+/// in the sums, a fraction of a pixel. Containers are sized in whole pixels up from that width, so a
+/// track short by more than this really is too narrow.
+inline constexpr float PRIORITY_LABELS_FIT_SLACK_PX = 0.5F;
+
+/// The discrete slider's track width and whether its scale labels are drawn under it.
+struct DiscreteTrackFit
+{
+    float trackWidth = 0.0F;
+    bool showLabels = false;
+};
+
+/**
+ * @brief Fit the discrete slider's track to its scale labels and the space it has (#1984)
+ *
+ * The track is its authored width (PRIORITY_SLIDER_WIDTH_EM) or, where its labels need more, as wide
+ * as they need: the labels' widths do not scale exactly with the em (the font's pixel rounding differs
+ * per size), so at some display scales the authored width came out a few pixels short and every label
+ * was dropped though the card had room. Either way the track is held to the space available, as
+ * computePrioritySliderMetrics() holds it, never clipped; the labels are drawn only when the track it
+ * ends up with is wide enough for them all.
+ *
+ * @param emPx One em, i.e. ImGui::GetFontSize()
+ * @param labelsMinWidthPx discreteStopLabelsMinWidth() for the stops' labels; non-positive or
+ *        non-finite means there are no labels to fit
+ * @param availableTrackWidthPx Width left for the track; non-positive or non-finite means "unconstrained"
+ */
+[[nodiscard]] inline auto fitDiscreteTrack(float emPx, float labelsMinWidthPx, float availableTrackWidthPx) noexcept -> DiscreteTrackFit
+{
+    const float labels = (std::isfinite(labelsMinWidthPx) && labelsMinWidthPx > 0.0F) ? labelsMinWidthPx : 0.0F;
+    const float authored = computePrioritySliderMetrics(emPx, 0.0F).sliderWidth;
+    float track = std::max(authored, labels);
+    if (std::isfinite(availableTrackWidthPx) && availableTrackWidthPx > 0.0F)
+    {
+        track = std::min(track, availableTrackWidthPx);
+    }
+    return DiscreteTrackFit{.trackWidth = track, .showLabels = track + PRIORITY_LABELS_FIT_SLACK_PX >= labels};
+}
+
 // Windows' priority classes on the discrete slider (#1538): the five settable classes, highest
 // first, so High is at the left like nice -20; Realtime is shown beyond High, never picked.
 

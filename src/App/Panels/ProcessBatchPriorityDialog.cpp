@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -52,7 +53,9 @@ constexpr float WINDOWS_DIALOG_WIDTH_EM = 30.0F;
             ? std::max(WINDOWS_DIALOG_WIDTH_EM * emPx, Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER))
             : (Detail::PRIORITY_SLIDER_WIDTH_EM * emPx) + (2.0F * Detail::PRIORITY_LABEL_PADDING_EM * emPx) +
                   ImGui::CalcTextSize("High").x + ImGui::CalcTextSize("Low").x;
-    const float wanted = contentWidth + (style.WindowPadding.x * 2.0F);
+    // In whole pixels up: ImGui truncates a window's size, and a fraction short of the class slider's
+    // minimum width drops its stop names (#1984).
+    const float wanted = std::ceil(contentWidth + (style.WindowPadding.x * 2.0F));
     return std::min(wanted, UI::DialogMetrics::computeDialogMaxExtent(ImGui::GetMainViewport()->WorkSize.x));
 }
 

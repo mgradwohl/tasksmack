@@ -454,8 +454,12 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
     ctx.priorityHighColor = theme.scheme().priorityHighColor;
     ctx.priorityNormalColor = theme.scheme().priorityNormalColor;
     ctx.priorityLowColor = theme.scheme().priorityLowColor;
-    // As the nice slider: never wider than the space there is, never clipped.
-    ctx.metrics = computePrioritySliderMetrics(emPx, std::max(ImGui::GetContentRegionAvail().x - lead, 1.0F));
+    // As the nice slider: never wider than the space there is, never clipped. But widened past its
+    // authored width where its stop names need that and there is room (#1984).
+    const float availableTrackWidth = std::max(ImGui::GetContentRegionAvail().x - lead, 1.0F);
+    const DiscreteTrackFit fit = fitDiscreteTrack(emPx, discretePrioritySliderMinWidth(slider) - lead, availableTrackWidth);
+    ctx.metrics = computePrioritySliderMetrics(emPx, availableTrackWidth);
+    ctx.metrics.sliderWidth = fit.trackWidth;
     const PrioritySliderMetrics& metrics = ctx.metrics;
     ctx.stops = slider.stops;
     ctx.niceValue = shownStop.colorNice;
@@ -489,8 +493,8 @@ DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, 
     }
 
     // Ticks, and the stops' names under them where there is room for all of them
-    drawDiscreteScale(ctx.drawList, ctx, shownIndex, lead + metrics.sliderWidth + 0.5F >= discretePrioritySliderMinWidth(slider));
-    return {.index = picked, .rightEdge = lead + metrics.sliderWidth};
+    drawDiscreteScale(ctx.drawList, ctx, shownIndex, fit.showLabels);
+    return {.index = picked, .rightEdge = lead + metrics.sliderWidth, .labelsShown = fit.showLabels};
 }
 
 } // namespace Detail

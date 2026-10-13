@@ -4,16 +4,19 @@
 /// selected process only, an edit made for another process is dropped before it can be applied, and
 /// the slider's keyboard shortcuts move the value as before (Linux only: the slider is the Linux control).
 /// There is no popup or modal on Linux. On Windows the same slider has a stop per priority class (#1538).
-/// On both, Apply is as wide as its label and the row repeats no "current" value (#1537).
+/// On both, Apply is as wide as its label and the row repeats no "current" value (#1537), and the
+/// discrete slider's stop names show at every display scale when its card has room for them (#1984).
 
+#include "App/Panels/ProcessActionsBlock.h" // The Priority card's width rule (#1984)
+#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h"
+#include "App/Panels/ProcessOverviewCard.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 #include "UI/IconsFontAwesome6.h"
 
 #ifdef _WIN32
-#include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h" // The class slider's ID
-#include "Domain/PriorityConfig.h"                          // MIN_NICE: what the probe reports for Realtime
+#include "Domain/PriorityConfig.h" // MIN_NICE: what the probe reports for Realtime
 #endif
 
 #include <gtest/gtest.h>
@@ -538,6 +541,108 @@ TEST_F(ProcessPriorityViewRenderTest, ARealtimeProcessGetsAWarningLine)
     EXPECT_EQ(mock.setPriorityCount(), 0);
 }
 #endif
+
+// The discrete slider's scale labels at every display scale (#1984). Its track was held to its
+// authored width (37.5 em), so where the stop names needed a few pixels more -- the Windows class
+// slider at 200 % -- every name was dropped though the Priority card had room. Stop names wider than
+// the authored track at every scale stand in for that case here (the test font's names fit in it),
+// in a card sized as the Priority card is, from discretePrioritySliderMinWidth().
+namespace LongStops
+{
+constexpr std::array<Detail::PrioritySliderStop, 5> STOPS{
+    Detail::PrioritySliderStop{.name = "Alpha stop label", .itemLabel = "Alpha###long_stop_slider", .colorNice = -15},
+    Detail::PrioritySliderStop{.name = "Bravo stop label", .itemLabel = "Bravo###long_stop_slider", .colorNice = -5},
+    Detail::PrioritySliderStop{.name = "Charlie stop lbl", .itemLabel = "Charlie###long_stop_slider", .colorNice = 0},
+    Detail::PrioritySliderStop{.name = "Delta stop label", .itemLabel = "Delta###long_stop_slider", .colorNice = 10},
+    Detail::PrioritySliderStop{.name = "Echo stop labels", .itemLabel = "Echo###long_stop_slider", .colorNice = 19},
+};
+constexpr Detail::DiscretePrioritySlider SLIDER{.stops = STOPS, .beyondStart = nullptr, .tooltip = "", .bandStarts = {}};
+} // namespace LongStops
+
+TEST_F(ProcessPriorityViewRenderTest, TheStopNamesShowAtEveryDisplayScaleWhenTheCardHasRoom)
+{
+    for (const float scale : {1.0F, 1.5F, 1.75F, 2.0F})
+    {
+        SCOPED_TRACE(scale);
+        ImGui::GetStyle().FontScaleMain = scale;
+        Detail::DiscretePick pick;
+        float minWidth = 0.0F;
+        float authored = 0.0F;
+        const auto body = [&]
+        {
+            minWidth = Detail::discretePrioritySliderMinWidth(LongStops::SLIDER);
+            authored = Detail::PRIORITY_SLIDER_WIDTH_EM * ImGui::GetFontSize();
+            // The Priority card's width rule, from the slider's own minimum.
+            const ProcessActionsBlock::Widths widths{.priority = minWidth, .padding = ImGui::GetStyle().WindowPadding.x * 2.0F};
+            (void) ProcessOverviewCard::render("LongStopsCard",
+                                               ICON_FA_GAUGE_HIGH,
+                                               "Priority",
+                                               ImVec2(widths.priorityCard(), 0.0F),
+                                               ImGuiChildFlags_AutoResizeY,
+                                               [&] { pick = Detail::renderDiscretePrioritySlider(LongStops::SLIDER, 2); });
+        };
+        runFrame(body);
+        runFrame(body);
+        ASSERT_GT(minWidth, authored); // The case of the issue: names wider than the authored track
+        EXPECT_TRUE(pick.labelsShown);
+        EXPECT_GE(pick.rightEdge + Detail::PRIORITY_LABELS_FIT_SLACK_PX, minWidth);
+    }
+}
+
+#ifdef _WIN32
+TEST_F(ProcessPriorityViewRenderTest, TheClassNamesShowAtEveryDisplayScaleInTheMeasuredPriorityCard)
+{
+    // The Windows class slider itself, in a card as wide as ProcessActionsBlock measures the Priority
+    // card: High...Idle under the track at 100, 150, 175 and 200 %, whatever the fractions come to.
+    constexpr Platform::ProcessActionCapabilities WINDOWS_PRIORITY{.canSetPriority = true};
+    for (const float scale : {1.0F, 1.5F, 1.75F, 2.0F})
+    {
+        SCOPED_TRACE(scale);
+        ImGui::GetStyle().FontScaleMain = scale;
+        Detail::DiscretePick pick;
+        const auto body = [&]
+        {
+            const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(WINDOWS_PRIORITY);
+            (void) ProcessOverviewCard::render("ClassCard",
+                                               ICON_FA_GAUGE_HIGH,
+                                               "Priority",
+                                               ImVec2(widths.priorityCard(), 0.0F),
+                                               ImGuiChildFlags_AutoResizeY,
+                                               [&] { pick = Detail::renderDiscretePrioritySlider(Detail::WINDOWS_PRIORITY_SLIDER, 2); });
+        };
+        runFrame(body);
+        runFrame(body);
+        EXPECT_TRUE(pick.labelsShown);
+    }
+}
+#endif
+
+TEST_F(ProcessPriorityViewRenderTest, TheStopNamesGoOnlyWhenTheCardReallyIsTooNarrow)
+{
+    for (const float scale : {1.0F, 2.0F})
+    {
+        SCOPED_TRACE(scale);
+        ImGui::GetStyle().FontScaleMain = scale;
+        Detail::DiscretePick pick;
+        float minWidth = 0.0F;
+        float available = 0.0F;
+        const auto body = [&]
+        {
+            minWidth = Detail::discretePrioritySliderMinWidth(LongStops::SLIDER);
+            if (ImGui::BeginChild("TooNarrow", ImVec2(std::floor(minWidth) - 2.0F, 0.0F), ImGuiChildFlags_AutoResizeY))
+            {
+                available = ImGui::GetContentRegionAvail().x;
+                pick = Detail::renderDiscretePrioritySlider(LongStops::SLIDER, 2);
+            }
+            ImGui::EndChild();
+        };
+        runFrame(body);
+        runFrame(body);
+        EXPECT_FALSE(pick.labelsShown);
+        // The track fills what there is, and no more: nothing clipped.
+        EXPECT_LE(pick.rightEdge, available + 0.001F);
+    }
+}
 
 } // namespace
 } // namespace App

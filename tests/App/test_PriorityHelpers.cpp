@@ -268,9 +268,9 @@ TEST(PriorityHelpersTest, GetNiceFromPositionRoundTrip)
 }
 
 // Default test colors matching the legacy hardcoded values
-static const ImVec4 TEST_HIGH = {1.0F, 0.3F, 0.2F, 1.0F};   // Red/orange
-static const ImVec4 TEST_NORMAL = {0.5F, 0.8F, 0.2F, 1.0F}; // Green
-static const ImVec4 TEST_LOW = {0.4F, 0.4F, 0.8F, 1.0F};    // Blue
+constexpr ImVec4 TEST_HIGH = {1.0F, 0.3F, 0.2F, 1.0F};   // Red/orange
+constexpr ImVec4 TEST_NORMAL = {0.5F, 0.8F, 0.2F, 1.0F}; // Green
+constexpr ImVec4 TEST_LOW = {0.4F, 0.4F, 0.8F, 1.0F};    // Blue
 
 // =============================================================================
 // getNiceColor Tests
@@ -685,6 +685,103 @@ TEST(DiscreteSliderTest, ScaleLabelsStayInsideTheTrackAndApart)
         EXPECT_LE(rightEdge + 10.0F, nextLeft + 0.001F);
     }
     EXPECT_FLOAT_EQ(discreteStopLabelsMinWidth(0, widthOf, 10.0F), 0.0F);
+}
+
+// The discrete slider's track and its scale labels (#1984). The labels' widths do not scale exactly
+// with the em -- the font rounds glyphs to whole pixels at each size -- so measured against the
+// authored track (37.5 em) they come out a little under it at some display scales and a little over
+// at others. Modelled here on the Windows class slider at the Medium font: under at 100/150/175 %,
+// a few pixels over at 200 %, where every label used to be dropped although the card had room.
+struct ScaleCase
+{
+    float scale;
+    float labelsMinPx; // discreteStopLabelsMinWidth() at that scale
+};
+constexpr std::array<ScaleCase, 4> SCALE_CASES{
+    ScaleCase{.scale = 1.0F, .labelsMinPx = 396.25F},
+    ScaleCase{.scale = 1.5F, .labelsMinPx = 597.5F},
+    ScaleCase{.scale = 1.75F, .labelsMinPx = 698.375F},
+    ScaleCase{.scale = 2.0F, .labelsMinPx = 803.625F}, // Authored: 800
+};
+
+TEST(DiscreteSliderTest, WithRoomTheLabelsShowAtEveryDisplayScale)
+{
+    for (const ScaleCase& c : SCALE_CASES)
+    {
+        SCOPED_TRACE(c.scale);
+        const float em = App::REFERENCE_EM_PX * c.scale;
+        const float authored = PRIORITY_SLIDER_WIDTH_EM * em;
+        // Unconstrained, and in a card with room to spare (1900 px wide at that scale).
+        for (const float available : {0.0F, 1900.0F})
+        {
+            const DiscreteTrackFit fit = fitDiscreteTrack(em, c.labelsMinPx, available);
+            EXPECT_TRUE(fit.showLabels);
+            // The authored width where the labels fit in it; their own width where they need more.
+            EXPECT_FLOAT_EQ(fit.trackWidth, std::max(authored, c.labelsMinPx));
+            EXPECT_GE(fit.trackWidth, c.labelsMinPx);
+        }
+    }
+}
+
+TEST(DiscreteSliderTest, At200PercentTheTrackWidensPastItsAuthoredWidthForTheLabels)
+{
+    // The issue: 800 px authored, labels needing 803.625 px, in a card that has them.
+    const float em = App::REFERENCE_EM_PX * 2.0F;
+    const DiscreteTrackFit fit = fitDiscreteTrack(em, 803.625F, 804.0F);
+    EXPECT_TRUE(fit.showLabels);
+    EXPECT_FLOAT_EQ(fit.trackWidth, 803.625F);
+    EXPECT_GT(fit.trackWidth, PRIORITY_SLIDER_WIDTH_EM * em);
+}
+
+TEST(DiscreteSliderTest, AContainerSizedInWholePixelsUpFromTheLabelsShowsThem)
+{
+    // Containers are sized std::ceil()'d from the labels' width (ImGui truncates a window's size); at
+    // a fractional scale that leaves the track exactly the labels' width or a fraction more, never less.
+    for (const ScaleCase& c : SCALE_CASES)
+    {
+        SCOPED_TRACE(c.scale);
+        const float em = App::REFERENCE_EM_PX * c.scale;
+        const DiscreteTrackFit atCeil = fitDiscreteTrack(em, c.labelsMinPx, std::ceil(c.labelsMinPx));
+        EXPECT_TRUE(atCeil.showLabels);
+        EXPECT_GE(atCeil.trackWidth, c.labelsMinPx);
+        // Float noise in the sums, a fraction of a pixel short, still fits.
+        EXPECT_TRUE(fitDiscreteTrack(em, c.labelsMinPx, c.labelsMinPx - 0.25F).showLabels);
+    }
+}
+
+TEST(DiscreteSliderTest, OnlyATrackReallyTooNarrowDropsTheLabels)
+{
+    for (const ScaleCase& c : SCALE_CASES)
+    {
+        SCOPED_TRACE(c.scale);
+        const float em = App::REFERENCE_EM_PX * c.scale;
+        // A pixel short: the labels would touch, so they go; the track still fills the space, never clipped.
+        const float tooNarrow = std::floor(c.labelsMinPx) - 1.0F;
+        const DiscreteTrackFit fit = fitDiscreteTrack(em, c.labelsMinPx, tooNarrow);
+        EXPECT_FALSE(fit.showLabels);
+        EXPECT_FLOAT_EQ(fit.trackWidth, tooNarrow);
+    }
+    // Far too narrow: a short track, still on screen.
+    const DiscreteTrackFit tiny = fitDiscreteTrack(App::REFERENCE_EM_PX, 396.25F, 120.0F);
+    EXPECT_FALSE(tiny.showLabels);
+    EXPECT_FLOAT_EQ(tiny.trackWidth, 120.0F);
+}
+
+TEST(DiscreteSliderTest, FitTreatsInvalidInputsAsNoLabelsAndNoLimit)
+{
+    const float authored = PRIORITY_SLIDER_WIDTH_EM * App::REFERENCE_EM_PX;
+    for (const float labels : {0.0F, -5.0F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        const DiscreteTrackFit fit = fitDiscreteTrack(App::REFERENCE_EM_PX, labels, 0.0F);
+        EXPECT_TRUE(fit.showLabels);
+        EXPECT_FLOAT_EQ(fit.trackWidth, authored);
+    }
+    for (const float available : {-1.0F, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+    {
+        const DiscreteTrackFit fit = fitDiscreteTrack(App::REFERENCE_EM_PX, 420.0F, available);
+        EXPECT_TRUE(fit.showLabels);
+        EXPECT_FLOAT_EQ(fit.trackWidth, 420.0F);
+    }
 }
 
 } // namespace

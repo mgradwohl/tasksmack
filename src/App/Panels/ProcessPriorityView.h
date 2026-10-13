@@ -52,12 +52,14 @@ struct PriorityPick
 /// What renderDiscretePrioritySlider() drew this frame.
 struct DiscretePick
 {
-    std::int32_t index = 0; ///< The stop picked this frame, or @p shown when nothing was picked
-    float rightEdge = 0.0F; ///< Where the control ends, from the cursor's x, for right-aligning a button under it
+    std::int32_t index = 0;   ///< The stop picked this frame, or @p shown when nothing was picked
+    float rightEdge = 0.0F;   ///< Where the control ends, from the cursor's x, for right-aligning a button under it
+    bool labelsShown = false; ///< Whether the stops' scale labels were drawn (fitDiscreteTrack())
 };
 
 /// Draws @p slider's discrete mode (#1538) showing stop @p shown (PRIORITY_STOP_BEYOND_START for its
-/// beyondStart state), as wide as the content region allows up to the slider's authored width: the
+/// beyondStart state), as wide as the content region allows up to the slider's authored width, or up to
+/// discretePrioritySliderMinWidth() where that is wider (fitDiscreteTrack(), #1984): the
 /// stop's name on the badge, the shared gradient through the stops' colours, a tick and a scale label
 /// under each stop (the labels only when the track has room for them all), and the thumb, hollow in
 /// the beyond-start state. A drag snaps to the nearest stop; while the track is focused Left/Up step one
@@ -69,7 +71,9 @@ struct DiscretePick
 [[nodiscard]] DiscretePick renderDiscretePrioritySlider(const DiscretePrioritySlider& slider, std::int32_t shown, bool inherited = false);
 
 /// The narrowest width renderDiscretePrioritySlider() needs for @p slider's scale labels to show, at
-/// the current font: the beyond-start lead and discreteStopLabelsMinWidth(). For measuring a container.
+/// the current font: the beyond-start lead and discreteStopLabelsMinWidth(). For measuring a container;
+/// size it in whole pixels up from this (ImGui truncates a window's size), or the labels can miss by
+/// the fraction lost (#1984).
 [[nodiscard]] float discretePrioritySliderMinWidth(const DiscretePrioritySlider& slider);
 
 } // namespace Detail

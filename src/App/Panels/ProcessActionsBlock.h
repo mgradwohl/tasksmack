@@ -16,6 +16,7 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 
+#include <cmath>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -51,10 +52,12 @@ struct Widths
         return buttons > 0.0F ? buttons + padding : 0.0F;
     }
 
-    /// The Priority card's width: its widest row, padded; 0 when there is no priority (no card).
+    /// The Priority card's width: its widest row, padded, in whole pixels up; 0 when there is no
+    /// priority (no card). ImGui truncates a window's size, which could leave the card a fraction short
+    /// of the row it was measured for, and the class slider then dropped its stop names (#1984).
     [[nodiscard]] float priorityCard() const noexcept
     {
-        return priority > 0.0F ? priority + padding : 0.0F;
+        return priority > 0.0F ? std::ceil(priority + padding) : 0.0F;
     }
 };
 
