@@ -628,5 +628,54 @@ TEST(WindowGeometrySizeAfterMinimumChangeTest, DoesNotRestoreAnUnknownSize)
 
 static_assert(sizeAfterMinimumChange({1600, 1000}, 0, 0, false) == std::pair{1600, 1000});
 
+// #1945: a minimum that rises with the content on show (a tab switch, a font change) must not grow
+// the window. Huge font at 175 %: Processes wants 1809 x 900, the machine tab 1809 x 1296.
+TEST(WindowGeometryMinimumKeepingSizeTest, ARisenMinimumKeepsTheWindowsSize)
+{
+    // Just changed: applied = wanted.
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1809, 900}, {1809, 1296}), (std::pair{1809, 900}));
+    EXPECT_EQ(minimumKeepingSize({2031, 1460}, {1600, 900}, {2031, 1460}), (std::pair{1600, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AMinimumTheWindowMeetsAppliesAsWanted)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 900}, {1809, 900}, {1809, 900}), (std::pair{1809, 900}));
+    EXPECT_EQ(minimumKeepingSize({800, 500}, {1600, 1000}, {800, 500}), (std::pair{800, 500}));
+    // Back on Processes: a lower minimum is handed to SDL as it is.
+    EXPECT_EQ(minimumKeepingSize({1809, 900}, {1809, 1000}, {1809, 900}), (std::pair{1809, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, EachSideIsDecidedOnItsOwn)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {2000, 900}, {1809, 1296}), (std::pair{1809, 900}));
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1600, 1400}, {1809, 1296}), (std::pair{1600, 1296}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AUserResizeShortOfTheWantedMinimumDoesNotRatchet)
+{
+    // Held at 900; the user drags the window to 1000 tall: the minimum stays 900, so it can go back.
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1809, 1000}, {1809, 900}), (std::pair{1809, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AUserResizeToTheWantedMinimumTakesIt)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1809, 1296}, {1809, 900}), (std::pair{1809, 1296}));
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1900, 1400}, {1809, 900}), (std::pair{1809, 1296}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, AnUnknownSizeTakesTheWantedMinimum)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {0, 0}, {1809, 1296}), (std::pair{1809, 1296}));
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {-1, 900}, {1809, 1296}), (std::pair{1809, 900}));
+}
+
+TEST(WindowGeometryMinimumKeepingSizeTest, NeverBelowZero)
+{
+    EXPECT_EQ(minimumKeepingSize({1809, 1296}, {1000, 700}, {-5, -5}), (std::pair{0, 0}));
+}
+
+static_assert(minimumKeepingSize({0, 0}, {1600, 900}, {0, 0}) == std::pair{0, 0});
+static_assert(minimumKeepingSize({1809, 1296}, {1809, 900}, {1809, 1296}) == std::pair{1809, 900});
+
 } // namespace
 } // namespace Core::WindowGeometry

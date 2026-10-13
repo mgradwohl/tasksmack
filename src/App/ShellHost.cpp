@@ -61,7 +61,7 @@ class ApplicationShellHost final : public IShellHost
 
     void setMinimumWindowSize(int width, int height) override
     {
-        // Logs its own failure; keeps the current size on a tiled Wayland window (#1777).
+        // Logs its own failure; never resizes the window (#1945), nor shrinks a tiled Wayland one (#1777).
         static_cast<void>(Core::Application::get().getWindow().setMinimumSize(width, height));
     }
 

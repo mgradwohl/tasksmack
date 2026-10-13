@@ -581,7 +581,10 @@ void TitleBarLayer::updateDrag(const int mx, const int my, Core::Window& window,
 void TitleBarLayer::updateResize(
     const int mx, const int my, Core::Window& window, double& setPositionMs, double& setSizeMs, double& raiseResizeEventMs)
 {
-    const ResizeTracker::Step step = m_Resize.step(mx, my, m_MinimumSize.width, m_MinimumSize.height, Core::Application::getTime());
+    // The minimum SDL holds the window to, not the wanted one: on a side the window is still smaller
+    // than the wanted minimum, the drag keeps the window's size there rather than jumping it (#1945).
+    const auto [minimumWidth, minimumHeight] = window.getMinimumSize();
+    const ResizeTracker::Step step = m_Resize.step(mx, my, minimumWidth, minimumHeight, Core::Application::getTime());
     if (step.move)
     {
         timedOp(m_TraceEnabled, setPositionMs, [&] { window.setPosition(step.x, step.y); });
@@ -942,7 +945,8 @@ void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
         if (minimumSize != m_MinimumSize)
         {
             m_MinimumSize = minimumSize;
-            // Logs its own failure; keeps the current size on a tiled Wayland window (#1777).
+            // Logs its own failure. Never resizes the window: a tab switch or a font change must not
+            // grow it (#1945), nor shrink a tiled Wayland window (#1777).
             static_cast<void>(window.setMinimumSize(minimumSize.width, minimumSize.height));
         }
     }

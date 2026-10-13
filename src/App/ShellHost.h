@@ -44,7 +44,8 @@ class IShellHost
     [[nodiscard]] virtual std::optional<std::pair<int, int>> usableDisplaySize() const = 0;
     /// Whether there is a window to set a minimum size on.
     [[nodiscard]] virtual bool hasWindow() const = 0;
-    /// SDL_SetWindowMinimumSize(); a refusal is logged, and the next scale or display change tries again.
+    /// Core::Window::setMinimumSize(), which never resizes the window to it (#1945); a refusal is
+    /// logged, and the next scale or display change tries again.
     virtual void setMinimumWindowSize(int width, int height) = 0;
     /// The window's normal (restored) geometry, its scale, and whether it is maximized, for the
     /// settings saved on exit (#1121, #1168).

@@ -79,10 +79,19 @@ class Window
 
     void setSize(int width, int height);
     /// Set the smallest size the user can resize the window to, in window coordinates. Unlike a bare
-    /// SDL_SetWindowMinimumSize(), it keeps the window's current size on native Wayland, where SDL
-    /// would otherwise shrink a tiled window to its stale floating size (#1777). False, with the SDL
-    /// error logged, when SDL rejects the minimum. Cheap: no SDL_SyncWindow().
+    /// SDL_SetWindowMinimumSize(), it never resizes the window: a side the window is smaller than
+    /// keeps its size until the user makes it at least that big (WindowGeometry::minimumKeepingSize(),
+    /// #1945), and on native Wayland a tiled window keeps the size the compositor gave it rather than
+    /// SDL's stale floating size (#1777). False, with the SDL error logged, when SDL rejects the
+    /// minimum. Cheap: no SDL_SyncWindow().
     bool setMinimumSize(int width, int height);
+    /// The minimum size handed to SDL by setMinimumSize() (and raised by handleGeometryChanged() as
+    /// the window grows to the wanted one), in window coordinates; {0, 0} before any. A client-side
+    /// resize holds the window to it, as the OS does for a native one.
+    [[nodiscard]] auto getMinimumSize() const noexcept -> std::pair<int, int>
+    {
+        return m_AppliedMinimum;
+    }
     /// Return the current logical size as {width, height} in screen coordinates.
     /// Returns {m_Spec.Width, m_Spec.Height} when the window handle has not yet
     /// been created. Callers that need both dimensions should prefer this over
@@ -157,7 +166,8 @@ class Window
     void handleSystemRestored();
     /// Handle SDL_EVENT_WINDOW_MOVED / _RESIZED: remember the live geometry as the last normal one
     /// while the window is normal (not maximized, minimized or fullscreen), as the restore target for
-    /// a maximize from outside the app (#1250). A few cached SDL queries, cheap enough per event.
+    /// a maximize from outside the app (#1250), and raise the minimum size toward the wanted one on a
+    /// side the window has grown to it (#1945). A few cached SDL queries, cheap enough per event.
     void handleGeometryChanged();
     /// A minimize from the shell reached the window (#1279): Win32 WM_SYSCOMMAND SC_MINIMIZE, before
     /// it is carried out, or SDL_EVENT_WINDOW_MINIMIZED, for a minimize that did not come that way.
@@ -192,6 +202,9 @@ class Window
     // Whether the window is at its normal geometry right now: not maximized (on any route),
     // minimized or fullscreen.
     [[nodiscard]] bool isNormalNow() const;
+    // Hand @p minimum to SDL as the window's minimum size, putting back the size SDL would replace
+    // with its stale floating size on native Wayland (#1777). False when SDL rejects it.
+    bool applyMinimumSize(std::pair<int, int> minimum);
 
     WindowSpecification m_Spec;
     SDL_Window* m_Handle = nullptr;
@@ -203,6 +216,10 @@ class Window
     // restore whoever starts it (#1250). Its state is the only maximized signal for a borderless
     // window on a client-side-maximize backend (see isMaximized()).
     WindowGeometry::NormalGeometryTracker m_Geometry;
+    // The minimum size the app wants (setMinimumSize()) and the one handed to SDL, which is smaller on
+    // a side the window has not yet been made that big (#1945). {0, 0} before any.
+    std::pair<int, int> m_WantedMinimum{0, 0};
+    std::pair<int, int> m_AppliedMinimum{0, 0};
     // See setShellRestoreKeysReader(); nullptr reads the keyboard.
     ShellRestoreKeysReader m_ShellRestoreKeysReader = nullptr;
 

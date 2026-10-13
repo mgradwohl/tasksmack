@@ -122,8 +122,9 @@ class TitleBarLayer : public Core::Layer
     ResizeTracker m_Resize;
 
     // Smallest size the window may be resized to, from the title bar's own content and the display
-    // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn; applied to
-    // custom edge-drags here and handed to SDL for every other way a window gets resized (#970).
+    // scale (see computeMinimumWindowSize()). Recomputed each frame the bar is drawn and handed to
+    // Window::setMinimumSize() on a change (#970), which never resizes the window to it (#1945);
+    // custom edge-drags use what that applied (Window::getMinimumSize()).
     WindowMinimumSize m_MinimumSize{};
     // The minimum before capMinimumToUsable(), and the display it was capped for: the display's
     // usable bounds are re-read only when one of them changes (#1207).

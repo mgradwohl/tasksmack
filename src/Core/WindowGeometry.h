@@ -405,6 +405,34 @@ sizeAfterMinimumChange(std::pair<int, int> current, int minimumWidth, int minimu
     return std::pair{std::max(current.first, minimumWidth), std::max(current.second, minimumHeight)};
 }
 
+/// The minimum size to hand SDL for the minimum the app wants, @p wanted, so that setting it never
+/// resizes the window (#1945).
+///
+/// SDL_SetWindowMinimumSize() grows a window that is smaller than the new minimum. The app derives
+/// its minimum from the content on show (the title bar, the tab strips, the tallest first chart a
+/// tab has measured), so it rises on a tab switch or a font change, and the window would jump to it
+/// and never shrink back. Instead, each side takes the wanted minimum only once the window is at
+/// least that big; until then it is the size the window had (@p applied, never more than
+/// @p normalSize), so the user can grow the window but not shrink it further, and once it reaches the
+/// wanted minimum that minimum holds from then on. Pass @p applied = @p wanted when the wanted
+/// minimum has just changed, and the minimum last handed to SDL when the window has been resized.
+///
+/// @param normalSize  The window's normal (restored) size; a side that is not known (not positive)
+///                    takes the wanted minimum, as before.
+[[nodiscard]] constexpr std::pair<int, int>
+minimumKeepingSize(std::pair<int, int> wanted, std::pair<int, int> normalSize, std::pair<int, int> applied) noexcept
+{
+    const auto side = [](const int wantedSide, const int size, const int appliedSide)
+    {
+        if (size <= 0 || size >= wantedSide)
+        {
+            return wantedSide;
+        }
+        return std::max(std::min(appliedSide, size), 0);
+    };
+    return std::pair{side(wanted.first, normalSize.first, applied.first), side(wanted.second, normalSize.second, applied.second)};
+}
+
 /// Largest window scale (window units per 96-DPI point) accepted from a saved config. Windows tops
 /// out at 500 %; anything far beyond that is a corrupt value, not a display.
 inline constexpr float MAX_WINDOW_SCALE = 16.0F;
