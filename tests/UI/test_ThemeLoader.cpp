@@ -1812,6 +1812,9 @@ TEST(ThemeLoaderTest, MetricRolesFallBackToTheFieldsTheyBorrowed)
     expectSame(scheme->chartSwapFill, scheme->chartIoFill, "swap_fill");
     expectSame(scheme->chartMemoryVirtual, scheme->chartIo, "memory_virtual");
     expectSame(scheme->chartMemoryVirtualFill, scheme->chartIoFill, "memory_virtual_fill");
+    expectSame(scheme->chartMemoryPrivate, scheme->chartCpu, "memory_private");
+    expectSame(scheme->chartMemorySwap, scheme->chartIo, "memory_swap");
+    expectSame(scheme->chartMemorySwapFill, scheme->chartIoFill, "memory_swap_fill");
     expectSame(scheme->chartPower, scheme->chartCpu, "power");
     expectSame(scheme->chartPowerFill, scheme->chartCpuFill, "power_fill");
     expectSame(scheme->chartBattery, scheme->chartMemory, "battery");
@@ -1843,11 +1846,30 @@ TEST(ThemeLoaderTest, MetricRolesAreReadAndDeriveTheirFills)
     expectColorNear(scheme->chartSwap, ThemeLoader::hexToImVec4("#8000FF"));
     expectColorNear(scheme->chartSwapFill, ThemeLoader::hexToImVec4("#8000FF40"));
     expectColorNear(scheme->chartMemoryVirtual, ThemeLoader::hexToImVec4("#A040FF"));
+    // Process Private and Swap (#1885) borrow Shared and system Swap when they are left out.
+    expectColorNear(scheme->chartMemoryPrivate, scheme->chartMemoryShared);
+    expectColorNear(scheme->chartMemorySwap, scheme->chartSwap);
+    expectColorNear(scheme->chartMemorySwapFill, scheme->chartSwapFill);
     expectColorNear(scheme->chartPower, ThemeLoader::hexToImVec4("#FFE000"));
     expectColorNear(scheme->chartPageFaults, ThemeLoader::hexToImVec4("#FF80C0"));
     // Roles left out still borrow.
     expectColorNear(scheme->chartThreads, scheme->chartCpu);
     expectColorNear(scheme->chartGdi, scheme->accents[4]);
+}
+
+// #1885: process Private and Swap are read like the other roles, with fills derived from their lines.
+TEST(ThemeLoaderTest, ProcessPrivateAndSwapRolesAreRead)
+{
+    const auto scheme = ThemeLoader::loadThemeFromString(buildFullThemeWithCpuColor("\"#0078D4\"\n"
+                                                                                    "memory_private = \"#40C080\"\n"
+                                                                                    "memory_swap = \"#9060D0\"\n"
+                                                                                    "memory_swap_fill = \"#9060D040\""),
+                                                         "private-swap.toml");
+    ASSERT_TRUE(scheme.has_value());
+    expectColorNear(scheme->chartMemoryPrivate, ThemeLoader::hexToImVec4("#40C080"));
+    expectColorNear(scheme->chartMemoryPrivateFill, ThemeLoader::hexToImVec4("#40C08059")); // 0.35 alpha
+    expectColorNear(scheme->chartMemorySwap, ThemeLoader::hexToImVec4("#9060D0"));
+    expectColorNear(scheme->chartMemorySwapFill, ThemeLoader::hexToImVec4("#9060D040"));
 }
 
 // ========== frameBorder: the outline of checkboxes, text fields and combos (#1923) ==========

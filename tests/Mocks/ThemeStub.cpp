@@ -121,6 +121,8 @@ namespace
     s.chartMemoryShared = s.chartMemoryCached;
     s.chartSwap = line(0.70F, 0.55F, 0.95F);
     s.chartMemoryVirtual = s.chartSwap;
+    s.chartMemoryPrivate = line(0.45F, 0.80F, 0.60F);
+    s.chartMemorySwap = line(0.55F, 0.40F, 0.85F);
     s.chartPower = line(0.95F, 0.90F, 0.40F);
     s.chartBattery = line(0.35F, 0.80F, 0.75F);
     s.chartThreads = line(0.95F, 0.50F, 0.75F);
@@ -131,6 +133,8 @@ namespace
     s.chartMemorySharedFill = fill(s.chartMemoryShared);
     s.chartSwapFill = fill(s.chartSwap);
     s.chartMemoryVirtualFill = fill(s.chartMemoryVirtual);
+    s.chartMemoryPrivateFill = fill(s.chartMemoryPrivate);
+    s.chartMemorySwapFill = fill(s.chartMemorySwap);
     s.chartPowerFill = fill(s.chartPower);
     s.chartBatteryFill = fill(s.chartBattery);
     s.chartThreadsFill = fill(s.chartThreads);

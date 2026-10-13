@@ -120,6 +120,8 @@ one, the fill is the line at about 35% alpha, or the borrowed fill when the line
 | `memory_shared` | Process Memory: Shared | `memory_cached` |
 | `swap` | Memory: Swap | `io` |
 | `memory_virtual` | Process Memory: Virtual | `swap` |
+| `memory_private` | Process Memory: Private | `memory_shared` |
+| `memory_swap` | Process Memory: Swap | `swap` |
 | `power` | Power: system, process (use the same colour for `charts.gpu.power`) | `cpu` |
 | `battery` | Battery charge | `memory` |
 | `threads` | Threads | `cpu` |

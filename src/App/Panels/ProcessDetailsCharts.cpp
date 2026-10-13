@@ -84,9 +84,8 @@ constexpr const char* MEM_VIRTUAL_LABEL = "Virtual →";
 // header for width, as it does "Mem %".
 constexpr const char* MEM_PEAK_LABEL = "Peak Memory";
 constexpr const char* MEM_PERCENT_LABEL = "Mem %";
-constexpr const char* MEM_PRIVATE_LABEL = "Private"; // the Processes table's column (#1885)
-constexpr const char* MEM_SWAP_LABEL =
-    "Swap"; // the Processes table's column (#1885)                // the Processes table's column (#1878)
+constexpr const char* MEM_PRIVATE_LABEL = "Private";              // the Processes table's column (#1885)
+constexpr const char* MEM_SWAP_LABEL = "Swap";                    // the Processes table's column (#1885)
 constexpr const char* FAULTS_TOTAL_LABEL = "Page Faults (total)"; // the Processes table's Page Faults column (#1878)
 constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
@@ -227,6 +226,8 @@ struct MemoryChartData
     std::span<const double> used;
     std::span<const double> shared; ///< Empty where Shared is not drawn (#1035)
     std::span<const double> virtualBytes;
+    std::span<const double> privateBytes; ///< Empty where the platform doesn't read Private (#1885)
+    std::span<const double> swapBytes;    ///< Empty where the platform doesn't read Swap (#1885)
     double peakBytes = 0.0;
     double percentPerByte = 0.0;
 };
@@ -260,6 +261,17 @@ void memoryTooltip(const ChartTimeAxis& axis, const MemoryChartData& data)
              .color = scheme.chartMemoryVirtual,
              .value = UI::Widgets::formatSampleOrNA(data.virtualBytes[*idxVal], [](double v) { return UI::Format::formatBytes(v); })});
     }
+    if (*idxVal < data.privateBytes.size())
+    {
+        rows.push_back({.label = MEM_PRIVATE_LABEL,
+                        .color = scheme.chartMemoryPrivate,
+                        .value = App::Detail::formatBytesWithRamShare(data.privateBytes[*idxVal], data.percentPerByte)});
+    }
+    if (*idxVal < data.swapBytes.size())
+    {
+        rows.push_back(
+            {.label = MEM_SWAP_LABEL, .color = scheme.chartMemorySwap, .value = UI::Format::formatBytes(data.swapBytes[*idxVal])});
+    }
     if (data.peakBytes > 0.0)
     {
         // The line's colour: this row was textWarning, which matched nothing (#1005).
@@ -268,8 +280,8 @@ void memoryTooltip(const ChartTimeAxis& axis, const MemoryChartData& data)
     UI::Widgets::renderHistoryTooltip(axis.timeData[*idxVal], rows);
 }
 
-/// The Memory chart's lines inside its plot: the peak reference line, Used and Shared on the left
-/// axis, Virtual on the right, and the tooltip.
+/// The Memory chart's lines inside its plot: the peak reference line, Used, Shared, Private and Swap
+/// on the left axis, Virtual on the right, and the tooltip.
 void drawMemorySeries(const ChartTimeAxis& axis, const MemoryChartData& data)
 {
     const auto& scheme = UI::Theme::get().scheme();
@@ -307,6 +319,28 @@ void drawMemorySeries(const ChartTimeAxis& axis, const MemoryChartData& data)
                    scheme.chartMemoryShared,
                    scheme.chartMemorySharedFill,
                    seriesStyle(SeriesRole::Secondary, 0));
+    }
+
+    // Private and Swap (#1885): lines in bytes beside Used and Shared, each with its own marker.
+    if (!data.privateBytes.empty())
+    {
+        plotSeries(MEM_PRIVATE_LABEL,
+                   axis.timeData.data(),
+                   data.privateBytes.data(),
+                   UI::Format::checkedCount(data.privateBytes.size()),
+                   scheme.chartMemoryPrivate,
+                   scheme.chartMemoryPrivateFill,
+                   seriesStyle(SeriesRole::Secondary, 2));
+    }
+    if (!data.swapBytes.empty())
+    {
+        plotSeries(MEM_SWAP_LABEL,
+                   axis.timeData.data(),
+                   data.swapBytes.data(),
+                   UI::Format::checkedCount(data.swapBytes.size()),
+                   scheme.chartMemorySwap,
+                   scheme.chartMemorySwapFill,
+                   seriesStyle(SeriesRole::Secondary, 3));
     }
 
     if (!data.virtualBytes.empty())
@@ -883,15 +917,18 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
         .used = tailSpan(history.series(ProcessSeries::MemoryUsed), alignedCount),
         .shared = showShared ? tailSpan(history.series(ProcessSeries::MemoryShared), alignedCount) : std::span<const double>{},
         .virtualBytes = tailSpan(history.series(ProcessSeries::Virtual), alignedCount),
+        .privateBytes =
+            ctx.hasPrivateBytes ? tailSpan(history.series(ProcessSeries::MemoryPrivate), alignedCount) : std::span<const double>{},
+        .swapBytes = ctx.hasSwapBytes ? tailSpan(history.series(ProcessSeries::MemorySwap), alignedCount) : std::span<const double>{},
         .peakBytes = ctx.peakMemoryBytes,
         .percentPerByte = smoothed.memoryPercentPerByte,
     };
 
-    // Used and Shared in bytes on an axis that scales to them (#1195), eased like a rate axis and
-    // shared with their bars.
+    // Used, Shared, Private and Swap in bytes on an axis that scales to them (#1195, #1885), eased like
+    // a rate axis and shared with their bars.
     const double memAxisUpper = UI::Widgets::easedRateAxisUpperBound(
         "##ProcOverviewMemory",
-        Detail::memoryAxisDataMax(axis.timeData, axis.axisConfig.xMin, data.used, data.shared, smoothed),
+        Detail::memoryAxisDataMax(axis.timeData, axis.axisConfig.xMin, data.used, data.shared, smoothed, data.privateBytes, data.swapBytes),
         UI::Widgets::RATE_AXIS_MIN_SPAN_BYTES);
     // Virtual size in bytes on its own right-hand axis (#992), eased like a rate axis and shared with
     // its bar, whose smoothed value it covers too.
@@ -946,14 +983,14 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
             .tooltip = "Its resident memory as a share of the system's RAM, as the Processes table's Mem % column",
         };
     }
-    // Private and Swap, the Processes table's columns (#1885), where the platform reads them: not
-    // plotted yet, so blank swatches like Mem %.
+    // Private and Swap, the Processes table's columns (#1885), where the platform reads them: lines
+    // without bars, so listed in the strip like Peak, in their lines' colours.
     if (ctx.hasPrivateBytes && ctx.snapshot != nullptr)
     {
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_PRIVATE_LABEL,
             .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->privateBytes)),
-            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .color = theme.scheme().chartMemoryPrivate,
             .tooltip = "Memory no other process shares (RssAnon on Linux), as the Processes table's Private column",
         };
     }
@@ -962,7 +999,7 @@ void ProcessDetailsCharts::renderMemoryUsageSection(const ProcessChartContext& c
         memoryExtras.at(memoryExtraCount++) = UI::Widgets::ValueStripEntry{
             .label = MEM_SWAP_LABEL,
             .value = UI::Format::formatBytes(Domain::Numeric::toDouble(ctx.snapshot->swapBytes)),
-            .color = ImVec4(0.0F, 0.0F, 0.0F, 0.0F),
+            .color = theme.scheme().chartMemorySwap,
             .tooltip = "How much of it is swapped out (VmSwap on Linux), as the Processes table's Swap column",
         };
     }

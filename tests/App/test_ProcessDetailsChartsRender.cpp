@@ -67,6 +67,8 @@ using SeriesLabels = std::set<std::string>;
     point.npuUtil = v * 0.5;
     point.npuDedicatedMemory = 0.0; // An NPU that maps system RAM (Intel AI Boost) has none
     point.npuSharedMemory = v * 2.0e5;
+    point.memoryPrivate = v * 4.0e5;
+    point.memorySwap = v * 1.0e5;
     return point;
 }
 
@@ -309,6 +311,29 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewFollowsTheSharedMemoryAndPowerCap
     EXPECT_EQ(plots[1], (SeriesLabels{"Peak Memory", "Memory", "Virtual →"}));
     EXPECT_EQ(plots[2], (SeriesLabels{"Power"}));
     EXPECT_EQ(plots[3], resourceSeries());
+}
+
+// Where the platform reads Private and Swap (Linux, #1885), each is a line in the Memory chart, after
+// Shared and before Virtual, with a tooltip row.
+TEST_F(ProcessDetailsChartsRenderTest, TheMemoryChartPlotsPrivateAndSwapWhereTheyAreRead)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.ctx.hasPrivateBytes = true;
+    inputs.ctx.hasSwapBytes = true;
+    ProcessDetailsCharts charts;
+    const auto draw = [&]
+    {
+        renderOverview(charts, inputs.ctx);
+    };
+    draw();
+    draw();
+
+    const auto plots = plotsDrawn();
+    ASSERT_EQ(plots.size(), 3U);
+    const SeriesLabels withPrivateAndSwap{"Peak Memory", "Memory", "Shared", "Private", "Swap", "Virtual →"};
+    EXPECT_EQ(plots[1], withPrivateAndSwap);
+    EXPECT_TRUE(hoverPlot(withPrivateAndSwap, draw));
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 }
 
 // The child window drawn for the card @p id (an ImGui child is named "<parent>/<id>_<hash>").
