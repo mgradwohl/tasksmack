@@ -216,7 +216,7 @@ jobs:
           cpack -G "TGZ;DEB"
 
       - name: Download build-linux's packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: linux-packages
           path: original-dist/
@@ -385,7 +385,7 @@ jobs:
           cpack -G "ZIP"
 
       - name: Download build-windows's packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: windows-packages
           path: original-dist/
@@ -443,7 +443,7 @@ jobs:
       actions: read  # Required to download the linux-packages artifact from this run
     steps:
       - name: Download Linux packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: linux-packages
           path: dist/
@@ -542,7 +542,7 @@ jobs:
       actions: read  # Required to download the windows-packages artifact from this run
     steps:
       - name: Download Windows packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: windows-packages
           path: dist/
@@ -639,13 +639,13 @@ jobs:
           upload-release-assets: false
 
       - name: Download Linux packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: linux-packages
           path: dist/
 
       - name: Download Windows packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: windows-packages
           path: dist/
