@@ -255,6 +255,29 @@ TEST(ServiceActionsDetailTest, TextsNameTheServiceAndTheOutcome)
     EXPECT_TRUE(SvcDetail::confirmQuestion(critical).contains("RpcSs is critical to Windows"));
 }
 
+// #1891: every action's progress and outcome in words, failures included: Restart's verb, and a start
+// type that couldn't be set naming the type it was going to.
+TEST(ServiceActionsDetailTest, EachActionSaysWhatItDoesAndWhatFailed)
+{
+    const Platform::ServiceInfo running = service("Spooler", ServiceState::Running);
+    const auto failed = Platform::ServiceActionResult::failed("Access is denied");
+
+    const auto start = SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped));
+    EXPECT_EQ(SvcDetail::progressText(start), "Starting Spooler...");
+    EXPECT_EQ(SvcDetail::resultMessage(start, failed).text, "Could not start Spooler: Access is denied");
+
+    const auto restart = SvcDetail::makeRequest(ServiceActionKind::Restart, running);
+    EXPECT_EQ(SvcDetail::progressText(restart), "Restarting Spooler...");
+    EXPECT_EQ(SvcDetail::resultMessage(restart, Platform::ServiceActionResult::succeeded()).text, "Restarted Spooler");
+    EXPECT_EQ(SvcDetail::resultMessage(restart, failed).text, "Could not restart Spooler: Access is denied");
+
+    const auto disable = SvcDetail::makeRequest(ServiceActionKind::SetStartType, running, Platform::ServiceStartType::Disabled);
+    EXPECT_EQ(SvcDetail::progressText(disable), "Setting Spooler to Disabled...");
+    const auto refused = SvcDetail::resultMessage(disable, failed);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.text, "Could not set Spooler to Disabled: Access is denied");
+}
+
 TEST(ServiceActionsViewTest, UnsupportedPlatformHasNoActions)
 {
     const ServiceActionsView view(std::make_shared<Platform::UnsupportedServiceActions>());
@@ -477,6 +500,30 @@ TEST_F(ServiceActionsViewRenderTest, CriticalStopConfirmsCentredThenShowsTheResu
 
     view.tick(SvcDetail::RESULT_SECONDS + 1.0F);
     EXPECT_TRUE(view.lastResult().text.empty());
+}
+
+// #1891: Restart, confirmed, runs on the worker and says so; its confirm button is labelled for it.
+TEST_F(ServiceActionsViewRenderTest, ARestartConfirmedRunsAndSaysItRestarted)
+{
+    auto fake = std::make_shared<FakeServiceActions>();
+    ServiceActionsView view(fake);
+    const auto running = service("Spooler", ServiceState::Running);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Restart, running));
+    for (int i = 0; i < 3; ++i)
+    {
+        frame(view, running);
+    }
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    EXPECT_TRUE(std::string(modal->Name).starts_with("Restart Spooler?")) << modal->Name;
+    // Every service confirm is danger-filled: its button's ID is "##filled" under the label.
+    ImGui::ActivateItemByID(
+        ImHashStr("##filled", 0, ImHashStr(SvcDetail::confirmLabel(view.pendingConfirm().value_or(ServiceActionRequest{})), 0, modal->ID)));
+    frame(view, running);
+    frame(view, running);
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_TRUE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Restarted Spooler");
 }
 
 // The action bar above the table (#1577, #1395 Windows half): what it says beside its buttons.
