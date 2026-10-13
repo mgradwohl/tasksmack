@@ -15,6 +15,7 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -2174,6 +2175,43 @@ TEST_F(UserConfigSaveLoadFixture, SaveKeepsTheConfigsAccessControlList)
     EXPECT_EQ(parsed(path)["theme"]["id"].value<std::string>(), "mocha");
 }
 #endif
+
+// #1395: whichever step of save() fails -- through the fault seam, so each error path runs in this
+// process -- the existing config is left byte for byte, the staging file goes, and the next save that
+// works still writes the change.
+TEST_F(UserConfigSaveLoadFixture, AnyStepOfSaveThatFailsLeavesTheConfigIntact)
+{
+    using SaveStep = UserConfig::SaveStep;
+    // POSIX only, like the rest of this block.
+    std::vector<SaveStep> steps{
+        SaveStep::Rename, SaveStep::OwnerStat, SaveStep::CreateStaging, SaveStep::Write, SaveStep::Chown, SaveStep::Chmod, SaveStep::Close};
+#if defined(__linux__)
+    steps.insert(steps.end(), {SaveStep::AclRead, SaveStep::Acl});
+#endif
+    for (const SaveStep step : steps)
+    {
+        SCOPED_TRACE(static_cast<int>(step));
+        auto& config = UserConfig::get();
+        config.resetConfigPathForTesting(m_ConfigPath);
+        const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+        writeFile(m_ConfigPath, original);
+        config.load();
+        config.settings().themeId = "mocha";
+
+        config.failSaveStepForTesting(step, EIO);
+        config.save();
+        std::ifstream in(m_ConfigPath, std::ios::binary);
+        EXPECT_EQ(std::string(std::istreambuf_iterator<char>(in), {}), original);
+        for (const auto& entry : std::filesystem::directory_iterator(m_TempDir))
+        {
+            EXPECT_NE(entry.path().extension(), ".tmp") << entry.path();
+        }
+
+        config.failSaveStepForTesting(SaveStep::None, 0);
+        config.save();
+        EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "mocha");
+    }
+}
 
 TEST_F(UserConfigSaveLoadFixture, FailedStagingLeavesAnExistingFileAlone)
 {

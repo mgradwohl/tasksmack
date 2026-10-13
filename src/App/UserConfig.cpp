@@ -47,6 +47,7 @@
 #else
 #include <array>
 #include <cerrno>
+#include <functional>
 #include <vector>
 
 #include <fcntl.h>
@@ -608,16 +609,19 @@ struct FileOwner
     gid_t gid;
 };
 
+/// @p fails(step): whether a test made that step fail (UserConfig::failSaveStepForTesting(); sets errno).
 [[nodiscard]] bool writeAllAndClose(int fd,
                                     std::string_view contents,
                                     std::optional<FileOwner> owner,
                                     std::optional<mode_t> mode,
-                                    const std::optional<std::vector<char>>& accessAcl)
+                                    const std::optional<std::vector<char>>& accessAcl,
+                                    const std::function<bool(UserConfig::SaveStep)>& fails)
 {
+    using SaveStep = UserConfig::SaveStep;
     bool ok = true;
     while (ok && !contents.empty())
     {
-        const auto n = ::write(fd, contents.data(), contents.size());
+        const auto n = fails(SaveStep::Write) ? -1 : ::write(fd, contents.data(), contents.size());
         if (n < 0)
         {
             ok = (errno == EINTR);
@@ -626,7 +630,7 @@ struct FileOwner
         contents.remove_prefix(static_cast<std::size_t>(n));
     }
     // Owner first: changing it can clear mode bits, and the ACL's owning-group entry refers to it.
-    if (ok && owner.has_value() && ::fchown(fd, owner->uid, owner->gid) != 0)
+    if (ok && owner.has_value() && (fails(SaveStep::Chown) || ::fchown(fd, owner->uid, owner->gid) != 0))
     {
         ok = false;
     }
@@ -639,9 +643,9 @@ struct FileOwner
     {
         if (!accessAcl->empty())
         {
-            ok = ::fsetxattr(fd, POSIX_ACL_ACCESS_XATTR, accessAcl->data(), accessAcl->size(), 0) == 0;
+            ok = !fails(SaveStep::Acl) && ::fsetxattr(fd, POSIX_ACL_ACCESS_XATTR, accessAcl->data(), accessAcl->size(), 0) == 0;
         }
-        else if (::fremovexattr(fd, POSIX_ACL_ACCESS_XATTR) != 0)
+        else if (fails(SaveStep::Acl) || ::fremovexattr(fd, POSIX_ACL_ACCESS_XATTR) != 0)
         {
             ok = (errno == ENODATA || errno == ENOTSUP);
         }
@@ -649,11 +653,12 @@ struct FileOwner
 #else
     (void) accessAcl;
 #endif
-    if (ok && mode.has_value() && ::fchmod(fd, *mode) != 0)
+    if (ok && mode.has_value() && (fails(SaveStep::Chmod) || ::fchmod(fd, *mode) != 0))
     {
         ok = false;
     }
-    if (::close(fd) != 0)
+    // Closed whatever a test asks for, so the descriptor never leaks.
+    if (::close(fd) != 0 || fails(SaveStep::Close))
     {
         ok = false;
     }
@@ -715,6 +720,16 @@ auto UserConfig::parseSettings(std::string_view tomlText, UserSettings& settings
         spdlog::debug("Config text is not valid TOML: {}", err.what());
         return false;
     }
+}
+
+bool UserConfig::saveStepFails(SaveStep step) const noexcept
+{
+    if (step == SaveStep::None || step != m_FailingSaveStep)
+    {
+        return false;
+    }
+    errno = m_FailingSaveErrno;
+    return true;
 }
 
 void UserConfig::save()
@@ -930,7 +945,7 @@ void UserConfig::save()
     if (fileExists)
     {
         struct stat original = {};
-        if (::stat(destination.c_str(), &original) != 0)
+        if (saveStepFails(SaveStep::OwnerStat) || ::stat(destination.c_str(), &original) != 0)
         {
             spdlog::error("Not saving settings: can't read the owner of {}: {}",
                           Core::pathToUtf8(m_ConfigPath),
@@ -952,7 +967,7 @@ void UserConfig::save()
     // file exists, so nothing between creating and writing it can fail or throw.
     if (fileExists)
     {
-        auto acl = readAccessAcl(destination);
+        auto acl = saveStepFails(SaveStep::AclRead) ? std::optional<std::vector<char>>{} : readAccessAcl(destination);
         if (!acl.has_value())
         {
             spdlog::error("Not saving settings: can't read the access control list of {}: {}",
@@ -968,7 +983,8 @@ void UserConfig::save()
     {
         tempPath = nextTempPath();
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-        fd = ::open(tempPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        fd = saveStepFails(SaveStep::CreateStaging) ? -1
+                                                    : ::open(tempPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
         if (fd < 0 && errno != EEXIST)
         {
             break;
@@ -981,7 +997,7 @@ void UserConfig::save()
         return;
     }
     stagingGuard.created(tempPath);
-    const bool written = writeAllAndClose(fd, contents, owner, mode, accessAcl);
+    const bool written = writeAllAndClose(fd, contents, owner, mode, accessAcl, [this](SaveStep step) { return saveStepFails(step); });
 #else
     std::ofstream file;
     for (int attempt = 0; attempt < 8 && !file.is_open(); ++attempt)
@@ -1021,7 +1037,14 @@ void UserConfig::save()
         return;
     }
 
-    std::filesystem::rename(tempPath, destination, ec);
+    if (saveStepFails(SaveStep::Rename))
+    {
+        ec = std::error_code(m_FailingSaveErrno, std::generic_category());
+    }
+    else
+    {
+        std::filesystem::rename(tempPath, destination, ec);
+    }
     if (ec)
     {
         spdlog::error("Failed to replace {} with the new config: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
