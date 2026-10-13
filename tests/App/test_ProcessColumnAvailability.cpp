@@ -1,6 +1,7 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/ProcessColumnConfig.h"
+#include "Domain/ProcessModel.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
@@ -291,37 +292,84 @@ TEST(ProcessColumnAvailabilityTest, CapabilityChangeThatMovesNoColumnQueuesNothi
     EXPECT_FALSE(ProcessColumnAvailability::capabilityDefaultChanges(chosen, noNetwork).has_value());
 }
 
-/// No per-process GPU data at all: DRM- or ROCm-only Linux, or no usable GPU probe.
-constexpr ProcessColumnAvailability::GpuSupport NO_PER_PROCESS_GPU{.perProcess = false, .utilization = false};
+/// No per-process GPU or NPU data at all: DRM- or ROCm-only Linux, or no usable GPU probe.
+constexpr ProcessColumnAvailability::GpuSupport NO_PER_PROCESS_GPU{
+    .perProcess = false, .utilization = false, .npuPerProcess = false, .npuUtilization = false};
 /// Per-process memory, devices and engines, but no utilization: NVML's running-process lists.
 constexpr ProcessColumnAvailability::GpuSupport NO_PER_PROCESS_GPU_UTILIZATION{.perProcess = true, .utilization = false};
+
+/// A generation's published support (Domain::ProcessModel::GpuSupport).
+[[nodiscard]] constexpr Domain::ProcessModel::GpuSupport generation(bool perProcess, bool utilization, bool readFailed = false)
+{
+    return {.perProcess = perProcess,
+            .utilization = utilization,
+            .npuPerProcess = perProcess,
+            .npuUtilization = utilization,
+            .readFailed = readFailed};
+}
 
 TEST(ProcessColumnAvailabilityTest, GpuSupportComesFromTheGpuModelsFlags)
 {
     using ProcessColumnAvailability::gpuSupport;
-    EXPECT_EQ(gpuSupport(/*hasGpuModel=*/true, /*perProcessKnownUnsupported=*/false, /*perProcessUtilizationKnownUnsupported=*/false),
-              (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = true}));
-    EXPECT_EQ(gpuSupport(true, false, true), NO_PER_PROCESS_GPU_UTILIZATION);
-    EXPECT_EQ(gpuSupport(true, true, false), NO_PER_PROCESS_GPU);   // No metrics means no utilization either
-    EXPECT_EQ(gpuSupport(false, false, false), NO_PER_PROCESS_GPU); // No GPU model at all
+    using Known = ProcessColumnAvailability::KnownUnsupported;
+    EXPECT_EQ(gpuSupport(/*hasGpuModel=*/true, Known{}), (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = true}));
+    EXPECT_EQ(gpuSupport(true, Known{.utilization = true, .npuUtilization = true}),
+              (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = false, .npuUtilization = false}));
+    // No metrics means no utilization either.
+    EXPECT_EQ(gpuSupport(true, Known{.perProcess = true, .npuPerProcess = true}), NO_PER_PROCESS_GPU);
+    EXPECT_EQ(gpuSupport(false, Known{}), NO_PER_PROCESS_GPU); // No GPU model at all
 }
 
 TEST(ProcessColumnAvailabilityTest, CellsFollowTheSupportTheirGenerationWasReadUnder)
 {
     // #1210: the table formats a generation's GPU cells by the support published with it.
     using ProcessColumnAvailability::gpuSupportOfGeneration;
-    EXPECT_EQ(gpuSupportOfGeneration(true, true), (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = true}));
-    EXPECT_EQ(gpuSupportOfGeneration(true, false), NO_PER_PROCESS_GPU_UTILIZATION);
-    EXPECT_EQ(gpuSupportOfGeneration(false, true), NO_PER_PROCESS_GPU); // No data means no utilization
-    EXPECT_EQ(gpuSupportOfGeneration(false, false), NO_PER_PROCESS_GPU);
+    EXPECT_EQ(gpuSupportOfGeneration(generation(true, true)),
+              (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = true}));
+    EXPECT_EQ(gpuSupportOfGeneration(generation(true, false)),
+              (ProcessColumnAvailability::GpuSupport{.perProcess = true, .utilization = false, .npuUtilization = false}));
+    EXPECT_EQ(gpuSupportOfGeneration(generation(false, true)), NO_PER_PROCESS_GPU); // No data means no utilization
+    EXPECT_EQ(gpuSupportOfGeneration(generation(false, false)), NO_PER_PROCESS_GPU);
 
     // A failed read keeps the support and is passed on to the row formatter (#1210).
-    const auto failed = gpuSupportOfGeneration(true, true, /*readFailed=*/true);
+    const auto failed = gpuSupportOfGeneration(generation(true, true, /*readFailed=*/true));
     EXPECT_TRUE(failed.perProcess);
     EXPECT_TRUE(failed.readFailed);
     EXPECT_TRUE(rowFormatOptions(linuxWithoutRaplCapabilities(), failed).gpuReadFailed);
     EXPECT_TRUE(rowFormatOptions(linuxWithoutRaplCapabilities(), failed).hasPerProcessGpu);
-    EXPECT_FALSE(gpuSupportOfGeneration(false, false, true).readFailed); // No support: nothing to fail
+    EXPECT_FALSE(gpuSupportOfGeneration(generation(false, false, true)).readFailed); // No support: nothing to fail
+    // NPU data alone (#1827): a failed read is still a failed read.
+    EXPECT_TRUE(gpuSupportOfGeneration({.npuPerProcess = true, .readFailed = true}).readFailed);
+}
+
+// #1827: per-process GPU and NPU data are separate. Linux with an Intel NPU listed and DRM per-process
+// data for the iGPU, but no NPU fdinfo read, showed the NPU columns as measured zeros; an NPU read
+// alone must not switch on the GPU columns either (#1210).
+TEST(ProcessColumnAvailabilityTest, GpuAndNpuColumnsFollowTheirOwnPerProcessSupport)
+{
+    const Platform::ProcessCapabilities caps = linuxWithoutRaplCapabilities();
+    constexpr ProcessColumnAvailability::GpuSupport GPU_ONLY{.npuPerProcess = false, .npuUtilization = false};
+    constexpr ProcessColumnAvailability::GpuSupport NPU_ONLY{.perProcess = false, .utilization = false, .npuUtilization = false};
+    for (const ProcessColumn col : {ProcessColumn::NpuPercent, ProcessColumn::NpuMemory, ProcessColumn::NpuEngine})
+    {
+        EXPECT_FALSE(isSupported(col, caps, GPU_ONLY)) << getColumnInfo(col).configKey;
+    }
+    EXPECT_TRUE(isSupported(ProcessColumn::GpuMemory, caps, GPU_ONLY));
+    EXPECT_FALSE(rowFormatOptions(caps, GPU_ONLY).hasPerProcessNpu);
+
+    // NPU memory without NPU utilization (an fdinfo read): NPU Memory and Engine, not NPU %.
+    EXPECT_TRUE(isSupported(ProcessColumn::NpuMemory, caps, NPU_ONLY));
+    EXPECT_TRUE(isSupported(ProcessColumn::NpuEngine, caps, NPU_ONLY));
+    EXPECT_FALSE(isSupported(ProcessColumn::NpuPercent, caps, NPU_ONLY));
+    for (const ProcessColumn col :
+         {ProcessColumn::GpuPercent, ProcessColumn::GpuMemory, ProcessColumn::GpuEngine, ProcessColumn::GpuDevice})
+    {
+        EXPECT_FALSE(isSupported(col, caps, NPU_ONLY)) << getColumnInfo(col).configKey;
+    }
+    const ProcessRowFormat::RowFormatOptions npuOnly = rowFormatOptions(caps, NPU_ONLY);
+    EXPECT_TRUE(npuOnly.hasPerProcessNpu);
+    EXPECT_FALSE(npuOnly.hasPerProcessNpuUtilization);
+    EXPECT_FALSE(npuOnly.hasPerProcessGpu);
 }
 
 TEST(ProcessColumnAvailabilityTest, GpuColumnsNeedPerProcessGpuMetrics)
@@ -356,9 +404,9 @@ TEST(ProcessColumnAvailabilityTest, GpuPercentNeedsPerProcessUtilization)
     EXPECT_TRUE(rowFormatOptions(caps).hasPerProcessGpuUtilization);
 }
 
-// #1799: the NPU columns need an NPU or compute accelerator as well as per-process GPU metrics, and
-// NPU % needs per-process utilization too. Without one -- every Linux system until #1827 -- they are
-// "not available on this system", as the GPU columns are without per-process data.
+// #1799: the NPU columns need an NPU or compute accelerator as well as per-process NPU data, and NPU %
+// needs per-process NPU utilization too. Without them they are "not available on this system", as the
+// GPU columns are without per-process data.
 TEST(ProcessColumnAvailabilityTest, NpuColumnsNeedAnAcceleratorAndPerProcessMetrics)
 {
     using ProcessColumnAvailability::gpuSupport;
@@ -375,18 +423,19 @@ TEST(ProcessColumnAvailabilityTest, NpuColumnsNeedAnAcceleratorAndPerProcessMetr
     // The GPU columns don't depend on an accelerator.
     EXPECT_TRUE(isSupported(ProcessColumn::GpuPercent, caps, NO_ACCELERATOR));
     // NPU % needs utilization; NPU Memory and NPU Engine don't.
-    EXPECT_FALSE(isSupported(ProcessColumn::NpuPercent, caps, NO_PER_PROCESS_GPU_UTILIZATION));
-    EXPECT_TRUE(isSupported(ProcessColumn::NpuMemory, caps, NO_PER_PROCESS_GPU_UTILIZATION));
-    EXPECT_TRUE(isSupported(ProcessColumn::NpuEngine, caps, NO_PER_PROCESS_GPU_UTILIZATION));
+    constexpr ProcessColumnAvailability::GpuSupport NO_NPU_UTILIZATION{.npuUtilization = false};
+    EXPECT_FALSE(isSupported(ProcessColumn::NpuPercent, caps, NO_NPU_UTILIZATION));
+    EXPECT_TRUE(isSupported(ProcessColumn::NpuMemory, caps, NO_NPU_UTILIZATION));
+    EXPECT_TRUE(isSupported(ProcessColumn::NpuEngine, caps, NO_NPU_UTILIZATION));
 
     // The GPU model's word on an accelerator reaches the support and the row formatter.
-    EXPECT_FALSE(gpuSupport(true, false, false, /*hasAccelerator=*/false).accelerator);
-    EXPECT_TRUE(gpuSupport(true, false, false, /*hasAccelerator=*/true).accelerator);
+    EXPECT_FALSE(gpuSupport(true, {}, /*hasAccelerator=*/false).accelerator);
+    EXPECT_TRUE(gpuSupport(true, {}, /*hasAccelerator=*/true).accelerator);
     EXPECT_FALSE(rowFormatOptions(caps, NO_ACCELERATOR).hasPerProcessNpu);
     EXPECT_TRUE(rowFormatOptions(caps, NO_ACCELERATOR).hasPerProcessGpu);
     EXPECT_FALSE(rowFormatOptions(caps, NO_PER_PROCESS_GPU).hasPerProcessNpu);
     EXPECT_TRUE(rowFormatOptions(caps).hasPerProcessNpu);
-    EXPECT_FALSE(ProcessColumnAvailability::gpuSupportOfGeneration(true, true, false, /*accelerator=*/false).accelerator);
+    EXPECT_FALSE(ProcessColumnAvailability::gpuSupportOfGeneration(generation(true, true), /*accelerator=*/false).accelerator);
 }
 
 /// Per-process GPU data on a system whose GPU model has listed an NPU (#1870).
@@ -424,13 +473,13 @@ TEST(ProcessColumnAvailabilityTest, NpuPercentIsShownByDefaultOnlyWithAKnownAcce
     EXPECT_FALSE(defaultColumns(caps).isVisible(ProcessColumn::NpuPercent));
     EXPECT_FALSE(
         defaultColumns(caps, {.perProcess = true, .utilization = true, .accelerator = false}).isVisible(ProcessColumn::NpuPercent));
-    EXPECT_FALSE(defaultColumns(caps, {.perProcess = true, .utilization = false, .accelerator = true, .acceleratorListed = true})
+    EXPECT_FALSE(defaultColumns(caps, {.perProcess = true, .npuUtilization = false, .accelerator = true, .acceleratorListed = true})
                      .isVisible(ProcessColumn::NpuPercent));
 
     // The GPU model's word: listed only once known, and never when it lists none.
-    EXPECT_TRUE(gpuSupport(true, false, false, /*hasAccelerator=*/true, /*acceleratorListed=*/true).acceleratorListed);
-    EXPECT_FALSE(gpuSupport(true, false, false, /*hasAccelerator=*/true).acceleratorListed);
-    EXPECT_FALSE(gpuSupport(true, false, false, /*hasAccelerator=*/false, /*acceleratorListed=*/true).acceleratorListed);
+    EXPECT_TRUE(gpuSupport(true, {}, /*hasAccelerator=*/true, /*acceleratorListed=*/true).acceleratorListed);
+    EXPECT_FALSE(gpuSupport(true, {}, /*hasAccelerator=*/true).acceleratorListed);
+    EXPECT_FALSE(gpuSupport(true, {}, /*hasAccelerator=*/false, /*acceleratorListed=*/true).acceleratorListed);
 }
 
 // #1870: the accelerator is known only once the GPU probe has enumerated, so NPU % takes its default

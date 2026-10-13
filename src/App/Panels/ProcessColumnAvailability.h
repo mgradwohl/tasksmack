@@ -7,6 +7,7 @@
 
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/ProcessColumnConfig.h"
+#include "Domain/ProcessModel.h"
 #include "Platform/ProcessTypes.h"
 
 #include <cstdint>
@@ -30,9 +31,13 @@ struct GpuSupport
     /// Supported, but reading the per-process GPU data failed for the generation being drawn: its GPU
     /// cells are unreadable for that sample, not "not available on this system" (#1210).
     bool readFailed = false;
+    /// Per-process NPU / compute-accelerator data (Platform::perProcessNpuMetricsSupported(), #1827),
+    /// apart from the GPU's: on Linux an NPU's per-process memory comes from its own fdinfo while the
+    /// iGPU beside it may have none, so neither may switch on the other's columns (#1210).
+    bool npuPerProcess = true;
+    bool npuUtilization = true; ///< ...and per-process NPU utilization among it
     /// An NPU or other compute accelerator is listed (Domain::GPUPublication::acceleratorInfo, #1799):
-    /// the NPU columns need one as well as per-process metrics. None on Linux yet (#1827), where they
-    /// read UNAVAILABLE_CELL_TEXT as the GPU columns do without per-process data.
+    /// the NPU columns need one as well as per-process NPU data.
     bool accelerator = true;
     /// An NPU or compute accelerator is known to be listed: the GPU model has published its devices and
     /// one is an accelerator. Unlike `accelerator`, unknown counts as none, so NPU % -- shown by default
@@ -43,21 +48,30 @@ struct GpuSupport
     friend constexpr bool operator==(const GpuSupport&, const GpuSupport&) = default;
 };
 
-/// GpuSupport from the GPU model's "known unsupported" flags (Domain::GPUModel::
-/// perProcessMetricsKnownUnsupported() / perProcessUtilizationKnownUnsupported()) and whether it lists
-/// an NPU or compute accelerator: @p hasAccelerator with unknown counted as listed (#1799),
-/// @p acceleratorListed only once one is known to be (#1870).
-[[nodiscard]] constexpr GpuSupport gpuSupport(bool hasGpuModel,
-                                              bool perProcessKnownUnsupported,
-                                              bool perProcessUtilizationKnownUnsupported,
-                                              bool hasAccelerator = true,
-                                              bool acceleratorListed = false) noexcept
+/// The GPU model's "known unsupported" flags (Domain::GPUModel::perProcessMetricsKnownUnsupported()
+/// and the rest), as gpuSupport() takes them.
+struct KnownUnsupported
 {
-    const bool perProcess = hasGpuModel && !perProcessKnownUnsupported;
+    bool perProcess = false;
+    bool utilization = false;
+    bool npuPerProcess = false;  ///< perProcessNpuMetricsKnownUnsupported() (#1827)
+    bool npuUtilization = false; ///< perProcessNpuUtilizationKnownUnsupported()
+};
+
+/// GpuSupport from the GPU model's "known unsupported" flags (@p known) and whether it lists an NPU or
+/// compute accelerator: @p hasAccelerator with unknown counted as listed (#1799), @p acceleratorListed
+/// only once one is known to be (#1870).
+[[nodiscard]] constexpr GpuSupport
+gpuSupport(bool hasGpuModel, KnownUnsupported known, bool hasAccelerator = true, bool acceleratorListed = false) noexcept
+{
+    const bool perProcess = hasGpuModel && !known.perProcess;
+    const bool npuPerProcess = hasGpuModel && !known.npuPerProcess;
     return {
         .perProcess = perProcess,
-        .utilization = perProcess && !perProcessUtilizationKnownUnsupported,
-        .accelerator = hasAccelerator, // Needed with perProcess, which a missing model already lacks
+        .utilization = perProcess && !known.utilization,
+        .npuPerProcess = npuPerProcess,
+        .npuUtilization = npuPerProcess && !known.npuUtilization,
+        .accelerator = hasAccelerator, // Needed with npuPerProcess, which a missing model already lacks
         .acceleratorListed = hasAccelerator && acceleratorListed,
     };
 }
@@ -68,22 +82,24 @@ struct GpuSupport
 /// utilization either.
 /// Whether an accelerator is listed is not published with a generation, so @p accelerator is the GPU
 /// model's current word on it (GpuSupport::accelerator).
-[[nodiscard]] constexpr GpuSupport
-gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = false, bool accelerator = true) noexcept
+[[nodiscard]] constexpr GpuSupport gpuSupportOfGeneration(const Domain::ProcessModel::GpuSupport& generation,
+                                                          bool accelerator = true) noexcept
 {
     return {
-        .perProcess = perProcess,
-        .utilization = perProcess && utilization,
-        .readFailed = perProcess && readFailed,
+        .perProcess = generation.perProcess,
+        .utilization = generation.perProcess && generation.utilization,
+        .readFailed = (generation.perProcess || generation.npuPerProcess) && generation.readFailed,
+        .npuPerProcess = generation.npuPerProcess,
+        .npuUtilization = generation.npuPerProcess && generation.npuUtilization,
         .accelerator = accelerator,
     };
 }
 
-/// Whether the NPU columns can be filled (#1799): per-process metrics on a system with an NPU or
-/// compute accelerator, and for NPU %, per-process utilization too.
+/// Whether the NPU columns can be filled (#1799): per-process NPU data (#1827) on a system with an NPU
+/// or compute accelerator, and for NPU %, per-process NPU utilization too.
 [[nodiscard]] constexpr bool npuSupported(GpuSupport gpu) noexcept
 {
-    return gpu.perProcess && gpu.accelerator;
+    return gpu.npuPerProcess && gpu.accelerator;
 }
 
 /// Whether the process probe can fill `col` at all on this system. A column it cannot shows
@@ -104,7 +120,7 @@ gpuSupportOfGeneration(bool perProcess, bool utilization, bool readFailed = fals
     case ProcessColumn::GpuDevice:
         return gpu.perProcess;
     case ProcessColumn::NpuPercent:
-        return npuSupported(gpu) && gpu.utilization;
+        return npuSupported(gpu) && gpu.npuUtilization;
     case ProcessColumn::NpuMemory:
     case ProcessColumn::NpuEngine:
         return npuSupported(gpu);
@@ -256,6 +272,7 @@ enum class TextCell : std::uint8_t
     options.hasPerProcessGpuUtilization = gpu.utilization;
     options.gpuReadFailed = gpu.readFailed;
     options.hasPerProcessNpu = npuSupported(gpu);
+    options.hasPerProcessNpuUtilization = gpu.npuUtilization;
     options.hasStatus = caps.hasStatus;
     options.hasPublisher = caps.hasPublisher;
     options.hasContainer = caps.hasContainer;

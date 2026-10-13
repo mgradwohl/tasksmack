@@ -23,9 +23,37 @@ struct GPUCapabilities
     // process's GPU memory and engines but not its utilization (NVML's running-process lists), which
     // then reads 0 for every process (#1210).
     bool hasPerProcessUtilization = false;
+    // Per-process NPU / compute-accelerator usage (ProcessGPUCounters with an accelerator's gpuId,
+    // #1827), apart from the GPU's: on Linux an NPU's per-process memory comes from its own fdinfo,
+    // while the iGPU beside it may have no per-process data at all (#1210). Read through
+    // perProcessNpuMetricsSupported(), not directly (see there).
+    bool hasPerProcessNpuMetrics = false;
+    bool hasPerProcessNpuUtilization = false; // ...and per-process NPU utilization among it
     bool hasEncoderDecoder = false;
     bool supportsMultiGPU = false;
 };
+
+// Whether @p caps report per-process NPU data, and NPU utilization among it (#1827). Transitional
+// (#1973): the Windows probes don't set the NPU flags yet, and their per-process GPU read (PDH, by
+// adapter LUID) carries the NPU's figures too, so on Windows the GPU flags still count. #1973 sets
+// the NPU flags in the Windows probes and removes the fallback.
+[[nodiscard]] constexpr bool perProcessNpuMetricsSupported(const GPUCapabilities& caps) noexcept
+{
+#ifdef _WIN32
+    return caps.hasPerProcessNpuMetrics || caps.hasPerProcessMetrics;
+#else
+    return caps.hasPerProcessNpuMetrics;
+#endif
+}
+
+[[nodiscard]] constexpr bool perProcessNpuUtilizationSupported(const GPUCapabilities& caps) noexcept
+{
+#ifdef _WIN32
+    return caps.hasPerProcessNpuUtilization || caps.hasPerProcessUtilization;
+#else
+    return caps.hasPerProcessNpuUtilization;
+#endif
+}
 
 /// How thoroughly IGPUProbe::rescanGPUs() looks for changes to the GPU set (#1116).
 enum class GPURescan : std::uint8_t

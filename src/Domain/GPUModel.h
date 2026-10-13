@@ -97,9 +97,11 @@ struct ProcessGPUPublication
     std::vector<Platform::ProcessGPUCounters> counters;
     /// The adapters as that refresh knew them (from the GPU info), to name and classify the counters' GPUs.
     std::vector<GPUAdapterIdentity> adapters;
-    bool perProcessSupported = false;  ///< Read under per-process support (#1210)
-    bool utilizationSupported = false; ///< ...including per-process utilization
-    /// Supported, but the probe's read threw: counters is empty, a gap rather than idle processes.
+    bool perProcessSupported = false;     ///< Read under per-process support (#1210)
+    bool utilizationSupported = false;    ///< ...including per-process utilization
+    bool npuSupported = false;            ///< Read under per-process NPU support (#1827)
+    bool npuUtilizationSupported = false; ///< ...including per-process NPU utilization
+    /// Supported (GPU or NPU), but the probe's read threw: counters is empty, a gap rather than idle processes.
     bool readFailed = false;
 };
 
@@ -199,6 +201,20 @@ class GPUModel : public ISamplable
         return m_PerProcessUtilizationKnownUnsupported.load(std::memory_order_acquire);
     }
 
+    /// As perProcessMetricsKnownUnsupported(), for a process's NPU / compute-accelerator usage
+    /// (Platform::perProcessNpuMetricsSupported(), #1827): apart from the GPU's, so an NPU's figures
+    /// don't switch on the GPU columns, nor the GPU's the NPU columns.
+    [[nodiscard]] bool perProcessNpuMetricsKnownUnsupported() const noexcept
+    {
+        return m_PerProcessNpuKnownUnsupported.load(std::memory_order_acquire);
+    }
+
+    /// As perProcessUtilizationKnownUnsupported(), for NPU utilization (#1827).
+    [[nodiscard]] bool perProcessNpuUtilizationKnownUnsupported() const noexcept
+    {
+        return m_PerProcessNpuUtilizationKnownUnsupported.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] std::shared_ptr<const GPUPublication> publication() const noexcept;
     [[nodiscard]] std::uint64_t publicationVersion() const noexcept;
 
@@ -222,8 +238,10 @@ class GPUModel : public ISamplable
     struct ProcessGPUReading
     {
         std::vector<Platform::ProcessGPUCounters> counters;
-        bool perProcessSupported = false;  ///< Not known to lack per-process metrics
-        bool utilizationSupported = false; ///< ...nor per-process utilization among them
+        bool perProcessSupported = false;     ///< Not known to lack per-process metrics
+        bool utilizationSupported = false;    ///< ...nor per-process utilization among them
+        bool npuSupported = false;            ///< Not known to lack per-process NPU metrics (#1827)
+        bool npuUtilizationSupported = false; ///< ...nor per-process NPU utilization among them
         /// What the probe's read threw, if it did. It is carried here rather than thrown, so the
         /// caller still learns the support the failed read ran under (#1210); rethrow it with
         /// std::rethrow_exception() after taking the flags.
@@ -237,6 +255,9 @@ class GPUModel : public ISamplable
     [[nodiscard]] ProcessGPUReading readProcessGPUData() const;
 
   private:
+    /// The four "known unsupported" flags from m_Capabilities, once they are known (under m_Mutex, unique).
+    void storePerProcessSupport() noexcept;
+
     std::unique_ptr<Platform::IGPUProbe> m_Probe;
     mutable std::mutex m_ProbeMutex;
     // The per-process GPU publication (#1417). Committed by refreshAt() while it holds m_ProbeMutex,
@@ -265,6 +286,11 @@ class GPUModel : public ISamplable
     std::atomic<bool> m_PerProcessKnownUnsupported{false};
     // m_CapabilitiesKnown && !m_Capabilities.hasPerProcessUtilization, kept in step the same way (#1210)
     std::atomic<bool> m_PerProcessUtilizationKnownUnsupported{false};
+    // The same two for per-process NPU data (Platform::perProcessNpuMetricsSupported() /
+    // perProcessNpuUtilizationSupported(), #1827). The per-process read's early exit needs both
+    // m_PerProcessKnownUnsupported and m_PerProcessNpuKnownUnsupported.
+    std::atomic<bool> m_PerProcessNpuKnownUnsupported{false};
+    std::atomic<bool> m_PerProcessNpuUtilizationKnownUnsupported{false};
 
     /// One sample of a GPU's history, as its series record it: a field that was not read, or a
     /// placeholder for a refresh the GPU was missing from, is NaN (#1111, #1146).

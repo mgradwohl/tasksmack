@@ -119,8 +119,14 @@ struct ChartInputs
         snapshot.peakMemoryBytes = 80'000'000;
         snapshot.gpuMemoryBytes = 1'000'000;
         snapshot.gpuUtilPercent = 12.0;
-        const Detail::SampleRateReadings readings{
-            .io = true, .network = true, .gpuPerProcess = gpuSupported, .gpuUtilization = gpuSupported, .gpuSupported = gpuSupported};
+        const Detail::SampleRateReadings readings{.io = true,
+                                                  .network = true,
+                                                  .gpuPerProcess = gpuSupported,
+                                                  .gpuUtilization = gpuSupported,
+                                                  .gpuSupported = gpuSupported,
+                                                  .npuPerProcess = gpuSupported,
+                                                  .npuUtilization = gpuSupported,
+                                                  .npuSupported = gpuSupported};
         smoothed.update(snapshot, readings, 0.0F, std::chrono::milliseconds(1000));
         ctx = ProcessChartContext{
             .history = &history,

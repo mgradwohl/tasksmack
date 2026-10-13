@@ -264,15 +264,16 @@ gpuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistor
 }
 
 /// What the NPU tab shows for @p proc and its retained @p history (#1869), decided as the GPU tab's
-/// (gpuTabContentFor()) from the process's NPU figures: its usage and charts while it uses an NPU or
+/// (gpuTabContentFor()) from the process's NPU figures and @p npuSupported (SampleRateReadings::
+/// npuSupported, #1827): its usage and charts while it uses an NPU or
 /// compute accelerator now or its retained history does, else why there is nothing to chart.
 [[nodiscard]] inline GpuTabContent
-npuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistory& history, bool gpuSupported)
+npuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistory& history, bool npuSupported)
 {
     const std::span<const double> util = history.series(ProcessSeries::NpuUtil);
     const std::span<const double> dedicated = history.series(ProcessSeries::NpuDedicatedMemory);
     const std::span<const double> shared = history.series(ProcessSeries::NpuSharedMemory);
-    return gpuTabContent(gpuSupported,
+    return gpuTabContent(npuSupported,
                          hasGpuUsageToShow(proc.npuMemoryBytes, proc.npuUtilPercent, !proc.npuDevices.empty(), util, dedicated, shared),
                          hasAnyReading(util) || hasAnyReading(dedicated) || hasAnyReading(shared));
 }

@@ -149,9 +149,10 @@ struct RowFormatOptions
     bool hasPerProcessGpu = true;            ///< Platform::GPUCapabilities::hasPerProcessMetrics, from the GPU probe (#1210)
     bool hasPerProcessGpuUtilization = true; ///< Platform::GPUCapabilities::hasPerProcessUtilization (#1210)
     bool gpuReadFailed = false;              ///< Supported, but this generation's per-process GPU read failed (#1210)
-    /// Per-process GPU metrics on a system with an NPU or compute accelerator (#1799): the NPU columns.
-    /// NPU % needs hasPerProcessGpuUtilization too; their reads are the GPU's, so gpuReadFailed covers them.
+    /// Per-process NPU data on a system with an NPU or compute accelerator (#1799, #1827): the NPU columns.
+    /// NPU % needs hasPerProcessNpuUtilization too; their read is the GPU's, so gpuReadFailed covers them.
     bool hasPerProcessNpu = true;
+    bool hasPerProcessNpuUtilization = true; ///< Platform::perProcessNpuUtilizationSupported() (#1827)
     bool hasStatus = true;
     bool hasPublisher = true;
     bool hasContainer = true;
@@ -374,7 +375,7 @@ struct RowFormatCache
     fmt.servicesSupported = options.hasServices;
     fmt.processTypeSupported = options.hasProcessType;
     fmt.gpuSupported = options.hasPerProcessGpu;
-    fmt.npuSupported = options.hasPerProcessGpu && options.hasPerProcessNpu;
+    fmt.npuSupported = options.hasPerProcessNpu; // Apart from the GPU's (#1827)
     fmt.gpuReadFailed = options.hasPerProcessGpu && options.gpuReadFailed;
     if (options.hasPerProcessGpu)
     {
@@ -459,7 +460,7 @@ struct RowFormatCache
     // The NPU columns (#1799) as the GPU ones: their figures are read with the GPU's, so a failed or
     // missing GPU read leaves them unread too. Without an NPU or compute accelerator -- every Linux
     // system until #1827 -- they are not available on this system.
-    if (!(fmt.npuSupported && options.hasPerProcessGpuUtilization))
+    if (!(fmt.npuSupported && options.hasPerProcessNpuUtilization))
     {
         fmt.npuPercent = unavailableCell(UNSUPPORTED_CELL_REASON);
     }

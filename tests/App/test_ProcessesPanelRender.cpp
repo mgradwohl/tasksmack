@@ -140,13 +140,16 @@ class ProcessesPanelRenderTest : public ::testing::Test
     }
 
     /// A GPU model with one GPU whose probe reports per-process metrics and utilization, and with
-    /// @p withNpu, an NPU too (#1870). It publishes what it lists on its first refresh(), as the GPU
+    /// @p withNpu, an NPU and per-process NPU data too (#1870, #1827). It publishes what it lists on its first refresh(), as the GPU
     /// sampler's first sample does; until then whether there is an NPU is unknown.
     [[nodiscard]] static std::shared_ptr<Domain::GPUModel> gpuModel(bool withNpu)
     {
         Platform::GPUCapabilities caps;
         caps.hasPerProcessMetrics = true;
         caps.hasPerProcessUtilization = true;
+        // Per-process NPU data, apart from the GPU's (#1827), with the NPU.
+        caps.hasPerProcessNpuMetrics = withNpu;
+        caps.hasPerProcessNpuUtilization = withNpu;
         auto probe = std::make_unique<TestMocks::MockGPUProbe>();
         probe->withGPU("gpu0", "Test GPU").withCapabilities(caps);
         if (withNpu)

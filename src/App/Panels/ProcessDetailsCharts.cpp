@@ -1336,7 +1336,7 @@ void ProcessDetailsCharts::renderNpuTab(const ProcessChartContext& ctx)
         return;
     }
     // Decided as the GPU tab's, from the process's NPU figures and history (#1869).
-    const Detail::GpuTabContent npuContent = Detail::npuTabContentFor(*ctx.snapshot, *ctx.history, ctx.rateReadings.gpuSupported);
+    const Detail::GpuTabContent npuContent = Detail::npuTabContentFor(*ctx.snapshot, *ctx.history, ctx.rateReadings.npuSupported);
     if (renderDeviceTabEmptyState(npuContent, NPU_TAB_EMPTY_TEXT, ctx.maxHistorySeconds, m_NoNpuUsageDetail, m_NoNpuUsageDetailKey))
     {
         return;

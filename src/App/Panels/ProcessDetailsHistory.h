@@ -163,11 +163,11 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
         .gpuMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.gpuMemoryBytes)),
         // NaN signals "no data" to the plot; ImPlot renders NaN as a gap in the line.
         .gdiObjects = snapshot.gdiObjectCount.has_value() ? toDouble(*snapshot.gdiObjectCount) : std::numeric_limits<double>::quiet_NaN(),
-        // The NPU figures come from the same per-process GPU read (ProcessSnapshot::gpuFieldsRead), so
-        // they are readings or gaps exactly as the GPU ones are (#1869).
-        .npuUtil = readingOrGap(rateReadings.gpuUtilization, snapshot.npuUtilPercent),
-        .npuDedicatedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuDedicatedMemoryBytes)),
-        .npuSharedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuSharedMemoryBytes)),
+        // The NPU figures come from the same per-process read (ProcessSnapshot::gpuFieldsRead), under the
+        // NPU's own support (#1869, #1827): readings or gaps as that says.
+        .npuUtil = readingOrGap(rateReadings.npuUtilization, snapshot.npuUtilPercent),
+        .npuDedicatedMemory = readingOrGap(rateReadings.npuPerProcess, toDouble(snapshot.npuDedicatedMemoryBytes)),
+        .npuSharedMemory = readingOrGap(rateReadings.npuPerProcess, toDouble(snapshot.npuSharedMemoryBytes)),
     };
 }
 

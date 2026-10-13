@@ -506,14 +506,15 @@ TEST(ProcessRowFormatTest, NpuCellsAreUnavailableWithoutAnAcceleratorOrAReading)
     EXPECT_FALSE(none.npuSupported);
     EXPECT_EQ(none.gpuPercent.text, "15.0%") << "The GPU columns don't need an accelerator";
 
+    // The NPU's support is its own (#1827): no per-process GPU data leaves the NPU cells as they are.
     ProcessRowFormat::RowFormatOptions noGpu;
     noGpu.hasPerProcessGpu = false;
-    const RowFormatCache noPerProcess = buildRowFormatCache(snap, noGpu);
-    expectUnavailable(noPerProcess.npuMemory, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
-    EXPECT_FALSE(noPerProcess.npuSupported);
+    const RowFormatCache noPerProcessGpu = buildRowFormatCache(snap, noGpu);
+    expectMeasuredZero(noPerProcessGpu.npuMemory);
+    EXPECT_TRUE(noPerProcessGpu.npuSupported);
 
     ProcessRowFormat::RowFormatOptions memoryOnly;
-    memoryOnly.hasPerProcessGpuUtilization = false;
+    memoryOnly.hasPerProcessNpuUtilization = false;
     const RowFormatCache noUtil = buildRowFormatCache(snap, memoryOnly);
     expectUnavailable(noUtil.npuPercent, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
     expectMeasuredZero(noUtil.npuMemory);
