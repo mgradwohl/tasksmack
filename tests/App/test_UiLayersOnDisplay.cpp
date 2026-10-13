@@ -24,6 +24,7 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 #include "Core/Window.h"
+#include "UI/IconTextureCache.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/RenderMetrics.h"
 #include "UI/Theme.h"
@@ -34,6 +35,7 @@
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_video.h>
+#include <glad/gl.h>
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // FindWindowByName(), ImHashStr(), ActivateItemByID(): the bar and its buttons
@@ -217,6 +219,83 @@ TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     // The bar never lets the window get narrower than it has to show.
     EXPECT_GT(observed.minimumWidth, 0);
     EXPECT_GT(observed.minimumHeight, 0);
+}
+
+/// What the real OpenGL icon backend did inside a frame, with the app's context current.
+struct IconTextureObserved
+{
+    bool ran = false;
+    std::uint32_t texture = 0U;
+    bool bindingRestored = false;
+    bool deleted = false;
+    std::uint32_t refusedSize = 1U;
+};
+
+/// Makes a 2x2 icon texture through UI::IconTextureBackend::openGL() on the first frame, with another
+/// texture bound, then deletes it and stops the app.
+class IconTextureDriverLayer : public Core::Layer
+{
+  public:
+    explicit IconTextureDriverLayer(IconTextureObserved& observed) : Layer("IconTextureDriver"), m_Observed(observed)
+    {}
+
+    void onRender() override
+    {
+        if (m_Observed.ran)
+        {
+            return;
+        }
+        m_Observed.ran = true;
+        const UI::IconTextureBackend gl = UI::IconTextureBackend::openGL();
+        constexpr std::array<std::uint8_t, std::size_t{2} * 2U * 4U> PIXELS{};
+
+        GLuint bound = 0U;
+        glGenTextures(1, &bound);
+        glBindTexture(GL_TEXTURE_2D, bound);
+        m_Observed.texture = gl.create(2, 2, PIXELS);
+        GLint after = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &after);
+        m_Observed.bindingRestored = std::cmp_equal(after, bound);
+        m_Observed.refusedSize = gl.create(3, 2, PIXELS); // 3x2 needs 24 bytes, not 16
+
+        gl.destroy(m_Observed.texture);
+        m_Observed.deleted = glIsTexture(m_Observed.texture) == GL_FALSE;
+        glBindTexture(GL_TEXTURE_2D, 0U);
+        glDeleteTextures(1, &bound);
+        Core::Application::get().stop();
+    }
+
+  private:
+    IconTextureObserved& m_Observed;
+};
+
+TEST(UiLayersOnDisplayTest, TheOpenGLIconBackendMakesAndDeletesATexture)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+
+    Core::ApplicationSpecification spec;
+    spec.Name = "UiLayersOnDisplayIconTest";
+    spec.VSync = false;
+    IconTextureObserved observed;
+    try
+    {
+        Core::Application app(spec);
+        app.pushLayer<IconTextureDriverLayer>(observed);
+        app.run();
+    }
+    catch (const std::exception& e)
+    {
+        FAIL() << "Application failed after the display probe passed: " << e.what();
+    }
+
+    ASSERT_TRUE(observed.ran);
+    EXPECT_NE(observed.texture, 0U);
+    EXPECT_TRUE(observed.bindingRestored) << "the icon upload must leave the caller's texture bound";
+    EXPECT_EQ(observed.refusedSize, 0U);
+    EXPECT_TRUE(observed.deleted);
 }
 
 /// What the window-event driver saw.
