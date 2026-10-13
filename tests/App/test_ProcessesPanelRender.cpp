@@ -356,6 +356,39 @@ TEST_F(ProcessesPanelRenderTest, TheTableListsTheProbesProcesses)
     panel->onDetach();
 }
 
+// #1891: every column's cell renderer draws its cells -- the hidden-by-default ones too, which no other
+// test turned on. A few at a time beside PID and Name, so none is scrolled out of the table's width.
+TEST_F(ProcessesPanelRenderTest, EveryColumnDrawsItsHeaderAndCells)
+{
+    constexpr std::size_t GROUP = 6;
+    const auto columns = allProcessColumns();
+    for (std::size_t first = 0; first < columns.size(); first += GROUP)
+    {
+        // As the config file would have it: only this group (and PID and Name) shown.
+        ProcessColumnSettings& settings = UserConfig::get().settings().processColumns;
+        std::vector<ProcessColumn> group;
+        for (std::size_t i = 0; i < columns.size(); ++i)
+        {
+            const bool inGroup = i >= first && i < first + GROUP;
+            settings.setVisible(columns[i], inGroup);
+            if (inGroup)
+            {
+                group.push_back(columns[i]);
+            }
+        }
+        const auto panel = attachedPanel();
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        const std::string text = renderAndCapture(*panel);
+        EXPECT_TRUE(text.contains("server")) << "the rows are still drawn";
+        for (const ProcessColumn col : group)
+        {
+            EXPECT_TRUE(text.contains(getColumnInfo(col).name)) << getColumnInfo(col).configKey << " in:\n" << text;
+        }
+        panel->onDetach();
+    }
+}
+
 TEST_F(ProcessesPanelRenderTest, TheTreeViewKeepsEveryProcess)
 {
     const auto panel = attachedPanel();
