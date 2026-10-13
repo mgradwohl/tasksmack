@@ -304,6 +304,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessSmoothedUsage.cpp
     App/test_ProcessActionHelpers.cpp
     App/test_ProcessActionsView.cpp
+    App/test_ProcessDumpView.cpp
     App/test_ProcessActionConfirmPopup.cpp
     App/test_ProcessActionsBlockRender.cpp
     App/test_ProcessPriorityView.cpp
@@ -380,6 +381,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsProcessIconMath.cpp
     Platform/WindowsMath/test_WindowsPackageLogoMath.cpp
     Platform/WindowsMath/test_WindowsAffinityMath.cpp
+    Platform/WindowsMath/test_WindowsProcessDumpMath.cpp
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
@@ -559,6 +561,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessBatchPriorityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessAffinityDialog.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsView.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessDumpView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessActionsBlock.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessPriorityView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIoPriorityView.cpp

@@ -6,6 +6,8 @@
 #include "WindowsAffinityMath.h"
 #include "WindowsHandles.h"
 #include "WindowsProcessActionsMath.h"
+#include "WindowsProcessDump.h"
+#include "WindowsProcessDumpMath.h"
 
 #include <spdlog/spdlog.h>
 
@@ -24,7 +26,9 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <filesystem>
 #include <format>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -268,6 +272,8 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canSetRealtimeIoPriority = false,
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
+        .syscallTrace = SyscallTraceAvailability::Unsupported,
+        .canCreateDump = true, // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
     };
 }
 
@@ -469,6 +475,30 @@ CpuAffinityLayout WindowsProcessActions::affinityLayout() const
 {
     const std::vector<ProcessorCoreRecord> cores = (m_Fns.readCores != nullptr) ? m_Fns.readCores() : std::vector<ProcessorCoreRecord>{};
     return affinityLayoutFromCores(m_GroupSizes, cores);
+}
+// NOLINTEND(misc-include-cleaner)
+
+// NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
+ProcessDumpResult
+WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
+{
+    VerifiedProcess process = openVerified(m_Fns,
+                                           target,
+                                           Windows::DUMP_PROCESS_ACCESS,
+                                           [&target](DWORD error)
+                                           {
+                                               // Only a refusal asks whether the process is protected: the
+                                               // one case where running as administrator would not help.
+                                               const bool isProtected = error == ERROR_ACCESS_DENIED &&
+                                                                        Windows::isProtectedProcess(static_cast<DWORD>(target.pid));
+                                               return DumpMath::openFailureMessage(error, target.pid, isProtected);
+                                           });
+    if (!process.result.success)
+    {
+        spdlog::warn("Not writing a dump of PID {}: {}", target.pid, process.result.errorMessage);
+        return std::unexpected(std::move(process.result.errorMessage));
+    }
+    return Windows::writeProcessDump(process.handle.get(), target.pid, directory, stopToken);
 }
 // NOLINTEND(misc-include-cleaner)
 

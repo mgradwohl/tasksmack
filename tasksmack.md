@@ -230,7 +230,7 @@ For other users' processes, per-process I/O and network attribution need `CAP_DA
 | Network | interface tables and TCP EStats |
 | Storage and power | Windows system APIs |
 | GPU | DXGI, NVML, and PDH |
-| Process actions | `TerminateProcess`, priority classes, affinity APIs |
+| Process actions | `TerminateProcess`, priority classes, affinity APIs, `MiniDumpWriteDump` (dump files, #807) |
 
 Per-process TCP byte counters use `GetPerTcpConnectionEStats` and require administrator privileges to enable collection. Without them no process's network bytes are read, so each process reports them unavailable (N/A) rather than 0; handle counts and I/O bytes come from the bulk snapshot and are read for every process (#1285). Windows does not expose Linux concepts such as load average, CPU steal time, or SIGSTOP/SIGCONT.
 

@@ -1,9 +1,9 @@
 #pragma once
 
 // Process Details' process-control buttons: Terminate / Kill / Suspend / Resume, the confirm dialog
-// and its dispatch, the "Trace system calls (strace)" button (Linux, #182), and the result line above
-// them (#1179, slice 3). Drawn in the Overview's Actions block (ProcessActionsBlock, #1493), beside
-// the priority control (ProcessPriorityView).
+// and its dispatch, the "Trace system calls (strace)" button (Linux, #182), "Create dump file..."
+// (Windows, #807; ProcessDumpView), and the result line above them (#1179, slice 3). Drawn in the
+// Overview's Actions block (ProcessActionsBlock, #1493), beside the priority control (ProcessPriorityView).
 //
 // The view owns only its UI state. The IProcessActions it dispatches to stays owned by the panel (the
 // composition root's Platform::makeProcessActions() result) and is passed in each frame, with the
@@ -13,6 +13,7 @@
 // tested against a mock IProcessActions without an ImGui context (test_ProcessActionsView.cpp).
 
 #include "App/Panels/ProcessAffinityDialog.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
@@ -188,6 +189,9 @@ class ProcessActionsView
     ///
     /// Then "Set affinity..." where the platform can (#1887), placed the same way; it opens the affinity
     /// dialog with @p currentAffinity's CPUs ticked (null: every CPU), for the process captured now.
+    ///
+    /// Then "Create dump file..." where the platform can write one (#807), placed the same way; it asks
+    /// to confirm a dump of the process captured now, into the temp folder.
     void renderControls(Platform::IProcessActions* actions,
                         const Platform::ProcessActionCapabilities& capabilities,
                         const std::string& processName,
@@ -214,17 +218,29 @@ class ProcessActionsView
     /// platform can't set affinity (#1887).
     [[nodiscard]] static float setAffinityButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
 
+    /// Width of the Create dump file... button for @p capabilities at the current font, or 0 where the
+    /// platform can't write a dump (#807).
+    [[nodiscard]] static float createDumpButtonWidth(const Platform::ProcessActionCapabilities& capabilities);
+
     /// Submits the confirm dialog while a confirm is pending, and closes it unconfirmed after a
     /// selection change or when @p liveTarget is no longer the captured process; a confirmed action is
     /// dispatched to @p actions. Kept apart from the buttons so it runs even when they are not drawn:
     /// ProcessDetailsPanel calls it at panel scope, since the Actions block's child is skipped while it
     /// is scrolled out of view, and F9 must still open its Kill confirm then (#1493).
     /// The affinity dialog (#1887) runs here too, and is closed unapplied when @p liveTarget is no
-    /// longer the process it was opened for.
+    /// longer the process it was opened for; and the dump's confirm, progress and result (#807), its
+    /// confirm closed unconfirmed the same way.
     void renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
     {
         renderConfirmDialog(actions, liveTarget);
         renderAffinityDialog(actions, liveTarget);
+        m_DumpView.render(actions, &liveTarget);
+    }
+
+    /// The dump's state (#807), for tests.
+    [[nodiscard]] ProcessDumpView& dumpView() noexcept
+    {
+        return m_DumpView;
     }
 
     /// The affinity dialog, for tests: open after Set affinity... is pressed.
@@ -255,6 +271,7 @@ class ProcessActionsView
         m_DismissPending = m_DismissPending || confirmPending();
         cancelConfirm();
         m_AffinityDialog.dismiss();
+        m_DumpView.onSelectionChanged(); // its confirm only: a dump already running goes on
         m_LastResult = {};
     }
 
@@ -284,13 +301,13 @@ class ProcessActionsView
     /// F9 (#170): ask to confirm Kill on @p target, as the Kill button does, capturing it now. Refused
     /// (returns false, nothing changes) when Detail::killShortcutAllowed() says no: the platform cannot
     /// kill, there is no target (PID <= 0), or another confirm is pending -- requested, open, or holding
-    /// a captured action, so the shortcut never replaces it. Only ever opens the dialog: the kill itself
-    /// still needs the dialog's own button (dispatchConfirmed()).
+    /// a captured action, so the shortcut never replaces it -- or a dump's dialog is up (#807). Only ever
+    /// opens the dialog: the kill itself still needs the dialog's own button (dispatchConfirmed()).
     bool requestKillShortcut(const Platform::ProcessActionCapabilities& capabilities,
                              const Platform::ProcessTarget& target,
                              std::string processName)
     {
-        if (!Detail::killShortcutAllowed(capabilities, target, confirmPending()))
+        if (!Detail::killShortcutAllowed(capabilities, target, confirmPending() || m_DumpView.active()))
         {
             return false;
         }
@@ -392,6 +409,12 @@ class ProcessActionsView
                                   const Platform::ProcessActionCapabilities& capabilities,
                                   const Platform::ProcessTarget& target,
                                   bool afterButtons);
+    /// Create dump file... (#807): at the row's end at its own width, as the trace button is. A press
+    /// asks to confirm a dump of @p target into the temp folder.
+    void renderCreateDumpButton(const Platform::ProcessActionCapabilities& capabilities,
+                                const std::string& processName,
+                                const Platform::ProcessTarget& target,
+                                bool afterButtons);
 
     bool m_ShowConfirmDialog = false;
     bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open
@@ -399,6 +422,9 @@ class ProcessActionsView
     ConfirmTarget m_ConfirmTarget;
     Detail::ActionResultMessage m_LastResult;
     ProcessAffinityDialog m_AffinityDialog; // Set affinity... (#1887)
+    // Create dump file... (#807). Its worker uses the panel's IProcessActions until it finishes: the
+    // panel declares this view after its actions, so the view (and its destructor's wait) goes first.
+    ProcessDumpView m_DumpView;
     float m_ResultSecondsLeft = 0.0F;
 };
 

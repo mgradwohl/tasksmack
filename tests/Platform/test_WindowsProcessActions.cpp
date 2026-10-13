@@ -25,12 +25,17 @@
 #include <windows.h>
 // clang-format on
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <ios>
 #include <limits>
+#include <stop_token>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -199,6 +204,7 @@ TEST(WindowsProcessActionsTest, CapabilitiesReportedCorrectly)
     EXPECT_TRUE(caps.canKill);
     EXPECT_FALSE(caps.canStop);
     EXPECT_FALSE(caps.canContinue);
+    EXPECT_TRUE(caps.canCreateDump); // MiniDumpWriteDump (#807)
 }
 
 TEST(WindowsProcessActionsTest, StopNotSupported)
@@ -838,6 +844,187 @@ TEST(WindowsProcessActionsTest, AffinityLayoutListsThisMachinesCpus)
     ASSERT_FALSE(layout.groupSizes.empty());
     EXPECT_FALSE(layout.online.empty());
     EXPECT_TRUE(layout.online.test(0));
+}
+
+// =============================================================================
+// Create dump file (#807), against a running child process this test starts (ping, waiting on
+// itself), dumped into a folder of the test's own that is deleted afterwards. Nothing else is dumped.
+// =============================================================================
+
+namespace
+{
+
+/// A running child process (ping counting to itself for a minute), terminated on scope exit.
+class RunningChild
+{
+  public:
+    RunningChild()
+    {
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        std::wstring commandLine = L"ping.exe -n 60 127.0.0.1";
+        if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &m_Info) ==
+            0)
+        {
+            m_Info = {};
+            return;
+        }
+        // Past the loader's start-up, so the dump sees a settled process.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    }
+    RunningChild(const RunningChild&) = delete;
+    RunningChild& operator=(const RunningChild&) = delete;
+    RunningChild(RunningChild&&) = delete;
+    RunningChild& operator=(RunningChild&&) = delete;
+    ~RunningChild()
+    {
+        if (m_Info.hProcess != nullptr)
+        {
+            TerminateProcess(m_Info.hProcess, 0);
+            WaitForSingleObject(m_Info.hProcess, 5000);
+            CloseHandle(m_Info.hThread);
+            CloseHandle(m_Info.hProcess);
+        }
+    }
+
+    [[nodiscard]] bool started() const
+    {
+        return m_Info.hProcess != nullptr;
+    }
+    [[nodiscard]] ProcessTarget target() const
+    {
+        FILETIME creation{};
+        FILETIME exitTime{};
+        FILETIME kernelTime{};
+        FILETIME userTime{};
+        GetProcessTimes(m_Info.hProcess, &creation, &exitTime, &kernelTime, &userTime);
+        return {
+            .pid = static_cast<int32_t>(m_Info.dwProcessId),
+            .startTimeTicks = (static_cast<uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+        };
+    }
+
+  private:
+    PROCESS_INFORMATION m_Info{};
+};
+
+/// A folder of this test's own under %TEMP%, removed with everything in it on scope exit.
+class DumpFolder
+{
+  public:
+    DumpFolder()
+        : m_Path(std::filesystem::temp_directory_path() /
+                 ("tasksmack-dump-test-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64())))
+    {
+        std::filesystem::create_directories(m_Path);
+    }
+    DumpFolder(const DumpFolder&) = delete;
+    DumpFolder& operator=(const DumpFolder&) = delete;
+    DumpFolder(DumpFolder&&) = delete;
+    DumpFolder& operator=(DumpFolder&&) = delete;
+    ~DumpFolder()
+    {
+        try
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(m_Path, ignored);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - a destructor; a folder left behind in %TEMP% is harmless
+        {}
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const
+    {
+        return m_Path;
+    }
+    [[nodiscard]] bool empty() const
+    {
+        return std::filesystem::is_empty(m_Path);
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+} // namespace
+
+TEST(WindowsProcessDumpTest, DumpsAChildIntoTheFolderWithAMinidumpHeader)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+
+    const ProcessDumpResult result = actions.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->file.parent_path(), folder.path());
+    EXPECT_TRUE(result->file.filename().string().contains("_" + std::to_string(child.target().pid) + "_")) << result->file;
+    EXPECT_EQ(result->file.extension(), ".dmp");
+    ASSERT_TRUE(std::filesystem::exists(result->file));
+    EXPECT_EQ(result->sizeBytes, std::filesystem::file_size(result->file));
+    EXPECT_GT(result->sizeBytes, 1024U * 1024U); // full memory: far more than a header and a thread list
+    EXPECT_TRUE(result->note.empty());           // a 64-bit ping from a 64-bit test
+
+    // A minidump starts "MDMP" (MINIDUMP_HEADER::Signature).
+    std::array<char, 4> signature{};
+    {
+        std::ifstream file(result->file, std::ios::binary);
+        file.read(signature.data(), static_cast<std::streamsize>(signature.size()));
+        ASSERT_TRUE(file.good());
+    }
+    EXPECT_EQ(std::string(signature.data(), signature.size()), "MDMP");
+
+    // A second dump of the same process in the same second gets a name of its own.
+    const ProcessDumpResult second = actions.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(second.has_value()) << second.error();
+    EXPECT_NE(second->file, result->file);
+}
+
+TEST(WindowsProcessDumpTest, AnInvalidOrGoneOrReusedPidWritesNothing)
+{
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+
+    ProcessDumpResult result = actions.createDump({.pid = -1, .startTimeTicks = 1}, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "Invalid PID");
+
+    result = actions.createDump({.pid = std::numeric_limits<int32_t>::max(), .startTimeTicks = 1}, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_FALSE(result.error().empty());
+
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+    result = actions.createDump(reused, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().contains("different process")) << result.error();
+
+    // An unknown start time is refused too, rather than dumping whatever holds the PID.
+    result = actions.createDump({.pid = child.target().pid, .startTimeTicks = 0}, folder.path(), std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(folder.empty());
+}
+
+TEST(WindowsProcessDumpTest, AMissingFolderIsNamedAndACancelLeavesNoFile)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+
+    const std::filesystem::path missing = folder.path() / "missing";
+    ProcessDumpResult result = actions.createDump(child.target(), missing, std::stop_token{});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().contains("doesn't exist")) << result.error();
+
+    std::stop_source stop;
+    stop.request_stop();
+    result = actions.createDump(child.target(), folder.path(), stop.get_token());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().starts_with("Cancelled")) << result.error();
+    EXPECT_TRUE(folder.empty()); // the partial file is deleted
 }
 
 } // namespace Platform

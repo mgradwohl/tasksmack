@@ -8,6 +8,7 @@
 #include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
@@ -16,8 +17,13 @@
 #include <imgui_internal.h> // GetTopMostPopupModal(): the open modal's window, for its title and width
 
 #include <algorithm>
+#include <chrono>
+#include <expected>
+#include <filesystem>
 #include <functional>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 
 namespace App
@@ -390,5 +396,122 @@ TEST_F(ProcessActionConfirmPopupTest, DisabledTraceButtonDoesNothingWhenClicked)
     EXPECT_EQ(clickTraceButton(caps, {.pid = 0, .startTimeTicks = 0}), 0);
 }
 
+// --- Create dump file (#807): Escape cancels its confirm, stops a dump being written, closes its result
+
+/// The title of the modal on top, or "" when none is open.
+[[nodiscard]] std::string topModalTitle()
+{
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    return modal != nullptr ? std::string(modal->Name) : std::string{};
+}
+
+/// Presses the dump view's open confirm's own button: it acts on the next frames.
+void activateConfirmDump()
+{
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(DumpDetail::CONFIRM_LABEL, 0, modal->ID));
+}
+
+TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsTheDumpConfirmWithoutWriting)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessDumpView view;
+    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
+    const auto draw = [&]
+    {
+        view.render(&mock, &TARGET_A);
+    };
+    static_cast<void>(runFrame(draw));
+    static_cast<void>(runFrame(draw));
+    EXPECT_TRUE(topModalTitle().starts_with("Create a dump file of a (PID 1001)?")) << topModalTitle();
+    // Its own confirm, not the panel's: the Kill/Suspend confirm's popup is not the one open.
+    EXPECT_FALSE(runFrame(draw));
+
+    pressEscape(draw);
+    static_cast<void>(runFrame(draw));
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(view.active());
+    EXPECT_EQ(mock.createDumpCount(), 0);
+}
+
+TEST_F(ProcessActionConfirmPopupTest, AnotherSelectionClosesTheDumpConfirmUnconfirmed)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessDumpView view;
+    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
+    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_A); }));
+    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_A); }));
+    ASSERT_NE(topModalTitle(), "");
+    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_B); }));
+    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_B); }));
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(view.active());
+    EXPECT_EQ(mock.createDumpCount(), 0);
+}
+
+TEST_F(ProcessActionConfirmPopupTest, EscapeStopsADumpBeingWrittenAndClosesItsProgress)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setDumpWaitsForCancel(true);
+    ProcessDumpView view;
+    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
+    const auto draw = [&]
+    {
+        view.render(&mock, &TARGET_A);
+    };
+    static_cast<void>(runFrame(draw));
+    static_cast<void>(runFrame(draw));
+    activateConfirmDump();
+    static_cast<void>(runFrame(draw));
+    static_cast<void>(runFrame(draw));
+    ASSERT_TRUE(view.busy());
+    static_cast<void>(runFrame(draw));
+    EXPECT_TRUE(topModalTitle().starts_with("Creating dump file")) << topModalTitle();
+
+    pressEscape(draw);
+    for (int frame = 0; frame < 200 && (view.busy() || !topModalTitle().empty()); ++frame)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        static_cast<void>(runFrame(draw));
+    }
+    EXPECT_FALSE(view.busy());
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(view.active());
+    EXPECT_EQ(mock.createDumpCount(), 1);
+}
+
+TEST_F(ProcessActionConfirmPopupTest, EscapeClosesTheDumpResult)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setDumpResult(std::unexpected(std::string("Access denied")));
+    ProcessDumpView view;
+    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
+    const auto draw = [&]
+    {
+        view.render(&mock, &TARGET_A);
+    };
+    static_cast<void>(runFrame(draw));
+    static_cast<void>(runFrame(draw));
+    activateConfirmDump();
+    static_cast<void>(runFrame(draw));
+    static_cast<void>(runFrame(draw));
+    for (int frame = 0; frame < 200 && !view.result().has_value(); ++frame)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        static_cast<void>(runFrame(draw));
+    }
+    ASSERT_TRUE(view.result().has_value());
+    static_cast<void>(runFrame(draw));
+    // The progress dialog, now showing the result: ImGui keeps the title it was opened with as the
+    // window's name, so the result's title is checked on the view.
+    EXPECT_TRUE(topModalTitle().ends_with("###ProcessDump")) << topModalTitle();
+    EXPECT_EQ(view.result().value_or(DumpDetail::DumpMessage{}).title, "Couldn't create a dump file");
+
+    pressEscape(draw);
+    static_cast<void>(runFrame(draw));
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(view.active());
+}
 } // namespace
 } // namespace App

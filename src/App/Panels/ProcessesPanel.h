@@ -8,6 +8,7 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessIconView.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
@@ -438,7 +439,10 @@ class ProcessesPanel : public Panel
     // The row menu's "Set priority for N processes..." (#1484): picks the value, then the batch
     // confirmation above sets it.
     ProcessBatchPriorityDialog m_BatchPriorityDialog;
-    ProcessAffinityDialog m_AffinityDialog;        // The row menu's Set affinity... (#1887)
+    ProcessAffinityDialog m_AffinityDialog; // The row menu's Set affinity... (#1887)
+    // The row menu's Create dump file... (#807). Declared after m_ProcessActions, which its worker uses
+    // until it finishes, so it is destroyed (cancelling and waiting for a dump in flight) first.
+    ProcessDumpView m_DumpView;
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
     float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the

@@ -11,6 +11,7 @@
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDisplayFreeze.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessFilterCache.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
@@ -1032,6 +1033,8 @@ void ProcessesPanel::onDetach()
         m_Sampler.reset();
     }
     this->m_InteractionHoldSeconds = 0.0F;
+    // A dump still being written is cancelled and waited for, while its actions are still here (#807).
+    m_DumpView.shutdown();
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
     // panel lets the collector go last (#1492).
     applyUdpEventTrace(false);
@@ -1518,6 +1521,8 @@ void ProcessesPanel::renderContent()
     // A row menu's Suspend, Resume, Terminate or Kill, confirmed as in the Actions block (#1209), or a
     // batch priority change (#1484)
     renderRowActionConfirm();
+    // The row menu's Create dump file... (#807): its confirm, then its progress and result.
+    m_DumpView.render(m_ProcessActions.get());
 
     // The row menu (#1209), for the process m_RowMenuTarget holds. One popup at panel level rather
     // than one per row, opened by ID from the row (m_RowMenuPopupId, this same ID stack).
@@ -2548,8 +2553,9 @@ void ProcessesPanel::applyKeyboardInput(const std::vector<Domain::ProcessSnapsho
     // With several rows selected (#804), F9 asks to kill all of them, in the batch confirm; with one,
     // the one highlighted row, when it is visible.
     // A batch priority change (#1484), in its dialog or its confirmation, is a row action too.
-    const bool rowActionPending =
-        m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() || m_AffinityDialog.isPending();
+    // So is a dump's confirm, progress or result (#807).
+    const bool rowActionPending = m_ShowRowActionConfirm || m_RowAction.pending() || m_BatchPriorityDialog.isPending() ||
+                                  m_AffinityDialog.isPending() || m_DumpView.active();
     if (killRequested && m_Selection.size() > 1)
     {
         // Only while at least one selected row is visible: with every selected row filtered out, F9
@@ -2745,6 +2751,19 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
                                   // Read once, on the click: the groups and core kinds to arrange the boxes by (#1881)
                                   m_ProcessActions ? m_ProcessActions->affinityLayout() : Platform::CpuAffinityLayout{});
         }
+    }
+    // One process's dump file (#807), as Task Manager's row menu offers it; never for a selection.
+    if (DumpDetail::offersCreateDump(can, batchCount))
+    {
+        if (!can.canSetAffinity || batchCount != 0) // else it shares Set affinity...'s group
+        {
+            ImGui::Separator();
+        }
+        if (ImGui::MenuItem(DumpDetail::CREATE_DUMP_LABEL))
+        {
+            m_DumpView.request({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, proc.name, DumpDetail::defaultDumpDirectory());
+        }
+        ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
     }
     if (can.canTerminate || can.canKill)
     {

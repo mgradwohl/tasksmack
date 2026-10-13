@@ -29,12 +29,13 @@ class ProcessPriorityView;
 namespace ProcessActionsBlock
 {
 
-/// Whether there is anything to offer: the platform can run at least one action, or set priority or
-/// I/O priority, or trace system calls (shown even greyed out). Without, neither card is drawn.
+/// Whether there is anything to offer: the platform can run at least one action, set priority, I/O
+/// priority or affinity, write a dump file, or trace system calls (shown even greyed out). Without,
+/// neither card is drawn.
 [[nodiscard]] constexpr bool hasAnyAction(const Platform::ProcessActionCapabilities& capabilities) noexcept
 {
     return capabilities.canTerminate || capabilities.canKill || capabilities.canStop || capabilities.canContinue ||
-           capabilities.canSetPriority || capabilities.canSetIoPriority || capabilities.canSetAffinity ||
+           capabilities.canSetPriority || capabilities.canSetIoPriority || capabilities.canSetAffinity || capabilities.canCreateDump ||
            capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
 }
 

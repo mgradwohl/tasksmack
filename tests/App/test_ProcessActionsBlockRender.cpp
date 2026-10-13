@@ -12,6 +12,7 @@
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessDetailsLayout.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessOverviewCard.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "Mocks/MockProbes.h"
@@ -31,12 +32,15 @@
 #include <imgui_internal.h> // The cards' child windows, for their size, and the open modal
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace App
 {
@@ -915,5 +919,77 @@ TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheCardsStartARowOfTheir
     EXPECT_FLOAT_EQ(priority->ScrollMax.y, 0.0F);
 }
 
+// #807: Create dump file... is in the card only where the platform can write a dump; from it, a confirm,
+// the dump through the platform for the process shown, and a result naming the file, closed by Close.
+TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndNamesTheFile)
+{
+    Harness h;
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(caps), layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+
+    // Not offered where the platform can't (Linux until its half lands).
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_FALSE(text.contains("Create dump file")) << text;
+    float withoutDump = 0.0F;
+    float withDump = 0.0F;
+    float dumpButton = 0.0F;
+    (void) runFrame(
+        [&]
+        {
+            withoutDump = ProcessActionsBlock::measure(caps).buttons;
+            Platform::ProcessActionCapabilities dumpCaps = caps;
+            dumpCaps.canCreateDump = true;
+            withDump = ProcessActionsBlock::measure(dumpCaps).buttons;
+            dumpButton = ProcessActionsView::createDumpButtonWidth(dumpCaps);
+        });
+    EXPECT_FLOAT_EQ(ProcessActionsView::createDumpButtonWidth(caps), 0.0F);
+    EXPECT_GT(dumpButton, 0.0F);
+    EXPECT_FLOAT_EQ(withDump, std::max(withoutDump, dumpButton));
+
+    caps.canCreateDump = true;
+    const std::filesystem::path file = std::filesystem::path("dumps") / "victim_1001.dmp";
+    h.mock.setDumpResult(Platform::ProcessDump{.file = file, .sizeBytes = 4096, .note = {}});
+    ASSERT_FALSE(runFrame(body));
+    EXPECT_TRUE(text.contains("Create dump file...")) << text;
+
+    ImGui::ActivateItemByID(ImHashStr(DumpDetail::CREATE_DUMP_LABEL, 0, actionsWindow()->ID));
+    (void) runFrame(body);
+    (void) runFrame(body);
+    EXPECT_TRUE(h.actionsView.dumpView().confirmPending());
+    EXPECT_TRUE(text.contains("A full memory dump of victim (PID 1001)")) << text;
+    EXPECT_EQ(h.mock.createDumpCount(), 0); // nothing until confirmed
+    // F9 waits while a dump's dialog is up.
+    EXPECT_FALSE(h.actionsView.requestKillShortcut(caps, TARGET, h.name));
+
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(DumpDetail::CONFIRM_LABEL, 0, modal->ID));
+    for (int frame = 0; frame < 200 && !h.actionsView.dumpView().result().has_value(); ++frame)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        (void) runFrame(body);
+    }
+    (void) runFrame(body);
+    EXPECT_EQ(h.mock.createDumpCount(), 1);
+    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    EXPECT_EQ(h.mock.lastDumpDirectory(), DumpDetail::defaultDumpDirectory());
+    EXPECT_TRUE(text.contains("Wrote a dump file of victim (PID 1001)")) << text;
+    EXPECT_TRUE(text.contains(file.string())) << text;
+
+    modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("Close", 0, modal->ID));
+    (void) runFrame(body);
+    EXPECT_FALSE(runFrame(body));
+    EXPECT_FALSE(h.actionsView.dumpView().active());
+}
 } // namespace
 } // namespace App

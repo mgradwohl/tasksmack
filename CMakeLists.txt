@@ -158,6 +158,7 @@ set(TASKSMACK_SOURCES
     src/App/Panels/ProcessBatchPriorityDialog.cpp
     src/App/Panels/ProcessAffinityDialog.cpp
     src/App/Panels/ProcessActionsView.cpp
+    src/App/Panels/ProcessDumpView.cpp
     src/App/Panels/ProcessActionsBlock.cpp
     src/App/Panels/ProcessPriorityView.cpp
     src/App/Panels/ProcessIoPriorityView.cpp
@@ -237,6 +238,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessProbe.cpp
     src/Platform/Windows/WindowsEtwNetCollector.cpp
     src/Platform/Windows/WindowsProcessActions.cpp
+    src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessConnections.cpp
     src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
@@ -410,6 +412,8 @@ elseif(WIN32)
     list(APPEND TASKSMACK_HEADERS
         src/Platform/Windows/WindowsProcessProbe.h
         src/Platform/Windows/WindowsProcessActions.h
+        src/Platform/Windows/WindowsProcessDump.h
+        src/Platform/Windows/WindowsProcessDumpMath.h
         src/Platform/Windows/WindowsProcessConnections.h
         src/Platform/Windows/WindowsProcessIconSource.h
         src/Platform/Windows/WindowsProcessIconMath.h

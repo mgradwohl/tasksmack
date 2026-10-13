@@ -15,6 +15,8 @@
 // clang-format on
 
 #include <cstdint>
+#include <filesystem>
+#include <stop_token>
 #include <vector>
 
 namespace Platform
@@ -79,6 +81,11 @@ class WindowsProcessActions : public IProcessActions
     /// (#1881); every CPU chosen clears the default CPU sets instead.
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
+    /// A full-memory minidump through dbghelp's MiniDumpWriteDump (#807), as Task Manager writes one;
+    /// see Windows::writeProcessDump(). Opens the process through the same identity check as every
+    /// action, and says why when that is refused: a protected process, one elevated or another user's.
+    [[nodiscard]] ProcessDumpResult
+    createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override;
 
   private:
     /// Helper to terminate a process with given exit code

@@ -4,7 +4,9 @@
 
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <format>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -137,6 +139,20 @@ struct CpuAffinityLayout
     bool appliedAsCpuSets = false;
 };
 
+/// A dump file IProcessActions::createDump() wrote (#807).
+struct ProcessDump
+{
+    std::filesystem::path file;  ///< The file written.
+    std::uint64_t sizeBytes = 0; ///< Its size on disk.
+    std::string note;            ///< Something worth knowing about the dump (a 32-bit process's); empty when nothing.
+};
+
+/// The dump file written, or the message saying why there is none.
+using ProcessDumpResult = std::expected<ProcessDump, std::string>;
+
+/// What createDump() says where the platform cannot write a dump.
+inline constexpr const char* DUMP_UNSUPPORTED_MESSAGE = "Creating a dump file isn't available on this system";
+
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
 {
@@ -154,6 +170,8 @@ struct ProcessActionCapabilities
     bool canSetAffinity = false;
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
+    /// createDump(): a full-memory dump file of the process (#807; Windows: MiniDumpWriteDump).
+    bool canCreateDump = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -225,6 +243,23 @@ class IProcessActions
         static_cast<void>(target);
         static_cast<void>(cpus);
         return ProcessActionResult::error("Setting CPU affinity isn't available on this system");
+    }
+
+    /// Writes a full-memory dump of the target into @p directory (#807), as Task Manager's "Create dump
+    /// file" does, and returns the file written. Blocking, for seconds or minutes with a large process,
+    /// so it is called on a worker thread, never the UI thread; it may run there while the UI thread
+    /// calls the other actions, so an implementation keeps no state that this changes. Once
+    /// @p stopToken is requested it stops at its next chance and deletes the partial file. Refused, as
+    /// every action is, unless the process at the target's PID is the target. The default refuses it
+    /// as unsupported, matching ProcessActionCapabilities::canCreateDump's default (false), which an
+    /// implementation that does not override this must leave as it is.
+    [[nodiscard]] virtual ProcessDumpResult
+    createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
+    {
+        static_cast<void>(target);
+        static_cast<void>(directory);
+        static_cast<void>(stopToken);
+        return std::unexpected(std::string(DUMP_UNSUPPORTED_MESSAGE));
     }
 
     /// The processor groups, the CPUs online and the core kinds, for the Set affinity dialog (#1881).

@@ -30,6 +30,8 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -729,8 +731,51 @@ class MockProcessActions : public Platform::IProcessActions
         return m_SyscallTraceCount;
     }
 
+    /// What createDump() returns (#807).
+    void setDumpResult(Platform::ProcessDumpResult result)
+    {
+        m_DumpResult = std::move(result);
+    }
+    /// createDump() blocks until its stop token is requested, then reports itself cancelled, as the
+    /// Windows one does: for tests of Cancel.
+    void setDumpWaitsForCancel(bool wait)
+    {
+        m_DumpWaitsForCancel = wait;
+    }
+
+    /// Runs on ProcessDumpView's worker. What it records is read by a test only after the worker's
+    /// result was taken in (the future's get() orders the two), so it needs no lock.
+    [[nodiscard]] Platform::ProcessDumpResult
+    createDump(const Platform::ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override
+    {
+        m_LastTarget = target;
+        m_LastDumpDirectory = directory;
+        ++m_CreateDumpCount;
+        if (m_DumpWaitsForCancel)
+        {
+            std::mutex mutex;
+            std::condition_variable_any wake;
+            std::unique_lock lock(mutex);
+            wake.wait(lock, stopToken, [] { return false; });
+            return std::unexpected(std::string("Cancelled; the partial dump file was deleted"));
+        }
+        return m_DumpResult;
+    }
+    [[nodiscard]] int createDumpCount() const
+    {
+        return m_CreateDumpCount;
+    }
+    [[nodiscard]] const std::filesystem::path& lastDumpDirectory() const
+    {
+        return m_LastDumpDirectory;
+    }
+
   private:
     Platform::ProcessActionCapabilities m_Capabilities;
+    Platform::ProcessDumpResult m_DumpResult = std::unexpected(std::string("no dump result set"));
+    bool m_DumpWaitsForCancel = false;
+    int m_CreateDumpCount = 0;
+    std::filesystem::path m_LastDumpDirectory;
     Platform::ProcessActionResult m_TerminateResult = Platform::ProcessActionResult::ok();
     Platform::ProcessActionResult m_KillResult = Platform::ProcessActionResult::ok();
     Platform::ProcessActionResult m_StopResult = Platform::ProcessActionResult::ok();

@@ -6,6 +6,7 @@
 #include "ProcessAffinityDialog.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "ProcessDumpView.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -40,12 +41,41 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
     // goes under the block's last row (renderResultLine()).
     const bool anyButton = renderButtons(capabilities, processName, target);
     renderSyscallTraceButton(actions, capabilities, target, anyButton);
-    renderSetAffinityButton(actions,
-                            capabilities,
-                            processName,
-                            target,
-                            currentAffinity,
-                            anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported);
+    const bool anyBeforeAffinity = anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
+    renderSetAffinityButton(actions, capabilities, processName, target, currentAffinity, anyBeforeAffinity);
+    renderCreateDumpButton(capabilities, processName, target, anyBeforeAffinity || capabilities.canSetAffinity);
+}
+
+void ProcessActionsView::renderCreateDumpButton(const Platform::ProcessActionCapabilities& capabilities,
+                                                const std::string& processName,
+                                                const Platform::ProcessTarget& target,
+                                                bool afterButtons)
+{
+    if (!DumpDetail::offersCreateDump(capabilities, 0))
+    {
+        return;
+    }
+    // As the trace and affinity buttons: on the row at its own width when it fits, else on a row of its own.
+    const float width = createDumpButtonWidth(capabilities);
+    if (afterButtons)
+    {
+        const float rowEnd = ImGui::GetItemRectMax().x;
+        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
+        {
+            ImGui::SameLine();
+        }
+    }
+    const bool disabled = target.pid <= 0 || m_DumpView.active();
+    ImGui::BeginDisabled(disabled);
+    const bool pressed = ImGui::Button(DumpDetail::CREATE_DUMP_LABEL, ImVec2(width, 0.0F));
+    ImGui::EndDisabled();
+    if (pressed && !disabled)
+    {
+        // The process is captured now; the confirm and the dump act only on it.
+        m_DumpView.request(target, processName, DumpDetail::defaultDumpDirectory());
+    }
+    ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
 }
 
 void ProcessActionsView::renderSetAffinityButton(const Platform::IProcessActions* actions,
@@ -228,6 +258,16 @@ float ProcessActionsView::setAffinityButtonWidth(const Platform::ProcessActionCa
                                                           ImGui::GetStyle().FramePadding.x);
 }
 
+float ProcessActionsView::createDumpButtonWidth(const Platform::ProcessActionCapabilities& capabilities)
+{
+    if (!DumpDetail::offersCreateDump(capabilities, 0))
+    {
+        return 0.0F;
+    }
+    return ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(DumpDetail::CREATE_DUMP_LABEL).x,
+                                                          ImGui::GetStyle().FramePadding.x);
+}
+
 float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     std::size_t count = 0;
@@ -237,9 +277,10 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
     }
     const float actionRow =
         ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
-    // The trace and affinity buttons each take a row of their own when they don't fit after the others.
+    // The trace, affinity and dump buttons each take a row of their own when they don't fit after the others.
     return ProcessDetailsLayout::computeActionButtonsWidth(
-        actionRow, std::max(syscallTraceButtonWidth(capabilities), setAffinityButtonWidth(capabilities)));
+        actionRow,
+        std::max({syscallTraceButtonWidth(capabilities), setAffinityButtonWidth(capabilities), createDumpButtonWidth(capabilities)}));
 }
 
 bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities& capabilities,

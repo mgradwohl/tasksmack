@@ -41,6 +41,8 @@ inline constexpr std::string_view CRASH_HISTORY_READ_THREAD_NAME = "ts-crash-rea
 inline constexpr std::string_view SERVICE_ACTION_THREAD_NAME = "ts-svc-action";
 /// The worker that runs one Startup tab action (enable, disable) at a time (#801).
 inline constexpr std::string_view STARTUP_ACTION_THREAD_NAME = "ts-auto-action";
+/// The worker that writes one "Create dump file" dump at a time (#807).
+inline constexpr std::string_view DUMP_THREAD_NAME = "ts-dump";
 /// The worker that reads process icons for the Processes table and Process Details (#1800).
 inline constexpr std::string_view ICON_READ_THREAD_NAME = "ts-icon-read";
 /// The thread that consumes the opt-in UDP event trace on Windows (#1492) while it runs.

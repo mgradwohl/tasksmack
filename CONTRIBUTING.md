@@ -500,6 +500,9 @@ nice value) and call count per method, so a test can assert both what was called
 argument. Every action takes a `Platform::ProcessTarget` (PID plus the probe's raw start time),
 not a bare PID, and real implementations refuse the action unless the process at that PID has that
 start time (#973); `lastTarget()` returns the whole target the most recent action received.
+`createDump()` (#807) returns what `setDumpResult(...)` set, or with `setDumpWaitsForCancel(true)`
+blocks until its stop token is requested, for tests of a dump's Cancel; `createDumpCount()` and
+`lastDumpDirectory()` record the call.
 
 For `Platform::IProcessEnvironmentReader` (the on-demand environment read behind Process Details'
 Environment section, #179), use `TestMocks::MockProcessEnvironmentReader`: `setResult(...)` and
