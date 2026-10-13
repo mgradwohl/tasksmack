@@ -27,6 +27,15 @@ if(TASKSMACK_ENABLE_FETCHCONTENT_CACHE)
 endif()
 
 include(FetchContent)
+
+# TASKSMACK_ENABLE_PCH=OFF means no precompiled headers anywhere, the dependencies' own included.
+# CI builds with it off so ccache can cache every compile (#1406); SDL3 adds a PCH to its own target
+# regardless, which left its ~260 C files uncacheable, about 30% of every CI build's compiler
+# calls (#1875).
+if(NOT TASKSMACK_ENABLE_PCH)
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
+endif()
+
 # Keep source-based dependencies deterministic: we rely on <dep>_SOURCE_DIR values below.
 set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 

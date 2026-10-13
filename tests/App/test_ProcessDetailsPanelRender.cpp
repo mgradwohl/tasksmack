@@ -182,6 +182,24 @@ TEST_F(ProcessDetailsPanelRenderTest, ASelectedProcessShowsItsOverview)
     EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 2);
 }
 
+// #1926: the Details tab is named after the process; with several processes selected in the table,
+// often some of one name, it gives the PID too, so it says which of them it shows.
+TEST_F(ProcessDetailsPanelRenderTest, TheTabLabelNamesThePidWhileSeveralAreSelected)
+{
+    const auto panel = activePanel();
+    EXPECT_EQ(panel->tabLabel(), "Select a process");
+    panel->setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(0.0, 10.0)};
+    panel->updateWithSamples(samples, 1.0F);
+    panel->setSelectionCount(1);
+    EXPECT_EQ(panel->tabLabel(), "server");
+    panel->setSelectionCount(3);
+    EXPECT_EQ(panel->tabLabel(), "server (PID 4242)");
+    EXPECT_EQ(panel->tabLabel(), "server (PID 4242)"); // Asked again, the same text
+    panel->setSelectionCount(1);
+    EXPECT_EQ(panel->tabLabel(), "server");
+}
+
 // #1395: the optional identity and runtime rows -- Publisher (Windows), Type (Windows) and Container
 // (Linux, #805) -- are shown when the process has them.
 TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)

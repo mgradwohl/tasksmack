@@ -160,11 +160,15 @@ jobs:
       # benchmark build fails here rather than on main (#1348).
       build_benchmarks: true
 
+  # Windows debug build and test, plus the Windows clang-tidy run (#1875): one job, so the LLVM
+  # restore, configure-check seed, configure and FetchContent restore happen once per PR head
+  # instead of twice. clang-tidy runs after the tests (PRs check changed files only, the nightly
+  # schedule and manual runs everything), never on push to main (the PR already checked the same
+  # tree). The nightly only runs clang-tidy here: it builds Windows release instead.
   build-windows-debug:
     needs: [detect-docs-only]
     if: >-
       (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      github.event_name != 'schedule' &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
@@ -173,6 +177,8 @@ jobs:
     with:
       os: windows-2025
       build_type: debug
+      build: ${{ github.event_name != 'schedule' }}
+      clang_tidy: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
 
   # Windows release (~12 min) runs nightly and on manual runs, not on every PR or every push to
   # main (#1134, #1406); Linux release above covers the PR gate and every push.
@@ -334,135 +340,49 @@ jobs:
 
   # Blocking clang-tidy for Windows-only code (#1233). The Linux job above can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
-  # without failing anything. Same event rules as static-analysis (PRs check changed files only,
-  # nightly checks everything), and also skipped when every change is Linux-only.
+  # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job
+  # only reports its result, under the name the "Main Builds" ruleset requires. Same event rules
+  # as before: skipped on push to main, for docs-only changes and when every change is Linux-only.
+  # always(): a failed or cancelled build-windows-debug must fail this check, not skip it (a
+  # skipped required check counts as passing).
   static-analysis-windows:
     name: Static Analysis (Windows)
-    needs: [detect-docs-only]
+    needs: [detect-docs-only, build-windows-debug]
     if: >-
+      always() &&
+      needs.detect-docs-only.result == 'success' &&
       (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
       (github.event_name != 'push' || github.ref != 'refs/heads/main') &&
       needs.detect-docs-only.outputs.linux_only != 'true'
-    runs-on: windows-2025
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      LLVM_ROOT: C:\Program Files\LLVM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # The PR merge commit plus its first parent (the base), for the changed-file diff.
-          fetch-depth: 2
-
-      # On a PR, check only the translation units the change can affect (#1406): changed src/ .cpp
-      # files plus every .cpp that includes a changed src/ header, or everything when the tidy
-      # config, tidy scripts, CMake files or this workflow changed (tools/tidy-changed-files.py).
-      # The nightly schedule and manual runs analyze every file.
-      - name: Select files to analyze
-        id: select
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
-            echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          python -I -X utf8 tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform windows > tidy-files.txt
-          # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
-          sed -i 's/\r$//' tidy-files.txt
-          if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
-            echo "mode=all" >> "$GITHUB_OUTPUT"
-          elif [[ ! -s tidy-files.txt ]]; then
-            echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "No translation unit affected by this change; clang-tidy skipped." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "mode=list" >> "$GITHUB_OUTPUT"
-            { echo "clang-tidy on $(wc -l < tidy-files.txt) changed/affected file(s):"; echo '```'; cat tidy-files.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Setup Windows LLVM
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/setup-windows-llvm
-        with:
-          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
-
-      - name: Setup Python for GLAD
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/setup-python-glad
-
-      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
-      - name: Restore FetchContent dependencies
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/fetchcontent-cache
-        with:
-          mode: restore
-
-      # Restore only: build-windows-debug saves the win-debug results (#1406). The check results
-      # don't depend on ccache, which this job turns off.
-      - name: Restore configure-check results
-        id: cmake-checks
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/cmake-check-cache
-        with:
-          mode: restore
-          preset: win-debug
-          toolchain: llvm-${{ env.LLVM_SEMVER_VERSION }}
-
-      - name: Configure
-        if: steps.select.outputs.mode != 'none'
-        shell: pwsh
-        # No ccache in the tidy jobs (#1406); keep CMake from finding the stale ccache that
-        # Strawberry Perl puts on the image PATH.
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF ${{ steps.cmake-checks.outputs.cmake-args }}
-
-      - name: Build GLAD
-        if: steps.select.outputs.mode != 'none'
-        shell: pwsh
-        run: cmake --build --preset win-debug --target glad_gl_core_33
-
-      # Per-file result cache (#1785), as in the Linux job.
-      - name: Restore clang-tidy results
-        id: tidy-cache
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/tidy-result-cache
-        with:
-          mode: restore
-          fresh: ${{ github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0' }}
-
-      - name: Run clang-tidy (Windows)
-        if: steps.select.outputs.mode != 'none'
-        shell: pwsh
+      - name: Report the clang-tidy (Windows) result
         env:
-          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
+          JOB_RESULT: ${{ needs.build-windows-debug.result }}
+          TIDY_MODE: ${{ needs.build-windows-debug.outputs.tidy-mode }}
+          TIDY_OUTCOME: ${{ needs.build-windows-debug.outputs.tidy-outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if ('${{ steps.select.outputs.mode }}' -eq 'list') {
-            $files = @(Get-Content tidy-files.txt | Where-Object { $_ })
-            # *>&1, not 2>&1: the script prints findings with Write-Host (information stream).
-            & ./tools/clang-tidy.ps1 debug -Files $files -CacheDir $env:RESULT_CACHE *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
-          } else {
-            & ./tools/clang-tidy.ps1 debug -CacheDir $env:RESULT_CACHE *>&1 | Tee-Object -FilePath clang-tidy-windows-output.txt
-          }
-          exit $LASTEXITCODE
-
-      - name: Summarize clang-tidy findings (Windows)
-        if: always() && steps.select.outputs.mode != 'none'
-        shell: bash
-        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-windows-output.txt --title 'clang-tidy findings (Windows)' >> "$GITHUB_STEP_SUMMARY"
-
-      # As in the Linux job: save after a failure too, never from a pull request (#1554).
-      - name: Save clang-tidy results
-        if: always() && steps.tidy-cache.outcome == 'success' && github.event_name != 'pull_request'
-        uses: ./.github/actions/tidy-result-cache
-        with:
-          mode: save
-
-      - name: Upload clang-tidy results (Windows)
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: clang-tidy-results-windows
-          path: clang-tidy-windows-output.txt
-          if-no-files-found: ignore
-          retention-days: 5
+          where="the \"Run clang-tidy (Windows)\" step of build-windows-debug / Build & Test (windows-2025 debug), ${RUN_URL}"
+          if [[ "$TIDY_OUTCOME" == 'success' ]]; then
+            echo "✅ clang-tidy (Windows) passed (${TIDY_MODE} files)."
+            exit 0
+          fi
+          if [[ "$TIDY_MODE" == 'none' ]]; then
+            echo "✅ No translation unit affected by this change; clang-tidy (Windows) skipped."
+            exit 0
+          fi
+          if [[ "$TIDY_OUTCOME" == 'failure' ]]; then
+            msg="clang-tidy (Windows) found problems: see ${where}, and its job summary."
+          else
+            msg="clang-tidy (Windows) did not run (build-windows-debug: ${JOB_RESULT:-not run}, clang-tidy step: ${TIDY_OUTCOME:-not reached}); see ${RUN_URL}."
+          fi
+          echo "::error title=Static Analysis (Windows)::${msg}"
+          echo "## Static Analysis (Windows)" >> "$GITHUB_STEP_SUMMARY"
+          echo "❌ ${msg}" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   include-analysis:
     needs: [detect-docs-only, build-linux-debug]

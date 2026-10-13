@@ -2,7 +2,8 @@
 /// @brief The main tab bar, headless (#1547): the first tab starts selected, a tab asked for is
 /// selected that frame and stays selected after the request ends, a click selects another, and the
 /// selection follows a tab's "###" ID rather than its changing text. The bar keeps the content gutter
-/// on its right as on its left, and measureWidth() is the width at which every tab fits whole (#1939).
+/// on its right as on its left, and measureWidth() is the width at which every tab fits whole (#1939);
+/// a Details label longer than the one measured, "name (PID n)" (#1926), shrinks inside the gutter.
 
 #include "App/MainTabBarView.h"
 #include "App/ShellMetrics.h"
@@ -12,6 +13,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // ImHashStr(), ActivateItemByID(): pressing a tab
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -176,6 +178,29 @@ TEST_F(MainTabBarViewRenderTest, NarrowerTheTabsShrinkInsideTheGutter)
     EXPECT_FLOAT_EQ(bar().BarRect.Max.x, width - inset());
     EXPECT_LE(lastTabRight(), width - inset() + 0.01F);
     EXPECT_GT(lastTabRight(), width - inset() - 4.0F); // The tabs fill the bar, less ImGui truncating each width
+}
+
+// The minimum width is measured with the Details tab's no-selection label (#1939). With several
+// processes selected that tab reads "name (PID n)" (#1926), which can be longer: at that minimum the
+// tabs shrink to fit, and the last still ends inside the right-hand gutter rather than overflowing it.
+TEST_F(MainTabBarViewRenderTest, ALongerDetailsLabelAtTheMinimumShrinksInsideTheGutter)
+{
+    m_Tabs[0].label = "Overview of this machine###OverviewTab";
+    m_Tabs[1].label = "Processes running now###ProcessesTab";
+    m_Tabs[2].label = "Select a process###DetailsTab";
+    static_cast<void>(frame());
+    const float width = std::ceil(m_MeasuredWidth); // The window's minimum, measured with nothing selected
+    ASSERT_GT(width, 0.0F);
+    m_Tabs[2].label = "pyright-langserver (PID 3400)###DetailsTab";
+    static_cast<void>(frame(width));
+    static_cast<void>(frame(width));
+
+    const ImGuiTabBar& tabBar = bar();
+    ASSERT_EQ(tabBar.Tabs.Size, static_cast<int>(m_Tabs.size()));
+    EXPECT_FLOAT_EQ(tabBar.BarRect.Max.x, width - inset());
+    EXPECT_LE(lastTabRight(), width - inset() + 0.01F);
+    // The longer label did not fit whole, so a tab was shrunk rather than pushed past the bar.
+    EXPECT_TRUE(std::ranges::any_of(tabBar.Tabs, [](const ImGuiTabItem& tab) { return tab.Width < tab.ContentWidth; }));
 }
 
 // The measured width follows the labels: a longer one widens it by the difference.

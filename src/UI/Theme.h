@@ -223,6 +223,12 @@ struct ColorScheme
     ImVec4 tableBorderLight;
     ImVec4 tableRowBg;
     ImVec4 tableRowBgAlt;
+    /// Marker of a multi-selection's primary row, the one Process Details shows (#1926): a bar at the
+    /// row's left edge and an outline round it. ui.table.selection_primary, else ui.misc.nav_highlight
+    /// (ImGui's focus colour), moved toward text_primary until it reaches
+    /// ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN on the selection fill of a plain and a striped row.
+    /// Opaque.
+    ImVec4 selectionPrimary;
     ImVec4 textSelectedBg;
     ImVec4 dragDropTarget;
     ImVec4 navHighlight;

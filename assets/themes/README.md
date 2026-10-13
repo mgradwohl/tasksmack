@@ -249,6 +249,11 @@ moves it toward `text_primary` just far enough to reach 3:1 contrast (WCAG 1.4.1
 boundary) on the window, child and popup backgrounds. Set `border` under `[ui.frame]` only to pick
 the outline's hue; it can't make the outline fainter than that.
 
+With several rows selected in the Processes table, the primary row -- the one Process Details shows --
+gets a bar at its left edge and an outline. Their colour is `[ui.table] selection_primary` if the theme
+sets one, otherwise `[ui.misc] nav_highlight`, moved toward `text_primary` just far enough to reach 3:1
+contrast on the selection fill (`[ui.header] normal`) of a plain and a striped row.
+
 ## Color Format
 
 Colors use hex format:
