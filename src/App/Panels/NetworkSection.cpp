@@ -765,6 +765,10 @@ void renderNetworkSection(RenderContext& ctx)
             fill.emplace(*ctx.fillState, diskGrid ? 1U : 0U, gridMinimum);
             ctx.fill = &*fill;
         }
+        // The network chart and the one-disk chart below it share their plot edges (#1206), as their
+        // cards and NowBar columns do, so the two time axes and bars line up (#1937). The per-disk
+        // grid renders after this scope: its cells are not part of the stack.
+        const UI::Widgets::AlignedChartStack alignedCharts("##NetworkTabCharts");
 
         if (ctx.systemPublication == nullptr || !ctx.hasNetworkCounters)
         {
