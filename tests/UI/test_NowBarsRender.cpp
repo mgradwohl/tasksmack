@@ -214,6 +214,46 @@ TEST_F(NowBarsRenderTest, BarsOnlyDrawsTheBarsAndNoChart)
     EXPECT_GT(drawn.vertices, 0);   // but the bars are drawn
 }
 
+// #1918: a bar with no reading (N/A) is not drawn as a zero bar. A measured 0 still gets its
+// MIN_BAR_FILL_HEIGHT baseline in the series' colour; an unavailable bar has none of its colour at all
+// (its track is hatched in the muted text colour instead), with or without a chart beside it.
+TEST_F(NowBarsRenderTest, AnUnavailableBarIsNotDrawnAsAZeroBar)
+{
+    const ImVec4 color(0.9F, 0.4F, 0.1F, 1.0F);
+    const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
+    const auto verticesInBarColour = [packed]
+    {
+        int count = 0;
+        for (const ImDrawList* list : ImGui::GetDrawData()->CmdLists)
+        {
+            for (const ImDrawVert& vertex : list->VtxBuffer)
+            {
+                count += (vertex.col == packed) ? 1 : 0;
+            }
+        }
+        return count;
+    };
+
+    for (const bool barsOnly : {true, false})
+    {
+        const std::array<NowBar, 1> zero{
+            NowBar{.valueText = "0.0 B/s", .label = "Sent", .tooltipText = {}, .value01 = 0.0, .color = color}};
+        static_cast<void>(frame(zero, barsOnly, NowBarValues::None));
+        EXPECT_GT(verticesInBarColour(), 0) << "barsOnly=" << barsOnly; // the measured 0's baseline
+
+        const std::array<NowBar, 1> unavailable{NowBar{.valueText = "N/A",
+                                                       .label = "Sent",
+                                                       .tooltipText = {},
+                                                       .value01 = 0.0,
+                                                       .color = color,
+                                                       .marker = ImPlotMarker_None,
+                                                       .available = false}};
+        const Drawn drawn = frame(unavailable, barsOnly, NowBarValues::None);
+        EXPECT_EQ(verticesInBarColour(), 0) << "barsOnly=" << barsOnly;
+        EXPECT_GT(drawn.vertices, 0); // the hatched track is still there
+    }
+}
+
 TEST_F(NowBarsRenderTest, ABarSaysWhatItIsOnHover)
 {
     const std::array<NowBar, 2> bars = twoBars();

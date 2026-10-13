@@ -171,7 +171,8 @@ constexpr TwoSeriesUnits BYTES_PER_SEC_UNITS{.axisFormatter = formatAxisBytesPer
 constexpr TwoSeriesUnits BYTES_UNITS{.axisFormatter = UI::Widgets::formatAxisBytes, .valueText = bytesOrNA};
 
 /// Draws a two-series chart -- @p primary at the primary series' weight, @p secondary as the first
-/// secondary -- on an axis in @p units from 0 to @p upper, with its hover tooltip.
+/// secondary -- on an axis in @p units from 0 to @p upper, with its hover tooltip. @p notice, when set,
+/// is shown over the plot in place of the "collecting" hint: the chart has no readings (#1918).
 void drawTwoSeriesPlot(const char* plotId,
                        const ChartTimeAxis& axis,
                        double upper,
@@ -179,7 +180,8 @@ void drawTwoSeriesPlot(const char* plotId,
                        std::uint64_t historyGeneration,
                        const TwoSeriesUnits& units,
                        const RateSeries& primary,
-                       const RateSeries& secondary)
+                       const RateSeries& secondary,
+                       const char* notice = nullptr)
 {
     const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
         UI::Widgets::withHeight(
@@ -190,7 +192,14 @@ void drawTwoSeriesPlot(const char* plotId,
     {
         return;
     }
-    UI::Widgets::drawCollectingHint(axis.alignedCount);
+    if (notice != nullptr)
+    {
+        UI::Widgets::drawPlotNotice(notice);
+    }
+    else
+    {
+        UI::Widgets::drawCollectingHint(axis.alignedCount);
+    }
     const int plotCount = UI::Format::checkedCount(axis.alignedCount);
     plotSeries(
         primary.label, axis.timeData.data(), primary.data.data(), plotCount, primary.color, primary.fill, seriesStyle(SeriesRole::Primary));
@@ -1178,12 +1187,18 @@ void ProcessDetailsCharts::renderIoStats(const ProcessChartContext& ctx, UI::Wid
                          .label = IO_READ_LABEL,
                          .tooltipText = {},
                          .value01 = ioAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.ioReadBytesPerSec, ioAxisUpper) : 0.0,
-                         .color = theme.scheme().chartIo};
+                         .color = theme.scheme().chartIo,
+                         .marker = ImPlotMarker_None,
+                         .available = ioAvailable}; // N/A is drawn hatched, not as a 0 bar (#1918)
     const NowBar writeBar{.valueText = Detail::rateTextOrNA(ioAvailable, smoothed.ioWriteBytesPerSec),
                           .label = IO_WRITE_LABEL,
                           .tooltipText = {},
                           .value01 = ioAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.ioWriteBytesPerSec, ioAxisUpper) : 0.0,
-                          .color = theme.scheme().chartIoWrite};
+                          .color = theme.scheme().chartIoWrite,
+                          .marker = ImPlotMarker_None,
+                          .available = ioAvailable};
+    // Nothing to draw and no reading now: say so over the plot, rather than an empty axis (#1918).
+    const char* ioNotice = Detail::rateChartNotice(ioAvailable, readData, writeData, Detail::IO_NOT_AVAILABLE_NOTICE);
 
     // Keep the plot and its hover tooltip together: both consume the same aligned vectors, and the
     // lambda is rendered alongside the matching NowBars below.
@@ -1197,7 +1212,8 @@ void ProcessDetailsCharts::renderIoStats(const ProcessChartContext& ctx, UI::Wid
             ctx.historyGeneration,
             BYTES_PER_SEC_UNITS,
             {.label = IO_READ_LABEL, .data = readData, .color = theme.scheme().chartIo, .fill = theme.scheme().chartIoFill},
-            {.label = IO_WRITE_LABEL, .data = writeData, .color = theme.scheme().chartIoWrite, .fill = theme.scheme().chartIoWriteFill});
+            {.label = IO_WRITE_LABEL, .data = writeData, .color = theme.scheme().chartIoWrite, .fill = theme.scheme().chartIoWriteFill},
+            ioNotice);
     };
 
     if (UI::Widgets::beginChartCard("##ProcIoCard", fill.plotHeight()))
@@ -1239,12 +1255,18 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
                          .label = NET_SENT_LABEL,
                          .tooltipText = {},
                          .value01 = netAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.netSentBytesPerSec, netAxisUpper) : 0.0,
-                         .color = theme.scheme().chartNetTx};
+                         .color = theme.scheme().chartNetTx,
+                         .marker = ImPlotMarker_None,
+                         .available = netAvailable}; // N/A is drawn hatched, not as a 0 bar (#1918)
     const NowBar recvBar{.valueText = Detail::rateTextOrNA(netAvailable, smoothed.netRecvBytesPerSec),
                          .label = NET_RECV_LABEL,
                          .tooltipText = {},
                          .value01 = netAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.netRecvBytesPerSec, netAxisUpper) : 0.0,
-                         .color = theme.scheme().chartNetRx};
+                         .color = theme.scheme().chartNetRx,
+                         .marker = ImPlotMarker_None,
+                         .available = netAvailable};
+    // Nothing to draw and no reading now: say so over the plot, rather than an empty axis (#1918).
+    const char* netNotice = Detail::rateChartNotice(netAvailable, sentData, recvData, Detail::NETWORK_NOT_AVAILABLE_NOTICE);
 
     // The plot lambda owns rendering and hover lookup over the same aligned buffers;
     // renderHistoryWithNowBars composes it with the summary bars. The tooltip's rates are averages
@@ -1259,7 +1281,8 @@ void ProcessDetailsCharts::renderNetworkStats(const ProcessChartContext& ctx, UI
             ctx.historyGeneration,
             BYTES_PER_SEC_UNITS,
             {.label = NET_SENT_LABEL, .data = sentData, .color = theme.scheme().chartNetTx, .fill = theme.scheme().chartNetTxFill},
-            {.label = NET_RECV_LABEL, .data = recvData, .color = theme.scheme().chartNetRx, .fill = theme.scheme().chartNetRxFill});
+            {.label = NET_RECV_LABEL, .data = recvData, .color = theme.scheme().chartNetRx, .fill = theme.scheme().chartNetRxFill},
+            netNotice);
     };
 
     // The heading's tooltip is shown after the chart: its value strip is placed beside the heading,

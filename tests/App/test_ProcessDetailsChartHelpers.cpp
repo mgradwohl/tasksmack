@@ -196,6 +196,24 @@ TEST(ProcessDetailsChartHelpersTest, RateAxesLeaveOutBarsWithoutAReading)
     EXPECT_DOUBLE_EQ(gpuMemoryAxisDataMax(f.x, f.xMin, a, smoothed), 9000.0);
 }
 
+// #1918: a Network or I/O chart with no reading now and none in its history says so over the plot,
+// rather than drawing an empty 0 to 1 KiB/s axis that reads as a measured 0 B/s.
+TEST(ProcessDetailsChartHelpersTest, AnUnreadRateChartWithNoReadingsShowsItsNotice)
+{
+    const std::array<double, 3> gaps{NOT_A_NUMBER, NOT_A_NUMBER, NOT_A_NUMBER};
+    const std::array<double, 3> zeros{0.0, 0.0, 0.0};
+    const std::array<double, 3> readThenGap{0.0, 10.0, NOT_A_NUMBER};
+
+    EXPECT_STREQ(rateChartNotice(false, gaps, gaps, NETWORK_NOT_AVAILABLE_NOTICE), NETWORK_NOT_AVAILABLE_NOTICE);
+    EXPECT_STREQ(rateChartNotice(false, {}, {}, IO_NOT_AVAILABLE_NOTICE), IO_NOT_AVAILABLE_NOTICE);
+    // A measured 0 is a reading: its line is the chart, no notice.
+    EXPECT_EQ(rateChartNotice(true, zeros, zeros, NETWORK_NOT_AVAILABLE_NOTICE), nullptr);
+    EXPECT_EQ(rateChartNotice(true, gaps, gaps, NETWORK_NOT_AVAILABLE_NOTICE), nullptr);
+    // Unread now, but the window holds readings (either series): their lines and the gap say it.
+    EXPECT_EQ(rateChartNotice(false, readThenGap, gaps, NETWORK_NOT_AVAILABLE_NOTICE), nullptr);
+    EXPECT_EQ(rateChartNotice(false, gaps, readThenGap, NETWORK_NOT_AVAILABLE_NOTICE), nullptr);
+}
+
 TEST(ProcessDetailsChartHelpersTest, FaultAndPowerAxesCoverTheirSeriesAndBar)
 {
     const AxisFixture f;

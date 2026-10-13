@@ -71,6 +71,21 @@ inline constexpr std::size_t PROCESS_NPU_NOW_BAR_COLUMNS = 2;
                      : std::string("N/A");
 }
 
+/// The notice the Network chart shows over its plot when it has nothing to draw (#1918).
+inline constexpr const char* NETWORK_NOT_AVAILABLE_NOTICE = "Network traffic not available for this process";
+/// The I/O chart's.
+inline constexpr const char* IO_NOT_AVAILABLE_NOTICE = "I/O not available for this process";
+
+/// What a two-rate chart (Network, I/O) shows over its plot: @p notice while its rates are not read for
+/// the process (@p available false) and its history holds no reading either, and null otherwise (#1918).
+/// Without it the chart drew an empty 0 to 1 KiB/s axis, as a measured 0 B/s does. Once the window
+/// holds readings, their lines and the gap after them say it.
+[[nodiscard]] inline const char*
+rateChartNotice(bool available, std::span<const double> first, std::span<const double> second, const char* notice) noexcept
+{
+    return (!available && !hasAnyReading(first) && !hasAnyReading(second)) ? notice : nullptr;
+}
+
 /// A smoothed count NowBar's text (threads, handles, GDI objects), or N/A while it has no reading.
 [[nodiscard]] inline std::string countTextOrNA(bool available, double count)
 {

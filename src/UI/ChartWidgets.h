@@ -2115,6 +2115,10 @@ struct NowBar
     /// strip swatch so the strip keys the series by shape as well as colour (#1198). None for a series
     /// drawn without markers (a chart's filled primary).
     ImPlotMarker marker = ImPlotMarker_None;
+    /// False when the bar's value is not a reading (its valueText is N/A): the bar is drawn hatched
+    /// with no fill (drawUnavailableVerticalBar()) rather than as a zero bar, which would read as a
+    /// measured 0 (#1918). value01 is then ignored.
+    bool available = true;
 };
 
 /// A chart's NowBars, held in place: built every frame without a heap allocation (#1018). A chart
@@ -2464,26 +2468,31 @@ inline constexpr const char* HISTORY_COLLECTING_TEXT = "Collecting data...";
     return sampleCount < HISTORY_COLLECTING_SAMPLE_COUNT;
 }
 
-/// Draws the "collecting" hint centred in the current plot while it has too few samples to show
-/// anything. Must be called between ImPlot::BeginPlot() and EndPlot(), i.e. while a HistoryChart is
-/// active, and after any further axis setup (setupSecondaryRateAxis, SetupAxis): it reads the plot's
-/// geometry, which locks ImPlot's setup.
+/// Draws @p text centred in the current plot, muted: a chart's notice in place of data it has none of
+/// ("Collecting data...", or that its values are not available, #1918). Must be called between
+/// ImPlot::BeginPlot() and EndPlot(), i.e. while a HistoryChart is active, and after any further axis
+/// setup (setupSecondaryRateAxis, SetupAxis): it reads the plot's geometry, which locks ImPlot's setup.
+inline void drawPlotNotice(const char* text)
+{
+    const ImVec2 plotPos = ImPlot::GetPlotPos();
+    const ImVec2 plotSize = ImPlot::GetPlotSize();
+    const ImVec2 textSize = ImGui::CalcTextSize(text);
+    const ImVec2 textPos(plotPos.x + std::max(0.0F, (plotSize.x - textSize.x) * 0.5F),
+                         plotPos.y + std::max(0.0F, (plotSize.y - textSize.y) * 0.5F));
+
+    ImPlot::PushPlotClipRect();
+    ImPlot::GetPlotDrawList()->AddText(textPos, ImGui::ColorConvertFloat4ToU32(Theme::get().scheme().textMuted), text);
+    ImPlot::PopPlotClipRect();
+}
+
+/// Draws the "collecting" hint (drawPlotNotice()) while the plot has too few samples to show anything.
 inline void drawCollectingHint(std::size_t sampleCount)
 {
     if (!historyChartIsCollecting(sampleCount))
     {
         return;
     }
-
-    const ImVec2 plotPos = ImPlot::GetPlotPos();
-    const ImVec2 plotSize = ImPlot::GetPlotSize();
-    const ImVec2 textSize = ImGui::CalcTextSize(HISTORY_COLLECTING_TEXT);
-    const ImVec2 textPos(plotPos.x + std::max(0.0F, (plotSize.x - textSize.x) * 0.5F),
-                         plotPos.y + std::max(0.0F, (plotSize.y - textSize.y) * 0.5F));
-
-    ImPlot::PushPlotClipRect();
-    ImPlot::GetPlotDrawList()->AddText(textPos, ImGui::ColorConvertFloat4ToU32(Theme::get().scheme().textMuted), HISTORY_COLLECTING_TEXT);
-    ImPlot::PopPlotClipRect();
+    drawPlotNotice(HISTORY_COLLECTING_TEXT);
 }
 
 /// Declarative configuration for a standard TaskSmack history chart.
@@ -3414,6 +3423,25 @@ inline void renderNowBarValueStrip(std::span<const NowBar> bars,
 
 namespace Detail
 {
+/// One NowBar's bar: filled to its value01, or hatched with no fill while it has no reading (#1918).
+inline void drawNowBar(const NowBar& bar, float plotHeight, float widthPerBar)
+{
+    if (bar.available)
+    {
+        drawVerticalBarWithValue("##NowBar", bar.value01, bar.color, plotHeight, widthPerBar, "", "");
+    }
+    else
+    {
+        drawUnavailableVerticalBar("##NowBar", plotHeight, widthPerBar);
+    }
+}
+
+/// The fill a NowBar is drawn at, for requestNowBarMotion(): none while it has no reading.
+[[nodiscard]] constexpr double nowBarMotionValue(const NowBar& bar) noexcept
+{
+    return bar.available ? bar.value01 : 0.0;
+}
+
 /// Ask the frame loop for the frames a NowBar's easing needs (#1125): the bar's on-screen speed since
 /// the previous frame, so a bar easing toward a new sample animates smoothly and a settled one stops
 /// asking. Before, any visible bar held the loop at the full animation rate forever (#1037). Keyed
@@ -3549,8 +3577,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
                 ImGui::SameLine(0.0F, style.ItemSpacing.x);
             }
 
-            drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
-            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), bars[i].value01, plotHeight);
+            Detail::drawNowBar(bars[i], plotHeight, widthPerBar);
+            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), Detail::nowBarMotionValue(bars[i]), plotHeight);
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);
@@ -3602,8 +3630,8 @@ inline void renderHistoryWithNowBars(const char* tableId,
             }
 
             ImGui::BeginGroup();
-            drawVerticalBarWithValue("##NowBar", bars[i].value01, bars[i].color, plotHeight, widthPerBar, "", "");
-            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), bars[i].value01, plotHeight);
+            Detail::drawNowBar(bars[i], plotHeight, widthPerBar);
+            Detail::requestNowBarMotion(Detail::nowBarMotionId(tableId, i), Detail::nowBarMotionValue(bars[i]), plotHeight);
             if (ImGui::IsItemHovered())
             {
                 const std::string tooltip = selectNowBarTooltip(bars[i]);
