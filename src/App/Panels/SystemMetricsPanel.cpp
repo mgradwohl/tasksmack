@@ -1141,26 +1141,31 @@ void SystemMetricsPanel::renderOverview()
             updateSmoothedResources(targetThreads, targetFaults, targetHandles, m_LastDeltaSeconds);
         }
 
-        // Threads and handles are counts on the left axis; page faults are a rate, on their own
-        // right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each bar is
-        // scaled to its series' axis, so a bar and its line show a value at the same height (#1003).
-        // Both are sized to the samples in the window, not ones left of it (#1145), and to their bars'
-        // smoothed values, which can still be easing down from a peak that has just left it.
-        const double countAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+        // Three scales: threads on the left axis; page faults, a rate, on the right-hand Y2, so a fault
+        // spike doesn't flatten the count lines (#1024); and handles/FDs on a right-hand Y3 outside it.
+        // A machine holds tens to hundreds of times more handles than threads, and while the two
+        // shared the left axis the Threads line and bar lay flat at zero (#1916). Each bar is scaled
+        // to its series' axis, so a bar and its line show a value at the same height (#1003). All are
+        // sized to the samples in the window, not ones left of it (#1145), and to their bars' smoothed
+        // values, which can still be easing down from a peak that has just left it.
+        const double threadAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory",
-            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, threadData, handleData),
-                                           {m_SmoothedResources.threads, m_SmoothedResources.handles}),
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, threadData), {m_SmoothedResources.threads}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
         const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound(
             "##ResourcesHistory/Y2",
             UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, faultData), {m_SmoothedResources.pageFaults}),
             UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+        const double handleAxisUpper = UI::Widgets::easedRateAxisUpperBound(
+            "##ResourcesHistory/Y3",
+            UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, axis.xMin, handleData), {m_SmoothedResources.handles}),
+            UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
 
 #ifdef _WIN32
-        constexpr const char* handleLabel = "Handles";
+        constexpr const char* handleLabel = "Handles →"; // The outer right-hand axis (#1916)
         constexpr const char* resourcesTitle = "Threads, Page Faults & Handles";
 #else
-        constexpr const char* handleLabel = "FDs";
+        constexpr const char* handleLabel = "FDs →";
         constexpr const char* resourcesTitle = "Threads, Page Faults & FDs";
 #endif
 
@@ -1168,7 +1173,7 @@ void SystemMetricsPanel::renderOverview()
                                 .label = THREADS_LABEL,
                                 // The fallback tooltip, "Threads: <value>", says it all (#1019)
                                 .tooltipText = {},
-                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, countAxisUpper),
+                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, threadAxisUpper),
                                 .color = theme.scheme().chartThreads};
         const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
                                .label = FAULTS_LABEL,
@@ -1178,29 +1183,36 @@ void SystemMetricsPanel::renderOverview()
         const NowBar handlesBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
                                 .label = handleLabel,
                                 .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
-                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, countAxisUpper),
+                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, handleAxisUpper),
                                 .color = theme.scheme().chartHandles};
 
         auto plot = [&]()
         {
             const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
                 UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
-                                            "##ResourcesHistory", axis.xMin, axis.xMax, formatAxisLocalized, countAxisUpper),
+                                            "##ResourcesHistory", axis.xMin, axis.xMax, formatAxisLocalized, threadAxisUpper),
                                         plotHeight),
                 m_ChartDataGeneration));
             if (chart.active())
             {
                 UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.scheme().chartPageFaults);
+                UI::Widgets::setupRightRateAxis(ImAxis_Y3, handleAxisUpper, formatAxisLocalized, theme.scheme().chartHandles);
                 // After all axis setup: the hint reads the plot's geometry, which locks setup (#1013).
                 UI::Widgets::drawCollectingHint(alignedCount);
                 const int count = UI::Format::checkedCount(alignedCount);
-                plotSeries(THREADS_LABEL,
+                // Each line fills its own axis, so a steady thread count and a steady handle count sit at
+                // the same height: Threads, the chart's primary series, is drawn last, on top (#1916).
+                // A CSV copy keeps the key's column order: a series' first export is the one kept.
+                UI::Widgets::exportSeries(THREADS_LABEL, timeData, threadData);
+                UI::Widgets::exportSeries(FAULTS_LABEL, timeData, faultData);
+                ImPlot::SetAxes(ImAxis_X1, ImAxis_Y3);
+                plotSeries(handleLabel,
                            timeData.data(),
-                           threadData.data(),
+                           handleData.data(),
                            count,
-                           theme.scheme().chartThreads,
-                           theme.scheme().chartThreadsFill,
-                           seriesStyle(SeriesRole::Primary));
+                           theme.scheme().chartHandles,
+                           theme.scheme().chartHandlesFill,
+                           seriesStyle(SeriesRole::Secondary, 1));
                 ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
                 plotSeries(FAULTS_LABEL,
                            timeData.data(),
@@ -1210,13 +1222,13 @@ void SystemMetricsPanel::renderOverview()
                            std::nullopt,
                            seriesStyle(SeriesRole::Secondary, 0));
                 ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-                plotSeries(handleLabel,
+                plotSeries(THREADS_LABEL,
                            timeData.data(),
-                           handleData.data(),
+                           threadData.data(),
                            count,
-                           theme.scheme().chartHandles,
-                           theme.scheme().chartHandlesFill,
-                           seriesStyle(SeriesRole::Secondary, 1));
+                           theme.scheme().chartThreads,
+                           theme.scheme().chartThreadsFill,
+                           seriesStyle(SeriesRole::Primary));
 
                 if (ImPlot::IsPlotHovered())
                 {

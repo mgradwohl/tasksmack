@@ -92,9 +92,11 @@ constexpr const char* THREADS_LABEL = "Threads";
 constexpr const char* FAULTS_LABEL = "Page Faults →"; // Its values carry the "/s" ("12.0/s"), #1202
 #ifdef _WIN32
 constexpr const char* GDI_LABEL = "GDI Objects";
-constexpr const char* HANDLE_LABEL = "Handles";
+// On the outer right-hand axis, its own scale (#1916): see ProcessDetailsChartHelpers.h's
+// handleAxisDataMax().
+constexpr const char* HANDLE_LABEL = "Handles →";
 #else
-constexpr const char* HANDLE_LABEL = "FDs";
+constexpr const char* HANDLE_LABEL = "FDs →";
 #endif
 constexpr const char* IO_READ_LABEL = "Read";
 constexpr const char* IO_WRITE_LABEL = "Write";
@@ -359,8 +361,9 @@ memoryNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, bool showShared
     return memoryBars;
 }
 
-/// The Resources chart's series: Threads and Handles/FDs on the count axis, Page Faults on the right
-/// (#1024), and GDI Objects on Windows (possibly shorter, drawn from its offset, #1001).
+/// The Resources chart's series: Threads (and GDI Objects on Windows, possibly shorter, drawn from its
+/// offset, #1001) on the left axis, Page Faults on the right (#1024), and Handles/FDs on a right-hand
+/// axis of their own outside it (#1916).
 struct ResourceChartData
 {
     std::span<const double> threads;
@@ -405,13 +408,11 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
 {
     const auto& theme = UI::Theme::get();
     const int plotCount = UI::Format::checkedCount(axis.alignedCount);
-    plotSeries(THREADS_LABEL,
-               axis.timeData.data(),
-               data.threads.data(),
-               plotCount,
-               theme.scheme().chartThreads,
-               theme.scheme().chartThreadsFill,
-               seriesStyle(SeriesRole::Primary));
+    // Each line fills its own axis, so a steady thread count and a steady handle count sit at the same
+    // height: Threads, the chart's primary series, is drawn after Handles, on top of it (#1916). A CSV
+    // copy keeps the key's column order: a series' first export is the one kept.
+    UI::Widgets::exportSeries(THREADS_LABEL, axis.timeData, data.threads);
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y3);
     plotSeries(HANDLE_LABEL,
                axis.timeData.data(),
                data.handles.data(),
@@ -419,6 +420,14 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                theme.scheme().chartHandles,
                theme.scheme().chartHandlesFill,
                seriesStyle(SeriesRole::Secondary, 0));
+    ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+    plotSeries(THREADS_LABEL,
+               axis.timeData.data(),
+               data.threads.data(),
+               plotCount,
+               theme.scheme().chartThreads,
+               theme.scheme().chartThreadsFill,
+               seriesStyle(SeriesRole::Primary));
     ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
     plotSeries(FAULTS_LABEL,
                axis.timeData.data(),
@@ -446,28 +455,36 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
     resourceTooltip(axis, data);
 }
 
-/// The Resources chart's NowBars: Threads and Handles/FDs on the count axis (@p countAxisUpper), Page
-/// Faults on its own (@p faultAxisUpper), and GDI Objects on Windows -- four there, the
-/// PROCESS_OVERVIEW_NOW_BAR_COLUMNS the Overview reserves.
-[[nodiscard]] NowBarList resourceNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, double countAxisUpper, double faultAxisUpper)
+/// The Resources chart's axes' upper bounds, which its lines and NowBars are both scaled to.
+struct ResourceAxisBounds
+{
+    double threads = 0.0; ///< The left axis: Threads, and GDI Objects on Windows
+    double faults = 0.0;  ///< Y2: Page Faults/s (#1024)
+    double handles = 0.0; ///< Y3: Handles/FDs (#1916)
+};
+
+/// The Resources chart's NowBars, each scaled to its series' axis (#1003): Threads, Handles/FDs, Page
+/// Faults, and GDI Objects on Windows -- four there, the PROCESS_OVERVIEW_NOW_BAR_COLUMNS the
+/// Overview reserves.
+[[nodiscard]] NowBarList resourceNowBars(const App::Detail::ProcessSmoothedUsage& smoothed, const ResourceAxisBounds& bounds)
 {
     const auto& theme = UI::Theme::get();
     const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(smoothed.threadCount)),
                             .label = THREADS_LABEL,
                             .tooltipText = {}, // The fallback, "Threads: <value>", says it all (#1019)
-                            .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.threadCount, countAxisUpper),
+                            .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.threadCount, bounds.threads),
                             .color = theme.scheme().chartThreads};
     // An unreadable count (#1110) shows N/A, as its line shows a gap.
     const NowBar handlesBar{
         .valueText = App::Detail::countTextOrNA(smoothed.handleCountAvailable, smoothed.handleCount),
         .label = HANDLE_LABEL,
         .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
-        .value01 = smoothed.handleCountAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.handleCount, countAxisUpper) : 0.0,
+        .value01 = smoothed.handleCountAvailable ? UI::Widgets::normalizeToUnitInterval(smoothed.handleCount, bounds.handles) : 0.0,
         .color = theme.scheme().chartHandles};
     const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(smoothed.pageFaultsPerSec),
                            .label = FAULTS_LABEL,
                            .tooltipText = {},
-                           .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.pageFaultsPerSec, faultAxisUpper),
+                           .value01 = UI::Widgets::normalizeToUnitInterval(smoothed.pageFaultsPerSec, bounds.faults),
                            // The line's colour: this bar was chartIo while its line is accentColor(3) (#1004).
                            .color = theme.scheme().chartPageFaults};
 #ifdef _WIN32
@@ -478,7 +495,7 @@ void drawResourceSeries(const ChartTimeAxis& axis, const ResourceChartData& data
                         .label = GDI_LABEL,
                         .tooltipText = {}, // The fallback, "GDI Objects: <value>", says it all (#1019)
                         .value01 =
-                            smoothed.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(smoothed.gdiObjectCount, countAxisUpper) : 0.0,
+                            smoothed.gdiInitialized ? UI::Widgets::normalizeToUnitInterval(smoothed.gdiObjectCount, bounds.threads) : 0.0,
                         .color = theme.scheme().chartGdi};
 #endif
 
@@ -1000,32 +1017,39 @@ void ProcessDetailsCharts::renderThreadAndFaultHistory(const ProcessChartContext
     data.gdi = tailSpan(history.series(ProcessSeries::GdiObjects), gdiAlignedCount);
     data.gdiTimeOffset = Detail::seriesTimeOffset(alignedCount, data.gdi.size());
     data.hasGdiSamples = Detail::hasAnySample(data.gdi);
-    const double countSeriesMax = Detail::countAxisDataMaxWithGdi(axis.timeData, xMin, data.threads, data.handles, data.gdi, smoothed);
+    const double threadSeriesMax = Detail::threadAxisDataMaxWithGdi(axis.timeData, xMin, data.threads, data.gdi, smoothed);
 #else
-    const double countSeriesMax = Detail::countAxisDataMax(axis.timeData, xMin, data.threads, data.handles, smoothed);
+    const double threadSeriesMax = Detail::threadAxisDataMax(axis.timeData, xMin, data.threads, smoothed);
 #endif
 
-    // Threads, handles (and GDI objects) are counts on the left axis; page faults are a rate, on their
-    // own right-hand axis, so a fault spike no longer flattens the count lines (#1024). Each bound
-    // covers every series drawn on its axis and its bars' smoothed values (#1003, #1145).
-    const double countAxisUpper =
-        UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", countSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
-    const double faultAxisUpper = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y2",
-                                                                       Detail::faultAxisDataMax(axis.timeData, xMin, data.faults, smoothed),
-                                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+    // Three scales: Threads (and GDI objects) on the left axis; page faults, a rate, on the right-hand
+    // Y2 so a fault spike doesn't flatten the count lines (#1024); and handles/FDs on a right-hand Y3
+    // outside it, as a process holds tens of times more of them than threads, which lay flat on the
+    // baseline while the two shared an axis (#1916). Each bound covers every series drawn on its axis
+    // and its bars' smoothed values (#1003, #1145).
+    const ResourceAxisBounds bounds{
+        .threads = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults", threadSeriesMax, UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
+        .faults = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y2",
+                                                       Detail::faultAxisDataMax(axis.timeData, xMin, data.faults, smoothed),
+                                                       UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
+        .handles = UI::Widgets::easedRateAxisUpperBound("##ProcThreadsFaults/Y3",
+                                                        Detail::handleAxisDataMax(axis.timeData, xMin, data.handles, smoothed),
+                                                        UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT),
+    };
 
-    const NowBarList bars = resourceNowBars(smoothed, countAxisUpper, faultAxisUpper);
+    const NowBarList bars = resourceNowBars(smoothed, bounds);
 
     auto plot = [&]()
     {
         const UI::Widgets::HistoryChart chart(UI::Widgets::withDataGeneration(
             UI::Widgets::withHeight(UI::Widgets::rateHistoryConfigWithUpper(
-                                        "##ProcThreadsFaults", xMin, axis.axisConfig.xMax, formatAxisLocalized, countAxisUpper),
+                                        "##ProcThreadsFaults", xMin, axis.axisConfig.xMax, formatAxisLocalized, bounds.threads),
                                     fill.plotHeight()),
             ctx.historyGeneration));
         if (chart.active())
         {
-            UI::Widgets::setupSecondaryRateAxis(faultAxisUpper, formatAxisLocalized, theme.scheme().chartPageFaults);
+            UI::Widgets::setupSecondaryRateAxis(bounds.faults, formatAxisLocalized, theme.scheme().chartPageFaults);
+            UI::Widgets::setupRightRateAxis(ImAxis_Y3, bounds.handles, formatAxisLocalized, theme.scheme().chartHandles);
             UI::Widgets::drawCollectingHint(alignedCount);
             drawResourceSeries(axis, data);
         }

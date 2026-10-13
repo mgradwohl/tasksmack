@@ -2653,10 +2653,11 @@ rateHistoryConfigWithUpper(const char* id, double xMin, double xMax, ImPlotForma
     return configuredFlags | ImPlotFlags_NoLegend;
 }
 
-/// Set up a right-hand Y2 axis for a series with its own scale -- a rate drawn beside counts, say
-/// (#1024) -- from 0 to `upperBound`. Pass easedRateAxisUpperBound() for it, the value its NowBar
-/// is scaled to as well. Call right after constructing the HistoryChart, while it is active() and
-/// before plotting; then plot that series between ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2) and
+/// Set up right-hand @p axis for a series with its own scale -- a rate drawn beside counts, say
+/// (#1024) -- from 0 to `upperBound`: ImAxis_Y2 next to the plot (setupSecondaryRateAxis()), or
+/// ImAxis_Y3 outside it for a third scale (#1916). Pass easedRateAxisUpperBound() for it, the value
+/// its NowBar is scaled to as well. Call right after constructing the HistoryChart, while it is
+/// active() and before plotting; then plot that series between ImPlot::SetAxes(ImAxis_X1, axis) and
 /// ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1).
 ///
 /// The axis's tick marks are drawn in @p seriesColor and its tick labels in that colour made readable
@@ -2667,10 +2668,8 @@ rateHistoryConfigWithUpper(const char* id, double xMin, double xMax, ImPlotForma
 ///
 /// With @p ticksUpTo the ticks stop there, below the axis's top: a percent axis drawn to
 /// PERCENT_AXIS_UPPER_WITH_HEADROOM keeps its last label at 100 % (#1300).
-inline void setupSecondaryRateAxis(double upperBound,
-                                   ImPlotFormatter formatter,
-                                   const ImVec4& seriesColor,
-                                   std::optional<double> ticksUpTo = std::nullopt)
+inline void setupRightRateAxis(
+    ImAxis axis, double upperBound, ImPlotFormatter formatter, const ImVec4& seriesColor, std::optional<double> ticksUpTo = std::nullopt)
 {
     // ImPlot reads an axis's colours from the style when the axis is set up (UpdateAxisColors), the
     // tick marks' apart from the labels', so both are pushed. The marks take the series colour as it
@@ -2685,11 +2684,20 @@ inline void setupSecondaryRateAxis(double upperBound,
     ImPlot::PushStyleColor(ImPlotCol_AxisText, labelColor);
     ImPlot::PushStyleColor(ImPlotCol_AxisTick, seriesColor);
     // AuxDefault: no grid lines of its own, and Opposite, which puts its labels on the right.
-    ImPlot::SetupAxis(ImAxis_Y2, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
+    ImPlot::SetupAxis(axis, nullptr, ImPlotAxisFlags_AuxDefault | ImPlotAxisFlags_Lock | Y_AXIS_FLAGS_DEFAULT);
     ImPlot::PopStyleColor(2);
-    ImPlot::SetupAxisLimits(ImAxis_Y2, 0.0, upperBound, ImPlotCond_Always);
+    ImPlot::SetupAxisLimits(axis, 0.0, upperBound, ImPlotCond_Always);
     // Round ticks like the primary axis, and no more of them (#1202).
-    setupNiceAxisTicks(ImAxis_Y2, ticksUpTo.value_or(upperBound), formatter, activeChartDataScope().maxYTicks);
+    setupNiceAxisTicks(axis, ticksUpTo.value_or(upperBound), formatter, activeChartDataScope().maxYTicks);
+}
+
+/// setupRightRateAxis() on ImAxis_Y2, the right-hand axis next to the plot.
+inline void setupSecondaryRateAxis(double upperBound,
+                                   ImPlotFormatter formatter,
+                                   const ImVec4& seriesColor,
+                                   std::optional<double> ticksUpTo = std::nullopt)
+{
+    setupRightRateAxis(ImAxis_Y2, upperBound, formatter, seriesColor, ticksUpTo);
 }
 
 /// RAII scope around a stack of history charts drawn one above another in a view (#1206): ImPlot

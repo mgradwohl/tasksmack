@@ -9,6 +9,7 @@
 #include "App/Panels/ProcessSmoothedUsage.h"
 #include "Domain/ProcessSnapshot.h"
 #include "UI/Format.h"
+#include "UI/RateAxis.h"
 
 #include <gtest/gtest.h>
 
@@ -138,37 +139,61 @@ TEST(ProcessDetailsChartHelpersTest, VirtualAxisCoversItsSeriesAndBar)
     EXPECT_DOUBLE_EQ(virtualAxisDataMax(f.x, f.xMin, virt, smoothed), 2000.0);
 }
 
-TEST(ProcessDetailsChartHelpersTest, CountAxisLeavesOutAnUnreadHandleBar)
+TEST(ProcessDetailsChartHelpersTest, HandleAxisLeavesOutAnUnreadHandleBar)
 {
     const AxisFixture f;
-    const std::array<double, 4> threads{99.0, 8.0, 9.0, 10.0};
-    const std::array<double, 4> handles{0.0, 20.0, NOT_A_NUMBER, 25.0};
+    const std::array<double, 4> handles{999.0, 20.0, NOT_A_NUMBER, 25.0}; // The first is left of the window
     ProcessSmoothedUsage smoothed;
-    smoothed.threadCount = 10.0;
     smoothed.handleCount = 400.0;
     smoothed.handleCountAvailable = false;
-    EXPECT_DOUBLE_EQ(countAxisDataMax(f.x, f.xMin, threads, handles, smoothed), 25.0);
+    EXPECT_DOUBLE_EQ(handleAxisDataMax(f.x, f.xMin, handles, smoothed), 25.0);
     smoothed.handleCountAvailable = true;
-    EXPECT_DOUBLE_EQ(countAxisDataMax(f.x, f.xMin, threads, handles, smoothed), 400.0);
+    EXPECT_DOUBLE_EQ(handleAxisDataMax(f.x, f.xMin, handles, smoothed), 400.0);
 }
 
-TEST(ProcessDetailsChartHelpersTest, CountAxisWithGdiCoversAShorterGdiSeriesAndItsBar)
+// #1916: Threads have an axis of their own. A process holds tens of times more handles than threads,
+// and while the two shared an axis, the handles set it and the Threads line and bar lay flat at zero.
+TEST(ProcessDetailsChartHelpersTest, TheThreadAxisIsSizedToThreadsNotHandles)
+{
+    const AxisFixture f;
+    const std::array<double, 4> threads{0.0, 100.0, 108.0, 104.0};
+    const std::array<double, 4> handles{0.0, 6000.0, 6044.0, 6100.0};
+    ProcessSmoothedUsage smoothed;
+    smoothed.threadCount = 104.0;
+    smoothed.handleCount = 6100.0;
+    smoothed.handleCountAvailable = true;
+
+    EXPECT_DOUBLE_EQ(threadAxisDataMax(f.x, f.xMin, threads, smoothed), 108.0);
+    EXPECT_DOUBLE_EQ(handleAxisDataMax(f.x, f.xMin, handles, smoothed), 6100.0);
+    // So the thread count's swing (100 to 108) spans a readable share of its axis, where on the
+    // handles' axis it was a fraction of a percent of it.
+    const double threadAxis =
+        UI::Widgets::rateAxisUpperBound(threadAxisDataMax(f.x, f.xMin, threads, smoothed), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+    const double handleAxis =
+        UI::Widgets::rateAxisUpperBound(handleAxisDataMax(f.x, f.xMin, handles, smoothed), UI::Widgets::RATE_AXIS_MIN_SPAN_COUNT);
+    EXPECT_GT((108.0 - 100.0) / threadAxis, 0.05);
+    EXPECT_GT(100.0 / threadAxis, 0.5); // the line sits well off the baseline
+    EXPECT_LT(108.0 / handleAxis, 0.02);
+}
+
+TEST(ProcessDetailsChartHelpersTest, TheThreadAxisWithGdiCoversAShorterGdiSeriesAndItsBar)
 {
     const AxisFixture f;
     const std::array<double, 4> threads{0.0, 8.0, 9.0, 10.0};
-    const std::array<double, 4> handles{0.0, 20.0, 21.0, 25.0};
     const std::array<double, 2> gdi{60.0, NOT_A_NUMBER}; // The last two samples only
     ProcessSmoothedUsage smoothed;
-    EXPECT_DOUBLE_EQ(countAxisDataMaxWithGdi(f.x, f.xMin, threads, handles, gdi, smoothed), 60.0);
+    smoothed.handleCount = 5000.0; // Never on this axis
+    smoothed.handleCountAvailable = true;
+    EXPECT_DOUBLE_EQ(threadAxisDataMaxWithGdi(f.x, f.xMin, threads, gdi, smoothed), 60.0);
     smoothed.gdiObjectCount = 300.0;
     smoothed.gdiInitialized = false; // No reading: the bar shows N/A and does not move the axis
-    EXPECT_DOUBLE_EQ(countAxisDataMaxWithGdi(f.x, f.xMin, threads, handles, gdi, smoothed), 60.0);
+    EXPECT_DOUBLE_EQ(threadAxisDataMaxWithGdi(f.x, f.xMin, threads, gdi, smoothed), 60.0);
     smoothed.gdiInitialized = true;
-    EXPECT_DOUBLE_EQ(countAxisDataMaxWithGdi(f.x, f.xMin, threads, handles, gdi, smoothed), 300.0);
-    // With no GDI series at all it is countAxisDataMax().
+    EXPECT_DOUBLE_EQ(threadAxisDataMaxWithGdi(f.x, f.xMin, threads, gdi, smoothed), 300.0);
+    // With no GDI series at all it is threadAxisDataMax().
     smoothed.gdiInitialized = false;
-    EXPECT_DOUBLE_EQ(countAxisDataMaxWithGdi(f.x, f.xMin, threads, handles, std::span<const double>{}, smoothed),
-                     countAxisDataMax(f.x, f.xMin, threads, handles, smoothed));
+    EXPECT_DOUBLE_EQ(threadAxisDataMaxWithGdi(f.x, f.xMin, threads, std::span<const double>{}, smoothed),
+                     threadAxisDataMax(f.x, f.xMin, threads, smoothed));
 }
 
 TEST(ProcessDetailsChartHelpersTest, RateAxesLeaveOutBarsWithoutAReading)
@@ -215,7 +240,8 @@ TEST(ProcessDetailsChartHelpersTest, AnEmptyWindowGivesZero)
     const ProcessSmoothedUsage smoothed;
     EXPECT_DOUBLE_EQ(cpuAxisDataMax(none, 0.0, none, none, none, smoothed), 0.0);
     EXPECT_DOUBLE_EQ(memoryAxisDataMax(none, 0.0, none, none, smoothed), 0.0);
-    EXPECT_DOUBLE_EQ(countAxisDataMax(none, 0.0, none, none, smoothed), 0.0);
+    EXPECT_DOUBLE_EQ(threadAxisDataMax(none, 0.0, none, smoothed), 0.0);
+    EXPECT_DOUBLE_EQ(handleAxisDataMax(none, 0.0, none, smoothed), 0.0);
     EXPECT_DOUBLE_EQ(ioAxisDataMax(none, 0.0, none, none, smoothed), 0.0);
 }
 
