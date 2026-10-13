@@ -110,6 +110,10 @@ struct UserSettings
     // written before the block existed has no such key and loads expanded.
     bool cpuDetailsExpanded = true;
 
+    // The folder "Create dump file..." writes to (#2001), [dumps] folder, UTF-8: the last one chosen
+    // with the confirm's "Save dump to...". Empty, or a folder that no longer exists: the temp folder.
+    std::string dumpFolder;
+
     // Opt-in escape hatch (default off -- the custom title bar is the default
     // everywhere): use native OS/compositor window decorations instead of the custom
     // borderless title bar. Only has an effect on native Wayland; read once at startup

@@ -410,8 +410,10 @@ class ProcessActionsView
                                   const Platform::ProcessTarget& target,
                                   bool afterButtons);
     /// Create dump file... (#807): at the row's end at its own width, as the trace button is. A press
-    /// asks to confirm a dump of @p target into the temp folder.
-    void renderCreateDumpButton(const Platform::ProcessActionCapabilities& capabilities,
+    /// asks to confirm a dump of @p target into the remembered folder (else the temp folder), its free
+    /// space read through @p actions (#2001).
+    void renderCreateDumpButton(Platform::IProcessActions* actions,
+                                const Platform::ProcessActionCapabilities& capabilities,
                                 const std::string& processName,
                                 const Platform::ProcessTarget& target,
                                 bool afterButtons);

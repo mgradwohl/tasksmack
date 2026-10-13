@@ -6,6 +6,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -145,6 +146,11 @@ struct ProcessDump
     std::filesystem::path file;  ///< The file written.
     std::uint64_t sizeBytes = 0; ///< Its size on disk.
     std::string note;            ///< Something worth knowing about the dump (a 32-bit process's); empty when nothing.
+    /// Written from a snapshot of the process (Windows: PssCaptureSnapshot's clone, #2001), so the
+    /// process paused only while the snapshot was taken, not for the whole write.
+    bool fromSnapshot = false;
+    /// Why it was written from the running process instead; empty when fromSnapshot.
+    std::string liveReason;
 };
 
 /// The dump file written, or the message saying why there is none.
@@ -152,6 +158,23 @@ using ProcessDumpResult = std::expected<ProcessDump, std::string>;
 
 /// What createDump() says where the platform cannot write a dump.
 inline constexpr const char* DUMP_UNSUPPORTED_MESSAGE = "Creating a dump file isn't available on this system";
+
+/// What a dump's free-space check is made from (#2001): raw readings, each empty when it couldn't be
+/// read. The estimate and the warning are the UI's (App::DumpDetail).
+struct DumpSpace
+{
+    /// Bytes free to TaskSmack's user on the volume holding the folder.
+    std::optional<std::uint64_t> freeBytes;
+    /// The process's private bytes (its commit charge): a full dump holds at least that much.
+    std::optional<std::uint64_t> processBytes;
+};
+
+/// The folder chosen in IProcessActions::chooseDumpFolder(), nullopt when the dialog was cancelled, or
+/// the message saying why it couldn't be shown.
+using FolderChoice = std::expected<std::optional<std::filesystem::path>, std::string>;
+
+/// What chooseDumpFolder() says where the platform has no folder dialog.
+inline constexpr const char* FOLDER_CHOICE_UNSUPPORTED_MESSAGE = "Choosing a folder isn't available on this system";
 
 /// Capabilities for process actions.
 struct ProcessActionCapabilities
@@ -172,6 +195,8 @@ struct ProcessActionCapabilities
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
     /// createDump(): a full-memory dump file of the process (#807; Windows: MiniDumpWriteDump).
     bool canCreateDump = false;
+    /// chooseDumpFolder(): a folder dialog for where dumps go (#2001; Windows: IFileOpenDialog).
+    bool canChooseDumpFolder = false;
 };
 
 /// Interface for platform-specific process actions.
@@ -246,7 +271,8 @@ class IProcessActions
     }
 
     /// Writes a full-memory dump of the target into @p directory (#807), as Task Manager's "Create dump
-    /// file" does, and returns the file written. Blocking, for seconds or minutes with a large process,
+    /// file" does, and returns the file written: from a snapshot of the process where the platform can
+    /// take one (ProcessDump::fromSnapshot), else from the running process. Blocking, for seconds or minutes with a large process,
     /// so it is called on a worker thread, never the UI thread; it may run there while the UI thread
     /// calls the other actions, so an implementation keeps no state that this changes. Once
     /// @p stopToken is requested it stops at its next chance and deletes the partial file. Refused, as
@@ -260,6 +286,28 @@ class IProcessActions
         static_cast<void>(directory);
         static_cast<void>(stopToken);
         return std::unexpected(std::string(DUMP_UNSUPPORTED_MESSAGE));
+    }
+
+    /// The free space on @p directory's volume and the target's private bytes, for the dump's confirm
+    /// to warn when the dump may not fit (#2001). Reads the system each call: call it when the confirm
+    /// opens or its folder changes, not per frame. The default knows neither.
+    [[nodiscard]] virtual DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
+    {
+        static_cast<void>(target);
+        static_cast<void>(directory);
+        return {};
+    }
+
+    /// Shows the platform's folder dialog, starting in @p initial, for where dump files go (#2001), and
+    /// returns the folder chosen (nullopt: cancelled). Blocks until the user answers, so it is called
+    /// on a worker thread, never the UI thread. @p ownerWindow is the native window the dialog is
+    /// modal to (an HWND on Windows), or null. The default refuses it as unsupported, matching
+    /// ProcessActionCapabilities::canChooseDumpFolder's default (false).
+    [[nodiscard]] virtual FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
+    {
+        static_cast<void>(initial);
+        static_cast<void>(ownerWindow);
+        return std::unexpected(std::string(FOLDER_CHOICE_UNSUPPORTED_MESSAGE));
     }
 
     /// The processor groups, the CPUs online and the core kinds, for the Set affinity dialog (#1881).

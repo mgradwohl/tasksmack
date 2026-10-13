@@ -4,6 +4,8 @@
 /// dialogs themselves are driven headless in test_ProcessActionsBlockRender.cpp.
 
 #include "App/Panels/ProcessDumpView.h"
+#include "App/UserConfig.h"
+#include "Core/Utf8Path.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 
@@ -13,8 +15,11 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <stop_token>
 #include <string>
+#include <system_error>
+#include <vector>
 
 namespace App
 {
@@ -128,7 +133,8 @@ TEST(ProcessDumpViewTest, AConfirmedDumpRunsOnTheWorkerAndSaysWhereItsFileIs)
 {
     TestMocks::MockProcessActions mock;
     const std::filesystem::path file = someFolder() / "notepad_1001_2026-10-13_14-05-09.dmp";
-    mock.setDumpResult(Platform::ProcessDump{.file = file, .sizeBytes = std::uint64_t{3} * 1024U * 1024U, .note = {}});
+    mock.setDumpResult(Platform::ProcessDump{
+        .file = file, .sizeBytes = std::uint64_t{3} * 1024U * 1024U, .note = {}, .fromSnapshot = true, .liveReason = {}});
     ProcessDumpView view;
     view.request(TARGET, "notepad.exe", someFolder());
     view.confirm(&mock);
@@ -173,7 +179,9 @@ TEST(ProcessDumpViewTest, AFailedDumpSaysWhy)
 TEST(ProcessDumpViewTest, ThePlatformsNoteIsKept)
 {
     const DumpDetail::DumpMessage message = DumpDetail::resultMessage(
-        "app32.exe", 77, Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = "This is a 32-bit process"});
+        "app32.exe",
+        77,
+        Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = "This is a 32-bit process", .fromSnapshot = true, .liveReason = {}});
     EXPECT_TRUE(message.ok);
     EXPECT_EQ(message.note, "This is a 32-bit process");
 }
@@ -186,7 +194,7 @@ TEST(ProcessDumpViewTest, WithoutActionsTheResultSaysTheyAreUnavailable)
     EXPECT_FALSE(view.busy());
     ASSERT_TRUE(view.result().has_value());
     const DumpDetail::DumpMessage message =
-        view.result().value_or(DumpDetail::DumpMessage{.ok = true, .title = {}, .text = {}, .file = {}, .note = {}});
+        view.result().value_or(DumpDetail::DumpMessage{.ok = true, .title = {}, .text = {}, .file = {}, .note = {}, .method = {}});
     EXPECT_FALSE(message.ok);
     EXPECT_TRUE(message.text.contains("Process actions unavailable")) << message.text;
 }
@@ -236,6 +244,313 @@ TEST(ProcessDumpViewTest, ShutdownCancelsAndWaits)
 TEST(ProcessDumpViewTest, ProgressCountsTheSeconds)
 {
     EXPECT_EQ(DumpDetail::progressText("big.exe", 1001, std::chrono::seconds(12)), "Writing a dump file of big.exe (PID 1001)... 12 s");
+}
+
+// --- Snapshot or live (#2001) ---------------------------------------------------------------------
+
+TEST(ProcessDumpViewTest, ASnapshotDumpSaysSo)
+{
+    const DumpDetail::DumpMessage message = DumpDetail::resultMessage(
+        "notepad.exe", 1001, Platform::ProcessDump{.file = "x.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}});
+    EXPECT_TRUE(message.ok);
+    EXPECT_TRUE(message.method.contains("from a snapshot")) << message.method;
+    EXPECT_TRUE(message.method.contains("paused only while the snapshot was taken")) << message.method;
+}
+
+TEST(ProcessDumpViewTest, ALiveDumpSaysWhyThereWasNoSnapshot)
+{
+    const DumpDetail::DumpMessage message =
+        DumpDetail::resultMessage("notepad.exe",
+                                  1001,
+                                  Platform::ProcessDump{.file = "x.dmp",
+                                                        .sizeBytes = 1,
+                                                        .note = {},
+                                                        .fromSnapshot = false,
+                                                        .liveReason = "Windows refused the access a snapshot of it needs"});
+    EXPECT_TRUE(message.ok);
+    EXPECT_TRUE(message.method.contains("from the running process")) << message.method;
+    EXPECT_TRUE(message.method.contains("no snapshot could be taken (Windows refused the access a snapshot of it needs)"))
+        << message.method;
+
+    // A failure has no method line.
+    const DumpDetail::DumpMessage failed =
+        DumpDetail::resultMessage("notepad.exe", 1001, Platform::ProcessDumpResult(std::unexpected(std::string("Access denied"))));
+    EXPECT_TRUE(failed.method.empty());
+}
+
+// --- The free-space estimate and warning (#2001) --------------------------------------------------
+
+constexpr std::uint64_t MIB = std::uint64_t{1024} * 1024U;
+constexpr std::uint64_t GIB = MIB * 1024U;
+
+TEST(ProcessDumpViewTest, TheEstimateIsThePrivateBytesAQuarterMoreAndAMargin)
+{
+    EXPECT_EQ(DumpDetail::estimatedDumpBytes(0), DumpDetail::DUMP_SIZE_MARGIN_BYTES);
+    EXPECT_EQ(DumpDetail::estimatedDumpBytes(4 * GIB), (4 * GIB) + GIB + (128 * MIB));
+    // Never wraps past the top of the range.
+    constexpr std::uint64_t MAX = ~std::uint64_t{0};
+    EXPECT_EQ(DumpDetail::estimatedDumpBytes(MAX), MAX);
+    EXPECT_EQ(DumpDetail::estimatedDumpBytes(MAX - 1), MAX);
+}
+
+TEST(ProcessDumpViewTest, ItWarnsOnlyWhenTheFreeSpaceIsKnownAndShort)
+{
+    const std::uint64_t need = DumpDetail::estimatedDumpBytes(2 * GIB);
+    EXPECT_TRUE(DumpDetail::dumpMayNotFit({.freeBytes = need - 1, .processBytes = 2 * GIB}));
+    EXPECT_FALSE(DumpDetail::dumpMayNotFit({.freeBytes = need, .processBytes = 2 * GIB}));
+    EXPECT_FALSE(DumpDetail::dumpMayNotFit({.freeBytes = 100 * GIB, .processBytes = 2 * GIB}));
+    // Either reading unknown: no warning, rather than a false one.
+    EXPECT_FALSE(DumpDetail::dumpMayNotFit({.freeBytes = std::nullopt, .processBytes = 2 * GIB}));
+    EXPECT_FALSE(DumpDetail::dumpMayNotFit({.freeBytes = 0, .processBytes = std::nullopt}));
+    EXPECT_FALSE(DumpDetail::dumpMayNotFit({}));
+}
+
+TEST(ProcessDumpViewTest, TheWarningNamesTheFolderTheSizesAndWhatToDo)
+{
+    const std::string warning = DumpDetail::lowSpaceWarning({.freeBytes = GIB, .processBytes = 4 * GIB}, someFolder());
+    EXPECT_TRUE(warning.contains("Only 1.0 GiB is free")) << warning;
+    EXPECT_TRUE(warning.contains(someFolder().string())) << warning;
+    EXPECT_TRUE(warning.contains("about 5.1 GiB")) << warning; // 4 GiB + 1 GiB + 128 MiB
+    EXPECT_TRUE(warning.contains("its 4.0 GiB of private memory")) << warning;
+    EXPECT_TRUE(warning.contains("may not fit")) << warning;
+    EXPECT_TRUE(warning.contains("Save dump to...")) << warning;
+    EXPECT_TRUE(DumpDetail::lowSpaceWarning({.freeBytes = 100 * GIB, .processBytes = 4 * GIB}, someFolder()).empty());
+    EXPECT_TRUE(DumpDetail::lowSpaceWarning({}, someFolder()).empty());
+
+    const std::string question = DumpDetail::confirmQuestion("big.exe", 1001, someFolder(), warning);
+    EXPECT_TRUE(question.ends_with("\n\n" + warning)) << question;
+    EXPECT_FALSE(DumpDetail::confirmQuestion("big.exe", 1001, someFolder()).contains("may not fit"));
+}
+
+TEST(ProcessDumpViewTest, TheConfirmWarnsEarlyWhenTheDriveIsTooFull)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setDumpSpace({.freeBytes = 512 * MIB, .processBytes = 3 * GIB});
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    ASSERT_TRUE(view.confirmPending());
+    EXPECT_EQ(mock.dumpSpaceCount(), 1); // read once, when the confirm opens
+    EXPECT_EQ(mock.lastSpaceDirectory(), someFolder());
+    EXPECT_EQ(mock.lastTarget(), TARGET);
+    EXPECT_TRUE(view.confirmQuestion().contains("may not fit")) << view.confirmQuestion();
+    EXPECT_TRUE(view.confirmQuestion().contains("Only 512.0 MiB is free")) << view.confirmQuestion();
+
+    // Still the user's call: the dump can be confirmed anyway.
+    mock.setDumpResult(Platform::ProcessDumpResult(std::unexpected(std::string("Not enough disk space"))));
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.createDumpCount(), 1);
+}
+
+TEST(ProcessDumpViewTest, TheConfirmSaysNothingOfSpaceWhenTheDumpFits)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setDumpSpace({.freeBytes = 500 * GIB, .processBytes = 3 * GIB});
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    EXPECT_FALSE(view.confirmQuestion().contains("may not fit")) << view.confirmQuestion();
+    EXPECT_EQ(view.confirmQuestion(), DumpDetail::confirmQuestion("big.exe", 1001, someFolder()));
+}
+
+// --- Save dump to... (#2001) ----------------------------------------------------------------------
+
+[[nodiscard]] Platform::ProcessActionCapabilities folderCapable()
+{
+    Platform::ProcessActionCapabilities caps = dumpCapable(true);
+    caps.canChooseDumpFolder = true;
+    return caps;
+}
+
+[[nodiscard]] std::filesystem::path otherFolder()
+{
+    return std::filesystem::path("elsewhere") / "dumps";
+}
+
+TEST(ProcessDumpViewTest, AChosenFolderBecomesTheConfirmsAndIsRemembered)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setDumpSpace({.freeBytes = 512 * MIB, .processBytes = 3 * GIB}); // the first folder is too full
+    mock.setFolderChoice(std::optional<std::filesystem::path>(otherFolder()));
+    std::vector<std::filesystem::path> remembered;
+    ProcessDumpView view([&remembered](const std::filesystem::path& folder) { remembered.push_back(folder); });
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    ASSERT_TRUE(view.confirmQuestion().contains("may not fit"));
+
+    view.chooseFolder(&mock, nullptr);
+    EXPECT_TRUE(view.choosingFolder());
+    EXPECT_TRUE(view.active());
+    EXPECT_TRUE(view.confirmPending()); // the confirm stays up behind the folder dialog
+    view.confirm(&mock);                // its button is disabled meanwhile: nothing starts
+    EXPECT_FALSE(view.busy());
+    view.chooseFolder(&mock, nullptr); // and a second dialog is never opened over the first
+
+    mock.setDumpSpace({.freeBytes = 500 * GIB, .processBytes = 3 * GIB}); // the new folder has room
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    EXPECT_FALSE(view.choosingFolder());
+    EXPECT_EQ(mock.chooseFolderCount(), 1);
+    EXPECT_EQ(mock.lastFolderInitial(), someFolder()); // it opened where the dump was going
+    EXPECT_EQ(view.directory(), otherFolder());
+    ASSERT_EQ(remembered.size(), 1U);
+    EXPECT_EQ(remembered.front(), otherFolder());
+    // The space is checked again for the new folder, and the warning is gone.
+    EXPECT_EQ(mock.dumpSpaceCount(), 2);
+    EXPECT_EQ(mock.lastSpaceDirectory(), otherFolder());
+    EXPECT_FALSE(view.confirmQuestion().contains("may not fit")) << view.confirmQuestion();
+    EXPECT_TRUE(view.confirmQuestion().contains(otherFolder().string())) << view.confirmQuestion();
+
+    mock.setDumpResult(
+        Platform::ProcessDump{.file = otherFolder() / "big.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}});
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.lastDumpDirectory(), otherFolder());
+}
+
+TEST(ProcessDumpViewTest, ACancelledFolderDialogChangesNothing)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setFolderChoice(std::optional<std::filesystem::path>{});
+    int remembered = 0;
+    ProcessDumpView view([&remembered](const std::filesystem::path&) { ++remembered; });
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    const std::string question = view.confirmQuestion();
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    EXPECT_EQ(view.directory(), someFolder());
+    EXPECT_EQ(remembered, 0);
+    EXPECT_EQ(view.confirmQuestion(), question);
+    EXPECT_TRUE(view.confirmPending());
+}
+
+TEST(ProcessDumpViewTest, AFolderDialogThatFailsSaysWhyInTheConfirm)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setFolderChoice(std::unexpected(std::string("Couldn't show the folder dialog: Show failed (0x80004005)")));
+    int remembered = 0;
+    ProcessDumpView view([&remembered](const std::filesystem::path&) { ++remembered; });
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    EXPECT_EQ(view.directory(), someFolder());
+    EXPECT_EQ(remembered, 0);
+    EXPECT_TRUE(view.confirmQuestion().contains("Show failed (0x80004005)")) << view.confirmQuestion();
+}
+
+TEST(ProcessDumpViewTest, NoFolderDialogWithoutThePlatformsOrAConfirm)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(dumpCapable(true)); // canChooseDumpFolder false
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.chooseFolder(&mock, nullptr); // no confirm up
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr); // no folder dialog on this platform
+    view.chooseFolder(nullptr, nullptr);
+    EXPECT_FALSE(view.choosingFolder());
+    EXPECT_EQ(mock.chooseFolderCount(), 0);
+
+    // The default interface has none, and knows no space.
+    struct Plain : TestMocks::MockProcessActions
+    {
+        [[nodiscard]] Platform::FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow) override
+        {
+            return Platform::IProcessActions::chooseDumpFolder(initial, ownerWindow); // NOLINT(bugprone-parent-virtual-call)
+        }
+        [[nodiscard]] Platform::DumpSpace dumpSpace(const Platform::ProcessTarget& target, const std::filesystem::path& directory) override
+        {
+            return Platform::IProcessActions::dumpSpace(target, directory); // NOLINT(bugprone-parent-virtual-call)
+        }
+    };
+    Plain plain;
+    const Platform::FolderChoice choice = plain.chooseDumpFolder(someFolder(), nullptr);
+    ASSERT_FALSE(choice.has_value());
+    EXPECT_EQ(choice.error(), Platform::FOLDER_CHOICE_UNSUPPORTED_MESSAGE);
+    const Platform::DumpSpace space = plain.dumpSpace(TARGET, someFolder());
+    EXPECT_FALSE(space.freeBytes.has_value());
+    EXPECT_FALSE(space.processBytes.has_value());
+    EXPECT_FALSE(Platform::ProcessActionCapabilities{}.canChooseDumpFolder);
+}
+
+TEST(ProcessDumpViewTest, AFolderChosenAfterTheConfirmClosedIsStillRemembered)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setFolderChoice(std::optional<std::filesystem::path>(otherFolder()));
+    std::vector<std::filesystem::path> remembered;
+    ProcessDumpView view([&remembered](const std::filesystem::path& folder) { remembered.push_back(folder); });
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr);
+    view.onSelectionChanged(); // the confirm closes; the folder dialog is the user's to answer
+    EXPECT_FALSE(view.confirmPending());
+    EXPECT_TRUE(view.active()); // until it is answered
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_EQ(remembered.size(), 1U);
+    EXPECT_EQ(remembered.front(), otherFolder());
+    EXPECT_FALSE(view.active());
+    EXPECT_EQ(mock.createDumpCount(), 0);
+}
+
+TEST(ProcessDumpViewTest, ShutdownWaitsForTheFolderDialog)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr);
+    view.shutdown();
+    EXPECT_EQ(mock.chooseFolderCount(), 1);
+    EXPECT_TRUE(view.takeFolderChoice(&mock));
+}
+
+// --- The remembered folder (#2001) ----------------------------------------------------------------
+
+/// A folder of this test's own under the temp folder, removed on scope exit.
+class TempFolder
+{
+  public:
+    TempFolder() : m_Path(std::filesystem::temp_directory_path() / "tasksmack-dumpview-test-folder")
+    {
+        std::filesystem::create_directories(m_Path);
+    }
+    TempFolder(const TempFolder&) = delete;
+    TempFolder& operator=(const TempFolder&) = delete;
+    TempFolder(TempFolder&&) = delete;
+    TempFolder& operator=(TempFolder&&) = delete;
+    ~TempFolder()
+    {
+        try
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(m_Path, ignored);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - a destructor; a folder left behind in the temp folder is harmless
+        {}
+    }
+    [[nodiscard]] const std::filesystem::path& path() const
+    {
+        return m_Path;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+TEST(ProcessDumpViewTest, TheRememberedFolderIsUsedWhileItExists)
+{
+    const TempFolder folder;
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path())), folder.path());
+    // Never chosen, or gone since: the temp folder, as before.
+    EXPECT_EQ(DumpDetail::dumpDirectory(""), DumpDetail::defaultDumpDirectory());
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path() / "gone")), DumpDetail::defaultDumpDirectory());
+}
+
+TEST(ProcessDumpViewTest, TheConfigKeepsTheDumpFolder)
+{
+    UserSettings settings;
+    EXPECT_TRUE(settings.dumpFolder.empty());
+    ASSERT_TRUE(UserConfig::parseSettings("[dumps]\nfolder = 'D:\\Dumps'\n", settings));
+    EXPECT_EQ(settings.dumpFolder, "D:\\Dumps");
 }
 
 } // namespace

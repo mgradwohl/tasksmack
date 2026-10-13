@@ -4,6 +4,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "WindowsAffinityMath.h"
+#include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
 #include "WindowsProcessActionsMath.h"
 #include "WindowsProcessDump.h"
@@ -28,6 +29,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -250,6 +252,7 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .readGroupSizes = &realReadGroupSizes,
         .readCores = &realReadCores,
         .readCpuSets = &realReadCpuSets,
+        .pssCaptureSnapshot = &PssCaptureSnapshot,
     };
 }
 
@@ -273,7 +276,8 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         // SetProcessAffinityMask, or CPU sets across processor groups (#1881); needs the groups' sizes
         .canSetAffinity = !m_GroupSizes.empty(),
         .syscallTrace = SyscallTraceAvailability::Unsupported,
-        .canCreateDump = true, // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
+        .canCreateDump = true,       // MiniDumpWriteDump, dbghelp.dll loaded on the first dump (#807)
+        .canChooseDumpFolder = true, // IFileOpenDialog with FOS_PICKFOLDERS (#2001)
     };
 }
 
@@ -482,23 +486,67 @@ CpuAffinityLayout WindowsProcessActions::affinityLayout() const
 ProcessDumpResult
 WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
 {
-    VerifiedProcess process = openVerified(m_Fns,
-                                           target,
-                                           Windows::DUMP_PROCESS_ACCESS,
-                                           [&target](DWORD error)
-                                           {
-                                               // Only a refusal asks whether the process is protected: the
-                                               // one case where running as administrator would not help.
-                                               const bool isProtected = error == ERROR_ACCESS_DENIED &&
-                                                                        Windows::isProtectedProcess(static_cast<DWORD>(target.pid));
-                                               return DumpMath::openFailureMessage(error, target.pid, isProtected);
-                                           });
+    // A snapshot needs more access than a live dump (Windows::SNAPSHOT_PROCESS_ACCESS). A process that
+    // refuses it may still allow a live dump's, so that is asked for next, and the dump says why it
+    // is live.
+    Windows::DumpSource source{.captureSnapshot = m_Fns.pssCaptureSnapshot, .liveReason = {}};
+    VerifiedProcess process;
+    bool snapshotOpenRefused = false;
+    if (source.captureSnapshot != nullptr)
+    {
+        process = openVerified(m_Fns,
+                               target,
+                               Windows::SNAPSHOT_PROCESS_ACCESS,
+                               [&snapshotOpenRefused](DWORD /*error*/)
+                               {
+                                   snapshotOpenRefused = true;
+                                   return std::string{};
+                               });
+    }
+    if (source.captureSnapshot == nullptr || snapshotOpenRefused)
+    {
+        process = openVerified(m_Fns,
+                               target,
+                               Windows::DUMP_PROCESS_ACCESS,
+                               [&target](DWORD error)
+                               {
+                                   // Only a refusal asks whether the process is protected: the one case
+                                   // where running as administrator would not help.
+                                   const bool isProtected =
+                                       error == ERROR_ACCESS_DENIED && Windows::isProtectedProcess(static_cast<DWORD>(target.pid));
+                                   return DumpMath::openFailureMessage(error, target.pid, isProtected);
+                               });
+        if (snapshotOpenRefused)
+        {
+            source.captureSnapshot = nullptr;
+            source.liveReason = DumpMath::snapshotFailureReason(0, true);
+        }
+    }
     if (!process.result.success)
     {
         spdlog::warn("Not writing a dump of PID {}: {}", target.pid, process.result.errorMessage);
         return std::unexpected(std::move(process.result.errorMessage));
     }
-    return Windows::writeProcessDump(process.handle.get(), target.pid, directory, stopToken);
+    return Windows::writeProcessDump(process.handle.get(), target.pid, directory, stopToken, source);
+}
+
+DumpSpace WindowsProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
+{
+    DumpSpace space{.freeBytes = Windows::freeBytesInFolder(directory), .processBytes = std::nullopt};
+    // The private bytes are read from the target itself, through the identity check, never from
+    // whatever holds its PID now.
+    const VerifiedProcess process =
+        openVerified(m_Fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return std::format("error {}", error); });
+    if (process.result.success)
+    {
+        space.processBytes = Windows::processPrivateBytes(process.handle.get());
+    }
+    return space;
+}
+
+FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
+{
+    return Windows::pickFolder(ownerWindow, initial, L"Save dump files to");
 }
 // NOLINTEND(misc-include-cleaner)
 

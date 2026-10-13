@@ -502,7 +502,11 @@ not a bare PID, and real implementations refuse the action unless the process at
 start time (#973); `lastTarget()` returns the whole target the most recent action received.
 `createDump()` (#807) returns what `setDumpResult(...)` set, or with `setDumpWaitsForCancel(true)`
 blocks until its stop token is requested, for tests of a dump's Cancel; `createDumpCount()` and
-`lastDumpDirectory()` record the call.
+`lastDumpDirectory()` record the call. `dumpSpace()` (#2001) returns what `setDumpSpace(...)` set
+(unknown by default), counted by `dumpSpaceCount()` with the folder in `lastSpaceDirectory()`;
+`chooseDumpFolder()` returns what `setFolderChoice(...)` set (cancelled by default), counted by
+`chooseFolderCount()` with `lastFolderInitial()` and `lastFolderOwner()`. A test that lets a folder
+be chosen gives its `ProcessDumpView` a handler of its own, so nothing is saved to the user's config.
 
 For `Platform::IProcessEnvironmentReader` (the on-demand environment read behind Process Details'
 Environment section, #179), use `TestMocks::MockProcessEnvironmentReader`: `setResult(...)` and

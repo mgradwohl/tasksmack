@@ -17,12 +17,15 @@
 #endif
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
 #include <dbghelp.h> // NOLINT(misc-include-cleaner) - MINIDUMP_* types; the function itself is looked up at run time
+#include <processsnapshot.h> // NOLINT(misc-include-cleaner) - PssFreeSnapshot, PSS_* flags
+#include <psapi.h> // NOLINT(misc-include-cleaner) - GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX
 // clang-format on
 
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -62,21 +65,94 @@ constexpr auto DUMP_TYPE =
                                MiniDumpWithThreadInfo | MiniDumpIgnoreInaccessibleMemory);
 // NOLINTEND(bugprone-signed-bitwise)
 
-/// Asks dbghelp to stop once the stop token passed as @p param is requested.
+/// What the snapshot captures, and how (#2001): Microsoft's documented recipe for a MiniDumpWriteDump
+/// of a snapshot, which Task Manager follows, chosen for what DUMP_TYPE writes.
+///  - VA_CLONE: a copy-on-write clone of the address space. The dump reads the clone, so the process
+///    pauses only while it is made; the full-memory stream comes from it.
+///  - HANDLES, with their NAME, BASIC, TYPE_SPECIFIC information and TRACE: the handle data stream
+///    (MiniDumpWithHandleData) -- names and types, as a live dump has them.
+///  - THREADS, THREAD_CONTEXT and THREAD_CONTEXT_EXTENDED: the thread list and every thread's registers,
+///    the extended (AVX/XSAVE) state included, which the stacks are walked from
+///    (MiniDumpWithThreadInfo).
+///  - CREATE_BREAKAWAY with BREAKAWAY_OPTIONAL: the clone leaves the process's job where the job lets
+///    it, so the job's limits (a process count, kill-on-close) don't apply to it, and the snapshot
+///    still succeeds where the job doesn't.
+///  - CREATE_USE_VM_ALLOCATIONS: the snapshot's own buffers come from VirtualAlloc, not TaskSmack's
+///    heap.
+///  - CREATE_RELEASE_SECTION: the clone holds no reference to the process's image file, so the clone
+///    never keeps an executable in use. The module list is read from the clone's memory, and the
+///    file's name from the process itself, so the dump loses nothing by it.
+/// Left out: VA_SPACE and VA_SPACE_SECTION_INFORMATION (only PssWalkSnapshot() reads those; dbghelp
+/// reads the clone's memory itself), IPT_TRACE, FORCE_BREAKAWAY (needs the TCB privilege) and
+/// MEASURE_PERFORMANCE.
+// processsnapshot.h gives PSS_CAPTURE_FLAGS its own operator| (DEFINE_ENUM_FLAG_OPERATORS), so this
+// stays a PSS_CAPTURE_FLAGS throughout.
+constexpr PSS_CAPTURE_FLAGS SNAPSHOT_CAPTURE_FLAGS =
+    PSS_CAPTURE_VA_CLONE | PSS_CAPTURE_HANDLES | PSS_CAPTURE_HANDLE_NAME_INFORMATION | PSS_CAPTURE_HANDLE_BASIC_INFORMATION |
+    PSS_CAPTURE_HANDLE_TYPE_SPECIFIC_INFORMATION | PSS_CAPTURE_HANDLE_TRACE | PSS_CAPTURE_THREADS | PSS_CAPTURE_THREAD_CONTEXT |
+    PSS_CAPTURE_THREAD_CONTEXT_EXTENDED | PSS_CREATE_BREAKAWAY | PSS_CREATE_BREAKAWAY_OPTIONAL | PSS_CREATE_USE_VM_ALLOCATIONS |
+    PSS_CREATE_RELEASE_SECTION;
+
+/// Every register the threads have, for THREAD_CONTEXT.
+constexpr DWORD SNAPSHOT_CONTEXT_FLAGS = CONTEXT_ALL;
+
+/// A snapshot from PssCaptureSnapshot(), freed (its clone ended) on scope exit.
+class Snapshot
+{
+  public:
+    Snapshot() = default;
+    explicit Snapshot(HPSS handle) noexcept : m_Handle(handle)
+    {}
+    ~Snapshot()
+    {
+        if (m_Handle != nullptr)
+        {
+            // The snapshot was captured into this process, so it is freed through this process's handle.
+            static_cast<void>(PssFreeSnapshot(GetCurrentProcess(), m_Handle));
+        }
+    }
+    Snapshot(const Snapshot&) = delete;
+    Snapshot& operator=(const Snapshot&) = delete;
+    Snapshot(Snapshot&&) = delete;
+    Snapshot& operator=(Snapshot&&) = delete;
+
+    [[nodiscard]] HPSS get() const noexcept
+    {
+        return m_Handle;
+    }
+
+  private:
+    HPSS m_Handle = nullptr;
+};
+
+/// What dumpCallback() is handed: the stop token, and whether dbghelp is reading a snapshot.
+struct CallbackState
+{
+    const std::stop_token* stopToken = nullptr;
+    bool snapshot = false;
+};
+
+/// Tells dbghelp the handle it was given is a snapshot's, and asks it to stop once the stop token is
+/// requested.
 BOOL CALLBACK dumpCallback(PVOID param, PMINIDUMP_CALLBACK_INPUT input, PMINIDUMP_CALLBACK_OUTPUT output)
 {
     if (param == nullptr || input == nullptr || output == nullptr)
     {
         return TRUE;
     }
-    if (input->CallbackType == CancelCallback)
+    const auto* state = static_cast<const CallbackState*>(param);
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - CallbackType selects the member
+    if (input->CallbackType == IsProcessSnapshotCallback)
     {
-        const auto* stopToken = static_cast<const std::stop_token*>(param);
-        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - CallbackType selects the member
-        output->Cancel = stopToken->stop_requested() ? TRUE : FALSE;
-        output->CheckCancel = TRUE; // keep asking, until it is done
-        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+        // S_FALSE: the handle is a PSS snapshot, which dbghelp then reads through the Pss* functions.
+        output->Status = state->snapshot ? S_FALSE : S_OK;
     }
+    else if (input->CallbackType == CancelCallback && state->stopToken != nullptr)
+    {
+        output->Cancel = state->stopToken->stop_requested() ? TRUE : FALSE;
+        output->CheckCancel = TRUE; // keep asking, until it is done
+    }
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
     return TRUE;
 }
 
@@ -154,8 +230,8 @@ bool isProtectedProcess(DWORD pid)
     return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
 }
 
-ProcessDumpResult
-writeProcessDump(HANDLE process, std::int32_t pid, const std::filesystem::path& directory, const std::stop_token& stopToken)
+ProcessDumpResult writeProcessDump(
+    HANDLE process, std::int32_t pid, const std::filesystem::path& directory, const std::stop_token& stopToken, const DumpSource& source)
 {
     if (directory.empty())
     {
@@ -182,18 +258,49 @@ writeProcessDump(HANDLE process, std::int32_t pid, const std::filesystem::path& 
         spdlog::warn("Dump of PID {}: {}", pid, message);
         return std::unexpected(std::move(message));
     }
-    spdlog::info("Writing a full dump of PID {} to {}", pid, WinString::wideToUtf8(file.path.wstring()));
 
+    // The snapshot is taken only once the file exists, so a folder that can't be written never pauses
+    // the process at all. A failure falls back to the live dump, and the result says why.
+    std::string liveReason = source.liveReason;
+    HPSS captured = nullptr;
+    if (source.captureSnapshot != nullptr && !stopToken.stop_requested())
+    {
+        const DWORD captureError = source.captureSnapshot(process, SNAPSHOT_CAPTURE_FLAGS, SNAPSHOT_CONTEXT_FLAGS, &captured);
+        if (captureError != ERROR_SUCCESS)
+        {
+            captured = nullptr;
+            liveReason = DumpMath::snapshotFailureReason(captureError, false);
+            spdlog::warn("Dump of PID {}: no snapshot ({}); writing it from the running process", pid, liveReason);
+        }
+    }
+    const Snapshot snapshot(captured);
+    const bool fromSnapshot = snapshot.get() != nullptr;
+    if (fromSnapshot)
+    {
+        liveReason.clear();
+    }
+    else if (liveReason.empty())
+    {
+        liveReason = DumpMath::snapshotFailureReason(DumpMath::ERROR_CODE_NOT_SUPPORTED, false);
+    }
+    spdlog::info("Writing a full dump of PID {} from {} to {}",
+                 pid,
+                 fromSnapshot ? "a snapshot" : "the running process",
+                 WinString::wideToUtf8(file.path.wstring()));
+
+    CallbackState state{.stopToken = &stopToken, .snapshot = fromSnapshot};
     MINIDUMP_CALLBACK_INFORMATION callback{};
     callback.CallbackRoutine = &dumpCallback;
-    // dbghelp hands the pointer back to dumpCallback() unchanged, and only reads through it.
-    callback.CallbackParam = const_cast<std::stop_token*>(&stopToken); // NOLINT(cppcoreguidelines-pro-type-const-cast)
+    callback.CallbackParam = &state;
 
+    // A snapshot's handle stands in for the process's: dbghelp asks dumpCallback() which it is.
+    HANDLE readFrom =
+        fromSnapshot ? reinterpret_cast<HANDLE>(snapshot.get()) : process; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     BOOL written = FALSE;
     DWORD error = 0;
     {
         const std::scoped_lock lock(dbghelpMutex());
-        written = writeDump(process, static_cast<DWORD>(pid), file.handle.get(), DUMP_TYPE, nullptr, nullptr, &callback);
+        written = writeDump(readFrom, static_cast<DWORD>(pid), file.handle.get(), DUMP_TYPE, nullptr, nullptr, &callback);
         error = (written == FALSE) ? GetLastError() : 0;
     }
 
@@ -209,7 +316,38 @@ writeProcessDump(HANDLE process, std::int32_t pid, const std::filesystem::path& 
     LARGE_INTEGER size{};
     const std::uint64_t sizeBytes = (GetFileSizeEx(file.handle.get(), &size) != 0) ? static_cast<std::uint64_t>(size.QuadPart) : 0;
     spdlog::info("Wrote a {}-byte dump of PID {}", sizeBytes, pid);
-    return ProcessDump{.file = std::move(file.path), .sizeBytes = sizeBytes, .note = note};
+    return ProcessDump{.file = std::move(file.path),
+                       .sizeBytes = sizeBytes,
+                       .note = note,
+                       .fromSnapshot = fromSnapshot,
+                       .liveReason = std::move(liveReason)};
+}
+
+std::optional<std::uint64_t> processPrivateBytes(HANDLE process)
+{
+    PROCESS_MEMORY_COUNTERS_EX counters{};
+    counters.cb = sizeof(counters);
+    // PROCESS_MEMORY_COUNTERS_EX is the documented extension GetProcessMemoryInfo() fills by its cb.
+    if (GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters)) ==
+        0) // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(counters.PrivateUsage);
+}
+
+std::optional<std::uint64_t> freeBytesInFolder(const std::filesystem::path& directory)
+{
+    if (directory.empty())
+    {
+        return std::nullopt;
+    }
+    ULARGE_INTEGER freeToCaller{};
+    if (GetDiskFreeSpaceExW(directory.c_str(), &freeToCaller, nullptr, nullptr) == 0)
+    {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(freeToCaller.QuadPart);
 }
 // NOLINTEND(misc-include-cleaner)
 

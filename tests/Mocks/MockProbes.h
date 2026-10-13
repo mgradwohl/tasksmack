@@ -770,8 +770,64 @@ class MockProcessActions : public Platform::IProcessActions
         return m_LastDumpDirectory;
     }
 
+    /// What dumpSpace() returns (#2001): unknown by default.
+    void setDumpSpace(Platform::DumpSpace space)
+    {
+        m_DumpSpace = space;
+    }
+    /// Called on the UI thread, when the dump's confirm opens or its folder changes.
+    [[nodiscard]] Platform::DumpSpace dumpSpace(const Platform::ProcessTarget& target, const std::filesystem::path& directory) override
+    {
+        m_LastTarget = target;
+        m_LastSpaceDirectory = directory;
+        ++m_DumpSpaceCount;
+        return m_DumpSpace;
+    }
+    [[nodiscard]] int dumpSpaceCount() const
+    {
+        return m_DumpSpaceCount;
+    }
+    [[nodiscard]] const std::filesystem::path& lastSpaceDirectory() const
+    {
+        return m_LastSpaceDirectory;
+    }
+
+    /// What chooseDumpFolder() returns (#2001): cancelled by default.
+    void setFolderChoice(Platform::FolderChoice choice)
+    {
+        m_FolderChoice = std::move(choice);
+    }
+    /// Runs on ProcessDumpView's folder-dialog worker; read by a test only after its answer was taken
+    /// in (the future's get() orders the two), so it needs no lock.
+    [[nodiscard]] Platform::FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow) override
+    {
+        m_LastFolderInitial = initial;
+        m_LastFolderOwner = ownerWindow;
+        ++m_ChooseFolderCount;
+        return m_FolderChoice;
+    }
+    [[nodiscard]] int chooseFolderCount() const
+    {
+        return m_ChooseFolderCount;
+    }
+    [[nodiscard]] const std::filesystem::path& lastFolderInitial() const
+    {
+        return m_LastFolderInitial;
+    }
+    [[nodiscard]] void* lastFolderOwner() const
+    {
+        return m_LastFolderOwner;
+    }
+
   private:
     Platform::ProcessActionCapabilities m_Capabilities;
+    Platform::DumpSpace m_DumpSpace;
+    int m_DumpSpaceCount = 0;
+    std::filesystem::path m_LastSpaceDirectory;
+    Platform::FolderChoice m_FolderChoice = std::optional<std::filesystem::path>{};
+    int m_ChooseFolderCount = 0;
+    std::filesystem::path m_LastFolderInitial;
+    void* m_LastFolderOwner = nullptr;
     Platform::ProcessDumpResult m_DumpResult = std::unexpected(std::string("no dump result set"));
     bool m_DumpWaitsForCancel = false;
     int m_CreateDumpCount = 0;

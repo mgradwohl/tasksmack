@@ -956,7 +956,7 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
 
     caps.canCreateDump = true;
     const std::filesystem::path file = std::filesystem::path("dumps") / "victim_1001.dmp";
-    h.mock.setDumpResult(Platform::ProcessDump{.file = file, .sizeBytes = 4096, .note = {}});
+    h.mock.setDumpResult(Platform::ProcessDump{.file = file, .sizeBytes = 4096, .note = {}, .fromSnapshot = true, .liveReason = {}});
     ASSERT_FALSE(runFrame(body));
     EXPECT_TRUE(text.contains("Create dump file...")) << text;
 
@@ -983,12 +983,66 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     EXPECT_EQ(h.mock.lastDumpDirectory(), DumpDetail::defaultDumpDirectory());
     EXPECT_TRUE(text.contains("Wrote a dump file of victim (PID 1001)")) << text;
     EXPECT_TRUE(text.contains(file.string())) << text;
+    EXPECT_TRUE(text.contains("Written from a snapshot")) << text; // #2001
 
     modal = ImGui::GetTopMostPopupModal();
     ASSERT_NE(modal, nullptr);
     ImGui::ActivateItemByID(ImHashStr("Close", 0, modal->ID));
     (void) runFrame(body);
     EXPECT_FALSE(runFrame(body));
+    EXPECT_FALSE(h.actionsView.dumpView().active());
+}
+
+// #2001: the dump's confirm warns when the folder's drive is too full, and offers Save dump to... where
+// the platform has a folder dialog; pressing it opens that dialog and leaves the confirm up.
+TEST_F(ProcessActionsBlockRenderTest, TheDumpConfirmWarnsOfLowSpaceAndOffersAFolder)
+{
+    Harness h;
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.canCreateDump = true;
+    caps.canChooseDumpFolder = true;
+    h.mock.setCapabilities(caps);
+    // Too little room for a 3 GiB process; and the folder dialog is cancelled (the mock's default), so
+    // no folder is remembered in the config.
+    constexpr std::uint64_t GIB = std::uint64_t{1024} * 1024U * 1024U;
+    h.mock.setDumpSpace({.freeBytes = GIB, .processBytes = 3 * GIB});
+    std::string text;
+    const auto body = [&]
+    {
+        ImGui::LogToBuffer();
+        (void) ProcessActionsBlock::render(h.context(caps), layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+    };
+    (void) runFrame(body);
+    ImGui::ActivateItemByID(ImHashStr(DumpDetail::CREATE_DUMP_LABEL, 0, actionsWindow()->ID));
+    (void) runFrame(body);
+    (void) runFrame(body);
+    ASSERT_TRUE(h.actionsView.dumpView().confirmPending());
+    EXPECT_EQ(h.mock.dumpSpaceCount(), 1);
+    EXPECT_TRUE(text.contains("may not fit")) << text;
+    EXPECT_TRUE(text.contains("Save dump to...")) << text;
+
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(DumpDetail::CHOOSE_FOLDER_LABEL, 0, modal->ID));
+    (void) runFrame(body); // the press
+    (void) runFrame(body);
+    // The dialog's answer is taken in by a frame, or here; either way after the worker is done, so the
+    // mock's counts are read after it wrote them.
+    static_cast<void>(h.actionsView.dumpView().takeFolderChoice(&h.mock, true));
+    (void) runFrame(body);
+    EXPECT_EQ(h.mock.chooseFolderCount(), 1);
+    EXPECT_EQ(h.mock.lastFolderInitial(), DumpDetail::defaultDumpDirectory());
+    EXPECT_TRUE(h.actionsView.dumpView().confirmPending()); // cancelled: the confirm is still up, as it was
+    EXPECT_EQ(h.mock.createDumpCount(), 0);
+
+    modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("Cancel", 0, modal->ID));
+    (void) runFrame(body);
+    (void) runFrame(body);
     EXPECT_FALSE(h.actionsView.dumpView().active());
 }
 } // namespace

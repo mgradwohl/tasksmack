@@ -3,6 +3,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "WindowsAffinityMath.h"
+#include "WindowsProcessDump.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -42,6 +43,8 @@ struct WindowsProcessFunctions
     std::vector<ProcessorCoreRecord> (*readCores)() = nullptr;
     /// Every CPU set (GetSystemCpuSetInformation); empty on failure.
     std::vector<CpuSetRecord> (*readCpuSets)() = nullptr;
+    /// PssCaptureSnapshot(), which a dump is written from (#2001); null: every dump is written live.
+    Windows::PssCaptureSnapshotFn pssCaptureSnapshot = nullptr;
 };
 
 /// The real Win32 calls.
@@ -84,8 +87,15 @@ class WindowsProcessActions : public IProcessActions
     /// A full-memory minidump through dbghelp's MiniDumpWriteDump (#807), as Task Manager writes one;
     /// see Windows::writeProcessDump(). Opens the process through the same identity check as every
     /// action, and says why when that is refused: a protected process, one elevated or another user's.
+    /// From a PssCaptureSnapshot() clone where it can take one (#2001), so the process pauses only for
+    /// the snapshot; else live, saying why (a process that refuses the snapshot's access, a failed
+    /// capture).
     [[nodiscard]] ProcessDumpResult
     createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override;
+    /// GetDiskFreeSpaceEx() on the folder, and the process's private bytes through the identity check.
+    [[nodiscard]] DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory) override;
+    /// IFileOpenDialog with FOS_PICKFOLDERS (Windows::pickFolder()).
+    [[nodiscard]] FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow) override;
 
   private:
     /// Helper to terminate a process with given exit code

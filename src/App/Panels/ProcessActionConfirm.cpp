@@ -67,7 +67,13 @@ bool openIfRequested(bool showRequested)
 }
 
 /// Draws the open modal with @p title and @p question, confirmed by a button labelled @p confirmLabel.
-Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructive, std::string_view title, std::string_view question)
+/// With @p leading's label set, a leading button too, which leaves the dialog open.
+Outcome renderOpen(bool& showRequested,
+                   const char* confirmLabel,
+                   bool destructive,
+                   std::string_view title,
+                   std::string_view question,
+                   const LeadingButton& leading)
 {
     Outcome outcome = Outcome::None;
     std::string popupTitle(title);
@@ -141,10 +147,12 @@ Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructi
         // their buttons in the Actions block use (#1273).
         const UI::Widgets::ButtonFills dangerFills = dangerButtonFills();
         const UI::Widgets::DialogFooterButton confirmButton{
-            .label = confirmLabel, .fills = destructive ? &dangerFills : nullptr, .tooltip = nullptr};
+            .label = confirmLabel, .fills = destructive ? &dangerFills : nullptr, .tooltip = nullptr, .disabled = leading.busy};
         const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel", .fills = nullptr, .tooltip = nullptr};
+        const UI::Widgets::DialogFooterButton leadingButton{
+            .label = leading.label, .fills = nullptr, .tooltip = leading.tooltip, .disabled = leading.busy};
         UI::Widgets::DialogFooterAction pressed =
-            UI::Widgets::dialogFooter(confirmButton, cancelButton, confirmButtonWidth, {}, contentBudget);
+            UI::Widgets::dialogFooter(confirmButton, cancelButton, confirmButtonWidth, leadingButton, contentBudget);
         if (escaped)
         {
             pressed = UI::Widgets::DialogFooterAction::Secondary; // Even if a button was clicked in the same frame
@@ -161,8 +169,13 @@ Outcome renderOpen(bool& showRequested, const char* confirmLabel, bool destructi
             showRequested = false;
             ImGui::CloseCurrentPopup();
             break;
-        case UI::Widgets::DialogFooterAction::None:
         case UI::Widgets::DialogFooterAction::Leading:
+            if (leading.pressed != nullptr)
+            {
+                *leading.pressed = true;
+            }
+            break;
+        case UI::Widgets::DialogFooterAction::None:
             break;
         }
 
@@ -187,7 +200,8 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
                       Detail::actionLabel(action),
                       Detail::isDestructiveAction(action),
                       Detail::confirmTitle(action, processName, pid),
-                      Detail::confirmBody(action, processName, pid));
+                      Detail::confirmBody(action, processName, pid),
+                      {});
 }
 
 Outcome renderText(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question, bool dismiss)
@@ -195,8 +209,13 @@ Outcome renderText(bool& showRequested, Detail::ProcessAction action, std::strin
     return renderLabelled(showRequested, Detail::actionLabel(action), Detail::isDestructiveAction(action), title, question, dismiss);
 }
 
-Outcome renderLabelled(
-    bool& showRequested, const char* confirmLabel, bool destructive, std::string_view title, std::string_view question, bool dismiss)
+Outcome renderLabelled(bool& showRequested,
+                       const char* confirmLabel,
+                       bool destructive,
+                       std::string_view title,
+                       std::string_view question,
+                       bool dismiss,
+                       const LeadingButton& leading)
 {
     if (dismiss)
     {
@@ -206,7 +225,7 @@ Outcome renderLabelled(
     {
         return Outcome::None;
     }
-    return renderOpen(showRequested, confirmLabel, destructive, title, question);
+    return renderOpen(showRequested, confirmLabel, destructive, title, question, leading);
 }
 
 } // namespace App::ProcessActionConfirm

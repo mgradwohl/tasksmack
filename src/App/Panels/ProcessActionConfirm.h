@@ -40,14 +40,27 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
 Outcome
 renderText(bool& showRequested, Detail::ProcessAction action, std::string_view title, std::string_view question, bool dismiss = false);
 
+/// An extra button at the left of the modal's footer, which leaves the modal open when pressed: the
+/// dump confirm's "Save dump to..." (#2001).
+struct LeadingButton
+{
+    const char* label = nullptr;   ///< Visible label and ID; nullptr: no such button.
+    const char* tooltip = nullptr; ///< Shown on hover; nullptr: none.
+    /// What the button started is still up (a folder dialog): it and the confirm button are disabled
+    /// until it is done. Cancel stays enabled.
+    bool busy = false;
+    bool* pressed = nullptr; ///< Set to true on the frame the button is pressed; may be null.
+};
+
 /// The same modal for a change that is not one of the ProcessActions, its confirm button labelled
 /// @p confirmLabel (in the danger fill when @p destructive): the Processes table's batch priority
-/// change (#1484), "[Cancel][Set Priority]".
+/// change (#1484), "[Cancel][Set Priority]"; with @p leading, a button left of those too.
 Outcome renderLabelled(bool& showRequested,
                        const char* confirmLabel,
                        bool destructive,
                        std::string_view title,
                        std::string_view question,
-                       bool dismiss = false);
+                       bool dismiss = false,
+                       const LeadingButton& leading = {});
 
 } // namespace App::ProcessActionConfirm

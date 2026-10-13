@@ -43,10 +43,11 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
     renderSyscallTraceButton(actions, capabilities, target, anyButton);
     const bool anyBeforeAffinity = anyButton || capabilities.syscallTrace != Platform::SyscallTraceAvailability::Unsupported;
     renderSetAffinityButton(actions, capabilities, processName, target, currentAffinity, anyBeforeAffinity);
-    renderCreateDumpButton(capabilities, processName, target, anyBeforeAffinity || capabilities.canSetAffinity);
+    renderCreateDumpButton(actions, capabilities, processName, target, anyBeforeAffinity || capabilities.canSetAffinity);
 }
 
-void ProcessActionsView::renderCreateDumpButton(const Platform::ProcessActionCapabilities& capabilities,
+void ProcessActionsView::renderCreateDumpButton(Platform::IProcessActions* actions,
+                                                const Platform::ProcessActionCapabilities& capabilities,
                                                 const std::string& processName,
                                                 const Platform::ProcessTarget& target,
                                                 bool afterButtons)
@@ -73,7 +74,7 @@ void ProcessActionsView::renderCreateDumpButton(const Platform::ProcessActionCap
     if (pressed && !disabled)
     {
         // The process is captured now; the confirm and the dump act only on it.
-        m_DumpView.request(target, processName, DumpDetail::defaultDumpDirectory());
+        m_DumpView.request(target, processName, DumpDetail::rememberedDumpDirectory(), actions);
     }
     ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
 }

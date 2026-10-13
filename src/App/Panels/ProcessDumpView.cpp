@@ -1,7 +1,10 @@
 #include "ProcessDumpView.h"
 
 #include "App/PlatformOpen.h"
+#include "App/UserConfig.h"
+#include "Core/Application.h"
 #include "Core/Utf8Path.h"
+#include "Core/Window.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ThreadName.h"
 #include "ProcessActionConfirm.h"
@@ -13,6 +16,8 @@
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
+#include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_video.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -23,6 +28,7 @@
 #include <filesystem>
 #include <format>
 #include <future>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -35,6 +41,20 @@ namespace App
 namespace DumpDetail
 {
 
+std::string lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory)
+{
+    if (!dumpMayNotFit(space))
+    {
+        return {};
+    }
+    return std::format("Only {} is free on the drive holding {}, and a full dump of this process may need about {} (its {} of "
+                       "private memory, and more). It may not fit: choose another folder with Save dump to..., or free some space.",
+                       UI::Format::formatBytes(static_cast<double>(space.freeBytes.value_or(0))),
+                       directory.empty() ? std::string("the temporary folder") : Core::pathToUtf8(directory),
+                       UI::Format::formatBytes(static_cast<double>(estimatedDumpBytes(space.processBytes.value_or(0)))),
+                       UI::Format::formatBytes(static_cast<double>(space.processBytes.value_or(0))));
+}
+
 std::filesystem::path defaultDumpDirectory()
 {
     std::error_code error;
@@ -42,18 +62,57 @@ std::filesystem::path defaultDumpDirectory()
     return error ? std::filesystem::path{} : directory;
 }
 
+std::filesystem::path dumpDirectory(std::string_view remembered)
+{
+    if (!remembered.empty())
+    {
+        std::filesystem::path directory = Core::utf8ToPath(remembered);
+        std::error_code error;
+        if (std::filesystem::is_directory(directory, error))
+        {
+            return directory;
+        }
+    }
+    return defaultDumpDirectory();
+}
+
+std::filesystem::path rememberedDumpDirectory()
+{
+    return dumpDirectory(UserConfig::get().settings().dumpFolder);
+}
+
+void rememberDumpDirectory(const std::filesystem::path& directory)
+{
+    auto& config = UserConfig::get();
+    std::string folder = Core::pathToUtf8(directory);
+    if (config.settings().dumpFolder == folder)
+    {
+        return;
+    }
+    config.settings().dumpFolder = std::move(folder);
+    config.save();
+}
+
 std::string confirmTitle(std::string_view processName, std::int32_t pid)
 {
     return std::format("Create a dump file of {} (PID {})?", processName, pid);
 }
 
-std::string confirmQuestion(std::string_view processName, std::int32_t pid, const std::filesystem::path& directory)
+std::string
+confirmQuestion(std::string_view processName, std::int32_t pid, const std::filesystem::path& directory, std::string_view warning)
 {
-    return std::format("A full memory dump of {} (PID {}) will be written to a new file in {}.\n\nIt can be as large as all the memory "
-                       "the process uses, and the process may stop responding while it is written.",
-                       processName,
-                       pid,
-                       directory.empty() ? std::string("the temporary folder") : Core::pathToUtf8(directory));
+    std::string question = std::format("A full memory dump of {} (PID {}) will be written to a new file in {}.\n\nIt can be as large as "
+                                       "all the memory the process uses. The process pauses while a snapshot of it is taken; where none "
+                                       "can be, it may stop responding while the dump is written.",
+                                       processName,
+                                       pid,
+                                       directory.empty() ? std::string("the temporary folder") : Core::pathToUtf8(directory));
+    if (!warning.empty())
+    {
+        question += "\n\n";
+        question += warning;
+    }
+    return question;
 }
 
 std::string progressText(std::string_view processName, std::int32_t pid, std::chrono::seconds elapsed)
@@ -69,14 +128,21 @@ DumpMessage resultMessage(std::string_view processName, std::int32_t pid, const 
                 .title = "Couldn't create a dump file",
                 .text = std::format("Could not create a dump file of {} (PID {}): {}", processName, pid, result.error()),
                 .file = {},
-                .note = {}};
+                .note = {},
+                .method = {}};
     }
+    std::string method = result->fromSnapshot
+                           ? std::string("Written from a snapshot: the process paused only while the snapshot was taken.")
+                           : std::format("Written from the running process, which may have stopped responding while it was written: "
+                                         "no snapshot could be taken ({}).",
+                                         result->liveReason.empty() ? std::string("unknown reason") : result->liveReason);
     return {.ok = true,
             .title = "Dump file created",
             .text = std::format(
                 "Wrote a dump file of {} (PID {}), {}:", processName, pid, UI::Format::formatBytes(static_cast<double>(result->sizeBytes))),
             .file = result->file,
-            .note = result->note};
+            .note = result->note,
+            .method = std::move(method)};
 }
 
 namespace
@@ -103,9 +169,32 @@ namespace
     }
 }
 
+/// Runs on the folder dialog's worker, as dumpOrFailed() does for the dump.
+[[nodiscard]] Platform::FolderChoice chooseOrFailed(Platform::IProcessActions& actions, const std::filesystem::path& initial, void* owner)
+{
+    try
+    {
+        return actions.chooseDumpFolder(initial, owner);
+    }
+    catch (const std::exception& e)
+    {
+        return std::unexpected(std::string(e.what()));
+    }
+    catch (...)
+    {
+        return std::unexpected(std::string("Unknown error"));
+    }
+}
+
 } // namespace
 
 } // namespace DumpDetail
+
+ProcessDumpView::ProcessDumpView() : ProcessDumpView(&DumpDetail::rememberDumpDirectory)
+{}
+
+ProcessDumpView::ProcessDumpView(FolderChosenHandler onFolderChosen) : m_OnFolderChosen(std::move(onFolderChosen))
+{}
 
 ProcessDumpView::~ProcessDumpView()
 {
@@ -117,6 +206,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
     if (this != &other)
     {
         shutdown();
+        m_OnFolderChosen = std::move(other.m_OnFolderChosen);
         m_ShowConfirm = other.m_ShowConfirm;
         m_DismissConfirm = other.m_DismissConfirm;
         m_ConfirmPending = other.m_ConfirmPending;
@@ -125,6 +215,9 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_Directory = std::move(other.m_Directory);
         m_ConfirmTitle = std::move(other.m_ConfirmTitle);
         m_ConfirmQuestion = std::move(other.m_ConfirmQuestion);
+        m_SpaceWarning = std::move(other.m_SpaceWarning);
+        m_FolderFailure = std::move(other.m_FolderFailure);
+        m_FolderPick = std::move(other.m_FolderPick);
         m_Worker = std::move(other.m_Worker);
         m_Stop = std::move(other.m_Stop);
         m_StartedAt = other.m_StartedAt;
@@ -134,26 +227,109 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
     return *this;
 }
 
-void ProcessDumpView::request(const Platform::ProcessTarget& target, std::string processName, std::filesystem::path directory)
+void ProcessDumpView::request(const Platform::ProcessTarget& target,
+                              std::string processName,
+                              std::filesystem::path directory,
+                              Platform::IProcessActions* actions)
 {
     if (active() || target.pid <= 0)
     {
         return;
     }
-    // Built once here, not every frame the dialog is up.
-    m_ConfirmTitle = DumpDetail::confirmTitle(processName, target.pid);
-    m_ConfirmQuestion = DumpDetail::confirmQuestion(processName, target.pid, directory);
     m_Target = target;
     m_ProcessName = std::move(processName);
     m_Directory = std::move(directory);
+    m_FolderFailure.clear();
+    // Built once here, not every frame the dialog is up.
+    m_ConfirmTitle = DumpDetail::confirmTitle(m_ProcessName, target.pid);
+    refreshConfirm(actions);
     m_ConfirmPending = true;
     m_ShowConfirm = true;
     m_DismissConfirm = false;
 }
 
+void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
+{
+    // Read once per folder, never per frame: the free space and the process's private bytes.
+    m_SpaceWarning =
+        (actions != nullptr) ? DumpDetail::lowSpaceWarning(actions->dumpSpace(m_Target, m_Directory), m_Directory) : std::string{};
+    std::string warning = m_SpaceWarning;
+    if (!m_FolderFailure.empty())
+    {
+        if (!warning.empty())
+        {
+            warning += "\n\n";
+        }
+        warning += m_FolderFailure;
+    }
+    m_ConfirmQuestion = DumpDetail::confirmQuestion(m_ProcessName, m_Target.pid, m_Directory, warning);
+}
+
+void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* ownerWindow)
+{
+    if (!m_ConfirmPending || choosingFolder() || actions == nullptr || !actions->actionCapabilities().canChooseDumpFolder)
+    {
+        return;
+    }
+    try
+    {
+        // The worker owns a copy of the folder to start in; it shares only the future with this view,
+        // and @p actions, which outlives it (see the header).
+        m_FolderPick = std::async(std::launch::async,
+                                  [actions, initial = m_Directory, ownerWindow]
+                                  {
+                                      static_cast<void>(Platform::setCurrentThreadName(Platform::FOLDER_DIALOG_THREAD_NAME));
+                                      return DumpDetail::chooseOrFailed(*actions, initial, ownerWindow);
+                                  });
+    }
+    catch (const std::system_error& e)
+    {
+        m_FolderFailure = std::format("Couldn't show the folder dialog: {}", e.what());
+        refreshConfirm(actions);
+    }
+}
+
+bool ProcessDumpView::takeFolderChoice(Platform::IProcessActions* actions, bool wait)
+{
+    if (!m_FolderPick.valid() || (!wait && m_FolderPick.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+    {
+        return false;
+    }
+    Platform::FolderChoice choice;
+    try
+    {
+        choice = m_FolderPick.get();
+    }
+    catch (...)
+    {
+        // chooseOrFailed() turns a throwing dialog into a failure itself; only building that result
+        // can land here (bad_alloc).
+        choice = std::unexpected(std::string("Unknown error"));
+    }
+    if (!choice.has_value())
+    {
+        m_FolderFailure = choice.error();
+    }
+    else if (choice->has_value())
+    {
+        m_FolderFailure.clear();
+        // Remembered even when the confirm closed meanwhile (a selection change): the user chose it.
+        if (m_OnFolderChosen)
+        {
+            m_OnFolderChosen(**choice);
+        }
+        m_Directory = std::move(**choice);
+    }
+    if (m_ConfirmPending)
+    {
+        refreshConfirm(actions);
+    }
+    return true;
+}
+
 void ProcessDumpView::confirm(Platform::IProcessActions* actions)
 {
-    if (!m_ConfirmPending)
+    if (!m_ConfirmPending || choosingFolder())
     {
         return;
     }
@@ -242,6 +418,12 @@ void ProcessDumpView::shutdown() noexcept
         {
             m_Worker.wait();
         }
+        // A folder dialog can't be cancelled from here; it is modal to the main window, so it is
+        // answered before the window can close, and this wait is short.
+        if (m_FolderPick.valid())
+        {
+            m_FolderPick.wait();
+        }
     }
     catch (...) // NOLINT(bugprone-empty-catch): wait() on a valid future does not throw
     {}
@@ -253,8 +435,32 @@ void ProcessDumpView::onSelectionChanged() noexcept
     cancelConfirm();
 }
 
+namespace
+{
+/// The main window's native handle, for the folder dialog to be modal to: an HWND on Windows; null
+/// where there is no window (headless tests) or none of that kind.
+[[nodiscard]] void* dialogOwnerWindow()
+{
+    try
+    {
+        const auto& app = Core::Application::get();
+        if (!app.hasWindow())
+        {
+            return nullptr;
+        }
+        return SDL_GetPointerProperty(SDL_GetWindowProperties(app.getWindow().getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    }
+    catch (...) // no Application (headless tests): the dialog has no owner
+    {
+        return nullptr;
+    }
+}
+} // namespace
+
 void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform::ProcessTarget* liveTarget)
 {
+    static_cast<void>(takeFolderChoice(actions));
+
     // The confirm: closed unconfirmed after a selection change, or once the selection is another
     // process, so it never starts a dump of a process other than the one it names.
     bool dismiss = std::exchange(m_DismissConfirm, false);
@@ -265,11 +471,17 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
     }
     if (confirmPending() || dismiss)
     {
+        const bool canChooseFolder = actions != nullptr && actions->actionCapabilities().canChooseDumpFolder;
+        bool choosePressed = false;
+        const ProcessActionConfirm::LeadingButton chooseButton{.label = canChooseFolder ? DumpDetail::CHOOSE_FOLDER_LABEL : nullptr,
+                                                               .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
+                                                               .busy = choosingFolder(),
+                                                               .pressed = &choosePressed};
         // The shared confirm dialog under an ID of its own: the panel's own confirm (Kill, Suspend...)
         // is submitted every frame too, and must never see this one open as its own.
         ImGui::PushID("ProcessDump");
         const ProcessActionConfirm::Outcome outcome = ProcessActionConfirm::renderLabelled(
-            m_ShowConfirm, DumpDetail::CONFIRM_LABEL, false, m_ConfirmTitle, m_ConfirmQuestion, dismiss);
+            m_ShowConfirm, DumpDetail::CONFIRM_LABEL, false, m_ConfirmTitle, m_ConfirmQuestion, dismiss, chooseButton);
         ImGui::PopID();
         switch (outcome)
         {
@@ -281,6 +493,10 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
             break;
         case ProcessActionConfirm::Outcome::None:
             break;
+        }
+        if (choosePressed)
+        {
+            chooseFolder(actions, dialogOwnerWindow());
         }
     }
 
@@ -359,6 +575,10 @@ void ProcessDumpView::renderProgressDialog()
     if (result.ok)
     {
         ImGui::TextUnformatted(Core::pathToUtf8(result.file).c_str());
+        if (!result.method.empty())
+        {
+            ImGui::TextColored(scheme.textMuted, "%s", result.method.c_str());
+        }
         if (!result.note.empty())
         {
             ImGui::TextColored(scheme.textMuted, "%s", result.note.c_str());

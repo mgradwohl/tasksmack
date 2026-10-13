@@ -86,6 +86,17 @@ TEST(DumpErrorTest, WritingSaysDiskFullCancelledOrPartial)
               "Failed to write the dump of process 42: error 0x80004005; the partial file was deleted");
 }
 
+TEST(DumpSnapshotTest, ALiveDumpSaysWhyThereWasNoSnapshot)
+{
+    // #2001: the access a snapshot needs refused (at the open, or by PssCaptureSnapshot itself).
+    EXPECT_EQ(snapshotFailureReason(0, true), "Windows refused the access a snapshot of it needs");
+    EXPECT_EQ(snapshotFailureReason(ERROR_CODE_ACCESS_DENIED, false), "Windows refused the access a snapshot of it needs");
+    EXPECT_EQ(snapshotFailureReason(ERROR_CODE_NOT_ENOUGH_MEMORY, false), "there wasn't enough memory to take a snapshot of it");
+    EXPECT_EQ(snapshotFailureReason(ERROR_CODE_COMMITMENT_LIMIT, false), "there wasn't enough memory to take a snapshot of it");
+    EXPECT_EQ(snapshotFailureReason(ERROR_CODE_NOT_SUPPORTED, false), "this version of Windows can't take a snapshot of it");
+    EXPECT_EQ(snapshotFailureReason(1234, false), "the snapshot failed with error 1234");
+}
+
 TEST(DumpBitnessTest, ThirtyTwoOnSixtyFourIsNotedAndTheReverseRefused)
 {
     EXPECT_EQ(dumpBitness(false, false), DumpBitness::Same);

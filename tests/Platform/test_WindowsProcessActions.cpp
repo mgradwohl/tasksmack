@@ -964,6 +964,9 @@ TEST(WindowsProcessDumpTest, DumpsAChildIntoTheFolderWithAMinidumpHeader)
     EXPECT_EQ(result->sizeBytes, std::filesystem::file_size(result->file));
     EXPECT_GT(result->sizeBytes, 1024U * 1024U); // full memory: far more than a header and a thread list
     EXPECT_TRUE(result->note.empty());           // a 64-bit ping from a 64-bit test
+    // Written from a PssCaptureSnapshot clone (#2001), not the running process.
+    EXPECT_TRUE(result->fromSnapshot) << result->liveReason;
+    EXPECT_TRUE(result->liveReason.empty()) << result->liveReason;
 
     // A minidump starts "MDMP" (MINIDUMP_HEADER::Signature).
     std::array<char, 4> signature{};
@@ -1025,6 +1028,69 @@ TEST(WindowsProcessDumpTest, AMissingFolderIsNamedAndACancelLeavesNoFile)
     ASSERT_FALSE(result.has_value());
     EXPECT_TRUE(result.error().starts_with("Cancelled")) << result.error();
     EXPECT_TRUE(folder.empty()); // the partial file is deleted
+}
+
+namespace
+{
+/// PssCaptureSnapshot standing in for one that fails, as it does on a process Windows won't clone.
+DWORD WINAPI failingCapture(HANDLE /*process*/, PSS_CAPTURE_FLAGS /*flags*/, DWORD /*contextFlags*/, HPSS* snapshot)
+{
+    *snapshot = nullptr;
+    return ERROR_NOT_ENOUGH_MEMORY;
+}
+} // namespace
+
+TEST(WindowsProcessDumpTest, AFailedSnapshotFallsBackToALiveDumpAndSaysWhy)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessFunctions functions = realWindowsProcessFunctions();
+    functions.pssCaptureSnapshot = &failingCapture;
+    WindowsProcessActions actions(functions);
+
+    const ProcessDumpResult result = actions.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_FALSE(result->fromSnapshot);
+    EXPECT_EQ(result->liveReason, "there wasn't enough memory to take a snapshot of it");
+    EXPECT_GT(result->sizeBytes, 1024U * 1024U); // still a full dump, read from the running process
+    std::array<char, 4> signature{};
+    {
+        std::ifstream file(result->file, std::ios::binary);
+        file.read(signature.data(), static_cast<std::streamsize>(signature.size()));
+        ASSERT_TRUE(file.good());
+    }
+    EXPECT_EQ(std::string(signature.data(), signature.size()), "MDMP");
+
+    // Without PssCaptureSnapshot at all, the dump is live too, and says so.
+    functions.pssCaptureSnapshot = nullptr;
+    WindowsProcessActions noSnapshots(functions);
+    const ProcessDumpResult live = noSnapshots.createDump(child.target(), folder.path(), std::stop_token{});
+    ASSERT_TRUE(live.has_value()) << live.error();
+    EXPECT_FALSE(live->fromSnapshot);
+    EXPECT_FALSE(live->liveReason.empty());
+}
+
+TEST(WindowsProcessDumpTest, DumpSpaceReadsTheFolderAndTheChildsPrivateBytes)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    WindowsProcessActions actions;
+    EXPECT_TRUE(actions.actionCapabilities().canChooseDumpFolder);
+
+    const DumpSpace space = actions.dumpSpace(child.target(), folder.path());
+    ASSERT_TRUE(space.freeBytes.has_value());
+    EXPECT_GT(space.freeBytes.value_or(0), 0U);
+    ASSERT_TRUE(space.processBytes.has_value());
+    EXPECT_GT(space.processBytes.value_or(0), 0U);
+
+    // A reused PID's private bytes are never read; a missing folder has no free space to read.
+    ProcessTarget reused = child.target();
+    reused.startTimeTicks += 1;
+    const DumpSpace other = actions.dumpSpace(reused, folder.path() / "missing");
+    EXPECT_FALSE(other.processBytes.has_value());
+    EXPECT_FALSE(other.freeBytes.has_value());
 }
 
 } // namespace Platform

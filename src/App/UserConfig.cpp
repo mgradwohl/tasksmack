@@ -326,6 +326,17 @@ void readSettings(const toml::table& config, UserSettings& settings)
         settings.cpuDetailsExpanded = *val;
     }
 
+    // The dump folder (#2001): a path, so no longer than the longest Windows allows (32767 UTF-16
+    // units, at most 3 UTF-8 bytes each). Whether it still exists is checked where it is used.
+    if (auto folder = config["dumps"]["folder"].value<std::string>())
+    {
+        constexpr std::size_t MAX_DUMP_FOLDER_BYTES = std::size_t{32767} * 3U;
+        if (folder->size() <= MAX_DUMP_FOLDER_BYTES)
+        {
+            settings.dumpFolder = std::move(*folder);
+        }
+    }
+
     // Process table column layout (widths, order, sort). Length-capped here; its content is
     // filtered where it is used, before ImGui parses it.
     if (auto layout = config["process_table"]["layout"].value<std::string>())
@@ -485,6 +496,7 @@ void readSettings(const toml::table& config, UserSettings& settings)
         {"process_columns", processColumnsTable},
         {"process_meters", processMetersTable},
         {"process_table", toml::table{{"layout", settings.processTableLayout}}},
+        {"dumps", toml::table{{"folder", settings.dumpFolder}}},
     };
 }
 

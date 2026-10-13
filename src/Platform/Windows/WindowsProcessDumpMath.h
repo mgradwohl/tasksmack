@@ -17,11 +17,14 @@ namespace Platform::DumpMath
 inline constexpr std::uint32_t ERROR_CODE_FILE_NOT_FOUND = 2;
 inline constexpr std::uint32_t ERROR_CODE_PATH_NOT_FOUND = 3;
 inline constexpr std::uint32_t ERROR_CODE_ACCESS_DENIED = 5;
+inline constexpr std::uint32_t ERROR_CODE_NOT_ENOUGH_MEMORY = 8;
 inline constexpr std::uint32_t ERROR_CODE_HANDLE_DISK_FULL = 39;
+inline constexpr std::uint32_t ERROR_CODE_NOT_SUPPORTED = 50;
 inline constexpr std::uint32_t ERROR_CODE_INVALID_PARAMETER = 87;
 inline constexpr std::uint32_t ERROR_CODE_DISK_FULL = 112;
 inline constexpr std::uint32_t ERROR_CODE_PARTIAL_COPY = 299;
 inline constexpr std::uint32_t ERROR_CODE_CANCELLED = 1223;
+inline constexpr std::uint32_t ERROR_CODE_COMMITMENT_LIMIT = 1455;
 
 /// How many names dumpFileName() tries in turn when the one before exists already.
 inline constexpr int MAX_NAME_ATTEMPTS = 20;
@@ -182,6 +185,29 @@ struct DumpTime
         break;
     }
     return std::format("Failed to write the dump of process {}: error 0x{:08X}; the partial file was deleted", pid, error);
+}
+
+/// Why a dump is written from the running process rather than from a snapshot (#2001), for
+/// ProcessDump::liveReason. @p openRefused: Windows refused to open the process with the access a
+/// snapshot needs (SNAPSHOT_PROCESS_ACCESS), though it allowed the access a live dump needs; else
+/// @p error is what PssCaptureSnapshot() returned.
+[[nodiscard]] inline std::string snapshotFailureReason(std::uint32_t error, bool openRefused)
+{
+    if (openRefused || error == ERROR_CODE_ACCESS_DENIED)
+    {
+        return "Windows refused the access a snapshot of it needs";
+    }
+    switch (error)
+    {
+    case ERROR_CODE_NOT_ENOUGH_MEMORY:
+    case ERROR_CODE_COMMITMENT_LIMIT:
+        return "there wasn't enough memory to take a snapshot of it";
+    case ERROR_CODE_NOT_SUPPORTED:
+        return "this version of Windows can't take a snapshot of it";
+    default:
+        break;
+    }
+    return std::format("the snapshot failed with error {}", error);
 }
 
 /// How TaskSmack's bitness and the process's compare, for a dump.

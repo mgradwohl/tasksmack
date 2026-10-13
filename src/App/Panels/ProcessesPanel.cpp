@@ -2749,7 +2749,10 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
         }
         if (ImGui::MenuItem(DumpDetail::CREATE_DUMP_LABEL))
         {
-            m_DumpView.request({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, proc.name, DumpDetail::defaultDumpDirectory());
+            m_DumpView.request({.pid = proc.pid, .startTimeTicks = proc.startTimeTicks},
+                               proc.name,
+                               DumpDetail::rememberedDumpDirectory(),
+                               m_ProcessActions.get());
         }
         ImGui::SetItemTooltip("%s", DumpDetail::CREATE_DUMP_TOOLTIP);
     }
