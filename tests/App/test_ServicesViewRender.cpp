@@ -41,11 +41,16 @@ using Platform::ServiceState;
     return info;
 }
 
-/// Capabilities of a probe that can list services.
+/// Capabilities of a probe that can list services and fill what the Windows one does.
 [[nodiscard]] Platform::ServiceCapabilities enumerable()
 {
     Platform::ServiceCapabilities capabilities;
     capabilities.canEnumerate = true;
+    capabilities.hasDisplayName = true;
+    capabilities.hasDescription = true;
+    capabilities.hasStartType = true;
+    capabilities.hasPid = true;
+    capabilities.hasAccount = true;
     return capabilities;
 }
 
@@ -457,6 +462,39 @@ TEST_F(ServicesViewRenderTest, ClippedCellsShowTheirWholeTextOnHover)
     ASSERT_NE(first, std::string::npos);
     EXPECT_NE(accountText.find(LONG_ACCOUNT, first + LONG_ACCOUNT.size()), std::string::npos) << "drawn in the cell, then in its tooltip";
     EXPECT_FALSE(accountText.contains("Supports Bluetooth")) << "the row's tooltip gives way to the cell's";
+}
+
+// #2006: a platform that can't tell a service's account (Linux's systemd probe) hides the Account column by
+// default, rather than drawing a column of blanks.
+TEST_F(ServicesViewRenderTest, TheAccountColumnIsHiddenWhereThePlatformCantFillIt)
+{
+    const auto publication = makePublication();
+    const auto headers = [&publication](const Platform::ServiceCapabilities& capabilities)
+    {
+        ServicesViewState state;
+        std::string captured;
+        for (int frame = 0; frame < 2; ++frame)
+        {
+            static_cast<void>(runFrame(
+                [&]
+                {
+                    ImGui::LogToBuffer();
+                    const ServicesViewContent content = renderServicesView(&publication, capabilities, state, nullptr);
+                    captured = GImGui->LogBuffer.c_str();
+                    ImGui::LogFinish();
+                    return content;
+                }));
+        }
+        return captured;
+    };
+    // A table keeps the columns it was first set up with (DefaultHide applies once), so only the first
+    // set-up is looked at here; ClippedCellsShowTheirWholeTextOnHover draws the column where it is filled.
+    Platform::ServiceCapabilities linuxLike = enumerable();
+    linuxLike.hasAccount = false;
+    linuxLike.hasDescription = false;
+    const std::string text = headers(linuxLike);
+    EXPECT_TRUE(text.contains("Start type")) << text;
+    EXPECT_FALSE(text.contains("Account")) << text;
 }
 
 TEST_F(ServicesViewRenderTest, ActionBarActsOnTheSelectedServiceByName)

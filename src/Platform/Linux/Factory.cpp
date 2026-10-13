@@ -12,6 +12,7 @@
 #include "LinuxProcessOpenFilesReader.h"
 #include "LinuxProcessProbe.h"
 #include "LinuxProcessSecurityReader.h"
+#include "LinuxServiceProbe.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
 #include "Platform/IDiskProbe.h"
@@ -129,8 +130,8 @@ std::unique_ptr<IGPUProbe> makeGPUProbe()
 
 std::unique_ptr<IServiceProbe> makeServiceProbe()
 {
-    // systemd (D-Bus org.freedesktop.systemd1) is the Linux lane's follow-up to #800.
-    return std::make_unique<UnsupportedServiceProbe>();
+    // systemd's services over D-Bus (#2006); says why where there is no systemd to ask.
+    return std::make_unique<LinuxServiceProbe>();
 }
 
 std::unique_ptr<IServiceActions> makeServiceActions()

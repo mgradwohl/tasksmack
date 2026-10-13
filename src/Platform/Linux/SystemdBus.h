@@ -9,6 +9,7 @@
 
 #include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
+#include "Platform/Linux/SystemdServices.h"
 
 #include <cstdint>
 #include <string>
@@ -35,6 +36,19 @@ inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
 
 /// Whether this build was linked with libsystemd.
 [[nodiscard]] bool built() noexcept;
+
+/// systemd's services, as ServicesRead holds them (#2006).
+struct ServicesRead
+{
+    bool ok = false;
+    std::string error; ///< Why not, when !ok: no sd-bus in this build, no system bus, systemd not answering.
+    SystemdServices::Listing listing;
+};
+
+/// Reads org.freedesktop.systemd1.Manager's ListUnits (the loaded services and their state) and
+/// ListUnitFiles (every installed service and whether it is enabled), then each running service's
+/// MainPID, in one connection. Unprivileged.
+[[nodiscard]] ServicesRead readServices();
 
 /// Reads org.freedesktop.systemd1.Manager's Firmware/Loader/InitRD/Userspace/FinishTimestampMonotonic
 /// from the system bus. Unprivileged.

@@ -219,6 +219,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessSecurityReader.cpp
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdBus.cpp
+    src/Platform/Linux/LinuxServiceProbe.cpp
     src/Platform/Linux/SystemdJournal.cpp
     src/Platform/Linux/LinuxSystemInfoProbe.cpp
     src/Platform/Linux/LinuxPublicIp.cpp

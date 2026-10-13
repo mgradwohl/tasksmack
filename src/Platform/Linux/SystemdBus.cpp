@@ -2,6 +2,7 @@
 
 #include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
+#include "Platform/Linux/SystemdServices.h"
 
 #include <cstdint>
 #include <memory>
@@ -9,6 +10,7 @@
 #include <string>
 
 #ifdef TASKSMACK_HAS_SDBUS
+#include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/NetworkdLinkJson.h"
 #include "Platform/ProcessEnvironment.h"
@@ -1068,6 +1070,164 @@ LinuxNetworkAdapters::LinkDnsReader makeLinkDnsReader()
     };
 }
 
+namespace
+{
+
+constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
+constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
+constexpr const char* SYSTEMD_MANAGER = "org.freedesktop.systemd1.Manager";
+constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
+
+/// Why systemd couldn't answer, in the user's terms.
+[[nodiscard]] std::string systemdError(const BusError& error, int result)
+{
+    if (timedOut(error.raw(), result))
+    {
+        return "systemd didn't answer in time";
+    }
+    if (error.is("org.freedesktop.DBus.Error.ServiceUnknown") || error.is("org.freedesktop.DBus.Error.NameHasNoOwner"))
+    {
+        return "systemd isn't running";
+    }
+    return "systemd couldn't be asked: " + error.text(result);
+}
+
+/// The loaded services from ListUnits' a(ssssssouso) reply into @p units; a negative sd-bus result when it is malformed.
+[[nodiscard]] int readUnits(sd_bus_message* reply, std::vector<SystemdServices::Unit>& units)
+{
+    int result = sd_bus_message_enter_container(reply, 'a', "(ssssssouso)");
+    if (result < 0)
+    {
+        return result;
+    }
+    for (;;)
+    {
+        const char* name = nullptr;
+        const char* description = nullptr;
+        const char* loadState = nullptr;
+        const char* activeState = nullptr;
+        const char* subState = nullptr;
+        const char* following = nullptr;
+        const char* path = nullptr;
+        std::uint32_t jobId = 0;
+        const char* jobType = nullptr;
+        const char* jobPath = nullptr;
+        result = sd_bus_message_read(
+            reply, "(ssssssouso)", &name, &description, &loadState, &activeState, &subState, &following, &path, &jobId, &jobType, &jobPath);
+        if (result <= 0)
+        {
+            break;
+        }
+        if (name != nullptr && SystemdServices::isService(name))
+        {
+            units.push_back({.name = name,
+                             .description = (description != nullptr) ? description : "",
+                             .activeState = (activeState != nullptr) ? activeState : "",
+                             .subState = (subState != nullptr) ? subState : "",
+                             .objectPath = (path != nullptr) ? path : ""});
+        }
+    }
+    if (result < 0)
+    {
+        return result;
+    }
+    return sd_bus_message_exit_container(reply);
+}
+
+/// The installed service files from ListUnitFiles' a(ss) reply (path, state) into @p files, by file name.
+[[nodiscard]] int readUnitFiles(sd_bus_message* reply, std::vector<std::pair<std::string, std::string>>& files)
+{
+    int result = sd_bus_message_enter_container(reply, 'a', "(ss)");
+    if (result < 0)
+    {
+        return result;
+    }
+    for (;;)
+    {
+        const char* path = nullptr;
+        const char* state = nullptr;
+        result = sd_bus_message_read(reply, "(ss)", &path, &state);
+        if (result <= 0)
+        {
+            break;
+        }
+        const std::string_view full = (path != nullptr) ? path : "";
+        const std::string_view name = full.substr(full.rfind('/') == std::string_view::npos ? 0 : full.rfind('/') + 1);
+        // Templates ("getty@.service") too: their instances take their enablement (SystemdServices::services()).
+        if (name.ends_with(SystemdServices::SERVICE_SUFFIX))
+        {
+            files.emplace_back(std::string(name), (state != nullptr) ? state : "");
+        }
+    }
+    if (result < 0)
+    {
+        return result;
+    }
+    return sd_bus_message_exit_container(reply);
+}
+
+} // namespace
+
+ServicesRead readServices()
+{
+    ServicesRead read;
+    Bus bus;
+    if (const int result = openSystemBus(bus); result < 0)
+    {
+        read.error = std::string("The system bus couldn't be reached: ") +
+                     std::strerror(-result); // NOLINT(concurrency-mt-unsafe) - one worker thread
+        return read;
+    }
+    {
+        BusError error;
+        Message reply;
+        int result = sd_bus_call_method(bus.get(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "ListUnits", error.get(), reply.out(), "");
+        if (result < 0)
+        {
+            read.error = systemdError(error, result);
+            return read;
+        }
+        if (result = readUnits(reply.get(), read.listing.units); result < 0)
+        {
+            read.error = std::string("systemd's unit list couldn't be read: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
+            return read;
+        }
+    }
+    {
+        BusError error;
+        Message reply;
+        int result = sd_bus_call_method(bus.get(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "ListUnitFiles", error.get(), reply.out(), "");
+        if (result < 0)
+        {
+            read.error = systemdError(error, result);
+            return read;
+        }
+        if (result = readUnitFiles(reply.get(), read.listing.unitFiles); result < 0)
+        {
+            read.error = std::string("systemd's unit files couldn't be read: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
+            return read;
+        }
+    }
+    // Each running service's main process: one property per service, so only for those that have one.
+    for (const SystemdServices::Unit& unit : read.listing.units)
+    {
+        if (unit.objectPath.empty() || SystemdServices::stateFrom(unit.activeState) == ServiceState::Stopped)
+        {
+            continue;
+        }
+        BusError error;
+        std::uint32_t pid = 0;
+        if (sd_bus_get_property_trivial(bus.get(), SYSTEMD, unit.objectPath.c_str(), SYSTEMD_SERVICE, "MainPID", error.get(), 'u', &pid) >=
+                0 &&
+            pid != 0)
+        {
+            read.listing.mainPids.emplace(unit.name, pid);
+        }
+    }
+    read.ok = true;
+    return read;
+}
+
 #else
 
 BootTimestampsRead readBootTimestamps()
@@ -1125,6 +1285,13 @@ LinuxNetworkAdapters::WifiLinkReader makeWifiLinkReader()
         read.error = "This build has no D-Bus support (it was built without libsystemd), so the Wi-Fi link can't be read";
         return read;
     };
+}
+
+ServicesRead readServices()
+{
+    ServicesRead read;
+    read.error = "This build has no systemd support (it was built without libsystemd)";
+    return read;
 }
 
 #endif

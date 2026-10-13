@@ -328,7 +328,7 @@ After Modules (and, on Linux, Security), the **Open files** section (closed by d
 
 ### Services
 
-The **Services** tab lists the system's services, and on Windows starts, stops and restarts them and changes their startup type:
+The **Services** tab lists the system's services (Windows' Service Control Manager, Linux's systemd), and on Windows starts, stops and restarts them and changes their startup type:
 
 - **Columns:** **Name** (the service's short name), **Display name**, **State** (Running in the running colour, Starting/Stopping/Resuming/Pausing in the amber pending colour, Paused, Stopped muted), **Start type** (Automatic, Automatic (delayed), Manual, Disabled), **PID** (blank when the service isn't running) and **Account** (the account it logs on as).
 - Each service's name has its program's icon beside it: the icon of the executable its command line runs. Services hosted by `svchost.exe` (most of Windows' own), and those whose program can't be read, show a generic gear instead, since the shared host's icon says nothing about the service.
@@ -341,7 +341,14 @@ The **Services** tab lists the system's services, and on Windows starts, stops a
   - The action runs in the background; a line above the table says "Stopping Spooler..." and then the outcome ("Stopped Spooler", or "Could not stop Spooler: Requires administrator"). Start, stop and restart wait up to 10 seconds for each change of state. The list is re-read straight after, start types included.
   - Stopping a service that other running services depend on is refused, naming them ("Stop the services that depend on it first: ..."): TaskSmack never stops dependents for you.
   - Most services need TaskSmack to run as administrator to be controlled. Without it, the actions stay available (a service's own permissions may allow some) and a note says "Requires administrator for most services"; a refused action reports "Requires administrator".
-- **Linux:** not available yet ("Services aren't available on this platform yet"); systemd support, and control through it, is planned.
+- **Linux:** systemd's services, read over D-Bus (`org.freedesktop.systemd1`) without root.
+  - **Name** is the unit's name (`cron.service`), the same name the Processes table's **Services** column shows, so **Show in Services** finds it. **Display name** is the unit's description.
+  - **State** comes from the unit's active state. Active is Running, including a one-shot service that has run ("active (exited)" in systemctl). Activating and deactivating are pending. Inactive and failed are Stopped.
+  - **Start type** comes from its unit file: enabled is Automatic; disabled and masked are Disabled; static, indirect and generated (started only when something asks) are Manual. An instance (`getty@tty1.service`) takes its template's.
+  - **PID** is a running service's main process. Installed services systemd hasn't loaded (a disabled one nothing has started) are listed too, Stopped, under their unit name.
+  - The Account column is hidden, since systemd doesn't say which account the service runs as without more reads; the column header's menu still offers it.
+  - Without systemd as the init system (some containers, WSL without systemd) the tab says "systemd isn't running here"; a build without libsystemd says so.
+  - Starting, stopping and enabling services is still to come.
 
 ### Startup Apps
 
