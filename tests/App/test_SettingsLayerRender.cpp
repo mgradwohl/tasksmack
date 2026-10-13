@@ -16,6 +16,7 @@
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal and its controls
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <random>
 #include <string>
@@ -35,6 +36,7 @@ struct Seen
     std::vector<int> refreshIntervalsMs;
     std::vector<int> historySeconds;
     int aboutRequests = 0;
+    std::vector<bool> udpEventTrace;
     std::vector<std::filesystem::path> opened;
 };
 
@@ -86,6 +88,12 @@ class SettingsLayerRenderTest : public ::testing::Test
                     [this](Core::HistoryDurationChangedEvent& e)
                     {
                         m_Seen.historySeconds.push_back(e.getSeconds());
+                        return false;
+                    });
+                dispatcher.dispatch<Core::UdpEventTraceChangedEvent>(
+                    [this](Core::UdpEventTraceChangedEvent& e)
+                    {
+                        m_Seen.udpEventTrace.push_back(e.isEnabled());
                         return false;
                     });
                 dispatcher.dispatch<Core::OpenAboutEvent>(
@@ -186,6 +194,15 @@ class SettingsLayerRenderTest : public ::testing::Test
         ASSERT_TRUE(std::string_view(combo->Name).contains("Combo")) << combo->Name;
         ImGui::ActivateItemByID(ImHashStr(entry, 0, combo->ID));
         static_cast<void>(runFrame());
+        static_cast<void>(runFrame());
+    }
+
+    /// Presses a footer button (Reset to defaults): a plain button under the modal's ID.
+    void pressFooter(const char* label)
+    {
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(label, 0, modal->ID));
         static_cast<void>(runFrame());
     }
 
@@ -318,6 +335,48 @@ TEST_F(SettingsLayerRenderTest, AboutRaisesOpenAbout)
     ASSERT_TRUE(openDialog());
     pressInBody(SettingsDialog::ABOUT_LABEL);
     EXPECT_EQ(m_Seen.aboutRequests, 1);
+}
+
+TEST_F(SettingsLayerRenderTest, ResetThenSaveWritesTheDefaultsAndRaisesTheirEvents)
+{
+    // Every setting away from its default, the ones without a control on this platform included
+    // (native decorations show only on Wayland, the UDP trace only on Windows): Reset still moves them.
+    const UserSettings defaults;
+    UserSettings& settings = UserConfig::get().settings();
+    settings.refreshIntervalMs = 250;
+    settings.forceNativeWindowDecorationsOnWayland = !defaults.forceNativeWindowDecorationsOnWayland;
+    settings.showPrivilegeNotice = !defaults.showPrivilegeNotice;
+    settings.udpEventTrace = !defaults.udpEventTrace;
+    settings.showProcessIcons = !defaults.showProcessIcons;
+    ASSERT_TRUE(openDialog());
+
+    pressFooter(SettingsDialog::RESET_LABEL);
+    pressSave();
+
+    EXPECT_FALSE(settle());
+    EXPECT_EQ(settings.refreshIntervalMs, defaults.refreshIntervalMs);
+    EXPECT_EQ(settings.forceNativeWindowDecorationsOnWayland, defaults.forceNativeWindowDecorationsOnWayland);
+    EXPECT_EQ(settings.showPrivilegeNotice, defaults.showPrivilegeNotice);
+    EXPECT_EQ(settings.udpEventTrace, defaults.udpEventTrace);
+    EXPECT_EQ(settings.showProcessIcons, defaults.showProcessIcons);
+    EXPECT_EQ(m_Seen.refreshIntervalsMs, std::vector<int>{defaults.refreshIntervalMs});
+    EXPECT_EQ(m_Seen.udpEventTrace, std::vector<bool>{defaults.udpEventTrace}); // the Processes panel starts or stops it now
+}
+
+TEST_F(SettingsLayerRenderTest, OpenThemesFolderStillOpensWhenItCantBeCreated)
+{
+    // A file where the folder belongs: create_directories fails, and the path is opened anyway (the
+    // handler says what it can't open).
+    {
+        std::ofstream blocker(m_TempDir / "themes");
+        blocker << "not a folder";
+    }
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::OPEN_THEMES_LABEL);
+    ASSERT_EQ(m_Seen.opened.size(), 1U);
+    EXPECT_EQ(m_Seen.opened.front(), m_TempDir / "themes");
+    std::error_code ec;
+    EXPECT_TRUE(std::filesystem::is_regular_file(m_TempDir / "themes", ec));
 }
 
 } // namespace

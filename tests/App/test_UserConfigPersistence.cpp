@@ -2055,6 +2055,28 @@ TEST_F(UserConfigSaveLoadFixture, LinkLoopIsNotSaved)
     EXPECT_TRUE(std::filesystem::is_symlink(link));
     EXPECT_TRUE(std::filesystem::is_symlink(other));
 }
+
+TEST_F(UserConfigSaveLoadFixture, ALinkIntoAFolderThatCantBeSearchedIsNotSaved)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can search a mode-000 folder";
+    }
+    // The link's target can't be looked at (EACCES): the save stops rather than replace the link.
+    const auto& link = m_ConfigPath;
+    const auto locked = m_TempDir / "locked";
+    std::filesystem::create_directory(locked);
+    std::filesystem::create_symlink(locked / "config.toml", link);
+    std::filesystem::permissions(locked, std::filesystem::perms::none);
+
+    auto& config = UserConfig::get();
+    config.settings().themeId = "mocha";
+    EXPECT_NO_THROW(config.save());
+
+    std::filesystem::permissions(locked, std::filesystem::perms::owner_all);
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_FALSE(std::filesystem::exists(locked / "config.toml"));
+}
 #endif
 
 TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSettings)
