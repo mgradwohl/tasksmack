@@ -687,18 +687,17 @@ class ProcessesPanel : public Panel
 
     /// Render a single process row
     /// @param proc The process to render.
-    /// @param depth Indentation depth in the tree.
-    /// @param hasChildren Whether the process has children.
-    /// @param isExpanded Whether the children are visible.
-    /// @param procIdx The process's index in the adopted generation, which its sparklines are found by.
-    void renderProcessRow(const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded, std::size_t procIdx);
+    /// @param row Its place in the tree (depth, children, expanded) and its index in the adopted
+    ///            generation, which its sparklines are found by; a list row is a root without children.
+    void renderProcessRow(const Domain::ProcessSnapshot& proc, const ProcessTreeFlatten::ProcessTreeRow& row);
 
     /// The PID cell: the row's selectable (entered even when the column is scrolled out of view, so
     /// the row stays clickable, #962) and, when `columnVisible`, the right-aligned PID.
     void renderPidCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, bool columnVisible);
 
-    /// The Name cell: the tree indent and expand/collapse control in tree view, then the name (#906).
-    void renderNameCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, int depth, bool hasChildren, bool isExpanded);
+    /// The Name cell: the tree indent and expand/collapse control in tree view, then the name (#906),
+    /// then, after a collapsed parent's name, its child count (#838).
+    void renderNameCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessTreeFlatten::ProcessTreeRow& row);
 };
 
 } // namespace App

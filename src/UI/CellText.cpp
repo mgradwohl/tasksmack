@@ -26,7 +26,8 @@ CellTextResult drawCell(std::string_view text, float textWidthPx, const CellText
         return {};
     }
 
-    const CellTextLayout layout = cellTextLayout(textWidthPx, ImGui::GetContentRegionAvail().x, options.rightAligned);
+    const CellTextLayout layout =
+        cellTextLayout(textWidthPx, ImGui::GetContentRegionAvail().x - options.trailingReservePx, options.rightAligned);
 
     // The steps mirror ImGui::TextEx()'s common path: same position, same item size, so a cell that
     // fits is laid out exactly as ImGui::TextUnformatted() would lay it out.

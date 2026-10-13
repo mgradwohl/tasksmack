@@ -11,6 +11,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -36,6 +37,9 @@ struct ProcessTreeRow
     bool hasChildren;
     bool isExpanded;
     bool isContext; // shown only as an ancestor of a filter match, not a match itself (#838)
+    // Children shown under it, expanded or not: the rows expanding it adds, its badge (#838). Set by
+    // buildProcessTreeRows(); collectProcessTreeRows() leaves it 0.
+    std::size_t childCount = 0;
 };
 
 namespace Detail
@@ -341,7 +345,8 @@ inline void buildProcessTreeRows(const std::vector<Domain::ProcessSnapshot>& sna
                                              .depth = frame.depth,
                                              .hasChildren = last > first,
                                              .isExpanded = isExpanded,
-                                             .isContext = withAncestors && (scratch.state[frame.procIdx] & Detail::CONTEXT) != 0U});
+                                             .isContext = withAncestors && (scratch.state[frame.procIdx] & Detail::CONTEXT) != 0U,
+                                             .childCount = last - first});
         }
     }
 }
@@ -409,6 +414,11 @@ class ProcessTreeRowsCache
         if (!m_Valid || key != m_Key)
         {
             buildProcessTreeRows(snapshots, order, collapsedKeys, key.context, m_Scratch, m_Rows);
+            m_MaxDepth = 0;
+            for (const ProcessTreeRow& row : m_Rows)
+            {
+                m_MaxDepth = std::max(m_MaxDepth, row.depth);
+            }
             m_Key = key;
             m_Valid = true;
             ++m_BuildCount;
@@ -422,6 +432,12 @@ class ProcessTreeRowsCache
         m_Valid = false;
     }
 
+    /// The deepest row of the last build, 0 for none: what the tree's indent per level is fitted to (#838).
+    [[nodiscard]] int maxDepth() const noexcept
+    {
+        return m_MaxDepth;
+    }
+
     /// How many times rows() has rebuilt.
     [[nodiscard]] std::uint64_t buildCount() const noexcept
     {
@@ -433,6 +449,7 @@ class ProcessTreeRowsCache
     TreeFlattenScratch m_Scratch;
     ProcessTreeRowsKey m_Key;
     std::uint64_t m_BuildCount = 0;
+    int m_MaxDepth = 0;
     bool m_Valid = false;
 };
 

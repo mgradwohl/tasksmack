@@ -1771,5 +1771,91 @@ TEST_F(ProcessesPanelRenderTest, AFilteredTreeShowsTheMatchUnderItsDimmedAncesto
     panel->onDetach();
 }
 
+// #838: a collapsed parent shows how many children it has after its name, "(1)"; an expanded one does not.
+TEST_F(ProcessesPanelRenderTest, ACollapsedParentShowsItsChildCountAndAnExpandedOneDoesNot)
+{
+    SelectionSink events;
+    const auto panel = attachedPanel(events.sink());
+    renderUntilLoaded(*panel);
+    if (!panel->treeViewEnabled())
+    {
+        panel->toggleTreeView();
+    }
+    static_cast<void>(renderAndCapture(*panel));
+    std::string text = renderAndCapture(*panel);
+    ASSERT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("(1)")) << text;
+
+    const ImGuiWindow* shell = ImGui::FindWindowByName("Shell");
+    ASSERT_NE(shell, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_ANGLES_UP "##CollapseAll", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    ASSERT_FALSE(text.contains("server")) << text;
+    EXPECT_GT(text.find("(1)"), text.find("init")) << text; // init's one child, after its name
+    EXPECT_NE(text.find("(1)"), std::string::npos) << text;
+
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_ANGLES_DOWN "##ExpandAll", 0, shell->ID));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("worker")) << text;
+    EXPECT_FALSE(text.contains("(1)")) << text;
+    panel->onDetach();
+}
+
+// #838: a name too long for its row at depth 12 is cut short with an ellipsis, with the whole name as
+// its tooltip, after every level's indent has shrunk alike to fit the deepest row.
+TEST_F(ProcessesPanelRenderTest, ADeepLongNameIsCutShortWithItsWholeNameAsTheTooltip)
+{
+    constexpr std::uint64_t RSS = std::uint64_t{1} << 20U;
+    constexpr int DEPTH = 12;
+    const std::string longName = "a-process-name-far-too-long-for-the-name-column-at-this-depth.exe";
+    std::vector<Platform::ProcessCounters> chain;
+    for (int level = 0; level <= DEPTH; ++level)
+    {
+        const std::string processName = level == DEPTH ? longName : std::format("level-{}", level);
+        chain.push_back(
+            TestMocks::makeProcessCounters(level + 1, processName, 'S', 10, 5, 100U + static_cast<std::uint64_t>(level), RSS, level));
+    }
+    const auto panel = loadedTreePanel(std::move(chain));
+    ASSERT_EQ(panel->processCount(), static_cast<std::size_t>(DEPTH + 1));
+    const std::string text = renderAndCapture(*panel);
+    ASSERT_TRUE(text.contains(longName)) << text; // logged whole, as a clipped cell logs its text
+    ASSERT_TRUE(text.contains("level-0")) << text;
+
+    // Down the right edge of the Name column, holding still long enough for a tooltip: only the long
+    // name is clipped, so the only tooltip is its own, which logs the name once more.
+    const ImGuiTable* table = processTable();
+    ASSERT_NE(table, nullptr);
+    const ImGuiTableColumn& name = table->Columns[static_cast<int>(toIndex(ProcessColumn::Name))];
+    ImGuiIO& io = ImGui::GetIO();
+    const auto occurrences = [&longName](const std::string& log)
+    {
+        std::size_t count = 0;
+        for (std::size_t at = log.find(longName); at != std::string::npos; at = log.find(longName, at + 1))
+        {
+            ++count;
+        }
+        return count;
+    };
+    io.AddMousePosEvent(-100.0F, -100.0F); // hovering nothing: only the cell logs the name
+    static_cast<void>(renderAndCapture(*panel));
+    const std::size_t resting = occurrences(renderAndCapture(*panel));
+    ASSERT_GE(resting, 1U);
+    bool shown = false;
+    for (int y = 20; y <= 400 && !shown; y += 4)
+    {
+        io.AddMousePosEvent(name.MaxX - 12.0F, static_cast<float>(y));
+        for (int frame = 0; frame < 30 && !shown; ++frame) // past ImGuiHoveredFlags_DelayShort at 60 fps
+        {
+            shown = occurrences(renderAndCapture(*panel)) == resting + 1;
+        }
+    }
+    EXPECT_TRUE(shown);
+    panel->onDetach();
+}
+
 } // namespace
 } // namespace App

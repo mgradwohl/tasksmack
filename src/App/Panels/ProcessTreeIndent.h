@@ -27,12 +27,12 @@ inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
 /// Indent to apply to a tree row's Name cell, clamped so the expander and a minimum slice of the
 /// name always stay inside the cell.
 ///
-/// The Name column is fixed-width, and ProcessesPanel widens it by the deepest indent in the tree
-/// (see m_MaxTreeDepth) so text room at every depth matches a flat list's. That widening is not
-/// guaranteed, though: ImGui persists a user-dragged column width in its ini and then ignores the
-/// width passed to TableSetupColumn(). Left unclamped, a user who narrows this column would push
-/// the expand/collapse button out of its cell and be unable to toggle deep parents at all -- so the
-/// indent yields to the controls rather than the other way round.
+/// The Name column is fixed-width (tree view widens it once, see treeViewNameWidth()), and ImGui
+/// persists a user-dragged column width in its ini and then ignores the width passed to
+/// TableSetupColumn(). Left unclamped, a user who narrows this column would push the
+/// expand/collapse button out of its cell and be unable to toggle deep parents at all -- so the
+/// indent yields to the controls rather than the other way round. With the step from
+/// uniformIndentPerLevel() it never has to: that step already fits the deepest row.
 ///
 /// @param depth          Tree depth of the row; 0 is a root.
 /// @param indentPerLevel Pixels of indent per level.
@@ -50,6 +50,26 @@ inline constexpr float MIN_NAME_WIDTH_EM = 6.75F;
     // the expander keeps whatever room there is rather than being pushed out entirely.
     const float allowed = std::max(0.0F, cellWidth - reservedWidth);
     return std::min(requested, allowed);
+}
+
+/// The indent per level every row of the tree shares (#838): @p indentPerLevel, or, when the deepest
+/// row would then push its expander and name reservation out of the cell, the same smaller step at
+/// every level. clampedIndent() alone stopped each over-deep row at one x, so depths 7, 8 and 9 lined
+/// up and a child sat level with its parent.
+///
+/// @param maxDepth  The deepest row in the tree (ProcessTreeRowsCache::maxDepth()); 0 for no indent.
+[[nodiscard]] constexpr float uniformIndentPerLevel(float indentPerLevel, int maxDepth, float cellWidth, float reservedWidth) noexcept
+{
+    if (indentPerLevel <= 0.0F)
+    {
+        return 0.0F;
+    }
+    if (maxDepth <= 0)
+    {
+        return indentPerLevel;
+    }
+    const float allowed = std::max(0.0F, cellWidth - reservedWidth);
+    return std::min(indentPerLevel, allowed / static_cast<float>(maxDepth));
 }
 
 /// Name column width tree view asks for, in ems: twice the list's default (11.25 em, 120px at the

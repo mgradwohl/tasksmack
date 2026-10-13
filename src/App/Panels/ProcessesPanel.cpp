@@ -24,6 +24,7 @@
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTableSettings.h"
+#include "App/Panels/ProcessTreeBadge.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessTreeIndent.h"
 #include "App/Panels/ProcessTypeColor.h"
@@ -1782,7 +1783,8 @@ void ProcessesPanel::renderContent()
                     {
                         continue;
                     }
-                    renderProcessRow(currentSnapshots[procIdx], 0, false, false, procIdx);
+                    renderProcessRow(currentSnapshots[procIdx],
+                                     {.procIdx = procIdx, .depth = 0, .hasChildren = false, .isExpanded = false, .isContext = false});
                 }
             }
         }
@@ -1909,9 +1911,9 @@ bool ProcessesPanel::watchedSamplesSince(std::uint64_t lastSeenVersion, std::vec
     return m_ProcessModel && m_ProcessModel->watchedSamplesSince(lastSeenVersion, outSamples);
 }
 
-void ProcessesPanel::renderProcessRow(
-    const Domain::ProcessSnapshot& proc, int depth, bool hasChildren, bool isExpanded, std::size_t procIdx)
+void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const ProcessTreeFlatten::ProcessTreeRow& row)
 {
+    const std::size_t procIdx = row.procIdx;
     ImGui::TableNextRow();
 
     // Get-or-build the pre-formatted strings for this row. Built lazily here --
@@ -1969,7 +1971,7 @@ void ProcessesPanel::renderProcessRow(
         // column (#1382).
         if (col == ProcessColumn::Name)
         {
-            renderNameCell(proc, fmt, depth, hasChildren, isExpanded);
+            renderNameCell(proc, fmt, row);
             continue;
         }
         // The meter first, so the cell's text is drawn over it (#1528): O(1) checks per cell, and at
@@ -2093,9 +2095,13 @@ void ProcessesPanel::renderPidCell(const Domain::ProcessSnapshot& proc, const Ro
     renderRightAlignedText(label, cachedTextWidth(label, fmt.pidWidth));
 }
 
-void ProcessesPanel::renderNameCell(
-    const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, int depth, bool hasChildren, bool isExpanded)
+void ProcessesPanel::renderNameCell(const Domain::ProcessSnapshot& proc,
+                                    const RowFormatCache& fmt,
+                                    const ProcessTreeFlatten::ProcessTreeRow& row)
 {
+    const int depth = row.depth;
+    const bool hasChildren = row.hasChildren;
+    const bool isExpanded = row.isExpanded;
     // Tree depth is expressed here rather than in the PID column, which is a
     // fixed 60px and truncated PIDs once the indent was inside it (#906).
     //
@@ -2106,25 +2112,26 @@ void ProcessesPanel::renderNameCell(
     // on !column_is_resizable), so passing a depth-dependent width on later
     // frames is silently ignored.
     //
-    // So the indent yields instead: it is clamped against the cell's actual
-    // width, always reserving the expander slot plus MIN_NAME_WIDTH_EM of name.
-    // Deep rows therefore show less indentation than their depth would suggest
-    // rather than losing the name or, worse, the expander -- a parent whose
-    // expander is pushed out of the cell cannot be collapsed back to a usable
-    // width, which is a dead end rather than a cosmetic clip. Restoring full
-    // indent fidelity needs a wider default Name column, tracked in #913. The
-    // expander slot is the control itself plus the ItemSpacing.x that SameLine()
-    // adds after it -- both the button and the leaf Dummy are followed by
-    // SameLine(), so the spacing is always paid and must be reserved or the name
-    // keeps less room than promised.
+    // So the indent yields instead: every level's step shrinks alike until the
+    // deepest row in the tree keeps the expander slot plus MIN_NAME_WIDTH_EM of
+    // name (#838), and the result is clamped against the cell's actual width
+    // as well. Deep trees therefore show a smaller step than usual rather than
+    // losing the name or, worse, the expander -- a parent whose expander is
+    // pushed out of the cell cannot be collapsed back to a usable width, which
+    // is a dead end rather than a cosmetic clip. The step is the same at every
+    // level, so a child is always one step right of its parent. The expander
+    // slot is the control itself plus the ItemSpacing.x that SameLine() adds
+    // after it -- both the button and the leaf Dummy are followed by
+    // SameLine(), so the spacing is always paid and must be reserved or the
+    // name keeps less room than promised.
     const float expanderSlotWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x;
     const float treeEmPx = ImGui::GetFontSize();
     const float reservedForControls = expanderSlotWidth + (ProcessTreeIndent::MIN_NAME_WIDTH_EM * treeEmPx);
+    const float cellWidth = ImGui::GetContentRegionAvail().x;
+    const float indentPerLevel = ProcessTreeIndent::uniformIndentPerLevel(
+        ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, m_TreeRowsCache.maxDepth(), cellWidth, reservedForControls);
     const float indentWidth =
-        m_TreeViewEnabled
-            ? ProcessTreeIndent::clampedIndent(
-                  depth, ProcessTreeIndent::INDENT_PER_LEVEL_EM * treeEmPx, ImGui::GetContentRegionAvail().x, reservedForControls)
-            : 0.0F;
+        m_TreeViewEnabled ? ProcessTreeIndent::clampedIndent(depth, indentPerLevel, cellWidth, reservedForControls) : 0.0F;
     const bool indented = indentWidth > 0.0F;
     if (indented)
     {
@@ -2172,7 +2179,32 @@ void ProcessesPanel::renderNameCell(
 
     // The program's icon, or the generic one, before its name (#1800).
     m_IconView.drawInline(proc);
-    renderLeftAlignedText(proc.name, fmt.nameWidth);
+    // A collapsed parent's child count follows its name (#838), muted. The name keeps room for it, so a
+    // long name is cut short with an ellipsis before the badge rather than pushing it out of the cell.
+    ProcessTreeBadge::BadgeBuffer badgeBuffer{};
+    const std::string_view badge =
+        (m_TreeViewEnabled && hasChildren && !isExpanded) ? ProcessTreeBadge::badgeText(row.childCount, badgeBuffer) : std::string_view{};
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float badgeWidth = badge.empty() ? 0.0F : ImGui::CalcTextSize(badge.data(), badge.data() + badge.size()).x;
+    static_cast<void>(UI::Widgets::cellText(proc.name,
+                                            cachedTextWidth(proc.name, fmt.nameWidth),
+                                            {.rightAligned = false,
+                                             .clippedTooltip = true,
+                                             .layoutFullText = false,
+                                             .trailingReservePx = badge.empty() ? 0.0F : style.ItemSpacing.x + badgeWidth}));
+    if (!badge.empty())
+    {
+        ImGui::SameLine(0.0F, style.ItemSpacing.x);
+        ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textMuted);
+        ImGui::TextUnformatted(badge.data(), badge.data() + badge.size());
+        ImGui::PopStyleColor();
+        if (ImGui::BeginItemTooltip())
+        {
+            const std::string tooltip = ProcessTreeBadge::badgeTooltip(row.childCount, !m_CachedSearchTerm.empty());
+            ImGui::TextUnformatted(tooltip.data(), tooltip.data() + tooltip.size());
+            ImGui::EndTooltip();
+        }
+    }
 
     if (indented)
     {
@@ -2240,7 +2272,7 @@ void ProcessesPanel::renderTreeView(const std::vector<Domain::ProcessSnapshot>& 
             {
                 ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * CONTEXT_ROW_ALPHA);
             }
-            renderProcessRow(snapshots[row.procIdx], row.depth, row.hasChildren, row.isExpanded, row.procIdx);
+            renderProcessRow(snapshots[row.procIdx], row);
             if (row.isContext)
             {
                 ImGui::PopStyleVar();

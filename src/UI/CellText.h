@@ -178,6 +178,9 @@ struct CellTextOptions
     /// does, so a column's "Size to fit" still fits it; false reports only the cell's width (the
     /// Processes table, whose layout was tuned with that).
     bool layoutFullText = true;
+    /// Room kept at the cell's right for an item drawn after the text, which then still fits when the
+    /// text is cut short: the tree view's child-count badge after a name (#838).
+    float trailingReservePx = 0.0F;
 };
 
 /// What cellText() drew.
