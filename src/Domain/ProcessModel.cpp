@@ -649,6 +649,22 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // _Rep) returned by copyProcess() and reports a leak; ownership is a plain shared_ptr.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
     std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(*newSnapshotsPublication, watchedPid) : nullptr;
+    // Its PSS and USS (#1885), which cost the kernel a walk of every mapping: for this one process
+    // only, outside the lock. The rare re-copy under the lock below (the watch changed meanwhile)
+    // goes without them until the next refresh.
+    if (watchedSnapshot != nullptr && publishedCapabilities.hasMemoryRollup)
+    {
+        if (const std::optional<Platform::MemoryRollup> rollup = m_Probe->readMemoryRollup(watchedPid, watchedSnapshot->startTimeTicks);
+            rollup.has_value())
+        {
+            auto withRollup = std::make_shared<ProcessSnapshot>(*watchedSnapshot);
+            withRollup->pssBytes = rollup->pssBytes;
+            withRollup->ussBytes = rollup->ussBytes;
+            withRollup->swapPssBytes = rollup->swapPssBytes;
+            withRollup->memoryRollupRead = true;
+            watchedSnapshot = std::move(withRollup);
+        }
+    }
 
     // Holds the outgoing generation so its destruction (freeing however many hundred
     // ProcessSnapshots' worth of strings/vectors, if this write is what drops the last
@@ -694,6 +710,8 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
                                                                     .networkCountersSupported = m_PublishedCapabilities.hasNetworkCounters,
                                                                     .gpuPerProcessSupported = gpuSupport.perProcess,
                                                                     .gpuUtilizationSupported = gpuSupport.utilization,
+                                                                    .npuPerProcessSupported = gpuSupport.npuPerProcess,
+                                                                    .npuUtilizationSupported = gpuSupport.npuUtilization,
                                                                     .gpuReadFailed = gpuSupport.readFailed});
         }
 
@@ -805,6 +823,8 @@ void ProcessModel::watchProcess(std::int32_t pid)
                                                                 .networkCountersSupported = currentCapabilities.hasNetworkCounters,
                                                                 .gpuPerProcessSupported = currentGpuSupport.perProcess,
                                                                 .gpuUtilizationSupported = currentGpuSupport.utilization,
+                                                                .npuPerProcessSupported = currentGpuSupport.npuPerProcess,
+                                                                .npuUtilizationSupported = currentGpuSupport.npuUtilization,
                                                                 .gpuReadFailed = currentGpuSupport.readFailed}));
     }
 }
@@ -1065,20 +1085,26 @@ ProcessModel::GpuSupport ProcessModel::mergeGPUDataContained(std::vector<Process
         // The GPU sampler hasn't read yet: the support is the GPU model's current
         // flags, and no process has GPU fields read -- not measured zeros (#1210).
         const bool perProcess = !gpuModel.perProcessMetricsKnownUnsupported();
+        const bool npuPerProcess = !gpuModel.perProcessNpuMetricsKnownUnsupported();
         for (auto& snapshot : snapshots)
         {
             snapshot.gpuFieldsRead = false;
         }
-        return GpuSupport{
-            .perProcess = perProcess, .utilization = perProcess && !gpuModel.perProcessUtilizationKnownUnsupported(), .readFailed = false};
+        return GpuSupport{.perProcess = perProcess,
+                          .utilization = perProcess && !gpuModel.perProcessUtilizationKnownUnsupported(),
+                          .npuPerProcess = npuPerProcess,
+                          .npuUtilization = npuPerProcess && !gpuModel.perProcessNpuUtilizationKnownUnsupported(),
+                          .readFailed = false};
     }
 
     // The support the publication's counters were read under (#1210), not the GPU
     // model's flags now.
     GpuSupport support{.perProcess = publication->perProcessSupported,
                        .utilization = publication->utilizationSupported,
+                       .npuPerProcess = publication->npuSupported,
+                       .npuUtilization = publication->npuUtilizationSupported,
                        .readFailed = publication->readFailed};
-    if (!support.perProcess || support.readFailed)
+    if ((!support.perProcess && !support.npuPerProcess) || support.readFailed)
     {
         // Unsupported: nothing to merge. A failed read: no GPU fields, cells read
         // as unreadable. GPUModel logs a failing read.

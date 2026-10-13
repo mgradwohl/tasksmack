@@ -172,6 +172,7 @@ struct ProcessCapabilities
                                         // not on Windows, where it would repeat Virtual, #1879)
     bool hasSwapBytes = false;          // Whether ProcessCounters::swapBytes is filled (Linux: VmSwap, #1885; Windows
                                         // has no per-process figure, #1879)
+    bool hasMemoryRollup = false;       // Whether IProcessProbe::readMemoryRollup() reads PSS/USS (Linux: smaps_rollup, #1885)
     bool hasCpuAffinity = false;        // Whether CPU affinity mask is available
     bool hasNetworkCounters = false;    // Whether per-process network counters are available
     bool hasUdpNetworkCounters = false; // Whether those counters include UDP (QUIC/HTTP3, WebRTC, games, DNS).

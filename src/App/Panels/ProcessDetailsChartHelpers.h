@@ -162,13 +162,14 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 
 /// The Resources chart's left axis: Threads alone (#1916). Handles/FDs have their own right-hand
 /// axis (handleAxisDataMax()): a process holds tens of times more of them than threads, so on one
-/// shared axis the Threads line lay flat on the baseline.
+/// shared axis the Threads line lay flat on the baseline. A Threads bar with no reading is left out (#1935).
 [[nodiscard]] inline double threadAxisDataMax(std::span<const double> timeData,
                                               double xMin,
                                               std::span<const double> threads,
                                               const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), {smoothed.threadCount});
+    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads),
+                                          {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount)});
 }
 
 /// threadAxisDataMax() with the GDI Objects series too (Windows, #1000), which shares the Threads
@@ -183,7 +184,8 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 {
     return UI::Widgets::withCurrentValues(
         std::max(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), UI::Widgets::maxOfSeriesSince(timeData, xMin, gdi)),
-        {smoothed.threadCount, UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
+        {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount),
+         UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
 }
 
 /// The Resources chart's Handles/FDs axis, the outer right-hand one (#1916). An unreadable handle
@@ -258,8 +260,8 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
                                                  const ProcessSmoothedUsage& smoothed) noexcept
 {
     return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, dedicated, shared),
-                                          {UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
-                                           UI::Widgets::currentIfAvailable(smoothed.gpuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
+                                          {UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuDedicatedMemoryBytes),
+                                           UI::Widgets::currentIfAvailable(smoothed.npuMemoryAvailable, smoothed.npuSharedMemoryBytes)});
 }
 
 /// What the GPU tab shows for @p proc and its retained @p history (gpuTabContent()). @p gpuSupported
@@ -276,15 +278,16 @@ gpuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistor
 }
 
 /// What the NPU tab shows for @p proc and its retained @p history (#1869), decided as the GPU tab's
-/// (gpuTabContentFor()) from the process's NPU figures: its usage and charts while it uses an NPU or
+/// (gpuTabContentFor()) from the process's NPU figures and @p npuSupported (SampleRateReadings::
+/// npuSupported, #1827): its usage and charts while it uses an NPU or
 /// compute accelerator now or its retained history does, else why there is nothing to chart.
 [[nodiscard]] inline GpuTabContent
-npuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistory& history, bool gpuSupported)
+npuTabContentFor(const Domain::ProcessSnapshot& proc, const ProcessDetailsHistory& history, bool npuSupported)
 {
     const std::span<const double> util = history.series(ProcessSeries::NpuUtil);
     const std::span<const double> dedicated = history.series(ProcessSeries::NpuDedicatedMemory);
     const std::span<const double> shared = history.series(ProcessSeries::NpuSharedMemory);
-    return gpuTabContent(gpuSupported,
+    return gpuTabContent(npuSupported,
                          hasGpuUsageToShow(proc.npuMemoryBytes, proc.npuUtilPercent, !proc.npuDevices.empty(), util, dedicated, shared),
                          hasAnyReading(util) || hasAnyReading(dedicated) || hasAnyReading(shared));
 }

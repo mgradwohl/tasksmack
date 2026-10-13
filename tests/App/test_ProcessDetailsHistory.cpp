@@ -710,8 +710,15 @@ TEST(ProcessDetailsHistoryTest, HistoryPointCarriesReadingsAndGapsWhereUnread)
     snapshot.npuDedicatedMemoryBytes = 1024;
     snapshot.npuSharedMemoryBytes = 8192;
 
-    const ProcessHistoryPoint all =
-        historyPointFrom(snapshot, {.io = true, .network = true, .gpuPerProcess = true, .gpuUtilization = true, .gpuSupported = true});
+    const ProcessHistoryPoint all = historyPointFrom(snapshot,
+                                                     {.io = true,
+                                                      .network = true,
+                                                      .gpuPerProcess = true,
+                                                      .gpuUtilization = true,
+                                                      .gpuSupported = true,
+                                                      .npuPerProcess = true,
+                                                      .npuUtilization = true,
+                                                      .npuSupported = true});
     EXPECT_DOUBLE_EQ(all.cpuTotal, 12.5);
     EXPECT_DOUBLE_EQ(all.cpuUser, 10.0);
     EXPECT_DOUBLE_EQ(all.cpuSystem, 2.5);
@@ -737,7 +744,9 @@ TEST(ProcessDetailsHistoryTest, HistoryPointCarriesReadingsAndGapsWhereUnread)
     // Unread values are gaps (#1110, #1148, #1210), not measured-looking zeros.
     snapshot.handleCountAvailable = false;
     snapshot.gdiObjectCount.reset();
+    snapshot.threadCount = 0; // A running process has a thread: 0 was not read (#1935)
     const ProcessHistoryPoint none = historyPointFrom(snapshot, {});
+    EXPECT_TRUE(std::isnan(none.threads));
     EXPECT_TRUE(std::isnan(none.handles));
     EXPECT_TRUE(std::isnan(none.ioRead));
     EXPECT_TRUE(std::isnan(none.ioWrite));
@@ -755,8 +764,16 @@ TEST(ProcessDetailsHistoryTest, HistoryPointCarriesReadingsAndGapsWhereUnread)
     const ProcessHistoryPoint memoryOnly = historyPointFrom(snapshot, {.gpuPerProcess = true});
     EXPECT_DOUBLE_EQ(memoryOnly.gpuMemory, 4096.0);
     EXPECT_TRUE(std::isnan(memoryOnly.gpuUtil));
-    EXPECT_DOUBLE_EQ(memoryOnly.npuSharedMemory, 8192.0);
+    // The NPU's figures follow the NPU's own support, not the GPU's (#1827).
+    EXPECT_TRUE(std::isnan(memoryOnly.npuSharedMemory));
     EXPECT_TRUE(std::isnan(memoryOnly.npuUtil));
+
+    // NPU memory without utilization (an accel fdinfo read): NPU memory a reading, the rest gaps.
+    const ProcessHistoryPoint npuMemoryOnly = historyPointFrom(snapshot, {.npuPerProcess = true});
+    EXPECT_DOUBLE_EQ(npuMemoryOnly.npuSharedMemory, 8192.0);
+    EXPECT_DOUBLE_EQ(npuMemoryOnly.npuDedicatedMemory, 1024.0);
+    EXPECT_TRUE(std::isnan(npuMemoryOnly.npuUtil));
+    EXPECT_TRUE(std::isnan(npuMemoryOnly.gpuMemory));
 }
 
 } // namespace

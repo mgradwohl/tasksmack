@@ -16,6 +16,7 @@
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
@@ -4514,4 +4515,62 @@ TEST(ProcessModelTest, UnattributableNetworkCountersAreUnavailable)
     ASSERT_NE(mineSnap, snaps.end());
     EXPECT_TRUE(mineSnap->networkAvailable);
     EXPECT_DOUBLE_EQ(mineSnap->netSentBytesPerSec, 2000.0);
+}
+
+// #1885: PSS and USS cost the kernel a walk of every mapping, so ProcessModel reads them for its
+// watched process only (the one Process Details shows), into that process's watched sample.
+TEST(ProcessModelTest, OnlyTheWatchedProcessHasItsPssAndUssRead)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 500), makeCounter(200, "other", 'S', 100, 50)});
+    probe->setTotalCpuTime(100000);
+    probe->setMemoryRollup(100, Platform::MemoryRollup{.pssBytes = 6000, .ussBytes = 4000, .swapPssBytes = 50});
+    probe->setMemoryRollup(200, Platform::MemoryRollup{.pssBytes = 9000, .ussBytes = 8000, .swapPssBytes = 0});
+    MockProcessProbe* rawProbe = probe.get();
+    Domain::ProcessModel model(std::move(probe));
+
+    model.refresh(); // Nothing watched: nothing read
+    EXPECT_EQ(rawProbe->memoryRollupReads(), 0);
+
+    model.watchProcess(100);
+    model.refresh();
+    EXPECT_EQ(rawProbe->memoryRollupReads(), 1); // The watched process alone
+    // Asked for the process the snapshot is of, by its start time, so a reused PID reads nothing.
+    const auto rows = model.snapshots();
+    const auto watchedRow = std::ranges::find(rows, 100, &Domain::ProcessSnapshot::pid);
+    ASSERT_NE(watchedRow, rows.end());
+    EXPECT_EQ(rawProbe->lastMemoryRollupStartTime(), watchedRow->startTimeTicks);
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_FALSE(samples.empty());
+    ASSERT_NE(samples.back().snapshot, nullptr);
+    const Domain::ProcessSnapshot& watched = *samples.back().snapshot;
+    EXPECT_TRUE(watched.memoryRollupRead);
+    EXPECT_EQ(watched.pssBytes, 6000U);
+    EXPECT_EQ(watched.ussBytes, 4000U);
+    EXPECT_EQ(watched.swapPssBytes, 50U);
+
+    // The table's rows don't carry them, the watched process's included.
+    const auto snaps = model.snapshots();
+    for (const Domain::ProcessSnapshot& snap : snaps)
+    {
+        EXPECT_FALSE(snap.memoryRollupRead) << snap.pid;
+        EXPECT_EQ(snap.pssBytes, 0U) << snap.pid;
+    }
+}
+
+TEST(ProcessModelTest, WithoutMemoryRollupSupportNothingIsRead)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->setCounters({makeCounter(100, "watched", 'R', 1000, 500)});
+    probe->setTotalCpuTime(100000);
+    MockProcessProbe* rawProbe = probe.get(); // Capabilities: no hasMemoryRollup
+    Domain::ProcessModel model(std::move(probe));
+    model.watchProcess(100);
+    model.refresh();
+    EXPECT_EQ(rawProbe->memoryRollupReads(), 0);
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(model.watchedSamplesSince(0, samples));
+    ASSERT_NE(samples.back().snapshot, nullptr);
+    EXPECT_FALSE(samples.back().snapshot->memoryRollupRead);
 }

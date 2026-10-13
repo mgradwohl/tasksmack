@@ -154,7 +154,7 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
         // Bytes, not a percent of RAM: a process's virtual size is usually larger than physical RAM,
         // so as a percent it was clamped to 100 and carried no information (#992).
         .virtualBytes = toDouble(snapshot.virtualBytes),
-        .threads = toDouble(snapshot.threadCount),
+        .threads = readingOrGap(threadCountIsReading(snapshot), toDouble(snapshot.threadCount)), // #1935
         .handles = readingOrGap(snapshot.handleCountAvailable, toDouble(snapshot.handleCount)),
         .pageFaults = snapshot.pageFaultsPerSec,
         // Gaps too where the probe has no such counters at all, not a line of measured-looking zeros (#1210).
@@ -169,11 +169,11 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
         .gpuMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.gpuMemoryBytes)),
         // NaN signals "no data" to the plot; ImPlot renders NaN as a gap in the line.
         .gdiObjects = snapshot.gdiObjectCount.has_value() ? toDouble(*snapshot.gdiObjectCount) : std::numeric_limits<double>::quiet_NaN(),
-        // The NPU figures come from the same per-process GPU read (ProcessSnapshot::gpuFieldsRead), so
-        // they are readings or gaps exactly as the GPU ones are (#1869).
-        .npuUtil = readingOrGap(rateReadings.gpuUtilization, snapshot.npuUtilPercent),
-        .npuDedicatedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuDedicatedMemoryBytes)),
-        .npuSharedMemory = readingOrGap(rateReadings.gpuPerProcess, toDouble(snapshot.npuSharedMemoryBytes)),
+        // The NPU figures come from the same per-process read (ProcessSnapshot::gpuFieldsRead), under the
+        // NPU's own support (#1869, #1827): readings or gaps as that says.
+        .npuUtil = readingOrGap(rateReadings.npuUtilization, snapshot.npuUtilPercent),
+        .npuDedicatedMemory = readingOrGap(rateReadings.npuPerProcess, toDouble(snapshot.npuDedicatedMemoryBytes)),
+        .npuSharedMemory = readingOrGap(rateReadings.npuPerProcess, toDouble(snapshot.npuSharedMemoryBytes)),
         .memoryPrivate = toDouble(snapshot.privateBytes),
         .memorySwap = toDouble(snapshot.swapBytes),
     };

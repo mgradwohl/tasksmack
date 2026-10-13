@@ -168,4 +168,9 @@ inline constexpr float BUTTON_FILL_CONTRAST_MIN = 1.5F;
 /// bundled themes step their resting-to-hovered fills by 1.12:1 to 1.94:1.
 inline constexpr float BUTTON_STATE_CONTRAST_MIN = 1.1F;
 
+/// Contrast floor for the hatch of a NowBar with no reading (N/A, #1935) against the surfaces it is
+/// drawn on: the bar's track (the frame fill) and the card or window around it. WCAG 2.1 SC 1.4.11's
+/// 3:1 for a graphical object: the hatch is all that tells an N/A bar from an empty track.
+inline constexpr float UNAVAILABLE_HATCH_CONTRAST_MIN = 3.0F;
+
 } // namespace UI::ColorContrast

@@ -23,6 +23,14 @@ namespace App::Detail
     return available ? value : std::numeric_limits<double>::quiet_NaN();
 }
 
+/// Whether @p snapshot's thread count is a reading (#1935): a running process has at least one thread,
+/// so a count of 0 is one the probe did not read -- or a probe without thread counts at all -- as the
+/// Processes table's Threads column judges it.
+[[nodiscard]] constexpr bool threadCountIsReading(const Domain::ProcessSnapshot& snapshot) noexcept
+{
+    return snapshot.threadCount > 0;
+}
+
 /// Whether a sample's rate is a reading: the probe can supply it on this system at all
 /// (ProcessCapabilities::hasIoCounters / hasNetworkCounters) and read it for this process this sample
 /// (ProcessSnapshot::ioAvailable / networkAvailable). A snapshot from a probe without the counters
@@ -42,6 +50,9 @@ struct SampleRateReadings
     /// The GPU probe supports per-process data at all, whether or not this sample's read succeeded:
     /// a failed read is a gap in one sample, not a lack of support (#1210).
     bool gpuSupported = false;
+    bool npuPerProcess = false;  ///< As gpuPerProcess, for the NPU's per-process data (#1827)
+    bool npuUtilization = false; ///< ...and per-process NPU utilization among it
+    bool npuSupported = false;   ///< As gpuSupported, for the NPU
 };
 
 /// A sample's I/O and network rates, and its GPU figures, as readings or not, each judged by the
@@ -57,12 +68,18 @@ struct SampleRateReadings
     }
     // A generation whose GPU read failed has no GPU readings, but keeps the probe's support.
     // Nor does a process started since the GPU sampler's last read (#1417).
-    const bool gpuRead = sample.gpuPerProcessSupported && !sample.gpuReadFailed && sample.snapshot->gpuFieldsRead;
+    // The NPU's figures come from the same read, under their own support (#1827).
+    const bool read = !sample.gpuReadFailed && sample.snapshot->gpuFieldsRead;
+    const bool gpuRead = sample.gpuPerProcessSupported && read;
+    const bool npuRead = sample.npuPerProcessSupported && read;
     return {.io = rateIsReading(sample.ioCountersSupported, sample.snapshot->ioAvailable),
             .network = rateIsReading(sample.networkCountersSupported, sample.snapshot->networkAvailable),
             .gpuPerProcess = gpuRead,
             .gpuUtilization = gpuRead && sample.gpuUtilizationSupported,
-            .gpuSupported = sample.gpuPerProcessSupported};
+            .gpuSupported = sample.gpuPerProcessSupported,
+            .npuPerProcess = npuRead,
+            .npuUtilization = npuRead && sample.npuUtilizationSupported,
+            .npuSupported = sample.npuPerProcessSupported};
 }
 
 /// Whether a history holds any actual reading rather than only gaps (NaN).

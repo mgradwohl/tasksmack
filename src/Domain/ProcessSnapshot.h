@@ -52,6 +52,12 @@ struct ProcessSnapshot
     std::uint64_t sharedBytes = 0;     // Shared memory
     std::uint64_t privateBytes = 0;    // Private memory (Linux: RssAnon, #1885)
     std::uint64_t swapBytes = 0;       // Swapped out (Linux: VmSwap, #1885)
+    // PSS, USS and swap PSS (Linux: smaps_rollup, #1885): costly, so read only for ProcessModel's
+    // watched process, in its watched sample (memoryRollupRead); zero everywhere else.
+    std::uint64_t pssBytes = 0;
+    std::uint64_t ussBytes = 0;
+    std::uint64_t swapPssBytes = 0;
+    bool memoryRollupRead = false;
     std::uint64_t pageFaults = 0;      // Total page faults (cumulative)
     Platform::CpuAffinity cpuAffinity; // Logical processors it may run on (empty = not available)
 
@@ -163,6 +169,9 @@ struct ProcessSample
     /// lose either on re-enumeration, on its own sampler, so each sample carries its own.
     bool gpuPerProcessSupported = true;
     bool gpuUtilizationSupported = true;
+    /// The same for per-process NPU / compute-accelerator data, apart from the GPU's (#1827).
+    bool npuPerProcessSupported = true;
+    bool npuUtilizationSupported = true;
     /// The GPU probe supported per-process data, but reading it failed for that generation: its GPU
     /// fields are a gap, not a measurement (#1210).
     bool gpuReadFailed = false;

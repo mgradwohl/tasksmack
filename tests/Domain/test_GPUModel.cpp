@@ -103,6 +103,8 @@ TEST(GPUModelTest, NullProbeReportsPerProcessGpuDataKnownUnsupported)
     Domain::GPUModel model(nullptr);
     EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
     EXPECT_TRUE(model.perProcessUtilizationKnownUnsupported());
+    EXPECT_TRUE(model.perProcessNpuMetricsKnownUnsupported());
+    EXPECT_TRUE(model.perProcessNpuUtilizationKnownUnsupported());
     const auto reading = model.readProcessGPUData();
     EXPECT_FALSE(reading.perProcessSupported);
     EXPECT_FALSE(reading.utilizationSupported);
@@ -302,6 +304,38 @@ TEST(GPUModelTest, UnsupportedPerProcessDataIsPublishedWithoutReadingTheProbe)
     EXPECT_FALSE(publication->readFailed);
     EXPECT_TRUE(publication->counters.empty());
     EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 0U);
+}
+
+// #1827: per-process NPU data on its own (an accel device's fdinfo on Linux, beside an iGPU with no
+// per-process data) is read and published, under the NPU's support and not the GPU's.
+TEST(GPUModelTest, PerProcessNpuDataAloneIsReadAndPublishedUnderItsOwnSupport)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    Platform::GPUCapabilities caps;
+    caps.hasPerProcessNpuMetrics = true; // NPU memory, no NPU utilization, nothing for the GPU
+    probe->withGPU("GPU0", "Intel DRM").withCapabilities(caps).withProcessGPU(100, "GPU0", 1024);
+    auto* rawProbe = probe.get();
+    Domain::GPUModel model(std::move(probe));
+    EXPECT_TRUE(model.perProcessMetricsKnownUnsupported());
+    EXPECT_FALSE(model.perProcessNpuMetricsKnownUnsupported());
+    EXPECT_TRUE(model.perProcessNpuUtilizationKnownUnsupported());
+
+    model.refresh();
+    const auto publication = model.processGPUPublication();
+    EXPECT_FALSE(publication->perProcessSupported);
+    EXPECT_FALSE(publication->utilizationSupported);
+    EXPECT_TRUE(publication->npuSupported);
+    EXPECT_FALSE(publication->npuUtilizationSupported);
+    EXPECT_EQ(publication->counters.size(), 1U);
+    EXPECT_EQ(rawProbe->readProcessCountersCallCount(), 1U);
+
+#ifndef _WIN32
+    // And the GPU's per-process data does not stand in for the NPU's (outside Windows, #1973).
+    auto gpuOnly = makePerProcessProbe();
+    const Domain::GPUModel gpuModel(std::move(gpuOnly));
+    EXPECT_FALSE(gpuModel.perProcessMetricsKnownUnsupported());
+    EXPECT_TRUE(gpuModel.perProcessNpuMetricsKnownUnsupported());
+#endif
 }
 
 TEST(GPUModelTest, AFailingPerProcessReadIsPublishedAsAFailedReadAndTheSystemStillUpdates)

@@ -69,10 +69,12 @@ class ProcessModel : public ISamplable
     /// per-process GPU counters were read under, published with the generation.
     struct GpuSupport
     {
-        bool perProcess = false;  ///< Per-process GPU data at all
-        bool utilization = false; ///< Per-process utilization among it
-        /// The probe supports per-process GPU data, but reading it failed for this generation: its
-        /// GPU fields are a gap, not a measurement -- and not "not available on this system".
+        bool perProcess = false;     ///< Per-process GPU data at all
+        bool utilization = false;    ///< Per-process utilization among it
+        bool npuPerProcess = false;  ///< Per-process NPU / compute-accelerator data at all (#1827)
+        bool npuUtilization = false; ///< Per-process NPU utilization among it
+        /// The probe supports per-process GPU or NPU data, but reading it failed for this generation:
+        /// its GPU and NPU fields are a gap, not a measurement -- and not "not available on this system".
         bool readFailed = false;
 
         friend bool operator==(const GpuSupport&, const GpuSupport&) = default;

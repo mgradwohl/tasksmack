@@ -1851,11 +1851,16 @@ ProcessColumnAvailability::GpuSupport ProcessesPanel::gpuSupport() const
     // Known to be listed: the machine view's NPU tab's condition, which Process Details' NPU tab follows
     // too (hasAccelerator(), #1869). False while there is no publication yet.
     const bool acceleratorListed = GpuSection::showAcceleratorTab(publication.get());
-    return ProcessColumnAvailability::gpuSupport(gpuModel != nullptr,
-                                                 gpuModel != nullptr && gpuModel->perProcessMetricsKnownUnsupported(),
-                                                 gpuModel != nullptr && gpuModel->perProcessUtilizationKnownUnsupported(),
-                                                 (publication == nullptr) || acceleratorListed,
-                                                 acceleratorListed);
+    const ProcessColumnAvailability::KnownUnsupported known =
+        (gpuModel == nullptr) ? ProcessColumnAvailability::KnownUnsupported{}
+                              : ProcessColumnAvailability::KnownUnsupported{
+                                    .perProcess = gpuModel->perProcessMetricsKnownUnsupported(),
+                                    .utilization = gpuModel->perProcessUtilizationKnownUnsupported(),
+                                    .npuPerProcess = gpuModel->perProcessNpuMetricsKnownUnsupported(),
+                                    .npuUtilization = gpuModel->perProcessNpuUtilizationKnownUnsupported(),
+                                };
+    return ProcessColumnAvailability::gpuSupport(
+        gpuModel != nullptr, known, (publication == nullptr) || acceleratorListed, acceleratorListed);
 }
 
 bool ProcessesPanel::hasAccelerator() const
@@ -1940,9 +1945,7 @@ void ProcessesPanel::renderProcessRow(
         m_CachedSnapshotVersion,
         m_TextSizeCache.stamp,
         ProcessColumnAvailability::rowFormatOptions(
-            caps,
-            ProcessColumnAvailability::gpuSupportOfGeneration(
-                m_CachedGpuSupport.perProcess, m_CachedGpuSupport.utilization, m_CachedGpuSupport.readFailed, m_GpuSupport.accelerator)));
+            caps, ProcessColumnAvailability::gpuSupportOfGeneration(m_CachedGpuSupport, m_GpuSupport.accelerator)));
 
     // Render all columns
     int colIdx = 0;

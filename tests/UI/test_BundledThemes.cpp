@@ -382,6 +382,45 @@ TEST(BundledThemesTest, ControlOutlinesStandOutOnEverySurfaceWithoutShouting)
     }
 }
 
+// #1935: the hatch of an N/A NowBar is all that tells it from an empty track, so it reaches 3:1
+// (WCAG 1.4.11, a graphical object) on the track -- the frame fill over the window and over a card --
+// and on the window and card round it. text_disabled, which #1918 drew it in, fell to 1.7:1 on the
+// track in Latte and below 3:1 in seven themes; where text_disabled already reaches it, it is kept.
+TEST(BundledThemesTest, TheUnavailableNowBarHatchStandsOutOnItsTrack)
+{
+    for (const auto& path : bundledThemes())
+    {
+        const auto scheme = ThemeLoader::loadTheme(path);
+        if (!scheme.has_value())
+        {
+            ADD_FAILURE() << "failed to load " << path;
+            continue;
+        }
+        const auto name = path.stem().string();
+        const Backgrounds bg = backgroundsOf(*scheme);
+        const ImVec4 card = flattenOver(scheme->childBg, bg.window);
+        const std::array surfaces{
+            std::pair{"window", bg.window},
+            std::pair{"card", card},
+            std::pair{"track", bg.frame},
+            std::pair{"track in a card", flattenOver(scheme->frameBg, card)},
+        };
+        EXPECT_FLOAT_EQ(scheme->unavailableHatch.w, 1.0F) << name;
+        const ImVec4 authored = flattenOver(scheme->textDisabled, bg.window);
+        bool authoredReadable = true;
+        for (const auto& [surface, color] : surfaces)
+        {
+            EXPECT_GE(contrastRatio(scheme->unavailableHatch, color), ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN)
+                << name << " N/A NowBar hatch on the " << surface;
+            authoredReadable = authoredReadable && contrastRatio(authored, color) >= ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN;
+        }
+        if (authoredReadable)
+        {
+            EXPECT_TRUE(sameRgb(scheme->unavailableHatch, authored)) << name << " keeps text_disabled where it is readable";
+        }
+    }
+}
+
 // #1926: with several rows selected, the primary row's marker (a bar and an outline) is the only thing
 // telling it from the other selected rows, so it reaches 3:1 (WCAG 1.4.11) on the selection fill of a
 // plain and of a striped row, and it is opaque.

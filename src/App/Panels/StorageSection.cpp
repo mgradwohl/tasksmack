@@ -165,7 +165,8 @@ void renderDiskCell(const std::string& deviceName,
                           .tooltipText = UI::InlineText::format("{}: not reported this sample", label),
                           .value01 = 0.0,
                           .color = theme.scheme().textMuted,
-                          .marker = marker};
+                          .marker = marker,
+                          .available = false}; // hatched, not a zero bar (#1935)
         }
         return NowBar{.valueText = UI::Format::formatBytesPerSec(current),
                       .label = label,

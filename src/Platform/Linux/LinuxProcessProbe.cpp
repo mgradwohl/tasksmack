@@ -23,6 +23,7 @@
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
 #include "ProcessName.h"
+#include "SmapsRollupParser.h"
 
 #include <spdlog/spdlog.h>
 
@@ -453,18 +454,21 @@ ProcessCapabilities LinuxProcessProbe::capabilities() const
         geteuid() == 0,
         ProcPrivileges::parseCapEff(selfStatus.empty() ? std::string_view{} : std::string_view(selfStatus.data(), selfStatus.size())));
 
+    std::error_code ignored; // A missing smaps_rollup (before Linux 4.14) is just "no PSS/USS"
     return ProcessCapabilities{.hasIoCounters = m_IoCountersAvailable.load(std::memory_order_acquire),
                                .hasThreadCount = true,
                                .hasHandleCount = true, // Can count FDs in /proc/[pid]/fd (others' need CAP_DAC_READ_SEARCH)
                                .hasUserSystemTime = true,
                                .hasStartTime = true,
-                               .hasUser = true,                           // From /proc/[pid]/status Uid field
-                               .hasCommand = true,                        // From /proc/[pid]/cmdline
-                               .hasNice = true,                           // From /proc/[pid]/stat
-                               .hasPageFaults = true,                     // From /proc/[pid]/stat (minflt + majflt)
-                               .hasPeakRss = true,                        // From /proc/[pid]/status VmHWM (kernel threads have none)
-                               .hasPrivateBytes = true,                   // From /proc/[pid]/status RssAnon (#1885)
-                               .hasSwapBytes = true,                      // From /proc/[pid]/status VmSwap (#1885)
+                               .hasUser = true,         // From /proc/[pid]/status Uid field
+                               .hasCommand = true,      // From /proc/[pid]/cmdline
+                               .hasNice = true,         // From /proc/[pid]/stat
+                               .hasPageFaults = true,   // From /proc/[pid]/stat (minflt + majflt)
+                               .hasPeakRss = true,      // From /proc/[pid]/status VmHWM (kernel threads have none)
+                               .hasPrivateBytes = true, // From /proc/[pid]/status RssAnon (#1885)
+                               .hasSwapBytes = true,    // From /proc/[pid]/status VmSwap (#1885)
+                               // From /proc/[pid]/smaps_rollup (Linux 4.14+), for one process at a time (#1885)
+                               .hasMemoryRollup = std::filesystem::exists(m_ProcRoot / "self" / "smaps_rollup", ignored),
                                .hasCpuAffinity = true,                    // From status Cpus_allowed_list
                                .hasNetworkCounters = hasNetworkCounters,  // From Netlink INET_DIAG (if available)
                                .hasUdpNetworkCounters = false,            // sock_diag has no UDP byte counters (#1101)
@@ -1292,6 +1296,31 @@ std::optional<uint64_t> LinuxProcessProbe::readSystemEnergy() const
     }
 
     return energyUj; // Already in microjoules
+}
+
+std::optional<MemoryRollup> LinuxProcessProbe::readMemoryRollup(const std::int32_t pid, const std::uint64_t startTimeTicks) const
+{
+    if (pid <= 0)
+    {
+        return std::nullopt;
+    }
+    // One open of the process's directory for both reads: the descriptor stays bound to the process it
+    // was opened for, so once stat confirms that is the expected one (not a later process given the
+    // same PID), smaps_rollup read through it can't be another's -- a process gone since reads empty.
+    const FdGuard pidDirFd(::open((m_ProcRoot / std::to_string(pid)).c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (pidDirFd.get() < 0)
+    {
+        return std::nullopt;
+    }
+    std::array<char, 1024> stat{}; // As parseProcessStat(): ample for one stat line
+    const std::size_t statLength = readProcFileOnceAt(pidDirFd.get(), "stat", stat.data(), stat.size());
+    if (const std::optional<std::uint64_t> startTime = ProcParsing::parseStatStartTime(std::string_view(stat.data(), statLength));
+        !startTime.has_value() || *startTime != startTimeTicks)
+    {
+        return std::nullopt;
+    }
+    const std::vector<char> text = ProcParsing::readProcFileFullAt(pidDirFd.get(), "smaps_rollup");
+    return SmapsRollup::parse(std::string_view(text.data(), text.size()));
 }
 
 std::optional<PackageEnergyReading> LinuxProcessProbe::readPackageEnergy() const

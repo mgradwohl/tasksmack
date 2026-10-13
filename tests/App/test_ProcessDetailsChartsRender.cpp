@@ -11,6 +11,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FillPlotLayout.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -122,8 +123,14 @@ struct ChartInputs
         snapshot.peakMemoryBytes = 80'000'000;
         snapshot.gpuMemoryBytes = 1'000'000;
         snapshot.gpuUtilPercent = 12.0;
-        const Detail::SampleRateReadings readings{
-            .io = true, .network = true, .gpuPerProcess = gpuSupported, .gpuUtilization = gpuSupported, .gpuSupported = gpuSupported};
+        const Detail::SampleRateReadings readings{.io = true,
+                                                  .network = true,
+                                                  .gpuPerProcess = gpuSupported,
+                                                  .gpuUtilization = gpuSupported,
+                                                  .gpuSupported = gpuSupported,
+                                                  .npuPerProcess = gpuSupported,
+                                                  .npuUtilization = gpuSupported,
+                                                  .npuSupported = gpuSupported};
         smoothed.update(snapshot, readings, 0.0F, std::chrono::milliseconds(1000));
         ctx = ProcessChartContext{
             .history = &history,
@@ -1071,6 +1078,154 @@ TEST_F(ProcessDetailsChartsRenderTest, TheResourcesTooltipListsGdiObjects)
     }
 }
 #endif
+
+/// The vertices drawn in the theme's N/A NowBar hatch (UI::ColorScheme::unavailableHatch, #1935) in
+/// the card @p id in the last frame. The stub scheme gives the hatch a colour nothing else uses, so
+/// any are an unavailable bar's; a measured 0 draws its zero bar in the series' colour instead.
+[[nodiscard]] int hatchVerticesIn(const std::string& id)
+{
+    const ImGuiWindow* card = findCard(id);
+    if (card == nullptr || !card->Active)
+    {
+        ADD_FAILURE() << "no card " << id << " this frame";
+        return -1;
+    }
+    const ImU32 hatch = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().unavailableHatch);
+    int count = 0;
+    for (const ImDrawVert& vertex : card->DrawList->VtxBuffer)
+    {
+        count += (vertex.col == hatch) ? 1 : 0;
+    }
+    return count;
+}
+
+/// Takes @p inputs' snapshot and readings into its smoothed values afresh, as the panel does for a
+/// newly selected process.
+void resample(ChartInputs& inputs)
+{
+    inputs.smoothed.reset();
+    inputs.smoothed.update(inputs.snapshot, inputs.ctx.rateReadings, 0.0F, std::chrono::milliseconds(1000));
+}
+
+/// A Resources chart in which every count and rate is a reading, the ones that can be a measured 0 at 0.
+void readEveryResource(ChartInputs& inputs)
+{
+    inputs.snapshot.threadCount = 4; // A running process has a thread: 0 is not a reading
+    inputs.snapshot.handleCountAvailable = true;
+    inputs.snapshot.handleCount = 0;
+    inputs.snapshot.gdiObjectCount = 0;
+    inputs.snapshot.pageFaultsPerSec = 0.0;
+    inputs.ctx.hasPageFaults = true;
+    resample(inputs);
+}
+
+// #1935: a Resources bar whose count could not be read -- Threads, Handles/FDs, GDI Objects -- or
+// whose rate the platform has no counter for (Page Faults) is drawn as the hatched N/A bar, as #1918
+// drew the Network and I/O ones, while a measured 0 is drawn as a zero bar.
+TEST_F(ProcessDetailsChartsRenderTest, AResourceBarWithNoReadingIsDrawnUnavailable)
+{
+    {
+        ChartInputs inputs(busyPoint);
+        readEveryResource(inputs);
+        ProcessDetailsCharts charts;
+        renderOverview(charts, inputs.ctx);
+        renderOverview(charts, inputs.ctx);
+        EXPECT_EQ(hatchVerticesIn("##ProcResourcesCard"), 0) << "measured zeros are not N/A";
+    }
+
+    struct Unread
+    {
+        const char* bar;
+        void (*unread)(ChartInputs&);
+    };
+    const std::vector<Unread> cases{
+        {.bar = "Threads", .unread = [](ChartInputs& in) { in.snapshot.threadCount = 0; }},
+        {.bar = "Handles", .unread = [](ChartInputs& in) { in.snapshot.handleCountAvailable = false; }},
+        {.bar = "Page Faults", .unread = [](ChartInputs& in) { in.ctx.hasPageFaults = false; }},
+#ifdef _WIN32
+        {.bar = "GDI Objects", .unread = [](ChartInputs& in) { in.snapshot.gdiObjectCount.reset(); }},
+#endif
+    };
+    for (const Unread& unreadCase : cases)
+    {
+        ChartInputs inputs(busyPoint);
+        readEveryResource(inputs);
+        unreadCase.unread(inputs);
+        resample(inputs);
+        ProcessDetailsCharts charts;
+        renderOverview(charts, inputs.ctx);
+        renderOverview(charts, inputs.ctx);
+        EXPECT_GT(hatchVerticesIn("##ProcResourcesCard"), 0) << unreadCase.bar;
+    }
+}
+
+// #1935: the GPU tab's Utilization and Memory bars, for a sample whose GPU figures were not read, are
+// the hatched N/A bar; a measured 0 % and 0 B are zero bars.
+TEST_F(ProcessDetailsChartsRenderTest, AGpuBarWithNoReadingIsDrawnUnavailable)
+{
+    const auto draw = [](ChartInputs& inputs, Detail::SampleRateReadings readings)
+    {
+        inputs.snapshot.gpuUtilPercent = 0.0;
+        inputs.snapshot.gpuMemoryBytes = 0;
+        inputs.ctx.rateReadings = readings;
+        resample(inputs);
+        ProcessDetailsCharts charts;
+        runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+        runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+    };
+    constexpr Detail::SampleRateReadings READ{
+        .io = true, .network = true, .gpuPerProcess = true, .gpuUtilization = true, .gpuSupported = true};
+    {
+        ChartInputs inputs(busyPoint);
+        draw(inputs, READ);
+        EXPECT_EQ(hatchVerticesIn("##ProcGpuUtilCard"), 0);
+        EXPECT_EQ(hatchVerticesIn("##ProcGpuMemCard"), 0);
+    }
+    {
+        // Memory but not utilization (NVML on Linux).
+        ChartInputs inputs(busyPoint);
+        Detail::SampleRateReadings noUtilization = READ;
+        noUtilization.gpuUtilization = false;
+        draw(inputs, noUtilization);
+        EXPECT_GT(hatchVerticesIn("##ProcGpuUtilCard"), 0);
+        EXPECT_EQ(hatchVerticesIn("##ProcGpuMemCard"), 0);
+    }
+    {
+        // A failed read: neither, though the probe supports them.
+        ChartInputs inputs(busyPoint);
+        Detail::SampleRateReadings failed = READ;
+        failed.gpuPerProcess = false;
+        failed.gpuUtilization = false;
+        draw(inputs, failed);
+        EXPECT_GT(hatchVerticesIn("##ProcGpuUtilCard"), 0);
+        EXPECT_GT(hatchVerticesIn("##ProcGpuMemCard"), 0);
+    }
+}
+
+// #1935: the NPU tab's Dedicated and Shared memory bars likewise. An NPU that maps system RAM reads a
+// measured 0 B dedicated, which stays a zero bar.
+TEST_F(ProcessDetailsChartsRenderTest, AnNpuMemoryBarWithNoReadingIsDrawnUnavailable)
+{
+    for (const bool read : {true, false})
+    {
+        ChartInputs inputs(busyPoint);
+        useTheNpu(inputs);
+        inputs.ctx.rateReadings.gpuPerProcess = read;
+        resample(inputs);
+        ProcessDetailsCharts charts;
+        runFrame([&] { charts.renderNpuTab(inputs.ctx); });
+        runFrame([&] { charts.renderNpuTab(inputs.ctx); });
+        if (read)
+        {
+            EXPECT_EQ(hatchVerticesIn("##ProcNpuMemCard"), 0);
+        }
+        else
+        {
+            EXPECT_GT(hatchVerticesIn("##ProcNpuMemCard"), 0);
+        }
+        EXPECT_EQ(hatchVerticesIn("##ProcNpuUtilCard"), 0) << "read=" << read; // its utilization is still read
+    }
+}
 
 } // namespace
 } // namespace App
