@@ -657,14 +657,16 @@ void renderGpuSection(RenderContext& ctx)
 
         // Build now bars for chart 1: utilization, memory, clock, encoder, decoder
         // A bar for a reading this sample couldn't take: N/A in muted text, as the line has a gap,
-        // rather than a real-looking 0 (#1111).
+        // rather than a real-looking 0 (#1111), and drawn hatched rather than as a zero bar (#1935).
         const auto unavailableBar = [&theme](const char* label)
         {
             return NowBar{.valueText = "N/A",
                           .label = label,
                           .tooltipText = UI::InlineText::format("{}: unavailable this sample", label),
                           .value01 = 0.0,
-                          .color = theme.scheme().textMuted};
+                          .color = theme.scheme().textMuted,
+                          .marker = ImPlotMarker_None,
+                          .available = false};
         };
         NowBarList gpuCoreBars;
         gpuCoreBars.push_back(smoothed.utilizationInitialized ? NowBar{.valueText = UI::Format::formatPercent(smoothed.utilizationPercent),
@@ -773,7 +775,9 @@ void renderGpuSection(RenderContext& ctx)
                                                                      .label = FAN_LABEL,
                                                                      .tooltipText = "Fan: unavailable this sample",
                                                                      .value01 = 0.0,
-                                                                     .color = theme.scheme().textMuted});
+                                                                     .color = theme.scheme().textMuted,
+                                                                     .marker = ImPlotMarker_None,
+                                                                     .available = false}); // hatched (#1935)
         }
 
         // Use max bar count across both charts for x-axis alignment

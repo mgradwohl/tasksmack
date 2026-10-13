@@ -142,6 +142,8 @@ namespace
     s.gpuPower = s.chartPower;
     // The primary row's marker (#1926), in a colour nothing else uses, so a test can find its geometry.
     s.selectionPrimary = line(1.00F, 0.20F, 0.80F);
+    // The N/A NowBars' hatch (#1935), likewise unique, so a test can tell an N/A bar from a measured 0.
+    s.unavailableHatch = line(0.10F, 0.95F, 0.95F);
     // Anything still unset -- chrome, GPU series, accents, a role added later -- is drawn in a visible
     // grey rather than not at all; test_ThemeHeader.cpp holds every field to a non-zero alpha.
     TestColorScheme::forEachColor(s,

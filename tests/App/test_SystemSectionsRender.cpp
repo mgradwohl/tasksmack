@@ -21,6 +21,7 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -1176,5 +1177,74 @@ TEST_F(SystemSectionsRenderTest, NetworkChartSettlesWhenDiskDataIsUnavailable)
     ASSERT_NE(tab, nullptr);
     EXPECT_LE(tab->ScrollMax.y, 0.0F);
 }
+/// The vertices drawn in the theme's N/A NowBar hatch (UI::ColorScheme::unavailableHatch, #1935) in
+/// the last frame. The stub scheme gives the hatch a colour nothing else uses, so any are an
+/// unavailable bar's; a measured 0 draws its zero bar in the series' colour instead.
+[[nodiscard]] int hatchVertices()
+{
+    const ImU32 hatch = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().unavailableHatch);
+    int count = 0;
+    for (const ImDrawList* list : ImGui::GetDrawData()->CmdLists)
+    {
+        for (const ImDrawVert& vertex : list->VtxBuffer)
+        {
+            count += (vertex.col == hatch) ? 1 : 0;
+        }
+    }
+    return count;
+}
+
+// #1935: a core with no current reading has the hatched N/A bar beside its N/A, as #1918 drew the
+// Process Details ones; an idle core's measured 0 % is a zero bar.
+TEST_F(SystemSectionsRenderTest, ACoreWithNoReadingHasAnUnavailableBar)
+{
+    for (const bool read : {true, false})
+    {
+        const Domain::SystemPublication publication = coresPublication({0.0, read ? 0.0 : NOT_A_NUMBER});
+        CpuCoresSection::RenderContext ctx{.publication = &publication}; // no smoothed values: raw readings
+        runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+        runFrame([&] { CpuCoresSection::renderCpuCoresSection(ctx); });
+        if (read)
+        {
+            EXPECT_EQ(hatchVertices(), 0);
+        }
+        else
+        {
+            EXPECT_GT(hatchVertices(), 0);
+        }
+    }
+}
+
+// #1935: a disk missing from the latest sample has hatched N/A bars in its grid cell; an idle disk's
+// measured 0 B/s are zero bars.
+TEST_F(SystemSectionsRenderTest, ADiskMissingFromTheSampleHasUnavailableBars)
+{
+    for (const bool sampled : {true, false})
+    {
+        Domain::StoragePublication publication;
+        publication.timestamps = viewOf(timestampsToNow());
+        publication.perDiskHistory.push_back(diskHistory("nvme0n1", 0.0, 0.0));
+        publication.perDiskHistory.push_back(diskHistory("sdb", 0.0, 0.0));
+        publication.snapshot.disks.push_back(diskSample("nvme0n1", 0.0, 0.0));
+        if (sampled)
+        {
+            publication.snapshot.disks.push_back(diskSample("sdb", 0.0, 0.0));
+        }
+        std::unordered_map<std::string, StorageSection::SmoothedDiskRates> perDisk;
+        StorageSection::RenderContext ctx{.publication = &publication, .refreshInterval = REFRESH, .smoothedPerDisk = &perDisk};
+        runFrame([&] { StorageSection::renderStorageSection(ctx); });
+        runFrame([&] { StorageSection::renderStorageSection(ctx); });
+        ASSERT_TRUE(StorageSection::usesDiskGrid(&publication));
+        if (sampled)
+        {
+            EXPECT_EQ(hatchVertices(), 0);
+        }
+        else
+        {
+            EXPECT_GT(hatchVertices(), 0);
+        }
+    }
+}
+
 } // namespace
 } // namespace App

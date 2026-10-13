@@ -9,6 +9,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/SharedHistory.h"
 #include "Platform/GPUTypes.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -17,6 +18,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -583,6 +585,74 @@ TEST_F(GpuSectionRenderTest, UnreadValuesShowAsNotAvailable)
     EXPECT_FALSE(m_Smoothed.at("gpu0").memoryInitialized);
     EXPECT_TRUE(m_Smoothed.at("gpu0").initialized); // the rest of the sample was read
     EXPECT_TRUE(text.contains("GPU")) << text;
+}
+
+/// The vertices drawn in the theme's N/A NowBar hatch (UI::ColorScheme::unavailableHatch, #1935) in
+/// the last frame. The stub scheme gives the hatch a colour nothing else uses, so any are an
+/// unavailable bar's; a measured 0 draws its zero bar in the series' colour instead.
+[[nodiscard]] int hatchVertices()
+{
+    const ImU32 hatch = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().unavailableHatch);
+    int count = 0;
+    for (const ImDrawList* list : ImGui::GetDrawData()->CmdLists)
+    {
+        for (const ImDrawVert& vertex : list->VtxBuffer)
+        {
+            count += (vertex.col == hatch) ? 1 : 0;
+        }
+    }
+    return count;
+}
+
+// #1935: each GPU bar whose reading this sample couldn't take -- utilization, memory, clock, encoder,
+// decoder, temperature, power, fan -- is the hatched N/A bar, as #1918 drew the Process Details ones,
+// while a measured 0 is a zero bar.
+TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
+{
+    const auto hatchFor = [this](void (*change)(Domain::GPUSnapshot&))
+    {
+        Domain::GPUPublication publication;
+        publication.gpuInfoKnown = true;
+        publication.capabilities = allSensors();
+        addGpu(publication, "gpu0", "GPU");
+        Domain::GPUSnapshot& snap = publication.snapshots[0];
+        // Every reading taken, the ones that can be a measured 0 at 0 (a clock of 0 is not a reading).
+        snap.utilizationPercent = 0.0;
+        snap.memoryUtilPercent = 0.0;
+        snap.memoryUsedBytes = 0;
+        snap.temperatureC = 0;
+        snap.powerDrawWatts = 0.0;
+        snap.encoderUtilPercent = 0.0;
+        snap.decoderUtilPercent = 0.0;
+        snap.fanSpeedPercent = 0;
+        change(snap);
+        m_Smoothed.clear();
+        GpuSection::RenderContext ctx = context(&publication);
+        static_cast<void>(renderAndCapture(ctx));
+        static_cast<void>(renderAndCapture(ctx));
+        return hatchVertices();
+    };
+
+    EXPECT_EQ(hatchFor([](Domain::GPUSnapshot&) {}), 0) << "measured zeros are not N/A";
+    struct Unread
+    {
+        const char* bar;
+        void (*unread)(Domain::GPUSnapshot&);
+    };
+    const std::array<Unread, 8> cases{{
+        {.bar = "Utilization", .unread = [](Domain::GPUSnapshot& s) { s.utilizationAvailable = false; }},
+        {.bar = "Memory", .unread = [](Domain::GPUSnapshot& s) { s.memoryAvailable = false; }},
+        {.bar = "Clock", .unread = [](Domain::GPUSnapshot& s) { s.gpuClockAvailable = false; }},
+        {.bar = "Encoder", .unread = [](Domain::GPUSnapshot& s) { s.encoderAvailable = false; }},
+        {.bar = "Decoder", .unread = [](Domain::GPUSnapshot& s) { s.decoderAvailable = false; }},
+        {.bar = "Temperature", .unread = [](Domain::GPUSnapshot& s) { s.temperatureAvailable = false; }},
+        {.bar = "Power", .unread = [](Domain::GPUSnapshot& s) { s.powerAvailable = false; }},
+        {.bar = "Fan", .unread = [](Domain::GPUSnapshot& s) { s.fanSpeedAvailable = false; }},
+    }};
+    for (const Unread& unreadCase : cases)
+    {
+        EXPECT_GT(hatchFor(unreadCase.unread), 0) << unreadCase.bar;
+    }
 }
 
 } // namespace

@@ -737,7 +737,9 @@ TEST(ProcessDetailsHistoryTest, HistoryPointCarriesReadingsAndGapsWhereUnread)
     // Unread values are gaps (#1110, #1148, #1210), not measured-looking zeros.
     snapshot.handleCountAvailable = false;
     snapshot.gdiObjectCount.reset();
+    snapshot.threadCount = 0; // A running process has a thread: 0 was not read (#1935)
     const ProcessHistoryPoint none = historyPointFrom(snapshot, {});
+    EXPECT_TRUE(std::isnan(none.threads));
     EXPECT_TRUE(std::isnan(none.handles));
     EXPECT_TRUE(std::isnan(none.ioRead));
     EXPECT_TRUE(std::isnan(none.ioWrite));

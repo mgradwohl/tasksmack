@@ -154,7 +154,7 @@ static_assert(sizeof(ProcessHistoryPoint) == PROCESS_SERIES_COUNT * sizeof(doubl
         // Bytes, not a percent of RAM: a process's virtual size is usually larger than physical RAM,
         // so as a percent it was clamped to 100 and carried no information (#992).
         .virtualBytes = toDouble(snapshot.virtualBytes),
-        .threads = toDouble(snapshot.threadCount),
+        .threads = readingOrGap(threadCountIsReading(snapshot), toDouble(snapshot.threadCount)), // #1935
         .handles = readingOrGap(snapshot.handleCountAvailable, toDouble(snapshot.handleCount)),
         .pageFaults = snapshot.pageFaultsPerSec,
         // Gaps too where the probe has no such counters at all, not a line of measured-looking zeros (#1210).

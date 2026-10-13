@@ -274,6 +274,27 @@ auto frameBorderFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
         ColorContrast::flattenOver(start, window), toward, surfaces, ColorContrast::FRAME_BORDER_CONTRAST_MIN);
 }
 
+/// The hatch of a NowBar with no reading (#1935): @p start (text_disabled) made opaque over the window,
+/// then moved toward text_primary just far enough to reach ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN
+/// on each surface it is drawn on -- the bar's track (the frame fill) over the window and over a card,
+/// and the window and card around it. text_disabled alone fell to 1.7:1 on the track in some bundled
+/// themes, too faint to tell an N/A bar from an empty one. Needs the scheme's text, window and frame
+/// colours loaded.
+auto unavailableHatchFor(const ImVec4& start, const ColorScheme& scheme) -> ImVec4
+{
+    const ImVec4 window = ColorContrast::flattenOver(scheme.windowBg, scheme.windowBg);
+    const ImVec4 card = ColorContrast::flattenOver(scheme.childBg, window);
+    const std::array<ImVec4, 4> surfaces{
+        window,
+        card,
+        ColorContrast::flattenOver(scheme.frameBg, window),
+        ColorContrast::flattenOver(scheme.frameBg, card),
+    };
+    const ImVec4 toward = withAlpha(scheme.textPrimary, 1.0F);
+    return ColorContrast::tintToContrast(
+        ColorContrast::flattenOver(start, window), toward, surfaces, ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN);
+}
+
 /// The marker of a multi-selection's primary row (#1926): @p start (ui.table.selection_primary, else
 /// ui.misc.nav_highlight) made opaque over the selection fill, then moved toward text_primary just far
 /// enough to reach ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN on the selection fill (header) of a
@@ -531,6 +552,8 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
 
     // Control outlines (#1923), after the window, text and modal-backdrop colours they are fitted to.
     scheme.frameBorder = frameBorderFor(getColor(tbl, "ui.frame.border", scheme.border), scheme);
+    // The N/A NowBar hatch (#1935), fitted to the frame fill it is drawn on and the surfaces round it.
+    scheme.unavailableHatch = unavailableHatchFor(scheme.textDisabled, scheme);
     // The primary row's marker (#1926), after the header, table row and focus colours it is fitted to.
     scheme.selectionPrimary = selectionPrimaryFor(getColor(tbl, "ui.table.selection_primary", scheme.navHighlight), scheme);
 

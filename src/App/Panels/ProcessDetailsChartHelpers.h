@@ -162,13 +162,14 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 
 /// The Resources chart's left axis: Threads alone (#1916). Handles/FDs have their own right-hand
 /// axis (handleAxisDataMax()): a process holds tens of times more of them than threads, so on one
-/// shared axis the Threads line lay flat on the baseline.
+/// shared axis the Threads line lay flat on the baseline. A Threads bar with no reading is left out (#1935).
 [[nodiscard]] inline double threadAxisDataMax(std::span<const double> timeData,
                                               double xMin,
                                               std::span<const double> threads,
                                               const ProcessSmoothedUsage& smoothed) noexcept
 {
-    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), {smoothed.threadCount});
+    return UI::Widgets::withCurrentValues(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads),
+                                          {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount)});
 }
 
 /// threadAxisDataMax() with the GDI Objects series too (Windows, #1000), which shares the Threads
@@ -183,7 +184,8 @@ rateChartNotice(bool available, std::span<const double> first, std::span<const d
 {
     return UI::Widgets::withCurrentValues(
         std::max(UI::Widgets::maxOfSeriesSince(timeData, xMin, threads), UI::Widgets::maxOfSeriesSince(timeData, xMin, gdi)),
-        {smoothed.threadCount, UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
+        {UI::Widgets::currentIfAvailable(smoothed.threadCountAvailable, smoothed.threadCount),
+         UI::Widgets::currentIfAvailable(smoothed.gdiInitialized, smoothed.gdiObjectCount)});
 }
 
 /// The Resources chart's Handles/FDs axis, the outer right-hand one (#1916). An unreadable handle

@@ -1168,22 +1168,37 @@ void SystemMetricsPanel::renderOverview()
         constexpr const char* resourcesTitle = "Threads, Page Faults & FDs";
 #endif
 
-        const NowBar threadsBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads)),
-                                .label = THREADS_LABEL,
-                                // The fallback tooltip, "Threads: <value>", says it all (#1019)
-                                .tooltipText = {},
-                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, threadAxisUpper),
-                                .color = theme.scheme().chartThreads};
-        const NowBar faultsBar{.valueText = UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults),
-                               .label = FAULTS_LABEL,
-                               .tooltipText = {},
-                               .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.pageFaults, faultAxisUpper),
-                               .color = theme.scheme().chartPageFaults};
-        const NowBar handlesBar{.valueText = UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)),
-                                .label = handleLabel,
-                                .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
-                                .value01 = UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, handleAxisUpper),
-                                .color = theme.scheme().chartHandles};
+        // A total the process probe can't count at all is N/A, drawn hatched rather than as a measured 0
+        // (#1935). Its capabilities arrive with its first samples; until then the bars are empty as before.
+        const bool capabilitiesKnown = alignedCount > 0;
+        const bool threadsAvailable = !capabilitiesKnown || m_ProcessCapabilities.hasThreadCount;
+        const bool faultsAvailable = !capabilitiesKnown || m_ProcessCapabilities.hasPageFaults;
+        const bool handlesAvailable = !capabilitiesKnown || m_ProcessCapabilities.hasHandleCount;
+        const NowBar threadsBar{
+            .valueText = threadsAvailable ? UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.threads)) : std::string("N/A"),
+            .label = THREADS_LABEL,
+            // The fallback tooltip, "Threads: <value>", says it all (#1019)
+            .tooltipText = {},
+            .value01 = threadsAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.threads, threadAxisUpper) : 0.0,
+            .color = theme.scheme().chartThreads,
+            .marker = ImPlotMarker_None,
+            .available = threadsAvailable};
+        const NowBar faultsBar{
+            .valueText = faultsAvailable ? UI::Format::formatCountPerSecond(m_SmoothedResources.pageFaults) : std::string("N/A"),
+            .label = FAULTS_LABEL,
+            .tooltipText = {},
+            .value01 = faultsAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.pageFaults, faultAxisUpper) : 0.0,
+            .color = theme.scheme().chartPageFaults,
+            .marker = ImPlotMarker_None,
+            .available = faultsAvailable};
+        const NowBar handlesBar{
+            .valueText = handlesAvailable ? UI::Format::formatIntLocalized(std::llround(m_SmoothedResources.handles)) : std::string("N/A"),
+            .label = handleLabel,
+            .tooltipText = {}, // The fallback, "<label>: <value>", says it all (#1019)
+            .value01 = handlesAvailable ? UI::Widgets::normalizeToUnitInterval(m_SmoothedResources.handles, handleAxisUpper) : 0.0,
+            .color = theme.scheme().chartHandles,
+            .marker = ImPlotMarker_None,
+            .available = handlesAvailable};
 
         auto plot = [&]()
         {

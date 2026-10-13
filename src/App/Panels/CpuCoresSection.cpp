@@ -273,6 +273,8 @@ void renderCpuCoresSection(RenderContext& ctx)
                     .value01 = UI::Format::percent01(smoothed),
                     // The core line's colour (#1192), muted when the core has no current sample (#1146)
                     .color = std::isnan(smoothed) ? theme.scheme().textMuted : theme.scheme().chartCpu,
+                    .marker = ImPlotMarker_None,
+                    .available = !std::isnan(smoothed), // hatched, not a zero bar (#1935)
                 };
 
                 NowBarList bars;

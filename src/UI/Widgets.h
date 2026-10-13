@@ -215,8 +215,9 @@ inline constexpr float UNAVAILABLE_BAR_HATCH_SPACING_EM = 0.5F;
 
 /// Draw a vertical bar that has no reading (N/A): its track hatched, with no fill and none of the
 /// MIN_BAR_FILL_HEIGHT baseline drawVerticalBarWithValue() gives a zero, so it can't read as a measured
-/// 0 (#1918). Takes the same box as drawVerticalBarWithValue() without text.
-inline void drawUnavailableVerticalBar(const char* id, float barHeight, float barWidth)
+/// 0 (#1918). Takes the same box as drawVerticalBarWithValue() without text. @p hatchColor is the
+/// theme's unavailableHatch, held to 3:1 on the track and the card round it (#1935).
+inline void drawUnavailableVerticalBar(const char* id, float barHeight, float barWidth, const ImVec4& hatchColor)
 {
     const ImGuiStyle& style = ImGui::GetStyle();
     const ImVec2 barPos = ImGui::GetCursorScreenPos();
@@ -227,12 +228,12 @@ inline void drawUnavailableVerticalBar(const char* id, float barHeight, float ba
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(barPos, barEnd, ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding);
 
-    // Diagonal lines, bottom-left to top-right, clipped to the track; in the disabled-text colour, as
-    // the other "no reading" marks are muted.
+    // Diagonal lines, bottom-left to top-right, clipped to the track; in the theme's muted hatch colour
+    // (text_disabled, raised to 3:1 where it is fainter, #1935), as the other "no reading" marks are muted.
     const float spacing = std::max(1.0F, ImGui::GetFontSize() * UNAVAILABLE_BAR_HATCH_SPACING_EM);
     const float rise = std::max(0.0F, barHeight);
     const int lineCount = static_cast<int>(std::ceil((std::max(0.0F, barWidth) + rise) / spacing));
-    const ImU32 hatchCol = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const ImU32 hatchCol = ImGui::ColorConvertFloat4ToU32(hatchColor);
     dl->PushClipRect(barPos, barEnd, true);
     for (int line = 0; line <= lineCount; ++line)
     {

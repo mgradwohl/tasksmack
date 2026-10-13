@@ -184,6 +184,10 @@ struct ColorScheme
     /// ui.window.border, moved toward text_primary until it reaches ColorContrast::FRAME_BORDER_CONTRAST_MIN
     /// on the window, a card and a popup. Opaque. Drawn only inside UI::Widgets::FrameOutlineScope.
     ImVec4 frameBorder;
+    /// Hatch of a NowBar with no reading (N/A, #1918, #1935): text_disabled, moved toward text_primary
+    /// until it reaches ColorContrast::UNAVAILABLE_HATCH_CONTRAST_MIN on the bar's track (the frame
+    /// fill over the window and over a card) and on the window and a card themselves. Opaque.
+    ImVec4 unavailableHatch;
     ImVec4 titleBg;
     ImVec4 titleBgActive;
     ImVec4 titleBgCollapsed;

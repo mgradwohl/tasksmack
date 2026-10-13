@@ -13,6 +13,7 @@
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
+#include "UI/Theme.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -20,6 +21,7 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -290,16 +292,23 @@ TEST_F(SystemMetricsPanelRenderTest, AnInactivePanelDrawsNothingAndADetachedOneS
     return probe;
 }
 
-/// A process model over two processes whose threads, page faults, descriptors and energy it can read;
-/// the second holds @p serverHandles handles (descriptors on Linux).
-[[nodiscard]] std::shared_ptr<Domain::ProcessModel> mockProcessModel(std::int32_t serverHandles = 40)
+/// A process probe's capabilities with threads, page faults, descriptors and energy.
+[[nodiscard]] Platform::ProcessCapabilities countingCapabilities()
 {
-    auto probe = std::make_unique<TestMocks::MockProcessProbe>();
     Platform::ProcessCapabilities caps;
     caps.hasThreadCount = true;
     caps.hasHandleCount = true;
     caps.hasPageFaults = true;
     caps.hasPowerUsage = true;
+    return caps;
+}
+
+/// A process model over two processes whose threads, page faults, descriptors and energy it can read
+/// (or what @p caps says it can); the second holds @p serverHandles handles (descriptors on Linux).
+[[nodiscard]] std::shared_ptr<Domain::ProcessModel> mockProcessModel(std::int32_t serverHandles = 40,
+                                                                     const Platform::ProcessCapabilities& caps = countingCapabilities())
+{
+    auto probe = std::make_unique<TestMocks::MockProcessProbe>();
     probe->setCapabilities(caps);
     Platform::ProcessCounters init = TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0);
     init.threadCount = 1;
@@ -643,6 +652,81 @@ TEST_F(SystemMetricsPanelRenderTest, TheResourcesChartGivesHandlesTheirOwnAxis)
     EXPECT_LE(threadAxis.Range.Max, 20.0);
     EXPECT_GT(9.0 / threadAxis.Range.Size(), 0.4);
     panel->onDetach();
+}
+
+/// The vertices drawn in the theme's N/A NowBar hatch (UI::ColorScheme::unavailableHatch, #1935) in
+/// the last frame. The stub scheme gives the hatch a colour nothing else uses, so any are an
+/// unavailable bar's.
+[[nodiscard]] int hatchVertices()
+{
+    const ImU32 hatch = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().unavailableHatch);
+    int count = 0;
+    for (const ImDrawList* list : ImGui::GetDrawData()->CmdLists)
+    {
+        for (const ImDrawVert& vertex : list->VtxBuffer)
+        {
+            count += (vertex.col == hatch) ? 1 : 0;
+        }
+    }
+    return count;
+}
+
+// #1935: a Resources total the process probe can't count at all -- threads, page faults or
+// handles/descriptors -- has the hatched N/A bar on the Overview, as #1918 drew the Process Details
+// ones; with every count read there is none.
+TEST_F(SystemMetricsPanelRenderTest, AResourceTotalTheProbeCannotCountHasAnUnavailableBar)
+{
+    struct Case
+    {
+        const char* missing;
+        void (*drop)(Platform::ProcessCapabilities&);
+    };
+    const std::array<Case, 4> cases{{
+        {.missing = "nothing", .drop = [](Platform::ProcessCapabilities&) {}},
+        {.missing = "threads", .drop = [](Platform::ProcessCapabilities& caps) { caps.hasThreadCount = false; }},
+        {.missing = "page faults", .drop = [](Platform::ProcessCapabilities& caps) { caps.hasPageFaults = false; }},
+        {.missing = "handles", .drop = [](Platform::ProcessCapabilities& caps) { caps.hasHandleCount = false; }},
+    }};
+    for (const Case& probeCase : cases)
+    {
+        SCOPED_TRACE(probeCase.missing);
+        const auto panel = std::make_unique<SystemMetricsPanel>(
+            [] { return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
+        panel->onAttach();
+        Platform::ProcessCapabilities caps = countingCapabilities();
+        probeCase.drop(caps);
+        const std::shared_ptr<Domain::ProcessModel> processes = mockProcessModel(40, caps);
+        panel->setProcessModel(processes);
+        panel->setSamplingInterval(std::chrono::milliseconds(100));
+
+        // Until the process model's samples, and their capabilities, have reached the chart.
+        const bool expectHatch = std::string_view(probeCase.missing) != "nothing";
+        int hatch = -1;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        int frames = 0;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            processes->refresh();
+            panel->onUpdate(1.0F / 60.0F);
+            const std::string text = renderAndCapture(*panel);
+            hatch = hatchVertices();
+            ++frames;
+            if (frames > 30 && text.contains("Threads, Page Faults") && (hatch > 0) == expectHatch)
+            {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (expectHatch)
+        {
+            EXPECT_GT(hatch, 0);
+        }
+        else
+        {
+            EXPECT_EQ(hatch, 0);
+        }
+        panel->onDetach();
+    }
 }
 
 } // namespace

@@ -149,4 +149,9 @@ inline constexpr float FRAME_BORDER_CONTRAST_MIN = 3.0F;
 /// is the only thing telling that row from the other selected ones.
 inline constexpr float SELECTION_PRIMARY_CONTRAST_MIN = 3.0F;
 
+/// Contrast floor for the hatch of a NowBar with no reading (N/A, #1935) against the surfaces it is
+/// drawn on: the bar's track (the frame fill) and the card or window around it. WCAG 2.1 SC 1.4.11's
+/// 3:1 for a graphical object: the hatch is all that tells an N/A bar from an empty track.
+inline constexpr float UNAVAILABLE_HATCH_CONTRAST_MIN = 3.0F;
+
 } // namespace UI::ColorContrast

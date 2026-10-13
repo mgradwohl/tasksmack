@@ -3452,7 +3452,7 @@ inline void drawNowBar(const NowBar& bar, float plotHeight, float widthPerBar)
     }
     else
     {
-        drawUnavailableVerticalBar("##NowBar", plotHeight, widthPerBar);
+        drawUnavailableVerticalBar("##NowBar", plotHeight, widthPerBar, Theme::get().scheme().unavailableHatch);
     }
 }
 

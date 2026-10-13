@@ -23,6 +23,14 @@ namespace App::Detail
     return available ? value : std::numeric_limits<double>::quiet_NaN();
 }
 
+/// Whether @p snapshot's thread count is a reading (#1935): a running process has at least one thread,
+/// so a count of 0 is one the probe did not read -- or a probe without thread counts at all -- as the
+/// Processes table's Threads column judges it.
+[[nodiscard]] constexpr bool threadCountIsReading(const Domain::ProcessSnapshot& snapshot) noexcept
+{
+    return snapshot.threadCount > 0;
+}
+
 /// Whether a sample's rate is a reading: the probe can supply it on this system at all
 /// (ProcessCapabilities::hasIoCounters / hasNetworkCounters) and read it for this process this sample
 /// (ProcessSnapshot::ioAvailable / networkAvailable). A snapshot from a probe without the counters

@@ -195,6 +195,29 @@ TEST(ProcessSmoothedUsageTest, AnUnavailableReadingHoldsItsValueAndTheNextStarts
     EXPECT_DOUBLE_EQ(usage.gdiObjectCount, 70.0);
 }
 
+// #1935: a thread count of 0 is one the probe did not read (a running process has a thread), so it
+// is held and marked unavailable like the handle count, and the next reading is taken outright.
+TEST(ProcessSmoothedUsageTest, AnUnreadThreadCountIsHeldAndMarkedUnavailable)
+{
+    ProcessSmoothedUsage usage;
+    EXPECT_FALSE(usage.threadCountAvailable);
+    usage.update(sampleAt(0.0, 1000), ALL_READINGS, FRAME_SECONDS, REFRESH);
+    EXPECT_TRUE(usage.threadCountAvailable);
+    EXPECT_DOUBLE_EQ(usage.threadCount, 8.0);
+
+    auto unread = sampleAt(0.0, 1000);
+    unread.threadCount = 0;
+    usage.update(unread, ALL_READINGS, FRAME_SECONDS, REFRESH);
+    EXPECT_FALSE(usage.threadCountAvailable);
+    EXPECT_DOUBLE_EQ(usage.threadCount, 8.0); // not eased toward the placeholder 0
+
+    auto back = sampleAt(0.0, 1000);
+    back.threadCount = 20;
+    usage.update(back, ALL_READINGS, FRAME_SECONDS, REFRESH);
+    EXPECT_TRUE(usage.threadCountAvailable);
+    EXPECT_DOUBLE_EQ(usage.threadCount, 20.0);
+}
+
 // #1869: the NPU tab's bars follow the NPU figures, readings exactly when the GPU figures are (they
 // come from the same read): held, not eased toward zero, while unread, and taken afresh after.
 TEST(ProcessSmoothedUsageTest, TheNpuBarsAreReadWithTheGpuFigures)

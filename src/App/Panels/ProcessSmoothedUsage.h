@@ -70,6 +70,7 @@ struct ProcessSmoothedUsage
     // Whether the latest sample had these readings (#1110): an unread one leaves its value where it
     // was and shows N/A, as its line shows a gap, like the GDI count below.
     bool handleCountAvailable = false;
+    bool threadCountAvailable = false; ///< threadCountIsReading() of the latest sample (#1935)
     bool ioAvailable = false;
     bool networkAvailable = false;
     double gdiObjectCount = 0.0;
@@ -107,7 +108,6 @@ struct ProcessSmoothedUsage
         const double targetVirtual = Domain::Numeric::toDouble(std::max(snapshot.virtualBytes, snapshot.memoryBytes));
         const double targetCpuUser = UI::Format::clampPercent(snapshot.cpuUserPercent);
         const double targetCpuSystem = UI::Format::clampPercent(snapshot.cpuSystemPercent);
-        const double targetThreads = Domain::Numeric::toDouble(snapshot.threadCount);
         const double targetFaults = std::max(0.0, snapshot.pageFaultsPerSec);
         const double targetPower = std::max(0.0, snapshot.powerWatts);
         const double targetGpuUtil = UI::Format::clampPercent(snapshot.gpuUtilPercent);
@@ -123,7 +123,6 @@ struct ProcessSmoothedUsage
         virtualBytes = std::max(virtualBytes, residentBytes);
         cpuUserPercent = UI::Format::clampPercent(initializeOrSmooth(cpuUserPercent, targetCpuUser, alpha, canSmooth));
         cpuSystemPercent = UI::Format::clampPercent(initializeOrSmooth(cpuSystemPercent, targetCpuSystem, alpha, canSmooth));
-        threadCount = std::max(0.0, initializeOrSmooth(threadCount, targetThreads, alpha, canSmooth));
         pageFaultsPerSec = std::max(0.0, initializeOrSmooth(pageFaultsPerSec, targetFaults, alpha, canSmooth));
         // Handle/FD count, I/O and network rates the probe could not read (#1110) aren't smoothed toward 0:
         // their NowBars show N/A, as their lines show a gap, and the next reading starts afresh.
@@ -135,6 +134,10 @@ struct ProcessSmoothedUsage
         };
         smoothReading(handleCount, handleCountAvailable, snapshot.handleCountAvailable, Domain::Numeric::toDouble(snapshot.handleCount));
         handleCountAvailable = snapshot.handleCountAvailable;
+        // A thread count of 0 is one that was not read (#1935): N/A, as the handle count above.
+        smoothReading(threadCount, threadCountAvailable, threadCountIsReading(snapshot), Domain::Numeric::toDouble(snapshot.threadCount));
+        threadCount = std::max(0.0, threadCount);
+        threadCountAvailable = threadCountIsReading(snapshot);
         // A rate the probe could not supply at all when the shown sample was taken is not a reading
         // either (#1210); judged with that sample's own generation, as its history point was.
         smoothReading(ioReadBytesPerSec, ioAvailable, readings.io, snapshot.ioReadBytesPerSec);
