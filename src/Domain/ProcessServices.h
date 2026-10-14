@@ -97,7 +97,7 @@ inline void mergeInto(std::span<ProcessSnapshot> snapshots,
         const std::string_view unit = index < counters.size() ? std::string_view(counters[index].services) : std::string_view{};
         const bool listedAtCapture = publication != nullptr && index < firstSeen.size() && firstSeen[index] <= publication->captureTime;
         snapshot.serviceNames = hostedServiceNames(unit, publication, snapshot.pid, listedAtCapture);
-        snapshot.services = joinNames(snapshot.serviceNames);
+        snapshot.services = joinNames(snapshot.serviceNames.span());
         ++index;
     }
 }

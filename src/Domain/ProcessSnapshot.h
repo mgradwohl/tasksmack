@@ -5,13 +5,61 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Domain
 {
+
+/// An immutable list of names that copies of a snapshot share (#2043). ProcessModel hands out its
+/// snapshots by value every frame, and a std::vector<std::string> member made every copy allocate --
+/// on Linux nearly every process has a systemd unit, so nearly every snapshot carried one -- which made
+/// those copies ~50% slower. Copying this copies a pointer. Reads like a const vector.
+class SharedNames
+{
+  public:
+    SharedNames() = default;
+    // Implicit on purpose: `snapshot.serviceNames = names;` and `= {"Dhcp"}` read as for the vector it replaces.
+    SharedNames(std::vector<std::string> names) // NOLINT(google-explicit-constructor, hicpp-explicit-conversions)
+        : m_Names(names.empty() ? nullptr : std::make_shared<const std::vector<std::string>>(std::move(names)))
+    {}
+    SharedNames(std::initializer_list<std::string> names) // NOLINT(google-explicit-constructor, hicpp-explicit-conversions)
+        : SharedNames(std::vector<std::string>(names))
+    {}
+
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return m_Names == nullptr;
+    }
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return m_Names == nullptr ? 0 : m_Names->size();
+    }
+    [[nodiscard]] const std::string& operator[](std::size_t index) const
+    {
+        return (*m_Names)[index];
+    }
+    [[nodiscard]] std::span<const std::string> span() const noexcept
+    {
+        return m_Names == nullptr ? std::span<const std::string>{} : std::span<const std::string>(*m_Names);
+    }
+    [[nodiscard]] auto begin() const noexcept
+    {
+        return span().begin();
+    }
+    [[nodiscard]] auto end() const noexcept
+    {
+        return span().end();
+    }
+
+  private:
+    std::shared_ptr<const std::vector<std::string>> m_Names; // null: none
+};
 
 /// Immutable, UI-ready process data.
 /// Computed from raw counter deltas by ProcessModel.
@@ -118,7 +166,7 @@ struct ProcessSnapshot
     // the list's name order); Linux, the systemd unit its cgroup names (#1886). Empty for none, or on
     // Windows while no current service list is attached (ProcessServices::mergeInto()). `services` above is
     // them joined with ", ", as the Services column shows and sorts them.
-    std::vector<std::string> serviceNames;
+    SharedNames serviceNames;
 
     // Tree hierarchy (computed once per snapshot)
     std::vector<std::size_t> childrenIndices; // Indices of children within the same snapshot vector
