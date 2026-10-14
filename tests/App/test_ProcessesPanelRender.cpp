@@ -16,6 +16,7 @@
 
 #include "App/Panels/AdaptiveIntervalUtils.h"
 #include "App/Panels/ProcessColumnAvailability.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTreeIndent.h"
@@ -665,6 +666,45 @@ TEST_F(ProcessesPanelRenderTest, SuspendAndResumeFromTheRowMenuAreConfirmedThenS
     pressModalButton(*panel, "Resume");
     EXPECT_EQ(actions->resumeCount(), 1);
     EXPECT_EQ(actions->lastResumePid(), menuPid.value_or(-1));
+    panel->onDetach();
+}
+
+// #1891: where the platform can write a dump (#807), the row menu offers "Create dump file..." for that
+// one process: it opens the dump's confirm, naming it; Cancel writes nothing.
+TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    auto panel = std::make_unique<ProcessesPanel>(
+        [&actions]
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0))
+                .withProcess(TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1));
+            auto mock = std::make_unique<TestMocks::MockProcessActions>();
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canCreateDump = true});
+            actions = mock.get();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
+        },
+        [](Core::Event&) {});
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    const std::map<std::int32_t, std::string> names{{1, "init"}, {100, "server"}};
+
+    const std::optional<std::int32_t> menuPid = openARowMenu(*panel);
+    ASSERT_TRUE(menuPid.has_value());
+    pressPopupItem(*panel, DumpDetail::CREATE_DUMP_LABEL);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    const std::int32_t pid = menuPid.value_or(1);
+    EXPECT_TRUE(std::string_view(modal->Name).starts_with(DumpDetail::confirmTitle(names.at(pid), pid))) << modal->Name;
+
+    pressModalButton(*panel, "Cancel");
+    EXPECT_EQ(actions->createDumpCount(), 0);
     panel->onDetach();
 }
 
