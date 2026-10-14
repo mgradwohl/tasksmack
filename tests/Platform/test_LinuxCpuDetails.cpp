@@ -359,7 +359,7 @@ TEST(LinuxCpuDetailsTest, NoPolicyBaseFrequencyLeavesBaseSpeedUnknown)
 TEST(LinuxCpuDetailsTest, AProcessorWithoutAPhysicalIdLeavesSocketsAndCoresUnknown)
 {
     // Counting only the processors that list one would undercount both (#809 review)
-    std::string text = processorBlock(0, 0, 0) + "\n" + processorBlock(1, 0, 1) + "\n" + processorBlock(2, std::nullopt, 2) + "\n";
+    const std::string text = processorBlock(0, 0, 0) + "\n" + processorBlock(1, 0, 1) + "\n" + processorBlock(2, std::nullopt, 2) + "\n";
     CpuDetails details;
     LinuxCpuDetails::parseCpuInfoTopology(text, details);
     EXPECT_EQ(details.logicalProcessors, 3U);
@@ -394,6 +394,49 @@ TEST(LinuxCpuDetailsTest, CachesWithoutASharedListAreTakenAsPrivate)
     fixture.writeCache(1, 0, 2, "Unified", "1M", "");
     const CpuDetails details = LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs());
     EXPECT_EQ(details.l2CacheBytes, 2 * MIB);
+}
+
+TEST(LinuxCpuDetailsTest, GigabyteCacheSizesAndTrailingJunkParse)
+{
+    EXPECT_EQ(LinuxCpuDetails::parseCacheSize("2G"), 2 * MIB * 1024U);
+    EXPECT_EQ(LinuxCpuDetails::parseCacheSize("1g"), MIB * 1024U);
+    EXPECT_FALSE(LinuxCpuDetails::Detail::parseUnsigned("12x").has_value());
+    EXPECT_EQ(LinuxCpuDetails::Detail::parseUnsigned(" 12 \n"), 12U);
+}
+
+TEST(LinuxCpuDetailsTest, CpuInfoLinesBeforeTheFirstProcessorAreIgnored)
+{
+    // Some kernels (ARM) open /proc/cpuinfo with machine-wide lines before any "processor".
+    const auto processors = LinuxCpuDetails::parseCpuInfoProcessors("Hardware\t: BCM2835\nphysical id\t: 7\n\nprocessor\t: 0\n");
+    ASSERT_EQ(processors.size(), 1U);
+    EXPECT_EQ(processors[0].processor, 0U);
+    EXPECT_FALSE(processors[0].physicalId.has_value()); // the stray line before it isn't taken as its
+}
+
+TEST(LinuxCpuDetailsTest, AProcessorWithoutANumberMakesTheOnlineSetUnknown)
+{
+    const auto processors = LinuxCpuDetails::parseCpuInfoProcessors("processor\t: 0\n\nprocessor\t: ?\n");
+    ASSERT_EQ(processors.size(), 2U);
+    EXPECT_FALSE(LinuxCpuDetails::onlineCpus(processors).has_value()); // every cpuN is then taken
+}
+
+TEST(LinuxCpuDetailsTest, ZeroSizedAndUnreadableCacheEntriesAreSkipped)
+{
+    const std::vector<LinuxCpuDetails::SysfsCacheEntry> entries{
+        {.cpu = 0, .level = 1, .type = "Data", .bytes = 0, .sharedCpuList = "0"},
+        {.cpu = 0, .level = 2, .type = "Unified", .bytes = MIB, .sharedCpuList = "0"},
+    };
+    EXPECT_EQ(LinuxCpuDetails::distinctCacheInstances(entries).size(), 1U);
+
+    // In sysfs: an index without a level, and a file beside the index directories, are passed over.
+    const FixtureDir fixture;
+    fixture.writeCache(0, 0, 2, "Unified", "1M", "0");
+    FixtureDir::write(fixture.cpuSysfs() / "cpu0" / "cache" / "index1" / "size", "32K\n");
+    FixtureDir::write(fixture.cpuSysfs() / "cpu0" / "cache" / "uevent", "\n");
+    const auto read = LinuxCpuDetails::readCacheEntries(fixture.cpuSysfs(), std::nullopt);
+    ASSERT_EQ(read.size(), 1U);
+    EXPECT_EQ(read[0].level, 2U);
+    EXPECT_EQ(read[0].bytes, MIB);
 }
 
 } // namespace
