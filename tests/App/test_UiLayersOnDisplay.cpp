@@ -54,6 +54,13 @@
 #include <tuple>
 #include <utility>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace
 {
 
@@ -92,13 +99,18 @@ struct Observed
     bool maximizedAfterRestore = true;
     int minimumWidth = 0;
     int minimumHeight = 0;
+#ifdef _WIN32
+    LRESULT titleHitTest = HTNOWHERE; ///< What the window answered WM_NCHITTEST on the empty title bar...
+    LRESULT edgeHitTest = HTNOWHERE;  ///< ...and on its right edge
+#endif
     int frames = 0;
     bool timedOut = false;
 };
 
 /// Pushed after UILayer and TitleBarLayer, so its onRender() runs inside the same ImGui frame, after
 /// the bar is drawn: it presses one bar button every few frames (taking effect the next frame) and
-/// records the outcome, then presses Close.
+/// records the outcome, then presses Close. Maximize and Restore wait for the window's state, up to
+/// WAIT_LIMIT frames: the window manager may apply either some frames later (#2054).
 class TitleBarDriverLayer : public Core::Layer
 {
   public:
@@ -109,42 +121,78 @@ class TitleBarDriverLayer : public Core::Layer
     {
         Core::AnimationRequest::request(Core::AnimationRequest::FULL_RATE); // keep frames coming
         const int frame = ++m_Observed.frames;
-        const Core::Window& window = Core::Application::get().getWindow();
-        switch (frame)
+        if (frame > MAX_FRAMES)
         {
-        case SETTLE:
+            m_Observed.timedOut = true;
+            Core::Application::get().stop();
+            return;
+        }
+        if (frame < m_NextFrame)
+        {
+            return;
+        }
+        const Core::Window& window = Core::Application::get().getWindow();
+        const auto next = [this, frame](Phase phase, int frames)
+        {
+            m_Phase = phase;
+            m_NextFrame = frame + frames;
+        };
+        const auto waiting = [this, frame]
+        {
+            return frame < m_Deadline;
+        };
+        switch (m_Phase)
+        {
+        case Phase::Settings:
             SDL_GetWindowMinimumSize(window.getHandle(), &m_Observed.minimumWidth, &m_Observed.minimumHeight);
+#ifdef _WIN32
+            hitTest(window);
+#endif
             press(App::TitleBarButtons::SETTINGS_LABEL);
+            next(Phase::Help, STEP);
             break;
-        case SETTLE + STEP:
+        case Phase::Help:
             press(App::TitleBarButtons::HELP_LABEL);
+            next(Phase::About, STEP);
             break;
-        case SETTLE + (2 * STEP):
+        case Phase::About:
             press(App::TitleBarButtons::ABOUT_LABEL);
+            next(Phase::Maximize, STEP);
             break;
-        case SETTLE + (3 * STEP):
+        case Phase::Maximize:
             press(ICON_FA_WINDOW_MAXIMIZE "##Maximize");
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitMaximized, 1);
             break;
-        case SETTLE + (5 * STEP):
+        case Phase::AwaitMaximized:
             m_Observed.maximizedAfterMaximize = window.isMaximized();
+            if (!m_Observed.maximizedAfterMaximize && waiting())
+            {
+                next(Phase::AwaitMaximized, 1);
+                break;
+            }
             press(ICON_FA_WINDOW_RESTORE "##Restore");
+            m_Deadline = frame + WAIT_LIMIT;
+            next(Phase::AwaitRestored, 1);
             break;
-        case SETTLE + (7 * STEP):
+        case Phase::AwaitRestored:
             m_Observed.maximizedAfterRestore = window.isMaximized();
+            if (m_Observed.maximizedAfterRestore && waiting())
+            {
+                next(Phase::AwaitRestored, 1);
+                break;
+            }
             // Unlabelled when the chrome icon font loaded, labelled when it fell back; one of them exists.
             // Pressed on separate frames: ActivateItemByID() keeps only the last request of a frame, so
             // pressing both at once only ever pressed the labelled one (#1954).
             press("##Close");
+            next(Phase::CloseLabelled, 1);
             break;
-        case SETTLE + (7 * STEP) + 1:
+        case Phase::CloseLabelled:
             press(ICON_FA_XMARK "##Close");
+            next(Phase::Closing, MAX_FRAMES); // the app stops; MAX_FRAMES fails the test if it doesn't
             break;
-        default:
-            if (frame > MAX_FRAMES)
-            {
-                m_Observed.timedOut = true;
-                Core::Application::get().stop();
-            }
+        case Phase::Closing:
             break;
         }
     }
@@ -180,11 +228,53 @@ class TitleBarDriverLayer : public Core::Layer
         ImGui::ActivateItemByID(ImHashStr(label, 0, bar->ID));
     }
 
-    static constexpr int SETTLE = 10; // frames before the first press: fonts, layout and minimum size settle
-    static constexpr int STEP = 10;   // frames between presses: maximize and restore may round-trip the WM
-    static constexpr int MAX_FRAMES = 600;
+#ifdef _WIN32
+    /// Asks the test's own window what lies under two of its points, as Windows does when the pointer
+    /// moves: the window procedure hands WM_NCHITTEST to TitleBarLayer's hit-test callback. Sent to
+    /// this window alone, and only a question: nothing is clicked or moved.
+    void hitTest(const Core::Window& window)
+    {
+        const SDL_PropertiesID props = SDL_GetWindowProperties(window.getHandle());
+        auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        ASSERT_NE(hwnd, nullptr);
+        RECT client{};
+        ASSERT_TRUE(GetClientRect(hwnd, &client));
+        const auto ask = [hwnd](LONG x, LONG y)
+        {
+            POINT point{.x = x, .y = y};
+            ClientToScreen(hwnd, &point);
+            return SendMessageW(hwnd, WM_NCHITTEST, 0, MAKELPARAM(point.x, point.y));
+        };
+        m_Observed.titleHitTest = ask(client.right / 2, TITLE_Y);          // the empty title bar: a drag on X11
+        m_Observed.edgeHitTest = ask(client.right - 2, client.bottom / 2); // the right edge: a resize on X11
+    }
+#endif
+
+    /// The steps, in order; each waits m_NextFrame before running.
+    enum class Phase : std::uint8_t
+    {
+        Settings,
+        Help,
+        About,
+        Maximize,
+        AwaitMaximized,
+        AwaitRestored,
+        CloseLabelled,
+        Closing,
+    };
+
+    static constexpr int SETTLE = 10;      // frames before the first press: fonts, layout and minimum size settle
+    static constexpr int STEP = 10;        // frames between presses
+    static constexpr int WAIT_LIMIT = 300; // frames Maximize and Restore each wait for the window's state
+    static constexpr int MAX_FRAMES = 900;
+#ifdef _WIN32
+    static constexpr LONG TITLE_Y = 16;
+#endif
 
     Observed& m_Observed;
+    Phase m_Phase = Phase::Settings;
+    int m_NextFrame = SETTLE;
+    int m_Deadline = 0;
 };
 
 TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
@@ -220,6 +310,12 @@ TEST(UiLayersOnDisplayTest, TitleBarButtonsDoWhatTheySay)
     // The bar never lets the window get narrower than it has to show.
     EXPECT_GT(observed.minimumWidth, 0);
     EXPECT_GT(observed.minimumHeight, 0);
+#ifdef _WIN32
+    // On Windows the whole window is client area, its edges too: TitleBarLayer drags and resizes it
+    // itself, so Windows never enters its modal move or resize loop and the frames keep coming.
+    EXPECT_EQ(observed.titleHitTest, HTCLIENT);
+    EXPECT_EQ(observed.edgeHitTest, HTCLIENT);
+#endif
 }
 
 /// What the display-scale driver saw.
