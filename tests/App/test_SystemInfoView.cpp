@@ -199,6 +199,8 @@ TEST(SystemInfoSectionsTest, ReportFileNameFormatAndExtension)
               "tasksmack-system-info-my-box-..-x-2026-10-12.txt");
     EXPECT_EQ(SystemInfo::reportFileName("..", true, "2026-10-12", ReportFormat::Text), "tasksmack-system-info-machine-2026-10-12.txt");
     EXPECT_EQ(SystemInfo::reportFileName("", true, "", ReportFormat::Text), "tasksmack-system-info-machine.txt");
+    // #1891: trailing dots and dashes are trimmed too, so the name never ends the stem in one.
+    EXPECT_EQ(SystemInfo::reportFileName("box-.", true, "", ReportFormat::Text), "tasksmack-system-info-box.txt");
 
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.txt", 1), ReportFormat::Json) << "the dialog's filter wins";
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.json", 0), ReportFormat::Text);
@@ -583,6 +585,59 @@ TEST(SystemInfoSectionsTest, SecurityRows)
     EXPECT_EQ(findRow(section, "Spectre v2")->value, "Mitigation: Enhanced / Automatic IBRS");
     EXPECT_EQ(findRow(section, "MDS")->value, "Vulnerable: Clear CPU buffers attempted, no microcode");
     EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; })); // nothing names the machine
+}
+
+// #1891: the value texts the other tests' fixtures don't reach.
+TEST(SystemInfoSectionsTest, OvercommitModesAlwaysAndStrict)
+{
+    Platform::CommitPagingInfo paging = linuxPaging();
+    paging.overcommit = Platform::OvercommitMode::Always;
+    EXPECT_EQ(findRow(SystemInfo::buildCommitPagingSection(paging), "Overcommit mode")->value, "Always overcommit (1)");
+    paging.overcommit = Platform::OvercommitMode::Strict;
+    EXPECT_EQ(findRow(SystemInfo::buildCommitPagingSection(paging), "Overcommit mode")->value, "Strict, the commit limit is enforced (2)");
+}
+
+TEST(SystemInfoSectionsTest, SecureBootOffAndOlderOrUnversionedTpms)
+{
+    Platform::PlatformSecurityInfo security;
+    security.available = true;
+    security.secureBoot = Platform::SecurityFeatureState::Off;
+    security.tpm = Platform::SecurityFeatureState::On;
+    security.tpmVersionMajor = 1;
+    Section section = SystemInfo::buildSecuritySection(security);
+    EXPECT_EQ(findRow(section, "Secure Boot")->value, "Off");
+    EXPECT_EQ(findRow(section, "TPM")->value, "Present (TPM 1.2)");
+
+    security.tpmVersionMajor = 0; // present, version not reported
+    EXPECT_EQ(findRow(SystemInfo::buildSecuritySection(security), "TPM")->value, "Present");
+    security.tpm = Platform::SecurityFeatureState::Off;
+    EXPECT_EQ(findRow(SystemInfo::buildSecuritySection(security), "TPM")->value, "Not detected");
+}
+
+TEST(SystemInfoSectionsTest, AnAudioEndpointOfUnknownFlowIsAnAudioDevice)
+{
+    Platform::DevicesInfo devices;
+    devices.available = true;
+    devices.audio = {{.name = "HDMI 0", .flow = Platform::AudioFlow::Unknown}};
+    const Section section = SystemInfo::buildDevicesSection(devices);
+    const Row* item = findRow(section, "Audio device");
+    ASSERT_NE(item, nullptr);
+    EXPECT_EQ(item->value, "HDMI 0");
+}
+
+TEST(SystemInfoSectionsTest, BootWithAnInitramfsListsTheInitrdPhase)
+{
+    Platform::BootPerformanceInfo boot;
+    boot.available = true;
+    boot.timingsRead = true;
+    boot.finished = true;
+    boot.kernelUs = 1'000'000;
+    boot.initrdUs = 750'000;
+    boot.userspaceUs = 2'000'000;
+    boot.totalUs = 3'750'000;
+    const Row* initrd = findRow(SystemInfo::buildBootPerformanceSection(boot), "Initrd");
+    ASSERT_NE(initrd, nullptr);
+    EXPECT_EQ(initrd->value, "750 ms");
 }
 
 TEST(SystemInfoSectionsTest, SecurityUnknownsAreMutedAndNotSupportedSaysSo)
