@@ -1119,6 +1119,29 @@ TEST_F(ProcessesPanelRenderTest, TheServicesColumnListsEachProcesssServices)
     EXPECT_TRUE(text.contains("Services")) << text;
     EXPECT_TRUE(text.contains("Dhcp, EventLog")) << text; // the list's name order
     EXPECT_TRUE(panel->processCapabilities().hasServices);
+
+    // Hovering the cell lists them one per line under a count (#1891); the tooltip waits for the mouse
+    // to rest, so the hover delays are zeroed and the rows swept.
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    const std::string heading = ProcessRowFormat::servicesTooltipHeading(2);
+    bool shown = false;
+    ImGuiIO& io = ImGui::GetIO();
+    for (int y = 20; y <= 140 && !shown; y += 6)
+    {
+        for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH) && !shown; x += 8)
+        {
+            io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+            for (int settle = 0; settle < 3 && !shown; ++settle)
+            {
+                const std::string hovered = renderAndCapture(*panel);
+                shown = hovered.contains(heading) && hovered.contains("\nDhcp") && hovered.contains("\nEventLog");
+            }
+        }
+    }
+    EXPECT_TRUE(shown) << "the Services cell's tooltip: \"" << heading << "\", then each name";
     panel->onDetach();
 }
 
