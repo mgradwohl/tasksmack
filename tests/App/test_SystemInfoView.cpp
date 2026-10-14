@@ -18,10 +18,12 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h> // GImGui->LogBuffer, FindWindowByName(): the tooltip a hover opens
 #include <implot.h>
 
 #include <algorithm>
 #include <array>
+#include <cfloat>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -2409,6 +2411,7 @@ TEST_F(SystemInfoViewRenderTest, ToolbarReadTimeShortensThenWrapsAsTheWindowNarr
     };
     EXPECT_EQ(render(1000.0F, false), SystemInfo::ReadAtForm::Full);
     ASSERT_TRUE(state.readAtText.starts_with("Read at "));
+    const std::string fullReadAt = state.readAtText;
 
     // Narrow a pixel at a time, so the test does not hard-code the default font's glyph widths.
     float timeOnlyWidth = 0.0F;
@@ -2431,6 +2434,40 @@ TEST_F(SystemInfoViewRenderTest, ToolbarReadTimeShortensThenWrapsAsTheWindowNarr
     ASSERT_GT(nextLineWidth, 0.0F);
     // Dropping "Read at " buys about its width before the time has to wrap.
     EXPECT_GT(timeOnlyWidth - nextLineWidth, ImGui::CalcTextSize("Read at ").x - 2.0F);
+
+    // Shortened, the time's tooltip gives the full "Read at ..." (#1891): sweep the toolbar row for it.
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    bool shown = false;
+    const int rowHeight = static_cast<int>(ImGui::GetFrameHeightWithSpacing());
+    for (int y = 2; y <= rowHeight && !shown; y += 3)
+    {
+        for (int x = 2; x < static_cast<int>(timeOnlyWidth) && !shown; x += 6)
+        {
+            ImGui::GetIO().AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+            for (int settle = 0; settle < 2 && !shown; ++settle)
+            {
+                std::string text;
+                static_cast<void>(runFrame(
+                    [&]
+                    {
+                        ImGui::LogToBuffer();
+                        const SystemInfoViewResult result = renderSystemInfoView(&snap, supported, false, state);
+                        text = GImGui->LogBuffer.c_str();
+                        ImGui::LogFinish();
+                        return result;
+                    },
+                    timeOnlyWidth));
+                const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+                shown = state.readAtForm == SystemInfo::ReadAtForm::TimeOnly && tooltip != nullptr && tooltip->Active &&
+                        text.contains(fullReadAt);
+            }
+        }
+    }
+    EXPECT_TRUE(shown) << "the shortened time's tooltip: " << fullReadAt;
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 
     // While a read is in flight "Reading..." has no shorter form: it keeps the row or wraps.
     EXPECT_NE(render(timeOnlyWidth, true), SystemInfo::ReadAtForm::TimeOnly);
