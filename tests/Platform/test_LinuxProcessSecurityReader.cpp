@@ -110,6 +110,36 @@ TEST_F(LinuxProcessSecurityReaderTest, AnEmptyStatusFromAnExitingProcessReadsAsE
     EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::ProcessExited);
 }
 
+TEST_F(LinuxProcessSecurityReaderTest, AStatusThatCantBeReadSaysWhy)
+{
+    // read() fails with an error that is neither permission nor exit (EISDIR): Failed, with its text.
+    std::filesystem::remove(m_Proc.path / "100" / "status");
+    std::filesystem::create_directory(m_Proc.path / "100" / "status");
+    LinuxProcessSecurityReader reader(m_Proc.path.string());
+    const SecurityReadResult result = reader.readSecurity(TARGET);
+    EXPECT_EQ(result.status, SecurityReadStatus::Failed);
+    EXPECT_FALSE(result.detail.empty());
+}
+
+TEST_F(LinuxProcessSecurityReaderTest, AStatusThatIsntThereReadsAsExited)
+{
+    std::filesystem::remove(m_Proc.path / "100" / "status");
+    LinuxProcessSecurityReader reader(m_Proc.path.string());
+    EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::ProcessExited);
+}
+
+TEST_F(LinuxProcessSecurityReaderTest, AStatusThatIsntPermittedIsNotPermitted)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root can read a mode-000 file";
+    }
+    std::filesystem::permissions(m_Proc.path / "100" / "status", std::filesystem::perms::none);
+    LinuxProcessSecurityReader reader(m_Proc.path.string());
+    EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::PermissionDenied);
+    std::filesystem::permissions(m_Proc.path / "100" / "status", std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+}
+
 TEST(LinuxProcessSecurityReaderRealTest, ReadsThisProcess)
 {
     std::ifstream stat("/proc/self/stat");
