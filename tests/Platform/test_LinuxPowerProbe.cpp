@@ -785,6 +785,77 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_WhitespaceStrippedFromSysfsFiles)
     EXPECT_EQ(counters.chargePercent, 77);
 }
 
+// #1891: a plain file among the power supplies (sysfs keeps none, a test root might) is skipped.
+TEST_F(LinuxPowerProbeUnitTest, PlainFileInTheRootIsSkipped)
+{
+    writeFile(m_SysRoot / "uevent", "POWER_SUPPLY_NAME=none");
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "capacity", "64");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_TRUE(probe.capabilities().hasBattery);
+    EXPECT_EQ(probe.read().chargePercent, 64);
+}
+
+// #1891: a power-supply root that cannot be listed leaves the probe without a battery.
+TEST_F(LinuxPowerProbeUnitTest, UnlistableRootFindsNoBattery)
+{
+    if (geteuid() == 0)
+    {
+        GTEST_SKIP() << "root lists a mode-000 directory anyway";
+    }
+    static_cast<void>(makeBatteryDevice("BAT0"));
+    std::filesystem::permissions(m_SysRoot, std::filesystem::perms::none);
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    std::filesystem::permissions(m_SysRoot, std::filesystem::perms::owner_all);
+    EXPECT_FALSE(probe.capabilities().hasBattery);
+    EXPECT_EQ(probe.read().state, BatteryState::NotPresent);
+}
+
+// #1891: charging power derived from current_now and voltage_now is negative, as power_now's is.
+TEST_F(LinuxPowerProbeUnitTest, Battery_CurrentNow_Charging_NegativeRate)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Charging");
+    writeFile(batPath / "current_now", "2000000");  // 2 A
+    writeFile(batPath / "voltage_now", "12000000"); // 12 V
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_DOUBLE_EQ(probe.read().powerNowW, -24.0);
+}
+
+// #1891: a file holding only whitespace reads as empty, so each value takes its fallback.
+TEST_F(LinuxPowerProbeUnitTest, Battery_WhitespaceOnlyFilesReadAsMissing)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "   ");
+    writeFile(batPath / "capacity", " \t ");
+    writeFile(batPath / "model_name", "  ");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    const auto counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Unknown);
+    EXPECT_EQ(counters.chargePercent, -1);
+    EXPECT_TRUE(counters.model.empty());
+}
+
+// #1891: an unparsable power_now falls back to zero watts rather than a garbage rate.
+TEST_F(LinuxPowerProbeUnitTest, Battery_MalformedPowerNow_FallsBackToZero)
+{
+    const auto batPath = makeBatteryDevice("BAT0");
+    writeFile(batPath / "status", "Discharging");
+    writeFile(batPath / "power_now", "n/a");
+
+    LinuxPowerProbe probe(m_SysRoot.string());
+
+    EXPECT_DOUBLE_EQ(probe.read().powerNowW, 0.0);
+}
+
 } // namespace
 } // namespace Platform
 
