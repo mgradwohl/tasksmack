@@ -51,13 +51,9 @@ bool detectDisplay()
     std::size_t len = 0;
     _dupenv_s(&ciEnv, &len, "CI");
     const bool isCI = (ciEnv != nullptr && std::string_view(ciEnv) == "true");
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) - _dupenv_s allocates with malloc; must free with free()
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc; must free with free()
     free(ciEnv);
-    if (isCI)
-    {
-        return false;
-    }
-    return true;
+    return !isCI;
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const char* display = std::getenv("DISPLAY");
@@ -194,7 +190,8 @@ TEST_F(WindowTest, GetGLContextReturnsNonNullAfterConstruction)
 {
     try
     {
-        Window window(WindowSpecification{.Title = "WindowGLContextTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowGLContextTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
         EXPECT_NE(window.getGLContext(), nullptr);
     }
     catch (const std::exception& e)
@@ -252,7 +249,8 @@ TEST_F(WindowTest, GetWidthAndHeightReflectCurrentSDLSize)
     // Resize through SDL directly so a cached WindowSpecification cannot satisfy the assertions.
     try
     {
-        Window window(WindowSpecification{.Title = "WindowLiveSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowLiveSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         EXPECT_EQ(window.getWidth(), 640);
         EXPECT_EQ(window.getHeight(), 480);
@@ -285,7 +283,8 @@ TEST_F(WindowTest, GetSizeInPixelsReturnsPositiveDimensions)
 {
     try
     {
-        Window window(WindowSpecification{.Title = "WindowPixelSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowPixelSizeTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         const auto [pixelW, pixelH] = window.getSizeInPixels();
         // Physical pixel size must be at least as large as logical size on any display.
@@ -311,7 +310,8 @@ TEST_F(WindowTest, SetAndGetPositionRoundTrip)
 
     try
     {
-        Window window(WindowSpecification{.Title = "WindowPositionTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "WindowPositionTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
         window.setPosition(40, 60);
         const auto [x, y] = window.getPosition();
 
@@ -630,7 +630,8 @@ TEST_F(WindowTest, SetHitTestCallbackDoesNotThrow)
 {
     try
     {
-        Window window(WindowSpecification{.Title = "HitTestCallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
+        const Window window(
+            WindowSpecification{.Title = "HitTestCallbackTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
         // Setting a no-op hit-test callback must not crash or throw.
         EXPECT_NO_THROW(window.setHitTestCallback([](SDL_Window* /*win*/, const SDL_Point* /*area*/, void* /*data*/) -> SDL_HitTestResult

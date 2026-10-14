@@ -175,7 +175,7 @@ TEST_F(NonAsciiConfigTest, ConfigDirOverrideNamesTheExactDirectory)
     const std::string value = Core::pathToUtf8(dir() / "config");
     const std::optional<std::filesystem::path> parsed = Core::ConfigDirOverride::parse(value.c_str());
     ASSERT_TRUE(parsed.has_value());
-    EXPECT_EQ(parsed.value(), dir() / "config");
+    EXPECT_EQ(parsed.value_or(std::filesystem::path{}), dir() / "config");
 }
 
 TEST_F(NonAsciiConfigTest, ConfigSavesAndLoadsUnderANonAsciiDirectoryWithNonAsciiValues)
@@ -185,7 +185,7 @@ TEST_F(NonAsciiConfigTest, ConfigSavesAndLoadsUnderANonAsciiDirectoryWithNonAsci
     const std::string configDirText = std::format("{}/{}-config", Core::pathToUtf8(dir()), allNonAsciiNames());
     const std::optional<std::filesystem::path> configDir = Core::ConfigDirOverride::parse(configDirText.c_str());
     ASSERT_TRUE(configDir.has_value());
-    const std::filesystem::path configPath = configDir.value() / "config.toml";
+    const std::filesystem::path configPath = configDir.value_or(std::filesystem::path{}) / "config.toml";
 
     // The free-text settings: the theme id (a user theme's file name) and the table layout.
     const std::string themeId = allNonAsciiNames();
@@ -275,23 +275,25 @@ TEST(NonAsciiSelectTest, SelectsAProcessByItsNonAsciiName)
         const std::string value = std::format("  {}  ", exe);
         const auto parsed = App::SelectOverride::parse(nullptr, value.c_str(), nullptr);
         ASSERT_TRUE(parsed.target.has_value()) << exe;
-        EXPECT_EQ(parsed.target.value().name, exe);
-        EXPECT_TRUE(App::SelectOverride::matches(parsed.target.value(), snapshotNamed(7, exe))) << exe;
-        EXPECT_FALSE(App::SelectOverride::matches(parsed.target.value(), snapshotNamed(7, "other.exe"))) << exe;
+        const App::SelectOverride::Target target = parsed.target.value_or(App::SelectOverride::Target{});
+        EXPECT_EQ(target.name, exe);
+        EXPECT_TRUE(App::SelectOverride::matches(target, snapshotNamed(7, exe))) << exe;
+        EXPECT_FALSE(App::SelectOverride::matches(target, snapshotNamed(7, "other.exe"))) << exe;
     }
 }
 
 TEST(NonAsciiSelectTest, NonAsciiCaseFollowsThePlatform)
 {
-    const auto target = App::SelectOverride::parse(nullptr, "ÜNÏCÖDÉ.EXE", nullptr).target;
-    ASSERT_TRUE(target.has_value());
+    const auto parsed = App::SelectOverride::parse(nullptr, "ÜNÏCÖDÉ.EXE", nullptr).target;
+    ASSERT_TRUE(parsed.has_value());
+    const App::SelectOverride::Target target = parsed.value_or(App::SelectOverride::Target{});
 #ifdef _WIN32
     // Windows file names ignore case beyond ASCII too (ordinal, on UTF-16).
-    EXPECT_TRUE(App::SelectOverride::matches(target.value(), snapshotNamed(1, "ünïcödé.exe")));
+    EXPECT_TRUE(App::SelectOverride::matches(target, snapshotNamed(1, "ünïcödé.exe")));
 #else
-    EXPECT_FALSE(App::SelectOverride::matches(target.value(), snapshotNamed(1, "ünïcödé.exe")));
+    EXPECT_FALSE(App::SelectOverride::matches(target, snapshotNamed(1, "ünïcödé.exe")));
 #endif
-    EXPECT_TRUE(App::SelectOverride::matches(target.value(), snapshotNamed(1, "ÜNÏCÖDÉ.EXE")));
+    EXPECT_TRUE(App::SelectOverride::matches(target, snapshotNamed(1, "ÜNÏCÖDÉ.EXE")));
 }
 
 TEST(NonAsciiSelectTest, InvalidUtf8NamesCompareExactlyWithoutCrashing)

@@ -104,7 +104,8 @@ bool detectDisplay()
     char* ciEnv = nullptr;
     size_t len = 0;
     _dupenv_s(&ciEnv, &len, "CI");
-    bool isCI = (ciEnv != nullptr && std::string(ciEnv) == "true");
+    const bool isCI = (ciEnv != nullptr && std::string(ciEnv) == "true");
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc; must free with free()
     free(ciEnv);
 
     if (isCI)
