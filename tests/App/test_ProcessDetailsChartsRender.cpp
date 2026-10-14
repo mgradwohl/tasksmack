@@ -902,6 +902,45 @@ TEST_F(ProcessDetailsChartsRenderTest, TheGpuTabNoLongerShowsTheNpu)
 
 // #1869: the NPU tab, modeled on the GPU tab: the NPU Usage card with every NPU figure, then the
 // utilization chart and the memory chart with its dedicated and shared series, each in its own card.
+// #1891: as the Overview's, a GPU or NPU history chart cut off by the bottom of the pane shows its
+// card's header but culls its plot, and is skipped whole rather than drawn in part.
+TEST_F(ProcessDetailsChartsRenderTest, GpuAndNpuChartsCutOffByTheBottomOfThePaneAreSkippedWhole)
+{
+    ChartInputs gpu(busyPoint);
+    ChartInputs npu(busyPoint);
+    useTheNpu(npu);
+    ProcessDetailsCharts charts;
+    const auto renderBoth = [&](float offset)
+    {
+        runFrame(
+            [&]
+            {
+                ImGui::Dummy(ImVec2(1.0F, offset));
+                charts.renderGpuTab(gpu.ctx);
+            });
+        runFrame(
+            [&]
+            {
+                ImGui::Dummy(ImVec2(1.0F, offset));
+                charts.renderNpuTab(npu.ctx);
+            });
+    };
+    renderBoth(1.0F);
+    renderBoth(1.0F);
+    const auto full = plotsDrawn();
+    ASSERT_FALSE(full.empty());
+
+    for (int step = 0; static_cast<float>(step) * 6.0F < DISPLAY_HEIGHT; ++step)
+    {
+        const float offset = 1.0F + (static_cast<float>(step) * 6.0F);
+        renderBoth(offset);
+        for (const SeriesLabels& plot : plotsDrawn())
+        {
+            EXPECT_TRUE(plot.empty() || std::ranges::find(full, plot) != full.end()) << "at offset " << offset;
+        }
+    }
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, TheNpuTabShowsItsUsageCardAndCharts)
 {
     ChartInputs inputs(busyPoint);
