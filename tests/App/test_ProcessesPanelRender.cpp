@@ -1127,18 +1127,36 @@ TEST_F(ProcessesPanelRenderTest, TheServicesColumnListsEachProcesssServices)
     style.HoverDelayShort = 0.0F;
     style.HoverDelayNormal = 0.0F;
     const std::string heading = ProcessRowFormat::servicesTooltipHeading(2);
+    // The Services column's cells, from the table ImGui laid out: sweep down that column only, so the
+    // row's position (it follows the sort) doesn't matter, and few frames are drawn (a slow ASan run).
+    const ImGuiTable* table = nullptr;
+    int servicesColumn = -1;
+    for (int t = 0; t < GImGui->Tables.GetMapSize() && servicesColumn < 0; ++t)
+    {
+        const ImGuiTable* candidate = GImGui->Tables.TryGetMapData(t);
+        for (int c = 0; candidate != nullptr && c < candidate->ColumnsCount; ++c)
+        {
+            if (std::string_view(ImGui::TableGetColumnName(candidate, c)) == "Services")
+            {
+                table = candidate;
+                servicesColumn = c;
+                break;
+            }
+        }
+    }
+    ASSERT_NE(table, nullptr) << "no table with a Services column";
+    const ImGuiTableColumn& column = table->Columns[servicesColumn];
+    const float x = (column.MinX + column.MaxX) * 0.5F;
     bool shown = false;
     ImGuiIO& io = ImGui::GetIO();
-    for (int y = 20; y <= 140 && !shown; y += 6)
+    const int steps = static_cast<int>(table->InnerRect.GetHeight() / 4.0F);
+    for (int step = 0; step < steps && !shown; ++step)
     {
-        for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH) && !shown; x += 8)
+        io.AddMousePosEvent(x, table->InnerRect.Min.y + 2.0F + (static_cast<float>(step) * 4.0F));
+        for (int settle = 0; settle < 3 && !shown; ++settle)
         {
-            io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
-            for (int settle = 0; settle < 3 && !shown; ++settle)
-            {
-                const std::string hovered = renderAndCapture(*panel);
-                shown = hovered.contains(heading) && hovered.contains("\nDhcp") && hovered.contains("\nEventLog");
-            }
+            const std::string hovered = renderAndCapture(*panel);
+            shown = hovered.contains(heading) && hovered.contains("\nDhcp") && hovered.contains("\nEventLog");
         }
     }
     EXPECT_TRUE(shown) << "the Services cell's tooltip: \"" << heading << "\", then each name";
