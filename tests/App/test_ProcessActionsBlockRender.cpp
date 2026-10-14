@@ -966,7 +966,8 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
 
     caps.canCreateDump = true;
     const std::filesystem::path file = std::filesystem::path("dumps") / "victim_1001.dmp";
-    h.mock.setDumpResult(Platform::ProcessDump{.file = file, .sizeBytes = 4096, .note = {}, .fromSnapshot = true, .liveReason = {}});
+    h.mock.setDumpResult(Platform::ProcessDump{
+        .file = file, .sizeBytes = 4096, .note = "Written by the 32-bit helper", .fromSnapshot = true, .liveReason = {}});
     ASSERT_FALSE(runFrame(body));
     EXPECT_TRUE(text.contains("Create dump file...")) << text;
 
@@ -993,7 +994,8 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     EXPECT_EQ(h.mock.lastDumpDirectory(), DumpDetail::defaultDumpDirectory());
     EXPECT_TRUE(text.contains("Wrote a dump file of victim (PID 1001)")) << text;
     EXPECT_TRUE(text.contains(file.string())) << text;
-    EXPECT_TRUE(text.contains("Written from a snapshot")) << text; // #2001
+    EXPECT_TRUE(text.contains("Written from a snapshot")) << text;      // #2001
+    EXPECT_TRUE(text.contains("Written by the 32-bit helper")) << text; // the platform's note, under the result (#1891)
 
     modal = ImGui::GetTopMostPopupModal();
     ASSERT_NE(modal, nullptr);

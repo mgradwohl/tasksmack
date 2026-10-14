@@ -656,6 +656,48 @@ TEST(ProcessDumpViewTest, TheRememberedFolderIsUsedWhileItExists)
     EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path() / "gone")), DumpDetail::defaultDumpDirectory());
 }
 
+// #1891: the default view remembers a chosen folder in the user's config, saving it once; choosing the
+// same folder again leaves the config alone.
+TEST(ProcessDumpViewTest, TheDefaultViewSavesAChosenFolderToTheConfig)
+{
+    const TempFolder folder;
+    auto& config = UserConfig::get();
+    const std::filesystem::path originalPath = config.configPath();
+    const UserSettings originalSettings = config.settings();
+    const std::filesystem::path configFile = folder.path() / "config.toml";
+    config.resetConfigPathForTesting(configFile);
+    config.settings().dumpFolder.clear();
+
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    const std::filesystem::path chosen = folder.path() / "dumps";
+    std::filesystem::create_directories(chosen);
+    mock.setFolderChoice(std::optional<std::filesystem::path>(chosen));
+    {
+        ProcessDumpView view; // the default: remembers in UserConfig
+        view.request(TARGET, "big.exe", someFolder(), &mock);
+        view.chooseFolder(&mock, nullptr);
+        ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+        EXPECT_EQ(view.directory(), chosen);
+    }
+    EXPECT_EQ(config.settings().dumpFolder, Core::pathToUtf8(chosen));
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::exists(configFile, ec)) << "saved to the redirected config";
+    const auto savedAt = std::filesystem::last_write_time(configFile, ec);
+
+    {
+        // The same folder again: already remembered, so nothing is written.
+        ProcessDumpView view;
+        view.request(TARGET, "big.exe", chosen, &mock);
+        view.chooseFolder(&mock, nullptr);
+        ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    }
+    EXPECT_EQ(std::filesystem::last_write_time(configFile, ec), savedAt);
+
+    config.resetConfigPathForTesting(originalPath);
+    config.settings() = originalSettings;
+}
+
 TEST(ProcessDumpViewTest, TheConfigKeepsTheDumpFolder)
 {
     UserSettings settings;
