@@ -7,6 +7,7 @@
 #include "Domain/GPUSnapshot.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Platform/GPUTypes.h"
+#include "UI/Format.h"
 
 #include <gtest/gtest.h>
 
@@ -251,6 +252,10 @@ TEST(GpuSectionDrawListTest, AnAcceleratorIsLabelledWithItsKindAndDriver)
     npu.driverVersion = "32.0.100.4778";
     npu.memoryIsShared = true;
     EXPECT_EQ(GpuSection::acceleratorDetailsText(npu), "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory: Shared");
+    // A Linux NPU's memory in use, which has no total to make a percent of (#1827): bytes on this line.
+    EXPECT_EQ(GpuSection::acceleratorDetailsText(npu, std::uint64_t{12} * 1024U * 1024U),
+              "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory: Shared, " + UI::Format::formatBytes(12.0 * 1024.0 * 1024.0) +
+                  " in use");
 
     Platform::GPUInfo unknown = info("ACC");
     unknown.kind = Platform::DeviceKind::ComputeAccelerator;

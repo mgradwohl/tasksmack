@@ -29,6 +29,7 @@
 #include <latch>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -670,6 +671,21 @@ TEST(GPUModelTest, FirstRefreshPopulatesSnapshot)
     EXPECT_DOUBLE_EQ(snap.utilizationPercent, 75.0);
     EXPECT_EQ(snap.memoryUsedBytes, 2ULL * 1024 * 1024 * 1024);
     EXPECT_EQ(snap.memoryTotalBytes, 8ULL * 1024 * 1024 * 1024);
+}
+
+// #1827: memory in use with no total reaches the snapshot as bytes; memory stays unavailable, so no percent is published.
+TEST(GPUModelTest, MemoryInUseWithoutATotalIsCarriedAsBytes)
+{
+    auto probe = std::make_unique<MockGPUProbe>();
+    probe->withGPU("NPU0", "Test NPU", "TestVendor").withMemoryInUse("NPU0", 12ULL * 1024 * 1024);
+
+    Domain::GPUModel model(std::move(probe));
+    model.refresh();
+
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 1U);
+    EXPECT_EQ(snaps[0].memoryInUseBytes, std::optional<std::uint64_t>{12ULL * 1024 * 1024});
+    EXPECT_FALSE(snaps[0].memoryAvailable);
 }
 
 TEST(GPUModelTest, SampleDelegatesToRefresh)

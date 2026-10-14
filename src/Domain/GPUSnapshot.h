@@ -3,6 +3,7 @@
 #include "Platform/GPUTypes.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,8 @@ struct GPUSnapshot
     std::uint64_t memoryUsedBytes = 0;
     std::uint64_t memoryTotalBytes = 0;
     double memoryUsedPercent = 0.0; // Computed by Domain
+    // Memory in use with no total (Platform::GPUCounters::memoryInUseBytes): a Linux NPU's (#1827).
+    std::optional<std::uint64_t> memoryInUseBytes;
 
     // Temperature
     std::int32_t temperatureC = 0;

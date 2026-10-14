@@ -165,6 +165,21 @@ class MockGPUProbe : public Platform::IGPUProbe
         return *this;
     }
 
+    /// Memory in use with no total, as a Linux NPU reports it (#1827); memoryAvailable goes false.
+    MockGPUProbe& withMemoryInUse(const std::string& gpuId, std::uint64_t inUse)
+    {
+        for (auto& counter : m_Counters)
+        {
+            if (counter.gpuId == gpuId)
+            {
+                counter.memoryAvailable = false;
+                counter.memoryInUseBytes = inUse;
+                return *this;
+            }
+        }
+        return *this;
+    }
+
     MockGPUProbe& withMemory(const std::string& gpuId, std::uint64_t used, std::uint64_t total)
     {
         for (auto& counter : m_Counters)

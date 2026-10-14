@@ -184,6 +184,9 @@ struct GPUCounters
     // Memory (bytes - raw counters)
     std::uint64_t memoryUsedBytes = 0;
     std::uint64_t memoryTotalBytes = 0;
+    // Memory in use where the device reports no total to set it against, so memoryAvailable stays false
+    // and no percent is drawn: a Linux NPU's npu_memory_utilization (bytes, #1827). nullopt elsewhere.
+    std::optional<std::uint64_t> memoryInUseBytes;
 
     // Temperature (°C)
     std::int32_t temperatureC = 0;

@@ -117,6 +117,24 @@ TEST(AccelNpuProbeTest, ListsTheDevicesAndSamplesIntelsBusyTime)
     EXPECT_TRUE(probe.capabilities().supportsMultiGPU);
 }
 
+// #1827: intel_vpu's npu_memory_utilization is the bytes the NPU has in use. With no total it is
+// reported as bytes in use, never as memoryAvailable (which would draw a percent of a total).
+TEST(AccelNpuProbeTest, IntelsMemoryInUseIsReadAsBytesWithoutAPercent)
+{
+    const ScopedTempDir dir("tasksmack_accel_npu_memory");
+    addDevice(dir.path, 0, "0000:00:0b.0", "intel_vpu", "0x8086", 1'000);
+    addDevice(dir.path, 1, "0000:c5:00.1", "amdxdna", "0x1022", std::nullopt);
+    writeFile(dir.path / "pci" / "0000:00:0b.0" / "npu_memory_utilization", "12582912\n");
+    AccelNpuProbe probe(dir.path / "class", [] { return std::uint64_t{1}; }, dir.path / "proc");
+
+    const std::vector<GPUCounters> counters = probe.readGPUCounters();
+    ASSERT_EQ(counters.size(), 2U);
+    EXPECT_EQ(counters[0].memoryInUseBytes, std::optional<std::uint64_t>{12'582'912});
+    EXPECT_FALSE(counters[0].memoryAvailable);
+    EXPECT_EQ(counters[0].memoryTotalBytes, 0U);
+    EXPECT_FALSE(counters[1].memoryInUseBytes.has_value()) << "AMD's driver has no such file";
+}
+
 TEST(AccelNpuProbeTest, NoneListedAndARescanFindsOneAdded)
 {
     const ScopedTempDir dir("tasksmack_accel_npu_rescan");

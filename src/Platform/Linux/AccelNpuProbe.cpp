@@ -313,7 +313,10 @@ std::vector<GPUCounters> AccelNpuProbe::readGPUCounters()
         c.temperatureAvailable = false;
         c.powerAvailable = false;
         c.gpuClockAvailable = false;
-        c.memoryAvailable = false; // npu_memory_utilization has no total to set it against yet
+        // npu_memory_utilization (intel_vpu) is the bytes the NPU has in use, with no total to set it
+        // against: shown as bytes, never a percent of an invented total (#1827).
+        c.memoryAvailable = false;
+        c.memoryInUseBytes = readCounter(device.deviceDir / "npu_memory_utilization");
         c.encoderAvailable = false;
         c.decoderAvailable = false;
         c.utilizationAvailable = false;

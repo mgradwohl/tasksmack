@@ -200,7 +200,10 @@ void refreshEntryLabels(FrameCache& cache, const Domain::GPUPublication& publica
     cache.thermalLayoutIds.clear();
     for (const GpuDrawEntry& entry : cache.drawList)
     {
-        cache.detailTexts.push_back((accelerators && entry.info != nullptr) ? acceleratorDetailsText(*entry.info) : std::string{});
+        cache.detailTexts.push_back(
+            (accelerators && entry.info != nullptr)
+                ? acceleratorDetailsText(*entry.info, entry.snapshot != nullptr ? entry.snapshot->memoryInUseBytes : std::nullopt)
+                : std::string{});
         if (accelerators)
         {
             cache.headerLabels.push_back(acceleratorEntryHeaderLabel(entry));

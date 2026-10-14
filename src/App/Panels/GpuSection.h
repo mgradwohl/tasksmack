@@ -247,7 +247,10 @@ acceleratorHeaderLabel(std::string_view icon, std::string_view name, Platform::D
 /// The line under an NPU's or compute accelerator's header (#1799): its kind, vendor, driver version
 /// and which memory its figures count -- "Kind: NPU    Vendor: Intel    Driver: 32.0.100.4778    Memory:
 /// Shared". A vendor the probe could not name is left out; a driver version it could not read says so.
-[[nodiscard]] inline std::string acceleratorDetailsText(const Platform::GPUInfo& info)
+/// With @p memoryInUseBytes (a device that reports memory in use but no total, #1827), the memory it
+/// has in use follows: "Memory: Shared, 12.0 MiB in use".
+[[nodiscard]] inline std::string acceleratorDetailsText(const Platform::GPUInfo& info,
+                                                        std::optional<std::uint64_t> memoryInUseBytes = std::nullopt)
 {
     constexpr std::string_view SEPARATOR = "    ";
     std::string text = std::format("Kind: {}", deviceKindLabel(info.kind));
@@ -258,6 +261,10 @@ acceleratorHeaderLabel(std::string_view icon, std::string_view name, Platform::D
     const std::string_view driver = info.driverVersion.empty() ? std::string_view{"Unknown"} : std::string_view{info.driverVersion};
     text += std::format("{}Driver: {}", SEPARATOR, driver);
     text += std::format("{}Memory: {}", SEPARATOR, info.memoryIsShared ? "Shared" : "Dedicated");
+    if (memoryInUseBytes.has_value())
+    {
+        text += std::format(", {} in use", UI::Format::formatBytes(static_cast<double>(*memoryInUseBytes)));
+    }
     return text;
 }
 
