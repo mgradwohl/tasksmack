@@ -146,6 +146,23 @@ TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStar
     EXPECT_FALSE(notBuilt.stop("cron.service", stop.get_token()).ok);
 }
 
+TEST(UnsupportedServiceActionsTest, RefusesEveryActionAndOffersNone)
+{
+    // A synthetic run's, or a build without systemd support's: no capability, every action refused.
+    UnsupportedServiceActions actions;
+    const ServiceActionCapabilities caps = actions.capabilities();
+    EXPECT_FALSE(caps.canStart || caps.canStop || caps.canRestart || caps.canSetStartType);
+    const std::stop_source stop;
+    for (const ServiceActionResult& result : {actions.start("cron.service", stop.get_token()),
+                                              actions.stop("cron.service", stop.get_token()),
+                                              actions.restart("cron.service", stop.get_token()),
+                                              actions.setStartType("cron.service", ServiceStartType::Manual)})
+    {
+        EXPECT_FALSE(result.ok);
+        EXPECT_FALSE(result.message.empty());
+    }
+}
+
 #ifdef TASKSMACK_HAS_SDBUS
 
 // ========== SystemdBus against a fake systemd ==========
@@ -483,6 +500,42 @@ TEST_F(SystemdActionsFakeTest, EachRefusedUnitFileStepStopsTheChange)
     EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic).message, "Requires administrator");
     EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Disabled).message, "Requires administrator");
     EXPECT_TRUE(calls().empty()) << "nothing past the refused step";
+}
+
+TEST_F(SystemdActionsFakeTest, LinuxServiceActionsActThroughSystemdWhereItRuns)
+{
+    // With a root where systemd runs, each action goes to systemd; restart is stop, then start.
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{};
+    m_Bus.properties()[CRON_PATH][UNIT]["BoundBy"] = std::vector<std::string>{};
+    serveJob("StopUnit", "inactive");
+    serveJob("StartUnit", "active");
+    serveUnitFileCall("UnmaskUnitFiles");
+    serveUnitFileCall("DisableUnitFiles");
+    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "Reload", [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, ""); });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+
+    const TestSupport::ScopedTempDir root("ts_service_actions_live");
+    std::filesystem::create_directories(root.path / "run" / "systemd" / "system");
+    LinuxServiceActions actions(root.path, /*built=*/true, QUICK);
+    const std::stop_source stop;
+    EXPECT_TRUE(actions.stop("cron.service", stop.get_token()).ok);
+    EXPECT_TRUE(actions.start("cron.service", stop.get_token()).ok);
+    EXPECT_TRUE(actions.restart("cron.service", stop.get_token()).ok);
+    EXPECT_TRUE(actions.setStartType("cron.service", ServiceStartType::Manual).ok);
+    const std::vector<std::string> expected{"StopUnit cron.service replace",
+                                            "StartUnit cron.service replace",
+                                            "StopUnit cron.service replace",
+                                            "StartUnit cron.service replace",
+                                            "UnmaskUnitFiles cron.service",
+                                            "DisableUnitFiles cron.service"};
+    EXPECT_EQ(calls(), expected);
+
+    // A stop request before the restart begins: nothing is sent, and it reports the cancellation.
+    std::stop_source stopNow;
+    stopNow.request_stop();
+    EXPECT_TRUE(actions.restart("cron.service", stopNow.get_token()).cancelled);
+    EXPECT_EQ(calls().size(), expected.size());
 }
 
 TEST(SystemdActionsNoBusTest, WithoutASystemBusEveryActionSaysSo)
