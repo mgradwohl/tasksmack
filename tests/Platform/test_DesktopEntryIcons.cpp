@@ -20,7 +20,9 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 namespace Platform::DesktopEntryIcons
 {
@@ -196,28 +198,32 @@ TEST(DesktopEntryIconsTest, DirectoriesAreReadInPrecedenceOrderWithSubdirectoryI
 
 TEST(DesktopEntryIconsTest, AFileTooLargeOrUnreadableIsSkipped)
 {
-    // Over MAX_DESKTOP_FILE_BYTES (a desktop file is a few KiB; this isn't one), and one that can't be
-    // opened: neither is read, and the rest of the directory still is (#1891).
+    // Over MAX_DESKTOP_FILE_BYTES (a desktop file is a few KiB; this isn't one), and on POSIX one that
+    // can't be opened: neither is read, and the rest of the directory still is (#1891).
     const TempTree tree;
     ASSERT_FALSE(tree.root().empty());
     std::string huge = entry("huge", "huge-icon");
     huge.append(static_cast<std::size_t>(MAX_DESKTOP_FILE_BYTES), '#');
     static_cast<void>(tree.write("applications/huge.desktop", huge));
-    static_cast<void>(tree.write("applications/locked.desktop", entry("locked", "locked-icon")));
     static_cast<void>(tree.write("applications/ok.desktop", entry("ok", "ok-icon")));
+#ifndef _WIN32
+    static_cast<void>(tree.write("applications/locked.desktop", entry("locked", "locked-icon")));
     const bool root = ::geteuid() == 0;
     std::filesystem::permissions(tree.root() / "applications" / "locked.desktop", std::filesystem::perms::none);
+#endif
 
     DesktopIndex index;
     const std::vector<std::filesystem::path> dirs{tree.root() / "applications"};
     index.addDirectories(dirs);
-    std::filesystem::permissions(tree.root() / "applications" / "locked.desktop", std::filesystem::perms::owner_all);
     EXPECT_FALSE(index.iconFor("/usr/bin/huge", "").has_value());
+    EXPECT_EQ(index.iconFor("/usr/bin/ok", ""), "ok-icon");
+#ifndef _WIN32
+    std::filesystem::permissions(tree.root() / "applications" / "locked.desktop", std::filesystem::perms::owner_all);
     if (!root) // root reads a mode-000 file anyway
     {
         EXPECT_FALSE(index.iconFor("/usr/bin/locked", "").has_value());
     }
-    EXPECT_EQ(index.iconFor("/usr/bin/ok", ""), "ok-icon");
+#endif
 }
 
 TEST(DesktopEntryIconsTest, SizesAreTriedNearestLargerFirstThenLargestSmaller)
