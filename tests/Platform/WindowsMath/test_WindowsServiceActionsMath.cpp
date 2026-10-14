@@ -28,6 +28,12 @@ TEST(WindowsServiceActionsMathTest, KnownErrorsHaveReadableMessages)
     EXPECT_EQ(errorText(1060), "The service no longer exists");
     EXPECT_EQ(errorText(1053), "The service didn't respond in time");
     EXPECT_EQ(errorText(1051), "Other running services depend on it");
+    EXPECT_EQ(errorText(1052), "The service doesn't accept that request");
+    EXPECT_EQ(errorText(1061), "The service can't accept requests right now");
+    EXPECT_EQ(errorText(1068), "A service it depends on failed to start");
+    EXPECT_EQ(errorText(1069), "The service couldn't log on as its account");
+    EXPECT_EQ(errorText(1072), "The service is marked for deletion");
+    EXPECT_EQ(errorText(1115), "Windows is shutting down");
 }
 
 TEST(WindowsServiceActionsMathTest, UnknownErrorsShowTheCode)

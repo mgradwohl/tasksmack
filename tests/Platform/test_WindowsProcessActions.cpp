@@ -10,8 +10,10 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsAffinityMath.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
+#include "Platform/Windows/WindowsProcessDump.h"
 
 #include <gtest/gtest.h>
 
@@ -1091,6 +1093,39 @@ TEST(WindowsProcessDumpTest, DumpSpaceReadsTheFolderAndTheChildsPrivateBytes)
     const DumpSpace other = actions.dumpSpace(reused, folder.path() / "missing");
     EXPECT_FALSE(other.processBytes.has_value());
     EXPECT_FALSE(other.freeBytes.has_value());
+}
+
+TEST(WindowsProcessDumpTest, ProtectionIsReadAndAnUnopenablePidIsNotProtected)
+{
+    EXPECT_FALSE(Windows::isProtectedProcess(GetCurrentProcessId()));
+    // No process has an odd PID (they are multiples of 4), so OpenProcess() fails.
+    EXPECT_FALSE(Windows::isProtectedProcess(0xFFFF'FFFBU));
+}
+
+TEST(WindowsProcessDumpTest, TheDumpHelpersRefuseNoFolderAndAHandleThatCannotBeRead)
+{
+    const DumpFolder folder;
+    // This process, through a handle that can only be waited on: its name, memory and private bytes
+    // are all unreadable through it.
+    const Windows::UniqueHandle waitOnly(OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId()));
+    ASSERT_TRUE(waitOnly);
+
+    EXPECT_FALSE(Windows::freeBytesInFolder({}).has_value());
+    EXPECT_FALSE(Windows::processPrivateBytes(waitOnly.get()).has_value());
+
+    const auto pid = static_cast<std::int32_t>(GetCurrentProcessId());
+    ProcessDumpResult result = Windows::writeProcessDump(waitOnly.get(), pid, {}, std::stop_token{}, {});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), "No folder was given to write the dump file in");
+
+    // The file is named without the image name it couldn't read, and the cancel already requested
+    // deletes it: nothing is left in the folder.
+    std::stop_source stop;
+    stop.request_stop();
+    result = Windows::writeProcessDump(waitOnly.get(), pid, folder.path(), stop.get_token(), {});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(result.error().starts_with("Cancelled")) << result.error();
+    EXPECT_TRUE(folder.empty());
 }
 
 } // namespace Platform

@@ -1,6 +1,7 @@
 /// @file test_WindowsServiceProbe.cpp
 /// @brief Smoke test of the real WindowsServiceProbe (#800): the list holds a service every Windows
-/// install runs, with its configuration read (start type, command line, account). Skipped where the
+/// install runs, with its configuration read (start type, command line, account), cached, and read
+/// again once the cache is dropped. Skipped where the
 /// Service Control Manager can't be opened or listed.
 
 #include "Platform/IServiceProbe.h"
@@ -61,6 +62,17 @@ TEST(WindowsServiceProbeTest, EnumeratesEventLogWithItsConfiguration)
     ASSERT_NE(eventLogAgain, nullptr);
     EXPECT_EQ(eventLogAgain->binaryPath, eventLog->binaryPath);
     EXPECT_EQ(eventLogAgain->startType, eventLog->startType);
+
+    // After a service action the cache is dropped (#1577), and the next call reads the configuration
+    // afresh: the same, as nothing changed it.
+    probe.forgetCachedConfig();
+    const auto reread = probe.enumerate();
+    ASSERT_TRUE(reread.ok);
+    const ServiceInfo* eventLogReread = findEventLog(reread.services);
+    ASSERT_NE(eventLogReread, nullptr);
+    EXPECT_EQ(eventLogReread->binaryPath, eventLog->binaryPath);
+    EXPECT_EQ(eventLogReread->startType, eventLog->startType);
+    EXPECT_EQ(eventLogReread->account, eventLog->account);
 }
 
 } // namespace

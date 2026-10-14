@@ -168,9 +168,26 @@ TEST(WindowsCrashEventsTest, Helpers)
     EXPECT_EQ(parseSystemTime("1970-01-02T00:00:00Z"), 86'400U);
     EXPECT_EQ(parseSystemTime("2026-02-30T00:00:00Z"), 0U);
     EXPECT_EQ(parseSystemTime("2026-10-01"), 0U);
+    EXPECT_EQ(parseSystemTime("2026-1x-01T00:00:00Z"), 0U); // a field that isn't all digits
     const std::string xpath = crashQueryXPath(CRASH_HISTORY_DAYS);
     EXPECT_NE(xpath.find("EventID=1000 or EventID=1002"), std::string::npos);
     EXPECT_NE(xpath.find("timediff(@SystemTime) <= 1209600000"), std::string::npos); // 14 days in ms
+}
+
+TEST(WindowsCrashEventsTest, TagsAndAttributesAsXmlAllowsThem)
+{
+    using namespace WindowsCrashEvents;
+    // A start tag cut off before its '>' is no tag.
+    EXPECT_FALSE(findTag("<Event><Data Name='x'", "Data").has_value());
+    EXPECT_FALSE(findTag("<Data", "Data").has_value());
+
+    // Spaces either side of '=' are allowed.
+    EXPECT_EQ(tagAttribute("<Data Name = 'App'>", "Name"), std::optional<std::string>("App"));
+    // A match inside a longer attribute's name isn't the attribute; the real one after it is.
+    EXPECT_EQ(tagAttribute("<Data xName='no' Name=\"yes\">", "Name"), std::optional<std::string>("yes"));
+    // An unquoted or unterminated value is no value.
+    EXPECT_FALSE(tagAttribute("<Data Name=App>", "Name").has_value());
+    EXPECT_FALSE(tagAttribute("<Data Name='App>", "Name").has_value());
 }
 
 /// The fake table's state: the open error (0 opens) and the events it yields, newest first.
