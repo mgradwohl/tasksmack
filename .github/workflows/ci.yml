@@ -125,11 +125,17 @@ jobs:
             echo "windows_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Linux debug build and test, plus the Linux clang-tidy run (#2047), the same way as Windows
+  # below: clang-tidy runs after the tests on the tree this job configured, so it reuses its LLVM
+  # setup, configure and generated headers instead of a separate job doing them all again. PRs
+  # check changed files only, the nightly schedule and manual runs everything, and push to main
+  # never (the PR already checked the same tree). The nightly only runs clang-tidy here (no
+  # build). "CI Success" gates on the tidy-outcome output; skipped for docs-only and Windows-only
+  # changes, whose Linux file selection would be empty anyway.
   build-linux-debug:
     needs: [detect-docs-only]
     if: >-
       (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      github.event_name != 'schedule' &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -138,11 +144,13 @@ jobs:
     with:
       os: ubuntu-24.04
       build_type: debug
+      build: ${{ github.event_name != 'schedule' }}
+      clang_tidy: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
 
   # Release differs from Debug in NDEBUG paths, IPO/LTO, hardening flags and -Werror at -O3, so
   # it is built and tested on every event that builds Debug (and on the weekly schedule), not just
-  # at release time (#1134). Linux only on PRs: it runs in parallel with the longer Windows debug
-  # and static-analysis jobs, so it adds runner minutes but no wall-clock time. It also builds
+  # at release time (#1134). Linux only on PRs: it runs in parallel with the debug jobs (each with
+  # its clang-tidy run), so it adds runner minutes but little or no wall-clock time. It also builds
   # the benchmark target (build only), the one PR job that does.
   build-linux-release:
     needs: [detect-docs-only]
@@ -221,124 +229,7 @@ jobs:
       - name: Audit markdown links
         run: ./tools/md-link-audit.sh
 
-  static-analysis:
-    needs: [detect-docs-only]
-    # Runs on pull_request (the PR gate -- #833; changed files only, see "Select files") plus the
-    # nightly schedule and workflow_dispatch (all files), skipping docs-only changes. Never on push
-    # to main: the PR already checked the same merge tree, and the nightly full run catches
-    # anything a file-scoped PR check could miss (#1406).
-    if: >-
-      (github.event_name != 'pull_request' || needs.detect-docs-only.outputs.docs_only != 'true') &&
-      (github.event_name != 'push' || github.ref != 'refs/heads/main')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # The PR merge commit plus its first parent (the base), for the changed-file diff.
-          fetch-depth: 2
-
-      # On a PR, check only the translation units the change can affect (#1406): changed src/ .cpp
-      # files plus every .cpp that includes a changed src/ header, or everything when the tidy
-      # config, tidy scripts, CMake files or this workflow changed (tools/tidy-changed-files.py).
-      # The nightly schedule and manual runs analyze every file.
-      - name: Select files to analyze
-        id: select
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
-            echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          python3 -I -X utf8 tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform linux > tidy-files.txt
-          # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
-          sed -i 's/\r$//' tidy-files.txt
-          if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
-            echo "mode=all" >> "$GITHUB_OUTPUT"
-          elif [[ ! -s tidy-files.txt ]]; then
-            echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "No translation unit affected by this change; clang-tidy skipped." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "mode=list" >> "$GITHUB_OUTPUT"
-            { echo "clang-tidy on $(wc -l < tidy-files.txt) changed/affected file(s):"; echo '```'; cat tidy-files.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Setup LLVM
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/setup-llvm
-        with:
-          llvm-version: ${{ env.LLVM_VERSION }}
-          install-clang-tidy: 'true'
-          # No ccache in the tidy jobs (#1406): clang-tidy doesn't compile through it.
-          install-ccache: 'false'
-
-      - name: Setup Python for GLAD
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/setup-python-glad
-
-      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
-      - name: Restore FetchContent dependencies
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/fetchcontent-cache
-        with:
-          mode: restore
-
-      - name: Configure
-        if: steps.select.outputs.mode != 'none'
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
-
-      - name: Build GLAD
-        if: steps.select.outputs.mode != 'none'
-        run: cmake --build --preset debug --target glad_gl_core_33
-
-      # Per-file result cache (#1785): a file that passed before with identical inputs (its
-      # includes, flags, config, clang-tidy build) is skipped. Sunday's full run starts empty, a
-      # weekly ground truth that re-seeds the cache.
-      - name: Restore clang-tidy results
-        id: tidy-cache
-        if: steps.select.outputs.mode != 'none'
-        uses: ./.github/actions/tidy-result-cache
-        with:
-          mode: restore
-          fresh: ${{ github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0' }}
-
-      - name: Run clang-tidy
-        if: steps.select.outputs.mode != 'none'
-        shell: bash
-        env:
-          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
-        run: |
-          files=()
-          if [[ "${{ steps.select.outputs.mode }}" == 'list' ]]; then
-            mapfile -t files < tidy-files.txt
-          fi
-          ./tools/clang-tidy.sh --cache-dir "$RESULT_CACHE" debug "${files[@]}" 2>&1 | tee clang-tidy-output.txt
-          test "${PIPESTATUS[0]}" -eq 0
-
-      - name: Summarize clang-tidy findings
-        if: always() && steps.select.outputs.mode != 'none'
-        shell: bash
-        run: python3 -I -X utf8 tools/tidy-findings.py clang-tidy-output.txt --title 'clang-tidy findings (Linux)' >> "$GITHUB_STEP_SUMMARY"
-
-      # Clean results are valid whether or not other files failed, so save after a failure too.
-      # Never from a pull request (#1554).
-      - name: Save clang-tidy results
-        if: always() && steps.tidy-cache.outcome == 'success' && github.event_name != 'pull_request'
-        uses: ./.github/actions/tidy-result-cache
-        with:
-          mode: save
-
-      - name: Upload clang-tidy results
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: clang-tidy-results
-          path: clang-tidy-output.txt
-          if-no-files-found: ignore
-          retention-days: 5
-
-  # Blocking clang-tidy for Windows-only code (#1233). The Linux job above can't see
+  # Blocking clang-tidy for Windows-only code (#1233). The Linux run in build-linux-debug can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
   # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job
   # only reports its result, under the name the "Main Builds" ruleset requires. Same event rules
@@ -642,7 +533,6 @@ jobs:
       - build-windows-release
       - build-linux-unity
       - docs-hygiene
-      - static-analysis
       - static-analysis-windows
       - asan-ubsan
     runs-on: ubuntu-24.04
@@ -691,7 +581,9 @@ jobs:
           WINDOWS_RELEASE_RESULT: ${{ needs.build-windows-release.result }}
           LINUX_UNITY_RESULT:     ${{ needs.build-linux-unity.result }}
           DOCS_RESULT:    ${{ needs.docs-hygiene.result }}
-          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.result }}
+          LINUX_TIDY_MODE:    ${{ needs.build-linux-debug.outputs.tidy-mode }}
+          LINUX_TIDY_OUTCOME: ${{ needs.build-linux-debug.outputs.tidy-outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           STATIC_ANALYSIS_WINDOWS_RESULT: ${{ needs.static-analysis-windows.result }}
           ASAN_UBSAN_RESULT: ${{ needs.asan-ubsan.result }}
         run: |
@@ -745,13 +637,29 @@ jobs:
             fi
           fi
 
-          # static-analysis is skipped on push to main specifically (static-analysis.yml
-          # already covers that) and on docs-only PRs (both intentional); require success
-          # everywhere else.
+          # clang-tidy (Linux) runs inside build-linux-debug (#2047) on every event but push to
+          # main (the PR already checked the same tree; the nightly runs every file). Its step is
+          # continue-on-error, so the job result can't show a finding: read the step's outcome.
+          # Like the job, it skips docs-only and Windows-only changes; a selection with no
+          # translation unit ('none') passes. Anything else -- a finding, or a tidy step that
+          # never ran because the job failed or was cancelled first -- fails the gate.
           if [[ "$EVENT_NAME" != 'push' || "$REF" != 'refs/heads/main' ]]; then
-            if [[ "$STATIC_ANALYSIS_RESULT" != 'success' &&
-                  ! ("$STATIC_ANALYSIS_RESULT" == 'skipped' && "$DOCS_ONLY" == 'true') ]]; then
-              echo "❌ Static analysis (clang-tidy) did not succeed or have an intentional skip: $STATIC_ANALYSIS_RESULT"
+            if [[ "$LINUX_RESULT" == 'skipped' && ("$DOCS_ONLY" == 'true' || "$WINDOWS_ONLY" == 'true') ]]; then
+              echo "✅ clang-tidy (Linux) skipped: no Linux-relevant change."
+            elif [[ "$LINUX_TIDY_OUTCOME" == 'success' ]]; then
+              echo "✅ clang-tidy (Linux) passed (${LINUX_TIDY_MODE} files)."
+            elif [[ "$LINUX_TIDY_MODE" == 'none' ]]; then
+              echo "✅ No translation unit affected by this change; clang-tidy (Linux) skipped."
+            else
+              if [[ "$LINUX_TIDY_OUTCOME" == 'failure' ]]; then
+                msg="clang-tidy (Linux) found problems: see the \"Run clang-tidy (Linux)\" step of build-linux-debug / Build & Test (ubuntu-24.04 debug), and its job summary, ${RUN_URL}"
+              else
+                msg="clang-tidy (Linux) did not run (build-linux-debug: ${LINUX_RESULT:-not run}, clang-tidy step: ${LINUX_TIDY_OUTCOME:-not reached}); see ${RUN_URL}"
+              fi
+              echo "::error title=clang-tidy (Linux)::${msg}"
+              echo "## clang-tidy (Linux)" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ ${msg}" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ ${msg}"
               failed=true
             fi
             # The Windows job is also skipped, intentionally, when every change is Linux-only.

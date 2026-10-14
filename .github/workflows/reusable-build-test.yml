@@ -37,9 +37,10 @@ on:
         default: true
       clang_tidy:
         description: >-
-          Windows debug only: also run clang-tidy (tools/clang-tidy.ps1) on the configured tree,
-          after the tests, and report its result in the tidy-outcome output. A failure doesn't fail
-          this job; ci.yml's "Static Analysis (Windows)" job reports it (#1875)
+          Debug only: also run clang-tidy (tools/clang-tidy.sh on Linux, tools/clang-tidy.ps1 on
+          Windows) on the configured tree, after the tests, and report its result in the
+          tidy-outcome output. A failure doesn't fail this job; ci.yml's "CI Success" (Linux, #2047)
+          and "Static Analysis (Windows)" (#1875) jobs report it
         required: false
         type: boolean
         default: false
@@ -66,7 +67,8 @@ jobs:
       checks: write
     outputs:
       tidy-mode: ${{ steps.select.outputs.mode }}
-      tidy-outcome: ${{ steps.tidy.outcome }}
+      # One clang-tidy step per OS; the other OS's step always reports 'skipped'.
+      tidy-outcome: ${{ runner.os == 'Windows' && steps.tidy.outcome || steps.tidy-linux.outcome }}
     env:
       # See the Configure steps: PCH stays on only for the weekly unity build.
       PCH: ${{ inputs.build_type == 'unity' && 'ON' || 'OFF' }}
@@ -104,7 +106,7 @@ jobs:
           if [[ "${{ github.event_name }}" != 'pull_request' ]]; then
             echo "mode=all" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          python -I -X utf8 tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform windows > tidy-files.txt
+          python -I -X utf8 tools/tidy-changed-files.py --base HEAD^1 --head HEAD --platform ${{ runner.os == 'Windows' && 'windows' || 'linux' }} > tidy-files.txt
           # Strip CR in case a Windows Python wrote CRLF (the selector writes LF, belt and braces).
           sed -i 's/\r$//' tidy-files.txt
           if [[ "$(head -n1 tidy-files.txt)" == 'ALL' ]]; then
@@ -122,7 +124,8 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ inputs.llvm-version }}
-          generate-test-locales: 'true'
+          install-clang-tidy: ${{ inputs.clang_tidy && 'true' || 'false' }}
+          generate-test-locales: ${{ inputs.build && 'true' || 'false' }}
 
       - name: Setup Windows LLVM
         if: runner.os == 'Windows'
@@ -175,9 +178,12 @@ jobs:
       # every build was effectively cold. The presets keep PCH on for local builds, and the weekly
       # unity build and release.yml still build with PCH on. PCH off is also the stricter build:
       # a missing #include that the PCH would have supplied fails here.
+      # Without a build (the nightly clang-tidy-only run) there is no ccache to use. The launcher
+      # isn't part of compile_commands.json, so clang-tidy sees the same commands either way.
       - name: Configure (Linux)
+        id: configure-linux
         if: runner.os == 'Linux'
-        run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }}
+        run: cmake --preset ${{ inputs.build_type }} -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_ENABLE_CCACHE=${{ inputs.build && 'ON' || 'OFF' }}
 
       # Windows only: SDL3's ~180 configure checks cost 110-130 s there (~20 s on Linux). Preload
       # the results of an earlier configure with the same toolchain, image and CMake inputs (#1406).
@@ -328,17 +334,24 @@ jobs:
           fail-on-error: false
           fail-on-empty: false
 
-      # -- clang-tidy (Windows) --------------------------------------------------------------------
-      # This was its own "Static Analysis (Windows)" job, which restored LLVM, Python and the
-      # FetchContent sources and configured the same win-debug tree a second time per PR head
-      # (#1875). It now analyzes the tree configured above, after the tests, and runs whether or
-      # not the build or tests passed, as the separate job did. A tidy failure doesn't fail this
-      # job (continue-on-error); ci.yml's "Static Analysis (Windows)" job turns the outcome into
-      # the required check of that name.
+      # -- clang-tidy ------------------------------------------------------------------------------
+      # Each OS's debug job runs clang-tidy over the tree it configured above, after the tests, and
+      # whether or not the build or tests passed. These were separate jobs ("static-analysis" on
+      # Linux, "Static Analysis (Windows)") that set up LLVM, Python and the FetchContent sources
+      # and configured the same debug tree a second time per PR head (#1875 Windows, #2047 Linux).
+      # A tidy failure doesn't fail this job (continue-on-error), so the build check stays about the
+      # build; ci.yml gates on the tidy-outcome output: "CI Success" for Linux, and "Static
+      # Analysis (Windows)", the required check of that name, for Windows.
 
       # A full build already built it; the nightly clang-tidy-only run builds just the generated
       # GL loader the sources include.
-      - name: Build GLAD for clang-tidy
+      - name: Build GLAD for clang-tidy (Linux)
+        if: >-
+          !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
+          steps.configure-linux.outcome == 'success'
+        run: cmake --build --preset ${{ inputs.build_type }} --target glad_gl_core_33
+
+      - name: Build GLAD for clang-tidy (Windows)
         if: >-
           !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
           steps.configure-windows.outcome == 'success'
@@ -354,11 +367,34 @@ jobs:
         id: tidy-cache
         if: >-
           !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
-          steps.configure-windows.outcome == 'success'
+          (steps.configure-linux.outcome == 'success' || steps.configure-windows.outcome == 'success')
         uses: ./.github/actions/tidy-result-cache
         with:
           mode: restore
           fresh: ${{ github.event_name == 'schedule' && github.event.schedule == '0 9 * * 0' }}
+
+      - name: Run clang-tidy (Linux)
+        id: tidy-linux
+        if: >-
+          !cancelled() && inputs.clang_tidy && steps.select.outputs.mode != 'none' &&
+          steps.configure-linux.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          RESULT_CACHE: ${{ steps.tidy-cache.outputs.cache-dir }}
+          TIDY_MODE: ${{ steps.select.outputs.mode }}
+        run: |
+          files=()
+          if [[ "$TIDY_MODE" == 'list' ]]; then
+            mapfile -t files < tidy-files.txt
+          fi
+          ./tools/clang-tidy.sh --cache-dir "$RESULT_CACHE" ${{ inputs.build_type }} "${files[@]}" 2>&1 | tee clang-tidy-output.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Summarize clang-tidy findings (Linux)
+        if: always() && (steps.tidy-linux.outcome == 'success' || steps.tidy-linux.outcome == 'failure')
+        shell: bash
+        run: python -I -X utf8 tools/tidy-findings.py clang-tidy-output.txt --title 'clang-tidy findings (Linux)' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run clang-tidy (Windows)
         id: tidy
@@ -394,8 +430,17 @@ jobs:
         with:
           mode: save
 
+      - name: Upload clang-tidy results (Linux)
+        if: always() && inputs.clang_tidy && runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: clang-tidy-results
+          path: clang-tidy-output.txt
+          if-no-files-found: ignore
+          retention-days: 5
+
       - name: Upload clang-tidy results (Windows)
-        if: always() && inputs.clang_tidy
+        if: always() && inputs.clang_tidy && runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: clang-tidy-results-windows

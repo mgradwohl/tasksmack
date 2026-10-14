@@ -51,8 +51,11 @@ jobs:
         with:
           mode: restore
 
+      # No ccache in the tidy jobs (#1406). PCH off matches ci.yml's Linux debug build, whose tree
+      # its clang-tidy run analyzes (#2047), so both compute the same per-file result-cache keys
+      # from the same compile commands.
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF
 
       - name: Build GLAD
         run: cmake --build --preset debug --target glad_gl_core_33
@@ -94,7 +97,8 @@ jobs:
 
   # Windows-only code (src/Platform/Windows/, the _WIN32 branches of shared files). Blocking,
   # like the Linux job. ci.yml runs the same analysis inside its Windows debug job on pull requests
-  # and nightly, and gates CI Success on it (#1233, #1875); this one is the manual full run.
+  # and nightly, and gates CI Success on it (#1233, #1875), as it does the Linux analysis inside
+  # its Linux debug job (#2047); these are the manual full runs.
   static-analysis-windows:
     name: Static Analysis (Windows)
     runs-on: windows-2025

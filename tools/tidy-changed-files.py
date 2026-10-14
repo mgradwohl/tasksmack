@@ -6,8 +6,9 @@ Usage:
     tools/tidy-changed-files.py --base <commit> --platform linux|windows [--head <commit>]
 
 Prints either the single word ALL (run the full analysis) or the repo-relative src/**/*.cpp files
-to analyze, one per line (possibly none). Used by ci.yml's pull-request clang-tidy jobs (#1406);
-the nightly CI run still analyzes every file.
+to analyze, one per line (possibly none). Used by the pull-request clang-tidy runs inside ci.yml's
+Linux and Windows debug jobs (reusable-build-test.yml; #1406, #1875, #2047); the nightly CI run
+still analyzes every file.
 
 A full run is required when anything that changes how *every* file is analyzed changed: the
 clang-tidy config, the tidy scripts, CMake files/presets (compile flags), this script, ci.yml or
@@ -46,7 +47,7 @@ FULL_RUN_PATTERNS = (
     # The per-file result cache (#1785): a change to how keys are made must run (and re-key) every file.
     re.compile(r"^tools/tidy-cache\.py$"),
     re.compile(r"^\.github/actions/tidy-result-cache/"),
-    # ci.yml, and reusable-build-test.yml, which configures the tree the Windows tidy run analyzes (#1875).
+    # ci.yml, and reusable-build-test.yml, which configures the tree both tidy runs analyze (#1875, #2047).
     re.compile(r"^\.github/workflows/(ci|reusable-build-test)\.yml$"),
     # The tidy jobs' toolchain: the LLVM/clang-tidy and GLAD setup actions and the GLAD generator's
     # pinned requirements. A PR that changes only these must still exercise them.
