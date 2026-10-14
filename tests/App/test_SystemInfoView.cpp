@@ -635,7 +635,8 @@ TEST(SystemInfoSectionsTest, BootWithAnInitramfsListsTheInitrdPhase)
     boot.initrdUs = 750'000;
     boot.userspaceUs = 2'000'000;
     boot.totalUs = 3'750'000;
-    const Row* initrd = findRow(SystemInfo::buildBootPerformanceSection(boot), "Initrd");
+    const Section section = SystemInfo::buildBootPerformanceSection(boot); // findRow points into it
+    const Row* initrd = findRow(section, "Initrd");
     ASSERT_NE(initrd, nullptr);
     EXPECT_EQ(initrd->value, "750 ms");
 }
