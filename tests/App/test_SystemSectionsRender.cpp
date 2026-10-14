@@ -974,6 +974,44 @@ TEST_F(SystemSectionsRenderTest, NetworkSelectionOfAVanishedInterfaceResetsToTot
     EXPECT_EQ(plots[0], (SeriesLabels{"Sent", "Received"}));
 }
 
+TEST_F(SystemSectionsRenderTest, NetworkInterfaceWithoutALinkSpeedSaysItsLinkIsUnknown)
+{
+    // A virtual or Bluetooth link reports no speed: "Unknown" beside the selector, not "0 bit/s".
+    NetworkInputs inputs;
+    inputs.publication.snapshot.networkInterfaces[0].linkSpeedMbps = 0;
+    inputs.selected = "eth0";
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_NE(text.find("Link: Unknown"), std::string::npos) << text;
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkShowAllListsTheLoopbackInterface)
+{
+    // Loopback is hidden by default; "Show all" lists it (drawn with the house icon, muted).
+    NetworkInputs inputs;
+    auto loopback = interfaceSample("lo", 0.0, 0.0);
+    loopback.linkSpeedMbps = 0;
+    inputs.publication.snapshot.networkInterfaces.push_back(loopback);
+    inputs.showAll = true;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_NE(text.find(ICON_FA_HOUSE), std::string::npos) << text;
+    EXPECT_NE(text.find("lo"), std::string::npos) << text;
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkWithoutSmoothingStateStillDraws)
+{
+    // A context without the smoothed-rate slots (an embedder that keeps none): the section is drawn,
+    // the bars simply aren't eased.
+    NetworkInputs inputs;
+    inputs.ctx.smoothedNetSentBytesPerSec = nullptr;
+    inputs.ctx.smoothedNetRecvBytesPerSec = nullptr;
+    inputs.ctx.smoothedNetInitialized = nullptr;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_NE(text.find("Interface Status"), std::string::npos) << text;
+}
+
 TEST_F(SystemSectionsRenderTest, NetworkCacheRebuildsForANewPublicationAndShowAll)
 {
     NetworkInputs inputs;
