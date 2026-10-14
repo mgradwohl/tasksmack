@@ -19,6 +19,7 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#include <algorithm>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -445,6 +446,49 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewDrawsNothingWithoutHistory)
     ProcessDetailsCharts charts;
     renderOverview(charts, inputs.ctx);
     EXPECT_TRUE(plotsDrawn().empty());
+}
+
+// #1891: a chart card cut off by the bottom of the pane: its header shows but its plot is culled
+// (ImPlot's BeginPlot fails), so the chart is skipped. Sliding the charts down a few pixels a frame
+// cuts each card in turn, on the Overview (Power included) and the Network and I/O tab; a chart is
+// either drawn whole, with the series a full render draws, or not plotted at all.
+TEST_F(ProcessDetailsChartsRenderTest, ChartsCutOffByTheBottomOfThePaneAreSkippedWhole)
+{
+    ChartInputs inputs(busyPoint);
+    inputs.ctx.hasPowerUsage = true;
+    ProcessDetailsCharts charts;
+    UI::Widgets::PlotFillState fillState;
+    const auto renderBoth = [&](float offset)
+    {
+        runFrame(
+            [&]
+            {
+                ImGui::Dummy(ImVec2(1.0F, offset));
+                UI::Widgets::FillPlotLayout fill(fillState);
+                const UI::Widgets::AlignedChartStack alignedCharts("##ProcOverviewCharts");
+                charts.renderOverviewCharts(inputs.ctx, fill);
+            });
+        runFrame(
+            [&]
+            {
+                ImGui::Dummy(ImVec2(1.0F, offset));
+                charts.renderNetworkTab(inputs.ctx);
+            });
+    };
+    renderBoth(1.0F);
+    renderBoth(1.0F);
+    const auto full = plotsDrawn();
+    ASSERT_EQ(full.size(), 6U); // CPU, Memory, Power, Resources; I/O, Network
+
+    for (int step = 0; static_cast<float>(step) * 6.0F < DISPLAY_HEIGHT; ++step)
+    {
+        const float offset = 1.0F + (static_cast<float>(step) * 6.0F);
+        renderBoth(offset);
+        for (const SeriesLabels& plot : plotsDrawn())
+        {
+            EXPECT_TRUE(plot.empty() || std::ranges::find(full, plot) != full.end()) << "at offset " << offset;
+        }
+    }
 }
 
 // #1891: without history the Network and I/O tab draws no chart either, as the Overview doesn't.
