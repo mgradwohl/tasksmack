@@ -62,6 +62,18 @@ TEST(PartitionTableTest, NamesCommonMbrTypes)
     EXPECT_EQ(mbrTypeName(0x8E), "Linux LVM");
     EXPECT_EQ(mbrTypeName(0xEE), "GPT protective");
     EXPECT_EQ(mbrTypeName(0xEF), "EFI System");
+    // The rest of the table, and the aliases that share a name (#1891).
+    EXPECT_EQ(mbrTypeName(0x01), "FAT12");
+    for (const std::uint8_t fat16 : {std::uint8_t{0x04}, std::uint8_t{0x06}, std::uint8_t{0x0E}})
+    {
+        EXPECT_EQ(mbrTypeName(fat16), "FAT16") << mbrTypeId(fat16);
+    }
+    EXPECT_EQ(mbrTypeName(0x05), "Extended");
+    EXPECT_EQ(mbrTypeName(0x0B), "FAT32");
+    EXPECT_EQ(mbrTypeName(0x85), "Linux extended");
+    EXPECT_EQ(mbrTypeName(0xA5), "FreeBSD");
+    EXPECT_EQ(mbrTypeName(0xAF), "Apple HFS+");
+    EXPECT_EQ(mbrTypeName(0xFD), "Linux RAID");
     EXPECT_EQ(mbrTypeName(0x00), ""); // an unused slot
     EXPECT_EQ(mbrTypeName(0x99), "");
     EXPECT_EQ(mbrTypeId(0x07), "0x07");

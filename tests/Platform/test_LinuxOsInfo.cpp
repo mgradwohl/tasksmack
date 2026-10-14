@@ -545,6 +545,10 @@ TEST(LinuxStorageTest, ParsesMountInfo)
     EXPECT_TRUE(LinuxStorage::parseMountInfo("").empty());
     EXPECT_TRUE(LinuxStorage::parseMountInfo("1 2 3:4 / / rw - ext4\n").empty()); // no source
     EXPECT_TRUE(LinuxStorage::parseMountInfo("- - - - - - - -\n").empty());       // a separator with one field after it
+    // A last line without its newline is still read (#1891).
+    const auto unterminated = LinuxStorage::parseMountInfo("36 35 8:1 / /mnt rw - ext4 /dev/sda1 rw");
+    ASSERT_EQ(unterminated.size(), 1U);
+    EXPECT_EQ(unterminated[0].source, "/dev/sda1");
 }
 
 TEST(LinuxStorageTest, ChoosesRealVolumesOncePerDevice)
@@ -576,10 +580,12 @@ TEST(LinuxStorageTest, ParsesUdevAndBusNames)
     EXPECT_EQ(LinuxStorage::udevProperty(UDEV, "ID_FS_LABEL"), "My Data");
     EXPECT_EQ(LinuxStorage::udevProperty(UDEV, "ID_SERIAL"), ""); // a prefix of a key isn't the key
     EXPECT_EQ(LinuxStorage::udevProperty("E:ID_BUS\n", "ID_BUS"), "");
+    EXPECT_EQ(LinuxStorage::udevProperty("E:ID_BUS=usb", "ID_BUS"), "usb"); // the last line, without its newline
     EXPECT_EQ(LinuxStorage::diskBus("nvme0n1", ""), "NVMe");
     EXPECT_EQ(LinuxStorage::diskBus("sda", "ata"), "SATA");
     EXPECT_EQ(LinuxStorage::diskBus("sdb", "usb"), "USB");
     EXPECT_EQ(LinuxStorage::diskBus("mmcblk0", ""), "MMC");
+    EXPECT_EQ(LinuxStorage::diskBus("vda", ""), "virtio");
     EXPECT_EQ(LinuxStorage::diskBus("sdc", ""), "");
     EXPECT_EQ(LinuxStorage::trimmed("  WDC WD20EZRZ   \n"), "WDC WD20EZRZ");
     EXPECT_EQ(LinuxStorage::trimmed(" \n"), "");
