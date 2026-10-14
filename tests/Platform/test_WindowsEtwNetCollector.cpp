@@ -37,6 +37,7 @@
 #include <map>
 #include <mutex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -106,12 +107,14 @@ struct Fake
 
     std::vector<FakeEvent> events; // Delivered by ProcessTrace before it waits
     ULONG processStatus = ERROR_SUCCESS;
+    bool processThrows = false; // ProcessTrace throws once released
 
     std::vector<ULONG64> stoppedIds;
     std::vector<std::wstring> stoppedNames;
     int queryCalls = 0;
     ULONG eventsLost = 0;
     int closeCalls = 0;
+    ULONG controlStatus = ERROR_SUCCESS; // What every ControlTrace returns
 
     std::vector<std::wstring> runningSessions; // What QueryAllTraces lists
     ULONG queryAllStatus = ERROR_SUCCESS;
@@ -176,7 +179,7 @@ ULONG WINAPI fakeControlTrace(ULONG64 traceId, LPCWSTR name, PEVENT_TRACE_PROPER
         ++fake().queryCalls;
     }
     properties->EventsLost = fake().eventsLost;
-    return ERROR_SUCCESS;
+    return fake().controlStatus;
 }
 
 ULONG WINAPI fakeEnableTraceEx2(ULONG64 traceId,
@@ -244,6 +247,10 @@ ULONG WINAPI fakeProcessTrace(ULONG64* handles, ULONG handleCount, LPFILETIME /*
     fake().delivered = true;
     fake().changed.notify_all();
     fake().changed.wait(lock, [] { return fake().released; });
+    if (fake().processThrows)
+    {
+        throw std::runtime_error("ProcessTrace failed");
+    }
     return fake().processStatus;
 }
 
@@ -344,11 +351,13 @@ class WindowsEtwNetCollectorTest : public ::testing::Test
         f.context = nullptr;
         f.events.clear();
         f.processStatus = ERROR_SUCCESS;
+        f.processThrows = false;
         f.stoppedIds.clear();
         f.stoppedNames.clear();
         f.queryCalls = 0;
         f.eventsLost = 0;
         f.closeCalls = 0;
+        f.controlStatus = ERROR_SUCCESS;
         f.runningSessions.clear();
         f.queryAllStatus = ERROR_SUCCESS;
         f.liveness.clear();
@@ -610,6 +619,54 @@ TEST_F(WindowsEtwNetCollectorTest, ASessionOfTheSameNameIsReplaced)
     ASSERT_TRUE(waitDelivered());
 }
 
+// --- Refused calls (#2039) ----------------------------------------------------------------------
+
+// Every ControlTrace refused: the sweep's stop by name, the lost-events query and the session's own
+// stop all fail, and the collector still starts, samples and stops. A session whose name isn't
+// ASCII is no TaskSmack's and is left alone.
+TEST_F(WindowsEtwNetCollectorTest, RefusedControlCallsAreSurvived)
+{
+    fake().controlStatus = ERROR_ACCESS_DENIED;
+    fake().runningSessions = {L"TaskSmack-UDP-200-1", L"TaskSmack-UDP-é-1"};
+    fake().liveness = {{200, OwnerLiveness::Gone}};
+    WindowsEtwNetCollector collector(fakeFunctions());
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    EXPECT_EQ(fake().stoppedNames, std::vector<std::wstring>{L"TaskSmack-UDP-200-1"});
+    ASSERT_TRUE(waitDelivered());
+    EXPECT_TRUE(collector.sample().empty());
+    EXPECT_EQ(fake().queryCalls, 1);
+
+    collector.stop();
+    EXPECT_EQ(fake().stoppedIds, std::vector<ULONG64>{SESSION_ID});
+    EXPECT_EQ(fake().closeCalls, 1);
+    EXPECT_TRUE(collector.sessionName().empty());
+}
+
+// A consumer that ends with an error, or throws, stops the delivery as a session ended from outside does.
+TEST_F(WindowsEtwNetCollectorTest, AConsumerThatFailsOrThrowsStopsDelivering)
+{
+    for (const bool throws : {false, true})
+    {
+        SCOPED_TRACE(throws ? "throws" : "fails");
+        fake().events = {udpEvent(EtwNet::UDP4_SEND_EVENT_ID, 10, 1)};
+        fake().processStatus = ERROR_INVALID_HANDLE;
+        fake().processThrows = throws;
+        WindowsEtwNetCollector collector(fakeFunctions());
+        ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+        ASSERT_TRUE(waitDelivered());
+        EXPECT_TRUE(collector.isDelivering());
+
+        release();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (collector.isDelivering() && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        EXPECT_FALSE(collector.isDelivering());
+        EXPECT_TRUE(collector.sample().empty());
+    }
+}
+
 // --- The real calls ---------------------------------------------------------------------------
 
 TEST(WindowsEtwNetCollectorSystemTest, TheRealFunctionsAreAllSet)
@@ -631,6 +688,39 @@ TEST(WindowsEtwNetCollectorSystemTest, TheRealFunctionsAreAllSet)
     EXPECT_NE(self.creationTime, 0U);
     EXPECT_EQ(fns.ownerLiveness(self), OwnerLiveness::Alive);
     EXPECT_EQ(fns.ownerLiveness(SessionOwner{.pid = self.pid, .creationTime = self.creationTime + 1}), OwnerLiveness::PidReused);
+}
+
+// The real elevation check reads this process's token, and the real liveness check finds PID 0 (the
+// Idle process, which OpenProcess refuses as an invalid parameter) gone, as it does a child of this
+// test that has exited while a handle to it is still held (#2039).
+TEST(WindowsEtwNetCollectorSystemTest, TheRealChecksAnswerForElevationAndGoneOwners)
+{
+    const WindowsEtwNetCollector::Functions fns = WindowsEtwNetCollector::systemFunctions();
+    ASSERT_NE(fns.isElevated, nullptr);
+    HANDLE token = nullptr;
+    ASSERT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token), FALSE);
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const BOOL read = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
+    CloseHandle(token);
+    ASSERT_NE(read, FALSE);
+    EXPECT_EQ(fns.isElevated(), elevation.TokenIsElevated != 0);
+
+    EXPECT_EQ(fns.ownerLiveness(SessionOwner{.pid = 0, .creationTime = 1}), OwnerLiveness::Gone);
+
+    std::wstring command(MAX_PATH, L'\0');
+    command.resize(GetSystemDirectoryW(command.data(), MAX_PATH));
+    ASSERT_FALSE(command.empty());
+    command = L"\"" + command + L"\\cmd.exe\" /c exit 0";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    ASSERT_NE(CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child),
+              FALSE);
+    CloseHandle(child.hThread);
+    EXPECT_EQ(WaitForSingleObject(child.hProcess, 30'000), WAIT_OBJECT_0);
+    EXPECT_EQ(fns.ownerLiveness(SessionOwner{.pid = child.dwProcessId, .creationTime = 1}), OwnerLiveness::Gone);
+    CloseHandle(child.hProcess);
 }
 
 } // namespace

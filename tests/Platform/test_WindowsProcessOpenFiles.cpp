@@ -3,7 +3,8 @@
 /// kernel32 calls: only the target's File handles listed, typed and named (disks only), the File type
 /// learned once, hang-prone access masks never touched, a handle that never answers abandoned under the
 /// timeout and skipped after, the count cap, a denied open, a reused PID, every handle duplicated with
-/// DUPLICATE_SAME_ACCESS and closed. Plus one read of this test process through the real calls.
+/// DUPLICATE_SAME_ACCESS and closed; long, NT-only and unnamable paths, failed calls and too many stuck namers.
+/// Plus one read of this test process through the real calls.
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -18,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <span>
 #include <string>
 #include <thread>
@@ -57,6 +59,14 @@ struct FakeSystem
     std::atomic<int> duplicates{0};
     std::atomic<int> closes{0};
     std::atomic<int> processOpens{0};
+    // Failures (#2039): each off unless set.
+    bool timesFail = false;        // GetProcessTimes
+    bool createFileFails = false;  // the NUL probe's CreateFile
+    LONG snapshotStatus = 0;       // NtQuerySystemInformation's failure status
+    ULONG snapshotNeeded = 0;      // a table that always needs this many bytes
+    ULONG_PTR refuseDuplicate = 0; // a handle DuplicateHandle refuses
+    ULONG_PTR throwOnName = 0;     // a handle whose name query throws
+    std::wstring ntPath;           // the VOLUME_NAME_NT answer when the DOS one fails
 };
 
 FakeSystem& fake()
@@ -114,6 +124,15 @@ LONG NTAPI fakeNtQuerySystemInformation(ULONG infoClass, PVOID buffer, ULONG byt
 {
     EXPECT_EQ(infoClass, SYSTEM_EXTENDED_HANDLE_INFORMATION);
     ++fake().snapshotCalls;
+    if (fake().snapshotStatus != 0)
+    {
+        return fake().snapshotStatus;
+    }
+    if (fake().snapshotNeeded != 0)
+    {
+        *needed = fake().snapshotNeeded;
+        return static_cast<LONG>(0xC0000004L);
+    }
     std::vector<SystemHandleEntry> entries;
     for (const FakeHandle& handle : fake().handles)
     {
@@ -159,6 +178,11 @@ BOOL WINAPI fakeCloseHandle(HANDLE /*handle*/)
 
 BOOL WINAPI fakeGetProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
 {
+    if (fake().timesFail)
+    {
+        SetLastError(ERROR_GEN_FAILURE);
+        return FALSE;
+    }
     creation->dwLowDateTime = static_cast<DWORD>(fake().creationTicks & 0xFFFFFFFFU);
     creation->dwHighDateTime = static_cast<DWORD>(fake().creationTicks >> 32U);
     return TRUE;
@@ -170,6 +194,10 @@ BOOL WINAPI fakeDuplicateHandle(HANDLE source, HANDLE handle, HANDLE target, LPH
     EXPECT_EQ(target, GetCurrentProcess());
     EXPECT_EQ(inherit, FALSE);
     EXPECT_EQ(options, static_cast<DWORD>(DUPLICATE_SAME_ACCESS)); // never DUPLICATE_CLOSE_SOURCE
+    if (reinterpret_cast<ULONG_PTR>(handle) == fake().refuseDuplicate)
+    {
+        return FALSE;
+    }
     ++fake().duplicates;
     *out = reinterpret_cast<HANDLE>(reinterpret_cast<ULONG_PTR>(handle) | DUPLICATE_BIT); // NOLINT(performance-no-int-to-ptr)
     return TRUE;
@@ -193,27 +221,44 @@ DWORD WINAPI fakeGetFileType(HANDLE handle)
     return found->fileType;
 }
 
+/// A handle's DOS path, or fake().ntPath when the NT form is asked for (only after the DOS one fails).
 DWORD WINAPI fakeGetFinalPathNameByHandle(HANDLE handle, LPWSTR buffer, DWORD size, DWORD flags)
 {
-    EXPECT_EQ(flags & VOLUME_NAME_NT, 0U); // the DOS form answers first in these fakes
     const FakeHandle* found = findDuplicate(handle);
-    if (found == nullptr || found->path.empty())
+    if (found != nullptr && found->value == fake().throwOnName)
+    {
+        throw std::bad_alloc();
+    }
+    std::wstring path;
+    if ((flags & VOLUME_NAME_NT) != 0)
+    {
+        path = fake().ntPath;
+    }
+    else if (found != nullptr)
+    {
+        path = found->path;
+    }
+    if (path.empty())
     {
         return 0;
     }
-    if (found->path.size() >= size)
+    if (path.size() >= size)
     {
-        return static_cast<DWORD>(found->path.size() + 1);
+        return static_cast<DWORD>(path.size() + 1);
     }
-    std::ranges::copy(found->path, buffer);
-    buffer[found->path.size()] = L'\0';
-    return static_cast<DWORD>(found->path.size());
+    std::ranges::copy(path, buffer);
+    buffer[path.size()] = L'\0';
+    return static_cast<DWORD>(path.size());
 }
 
 HANDLE WINAPI fakeCreateFile(
     LPCWSTR name, DWORD /*access*/, DWORD /*share*/, LPSECURITY_ATTRIBUTES /*sa*/, DWORD /*disp*/, DWORD /*flags*/, HANDLE /*tmpl*/)
 {
     EXPECT_STREQ(name, L"NUL");
+    if (fake().createFileFails)
+    {
+        return INVALID_HANDLE_VALUE;
+    }
     ++fake().createFileCalls;
     ++fake().processOpens;                       // closed like any other handle
     return reinterpret_cast<HANDLE>(NUL_HANDLE); // NOLINT(performance-no-int-to-ptr)
@@ -251,6 +296,13 @@ class WindowsProcessOpenFilesTest : public ::testing::Test
         fake().duplicates = 0;
         fake().closes = 0;
         fake().processOpens = 0;
+        fake().timesFail = false;
+        fake().createFileFails = false;
+        fake().snapshotStatus = 0;
+        fake().snapshotNeeded = 0;
+        fake().refuseDuplicate = 0;
+        fake().throwOnName = 0;
+        fake().ntPath.clear();
         fake().handles = {
             {.pid = SELF_PID,
              .value = NUL_HANDLE,
@@ -409,6 +461,93 @@ TEST_F(WindowsProcessOpenFilesTest, CapsTheCount)
     const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
     EXPECT_TRUE(result.truncated);
     EXPECT_EQ(result.files.size(), MAX_OPEN_FILES);
+}
+
+// A path longer than MAX_PATH is read again into a buffer that fits; a file without a DOS path
+// gets its NT device path; one with neither, a handle that can't be duplicated and one whose name
+// query throws are still listed, unnamed (#2039).
+TEST_F(WindowsProcessOpenFilesTest, LongNtAndUnnamablePathsAreAllListed)
+{
+    const std::wstring longPath = L"C:\\" + std::wstring(300, L'a');
+    fake().handles[1].path = L"\\\\?\\" + longPath; // 0x40
+    fake().handles[4].access = READ_WRITE_ACCESS;   // 0x4C: queried now
+    fake().handles[4].path.clear();                 // no DOS path
+    fake().ntPath = L"\\Device\\HarddiskVolume3\\nt.txt";
+    fake().refuseDuplicate = 0x48;
+    WindowsProcessOpenFilesReader reader(fakeApi());
+    OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
+    ASSERT_EQ(result.files.size(), 4U);
+    EXPECT_EQ(result.files[1].path, "C:\\" + std::string(300, 'a'));
+    EXPECT_EQ(result.files[2].kind, OpenFileKind::Other); // 0x48: not duplicated
+    EXPECT_EQ(result.files[3].path, "\\Device\\HarddiskVolume3\\nt.txt");
+
+    fake().ntPath.clear();
+    fake().throwOnName = 0x40; // named first: the rest are listed unnamed
+    result = reader.readOpenFiles(TARGET);
+    ASSERT_EQ(result.files.size(), 4U);
+    EXPECT_TRUE(std::ranges::all_of(result.files, [](const OpenFile& file) { return file.path.empty(); }));
+}
+
+TEST_F(WindowsProcessOpenFilesTest, FailedCallsFailTheRead)
+{
+    WindowsProcessOpenFilesReader reader(fakeApi());
+    EXPECT_EQ(reader.readOpenFiles({.pid = 0, .startTimeTicks = START_TICKS}).status, OpenFilesReadStatus::ProcessExited);
+    fake().openError = ERROR_GEN_FAILURE;
+    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    EXPECT_EQ(result.status, OpenFilesReadStatus::Failed);
+    EXPECT_FALSE(result.detail.empty()); // the system's message for the error
+    fake().openError = 0;
+    fake().timesFail = true;
+    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::Failed);
+    fake().timesFail = false;
+
+    // The File type can't be learned: no NUL handle, then no handle table.
+    fake().createFileFails = true;
+    EXPECT_EQ(reader.readOpenFiles(TARGET).detail, "Could not identify file handles");
+    fake().createFileFails = false;
+    fake().snapshotStatus = static_cast<LONG>(0xC0000022L); // STATUS_ACCESS_DENIED
+    EXPECT_EQ(reader.readOpenFiles(TARGET).detail, "Could not identify file handles");
+
+    // Learned, then the read's own table fails, or outgrows the cap.
+    fake().snapshotStatus = 0;
+    ASSERT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::Ok);
+    fake().snapshotStatus = static_cast<LONG>(0xC0000022L);
+    EXPECT_EQ(reader.readOpenFiles(TARGET).detail, "NtQuerySystemInformation failed (0xC0000022)");
+    fake().snapshotStatus = 0;
+    fake().snapshotNeeded = 600U << 20U;
+    EXPECT_EQ(reader.readOpenFiles(TARGET).detail, "The system handle table is too large to read");
+}
+
+// Once MAX_STUCK_NAMERS namers wait on handles that never answer, a read names nothing more: every
+// handle is listed unnamed and none is touched.
+TEST_F(WindowsProcessOpenFilesTest, TooManyStuckNamersListTheRestUnnamed)
+{
+    fake().handles.resize(1); // just the NUL probe
+    for (ULONG_PTR i = 0; i < 24; ++i)
+    {
+        fake().handles.push_back({.pid = TARGET.pid,
+                                  .value = 0x200 + (i * 4),
+                                  .typeIndex = FILE_TYPE_INDEX,
+                                  .access = READ_WRITE_ACCESS,
+                                  .fileType = FILE_TYPE_DISK,
+                                  .path = {},
+                                  .hangs = true});
+    }
+    WindowsProcessOpenFilesReader reader(fakeApi(), std::chrono::milliseconds(100));
+    // Each read gives up on the first handle not given up on before. A namer that had not started
+    // by then never touches it and finishes, so read until enough are left waiting.
+    for (int read = 0; read < 20 && reader.stuckNamerCount() < MAX_STUCK_NAMERS; ++read)
+    {
+        static_cast<void>(reader.readOpenFiles(TARGET));
+    }
+    ASSERT_EQ(reader.stuckNamerCount(), MAX_STUCK_NAMERS);
+    const int duplicatesBefore = fake().duplicates.load();
+    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    EXPECT_TRUE(result.namesIncomplete);
+    EXPECT_EQ(result.files.size(), 24U);
+    EXPECT_EQ(fake().duplicates.load(), duplicatesBefore);
+    releaseAndDrain(reader);
 }
 
 TEST(WindowsProcessOpenFilesSnapshotTest, ClampsACountLargerThanTheBuffer)

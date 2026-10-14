@@ -71,6 +71,8 @@ struct FakeDXGIState
     int generation = 0;
     int factoriesCreated = 0;
     bool failFactoryCreation = false;
+    // EnumAdapters1 succeeds at this index but hands back no adapter (a misbehaving driver stack).
+    std::optional<UINT> nullAdapterAt;
     // Kernel adapters opened, so a test can see a per-LUID decision being made again.
     int adapterOpens = 0;
     // Open kernel adapter handles: handle - 1 indexes this, giving the LUID it was opened for.
@@ -260,6 +262,11 @@ class FakeDXGIFactory final : public IDXGIFactory1
             *adapter = nullptr;
             return DXGI_ERROR_NOT_FOUND;
         }
+        if (dxgiState().nullAdapterAt == index)
+        {
+            *adapter = nullptr;
+            return S_OK;
+        }
         *adapter = new FakeDXGIAdapter(m_Adapters[index]);
         return S_OK;
     }
@@ -431,6 +438,12 @@ struct DXGIGPUProbeTestAccessor
     {
         probe.m_ListAccelerators = DXGIFake::listFakeAccelerators;
         probe.m_AcceleratorLuids.reset();
+    }
+
+    /// Makes the DXCore factory again, as a full rescan does: false once useFakes() unloaded dxcore.dll.
+    static bool createDXCoreFactory(DXGIGPUProbe& probe)
+    {
+        return probe.createDXCoreFactory();
     }
 };
 

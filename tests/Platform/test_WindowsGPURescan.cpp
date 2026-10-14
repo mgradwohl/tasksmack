@@ -202,6 +202,40 @@ TEST_F(WindowsGPURescanTest, AFailedFactoryReplacementKeepsTheOldFactoryAndRetri
     EXPECT_EQ(probe.enumerateGPUs().size(), 2U);
 }
 
+// Without a first factory the probe lists and reads nothing and reports no capabilities; a full
+// rescan that can make one then starts it, and without dxcore.dll no DXCore factory is made (#2039).
+TEST_F(WindowsGPURescanTest, WithoutAFactoryNothingIsListedUntilARescanMakesOne)
+{
+    setAdapters({intelIGPU()});
+    dxgiState().failFactoryCreation = true;
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    EXPECT_TRUE(probe.enumerateGPUs().empty());
+    EXPECT_TRUE(probe.readGPUCounters().empty());
+    EXPECT_TRUE(probe.enumerateAccelerators().empty());
+    EXPECT_FALSE(probe.capabilities().supportsMultiGPU);
+    EXPECT_FALSE(DXGIGPUProbeTestAccessor::createDXCoreFactory(probe));
+
+    dxgiState().failFactoryCreation = false;
+    EXPECT_TRUE(probe.rescanGPUs(GPURescan::Full));
+    EXPECT_EQ(probe.enumerateGPUs().size(), 1U);
+    EXPECT_TRUE(probe.capabilities().supportsMultiGPU);
+}
+
+// An adapter slot that enumerates without an adapter ends the walk: the adapters before it are
+// listed and read, none after it.
+TEST_F(WindowsGPURescanTest, AnEmptyAdapterSlotEndsTheWalk)
+{
+    setAdapters({intelIGPU(), nvidiaGPU(0x200, 0x01), nvidiaGPU(0x300, 0x02)});
+    dxgiState().nullAdapterAt = 1;
+    DXGIGPUProbe probe;
+    DXGIGPUProbeTestAccessor::useFakes(probe);
+    const auto gpus = probe.enumerateGPUs();
+    ASSERT_EQ(gpus.size(), 1U);
+    EXPECT_EQ(gpus[0].vendor, "Intel");
+    EXPECT_EQ(probe.readGPUCounters().size(), 1U);
+}
+
 // An adapter's id is its own, not its place in DXGI's list (#1317). Removing the adapter listed
 // first used to renumber the one after it ("GPU1" became "GPU0"), so its history and chart state
 // moved to the removed card's, and an adapter added later took the next free number. Now the
