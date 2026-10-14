@@ -2492,6 +2492,14 @@ TEST(DRMGPUProbeVramQueryTest, RefusesNonIntelDriversAndUnopenableNodes)
     EXPECT_FALSE(DRMGPUProbe::queryVramByIoctl("/nonexistent/dri/renderD999", "i915").has_value());
 }
 
+// #1891: a node that opens but rejects the DRM ioctl (/dev/null answers ENOTTY) gives "not known"
+// for both drivers' queries, as a kernel without the memory-region query would.
+TEST(DRMGPUProbeVramQueryTest, NodeRejectingTheQueryIoctlIsNotKnown)
+{
+    EXPECT_FALSE(DRMGPUProbe::queryVramByIoctl("/dev/null", "xe").has_value());
+    EXPECT_FALSE(DRMGPUProbe::queryVramByIoctl("/dev/null", "i915").has_value());
+}
+
 } // namespace
 } // namespace Platform
 
