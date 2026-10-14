@@ -665,6 +665,59 @@ TEST_F(ProcessDetailsPanelRenderTest, TheNpuTabAppearsOnlyWithAnAccelerator)
     EXPECT_FALSE(text.contains("NPU Usage")) << text;
 }
 
+TEST_F(ProcessDetailsPanelRenderTest, ARequestedGpuTabIsSelected)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(0.0, 10.0), sampleAt(1.0, 11.0)};
+    panel->updateWithSamples(samples, 1.0F);
+    panel->requestTab(SelectOverride::DetailsTab::Gpu);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    // The GPU tab: this process reported no GPU figures, so its empty state, not the Overview.
+    EXPECT_TRUE(text.contains("GPU")) << text;
+    EXPECT_FALSE(text.contains("Identity")) << text;
+    const std::vector<std::string> tabs = detailsTabLabels();
+    EXPECT_TRUE(std::ranges::any_of(tabs, [](const std::string& label) { return label.contains("GPU"); }));
+}
+
+TEST_F(ProcessDetailsPanelRenderTest, ReselectingTheShownProcessKeepsItsHistoryAndAReusedPidDoesNot)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(0.0, 10.0), sampleAt(1.0, 11.0)};
+    panel->updateWithSamples(samples, 1.0F);
+    ASSERT_NE(panel->displayedSnapshot(), nullptr);
+    const std::uint64_t version = panel->lastSampleVersion();
+    ASSERT_GT(version, 0U);
+
+    // The same process again (a click on its row): nothing is reset.
+    panel->setSelectedPid(PID, START_TICKS);
+    EXPECT_NE(panel->displayedSnapshot(), nullptr);
+    EXPECT_EQ(panel->lastSampleVersion(), version);
+
+    // The same PID with another start time is another process: a new selection.
+    panel->setSelectedPid(PID, START_TICKS + 1);
+    EXPECT_EQ(panel->displayedSnapshot(), nullptr);
+    EXPECT_EQ(panel->lastSampleVersion(), 0U);
+}
+
+TEST_F(ProcessDetailsPanelRenderTest, ThePanelWithoutTheOptionalReadersStillRenders)
+{
+    // The two-reader constructor: actions and environment, no connections, modules or security reader.
+    ProcessDetailsPanel panel(std::make_unique<TestMocks::MockProcessActions>(),
+                              std::make_unique<TestMocks::MockProcessEnvironmentReader>());
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(0.0, 10.0)};
+    panel.updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(panel));
+    const std::string text = renderAndCapture(panel);
+    EXPECT_TRUE(text.contains("Identity")) << text;
+    EXPECT_TRUE(text.contains("Environment")) << text;
+}
+
 TEST_F(ProcessDetailsPanelRenderTest, AProcessThatLeavesTheListIsReportedExited)
 {
     const auto panel = activePanel();
