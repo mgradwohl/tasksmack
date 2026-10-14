@@ -14,3 +14,10 @@
 # if a future dependency change routes a genuine race through the same function names.
 race:pthread_barrier_destroy
 race:pthread_barrier_wait
+
+# Mesa's llvmpipe (libgallium), the software GL driver CI's Xvfb display tests run on, is not
+# instrumented: its fence teardown on the main thread (inside a glTexImage2D the title bar's icon
+# upload makes) and its own worker threads' pthread_cond_broadcast on the same fence read to TSan as
+# a race (#2042). TSan matches "race:" against each frame's function, file and module name, so this
+# hides only reports with a libgallium frame on the stack; TaskSmack has no code in that module.
+race:libgallium
