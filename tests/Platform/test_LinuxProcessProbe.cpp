@@ -2269,6 +2269,37 @@ TEST(LinuxProcessProbeTest, AnUnreadableCommandLineIsTriedAgainNextSample)
     EXPECT_EQ(enumerateOne(probe, 4242).command, "app");
 }
 
+TEST(LinuxProcessProbeTest, ACommandLineTooLongToCacheIsReadEverySample)
+{
+    // #1891: a command line over the cache's 64 KiB cap is not kept, so a change to it is seen at once
+    // even within the TTL.
+    ScopedTempDir proc("ts_test_proc_cmdline_long");
+    const std::string longArg(std::size_t{70} * 1024, 'x');
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", longArg, "--first"}));
+
+    LinuxProcessProbe probe(proc.path);
+    probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
+    EXPECT_TRUE(enumerateOne(probe, 4242).command.ends_with(" --first"));
+
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", longArg, "--second"}));
+    EXPECT_TRUE(enumerateOne(probe, 4242).command.ends_with(" --second")) << "too long to cache: read again";
+}
+
+TEST(LinuxProcessProbeTest, ACommandLineThatFailsToReadIsNotAKernelThread)
+{
+    // #1891: a cmdline that opens but fails to read (here a directory: EISDIR) is treated like one that
+    // can't be opened -- the command stays empty and the process isn't shown as a [kernel thread].
+    ScopedTempDir proc("ts_test_proc_cmdline_read_error");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, std::nullopt);
+    std::filesystem::create_directory(proc.path / "4242" / "cmdline");
+
+    LinuxProcessProbe probe(proc.path);
+    const auto process = enumerateOne(probe, 4242);
+    EXPECT_EQ(process.pid, 4242);
+    EXPECT_EQ(process.name, "app");
+    EXPECT_EQ(process.command, "");
+}
+
 TEST(ProcFdScanTest, OnlyASocketLinkNamesASocketInode)
 {
     // #1426: the shared fd walk takes a socket's inode from its link target, as buildInodeToPidMap() did.
