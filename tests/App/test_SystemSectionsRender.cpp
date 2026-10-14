@@ -41,6 +41,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -152,6 +153,48 @@ class SystemSectionsRenderTest : public ::testing::Test
                 ImGui::LogFinish();
             });
         return captured;
+    }
+
+    /// The window drawn for the child named @p childId (a card's "##InterfaceStatusCard"): its screen
+    /// rectangle, or an empty one when there is none.
+    [[nodiscard]] static ImRect childRect(std::string_view childId)
+    {
+        for (const ImGuiWindow* window : GImGui->Windows)
+        {
+            if (window->ParentWindow != nullptr && std::string_view(window->Name).contains(childId))
+            {
+                return window->Rect();
+            }
+        }
+        return {};
+    }
+
+    /// Sweeps the mouse over @p region (rows a text line apart, columns @p columnStep apart), drawing
+    /// @p section at each point, until a tooltip shows text containing @p wanted -- for an item in a
+    /// table, which no ID can be found for headlessly. Whether one did.
+    [[nodiscard]] static bool
+    sweepForTooltip(const std::function<void()>& section, const ImRect& region, std::string_view wanted, float columnStep = 40.0F)
+    {
+        const float rowStep = ImGui::GetTextLineHeight() * 0.75F;
+        const int rows = static_cast<int>(region.GetHeight() / rowStep);
+        const int columns = static_cast<int>(region.GetWidth() / columnStep);
+        for (int row = 0; row < rows; ++row)
+        {
+            for (int column = 0; column < columns; ++column)
+            {
+                const float x = region.Min.x + 2.0F + (static_cast<float>(column) * columnStep);
+                const float y = region.Min.y + 2.0F + (static_cast<float>(row) * rowStep);
+                ImGui::GetIO().AddMousePosEvent(x, y);
+                runFrame(section);
+                const std::string captured = renderAndCapture(section);
+                const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+                if (tooltip != nullptr && tooltip->Active && captured.contains(wanted))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// Every plot ImPlot has seen in this context, each as the set of its series' legend labels.
@@ -1039,6 +1082,35 @@ TEST_F(SystemSectionsRenderTest, NetworkWithoutSmoothingStateStillDraws)
     runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
     const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
     EXPECT_NE(text.find("Interface Status"), std::string::npos) << text;
+}
+
+// #1891: the Interface Status table's hover tooltips, found by sweeping the mouse over the card.
+TEST_F(SystemSectionsRenderTest, NetworkStatusTableTooltipsShowOnHover)
+{
+    NetworkInputs inputs;
+    // eth0's received rate couldn't be taken yet (a muted dash, its reason on hover); a down interface
+    // makes "Show all (1)" appear, with its own tooltip.
+    inputs.publication.snapshot.networkInterfaces[0].rxRateStatus = Domain::InterfaceRateStatus::NotYetSampled;
+    auto down = interfaceSample("eth1", 0.0, 0.0);
+    down.isUp = false;
+    inputs.publication.snapshot.networkInterfaces.push_back(down);
+    const auto section = [&]
+    {
+        NetworkSection::renderNetworkSection(inputs.ctx);
+    };
+    runFrame(section);
+    runFrame(section);
+    const ImRect card = childRect("##InterfaceStatusCard");
+    ASSERT_GT(card.GetArea(), 0.0F);
+
+    // The speed column: the byte rate a 1 Gbit/s link carries at most.
+    EXPECT_TRUE(sweepForTooltip(section, card, "Up to " + UI::Format::formatLinkSpeedAsByteRate(1000)));
+    // The received cell's reason it has no reading.
+    const char* reason = NetInterfaceUtils::rateUnavailableReason(Domain::InterfaceRateStatus::NotYetSampled);
+    ASSERT_NE(reason, nullptr);
+    EXPECT_TRUE(sweepForTooltip(section, card, reason, /*columnStep=*/8.0F)); // a narrow dash: a finer sweep
+    // The Show all checkbox, in the card's heading row.
+    EXPECT_TRUE(sweepForTooltip(section, card, "Also list the 1 down, virtual and Bluetooth interfaces"));
 }
 
 TEST_F(SystemSectionsRenderTest, NetworkCacheRebuildsForANewPublicationAndShowAll)
