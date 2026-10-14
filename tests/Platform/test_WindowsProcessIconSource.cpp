@@ -267,9 +267,10 @@ TEST_F(WindowsProcessIconSourceTest, ReadsAnIconWithAlpha)
     api().bits[maskBitmap()] = pixels(4, 255, 255, 255, 0);
     const auto icon = m_Source.loadIcon("C:\\App\\app.exe", "app.exe", 16);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->width, 2);
-    EXPECT_EQ(icon->height, 2);
-    EXPECT_EQ(icon->rgba, pixels(4, 30, 20, 10, 200)); // RGBA, straight alpha kept
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.width, 2);
+    EXPECT_EQ(loaded.height, 2);
+    EXPECT_EQ(loaded.rgba, pixels(4, 30, 20, 10, 200)); // RGBA, straight alpha kept
     EXPECT_EQ(api().requestedSize, 16U);
     expectEverythingReleased(true);
 }
@@ -284,10 +285,11 @@ TEST_F(WindowsProcessIconSourceTest, TakesAnOldIconsAlphaFromItsMask)
 
     const auto icon = m_Source.loadIcon("C:\\App\\old.exe", "old.exe", 16);
     ASSERT_TRUE(icon.has_value());
+    const IconPixels loaded = icon.value_or(IconPixels{});
     std::vector<std::uint8_t> expected = pixels(2, 30, 20, 10, 255);
     const std::vector<std::uint8_t> hidden = pixels(2, 30, 20, 10, 0);
     expected.insert(expected.end(), hidden.begin(), hidden.end());
-    EXPECT_EQ(icon->rgba, expected);
+    EXPECT_EQ(loaded.rgba, expected);
     expectEverythingReleased(true);
 }
 
@@ -296,7 +298,8 @@ TEST_F(WindowsProcessIconSourceTest, AnUnreadableMaskLeavesAnOldIconOpaque)
     api().bits[colorBitmap()] = pixels(4, 10, 20, 30, 0); // The mask's GetDIBits fails
     const auto icon = m_Source.loadIcon("C:\\App\\old.exe", "old.exe", 16);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->rgba, pixels(4, 30, 20, 10, 255));
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.rgba, pixels(4, 30, 20, 10, 255));
     expectEverythingReleased(true);
 }
 
@@ -309,8 +312,9 @@ TEST_F(WindowsProcessIconSourceTest, ReadsAMonochromeIcon)
     api().bits[maskBitmap()] = mask;
     const auto icon = m_Source.loadIcon("C:\\App\\mono.exe", "mono.exe", 16);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->height, 2);
-    EXPECT_EQ(icon->rgba, pixels(4, 255, 255, 255, 255));
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.height, 2);
+    EXPECT_EQ(loaded.rgba, pixels(4, 255, 255, 255, 255));
     expectEverythingReleased(true);
 }
 

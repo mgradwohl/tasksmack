@@ -53,7 +53,7 @@ constexpr int CPU_WORK_INNER_LOOP = 10'000'000;
 
 TEST(WindowsProcessProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsProcessProbe probe; });
+    EXPECT_NO_THROW({ const WindowsProcessProbe probe; });
 }
 
 TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInvented)
@@ -79,7 +79,7 @@ TEST(WindowsProcessProbeTest, PowerAndSharedMemoryAreNotClaimedAndNoEnergyIsInve
 
 TEST(WindowsProcessProbeTest, CapabilitiesReportedCorrectly)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     const auto caps = probe.capabilities();
 
     EXPECT_TRUE(caps.hasUserSystemTime);
@@ -102,7 +102,7 @@ TEST(WindowsProcessProbeTest, ReducedPrivilegesIsConsistent)
     // hasReducedPrivileges should be false when EStats is available (admin) or when
     // EStats failed for a non-privilege reason (unsupported API). It should only be
     // true when non-admin AND EStats was specifically denied due to admin requirement.
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     const auto caps = probe.capabilities();
 
     // Network counters and reduced-privileges are mutually exclusive:
@@ -251,13 +251,13 @@ TEST(WindowsProcessProbeTest, NetworkFlagsStayConsistentAfterSampling)
 
 TEST(WindowsProcessProbeTest, TicksPerSecondMatchesFileTime)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     EXPECT_EQ(probe.ticksPerSecond(), 10'000'000L);
 }
 
 TEST(WindowsProcessProbeTest, TotalCpuTimeIsPositiveAndMonotonic)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
 
     const uint64_t time1 = probe.totalCpuTime();
     EXPECT_GT(time1, 0ULL);
@@ -275,7 +275,7 @@ TEST(WindowsProcessProbeTest, TotalCpuTimeIsPositiveAndMonotonic)
 
 TEST(WindowsProcessProbeTest, SystemTotalMemoryIsPositive)
 {
-    WindowsProcessProbe probe;
+    const WindowsProcessProbe probe;
     const uint64_t totalMem = probe.systemTotalMemory();
 
     EXPECT_GT(totalMem, 128ULL * 1024ULL * 1024ULL);
@@ -294,8 +294,8 @@ TEST(WindowsProcessProbeTest, EnumerateFindsOurOwnProcess)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
-    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
 
     ASSERT_NE(it, processes.end());
 
@@ -334,7 +334,7 @@ TEST(WindowsProcessProbeTest, ProcessNamesAreNonEmpty)
     int processesWithNames = 0;
     for (const auto& proc : processes)
     {
-        if (proc.name.size() > 0)
+        if (!proc.name.empty())
         {
             ++processesWithNames;
         }
@@ -522,11 +522,11 @@ TEST(WindowsProcessProbeTest, MultipleEnumerationsAreConsistent)
 TEST(WindowsProcessProbeTest, OwnProcessDataIsStable)
 {
     WindowsProcessProbe probe;
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
     auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
-        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -550,11 +550,11 @@ TEST(WindowsProcessProbeTest, OwnProcessDataIsStable)
 TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
 {
     WindowsProcessProbe probe;
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
     auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
-        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -588,11 +588,11 @@ TEST(WindowsProcessProbeTest, OwnProcessHasPerSampleCountersEverySample)
     // on every enumerate() call — these are no longer TTL-cached. Force deterministic
     // changes between samples and verify the very next snapshot reflects them.
     WindowsProcessProbe probe;
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
 
     auto findOurProcess = [ourPid](const std::vector<ProcessCounters>& processes)
     {
-        const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+        const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
         return it != processes.end() ? *it : ProcessCounters{};
     };
 
@@ -782,22 +782,22 @@ TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const auto idle = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    const auto idle = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 0; });
     ASSERT_NE(idle, processes.end());
     EXPECT_EQ(idle->name, "[System Process]");
 
-    const auto system = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    const auto system = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 4; });
     ASSERT_NE(system, processes.end());
     EXPECT_FALSE(system->name.empty());
 
     // A second sample must report identical names — the cached-name/fallback path
     // may not degrade or change once details refresh TTLs kick in.
     const auto second = probe.enumerate();
-    const auto idle2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 0; });
+    const auto idle2 = std::ranges::find_if(second, [](const ProcessCounters& p) { return p.pid == 0; });
     ASSERT_NE(idle2, second.end());
     EXPECT_EQ(idle2->name, idle->name);
 
-    const auto system2 = std::find_if(second.begin(), second.end(), [](const ProcessCounters& p) { return p.pid == 4; });
+    const auto system2 = std::ranges::find_if(second, [](const ProcessCounters& p) { return p.pid == 4; });
     ASSERT_NE(system2, second.end());
     EXPECT_EQ(system2->name, system->name);
 }
@@ -866,6 +866,7 @@ TEST(WindowsProcessProbeTest, ConcurrentEnumeration)
 
     // Start multiple threads enumerating concurrently
     std::vector<std::thread> threads;
+    threads.reserve(4);
     for (int i = 0; i < 4; ++i)
     {
         threads.emplace_back(enumerateTask);
@@ -898,8 +899,8 @@ TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
-    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
 
     ASSERT_NE(it, processes.end());
 
@@ -937,8 +938,8 @@ TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
     // (C:\Windows\System32\svchost.exe) carries a well-known Microsoft publisher string.
     // If the probe can open it and read version resources, the publisher must be
     // "Microsoft Corporation" — this verifies that VarFileInfo\Translation lookup works.
-    const auto svchostIt = std::find_if(
-        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.publisher.empty(); });
+    const auto svchostIt =
+        std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.publisher.empty(); });
 
     if (svchostIt != processes.end())
     {
@@ -949,7 +950,7 @@ TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
     else
     {
         // Fallback: at least one process should have a publisher
-        const auto anyIt = std::find_if(processes.begin(), processes.end(), [](const ProcessCounters& p) { return !p.publisher.empty(); });
+        const auto anyIt = std::ranges::find_if(processes, [](const ProcessCounters& p) { return !p.publisher.empty(); });
         EXPECT_NE(anyIt, processes.end()) << "At least one process should have a publisher field populated; "
                                           << "if svchost.exe was inaccessible this may indicate a permissions issue";
     }
@@ -984,8 +985,8 @@ TEST(WindowsProcessProbeTest, SystemDirectoryProcessesAreWindowsProcess)
     // and will therefore be classified as "App". The invariant we can reliably
     // assert is that no accessible svchost.exe is a "Background Process" —
     // the path heuristic must recognise it as a system binary.
-    const auto svchostIt = std::find_if(
-        processes.begin(), processes.end(), [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
+    const auto svchostIt =
+        std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.name == "svchost.exe" && !p.processType.empty(); });
 
     // Every Windows system has at least one accessible svchost.exe instance.
     ASSERT_NE(svchostIt, processes.end()) << "Expected at least one accessible svchost.exe in the enumeration";
@@ -1000,8 +1001,8 @@ TEST(WindowsProcessProbeTest, OurProcessHasNonNegativeGdiCount)
     WindowsProcessProbe probe;
     const auto processes = probe.enumerate();
 
-    const int32_t ourPid = static_cast<int32_t>(GetCurrentProcessId());
-    const auto it = std::find_if(processes.begin(), processes.end(), [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
+    const auto ourPid = static_cast<int32_t>(GetCurrentProcessId());
+    const auto it = std::ranges::find_if(processes, [ourPid](const ProcessCounters& p) { return p.pid == ourPid; });
 
     ASSERT_NE(it, processes.end());
 

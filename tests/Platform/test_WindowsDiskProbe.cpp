@@ -30,12 +30,12 @@ namespace
 
 TEST(WindowsDiskProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsDiskProbe probe; });
+    EXPECT_NO_THROW({ const WindowsDiskProbe probe; });
 }
 
 TEST(WindowsDiskProbeTest, CapabilitiesReportedCorrectly)
 {
-    WindowsDiskProbe probe;
+    const WindowsDiskProbe probe;
     auto caps = probe.capabilities();
 
     EXPECT_TRUE(caps.hasDiskStats);
@@ -44,8 +44,8 @@ TEST(WindowsDiskProbeTest, CapabilitiesReportedCorrectly)
 
     // These may be true or false depending on PDH initialization
     // Just verify they are boolean values (no exception thrown)
-    [[maybe_unused]] bool hasBytes = caps.hasReadWriteBytes;
-    [[maybe_unused]] bool hasIoTime = caps.hasIoTime;
+    [[maybe_unused]] const bool hasBytes = caps.hasReadWriteBytes;
+    [[maybe_unused]] const bool hasIoTime = caps.hasIoTime;
 }
 
 // =============================================================================
@@ -72,8 +72,7 @@ TEST(WindowsDiskProbeTest, DiskCountersHaveValidNames)
         EXPECT_FALSE(disk.deviceName.empty());
         // Windows disk names are typically drive letters (C:) or PDH instance names (e.g., "0 C:")
         // They should not be empty and should contain printable characters
-        EXPECT_TRUE(std::all_of(
-            disk.deviceName.begin(), disk.deviceName.end(), [](unsigned char c) { return std::isprint(c) || std::isspace(c); }));
+        EXPECT_TRUE(std::ranges::all_of(disk.deviceName, [](unsigned char c) { return std::isprint(c) || std::isspace(c); }));
     }
 }
 
@@ -126,10 +125,10 @@ TEST(WindowsDiskProbeTest, TotalCountersAggregate)
     WindowsDiskProbe probe;
     auto counters = probe.read();
 
-    uint64_t totalReads = counters.totalReadsCompleted();
-    uint64_t totalWrites = counters.totalWritesCompleted();
-    uint64_t totalReadBytes = counters.totalReadBytes();
-    uint64_t totalWriteBytes = counters.totalWriteBytes();
+    const uint64_t totalReads = counters.totalReadsCompleted();
+    const uint64_t totalWrites = counters.totalWritesCompleted();
+    const uint64_t totalReadBytes = counters.totalReadBytes();
+    const uint64_t totalWriteBytes = counters.totalWriteBytes();
 
     // If we have disks, totals should match sum
     if (!counters.disks.empty())
@@ -201,7 +200,7 @@ TEST(WindowsDiskProbeTest, PDHCountersProvideRealData)
         }
 
         // It's okay if there's no activity, but the structure should be valid
-        [[maybe_unused]] bool activityDetected = hasAnyActivity;
+        [[maybe_unused]] const bool activityDetected = hasAnyActivity;
     }
 }
 

@@ -456,38 +456,44 @@ TEST(WindowsSystemInfoProbeTest, LayoutParserMatchesWinIoctlStructs)
     efi.StartingOffset.QuadPart = 1LL << 20U;
     efi.PartitionLength.QuadPart = 260LL << 20U;
     efi.PartitionNumber = 1;
-    efi.Gpt.PartitionType = GUID{0xC12A7328, 0xF81F, 0x11D2, {0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B}};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PARTITION_STYLE_GPT selects Gpt
+    efi.Gpt.PartitionType =
+        GUID{.Data1 = 0xC12A7328, .Data2 = 0xF81F, .Data3 = 0x11D2, .Data4 = {0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B}};
     PARTITION_INFORMATION_EX data = efi;
     data.StartingOffset.QuadPart = 277LL << 20U;
     data.PartitionLength.QuadPart = 930LL << 30U;
     data.PartitionNumber = 3;
-    data.Gpt.PartitionType = GUID{0xEBD0A0A2, 0xB9E5, 0x4433, {0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7}};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PARTITION_STYLE_GPT selects Gpt
+    data.Gpt.PartitionType =
+        GUID{.Data1 = 0xEBD0A0A2, .Data2 = 0xB9E5, .Data3 = 0x4433, .Data4 = {0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99, 0xC7}};
     std::memcpy(buffer.data() + offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry), &efi, sizeof(efi));
     std::memcpy(buffer.data() + offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry) + sizeof(efi), &data, sizeof(data));
 
     const std::optional<PartitionTable::DriveLayout> layout = PartitionTable::parseDriveLayout(buffer);
     ASSERT_TRUE(layout.has_value());
-    EXPECT_EQ(layout->style, PartitionStyle::Gpt);
-    ASSERT_EQ(layout->partitions.size(), 2U);
-    EXPECT_EQ(layout->partitions[0].typeName, "EFI System");
-    EXPECT_EQ(layout->partitions[0].offsetBytes, 1ULL << 20U);
-    EXPECT_EQ(layout->partitions[1].number, 3U);
-    EXPECT_EQ(layout->partitions[1].typeName, "Basic data");
-    EXPECT_EQ(layout->partitions[1].sizeBytes, 930ULL << 30U);
+    const PartitionTable::DriveLayout gpt = layout.value_or(PartitionTable::DriveLayout{});
+    EXPECT_EQ(gpt.style, PartitionStyle::Gpt);
+    ASSERT_EQ(gpt.partitions.size(), 2U);
+    EXPECT_EQ(gpt.partitions[0].typeName, "EFI System");
+    EXPECT_EQ(gpt.partitions[0].offsetBytes, 1ULL << 20U);
+    EXPECT_EQ(gpt.partitions[1].number, 3U);
+    EXPECT_EQ(gpt.partitions[1].typeName, "Basic data");
+    EXPECT_EQ(gpt.partitions[1].sizeBytes, 930ULL << 30U);
 
     PARTITION_INFORMATION_EX mbr{};
     mbr.PartitionStyle = PARTITION_STYLE_MBR;
     mbr.StartingOffset.QuadPart = 1LL << 20U;
     mbr.PartitionLength.QuadPart = 1LL << 30U;
     mbr.PartitionNumber = 1;
-    mbr.Mbr.PartitionType = PARTITION_IFS;
+    mbr.Mbr.PartitionType = PARTITION_IFS; // NOLINT(cppcoreguidelines-pro-type-union-access) - PARTITION_STYLE_MBR selects Mbr
     header.PartitionStyle = PARTITION_STYLE_MBR;
     header.PartitionCount = 1;
     std::memcpy(buffer.data(), &header, offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry));
     std::memcpy(buffer.data() + offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry), &mbr, sizeof(mbr));
     const std::optional<PartitionTable::DriveLayout> mbrLayout = PartitionTable::parseDriveLayout(buffer);
-    ASSERT_EQ(mbrLayout.value_or(PartitionTable::DriveLayout{}).partitions.size(), 1U);
-    EXPECT_EQ(mbrLayout->partitions[0].typeName, "NTFS/exFAT");
+    const PartitionTable::DriveLayout mbrTable = mbrLayout.value_or(PartitionTable::DriveLayout{});
+    ASSERT_EQ(mbrTable.partitions.size(), 1U);
+    EXPECT_EQ(mbrTable.partitions[0].typeName, "NTFS/exFAT");
 }
 
 /// A STORAGE_DEVICE_DESCRIPTOR with its strings after it, as the driver returns it.

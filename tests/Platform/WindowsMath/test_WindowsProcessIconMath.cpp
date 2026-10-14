@@ -3,6 +3,7 @@
 /// keeps its own alpha, an icon without alpha takes it from its AND mask, a monochrome icon is built
 /// from its AND and XOR masks, and wrong-sized input is refused. Pure, so it runs on every platform.
 
+#include "Platform/IProcessIconSource.h"
 #include "Platform/Windows/WindowsProcessIconMath.h"
 
 #include <gtest/gtest.h>
@@ -36,9 +37,10 @@ TEST(WindowsProcessIconMathTest, AnIconWithAlphaKeepsItAndSwapsRedAndBlue)
 
     const auto icon = iconFromColor(color, mask, 2, 2);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->width, 2);
-    EXPECT_EQ(icon->height, 2);
-    EXPECT_EQ(icon->rgba, (std::vector<std::uint8_t>{30, 20, 10, 255, 60, 50, 40, 128, 0, 0, 0, 0, 3, 2, 1, 7}));
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.width, 2);
+    EXPECT_EQ(loaded.height, 2);
+    EXPECT_EQ(loaded.rgba, (std::vector<std::uint8_t>{30, 20, 10, 255, 60, 50, 40, 128, 0, 0, 0, 0, 3, 2, 1, 7}));
 }
 
 TEST(WindowsProcessIconMathTest, AnIconWithoutAlphaTakesItFromItsMask)
@@ -52,7 +54,8 @@ TEST(WindowsProcessIconMathTest, AnIconWithoutAlphaTakesItFromItsMask)
 
     const auto icon = iconFromColor(color, mask, 2, 1);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->rgba, (std::vector<std::uint8_t>{30, 20, 10, 255, 60, 50, 40, 0}));
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.rgba, (std::vector<std::uint8_t>{30, 20, 10, 255, 60, 50, 40, 0}));
 }
 
 TEST(WindowsProcessIconMathTest, AnIconWithoutAlphaOrAReadableMaskIsOpaque)
@@ -61,7 +64,8 @@ TEST(WindowsProcessIconMathTest, AnIconWithoutAlphaOrAReadableMaskIsOpaque)
     push(color, 10, 20, 30, 0);
     const auto icon = iconFromColor(color, {}, 1, 1);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->rgba, (std::vector<std::uint8_t>{30, 20, 10, 255}));
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.rgba, (std::vector<std::uint8_t>{30, 20, 10, 255}));
 }
 
 TEST(WindowsProcessIconMathTest, AMonochromeIconIsBuiltFromItsTwoMasks)
@@ -75,7 +79,8 @@ TEST(WindowsProcessIconMathTest, AMonochromeIconIsBuiltFromItsTwoMasks)
 
     const auto icon = iconFromMonochrome(mask, 2, 1);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->rgba, (std::vector<std::uint8_t>{255, 255, 255, 255, 0, 0, 0, 0}));
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.rgba, (std::vector<std::uint8_t>{255, 255, 255, 255, 0, 0, 0, 0}));
 }
 
 TEST(WindowsProcessIconMathTest, AMonochromeIconsClearPixelsAreBlack)
@@ -83,7 +88,8 @@ TEST(WindowsProcessIconMathTest, AMonochromeIconsClearPixelsAreBlack)
     const std::vector<std::uint8_t> mask(8, 0U); // 1x1: AND clear, XOR clear
     const auto icon = iconFromMonochrome(mask, 1, 1);
     ASSERT_TRUE(icon.has_value());
-    EXPECT_EQ(icon->rgba, (std::vector<std::uint8_t>{0, 0, 0, 255}));
+    const IconPixels loaded = icon.value_or(IconPixels{});
+    EXPECT_EQ(loaded.rgba, (std::vector<std::uint8_t>{0, 0, 0, 255}));
 }
 
 TEST(WindowsProcessIconMathTest, WrongSizesAreRefused)

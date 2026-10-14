@@ -4,6 +4,7 @@
 /// These tests validate actual Windows API calls and real system behavior.
 /// They ensure probes correctly handle real-world scenarios on Windows.
 
+#include "Platform/GPUTypes.h"
 #include "Platform/Windows/WindowsGPUProbe.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
@@ -12,11 +13,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
-#include <ranges>
 #include <string>
 #include <thread>
 #include <vector>
@@ -152,7 +154,7 @@ TEST(WindowsRealProbesTest, ProcessProbeFindsSystemProcess)
 
 TEST(WindowsRealProbesTest, TotalCpuTimeMonotonicallyIncreases)
 {
-    Platform::WindowsProcessProbe probe;
+    const Platform::WindowsProcessProbe probe;
 
     auto time1 = probe.totalCpuTime();
 
@@ -207,7 +209,7 @@ TEST(WindowsRealProbesTest, ProcessProbeCapabilitiesAreAccurate)
 
     // Find our process and verify all claimed capabilities work
     auto ownPid = static_cast<int32_t>(GetCurrentProcessId());
-    auto it = std::find_if(processes.begin(), processes.end(), [ownPid](const auto& p) { return p.pid == ownPid; });
+    auto it = std::ranges::find_if(processes, [ownPid](const auto& p) { return p.pid == ownPid; });
 
     if (it != processes.end())
     {
@@ -397,7 +399,7 @@ TEST(WindowsRealProbesTest, SystemProbeHandlesMultipleCalls)
 
 TEST(WindowsRealProbesTest, ProcessActionsCapabilitiesAreAccurate)
 {
-    Platform::WindowsProcessActions actions;
+    const Platform::WindowsProcessActions actions;
     auto caps = actions.actionCapabilities();
 
     // Windows should support terminate and kill
@@ -474,8 +476,8 @@ TEST(WindowsRealProbesTest, ProbeHandlesProcessExitingDuringEnumeration)
     si.cb = sizeof(si);
 
     // CreateProcessA modifies its second parameter, so we need a mutable buffer
-    char cmdLine[] = "cmd.exe /c exit";
-    if (CreateProcessA(nullptr, cmdLine, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi) != 0)
+    auto cmdLine = std::to_array("cmd.exe /c exit");
+    if (CreateProcessA(nullptr, cmdLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi) != 0)
     {
         // Enumerate while child might be exiting
         for (int i = 0; i < 10; ++i)
@@ -512,14 +514,15 @@ namespace
 /// in [0, 100]) is the integration-level correctness assertion.
 void checkMultiGPUUtilizationDistribution(const std::vector<Platform::GPUCounters>& counters)
 {
-    bool hasNonZero = std::ranges::any_of(counters, [](const auto& c) { return c.utilizationPercent > 0.0; });
+    const bool hasNonZero = std::ranges::any_of(counters, [](const auto& c) { return c.utilizationPercent > 0.0; });
     if (!hasNonZero)
     {
         return; // All idle — nothing to check
     }
 
     const double firstUtil = counters[0].utilizationPercent;
-    bool allSame = std::ranges::all_of(counters, [firstUtil](const auto& c) { return std::abs(c.utilizationPercent - firstUtil) < 0.01; });
+    const bool allSame =
+        std::ranges::all_of(counters, [firstUtil](const auto& c) { return std::abs(c.utilizationPercent - firstUtil) < 0.01; });
 
     if (allSame)
     {

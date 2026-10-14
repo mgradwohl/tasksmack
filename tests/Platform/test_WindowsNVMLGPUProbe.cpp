@@ -26,7 +26,7 @@ namespace
 TEST(WindowsNVMLGPUProbeTest, ConstructionDoesNotThrow)
 {
     // Should not throw even if NVML is not available
-    EXPECT_NO_THROW(NVMLGPUProbe probe);
+    EXPECT_NO_THROW(const NVMLGPUProbe probe);
 }
 
 TEST(WindowsNVMLGPUProbeTest, BasicOperationsDoNotThrow)
@@ -45,7 +45,7 @@ TEST(WindowsNVMLGPUProbeTest, BasicOperationsDoNotThrow)
 
 TEST(WindowsNVMLGPUProbeTest, IsAvailableReturnsBool)
 {
-    NVMLGPUProbe probe;
+    const NVMLGPUProbe probe;
     const bool available1 = probe.isAvailable();
     const bool available2 = probe.isAvailable();
     EXPECT_EQ(available1, available2) << "isAvailable() should be stable across consecutive calls";
@@ -53,7 +53,7 @@ TEST(WindowsNVMLGPUProbeTest, IsAvailableReturnsBool)
 
 TEST(WindowsNVMLGPUProbeTest, AvailabilityMatchesCapabilities)
 {
-    NVMLGPUProbe probe;
+    const NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
     const auto caps = probe.capabilities();
 
@@ -124,7 +124,7 @@ TEST(WindowsNVMLGPUProbeTest, ProcessCountersAreAlwaysEmpty)
 
 TEST(WindowsNVMLGPUProbeTest, CapabilitiesMatchAvailability)
 {
-    NVMLGPUProbe probe;
+    const NVMLGPUProbe probe;
     const bool available = probe.isAvailable();
     const auto caps = probe.capabilities();
 

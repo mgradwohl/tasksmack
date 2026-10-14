@@ -29,7 +29,7 @@ namespace
 TEST(WindowsGPUProbeTest, ConstructionDoesNotThrow)
 {
     // Should not throw even if underlying probes are unavailable
-    EXPECT_NO_THROW(WindowsGPUProbe probe);
+    EXPECT_NO_THROW(const WindowsGPUProbe probe);
 }
 
 TEST(WindowsGPUProbeTest, BasicOperationsDoNotThrow)
@@ -232,7 +232,7 @@ TEST(WindowsGPUProbeTest, ProbeStatePersistsBetweenCalls)
 
 TEST(WindowsGPUProbeTest, CapabilitiesReturnsConsistentStructure)
 {
-    WindowsGPUProbe probe;
+    const WindowsGPUProbe probe;
     auto caps = probe.capabilities();
 
     // The public contract only guarantees stable self-consistency and the

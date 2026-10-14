@@ -288,8 +288,8 @@ TEST(MultiGroupTotalTest, FirstReadFailureThenRecoveryDoesNotSpike)
     ASSERT_TRUE(last.has_value());
 
     // The model's busy share over the recovery interval: the since-boot average, not a spike.
-    const double busy = static_cast<double>(recovered.active() - failed.active());
-    const double span = static_cast<double>(recovered.total() - failed.total());
+    const auto busy = static_cast<double>(recovered.active() - failed.active());
+    const auto span = static_cast<double>(recovered.total() - failed.total());
     EXPECT_DOUBLE_EQ(100.0 * busy / span, 25.0);
 }
 

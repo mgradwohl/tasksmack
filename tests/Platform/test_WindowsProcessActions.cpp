@@ -192,12 +192,12 @@ TEST(CloseRequestWindowTest, RefusedRequestsAreReportedAsRefusalsWithTheError)
 
 TEST(WindowsProcessActionsTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsProcessActions actions; });
+    EXPECT_NO_THROW({ const WindowsProcessActions actions; });
 }
 
 TEST(WindowsProcessActionsTest, CapabilitiesReportedCorrectly)
 {
-    WindowsProcessActions actions;
+    const WindowsProcessActions actions;
     const auto caps = actions.actionCapabilities();
 
     EXPECT_TRUE(caps.canTerminate);

@@ -49,12 +49,12 @@ namespace
 
 TEST(WindowsSystemProbeTest, ConstructsSuccessfully)
 {
-    EXPECT_NO_THROW({ WindowsSystemProbe probe; });
+    EXPECT_NO_THROW({ const WindowsSystemProbe probe; });
 }
 
 TEST(WindowsSystemProbeTest, CapabilitiesReportedCorrectly)
 {
-    WindowsSystemProbe probe;
+    const WindowsSystemProbe probe;
     const auto caps = probe.capabilities();
 
     EXPECT_TRUE(caps.hasPerCoreCpu);
@@ -466,7 +466,7 @@ TEST(WindowsSystemProbeTest, BaseClockIsThisMachinesHighestRatedMaxMhz)
 
 TEST(WindowsSystemProbeTest, TicksPerSecondMatchesFileTime)
 {
-    WindowsSystemProbe probe;
+    const WindowsSystemProbe probe;
     EXPECT_EQ(probe.ticksPerSecond(), 10'000'000L);
 }
 
