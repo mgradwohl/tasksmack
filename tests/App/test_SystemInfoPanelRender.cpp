@@ -357,6 +357,51 @@ TEST_F(SystemInfoPanelRenderTest, ReadsOnlyOnceTheTabShowsAndDrawsTheFacts)
     EXPECT_EQ(m_HostQueries, 1);
 }
 
+// #1891: a row with no value shows a muted dash, and hovering it says why. Found by sweeping down the
+// Value column of each section's table, from the tables ImGui laid out (#2061's approach).
+TEST_F(SystemInfoPanelRenderTest, AnUnavailableValueSaysWhyOnHover)
+{
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1")); // the fixture's OS has a name and nothing else
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+
+    std::vector<std::pair<float, ImRect>> valueColumns; // the column's middle, the table's rows
+    for (int t = 0; t < GImGui->Tables.GetMapSize(); ++t)
+    {
+        const ImGuiTable* table = GImGui->Tables.TryGetMapData(t);
+        for (int c = 0; table != nullptr && c < table->ColumnsCount; ++c)
+        {
+            if (std::string_view(ImGui::TableGetColumnName(table, c)) == "Value")
+            {
+                // The dash sits at the column's left edge: aim just inside it.
+                valueColumns.emplace_back(table->Columns[c].MinX + 6.0F, table->InnerRect);
+            }
+        }
+    }
+    ASSERT_FALSE(valueColumns.empty()) << "no section table drawn";
+    bool shown = false;
+    ImGuiIO& io = ImGui::GetIO();
+    for (const auto& [x, rows] : valueColumns)
+    {
+        const int steps = static_cast<int>(rows.GetHeight() / 4.0F);
+        for (int step = 0; step < steps && !shown; ++step)
+        {
+            io.AddMousePosEvent(x, rows.Min.y + 2.0F + (static_cast<float>(step) * 4.0F));
+            for (int settle = 0; settle < 2 && !shown; ++settle)
+            {
+                const std::string text = frame();
+                const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+                shown = tooltip != nullptr && tooltip->Active && text.contains("Not reported by this system");
+            }
+        }
+    }
+    EXPECT_TRUE(shown) << "an unavailable row's reason on hover";
+}
+
 TEST_F(SystemInfoPanelRenderTest, RefreshReadsAgain)
 {
     makePanel(true);
