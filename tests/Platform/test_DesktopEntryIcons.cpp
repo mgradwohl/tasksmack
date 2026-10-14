@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 namespace Platform::DesktopEntryIcons
 {
 namespace
@@ -106,6 +108,12 @@ TEST(DesktopEntryIconsTest, AnEntryWithoutAnIconOrAGroupIsNone)
     EXPECT_FALSE(parseDesktopEntry("[Desktop Entry]\nExec=app\n").has_value());
     EXPECT_FALSE(parseDesktopEntry("Exec=app\nIcon=app\n").has_value());
     EXPECT_FALSE(parseDesktopEntry("").has_value());
+    // A line without '=' in the group is passed over, not the end of it (#1891).
+    const auto stray = parseDesktopEntry("[Desktop Entry]\nIcon=a\nnot a key line\nExec=b\n");
+    ASSERT_TRUE(stray.has_value());
+    const DesktopEntry strayEntry = stray.value_or(DesktopEntry{}); // value_or: tidy's optional check doesn't model ASSERT_TRUE
+    EXPECT_EQ(strayEntry.icon, "a");
+    EXPECT_EQ(strayEntry.exec, "b");
 }
 
 TEST(DesktopEntryIconsTest, HiddenAndNonApplicationEntriesAreMarked)
@@ -129,6 +137,7 @@ TEST(DesktopEntryIconsTest, TheProgramAnExecRuns)
     EXPECT_TRUE(execProgramKeys("python3 /usr/share/app/app.py").empty());
     EXPECT_TRUE(execProgramKeys("sh -c \"exec app\"").empty());
     EXPECT_TRUE(execProgramKeys("").empty());
+    EXPECT_TRUE(execProgramKeys("%U").empty()); // a field code where the program would be: none (#1891)
 }
 
 TEST(DesktopEntryIconsTest, TheIndexFindsAProcessByExecutableThenName)
@@ -182,6 +191,33 @@ TEST(DesktopEntryIconsTest, DirectoriesAreReadInPrecedenceOrderWithSubdirectoryI
     EXPECT_EQ(index.iconFor("", "kde-kate"), "kate"); // The ID joins the subdirectory with '-'
     EXPECT_FALSE(index.iconFor("/usr/bin/notes", "").has_value());
     EXPECT_FALSE(index.iconFor("/usr/bin/broken", "").has_value());
+    EXPECT_GT(index.size(), 0U);
+}
+
+TEST(DesktopEntryIconsTest, AFileTooLargeOrUnreadableIsSkipped)
+{
+    // Over MAX_DESKTOP_FILE_BYTES (a desktop file is a few KiB; this isn't one), and one that can't be
+    // opened: neither is read, and the rest of the directory still is (#1891).
+    const TempTree tree;
+    ASSERT_FALSE(tree.root().empty());
+    std::string huge = entry("huge", "huge-icon");
+    huge.append(static_cast<std::size_t>(MAX_DESKTOP_FILE_BYTES), '#');
+    static_cast<void>(tree.write("applications/huge.desktop", huge));
+    static_cast<void>(tree.write("applications/locked.desktop", entry("locked", "locked-icon")));
+    static_cast<void>(tree.write("applications/ok.desktop", entry("ok", "ok-icon")));
+    const bool root = ::geteuid() == 0;
+    std::filesystem::permissions(tree.root() / "applications" / "locked.desktop", std::filesystem::perms::none);
+
+    DesktopIndex index;
+    const std::vector<std::filesystem::path> dirs{tree.root() / "applications"};
+    index.addDirectories(dirs);
+    std::filesystem::permissions(tree.root() / "applications" / "locked.desktop", std::filesystem::perms::owner_all);
+    EXPECT_FALSE(index.iconFor("/usr/bin/huge", "").has_value());
+    if (!root) // root reads a mode-000 file anyway
+    {
+        EXPECT_FALSE(index.iconFor("/usr/bin/locked", "").has_value());
+    }
+    EXPECT_EQ(index.iconFor("/usr/bin/ok", ""), "ok-icon");
 }
 
 TEST(DesktopEntryIconsTest, SizesAreTriedNearestLargerFirstThenLargestSmaller)
