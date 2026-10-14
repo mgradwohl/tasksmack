@@ -1787,6 +1787,38 @@ border = "#11223344"
     expectSameColour(fromString->windowBg, fromFile->windowBg);
 }
 
+TEST(ThemeLoaderTest, LoadThemeFromString_AColourOfTheWrongTypeIsErrorMagenta)
+{
+    // A number, or an array of fewer than three components, is no colour: each reads as error magenta
+    // (as an invalid hex string does) instead of failing the whole theme.
+    const auto scheme = ThemeLoader::loadThemeFromString(R"(
+[meta]
+name = "Wrong Types"
+
+[accents]
+colors = [7, [0.5, 0.5]]
+
+[charts]
+cpu = 42
+memory = [0.1]
+)",
+                                                         "wrong-types.toml");
+    ASSERT_TRUE(scheme.has_value());
+    const auto expectMagenta = [](const ImVec4& colour)
+    {
+        EXPECT_FLOAT_EQ(colour.x, 1.0F);
+        EXPECT_FLOAT_EQ(colour.y, 0.0F);
+        EXPECT_FLOAT_EQ(colour.z, 1.0F);
+        EXPECT_FLOAT_EQ(colour.w, 1.0F);
+    };
+    // value_or, not ->: clang-tidy's optional check does not model ASSERT_TRUE's early return.
+    const ColorScheme loaded = scheme.value_or(ColorScheme{});
+    expectMagenta(loaded.accents[0]);
+    expectMagenta(loaded.accents[1]);
+    expectMagenta(loaded.chartCpu);
+    expectMagenta(loaded.chartMemory);
+}
+
 TEST(ThemeLoaderTest, LoadThemeFromString_InvalidTomlReturnsNullopt)
 {
     EXPECT_FALSE(ThemeLoader::loadThemeFromString("[meta\nname = \"Broken\"\n").has_value());

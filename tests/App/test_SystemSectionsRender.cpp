@@ -774,6 +774,35 @@ TEST_F(SystemSectionsRenderTest, StorageGridDrawsOneCellPerDiskAndTracksTheirSmo
     EXPECT_DOUBLE_EQ(perDisk.at("nvme0n1").writeBytesPerSec, 512.0);
 }
 
+TEST_F(SystemSectionsRenderTest, AStorageGridCellShowsItsTooltipOnHover)
+{
+    // Each disk's own chart in the grid has the aggregate chart's Read/Write tooltip.
+    Domain::StoragePublication publication;
+    publication.timestamps = viewOf(timestampsToNow());
+    publication.perDiskHistory.push_back(diskHistory("nvme0n1", 8192.0, 512.0));
+    publication.perDiskHistory.push_back(diskHistory("sdb", 100.0, 200.0));
+    publication.snapshot.disks.push_back(diskSample("nvme0n1", 8192.0, 512.0));
+    publication.snapshot.disks.push_back(diskSample("sdb", 100.0, 200.0));
+    std::unordered_map<std::string, StorageSection::SmoothedDiskRates> perDisk;
+    StorageSection::RenderContext ctx{.publication = &publication, .refreshInterval = REFRESH, .smoothedPerDisk = &perDisk};
+    const auto section = [&]
+    {
+        StorageSection::renderStorageSection(ctx);
+    };
+    runFrame(section);
+    runFrame(section);
+    ASSERT_TRUE(StorageSection::usesDiskGrid(&publication));
+
+    // The first cell is nvme0n1's: its hovered sample's own rates, not the other disk's or a total.
+    const std::vector<std::string> lines = hoverFirstPlotAndCaptureLines(section);
+    EXPECT_TRUE(hasLine(lines, UI::Widgets::formatTooltipRow("Read", UI::Format::formatBytesPerSecOrNA(8192.0))))
+        << ::testing::PrintToString(lines);
+    // The log appends the cell table's column separators to the tooltip's last row.
+    const std::string writeRow = UI::Widgets::formatTooltipRow("Write", UI::Format::formatBytesPerSecOrNA(512.0));
+    EXPECT_TRUE(std::ranges::any_of(lines, [&writeRow](const std::string& line) { return line.starts_with(writeRow); }))
+        << ::testing::PrintToString(lines);
+}
+
 TEST_F(SystemSectionsRenderTest, StorageGridReservesAtLeastOneRowOfCells)
 {
     Domain::StoragePublication single;
