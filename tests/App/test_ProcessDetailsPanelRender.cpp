@@ -17,6 +17,7 @@
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ProcessTypes.h"
+#include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 
 #include <gtest/gtest.h>
@@ -286,6 +287,71 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTablesStatusAffinityFaultsAndMemPercent
 
 // #1885: PSS and USS, read for the process Process Details shows (ProcessSnapshot::memoryRollupRead), are
 // in its Memory value strip; a sample without them has neither.
+// #1891: an Overview value wider than its column (a long affinity list, #1878) is clipped, and its
+// tooltip has it whole.
+TEST_F(ProcessDetailsPanelRenderTest, AClippedOverviewValueShowsWholeOnHover)
+{
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasCpuAffinity = true;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+    // Every other CPU of 512: "0,2,4,...,510", far wider than the value column at any display width.
+    std::string list;
+    for (int cpu = 0; cpu < 512; cpu += 2)
+    {
+        list += (cpu == 0 ? "" : ",") + std::to_string(cpu);
+    }
+    const Platform::CpuAffinity everyOther = Platform::CpuAffinity::fromCpuList(list).value_or(Platform::CpuAffinity{});
+    ASSERT_FALSE(everyOther.empty());
+    Domain::ProcessSample sample = sampleAt(0.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+    snapshot->cpuAffinity = everyOther;
+    sample.snapshot = std::move(snapshot);
+    const std::vector samples{sample};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    const std::string whole = UI::Format::formatCpuAffinity(everyOther.words());
+    // Down the middle of every card table's Value column (the clipped value fills its column), so the
+    // card's position doesn't matter and few frames are drawn.
+    std::vector<std::pair<float, ImRect>> valueColumns; // x, the table's rows
+    for (int t = 0; t < GImGui->Tables.GetMapSize(); ++t)
+    {
+        const ImGuiTable* table = GImGui->Tables.TryGetMapData(t);
+        for (int c = 0; table != nullptr && c < table->ColumnsCount; ++c)
+        {
+            if (std::string_view(ImGui::TableGetColumnName(table, c)) == "Value")
+            {
+                valueColumns.emplace_back((table->Columns[c].MinX + table->Columns[c].MaxX) * 0.5F, table->InnerRect);
+            }
+        }
+    }
+    ASSERT_FALSE(valueColumns.empty()) << "no Label/Value table drawn";
+    bool shown = false;
+    ImGuiIO& io = ImGui::GetIO();
+    for (const auto& [x, rows] : valueColumns)
+    {
+        const int steps = static_cast<int>(rows.GetHeight() / 4.0F);
+        for (int step = 0; step < steps && !shown; ++step)
+        {
+            io.AddMousePosEvent(x, rows.Min.y + 2.0F + (static_cast<float>(step) * 4.0F));
+            for (int settle = 0; settle < 2 && !shown; ++settle)
+            {
+                const std::string hovered = renderAndCapture(*panel);
+                const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+                shown = tooltip != nullptr && tooltip->Active && hovered.contains(whole);
+            }
+        }
+    }
+    EXPECT_TRUE(shown) << "the affinity row's tooltip: " << whole;
+}
+
 TEST_F(ProcessDetailsPanelRenderTest, PssAndUssAreShownWhenTheyWereRead)
 {
     const auto panel = activePanel();
