@@ -458,6 +458,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SystemdBus.cpp
     Platform/test_SystemdBusFake.cpp
     Platform/test_SystemdServices.cpp
+    Platform/test_ProcParsing.cpp  # the file readers and parseDouble (#1891)
     Platform/test_SystemdJournal.cpp
     Platform/test_InetSocketTable.cpp
     Platform/test_LinuxProcessStatus.cpp
