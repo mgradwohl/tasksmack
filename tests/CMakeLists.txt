@@ -430,6 +430,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsPDHGPUProbe.cpp
     Platform/test_WindowsGPUProbe.cpp
     Platform/test_WindowsDXGIGPUProbe.cpp
+    Platform/test_WindowsDXGIGPUProbeDXCore.cpp
     Platform/test_WindowsGPURescan.cpp
     Platform/test_WindowsProcAddress.cpp
     Platform/test_WindowsStartupProbe.cpp
@@ -801,6 +802,7 @@ if(WIN32)
     tasksmack_apply_windows_platform(TaskSmackTests)
     # The tests also link these, beyond the app's list; kept here so the app's link line is unchanged.
     target_link_libraries(TaskSmackTests PRIVATE
+        dxguid # tests/Mocks/WindowsDXCoreFake.h: the SDK's DXCore interface and hardware-type GUIDs (#2039)
         pdh
         psapi
         userenv

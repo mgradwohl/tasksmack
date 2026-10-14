@@ -38,6 +38,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wlanguage-extension-token"
 #include <dxgi.h>
+#include <dxcore_interface.h>
 #pragma clang diagnostic pop
 // clang-format on
 
@@ -444,6 +445,22 @@ struct DXGIGPUProbeTestAccessor
     static bool createDXCoreFactory(DXGIGPUProbe& probe)
     {
         return probe.createDXCoreFactory();
+    }
+
+    /// Puts @p factory where dxcore.dll's adapter factory goes (a fake from tests/Mocks/WindowsDXCoreFake.h,
+    /// #2039): DXCore then classifies the adapters it knows and lists the accelerators. Call after
+    /// useFakes(); a rescan keeps it, since useFakes() left no dxcore.dll to make another from.
+    static void useDXCoreFactory(DXGIGPUProbe& probe, ComPtr<IDXCoreAdapterFactory> factory)
+    {
+        probe.m_DXCoreFactory = std::move(factory);
+        probe.m_IntegratedByLuid.clear();
+    }
+
+    /// Puts @p module where dxcore.dll goes; the probe frees it with dxcore.dll's handle, so pass one
+    /// loaded for it. A module without DXCoreCreateAdapterFactory makes every factory creation fail.
+    static void useDXCoreModule(DXGIGPUProbe& probe, void* module)
+    {
+        probe.m_DXCoreModule = module;
     }
 };
 
