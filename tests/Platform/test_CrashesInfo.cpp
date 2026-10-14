@@ -25,6 +25,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace Platform
 {
 namespace
@@ -317,6 +321,7 @@ TEST(LinuxCoredumpsTest, RejectsOtherNames)
     EXPECT_FALSE(parseCoredumpName(std::format("core.x.uid.{}.1.2", BOOT_ID)).has_value());
     EXPECT_FALSE(parseCoredumpName(std::format("core.x.1000.{}.1.2.", BOOT_ID)).has_value());
     EXPECT_FALSE(parseCoredumpName(std::format("core.x.99999999999.{}.1.2", BOOT_ID)).has_value()); // uid overflow
+    EXPECT_FALSE(parseCoredumpName(std::format("core.x.1000.{}", BOOT_ID)).has_value());            // too few parts (#1891)
     EXPECT_EQ(LinuxCoredumps::unescapeComm("a\\x2fb\\xZZ\\"), "a/b\\xZZ\\");
 }
 
@@ -512,6 +517,39 @@ TEST_F(CoredumpsFixture, TheJournalAddsDetailsAndCrashesWithoutACore)
     EXPECT_TRUE(info.journalRead);
     EXPECT_TRUE(info.journalUnavailableReason.empty());
 }
+
+TEST_F(CoredumpsFixture, AJournalEntryThatIsntACrashIsSkipped)
+{
+    // An entry naming no process can't be listed (#1891); the one beside it still is.
+    FakeJournal journal;
+    const LinuxCoredumps::JournalFields noProcess{std::pair<std::string, std::string>{"SIGNAL", "11"}};
+    journal.entries = {noProcess, entry("real", 7, NOW - DAY)};
+    CrashesInfo info;
+    LinuxCoredumps::readCrashFacts(m_Root, NOW, info, journal.reader());
+    ASSERT_EQ(info.events.size(), 1U);
+    EXPECT_EQ(info.events[0].application, "real");
+}
+
+#ifndef _WIN32
+TEST_F(CoredumpsFixture, ADirectoryThatCantBeListedSaysPermissionIsNeeded)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root lists a mode-0311 directory anyway";
+    }
+    // There, and searchable, but not readable: as /var/lib/systemd/coredump is to an ordinary user on
+    // some systems (#1891).
+    core("x", NOW - DAY);
+    const auto dir = m_Root / LinuxCoredumps::COREDUMP_DIR;
+    std::filesystem::permissions(dir, std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec);
+    CrashesInfo info;
+    LinuxCoredumps::readCoredumps(m_Root, NOW, info);
+    std::filesystem::permissions(dir, std::filesystem::perms::owner_all);
+    EXPECT_FALSE(info.listed);
+    EXPECT_TRUE(info.accessDenied);
+    EXPECT_EQ(info.unavailableReason, "Listing /var/lib/systemd/coredump requires permission");
+}
+#endif
 
 TEST_F(CoredumpsFixture, TheJournalListsCrashesWhenTheDirectoryIsMissing)
 {
