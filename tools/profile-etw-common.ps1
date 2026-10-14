@@ -4,7 +4,11 @@
 # Read-CMakeCache and ConvertTo-CMakeUpper, shared with bench.ps1 (#1479).
 . (Join-Path $PSScriptRoot 'cmake-cache.ps1')
 
-if (-not ('TaskSmackProfile.TokenInfo' -as [type])) {
+function Initialize-TokenInfoType {
+    # Compiled on first use rather than when this file is dot-sourced: Add-Type starts the C#
+    # compiler, about 1.5 s of CPU, and callers such as Get-PresetBuildFlags never read an
+    # integrity level (#2054). Capture paths call it before their trace starts.
+    if ('TaskSmackProfile.TokenInfo' -as [type]) { return }
     Add-Type -Namespace TaskSmackProfile -Name TokenInfo -MemberDefinition @'
 [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
 public static extern System.IntPtr OpenProcess(uint access, bool inherit, int pid);
@@ -75,6 +79,7 @@ function Get-ProcessIntegrityLevel {
     # The *measured* integrity level of a running process (#872): what the capture actually
     # profiled, not what the launcher assumed it would be.
     param([Parameter(Mandatory = $true)][int]$ProcessId)
+    Initialize-TokenInfoType
     return ConvertTo-IntegrityLevelName ([TaskSmackProfile.TokenInfo]::IntegrityRid($ProcessId))
 }
 
@@ -305,6 +310,7 @@ function Invoke-AppCapture {
         [int]$InteractiveTimeoutSeconds = 14400,
         [ValidateSet('Normal', 'Hidden')][string]$WindowStyle = 'Normal'
     )
+    Initialize-TokenInfoType # before the trace starts, so the compile is not recorded in it
     $result = [ordered]@{
         Binary         = $BinaryPath
         Pid            = $null

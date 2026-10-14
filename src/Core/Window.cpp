@@ -447,6 +447,15 @@ Window::~Window()
 
     if (m_Handle != nullptr)
     {
+        // X11 (#2054): an event SDL queues while SDL_WaitEventTimeout() is dispatching wakes that wait
+        // with an XSendEvent() to this window on SDL's second X connection. The server may take this
+        // connection's XDestroyWindow() first, and the late send then fails with BadWindow. SDL sets
+        // no error handler there, so Xlib's default one exits the process when SDL_Quit() closes that
+        // connection. A round trip here gives the server time to take the queued send first.
+        if (VideoBackend::isX11() || VideoBackend::isXWaylandFallback())
+        {
+            static_cast<void>(SDL_SyncWindow(m_Handle));
+        }
         SDL_DestroyWindow(m_Handle);
         m_Handle = nullptr;
     }

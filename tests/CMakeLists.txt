@@ -61,24 +61,34 @@ if(WIN32)
     if(TASKSMACK_PWSH)
         add_test(NAME ResizeCaptureScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw-resize.ps1)
+        # Runs real stub apps through the app-capture lifecycle (#1186).
         add_test(NAME EtwCaptureScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-profile-etw.ps1)
-        # Runs real stub apps through the app-capture lifecycle (#1186), about 30 s; keep it clear
-        # of the 60 s --timeout the CI ctest steps pass under parallel load.
-        set_tests_properties(EtwCaptureScript PROPERTIES TIMEOUT 180)
         add_test(NAME EtwAnalysisScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-analyze-etw.ps1)
         # tools/cmake-cache.ps1, the CMakeCache.txt reader bench.ps1 and the ETW scripts share (#1479).
         add_test(NAME CMakeCacheScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-cmake-cache.ps1)
         # tools/bench.ps1 against a stub benchmark binary: exit-code propagation (#1423) and the
-        # provenance manifest (#1424).
+        # provenance manifest (#1424). The stub benchmark is a Python script when CMake's interpreter
+        # is passed in (much cheaper to start than PowerShell).
         add_test(NAME BenchScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench.ps1)
-        # The stub benchmark is a Python script when CMake's interpreter is passed in (much cheaper
-        # to start than PowerShell). The test runs in well under 30 s; the 180 s limit only keeps it
-        # clear of the 60 s --timeout the CI ctest steps pass under heavy load, as EtwCaptureScript does.
-        set_tests_properties(BenchScript PROPERTIES TIMEOUT 180 ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
+        set_tests_properties(BenchScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
+        # The PowerShell script tests take turns (#2054). Each starts pwsh, several compile C# with
+        # Add-Type, and some start further pwsh or stub processes; run together under `ctest -j` on a
+        # 4-core CI runner they slowed each other down many times over (CMakeCacheScript, 1.5-4.4 s
+        # alone, passed 60 s beside ResizeCaptureScript, BenchScript and BenchShScript). Taking turns
+        # costs about a minute in all (EtwCaptureScript 33-52 s, BenchScript 14-17 s, the rest under
+        # 5 s each on CI), which the gtest suites fill on the other slots.
+        #
+        # Their own TIMEOUTs, rather than the CI steps' 60 s --timeout: about twice the slowest CI
+        # time seen, measured with the scripts all running at once (EtwCaptureScript 74 s, BenchScript
+        # 44 s, ResizeCaptureScript 26 s), and 120 s for the short ones.
+        set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
+            PROPERTIES RESOURCE_LOCK pwsh-script-tests)
+        set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript PROPERTIES TIMEOUT 120)
+        set_tests_properties(EtwCaptureScript BenchScript PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
@@ -126,6 +136,11 @@ add_test(NAME MergeGtestResultsScript
 # tools/coverage-mismatches.py explains tools/coverage.sh's "functions have mismatched data" warning (#1544).
 add_test(NAME CoverageMismatchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_coverage_mismatches.py)
+
+# The short Python script tests (under 6 s each, even with every script test running at once) get
+# their own limit too, so a busy runner can't trip the CI steps' 60 s --timeout on them (#2054).
+set_tests_properties(BenchmarkRegressionGateScript TidyCacheScript MergeGtestResultsScript CoverageMismatchesScript
+    PROPERTIES TIMEOUT 120)
 
 # Test sources. Every list is defined on every platform, so the registration check below can see
 # all of them; the platform branch then picks its own.

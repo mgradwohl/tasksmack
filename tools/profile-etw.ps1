@@ -192,6 +192,7 @@ if ($Mode -eq 'resize') {
 }
 
 . (Join-Path $scriptDir 'profile-etw-common.ps1')
+Initialize-TokenInfoType # before any trace starts, so the compile is not recorded in it
 # Absolute before anything is created or passed on (see Resolve-CaptureOutputDirectory).
 $perfDir = Resolve-CaptureOutputDirectory -OutputDirectory $OutputDirectory -RepoRoot $repoRoot
 
