@@ -328,19 +328,25 @@ TEST(LinuxProcessProbeTest, ARealCommandLineThatIsntUtf8ArrivesByteForByte)
     }
     const ChildProcess child(pid);
 
-    // Wait for the exec: until then /proc/<pid>/cmdline is the test binary's.
+    // Wait for the exec: until then /proc/<pid>/cmdline is the test binary's, or empty mid-exec (the
+    // probe then shows "[sleep]"). On a loaded machine that can take seconds (#2052), so wait on a
+    // deadline and say so if the exec never shows, rather than compare against the pre-exec reading.
+    constexpr auto EXEC_DEADLINE = std::chrono::seconds(15);
     LinuxProcessProbe probe;
     std::optional<ProcessCounters> counters;
-    for (int attempt = 0; attempt < 200; ++attempt)
+    bool execSeen = false;
+    const auto giveUpAt = std::chrono::steady_clock::now() + EXEC_DEADLINE;
+    while (std::chrono::steady_clock::now() < giveUpAt)
     {
         counters = countersFor(probe, child.pid());
         if (counters.has_value() && counters.value_or(ProcessCounters{}).command.starts_with(NOT_UTF8))
         {
+            execSeen = true;
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    ASSERT_TRUE(counters.has_value());
+    ASSERT_TRUE(execSeen) << "the child's exec of " << SLEEP << " wasn't seen within " << EXEC_DEADLINE.count() << " s";
     const ProcessCounters found = counters.value_or(ProcessCounters{});
     EXPECT_EQ(found.command, std::string(NOT_UTF8) + " 30");
     EXPECT_FALSE(found.name.empty()); // "sleep" from comm, or the command line's -- either way, not lost
