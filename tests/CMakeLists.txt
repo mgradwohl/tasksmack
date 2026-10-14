@@ -218,6 +218,7 @@ set(COMMON_TEST_SOURCES
     UI/test_DialogMetrics.cpp
     UI/test_ChromeLayout.cpp
     UI/test_ChromeWidgets.cpp
+    UI/test_VerticalBar.cpp  # drawVerticalBarWithValue's text and tooltip (#1891)
     UI/test_LineLayout.cpp
     UI/test_SeriesLabelAlignment.cpp
     UI/test_IconEncoding.cpp
