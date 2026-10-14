@@ -337,6 +337,48 @@ TEST(ServiceActionsViewTest, ActionThatThrowsBecomesAPlainFailedResult)
     EXPECT_EQ(view.lastResult().text, "Could not start Spooler: boom");
 }
 
+TEST(ServiceActionsViewTest, AStartTypeChangeThatThrowsAnythingElseIsAnUnknownError)
+{
+    // Not a std::exception: the worker still turns it into a failed result, worded for the start type.
+    struct ThrowsAnything final : Platform::IServiceActions
+    {
+        [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
+        {
+            return ALL;
+        }
+        [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+        {
+            return Platform::ServiceActionResult::succeeded();
+        }
+        [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+        {
+            return Platform::ServiceActionResult::succeeded();
+        }
+        [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+        {
+            return Platform::ServiceActionResult::succeeded();
+        }
+        [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+        {
+            throw 42; // NOLINT(hicpp-exception-baseclass) - not a std::exception, on purpose
+        }
+    };
+    ServiceActionsView view(std::make_shared<ThrowsAnything>());
+    view.request(SvcDetail::makeRequest(
+        ServiceActionKind::SetStartType, service("Spooler", ServiceState::Running), Platform::ServiceStartType::Automatic));
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_EQ(view.lastResult().text, "Could not set Spooler to Automatic: Unknown error");
+}
+
+TEST(ServiceActionsDetailTest, AStartConfirmationNamesTheService)
+{
+    // Start doesn't ask by default, but its texts exist for a caller that asks first.
+    const auto start = SvcDetail::makeRequest(ServiceActionKind::Start, service("Spooler", ServiceState::Stopped));
+    EXPECT_EQ(SvcDetail::confirmTitle(start), "Start Spooler?");
+    EXPECT_TRUE(SvcDetail::confirmQuestion(start).starts_with("Start Spooler service (Spooler)?")) << SvcDetail::confirmQuestion(start);
+}
+
 class ServiceActionsViewRenderTest : public ::testing::Test
 {
   protected:
@@ -524,6 +566,26 @@ TEST_F(ServiceActionsViewRenderTest, ARestartConfirmedRunsAndSaysItRestarted)
     ASSERT_TRUE(waitFinished(view));
     EXPECT_TRUE(view.lastResult().ok);
     EXPECT_EQ(view.lastResult().text, "Restarted Spooler");
+}
+
+TEST_F(ServiceActionsViewRenderTest, ACancelledConfirmRunsNothing)
+{
+    auto fake = std::make_shared<FakeServiceActions>();
+    ServiceActionsView view(fake);
+    const auto running = service("Spooler", ServiceState::Running);
+    view.request(SvcDetail::makeRequest(ServiceActionKind::Stop, running));
+    for (int i = 0; i < 3; ++i)
+    {
+        frame(view, running);
+    }
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("Cancel", 0, modal->ID));
+    frame(view, running);
+    frame(view, running);
+    EXPECT_FALSE(view.pendingConfirm().has_value());
+    EXPECT_FALSE(view.takeFinished());
+    EXPECT_EQ(fake->stops.load(), 0);
 }
 
 // The action bar above the table (#1577, #1395 Windows half): what it says beside its buttons.
