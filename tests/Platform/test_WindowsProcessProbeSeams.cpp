@@ -103,16 +103,21 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     std::vector<DWORD> groupMaxima{8};
     std::vector<KAFFINITY> activeMasks{0xFF};
     bool failLogicalProcessorInfo = false;
+    bool activeGroupsOverrun = false;  ///< Claims one more active group than the buffer holds
+    bool nameOutsideSnapshot = false;  ///< Image names point outside the snapshot buffer
     std::uint32_t buildNumber = 19045; // Before threads span groups by default
     // Token
     bool elevated = false;
     bool failOpenToken = false;
+    bool failElevation = false;
+    bool tokenUserTooShort = false; ///< TokenUser reads fewer bytes than a TOKEN_USER
     bool failTokenSize = false;
     bool failTokenRead = false;
     bool failLookup = false;
     std::wstring user = L"alice";
     // Process
     bool failOpenProcess = false;
+    bool failQueryInfoOpen = false; ///< Only the PROCESS_QUERY_INFORMATION open is refused
     int openProcessCalls = 0;
     HANDLE queryInfoHandle = nullptr; // The last PROCESS_QUERY_INFORMATION open
     DWORD priorityClass = HIGH_PRIORITY_CLASS;
@@ -121,7 +126,8 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     std::wstring commandLine = L"app.exe --flag";
     bool failStatus = false;
     bool failCommandLine = false;
-    ULONG statusFlags = 0x20; // PEBI_IS_BACKGROUND
+    bool commandLineOutsideBuffer = false; ///< The command line's characters aren't in the returned buffer
+    ULONG statusFlags = 0x20;              // PEBI_IS_BACKGROUND
     bool failGdiOnLimitedHandle = false;
     bool failGdi = false;
     DWORD gdiObjects = 7;
@@ -208,7 +214,8 @@ LONG NTAPI fakeNtQuerySystemInformation(ULONG /*infoClass*/, PVOID buffer, ULONG
             at += sizeof(thread);
         }
         std::memcpy(out + at, p.name.c_str(), (p.name.size() + 1) * sizeof(wchar_t));
-        info.ImageName.Buffer = reinterpret_cast<PWSTR>(out + at);
+        static std::wstring outside = L"elsewhere.exe"; // Not in the snapshot buffer
+        info.ImageName.Buffer = fake().nameOutsideSnapshot ? outside.data() : reinterpret_cast<PWSTR>(out + at);
         info.ImageName.Length = static_cast<USHORT>(p.name.size() * sizeof(wchar_t));
         std::memcpy(out + offset, &info, sizeof(info));
         offset += entrySize(p);
@@ -242,7 +249,7 @@ BOOL WINAPI fakeGetLogicalProcessorInformationEx(LOGICAL_PROCESSOR_RELATIONSHIP 
     std::memset(out, 0, needed);
     buffer->Relationship = RelationGroup;
     buffer->Size = static_cast<DWORD>(needed);
-    buffer->Group.ActiveGroupCount = static_cast<WORD>(fake().activeMasks.size());
+    buffer->Group.ActiveGroupCount = static_cast<WORD>(fake().activeMasks.size() + (fake().activeGroupsOverrun ? 1U : 0U));
     for (std::size_t g = 0; g < fake().activeMasks.size(); ++g)
     {
         PROCESSOR_GROUP_INFO info{};
@@ -273,25 +280,33 @@ BOOL WINAPI fakeGetTokenInformation(HANDLE /*token*/, TOKEN_INFORMATION_CLASS in
 {
     if (infoClass == TokenElevation)
     {
+        if (fake().failElevation)
+        {
+            return FALSE;
+        }
         TOKEN_ELEVATION elevation{.TokenIsElevated = fake().elevated ? 1U : 0U};
         std::memcpy(info, &elevation, sizeof(elevation));
         return TRUE;
     }
-    constexpr DWORD NEEDED = sizeof(TOKEN_USER) + 16;
+    const DWORD needed = fake().tokenUserTooShort ? DWORD{sizeof(DWORD)} : DWORD{sizeof(TOKEN_USER) + 16};
     if (fake().failTokenSize)
     {
         *returned = 0;
         return FALSE;
     }
-    if (info == nullptr || length < NEEDED)
+    if (info == nullptr || length < needed)
     {
-        *returned = NEEDED;
+        *returned = needed;
         SetLastError(ERROR_INSUFFICIENT_BUFFER);
         return FALSE;
     }
     if (fake().failTokenRead)
     {
         return FALSE;
+    }
+    if (fake().tokenUserTooShort)
+    {
+        return TRUE; // Read, but too short to hold a TOKEN_USER
     }
     TOKEN_USER user{};
     user.User.Sid = static_cast<std::byte*>(info) + sizeof(TOKEN_USER);
@@ -315,7 +330,7 @@ BOOL WINAPI fakeLookupAccountSidW(
 HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD /*pid*/)
 {
     ++fake().openProcessCalls;
-    if (fake().failOpenProcess)
+    if (fake().failOpenProcess || (fake().failQueryInfoOpen && access == PROCESS_QUERY_INFORMATION))
     {
         return nullptr;
     }
@@ -386,7 +401,9 @@ LONG NTAPI fakeNtQueryInformationProcess(HANDLE /*process*/, ULONG infoClass, PV
     UNICODE_STRING text{};
     text.Length = static_cast<USHORT>(textBytes);
     text.MaximumLength = text.Length;
-    text.Buffer = reinterpret_cast<PWSTR>(out + sizeof(UNICODE_STRING));
+    static std::wstring outside; // Not in the caller's buffer
+    outside.assign(fake().commandLine.size(), L'o');
+    text.Buffer = fake().commandLineOutsideBuffer ? outside.data() : reinterpret_cast<PWSTR>(out + sizeof(UNICODE_STRING));
     std::memcpy(out, &text, sizeof(text));
     std::memcpy(out + sizeof(UNICODE_STRING), fake().commandLine.data(), textBytes);
     return 0;
@@ -671,7 +688,8 @@ TEST_F(WindowsProcessProbeSeamTest, AnUnopenableProcessKeepsItsNameAndNothingEls
 
 TEST_F(WindowsProcessProbeSeamTest, EachFailedOwnerStepLeavesOnlyTheUserMissing)
 {
-    for (bool FakeWin::* const failure : {&FakeWin::failOpenToken, &FakeWin::failTokenSize, &FakeWin::failTokenRead, &FakeWin::failLookup})
+    for (bool FakeWin::* const failure :
+         {&FakeWin::failOpenToken, &FakeWin::failTokenSize, &FakeWin::failTokenRead, &FakeWin::tokenUserTooShort, &FakeWin::failLookup})
     {
         fake() = FakeWin{};
         fake().*failure = true;
@@ -691,6 +709,44 @@ TEST_F(WindowsProcessProbeSeamTest, AnUnreadableCommandLineFallsBackToTheImagePa
     const ProcessCounters process = sampleOne();
     EXPECT_EQ(process.command, "[app.exe]");
     EXPECT_EQ(process.processType, "App"); // From its USER objects, which need no path
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnEmptyOrMisplacedCommandLineFallsBackToTheImagePath)
+{
+    fake().commandLine.clear(); // Read, but with no characters
+    EXPECT_EQ(sampleOne().command, "C:\\fake\\app.exe");
+
+    fake().commandLine = L"app.exe --flag";
+    fake().commandLineOutsideBuffer = true; // Its characters aren't where the header says
+    EXPECT_EQ(sampleOne().command, "C:\\fake\\app.exe");
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnImageNameOutsideTheSnapshotIsNotRead)
+{
+    fake().nameOutsideSnapshot = true;
+    const ProcessCounters process = sampleOne();
+    EXPECT_TRUE(process.name.empty());
+    EXPECT_EQ(process.command, "app.exe --flag"); // The details don't need the name
+}
+
+TEST_F(WindowsProcessProbeSeamTest, ACreateTimeBeforeTheUnixEpochHasNoStartTime)
+{
+    fake().processes.front().createTime = 10'000'000; // One second into 1601
+    const ProcessCounters process = sampleOne();
+    EXPECT_EQ(process.startTimeTicks, 10'000'000U);
+    EXPECT_EQ(process.startTimeEpoch, 0U);
+    EXPECT_EQ(process.user, "alice"); // Still a real create time: the details are read and cached
+}
+
+TEST_F(WindowsProcessProbeSeamTest, TheSystemProcessIsAWindowsProcessWhateverItOwns)
+{
+    fake().processes.push_back(FakeProcess{.pid = 4, .name = L"System", .threadIds = {}});
+    WindowsProcessProbe probe(fakeFunctions());
+    const std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto system = std::ranges::find(processes, 4, &ProcessCounters::pid);
+    ASSERT_NE(system, processes.end());
+    EXPECT_EQ(system->processType, "Windows Process"); // Its USER objects (2) don't make it an App
+    EXPECT_EQ(find(processes).processType, "App");
 }
 
 TEST_F(WindowsProcessProbeSeamTest, LongImagePathsAndCommandLinesGrowTheirBuffers)
@@ -739,6 +795,14 @@ TEST_F(WindowsProcessProbeSeamTest, ARefusedGdiReadIsRetriedWithQueryInformation
     const ProcessCounters unreadable = sampleOne();
     EXPECT_FALSE(unreadable.gdiObjectCount.has_value());
     EXPECT_TRUE(unreadable.processType.empty()); // Unknown: it may own windows
+
+    // The retry's own open refused: no count, and the type is unknown too.
+    fake().failGdi = false;
+    fake().failQueryInfoOpen = true;
+    const ProcessCounters unopenable = sampleOne();
+    EXPECT_FALSE(unopenable.gdiObjectCount.has_value());
+    EXPECT_TRUE(unopenable.processType.empty());
+    EXPECT_EQ(unopenable.user, "alice");
 }
 
 TEST_F(WindowsProcessProbeSeamTest, ProcessTypeFromThePathWhenThereAreNoWindows)
@@ -844,6 +908,11 @@ TEST_F(WindowsProcessProbeSeamTest, EveryFailedMultiGroupReadLeavesTheAffinityEm
     EXPECT_TRUE(sampleOne().cpuAffinity.empty());
 
     twoGroups();
+    fake().activeMasks = {0xF};
+    fake().activeGroupsOverrun = true; // Two active groups claimed, one returned
+    EXPECT_TRUE(sampleOne().cpuAffinity.empty());
+
+    twoGroups();
     fake().groupMaxima = {4, 0}; // A group whose size can't be read
     EXPECT_TRUE(sampleOne().cpuAffinity.empty());
 
@@ -873,6 +942,16 @@ TEST_F(WindowsProcessProbeSeamTest, NonElevatedNeverLoadsEStats)
     EXPECT_FALSE(probe.capabilities().hasNetworkCounters);
     EXPECT_TRUE(probe.capabilities().hasReducedPrivileges);
     EXPECT_EQ(probe.readSocketTraffic().sampleTimeNs, 0U);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnUnreadableElevationCountsAsNotElevated)
+{
+    fake().elevated = true;
+    fake().failElevation = true;
+    const WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(fake().loadCalls, 0);
+    EXPECT_FALSE(probe.capabilities().hasNetworkCounters);
+    EXPECT_TRUE(probe.capabilities().hasReducedPrivileges);
 }
 
 TEST_F(WindowsProcessProbeSeamTest, MissingExportsOrARefusedProbeTurnCountersOff)
