@@ -44,6 +44,108 @@ if (-not $LlvmProfdata) {
     exit 1
 }
 
+# Structural exclusions (#2039): lines no test can run on Windows, such as a modal shell dialog, the real
+# ShellExecuteW launch or the WinMain entry point. The source marks them LCOV_EXCL_START ... LCOV_EXCL_STOP
+# (inclusive) or LCOV_EXCL_LINE, each with its reason. llvm-cov has no such markers, so the LCOV report
+# drops them here; the HTML report and the llvm-cov summary still count them. Only Windows-only code
+# (src/Platform/Windows/ and _WIN32 blocks) is marked, and tools/coverage.sh honours no markers.
+
+# The 1-based line numbers of @SourcePath inside a marked region.
+function Get-ExcludedLine([string]$SourcePath) {
+    $excluded = [System.Collections.Generic.HashSet[int]]::new()
+    if (-not [System.IO.File]::Exists($SourcePath)) {
+        return , $excluded
+    }
+    $lines = [System.IO.File]::ReadAllLines($SourcePath)
+    $inside = $false
+    for ($i = 0; $i -lt $lines.Length; $i++) {
+        $text = $lines[$i]
+        if ($text.Contains("LCOV_EXCL_START")) {
+            $inside = $true
+        }
+        if ($inside -or $text.Contains("LCOV_EXCL_LINE")) {
+            [void]$excluded.Add($i + 1)
+        }
+        if ($text.Contains("LCOV_EXCL_STOP")) {
+            $inside = $false
+        }
+    }
+    if ($inside) {
+        throw "${SourcePath}: LCOV_EXCL_START without a matching LCOV_EXCL_STOP"
+    }
+    return , $excluded
+}
+
+# Rewrite the LCOV file at @LcovPath without the marked lines, their branches and the functions that start
+# on them. Each record's LF/LH, BRF/BRH and FNF/FNH lose what was dropped; they are llvm-cov's own counts,
+# not a count of the records, so they are reduced rather than recounted. Returns how many line records it dropped.
+function Remove-ExcludedLcovLine([string]$LcovPath) {
+    $output = [System.Collections.Generic.List[string]]::new()
+    $excluded = $null
+    $droppedFunctions = $null
+    $dropped = @{}
+    $droppedLines = 0
+    foreach ($record in [System.IO.File]::ReadAllLines($LcovPath)) {
+        if ($record.StartsWith("SF:")) {
+            $excluded = Get-ExcludedLine $record.Substring(3)
+            $droppedFunctions = [System.Collections.Generic.HashSet[string]]::new()
+            $dropped = @{ LF = 0; LH = 0; BRF = 0; BRH = 0; FNF = 0; FNH = 0 }
+            $output.Add($record)
+            continue
+        }
+        if ($null -eq $excluded -or $excluded.Count -eq 0) {
+            $output.Add($record)
+            continue
+        }
+        # A switch's `continue` would leave only the switch, so each case says whether to keep the record.
+        $tag, $value = $record -split ":", 2
+        $keep = $true
+        switch ($tag) {
+            "FN" {
+                $line, $name = $value -split ",", 2
+                if ($excluded.Contains([int]$line)) {
+                    [void]$droppedFunctions.Add($name)
+                    $keep = $false
+                }
+            }
+            "FNDA" {
+                $hits, $name = $value -split ",", 2
+                if ($droppedFunctions.Contains($name)) {
+                    $dropped.FNF++
+                    if ([long]$hits -gt 0) { $dropped.FNH++ }
+                    $keep = $false
+                }
+            }
+            "BRDA" {
+                $fields = $value -split ","
+                if ($excluded.Contains([int]$fields[0])) {
+                    $dropped.BRF++
+                    if ($fields[3] -ne "-" -and [long]$fields[3] -gt 0) { $dropped.BRH++ }
+                    $keep = $false
+                }
+            }
+            "DA" {
+                $fields = $value -split ","
+                if ($excluded.Contains([int]$fields[0])) {
+                    $droppedLines++
+                    $dropped.LF++
+                    if ([long]$fields[1] -gt 0) { $dropped.LH++ }
+                    $keep = $false
+                }
+            }
+            { $_ -in "LF", "LH", "BRF", "BRH", "FNF", "FNH" } {
+                $output.Add("${tag}:$([long]$value - $dropped[$tag])")
+                $keep = $false
+            }
+        }
+        if ($keep) {
+            $output.Add($record)
+        }
+    }
+    [System.IO.File]::WriteAllLines($LcovPath, $output, [System.Text.UTF8Encoding]::new($false))
+    return $droppedLines
+}
+
 if ($ShowDetails) {
     Write-Host "Using llvm-profdata: $LlvmProfdata"
     Write-Host "Using llvm-cov: $LlvmCov"
@@ -131,6 +233,8 @@ try {
         "-ignore-filename-regex=$IgnoreRegex" `
         | Set-Content -Path $lcovPath -Encoding utf8NoBOM
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $droppedLines = Remove-ExcludedLcovLine $lcovPath
+    Write-Host "Left $droppedLines structurally untestable line(s) out of the LCOV report (LCOV_EXCL markers, #2039)."
 
     # Step 6: Generate summary
     Write-Host "==> Coverage Summary:"

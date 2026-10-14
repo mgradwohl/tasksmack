@@ -66,9 +66,11 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
     std::cin.imbue(global);
 
 #ifdef _WIN32
+    // LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
     // On Windows, also set the console code page to UTF-8 for wide output.
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
+    // LCOV_EXCL_STOP
 #endif
     return summary;
 }
@@ -80,6 +82,7 @@ auto runApp() -> int
 // Required on Windows to see console output when launching from an IDE or debugger. Debug-only
 // on purpose: a release-class GUI build must not pop up a console window.
 #if defined(_WIN32) && !defined(NDEBUG)
+    // LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
     // Try to attach to parent console if it's a console app
     // If no parent console exists because it's a Windows app create our own console
     if (AttachConsole(ATTACH_PARENT_PROCESS) == 0)
@@ -99,6 +102,7 @@ auto runApp() -> int
             // Redirection failed, but continue - spdlog will still work via msvc_sink
         }
     }
+    // LCOV_EXCL_STOP
 #endif
 
     // Load user configuration early so we can apply window geometry before creating the SDL window.
@@ -134,7 +138,7 @@ auto runApp() -> int
     std::vector<spdlog::sink_ptr> sinks;
     sinks.reserve(3);
 #ifdef _WIN32
-    sinks.push_back(std::make_shared<spdlog::sinks::msvc_sink_mt>());
+    sinks.push_back(std::make_shared<spdlog::sinks::msvc_sink_mt>()); // LCOV_EXCL_LINE - TaskSmack.exe only (#2039)
 #endif
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
 
@@ -339,8 +343,10 @@ auto runAppGuarded() -> int
         {
             spdlog::critical("TaskSmack stopped on an unexpected error: {}", e.what());
 #ifdef _WIN32
+            // LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
             const std::string message = std::string("TaskSmack stopped on an unexpected error:\n\n") + e.what();
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TaskSmack", message.c_str(), nullptr);
+            // LCOV_EXCL_STOP
 #endif
         }
         catch (...) // NOLINT(bugprone-empty-catch) - reporting is best effort; the exit code still says it failed
@@ -354,7 +360,9 @@ auto runAppGuarded() -> int
         {
             spdlog::critical("TaskSmack stopped on an unexpected error of an unknown type");
 #ifdef _WIN32
+            // LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TaskSmack", "TaskSmack stopped on an unexpected error.", nullptr);
+            // LCOV_EXCL_STOP
 #endif
         }
         catch (...) // NOLINT(bugprone-empty-catch) - reporting is best effort; the exit code still says it failed
@@ -367,11 +375,13 @@ auto runAppGuarded() -> int
 
 // Entry points
 #ifdef _WIN32
+// LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
 // Windows GUI application entry point
 auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR /*lpCmdLine*/, int /*nShowCmd*/) -> int
 {
     return runAppGuarded();
 }
+// LCOV_EXCL_STOP
 #else
 // Standard entry point for Linux/macOS
 // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog initialization may theoretically throw; acceptable at program start

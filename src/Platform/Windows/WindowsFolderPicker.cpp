@@ -31,6 +31,7 @@
 namespace Platform::Windows
 {
 
+// LCOV_EXCL_START - the whole file is a modal IFileOpenDialog, which blocks until a user picks or cancels (#2039)
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {
@@ -131,5 +132,6 @@ FolderChoice pickFolder(void* ownerWindow, const std::filesystem::path& initial,
     return std::optional<std::filesystem::path>(std::move(folder));
 }
 // NOLINTEND(misc-include-cleaner)
+// LCOV_EXCL_STOP
 
 } // namespace Platform::Windows

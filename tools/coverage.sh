@@ -110,7 +110,8 @@ $LLVM_PROFDATA merge -sparse "${BUILD_DIR}"/*.profraw -o "${BUILD_DIR}/default.p
 # Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/ holds
 # test-support headers the tests include, #1395). ImGui panel code
 # (Widgets.h, the panel headers) is deliberately NOT excluded any more (#1131): untested code has
-# to count against the total.
+# to count against the total. tools/coverage.ps1 also drops LCOV_EXCL-marked lines, which mark only
+# Windows-only code (#2039); this script honours no markers, so every Linux line counts.
 COV_IGNORE_REGEX='.*/(build|_deps|tests|benchmarks|\.cache)/.*'
 
 # llvm-cov only reports files compiled into the binaries it is given, so with TaskSmackTests

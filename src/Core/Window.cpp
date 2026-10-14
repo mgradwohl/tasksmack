@@ -61,6 +61,7 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
 [[nodiscard]] auto shellRestoreKeysHeld() noexcept -> std::pair<bool, bool>
 {
 #ifdef _WIN32
+    // LCOV_EXCL_START - reads the physical keyboard; tests inject the keys through m_ShellRestoreKeysReader (#2039)
     const auto isKeyHeld = [](int virtualKey)
     {
         // GetAsyncKeyState's most significant bit: the key is down right now.
@@ -68,6 +69,7 @@ constexpr float PIXEL_DENSITY_EPSILON = 1e-3F;
         return (static_cast<unsigned>(static_cast<unsigned short>(GetAsyncKeyState(virtualKey))) & KEY_DOWN_BIT) != 0U;
     };
     return {isKeyHeld(VK_LWIN) || isKeyHeld(VK_RWIN), isKeyHeld(VK_DOWN)};
+    // LCOV_EXCL_STOP
 #else
     return {false, false};
 #endif
@@ -85,6 +87,7 @@ namespace
     return LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON, width, height, LR_DEFAULTCOLOR);
 }
 
+// LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only, never into a test binary (#2039)
 void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 {
     // Win32 SendMessage takes LPARAM; HICON is pointer-sized and is passed opaquely
@@ -94,6 +97,7 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
                  iconType,
                  reinterpret_cast<LPARAM>(icon)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-ptr-to-int)
 }
+// LCOV_EXCL_STOP
 
 // Returns the {small, large} icon handles so the caller (Window) can own and eventually
 // DestroyIcon() them; LoadImage(..., IMAGE_ICON, ...) without LR_SHARED returns handles
@@ -105,10 +109,12 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
                                                               SDL_PROP_WINDOW_WIN32_HWND_POINTER,
                                                               nullptr)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     if (hwnd == nullptr)
+    // LCOV_EXCL_START - SDL gives every window it creates on Windows an HWND (#2039)
     {
         spdlog::warn("Failed to get Win32 window handle for icon");
         return {nullptr, nullptr};
     }
+    // LCOV_EXCL_STOP
 
     // Get the module handle for this executable
     HINSTANCE hInstance = GetModuleHandleW(nullptr);
@@ -121,6 +127,7 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
 
     // Validate dimensions (GetSystemMetrics can return 0 on failure)
     if (smallIconWidth <= 0 || smallIconHeight <= 0 || largeIconWidth <= 0 || largeIconHeight <= 0)
+    // LCOV_EXCL_START - GetSystemMetrics fails only without a desktop, where no window exists (#2039)
     {
         spdlog::warn("Invalid icon dimensions from GetSystemMetrics (small={}x{}, large={}x{})",
                      smallIconWidth,
@@ -129,6 +136,7 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
                      largeIconHeight);
         return {nullptr, nullptr};
     }
+    // LCOV_EXCL_STOP
 
     // Load small icon (16x16) for title bar and Alt+Tab
     // MAKEINTRESOURCE(1) refers to IDI_ICON1 (resource ID 1) defined in the .rc file
@@ -138,20 +146,24 @@ void setWindowIcon(HWND hwnd, WPARAM iconType, HANDLE icon)
     HANDLE hIconBig = loadIconFromResource(hInstance, largeIconWidth, largeIconHeight);
 
     if (hIconSmall != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only (#2039)
     {
         setWindowIcon(hwnd, ICON_SMALL, hIconSmall);
         spdlog::debug("Set small window icon ({}x{})", smallIconWidth, smallIconHeight);
     }
+    // LCOV_EXCL_STOP
     else
     {
         spdlog::warn("Failed to load small icon from resource");
     }
 
     if (hIconBig != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only (#2039)
     {
         setWindowIcon(hwnd, ICON_BIG, hIconBig);
         spdlog::debug("Set large window icon ({}x{})", largeIconWidth, largeIconHeight);
     }
+    // LCOV_EXCL_STOP
     else
     {
         spdlog::warn("Failed to load large icon from resource");
@@ -191,8 +203,10 @@ LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
             catch (...)
             {
                 // No exception may cross back into the OS; let the minimize through instead.
+                // LCOV_EXCL_START - a guard; restoreForShellMinimize() has no failure a test can force (#2039)
                 restored = false;
             }
+            // LCOV_EXCL_STOP
             if (restored)
             {
                 return 0;
@@ -202,9 +216,11 @@ LRESULT CALLBACK shellCommandWindowProc(HWND hwnd, UINT message, WPARAM wParam, 
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the window procedure is stored as an opaque window property
     const auto sdlWindowProc = reinterpret_cast<WNDPROC>(GetPropW(hwnd, SDL_WINDOW_PROC_PROP));
     if (sdlWindowProc == nullptr)
+    // LCOV_EXCL_START - the property is set before this procedure is installed and outlives it (#2039)
     {
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
+    // LCOV_EXCL_STOP
     return CallWindowProcW(sdlWindowProc, hwnd, message, wParam, lParam);
 }
 
@@ -223,28 +239,34 @@ void hookShellCommands(SDL_Window* sdlWindow, Window* window)
 {
     HWND hwnd = nativeWindowHandle(sdlWindow);
     if (hwnd == nullptr)
+    // LCOV_EXCL_START - SDL gives every window it creates on Windows an HWND (#2039)
     {
         spdlog::warn("Failed to get Win32 window handle; Win+Down will minimize the maximized window (#1279)");
         return;
     }
+    // LCOV_EXCL_STOP
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr) - GWLP_WNDPROC holds the window procedure as LONG_PTR
     auto* const sdlWindowProc = reinterpret_cast<void*>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC));
     // Both properties are in place before the procedure is, so it never runs without them.
     if (sdlWindowProc == nullptr || SetPropW(hwnd, SDL_WINDOW_PROC_PROP, sdlWindowProc) == 0 || SetPropW(hwnd, WINDOW_PROP, window) == 0)
+    // LCOV_EXCL_START - Windows refusing a property on the process's own window; no test can force it (#2039)
     {
         spdlog::warn("Failed to subclass the window; Win+Down will minimize the maximized window (#1279)");
         RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
         RemovePropW(hwnd, WINDOW_PROP);
         return;
     }
+    // LCOV_EXCL_STOP
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
     if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(&shellCommandWindowProc)))
+    // LCOV_EXCL_START - Windows refusing SetWindowLongPtr on the process's own window; no test can force it (#2039)
     {
         // SDL's procedure is still in place and nothing reads the properties; don't leave them behind.
         spdlog::warn("Failed to subclass the window (error {}); Win+Down will minimize the maximized window (#1279)", GetLastError());
         RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
         RemovePropW(hwnd, WINDOW_PROP);
     }
+    // LCOV_EXCL_STOP
 }
 
 // Undo hookShellCommands() before SDL destroys the window.
@@ -252,9 +274,11 @@ void unhookShellCommands(SDL_Window* sdlWindow)
 {
     HWND hwnd = nativeWindowHandle(sdlWindow);
     if (hwnd == nullptr)
+    // LCOV_EXCL_START - SDL gives every window it creates on Windows an HWND (#2039)
     {
         return;
     }
+    // LCOV_EXCL_STOP
     // The Window is going away: stop reporting to it, whatever happens below.
     RemovePropW(hwnd, WINDOW_PROP);
     HANDLE sdlWindowProc = GetPropW(hwnd, SDL_WINDOW_PROC_PROP);
@@ -267,6 +291,7 @@ void unhookShellCommands(SDL_Window* sdlWindow)
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - SetWindowLongPtr takes the window procedure as LONG_PTR
     if (!replaceWindowProc(hwnd, reinterpret_cast<LONG_PTR>(sdlWindowProc)))
+    // LCOV_EXCL_START - Windows refusing SetWindowLongPtr on the process's own window; no test can force it (#2039)
     {
         // Our procedure is still installed and still receives every message SDL_DestroyWindow()
         // sends, so keep the property it forwards them to SDL's procedure through.
@@ -279,6 +304,7 @@ void unhookShellCommands(SDL_Window* sdlWindow)
         {}
         return;
     }
+    // LCOV_EXCL_STOP
     RemovePropW(hwnd, SDL_WINDOW_PROC_PROP);
 }
 } // namespace
@@ -396,17 +422,21 @@ Window::~Window()
         unhookShellCommands(m_Handle);
     }
     if (m_IconSmall != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only, so no test window has icons (#2039)
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
         DestroyIcon(reinterpret_cast<HICON>(m_IconSmall));
         m_IconSmall = nullptr;
     }
+    // LCOV_EXCL_STOP
     if (m_IconBig != nullptr)
+    // LCOV_EXCL_START - the icon resource is linked into TaskSmack.exe only, so no test window has icons (#2039)
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - HANDLE and HICON are both opaque Win32 handle types
         DestroyIcon(reinterpret_cast<HICON>(m_IconBig));
         m_IconBig = nullptr;
     }
+    // LCOV_EXCL_STOP
 #endif
 
     if (m_GLContext != nullptr)

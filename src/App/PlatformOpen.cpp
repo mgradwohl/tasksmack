@@ -58,6 +58,7 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
         return false;
     }
 
+    // LCOV_EXCL_START - launches the real default handler (a browser, Explorer); no test may (#2039)
     // ShellExecuteW returns > 32 on success
     auto* const shellResult = ::ShellExecuteW(nullptr, L"open", wideTarget.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     // NOLINTNEXTLINE(performance-no-int-to-ptr) - ShellExecuteW returns HINSTANCE which must be compared as int
@@ -68,6 +69,7 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
         return false;
     }
     return true;
+    // LCOV_EXCL_STOP
 #elif defined(__linux__)
     // Linux: Use double-fork to safely spawn xdg-open without creating zombies
     const std::string targetStr = nativeTargetFromUtf8(target);
@@ -139,6 +141,7 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
 [[nodiscard]] bool openWithSystemHandler(const std::filesystem::path& path)
 {
 #ifdef _WIN32
+    // LCOV_EXCL_START - launches the real default handler (a browser, Explorer); no test may (#2039)
     // The native wide path directly, never a narrowed one (#1648).
     const std::wstring widePath = nativeTargetFromPath(path);
 
@@ -152,6 +155,7 @@ NativeTarget nativeTargetFromPath(const std::filesystem::path& path)
         return false;
     }
     return true;
+    // LCOV_EXCL_STOP
 #elif defined(__linux__)
     // A Linux path is bytes, and xdg-open takes them as they are (valid UTF-8 or not).
     const std::string nativePath = nativeTargetFromPath(path);

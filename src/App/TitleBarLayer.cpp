@@ -892,7 +892,7 @@ void TitleBarLayer::renderTitleBar()
     {
     case TitleBarView::Action::IconClicked:
 #ifdef _WIN32
-        showNativeSystemMenu();
+        showNativeSystemMenu(); // LCOV_EXCL_LINE - opens the modal native system menu, which a test can't dismiss (#2039)
 #endif
         break; // Linux: the view opened its own menu
     case TitleBarView::Action::Close:
@@ -971,6 +971,7 @@ void TitleBarLayer::updateMinimumWindowSize(float contentWidth)
 }
 
 #ifdef _WIN32
+// LCOV_EXCL_START - TrackPopupMenu runs a modal menu loop until the user picks or dismisses (#2039)
 void TitleBarLayer::showNativeSystemMenu()
 {
     // Show native Windows system menu
@@ -996,6 +997,7 @@ void TitleBarLayer::showNativeSystemMenu()
         }
     }
 }
+// LCOV_EXCL_STOP
 #endif
 
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static) - Intentionally non-static for OOP consistency
