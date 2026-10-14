@@ -539,5 +539,43 @@ TEST_F(SyntheticProcConnections, AStartTimeThatDoesNotMatchReadsAsExited)
     EXPECT_EQ(result.status, ConnectionsReadStatus::ProcessExited);
 }
 
+TEST_F(SyntheticProcConnections, AnFdDirectoryThatCantBeOpenedFailsTheRead)
+{
+    // Not EACCES (another user's process) or ENOENT (gone): here ENOTDIR, an fd "directory" that's a file.
+    writeAllTables();
+    std::filesystem::remove_all(pidDir() / "fd");
+    write("fd", "not a directory\n");
+    const ConnectionsReadResult result = read();
+    EXPECT_EQ(result.status, ConnectionsReadStatus::Failed);
+    EXPECT_TRUE(result.connections.empty());
+}
+
+TEST_F(SyntheticProcConnections, ATableThatFailsBecauseTheProcessExitedReadsAsExited)
+{
+    // udp can't be read, and by then stat names another process: that's an exit, not a failed read.
+    writeAllTables();
+    std::filesystem::remove(pidDir() / "net" / "udp");
+    std::filesystem::create_directories(pidDir() / "net" / "udp");
+    LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{
+        .path = pidDir().parent_path().string(),
+        .afterFdScan = [this] { write("stat", "100 (other) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 9999 1000 50\n"); }});
+    const ConnectionsReadResult result = reader.readConnections(TARGET);
+    EXPECT_EQ(result.status, ConnectionsReadStatus::ProcessExited);
+    EXPECT_TRUE(result.connections.empty());
+}
+
+TEST_F(SyntheticProcConnections, AProcessThatExitsWhileItsTablesAreReadReadsAsExited)
+{
+    // Every table reads, but the PID names another process once they have: the rows can't be trusted
+    // to be complete (a table may have read as absent because the process went), so none are returned.
+    writeAllTables();
+    LinuxProcessConnectionsReader reader(LinuxProcessConnectionsReader::ProcRoot{
+        .path = pidDir().parent_path().string(),
+        .afterFdScan = [this] { write("stat", "100 (other) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 9999 1000 50\n"); }});
+    const ConnectionsReadResult result = reader.readConnections(TARGET);
+    EXPECT_EQ(result.status, ConnectionsReadStatus::ProcessExited);
+    EXPECT_TRUE(result.connections.empty());
+}
+
 } // namespace
 } // namespace Platform
