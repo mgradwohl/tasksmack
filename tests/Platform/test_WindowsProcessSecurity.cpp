@@ -4,7 +4,9 @@
 /// privileges with their state, groups less the integrity label), SIDs named once and cached, a long
 /// account name, an unnamed SID and privilege, the denials (a refused open, a protected process's
 /// token, a refused TokenUser), a reused PID, a token whose groups grow between the size query and the
-/// copy, optional queries that fail, and both handles closed. Plus sidToString() against
+/// copy (or keep growing), queries that misreport their size or answer short, unknown elevation types and odd
+/// integrity labels, accounts that can't be named, the name cache starting over when full, optional queries
+/// that fail, and both handles closed. Plus sidToString() against
 /// ConvertSidToStringSidW, and one read of this test process through the real calls.
 
 #include "Platform/IProcessActions.h"
@@ -95,8 +97,16 @@ struct FakeToken
     DWORD openError = 0;  // non-zero: OpenProcess fails with it
     DWORD tokenError = 0; // non-zero: OpenProcessToken fails with it
     std::uint64_t creationTicks = START_TICKS;
-    std::map<TOKEN_INFORMATION_CLASS, DWORD> classErrors; // a class's query fails with this error
-    int growGroupsOnFirstCopy = 0;                        // groups added after the first sized TokenGroups query
+    std::map<TOKEN_INFORMATION_CLASS, DWORD> classErrors;      // a class's query fails with this error
+    int growGroupsOnFirstCopy = 0;                             // groups added after the first sized TokenGroups query
+    bool growGroupsOnEveryCopy = false;                        // ... and after every later one too
+    bool timesFail = false;                                    // GetProcessTimes fails
+    std::map<TOKEN_INFORMATION_CLASS, DWORD> sizeNeeds;        // a class's size query reports this size instead
+    std::map<TOKEN_INFORMATION_CLASS, DWORD> copyErrors;       // a class's copy (not its size query) fails with this error
+    std::map<TOKEN_INFORMATION_CLASS, std::size_t> truncateTo; // a class's answer cut to this many bytes
+    DWORD elevationType = TokenElevationTypeLimited;
+    const SidBytes* labelSid = nullptr;   // TokenIntegrityLevel's label; null: the medium label
+    std::vector<std::string> refuseRetry; // SID strings whose lookup fails once it has room for the name
     std::vector<FakeGroup> groups;
     std::vector<FakePrivilege> privileges;
     std::map<std::string, std::pair<std::wstring, std::wstring>> accounts; // SID string -> (domain, name)
@@ -133,6 +143,11 @@ HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD pid)
 
 BOOL WINAPI fakeGetProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
 {
+    if (fake().timesFail)
+    {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return FALSE;
+    }
     creation->dwLowDateTime = static_cast<DWORD>(fake().creationTicks & 0xFFFFFFFFU);
     creation->dwHighDateTime = static_cast<DWORD>(fake().creationTicks >> 32U);
     return TRUE;
@@ -185,8 +200,8 @@ template<typename T> [[nodiscard]] std::vector<std::byte> bytesOf(const T& value
     {
         TOKEN_MANDATORY_LABEL label{};
         label.Label.Attributes = SE_GROUP_INTEGRITY;
-        return layOut(
-            bytesOf(label), {{offsetof(TOKEN_MANDATORY_LABEL, Label) + offsetof(SID_AND_ATTRIBUTES, Sid), &mediumLabelSid()}}, out);
+        const SidBytes* sid = fake().labelSid != nullptr ? fake().labelSid : &mediumLabelSid();
+        return layOut(bytesOf(label), {{offsetof(TOKEN_MANDATORY_LABEL, Label) + offsetof(SID_AND_ATTRIBUTES, Sid), sid}}, out);
     }
     case TokenGroups:
     {
@@ -226,7 +241,7 @@ template<typename T> [[nodiscard]] std::vector<std::byte> bytesOf(const T& value
     case TokenElevation:
         return bytesOf(TOKEN_ELEVATION{.TokenIsElevated = 0});
     case TokenElevationType:
-        return bytesOf(TokenElevationTypeLimited);
+        return bytesOf(fake().elevationType);
     case TokenIsAppContainer:
         return bytesOf(DWORD{0});
     case TokenVirtualizationEnabled:
@@ -246,17 +261,33 @@ BOOL WINAPI fakeGetTokenInformation(HANDLE /*token*/, TOKEN_INFORMATION_CLASS in
         SetLastError(error->second);
         return FALSE;
     }
-    if (infoClass == TokenGroups && buffer != nullptr && ++fake().groupCopies == 1)
+    if (const auto error = fake().copyErrors.find(infoClass); error != fake().copyErrors.end() && buffer != nullptr)
     {
+        SetLastError(error->second);
+        return FALSE;
+    }
+    if (infoClass == TokenGroups && buffer != nullptr && (++fake().groupCopies == 1 || fake().growGroupsOnEveryCopy))
+    {
+        const int count = fake().growGroupsOnEveryCopy ? 1 : fake().growGroupsOnFirstCopy;
         int added = 0;
-        while (added < fake().growGroupsOnFirstCopy)
+        while (added < count)
         {
             fake().groups.push_back({.sid = makeSid(5, {21, 5, 5, 5, static_cast<DWORD>(2000 + added)}), .attributes = SE_GROUP_ENABLED});
             ++added;
         }
     }
     auto* out = static_cast<std::byte*>(buffer);
-    const std::vector<std::byte> answer = answerFor(infoClass, out);
+    std::vector<std::byte> answer = answerFor(infoClass, out);
+    if (const auto cut = fake().truncateTo.find(infoClass); cut != fake().truncateTo.end())
+    {
+        answer.resize(std::min(answer.size(), cut->second));
+    }
+    if (const auto size = fake().sizeNeeds.find(infoClass); size != fake().sizeNeeds.end() && buffer == nullptr)
+    {
+        *needed = size->second;
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
     *needed = static_cast<DWORD>(answer.size());
     if (buffer == nullptr || bytes < answer.size())
     {
@@ -300,6 +331,11 @@ fakeLookupAccountSid(LPCWSTR system, PSID sid, LPWSTR name, LPDWORD nameChars, L
         *nameChars = static_cast<DWORD>(nameText.size() + 1);
         *domainChars = static_cast<DWORD>(domainText.size() + 1);
         SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    if (std::ranges::contains(fake().refuseRetry, found->first))
+    {
+        SetLastError(ERROR_NONE_MAPPED);
         return FALSE;
     }
     EXPECT_TRUE(fitName(nameText, name, nameChars));
@@ -527,6 +563,116 @@ TEST_F(WindowsProcessSecurityTest, ATokenUserThatCannotBeReadFailsTheRead)
     EXPECT_EQ(failed.status, SecurityReadStatus::Failed);
     EXPECT_FALSE(failed.detail.empty());
     EXPECT_FALSE(failed.security.tokenUser.has_value());
+}
+
+TEST_F(WindowsProcessSecurityTest, AShortTokenUserOrUnreadableTimesFailTheRead)
+{
+    WindowsProcessSecurityReader reader(fakeApi());
+    fake().truncateTo[TokenUser] = sizeof(DWORD); // too short for a TOKEN_USER
+    const SecurityReadResult shortUser = reader.readSecurity(TARGET);
+    EXPECT_EQ(shortUser.status, SecurityReadStatus::Failed);
+    EXPECT_FALSE(shortUser.detail.empty());
+
+    fake().timesFail = true; // the identity can't be confirmed
+    const SecurityReadResult noTimes = reader.readSecurity(TARGET);
+    EXPECT_EQ(noTimes.status, SecurityReadStatus::Failed);
+    EXPECT_FALSE(noTimes.detail.empty());
+}
+
+TEST_F(WindowsProcessSecurityTest, VariableSizeQueriesThatMisreportTheirSize)
+{
+    fake().sizeNeeds[TokenUser] = 4096;                           // more than it writes: the answer is trimmed to what it wrote
+    fake().sizeNeeds[TokenGroups] = 0;                            // no size at all
+    fake().sizeNeeds[TokenPrivileges] = 2U << 20U;                // past the 1 MB the reader takes
+    fake().copyErrors[TokenIntegrityLevel] = ERROR_ACCESS_DENIED; // sized, then refused
+    WindowsProcessSecurityReader reader(fakeApi());
+    const SecurityReadResult result = reader.readSecurity(TARGET);
+    ASSERT_EQ(result.status, SecurityReadStatus::Ok);
+    EXPECT_EQ(result.security.tokenUser.value_or(SecurityAccount{}).name, "DESKTOP\\matt");
+    EXPECT_FALSE(result.security.tokenGroups.has_value());
+    EXPECT_FALSE(result.security.privileges.has_value());
+    EXPECT_FALSE(result.security.integrityLevel.has_value());
+    EXPECT_TRUE(result.security.elevated.has_value()); // the fixed-size queries are unaffected
+}
+
+TEST_F(WindowsProcessSecurityTest, GroupsThatKeepGrowingAreGivenUpOn)
+{
+    fake().growGroupsOnEveryCopy = true;
+    WindowsProcessSecurityReader reader(fakeApi());
+    const SecurityReadResult result = reader.readSecurity(TARGET);
+    ASSERT_EQ(result.status, SecurityReadStatus::Ok);
+    EXPECT_FALSE(result.security.tokenGroups.has_value());
+    EXPECT_EQ(fake().groupCopies, 3); // three tries, then no groups rather than a failed read
+}
+
+TEST_F(WindowsProcessSecurityTest, OddTokenAnswersLeaveTheirFieldsEmpty)
+{
+    const SidBytes invalidLabel = []
+    {
+        SidBytes sid = mediumLabelSid();
+        sid[0] = std::byte{9}; // not revision 1
+        return sid;
+    }();
+    const SidBytes emptyLabel = makeSid(16, {}); // no sub-authority to take the RID from
+    // A privilege count past the buffer: the header cut short, then the second entry cut off.
+    const std::size_t oneEntry = offsetof(TOKEN_PRIVILEGES, Privileges) + sizeof(LUID_AND_ATTRIBUTES);
+    for (const std::size_t privilegeBytes : {std::size_t{2}, oneEntry})
+    {
+        fake().truncateTo[TokenPrivileges] = privilegeBytes;
+        for (const SidBytes* label : {&invalidLabel, &emptyLabel})
+        {
+            fake().labelSid = label;
+            WindowsProcessSecurityReader reader(fakeApi());
+            const SecurityReadResult result = reader.readSecurity(TARGET);
+            ASSERT_EQ(result.status, SecurityReadStatus::Ok);
+            EXPECT_FALSE(result.security.privileges.has_value()) << privilegeBytes;
+            EXPECT_FALSE(result.security.integrityLevel.has_value());
+        }
+    }
+
+    const std::vector<std::pair<DWORD, std::optional<TokenElevationKind>>> types{
+        {TokenElevationTypeDefault, TokenElevationKind::Default}, {TokenElevationTypeFull, TokenElevationKind::Full}, {99, std::nullopt}};
+    for (const auto& [type, kind] : types)
+    {
+        fake().elevationType = type;
+        WindowsProcessSecurityReader reader(fakeApi());
+        EXPECT_EQ(reader.readSecurity(TARGET).security.elevationType, kind) << type;
+    }
+}
+
+TEST_F(WindowsProcessSecurityTest, AccountsThatCannotBeNamed)
+{
+    fake().accounts["S-1-5-21-1111-2222-3333-1001"] = {L"CORP", std::wstring(300, L'x')};
+    fake().refuseRetry = {"S-1-5-21-1111-2222-3333-1001"}; // too long at first, then not found
+    fake().accounts["S-1-5-32-544"] = {L"BUILTIN", L""};   // resolves to an empty name
+    SidBytes invalid = everyoneSid();
+    invalid[0] = std::byte{9};
+    fake().groups = {{.sid = adminsSid(), .attributes = SE_GROUP_ENABLED}, {.sid = invalid, .attributes = SE_GROUP_ENABLED}};
+    WindowsProcessSecurityReader reader(fakeApi());
+    const SecurityReadResult result = reader.readSecurity(TARGET);
+    ASSERT_EQ(result.status, SecurityReadStatus::Ok);
+    const SecurityAccount user{.sid = "S-1-5-21-1111-2222-3333-1001", .name = ""};
+    EXPECT_EQ(result.security.tokenUser, std::optional{user});
+    const std::vector<TokenGroup> groups{{.account = {.sid = "S-1-5-32-544", .name = ""}, .enabled = true, .denyOnly = false},
+                                         {.account = {.sid = "", .name = ""}, .enabled = true, .denyOnly = false}};
+    EXPECT_EQ(result.security.tokenGroups, std::optional{groups}); // an invalid SID is neither shown as text nor looked up
+    EXPECT_EQ(fake().accountLookups, 3);                           // the user twice, Administrators once
+}
+
+TEST_F(WindowsProcessSecurityTest, TheNameCacheStartsOverWhenFull)
+{
+    fake().groups.clear();
+    constexpr DWORD GROUPS = 1100;
+    for (DWORD rid = 0; rid < GROUPS; ++rid)
+    {
+        fake().groups.push_back({.sid = makeSid(5, {21, 7, 7, 7, 10000 + rid}), .attributes = SE_GROUP_ENABLED});
+    }
+    WindowsProcessSecurityReader reader(fakeApi());
+    const SecurityReadResult result = reader.readSecurity(TARGET);
+    ASSERT_EQ(result.status, SecurityReadStatus::Ok);
+    EXPECT_EQ(result.security.tokenGroups.value_or(std::vector<TokenGroup>{}).size(), GROUPS);
+    // The user and 1,023 groups filled it; the 1,025th SID emptied it, and the last 76 groups came after.
+    EXPECT_EQ(reader.cachedAccountCount(), (1U + GROUPS) - 1024U);
 }
 
 /// ConvertSidToStringSidW's text for @p sid.

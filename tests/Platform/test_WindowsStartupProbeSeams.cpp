@@ -3,7 +3,8 @@
 /// values and their failures, the Startup folders' listing (plain files, shortcuts read, broken and
 /// with a missing target, desktop.ini and subfolders skipped, non-ASCII names), StartupApproved's
 /// enabled and disabled states, folders that can't be found or read, and packaged apps' startup tasks
-/// (#1798: the manifest parser, recorded states, installed packages and their names). The registry is never read
+/// (#1798: the manifest parser, recorded states, installed packages and their names, and packages that
+/// can't be listed or read). The registry is never read
 /// or written; the "Startup folders" are directories the test makes under its own temp directory.
 
 #include "Platform/IStartupProbe.h"
@@ -91,6 +92,7 @@ struct FakePackage
     std::wstring family;
     std::wstring fullName;
     std::wstring folder;
+    bool pathFailsAfterSizing = false; ///< GetPackagePathByFullName sizes the folder, then fails.
 };
 
 /// The fake registry, known folders and packages. Index + 1 into keys is a fake HKEY's value. Reset per test.
@@ -100,6 +102,7 @@ struct FakeSystem
     std::vector<FakePackage> packages;
     std::vector<std::pair<std::wstring, std::wstring>> resources; ///< SHLoadIndirectString source and text.
     int packageLookups = 0;                                       ///< GetPackagePathByFullName calls.
+    std::wstring familyFailingAfterSizing;                        ///< GetPackagesByPackageFamily sizes it, then fails.
     std::wstring userFolder;                                      ///< FOLDERID_Startup; the call fails when empty
     std::wstring commonFolder;                                    ///< FOLDERID_CommonStartup; the call fails when empty
     int opened = 0;                                               ///< Open minus closed.
@@ -325,6 +328,10 @@ LONG WINAPI fakePackagesByFamily(PCWSTR family, UINT32* count, PWSTR* fullNames,
         *bufferChars = needed;
         return ERROR_INSUFFICIENT_BUFFER;
     }
+    if (fake().familyFailingAfterSizing == family)
+    {
+        return ERROR_ACCESS_DENIED;
+    }
     WCHAR* next = buffer;
     std::size_t index = 0;
     while (index < matches.size())
@@ -352,6 +359,10 @@ LONG WINAPI fakePackagePath(PCWSTR fullName, UINT32* pathChars, PWSTR path)
     {
         *pathChars = needed;
         return ERROR_INSUFFICIENT_BUFFER;
+    }
+    if (it->pathFailsAfterSizing)
+    {
+        return ERROR_ACCESS_DENIED;
     }
     std::memcpy(path, it->folder.c_str(), needed * sizeof(wchar_t));
     *pathChars = needed;
@@ -910,6 +921,78 @@ TEST_F(WindowsStartupProbeSeamsTest, AnUnreadableManifestListsNoTasksForItsPacka
 
     WindowsStartupProbe probe(fakeFunctions());
     EXPECT_TRUE(probe.enumerate().empty());
+}
+TEST_F(WindowsStartupProbeSeamsTest, PackagedTasksThatCantBeResolvedAreSkipped)
+{
+    // Quirks: installed, but no name loads, so the task is shown by its TaskId. Its key is listed twice in
+    // different case (one entry), and a third key's State isn't a number (not a task).
+    const std::filesystem::path quirks = makeFolder(L"quirks");
+    writeFile(quirks / L"AppxManifest.xml",
+              manifestXml(R"(
+        <uap5:Extension Category="windows.startupTask">
+          <uap5:StartupTask TaskId="Bare" Enabled="true" DisplayName="ms-resource:Missing" />
+        </uap5:Extension>)",
+                          "ms-resource:AlsoMissing"));
+    fake().packages.push_back({.family = L"Contoso.Quirks_q1", .fullName = L"Contoso.Quirks_1.0.0.0_x64__q1", .folder = quirks.wstring()});
+    addTaskKey(L"Contoso.Quirks_q1", L"Bare", {{.name = L"State", .type = REG_DWORD, .data = dwordData(2)}});
+    addTaskKey(L"Contoso.Quirks_q1", L"BARE", {{.name = L"State", .type = REG_DWORD, .data = dwordData(2)}});
+    addTaskKey(L"Contoso.Quirks_q1", L"Text", {{.name = L"State", .type = REG_SZ, .data = stringData(L"2")}});
+
+    // Families whose package can't be read: the family's names, then a package's folder, refused after
+    // they were sized; a folder with no manifest; and a manifest another handle holds exclusively.
+    fake().familyFailingAfterSizing = L"Contoso.Listless_l1";
+    fake().packages.push_back({.family = L"Contoso.Listless_l1", .fullName = L"Contoso.Listless_1_x64__l1", .folder = quirks.wstring()});
+    fake().packages.push_back({.family = L"Contoso.Pathless_p1",
+                               .fullName = L"Contoso.Pathless_1_x64__p1",
+                               .folder = quirks.wstring(),
+                               .pathFailsAfterSizing = true});
+    fake().packages.push_back(
+        {.family = L"Contoso.NoManifest_n1", .fullName = L"Contoso.NoManifest_1_x64__n1", .folder = makeFolder(L"empty").wstring()});
+    const std::filesystem::path locked = makeFolder(L"locked");
+    writeFile(locked / L"AppxManifest.xml", manifestXml(""));
+    fake().packages.push_back({.family = L"Contoso.Locked_k1", .fullName = L"Contoso.Locked_1_x64__k1", .folder = locked.wstring()});
+    for (const wchar_t* family : {L"Contoso.Listless_l1", L"Contoso.Pathless_p1", L"Contoso.NoManifest_n1", L"Contoso.Locked_k1"})
+    {
+        addTaskKey(family, L"Bare", {{.name = L"State", .type = REG_DWORD, .data = dwordData(2)}});
+    }
+    HANDLE lock =
+        CreateFileW((locked / L"AppxManifest.xml").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(lock, INVALID_HANDLE_VALUE);
+
+    WindowsStartupProbe probe(fakeFunctions());
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    CloseHandle(lock);
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].registrationName, "Bare");
+    EXPECT_EQ(entries[0].name, "Bare") << "neither the task's nor the package's name loads";
+    EXPECT_EQ(entries[0].packageFamily, "Contoso.Quirks_q1");
+}
+
+TEST_F(WindowsStartupProbeSeamsTest, ARunValueOfOnlySpacesNamesNoProgram)
+{
+    addKey(HKEY_CURRENT_USER, RUN_KEY).values = {{.name = L"Spaces", .type = REG_SZ, .data = stringData(L"   ")}};
+    WindowsStartupProbe probe(fakeFunctions());
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_EQ(entries[0].name, "Spaces");
+    EXPECT_TRUE(entries[0].executablePath.empty());
+    EXPECT_EQ(entries[0].target, StartupTargetState::Unresolved);
+}
+
+TEST_F(WindowsStartupProbeSeamsTest, AShortcutWithoutATargetReadsNothing)
+{
+    // A shortcut that was given arguments but no target.
+    const std::filesystem::path shortcut = m_Root / L"NoTarget.lnk";
+    {
+        ComPtr<IShellLinkW> link;
+        ComPtr<IPersistFile> file;
+        ASSERT_TRUE(SUCCEEDED(CoCreateInstance(
+            CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, reinterpret_cast<void**>(link.releaseAndGetAddressOf()))));
+        ASSERT_TRUE(SUCCEEDED(link->SetArguments(L"--x")));
+        ASSERT_TRUE(SUCCEEDED(link->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(file.releaseAndGetAddressOf()))));
+        ASSERT_TRUE(SUCCEEDED(file->Save(shortcut.c_str(), TRUE)));
+    }
+    EXPECT_FALSE(Windows::readShortcutCommand(shortcut).has_value());
 }
 } // namespace
 } // namespace Platform
