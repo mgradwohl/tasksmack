@@ -15,6 +15,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessOverviewCard.h"
 #include "App/Panels/ProcessPriorityView.h"
+#include "Core/Application.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
@@ -25,6 +26,11 @@
 
 #ifdef _WIN32
 #include "App/Panels/ProcessDetailsPanel_PriorityHelpers.h" // The Windows class slider: its ID and minimum width
+#include "Core/HeadlessVideoDriverTestUtils.h"              // The folder dialog's owner: a display for the main window
+#include "Core/Window.h"
+
+#include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_video.h>
 #endif
 
 #include <gtest/gtest.h>
@@ -41,6 +47,10 @@
 #include <string>
 #include <string_view>
 #include <thread>
+
+#ifdef _WIN32
+#include <cstdlib> // free(), for _dupenv_s()'s copy
+#endif
 
 namespace App
 {
@@ -1045,5 +1055,114 @@ TEST_F(ProcessActionsBlockRenderTest, TheDumpConfirmWarnsOfLowSpaceAndOffersAFol
     (void) runFrame(body);
     EXPECT_FALSE(h.actionsView.dumpView().active());
 }
+
+// --- The folder dialog's owner window (#2040) ------------------------------------------------------
+
+/// Opens the dump's confirm, presses Save dump to..., and returns the owner window the folder dialog
+/// was handed (the mock records it; the dialog is the mock's, so nothing is shown).
+void* folderDialogOwner()
+{
+    TestMocks::MockProcessActions mock;
+    ProcessActionsView actionsView;
+    ProcessPriorityView priorityView;
+    const std::string name = "victim";
+    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    caps.canCreateDump = true;
+    caps.canChooseDumpFolder = true;
+    mock.setCapabilities(caps);
+    const ProcessActionsBlock::Context context{
+        .actionsView = &actionsView,
+        .priorityView = &priorityView,
+        .actions = &mock,
+        .capabilities = caps,
+        .processName = &name,
+        .target = TARGET,
+        .currentNice = std::optional<std::int32_t>{0},
+    };
+    const auto frame = [&]
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(1600.0F, 1000.0F));
+        ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        (void) ProcessActionsBlock::render(context, layoutFor(caps, 1600.0F, 600.0F), infoCardHeight(6.0F));
+        actionsView.renderConfirmation(&mock, TARGET);
+        ImGui::End();
+        ImGui::Render();
+    };
+    frame();
+    const ImGuiWindow* actions = actionsWindow();
+    EXPECT_NE(actions, nullptr);
+    if (actions == nullptr)
+    {
+        return nullptr;
+    }
+    ImGui::ActivateItemByID(ImHashStr(DumpDetail::CREATE_DUMP_LABEL, 0, actions->ID));
+    frame();
+    frame();
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    EXPECT_NE(modal, nullptr);
+    if (modal == nullptr)
+    {
+        return nullptr;
+    }
+    ImGui::ActivateItemByID(ImHashStr(DumpDetail::CHOOSE_FOLDER_LABEL, 0, modal->ID));
+    frame(); // the press
+    frame();
+    static_cast<void>(actionsView.dumpView().takeFolderChoice(&mock, true)); // after the worker wrote the mock's record
+    EXPECT_EQ(mock.chooseFolderCount(), 1);
+    return mock.lastFolderOwner();
+}
+
+TEST_F(ProcessActionsBlockRenderTest, WithoutAnApplicationTheFolderDialogHasNoOwner)
+{
+    EXPECT_EQ(folderDialogOwner(), nullptr);
+}
+
+TEST_F(ProcessActionsBlockRenderTest, AHeadlessApplicationGivesTheFolderDialogNoOwner)
+{
+    // No window to be modal to (#880's headless driver): the dialog is shown without an owner.
+    Core::ApplicationSpecification spec;
+    spec.Name = "FolderDialogOwnerTest";
+    spec.Headless = true;
+    const Core::Application app(spec);
+    ASSERT_FALSE(app.hasWindow());
+    EXPECT_EQ(folderDialogOwner(), nullptr);
+}
+
+#ifdef _WIN32
+/// A display that can back the app's window: never on CI, whose Windows runners are headless, as
+/// test_Application.cpp treats them.
+[[nodiscard]] bool hasDisplay()
+{
+    char* ci = nullptr;
+    std::size_t length = 0;
+    const bool onCi = _dupenv_s(&ci, &length, "CI") == 0 && ci != nullptr && std::string_view(ci) == "true";
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc
+    free(ci);
+    return TestSupport::enforceDisplayRequirement(!onCi && TestSupport::probeGLCapability());
+}
+
+// The one Windows-only line: the main window's HWND, which SDL has only on Windows.
+TEST_F(ProcessActionsBlockRenderTest, TheFolderDialogIsOwnedByTheMainWindowsHwnd)
+{
+    if (!hasDisplay())
+    {
+        GTEST_SKIP() << "No display available (headless environment)";
+    }
+    Core::ApplicationSpecification spec;
+    spec.Name = "FolderDialogOwnerTest";
+    spec.Width = 320;
+    spec.Height = 240;
+    spec.VSync = false;
+    const Core::Application app(spec);
+    ASSERT_TRUE(app.hasWindow());
+    const void* const hwnd =
+        SDL_GetPointerProperty(SDL_GetWindowProperties(app.getWindow().getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    ASSERT_NE(hwnd, nullptr);
+    EXPECT_EQ(folderDialogOwner(), hwnd); // modal to the main window, so it can't fall behind it
+}
+#endif
+
 } // namespace
 } // namespace App

@@ -379,5 +379,32 @@ TEST_F(SettingsDialogRenderTest, TheLimitedDataNoticeCheckboxEditsTheState)
     EXPECT_FALSE(m_State.showPrivilegeNotice);
 }
 
+#ifdef _WIN32
+// #2040: Windows only (#1492). The checkbox edits the state, which Save hands the layer; the
+// stored value is loaded into it, and Reset to defaults puts it back off.
+TEST_F(SettingsDialogRenderTest, TheUdpCheckboxEditsTheState)
+{
+    ASSERT_FALSE(m_State.udpEventTrace);
+    ASSERT_TRUE(openAndSettle().open);
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL);
+    (void) runFrame();
+    EXPECT_TRUE(m_State.udpEventTrace);
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL);
+    (void) runFrame();
+    EXPECT_FALSE(m_State.udpEventTrace);
+}
+#endif
+
+TEST(SettingsDialogStateTest, TheUdpTraceIsLoadedAndResetToOff)
+{
+    UserSettings settings;
+    settings.udpEventTrace = true;
+    SettingsDialog::State state;
+    SettingsDialog::load(state, settings, themes());
+    EXPECT_TRUE(state.udpEventTrace);
+    SettingsDialog::resetToDefaults(state);
+    EXPECT_EQ(state.udpEventTrace, UserSettings{}.udpEventTrace);
+}
+
 } // namespace
 } // namespace App

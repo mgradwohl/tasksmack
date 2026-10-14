@@ -363,6 +363,47 @@ TEST_F(SettingsLayerRenderTest, ResetThenSaveWritesTheDefaultsAndRaisesTheirEven
     EXPECT_EQ(m_Seen.udpEventTrace, std::vector<bool>{defaults.udpEventTrace}); // the Processes panel starts or stops it now
 }
 
+#ifdef _WIN32
+// #2040: the checkbox exists only on Windows (#1492). Ticking it and saving raises the event the
+// Processes panel starts the trace on; unticking it and saving raises it again, to stop it.
+TEST_F(SettingsLayerRenderTest, TheUdpCheckboxIsSavedAndRaisesItsEvent)
+{
+    UserSettings& settings = UserConfig::get().settings();
+    settings.udpEventTrace = false;
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL); // ticks it
+    pressSave();
+    EXPECT_FALSE(settle());
+    EXPECT_TRUE(settings.udpEventTrace);
+    EXPECT_EQ(m_Seen.udpEventTrace, std::vector<bool>{true});
+
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL); // and off again
+    pressSave();
+    EXPECT_FALSE(settle());
+    EXPECT_FALSE(settings.udpEventTrace);
+    EXPECT_EQ(m_Seen.udpEventTrace, (std::vector<bool>{true, false}));
+
+    // Saved to the redirected config: it reads back off.
+    UserConfig::get().settings().udpEventTrace = true;
+    UserConfig::get().load();
+    EXPECT_FALSE(UserConfig::get().settings().udpEventTrace);
+}
+
+TEST_F(SettingsLayerRenderTest, TheUdpCheckboxPutBackBeforeSaveRaisesNothing)
+{
+    UserSettings& settings = UserConfig::get().settings();
+    settings.udpEventTrace = false;
+    ASSERT_TRUE(openDialog());
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL); // ticked...
+    pressInBody(SettingsDialog::UDP_EVENT_TRACE_LABEL); // ...and unticked before Save
+    pressSave();
+    EXPECT_FALSE(settle());
+    EXPECT_FALSE(settings.udpEventTrace);
+    EXPECT_TRUE(m_Seen.udpEventTrace.empty()); // unchanged: the trace is left as it is
+}
+#endif
+
 TEST_F(SettingsLayerRenderTest, OpenThemesFolderStillOpensWhenItCantBeCreated)
 {
     // A file where the folder belongs: create_directories fails, and the path is opened anyway (the
