@@ -7,12 +7,17 @@
 // the build can't, so callers say "unavailable" rather than guess. Reads are synchronous and quick;
 // the System Information page makes them on its worker thread, never per frame.
 
+#include "Platform/IServiceActions.h"
+#include "Platform/IServiceProbe.h"
 #include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
 #include "Platform/Linux/SystemdServices.h"
 
+#include <chrono>
 #include <cstdint>
+#include <stop_token>
 #include <string>
+#include <string_view>
 
 namespace Platform::SystemdBus
 {
@@ -49,6 +54,27 @@ struct ServicesRead
 /// ListUnitFiles (every installed service and whether it is enabled), then each running service's
 /// MainPID, in one connection. Unprivileged.
 [[nodiscard]] ServicesRead readServices();
+
+/// How long a start or stop waits for the unit to get there, and how often it looks (#2006).
+struct UnitWait
+{
+    std::chrono::milliseconds timeout{10'000}; ///< Windows' bounded wait, per state change
+    std::chrono::milliseconds poll{100};
+};
+
+/// Starts the unit @p name (Manager.StartUnit, mode "replace") and waits until it is running, it
+/// fails, @p wait runs out or @p stopToken is stopped (#2006). Never asks polkit to prompt: refused
+/// unprivileged, it says "Requires administrator".
+[[nodiscard]] ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
+
+/// Stops the unit @p name and waits until it has stopped, unless a running unit depends on it (its
+/// RequiredBy or BoundBy): then nothing is sent and the refusal names them, as on Windows (#2006).
+[[nodiscard]] ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
+
+/// Sets the start type of @p name's unit file: Automatic enables it, Manual disables it, Disabled masks
+/// it, unmasking first when moving off Disabled; then reloads systemd, as systemctl does (#2006).
+/// Automatic (delayed) and the read-only types are refused.
+[[nodiscard]] ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType);
 
 /// Reads org.freedesktop.systemd1.Manager's Firmware/Loader/InitRD/Userspace/FinishTimestampMonotonic
 /// from the system bus. Unprivileged.

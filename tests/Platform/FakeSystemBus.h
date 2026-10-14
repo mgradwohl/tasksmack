@@ -115,6 +115,10 @@ class FakeSystemBus
     using IntMethod = std::function<MethodAnswer(std::int32_t argument)>;
     /// Answers a call with no arguments.
     using NoArgMethod = std::function<MethodAnswer()>;
+    /// Reads the call and replies to it itself (sd_bus_reply_method_return/_errorf), for arguments the
+    /// typed methods don't read: systemd's StartUnit (ss) and unit-file calls (as, b...) (#2006). Runs on
+    /// the bus thread, which also answers property reads, so it may change properties() as it goes.
+    using RawMethod = std::function<int(sd_bus_message* call)>;
 
     FakeSystemBus() = default;
     FakeSystemBus(const FakeSystemBus&) = delete;
@@ -165,6 +169,12 @@ class FakeSystemBus
 
     /// A method with no arguments, before start().
     void addNoArgMethod(const std::string& path, const std::string& interface, const std::string& member, NoArgMethod method)
+    {
+        m_Methods[path + '\n' + interface + '\n' + member] = std::move(method);
+    }
+
+    /// A method that reads and answers the call itself, before start().
+    void addRawMethod(const std::string& path, const std::string& interface, const std::string& member, RawMethod method)
     {
         m_Methods[path + '\n' + interface + '\n' + member] = std::move(method);
     }
@@ -588,6 +598,10 @@ class FakeSystemBus
         {
             return 0; // sd-bus answers UnknownMethod/UnknownObject
         }
+        if (const auto* raw = std::get_if<RawMethod>(&method->second))
+        {
+            return (*raw)(message);
+        }
         MethodAnswer answer;
         if (const auto* byString = std::get_if<StringMethod>(&method->second))
         {
@@ -657,7 +671,7 @@ class FakeSystemBus
     }
 
     Properties m_Properties;
-    std::map<std::string, std::variant<StringMethod, IntMethod, NoArgMethod>> m_Methods;
+    std::map<std::string, std::variant<StringMethod, IntMethod, NoArgMethod, RawMethod>> m_Methods;
     std::filesystem::path m_Dir;
     pid_t m_Daemon = 0; // NOLINT(misc-include-cleaner) - pid_t comes with <spawn.h> and <unistd.h>
     sd_bus* m_Service = nullptr;

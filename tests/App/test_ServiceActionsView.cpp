@@ -673,6 +673,20 @@ TEST_F(ServiceActionsViewRenderTest, StartupTypeMenuOffersTheOtherTypes)
     EXPECT_EQ(fake->startTypes.load(), 1);
 }
 
+// #2006: where the platform has no delayed automatic start (systemd), the menu leaves it out.
+TEST_F(ServiceActionsViewRenderTest, StartupTypeMenuLeavesOutADelayedStartThePlatformHasNot)
+{
+    Platform::ServiceActionCapabilities caps = ALL;
+    caps.canDelayStart = false;
+    const auto fake = std::make_shared<FakeServiceActions>(caps);
+    const auto spooler = service("Spooler", ServiceState::Running);
+    ServiceActionsView view(fake);
+    clickBarButton(view, &spooler, "Startup type " ICON_FA_CARET_DOWN);
+    const std::string text = barFrame(view, &spooler);
+    EXPECT_TRUE(text.contains("Disabled")) << text; // the menu is open
+    EXPECT_FALSE(text.contains("Automatic (delayed)")) << text;
+}
+
 TEST_F(ServiceActionsViewRenderTest, RowMenuStartupTypeSubmenuAsksBeforeDisabling)
 {
     const auto fake = std::make_shared<FakeServiceActions>();

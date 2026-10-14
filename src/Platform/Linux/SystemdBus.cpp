@@ -1,7 +1,9 @@
 #include "SystemdBus.h"
 
+#include "Platform/IServiceActions.h"
 #include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
+#include "Platform/Linux/SystemdActions.h"
 #include "Platform/Linux/SystemdServices.h"
 
 #include <cstdint>
@@ -15,14 +17,19 @@
 #include "Platform/Linux/NetworkdLinkJson.h"
 #include "Platform/ProcessEnvironment.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <format>
 #include <span>
+#include <stop_token>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1228,6 +1235,285 @@ ServicesRead readServices()
     return read;
 }
 
+namespace
+{
+
+constexpr const char* SYSTEMD_UNIT = "org.freedesktop.systemd1.Unit";
+constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
+
+/// A failed call as a ServiceActionResult, in the user's terms (SystemdActions::errorText()).
+[[nodiscard]] ServiceActionResult actionFailure(const BusError& error, int result)
+{
+    const sd_bus_error& raw = error.raw();
+    const std::string_view name = raw.name != nullptr ? std::string_view(raw.name) : std::string_view{};
+    const std::string message = (raw.message != nullptr)
+                                  ? std::string(raw.message)
+                                  : std::string(std::strerror(-result)); // NOLINT(concurrency-mt-unsafe) - one worker thread
+    return ServiceActionResult::failed(SystemdActions::errorText(name, message, timedOut(raw, result)));
+}
+
+/// The system bus for an action, or why not.
+[[nodiscard]] std::optional<std::string> openForAction(Bus& bus)
+{
+    if (const int result = openSystemBus(bus); result < 0)
+    {
+        return std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
+    }
+    // Never let polkit prompt: unprivileged, the call is refused with InteractiveAuthorizationRequired,
+    // which reads as "Requires administrator" (#2006).
+    (void) sd_bus_set_allow_interactive_authorization(bus.get(), 0);
+    return std::nullopt;
+}
+
+/// @p name's unit object (Manager.LoadUnit, which loads an installed unit that isn't), into @p path.
+[[nodiscard]] std::optional<ServiceActionResult> unitPath(sd_bus* bus, std::string_view name, std::string& path)
+{
+    BusError error;
+    Message reply;
+    const std::string unit(name);
+    if (const int result =
+            sd_bus_call_method(bus, SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "LoadUnit", error.get(), reply.out(), "s", unit.c_str());
+        result < 0)
+    {
+        return actionFailure(error, result);
+    }
+    const char* object = nullptr;
+    if (const int result = sd_bus_message_read(reply.get(), "o", &object); result < 0 || object == nullptr)
+    {
+        return ServiceActionResult::failed("systemd's answer couldn't be read");
+    }
+    path = object;
+    return std::nullopt;
+}
+
+/// A unit's ActiveState, or empty when it can't be read.
+[[nodiscard]] std::string activeStateOf(sd_bus* bus, const std::string& unitPath)
+{
+    BusError error;
+    char* state = nullptr;
+    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_UNIT, "ActiveState", error.get(), &state) < 0 ||
+        state == nullptr)
+    {
+        return {};
+    }
+    std::string text(state);
+    std::free(state); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
+    return text;
+}
+
+/// Whether the job at @p jobPath has finished: systemd removes a job's object once it is done.
+[[nodiscard]] bool jobGone(sd_bus* bus, const std::string& jobPath)
+{
+    BusError error;
+    char* state = nullptr;
+    const int result = sd_bus_get_property_string(bus, SYSTEMD, jobPath.c_str(), SYSTEMD_JOB, "State", error.get(), &state);
+    std::free(state); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - as above
+    return result < 0;
+}
+
+/// Sends Manager.@p method (StartUnit or StopUnit) for @p name in "replace" mode and waits for @p goal.
+[[nodiscard]] ServiceActionResult runJob(sd_bus* bus,
+                                         std::string_view name,
+                                         const std::string& unitObject,
+                                         const char* method,
+                                         SystemdActions::Goal goal,
+                                         const std::stop_token& stopToken,
+                                         UnitWait wait)
+{
+    if (stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested();
+    }
+    std::string jobPath;
+    {
+        BusError error;
+        Message reply;
+        const std::string unit(name);
+        if (const int result = sd_bus_call_method(
+                bus, SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, method, error.get(), reply.out(), "ss", unit.c_str(), "replace");
+            result < 0)
+        {
+            return actionFailure(error, result);
+        }
+        const char* job = nullptr;
+        if (sd_bus_message_read(reply.get(), "o", &job) >= 0 && job != nullptr)
+        {
+            jobPath = job;
+        }
+    }
+    const auto giveUpAt = std::chrono::steady_clock::now() + wait.timeout;
+    for (;;)
+    {
+        const std::string state = activeStateOf(bus, unitObject);
+        const bool gone = jobPath.empty() || jobGone(bus, jobPath);
+        switch (SystemdActions::waitStep(goal, state, gone))
+        {
+        case SystemdActions::WaitStep::Done:
+            return ServiceActionResult::succeeded();
+        case SystemdActions::WaitStep::Failed:
+            return ServiceActionResult::failed(goal == SystemdActions::Goal::Running
+                                                   ? "It didn't start (" + (state.empty() ? std::string("state unknown") : state) + ")"
+                                                   : "It didn't stop (" + (state.empty() ? std::string("state unknown") : state) + ")");
+        case SystemdActions::WaitStep::Wait:
+            break;
+        }
+        if (stopToken.stop_requested())
+        {
+            return ServiceActionResult::stopRequested();
+        }
+        if (std::chrono::steady_clock::now() >= giveUpAt)
+        {
+            const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(wait.timeout).count();
+            return ServiceActionResult::failed(goal == SystemdActions::Goal::Running ? std::format("It didn't start within {} s", seconds)
+                                                                                     : std::format("It didn't stop within {} s", seconds));
+        }
+        std::this_thread::sleep_for(wait.poll);
+    }
+}
+
+/// The units in @p unitObject's RequiredBy and BoundBy that are running: those a stop would take down.
+[[nodiscard]] std::vector<std::string> runningDependents(sd_bus* bus, const std::string& unitObject)
+{
+    std::vector<std::string> running;
+    for (const char* property : {"RequiredBy", "BoundBy"})
+    {
+        BusError error;
+        char** names = nullptr;
+        if (sd_bus_get_property_strv(bus, SYSTEMD, unitObject.c_str(), SYSTEMD_UNIT, property, error.get(), &names) < 0 || names == nullptr)
+        {
+            continue;
+        }
+        for (char* const* entry = names; *entry != nullptr; ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
+        {
+            const std::string dependent(*entry);
+            std::free(*entry); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - strv entries are malloc'd
+            std::string dependentObject;
+            if (!unitPath(bus, dependent, dependentObject).has_value() && SystemdActions::isRunning(activeStateOf(bus, dependentObject)) &&
+                std::ranges::find(running, dependent) == running.end())
+            {
+                running.push_back(dependent);
+            }
+        }
+        std::free(static_cast<void*>(names)); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - as above
+    }
+    return running;
+}
+
+/// Manager.@p method over the one unit file @p name: UnmaskUnitFiles/DisableUnitFiles (as, b runtime),
+/// MaskUnitFiles (as, b runtime, b force) or EnableUnitFiles (as, b runtime, b force). The changes it
+/// answers with aren't needed.
+[[nodiscard]] std::optional<ServiceActionResult> changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool withForce)
+{
+    BusError error;
+    Message call;
+    Message reply;
+    const std::string unit(name);
+    int result = sd_bus_message_new_method_call(bus, call.out(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, method);
+    if (result >= 0)
+    {
+        result = sd_bus_message_append(call.get(), "as", 1, unit.c_str());
+    }
+    if (result >= 0)
+    {
+        result = withForce ? sd_bus_message_append(call.get(), "bb", 0, 0) : sd_bus_message_append(call.get(), "b", 0);
+    }
+    if (result >= 0)
+    {
+        result = sd_bus_call(bus, call.get(), 0, error.get(), reply.out());
+    }
+    if (result < 0)
+    {
+        return actionFailure(error, result);
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait)
+{
+    Bus bus;
+    if (const auto failed = openForAction(bus))
+    {
+        return ServiceActionResult::failed(*failed);
+    }
+    std::string unitObject;
+    if (auto failed = unitPath(bus.get(), name, unitObject))
+    {
+        return std::move(*failed);
+    }
+    return runJob(bus.get(), name, unitObject, "StartUnit", SystemdActions::Goal::Running, stopToken, wait);
+}
+
+ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait)
+{
+    Bus bus;
+    if (const auto failed = openForAction(bus))
+    {
+        return ServiceActionResult::failed(*failed);
+    }
+    std::string unitObject;
+    if (auto failed = unitPath(bus.get(), name, unitObject))
+    {
+        return std::move(*failed);
+    }
+    // Never stop running dependents with it (#2006): systemd would take every unit that Requires= it.
+    if (const std::vector<std::string> dependents = runningDependents(bus.get(), unitObject); !dependents.empty())
+    {
+        return ServiceActionResult::failed(SystemdActions::dependentsText(dependents));
+    }
+    return runJob(bus.get(), name, unitObject, "StopUnit", SystemdActions::Goal::Stopped, stopToken, wait);
+}
+
+ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType)
+{
+    const std::optional<SystemdActions::StartTypeSteps> steps = SystemdActions::startTypeSteps(startType);
+    if (!steps.has_value())
+    {
+        return ServiceActionResult::failed("systemd services have no such startup type");
+    }
+    Bus bus;
+    if (const auto failed = openForAction(bus))
+    {
+        return ServiceActionResult::failed(*failed);
+    }
+    if (steps->unmaskFirst)
+    {
+        if (auto failed = changeUnitFile(bus.get(), "UnmaskUnitFiles", name, false))
+        {
+            return std::move(*failed);
+        }
+    }
+    const char* method = "DisableUnitFiles";
+    bool withForce = false;
+    switch (steps->change)
+    {
+    case SystemdActions::FileChange::Enable:
+        method = "EnableUnitFiles";
+        withForce = true;
+        break;
+    case SystemdActions::FileChange::Mask:
+        method = "MaskUnitFiles";
+        withForce = true;
+        break;
+    case SystemdActions::FileChange::Disable:
+        break;
+    }
+    if (auto failed = changeUnitFile(bus.get(), method, name, withForce))
+    {
+        return std::move(*failed);
+    }
+    // As systemctl does after changing unit files, so systemd sees the new state.
+    BusError error;
+    Message reply;
+    if (const int result = sd_bus_call_method(bus.get(), SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "Reload", error.get(), reply.out(), "");
+        result < 0)
+    {
+        return actionFailure(error, result);
+    }
+    return ServiceActionResult::succeeded();
+}
+
 #else
 
 BootTimestampsRead readBootTimestamps()
@@ -1292,6 +1578,21 @@ ServicesRead readServices()
     ServicesRead read;
     read.error = "This build has no systemd support (it was built without libsystemd)";
     return read;
+}
+
+ServiceActionResult startUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/)
+{
+    return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
+}
+
+ServiceActionResult stopUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/)
+{
+    return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
+}
+
+ServiceActionResult setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/)
+{
+    return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
 
 #endif

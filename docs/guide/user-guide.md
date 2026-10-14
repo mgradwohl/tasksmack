@@ -328,7 +328,7 @@ After Modules (and, on Linux, Security), the **Open files** section (closed by d
 
 ### Services
 
-The **Services** tab lists the system's services (Windows' Service Control Manager, Linux's systemd), and on Windows starts, stops and restarts them and changes their startup type:
+The **Services** tab lists the system's services (Windows' Service Control Manager, Linux's systemd), starts, stops and restarts them, and changes their startup type:
 
 - **Columns:** **Name** (the service's short name), **Display name**, **State** (Running in the running colour, Starting/Stopping/Resuming/Pausing in the amber pending colour, Paused, Stopped muted), **Start type** (Automatic, Automatic (delayed), Manual, Disabled), **PID** (blank when the service isn't running) and **Account** (the account it logs on as).
 - Each service's name has its program's icon beside it: the icon of the executable its command line runs. Services hosted by `svchost.exe` (most of Windows' own), and those whose program can't be read, show a generic gear instead, since the shared host's icon says nothing about the service.
@@ -348,7 +348,10 @@ The **Services** tab lists the system's services (Windows' Service Control Manag
   - **PID** is a running service's main process. Installed services systemd hasn't loaded (a disabled one nothing has started) are listed too, Stopped, under their unit name.
   - The Account column is hidden, since systemd doesn't say which account the service runs as without more reads; the column header's menu still offers it.
   - Without systemd as the init system (some containers, WSL without systemd) the tab says "systemd isn't running here"; a build without libsystemd says so.
-  - Starting, stopping and enabling services is still to come.
+  - **Actions (Linux):** the same menu and buttons as on Windows, through systemd's D-Bus Manager. Start and stop queue a job in `replace` mode and wait up to 10 seconds for the unit to be running, or stopped; a start whose unit ends up not running (a condition unmet, a program that exits at once) says so ("It didn't start (inactive)"). Restart is a stop, then a start.
+    - **Startup type:** Automatic enables the unit file, Manual disables it, and Disabled masks it (a disabled systemd unit can still be started by hand or by another unit, which is Windows' Manual; masking is what stops that). Choosing Automatic or Manual for a masked service unmasks it first. systemd is then reloaded, as `systemctl` does. There is no Automatic (delayed) on Linux, so the menu leaves it out.
+    - Stopping a service that running units depend on (`RequiredBy` or `BoundBy`) is refused, naming them, as on Windows: systemd would stop them too.
+    - Without root, systemd asks polkit, and TaskSmack never lets polkit open a password prompt: a refused action reports "Requires administrator". Run TaskSmack as root, or allow the actions in a polkit rule, to control services.
 
 ### Startup Apps
 
@@ -538,7 +541,7 @@ The following table summarises capabilities that differ between Windows and Linu
 | Shared memory per process | ✅ (`/proc/[pid]/statm`) | ❌ |
 | Process environment variables (Process Details) | ✅ (`/proc/[pid]/environ`, own user's processes, or root / `CAP_SYS_PTRACE`) | ❌ |
 | Per-process TCP/UDP connections (Process Details) | ✅ (`INET_DIAG` or `/proc/[pid]/net/*`, own user's processes, or root / `CAP_SYS_PTRACE`) | ✅ (`GetExtendedTcpTable` / `GetExtendedUdpTable`, every user's processes; UDP always `UNCONN`) |
-| Services tab | ❌ (planned: systemd) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
+| Services tab | ✅ (systemd over D-Bus; listing needs no root, actions need root or a polkit rule) | ✅ (Service Control Manager; listing needs no administrator, most actions do) |
 | Services a process runs (Services column, Process Details) | ✅ (the systemd service from `/proc/[pid]/cgroup`) | ✅ (the service list's PIDs; no administrator needed) |
 | System Information: Operating system section | ✅ (os-release, uname, `/proc`, XDG session, container/VM hints) | ✅ (CurrentVersion registry key, session APIs) |
 | System Information: Firmware & board section | ✅ (`/sys/class/dmi/id`; serials, UUID and SMBIOS version need root) | ✅ (SMBIOS table, `GetFirmwareType`) |

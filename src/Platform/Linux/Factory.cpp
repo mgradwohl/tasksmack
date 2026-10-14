@@ -12,6 +12,7 @@
 #include "LinuxProcessOpenFilesReader.h"
 #include "LinuxProcessProbe.h"
 #include "LinuxProcessSecurityReader.h"
+#include "LinuxServiceActions.h"
 #include "LinuxServiceProbe.h"
 #include "LinuxSystemInfoProbe.h"
 #include "LinuxSystemProbe.h"
@@ -136,8 +137,8 @@ std::unique_ptr<IServiceProbe> makeServiceProbe()
 
 std::unique_ptr<IServiceActions> makeServiceActions()
 {
-    // systemd control (D-Bus StartUnit/StopUnit/...) is the Linux lane's follow-up to #1577.
-    return std::make_unique<UnsupportedServiceActions>();
+    // systemd's StartUnit/StopUnit and unit-file calls over D-Bus (#2006 phase 2).
+    return std::make_unique<LinuxServiceActions>();
 }
 
 } // namespace Platform

@@ -369,6 +369,10 @@ void ServiceActionsView::renderStartTypeItems(const Platform::ServiceInfo& servi
     }};
     for (const auto& [type, label] : CHOICES)
     {
+        if (type == AutomaticDelayed && !m_Capabilities.canDelayStart)
+        {
+            continue; // systemd has no delayed start (#2006)
+        }
         const bool current = service.startType == type;
         if (ImGui::MenuItem(label, nullptr, current, !current && !busy()))
         {
@@ -419,8 +423,8 @@ void ServiceActionsView::renderActionBar(const Platform::ServiceInfo* selected)
     {
         // Kept enabled: a service's own permissions may still allow the change.
         ImGui::TextColored(scheme.textMuted, ICON_FA_CIRCLE_INFO "  Requires administrator for most services");
-        ImGui::SetItemTooltip("TaskSmack isn't running as administrator. Windows may still allow some services, by their own "
-                              "permissions; the others report \"Requires administrator\".");
+        ImGui::SetItemTooltip("TaskSmack isn't running as administrator. Some services may still be allowed, by their own "
+                              "permissions on Windows or by polkit on Linux; the others report \"Requires administrator\".");
     }
     else if (selected == nullptr)
     {

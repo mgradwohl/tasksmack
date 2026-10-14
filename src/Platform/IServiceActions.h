@@ -46,6 +46,9 @@ struct ServiceActionCapabilities
     bool canStop = false;
     bool canRestart = false;
     bool canSetStartType = false;
+    /// Whether "Automatic (delayed)" is a start type here: Windows' delayed auto-start. systemd has none,
+    /// so Linux clears it and the startup-type menu leaves it out (#2006).
+    bool canDelayStart = true;
     /// Whether TaskSmack runs elevated. Not elevated, most actions are refused, but a service's own
     /// security descriptor may still allow some, so the UI only warns rather than disabling them.
     bool elevated = false;
@@ -83,8 +86,8 @@ class IServiceActions
     [[nodiscard]] virtual ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) = 0;
 };
 
-/// The actions for a platform without service control (Linux until systemd control lands, synthetic
-/// runs): every capability false, and every action refused.
+/// The actions for a platform without service control (synthetic runs, a Linux build without systemd
+/// support): every capability false, and every action refused.
 class UnsupportedServiceActions final : public IServiceActions
 {
   public:
