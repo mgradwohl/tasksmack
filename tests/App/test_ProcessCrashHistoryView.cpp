@@ -265,6 +265,36 @@ TEST_F(ProcessCrashHistoryViewRenderTest, DrawsTheLineAndMarksItDrawn)
     EXPECT_TRUE(none.contains("None in the last 14 days")) << none;
 }
 
+// #1891: hovering the line lists the crashes and points to the System tab.
+TEST_F(ProcessCrashHistoryViewRenderTest, HoveringTheLineListsTheCrashes)
+{
+    const auto history = std::make_shared<Domain::CrashHistory>([] { return CrashesInfo{}; });
+    history->publish(listed(OsFamily::Windows, {crash("app.exe", 1'790'000'000)}), 1'790'000'100);
+    ProcessCrashHistoryView view;
+    view.setHistory(history);
+    ASSERT_TRUE(renderAndCapture(view, "app.exe").contains("Recent crashes:"));
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+
+    // Along the line, the first in the window's content.
+    const ImGuiWindow* window = ImGui::FindWindowByName("Details");
+    ASSERT_NE(window, nullptr);
+    const ImVec2 start = window->ContentRegionRect.Min;
+    const float y = start.y + (ImGui::GetTextLineHeight() * 0.5F);
+    bool shown = false;
+    for (int step = 0; step < 60 && !shown; ++step)
+    {
+        ImGui::GetIO().AddMousePosEvent(start.x + 2.0F + (static_cast<float>(step) * 8.0F), y);
+        for (int settle = 0; settle < 2 && !shown; ++settle)
+        {
+            shown = renderAndCapture(view, "app.exe").contains("System tab");
+        }
+    }
+    EXPECT_TRUE(shown) << "the line's tooltip";
+}
+
 TEST_F(ProcessCrashHistoryViewRenderTest, DrawsNothingWithoutAHistoryOrOnAnUnsupportedPlatform)
 {
     ProcessCrashHistoryView none;
