@@ -28,8 +28,10 @@
 
 #include <map>
 #include <mutex>
+#include <thread>
 #include <utility>
 
+#include <stdlib.h>                  // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv(), which <cstdlib> doesn't declare
 #include <systemd/sd-bus-protocol.h> // NOLINT(misc-include-cleaner) - sd_bus_message here on newer libsystemd, sd-bus.h on older
 #include <systemd/sd-bus.h>
 #endif
@@ -411,6 +413,98 @@ TEST_F(SystemdActionsFakeTest, EachStartTypeSendsItsUnitFileCallsThenReloads)
     const ServiceActionResult delayed = SystemdBus::setUnitStartType("cron.service", ServiceStartType::AutomaticDelayed);
     EXPECT_FALSE(delayed.ok);
     EXPECT_EQ(calls().size(), expected.size());
+}
+
+TEST_F(SystemdActionsFakeTest, AStopOfAnUnknownServiceIsNoSuchService)
+{
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    EXPECT_EQ(SystemdBus::stopUnit("nope.service", stop.get_token(), QUICK).message, "No such service");
+}
+
+TEST_F(SystemdActionsFakeTest, AUnitWhoseStateCantBeReadDidntStart)
+{
+    // web.service's object answers no ActiveState, and its start job is done: what it ended up as is
+    // unknown, so the start isn't reported as a success.
+    serveJob("StartUnit", "active"); // moves cron, not web
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit("web.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't start (state unknown)");
+}
+
+TEST_F(SystemdActionsFakeTest, AStopRequestedWhileWaitingEndsTheWait)
+{
+    // Still activating, its job still queued: a stop request (TaskSmack closing) ends the wait at the
+    // next poll, as a cancellation, without waiting out the timeout.
+    m_Bus.properties()[JOB_PATH]["org.freedesktop.systemd1.Job"]["State"] = std::string("running");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveJob("StartUnit", "activating");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    std::stop_source stop;
+    std::thread canceller(
+        [&stop]
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            stop.request_stop();
+        });
+    const ServiceActionResult result = SystemdBus::startUnit(
+        "cron.service", stop.get_token(), {.timeout = std::chrono::seconds(10), .poll = std::chrono::milliseconds(10)});
+    canceller.join();
+    EXPECT_TRUE(result.cancelled);
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace"})); // the request already sent stands
+}
+
+TEST_F(SystemdActionsFakeTest, ALoadUnitAnswerThatIsntAnObjectPathFailsTheAction)
+{
+    m_Bus.addRawMethod(
+        SYSTEMD_PATH, MANAGER, "LoadUnit", [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, "s", "not a path"); });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    EXPECT_EQ(SystemdBus::startUnit("cron.service", stop.get_token(), QUICK).message, "systemd's answer couldn't be read");
+}
+
+TEST_F(SystemdActionsFakeTest, EachRefusedUnitFileStepStopsTheChange)
+{
+    // Unmask refused: Automatic stops there. Mask refused: Disabled fails. Reload refused: the change
+    // was made but systemd wasn't told, which is reported too.
+    const auto refuse = [](sd_bus_message* call) -> int
+    {
+        return sd_bus_reply_method_errorf(
+            call, "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.");
+    };
+    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "UnmaskUnitFiles", refuse);
+    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "MaskUnitFiles", refuse);
+    serveUnitFileCall("DisableUnitFiles");
+    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "Reload", refuse);
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+
+    EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic).message, "Requires administrator");
+    EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Disabled).message, "Requires administrator");
+    EXPECT_TRUE(calls().empty()) << "nothing past the refused step";
+}
+
+TEST(SystemdActionsNoBusTest, WithoutASystemBusEveryActionSaysSo)
+{
+    const char* saved = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
+    const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
+    ASSERT_EQ(setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path=/nonexistent/tasksmack-test-bus", 1), 0); // NOLINT(concurrency-mt-unsafe)
+
+    const std::string unreachable = "The system bus couldn't be reached";
+    const std::stop_source stop;
+    EXPECT_TRUE(SystemdBus::startUnit("cron.service", stop.get_token(), QUICK).message.starts_with(unreachable));
+    EXPECT_TRUE(SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK).message.starts_with(unreachable));
+    EXPECT_TRUE(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Manual).message.starts_with(unreachable));
+
+    if (savedAddress.has_value())
+    {
+        setenv("DBUS_SYSTEM_BUS_ADDRESS", savedAddress->c_str(), 1); // NOLINT(concurrency-mt-unsafe)
+    }
+    else
+    {
+        unsetenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe)
+    }
 }
 
 #endif // TASKSMACK_HAS_SDBUS
