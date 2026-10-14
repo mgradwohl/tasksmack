@@ -272,5 +272,46 @@ TEST(AccelNpuProbeTest, AnAcceleratorsOwnMemoryIsDedicatedNotShared)
     EXPECT_EQ(counters[0].gpuSharedMemoryBytes, 0U);
 }
 
+TEST(AccelNpuTest, FdinfoToleratesCrlfLinesWithoutAColonAndUnreadableMemory)
+{
+    // CRLF line ends, a line without a colon, and a memory key with no value: the id still reads, the
+    // memory doesn't.
+    const AccelNpu::ClientMemory memory = AccelNpu::parseFdinfo("garbage\r\ndrm-client-id:\t5\r\ndrm-resident-memory:\t\r\n");
+    EXPECT_EQ(memory.clientId, std::optional<std::uint64_t>{5});
+    EXPECT_FALSE(memory.bytes.has_value());
+    EXPECT_FALSE(AccelNpu::parseFdinfo("drm-total-memory: lots\n").bytes.has_value());
+}
+
+// The walks pass over what isn't theirs: a class entry that isn't accelN, a /proc entry that isn't a
+// PID, and a client whose fdinfo has gone since the walk. Without a device nothing is read at all.
+TEST(AccelNpuProbeTest, TheWalksPassOverWhatIsntTheirs)
+{
+    const ScopedTempDir dir("tasksmack_accel_npu_walks");
+    addDevice(dir.path, 0, "0000:00:0b.0", "intel_vpu", "0x8086", std::nullopt);
+    std::filesystem::create_directories(dir.path / "class" / "card0"); // not an accel node
+    const std::filesystem::path proc = dir.path / "proc";
+    std::filesystem::create_directories(proc / "self");
+    addFd(proc, 100, 3, "/dev/accel/accel0", "drm-client-id:\t1\ndrm-resident-memory:\t8 MiB\n");
+    addFd(proc, 200, 4, "/dev/accel/accel0", "drm-client-id:\t2\ndrm-resident-memory:\t1 MiB\n");
+    std::uint64_t now = 1'000'000'000;
+    AccelNpuProbe probe(dir.path / "class", [&now] { return now; }, proc);
+    EXPECT_EQ(probe.enumerateGPUs().size(), 1U);
+
+    std::vector<ProcessGPUCounters> counters = probe.readProcessGPUCounters();
+    EXPECT_EQ(counters.size(), 2U);
+
+    // 200's fdinfo goes (the process is exiting) while its fd still links to the device.
+    std::filesystem::remove(proc / "200" / "fdinfo" / "4");
+    now += 1'000'000'000;
+    counters = probe.readProcessGPUCounters();
+    ASSERT_EQ(counters.size(), 1U);
+    EXPECT_EQ(counters.front().pid, 100);
+
+    const ScopedTempDir empty("tasksmack_accel_npu_none");
+    std::filesystem::create_directories(empty.path / "class");
+    AccelNpuProbe none(empty.path / "class", {}, proc);
+    EXPECT_TRUE(none.readProcessGPUCounters().empty());
+}
+
 } // namespace
 } // namespace Platform
