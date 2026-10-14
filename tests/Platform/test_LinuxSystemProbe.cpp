@@ -601,6 +601,16 @@ TEST(LinuxSystemProbeTest, MemAvailableIsReportedOnlyWhenTheKernelHasIt)
     EXPECT_FALSE(LinuxSystemProbe(without.path).read().memory.hasAvailableBytes);
 }
 
+// #1891: a meminfo line without a colon is passed over, and the fields after it are still read.
+TEST(LinuxSystemProbeTest, AMeminfoLineWithoutAColonIsSkipped)
+{
+    ScopedTempDir scoped("ts_test_sys_meminfo_stray");
+    std::ofstream(scoped.path / "meminfo") << "MemTotal: 1000 kB\nnot a field\nMemAvailable: 400 kB\n";
+    const auto memory = LinuxSystemProbe(scoped.path).read().memory;
+    EXPECT_EQ(memory.totalBytes, 1000ULL * 1024);
+    EXPECT_TRUE(memory.hasAvailableBytes);
+}
+
 TEST(LinuxSystemProbeTest, CommitChargeComesFromTheMeminfoAlreadyRead)
 {
     // Committed_AS and CommitLimit come from the same /proc/meminfo pass as the rest of memory (#1627);
@@ -795,6 +805,23 @@ TEST(LinuxSystemProbeTest, NetworkTotalCountsHardwareInterfacesOnly)
         EXPECT_EQ(iface.isVirtual, expectVirtual) << iface.name;
         EXPECT_TRUE(iface.isVirtualKnown) << iface.name << ": in sysfs, so classified (#1260)";
     }
+}
+
+// #1891: whitespace between an interface's name and its colon is trimmed from the name.
+TEST(LinuxSystemProbeTest, AnInterfaceNameIsTrimmedBeforeItsColon)
+{
+    ScopedTempDir proc("ts_test_sys_net_trim");
+    ScopedTempDir sys("ts_test_sys_class_net_trim");
+    std::filesystem::create_directories(proc.path / "net");
+    std::ofstream(proc.path / "net" / "dev") << NET_DEV_HEADER << "  eth0 \t: 5000 10 0 0 0 0 0 0 700 10 0 0 0 0 0 0\n";
+    addSysfsInterface(sys.path, "eth0", true);
+
+    LinuxSystemProbe probe(proc.path, sys.path);
+    const auto counters = probe.read();
+    ASSERT_EQ(counters.networkInterfaces.size(), 1U);
+    EXPECT_EQ(counters.networkInterfaces[0].name, "eth0");
+    EXPECT_EQ(counters.netRxBytes, 5000U);
+    EXPECT_EQ(counters.netTxBytes, 700U);
 }
 
 TEST(LinuxSystemProbeTest, AnInterfaceMissingFromSysfsIsUnclassified)
