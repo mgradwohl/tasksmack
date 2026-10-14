@@ -303,6 +303,27 @@ TEST_F(SettingsDialogRenderTest, OpensCentredInsideTheWindow)
     EXPECT_NE(body(), nullptr);
 }
 
+// #1891: a refresh rate and history length that are no option show as "Custom (...)" previews, and the
+// combos are sized for them too, so the dialog is at least as wide and still inside the window.
+TEST_F(SettingsDialogRenderTest, CustomValuesAreMeasuredForTheCombos)
+{
+    const Measured standard = openAndSettle();
+    ASSERT_TRUE(standard.open);
+    pressFooter(SettingsDialog::CANCEL_LABEL);
+    ASSERT_FALSE(settle().open);
+
+    UserSettings custom;
+    custom.refreshIntervalMs = 750; // no option
+    custom.maxHistorySeconds = 777; // no option
+    SettingsDialog::load(m_State, custom, themes());
+    ASSERT_FALSE(m_State.customRefreshPreview.empty());
+    ASSERT_FALSE(m_State.customHistoryPreview.empty());
+    const Measured measured = openAndSettle();
+    ASSERT_TRUE(measured.open);
+    EXPECT_GE(measured.size.x, standard.size.x);
+    expectInsideDisplay(measured);
+}
+
 TEST_F(SettingsDialogRenderTest, StaysInsideASmallWindowAtALargeFont)
 {
     ImGui::GetIO().DisplaySize = ImVec2(480.0F, 320.0F);
