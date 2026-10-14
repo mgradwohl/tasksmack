@@ -508,6 +508,42 @@ TEST_F(SystemdBusFakeTest, AnUnexpectedErrorFromNetworkManagerIsPassedOn)
     EXPECT_TRUE(read("wlan1").error.starts_with("NetworkManager couldn't be asked: "));
 }
 
+// A service that doesn't answer in time: sd-bus reports it as NoReply (or Timeout), and each reader says
+// so in the user's terms rather than passing the D-Bus error name on.
+constexpr const char* NO_REPLY = "org.freedesktop.DBus.Error.NoReply";
+
+TEST_F(SystemdBusFakeTest, ANetworkdThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+    EXPECT_EQ(SystemdBus::makeNetworkdLeaseReader()(3).error, "systemd-networkd didn't answer in time");
+}
+
+TEST_F(SystemdBusFakeTest, AResolvedThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addIntMethod(RESOLVE_PATH,
+                       RESOLVE_MANAGER,
+                       "GetLink",
+                       [](std::int32_t /*ifindex*/) -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
+    EXPECT_EQ(SystemdBus::makeLinkDnsReader()(2).error, "systemd-resolved didn't answer in time");
+}
+
+TEST_F(SystemdBusFakeTest, ANetworkManagerThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addStringMethod(NM_PATH,
+                          NM,
+                          "GetDeviceByIpIface",
+                          [](const std::string& /*name*/) -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
+    const LinuxNetworkAdapters::WifiLinkRead wlan0 = SystemdBus::makeWifiLinkReader()("wlan0");
+    EXPECT_FALSE(wlan0.link.has_value());
+    EXPECT_EQ(wlan0.error, "NetworkManager didn't answer in time");
+}
+
 TEST_F(SystemdBusFakeTest, AResolvedLinkMissingItsServersOrDomainsIsAnError)
 {
     constexpr const char* NO_DOMAINS = "/org/freedesktop/resolve1/link/_35";
@@ -736,6 +772,16 @@ TEST_F(SystemdBusFakeServicesTest, ARunningServiceWithoutAMainPidIsListedWithout
     ASSERT_TRUE(read.ok) << read.error;
     EXPECT_EQ(read.listing.units.size(), 3U);
     EXPECT_TRUE(read.listing.mainPids.empty());
+}
+
+TEST_F(SystemdBusFakeTest, ASystemdThatDoesntAnswerInTimeSaysSo)
+{
+    m_Bus.addNoArgMethod(
+        SYSTEMD_PATH, SYSTEMD_MANAGER, "ListUnits", []() -> MethodAnswer { return {.path = std::nullopt, .errorName = NO_REPLY}; });
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd didn't answer in time");
 }
 
 } // namespace
