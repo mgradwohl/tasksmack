@@ -59,21 +59,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The latest *finished* main run of each watched workflow, ignoring cancelled and skipped
-          # runs and pull_request runs (whose head branch can also be called main in a fork).
+          # The latest *finished* main run of each watched workflow, per event, ignoring cancelled
+          # and skipped runs. Push and schedule runs are tracked apart (#2131): several jobs run only
+          # on the nightly schedule (CI's Windows release and unity builds and full clang-tidy, Heavy
+          # Checks' sanitizers), so a later push run that skips them would otherwise pass for the whole
+          # workflow and close the issue while the nightly failure is still there. A workflow is red
+          # while either its latest push run or its latest schedule run failed. Manual dispatches are
+          # left out, like Static Analysis above: one failed dispatch would stay red forever.
           red=""
           while IFS='|' read -r file name; do
             [[ -n "$file" ]] || continue
-            latest=$(gh api "repos/$REPO/actions/workflows/$file/runs?branch=main&status=completed&per_page=20" \
-              --jq '[.workflow_runs[] | select(.event != "pull_request")
-                     | select(.conclusion != "cancelled" and .conclusion != "skipped")][0]
-                    | select(. != null) | "\(.conclusion)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
-            [[ -n "$latest" ]] || continue
-            IFS='|' read -r conclusion url sha created <<<"$latest"
-            echo "$name: $conclusion ($sha, $url)"
-            if [[ "$conclusion" != 'success' && "$conclusion" != 'neutral' ]]; then
-              red+="- **${name}**: \`${conclusion}\` on \`${sha}\` (${created}): ${url}"$'\n'
-            fi
+            for event in push schedule; do
+              latest=$(gh api "repos/$REPO/actions/workflows/$file/runs?branch=main&event=$event&status=completed&per_page=10" \
+                --jq '[.workflow_runs[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0]
+                      | select(. != null) | "\(.conclusion)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
+              [[ -n "$latest" ]] || continue
+              IFS='|' read -r conclusion url sha created <<<"$latest"
+              echo "$name ($event): $conclusion ($sha, $url)"
+              if [[ "$conclusion" != 'success' && "$conclusion" != 'neutral' ]]; then
+                red+="- **${name}** (${event}): \`${conclusion}\` on \`${sha}\` (${created}): ${url}"$'\n'
+              fi
+            done
           done <<<"$WATCHED"
 
           # REST only: `gh issue edit`/`view` go through GraphQL fields that fail on this repo.
@@ -83,7 +89,7 @@ jobs:
           if [[ -z "$red" ]]; then
             if [[ -n "$issue" ]]; then
               gh api "repos/$REPO/issues/$issue/comments" --silent \
-                -f body="Main is green again: the latest finished run of every watched workflow on \`main\` passed (closed by ${run_link})."
+                -f body="Main is green again: the latest finished push and nightly runs of every watched workflow on \`main\` passed (closed by ${run_link})."
               gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f state=closed -f state_reason=completed
               echo "Closed #$issue."
             else
@@ -94,7 +100,7 @@ jobs:
 
           body="One or more workflows are failing on \`main\`. This issue is maintained by \`.github/workflows/main-health.yml\` (#1406): it is rewritten after every watched run on \`main\` and closed automatically once all of them pass again.
 
-          **Currently red** (latest finished, non-cancelled run on \`main\`):
+          **Currently red** (latest finished, non-cancelled push or nightly run on \`main\`):
 
           ${red}
           File a separate bug for each root cause and link it here. Last updated by ${run_link}."
@@ -112,7 +118,7 @@ jobs:
           previous=$(gh api "repos/$REPO/issues/$issue" --jq .body)
           gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f body="$body"
           if [[ "${TRIGGER_CONCLUSION:-}" == 'failure' || "${TRIGGER_CONCLUSION:-}" == 'timed_out' ]] &&
-             ! grep -qF -- "- **${TRIGGER_NAME}**:" <<<"$previous"; then
+             ! grep -qF -- "- **${TRIGGER_NAME}** (" <<<"$previous"; then
             gh api "repos/$REPO/issues/$issue/comments" --silent \
               -f body="**${TRIGGER_NAME}** turned red: ${TRIGGER_CONCLUSION} on \`${TRIGGER_SHA:0:8}\`: ${TRIGGER_URL}"
           fi
