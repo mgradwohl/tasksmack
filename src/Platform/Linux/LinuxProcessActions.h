@@ -7,6 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
+#include <stop_token>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
@@ -37,6 +40,10 @@ struct LinuxProcessSyscalls
     std::expected<std::vector<id_t>, std::error_code> (*listThreads)(pid_t pid) = nullptr;
     /// Whether thread @p tid is still listed under /proc/<pid>/task. Left null, the real check is used.
     bool (*isThreadOf)(pid_t pid, id_t tid) = nullptr;
+    /// What ptrace(2) would check if @p toolPath (strace, gcore) attached to @p pid: Yama's scope, the
+    /// target's credentials, and whether the tool holds CAP_SYS_PTRACE. Left null, the real check is
+    /// used; tests fake it to reach what runs once ptrace allows the attach (#807).
+    SyscallTrace::PtraceContext (*ptraceContext)(std::int32_t pid, const std::string& toolPath) = nullptr;
 };
 
 /// The real system calls.
@@ -55,6 +62,9 @@ struct LinuxProcessSyscalls
 /// launchSyscallTrace() opens a terminal running `strace -p` (#182). strace and the terminal are looked
 /// up once, at construction (discoverSyscallTraceTools()), and actionCapabilities() reports what was
 /// found; installing either later takes effect on the next start.
+///
+/// createDump() writes a core file with gdb's gcore (#807), found the same way: the action is offered
+/// only where gcore is installed, and refused with the reason where ptrace would refuse gcore.
 class LinuxProcessActions : public IProcessActions
 {
   public:
@@ -81,10 +91,16 @@ class LinuxProcessActions : public IProcessActions
     [[nodiscard]] IoPriorityReadResult getIoPriority(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult launchSyscallTrace(const ProcessTarget& target) override;
     [[nodiscard]] ProcessActionResult setAffinity(const ProcessTarget& target, const CpuAffinity& cpus) override;
+    /// A core file of the process, written by gcore into @p directory (#807). Live: gcore pauses the
+    /// process while it copies its memory out. Once @p stopToken is requested, gcore (and the gdb it
+    /// runs) is killed and the partial file deleted.
+    [[nodiscard]] ProcessDumpResult
+    createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override;
     /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
 
-    /// strace and the terminal to run it in, from this process's PATH and $TERMINAL.
+    /// strace and the terminal to run it in, from this process's PATH and $TERMINAL, and gcore for
+    /// createDump() (#807).
     [[nodiscard]] static SyscallTrace::Tools discoverSyscallTraceTools();
 
   private:

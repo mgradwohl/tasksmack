@@ -28,6 +28,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -811,7 +812,8 @@ void writeScript(const std::filesystem::path& path, const std::string& body)
     const std::filesystem::path tracer = dir / "fake-strace";
     writeScript(tracer, "exit 0\n");
     return {.tracerPath = tracer.string(),
-            .terminal = SyscallTrace::Terminal{.path = terminal.string(), .syntax = SyscallTrace::TerminalSyntax::DashE}};
+            .terminal = SyscallTrace::Terminal{.path = terminal.string(), .syntax = SyscallTrace::TerminalSyntax::DashE},
+            .coreDumperPath = {}};
 }
 
 TEST(LinuxProcessActionsTest, SyscallTraceAvailabilityFollowsTheToolsFound)
@@ -819,9 +821,11 @@ TEST(LinuxProcessActionsTest, SyscallTraceAvailabilityFollowsTheToolsFound)
     const TestSupport::ScopedTempDir dir("tasksmack_trace_caps");
     const SyscallTrace::Tools tools = fakeTraceTools(dir.path);
     EXPECT_EQ(LinuxProcessActions(tools).actionCapabilities().syscallTrace, SyscallTraceAvailability::Available);
-    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = {}, .terminal = tools.terminal}).actionCapabilities().syscallTrace,
+    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = {}, .terminal = tools.terminal, .coreDumperPath = {}})
+                  .actionCapabilities()
+                  .syscallTrace,
               SyscallTraceAvailability::NoTracer);
-    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = tools.tracerPath, .terminal = std::nullopt})
+    EXPECT_EQ(LinuxProcessActions(SyscallTrace::Tools{.tracerPath = tools.tracerPath, .terminal = std::nullopt, .coreDumperPath = {}})
                   .actionCapabilities()
                   .syscallTrace,
               SyscallTraceAvailability::NoTerminal);
@@ -903,6 +907,179 @@ TEST(LinuxProcessActionsTest, SyscallTraceOpensTheTerminalWithStraceOrExplainsPt
         args.push_back(line);
     }
     EXPECT_EQ(args, (std::vector<std::string>{"-e", tools.tracerPath, "-f", "-tt", "-p", std::to_string(self.pid)}));
+}
+
+// ============================================================================
+// Create dump file with gcore (#807)
+// ============================================================================
+// A fake gcore stands in for gdb's: it records its arguments and writes (or doesn't) the "<prefix>.<pid>"
+// file gcore would. ptrace is faked to allow the attach, so what runs after the check is reached under
+// any Yama scope; the refusals themselves are tested through the same seam.
+
+/// ptrace would let gcore attach: as if TaskSmack held CAP_SYS_PTRACE.
+SyscallTrace::PtraceContext ptraceAllowed(std::int32_t /*pid*/, const std::string& /*toolPath*/)
+{
+    return {.ptraceScope = 1, .sameCredentials = true, .privileged = true};
+}
+
+/// ptrace would refuse: Yama's "descendants only", without the capability.
+SyscallTrace::PtraceContext ptraceDescendantsOnly(std::int32_t /*pid*/, const std::string& /*toolPath*/)
+{
+    return {.ptraceScope = 1, .sameCredentials = true, .privileged = false};
+}
+
+/// The real syscalls, with ptrace's verdict replaced by @p context.
+[[nodiscard]] LinuxProcessSyscalls syscallsWithPtrace(SyscallTrace::PtraceContext (*context)(std::int32_t, const std::string&))
+{
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.ptraceContext = context;
+    return syscalls;
+}
+
+/// Tools with only a gcore: the script at @p dir/fake-gcore running @p body, after recording its
+/// arguments (one per line) in @p dir/gcore-args.txt.
+[[nodiscard]] SyscallTrace::Tools fakeDumpTools(const std::filesystem::path& dir, const std::string& body)
+{
+    const std::filesystem::path gcore = dir / "fake-gcore";
+    writeScript(gcore, std::format("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{}/gcore-args.txt'\n{}", dir.string(), body));
+    return {.tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = gcore.string()};
+}
+
+/// The files in @p dir, by name.
+[[nodiscard]] std::vector<std::string> filesIn(const std::filesystem::path& dir)
+{
+    std::vector<std::string> names;
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    {
+        names.push_back(entry.path().filename().string());
+    }
+    std::ranges::sort(names);
+    return names;
+}
+
+TEST(LinuxProcessActionsDumpTest, DumpsAreOfferedOnlyWhereGcoreIsInstalled)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_dump_caps");
+    EXPECT_TRUE(LinuxProcessActions(fakeDumpTools(dir.path, "exit 0\n")).actionCapabilities().canCreateDump);
+    EXPECT_FALSE(LinuxProcessActions(SyscallTrace::Tools{}).actionCapabilities().canCreateDump);
+
+    // And refused as unsupported where it isn't.
+    LinuxProcessActions without(SyscallTrace::Tools{});
+    const std::stop_source stop;
+    const ProcessDumpResult refused = without.createDump(ownTarget(), dir.path, stop.get_token());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), DUMP_UNSUPPORTED_MESSAGE);
+}
+
+TEST(LinuxProcessActionsDumpTest, GcoreWritesTheCoreUnderItsFinalName)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_out");
+    // As gcore does: writes "<prefix>.<pid>" ($2 and $3 after -o).
+    LinuxProcessActions actions(fakeDumpTools(work.path, "printf 'CORE' > \"$2.$3\"\n"), syscallsWithPtrace(&ptraceAllowed));
+    const ProcessTarget self = ownTarget();
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(self, dumps.path, stop.get_token());
+    ASSERT_TRUE(dump.has_value()) << dump.error();
+
+    const std::string name = dump->file.filename().string();
+    EXPECT_EQ(dump->file.parent_path(), dumps.path);
+    EXPECT_TRUE(name.contains(std::format("_{}_", self.pid))) << name;
+    EXPECT_TRUE(name.ends_with(".core")) << name;
+    EXPECT_EQ(dump->sizeBytes, 4U);
+    EXPECT_FALSE(dump->fromSnapshot);
+    EXPECT_FALSE(dump->liveReason.empty());
+    EXPECT_EQ(filesIn(dumps.path), (std::vector<std::string>{name})) << "the partial name was renamed away";
+
+    // gcore was asked for the core of this process, under a partial name beside the final one.
+    std::ifstream recorded(work.path / "gcore-args.txt");
+    std::vector<std::string> args;
+    for (std::string line; std::getline(recorded, line);)
+    {
+        args.push_back(line);
+    }
+    EXPECT_EQ(args, (std::vector<std::string>{"-o", dump->file.string() + ".partial", std::to_string(self.pid)}));
+}
+
+TEST(LinuxProcessActionsDumpTest, AGcoreThatFailsSaysWhyAndLeavesNothing)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_fail_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_fail_out");
+    // A partial file, then the error gdb prints when the attach is refused.
+    LinuxProcessActions actions(
+        fakeDumpTools(work.path, "printf 'PART' > \"$2.$3\"\necho 'ptrace: Operation not permitted.' >&2\nexit 1\n"),
+        syscallsWithPtrace(&ptraceAllowed));
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_TRUE(dump.error().ends_with(": ptrace: Operation not permitted.")) << dump.error();
+    EXPECT_TRUE(filesIn(dumps.path).empty()) << "the partial file was deleted";
+
+    // Exit status 0 with no core written is a failure too.
+    LinuxProcessActions silent(fakeDumpTools(work.path, "exit 0\n"), syscallsWithPtrace(&ptraceAllowed));
+    const ProcessDumpResult none = silent.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(none.has_value());
+    EXPECT_TRUE(none.error().contains("exit status 0")) << none.error();
+}
+
+TEST(LinuxProcessActionsDumpTest, ACancelledDumpKillsGcoreAndDeletesThePartialFile)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_cancel_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_cancel_out");
+    // Writes part of the core, then hangs as a long dump would (sleep runs in gcore's process group).
+    LinuxProcessActions actions(fakeDumpTools(work.path, "printf 'PART' > \"$2.$3\"\nsleep 30\n"), syscallsWithPtrace(&ptraceAllowed));
+    std::stop_source stop;
+    std::jthread canceller(
+        [&stop, &dumps]
+        {
+            // Once the partial file shows, the dump is under way: cancel it.
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (filesIn(dumps.path).empty() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            stop.request_stop();
+        });
+    const auto started = std::chrono::steady_clock::now();
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    canceller.join();
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_EQ(dump.error(), "Cancelled; the partial dump file was deleted");
+    EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(20)) << "didn't wait for the sleep";
+    EXPECT_TRUE(filesIn(dumps.path).empty());
+}
+
+TEST(LinuxProcessActionsDumpTest, ADumpPtraceWouldRefuseIsRefusedBeforeGcoreRuns)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_refused_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_refused_out");
+    LinuxProcessActions actions(fakeDumpTools(work.path, "exit 0\n"), syscallsWithPtrace(&ptraceDescendantsOnly));
+    const std::stop_source stop;
+    const ProcessDumpResult dump = actions.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_TRUE(dump.error().contains("so gcore cannot attach to process")) << dump.error();
+    EXPECT_FALSE(std::filesystem::exists(work.path / "gcore-args.txt")) << "gcore never ran";
+}
+
+TEST(LinuxProcessActionsDumpTest, ADumpIsRefusedForAnInvalidTargetOrAMissingFolder)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_bad_tools");
+    LinuxProcessActions actions(fakeDumpTools(work.path, "exit 0\n"), syscallsWithPtrace(&ptraceAllowed));
+    const std::stop_source stop;
+    const ProcessDumpResult invalid = actions.createDump({.pid = 0, .startTimeTicks = 1}, work.path, stop.get_token());
+    ASSERT_FALSE(invalid.has_value());
+    EXPECT_EQ(invalid.error(), "Invalid PID");
+
+    ProcessTarget reused = ownTarget();
+    reused.startTimeTicks += 1;
+    const ProcessDumpResult other = actions.createDump(reused, work.path, stop.get_token());
+    ASSERT_FALSE(other.has_value());
+    EXPECT_TRUE(other.error().contains("different process")) << other.error();
+
+    const ProcessDumpResult nowhere = actions.createDump(ownTarget(), work.path / "missing", stop.get_token());
+    ASSERT_FALSE(nowhere.has_value());
+    EXPECT_TRUE(nowhere.error().contains("doesn't exist")) << nowhere.error();
+    EXPECT_FALSE(std::filesystem::exists(work.path / "gcore-args.txt")) << "gcore never ran";
 }
 
 // ============================================================================

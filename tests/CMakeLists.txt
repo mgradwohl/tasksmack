@@ -466,6 +466,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Core/test_RuntimeDir.cpp
     Platform/test_LinuxProcessActions.cpp
     Platform/test_SyscallTrace.cpp
+    Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_DetachedSpawn.cpp
     Platform/test_LinuxIoPriority.cpp
     Platform/test_LinuxProcessEnvironmentReader.cpp

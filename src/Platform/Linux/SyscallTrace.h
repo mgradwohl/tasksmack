@@ -102,6 +102,8 @@ struct Tools
 {
     std::string tracerPath; ///< Absolute path to strace, or empty.
     std::optional<Terminal> terminal;
+    /// Absolute path to gdb's gcore, which createDump() runs to write a core file (#807), or empty.
+    std::string coreDumperPath;
 };
 
 /// Where @p name would be run from: @p name itself when it contains a '/', otherwise the first
@@ -319,18 +321,33 @@ struct PtraceContext
     bool privileged = false;        ///< strace will run with CAP_SYS_PTRACE (we are root with it, or strace has the file capability).
 };
 
-/// Why strace could not attach to @p pid, or nullopt when ptrace should allow it.
+/// The tool that attaches with ptrace, as ptraceRefusal()'s messages name it and what it does.
+struct PtraceTool
+{
+    std::string_view name;   ///< "strace"
+    std::string_view verb;   ///< "trace": "strace cannot trace process 42"
+    std::string_view gerund; ///< "tracing": "tracing it needs CAP_SYS_PTRACE"
+};
+
+inline constexpr PtraceTool STRACE_TOOL{.name = "strace", .verb = "trace", .gerund = "tracing"};
+/// gdb's gcore, which writes a core file of the process (#807).
+inline constexpr PtraceTool GCORE_TOOL{.name = "gcore", .verb = "dump", .gerund = "dumping"};
+
+/// Why @p tool could not attach to @p pid, or nullopt when ptrace should allow it.
 ///
-/// Checked before opening a terminal, because a refused strace exits at once and its window closes
-/// before the message can be read. TaskSmack never elevates: the messages say what would allow it.
-/// strace runs in a terminal TaskSmack starts, so it is never the target's ancestor; that is why
-/// Yama's mode 1 ("descendants only") refuses it as surely as mode 2 does.
-[[nodiscard]] inline std::optional<std::string> ptraceRefusal(std::int32_t pid, const PtraceContext& context)
+/// Checked before starting the tool: a refused strace exits at once, and its terminal window closes
+/// before the message can be read; a refused gcore leaves only its own stderr. TaskSmack never
+/// elevates: the messages say what would allow it. The tool runs as TaskSmack's child, so it is never
+/// the target's ancestor; that is why Yama's mode 1 ("descendants only") refuses it as surely as mode 2.
+[[nodiscard]] inline std::optional<std::string>
+ptraceRefusal(std::int32_t pid, const PtraceContext& context, const PtraceTool& tool = STRACE_TOOL)
 {
     if (context.ptraceScope == 3)
     {
         return std::format("Attaching with ptrace is disabled on this system (/proc/sys/kernel/yama/ptrace_scope is 3, "
-                           "which only a reboot undoes), so strace cannot trace process {}",
+                           "which only a reboot undoes), so {} cannot {} process {}",
+                           tool.name,
+                           tool.verb,
                            pid);
     }
     if (context.privileged)
@@ -339,23 +356,30 @@ struct PtraceContext
     }
     if (!context.sameCredentials)
     {
-        return std::format("Process {} runs as another user (or changed its user or group IDs); tracing it needs "
-                           "CAP_SYS_PTRACE (root with that capability, or a strace that carries it)",
-                           pid);
+        return std::format("Process {} runs as another user (or changed its user or group IDs); {} it needs "
+                           "CAP_SYS_PTRACE (root with that capability, or a {} that carries it)",
+                           pid,
+                           tool.gerund,
+                           tool.name);
     }
     if (context.ptraceScope == 2)
     {
         return std::format("Only processes with CAP_SYS_PTRACE may attach with ptrace here (/proc/sys/kernel/yama/ptrace_scope is 2), "
-                           "so strace cannot trace process {} without that capability",
+                           "so {} cannot {} process {} without that capability",
+                           tool.name,
+                           tool.verb,
                            pid);
     }
     if (context.ptraceScope == 1)
     {
         return std::format(
-            "ptrace is limited to a process's own descendants here (/proc/sys/kernel/yama/ptrace_scope is 1), so strace "
-            "cannot attach to process {}. Set kernel.yama.ptrace_scope to 0, or give strace CAP_SYS_PTRACE (run TaskSmack as root "
-            "with that capability), to trace it",
-            pid);
+            "ptrace is limited to a process's own descendants here (/proc/sys/kernel/yama/ptrace_scope is 1), so {} "
+            "cannot attach to process {}. Set kernel.yama.ptrace_scope to 0, or give {} CAP_SYS_PTRACE (run TaskSmack as root "
+            "with that capability), to {} it",
+            tool.name,
+            pid,
+            tool.name,
+            tool.verb);
     }
     return std::nullopt;
 }

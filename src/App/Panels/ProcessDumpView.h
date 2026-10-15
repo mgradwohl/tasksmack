@@ -39,7 +39,8 @@ namespace DumpDetail
 
 /// The Actions card's button and the row menu's item ("###" keeps the menu item's ID fixed).
 inline constexpr const char* CREATE_DUMP_LABEL = ICON_FA_FLOPPY_DISK " Create dump file...";
-inline constexpr const char* CREATE_DUMP_TOOLTIP = "Write a full memory dump of this process to a file, for a debugger such as WinDbg";
+inline constexpr const char* CREATE_DUMP_TOOLTIP =
+    "Write a full memory dump of this process to a file, for a debugger such as WinDbg or gdb";
 /// The confirm dialog's button.
 inline constexpr const char* CONFIRM_LABEL = "Create dump file";
 /// The confirm dialog's folder button (#2001), left of Cancel.

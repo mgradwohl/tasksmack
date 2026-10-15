@@ -3,6 +3,7 @@
 #include "DetachedSpawn.h"
 #include "Domain/PriorityConfig.h"
 #include "IoPriority.h"
+#include "LinuxCoreDump.h"
 #include "LinuxCpuDetails.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
@@ -22,12 +23,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <ctime>
 #include <expected>
 #include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -39,11 +42,13 @@
 
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill() function, csignal does not
 #include <signal.h>
+#include <spawn.h>
 #include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 
@@ -300,6 +305,12 @@ LinuxProcessSyscalls realProcessSyscalls() noexcept
             .isThreadOf = &realIsThreadOf};
 }
 
+namespace
+{
+// Defined with the other syscall-trace helpers below; the default for LinuxProcessSyscalls::ptraceContext.
+[[nodiscard]] SyscallTrace::PtraceContext ptraceContextFor(std::int32_t pid, const std::string& tracerPath);
+} // namespace
+
 LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(discoverSyscallTraceTools(), realProcessSyscalls())
 {}
 
@@ -317,6 +328,10 @@ LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, const L
     if (m_Syscalls.isThreadOf == nullptr)
     {
         m_Syscalls.isThreadOf = &realIsThreadOf;
+    }
+    if (m_Syscalls.ptraceContext == nullptr)
+    {
+        m_Syscalls.ptraceContext = &ptraceContextFor;
     }
 }
 
@@ -341,6 +356,7 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
         .canSetRealtimeIoPriority = m_CanSetRealtimeIoPriority,
         .canSetAffinity = m_Syscalls.setAffinity != nullptr, // sched_setaffinity(2) (#1887)
         .syscallTrace = syscallTrace,
+        .canCreateDump = !m_TraceTools.coreDumperPath.empty(), // gdb's gcore (#807)
     };
 }
 
@@ -861,9 +877,11 @@ SyscallTrace::Tools LinuxProcessActions::discoverSyscallTraceTools()
     SyscallTrace::Tools tools;
     tools.tracerPath = find("strace").value_or(std::string{});
     tools.terminal = SyscallTrace::selectTerminal(environmentValue("TERMINAL"), find);
-    spdlog::debug("System call tracing: strace {}, terminal {}",
+    tools.coreDumperPath = find("gcore").value_or(std::string{});
+    spdlog::debug("System call tracing: strace {}, terminal {}; dump files: gcore {}",
                   tools.tracerPath.empty() ? std::string("not found") : tools.tracerPath,
-                  tools.terminal ? tools.terminal->path : std::string("not found"));
+                  tools.terminal ? tools.terminal->path : std::string("not found"),
+                  tools.coreDumperPath.empty() ? std::string("not found") : tools.coreDumperPath);
     return tools;
 }
 
@@ -900,7 +918,7 @@ ProcessActionResult LinuxProcessActions::launchSyscallTrace(const ProcessTarget&
     }
 
     if (const std::optional<std::string> refusal =
-            SyscallTrace::ptraceRefusal(target.pid, ptraceContextFor(target.pid, m_TraceTools.tracerPath)))
+            SyscallTrace::ptraceRefusal(target.pid, m_Syscalls.ptraceContext(target.pid, m_TraceTools.tracerPath)))
     {
         spdlog::info("Not tracing PID {}: {}", target.pid, *refusal);
         return ProcessActionResult::error(*refusal);
@@ -964,6 +982,255 @@ ProcessActionResult LinuxProcessActions::sendSignal(const ProcessTarget& target,
     const std::string errorMsg = signalErrorMessage(errno);
     spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, errorMsg);
     return ProcessActionResult::error(errorMsg);
+}
+
+namespace
+{
+
+/// The name the kernel gives @p pid (/proc/<pid>/comm) without its newline; empty when it can't be read.
+[[nodiscard]] std::string processComm(std::int32_t pid)
+{
+    std::string comm = readSmallFile(std::format("/proc/{}/comm", pid)).value_or(std::string{});
+    while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\r'))
+    {
+        comm.pop_back();
+    }
+    return comm;
+}
+
+/// Whether @p pid is stopped ('T' in /proc/<pid>/stat), so a cancelled dump knows whether to wake it.
+[[nodiscard]] bool processIsStopped(std::int32_t pid)
+{
+    const std::string stat = readSmallFile(std::format("/proc/{}/stat", pid)).value_or(std::string{});
+    // The state follows the comm's closing parenthesis; comm may hold ')' itself, so the last one counts.
+    const std::size_t close = stat.rfind(')');
+    return close != std::string::npos && close + 2 < stat.size() && stat[close + 2] == 'T';
+}
+
+/// How a tool run by runCancellable() ended.
+struct ToolRun
+{
+    std::error_code spawnError; ///< Set when it couldn't be started.
+    bool cancelled = false;     ///< Killed because the stop token was requested.
+    int exitStatus = -1;        ///< Its exit status when it exited on its own; -1 when a signal ended it.
+    std::string stderrText;     ///< The last of what it wrote on stderr (MAX_STDERR_KEPT bytes at most).
+};
+
+constexpr std::size_t MAX_STDERR_KEPT = 4096;
+constexpr int TOOL_POLL_MS = 50;
+
+/// Appends what @p fd has ready to @p text, keeping its last MAX_STDERR_KEPT bytes. False at end of file.
+bool readAvailable(int fd, std::string& text)
+{
+    std::array<char, 1024> chunk{};
+    const ssize_t got = ::read(fd, chunk.data(), chunk.size()); // NOLINT(misc-include-cleaner) - ssize_t is from <sys/types.h>
+    if (got <= 0)
+    {
+        return got < 0 && errno == EINTR;
+    }
+    text.append(chunk.data(), static_cast<std::size_t>(got));
+    if (text.size() > MAX_STDERR_KEPT)
+    {
+        text.erase(0, text.size() - MAX_STDERR_KEPT);
+    }
+    return true;
+}
+
+/// Runs @p argv in a process group of its own, stdin and stdout on /dev/null and stderr kept, until it
+/// exits or @p stopToken is requested; then the whole group is killed (gcore runs gdb under it) and
+/// reaped. Blocking: called on createDump()'s worker thread.
+[[nodiscard]] ToolRun runCancellable(const std::vector<std::string>& argv, const std::stop_token& stopToken)
+{
+    ToolRun run;
+    std::array<int, 2> pipeFds{-1, -1};
+    if (::pipe2(pipeFds.data(), O_CLOEXEC) != 0)
+    {
+        run.spawnError = std::error_code(errno, std::generic_category());
+        return run;
+    }
+    const FdGuard readEnd(pipeFds[0]);
+    FdGuard writeEnd(pipeFds[1]);
+
+    posix_spawn_file_actions_t actions{};
+    posix_spawnattr_t attributes{};
+    ::posix_spawn_file_actions_init(&actions);
+    ::posix_spawnattr_init(&attributes);
+    ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+    ::posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+    ::posix_spawn_file_actions_adddup2(&actions, writeEnd.get(), STDERR_FILENO);
+    // Its own process group, so a cancel reaches the gdb gcore runs; an empty signal mask and default
+    // dispositions, whatever this thread blocks or ignores.
+    sigset_t signals{}; // NOLINT(misc-include-cleaner) - sigset_t is provided by <signal.h>
+    sigemptyset(&signals);
+    ::posix_spawnattr_setsigmask(&attributes, &signals);
+    sigaddset(&signals, SIGPIPE);
+    ::posix_spawnattr_setsigdefault(&attributes, &signals);
+    ::posix_spawnattr_setpgroup(&attributes, 0);
+    ::posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+
+    std::vector<char*> args;
+    args.reserve(argv.size() + 1);
+    for (const std::string& arg : argv)
+    {
+        args.push_back(const_cast<char*>(arg.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
+    }
+    args.push_back(nullptr);
+    pid_t child = -1;
+    const int spawned = ::posix_spawn(&child, argv.front().c_str(), &actions, &attributes, args.data(), environ);
+    ::posix_spawn_file_actions_destroy(&actions);
+    ::posix_spawnattr_destroy(&attributes);
+    {
+        const FdGuard closing(std::move(writeEnd)); // Only the child writes: end of file once it is gone.
+    }
+    if (spawned != 0)
+    {
+        run.spawnError = std::error_code(spawned, std::generic_category());
+        return run;
+    }
+
+    for (;;)
+    {
+        pollfd ready{.fd = readEnd.get(), .events = POLLIN, .revents = 0};
+        if (::poll(&ready, 1, TOOL_POLL_MS) > 0 && (ready.revents & (POLLIN | POLLHUP)) != 0)
+        {
+            static_cast<void>(readAvailable(readEnd.get(), run.stderrText));
+        }
+        int status = 0;
+        // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG is provided by <sys/wait.h>
+        const pid_t waited = ::waitpid(child, &status, WNOHANG);
+        if (waited == child)
+        {
+            // Whatever it wrote last, up to the end of the pipe (or until nothing more is ready).
+            pollfd rest{.fd = readEnd.get(), .events = POLLIN, .revents = 0};
+            while (::poll(&rest, 1, 0) > 0 && readAvailable(readEnd.get(), run.stderrText))
+            {
+            }
+            // NOLINTNEXTLINE(misc-include-cleaner) - WIFEXITED/WEXITSTATUS are provided by <sys/wait.h>
+            run.exitStatus = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            return run;
+        }
+        if (waited < 0 && errno != EINTR)
+        {
+            return run;
+        }
+        if (stopToken.stop_requested())
+        {
+            ::kill(-child, SIGKILL);
+            while (::waitpid(child, &status, 0) < 0 && errno == EINTR)
+            {
+            }
+            run.cancelled = true;
+            return run;
+        }
+    }
+}
+
+} // namespace
+
+ProcessDumpResult
+LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken)
+{
+    const std::string& gcore = m_TraceTools.coreDumperPath;
+    if (gcore.empty())
+    {
+        return std::unexpected(std::string(DUMP_UNSUPPORTED_MESSAGE));
+    }
+    if (target.pid <= 0)
+    {
+        return std::unexpected(std::string("Invalid PID"));
+    }
+    // The identity check every action makes. gcore then attaches by PID -- it has no pidfd form -- so, as
+    // with strace, a target that exits in that instant and whose PID is reused at once could be the one
+    // dumped; the core names the process it was taken from.
+    const PidfdOpen opened = openPidfd(m_Syscalls, target.pid);
+    if (opened.fd < 0)
+    {
+        spdlog::warn("Not dumping PID {}: {}", target.pid, opened.refusal);
+        return std::unexpected(opened.refusal);
+    }
+    const FdGuard pidfd(opened.fd);
+    if (const ProcessActionResult identity = verifyIdentity(target); !identity.success)
+    {
+        spdlog::warn("Not dumping PID {}: {}", target.pid, identity.errorMessage);
+        return std::unexpected(identity.errorMessage);
+    }
+    if (const std::optional<std::string> refusal =
+            SyscallTrace::ptraceRefusal(target.pid, m_Syscalls.ptraceContext(target.pid, gcore), SyscallTrace::GCORE_TOOL))
+    {
+        spdlog::info("Not dumping PID {}: {}", target.pid, *refusal);
+        return std::unexpected(*refusal);
+    }
+    if (!isExecutableFile(gcore))
+    {
+        return std::unexpected(std::format("{} is no longer there or not executable", gcore));
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec))
+    {
+        return std::unexpected(std::format("The folder {} doesn't exist", directory.string()));
+    }
+
+    // A name not taken yet: the process name, PID and local time, then " (2)" and on.
+    const std::string comm = processComm(target.pid);
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    ::localtime_r(&now, &local);
+    std::filesystem::path file;
+    for (int attempt = 1; attempt <= LinuxCoreDump::MAX_NAME_ATTEMPTS && file.empty(); ++attempt)
+    {
+        std::filesystem::path candidate = directory / LinuxCoreDump::dumpFileName(comm, target.pid, local, attempt);
+        if (!std::filesystem::exists(candidate, ec))
+        {
+            file = std::move(candidate);
+        }
+    }
+    if (file.empty())
+    {
+        return std::unexpected(std::format("Couldn't find a free name for the dump file in {}", directory.string()));
+    }
+
+    // gcore writes "<prefix>.<pid>"; the prefix marks it partial until it is renamed into place.
+    const std::filesystem::path prefix = file.string() + ".partial";
+    const std::filesystem::path written = LinuxCoreDump::gcoreOutputFile(prefix, target.pid);
+    const bool wasStopped = processIsStopped(target.pid);
+    spdlog::info("Writing a dump of PID {} with {} to {}", target.pid, gcore, file.string());
+    const ToolRun run = runCancellable(LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
+    if (run.spawnError)
+    {
+        return std::unexpected(std::format("Couldn't start {}: {}", gcore, run.spawnError.message()));
+    }
+    if (run.cancelled)
+    {
+        std::filesystem::remove(written, ec);
+        // gdb was killed while attached: the kernel detaches it, but a process its attach stopped may
+        // stay stopped. One that was running before is woken, through the pidfd, so it is still the target.
+        if (!wasStopped && processIsStopped(target.pid))
+        {
+            static_cast<void>(sendThroughPidfd(m_Syscalls, pidfd, SIGCONT));
+        }
+        spdlog::info("Dump of PID {} cancelled", target.pid);
+        return std::unexpected(std::string(LinuxCoreDump::CANCELLED_MESSAGE));
+    }
+    if (run.exitStatus != 0 || !std::filesystem::exists(written, ec))
+    {
+        std::filesystem::remove(written, ec);
+        std::string message = LinuxCoreDump::gcoreFailureMessage(target.pid, run.exitStatus, run.stderrText);
+        spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
+        return std::unexpected(std::move(message));
+    }
+    std::filesystem::rename(written, file, ec);
+    if (ec)
+    {
+        std::filesystem::remove(written, ec);
+        return std::unexpected(std::format("Couldn't name the dump file {}: {}", file.string(), ec.message()));
+    }
+    const std::uintmax_t size = std::filesystem::file_size(file, ec);
+    spdlog::info("Wrote a dump of PID {} to {}", target.pid, file.string());
+    return ProcessDump{.file = file,
+                       .sizeBytes = ec ? 0 : static_cast<std::uint64_t>(size),
+                       .note = {},
+                       .fromSnapshot = false,
+                       .liveReason = LinuxCoreDump::LIVE_REASON};
 }
 
 } // namespace Platform
