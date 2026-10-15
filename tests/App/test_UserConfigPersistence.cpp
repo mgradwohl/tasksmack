@@ -2281,6 +2281,56 @@ TEST_F(UserConfigSaveLoadFixture, AnyStepOfSaveThatFailsLeavesTheConfigIntact)
     }
 }
 
+// #2121: run as root under another user's home (sudo -E), a config TaskSmack creates -- and the
+// directories it makes for it -- go to that home's owner, or the user's next normal run can't read or
+// save it. As root is simulated here, each hand-over is shown by making it fail: the save then stops.
+TEST_F(UserConfigSaveLoadFixture, AsRootANewConfigAndItsDirectoriesGoToTheHomesOwner)
+{
+    using SaveStep = UserConfig::SaveStep;
+    auto& config = UserConfig::get();
+    const std::filesystem::path nested = m_TempDir / "made" / "for-it" / "config.toml";
+
+    // Not root: a new config is created as the process, with no owner to hand it to.
+    config.resetConfigPathForTesting(m_ConfigPath);
+    std::filesystem::remove(m_ConfigPath);
+    config.settings().themeId = "mocha";
+    config.failSaveStepForTesting(SaveStep::Chown, EPERM);
+    config.save();
+    EXPECT_TRUE(std::filesystem::exists(m_ConfigPath)) << "no chown attempted for the process's own file";
+
+    // Root, the home (m_TempDir) owned by this test's user: the new file is handed over...
+    config.resetConfigPathForTesting(m_ConfigPath);
+    std::filesystem::remove(m_ConfigPath);
+    config.setEffectiveUidForTesting(0);
+    config.settings().themeId = "mocha";
+    config.failSaveStepForTesting(SaveStep::Chown, EPERM);
+    config.save();
+    EXPECT_FALSE(std::filesystem::exists(m_ConfigPath)) << "the new file's owner was set";
+
+    // ...and so is each directory made for it.
+    config.resetConfigPathForTesting(nested);
+    config.setEffectiveUidForTesting(0);
+    config.settings().themeId = "mocha";
+    config.failSaveStepForTesting(SaveStep::ChownDirectory, EPERM);
+    config.save();
+    EXPECT_FALSE(std::filesystem::exists(nested)) << "the directories' owner was set";
+
+    // All of it works (handing this user's files to this user): saved, and owned by the home's owner.
+    config.failSaveStepForTesting(SaveStep::None, 0);
+    config.save();
+    ASSERT_TRUE(std::filesystem::exists(nested));
+    EXPECT_EQ(parsed(nested)["theme"]["id"].value<std::string>(), "mocha");
+    struct stat home = {};
+    struct stat made = {};
+    struct stat file = {};
+    ASSERT_EQ(::stat(m_TempDir.c_str(), &home), 0);
+    ASSERT_EQ(::stat((m_TempDir / "made").c_str(), &made), 0);
+    ASSERT_EQ(::stat(nested.c_str(), &file), 0);
+    EXPECT_EQ(made.st_uid, home.st_uid);
+    EXPECT_EQ(file.st_uid, home.st_uid);
+    config.setEffectiveUidForTesting(std::nullopt);
+}
+
 TEST_F(UserConfigSaveLoadFixture, FailedStagingLeavesAnExistingFileAlone)
 {
     // Every candidate staging name taken: the save fails, and the file that already had that name

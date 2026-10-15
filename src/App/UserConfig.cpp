@@ -651,6 +651,49 @@ struct FileOwner
     return ok;
 }
 
+/// Who should own config files and directories TaskSmack creates (#2121). Running as root with another
+/// user's HOME (sudo -E, as the elevation notice suggests), a new config.toml -- and any directory made
+/// for it -- would be root's and 0600, so the user's next normal run could neither read nor save it.
+/// Then they go to the owner of the nearest existing ancestor of @p dir (the user's ~/.config or home);
+/// otherwise nullopt (not root, or root in root's own home): created as the process, as usual.
+[[nodiscard]] std::optional<FileOwner> ownerForNewFiles(const std::filesystem::path& dir, uid_t effectiveUid)
+{
+    if (effectiveUid != 0)
+    {
+        return std::nullopt;
+    }
+    std::filesystem::path at = dir;
+    struct stat existing = {};
+    while (::stat(at.c_str(), &existing) != 0)
+    {
+        if (at == at.parent_path())
+        {
+            return std::nullopt;
+        }
+        at = at.parent_path();
+    }
+    if (existing.st_uid == 0)
+    {
+        return std::nullopt;
+    }
+    return FileOwner{.uid = existing.st_uid, .gid = existing.st_gid};
+}
+
+/// Gives the directory @p dir, which save() just created, to @p owner: through a descriptor opened with
+/// O_NOFOLLOW, so a symlink swapped in for it can't make root hand some other directory over.
+[[nodiscard]] bool chownCreatedDirectory(const std::filesystem::path& dir, const FileOwner& owner)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0)
+    {
+        return false;
+    }
+    const bool ok = ::fchown(fd, owner.uid, owner.gid) == 0;
+    ::close(fd);
+    return ok;
+}
+
 } // namespace
 #endif
 
@@ -723,14 +766,41 @@ void UserConfig::save()
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
     std::error_code ec;
+#ifndef _WIN32
+    const std::optional<FileOwner> newFileOwner =
+        ownerForNewFiles(configDir, m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid());
+#endif
     if (!std::filesystem::exists(configDir, ec))
     {
+#ifndef _WIN32
+        // The directories about to be made, outermost first, to hand to the user afterwards (#2121).
+        std::vector<std::filesystem::path> created;
+        for (std::filesystem::path at = configDir; !at.empty() && at != at.parent_path() && !std::filesystem::exists(at, ec);
+             at = at.parent_path())
+        {
+            created.insert(created.begin(), at);
+        }
+#endif
         std::filesystem::create_directories(configDir, ec);
         if (ec)
         {
             spdlog::error("Failed to create config directory {}: {}", Core::pathToUtf8(configDir), ec.message());
             return;
         }
+#ifndef _WIN32
+        if (newFileOwner.has_value())
+        {
+            for (const std::filesystem::path& dir : created)
+            {
+                if (saveStepFails(SaveStep::ChownDirectory) || !chownCreatedDirectory(dir, *newFileOwner))
+                {
+                    spdlog::error(
+                        "Not saving settings: can't give {} to its user: {}", Core::pathToUtf8(dir), std::system_category().message(errno));
+                    return;
+                }
+            }
+        }
+#endif
     }
 
     // A symlinked config is written through the link: the temporary file goes beside the link's
@@ -939,6 +1009,10 @@ void UserConfig::save()
             return;
         }
         owner = FileOwner{.uid = original.st_uid, .gid = original.st_gid};
+    }
+    else
+    {
+        owner = newFileOwner; // A new config under another user's home, made as root, is theirs (#2121)
     }
     const std::optional<mode_t> mode = (originalPermissions != std::filesystem::perms::unknown)
                                          ? std::optional<mode_t>(static_cast<mode_t>(originalPermissions & std::filesystem::perms::mask))

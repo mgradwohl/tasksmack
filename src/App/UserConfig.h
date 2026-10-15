@@ -196,6 +196,14 @@ class UserConfig
         m_TempNameSource = nullptr;
         m_FailingSaveStep = SaveStep::None;
         m_FailingSaveErrno = 0;
+        m_EffectiveUidForTesting.reset();
+    }
+
+    /// Testing only: save() runs as if its effective user ID were @p uid (0: root, #2121); nullopt for the
+    /// real one. Reset by resetConfigPathForTesting().
+    void setEffectiveUidForTesting(std::optional<std::uint32_t> uid)
+    {
+        m_EffectiveUidForTesting = uid;
     }
 
     /// Replaces the random number that names save()'s staging file, so a test can make every
@@ -209,15 +217,16 @@ class UserConfig
     enum class SaveStep : std::uint8_t
     {
         None,
-        OwnerStat,     ///< Reading the existing config's owner (POSIX)
-        AclRead,       ///< Reading its access ACL (Linux)
-        CreateStaging, ///< Creating the staging file (POSIX)
-        Write,         ///< Writing the staging file (POSIX)
-        Chown,         ///< Giving it the original's owner (POSIX)
-        Acl,           ///< Giving it the original's access ACL (Linux)
-        Chmod,         ///< Giving it the original's mode (POSIX)
-        Close,         ///< Closing it (POSIX)
-        Rename,        ///< Renaming it over the config
+        OwnerStat,      ///< Reading the existing config's owner (POSIX)
+        AclRead,        ///< Reading its access ACL (Linux)
+        CreateStaging,  ///< Creating the staging file (POSIX)
+        Write,          ///< Writing the staging file (POSIX)
+        Chown,          ///< Giving it the original's owner (POSIX)
+        Acl,            ///< Giving it the original's access ACL (Linux)
+        Chmod,          ///< Giving it the original's mode (POSIX)
+        Close,          ///< Closing it (POSIX)
+        Rename,         ///< Renaming it over the config
+        ChownDirectory, ///< Giving a directory save() created to the user, running as root (POSIX, #2121)
     };
 
     /// Testing only: save()'s @p step fails from now on with @p errorNumber, as if its system call had
@@ -243,6 +252,7 @@ class UserConfig
     std::function<std::uint32_t()> m_TempNameSource; // Testing only; empty means std::random_device
     SaveStep m_FailingSaveStep = SaveStep::None;     // Testing only (failSaveStepForTesting())
     int m_FailingSaveErrno = 0;
+    std::optional<std::uint32_t> m_EffectiveUidForTesting; // Testing only (setEffectiveUidForTesting())
 
     /// Whether @p step is the one a test made fail; sets errno to its error if so.
     [[nodiscard]] bool saveStepFails(SaveStep step) const noexcept;
