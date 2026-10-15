@@ -433,6 +433,58 @@ TEST_F(SystemMetricsPanelRenderTest, EachOverviewChartShowsItsTooltipWhenHovered
     panel->onDetach();
 }
 
+// #1891: where the platform reports I/O wait (Linux), the CPU chart's tooltip lists it as its own row.
+TEST_F(SystemMetricsPanelRenderTest, TheCpuTooltipListsIoWaitWhereItIsReported)
+{
+    auto panel = std::make_unique<SystemMetricsPanel>(
+        []
+        {
+            auto system = mockSystem();
+            Platform::SystemCapabilities caps = system->capabilities();
+            caps.hasIoWait = true;
+            system->setCapabilities(caps);
+            return SystemMetricsProbes{.system = std::move(system), .power = nullptr, .disk = nullptr, .gpu = nullptr};
+        });
+    panel->onAttach();
+    panel->setSamplingInterval(std::chrono::milliseconds(100));
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (int frames = 0; frames < 40 && std::chrono::steady_clock::now() < deadline; ++frames)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    // The CPU chart is the Overview's first plot.
+    const ImPlotPlot* cpu = ImPlot::GetCurrentContext()->Plots.GetByIndex(0);
+    ASSERT_NE(cpu, nullptr);
+    const ImRect rect = cpu->PlotRect;
+    ImGui::GetIO().AddMousePosEvent(rect.Max.x - 3.0F, (rect.Min.y + rect.Max.y) * 0.5F);
+    bool shown = false;
+    for (int frame = 0; frame < 3; ++frame)
+    {
+        panel->onUpdate(1.0F / 60.0F);
+        static_cast<void>(renderAndCapture(*panel));
+        const ImGuiWindow* tooltip = ImGui::FindWindowByName("##Tooltip_00");
+        shown = tooltip != nullptr && tooltip->Active;
+    }
+    EXPECT_TRUE(shown) << "the CPU chart's tooltip";
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    panel->onDetach();
+}
+
+// #1891: a panel that was never attached has no model to update, and onUpdate() leaves it at that.
+TEST_F(SystemMetricsPanelRenderTest, UpdatingAPanelThatWasNeverAttachedDoesNothing)
+{
+    SystemMetricsPanel panel([] { return SystemMetricsProbes{.system = mockSystem(), .power = nullptr, .disk = nullptr, .gpu = nullptr}; });
+    panel.onUpdate(1.0F / 60.0F);
+    EXPECT_FALSE(renderAndCapture(panel).contains("testhost")) << "nothing read, so no machine to show";
+}
+
 // #1395: hovering the power card's heading explains what it shows: the process power estimate, the
 // battery's charge and its health, and how many samples the chart holds.
 TEST_F(SystemMetricsPanelRenderTest, ThePowerHeadingSaysWhatTheChartShows)
