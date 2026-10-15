@@ -41,18 +41,19 @@ namespace App
 namespace DumpDetail
 {
 
-std::string lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory)
+std::string lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory, bool canChooseFolder)
 {
     if (!dumpMayNotFit(space))
     {
         return {};
     }
     return std::format("Only {} is free on the drive holding {}, and a full dump of this process may need about {} (its {} of "
-                       "private memory, and more). It may not fit: choose another folder with Save dump to..., or free some space.",
+                       "private memory, and more). It may not fit: {}",
                        UI::Format::formatBytes(static_cast<double>(space.freeBytes.value_or(0))),
                        directory.empty() ? std::string("the temporary folder") : Core::pathToUtf8(directory),
                        UI::Format::formatBytes(static_cast<double>(estimatedDumpBytes(space.processBytes.value_or(0)))),
-                       UI::Format::formatBytes(static_cast<double>(space.processBytes.value_or(0))));
+                       UI::Format::formatBytes(static_cast<double>(space.processBytes.value_or(0))),
+                       canChooseFolder ? "choose another folder with Save dump to..., or free some space." : "free some space first.");
 }
 
 std::filesystem::path defaultDumpDirectory()
@@ -251,8 +252,10 @@ void ProcessDumpView::request(const Platform::ProcessTarget& target,
 void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
 {
     // Read once per folder, never per frame: the free space and the process's private bytes.
-    m_SpaceWarning =
-        (actions != nullptr) ? DumpDetail::lowSpaceWarning(actions->dumpSpace(m_Target, m_Directory), m_Directory) : std::string{};
+    m_SpaceWarning = (actions != nullptr) ? DumpDetail::lowSpaceWarning(actions->dumpSpace(m_Target, m_Directory),
+                                                                        m_Directory,
+                                                                        actions->actionCapabilities().canChooseDumpFolder)
+                                          : std::string{};
     std::string warning = m_SpaceWarning;
     if (!m_FolderFailure.empty())
     {

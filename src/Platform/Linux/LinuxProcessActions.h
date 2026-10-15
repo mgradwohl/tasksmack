@@ -96,6 +96,10 @@ class LinuxProcessActions : public IProcessActions
     /// runs) is killed and the partial file deleted.
     [[nodiscard]] ProcessDumpResult
     createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override;
+    /// The free space on @p directory's filesystem (statvfs) and what a core of the target holds at
+    /// least (LinuxCoreDump::coreBytesFromStatus()), read from the target itself through the identity
+    /// check (#807, #2001).
+    [[nodiscard]] DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory) override;
     /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
 

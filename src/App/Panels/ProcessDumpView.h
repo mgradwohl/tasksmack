@@ -78,8 +78,10 @@ inline constexpr std::uint64_t DUMP_SIZE_OVERHEAD_DIVISOR = 4; ///< A quarter mo
 }
 
 /// The confirm's warning when the dump may not fit in @p directory (dumpMayNotFit()); empty when it
-/// should, or when that can't be told.
-[[nodiscard]] std::string lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory);
+/// should, or when that can't be told. It points to "Save dump to..." only where @p canChooseFolder
+/// (ProcessActionCapabilities::canChooseDumpFolder; not on Linux, #807).
+[[nodiscard]] std::string
+lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory, bool canChooseFolder = true);
 
 /// The folder dumps go to by default: the user's temp folder (%TEMP% on Windows), as Task Manager's
 /// do. Empty when there is none; the platform then refuses the dump and says so.

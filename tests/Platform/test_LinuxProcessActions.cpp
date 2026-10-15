@@ -1082,6 +1082,23 @@ TEST(LinuxProcessActionsDumpTest, ADumpIsRefusedForAnInvalidTargetOrAMissingFold
     EXPECT_FALSE(std::filesystem::exists(work.path / "gcore-args.txt")) << "gcore never ran";
 }
 
+TEST(LinuxProcessActionsDumpTest, DumpSpaceReadsTheFolderAndTheProcess)
+{
+    // The confirm's free-space check (#2001): this process has anonymous memory, and the temp folder free space.
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_space");
+    LinuxProcessActions actions(SyscallTrace::Tools{});
+    const DumpSpace space = actions.dumpSpace(ownTarget(), dumps.path);
+    EXPECT_GT(space.freeBytes.value_or(0), 0U);
+    EXPECT_GT(space.processBytes.value_or(0), 0U);
+
+    // Not the target any more: its memory isn't counted. No folder: no free space.
+    ProcessTarget reused = ownTarget();
+    reused.startTimeTicks += 1;
+    EXPECT_EQ(actions.dumpSpace(reused, dumps.path).processBytes, std::nullopt);
+    EXPECT_EQ(actions.dumpSpace(ownTarget(), {}).freeBytes, std::nullopt);
+    EXPECT_EQ(actions.dumpSpace(ownTarget(), dumps.path / "missing").freeBytes, std::nullopt);
+}
+
 // ============================================================================
 // Kernel failures, through LinuxProcessActions' syscall table (#1548)
 // ============================================================================

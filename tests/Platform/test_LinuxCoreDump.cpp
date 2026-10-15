@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <ctime>
 #include <filesystem>
 #include <optional>
@@ -66,6 +67,22 @@ TEST(LinuxCoreDumpTest, AFailureSaysWhatGcoreSaidLast)
     EXPECT_EQ(gcoreFailureMessage(42, -1, ""), "gcore couldn't write a dump of process 42 (exit status -1)");
     EXPECT_EQ(LinuxCoreDump::lastLine("  only line  "), "only line");
     EXPECT_EQ(LinuxCoreDump::lastLine("first\n  \n\t\n"), "first");
+}
+
+TEST(LinuxCoreDumpTest, ACoreHoldsTheAnonymousSharedAndSwappedMemory)
+{
+    using LinuxCoreDump::coreBytesFromStatus;
+    // Lines as the kernel writes them, a few left out.
+    const std::string status = "Name:\tapp\nVmRSS:\t   10000 kB\nRssAnon:\t    6000 kB\nRssFile:\t    3000 kB\n"
+                               "RssShmem:\t    1000 kB\nVmSwap:\t     500 kB\n";
+    EXPECT_EQ(coreBytesFromStatus(status), std::optional<std::uint64_t>{(6000U + 1000U + 500U) * 1024U});
+    // No shared memory or swap reported: the anonymous memory alone.
+    EXPECT_EQ(coreBytesFromStatus("Name:\tapp\nRssAnon:\t 8 kB\n"), std::optional<std::uint64_t>{8U * 1024U});
+    // A kernel thread (no Rss* lines), an old kernel, or a value that isn't one: unknown.
+    EXPECT_EQ(coreBytesFromStatus("Name:\tkworker/0:1\n"), std::nullopt);
+    EXPECT_EQ(coreBytesFromStatus("RssAnon:\t lots\n"), std::nullopt);
+    // A key that only starts the same is not the key.
+    EXPECT_EQ(coreBytesFromStatus("RssAnonymous:\t 8 kB\n"), std::nullopt);
 }
 
 TEST(LinuxCoreDumpTest, GcoresPtraceRefusalsSayDumpNotTrace)

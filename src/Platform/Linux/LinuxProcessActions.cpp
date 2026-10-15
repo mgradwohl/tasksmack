@@ -27,6 +27,8 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -46,6 +48,7 @@
 #include <sys/poll.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1231,6 +1234,27 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
                        .note = {},
                        .fromSnapshot = false,
                        .liveReason = LinuxCoreDump::LIVE_REASON};
+}
+
+DumpSpace LinuxProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
+{
+    DumpSpace space;
+    struct statvfs stats{};
+    if (!directory.empty() && ::statvfs(directory.c_str(), &stats) == 0)
+    {
+        space.freeBytes = static_cast<std::uint64_t>(stats.f_bavail) * static_cast<std::uint64_t>(stats.f_frsize);
+    }
+    if (target.pid > 0)
+    {
+        // Read first, then confirmed to have been the target's: a PID reused in between is not counted.
+        std::ifstream file(std::format("/proc/{}/status", target.pid));
+        const std::string status{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        if (!status.empty() && verifyIdentity(target).success)
+        {
+            space.processBytes = LinuxCoreDump::coreBytesFromStatus(status);
+        }
+    }
+    return space;
 }
 
 } // namespace Platform

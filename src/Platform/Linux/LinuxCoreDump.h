@@ -1,11 +1,15 @@
 #pragma once
 
+#include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 /// The pure parts of LinuxProcessActions::createDump() (#807): the core file's name, the gcore command
@@ -54,6 +58,44 @@ inline constexpr const char* CANCELLED_MESSAGE = "Cancelled; the partial dump fi
     }
     name += ".core";
     return name;
+}
+
+/// What a core of the process holds at least, in bytes, from its /proc/<pid>/status: its resident
+/// anonymous and shared memory plus what is swapped out (RssAnon + RssShmem + VmSwap) -- the memory
+/// gcore writes under the default coredump_filter. Nullopt without RssAnon (a kernel thread, or a
+/// kernel before 4.5); a missing RssShmem or VmSwap counts as none.
+[[nodiscard]] inline std::optional<std::uint64_t> coreBytesFromStatus(std::string_view status)
+{
+    const auto kib = [status](std::string_view key) -> std::optional<std::uint64_t>
+    {
+        for (std::size_t at = 0; at < status.size();)
+        {
+            const std::size_t end = std::min(status.find('\n', at), status.size());
+            const std::string_view line = status.substr(at, end - at);
+            at = end + 1;
+            if (!line.starts_with(key) || line.size() <= key.size() || line[key.size()] != ':')
+            {
+                continue;
+            }
+            std::string_view value = line.substr(key.size() + 1);
+            value.remove_prefix(std::min(value.find_first_not_of(" \t"), value.size()));
+            std::uint64_t kibibytes = 0;
+            const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), kibibytes);
+            if (ec != std::errc{} || ptr == value.data())
+            {
+                return std::nullopt;
+            }
+            return kibibytes;
+        }
+        return std::nullopt;
+    };
+    const std::optional<std::uint64_t> anon = kib("RssAnon");
+    if (!anon.has_value())
+    {
+        return std::nullopt;
+    }
+    constexpr std::uint64_t KIB = 1024;
+    return (*anon + kib("RssShmem").value_or(0) + kib("VmSwap").value_or(0)) * KIB;
 }
 
 /// The command that writes the core: `gcore -o <prefix> <pid>`, which writes "<prefix>.<pid>".

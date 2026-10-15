@@ -316,6 +316,10 @@ TEST(ProcessDumpViewTest, TheWarningNamesTheFolderTheSizesAndWhatToDo)
     EXPECT_TRUE(warning.contains("its 4.0 GiB of private memory")) << warning;
     EXPECT_TRUE(warning.contains("may not fit")) << warning;
     EXPECT_TRUE(warning.contains("Save dump to...")) << warning;
+    // Where there is no folder picker (Linux, #807) it doesn't point to one.
+    const std::string noPicker = DumpDetail::lowSpaceWarning({.freeBytes = GIB, .processBytes = 4 * GIB}, someFolder(), false);
+    EXPECT_FALSE(noPicker.contains("Save dump to...")) << noPicker;
+    EXPECT_TRUE(noPicker.contains("free some space first")) << noPicker;
     EXPECT_TRUE(DumpDetail::lowSpaceWarning({.freeBytes = 100 * GIB, .processBytes = 4 * GIB}, someFolder()).empty());
     EXPECT_TRUE(DumpDetail::lowSpaceWarning({}, someFolder()).empty());
 
