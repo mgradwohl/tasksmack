@@ -549,6 +549,7 @@ TEST_F(ProcessDetailsChartsRenderTest, AMissingInputDrawsNothing)
     renderOverview(charts, inputs.ctx);
     runFrame([&] { charts.renderNetworkTab(inputs.ctx); });
     runFrame([&] { charts.renderGpuTab(inputs.ctx); });
+    runFrame([&] { charts.renderNpuTab(inputs.ctx); }); // #1891: the NPU tab checks its inputs too
     EXPECT_TRUE(plotsDrawn().empty());
 }
 
