@@ -92,6 +92,7 @@ class ProcessEnvironmentViewRenderTest : public ::testing::Test
         for (int i = 0; i < 3 && !view.hasRead(); ++i)
         {
             static_cast<void>(view.update(&reader, TARGET, 1.0F / 60.0F));
+            view.finishPendingRead(TARGET); // the read runs on a worker (#2116)
             static_cast<void>(renderAndCapture(view, true));
         }
         ASSERT_TRUE(view.hasRead());

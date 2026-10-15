@@ -14,6 +14,7 @@
 
 #include <array>
 #include <cstddef>
+#include <future>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -32,10 +33,13 @@ constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_E
     return {.status = Platform::EnvironmentReadStatus::Ok, .variables = std::move(variables)};
 }
 
-/// One frame as the panel runs it: update (reads if due), then render drew the section open or not.
+/// One frame as the panel runs it: update (starts a read if due), then render drew the section open or
+/// not. A read started is waited for and taken in at once, so each frame sees its result (#2116: the
+/// read runs on a worker).
 bool frame(ProcessEnvironmentView& view, TestMocks::MockProcessEnvironmentReader& reader, float deltaSeconds, bool drawnOpen)
 {
     const bool read = view.update(&reader, TARGET, deltaSeconds);
+    view.finishPendingRead(TARGET);
     if (drawnOpen)
     {
         view.markDrawnOpen();
@@ -120,6 +124,7 @@ TEST(ProcessEnvironmentViewTest, SelectionChangeReadsAfreshWithoutWaitingForTheI
     EXPECT_FALSE(view.hasRead());
     view.markDrawnOpen();
     EXPECT_TRUE(view.update(&reader, TARGET, 0.016F));
+    view.finishPendingRead(TARGET);
     EXPECT_EQ(reader.readCount(), 2);
 }
 
@@ -195,12 +200,51 @@ TEST(ProcessEnvironmentViewTest, KeepsEachReadStatusForItsStatusLine)
         reader.setResult({.status = c.status, .variables = {}});
         view.markDrawnOpen();
         ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+        view.finishPendingRead(TARGET);
         EXPECT_TRUE(view.hasRead());
         EXPECT_EQ(view.status(), c.status);
         EXPECT_TRUE(view.rows().empty());
         EXPECT_EQ(Detail::environmentStatusText(view.status()), c.text);
     }
     EXPECT_TRUE(Detail::environmentStatusText(Platform::EnvironmentReadStatus::Ok).empty());
+}
+
+// #2116: the read runs on a worker, not on the thread that calls update(): a reader that blocks (the
+// target's mmap lock held on a hung mount) leaves update() returning at once, and the section keeps
+// showing "Reading..." until the read arrives.
+TEST(ProcessEnvironmentViewTest, AReadThatBlocksDoesNotBlockUpdate)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    std::promise<void> release;
+    reader.setBeforeRead([gate = release.get_future().share()] { gate.wait(); });
+    reader.setResult(okResult({{.name = "HOME", .value = "/home/a"}}));
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.016F)); // returned while the read is still blocked
+    EXPECT_TRUE(view.readInFlight());
+    EXPECT_FALSE(view.hasRead());
+    release.set_value();
+    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.hasRead());
+    ASSERT_EQ(view.rows().size(), 1U);
+    EXPECT_EQ(view.rows()[0].name, "HOME");
+}
+
+// A read still in flight when another process is selected is dropped, never shown for the new one.
+TEST(ProcessEnvironmentViewTest, AReadForThePreviousSelectionIsDropped)
+{
+    ProcessEnvironmentView view;
+    TestMocks::MockProcessEnvironmentReader reader;
+    std::promise<void> release;
+    reader.setBeforeRead([gate = release.get_future().share()] { gate.wait(); });
+    reader.setResult(okResult({{.name = "SECRET_TOKEN", .value = "old"}}));
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.016F));
+    view.onSelectionChanged();
+    release.set_value();
+    view.finishPendingRead(TARGET);
+    EXPECT_FALSE(view.hasRead());
+    EXPECT_TRUE(view.rows().empty());
 }
 
 // ========== Reveal ==========

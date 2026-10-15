@@ -6,9 +6,12 @@
 //
 // The view never creates a reader. The panel owns the IProcessEnvironmentReader (the composition
 // root's Platform::makeProcessEnvironmentReader() result) and passes it to update(), which the panel
-// calls from its per-frame update path, never from render(). update() reads only while the section
-// was drawn open on the last frame, once when it opens or the selection changes and then every
-// Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS; render() only draws what the last read returned.
+// calls from its per-frame update path, never from render(). update() starts a read only while the
+// section was drawn open on the last frame, once when it opens or the selection changes and then every
+// Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS, on a worker thread, one at a time
+// (LazyBackgroundRead.h, as the Connections and Security sections'): reading /proc/<pid>/environ takes
+// the target's mmap lock, which a process stuck on a hung mount can hold indefinitely, and that must
+// not freeze the UI (#2116). render() only draws what the last read returned.
 //
 // Everything but render() is defined here, free of ImGui, so the read cadence, the statuses and the
 // reveal state are tested against a mock reader without an ImGui context
@@ -18,8 +21,10 @@
 // Environment values are never logged (#179).
 
 #include "Domain/SamplingConfig.h"
+#include "LazyBackgroundRead.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
+#include "Platform/ThreadName.h"
 #include "ProcessEnvironmentMasking.h"
 
 #include <algorithm>
@@ -119,31 +124,43 @@ class ProcessEnvironmentView
     /// cannot read environments: Windows, synthetic runs).
     void render(bool hasEnvironment);
 
-    /// The panel's per-frame update: reads @p target's environment through @p reader when the section
-    /// was drawn open on the last frame and a read is due -- none yet since it opened or the selection
-    /// changed, or PROCESS_ENVIRONMENT_REFRESH_MS since the last. @p reader may be null (nothing is read).
-    /// @return Whether it read.
+    /// The panel's per-frame update: takes in a read that has finished, then starts @p target's on a
+    /// worker through @p reader when the section was drawn open on the last frame and a read is due --
+    /// none yet since it opened or the selection changed, or PROCESS_ENVIRONMENT_REFRESH_MS since the
+    /// last. @p reader may be null (nothing is read); the caller keeps it alive while a read runs.
+    /// @return Whether it started a read.
     bool update(Platform::IProcessEnvironmentReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
-        m_SecondsSinceRead += deltaSeconds;
-        const bool shownOpen = std::exchange(m_DrawnOpen, false);
-        // Kept counting while the section is closed, so one reopened after the interval reads at once.
-        if (!shownOpen || reader == nullptr || !reader->hasEnvironment())
+        takeFinishedRead(target, false);
+        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasEnvironment())
         {
             return false;
         }
-        if (m_HasRead && (m_SecondsSinceRead * 1000.0F) < static_cast<float>(Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS))
+        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readEnvironment(t); }))
         {
-            return false;
+            applyResult(std::move(*failed));
         }
-        applyResult(reader->readEnvironment(target));
         return true;
     }
 
+    /// Waits for the read in flight, if any, and takes it in as update() would (tests only).
+    void finishPendingRead(const Platform::ProcessTarget& target)
+    {
+        takeFinishedRead(target, true);
+    }
+
+    /// Whether a read is running on its worker.
+    [[nodiscard]] bool readInFlight() const noexcept
+    {
+        return m_Read.inFlight();
+    }
+
     /// A different process was selected: drop its variables, the values revealed for it and the
-    /// filter, so nothing of one process is shown for the next, and read afresh when next shown.
+    /// filter, so nothing of one process is shown for the next, and read afresh when next shown. A read
+    /// in flight for the previous process is dropped when it arrives.
     void onSelectionChanged() noexcept
     {
+        m_Read.reset();
         m_HasRead = false;
         m_Status = Platform::EnvironmentReadStatus::Ok;
         m_Rows.clear();
@@ -152,9 +169,6 @@ class ProcessEnvironmentView
         m_FilterKey.clear();
         m_FilteredRows.clear();
         m_FilterDirty = true;
-        m_SecondsSinceRead = 0.0F;
-        // The open frame was the previous process's: the new one's section has not been drawn yet.
-        m_DrawnOpen = false;
     }
 
     /// Takes in a read: its status and, for Ok, its variables sorted by name with their mask flags.
@@ -162,7 +176,6 @@ class ProcessEnvironmentView
     void applyResult(Platform::EnvironmentReadResult result)
     {
         m_HasRead = true;
-        m_SecondsSinceRead = 0.0F;
         m_Status = result.status;
         m_Rows.clear();
         m_Rows.reserve(result.variables.size());
@@ -186,7 +199,7 @@ class ProcessEnvironmentView
     /// Records that render() drew the section open this frame (render() calls it; tests may too).
     void markDrawnOpen() noexcept
     {
-        m_DrawnOpen = true;
+        m_Read.markDrawnOpen();
     }
 
     /// Shows @p row's value if it is masked, or masks it again if it was revealed. Only that row:
@@ -282,9 +295,23 @@ class ProcessEnvironmentView
 
     void renderTable();
 
-    bool m_DrawnOpen = false; // render() drew the section open since the last update()
+    void takeFinishedRead(const Platform::ProcessTarget& target, bool wait)
+    {
+        if (auto result = m_Read.takeFinished(target, wait))
+        {
+            applyResult(std::move(*result));
+        }
+    }
+
+    /// The Failed result for a read that threw, or one no worker could be started for. The detail is
+    /// not kept: the status line says "Could not be read" (and a value must never be logged, #179).
+    // NOLINTNEXTLINE(performance-unnecessary-value-param) - the signature LazyBackgroundRead::FailedResultFn takes
+    [[nodiscard]] static Platform::EnvironmentReadResult failedRead(std::string /*detail*/)
+    {
+        return {.status = Platform::EnvironmentReadStatus::Failed, .variables = {}};
+    }
+
     bool m_HasRead = false;
-    float m_SecondsSinceRead = 0.0F;
     Platform::EnvironmentReadStatus m_Status = Platform::EnvironmentReadStatus::Ok;
     std::vector<Row> m_Rows;
     std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown
@@ -292,6 +319,9 @@ class ProcessEnvironmentView
     std::string m_FilterKey; // m_Filter as m_FilteredRows was built for
     std::vector<std::size_t> m_FilteredRows;
     bool m_FilterDirty = true;
+    // Last: destroying it waits for a read in flight, which writes only into its own future.
+    Detail::LazyBackgroundRead<Platform::EnvironmentReadResult> m_Read{
+        Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS, Platform::ENVIRONMENT_READ_THREAD_NAME, &failedRead};
 };
 
 } // namespace App
