@@ -152,6 +152,45 @@ TEST_F(HistoryChartEdgeTest, AnAxisNotStartingAtZeroKeepsImPlotsOwnTicks)
     EXPECT_TRUE(frame(offZero));
 }
 
+// #1891: the per-chart caches (each chart's eased Y bound, each series' point reduction) drop what
+// hasn't been drawn for a while once they hold many entries, so charts that come and go (per-disk,
+// per-interface) don't grow them forever. A chart still being drawn keeps its state.
+TEST_F(HistoryChartEdgeTest, ChartCachesPruneChartsNotDrawnForAWhile)
+{
+    constexpr int CHARTS = 300; // above the caches' 256-entry prune threshold
+    const auto inFrame = [](const auto& body)
+    {
+        ImGui::NewFrame();
+        body();
+        ImGui::Render();
+    };
+    inFrame(
+        []
+        {
+            for (int i = 0; i < CHARTS; ++i)
+            {
+                const auto id = static_cast<ImGuiID>(0xC0DE0000U + static_cast<unsigned>(i));
+                static_cast<void>(easedChartUpperBound(id, 100.0));
+                static_cast<void>(seriesReductionCache(id, "Load"));
+            }
+        });
+    // Past the caches' 600 stale frames, with one chart still drawn every frame.
+    constexpr ImGuiID KEPT = 0xC0DE0001U;
+    for (int idle = 0; idle < 610; ++idle)
+    {
+        inFrame([] { static_cast<void>(easedChartUpperBound(KEPT, 100.0)); });
+    }
+    double kept = 0.0;
+    inFrame(
+        [&kept]
+        {
+            static_cast<void>(seriesReductionCache(0xC0DEFFFFU, "Load")); // a new series: prunes the stale ones
+            kept = easedChartUpperBound(KEPT, 10.0);                      // prunes the stale bounds, not this one
+        });
+    EXPECT_GT(kept, 10.0) << "a chart drawn every frame keeps its bound, easing down rather than jumping";
+    EXPECT_LE(kept, 100.0);
+}
+
 TEST_F(HistoryChartEdgeTest, RenderMetricsRecordsAHistoryChartWhenOn)
 {
     RenderMetrics::get().setEnabled(true);
