@@ -824,20 +824,23 @@ bool ownProcessCanSetRealtimeIo()
     return ProcPrivileges::canSetRealtimeIoPriority(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
 }
 
-/// Whether strace, as exec'd from TaskSmack, will hold CAP_SYS_PTRACE: TaskSmack runs as root with the
-/// capability in its effective set (root keeps it across exec), or strace carries it as a file
-/// capability. An unreadable or malformed CapEff does not count as having it (fail closed).
-[[nodiscard]] bool tracerIsPrivileged(const std::string& tracerPath)
+/// Whether TaskSmack runs as root with CAP_SYS_PTRACE in its effective set, which strace exec'd from it
+/// keeps (root keeps its effective capabilities across exec). An unreadable or malformed CapEff does
+/// not count as having it (fail closed).
+[[nodiscard]] bool rootWithSysPtrace()
 {
-    if (::geteuid() == 0)
+    if (::geteuid() != 0)
     {
-        const std::optional<std::string> status = readSmallFile("/proc/self/status");
-        const std::optional<std::uint64_t> capEff = status ? ProcPrivileges::parseCapEff(*status) : std::nullopt;
-        if (SyscallTrace::rootTracerHasSysPtrace(true, capEff))
-        {
-            return true;
-        }
+        return false;
     }
+    const std::optional<std::string> status = readSmallFile("/proc/self/status");
+    const std::optional<std::uint64_t> capEff = status ? ProcPrivileges::parseCapEff(*status) : std::nullopt;
+    return SyscallTrace::rootTracerHasSysPtrace(true, capEff);
+}
+
+/// Whether the tool at @p tracerPath carries CAP_SYS_PTRACE as a file capability, whoever runs it.
+[[nodiscard]] bool tracerHasFileCapability(const std::string& tracerPath)
+{
     std::array<std::uint8_t, 64> xattr{};
     const auto len = ::getxattr(tracerPath.c_str(), "security.capability", xattr.data(), xattr.size());
     return len > 0 && SyscallTrace::fileCapsGrantSysPtrace(std::span<const std::uint8_t>(xattr.data(), static_cast<std::size_t>(len)));
@@ -851,7 +854,10 @@ bool ownProcessCanSetRealtimeIo()
     {
         context.ptraceScope = SyscallTrace::parsePtraceScope(*scope);
     }
-    context.privileged = tracerIsPrivileged(tracerPath);
+    const bool fileCapability = tracerHasFileCapability(tracerPath);
+    const bool rootPrivilege = rootWithSysPtrace();
+    context.privileged = fileCapability || rootPrivilege;
+    context.privilegeIsInherited = rootPrivilege && !fileCapability;
 
     // ptrace requires the target's real, effective and saved IDs all to be the tracer's. A process
     // that is not dumpable (it changed credentials, or asked not to be) cannot be attached to either;
@@ -922,8 +928,17 @@ ProcessActionResult LinuxProcessActions::launchSyscallTrace(const ProcessTarget&
         return identity;
     }
 
+    const SyscallTrace::PtraceContext context = m_Syscalls.ptraceContext(target.pid, m_TraceTools.tracerPath);
+    if (const std::optional<std::string> refusal = SyscallTrace::ptraceRefusal(target.pid, context))
+    {
+        spdlog::info("Not tracing PID {}: {}", target.pid, *refusal);
+        return ProcessActionResult::error(*refusal);
+    }
+    // x-terminal-emulator and the like are links: what they resolve to decides who runs strace (#2140).
+    std::error_code resolveError;
+    const std::filesystem::path resolvedTerminal = std::filesystem::canonical(terminal.path, resolveError);
     if (const std::optional<std::string> refusal =
-            SyscallTrace::ptraceRefusal(target.pid, m_Syscalls.ptraceContext(target.pid, m_TraceTools.tracerPath)))
+            SyscallTrace::serverTerminalRefusal(target.pid, context, resolveError ? terminal.path : resolvedTerminal.string()))
     {
         spdlog::info("Not tracing PID {}: {}", target.pid, *refusal);
         return ProcessActionResult::error(*refusal);

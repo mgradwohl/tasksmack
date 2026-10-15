@@ -19,6 +19,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/ISystemProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
+#include "WindowsDebugPrivilege.h"
 #include "WindowsDiskProbe.h"
 #include "WindowsEtwNetCollector.h"
 #include "WindowsGPUProbe.h"
@@ -139,6 +140,11 @@ std::unique_ptr<IServiceProbe> makeServiceProbe()
 std::unique_ptr<IServiceActions> makeServiceActions()
 {
     return std::make_unique<WindowsServiceActions>(WindowsServiceActions::isCurrentProcessElevated());
+}
+
+bool enableDebugPrivilege()
+{
+    return Windows::enableDebugPrivilegeIfElevated() == Windows::DebugPrivilegeResult::Enabled;
 }
 
 } // namespace Platform

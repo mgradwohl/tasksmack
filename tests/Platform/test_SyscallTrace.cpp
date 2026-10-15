@@ -310,5 +310,33 @@ TEST(SyscallTraceTest, RealtimeIoNeedsSysNiceOrSysAdmin)
     EXPECT_FALSE(ProcPrivileges::canSetRealtimeIoPriority(std::nullopt)); // unreadable
 }
 
+// #2140: which terminals hand their command to a server, and when that matters.
+TEST(SyscallTraceTest, ATerminalServerCantCarryTaskSmacksRootToStrace)
+{
+    using SyscallTrace::handsCommandToServer;
+    using SyscallTrace::serverTerminalRefusal;
+    EXPECT_TRUE(handsCommandToServer("/usr/bin/gnome-terminal.wrapper"));
+    EXPECT_TRUE(handsCommandToServer("/usr/bin/gnome-terminal"));
+    EXPECT_TRUE(handsCommandToServer("/usr/bin/ptyxis"));
+    EXPECT_TRUE(handsCommandToServer("kgx"));
+    EXPECT_FALSE(handsCommandToServer("/usr/bin/xterm"));
+    EXPECT_FALSE(handsCommandToServer("/usr/bin/konsole"));
+
+    const SyscallTrace::PtraceContext rootOnly{
+        .ptraceScope = 0, .sameCredentials = false, .privileged = true, .privilegeIsInherited = true};
+    EXPECT_TRUE(serverTerminalRefusal(42, rootOnly, "/usr/bin/gnome-terminal.wrapper").has_value());
+    EXPECT_FALSE(serverTerminalRefusal(42, rootOnly, "/usr/bin/xterm").has_value());
+    // Yama's descendants-only mode needs the privilege even for one's own processes.
+    const SyscallTrace::PtraceContext rootYama{.ptraceScope = 1, .sameCredentials = true, .privileged = true, .privilegeIsInherited = true};
+    EXPECT_TRUE(serverTerminalRefusal(42, rootYama, "/usr/bin/ptyxis").has_value());
+    // Not needed: the target is ours and Yama allows it.
+    const SyscallTrace::PtraceContext own{.ptraceScope = 0, .sameCredentials = true, .privileged = true, .privilegeIsInherited = true};
+    EXPECT_FALSE(serverTerminalRefusal(42, own, "/usr/bin/ptyxis").has_value());
+    // strace's own file capability goes with it, whoever starts it.
+    const SyscallTrace::PtraceContext fileCap{
+        .ptraceScope = 1, .sameCredentials = false, .privileged = true, .privilegeIsInherited = false};
+    EXPECT_FALSE(serverTerminalRefusal(42, fileCap, "/usr/bin/ptyxis").has_value());
+}
+
 } // namespace
 } // namespace Platform::SyscallTrace

@@ -69,14 +69,8 @@ namespace
 bool hasDisplay()
 {
 #ifdef _WIN32
-    // Windows CI runners are headless, as test_Application.cpp treats them; elsewhere probe for GL.
-    char* ci = nullptr;
-    std::size_t length = 0;
-    _dupenv_s(&ci, &length, "CI");
-    const bool onCi = ci != nullptr && std::string_view(ci) == "true";
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc
-    free(ci);
-    const bool available = !onCi && TestSupport::probeGLCapability();
+    // A GL 3.3 core context on the desktop, CI included (#2134).
+    const bool available = TestSupport::detectWindowsDisplay();
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
     const char* display = std::getenv("DISPLAY");

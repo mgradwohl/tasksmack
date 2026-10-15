@@ -44,16 +44,8 @@ bool isOffscreenVideoDriver()
 bool detectDisplay()
 {
 #ifdef _WIN32
-    // Check for CI environment - headless Windows CI runners cannot create windows.
-    // Mirror the guard used in test_Application.cpp: use _dupenv_s to avoid the
-    // MSVC CRT deprecation warning on std::getenv that is treated as an error under /WX.
-    char* ciEnv = nullptr;
-    std::size_t len = 0;
-    _dupenv_s(&ciEnv, &len, "CI");
-    const bool isCI = (ciEnv != nullptr && std::string_view(ciEnv) == "true");
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc; must free with free()
-    free(ciEnv);
-    return !isCI;
+    // A GL 3.3 core context on the desktop, CI included (#2134), as test_Application.cpp checks.
+    return TestSupport::detectWindowsDisplay();
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const char* display = std::getenv("DISPLAY");

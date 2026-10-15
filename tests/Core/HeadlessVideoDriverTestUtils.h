@@ -10,24 +10,31 @@
 namespace TestSupport
 {
 
-// True when the environment promises a GL-capable display (TASKSMACK_REQUIRE_DISPLAY=1), as
-// Linux CI does by running the tests under Xvfb + Mesa. There, "no display" means the CI setup
-// broke, and the display-dependent suites must fail rather than quietly skip (#1132).
-[[maybe_unused]] inline bool displayRequired()
+// True when the environment variable @p name is exactly "1".
+[[maybe_unused]] inline bool envFlagSet(const char* name)
 {
 #ifdef _WIN32
     char* value = nullptr;
     std::size_t len = 0;
-    _dupenv_s(&value, &len, "TASKSMACK_REQUIRE_DISPLAY");
-    const bool required = (value != nullptr && std::string_view(value) == "1");
+    _dupenv_s(&value, &len, name);
+    const bool set = (value != nullptr && std::string_view(value) == "1");
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc; must free with free()
     free(value);
-    return required;
+    return set;
 #else
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - read-only env access during single-threaded test setup
-    const char* value = std::getenv("TASKSMACK_REQUIRE_DISPLAY");
+    const char* value = std::getenv(name);
     return value != nullptr && std::string_view(value) == "1";
 #endif
+}
+
+// True when the environment promises a GL-capable display (TASKSMACK_REQUIRE_DISPLAY=1), as CI
+// does: Linux runs the tests under Xvfb + Mesa, Windows on the runner's desktop with Mesa's
+// llvmpipe beside the test executables (#2134). There, "no display" means the CI setup broke, and
+// the display-dependent suites must fail rather than quietly skip (#1132).
+[[maybe_unused]] inline bool displayRequired()
+{
+    return envFlagSet("TASKSMACK_REQUIRE_DISPLAY");
 }
 
 // Passes a display probe's result through, recording a test failure first when the probe found
@@ -83,6 +90,19 @@ namespace TestSupport
     SDL_Quit();
     return glCapable;
 }
+
+#ifdef _WIN32
+// Windows' display check for the suites that open real windows. A Windows session always has a
+// desktop, so the question is only whether SDL can create a GL 3.3 core context on it: a real GPU
+// driver, or Mesa's llvmpipe beside the test executable as CI provides (#2134). A machine with
+// neither (a VM, a basic display adapter, a CI job without llvmpipe) skips. There is no CI=true
+// bypass any more; TASKSMACK_SKIP_DISPLAY_TESTS=1 is the explicit opt-out, for a local run that
+// shouldn't open windows on a desktop someone is using.
+[[maybe_unused]] inline bool detectWindowsDisplay()
+{
+    return !envFlagSet("TASKSMACK_SKIP_DISPLAY_TESTS") && probeGLCapability();
+}
+#endif
 
 [[maybe_unused]] inline bool tryEnableOffscreenVideoDriver()
 {

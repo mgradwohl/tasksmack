@@ -224,8 +224,21 @@ jobs:
         with:
           mode: restore
 
+      # Software GL 4.6 (Mesa llvmpipe) for the window, title bar, HWND and GL icon suites, which
+      # skipped on the GPU-less runner and left that code uncovered (#2134). Copied into the
+      # coverage build's tests directory before the build; the build leaves extra files there alone.
+      - name: Software OpenGL for the display tests
+        uses: ./.github/actions/setup-mesa-llvmpipe
+        with:
+          copy-to: build/win-coverage/tests
+
       - name: Generate coverage report
         shell: pwsh
+        env:
+          # The step above guarantees a display, so a display suite that can't get one fails rather
+          # than skips (coverage.ps1 only warns on test failures, but its output names them).
+          TASKSMACK_REQUIRE_DISPLAY: '1'
+          GALLIUM_DRIVER: llvmpipe
         run: |
           $ErrorActionPreference = 'Stop'
           ./tools/coverage.ps1 -ShowDetails *>&1 | Tee-Object -FilePath coverage-output.txt

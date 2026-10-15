@@ -958,6 +958,37 @@ SyscallTrace::PtraceContext ptraceDescendantsOnly(std::int32_t /*pid*/, const st
     return names;
 }
 
+/// ptrace would allow strace only through TaskSmack's own root privilege (Yama mode 1).
+SyscallTrace::PtraceContext ptraceAllowedAsRoot(std::int32_t /*pid*/, const std::string& /*toolPath*/)
+{
+    return {.ptraceScope = 1, .sameCredentials = true, .privileged = true, .privilegeIsInherited = true};
+}
+
+// #2140: gnome-terminal (here reached through an x-terminal-emulator link, as on Ubuntu) has its
+// server start strace, as the desktop user, so a trace that needs TaskSmack's root is refused up front
+// rather than reported as opened; a terminal that runs strace itself is used as before.
+TEST(LinuxProcessActionsTest, SyscallTraceNeedingRootRefusesATerminalThatHandsItToItsServer)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_trace_server_terminal");
+    SyscallTrace::Tools tools = fakeTraceTools(dir.path);
+    const std::filesystem::path server = dir.path / "gnome-terminal";
+    std::filesystem::copy_file(tools.terminal->path, server);
+    const std::filesystem::path link = dir.path / "x-terminal-emulator";
+    std::filesystem::create_symlink(server, link);
+    tools.terminal = SyscallTrace::Terminal{.path = link.string(), .syntax = SyscallTrace::TerminalSyntax::DashE};
+
+    LinuxProcessActions viaServer(tools, syscallsWithPtrace(&ptraceAllowedAsRoot));
+    const auto refused = viaServer.launchSyscallTrace(ownTarget());
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.errorMessage.starts_with("gnome-terminal opens its windows from your desktop session")) << refused.errorMessage;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+
+    // The same privilege through a terminal that runs the command itself: opened.
+    LinuxProcessActions viaChild(fakeTraceTools(dir.path), syscallsWithPtrace(&ptraceAllowedAsRoot));
+    EXPECT_TRUE(viaChild.launchSyscallTrace(ownTarget()).success);
+}
+
 TEST(LinuxProcessActionsDumpTest, DumpsAreOfferedOnlyWhereGcoreIsInstalled)
 {
     const TestSupport::ScopedTempDir dir("tasksmack_dump_caps");

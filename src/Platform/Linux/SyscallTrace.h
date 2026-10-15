@@ -12,6 +12,7 @@
 
 #include "ProcPrivileges.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstddef>
@@ -60,6 +61,13 @@ inline constexpr std::array<KnownTerminal, 11> FALLBACK_TERMINALS{{
     {.name = "wezterm", .syntax = TerminalSyntax::WezTerm},
     {.name = "xterm", .syntax = TerminalSyntax::DashE},
 }};
+
+/// Terminals that don't run the command themselves (#2140): they are clients that ask the desktop user's
+/// already-running terminal server, over the session bus, to open a window, and that server forks the
+/// command. It runs as the desktop user, without TaskSmack's root, and isn't TaskSmack's descendant.
+/// By the name of the program (x-terminal-emulator is resolved first: on Debian/Ubuntu it is usually
+/// gnome-terminal.wrapper).
+inline constexpr std::array<std::string_view, 4> SERVER_TERMINALS{"gnome-terminal", "gnome-terminal.wrapper", "ptyxis", "kgx"};
 
 /// The final component of @p path ("/usr/bin/kitty" -> "kitty").
 [[nodiscard]] constexpr std::string_view baseName(std::string_view path) noexcept
@@ -319,6 +327,9 @@ struct PtraceContext
     std::optional<int> ptraceScope; ///< Yama's kernel.yama.ptrace_scope; nullopt without Yama.
     bool sameCredentials = false;   ///< The target's real/effective/saved UIDs and GIDs are ours, and it is dumpable.
     bool privileged = false;        ///< strace will run with CAP_SYS_PTRACE (we are root with it, or strace has the file capability).
+    /// privileged only because TaskSmack itself is root with CAP_SYS_PTRACE, not through a file
+    /// capability: strace keeps it only when it runs as TaskSmack's own descendant (#2140).
+    bool privilegeIsInherited = false;
 };
 
 /// The tool that attaches with ptrace, as ptraceRefusal()'s messages name it and what it does.
@@ -382,6 +393,33 @@ ptraceRefusal(std::int32_t pid, const PtraceContext& context, const PtraceTool& 
             tool.verb);
     }
     return std::nullopt;
+}
+
+/// Whether the terminal at @p resolvedPath (symlinks followed) hands its command to a terminal server.
+[[nodiscard]] constexpr bool handsCommandToServer(std::string_view resolvedPath) noexcept
+{
+    const std::string_view name = baseName(resolvedPath);
+    return std::ranges::find(SERVER_TERMINALS, name) != SERVER_TERMINALS.end();
+}
+
+/// Why strace can't be run through the terminal at @p resolvedPath for @p pid, or nullopt (#2140): it
+/// needs TaskSmack's own root privilege -- the target is another user's, or Yama limits ptrace -- but
+/// that terminal has its server start strace, as the desktop user and outside TaskSmack's descendants,
+/// so it would be refused and its window would close at once while TaskSmack said it worked.
+[[nodiscard]] inline std::optional<std::string>
+serverTerminalRefusal(std::int32_t pid, const PtraceContext& context, std::string_view resolvedPath)
+{
+    const bool needsTaskSmacksPrivilege =
+        context.privilegeIsInherited && (!context.sameCredentials || context.ptraceScope == 1 || context.ptraceScope == 2);
+    if (!needsTaskSmacksPrivilege || !handsCommandToServer(resolvedPath))
+    {
+        return std::nullopt;
+    }
+    return std::format("{} opens its windows from your desktop session, so strace would run there without TaskSmack's root "
+                       "privileges and couldn't attach to process {}. Set TERMINAL to a terminal that runs the command itself "
+                       "(for example xterm, konsole or alacritty) and restart TaskSmack",
+                       baseName(resolvedPath),
+                       pid);
 }
 
 } // namespace Platform::SyscallTrace
