@@ -1169,6 +1169,47 @@ TEST_F(ProcessesPanelRenderTest, PrivateAndSwapWithoutTheirFiguresShowTheDashAnd
     panel->onDetach();
 }
 
+// #1891: with per-process GPU data supported but not read yet for a process (it was first listed after
+// the GPU sampler's last read), the GPU Engine and GPU Device cells read as the dash, and hovering one
+// says why -- not the generic "couldn't be read" an empty list would get.
+TEST_F(ProcessesPanelRenderTest, GpuTextCellsNotReadYetSayWhyOnHover)
+{
+    ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
+    columns.setVisible(ProcessColumn::GpuEngine, true);
+    columns.setVisible(ProcessColumn::GpuDevice, true);
+    // The GPU sampler reads before the panel lists any process, so every process is listed after the
+    // read: it may have started since, so its GPU fields are unread (#1210).
+    const std::shared_ptr<Domain::GPUModel> gpu = gpuModel(false);
+    gpu->refresh();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5)); // listed strictly after the read
+    const auto panel = attachedPanel({}, gpu);
+    panel->processModel()->setGPUModel(gpu); // as ShellLayer wires both
+    panel->processModel()->refresh();
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(renderAndCapture(*panel).contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT));
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    style.HoverStationaryDelay = 0.0F;
+    bool shown = false;
+    ImGuiIO& io = ImGui::GetIO();
+    for (int y = 20; y <= 140 && !shown; y += 6)
+    {
+        for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH) && !shown; x += 6)
+        {
+            io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+            for (int frame = 0; frame < 3 && !shown; ++frame)
+            {
+                shown = renderAndCapture(*panel).contains(ProcessRowFormat::GPU_NOT_READ_YET_CELL_REASON);
+            }
+        }
+    }
+    EXPECT_TRUE(shown) << "a GPU text cell's not-read-yet reason";
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    panel->onDetach();
+}
+
 // #1880: the Services column, once a service list with PIDs is attached, lists each process's services
 // comma-joined -- blank for one hosting none -- and sorts by that text.
 TEST_F(ProcessesPanelRenderTest, TheServicesColumnListsEachProcesssServices)
