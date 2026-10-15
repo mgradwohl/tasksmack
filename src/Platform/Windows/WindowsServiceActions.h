@@ -57,9 +57,10 @@ struct ServiceControlFunctions
 } // namespace Windows
 
 /// Starts, stops, restarts and reconfigures Windows services. Each action opens the manager with
-/// SC_MANAGER_CONNECT and the service with only the rights it needs, then waits (polling, bounded by
-/// ServiceActionMath::WAIT_TIMEOUT_MS) for the new state, checking the stop token between polls, so a
-/// stop request ends the wait within one WAIT_POLL_MS (#1591). Stateless beyond its fixed function
+/// SC_MANAGER_CONNECT and the service with only the rights it needs, then waits (polling, for as long
+/// as the service's dwCheckPoint advances within its dwWaitHint, bounded by
+/// ServiceActionMath::WAIT_TOTAL_MAX_MS; #2127) for the new state, checking the stop token between
+/// polls, so a stop request ends the wait within one WAIT_POLL_MS (#1591). Stateless beyond its fixed function
 /// table, so safe to call from any thread.
 class WindowsServiceActions final : public IServiceActions
 {

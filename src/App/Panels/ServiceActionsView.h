@@ -3,9 +3,10 @@
 // The Services tab's actions (#1577): Start / Stop / Restart / Startup type in each row's context
 // menu and in an action bar for the selected row, the confirm for destructive ones (the shared
 // ProcessActionConfirm dialog, centred), and the result line. An action runs on a worker thread of
-// its own (std::async), never on the UI or the sampler thread: the platform call waits up to 10 s
-// per state change, so it carries a stop token: cancel() or the destructor abandons that wait within one
-// poll (#1591). The pure helpers (which actions apply, the critical list, the texts) make no ImGui calls.
+// its own (std::async), never on the UI or the sampler thread: the platform call can wait a long
+// time per state change (minutes, for a slow service still making progress; #2127), so it carries a
+// stop token: cancel() or the destructor abandons that wait within one poll (#1591). The pure
+// helpers (which actions apply, the critical list, the texts) make no ImGui calls.
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"

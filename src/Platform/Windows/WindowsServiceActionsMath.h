@@ -6,6 +6,7 @@
 
 #include "Platform/IServiceProbe.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <format>
 #include <optional>
@@ -15,9 +16,67 @@
 namespace Platform::Windows::ServiceActionMath
 {
 
-/// How long an action waits for the service to reach its new state, and how often it looks.
-inline constexpr std::uint32_t WAIT_TIMEOUT_MS = 10'000;
+/// How often an action looks at the service while it waits for the new state. Short, so a stop
+/// request on the action's token ends the wait within one poll (#1591).
 inline constexpr std::uint32_t WAIT_POLL_MS = 250;
+/// The least time a service may go without progress before the wait gives up: the whole wait for a
+/// service that reports no wait hint (#2127).
+inline constexpr std::uint32_t WAIT_STALL_MIN_MS = 10'000;
+/// The most time the wait allows, however long the hints and however steady the progress (#2127).
+inline constexpr std::uint32_t WAIT_TOTAL_MAX_MS = 180'000;
+
+/// How long a service may go without progress, given its SERVICE_STATUS::dwWaitHint: the hint, but
+/// at least WAIT_STALL_MIN_MS and at most WAIT_TOTAL_MAX_MS (#2127).
+[[nodiscard]] constexpr std::uint32_t stallWindowMs(std::uint32_t waitHintMs) noexcept
+{
+    return std::clamp(waitHintMs, WAIT_STALL_MIN_MS, WAIT_TOTAL_MAX_MS);
+}
+
+/// What the wait does after one look at the service.
+enum class WaitVerdict : std::uint8_t
+{
+    KeepWaiting, ///< Not there yet, and still within its time.
+    Stalled,     ///< No progress for longer than its wait hint allows.
+    TooLong,     ///< Making progress, but past WAIT_TOTAL_MAX_MS overall.
+};
+
+/// The SCM's documented wait for a pending service (#2127), as a pure clock the tests drive. A
+/// pending service reports progress by raising dwCheckPoint, and how long the next step may take in
+/// dwWaitHint; a new dwCurrentState is progress too (the checkpoint starts again from 0). The wait
+/// gives up only when the service has made no progress for stallWindowMs(hint), or has taken
+/// WAIT_TOTAL_MAX_MS in all, so a slow but advancing stop or start is waited out rather than reported
+/// as a failure after a fixed time.
+class PendingWait
+{
+  public:
+    /// One look at the service, @p elapsedMs into the wait, with what SERVICE_STATUS reported.
+    [[nodiscard]] constexpr WaitVerdict
+    observe(std::uint32_t elapsedMs, std::uint32_t state, std::uint32_t checkPoint, std::uint32_t waitHintMs) noexcept
+    {
+        if (!m_Seen || state != m_State || checkPoint > m_CheckPoint)
+        {
+            m_Seen = true;
+            m_State = state;
+            m_CheckPoint = checkPoint;
+            m_ProgressAtMs = elapsedMs;
+        }
+        if (elapsedMs >= WAIT_TOTAL_MAX_MS)
+        {
+            return WaitVerdict::TooLong;
+        }
+        if (elapsedMs - m_ProgressAtMs >= stallWindowMs(waitHintMs))
+        {
+            return WaitVerdict::Stalled;
+        }
+        return WaitVerdict::KeepWaiting;
+    }
+
+  private:
+    bool m_Seen = false;
+    std::uint32_t m_State = 0;
+    std::uint32_t m_CheckPoint = 0;
+    std::uint32_t m_ProgressAtMs = 0;
+};
 
 /// A Win32 error from a service call, in words the result line shows as they stand. ERROR_ACCESS_DENIED
 /// is "Requires administrator": not elevated, that is nearly always why.

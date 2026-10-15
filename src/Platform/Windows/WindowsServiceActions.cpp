@@ -72,13 +72,17 @@ struct OpenedService
     return ServiceActionResult::failed(Math::errorText(GetLastError()));
 }
 
-/// Polls until the service reaches @p target, for at most Math::WAIT_TIMEOUT_MS. A service that falls
-/// back to stopped while starting has failed to start, and says so at once rather than timing out. A
-/// stop request on @p stopToken ends the wait at the next poll (#1591): the state is read once more,
-/// so a service that got there still reports success; otherwise the wait is abandoned.
+/// Polls until the service reaches @p target, following the SCM's documented wait (#2127): while the
+/// service raises dwCheckPoint it is making progress and the wait goes on, for up to its dwWaitHint
+/// (at least Math::WAIT_STALL_MIN_MS) without progress and Math::WAIT_TOTAL_MAX_MS in all; see
+/// Math::PendingWait. A service that falls back to stopped while starting has failed to start, and
+/// says so at once rather than timing out. A stop request on @p stopToken ends the wait at the next
+/// poll (#1591): the state is read once more, so a service that got there still reports success;
+/// otherwise the wait is abandoned.
 [[nodiscard]] ServiceActionResult waitForState(
     const Windows::ServiceControlFunctions& api, SC_HANDLE service, DWORD target, std::string_view verb, const std::stop_token& stopToken)
 {
+    Math::PendingWait wait;
     for (std::uint32_t waited = 0;; waited += Math::WAIT_POLL_MS)
     {
         SERVICE_STATUS status{};
@@ -100,9 +104,15 @@ struct OpenedService
         {
             return ServiceActionResult::stopRequested();
         }
-        if (waited >= Math::WAIT_TIMEOUT_MS)
+        switch (wait.observe(waited, status.dwCurrentState, status.dwCheckPoint, status.dwWaitHint))
         {
-            return ServiceActionResult::failed(std::format("It didn't {} within {} s", verb, Math::WAIT_TIMEOUT_MS / 1000));
+        case Math::WaitVerdict::Stalled:
+            return ServiceActionResult::failed(
+                std::format("It didn't {}: no progress in {} s", verb, Math::stallWindowMs(status.dwWaitHint) / 1000));
+        case Math::WaitVerdict::TooLong:
+            return ServiceActionResult::failed(std::format("It didn't {} within {} s", verb, Math::WAIT_TOTAL_MAX_MS / 1000));
+        case Math::WaitVerdict::KeepWaiting:
+            break;
         }
         api.sleep(Math::WAIT_POLL_MS);
     }
@@ -197,6 +207,9 @@ ServiceActionResult WindowsServiceActions::stop(std::string_view name, const std
 
 ServiceActionResult WindowsServiceActions::restart(std::string_view name, const std::stop_token& stopToken)
 {
+    // stop() returns only once the service is STOPPED (or the wait failed): start is never sent to a
+    // service still stopping, and a slow but advancing stop is waited out rather than ending the
+    // restart with the service left stopped (#2127).
     if (ServiceActionResult stopped = stop(name, stopToken); !stopped.ok)
     {
         return stopped;

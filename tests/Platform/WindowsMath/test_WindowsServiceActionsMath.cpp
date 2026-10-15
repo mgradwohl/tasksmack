@@ -1,12 +1,13 @@
 /// @file test_WindowsServiceActionsMath.cpp
 /// @brief WindowsServiceActionsMath.h (#1577): error codes to messages, the dependents message, and
-/// start types to SCM codes. No Windows header, so these run on every platform.
+/// start types to SCM codes, and the SCM wait's clock (#2127). No Windows header, so these run on every platform.
 
 #include "Platform/IServiceProbe.h"
 #include "Platform/Windows/WindowsServiceActionsMath.h"
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,57 @@ TEST(WindowsServiceActionsMathTest, StartTypesMapToCodes)
     EXPECT_FALSE(startTypeCode(ServiceStartType::Boot).has_value());
     EXPECT_FALSE(startTypeCode(ServiceStartType::System).has_value());
     EXPECT_FALSE(startTypeCode(ServiceStartType::Unknown).has_value());
+}
+
+// #2127: the SCM wait. States are SERVICE_STOP_PENDING (3) and SERVICE_STOPPED (1); times in ms.
+TEST(WindowsServiceActionsMathTest, StallWindowIsTheHintWithinBounds)
+{
+    EXPECT_EQ(stallWindowMs(0), WAIT_STALL_MIN_MS);
+    EXPECT_EQ(stallWindowMs(2'000), WAIT_STALL_MIN_MS);
+    EXPECT_EQ(stallWindowMs(30'000), 30'000U);
+    EXPECT_EQ(stallWindowMs(3'600'000), WAIT_TOTAL_MAX_MS);
+}
+
+TEST(WindowsServiceActionsMathTest, NoProgressFailsAfterTheStallWindow)
+{
+    PendingWait wait;
+    EXPECT_EQ(wait.observe(0, 3, 0, 0), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(wait.observe(9'750, 3, 0, 0), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(wait.observe(10'000, 3, 0, 0), WaitVerdict::Stalled);
+}
+
+TEST(WindowsServiceActionsMathTest, RisingCheckpointRestartsTheStallWindow)
+{
+    PendingWait wait;
+    EXPECT_EQ(wait.observe(0, 3, 1, 30'000), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(wait.observe(25'000, 3, 2, 30'000), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(wait.observe(50'000, 3, 2, 30'000), WaitVerdict::KeepWaiting) << "25 s since progress, within the 30 s hint";
+    EXPECT_EQ(wait.observe(55'000, 3, 2, 30'000), WaitVerdict::Stalled);
+}
+
+TEST(WindowsServiceActionsMathTest, ANewStateIsProgressAndAFallingCheckpointIsNot)
+{
+    PendingWait wait;
+    EXPECT_EQ(wait.observe(0, 3, 5, 0), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(wait.observe(8'000, 3, 4, 0), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(wait.observe(10'000, 3, 4, 0), WaitVerdict::Stalled) << "a lower checkpoint is no progress";
+
+    PendingWait changed;
+    EXPECT_EQ(changed.observe(0, 3, 5, 0), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(changed.observe(8'000, 1, 0, 0), WaitVerdict::KeepWaiting) << "a new state restarts the window";
+    EXPECT_EQ(changed.observe(17'750, 1, 0, 0), WaitVerdict::KeepWaiting);
+    EXPECT_EQ(changed.observe(18'000, 1, 0, 0), WaitVerdict::Stalled);
+}
+
+TEST(WindowsServiceActionsMathTest, SteadyProgressStillEndsAtTheOverallCap)
+{
+    PendingWait wait;
+    std::uint32_t checkPoint = 0;
+    for (std::uint32_t elapsed = 0; elapsed < WAIT_TOTAL_MAX_MS; elapsed += WAIT_POLL_MS)
+    {
+        ASSERT_EQ(wait.observe(elapsed, 3, ++checkPoint, 30'000), WaitVerdict::KeepWaiting) << elapsed;
+    }
+    EXPECT_EQ(wait.observe(WAIT_TOTAL_MAX_MS, 3, ++checkPoint, 30'000), WaitVerdict::TooLong);
 }
 
 } // namespace

@@ -1,6 +1,7 @@
 /// @file test_WindowsServiceActions.cpp
 /// @brief WindowsServiceActions (#1577) against a fake Service Control Manager: each action's
-/// success, a denied open (Requires administrator), a timed-out wait, a stop refused because of
+/// success, a denied open (Requires administrator), a timed-out wait, a slow stop or start waited
+/// out while its checkpoint advances within its wait hint (#2127), a stop refused because of
 /// running dependents, already running / not running, start-type changes with delayed auto-start,
 /// and a stop request ending the wait within one poll (#1591). No real service is ever started or
 /// stopped.
@@ -39,6 +40,8 @@ struct FakeScm
     DWORD configError = ERROR_SUCCESS;
     std::vector<DWORD> states{SERVICE_RUNNING}; ///< QueryServiceStatus answers in turn; the last repeats.
     std::size_t queries = 0;
+    DWORD waitHint = 0;              ///< Each QueryServiceStatus answer's dwWaitHint.
+    std::size_t checkPointRises = 0; ///< dwCheckPoint is the query's 0-based index, up to this; then it stays.
     std::vector<std::wstring> dependents;
     std::vector<DWORD> accesses; ///< Each OpenServiceW's requested rights.
     int starts = 0;
@@ -118,7 +121,10 @@ BOOL WINAPI fakeQuery(SC_HANDLE /*service*/, LPSERVICE_STATUS status)
     }
     const auto& states = fake().states;
     *status = SERVICE_STATUS{};
-    status->dwCurrentState = states[std::min(fake().queries++, states.size() - 1)];
+    const std::size_t query = fake().queries++;
+    status->dwCurrentState = states[std::min(query, states.size() - 1)];
+    status->dwCheckPoint = static_cast<DWORD>(std::min(query, fake().checkPointRises));
+    status->dwWaitHint = fake().waitHint;
     return TRUE;
 }
 
@@ -255,12 +261,76 @@ TEST_F(WindowsServiceActionsTest, AlreadyRunningAndNotRunningAreReported)
 
 TEST_F(WindowsServiceActionsTest, StopTimesOutAfterTheBoundedWait)
 {
-    fake().states = {SERVICE_STOP_PENDING};
+    fake().states = {SERVICE_STOP_PENDING}; // no wait hint, no checkpoint: the least wait applies
     const ServiceActionResult result = actions().stop("Spooler", token());
     EXPECT_FALSE(result.ok);
-    EXPECT_EQ(result.message, "It didn't stop within 10 s");
+    EXPECT_EQ(result.message, "It didn't stop: no progress in 10 s");
     EXPECT_EQ(static_cast<std::uint32_t>(fake().sleeps),
-              Windows::ServiceActionMath::WAIT_TIMEOUT_MS / Windows::ServiceActionMath::WAIT_POLL_MS);
+              Windows::ServiceActionMath::WAIT_STALL_MIN_MS / Windows::ServiceActionMath::WAIT_POLL_MS);
+}
+
+// #2127: a stop that takes 15 s, reporting a 30 s wait hint and a rising checkpoint, is waited out.
+TEST_F(WindowsServiceActionsTest, SlowStopWithARisingCheckpointIsWaitedOut)
+{
+    fake().states.assign(60, SERVICE_STOP_PENDING); // 60 polls, 250 ms apart: 15 s
+    fake().states.push_back(SERVICE_STOPPED);
+    fake().waitHint = 30'000;
+    fake().checkPointRises = 1'000;
+    const ServiceActionResult result = actions().stop("Spooler", token());
+    EXPECT_TRUE(result.ok) << result.message;
+    EXPECT_EQ(fake().sleeps, 60);
+}
+
+// #2127: Restart after that slow stop still sends the start, rather than leaving the service stopped.
+TEST_F(WindowsServiceActionsTest, RestartAfterASlowStopStillStarts)
+{
+    fake().states.assign(60, SERVICE_STOP_PENDING);
+    fake().states.push_back(SERVICE_STOPPED);
+    fake().states.push_back(SERVICE_START_PENDING);
+    fake().states.push_back(SERVICE_RUNNING);
+    fake().waitHint = 30'000;
+    fake().checkPointRises = 1'000;
+    const ServiceActionResult result = actions().restart("Spooler", token());
+    EXPECT_TRUE(result.ok) << result.message;
+    EXPECT_EQ(fake().stops, 1);
+    EXPECT_EQ(fake().starts, 1);
+}
+
+// #2127: once the checkpoint stops rising, the stop fails after the wait hint, not after a fixed 10 s.
+TEST_F(WindowsServiceActionsTest, StalledCheckpointFailsAfterTheWaitHint)
+{
+    fake().states = {SERVICE_STOP_PENDING};
+    fake().waitHint = 30'000;
+    fake().checkPointRises = 20; // the last progress is the 21st look, 5 s in
+    const ServiceActionResult result = actions().stop("Spooler", token());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't stop: no progress in 30 s");
+    EXPECT_EQ(fake().sleeps, 140) << "5 s of progress, then 30 s without";
+    EXPECT_EQ(fake().starts, 0);
+}
+
+// #2127: a stalled start fails the same way, after its own hint.
+TEST_F(WindowsServiceActionsTest, StalledStartFailsAfterTheWaitHint)
+{
+    fake().states = {SERVICE_START_PENDING};
+    fake().waitHint = 20'000;
+    const ServiceActionResult result = actions().start("Spooler", token());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't start: no progress in 20 s");
+    EXPECT_EQ(fake().sleeps, 80);
+}
+
+// #2127: a service that keeps reporting progress forever is still given up on, at the overall cap.
+TEST_F(WindowsServiceActionsTest, EndlessProgressStopsAtTheOverallCap)
+{
+    fake().states = {SERVICE_STOP_PENDING};
+    fake().waitHint = 30'000;
+    fake().checkPointRises = 100'000;
+    const ServiceActionResult result = actions().stop("Spooler", token());
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't stop within 180 s");
+    EXPECT_EQ(static_cast<std::uint32_t>(fake().sleeps),
+              Windows::ServiceActionMath::WAIT_TOTAL_MAX_MS / Windows::ServiceActionMath::WAIT_POLL_MS);
 }
 
 TEST_F(WindowsServiceActionsTest, StartThatFallsBackToStoppedFailsAtOnce)
@@ -298,7 +368,7 @@ TEST_F(WindowsServiceActionsTest, RestartDoesNotStartWhenTheStopFails)
 
 TEST_F(WindowsServiceActionsTest, StopRequestMidWaitReturnsCancelledAtTheNextPoll)
 {
-    fake().states = {SERVICE_STOP_PENDING}; // never stops: without the stop request this waits out 10 s
+    fake().states = {SERVICE_STOP_PENDING}; // never stops: without the stop request this waits out 10 s or more
     fake().stopAfterSleeps = 3;
     const ServiceActionResult result = actions().stop("Spooler", token());
     EXPECT_FALSE(result.ok);
