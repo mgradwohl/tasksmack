@@ -95,6 +95,19 @@ enum class WaitStep : std::uint8_t
     return jobGone && activeState != "deactivating" ? WaitStep::Failed : WaitStep::Wait;
 }
 
+/// Whether a start that ended with the unit inactive was a oneshot service's successful run (#2123): a
+/// Type=oneshot unit without RemainAfterExit= goes activating -> inactive when it has done its work, so
+/// polling alone reads it as "didn't start". It ran if its main process started after the start was
+/// asked for (@p execStartAfter > @p execStartBefore, ExecMainStartTimestampMonotonic), which a skipped
+/// condition or a failed dependency never does, and that run succeeded if its Result is "success".
+[[nodiscard]] constexpr bool oneshotRanSuccessfully(std::string_view serviceType,
+                                                    std::string_view result,
+                                                    std::uint64_t execStartBefore,
+                                                    std::uint64_t execStartAfter) noexcept
+{
+    return serviceType == "oneshot" && result == "success" && execStartAfter > execStartBefore;
+}
+
 /// Whether a unit in @p activeState counts as a running dependent, one a stop would take down.
 [[nodiscard]] constexpr bool isRunning(std::string_view activeState) noexcept
 {

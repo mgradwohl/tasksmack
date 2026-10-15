@@ -1301,6 +1301,34 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     return text;
 }
 
+/// A string property of @p unitPath's Service interface (Type, Result); empty when it can't be read.
+[[nodiscard]] std::string serviceStringOf(sd_bus* bus, const std::string& unitPath, const char* property)
+{
+    BusError error;
+    char* value = nullptr;
+    std::string text;
+    if (sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_SERVICE, property, error.get(), &value) >= 0 && value != nullptr)
+    {
+        text = value;
+    }
+    std::free(value); // NOLINT(cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory) - sd-bus hands back malloc'd strings
+    return text;
+}
+
+/// When @p unitPath's service main process last started (ExecMainStartTimestampMonotonic, in µs); 0 when
+/// it never has or can't be read.
+[[nodiscard]] std::uint64_t execMainStartOf(sd_bus* bus, const std::string& unitPath)
+{
+    BusError error;
+    std::uint64_t started = 0;
+    if (sd_bus_get_property_trivial(
+            bus, SYSTEMD, unitPath.c_str(), SYSTEMD_SERVICE, "ExecMainStartTimestampMonotonic", error.get(), 't', &started) < 0)
+    {
+        return 0;
+    }
+    return started;
+}
+
 /// Whether the job at @p jobPath has finished: systemd removes a job's object once it is done.
 [[nodiscard]] bool jobGone(sd_bus* bus, const std::string& jobPath)
 {
@@ -1324,6 +1352,9 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     {
         return ServiceActionResult::stopRequested();
     }
+    // A oneshot service is back to inactive once it has run: when its main process last started tells
+    // a run apart from a start that never happened (#2123).
+    const std::uint64_t execStartBefore = goal == SystemdActions::Goal::Running ? execMainStartOf(bus, unitObject) : 0;
     std::string jobPath;
     {
         BusError error;
@@ -1351,6 +1382,14 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
         case SystemdActions::WaitStep::Done:
             return ServiceActionResult::succeeded();
         case SystemdActions::WaitStep::Failed:
+            if (goal == SystemdActions::Goal::Running && state == "inactive" &&
+                SystemdActions::oneshotRanSuccessfully(serviceStringOf(bus, unitObject, "Type"),
+                                                       serviceStringOf(bus, unitObject, "Result"),
+                                                       execStartBefore,
+                                                       execMainStartOf(bus, unitObject)))
+            {
+                return ServiceActionResult::succeeded();
+            }
             return ServiceActionResult::failed(goal == SystemdActions::Goal::Running
                                                    ? "It didn't start (" + (state.empty() ? std::string("state unknown") : state) + ")"
                                                    : "It didn't stop (" + (state.empty() ? std::string("state unknown") : state) + ")");

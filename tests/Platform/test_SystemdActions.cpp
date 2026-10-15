@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <optional>
@@ -173,6 +174,7 @@ constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
 constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
 constexpr const char* MANAGER = "org.freedesktop.systemd1.Manager";
 constexpr const char* UNIT = "org.freedesktop.systemd1.Unit";
+constexpr const char* SERVICE = "org.freedesktop.systemd1.Service";
 constexpr const char* CRON_PATH = "/org/freedesktop/systemd1/unit/cron_2eservice";
 constexpr const char* WEB_PATH = "/org/freedesktop/systemd1/unit/web_2eservice";
 constexpr const char* JOB_PATH = "/org/freedesktop/systemd1/job/42";
@@ -228,6 +230,30 @@ class SystemdActionsFakeTest : public ::testing::Test
                                }
                                record(std::string(method) + " " + (name != nullptr ? name : "") + " " + (mode != nullptr ? mode : ""));
                                m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = resultingState;
+                               return sd_bus_reply_method_return(call, "o", JOB_PATH);
+                           });
+    }
+
+    /// StartUnit for a Type=oneshot cron (#2123): it runs and is back to inactive by the time the job
+    /// is gone. @p ran moves its main process start time on (it ran); @p result is the run's Result.
+    void serveOneshotStart(bool ran, const std::string& result)
+    {
+        m_Bus.properties()[CRON_PATH][SERVICE]["Type"] = std::string("oneshot");
+        m_Bus.properties()[CRON_PATH][SERVICE]["Result"] = std::string("success"); // from an earlier run
+        m_Bus.properties()[CRON_PATH][SERVICE]["ExecMainStartTimestampMonotonic"] = std::uint64_t{1000};
+        m_Bus.addRawMethod(SYSTEMD_PATH,
+                           MANAGER,
+                           "StartUnit",
+                           // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
+                           [this, ran, result](sd_bus_message* call) -> int
+                           {
+                               record("StartUnit");
+                               m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+                               if (ran)
+                               {
+                                   m_Bus.properties()[CRON_PATH][SERVICE]["ExecMainStartTimestampMonotonic"] = std::uint64_t{2000};
+                                   m_Bus.properties()[CRON_PATH][SERVICE]["Result"] = result;
+                               }
                                return sd_bus_reply_method_return(call, "o", JOB_PATH);
                            });
     }
@@ -300,6 +326,50 @@ TEST_F(SystemdActionsFakeTest, AStartIsSentInReplaceModeAndWaitsUntilRunning)
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.ok) << result.message;
     EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit cron.service replace"}));
+}
+
+// #2123: a oneshot service that ran and succeeded is inactive again when its job is gone: that's a start.
+TEST_F(SystemdActionsFakeTest, AOneshotThatRanSuccessfullyStarted)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveOneshotStart(/*ran=*/true, "success");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_TRUE(result.ok) << result.message;
+}
+
+TEST_F(SystemdActionsFakeTest, AOneshotWhoseRunFailedDidNotStart)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveOneshotStart(/*ran=*/true, "exit-code");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't start (inactive)");
+}
+
+// A condition unmet or a dependency failed: nothing ran, and the Result left from an earlier run counts
+// for nothing.
+TEST_F(SystemdActionsFakeTest, AOneshotThatNeverRanDidNotStart)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveOneshotStart(/*ran=*/false, "success");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "It didn't start (inactive)");
+}
+
+TEST(SystemdActionsTest, OnlyAOneshotRunThatStartedAndSucceededCounts)
+{
+    using SystemdActions::oneshotRanSuccessfully;
+    EXPECT_TRUE(oneshotRanSuccessfully("oneshot", "success", 1, 2));
+    EXPECT_FALSE(oneshotRanSuccessfully("oneshot", "success", 2, 2));
+    EXPECT_FALSE(oneshotRanSuccessfully("oneshot", "exit-code", 1, 2));
+    EXPECT_FALSE(oneshotRanSuccessfully("simple", "success", 1, 2));
 }
 
 TEST_F(SystemdActionsFakeTest, AStartWhoseUnitEndsUpNotRunningSaysSo)
