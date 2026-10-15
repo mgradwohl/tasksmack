@@ -380,6 +380,36 @@ TEST_F(SystemdActionsFakeTest, AStopWithARunningDependentIsRefusedNamingIt)
     EXPECT_TRUE(calls().empty());
 }
 
+// #2124: systemd also stops the units that are PartOf= cron (its ConsistsOf) and those that are
+// Requisite= of it (its RequisiteOf), so a running one of those refuses the stop as well.
+TEST_F(SystemdActionsFakeTest, AStopWithARunningPartOfMemberIsRefusedNamingIt)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[CRON_PATH][UNIT]["ConsistsOf"] = std::vector<std::string>{"web.service"};
+    m_Bus.properties()[WEB_PATH][UNIT]["ActiveState"] = std::string("active");
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "Stop the services that depend on it first: web.service");
+    EXPECT_TRUE(calls().empty());
+}
+
+TEST_F(SystemdActionsFakeTest, AStopWithARunningRequisiteDependentIsRefusedNamingIt)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[CRON_PATH][UNIT]["RequisiteOf"] = std::vector<std::string>{"web.service"};
+    m_Bus.properties()[WEB_PATH][UNIT]["ActiveState"] = std::string("active");
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "Stop the services that depend on it first: web.service");
+    EXPECT_TRUE(calls().empty());
+}
+
 TEST_F(SystemdActionsFakeTest, AStopWithOnlyStoppedDependentsStopsIt)
 {
     m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");

@@ -67,8 +67,9 @@ struct UnitWait
 /// unprivileged, it says "Requires administrator".
 [[nodiscard]] ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
 
-/// Stops the unit @p name and waits until it has stopped, unless a running unit depends on it (its
-/// RequiredBy or BoundBy): then nothing is sent and the refusal names them, as on Windows (#2006).
+/// Stops the unit @p name and waits until it has stopped, unless a running unit would go down with it
+/// (its RequiredBy, BoundBy, ConsistsOf or RequisiteOf, #2124): then nothing is sent and the refusal
+/// names them, as on Windows (#2006).
 [[nodiscard]] ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
 
 /// Sets the start type of @p name's unit file: Automatic enables it, Manual disables it, Disabled masks

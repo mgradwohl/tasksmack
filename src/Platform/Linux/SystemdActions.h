@@ -8,7 +8,8 @@
 // Decided on #2006: Automatic enables the unit file, Manual disables it and Disabled masks it, each
 // unmasking first when moving off Disabled (a systemd "disabled" unit can still be started by hand,
 // which is Windows' Manual; masking is what stops that, Windows' Disabled). There is no delayed start.
-// A stop never takes running dependents with it (systemd would stop every unit that Requires= it):
+// A stop never takes running dependents with it (systemd would stop every unit that Requires=, BindsTo=,
+// PartOf= or Requisite= it):
 // it is refused, naming them, as on Windows. polkit's "interactive authentication required", which
 // TaskSmack never asks for, reads as "Requires administrator".
 

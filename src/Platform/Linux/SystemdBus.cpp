@@ -1371,11 +1371,12 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     }
 }
 
-/// The units in @p unitObject's RequiredBy and BoundBy that are running: those a stop would take down.
+/// The running units a stop of @p unitObject would take down: those that Requires= it (RequiredBy),
+/// BindsTo= it (BoundBy), are PartOf= it (ConsistsOf) or are Requisite= of it (RequisiteOf, #2124).
 [[nodiscard]] std::vector<std::string> runningDependents(sd_bus* bus, const std::string& unitObject)
 {
     std::vector<std::string> running;
-    for (const char* property : {"RequiredBy", "BoundBy"})
+    for (const char* property : {"RequiredBy", "BoundBy", "ConsistsOf", "RequisiteOf"})
     {
         BusError error;
         char** names = nullptr;
