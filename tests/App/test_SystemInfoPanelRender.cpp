@@ -8,6 +8,7 @@
 
 #include "App/Panels/SystemInfoPanel.h"
 #include "App/Panels/SystemInfoSections.h"
+#include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/GraphicsHostInfo.h"
 #include "Core/SaveFileDialog.h"
@@ -31,6 +32,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -56,6 +58,8 @@ struct ProbeLog
     std::atomic<int> adapterReadsWithout{0};
     bool publicIp = false;             ///< The platform can look the public addresses up (#1518).
     std::atomic<int> publicIpReads{0}; ///< readPublicIp() calls
+    std::atomic<bool> osThrows{false}; ///< readOs() throws, so the whole read fails (#1891)
+    std::atomic<int> osAttempts{0};    ///< readOs() calls, the throwing ones included
 };
 
 /// The Wi-Fi link row's value, which only a read with the Wi-Fi details has.
@@ -86,6 +90,11 @@ class FakeSystemInfoProbe final : public Platform::ISystemInfoProbe
         while (m_Log->hold.load())
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ++m_Log->osAttempts;
+        if (m_Log->osThrows.load())
+        {
+            throw std::runtime_error("fixture OS read failed");
         }
         const int read = ++m_Log->reads;
         Platform::OsInfo info;
@@ -622,6 +631,47 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportWritesTheChosenFormat)
 
     std::error_code ignored;
     std::filesystem::remove_all(dir, ignored);
+}
+
+// #1891: a read that throws is reported as failed on the UI thread; no facts are drawn from it.
+TEST_F(SystemInfoPanelRenderTest, AFailedReadDrawsNoFacts)
+{
+    m_Log.osThrows = true;
+    makePanel(true);
+    showTab();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (m_Log.osAttempts.load() == 0 && std::chrono::steady_clock::now() < deadline)
+    {
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ASSERT_GE(m_Log.osAttempts.load(), 1);
+    std::string text;
+    for (int settle = 0; settle < 20; ++settle) // let the worker finish and the panel collect its result
+    {
+        text = frame();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    EXPECT_FALSE(text.contains("Fixture Linux")) << text;
+    EXPECT_EQ(m_Log.reads.load(), 0);
+}
+
+// #1891: with no save-dialog override and no window to own one, Save report says why instead.
+TEST_F(SystemInfoPanelRenderTest, SaveReportWithoutAWindowSaysWhy)
+{
+    Core::ApplicationSpecification spec;
+    spec.Name = "SaveReportHeadlessTest";
+    spec.Headless = true;
+    const Core::Application app(spec);
+    ASSERT_FALSE(app.hasWindow());
+    makePanel(true);
+    showTab();
+    ASSERT_TRUE(frameUntil("Fixture Linux 1"));
+    const ImGuiWindow* window = ImGui::FindWindowByName("Panel");
+    ASSERT_NE(window, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(ICON_FA_FLOPPY_DISK "  Save report...", 0, window->ID));
+    static_cast<void>(frame());
+    EXPECT_TRUE(frameUntil("Couldn't save: there is no window to show a save dialog"));
 }
 
 // #1395: Copy all puts every section's text on the clipboard.
