@@ -1030,6 +1030,37 @@ TEST_F(ProcessesPanelRenderTest, ChosenColumnsThisSystemCantFillShowTheDash)
     panel->onDetach();
 }
 
+// #1891: where the probe classifies processes (Windows), the Type column shows each one's type in its
+// colour, and the dash for a process it couldn't classify.
+TEST_F(ProcessesPanelRenderTest, TheTypeColumnShowsEachProcesssTypeOrTheDash)
+{
+    UserConfig::get().settings().processColumns.setVisible(ProcessColumn::Type, true);
+    auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            Platform::ProcessCounters app = TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            app.processType = "Background Process";
+            probe->withProcess(std::move(app))
+                .withProcess(TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100));
+            Platform::ProcessCapabilities caps = probe->capabilities();
+            caps.hasProcessType = true;
+            probe->setCapabilities(caps);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+        },
+        std::function<void(Core::Event&)>{},
+        [] { return false; });
+    panel->onAttach();
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_TRUE(text.contains("Background Process")) << text;
+    EXPECT_TRUE(text.contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT)) << "worker isn't classified:\n" << text;
+    panel->onDetach();
+}
+
 // #1879: where the probe fills neither (Windows; the mock reports neither), the Private and Swap columns
 // read as the dash in every row, and their headers and cells say why.
 TEST_F(ProcessesPanelRenderTest, PrivateAndSwapWithoutTheirFiguresShowTheDashAndSayWhy)
