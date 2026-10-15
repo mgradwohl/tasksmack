@@ -3,6 +3,7 @@
 #include "App/PlatformOpen.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
+#include "Core/SaveFileDialog.h"
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "Platform/IProcessActions.h"
@@ -27,7 +28,9 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <future>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -189,10 +192,64 @@ namespace
 
 } // namespace
 
+std::string folderDialogFailure(std::string_view error)
+{
+    // SDL names its dialog drivers ("zenity" and "portal") when it can use neither: say what would help.
+    if (error.contains("SDL_HINT_FILE_DIALOG_DRIVER") || error.contains("dialog driver unsupported"))
+    {
+        return "Couldn't show the folder dialog: no folder chooser is available here (it needs xdg-desktop-portal or zenity installed)";
+    }
+    return std::format("Couldn't show the folder dialog: {}", error);
+}
+
+void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Platform::FolderChoice)> answer)
+{
+    SDL_Window* window = nullptr;
+    try
+    {
+        const auto& app = Core::Application::get();
+        if (app.hasWindow())
+        {
+            window = app.getWindow().getHandle();
+        }
+    }
+    catch (...) // NOLINT(bugprone-empty-catch): no Application (headless), so no window to show the dialog over
+    {}
+    if (window == nullptr)
+    {
+        answer(std::unexpected(std::string("Couldn't show the folder dialog: there is no window to show it over")));
+        return;
+    }
+    Core::showFolderDialog(window,
+                           Core::pathToUtf8(initial),
+                           [answer = std::move(answer)](const Core::SaveFileResult& result)
+                           {
+                               if (!result.error.empty())
+                               {
+                                   answer(std::unexpected(folderDialogFailure(result.error)));
+                               }
+                               else if (result.path.empty())
+                               {
+                                   answer(std::optional<std::filesystem::path>{}); // cancelled
+                               }
+                               else
+                               {
+                                   answer(std::optional<std::filesystem::path>{Core::utf8ToPath(result.path)});
+                               }
+                           });
+}
+
 } // namespace DumpDetail
 
 ProcessDumpView::ProcessDumpView() : ProcessDumpView(&DumpDetail::rememberDumpDirectory)
-{}
+{
+    m_FolderDialog = &DumpDetail::sdlFolderDialog;
+}
+
+bool ProcessDumpView::canChooseFolder(Platform::IProcessActions* actions) const
+{
+    return (actions != nullptr && actions->actionCapabilities().canChooseDumpFolder) || static_cast<bool>(m_FolderDialog);
+}
 
 ProcessDumpView::ProcessDumpView(FolderChosenHandler onFolderChosen) : m_OnFolderChosen(std::move(onFolderChosen))
 {}
@@ -219,6 +276,8 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_SpaceWarning = std::move(other.m_SpaceWarning);
         m_FolderFailure = std::move(other.m_FolderFailure);
         m_FolderPick = std::move(other.m_FolderPick);
+        m_FolderDialog = std::move(other.m_FolderDialog);
+        m_FolderPickAsync = other.m_FolderPickAsync;
         m_Worker = std::move(other.m_Worker);
         m_Stop = std::move(other.m_Stop);
         m_StartedAt = other.m_StartedAt;
@@ -252,10 +311,9 @@ void ProcessDumpView::request(const Platform::ProcessTarget& target,
 void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
 {
     // Read once per folder, never per frame: the free space and the process's private bytes.
-    m_SpaceWarning = (actions != nullptr) ? DumpDetail::lowSpaceWarning(actions->dumpSpace(m_Target, m_Directory),
-                                                                        m_Directory,
-                                                                        actions->actionCapabilities().canChooseDumpFolder)
-                                          : std::string{};
+    m_SpaceWarning = (actions != nullptr)
+                       ? DumpDetail::lowSpaceWarning(actions->dumpSpace(m_Target, m_Directory), m_Directory, canChooseFolder(actions))
+                       : std::string{};
     std::string warning = m_SpaceWarning;
     if (!m_FolderFailure.empty())
     {
@@ -270,10 +328,30 @@ void ProcessDumpView::refreshConfirm(Platform::IProcessActions* actions)
 
 void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* ownerWindow)
 {
-    if (!m_ConfirmPending || choosingFolder() || actions == nullptr || !actions->actionCapabilities().canChooseDumpFolder)
+    if (!m_ConfirmPending || choosingFolder() || !canChooseFolder(actions))
     {
         return;
     }
+    if (actions == nullptr || !actions->actionCapabilities().canChooseDumpFolder)
+    {
+        // No folder dialog in the platform layer (Linux): the fallback answers asynchronously, from SDL's
+        // event pump or a thread of its own, into the same future the worker would have filled.
+        auto promise = std::make_shared<std::promise<Platform::FolderChoice>>();
+        m_FolderPick = promise->get_future();
+        m_FolderPickAsync = true;
+        m_FolderDialog(m_Directory,
+                       [promise](Platform::FolderChoice choice)
+                       {
+                           try
+                           {
+                               promise->set_value(std::move(choice));
+                           }
+                           catch (const std::future_error&) // NOLINT(bugprone-empty-catch): a second answer is ignored
+                           {}
+                       });
+        return;
+    }
+    m_FolderPickAsync = false;
     try
     {
         // The worker owns a copy of the folder to start in; it shares only the future with this view,
@@ -422,10 +500,17 @@ void ProcessDumpView::shutdown() noexcept
             m_Worker.wait();
         }
         // A folder dialog can't be cancelled from here; it is modal to the main window, so it is
-        // answered before the window can close, and this wait is short.
-        if (m_FolderPick.valid())
+        // answered before the window can close, and this wait is short. The fallback's (SDL's) is answered
+        // from the event pump on this thread, so waiting would never end: its answer is dropped instead
+        // (the promise it fills is shared, so a late answer is harmless).
+        if (m_FolderPick.valid() && !m_FolderPickAsync)
         {
             m_FolderPick.wait();
+        }
+        else if (m_FolderPickAsync)
+        {
+            m_FolderPick = {};
+            m_FolderPickAsync = false;
         }
     }
     catch (...) // NOLINT(bugprone-empty-catch): wait() on a valid future does not throw
@@ -474,9 +559,9 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
     }
     if (confirmPending() || dismiss)
     {
-        const bool canChooseFolder = actions != nullptr && actions->actionCapabilities().canChooseDumpFolder;
+        const bool offerFolder = canChooseFolder(actions);
         bool choosePressed = false;
-        const ProcessActionConfirm::LeadingButton chooseButton{.label = canChooseFolder ? DumpDetail::CHOOSE_FOLDER_LABEL : nullptr,
+        const ProcessActionConfirm::LeadingButton chooseButton{.label = offerFolder ? DumpDetail::CHOOSE_FOLDER_LABEL : nullptr,
                                                                .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
                                                                .busy = choosingFolder(),
                                                                .pressed = &choosePressed};

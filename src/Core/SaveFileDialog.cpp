@@ -63,6 +63,15 @@ void showSaveFileDialog(SDL_Window* window, std::vector<FileFilter> filters, con
         &onDialogClosed, request.release(), window, sdlFilters, count, defaultLocation.empty() ? nullptr : defaultLocation.c_str());
 }
 
+void showFolderDialog(SDL_Window* window, const std::string& defaultLocation, SaveFileCallback callback)
+{
+    auto request = std::make_unique<DialogRequest>();
+    request->callback = std::move(callback);
+    // From here SDL owns the request, as for the save dialog.
+    SDL_ShowOpenFolderDialog(
+        &onDialogClosed, request.release(), window, defaultLocation.empty() ? nullptr : defaultLocation.c_str(), false);
+}
+
 std::string defaultSaveFolder()
 {
     if (const char* documents = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS); documents != nullptr && *documents != '\0')

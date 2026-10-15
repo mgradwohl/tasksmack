@@ -20,6 +20,7 @@
 #include <stop_token>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -507,6 +508,141 @@ TEST(ProcessDumpViewTest, ShutdownWaitsForTheFolderDialog)
     view.shutdown();
     EXPECT_EQ(mock.chooseFolderCount(), 1);
     EXPECT_TRUE(view.takeFolderChoice(&mock));
+}
+
+// --- The fallback folder dialog (#807: Linux, through SDL) ----------------------------------------
+
+/// A fallback folder dialog that keeps what it was asked and lets the test answer when it likes.
+struct FakeFolderDialog
+{
+    int shown = 0;
+    std::filesystem::path initial;
+    ProcessDumpView::FolderAnswer answer;
+
+    [[nodiscard]] ProcessDumpView::FolderDialog dialog()
+    {
+        return [this](const std::filesystem::path& from, ProcessDumpView::FolderAnswer reply)
+        {
+            ++shown;
+            initial = from;
+            answer = std::move(reply);
+        };
+    }
+};
+
+TEST(ProcessDumpViewTest, WithoutThePlatformsDialogTheFallbackChoosesTheFolder)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(dumpCapable(true)); // no folder dialog in the platform layer, as on Linux
+    std::vector<std::filesystem::path> remembered;
+    ProcessDumpView view([&remembered](const std::filesystem::path& folder) { remembered.push_back(folder); });
+    EXPECT_FALSE(view.canChooseFolder(&mock)) << "neither the platform's nor a fallback";
+    FakeFolderDialog fake;
+    view.setFolderDialog(fake.dialog());
+    EXPECT_TRUE(view.canChooseFolder(&mock));
+    EXPECT_TRUE(view.canChooseFolder(nullptr)) << "the fallback needs no actions";
+
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr);
+    EXPECT_EQ(fake.shown, 1);
+    EXPECT_EQ(fake.initial, someFolder()); // it opens where the dump was going
+    EXPECT_TRUE(view.choosingFolder());
+    EXPECT_FALSE(view.takeFolderChoice(&mock)) << "not answered yet";
+    view.chooseFolder(&mock, nullptr); // and a second dialog is never opened over the first
+    EXPECT_EQ(fake.shown, 1);
+
+    // Answered later, from another thread, as SDL may.
+    std::thread([&fake] { fake.answer(std::optional<std::filesystem::path>(otherFolder())); }).join();
+    ASSERT_TRUE(view.takeFolderChoice(&mock));
+    EXPECT_FALSE(view.choosingFolder());
+    EXPECT_EQ(view.directory(), otherFolder());
+    ASSERT_EQ(remembered.size(), 1U);
+    EXPECT_EQ(remembered.front(), otherFolder());
+    EXPECT_TRUE(view.confirmQuestion().contains(otherFolder().string())) << view.confirmQuestion();
+    EXPECT_EQ(mock.chooseFolderCount(), 0) << "the platform has no dialog to ask";
+}
+
+TEST(ProcessDumpViewTest, TheFallbacksCancelChangesNothingAndItsFailureSaysWhy)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(dumpCapable(true));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    FakeFolderDialog fake;
+    view.setFolderDialog(fake.dialog());
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    const std::string question = view.confirmQuestion();
+
+    view.chooseFolder(&mock, nullptr);
+    fake.answer(std::optional<std::filesystem::path>{});
+    ASSERT_TRUE(view.takeFolderChoice(&mock));
+    EXPECT_EQ(view.directory(), someFolder());
+    EXPECT_EQ(view.confirmQuestion(), question);
+
+    view.chooseFolder(&mock, nullptr);
+    fake.answer(std::unexpected(std::string("Couldn't show the folder dialog: no portal")));
+    fake.answer(std::optional<std::filesystem::path>(otherFolder())); // a second answer is ignored
+    ASSERT_TRUE(view.takeFolderChoice(&mock));
+    EXPECT_EQ(view.directory(), someFolder());
+    EXPECT_TRUE(view.confirmQuestion().contains("no portal")) << view.confirmQuestion();
+}
+
+TEST(ProcessDumpViewTest, ThePlatformsFolderDialogIsPreferredToTheFallback)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setFolderChoice(std::optional<std::filesystem::path>(otherFolder()));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    FakeFolderDialog fake;
+    view.setFolderDialog(fake.dialog());
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    EXPECT_EQ(mock.chooseFolderCount(), 1);
+    EXPECT_EQ(fake.shown, 0);
+    EXPECT_EQ(view.directory(), otherFolder());
+}
+
+TEST(ProcessDumpViewTest, ShutdownDoesNotWaitForTheFallbacksDialog)
+{
+    // SDL's dialog is answered from the event pump on the UI thread, so shutdown() (on that thread)
+    // can't wait for it: the answer is dropped, and a late one lands harmlessly.
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(dumpCapable(true));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    FakeFolderDialog fake;
+    view.setFolderDialog(fake.dialog());
+    view.request(TARGET, "big.exe", someFolder(), &mock);
+    view.chooseFolder(&mock, nullptr);
+    view.shutdown(); // returns at once
+    EXPECT_FALSE(view.choosingFolder());
+    fake.answer(std::optional<std::filesystem::path>(otherFolder()));
+    EXPECT_FALSE(view.takeFolderChoice(&mock));
+    EXPECT_EQ(view.directory(), someFolder());
+}
+
+TEST(ProcessDumpViewTest, NoFolderChooserAtAllIsSaidInTheUsersTerms)
+{
+    // What SDL says on a system with neither the desktop portal nor zenity (seen under WSLg).
+    const std::string none = DumpDetail::folderDialogFailure(
+        "File dialog driver unsupported (supported values for SDL_HINT_FILE_DIALOG_DRIVER are 'zenity' and 'portal')");
+    EXPECT_FALSE(none.contains("SDL_HINT")) << none;
+    EXPECT_TRUE(none.contains("xdg-desktop-portal or zenity")) << none;
+    // Anything else is SDL's own words.
+    EXPECT_EQ(DumpDetail::folderDialogFailure("portal timed out"), "Couldn't show the folder dialog: portal timed out");
+}
+
+TEST(ProcessDumpViewTest, SdlsFolderDialogWithoutAWindowSaysSoAtOnce)
+{
+    int answers = 0;
+    std::string error;
+    DumpDetail::sdlFolderDialog(someFolder(),
+                                [&answers, &error](const Platform::FolderChoice& choice)
+                                {
+                                    ++answers;
+                                    error = choice.has_value() ? std::string{} : choice.error();
+                                });
+    EXPECT_EQ(answers, 1) << "answered at once, before returning";
+    EXPECT_TRUE(error.contains("no window")) << error;
 }
 
 // --- The remembered folder (#2001) ----------------------------------------------------------------

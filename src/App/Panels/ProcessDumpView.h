@@ -95,6 +95,16 @@ lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& d
 /// Keeps @p directory as the folder later dumps go to, in the user's config, and saves it.
 void rememberDumpDirectory(const std::filesystem::path& directory);
 
+/// What the confirm says when SDL's folder dialog couldn't be shown, from SDL's @p error: in the user's
+/// terms where SDL found no dialog to use at all (no desktop portal and no zenity), else SDL's own.
+[[nodiscard]] std::string folderDialogFailure(std::string_view error);
+
+/// The folder dialog used where the platform layer has none (Linux, #807): SDL's
+/// (Core::showFolderDialog(), the desktop portal's chooser), modal to the main window, starting in
+/// @p initial. @p answer gets the folder chosen, nullopt when cancelled, or why the dialog couldn't be
+/// shown -- at once when there is no window, else later, maybe on another thread.
+void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Platform::FolderChoice)> answer);
+
 /// "Create a dump file of notepad.exe (PID 1234)?"
 [[nodiscard]] std::string confirmTitle(std::string_view processName, std::int32_t pid);
 /// What the dump does and where it goes, for the confirm dialog; then @p warning (lowSpaceWarning(),
@@ -128,12 +138,28 @@ class ProcessDumpView
   public:
     /// Called on the UI thread with each folder the user chooses, to remember it.
     using FolderChosenHandler = std::function<void(const std::filesystem::path&)>;
+    /// The answer to a folder dialog: called once, maybe on another thread.
+    using FolderAnswer = std::function<void(Platform::FolderChoice)>;
+    /// A folder dialog that answers later, through its FolderAnswer: the one used where the platform
+    /// layer has none of its own (Linux: SDL's, which shows the desktop portal's chooser, #807). Called on
+    /// the UI thread with the folder to start in.
+    using FolderDialog = std::function<void(const std::filesystem::path& initial, FolderAnswer answer)>;
 
-    /// Remembers a chosen folder in the user's config (DumpDetail::rememberDumpDirectory()).
+    /// Remembers a chosen folder in the user's config (DumpDetail::rememberDumpDirectory()), and, where
+    /// the platform has no folder dialog, uses SDL's over the main window (DumpDetail::sdlFolderDialog()).
     ProcessDumpView();
     /// Remembers a chosen folder through @p onFolderChosen instead (tests: no config written); empty:
-    /// not at all.
+    /// not at all. No fallback folder dialog: tests set one with setFolderDialog().
     explicit ProcessDumpView(FolderChosenHandler onFolderChosen);
+
+    /// The folder dialog used where the platform has none (empty: none, so no "Save dump to...").
+    void setFolderDialog(FolderDialog dialog)
+    {
+        m_FolderDialog = std::move(dialog);
+    }
+
+    /// Whether "Save dump to..." is offered with @p actions: the platform's folder dialog, or the fallback.
+    [[nodiscard]] bool canChooseFolder(Platform::IProcessActions* actions) const;
     /// Cancels a dump in flight and waits for it, and for a folder dialog still up (shutdown()).
     ~ProcessDumpView();
 
@@ -154,8 +180,9 @@ class ProcessDumpView
                  Platform::IProcessActions* actions = nullptr);
 
     /// "Save dump to..." was pressed in the confirm: opens @p actions' folder dialog on a worker,
-    /// starting in the confirm's folder and modal to @p ownerWindow (a native window, or null). Does
-    /// nothing unless a confirm is pending, no folder dialog is up already, and the platform has one.
+    /// starting in the confirm's folder and modal to @p ownerWindow (a native window, or null); where the
+    /// platform has none, the fallback FolderDialog, which answers asynchronously. Does nothing unless a
+    /// confirm is pending, no folder dialog is up already, and there is one (canChooseFolder()).
     void chooseFolder(Platform::IProcessActions* actions, void* ownerWindow);
 
     /// Takes in the folder dialog's answer -- at once, or with @p wait after waiting for it. True on
@@ -260,6 +287,8 @@ class ProcessDumpView
     std::string m_FolderFailure; // why the folder dialog couldn't be shown; empty when it could
 
     std::future<Platform::FolderChoice> m_FolderPick;
+    FolderDialog m_FolderDialog;    // used where the platform has no folder dialog; empty: none
+    bool m_FolderPickAsync = false; // m_FolderPick is the fallback's: answered from SDL's event pump, not a worker
 
     std::future<Platform::ProcessDumpResult> m_Worker;
     std::stop_source m_Stop; ///< The running dump's; a new one per dump.

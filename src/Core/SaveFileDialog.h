@@ -1,6 +1,7 @@
 #pragma once
 
-// The platform's save-file dialog (#1866), through SDL3's SDL_ShowSaveFileDialog. Asynchronous: the
+// The platform's save-file dialog (#1866), through SDL3's SDL_ShowSaveFileDialog, and its folder dialog
+// (#807), through SDL_ShowOpenFolderDialog. Asynchronous: the
 // result comes back through a callback that SDL may call on another thread, so callers hand it to their
 // own thread (SystemInfoPanel keeps it in a mutex-guarded slot it polls each frame).
 
@@ -34,6 +35,13 @@ using SaveFileCallback = std::function<void(SaveFileResult)>;
 /// @p filters and starting at @p defaultLocation (a folder, or a folder and file name). Returns at once;
 /// @p callback gets the result later, maybe on another thread, exactly once. Call from the main thread.
 void showSaveFileDialog(SDL_Window* window, std::vector<FileFilter> filters, const std::string& defaultLocation, SaveFileCallback callback);
+
+/// Shows the folder-picking dialog (SDL_ShowOpenFolderDialog; on Linux, the desktop portal's chooser),
+/// modal for @p window when the platform allows (may be null), starting in @p defaultLocation. Returns at
+/// once; @p callback gets the result later, maybe on another thread, exactly once: SaveFileResult::path is
+/// the folder chosen, empty when cancelled (filter is unused). Call from the main thread. Used where the
+/// platform layer has no folder dialog of its own (Create dump file on Linux, #807).
+void showFolderDialog(SDL_Window* window, const std::string& defaultLocation, SaveFileCallback callback);
 
 /// The user's Documents folder with a trailing separator, else their home folder, else empty.
 [[nodiscard]] std::string defaultSaveFolder();
