@@ -227,7 +227,16 @@ void SystemInfoPanel::renderContent()
         if (m_Snapshot->version != 0)
         {
             // Core's OpenGL and SDL display facts, on the UI thread that owns them, once per read (#1519).
-            m_ViewState.host = m_QueryHost ? m_QueryHost() : Core::Application::get().getWindow().queryGraphicsHostInfo();
+            // A headless Application (the PGO training driver) has no window to ask: no facts (#2135).
+            if (m_QueryHost)
+            {
+                m_ViewState.host = m_QueryHost();
+            }
+            else
+            {
+                const Core::Application& app = Core::Application::get();
+                m_ViewState.host = app.hasWindow() ? app.getWindow().queryGraphicsHostInfo() : Core::GraphicsHostInfo{};
+            }
         }
     }
     // While the tab is drawn, the sensors are read again every SENSOR_REFRESH so their ranges follow them

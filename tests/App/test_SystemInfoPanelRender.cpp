@@ -674,6 +674,23 @@ TEST_F(SystemInfoPanelRenderTest, SaveReportWithoutAWindowSaysWhy)
     EXPECT_TRUE(frameUntil("Couldn't save: there is no window to show a save dialog"));
 }
 
+// #2135: with no host-query override (the default, as the PGO training shell builds it) in a headless
+// Application, a finished read takes no graphics facts rather than throwing from getWindow().
+TEST_F(SystemInfoPanelRenderTest, AReadInAHeadlessApplicationTakesNoGraphicsFacts)
+{
+    Core::ApplicationSpecification spec;
+    spec.Name = "SystemInfoHeadlessTest";
+    spec.Headless = true;
+    const Core::Application app(spec);
+    ASSERT_FALSE(app.hasWindow());
+    m_Panel = std::make_unique<SystemInfoPanel>([this] { return std::make_unique<FakeSystemInfoProbe>(m_Log, true); }, nullptr);
+    m_Panel->onAttach();
+    showTab();
+    bool drawn = false;
+    EXPECT_NO_THROW(drawn = frameUntil("Fixture Linux 1"));
+    EXPECT_TRUE(drawn);
+}
+
 // #1395: Copy all puts every section's text on the clipboard.
 TEST_F(SystemInfoPanelRenderTest, CopyAllPutsThePageOnTheClipboard)
 {
