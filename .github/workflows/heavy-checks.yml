@@ -110,6 +110,8 @@ jobs:
           # fail rather than skip if it, or its GL context, goes missing -- otherwise a broken setup
           # would silently publish a coverage report without them (#1132).
           TASKSMACK_REQUIRE_DISPLAY: '1'
+          # And the D-Bus fake suites must run, not skip (#2133).
+          TASKSMACK_REQUIRE_SDBUS: '1'
         run: |
           set -o pipefail
           xvfb-run -s "-screen 0 1920x1080x24 -noreset" ./tools/coverage.sh -v 2>&1 | tee coverage-output.txt

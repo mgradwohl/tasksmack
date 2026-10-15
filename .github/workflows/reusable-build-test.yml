@@ -273,6 +273,9 @@ jobs:
           # A display is guaranteed here, so the display-dependent suites must fail rather than
           # skip if it goes missing or construction throws (tests/Core/HeadlessVideoDriverTestUtils.h).
           TASKSMACK_REQUIRE_DISPLAY: '1'
+          # libsystemd-dev and dbus-daemon are installed (setup-llvm), so the D-Bus fake suites must
+          # run: SystemdBusFakeEnvironmentTest fails if they would skip or compiled out (#2133).
+          TASKSMACK_REQUIRE_SDBUS: '1'
         run: xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       # Build-only check that the benchmark target still compiles and links (#1348: a PR removed

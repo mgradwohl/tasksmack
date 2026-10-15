@@ -18,6 +18,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <string_view>
+
 #ifdef TASKSMACK_HAS_SDBUS
 
 #include "FakeSystemBus.h"
@@ -25,7 +28,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -1006,3 +1008,21 @@ TEST_F(SystemdBusFakeTest, ASystemdThatDoesntAnswerInTimeSaysSo)
 } // namespace Platform
 
 #endif // TASKSMACK_HAS_SDBUS
+
+// #2133: the fake-bus suites above (and SystemdActionsFakeTest) skip when this build has no libsystemd
+// or dbus-daemon isn't installed, which would leave the Services actions with no automated check while
+// CI stays green. CI sets TASKSMACK_REQUIRE_SDBUS=1 where both are guaranteed, and then this fails.
+TEST(SystemdBusFakeEnvironmentTest, CiRunsTheFakeBusSuitesWhenRequired)
+{
+    const char* const required = std::getenv("TASKSMACK_REQUIRE_SDBUS"); // NOLINT(concurrency-mt-unsafe) - read once, single thread
+    if (required == nullptr || std::string_view(required) != "1")
+    {
+        GTEST_SKIP() << "TASKSMACK_REQUIRE_SDBUS isn't set";
+    }
+#ifdef TASKSMACK_HAS_SDBUS
+    EXPECT_TRUE(::TestSupport::FakeSystemBus::available())
+        << "dbus-daemon isn't on PATH, so every fake-bus suite skipped; install dbus-daemon";
+#else
+    FAIL() << "built without libsystemd (pkg-config couldn't find it), so the fake-bus suites compiled out";
+#endif
+}

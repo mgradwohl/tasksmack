@@ -488,6 +488,9 @@ jobs:
         run: cmake --build --preset asan-ubsan
 
       - name: Test
+        env:
+          # The D-Bus fake suites must run under the sanitizers, not skip (#2133).
+          TASKSMACK_REQUIRE_SDBUS: '1'
         run: |
           set +e
           ctest --preset asan-ubsan -j "$(nproc)" --output-on-failure --timeout 120 \
