@@ -56,6 +56,11 @@ struct StartTypeSteps
     }
 }
 
+/// Why Automatic did nothing for a unit file without an [Install] section (static, generated, transient):
+/// EnableUnitFiles answers carries_install_info=false and changes nothing (#2146).
+inline constexpr const char* NO_INSTALL_SECTION_MESSAGE =
+    "This service has no [Install] section, so it can't start at boot; other units or a user start it";
+
 /// Which way a waiting action is going.
 enum class Goal : std::uint8_t
 {

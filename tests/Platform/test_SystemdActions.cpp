@@ -259,13 +259,14 @@ class SystemdActionsFakeTest : public ::testing::Test
     }
 
     /// A unit-file call (as, b... ): records it, and answers as systemd does (EnableUnitFiles: b a(sss)).
-    void serveUnitFileCall(const char* method)
+    /// @p carriesInstallInfo is EnableUnitFiles' answer: false for a unit file without an [Install] section.
+    void serveUnitFileCall(const char* method, bool carriesInstallInfo = true)
     {
         m_Bus.addRawMethod(SYSTEMD_PATH,
                            MANAGER,
                            method,
                            // NOLINTNEXTLINE(bugprone-exception-escape) - as above
-                           [this, method](sd_bus_message* call) -> int
+                           [this, method, carriesInstallInfo](sd_bus_message* call) -> int
                            {
                                char** files = nullptr;
                                if (sd_bus_message_read_strv(call, &files) < 0 || files == nullptr || files[0] == nullptr)
@@ -283,7 +284,7 @@ class SystemdActionsFakeTest : public ::testing::Test
                                int result = sd_bus_message_new_method_return(call, &reply);
                                if (result >= 0 && std::string_view(method) == "EnableUnitFiles")
                                {
-                                   result = sd_bus_message_append(reply, "b", 1);
+                                   result = sd_bus_message_append(reply, "b", carriesInstallInfo ? 1 : 0);
                                }
                                if (result >= 0)
                                {
@@ -600,6 +601,21 @@ TEST_F(SystemdActionsFakeTest, EachRefusedUnitFileStepStopsTheChange)
     EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic).message, "Requires administrator");
     EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Disabled).message, "Requires administrator");
     EXPECT_TRUE(calls().empty()) << "nothing past the refused step";
+}
+
+// #2146: Automatic on a unit file without an [Install] section (static, generated, transient) enables
+// nothing (EnableUnitFiles answers carries_install_info=false): a failure that says why, not a success,
+// and no Reload after it.
+TEST_F(SystemdActionsFakeTest, AutomaticOnAUnitWithoutAnInstallSectionSaysWhy)
+{
+    serveUnitFileCall("UnmaskUnitFiles");
+    serveUnitFileCall("EnableUnitFiles", /*carriesInstallInfo=*/false);
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+
+    const ServiceActionResult automatic = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic);
+    EXPECT_FALSE(automatic.ok);
+    EXPECT_EQ(automatic.message, SystemdActions::NO_INSTALL_SECTION_MESSAGE);
+    EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "EnableUnitFiles cron.service"}));
 }
 
 // #1891: the unit files changed but systemd refused the Reload that tells it so: reported as a

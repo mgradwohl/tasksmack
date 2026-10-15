@@ -1441,7 +1441,8 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
 
 /// Manager.@p method over the one unit file @p name: UnmaskUnitFiles/DisableUnitFiles (as, b runtime),
 /// MaskUnitFiles (as, b runtime, b force) or EnableUnitFiles (as, b runtime, b force). The changes it
-/// answers with aren't needed.
+/// answers with aren't needed, but EnableUnitFiles' carries_install_info is: false means the unit file
+/// has no [Install] section, so nothing was enabled and it would never start at boot (#2146).
 [[nodiscard]] std::optional<ServiceActionResult> changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool withForce)
 {
     BusError error;
@@ -1464,6 +1465,14 @@ constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
     if (result < 0)
     {
         return actionFailure(error, result);
+    }
+    if (std::string_view(method) == "EnableUnitFiles")
+    {
+        int carriesInstallInfo = 1;
+        if (sd_bus_message_read(reply.get(), "b", &carriesInstallInfo) >= 0 && carriesInstallInfo == 0)
+        {
+            return ServiceActionResult::failed(SystemdActions::NO_INSTALL_SECTION_MESSAGE);
+        }
     }
     return std::nullopt;
 }
