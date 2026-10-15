@@ -14,8 +14,9 @@ set(CPACK_RESOURCE_FILE_README "${CMAKE_SOURCE_DIR}/README.md")
 set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
 
 # Package only the default install component, i.e. TaskSmack's own install() rules in
-# cmake/InstallRules.cmake. tests/ (rapidcheck) and benchmarks/ install into their own components so
-# that nothing a test or benchmark dependency installs ends up in a package (#1398).
+# cmake/InstallRules.cmake. The FetchContent dependencies (cmake/Dependencies.cmake), tests/
+# (googletest, rapidcheck) and benchmarks/ install into their own third_party/tests/benchmarks
+# components, so nothing a dependency installs ends up in a package (#1398).
 set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};${PROJECT_NAME};Unspecified;/")
 
 # Output directory for packages

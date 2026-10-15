@@ -28,6 +28,12 @@ endif()
 
 include(FetchContent)
 
+# Every install() rule a dependency added below declares lands in a "third_party" component, which
+# cmake/Packaging.cmake leaves out of the packages: TaskSmack links all of them statically, so their
+# headers, libraries and CMake/pkg-config files never belong in one (#1398). Generic, so a new
+# dependency can't leak; reset to the default at the end of this file for TaskSmack's own rules.
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME third_party)
+
 # TASKSMACK_ENABLE_PCH=OFF means no precompiled headers anywhere, the dependencies' own included.
 # CI builds with it off so ccache can cache every compile (#1406); SDL3 adds a PCH to its own target
 # regardless, which left its ~260 C files uncacheable, about 30% of every CI build's compiler
@@ -320,3 +326,6 @@ target_include_directories(implot_lib
 )
 target_link_libraries(implot_lib PUBLIC imgui_lib)
 set_target_properties(implot_lib PROPERTIES FOLDER "third_party")
+
+# Back to the default component ("Unspecified") for TaskSmack's own install rules.
+unset(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME)

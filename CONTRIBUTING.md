@@ -2250,8 +2250,9 @@ What a package contains, and what it depends on (#1398):
   (`LICENSE`, plus the third-party licences under `share/doc/tasksmack/third_party/` on Linux or
   `third_party_licenses/` in the Windows `.zip`). Every library TaskSmack is built from is linked
   statically, so no headers, `.a`/`.lib` files, or CMake/pkg-config files belong in a package.
-  Test and benchmark dependencies install into their own `tests`/`benchmarks` components, which
-  CPack leaves out.
+  Whatever the FetchContent dependencies' own install rules declare goes into a `third_party`
+  component (`tests`/`benchmarks` for the test and benchmark dependencies), and CPack packages
+  only the default component, TaskSmack's own rules in `cmake/InstallRules.cmake`.
 - Linux Release builds link libc++ and libc++abi statically (`TASKSMACK_STATIC_LIBCXX`, ON by
   default for `CMAKE_BUILD_TYPE=Release`), because the distro's `libc++1` is older than the
   apt.llvm.org clang the release is built with. `readelf -d build/release/bin/TaskSmack` should
