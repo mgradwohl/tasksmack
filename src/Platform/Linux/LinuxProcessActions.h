@@ -63,7 +63,7 @@ class LinuxProcessActions : public IProcessActions
     /// Uses @p traceTools instead of searching (tests: a fake terminal that records its argv).
     explicit LinuxProcessActions(SyscallTrace::Tools traceTools);
     /// As above, making its system calls through @p syscalls (tests: calls that fail on demand, #1548).
-    LinuxProcessActions(SyscallTrace::Tools traceTools, LinuxProcessSyscalls syscalls);
+    LinuxProcessActions(SyscallTrace::Tools traceTools, const LinuxProcessSyscalls& syscalls);
     ~LinuxProcessActions() override = default;
 
     LinuxProcessActions(const LinuxProcessActions&) = delete;

@@ -306,7 +306,7 @@ LinuxProcessActions::LinuxProcessActions() : LinuxProcessActions(discoverSyscall
 LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools) : LinuxProcessActions(std::move(traceTools), realProcessSyscalls())
 {}
 
-LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, LinuxProcessSyscalls syscalls)
+LinuxProcessActions::LinuxProcessActions(SyscallTrace::Tools traceTools, const LinuxProcessSyscalls& syscalls)
     : m_TraceTools(std::move(traceTools)), m_Syscalls(syscalls), m_CanSetRealtimeIoPriority(ownProcessCanSetRealtimeIo())
 {
     // A table that fakes only the kernel calls keeps the real thread listing (see LinuxProcessSyscalls).
