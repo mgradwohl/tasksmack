@@ -33,6 +33,7 @@
 #include <expected>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stop_token>
@@ -742,6 +743,26 @@ class MockProcessActions : public Platform::IProcessActions
     {
         m_DumpWaitsForCancel = wait;
     }
+    /// createDump() blocks until releaseDump() (or its stop token: then it reports itself cancelled),
+    /// then returns setDumpResult()'s result: for tests of a dump that is still being written while
+    /// something else happens (#2117). Call before the dump starts.
+    void holdDump()
+    {
+        m_DumpGate = std::make_shared<DumpGate>();
+    }
+    /// Lets a dump held by holdDump() finish. Safe from the test's thread while the worker waits.
+    void releaseDump()
+    {
+        if (m_DumpGate == nullptr)
+        {
+            return;
+        }
+        {
+            const std::scoped_lock lock(m_DumpGate->mutex);
+            m_DumpGate->released = true;
+        }
+        m_DumpGate->wake.notify_all();
+    }
 
     /// Runs on ProcessDumpView's worker. What it records is read by a test only after the worker's
     /// result was taken in (the future's get() orders the two), so it needs no lock.
@@ -758,6 +779,14 @@ class MockProcessActions : public Platform::IProcessActions
             std::unique_lock lock(mutex);
             wake.wait(lock, stopToken, [] { return false; });
             return std::unexpected(std::string("Cancelled; the partial dump file was deleted"));
+        }
+        if (m_DumpGate != nullptr)
+        {
+            std::unique_lock lock(m_DumpGate->mutex);
+            if (!m_DumpGate->wake.wait(lock, stopToken, [this] { return m_DumpGate->released; }))
+            {
+                return std::unexpected(std::string("Cancelled; the partial dump file was deleted"));
+            }
         }
         return m_DumpResult;
     }
@@ -830,6 +859,14 @@ class MockProcessActions : public Platform::IProcessActions
     void* m_LastFolderOwner = nullptr;
     Platform::ProcessDumpResult m_DumpResult = std::unexpected(std::string("no dump result set"));
     bool m_DumpWaitsForCancel = false;
+    /// holdDump()'s latch; shared, so the mock stays copyable.
+    struct DumpGate
+    {
+        std::mutex mutex;
+        std::condition_variable_any wake;
+        bool released = false;
+    };
+    std::shared_ptr<DumpGate> m_DumpGate;
     int m_CreateDumpCount = 0;
     std::filesystem::path m_LastDumpDirectory;
     Platform::ProcessActionResult m_TerminateResult = Platform::ProcessActionResult::ok();

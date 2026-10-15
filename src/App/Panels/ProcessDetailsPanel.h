@@ -218,7 +218,16 @@ class ProcessDetailsPanel : public Panel
         m_RaiseEvent = std::move(raise);
     }
 
+    /// Test seam (#2117): the Actions block's view, with the dump's state (ProcessActionsView::dumpView()).
+    [[nodiscard]] ProcessActionsView& actionsViewForTesting() noexcept
+    {
+        return m_ActionsView;
+    }
+
   private:
+    /// The pane renderContent() draws before the dialogs: the empty or exited state, or the tabs. Takes
+    /// F9's request (@p killRequested) only once the tabs are drawn.
+    void renderPane(bool killRequested);
     void renderBasicInfo(const Domain::ProcessSnapshot& proc);
     /// The Overview's collapsed Services section (#1886): each service the process runs, with a button
     /// that shows it in the Services tab. Not drawn for a process that runs none.

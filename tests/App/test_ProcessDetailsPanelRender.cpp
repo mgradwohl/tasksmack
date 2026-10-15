@@ -2,9 +2,13 @@
 /// @brief The Process Details panel as a whole (#1546), run headless with mock actions and readers
 /// through its injectable constructor: nothing selected, a selected process's Overview (identity,
 /// runtime, actions, the optional sections, the charts once it has history), the tab a selection asks
-/// for, a process that leaves the list, and an inactive panel drawing nothing.
+/// for, a process that leaves the list, and an inactive panel drawing nothing. The Actions block's
+/// dialogs stay submitted whatever the pane shows: a confirm closes when its process exits or another is
+/// selected, and a dump in flight keeps its progress and then shows its result (#2117).
 
+#include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessDetailsPanel.h"
+#include "App/Panels/ProcessDumpView.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -27,12 +31,16 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -808,6 +816,179 @@ TEST_F(ProcessDetailsPanelRenderTest, AnInactivePanelDrawsNothing)
     Core::ActiveTabChangedEvent away("Processes");
     panel->onEvent(away);
     EXPECT_TRUE(renderAndCapture(*panel).empty());
+}
+
+// --- The Actions block's dialogs when the process exits or the selection changes (#2117) ----------
+
+/// The topmost open modal's name, or empty when none is open.
+[[nodiscard]] std::string topModalTitle()
+{
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    return modal != nullptr ? std::string(modal->Name) : std::string{};
+}
+
+/// Whether ImGui has any popup open at all: what KeyboardInput::anyPopupOpen() asks before it lets a
+/// shortcut through. A modal left on the stack without being submitted turns them all off (#2117).
+[[nodiscard]] bool anyPopupOpen()
+{
+    return ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+}
+
+/// A panel with mock actions that can kill and dump, shown as the active tab, with "server" selected
+/// and sampled once.
+class ProcessDetailsDialogsTest : public ProcessDetailsPanelRenderTest
+{
+  protected:
+    void SetUp() override
+    {
+        ProcessDetailsPanelRenderTest::SetUp();
+        auto actions = std::make_unique<TestMocks::MockProcessActions>();
+        Platform::ProcessActionCapabilities caps;
+        caps.canTerminate = true;
+        caps.canKill = true;
+        caps.canCreateDump = true;
+        actions->setCapabilities(caps);
+        m_Mock = actions.get();
+        m_Panel = std::make_unique<ProcessDetailsPanel>(std::move(actions));
+        Core::ActiveTabChangedEvent shown("ProcessDetails");
+        m_Panel->onEvent(shown);
+        m_Panel->setSelectedPid(PID, START_TICKS);
+        const std::vector samples{sampleAt(1.0, 10.0)};
+        m_Panel->updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(*m_Panel));
+    }
+
+    void TearDown() override
+    {
+        // Before the ImGui context goes: the panel's dump view cancels a dump in flight and waits for it.
+        m_Panel.reset();
+        ProcessDetailsPanelRenderTest::TearDown();
+    }
+
+    /// "server" leaves the process list; returns the text of the frame drawn after.
+    [[nodiscard]] std::string exitProcess()
+    {
+        const std::vector gone{emptySampleAt(2.0)};
+        m_Panel->updateWithSamples(gone, 1.0F);
+        return renderAndCapture(*m_Panel);
+    }
+
+    /// The dump view's confirm for "server", asked for as its button does, drawn until it is open.
+    void openDumpConfirm()
+    {
+        dumpView().request({.pid = PID, .startTimeTicks = START_TICKS}, "server", std::filesystem::path("dumps"), m_Mock);
+        static_cast<void>(renderAndCapture(*m_Panel));
+        static_cast<void>(renderAndCapture(*m_Panel));
+        ASSERT_TRUE(topModalTitle().starts_with("Create a dump file of server (PID 4242)?")) << topModalTitle();
+    }
+
+    /// Presses the open dump confirm's own button and draws until the dump is running.
+    void startDump()
+    {
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        ASSERT_NE(modal, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(DumpDetail::CONFIRM_LABEL, 0, modal->ID));
+        static_cast<void>(renderAndCapture(*m_Panel));
+        static_cast<void>(renderAndCapture(*m_Panel));
+        ASSERT_TRUE(dumpView().busy());
+    }
+
+    /// Presses and releases Escape over two frames.
+    void pressEscape()
+    {
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+        static_cast<void>(renderAndCapture(*m_Panel));
+        ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+        static_cast<void>(renderAndCapture(*m_Panel));
+    }
+
+    [[nodiscard]] ProcessDumpView& dumpView()
+    {
+        return m_Panel->actionsViewForTesting().dumpView();
+    }
+
+    TestMocks::MockProcessActions* m_Mock = nullptr; // owned by m_Panel
+    std::unique_ptr<ProcessDetailsPanel> m_Panel;
+};
+
+TEST_F(ProcessDetailsDialogsTest, AKillConfirmClosesWhenItsProcessExits)
+{
+    m_Panel->requestKillSelected();
+    static_cast<void>(renderAndCapture(*m_Panel));
+    static_cast<void>(renderAndCapture(*m_Panel));
+    ASSERT_TRUE(topModalTitle().starts_with("Kill")) << topModalTitle();
+
+    const std::string text = exitProcess();
+    EXPECT_TRUE(text.contains("Process exited")) << text;
+    static_cast<void>(renderAndCapture(*m_Panel));
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(anyPopupOpen()); // nothing stale left to turn the shortcuts off
+    EXPECT_FALSE(m_Panel->actionsViewForTesting().confirmPending());
+    EXPECT_EQ(m_Mock->killCount(), 0);
+}
+
+TEST_F(ProcessDetailsDialogsTest, ADumpConfirmClosesWhenItsProcessExits)
+{
+    openDumpConfirm();
+
+    static_cast<void>(exitProcess());
+    static_cast<void>(renderAndCapture(*m_Panel));
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(anyPopupOpen());
+    EXPECT_FALSE(dumpView().active());
+    EXPECT_EQ(m_Mock->createDumpCount(), 0);
+}
+
+TEST_F(ProcessDetailsDialogsTest, ADumpConfirmClosesWhenAnotherProcessIsSelected)
+{
+    openDumpConfirm();
+
+    // Another process, not sampled yet: the pane says it is not found, and the dialogs still run.
+    m_Panel->setSelectedPid(PID + 1, START_TICKS + 1);
+    static_cast<void>(renderAndCapture(*m_Panel));
+    static_cast<void>(renderAndCapture(*m_Panel));
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(anyPopupOpen());
+    EXPECT_FALSE(dumpView().active());
+    EXPECT_EQ(m_Mock->createDumpCount(), 0);
+}
+
+TEST_F(ProcessDetailsDialogsTest, ADumpInFlightKeepsItsProgressAndShowsItsResultAfterItsProcessExits)
+{
+    m_Mock->holdDump();
+    m_Mock->setDumpResult(std::unexpected(std::string("The process exited while its dump was being written")));
+    openDumpConfirm();
+    startDump();
+
+    const std::string text = exitProcess();
+    EXPECT_TRUE(text.contains("Process exited")) << text;
+    static_cast<void>(renderAndCapture(*m_Panel));
+    EXPECT_TRUE(topModalTitle().starts_with("Creating dump file")) << topModalTitle(); // its Cancel still there
+    EXPECT_TRUE(dumpView().busy());
+
+    // The dump ends: its result is taken in and shown without another selection.
+    m_Mock->releaseDump();
+    for (int frame = 0; frame < 400 && !dumpView().result().has_value(); ++frame)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        static_cast<void>(renderAndCapture(*m_Panel));
+    }
+    ASSERT_TRUE(dumpView().result().has_value());
+    static_cast<void>(renderAndCapture(*m_Panel));
+    // The progress dialog, now showing the result: ImGui keeps the title it was opened with as the
+    // window's name, so the result's own title and text are checked on the view.
+    EXPECT_TRUE(topModalTitle().ends_with("###ProcessDump")) << topModalTitle();
+    const DumpDetail::DumpMessage message = dumpView().result().value_or(DumpDetail::DumpMessage{});
+    EXPECT_EQ(message.title, "Couldn't create a dump file");
+    EXPECT_TRUE(message.text.contains("The process exited")) << message.text;
+
+    // Escape closes it, and nothing is left open.
+    pressEscape();
+    static_cast<void>(renderAndCapture(*m_Panel));
+    EXPECT_EQ(topModalTitle(), "");
+    EXPECT_FALSE(anyPopupOpen());
+    EXPECT_FALSE(dumpView().active());
+    EXPECT_EQ(m_Mock->createDumpCount(), 1);
 }
 
 } // namespace

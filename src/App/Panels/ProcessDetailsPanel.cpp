@@ -328,10 +328,27 @@ const std::string& ProcessDetailsPanel::tabLabel() const
 
 void ProcessDetailsPanel::renderContent()
 {
-    // F9 (#170), taken now so it can only act on this frame: by the time the tabs below are drawn,
+    // F9 (#170), taken now so it can only act on this frame: by the time renderPane() draws the tabs,
     // every reason not to (no selection, not on show, exited, not yet sampled) has returned early.
     const bool killRequested = m_KillShortcut.take();
 
+    renderPane(killRequested);
+
+    // The Actions block's confirm dialog, submitted here every frame rather than from the block: the
+    // block's child is skipped while the Overview is scrolled so that it is out of view, which left
+    // an F9 Kill confirm pending with no dialog, refusing further F9 presses (#1493). Submitted after
+    // the pane whatever it showed, the exited and empty states included: skipped there, a Kill confirm
+    // stayed pending and refused F9, a modal could be left on ImGui's popup stack, which turns off the
+    // shortcuts, and a dump's progress (its only Cancel) and result went with it (#2117). Once the pane no longer shows a running process,
+    // the dialogs are given no live target, so a confirm or the affinity dialog closes unconfirmed, while a dump in flight keeps its
+    // progress and then shows its result.
+    const Platform::ProcessTarget noTarget{.pid = -1, .startTimeTicks = 0};
+    const bool showsRunningProcess = m_SelectedPid != -1 && m_HasSnapshot && !m_ProcessExited;
+    m_ActionsView.renderConfirmation(m_ProcessActions.get(), showsRunningProcess ? selectedTarget() : noTarget);
+}
+
+void ProcessDetailsPanel::renderPane(bool killRequested)
+{
     if (m_SelectedPid == -1)
     {
         UI::Widgets::renderEmptyState(ICON_FA_CIRCLE_INFO "  No process selected",
@@ -459,11 +476,6 @@ void ProcessDetailsPanel::renderContent()
     }
 
     ImGui::PopStyleVar(); // FramePadding
-
-    // The Actions block's confirm dialog, submitted here every frame rather than from the block: the
-    // block's child is skipped while the Overview is scrolled so that it is out of view, which left
-    // an F9 Kill confirm pending with no dialog, refusing further F9 presses (#1493).
-    m_ActionsView.renderConfirmation(m_ProcessActions.get(), selectedTarget());
 }
 
 void ProcessDetailsPanel::onEvent(Core::Event& event)
