@@ -43,6 +43,16 @@ inline constexpr std::string_view WIFI_DETAILS_NOTE = "Windows may ask for locat
 /// The note beside the "Show public IP" button (#1518).
 inline constexpr std::string_view PUBLIC_IP_NOTE = "Sends a DNS query to OpenDNS";
 
+/// What a row shows in place of its text while identifiers are hidden (#2120): its label, value and
+/// tooltips with the user's login name redacted (redactLoginName()).
+struct RedactedText
+{
+    std::string label;
+    std::string value;
+    std::string unavailableReason;
+    std::string valueTooltip;
+};
+
 /// One label/value row. An empty value is unavailable; unavailableReason says why.
 struct Row
 {
@@ -57,10 +67,35 @@ struct Row
     /// A tooltip on an available value that needs explaining, such as a CPU vulnerability Windows reports
     /// as Unknown (#1781). Empty for most rows; an unavailable row's tooltip is unavailableReason.
     std::string valueTooltip;
+    /// Set when the label, value or a tooltip names the user in a path, such as a mount point under
+    /// /media/<user> or a crash under /home/<user> (#2120): the text shown and copied while identifiers
+    /// are hidden. Such a row stays visible, unlike an identifier, since the rest of it names nothing.
+    std::optional<RedactedText> redacted;
 
     [[nodiscard]] bool available() const noexcept
     {
         return !value.empty();
+    }
+
+    /// The label to show: redacted while identifiers are hidden (#2120).
+    [[nodiscard]] const std::string& shownLabel(bool showIdentifiers) const noexcept
+    {
+        return showIdentifiers || !redacted.has_value() ? label : redacted->label;
+    }
+    /// The value to show: redacted while identifiers are hidden (#2120).
+    [[nodiscard]] const std::string& shownValue(bool showIdentifiers) const noexcept
+    {
+        return showIdentifiers || !redacted.has_value() ? value : redacted->value;
+    }
+    /// The unavailable reason to show: redacted while identifiers are hidden (#2120).
+    [[nodiscard]] const std::string& shownUnavailableReason(bool showIdentifiers) const noexcept
+    {
+        return showIdentifiers || !redacted.has_value() ? unavailableReason : redacted->unavailableReason;
+    }
+    /// The value's tooltip to show: redacted while identifiers are hidden (#2120).
+    [[nodiscard]] const std::string& shownValueTooltip(bool showIdentifiers) const noexcept
+    {
+        return showIdentifiers || !redacted.has_value() ? valueTooltip : redacted->valueTooltip;
     }
 };
 
@@ -305,19 +340,39 @@ enum class AddressScope : std::uint8_t
 /// total, when the boot event was recorded, the main path (to the desktop) and the post-boot time.
 [[nodiscard]] Section buildBootPerformanceSection(const Platform::BootPerformanceInfo& boot);
 
-/// The page's sections, in display order. Empty before the first read. @p host is Core's graphics facts
-/// for the Graphics & displays section, captured on the UI thread; @p capabilities what the probe can read.
+/// What a redacted login name reads as (#2120).
+inline constexpr std::string_view REDACTED_USER = "<user>";
+
+/// @p text with the path components that name the user by @p userName (OsInfo::userName) replaced by
+/// REDACTED_USER (#2120): "/media/alice/USB" -> "/media/<user>/USB", "C:\Users\alice\x.exe" ->
+/// "C:\Users\<user>\x.exe". The login name is userName after any "DOMAIN\" prefix and, for an
+/// "alice@example.com" login, also the part before the '@'. Only a whole component matches: one that
+/// follows a '/' or '\' and ends at one, at the end of the text, or at whitespace or one of ,;:)]}"' so
+/// a short name never matches inside a longer word or file name. On Windows the match ignores ASCII
+/// case, and a profile folder under Users named "<login>.<suffix>" (Windows adds ".DOMAIN" or ".000"
+/// when the plain name is taken) is redacted whole. An empty login name redacts nothing.
+[[nodiscard]] std::string redactLoginName(std::string_view text, std::string_view userName, Platform::OsFamily family);
+
+/// Gives each row of @p sections that isn't an identifier, and whose label, value or tooltips name the
+/// user (redactLoginName() with @p os's userName and family), its redacted text (#2120).
+void redactUserPaths(std::span<Section> sections, const Platform::OsInfo& os);
+
+/// The page's sections, in display order, with redactUserPaths() applied to them all. Empty before the
+/// first read. @p host is Core's graphics facts for the Graphics & displays section, captured on the UI
+/// thread; @p capabilities what the probe can read.
 [[nodiscard]] std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
                                                            const Core::GraphicsHostInfo& host = {},
                                                            const Platform::SystemInfoCapabilities& capabilities = {});
 
 /// The sections and rows to draw: hidden identifiers left out, then, with a filter, a section whose
-/// title matches keeps all its rows and otherwise only rows whose label or value matches (ASCII case-
-/// insensitive). Sections left with no rows are dropped.
+/// title matches keeps all its rows and otherwise only rows whose shown label or value matches (ASCII
+/// case-insensitive; the redacted text while identifiers are hidden, so a filter on the user's name
+/// can't pick out the rows that name it). Sections left with no rows are dropped.
 [[nodiscard]] std::vector<VisibleSection> visibleSections(std::span<const Section> sections, std::string_view filter, bool showIdentifiers);
 
 /// A section as plain text: its title, then one "Label: Value" line per row (an unavailable value as
-/// "unavailable (reason)"), hidden identifiers left out.
+/// "unavailable (reason)"), hidden identifiers left out and, while they are, the redacted text (#2120)
+/// of a row that names the user.
 [[nodiscard]] std::string sectionText(const Section& section, bool showIdentifiers);
 
 /// Every section's sectionText(), separated by blank lines.
@@ -332,7 +387,8 @@ enum class ReportFormat : std::uint8_t
 
 /// Every section as JSON (#1866), for scripts and diffing: {"readAt", "identifiersIncluded",
 /// "sections": [{"title", "rows": [{"label", "value"} or {"label", "unavailable": reason}]}]}. Rows
-/// left out of Copy (identifiers, unless @p showIdentifiers) are left out here too. Strings are escaped
+/// left out of Copy (identifiers, unless @p showIdentifiers) are left out here too, and a row's text is
+/// redacted as Copy's is (#2120). Strings are escaped
 /// as JSON requires; non-ASCII text stays UTF-8.
 [[nodiscard]] std::string allSectionsJson(std::span<const Section> sections, bool showIdentifiers, std::string_view readAt);
 

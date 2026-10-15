@@ -212,21 +212,24 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
 
 /// One value cell: the value (with its valueTooltip, if any), or a muted em dash whose tooltip says why
 /// there is none. A value too wide for the page ends in an ellipsis, the whole of it on hover (#1920).
-void renderValue(const SystemInfo::Row& row, const UI::ColorScheme& scheme)
+/// Shows the redacted text of a row that names the user while identifiers are hidden (#2120).
+void renderValue(const SystemInfo::Row& row, bool showIdentifiers, const UI::ColorScheme& scheme)
 {
     if (row.available())
     {
-        const bool ownTooltip = !row.valueTooltip.empty();
-        const UI::Widgets::CellTextResult drawn = UI::Widgets::cellText(row.value, {.clippedTooltip = !ownTooltip});
+        const std::string& value = row.shownValue(showIdentifiers);
+        const std::string& valueTooltip = row.shownValueTooltip(showIdentifiers);
+        const bool ownTooltip = !valueTooltip.empty();
+        const UI::Widgets::CellTextResult drawn = UI::Widgets::cellText(value, {.clippedTooltip = !ownTooltip});
         if (ownTooltip && ImGui::BeginItemTooltip())
         {
             if (drawn.clipped)
             {
                 ImGui::PushTextWrapPos(ImGui::GetFontSize() * UI::Widgets::CLIPPED_CELL_TOOLTIP_WRAP_EM);
-                textView(row.value);
+                textView(value);
                 ImGui::PopTextWrapPos();
             }
-            textView(row.valueTooltip);
+            textView(valueTooltip);
             ImGui::EndTooltip();
         }
         return;
@@ -234,9 +237,10 @@ void renderValue(const SystemInfo::Row& row, const UI::ColorScheme& scheme)
     ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
     textView(SystemInfo::UNAVAILABLE_TEXT);
     ImGui::PopStyleColor();
-    if (!row.unavailableReason.empty() && ImGui::BeginItemTooltip())
+    const std::string& reason = row.shownUnavailableReason(showIdentifiers);
+    if (!reason.empty() && ImGui::BeginItemTooltip())
     {
-        textView(row.unavailableReason);
+        textView(reason);
         ImGui::EndTooltip();
     }
 }
@@ -314,12 +318,12 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
-            textView(row.label);
+            textView(row.shownLabel(state.showIdentifiers));
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
             if (row.action == SystemInfo::RowAction::None)
             {
-                renderValue(row, scheme);
+                renderValue(row, state.showIdentifiers, scheme);
             }
             else
             {
@@ -393,7 +397,9 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         {
             for (const std::size_t index : visible.rows)
             {
-                widestLabel = std::max(widestLabel, ImGui::CalcTextSize(state.sections[visible.section].rows[index].label.c_str()).x);
+                widestLabel =
+                    std::max(widestLabel,
+                             ImGui::CalcTextSize(state.sections[visible.section].rows[index].shownLabel(state.showIdentifiers).c_str()).x);
             }
         }
         const float labelWidth = UI::LineLayout::labelColumnWidth(widestLabel, ImGui::GetFontSize());

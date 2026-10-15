@@ -48,6 +48,7 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
         .sensorKind = std::nullopt,
         .action = RowAction::None,
         .valueTooltip = {},
+        .redacted = std::nullopt,
     };
 }
 
@@ -2088,6 +2089,136 @@ std::vector<Row> buildPublicIpRows(bool hasPublicIp, bool included, const Platfo
     return rows;
 }
 
+namespace
+{
+
+[[nodiscard]] constexpr bool isPathSeparator(char c) noexcept
+{
+    return c == '/' || c == '\\';
+}
+
+/// Whether a path component that started earlier ends at @p at: at a separator, the end of the text,
+/// whitespace or punctuation that ends a path in a row's text ("..., pid 42", "(/home/alice)").
+[[nodiscard]] bool endsComponent(std::string_view text, std::size_t at) noexcept
+{
+    constexpr std::string_view ENDS = " \t\r\n,;:)]}\"'";
+    return at >= text.size() || isPathSeparator(text[at]) || ENDS.contains(text[at]);
+}
+
+[[nodiscard]] constexpr char lowerAscii(char c) noexcept
+{
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+[[nodiscard]] bool namesEqual(std::string_view a, std::string_view b, bool ignoreCase) noexcept
+{
+    return ignoreCase ? std::ranges::equal(a, b, {}, lowerAscii, lowerAscii) : a == b;
+}
+
+/// Whether the component that ends at the separator @p separator is "Users" (Windows' profile folders).
+[[nodiscard]] bool followsUsersFolder(std::string_view text, std::size_t separator) noexcept
+{
+    constexpr std::string_view USERS = "users";
+    if (separator < USERS.size())
+    {
+        return false;
+    }
+    const std::size_t start = separator - USERS.size();
+    // A view built from the pointer, not substr(), which may throw: in range, as checked above.
+    return namesEqual(std::string_view(text.data() + start, USERS.size()), USERS, true) && (start == 0 || isPathSeparator(text[start - 1]));
+}
+
+/// The length of the path component at @p at when it names @p login, else 0.
+[[nodiscard]] std::size_t loginComponentLength(std::string_view text, std::size_t at, std::string_view login, bool windows) noexcept
+{
+    if (at == 0 || !isPathSeparator(text[at - 1]) || text.size() - at < login.size() ||
+        !namesEqual(std::string_view(text.data() + at, login.size()), login, windows))
+    {
+        return 0;
+    }
+    std::size_t end = at + login.size();
+    if (endsComponent(text, end))
+    {
+        return login.size();
+    }
+    // Windows names a profile folder "<login>.<DOMAIN>" or "<login>.000" when the plain name is taken.
+    if (windows && text[end] == '.' && followsUsersFolder(text, at - 1))
+    {
+        while (!endsComponent(text, end))
+        {
+            ++end;
+        }
+        return end - at;
+    }
+    return 0;
+}
+
+[[nodiscard]] std::string redactLogin(std::string_view text, std::string_view login, bool windows)
+{
+    std::string out;
+    out.reserve(text.size());
+    std::size_t at = 0;
+    while (at < text.size())
+    {
+        if (const std::size_t length = loginComponentLength(text, at, login, windows); length != 0)
+        {
+            out += REDACTED_USER;
+            at += length;
+        }
+        else
+        {
+            out += text[at];
+            ++at;
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+std::string redactLoginName(std::string_view text, std::string_view userName, Platform::OsFamily family)
+{
+    // Windows gives "DOMAIN\user"; Linux the login name, which winbind writes as "DOMAIN\user" too and
+    // SSSD may write as "user@domain", with the home directory under either form.
+    std::string_view login = userName;
+    if (const std::size_t slash = login.rfind('\\'); slash != std::string_view::npos)
+    {
+        login.remove_prefix(slash + 1);
+    }
+    const bool windows = family == Platform::OsFamily::Windows;
+    std::string redacted = login.empty() ? std::string(text) : redactLogin(text, login, windows);
+    if (const std::size_t at = login.find('@'); at != std::string_view::npos && at != 0)
+    {
+        redacted = redactLogin(redacted, login.substr(0, at), windows);
+    }
+    return redacted;
+}
+
+void redactUserPaths(std::span<Section> sections, const Platform::OsInfo& os)
+{
+    for (Section& section : sections)
+    {
+        for (Row& item : section.rows)
+        {
+            if (item.isIdentifier)
+            {
+                continue; // hidden whole
+            }
+            RedactedText redacted{
+                .label = redactLoginName(item.label, os.userName, os.family),
+                .value = redactLoginName(item.value, os.userName, os.family),
+                .unavailableReason = redactLoginName(item.unavailableReason, os.userName, os.family),
+                .valueTooltip = redactLoginName(item.valueTooltip, os.userName, os.family),
+            };
+            if (redacted.label != item.label || redacted.value != item.value || redacted.unavailableReason != item.unavailableReason ||
+                redacted.valueTooltip != item.valueTooltip)
+            {
+                item.redacted = std::move(redacted);
+            }
+        }
+    }
+}
+
 std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& snapshot,
                                              const Core::GraphicsHostInfo& host,
                                              const Platform::SystemInfoCapabilities& capabilities)
@@ -2153,6 +2284,9 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
         sections.push_back(buildCrashesSection(snapshot.crashes)); // the page's last section
     }
     // Further sections (#1514 and on) follow here, in the page's order.
+
+    // Last, so no section can name the user in a path with identifiers hidden (#2120).
+    redactUserPaths(sections, snapshot.os);
     return sections;
 }
 
@@ -2171,7 +2305,8 @@ std::vector<VisibleSection> visibleSections(std::span<const Section> sections, s
             {
                 continue;
             }
-            if (titleMatches || containsIgnoringCase(item.label, filter) || containsIgnoringCase(item.value, filter))
+            if (titleMatches || containsIgnoringCase(item.shownLabel(showIdentifiers), filter) ||
+                containsIgnoringCase(item.shownValue(showIdentifiers), filter))
             {
                 entry.rows.push_back(r);
             }
@@ -2193,8 +2328,8 @@ std::string sectionText(const Section& section, bool showIdentifiers)
         {
             continue;
         }
-        text += item.label + ": ";
-        text += item.available() ? item.value : "unavailable (" + item.unavailableReason + ")";
+        text += item.shownLabel(showIdentifiers) + ": ";
+        text += item.available() ? item.shownValue(showIdentifiers) : "unavailable (" + item.shownUnavailableReason(showIdentifiers) + ")";
         text += '\n';
     }
     return text;
@@ -2280,10 +2415,12 @@ std::string allSectionsJson(std::span<const Section> sections, bool showIdentifi
             }
             json += firstRow ? "\n" : ",\n";
             firstRow = false;
+            const std::string label = jsonString(item.shownLabel(showIdentifiers));
             json += item.available()
-                      ? std::format(R"(        {{"label": {}, "value": {}}})", jsonString(item.label), jsonString(item.value))
-                      : std::format(
-                            R"(        {{"label": {}, "unavailable": {}}})", jsonString(item.label), jsonString(item.unavailableReason));
+                      ? std::format(R"(        {{"label": {}, "value": {}}})", label, jsonString(item.shownValue(showIdentifiers)))
+                      : std::format(R"(        {{"label": {}, "unavailable": {}}})",
+                                    label,
+                                    jsonString(item.shownUnavailableReason(showIdentifiers)));
         }
         json += firstRow ? "]\n    }" : "\n      ]\n    }";
     }

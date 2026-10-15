@@ -953,6 +953,154 @@ TEST(SystemInfoSectionsTest, PublicAdapterAddressesAreIdentifiers)
     }
 }
 
+// #2120: with identifiers hidden, the user's login name must not reach the page, Copy or Save report
+// through a path: a removable drive's mount point under /media/<user> or a crash under /home/<user>.
+TEST(SystemInfoSectionsTest, LoginNameInPathsIsRedactedWhileIdentifiersAreHidden)
+{
+    Domain::SystemInfoSnapshot read;
+    read.version = 1;
+    read.os.family = Platform::OsFamily::Linux;
+    read.os.userName = "alice";
+    read.storage.available = true;
+    read.storage.family = Platform::OsFamily::Linux;
+    read.storage.disksRead = true;
+    Platform::PhysicalDisk disk;
+    disk.name = "sdb";
+    disk.partitionsRead = true;
+    disk.partitions = {{.number = 1,
+                        .device = "sdb1",
+                        .typeId = "0x0c",
+                        .typeName = "FAT32",
+                        .offsetBytes = 1'048'576,
+                        .sizeBytes = 16ULL << 30U,
+                        .mountPoint = "/media/alice/USB"}};
+    read.storage.disks = {disk};
+    read.storage.volumesRead = true;
+    read.storage.volumes = {{.mountPoint = "/media/alice/USB",
+                             .label = "USB",
+                             .fileSystem = "vfat",
+                             .device = "/dev/sdb1",
+                             .network = false,
+                             .sizeRead = false,
+                             .sizeBytes = 0,
+                             .freeBytes = 0}};
+    read.crashes.available = true;
+    read.crashes.family = Platform::OsFamily::Linux;
+    read.crashes.listed = true;
+    read.crashes.journalRead = true;
+    Platform::CrashEvent crash;
+    crash.unixSeconds = 1'790'863'402;
+    crash.application = "x";
+    crash.executable = "/home/alice/bin/x";
+    crash.signal = "SIGSEGV";
+    crash.pid = 4242;
+    read.crashes.events = {crash};
+
+    const std::vector<Section> sections = SystemInfo::buildSystemInfoSections(read);
+    for (const std::string& hidden : {SystemInfo::allSectionsText(sections, false), SystemInfo::allSectionsJson(sections, false, "")})
+    {
+        EXPECT_FALSE(hidden.contains("alice")) << hidden;
+        EXPECT_TRUE(hidden.contains("/media/<user>/USB")) << hidden;
+        EXPECT_TRUE(hidden.contains("/home/<user>/bin/x, pid 4242")) << hidden; // the rest of the row stays useful
+    }
+    for (const std::string& shown : {SystemInfo::allSectionsText(sections, true), SystemInfo::allSectionsJson(sections, true, "")})
+    {
+        EXPECT_TRUE(shown.contains("/media/alice/USB")) << shown;
+        EXPECT_TRUE(shown.contains("/home/alice/bin/x")) << shown;
+        EXPECT_TRUE(shown.contains("\xE2\x86\x92 /media/alice/USB")) << shown; // the partition row's mount point
+    }
+
+    // The page itself: the filter can't pick out the rows that name the user, and they show redacted.
+    EXPECT_TRUE(SystemInfo::visibleSections(sections, "alice", false).empty());
+    EXPECT_FALSE(SystemInfo::visibleSections(sections, "alice", true).empty());
+    const Section& storage = sections[1];
+    const Row* volume = findRow(storage, "/media/alice/USB");
+    ASSERT_NE(volume, nullptr);
+    EXPECT_FALSE(volume->isIdentifier); // redacted, not hidden: the rest of the row names nothing
+    EXPECT_EQ(volume->shownLabel(false), "/media/<user>/USB");
+    EXPECT_EQ(volume->shownLabel(true), "/media/alice/USB");
+    EXPECT_EQ(volume->shownValue(false), volume->value); // nothing to redact in it
+    EXPECT_FALSE(findRow(storage, "sdb")->redacted.has_value());
+}
+
+TEST(SystemInfoSectionsTest, RedactsTheLoginNameOnlyAsAWholePathComponent)
+{
+    constexpr auto LINUX = Platform::OsFamily::Linux;
+    constexpr auto WINDOWS = Platform::OsFamily::Windows;
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/alice", "alice", LINUX), "/home/<user>");
+    EXPECT_EQ(SystemInfo::redactLoginName("/run/media/alice/KINGSTON", "alice", LINUX), "/run/media/<user>/KINGSTON");
+    EXPECT_EQ(SystemInfo::redactLoginName("x crashed, /home/alice/src/x, pid 1", "alice", LINUX), "x crashed, /home/<user>/src/x, pid 1");
+    EXPECT_EQ(SystemInfo::redactLoginName("nfs4 on server:/home/alice, network", "alice", LINUX), "nfs4 on server:/home/<user>, network");
+    EXPECT_EQ(SystemInfo::redactLoginName("(/home/alice)", "alice", LINUX), "(/home/<user>)");
+    // Linux paths are case-sensitive, and a component only matches whole.
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/Alice", "alice", LINUX), "/home/Alice");
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/alice2/x /srv/malice /home/alice.old", "alice", LINUX),
+              "/home/alice2/x /srv/malice /home/alice.old");
+    EXPECT_EQ(SystemInfo::redactLoginName("alice's /home/alice", "alice", LINUX), "alice's /home/<user>"); // not a path
+    // A one-letter name only redacts a component that is it: never "a.out", "/bin/bash" or "/var/a2".
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/a/a.out, /bin/bash, /var/a2, /media/a", "a", LINUX),
+              "/home/<user>/a.out, /bin/bash, /var/a2, /media/<user>");
+    // Nothing to redact by.
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/alice", "", LINUX), "/home/alice");
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/alice", "CONTOSO\\", LINUX), "/home/alice");
+    EXPECT_EQ(SystemInfo::redactLoginName("", "alice", LINUX), "");
+    // winbind's DOMAIN\user and SSSD's user@domain logins.
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/CONTOSO/alice/x", "CONTOSO\\alice", LINUX), "/home/CONTOSO/<user>/x");
+    EXPECT_EQ(SystemInfo::redactLoginName("/home/alice@contoso.com/x and /home/alice/y", "alice@contoso.com", LINUX),
+              "/home/<user>/x and /home/<user>/y");
+
+    // Windows: DOMAIN\user, ASCII case ignored, either separator.
+    EXPECT_EQ(SystemInfo::redactLoginName("C:\\Users\\Alice\\AppData\\x.exe", "CONTOSO\\alice", WINDOWS),
+              "C:\\Users\\<user>\\AppData\\x.exe");
+    EXPECT_EQ(SystemInfo::redactLoginName("C:/users/ALICE/x", "PC\\alice", WINDOWS), "C:/users/<user>/x");
+    EXPECT_EQ(SystemInfo::redactLoginName("D:\\Games\\alice drive", "PC\\alice", WINDOWS), "D:\\Games\\<user> drive");
+    // A profile folder Windows gave a suffix is redacted whole; elsewhere a dotted name is another file.
+    EXPECT_EQ(SystemInfo::redactLoginName("C:\\Users\\alice.CONTOSO\\x", "CONTOSO\\alice", WINDOWS), "C:\\Users\\<user>\\x");
+    EXPECT_EQ(SystemInfo::redactLoginName("C:\\Users\\a.000", "PC\\a", WINDOWS), "C:\\Users\\<user>");
+    EXPECT_EQ(SystemInfo::redactLoginName("C:\\Users\\a\\a.exe", "PC\\a", WINDOWS), "C:\\Users\\<user>\\a.exe");
+    EXPECT_EQ(SystemInfo::redactLoginName("C:\\Users\\Public\\x, C:\\Windows\\a", "PC\\a", WINDOWS),
+              "C:\\Users\\Public\\x, C:\\Windows\\<user>");
+}
+
+// #2120 on Windows: a row's label, value, unavailable reason and tooltip are each redacted, whatever the
+// name's case; an identifier row is left alone, since it is hidden whole.
+TEST(SystemInfoSectionsTest, RedactUserPathsCoversEveryTextOfARowButNotIdentifiers)
+{
+    Platform::OsInfo os;
+    os.family = Platform::OsFamily::Windows;
+    os.userName = "PC\\Alice";
+    const auto makeRow = [](std::string label, std::string value, std::string reason = {}, std::string tooltip = {})
+    {
+        Row made;
+        made.label = std::move(label);
+        made.value = std::move(value);
+        made.unavailableReason = std::move(reason);
+        made.valueTooltip = std::move(tooltip);
+        return made;
+    };
+    std::vector<Section> sections(1);
+    sections[0].rows = {makeRow(R"(C:\Users\alice\Mount drive)", "NTFS"),
+                        makeRow("Crash", "x.exe crashed", {}, R"(c:\users\ALICE\x.exe)"),
+                        makeRow("Dump", "", R"(C:\Users\Alice\dump couldn't be read)"),
+                        makeRow("User", R"(PC\Alice)"),
+                        makeRow("Kernel", R"(C:\Windows\system32\ntoskrnl.exe)")};
+    sections[0].rows[3].isIdentifier = true;
+    SystemInfo::redactUserPaths(sections, os);
+    const std::vector<Row>& rows = sections[0].rows;
+    ASSERT_TRUE(rows[0].redacted.has_value());
+    EXPECT_EQ(rows[0].shownLabel(false), "C:\\Users\\<user>\\Mount drive");
+    EXPECT_EQ(rows[1].shownValueTooltip(false), "c:\\users\\<user>\\x.exe");
+    EXPECT_EQ(rows[1].shownValueTooltip(true), "c:\\users\\ALICE\\x.exe");
+    EXPECT_EQ(rows[2].shownUnavailableReason(false), "C:\\Users\\<user>\\dump couldn't be read");
+    EXPECT_FALSE(rows[3].redacted.has_value()); // an identifier is hidden whole instead
+    EXPECT_FALSE(rows[4].redacted.has_value());
+
+    const std::string hidden = SystemInfo::allSectionsText(sections, false);
+    EXPECT_FALSE(hidden.contains("lice")) << hidden;
+    EXPECT_FALSE(hidden.contains("LICE")) << hidden;
+    EXPECT_TRUE(SystemInfo::allSectionsText(sections, true).contains("C:\\Users\\alice\\Mount drive"));
+}
+
 TEST(SystemInfoSectionsTest, AnAdaptersOwnDnsSettingsOnlyWhereItHasAny)
 {
     Platform::NetworkAdaptersInfo network;
@@ -2838,6 +2986,49 @@ TEST_F(SystemInfoViewRenderTest, SensorsSectionDrawsEachSensorsHistory)
     const int withoutCharts = ImGui::GetDrawData()->TotalVtxCount;
     EXPECT_GT(withCharts, withoutCharts);
     ImPlot::DestroyContext(plot);
+}
+
+// #2120: the page draws a mount point that names the user redacted until identifiers are shown.
+TEST_F(SystemInfoViewRenderTest, MountPointNamingTheUserDrawsRedactedUntilIdentifiersAreShown)
+{
+    const Platform::SystemInfoCapabilities supported{.hasOs = true, .unavailableReason = {}};
+    Domain::SystemInfoSnapshot snap;
+    snap.version = 1;
+    snap.os.family = Platform::OsFamily::Linux;
+    snap.os.userName = "alice";
+    snap.storage.available = true;
+    snap.storage.family = Platform::OsFamily::Linux;
+    snap.storage.disksRead = true;
+    snap.storage.volumesRead = true;
+    snap.storage.volumes = {{.mountPoint = "/media/alice/USB",
+                             .label = "USB",
+                             .fileSystem = "vfat",
+                             .device = "/dev/sdb1",
+                             .network = false,
+                             .sizeRead = false,
+                             .sizeBytes = 0,
+                             .freeBytes = 0}};
+    SystemInfoViewState state;
+    const auto drawnText = [&]
+    {
+        std::string text;
+        static_cast<void>(runFrame(
+            [&]
+            {
+                ImGui::LogToBuffer();
+                const SystemInfoViewResult result = renderSystemInfoView(&snap, supported, false, state);
+                text = GImGui->LogBuffer.c_str();
+                ImGui::LogFinish();
+                return result;
+            }));
+        return text;
+    };
+    const std::string hidden = drawnText();
+    EXPECT_TRUE(hidden.contains("/media/<user>/USB")) << hidden;
+    EXPECT_FALSE(hidden.contains("alice")) << hidden;
+    state.showIdentifiers = true;
+    const std::string shown = drawnText();
+    EXPECT_TRUE(shown.contains("/media/alice/USB")) << shown;
 }
 
 } // namespace
