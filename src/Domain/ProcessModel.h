@@ -258,7 +258,7 @@ class ProcessModel : public ISamplable
 
     // Key for m_PerProcessState: the exact (pid, startTime) identity, distinct from the
     // combined hash stored in ProcessSnapshot::uniqueKey (a display/collapse-state id that
-    // is not collision-free). Using the actual pair as the map key means a hash collision
+    // is unlikely to collide since #2115, but not collision-free). Using the actual pair as the map key means a hash collision
     // only costs a bucket collision, not silently merging two unrelated processes' state.
     struct ProcessIdentity
     {

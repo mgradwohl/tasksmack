@@ -25,7 +25,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -1294,9 +1293,20 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
 
 std::uint64_t ProcessModel::makeUniqueKey(std::int32_t pid, std::uint64_t startTime)
 {
-    std::size_t hash = std::hash<std::int32_t>{}(pid);
-    hash ^= std::hash<std::uint64_t>{}(startTime) + 0x9e3779b9U + (hash << 6) + (hash >> 2);
-    return hash;
+    // splitmix64 (#2115): a bijection on 64 bits, so mixing the PID first and the start time into it
+    // keeps adjacent PIDs started in the same tick apart. The boost-style combine this replaces, with
+    // the identity std::hash of libstdc++ and libc++, gave (895, 7) and (896, 7) the same key. 64 bits
+    // cannot hold both values whole, so a collision stays possible: whatever must never mix up two
+    // processes compares the exact pid and start time as well.
+    const auto splitMix64 = [](std::uint64_t value)
+    {
+        value += 0x9e3779b97f4a7c15ULL;
+        value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+        return value ^ (value >> 31U);
+    };
+    const auto pidBits = static_cast<std::uint64_t>(static_cast<std::uint32_t>(pid));
+    return splitMix64(splitMix64(pidBits) ^ startTime);
 }
 
 void ProcessModel::trimHistory()

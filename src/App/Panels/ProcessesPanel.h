@@ -561,7 +561,9 @@ class ProcessesPanel : public Panel
     /// stamps its own `generation`/`fontPtr` (see ProcessRowFormat.h's RowFormatCache doc
     /// comment) so renderProcessRow() can detect a stale entry (new snapshot data, or a font/
     /// size/DPI change) and rebuild just that one row on demand -- cost scales with visible
-    /// rows, not total process count (perf-plan #843).
+    /// rows, not total process count (perf-plan #843). An entry also records the exact process (pid
+    /// and start time) it was built for, so a uniqueKey hash collision rebuilds it rather than
+    /// showing another process's cells (#2115).
     std::unordered_map<std::uint64_t, RowFormatCache> m_RowFormatCache;
     // Generation m_RowFormatCache was last pruned at (entries for processes no longer present
     // are erased once per new snapshot generation, not per frame, to bound the map's size

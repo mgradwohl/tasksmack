@@ -35,6 +35,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -575,6 +576,58 @@ TEST(ProcessModelTest, UniqueKeyDiffersForPidReuse)
     auto snaps2 = model.snapshots();
 
     EXPECT_NE(snaps1[0].uniqueKey, snaps2[0].uniqueKey);
+}
+
+TEST(ProcessModelTest, UniqueKeyDiffersForPairsTheOldHashCollidedOn)
+{
+    // Pairs the boost-style combine (with the identity std::hash of libstdc++ and libc++) mapped to one
+    // key (#2115, #2158): adjacent PIDs forked in the same tick, and two found by search.
+    struct Identity
+    {
+        std::int32_t pid;
+        std::uint64_t startTime;
+    };
+    const std::vector<std::pair<Identity, Identity>> pairs = {
+        {{.pid = 895, .startTime = 7}, {.pid = 896, .startTime = 7}},
+        {{.pid = 16095, .startTime = 2152828}, {.pid = 16389, .startTime = 2152828}},
+        {{.pid = 1000, .startTime = 50000}, {.pid = 1001, .startTime = 49935}},
+    };
+    for (const auto& [a, b] : pairs)
+    {
+        auto probe = std::make_unique<MockProcessProbe>();
+        probe->setCounters({makeCounter(a.pid, "a", 'R', 0, 0, a.startTime), makeCounter(b.pid, "b", 'R', 0, 0, b.startTime)});
+        probe->setTotalCpuTime(100000);
+        Domain::ProcessModel model(std::move(probe));
+        model.refresh();
+
+        const auto snaps = model.snapshots();
+        ASSERT_EQ(snaps.size(), 2U);
+        EXPECT_NE(snaps[0].uniqueKey, snaps[1].uniqueKey) << a.pid << "@" << a.startTime << " vs " << b.pid << "@" << b.startTime;
+    }
+}
+
+TEST(ProcessModelTest, UniqueKeysOfAForkBurstAreDistinct)
+{
+    // A fork burst: 2000 consecutive PIDs, a handful of processes started per clock tick (#2115).
+    auto probe = std::make_unique<MockProcessProbe>();
+    constexpr std::int32_t COUNT = 2000;
+    std::vector<Platform::ProcessCounters> counters;
+    counters.reserve(static_cast<std::size_t>(COUNT));
+    for (std::int32_t i = 0; i < COUNT; ++i)
+    {
+        counters.push_back(makeCounter(1000 + i, "burst", 'R', 0, 0, 5000 + static_cast<std::uint64_t>(i / 4)));
+    }
+    probe->setCounters(counters);
+    probe->setTotalCpuTime(100000);
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+
+    std::unordered_set<std::uint64_t> keys;
+    for (const auto& snap : model.snapshots())
+    {
+        keys.insert(snap.uniqueKey);
+    }
+    EXPECT_EQ(keys.size(), static_cast<std::size_t>(COUNT));
 }
 
 TEST(ProcessModelTest, TryCopySnapshotsIfNewerOnlyCopiesWhenVersionAdvances)

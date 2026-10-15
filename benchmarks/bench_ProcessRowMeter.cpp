@@ -12,6 +12,7 @@
 // AddPolyline per visible cell). RowHistoryAdvance is the once-per-generation ring maintenance on the
 // sampler thread, for 500 and 1000 processes; its "bytes" counter is what the tracker holds.
 
+#include "App/Panels/ProcessRowFormat.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessRowMeterView.h"
 #include "App/ProcessColumnConfig.h"
@@ -25,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -213,5 +215,33 @@ void BM_ProcessRowMeter_MaximaRebuild(benchmark::State& state)
     }
 }
 BENCHMARK(BM_ProcessRowMeter_MaximaRebuild)->Unit(benchmark::kMicrosecond);
+
+// The per-frame row format cache lookups (#2115): every visible row asks for its formatted cells
+// once per frame, and outside a new generation each is a hit. One iteration is one 50-row frame
+// over the 1000-process table, a different window of rows each time.
+void BM_ProcessRowMeter_RowFormatCacheHit(benchmark::State& state)
+{
+    constexpr std::size_t VISIBLE_ROWS = 50;
+    constexpr std::uint64_t GENERATION = 1;
+    constexpr std::uintptr_t FONT_ID = 1;
+    const auto snapshots = makeSnapshots();
+    std::unordered_map<std::uint64_t, App::ProcessRowFormat::RowFormatCache> cache;
+    for (const auto& proc : snapshots)
+    {
+        static_cast<void>(App::ProcessRowFormat::getOrBuildRowFormatCache(cache, proc, GENERATION, FONT_ID));
+    }
+    std::size_t first = 0;
+    for (auto _ : state)
+    {
+        for (std::size_t row = 0; row < VISIBLE_ROWS; ++row)
+        {
+            const auto& entry =
+                App::ProcessRowFormat::getOrBuildRowFormatCache(cache, snapshots[(first + row) % snapshots.size()], GENERATION, FONT_ID);
+            benchmark::DoNotOptimize(&entry);
+        }
+        first = (first + VISIBLE_ROWS) % snapshots.size();
+    }
+}
+BENCHMARK(BM_ProcessRowMeter_RowFormatCacheHit)->Unit(benchmark::kNanosecond);
 
 } // namespace

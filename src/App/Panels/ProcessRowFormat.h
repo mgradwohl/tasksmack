@@ -305,6 +305,10 @@ struct RowFormatCache
     // storing it as an integer keeps a caller-supplied address from escaping into this long-lived
     // map (CodeQL cpp/stack-address-escape, see #904). Also keeps this header ImGui-free.
     std::uintptr_t fontId = 0;
+    // The process this entry was built for (#2115). The map is keyed by uniqueKey, a hash of these two
+    // that can collide, so an entry is reused only for the exact process: never another one's cells.
+    std::int32_t pid = 0;
+    std::uint64_t startTimeTicks = 0;
 
     AlignedCellText ppid;       // formatId(parentPid)          — immutable
     AlignedCellText startTime;  // formatEpochDateTimeShort      — immutable
@@ -535,8 +539,10 @@ struct RowFormatCache
 }
 
 /// Get-or-build one row's cache entry: reuses it as-is if it was already built for this exact
-/// `generation`/`fontId`, otherwise (re)builds it from `proc` via buildRowFormatCache() and
-/// stamps the new generation/fontId. ImGui-free (only touches the map and calls
+/// process (pid and start time), `generation` and `fontId`, otherwise (re)builds it from `proc` via
+/// buildRowFormatCache() and stamps the new process, generation and fontId. Two live processes whose
+/// uniqueKey collides share one entry, so each rebuilds it for itself rather than showing the other's
+/// cells (#2115); the returned reference is valid until the next call. ImGui-free (only touches the map and calls
 /// buildRowFormatCache()) so the lazy-invalidation policy itself -- not just the formatting it
 /// produces -- is directly unit-testable, separate from renderProcessRow()'s live ImGui context.
 inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t, RowFormatCache>& cache,
@@ -552,11 +558,14 @@ inline RowFormatCache& getOrBuildRowFormatCache(std::unordered_map<std::uint64_t
     // whatever the caller happens to seed its generation counter and font identity with.
     const auto [it, inserted] = cache.try_emplace(proc.uniqueKey);
     RowFormatCache& entry = it->second;
-    if (inserted || entry.generation != generation || entry.fontId != fontId)
+    if (inserted || entry.generation != generation || entry.fontId != fontId || entry.pid != proc.pid ||
+        entry.startTimeTicks != proc.startTimeTicks)
     {
         entry = buildRowFormatCache(proc, options);
         entry.generation = generation;
         entry.fontId = fontId;
+        entry.pid = proc.pid;
+        entry.startTimeTicks = proc.startTimeTicks;
     }
     return entry;
 }

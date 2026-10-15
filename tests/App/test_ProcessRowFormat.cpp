@@ -681,6 +681,38 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenFontChangesWithou
     EXPECT_EQ(fmt.fontId, newFontToken);
 }
 
+TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheNeverSharesCellsBetweenProcessesWithACollidingKey)
+{
+    // Two live processes whose uniqueKey hash collides (#2115), drawn in the same frame: the second
+    // row must show its own cells, not the ones the first row built for this generation and font.
+    std::unordered_map<std::uint64_t, RowFormatCache> cache;
+    constexpr std::uint64_t COLLIDING_KEY = 0xC011;
+    ProcessSnapshot first = makeSnapshot();
+    first.uniqueKey = COLLIDING_KEY;
+    first.pid = 895;
+    first.startTimeTicks = 7;
+    first.cpuPercent = 12.0;
+    ProcessSnapshot second = makeSnapshot();
+    second.uniqueKey = COLLIDING_KEY;
+    second.pid = 896;
+    second.startTimeTicks = 7;
+    second.cpuPercent = 87.0;
+
+    EXPECT_EQ(getOrBuildRowFormatCache(cache, first, /*generation=*/1, /*fontId=*/0).cpuPercent.text, "12.0%");
+    const RowFormatCache& secondFmt = getOrBuildRowFormatCache(cache, second, /*generation=*/1, /*fontId=*/0);
+    EXPECT_EQ(secondFmt.cpuPercent.text, "87.0%");
+    EXPECT_EQ(secondFmt.pid, 896);
+
+    // The same PID with another start time is another process too (a reused PID).
+    ProcessSnapshot reused = second;
+    reused.startTimeTicks = 8;
+    reused.cpuPercent = 3.0;
+    EXPECT_EQ(getOrBuildRowFormatCache(cache, reused, /*generation=*/1, /*fontId=*/0).cpuPercent.text, "3.0%");
+
+    // And the first one, drawn again in the next frame, is back to its own cells.
+    EXPECT_EQ(getOrBuildRowFormatCache(cache, first, /*generation=*/1, /*fontId=*/0).cpuPercent.text, "12.0%");
+}
+
 // =============================================================================
 // Free-text cell widths (#1141)
 // =============================================================================

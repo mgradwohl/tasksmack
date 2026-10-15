@@ -84,7 +84,7 @@ struct ProcessSnapshot
     std::uint64_t virtualBytes = 0;
     std::uint64_t startTimeEpoch = 0; // Process start time (Unix epoch seconds)
     std::uint64_t startTimeTicks = 0; // Raw platform start time; with pid, what process actions verify (#973)
-    std::uint64_t uniqueKey = 0;      // Stable identity across samples (hash(pid, startTime))
+    std::uint64_t uniqueKey = 0;      // Stable across samples: a 64-bit mix of (pid, startTimeTicks), not collision-free (#2115)
 
     // Less frequently accessed metrics
     double cpuUserPercent = 0.0;         // Computed from deltas (user mode)
