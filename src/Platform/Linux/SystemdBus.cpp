@@ -1175,7 +1175,7 @@ constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
 
 } // namespace
 
-ServicesRead readServices()
+ServicesRead readServices(UnitFileCache* cache, std::chrono::steady_clock::time_point now)
 {
     ServicesRead read;
     Bus bus;
@@ -1200,6 +1200,11 @@ ServicesRead readServices()
             return read;
         }
     }
+    if (cache != nullptr && cache->readAt.has_value() && now - *cache->readAt < UNIT_FILES_TTL)
+    {
+        read.listing.unitFiles = cache->unitFiles;
+    }
+    else
     {
         BusError error;
         Message reply;
@@ -1214,6 +1219,11 @@ ServicesRead readServices()
             read.error = std::string("systemd's unit files couldn't be read: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
             return read;
         }
+        if (cache != nullptr)
+        {
+            cache->unitFiles = read.listing.unitFiles;
+            cache->readAt = now;
+        }
     }
     // Each running service's main process: one property per service, so only for those that have one.
     for (const SystemdServices::Unit& unit : read.listing.units)
@@ -1224,9 +1234,13 @@ ServicesRead readServices()
         }
         BusError error;
         std::uint32_t pid = 0;
-        if (sd_bus_get_property_trivial(bus.get(), SYSTEMD, unit.objectPath.c_str(), SYSTEMD_SERVICE, "MainPID", error.get(), 'u', &pid) >=
-                0 &&
-            pid != 0)
+        const int result =
+            sd_bus_get_property_trivial(bus.get(), SYSTEMD, unit.objectPath.c_str(), SYSTEMD_SERVICE, "MainPID", error.get(), 'u', &pid);
+        if (result < 0 && timedOut(error.raw(), result))
+        {
+            break; // systemd isn't answering: the list without the rest of the PIDs, not a call timeout per service
+        }
+        if (result >= 0 && pid != 0)
         {
             read.listing.mainPids.emplace(unit.name, pid);
         }
@@ -1574,7 +1588,7 @@ LinuxNetworkAdapters::WifiLinkReader makeWifiLinkReader()
     };
 }
 
-ServicesRead readServices()
+ServicesRead readServices(UnitFileCache* /*cache*/, std::chrono::steady_clock::time_point /*now*/)
 {
     ServicesRead read;
     read.error = "This build has no systemd support (it was built without libsystemd)";

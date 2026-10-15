@@ -15,9 +15,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace Platform::SystemdBus
 {
@@ -50,10 +53,31 @@ struct ServicesRead
     SystemdServices::Listing listing;
 };
 
+/// How long readServices() reuses a ListUnitFiles answer (#2125): systemd walks every unit directory on
+/// disk to give it, and installed files and their enablement rarely change. A start type TaskSmack sets
+/// itself shows at once (LinuxServiceProbe forgets the cache after an action); one changed elsewhere
+/// (systemctl enable) shows within this long.
+inline constexpr std::chrono::seconds UNIT_FILES_TTL{30};
+
+/// The last ListUnitFiles answer readServices() was given, and when.
+struct UnitFileCache
+{
+    std::vector<std::pair<std::string, std::string>> unitFiles;
+    std::optional<std::chrono::steady_clock::time_point> readAt; ///< Empty: nothing cached (or forgotten)
+
+    void forget() noexcept
+    {
+        readAt.reset();
+    }
+};
+
 /// Reads org.freedesktop.systemd1.Manager's ListUnits (the loaded services and their state) and
 /// ListUnitFiles (every installed service and whether it is enabled), then each running service's
-/// MainPID, in one connection. Unprivileged.
-[[nodiscard]] ServicesRead readServices();
+/// MainPID, in one connection. Unprivileged. With @p cache, a ListUnitFiles answer younger than
+/// UNIT_FILES_TTL at @p now is reused rather than asked again. A MainPID read that times out ends the
+/// MainPID reads for this call (#2125): a stalled systemd costs one call timeout, not one per service.
+[[nodiscard]] ServicesRead readServices(UnitFileCache* cache = nullptr,
+                                        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 
 /// How long a start or stop waits for the unit to get there, and how often it looks (#2006).
 struct UnitWait

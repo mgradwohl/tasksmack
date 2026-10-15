@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <memory>
 
 namespace Platform
 {
@@ -25,12 +26,15 @@ class LinuxServiceProbe final : public IServiceProbe
 
     [[nodiscard]] ServiceCapabilities capabilities() const override;
     [[nodiscard]] ServiceEnumeration enumerate() override;
+    /// Forgets the cached unit files, so a start type just set shows on the next enumerate() (#2125).
+    void forgetCachedConfig() override;
 
     /// Why there is no service list here, or empty when there is one.
     static constexpr const char* NOT_BUILT_REASON = "This build has no systemd support (it was built without libsystemd)";
     static constexpr const char* NOT_RUNNING_REASON = "systemd isn't running here, so there are no services to list";
 
   private:
+    std::shared_ptr<SystemdBus::UnitFileCache> m_UnitFiles = std::make_shared<SystemdBus::UnitFileCache>(); ///< The default reader's
     Reader m_Reader;
     ServiceCapabilities m_Capabilities;
 };

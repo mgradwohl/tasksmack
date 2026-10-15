@@ -13,7 +13,7 @@ namespace Platform
 {
 
 LinuxServiceProbe::LinuxServiceProbe(Reader reader, const std::filesystem::path& root, bool built)
-    : m_Reader(reader ? std::move(reader) : Reader(&SystemdBus::readServices))
+    : m_Reader(reader ? std::move(reader) : Reader([cache = m_UnitFiles] { return SystemdBus::readServices(cache.get()); }))
 {
     std::error_code ec;
     if (!built)
@@ -37,6 +37,11 @@ LinuxServiceProbe::LinuxServiceProbe(Reader reader, const std::filesystem::path&
 ServiceCapabilities LinuxServiceProbe::capabilities() const
 {
     return m_Capabilities;
+}
+
+void LinuxServiceProbe::forgetCachedConfig()
+{
+    m_UnitFiles->forget();
 }
 
 ServiceEnumeration LinuxServiceProbe::enumerate()

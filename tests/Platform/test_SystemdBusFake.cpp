@@ -13,6 +13,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxDiskSmart.h"
 #include "Platform/Linux/LinuxNetworkAdapters.h"
+#include "Platform/Linux/LinuxServiceProbe.h"
 #include "Platform/Linux/SystemdBus.h"
 
 #include <gtest/gtest.h>
@@ -21,15 +22,20 @@
 
 #include "FakeSystemBus.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include <stdlib.h> // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv(), which <cstdlib> doesn't declare
+#include <unistd.h>
 
 namespace Platform
 {
@@ -769,8 +775,9 @@ class SystemdBusFakeServicesTest : public SystemdBusFakeTest
         m_Bus.addNoArgMethod(SYSTEMD_PATH,
                              SYSTEMD_MANAGER,
                              "ListUnitFiles",
-                             []() -> MethodAnswer
+                             [this]() -> MethodAnswer
                              {
+                                 ++m_UnitFileCalls;
                                  return {.path = std::nullopt,
                                          .errorName = {},
                                          .unitFiles = std::vector<std::pair<std::string, std::string>>{
@@ -785,7 +792,77 @@ class SystemdBusFakeServicesTest : public SystemdBusFakeTest
         m_Bus.properties()[GETTY_PATH][SYSTEMD_SERVICE].try_emplace("MainPID", std::uint32_t{208});
         ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
     }
+
+    std::atomic<int> m_UnitFileCalls{0}; ///< ListUnitFiles calls answered (the bus answers on its own thread)
 };
+
+// #2125: ListUnitFiles makes systemd walk every unit directory, so a cached answer is reused for
+// UNIT_FILES_TTL; forgetting the cache, or the time passing, asks again.
+TEST_F(SystemdBusFakeServicesTest, UnitFilesAreAskedForOncePerCacheWindow)
+{
+    serveSystemd();
+    SystemdBus::UnitFileCache cache;
+    const auto start = std::chrono::steady_clock::time_point{} + std::chrono::hours(1);
+    const SystemdBus::ServicesRead first = SystemdBus::readServices(&cache, start);
+    ASSERT_TRUE(first.ok) << first.error;
+    const SystemdBus::ServicesRead second = SystemdBus::readServices(&cache, start + SystemdBus::UNIT_FILES_TTL - std::chrono::seconds(1));
+    ASSERT_TRUE(second.ok) << second.error;
+    EXPECT_EQ(m_UnitFileCalls.load(), 1);
+    EXPECT_EQ(second.listing.unitFiles, first.listing.unitFiles);
+
+    static_cast<void>(SystemdBus::readServices(&cache, start + SystemdBus::UNIT_FILES_TTL));
+    EXPECT_EQ(m_UnitFileCalls.load(), 2) << "the window passed";
+    cache.forget();
+    static_cast<void>(SystemdBus::readServices(&cache, start + SystemdBus::UNIT_FILES_TTL));
+    EXPECT_EQ(m_UnitFileCalls.load(), 3) << "forgotten";
+    static_cast<void>(SystemdBus::readServices());
+    EXPECT_EQ(m_UnitFileCalls.load(), 4) << "no cache, always asked";
+}
+
+// #2125: a MainPID read that times out ends the MainPID reads: the list comes back without the rest of
+// the PIDs rather than costing a call timeout per running service.
+TEST_F(SystemdBusFakeServicesTest, AMainPidTimeoutStopsAskingForTheRest)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "MainPID", "org.freedesktop.DBus.Error.Timeout");
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.units.size(), 3U);
+    EXPECT_TRUE(read.listing.mainPids.empty()) << "getty, after cron, wasn't asked";
+}
+
+// Another error on one service's MainPID skips only that one.
+TEST_F(SystemdBusFakeServicesTest, AnotherMainPidErrorSkipsOnlyThatService)
+{
+    m_Bus.failProperty(CRON_PATH, SYSTEMD_SERVICE, "MainPID", "org.freedesktop.DBus.Error.UnknownProperty");
+    serveSystemd();
+    const SystemdBus::ServicesRead read = SystemdBus::readServices();
+    ASSERT_TRUE(read.ok) << read.error;
+    EXPECT_EQ(read.listing.mainPids.size(), 1U);
+    EXPECT_EQ(read.listing.mainPids.count("getty@tty1.service"), 1U);
+}
+
+// #2125: LinuxServiceProbe's default reader caches the unit files, and forgetCachedConfig() (called
+// after a service action) makes the next enumerate() ask again, so a start type just set shows at once.
+TEST_F(SystemdBusFakeServicesTest, TheProbeForgetsItsUnitFilesAfterAnAction)
+{
+    serveSystemd();
+    // A root where systemd looks booted (run/systemd/system), named per process so parallel runs don't share it.
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("tasksmack_services_probe_root_" + std::to_string(getpid()));
+    std::filesystem::create_directories(root / "run/systemd/system");
+    {
+        LinuxServiceProbe probe({}, root, /*built=*/true);
+        EXPECT_TRUE(probe.enumerate().ok);
+        EXPECT_TRUE(probe.enumerate().ok);
+        EXPECT_EQ(m_UnitFileCalls.load(), 1);
+        probe.forgetCachedConfig();
+        EXPECT_TRUE(probe.enumerate().ok);
+        EXPECT_EQ(m_UnitFileCalls.load(), 2);
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
 
 TEST_F(SystemdBusFakeServicesTest, TheServicesTheirFilesAndTheRunningOnesMainPidsAreRead)
 {
