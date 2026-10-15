@@ -8,6 +8,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Linux/IoPriority.h"
+#include "Platform/Linux/LinuxCoreDump.h"
 #include "Platform/Linux/LinuxProcessActions.h"
 #include "Platform/Linux/ProcParsing.h"
 #include "Platform/Linux/ProcPrivileges.h"
@@ -1047,6 +1048,40 @@ TEST(LinuxProcessActionsDumpTest, ACancelledDumpKillsGcoreAndDeletesThePartialFi
     EXPECT_EQ(dump.error(), "Cancelled; the partial dump file was deleted");
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(20)) << "didn't wait for the sleep";
     EXPECT_TRUE(filesIn(dumps.path).empty());
+}
+
+// #2122: a cancelled dump wakes a target that was running before and that the dump left stopped (gdb's
+// attach stop, here sent by the fake gcore itself).
+TEST(LinuxProcessActionsDumpTest, ACancelledDumpWakesATargetItLeftStopped)
+{
+    const SleepingChild child;
+    ASSERT_TRUE(child.started());
+    const TestSupport::ScopedTempDir work("tasksmack_dump_wake_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_wake_out");
+    LinuxProcessActions actions(fakeDumpTools(work.path, "kill -STOP \"$3\"\nprintf 'PART' > \"$2.$3\"\nsleep 30\n"),
+                                syscallsWithPtrace(&ptraceAllowed));
+    const auto stateOf = [pid = child.target().pid]
+    {
+        std::ifstream stat(std::format("/proc/{}/stat", pid));
+        const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+        return LinuxCoreDump::stateFromStat(line).value_or('?');
+    };
+    std::stop_source stop;
+    std::jthread canceller(
+        [&stop, &dumps]
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (filesIn(dumps.path).empty() && std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            stop.request_stop();
+        });
+    const ProcessDumpResult dump = actions.createDump(child.target(), dumps.path, stop.get_token());
+    canceller.join();
+    ASSERT_FALSE(dump.has_value());
+    EXPECT_EQ(dump.error(), "Cancelled; the partial dump file was deleted");
+    EXPECT_FALSE(LinuxCoreDump::isStoppedState(stateOf())) << "state " << stateOf();
 }
 
 TEST(LinuxProcessActionsDumpTest, ADumpPtraceWouldRefuseIsRefusedBeforeGcoreRuns)

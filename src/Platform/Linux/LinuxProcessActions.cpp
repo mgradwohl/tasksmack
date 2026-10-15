@@ -20,6 +20,7 @@
 #include <array>
 #include <cerrno>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -36,6 +37,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1001,13 +1003,36 @@ namespace
     return comm;
 }
 
-/// Whether @p pid is stopped ('T' in /proc/<pid>/stat), so a cancelled dump knows whether to wake it.
+/// Whether @p pid is stopped, by a signal or a tracer ('T' or 't' in /proc/<pid>/stat), so a cancelled
+/// dump knows whether to wake it.
 [[nodiscard]] bool processIsStopped(std::int32_t pid)
 {
     const std::string stat = readSmallFile(std::format("/proc/{}/stat", pid)).value_or(std::string{});
-    // The state follows the comm's closing parenthesis; comm may hold ')' itself, so the last one counts.
-    const std::size_t close = stat.rfind(')');
-    return close != std::string::npos && close + 2 < stat.size() && stat[close + 2] == 'T';
+    return LinuxCoreDump::isStoppedState(LinuxCoreDump::stateFromStat(stat).value_or('\0'));
+}
+
+/// Who traces @p pid (its TracerPid; 0 for nobody), or nullopt once its status can't be read (it is gone).
+[[nodiscard]] std::optional<std::int32_t> processTracer(std::int32_t pid)
+{
+    const std::optional<std::string> status = readSmallFile(std::format("/proc/{}/status", pid));
+    return status.has_value() ? LinuxCoreDump::tracerPidFromStatus(*status) : std::nullopt;
+}
+
+/// Waits, up to LinuxCoreDump::DETACH_WAIT_MS, until @p pid is traced by @p tracerBefore again (whoever
+/// traced it before the dump; usually nobody): the killed gdb has exited and let go of it (#2122).
+void waitForDumperToDetach(std::int32_t pid, std::int32_t tracerBefore)
+{
+    constexpr auto STEP = std::chrono::milliseconds(10);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(LinuxCoreDump::DETACH_WAIT_MS);
+    for (;;)
+    {
+        const std::optional<std::int32_t> tracer = processTracer(pid);
+        if (!tracer.has_value() || *tracer == tracerBefore || std::chrono::steady_clock::now() >= deadline)
+        {
+            return;
+        }
+        std::this_thread::sleep_for(STEP);
+    }
 }
 
 /// How a tool run by runCancellable() ended.
@@ -1196,6 +1221,7 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     const std::filesystem::path prefix = file.string() + ".partial";
     const std::filesystem::path written = LinuxCoreDump::gcoreOutputFile(prefix, target.pid);
     const bool wasStopped = processIsStopped(target.pid);
+    const std::int32_t tracerBefore = processTracer(target.pid).value_or(0);
     spdlog::info("Writing a dump of PID {} with {} to {}", target.pid, gcore, file.string());
     const ToolRun run = runCancellable(LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
     if (run.spawnError)
@@ -1206,7 +1232,10 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     {
         std::filesystem::remove(written, ec);
         // gdb was killed while attached: the kernel detaches it, but a process its attach stopped may
-        // stay stopped. One that was running before is woken, through the pidfd, so it is still the target.
+        // stay stopped. Killing gcore's group doesn't wait for gdb (gcore's child) to exit, and until it
+        // has, the process shows 't' and its stop is still to come (#2122): wait for gdb to let go first.
+        // One that was running before is then woken, through the pidfd, so it is still the target.
+        waitForDumperToDetach(target.pid, tracerBefore);
         if (!wasStopped && processIsStopped(target.pid))
         {
             static_cast<void>(sendThroughPidfd(m_Syscalls, pidfd, SIGCONT));

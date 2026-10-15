@@ -107,5 +107,25 @@ TEST(LinuxCoreDumpTest, GcoresPtraceRefusalsSayDumpNotTrace)
     EXPECT_EQ(ptraceRefusal(42, {.ptraceScope = 1, .sameCredentials = true, .privileged = true}, GCORE_TOOL), std::nullopt);
 }
 
+// #2122: a process gdb still holds shows 't', which is a stop as much as 'T'.
+TEST(LinuxCoreDumpTest, StatesAndTracersComeFromProc)
+{
+    using LinuxCoreDump::isStoppedState;
+    using LinuxCoreDump::stateFromStat;
+    using LinuxCoreDump::tracerPidFromStatus;
+    EXPECT_EQ(stateFromStat("42 (a) b) t 1 42"), std::optional<char>{'t'}); // comm with ')' in it
+    EXPECT_EQ(stateFromStat("42 (bash) S 1"), std::optional<char>{'S'});
+    EXPECT_EQ(stateFromStat("42 (bash)"), std::nullopt);
+    EXPECT_EQ(stateFromStat(""), std::nullopt);
+    EXPECT_TRUE(isStoppedState('T'));
+    EXPECT_TRUE(isStoppedState('t'));
+    EXPECT_FALSE(isStoppedState('S'));
+    EXPECT_FALSE(isStoppedState('R'));
+    EXPECT_EQ(tracerPidFromStatus("Name:\tapp\nState:\tt (tracing stop)\nTracerPid:\t4321\n"), std::optional<std::int32_t>{4321});
+    EXPECT_EQ(tracerPidFromStatus("TracerPid:\t0\n"), std::optional<std::int32_t>{0});
+    EXPECT_EQ(tracerPidFromStatus("TracerPid:\tx\n"), std::nullopt);
+    EXPECT_EQ(tracerPidFromStatus("Name:\tapp\n"), std::nullopt);
+}
+
 } // namespace
 } // namespace Platform

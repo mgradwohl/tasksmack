@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -26,6 +27,57 @@ inline constexpr const char* LIVE_REASON = "Linux has no process snapshots";
 
 /// The message for a dump stopped because it was asked to; the partial file has been deleted by then.
 inline constexpr const char* CANCELLED_MESSAGE = "Cancelled; the partial dump file was deleted";
+
+/// How long a cancelled dump waits for the killed gdb to let go of the process (#2122) before deciding
+/// whether to wake it. gcore runs gdb as its child, so killing gcore's group doesn't wait for gdb's exit,
+/// and until it has exited the process is still traced.
+inline constexpr int DETACH_WAIT_MS = 2000;
+
+/// The state letter of a process from its /proc/<pid>/stat: the field after comm's closing parenthesis
+/// (comm may hold ')' itself, so the last one counts). Nullopt when there is none.
+[[nodiscard]] inline std::optional<char> stateFromStat(std::string_view stat)
+{
+    const std::size_t close = stat.rfind(')');
+    if (close == std::string_view::npos || close + 2 >= stat.size())
+    {
+        return std::nullopt;
+    }
+    return stat[close + 2];
+}
+
+/// Whether @p state is a stop: 'T' (stopped by a signal) or 't' (stopped by a tracer -- what a process
+/// gdb still holds shows, and what turns into 'T' once the tracer dies without detaching).
+[[nodiscard]] constexpr bool isStoppedState(char state) noexcept
+{
+    return state == 'T' || state == 't';
+}
+
+/// The PID tracing the process, from its /proc/<pid>/status ("TracerPid:"); 0 when nothing is. Nullopt
+/// without the line.
+[[nodiscard]] inline std::optional<std::int32_t> tracerPidFromStatus(std::string_view status)
+{
+    constexpr std::string_view KEY = "TracerPid:";
+    for (std::size_t at = 0; at < status.size();)
+    {
+        const std::size_t end = std::min(status.find('\n', at), status.size());
+        std::string_view line = status.substr(at, end - at);
+        at = end + 1;
+        if (!line.starts_with(KEY))
+        {
+            continue;
+        }
+        line.remove_prefix(KEY.size());
+        line.remove_prefix(std::min(line.find_first_not_of(" \t"), line.size()));
+        std::int32_t pid = 0;
+        const auto [ptr, ec] = std::from_chars(line.data(), line.data() + line.size(), pid);
+        if (ec != std::errc{} || ptr == line.data())
+        {
+            return std::nullopt;
+        }
+        return pid;
+    }
+    return std::nullopt;
+}
 
 /// The dump file's name: "bash_1234_2026-10-15_04-30-00.core" -- the process name, the PID and the local
 /// time, so dumps of one process sort by when they were taken. @p attempt 2 and up (the name before it
