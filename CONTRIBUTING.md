@@ -2244,6 +2244,25 @@ Supported generators:
 
 Packages are created in `dist/`.
 
+What a package contains, and what it depends on (#1398):
+
+- Only the executable, the runtime assets, the Linux desktop entry and icons, and the licences
+  (`LICENSE`, plus the third-party licences under `share/doc/tasksmack/third_party/` on Linux or
+  `third_party_licenses/` in the Windows `.zip`). Every library TaskSmack is built from is linked
+  statically, so no headers, `.a`/`.lib` files, or CMake/pkg-config files belong in a package.
+  Test and benchmark dependencies install into their own `tests`/`benchmarks` components, which
+  CPack leaves out.
+- Linux Release builds link libc++ and libc++abi statically (`TASKSMACK_STATIC_LIBCXX`, ON by
+  default for `CMAKE_BUILD_TYPE=Release`), because the distro's `libc++1` is older than the
+  apt.llvm.org clang the release is built with. `readelf -d build/release/bin/TaskSmack` should
+  list no `libc++*.so`. Debug and the sanitizer presets keep the shared libc++.
+- The `.deb`'s `Depends` come from `dpkg-shlibdeps`, plus the libraries SDL3 `dlopen()`s that it
+  can't see (X11, GL/EGL), listed in `cmake/Packaging.cmake`; Wayland, the other X11 extensions
+  and Mesa's drivers are `Recommends`.
+- Windows builds other than Debug link the C and C++ runtime statically (`/MT`), so the `.zip`'s
+  `TaskSmack.exe` runs without the Visual C++ Redistributable: `llvm-objdump -p` on it should list
+  no `MSVCP140.dll`, `VCRUNTIME140*.dll` or `api-ms-win-crt-*.dll`. Debug keeps `/MDd`.
+
 ## Version Header
 
 The build auto-generates a `version.h` header at configure time with project version, build type, compiler info, and build timestamp.
@@ -2623,7 +2642,7 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
 `validate-linux-package` and `validate-windows-package` run after each platform's build job and
 before `create-release`, so a failure here blocks signing and publishing. Linux installs the
 `.deb` in a bare `ubuntu:24.04` container (no dev tools pre-installed) to exercise the runtime
-`Depends` declared in `cmake/Packaging.cmake`, separately extracts the `.tar.gz`, and launches
+`Depends` (from `dpkg-shlibdeps` and `cmake/Packaging.cmake`), separately extracts the `.tar.gz`, and launches
 each installed/extracted binary with `SDL_VIDEODRIVER=offscreen` (a real Mesa/llvmpipe GL context,
 no X server needed) under a 5-second `timeout`. Windows extracts the `.zip` (requiring
 `TaskSmack.exe` directly under the single top-level directory, matching the documented layout) and

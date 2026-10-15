@@ -1,3 +1,6 @@
+# Keep anything installed from here out of the packages (see tests/CMakeLists.txt, #1398).
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME benchmarks)
+
 # Google Benchmark setup
 include(FetchContent)
 

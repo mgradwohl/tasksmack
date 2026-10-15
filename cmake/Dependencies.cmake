@@ -250,7 +250,12 @@ set(FT_REQUIRE_PNG FALSE CACHE BOOL "" FORCE)
 set(FT_REQUIRE_HARFBUZZ FALSE CACHE BOOL "" FORCE)
 set(FT_REQUIRE_BROTLI FALSE CACHE BOOL "" FORCE)
 
+# FreeType is linked statically into TaskSmack; without this its own install() rules put
+# include/freetype2, lib/libfreetype.a, lib/cmake and lib/pkgconfig into every package (#1398).
+# (FetchContent's EXCLUDE_FROM_ALL wouldn't help: it leaves a subdirectory's install rules in place.)
+set(SKIP_INSTALL_ALL ON)
 FetchContent_MakeAvailable(freetype)
+unset(SKIP_INSTALL_ALL)
 
 set_target_properties(freetype PROPERTIES FOLDER "third_party")
 # Create an alias target to match find_package(Freetype) behavior

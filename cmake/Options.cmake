@@ -35,4 +35,15 @@ option(TASKSMACK_ENABLE_TIME_TRACE "Enable -ftime-trace compile-time flamegraph 
 set(TASKSMACK_LINKER "lld" CACHE STRING "Linker to use on Unix: lld, mold, or default")
 set_property(CACHE TASKSMACK_LINKER PROPERTY STRINGS lld mold default)
 
+# Linux: link libc++/libc++abi statically into TaskSmack's executables, so a packaged build doesn't
+# depend on the distro's (older) libc++1 (#1398). ON by default for Release, the configuration every
+# packaging preset uses; see tasksmack_apply_linux_toolchain() in cmake/CompilerOptions.cmake.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_ts_static_libcxx_default ON)
+else()
+    set(_ts_static_libcxx_default OFF)
+endif()
+option(TASKSMACK_STATIC_LIBCXX "Linux: link libc++ and libc++abi statically (default ON for Release)" ${_ts_static_libcxx_default})
+unset(_ts_static_libcxx_default)
+
 set(TASKSMACK_EXTRA_WARNING_FLAGS "" CACHE STRING "Additional warning flags")

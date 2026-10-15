@@ -1,5 +1,5 @@
-# Install rules for the TaskSmack binary, third-party static libs, runtime assets,
-# and the FreeType runtime copy for portable layouts.
+# Install rules for the TaskSmack binary, runtime assets, licences, and the FreeType runtime
+# copy for portable layouts.
 # Include AFTER the TaskSmack target is defined and PROJECT_NAME_LOWER is set.
 
 include(GNUInstallDirs)
@@ -66,12 +66,43 @@ install(TARGETS TaskSmack
     ARCHIVE DESTINATION .
 )
 
-# Install static libs alongside the binary for local/portable layout
-install(TARGETS imgui_lib implot_lib glad_gl_core_33
-    RUNTIME DESTINATION .
-    LIBRARY DESTINATION .
-    ARCHIVE DESTINATION .
-)
+# imgui_lib, implot_lib, glad_gl_core_33 and the FetchContent dependencies are linked statically
+# into TaskSmack, so none of their libraries or headers are installed (#1398).
+
+# Licences: TaskSmack's own, plus those of the third-party code compiled into the executable (the
+# fonts' notices ship with assets/fonts). Linux follows the Debian layout, the copyright file in
+# share/doc/<package>; Windows puts LICENSE.txt beside TaskSmack.exe and the rest in
+# third_party_licenses/.
+if(UNIX AND NOT APPLE)
+    set(_ts_license_dir ${CMAKE_INSTALL_DATADIR}/doc/${PROJECT_NAME_LOWER})
+    install(FILES ${CMAKE_SOURCE_DIR}/LICENSE DESTINATION ${_ts_license_dir} RENAME copyright)
+    set(_ts_license_dir ${_ts_license_dir}/third_party)
+else()
+    install(FILES ${CMAKE_SOURCE_DIR}/LICENSE DESTINATION . RENAME LICENSE.txt)
+    set(_ts_license_dir third_party_licenses)
+endif()
+foreach(_ts_dep_license IN ITEMS
+        "SDL3|${sdl3_SOURCE_DIR}/LICENSE.txt"
+        "FreeType|${freetype_SOURCE_DIR}/LICENSE.TXT"
+        "FreeType|${freetype_SOURCE_DIR}/docs/FTL.TXT"
+        "imgui|${imgui_SOURCE_DIR}/LICENSE.txt"
+        "implot|${implot_SOURCE_DIR}/LICENSE"
+        "spdlog|${spdlog_SOURCE_DIR}/LICENSE"
+        "tomlplusplus|${tomlplusplus_SOURCE_DIR}/LICENSE"
+        "stb|${stb_SOURCE_DIR}/LICENSE"
+        "glad|${glad_SOURCE_DIR}/LICENSE")
+    string(REPLACE "|" ";" _ts_dep_license "${_ts_dep_license}")
+    list(GET _ts_dep_license 0 _ts_dep_name)
+    list(GET _ts_dep_license 1 _ts_dep_file)
+    if(NOT EXISTS "${_ts_dep_file}")
+        message(FATAL_ERROR "Third-party licence file not found: ${_ts_dep_file}")
+    endif()
+    install(FILES "${_ts_dep_file}" DESTINATION ${_ts_license_dir}/${_ts_dep_name})
+endforeach()
+unset(_ts_license_dir)
+unset(_ts_dep_license)
+unset(_ts_dep_name)
+unset(_ts_dep_file)
 
 # Install runtime assets (fonts/themes/icons) using GNUInstallDirs for FHS compliance.
 # On Linux this resolves to share/<project_name_lower>/assets/; on Windows the prefix root is typically

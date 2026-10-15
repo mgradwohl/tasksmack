@@ -2,10 +2,16 @@
 # Must be included after Options.cmake and before Dependencies.cmake so global
 # flags (coverage, hardening, compiler launcher) apply to third-party builds too.
 
-# Windows: Configure MSVC runtime library linkage for Clang
+# Windows: Configure MSVC runtime library linkage for Clang.
+# Debug keeps the DLL runtime (/MDd). Every other configuration links the CRT and C++ runtime
+# statically (/MT): the release .zip ships just TaskSmack.exe, and with the DLL runtime a PC
+# without the Visual C++ Redistributable failed to start it ("MSVCP140.dll was not found", #1398).
+# Set here, before Dependencies.cmake, so SDL3, FreeType, ImGui, googletest and every other
+# FetchContent target are compiled against the same runtime (CMAKE_POLICY_DEFAULT_CMP0091 makes
+# that hold for dependencies whose cmake_minimum_required predates the policy).
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    # Use dynamic MSVC runtime (/MD for Release, /MDd for Debug)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>")
 endif()
 
 # Windows clang Debug builds: global type hashes in the CodeView debug info (-gcodeview-ghash), which
@@ -225,13 +231,21 @@ if(TASKSMACK_MARCH)
     message(STATUS "Target microarchitecture: -march=${TASKSMACK_MARCH} (TASKSMACK_MARCH override)")
 endif()
 
+# Linux Release builds (the release, release-compatible, optimized, benchmark and pgo-* presets;
+# `release` is what the .deb/.tar.gz are built from) link libc++ and libc++abi statically
+# (TASKSMACK_STATIC_LIBCXX). The apt.llvm.org clang-22 build imports libc++ symbols that the distro
+# libc++1 on Ubuntu 24.04 (LLVM 18) doesn't have, e.g. std::__1::__hash_memory, so a .deb that
+# depended on the system libc++1 failed to start on a stock system (#1398). Clang's
+# -static-libstdc++ applies to whichever C++ library -stdlib picks, so with -stdlib=libc++ it
+# links libc++.a (which pulls in libc++abi.a); `readelf -d` then lists no libc++*.so. Debug,
+# RelWithDebInfo and the sanitizer presets keep the shared libc++: MSan needs an instrumented
+# libc++, and the other sanitizers' interceptors are only exercised against the shared one.
 function(tasksmack_apply_linux_toolchain target)
     if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(${target} PRIVATE -stdlib=libc++ -pthread)
-        if(_ts_linker_flag)
-            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
-        else()
-            target_link_options(${target} PRIVATE -stdlib=libc++ -pthread)
+        target_link_options(${target} PRIVATE -stdlib=libc++ -pthread ${_ts_linker_flag})
+        if(TASKSMACK_STATIC_LIBCXX)
+            target_link_options(${target} PRIVATE -static-libstdc++)
         endif()
     endif()
 endfunction()

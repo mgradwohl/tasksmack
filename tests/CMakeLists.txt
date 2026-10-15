@@ -1,3 +1,8 @@
+# Anything installed from here (rapidcheck's install() rules are unconditional: headers, library,
+# CMake and pkg-config files) goes into a "tests" component, which cmake/Packaging.cmake leaves out
+# of the packages (#1398). Directory-scoped, so it doesn't reach the app's own install rules.
+set(CMAKE_INSTALL_DEFAULT_COMPONENT_NAME tests)
+
 # Google Test setup
 include(FetchContent)
 
