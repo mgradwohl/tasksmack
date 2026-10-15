@@ -437,7 +437,9 @@ TEST(SystemdBusNoBusTest, WithoutASystemBusEveryReaderSaysSo)
     EXPECT_TRUE(dns.error.starts_with(unreachable)) << dns.error;
     const LinuxNetworkAdapters::IndexedDhcpLeaseReader networkd = SystemdBus::makeNetworkdLeaseReader();
     EXPECT_TRUE(networkd(3).error.starts_with(unreachable)) << networkd(3).error;
-    EXPECT_TRUE(networkd(4).error.starts_with(unreachable)); // remembered for the reader's other adapters
+    EXPECT_TRUE(networkd(4).error.starts_with(unreachable));              // remembered for the reader's other adapters
+    const SystemdBus::ServicesRead services = SystemdBus::readServices(); // #1891: the Services list too
+    EXPECT_TRUE(services.error.starts_with(unreachable)) << services.error;
 
     if (savedAddress.has_value())
     {
