@@ -48,10 +48,6 @@
 #include <string_view>
 #include <thread>
 
-#ifdef _WIN32
-#include <cstdlib> // free(), for _dupenv_s()'s copy
-#endif
-
 namespace App
 {
 namespace
@@ -1133,16 +1129,11 @@ TEST_F(ProcessActionsBlockRenderTest, AHeadlessApplicationGivesTheFolderDialogNo
 }
 
 #ifdef _WIN32
-/// A display that can back the app's window: never on CI, whose Windows runners are headless, as
-/// test_Application.cpp treats them.
+/// A display that can back the app's window: a GL 3.3 core context on the desktop, CI included
+/// (#2134), as test_Application.cpp checks.
 [[nodiscard]] bool hasDisplay()
 {
-    char* ci = nullptr;
-    std::size_t length = 0;
-    const bool onCi = _dupenv_s(&ci, &length, "CI") == 0 && ci != nullptr && std::string_view(ci) == "true";
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc
-    free(ci);
-    return TestSupport::enforceDisplayRequirement(!onCi && TestSupport::probeGLCapability());
+    return TestSupport::enforceDisplayRequirement(TestSupport::detectWindowsDisplay());
 }
 
 // The one Windows-only line: the main window's HWND, which SDL has only on Windows.

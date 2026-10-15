@@ -703,7 +703,8 @@ jobs:
         # Pinned: mesa-dist-win 26.2.4, release-msvc build, from the project's GitHub release, with
         # the archive's SHA-256 checked before anything in it is used. To update, take the new
         # release's mesa3d-<ver>-release-msvc.7z asset and its digest (gh release view -R
-        # pal1000/mesa-dist-win <ver> --json assets).
+        # pal1000/mesa-dist-win <ver> --json assets). Inline rather than the setup-mesa-llvmpipe
+        # action because this job checks nothing out; keep the pin in step with that action's.
         shell: pwsh
         env:
           MESA_VERSION: "26.2.4"

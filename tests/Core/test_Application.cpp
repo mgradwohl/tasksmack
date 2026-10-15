@@ -100,22 +100,9 @@ namespace
 bool detectDisplay()
 {
 #ifdef _WIN32
-    // Check for CI environment - GitHub Actions sets CI=true
-    char* ciEnv = nullptr;
-    size_t len = 0;
-    _dupenv_s(&ciEnv, &len, "CI");
-    const bool isCI = (ciEnv != nullptr && std::string(ciEnv) == "true");
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc; must free with free()
-    free(ciEnv);
-
-    if (isCI)
-    {
-        // Windows CI runners are typically headless
-        return false;
-    }
-    // Local Windows development usually has a display, but it must also offer a GL 3.3 core context:
-    // construction failures are fatal once a display is detected (#1132).
-    return TestSupport::probeGLCapability();
+    // A GL 3.3 core context on the desktop, CI included (#2134): construction failures are fatal
+    // once a display is detected (#1132).
+    return TestSupport::detectWindowsDisplay();
 #else
     // On Linux, check for DISPLAY environment variable (X11) or WAYLAND_DISPLAY
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay) - called during single-threaded test startup, read-only env check

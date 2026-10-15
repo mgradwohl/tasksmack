@@ -11,9 +11,9 @@
 /// Most cases below return before any GL call is made, so no context is required. The
 /// loadTexture() success path (a real image + real glGenTextures/glTexImage2D) needs a live
 /// OpenGL context; IconLoaderGLTest below constructs a real Core::Window (mirroring
-/// test_Window.cpp's WindowTest fixture) to provide one when a display is available, skipping
-/// otherwise (this is always the case on headless CI Windows runners, and on Linux CI unless the
-/// offscreen SDL driver happens to support a GL 3.3 core context, which it does not).
+/// test_Window.cpp's WindowTest fixture) to provide one when a display with a GL 3.3 core context
+/// is available (CI provides one on both OSes: Xvfb + Mesa on Linux, Mesa's llvmpipe on Windows,
+/// #2134), skipping otherwise.
 
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Utf8Path.h"
@@ -26,9 +26,7 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <format>
@@ -38,6 +36,10 @@
 #include <system_error>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <cstdlib> // std::getenv(), in the Linux display checks
+#endif
 
 namespace UI
 {
@@ -209,8 +211,8 @@ std::vector<unsigned char> makeMinimalRedBmp()
 
 } // namespace
 
-// Mirrors test_Window.cpp's hasDisplay()/WindowTest pattern: on Windows, any non-CI local run
-// is assumed to have a display; on Linux, a real DISPLAY/WAYLAND_DISPLAY with a working GL 3.3
+// Mirrors test_Window.cpp's hasDisplay()/WindowTest pattern: on Windows, a desktop with a GL 3.3
+// core context (TestSupport::detectWindowsDisplay()); on Linux, a real DISPLAY/WAYLAND_DISPLAY with a working GL 3.3
 // core context, or (failing that) the offscreen SDL driver - which cannot create a GL context,
 // so tests relying on it must still skip.
 namespace
@@ -218,13 +220,7 @@ namespace
 bool detectDisplay()
 {
 #ifdef _WIN32
-    char* ciEnv = nullptr;
-    std::size_t len = 0;
-    _dupenv_s(&ciEnv, &len, "CI");
-    const bool isCI = (ciEnv != nullptr && std::string_view(ciEnv) == "true");
-    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory, cppcoreguidelines-no-malloc) - _dupenv_s allocates with malloc; must free with free()
-    free(ciEnv);
-    return !isCI;
+    return TestSupport::detectWindowsDisplay();
 #else
     // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     const char* display = std::getenv("DISPLAY");

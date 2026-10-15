@@ -629,8 +629,8 @@ Three established ways to get real coverage of such a file's logic:
    can run `UILayer` and other layers through `run()`. Push a driver layer last, so its `onRender()`
    runs inside the frame after the others have drawn. Call `Core::AnimationRequest::request()` to
    keep frames coming, and press widgets by ID with `ImGui::ActivateItemByID()`. Skip the test when
-   no display with GL 3.3 is available; with `TASKSMACK_REQUIRE_DISPLAY=1` (Linux CI, under Xvfb) a
-   missing display fails instead. Its own `main()` (`tests/App/AppTestsMain.cpp`) points
+   no display with GL 3.3 is available; with `TASKSMACK_REQUIRE_DISPLAY=1` (CI: Linux under Xvfb,
+   Windows with Mesa's llvmpipe) a missing display fails instead. Its own `main()` (`tests/App/AppTestsMain.cpp`) points
    `TASKSMACK_CONFIG_DIR` at a fresh temporary directory before any test runs, so whatever the app
    saves (`ShellLayer::onDetach()` writes `config.toml`) never reaches your own config.
    `tools/coverage.sh` runs this binary too. Example: `tests/App/test_UiLayersOnDisplay.cpp`, the title
@@ -921,8 +921,11 @@ pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-cove
 > **Note (display-dependent tests):** The `ApplicationTest`, `WindowTest`, `IconLoaderGLTest` and
 > `AssetPathTest.FindAssetsDirIsStableAcrossCalls` tests need a GL 3.3 core context. They skip only
 > when the up-front display probe finds none; once it passes, a construction exception fails the
-> test. Linux CI runs `ctest` under `xvfb-run` with Mesa and sets `TASKSMACK_REQUIRE_DISPLAY=1`,
-> which turns a failed probe into a failure too, so a broken CI display can't hide as skips (#1132).
+> test. Linux CI runs `ctest` under `xvfb-run` with Mesa, and Windows CI on the runner's desktop with
+> Mesa's llvmpipe `opengl32.dll` and `libgallium_wgl.dll` copied beside the test executables (the
+> runners have no GPU, #2134); both set `TASKSMACK_REQUIRE_DISPLAY=1`, which turns a failed probe into
+> a failure too, so a broken CI display can't hide as skips (#1132). On Windows these suites open
+> windows on your desktop; set `TASKSMACK_SKIP_DISPLAY_TESTS=1` to skip them instead.
 
 ## Sanitizers (Linux only)
 

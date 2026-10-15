@@ -240,6 +240,16 @@ jobs:
           LLVM_ROOT: C:\Program Files\LLVM
         run: cmake --build --preset win-${{ inputs.build_type }}
 
+      # The runner has a desktop but no GPU: its only OpenGL is GDI Generic 1.1, below the 3.3 core
+      # the window, title bar, HWND and GL icon suites need, so they skipped and Windows-only window
+      # code never ran in CI (#2134). Mesa's llvmpipe beside the test executables (in the build
+      # tree; the test binaries load it before System32's opengl32.dll) is a software GL 4.6.
+      - name: Software OpenGL for the display tests (Windows)
+        if: runner.os == 'Windows' && inputs.build
+        uses: ./.github/actions/setup-mesa-llvmpipe
+        with:
+          copy-to: build/win-${{ inputs.build_type }}/tests
+
       # Where the build's time went (scans, compiles, links, the slowest links), from .ninja_log,
       # so a flag change can be measured from the job summary (#1875).
       - name: Build profile
@@ -287,6 +297,12 @@ jobs:
       - name: Test (Windows)
         if: runner.os == 'Windows' && inputs.build
         shell: pwsh
+        env:
+          # llvmpipe (beside the test executables, see "Software OpenGL for the display tests")
+          # gives the display suites a GL 3.3+ context on the runner's desktop, so they must fail
+          # rather than skip if it goes missing, as on Linux (#2134).
+          TASKSMACK_REQUIRE_DISPLAY: '1'
+          GALLIUM_DRIVER: llvmpipe
         run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       # ctest runs one entry per gtest suite (#1871); each entry also writes gtest's own report, one

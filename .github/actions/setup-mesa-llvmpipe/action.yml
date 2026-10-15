@@ -1,0 +1,61 @@
+name: 'Setup Mesa llvmpipe (Windows)'
+description: >-
+  Fetch Mesa's software OpenGL 4.6 driver (llvmpipe) for Windows from mesa-dist-win, pinned by
+  version and SHA-256, and extract its opengl32.dll and libgallium_wgl.dll. The windows-2025
+  runners have no GPU, so their only OpenGL is GDI Generic 1.1, below TaskSmack's 3.3 core. A
+  program loads the opengl32.dll beside its exe before System32's, so these two DLLs placed there
+  give it a GL 3.3+ context in software. Exports MESA_DLL_DIR (and the dll-dir output); with
+  copy-to, also copies both DLLs there. Set GALLIUM_DRIVER=llvmpipe on the steps that use them.
+  Used by the Windows display test suites in reusable-build-test.yml and heavy-checks.yml's
+  win-coverage (#2134). release.yml's packaged-exe smoke check (#2175) fetches the same archive
+  inline, since that job has no checkout to load this action from: keep the two pins in step.
+inputs:
+  copy-to:
+    description: >-
+      Optional directory to copy opengl32.dll and libgallium_wgl.dll into, created if missing:
+      the directory of the executables that should load them (a build tree, never the source tree)
+    required: false
+    default: ''
+outputs:
+  dll-dir:
+    description: The directory holding the extracted opengl32.dll and libgallium_wgl.dll
+    value: ${{ steps.fetch.outputs.dll-dir }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Pinned: mesa-dist-win 26.2.4, release-msvc build, from the project's GitHub release, with the
+    # archive's SHA-256 checked before anything in it is used. To update, take the new release's
+    # mesa3d-<ver>-release-msvc.7z asset and its digest (gh release view -R pal1000/mesa-dist-win
+    # <ver> --json assets).
+    - name: Fetch Mesa llvmpipe
+      id: fetch
+      shell: pwsh
+      env:
+        MESA_VERSION: "26.2.4"
+        MESA_URL: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z
+        MESA_SHA256: 351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695
+        COPY_TO: ${{ inputs.copy-to }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $mesaRoot = Join-Path $env:RUNNER_TEMP 'mesa'
+        $archive = Join-Path $mesaRoot "mesa3d-$env:MESA_VERSION-release-msvc.7z"
+        $dllDir = Join-Path $mesaRoot 'x64'
+        New-Item -ItemType Directory -Force -Path $mesaRoot | Out-Null
+        Invoke-WebRequest -Uri $env:MESA_URL -OutFile $archive -MaximumRetryCount 3 -RetryIntervalSec 5
+        $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $env:MESA_SHA256) {
+          Write-Error "Mesa archive SHA-256 mismatch: expected $env:MESA_SHA256, got $actual"
+          exit 1
+        }
+        # Windows' own bsdtar reads .7z; an unqualified 'tar' can resolve to Git's GNU tar, which can't.
+        & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $mesaRoot x64/opengl32.dll x64/libgallium_wgl.dll
+        if ($LASTEXITCODE -ne 0) { Write-Error "Extracting Mesa's OpenGL DLLs failed (tar exit $LASTEXITCODE)"; exit 1 }
+        Get-ChildItem -LiteralPath $dllDir | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
+        "MESA_DLL_DIR=$dllDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        "dll-dir=$dllDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        if ($env:COPY_TO) {
+          New-Item -ItemType Directory -Force -Path $env:COPY_TO | Out-Null
+          Copy-Item -Path (Join-Path $dllDir '*.dll') -Destination $env:COPY_TO
+          Write-Host "Copied Mesa's opengl32.dll and libgallium_wgl.dll to $env:COPY_TO"
+        }
