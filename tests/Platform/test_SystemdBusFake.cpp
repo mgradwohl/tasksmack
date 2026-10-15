@@ -371,6 +371,36 @@ TEST_F(SystemdBusFakeSmartTest, AHealthLogThatFailsIsSaidSoAndTheRestStays)
     EXPECT_EQ(smart.nvmeTemperatureKelvin, 310); // the properties still read
 }
 
+// #1891: a health log whose attribute has the wrong type (percent_used as a 64-bit value, not the byte
+// udisks2 sends) can't be read: said so, and the controller's properties still read.
+TEST_F(SystemdBusFakeTest, AHealthLogOfTheWrongShapeIsSaidSo)
+{
+    constexpr const char* ODD_NVME_DRIVE = "/org/freedesktop/UDisks2/drives/OddNvme";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("nvme2n1")][UDISKS_BLOCK]["Drive"] = ObjectPath{ODD_NVME_DRIVE};
+    auto& nvme = props[ODD_NVME_DRIVE][UDISKS_NVME];
+    nvme["SmartUpdated"] = std::uint64_t{1'760'000'200};
+    nvme["SmartTemperature"] = std::uint16_t{305};
+    m_Bus.addNoArgMethod(ODD_NVME_DRIVE,
+                         UDISKS_NVME,
+                         "SmartGetAttributes",
+                         []() -> MethodAnswer
+                         {
+                             return {.path = std::nullopt,
+                                     .errorName = {},
+                                     .dict = std::map<std::string, TestSupport::DictValue>{{"percent_used", std::uint64_t{3}}}};
+                         });
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+
+    const LinuxDiskSmart::DriveSmartRead read = SystemdBus::makeDriveSmartReader()("nvme2n1");
+    ASSERT_TRUE(read.smart.has_value()) << read.error;
+    const LinuxDiskSmart::DriveSmart smart = read.smart.value_or(LinuxDiskSmart::DriveSmart{});
+    EXPECT_EQ(smart.kind, LinuxDiskSmart::DriveSmart::Kind::Nvme);
+    EXPECT_FALSE(smart.attributesRead);
+    EXPECT_TRUE(smart.attributesError.starts_with("its reply couldn't be read: ")) << smart.attributesError;
+    EXPECT_EQ(smart.nvmeTemperatureKelvin, 305);
+}
+
 TEST_F(SystemdBusFakeSmartTest, ABlockDeviceWithoutADriveHasNoSmart)
 {
     serveUdisks();
