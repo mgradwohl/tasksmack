@@ -91,4 +91,12 @@ namespace Platform
 /// UnsupportedServiceActions (every capability false) until systemd control lands.
 [[nodiscard]] std::unique_ptr<IServiceActions> makeServiceActions();
 
+/// Enables the debug privilege on TaskSmack's own process when it runs elevated (#2128): on Windows,
+/// SeDebugPrivilege, without which even an elevated TaskSmack is refused terminate, set-information
+/// and handle-duplication access to SYSTEM-service processes. Called once at startup, before any
+/// probe or action opens a process. Logs the outcome; returns whether the privilege is now enabled.
+/// Never throws, and changes nothing when not elevated. A no-op returning false on Linux, where root
+/// already bypasses those checks.
+bool enableDebugPrivilege();
+
 } // namespace Platform

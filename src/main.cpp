@@ -20,6 +20,7 @@
 #include "Core/LogFileSink.h"
 #include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
+#include "Platform/Factory.h"
 #include "UI/Format.h"
 #include "UI/UILayer.h"
 #include "version.h"
@@ -210,6 +211,11 @@ auto runApp() -> int
     }
     spdlog::debug("Compiler: {} {}", tasksmack::Version::COMPILER_ID, tasksmack::Version::COMPILER_VERSION);
     spdlog::debug("Built: {} {}", tasksmack::Version::BUILD_DATE, tasksmack::Version::BUILD_TIME);
+
+    // Elevated on Windows, enable SeDebugPrivilege (#2128) before any probe or action opens a process,
+    // so SYSTEM-service processes can be killed, reprioritized, dumped and read. It logs its own
+    // outcome, changes nothing when not elevated, and a failure doesn't stop startup.
+    Platform::enableDebugPrivilege();
 
     // Read TASKSMACK_SYNTHETIC once, now, so the synthetic scenario (#1413) is logged at startup and
     // every panel sees the same one. Unset, this is the only trace of it.

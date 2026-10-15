@@ -125,5 +125,14 @@ TEST(FactoryTest, MakeServiceProbeReturnsNonNull)
     EXPECT_NE(probe, nullptr);
 }
 
+#ifndef _WIN32
+// Windows' enableDebugPrivilege() would change the test process's own token when run elevated, so
+// its logic is tested through fakes instead (test_WindowsDebugPrivilege.cpp, #2128).
+TEST(FactoryTest, EnableDebugPrivilegeIsANoOpOnLinux)
+{
+    EXPECT_FALSE(enableDebugPrivilege());
+}
+#endif
+
 } // namespace
 } // namespace Platform
