@@ -42,11 +42,12 @@ concurrency:
 env:
   LLVM_VERSION: '22'
   LLVM_SEMVER_VERSION: '22.1.7'
-  # Warn-only floors for LINE coverage (see the "Check coverage threshold" steps, #1543): 85% on
-  # both platforms (maintainer, 2026-10-12), set when the nightly run read Linux 93.9% and Windows
-  # 89.8% of lines. They were 66% and 61%, from the 2026-10-08 baseline (68.9%, 63.8%). A warning now
-  # means a real drop. codecov.yml's `auto` target is the per-change ratchet.
-  LINUX_COVERAGE_THRESHOLD: '85'
+  # Floors for LINE coverage (see the "Check coverage threshold" steps, #1543). Linux: 95%, and a
+  # drop below it FAILS the coverage job (maintainer, 2026-10-15, closing #1891), set when the nightly
+  # run read 95.51% of lines. Windows: 85%, warn-only (maintainer, 2026-10-12, when it read 89.8%;
+  # 91.54% on 2026-10-15). They were 66% and 61%, from the 2026-10-08 baseline (68.9%, 63.8%).
+  # codecov.yml's `auto` target is the per-change ratchet.
+  LINUX_COVERAGE_THRESHOLD: '95'
   WINDOWS_COVERAGE_THRESHOLD: '85'
 
 permissions: {}
@@ -157,10 +158,11 @@ jobs:
           fi
           COVERAGE="$(awk -v h="$hit" -v f="$found" 'BEGIN{printf "%.2f", 100*h/f}')"
           echo "📊 Line coverage: ${COVERAGE}% (${hit}/${found} lines)"
-          echo "🎯 Warning floor: ${THRESHOLD}%"
+          echo "🎯 Floor: ${THRESHOLD}% (a drop below it fails this job)"
           if awk -v c="$COVERAGE" -v t="$THRESHOLD" 'BEGIN{exit !(c < t)}'; then
-            echo "::warning title=Coverage::Line coverage ${COVERAGE}% is below the ${THRESHOLD}% floor"
-            printf '\n⚠️ **Coverage Warning:** line coverage %s%% is below the %s%% floor\n' "$COVERAGE" "$THRESHOLD" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Coverage::Line coverage ${COVERAGE}% is below the ${THRESHOLD}% floor"
+            printf '\n❌ **Coverage Failure:** line coverage %s%% is below the %s%% floor\n' "$COVERAGE" "$THRESHOLD" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           else
             printf '\n✅ **Coverage Status:** line coverage %s%% (%s/%s lines) meets the %s%% floor\n' "$COVERAGE" "$hit" "$found" "$THRESHOLD" >> "$GITHUB_STEP_SUMMARY"
           fi
