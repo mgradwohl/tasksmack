@@ -17,7 +17,7 @@ endif()
 include(cmake/RCCompiler.cmake)
 
 # Initialize with both C and CXX (required by dependencies like SDL3, GLAD)
-project(TaskSmack VERSION 0.8.0 LANGUAGES C CXX)
+project(TaskSmack VERSION 0.9.0 LANGUAGES C CXX)
 
 # Focused modules keep this root file declarative. Order matters:
 #   Options          - cache options consumed by every later module
