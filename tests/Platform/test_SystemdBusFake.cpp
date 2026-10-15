@@ -432,6 +432,25 @@ TEST_F(SystemdBusFakeSmartTest, ADiskUdisksDoesntListIsSaidSo)
     EXPECT_EQ(read.error, "udisks2 doesn't list this disk");
 }
 
+// #1891: udisks2 not answering in time is said once in the user's terms, and remembered for the read's
+// other disks, which aren't asked again (each would wait out the timeout too).
+TEST_F(SystemdBusFakeTest, AUdisksThatDoesntAnswerInTimeIsRememberedForTheOtherDisks)
+{
+    constexpr const char* TIMED_OUT = "udisks2 didn't answer in time, so SMART status wasn't read";
+    auto& props = m_Bus.properties();
+    props[LinuxDiskSmart::blockObjectPath("sdb")][UDISKS_BLOCK]["Drive"] = ObjectPath{"/"};
+    m_Bus.failProperty(LinuxDiskSmart::blockObjectPath("sda"), UDISKS_BLOCK, "Drive", "org.freedesktop.DBus.Error.NoReply");
+    ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
+
+    const LinuxDiskSmart::SmartReader read = SystemdBus::makeDriveSmartReader();
+    const LinuxDiskSmart::DriveSmartRead sda = read("sda");
+    EXPECT_FALSE(sda.smart.has_value());
+    EXPECT_EQ(sda.error, TIMED_OUT);
+    const LinuxDiskSmart::DriveSmartRead sdb = read("sdb"); // would read as "no SMART" if asked
+    EXPECT_FALSE(sdb.smart.has_value());
+    EXPECT_EQ(sdb.error, TIMED_OUT);
+}
+
 TEST_F(SystemdBusFakeTest, WithoutUdisksSmartCantBeRead)
 {
     ASSERT_TRUE(m_Bus.start("")) << m_Bus.error();
@@ -505,6 +524,19 @@ TEST_F(SystemdBusFakeTest, BootTimestampsMissingOneAreAnError)
     const SystemdBus::BootTimestampsRead read = SystemdBus::readBootTimestamps();
     EXPECT_FALSE(read.ok);
     EXPECT_FALSE(read.error.empty());
+}
+
+// #1891: systemd not answering a boot timestamp's read in time says so, rather than passing NoReply on.
+TEST_F(SystemdBusFakeTest, BootTimestampsSystemdDoesntAnswerInTimeSaySo)
+{
+    auto& manager = m_Bus.properties()["/org/freedesktop/systemd1"]["org.freedesktop.systemd1.Manager"];
+    manager["FirmwareTimestampMonotonic"] = std::uint64_t{1'000'000};
+    m_Bus.failProperty(
+        "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "LoaderTimestampMonotonic", "org.freedesktop.DBus.Error.NoReply");
+    ASSERT_TRUE(m_Bus.start("org.freedesktop.systemd1")) << m_Bus.error();
+    const SystemdBus::BootTimestampsRead read = SystemdBus::readBootTimestamps();
+    EXPECT_FALSE(read.ok);
+    EXPECT_EQ(read.error, "systemd didn't answer in time");
 }
 
 TEST_F(SystemdBusFakeTest, WithoutNetworkdEveryAdapterSaysSo)

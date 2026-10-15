@@ -173,6 +173,13 @@ class FakeSystemBus
         m_Methods[path + '\n' + interface + '\n' + member] = std::move(method);
     }
 
+    /// Makes reads of one property fail with the D-Bus error @p errorName (e.g. NoReply, as a service
+    /// that doesn't answer in time), before start() (#1891).
+    void failProperty(const std::string& path, const std::string& interface, const std::string& name, std::string errorName)
+    {
+        m_PropertyErrors[path + '\n' + interface + '\n' + name] = std::move(errorName);
+    }
+
     /// A method that reads and answers the call itself, before start().
     void addRawMethod(const std::string& path, const std::string& interface, const std::string& member, RawMethod method)
     {
@@ -561,6 +568,11 @@ class FakeSystemBus
             {
                 return 0;
             }
+            if (const auto failure = self->m_PropertyErrors.find(std::string(path) + '\n' + iface + '\n' + name);
+                failure != self->m_PropertyErrors.end())
+            {
+                return sd_bus_reply_method_errorf(message, failure->second.c_str(), "Fake error");
+            }
             const auto object = self->m_Properties.find(path);
             if (object != self->m_Properties.end())
             {
@@ -671,6 +683,7 @@ class FakeSystemBus
     }
 
     Properties m_Properties;
+    std::map<std::string, std::string> m_PropertyErrors; ///< path\ninterface\nname -> the error its reads fail with
     std::map<std::string, std::variant<StringMethod, IntMethod, NoArgMethod, RawMethod>> m_Methods;
     std::filesystem::path m_Dir;
     pid_t m_Daemon = 0; // NOLINT(misc-include-cleaner) - pid_t comes with <spawn.h> and <unistd.h>
