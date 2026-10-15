@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -87,20 +88,22 @@ inline constexpr std::string_view SERVICE_SUFFIX = ".service";
     return ServiceState::Unknown;
 }
 
-/// A unit file's state as a start type: enabled starts at boot (Automatic), disabled and masked don't
-/// (Disabled), and static, indirect, generated and the like start only when something asks (Manual).
+/// A unit file's state as a start type, matching what SystemdActions sets (#2006, #2114): enabled starts
+/// at boot (Automatic); masked can never start (Disabled); disabled, static, indirect, generated and the
+/// like start only when something asks (Manual) -- a disabled unit can still be started by hand, which is
+/// Windows' Manual, and Manual is what DisableUnitFiles writes.
 [[nodiscard]] constexpr ServiceStartType startTypeFrom(std::string_view unitFileState) noexcept
 {
     if (unitFileState == "enabled" || unitFileState == "enabled-runtime")
     {
         return ServiceStartType::Automatic;
     }
-    if (unitFileState == "disabled" || unitFileState == "masked" || unitFileState == "masked-runtime")
+    if (unitFileState == "masked" || unitFileState == "masked-runtime")
     {
         return ServiceStartType::Disabled;
     }
-    if (unitFileState == "static" || unitFileState == "indirect" || unitFileState == "generated" || unitFileState == "transient" ||
-        unitFileState == "alias" || unitFileState == "linked" || unitFileState == "linked-runtime")
+    if (unitFileState == "disabled" || unitFileState == "static" || unitFileState == "indirect" || unitFileState == "generated" ||
+        unitFileState == "transient" || unitFileState == "alias" || unitFileState == "linked" || unitFileState == "linked-runtime")
     {
         return ServiceStartType::Manual;
     }

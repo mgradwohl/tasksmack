@@ -4,6 +4,7 @@
 
 #include "Platform/IServiceProbe.h"
 #include "Platform/Linux/LinuxServiceProbe.h"
+#include "Platform/Linux/SystemdActions.h"
 #include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdServices.h"
 #include "Platform/ScopedTempDir.h"
@@ -43,12 +44,42 @@ TEST(SystemdServicesTest, UnitFileStatesAreStartTypes)
 {
     EXPECT_EQ(SystemdServices::startTypeFrom("enabled"), ServiceStartType::Automatic);
     EXPECT_EQ(SystemdServices::startTypeFrom("enabled-runtime"), ServiceStartType::Automatic);
-    EXPECT_EQ(SystemdServices::startTypeFrom("disabled"), ServiceStartType::Disabled);
+    EXPECT_EQ(SystemdServices::startTypeFrom("disabled"), ServiceStartType::Manual); // can still be started by hand
     EXPECT_EQ(SystemdServices::startTypeFrom("masked"), ServiceStartType::Disabled);
+    EXPECT_EQ(SystemdServices::startTypeFrom("masked-runtime"), ServiceStartType::Disabled);
     EXPECT_EQ(SystemdServices::startTypeFrom("static"), ServiceStartType::Manual);
     EXPECT_EQ(SystemdServices::startTypeFrom("indirect"), ServiceStartType::Manual);
     EXPECT_EQ(SystemdServices::startTypeFrom("generated"), ServiceStartType::Manual);
     EXPECT_EQ(SystemdServices::startTypeFrom("bad"), ServiceStartType::Unknown);
+}
+
+// #2114: each start type the Services menu sets reads back as itself once systemd has made the change
+// (EnableUnitFiles -> "enabled", DisableUnitFiles -> "disabled", MaskUnitFiles -> "masked").
+TEST(SystemdServicesTest, StartTypesRoundTripThroughTheUnitFileStateTheyWrite)
+{
+    const auto stateAfter = [](SystemdActions::FileChange change) -> std::string_view
+    {
+        switch (change)
+        {
+        case SystemdActions::FileChange::Enable:
+            return "enabled";
+        case SystemdActions::FileChange::Disable:
+            return "disabled";
+        case SystemdActions::FileChange::Mask:
+            return "masked";
+        }
+        return {};
+    };
+    for (const auto type : {ServiceStartType::Automatic, ServiceStartType::Manual, ServiceStartType::Disabled})
+    {
+        const auto steps = SystemdActions::startTypeSteps(type);
+        if (!steps.has_value())
+        {
+            ADD_FAILURE() << "no steps for start type " << static_cast<int>(type);
+            continue;
+        }
+        EXPECT_EQ(SystemdServices::startTypeFrom(stateAfter(steps->change)), type);
+    }
 }
 
 TEST(SystemdServicesTest, OnlyServicesAndNotTemplatesAreServices)
@@ -115,7 +146,7 @@ TEST(SystemdServicesTest, LoadedServicesAndInstalledOnesBecomeTheList)
     const ServiceInfo* ssh = find(services, "ssh.service");
     ASSERT_NE(ssh, nullptr);
     EXPECT_EQ(ssh->state, ServiceState::Stopped);
-    EXPECT_EQ(ssh->startType, ServiceStartType::Disabled);
+    EXPECT_EQ(ssh->startType, ServiceStartType::Manual); // disabled: started only by hand
     const ServiceInfo* masked = find(services, "masked-thing.service");
     ASSERT_NE(masked, nullptr);
     EXPECT_EQ(masked->startType, ServiceStartType::Disabled);
