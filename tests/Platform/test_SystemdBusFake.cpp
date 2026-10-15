@@ -268,6 +268,39 @@ TEST_F(SystemdBusFakeTest, NetworkdGivesTheLeaseFromALinksDescription)
     EXPECT_EQ(read(9).error, "systemd-networkd doesn't manage this adapter");
 }
 
+// #1891: a link whose Describe() is refused says so for that adapter only; the others are still read.
+TEST_F(SystemdBusFakeTest, ARefusedLinkDescriptionIsSaidSoForThatAdapterOnly)
+{
+    constexpr const char* REFUSING_LINK_PATH = "/org/freedesktop/network1/link/_35";
+    m_Bus.addIntMethod(NETWORKD_PATH,
+                       NETWORKD_MANAGER,
+                       "GetLinkByIndex",
+                       [](std::int32_t ifindex) -> MethodAnswer
+                       {
+                           if (ifindex == 3)
+                           {
+                               return {.path = ObjectPath{DHCP_LINK_PATH}, .errorName = {}, .name = "enp3s0"};
+                           }
+                           return {.path = ObjectPath{REFUSING_LINK_PATH}, .errorName = {}, .name = "enp5s0"};
+                       });
+    m_Bus.addNoArgMethod(DHCP_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = {}, .text = DHCP_DESCRIPTION}; });
+    m_Bus.addNoArgMethod(REFUSING_LINK_PATH,
+                         NETWORKD_LINK,
+                         "Describe",
+                         []() -> MethodAnswer { return {.path = std::nullopt, .errorName = "org.freedesktop.DBus.Error.AccessDenied"}; });
+    ASSERT_TRUE(m_Bus.start(NETWORKD)) << m_Bus.error();
+
+    const LinuxNetworkAdapters::IndexedDhcpLeaseReader read = SystemdBus::makeNetworkdLeaseReader();
+    const LinuxNetworkAdapters::DhcpLeaseRead refused = read(5);
+    EXPECT_FALSE(refused.lease.has_value());
+    EXPECT_TRUE(refused.error.starts_with("systemd-networkd couldn't be asked: ")) << refused.error;
+    const LinuxNetworkAdapters::DhcpLeaseRead dhcp = read(3);
+    EXPECT_TRUE(dhcp.lease.has_value()) << dhcp.error;
+}
+
 constexpr const char* UDISKS = "org.freedesktop.UDisks2";
 constexpr const char* UDISKS_BLOCK = "org.freedesktop.UDisks2.Block";
 constexpr const char* UDISKS_ATA = "org.freedesktop.UDisks2.Drive.Ata";
