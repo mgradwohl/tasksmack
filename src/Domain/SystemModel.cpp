@@ -701,7 +701,6 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
         bool rx = false;
         bool tx = false;
     };
-    std::vector<RateGap> interfaceGaps(counters.networkInterfaces.size());
     RateGap totalGap;
     const auto saneRate = [maxSaneRate](double rate, bool& gap)
     {
@@ -716,10 +715,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
     buildInterfaceIndex(counters.networkInterfaces, m_InterfaceIndex);
 
     snap.networkInterfaces.reserve(counters.networkInterfaces.size());
-    for (std::size_t ifaceIndex = 0; ifaceIndex < counters.networkInterfaces.size(); ++ifaceIndex)
+    for (const auto& iface : counters.networkInterfaces)
     {
-        const auto& iface = counters.networkInterfaces[ifaceIndex];
-        auto& gap = interfaceGaps[ifaceIndex];
+        RateGap gap; // set by saneRate(); the rate status below carries it on
         SystemSnapshot::InterfaceSnapshot ifaceSnap;
         ifaceSnap.name = iface.name;
         ifaceSnap.displayName = iface.displayName;
@@ -818,33 +816,61 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
         {
             const bool anyHardware =
                 std::ranges::any_of(snap.networkInterfaces, [](const auto& ifaceSnap) { return !ifaceSnap.isVirtual; });
-            for (std::size_t ifaceIndex = 0; ifaceIndex < snap.networkInterfaces.size(); ++ifaceIndex)
+            // A Total missing a counted interface's dropped sample -- a glitch above the ceiling, or a
+            // counter that went backwards -- isn't a measurement either (#1291, #2129). A counted
+            // interface new this sample doesn't make it one: it wasn't in the previous Total, so the
+            // sum of the others is still one, as StorageModel's totals are (totalsMeasured). A Total
+            // with no counted interface measured at all is no reading, not 0.
+            const auto dropped = [](InterfaceRateStatus status)
             {
-                const auto& ifaceSnap = snap.networkInterfaces[ifaceIndex];
+                return status == InterfaceRateStatus::CounterReset || status == InterfaceRateStatus::AboveCeiling;
+            };
+            bool anyMeasuredRx = false;
+            bool anyMeasuredTx = false;
+            for (const auto& ifaceSnap : snap.networkInterfaces)
+            {
                 if (anyHardware && ifaceSnap.isVirtual)
                 {
                     continue;
                 }
                 snap.netRxBytesPerSec += ifaceSnap.rxBytesPerSec;
                 snap.netTxBytesPerSec += ifaceSnap.txBytesPerSec;
-                // A Total missing a counted interface's glitched sample isn't a measurement either.
-                totalGap.rx = totalGap.rx || interfaceGaps[ifaceIndex].rx;
-                totalGap.tx = totalGap.tx || interfaceGaps[ifaceIndex].tx;
+                totalGap.rx = totalGap.rx || dropped(ifaceSnap.rxRateStatus);
+                totalGap.tx = totalGap.tx || dropped(ifaceSnap.txRateStatus);
+                anyMeasuredRx = anyMeasuredRx || ifaceSnap.rxRateStatus == InterfaceRateStatus::Measured;
+                anyMeasuredTx = anyMeasuredTx || ifaceSnap.txRateStatus == InterfaceRateStatus::Measured;
             }
+            totalGap.rx = totalGap.rx || !anyMeasuredRx;
+            totalGap.tx = totalGap.tx || !anyMeasuredTx;
         }
         else if (timeDelta > 0.0)
         {
-            // Only compute if counters increased (handle overflow/restart)
+            // Only compute if counters increased; one that went backwards (overflow/restart) is a gap
+            // in the history, not a 0 (#2129). The next sample rates from this one's counters.
             if (counters.netRxBytes >= m_PrevCounters.netRxBytes)
             {
                 snap.netRxBytesPerSec =
                     saneRate(Numeric::counterRate(counters.netRxBytes, m_PrevCounters.netRxBytes, timeDelta), totalGap.rx);
+            }
+            else
+            {
+                totalGap.rx = true;
             }
             if (counters.netTxBytes >= m_PrevCounters.netTxBytes)
             {
                 snap.netTxBytesPerSec =
                     saneRate(Numeric::counterRate(counters.netTxBytes, m_PrevCounters.netTxBytes, timeDelta), totalGap.tx);
             }
+            else
+            {
+                totalGap.tx = true;
+            }
+        }
+        else
+        {
+            // Too short an interval to rate (MIN_ELAPSED_FOR_RATES): nothing was measured (#2129).
+            totalGap.rx = true;
+            totalGap.tx = true;
         }
     }
 
@@ -858,7 +884,9 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
     PendingHistory pending;
     if (m_HasPrevious)
     {
-        // A rate dropped as a glitch is a gap (NaN) in the history, not the 0 the snapshot shows (#1291).
+        // A rate that wasn't measured is a gap (NaN) in the history, not the 0 the snapshot shows:
+        // a glitch above the ceiling (#1291), and an interface's first sample or a counter that went
+        // backwards, whose rate status says so (#1375, #2129). Only a Measured rate is a point.
         const auto historyRate = [](double rate, bool gap)
         {
             return gap ? std::numeric_limits<float>::quiet_NaN() : static_cast<float>(rate);
@@ -867,10 +895,10 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
         pending.netTx = historyRate(snap.netTxBytesPerSec, totalGap.tx);
         pending.interfaceRx.reserve(snap.networkInterfaces.size());
         pending.interfaceTx.reserve(snap.networkInterfaces.size());
-        for (std::size_t i = 0; i < snap.networkInterfaces.size(); ++i)
+        for (const auto& ifaceSnap : snap.networkInterfaces)
         {
-            pending.interfaceRx.push_back(historyRate(snap.networkInterfaces[i].rxBytesPerSec, interfaceGaps[i].rx));
-            pending.interfaceTx.push_back(historyRate(snap.networkInterfaces[i].txBytesPerSec, interfaceGaps[i].tx));
+            pending.interfaceRx.push_back(historyRate(ifaceSnap.rxBytesPerSec, ifaceSnap.rxRateStatus != InterfaceRateStatus::Measured));
+            pending.interfaceTx.push_back(historyRate(ifaceSnap.txBytesPerSec, ifaceSnap.txRateStatus != InterfaceRateStatus::Measured));
         }
         stageHistoryAppend(pending, counters, snap, coreSlots, nowSeconds);
     }

@@ -1015,6 +1015,42 @@ TEST_F(SystemSectionsRenderTest, NetworkSelectedInterfaceDrawsItsLinesOverTheTot
     EXPECT_NE(text.find(inputs.cache.linkText), std::string::npos) << text;
 }
 
+TEST_F(SystemSectionsRenderTest, NetworkInterfaceBarsShowNoReadingAsNAAndRestartAfterIt)
+{
+    // #2129: a selected interface's rate that isn't Measured (its first sample, a counter reset) is no
+    // reading: its bar is N/A, not a 0 the bar would ease down to, and the next reading starts the bar
+    // afresh. The measured direction is unaffected.
+    NetworkInputs inputs;
+    inputs.selected = "eth0";
+    inputs.publication.snapshot.networkInterfaces[0].rxRateStatus = Domain::InterfaceRateStatus::CounterReset;
+    inputs.publication.snapshot.networkInterfaces[0].rxBytesPerSec = 0.0;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_TRUE(std::isnan(inputs.received)) << "no reading, not 0";
+    EXPECT_DOUBLE_EQ(inputs.sent, 1024.0);
+    const std::string text = renderAndCapture([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_NE(text.find("N/A"), std::string::npos) << text;
+
+    inputs.publication.snapshot.networkInterfaces[0].rxRateStatus = Domain::InterfaceRateStatus::Measured;
+    inputs.publication.snapshot.networkInterfaces[0].rxBytesPerSec = 4096.0;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_DOUBLE_EQ(inputs.received, 4096.0) << "the first reading after the gap is shown as is";
+}
+
+TEST_F(SystemSectionsRenderTest, NetworkTotalBarsShowAGapInTheTotalAsNA)
+{
+    // #2129: the Total's latest history sample is a gap (a counted interface's counter reset); the
+    // snapshot's Total reads 0 there, which the bars must not show as a measured 0.
+    NetworkInputs inputs;
+    auto rx = constant(8192.0F);
+    rx.back() = std::numeric_limits<float>::quiet_NaN();
+    inputs.publication.netRxHistory = viewOf(std::move(rx));
+    inputs.publication.snapshot.netRxBytesPerSec = 0.0;
+    runFrame([&] { NetworkSection::renderNetworkSection(inputs.ctx); });
+    EXPECT_TRUE(std::isnan(inputs.received));
+    EXPECT_DOUBLE_EQ(inputs.sent, 2048.0);
+}
+
 TEST_F(SystemSectionsRenderTest, NetworkInterfaceWithoutHistoryFallsBackToTheTotals)
 {
     NetworkInputs inputs;

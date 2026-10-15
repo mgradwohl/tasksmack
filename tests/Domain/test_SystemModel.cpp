@@ -2034,6 +2034,101 @@ TEST(SystemModelTest, AnInterfaceCounterJumpAboveTheCeilingIsAGapNotASpike)
     EXPECT_FLOAT_EQ(totalTx[1], 710.0F);
 }
 
+TEST(SystemModelTest, ANewInterfacesFirstSampleIsAGapInItsHistoryNotAZero)
+{
+    // #2129: an interface appearing (a VPN connecting, WSL adding an adapter) has no rate on its first
+    // sample. Its history starts with a gap there, not a 0 B/s point, and has a rate on the next.
+    constexpr uint64_t BASE = 1'000'000;
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 1.0);
+    sampleInterfaces(model, {{"eth0", BASE + 1'000, BASE + 100}}, 2.0);                                  // history[0]
+    sampleInterfaces(model, {{"eth0", BASE + 2'000, BASE + 200}, {"tun0", BASE, BASE}}, 3.0);            // history[1]
+    sampleInterfaces(model, {{"eth0", BASE + 3'000, BASE + 300}, {"tun0", BASE + 400, BASE + 40}}, 4.0); // history[2]
+
+    const auto tunRx = netRxFor(model, "tun0");
+    const auto tunTx = netTxFor(model, "tun0");
+    ASSERT_EQ(tunRx.size(), 3U);
+    ASSERT_EQ(tunTx.size(), 3U);
+    EXPECT_TRUE(std::isnan(tunRx[0])) << "before it appeared";
+    EXPECT_TRUE(std::isnan(tunRx[1])) << "its first sample: no rate yet, a gap, not 0";
+    EXPECT_TRUE(std::isnan(tunTx[1]));
+    EXPECT_FLOAT_EQ(tunRx[2], 400.0F) << "a rate from its second sample";
+    EXPECT_FLOAT_EQ(tunTx[2], 40.0F);
+
+    // The Total is still a reading on tun0's first sample: tun0 wasn't in the previous Total, and eth0
+    // was measured (as StorageModel's totals).
+    const auto totalRx = model.publication()->netRxHistory;
+    ASSERT_EQ(totalRx.size(), 3U);
+    EXPECT_FLOAT_EQ(totalRx[1], 1'000.0F);
+    EXPECT_FLOAT_EQ(totalRx[2], 1'400.0F);
+}
+
+TEST(SystemModelTest, AnInterfaceCounterResetIsAGapAndRebaselinesNotAZero)
+{
+    // #2129: an interface recreated under the same name (a VPN reconnecting, a driver reload) restarts
+    // its counters. That sample is CounterReset: a gap in its own history and in the Total, not a 0
+    // dip, and the next sample rates from the new counters.
+    using Domain::InterfaceRateStatus;
+    constexpr uint64_t BASE = 1'000'000;
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    sampleInterfaces(model, {{"eth0", BASE, BASE}, {"wlan0", BASE, BASE}}, 1.0);
+    sampleInterfaces(model, {{"eth0", BASE + 1'000, BASE + 100}, {"wlan0", BASE + 50, BASE + 5}}, 2.0); // history[0]
+    sampleInterfaces(model, {{"eth0", 500, 50}, {"wlan0", BASE + 100, BASE + 10}}, 3.0);                // history[1]: eth0 reset
+    sampleInterfaces(model, {{"eth0", 1'300, 130}, {"wlan0", BASE + 150, BASE + 15}}, 4.0);             // history[2]
+
+    const auto eth0Rx = netRxFor(model, "eth0");
+    const auto eth0Tx = netTxFor(model, "eth0");
+    ASSERT_EQ(eth0Rx.size(), 3U);
+    EXPECT_FLOAT_EQ(eth0Rx[0], 1'000.0F);
+    EXPECT_TRUE(std::isnan(eth0Rx[1])) << "a counter reset is a gap, not 0";
+    EXPECT_TRUE(std::isnan(eth0Tx[1]));
+    EXPECT_FLOAT_EQ(eth0Rx[2], 800.0F) << "re-baselined on the reset sample's counters";
+    EXPECT_FLOAT_EQ(eth0Tx[2], 80.0F);
+    EXPECT_FLOAT_EQ(netRxFor(model, "wlan0")[1], 50.0F) << "the other interface is unaffected";
+
+    const auto totalRx = model.publication()->netRxHistory;
+    const auto totalTx = model.publication()->netTxHistory;
+    ASSERT_EQ(totalRx.size(), 3U);
+    EXPECT_FLOAT_EQ(totalRx[0], 1'050.0F);
+    EXPECT_TRUE(std::isnan(totalRx[1])) << "a Total missing a counted interface's reset sample is a gap, not a dip";
+    EXPECT_TRUE(std::isnan(totalTx[1]));
+    EXPECT_FLOAT_EQ(totalRx[2], 850.0F);
+
+    sampleInterfaces(model, {{"eth0", 1'000, 1'000}, {"wlan0", BASE + 150, BASE + 15}}, 5.0);
+    EXPECT_EQ(model.snapshot().networkInterfaces[0].rxRateStatus, InterfaceRateStatus::CounterReset);
+}
+
+TEST(SystemModelTest, AMeasuredZeroInterfaceRateStaysZeroInItsHistory)
+{
+    // #2129 gaps only what wasn't measured: an idle interface whose counters didn't move is a measured
+    // 0 B/s, a point at 0 in its history and the Total, with status Measured (#1375).
+    using Domain::InterfaceRateStatus;
+    constexpr uint64_t BASE = 1'000'000;
+    Domain::SystemModel model(std::make_unique<MockSystemProbe>());
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 1.0);
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 2.0);
+    sampleInterfaces(model, {{"eth0", BASE, BASE}}, 3.0);
+
+    const auto snap = model.snapshot();
+    ASSERT_EQ(snap.networkInterfaces.size(), 1U);
+    EXPECT_EQ(snap.networkInterfaces[0].rxRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_EQ(snap.networkInterfaces[0].txRateStatus, InterfaceRateStatus::Measured);
+    EXPECT_DOUBLE_EQ(snap.networkInterfaces[0].rxBytesPerSec, 0.0);
+
+    const auto rx = netRxFor(model, "eth0");
+    const auto tx = netTxFor(model, "eth0");
+    ASSERT_EQ(rx.size(), 2U);
+    ASSERT_EQ(tx.size(), 2U);
+    for (std::size_t i = 0; i < rx.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(rx[i], 0.0F) << i;
+        EXPECT_FLOAT_EQ(tx[i], 0.0F) << i;
+    }
+    const auto totalRx = model.publication()->netRxHistory;
+    ASSERT_EQ(totalRx.size(), 2U);
+    EXPECT_FLOAT_EQ(totalRx[1], 0.0F) << "a Total of measured zeros is a measured 0";
+}
+
 TEST(SystemModelTest, InterfaceRateStatusTellsAMeasuredZeroFromNoReading)
 {
     // #1375: an unmeasured rate is held at 0, so the status is what lets Interface Status show a
@@ -2366,22 +2461,25 @@ TEST(SystemModelTest, PerInterfaceHistoryRecordsMissingSamplesAsNaN)
     // History starts with the second sample (the first has nothing to take a delta against).
     model.updateFromCounters(withoutWlan, 1.0);
     model.updateFromCounters(withoutWlan, 2.0); // history[0]: wlan0 not seen yet
-    model.updateFromCounters(withWlan, 3.0);    // history[1]: wlan0 present
-    model.updateFromCounters(withoutWlan, 4.0); // history[2]: wlan0 gone
+    model.updateFromCounters(withWlan, 3.0);    // history[1]: wlan0 present, its first sample
+    model.updateFromCounters(withWlan, 4.0);    // history[2]: wlan0's first rate
+    model.updateFromCounters(withoutWlan, 5.0); // history[3]: wlan0 gone
 
     const auto timestamps = model.publication()->timestamps;
     const auto rx = netRxFor(model, "wlan0");
     const auto tx = netTxFor(model, "wlan0");
     ASSERT_EQ(rx.size(), timestamps.size());
     ASSERT_EQ(tx.size(), timestamps.size());
-    ASSERT_EQ(rx.size(), 3U);
+    ASSERT_EQ(rx.size(), 4U);
 
     EXPECT_TRUE(std::isnan(rx[0]));
     EXPECT_TRUE(std::isnan(tx[0]));
-    EXPECT_TRUE(std::isfinite(rx[1]));
-    EXPECT_TRUE(std::isfinite(tx[1]));
-    EXPECT_TRUE(std::isnan(rx[2]));
-    EXPECT_TRUE(std::isnan(tx[2]));
+    EXPECT_TRUE(std::isnan(rx[1])) << "a rate needs two samples (#2129)";
+    EXPECT_TRUE(std::isnan(tx[1]));
+    EXPECT_TRUE(std::isfinite(rx[2]));
+    EXPECT_TRUE(std::isfinite(tx[2]));
+    EXPECT_TRUE(std::isnan(rx[3]));
+    EXPECT_TRUE(std::isnan(tx[3]));
 
     // eth0, present every sample, has no gaps.
     for (const float value : netRxFor(model, "eth0"))
@@ -3042,7 +3140,7 @@ TEST(SystemModelTest, InterfaceRatesAndGapsHoldAtHundredsOfChurningInterfaces)
         else
         {
             EXPECT_TRUE(std::isnan(rx[0])) << name(i) << " arrived later: backfilled with a gap";
-            EXPECT_FLOAT_EQ(rx[1], 0.0F) << name(i) << " arrived: no rate before its second sample";
+            EXPECT_TRUE(std::isnan(rx[1])) << name(i) << " arrived: no rate before its second sample, a gap (#2129)";
             EXPECT_FLOAT_EQ(rx[2], rate) << name(i);
         }
     }

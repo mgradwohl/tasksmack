@@ -3,6 +3,7 @@
 #include "App/Panels/NetInterfaceUtils.h"
 #include "App/Panels/StorageSection.h"
 #include "Domain/SharedHistory.h"
+#include "Domain/SystemSnapshot.h"
 #include "UI/Card.h"
 #include "UI/CellText.h"
 #include "UI/ChartWidgets.h"
@@ -51,7 +52,9 @@ using UI::Widgets::renderHistoryWithNowBars;
 using UI::Widgets::SeriesRole;
 using UI::Widgets::seriesStyle;
 
-/// Update smoothed network values
+/// Update smoothed network values. A target of NaN is no reading (#2129): the bar holds NaN, shown
+/// as N/A, and the first reading after it starts the bar afresh rather than easing from a value
+/// before the gap.
 void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTimeSeconds, RenderContext& ctx)
 {
     if (ctx.smoothedNetSentBytesPerSec == nullptr || ctx.smoothedNetRecvBytesPerSec == nullptr || ctx.smoothedNetInitialized == nullptr)
@@ -62,8 +65,16 @@ void updateSmoothedNetwork(double targetSent, double targetRecv, float deltaTime
     const double alpha = computeAlpha(deltaTimeSeconds, ctx.refreshInterval);
 
     const bool initialized = *ctx.smoothedNetInitialized;
-    *ctx.smoothedNetSentBytesPerSec = initializeOrSmooth(*ctx.smoothedNetSentBytesPerSec, targetSent, alpha, initialized);
-    *ctx.smoothedNetRecvBytesPerSec = initializeOrSmooth(*ctx.smoothedNetRecvBytesPerSec, targetRecv, alpha, initialized);
+    const auto step = [alpha, initialized](double previous, double target)
+    {
+        if (!std::isfinite(target))
+        {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        return initializeOrSmooth(previous, target, alpha, initialized && std::isfinite(previous));
+    };
+    *ctx.smoothedNetSentBytesPerSec = step(*ctx.smoothedNetSentBytesPerSec, targetSent);
+    *ctx.smoothedNetRecvBytesPerSec = step(*ctx.smoothedNetRecvBytesPerSec, targetRecv);
     *ctx.smoothedNetInitialized = true;
 }
 
@@ -248,24 +259,6 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     ImGui::Spacing();
 
-    // Get data based on selection
-    double targetSent = 0.0;
-    double targetRecv = 0.0;
-
-    if (selectedInterface < 0)
-    {
-        // Total mode - use existing system-wide history
-        targetSent = netSnap.netTxBytesPerSec;
-        targetRecv = netSnap.netRxBytesPerSec;
-    }
-    else if (hasValidSelection)
-    {
-        // Specific interface - use its current rates
-        const auto& selectedIface = interfaces[static_cast<size_t>(selectedInterface)];
-        targetSent = selectedIface.txBytesPerSec;
-        targetRecv = selectedIface.rxBytesPerSec;
-    }
-
     const auto& netTimestamps = ctx.systemPublication->timestamps;
     const auto& netTxHist = ctx.systemPublication->netTxHistory;
     const auto& netRxHist = ctx.systemPublication->netRxHistory;
@@ -309,6 +302,33 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         {
             ifaceRecvData = UI::Widgets::tailAlignedSpan(ifaceRxHist, aligned).values;
         }
+    }
+
+    // The bars' targets: the selected interface's current rates, else the totals. A rate that isn't a
+    // reading is NaN, so its bar shows N/A, hatched, as its line shows a gap, rather than a 0 (#2129):
+    // an interface's rate unless its status is Measured (#1375); the Total's when its latest history
+    // sample is a gap (the snapshot's Total reads 0 there), or before it has any history.
+    const double noReading = std::numeric_limits<double>::quiet_NaN();
+    double targetSent = noReading;
+    double targetRecv = noReading;
+    if (selectedInterface < 0)
+    {
+        const auto latestTotal = [noReading](std::span<const float> data, double rate)
+        {
+            return (!data.empty() && std::isfinite(data.back())) ? rate : noReading;
+        };
+        targetSent = latestTotal(sentData, netSnap.netTxBytesPerSec);
+        targetRecv = latestTotal(recvData, netSnap.netRxBytesPerSec);
+    }
+    else if (hasValidSelection)
+    {
+        const auto& selectedIface = interfaces[static_cast<size_t>(selectedInterface)];
+        const auto measured = [noReading](double rate, Domain::InterfaceRateStatus status)
+        {
+            return status == Domain::InterfaceRateStatus::Measured ? rate : noReading;
+        };
+        targetSent = measured(selectedIface.txBytesPerSec, selectedIface.txRateStatus);
+        targetRecv = measured(selectedIface.rxBytesPerSec, selectedIface.rxRateStatus);
     }
 
     // Update smoothed network rates
@@ -376,18 +396,22 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
 
     const std::array netBars{
         NowBar{
-            .valueText = UI::Format::formatBytesPerSec(smoothedSent),
+            .valueText = UI::Format::formatBytesPerSecOrNA(smoothedSent),
             .label = sentBarLabel,
             .tooltipText = {},
-            .value01 = UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper),
+            .value01 = std::isfinite(smoothedSent) ? UI::Widgets::normalizeToUnitInterval(smoothedSent, netAxisUpper) : 0.0,
             .color = theme.scheme().chartNetTx,
+            .marker = ImPlotMarker_None,
+            .available = std::isfinite(smoothedSent), // N/A is drawn hatched, not as a 0 bar (#2129)
         },
         NowBar{
-            .valueText = UI::Format::formatBytesPerSec(smoothedRecv),
+            .valueText = UI::Format::formatBytesPerSecOrNA(smoothedRecv),
             .label = recvBarLabel,
             .tooltipText = {},
-            .value01 = UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper),
+            .value01 = std::isfinite(smoothedRecv) ? UI::Widgets::normalizeToUnitInterval(smoothedRecv, netAxisUpper) : 0.0,
             .color = theme.scheme().chartNetRx,
+            .marker = ImPlotMarker_None,
+            .available = std::isfinite(smoothedRecv),
         },
     };
 
