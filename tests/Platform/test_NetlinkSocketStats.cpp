@@ -594,6 +594,23 @@ TEST(NetlinkSocketStatsScriptedTest, AnInterruptedDumpIsAFailedReading)
         {doneDatagram(0, ScriptedNetlinkTransport::PORT_ID, 0, static_cast<std::uint16_t>(NLM_F_MULTI | NLM_F_DUMP_INTR))});
 }
 
+// #1891: a failed reading is empty through queryAllSocketsUncached() as well as the cached query.
+TEST(NetlinkSocketStatsScriptedTest, AFailedReadingIsEmptyOnTheUncachedPathToo)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    const std::array ipv4{FakeSocket{.inode = 11, .bytesSent = 5}};
+    scripted.transport->onRequest = [&](const ScriptedNetlinkTransport::Request& request)
+    {
+        if (request.family == AF_INET6)
+        {
+            return ScriptedNetlinkTransport::Reply{errorDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID, -EBUSY)};
+        }
+        return completeDump(request, ipv4);
+    };
+    EXPECT_TRUE(scripted.stats->queryAllSocketsUncached().empty()) << "half a reading is no reading";
+}
+
 TEST(NetlinkSocketStatsScriptedTest, AnAckIsNotTheEndOfTheDump)
 {
     // A zero-error NLMSG_ERROR is an ACK: the dump continues to NLMSG_DONE, and the sockets after it
