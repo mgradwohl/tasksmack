@@ -704,9 +704,16 @@ TEST_F(WindowTest, ASavedSizeLargerThanTheDisplayIsShrunkToFit)
         }
         window.applySavedGeometry(std::nullopt, false, std::nullopt);
         waitForWindowSize(window, usable.w, usable.h);
+        // The grow can carry the window onto a bigger monitor, and the fit is to the display it is on
+        // then, so compare with that display's bounds, not the one it started on (#2088).
+        SDL_Rect fitted = usable;
+        if (const SDL_DisplayID now = SDL_GetDisplayForWindow(window.getHandle()); now != 0 && now != display)
+        {
+            ASSERT_TRUE(SDL_GetDisplayUsableBounds(now, &fitted));
+        }
         const auto [width, height] = window.getSize();
-        EXPECT_LE(width, usable.w);
-        EXPECT_LE(height, usable.h);
+        EXPECT_LE(width, fitted.w);
+        EXPECT_LE(height, fitted.h);
     }
     catch (const std::exception& e)
     {
