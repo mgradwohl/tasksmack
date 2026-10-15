@@ -208,6 +208,13 @@ TEST(ServiceActionsDetailTest, CriticalServicesAreKnown)
     EXPECT_TRUE(SvcDetail::isCriticalService("SomeFilter", "Driver"));
     EXPECT_FALSE(SvcDetail::isCriticalService("Spooler", "Own process"));
     EXPECT_FALSE(SvcDetail::isCriticalService("RpcSsX", ""));
+    // #2118: the systemd units a Linux machine can't run well without; unit names are exact.
+    EXPECT_TRUE(SvcDetail::isCriticalService("dbus.service", "simple"));
+    EXPECT_TRUE(SvcDetail::isCriticalService("systemd-logind.service", ""));
+    EXPECT_TRUE(SvcDetail::isCriticalService("ssh.service", ""));
+    EXPECT_TRUE(SvcDetail::isCriticalService("NetworkManager.service", ""));
+    EXPECT_FALSE(SvcDetail::isCriticalService("networkmanager.service", ""));
+    EXPECT_FALSE(SvcDetail::isCriticalService("cups.service", ""));
 }
 
 TEST(ServiceActionsDetailTest, ActionsApplyPerState)
@@ -235,6 +242,29 @@ TEST(ServiceActionsDetailTest, DestructiveActionsConfirm)
     EXPECT_FALSE(SvcDetail::needsConfirm(SvcDetail::makeRequest(SetStartType, spooler, Platform::ServiceStartType::Manual)));
 }
 
+// #2118: Manual on a critical service that starts at boot asks first -- after the next restart it won't
+// be running -- and says so; Manual on anything else, or on one that isn't started at boot, doesn't.
+TEST(ServiceActionsDetailTest, ManualOnACriticalBootServiceConfirms)
+{
+    using enum Platform::ServiceStartType;
+    auto ssh = service("ssh.service", ServiceState::Running);
+    ssh.startType = Automatic;
+    const auto manual = SvcDetail::makeRequest(ServiceActionKind::SetStartType, ssh, Manual);
+    EXPECT_EQ(manual.fromStartType, Automatic);
+    EXPECT_TRUE(SvcDetail::needsConfirm(manual));
+    EXPECT_EQ(SvcDetail::confirmTitle(manual), "Set to Manual ssh.service?");
+    EXPECT_TRUE(SvcDetail::confirmQuestion(manual).contains("is critical to")) << SvcDetail::confirmQuestion(manual);
+    EXPECT_TRUE(SvcDetail::confirmQuestion(manual).contains("won't start at boot any more")) << SvcDetail::confirmQuestion(manual);
+
+    ssh.startType = AutomaticDelayed;
+    EXPECT_TRUE(SvcDetail::needsConfirm(SvcDetail::makeRequest(ServiceActionKind::SetStartType, ssh, Manual)));
+    ssh.startType = Disabled; // not started at boot: Manual starts nothing new and stops nothing
+    EXPECT_FALSE(SvcDetail::needsConfirm(SvcDetail::makeRequest(ServiceActionKind::SetStartType, ssh, Manual)));
+    auto cups = service("cups.service", ServiceState::Running);
+    cups.startType = Automatic;
+    EXPECT_FALSE(SvcDetail::needsConfirm(SvcDetail::makeRequest(ServiceActionKind::SetStartType, cups, Manual)));
+}
+
 TEST(ServiceActionsDetailTest, TextsNameTheServiceAndTheOutcome)
 {
     const auto stop = SvcDetail::makeRequest(ServiceActionKind::Stop, service("Spooler", ServiceState::Running));
@@ -252,7 +282,11 @@ TEST(ServiceActionsDetailTest, TextsNameTheServiceAndTheOutcome)
 
     const auto critical = SvcDetail::makeRequest(ServiceActionKind::Stop, service("RpcSs", ServiceState::Running));
     EXPECT_TRUE(critical.critical);
+#ifdef _WIN32
     EXPECT_TRUE(SvcDetail::confirmQuestion(critical).contains("RpcSs is critical to Windows"));
+#else
+    EXPECT_TRUE(SvcDetail::confirmQuestion(critical).contains("RpcSs is critical to the system"));
+#endif
 }
 
 // #1891: every action's progress and outcome in words, failures included: Restart's verb, and a start
@@ -524,7 +558,7 @@ TEST_F(ServiceActionsViewRenderTest, CriticalStopConfirmsCentredThenShowsTheResu
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
     ASSERT_NE(modal, nullptr);
     EXPECT_TRUE(std::string(modal->Name).starts_with("Stop RpcSs?"));
-    EXPECT_TRUE(SvcDetail::confirmQuestion(view.pendingConfirm().value_or(ServiceActionRequest{})).contains("critical to Windows"));
+    EXPECT_TRUE(SvcDetail::confirmQuestion(view.pendingConfirm().value_or(ServiceActionRequest{})).contains("RpcSs is critical to "));
     const ImVec2 centre = ImGui::GetMainViewport()->GetWorkCenter();
     EXPECT_NEAR(modal->Pos.x + (modal->Size.x * 0.5F), centre.x, 1.0F);
     EXPECT_NEAR(modal->Pos.y + (modal->Size.y * 0.5F), centre.y, 1.0F);

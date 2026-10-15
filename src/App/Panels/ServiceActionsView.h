@@ -36,8 +36,9 @@ struct ServiceActionRequest
     ServiceActionKind kind = ServiceActionKind::Start;
     std::string name;
     std::string displayName;
-    Platform::ServiceStartType startType = Platform::ServiceStartType::Unknown; ///< SetStartType's target.
-    bool critical = false;                                                      ///< isCriticalService() when asked.
+    Platform::ServiceStartType startType = Platform::ServiceStartType::Unknown;     ///< SetStartType's target.
+    Platform::ServiceStartType fromStartType = Platform::ServiceStartType::Unknown; ///< The start type when asked.
+    bool critical = false;                                                          ///< isCriticalService() when asked.
 };
 
 /// What the result line shows.

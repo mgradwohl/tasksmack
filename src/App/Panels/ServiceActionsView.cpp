@@ -60,6 +60,34 @@ constexpr std::array<std::string_view, 20> CRITICAL_SERVICES{
     "Winmgmt",
 };
 
+/// systemd units a Linux desktop or server can't run well without (#2118): the bus, logins and the
+/// display manager, logging and devices, the network and remote access. Unit names are case-sensitive.
+constexpr std::array<std::string_view, 16> CRITICAL_UNITS{
+    "dbus.service",
+    "dbus-broker.service",
+    "display-manager.service",
+    "gdm.service",
+    "gdm3.service",
+    "lightdm.service",
+    "NetworkManager.service",
+    "polkit.service",
+    "sddm.service",
+    "ssh.service",
+    "sshd.service",
+    "systemd-journald.service",
+    "systemd-logind.service",
+    "systemd-networkd.service",
+    "systemd-resolved.service",
+    "systemd-udevd.service",
+};
+
+/// What a critical service is critical to, in the confirm's warning.
+#ifdef _WIN32
+constexpr std::string_view SYSTEM_NAME = "Windows";
+#else
+constexpr std::string_view SYSTEM_NAME = "the system";
+#endif
+
 [[nodiscard]] bool equalsIgnoringCase(std::string_view a, std::string_view b)
 {
     return std::ranges::equal(a, b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
@@ -123,7 +151,8 @@ dispatchOrFailed(Platform::IServiceActions& actions, const ServiceActionRequest&
 bool isCriticalService(std::string_view name, std::string_view serviceType)
 {
     return serviceType == "Driver" ||
-           std::ranges::any_of(CRITICAL_SERVICES, [name](std::string_view critical) { return equalsIgnoringCase(name, critical); });
+           std::ranges::any_of(CRITICAL_SERVICES, [name](std::string_view critical) { return equalsIgnoringCase(name, critical); }) ||
+           std::ranges::find(CRITICAL_UNITS, name) != CRITICAL_UNITS.end();
 }
 
 bool isApplicable(ServiceActionKind kind, Platform::ServiceState state, const Platform::ServiceActionCapabilities& caps)
@@ -145,8 +174,19 @@ bool isApplicable(ServiceActionKind kind, Platform::ServiceState state, const Pl
 
 bool needsConfirm(const ServiceActionRequest& request)
 {
-    return request.kind == ServiceActionKind::Stop || request.kind == ServiceActionKind::Restart ||
-           (request.kind == ServiceActionKind::SetStartType && request.startType == Platform::ServiceStartType::Disabled);
+    using enum Platform::ServiceStartType;
+    if (request.kind == ServiceActionKind::Stop || request.kind == ServiceActionKind::Restart)
+    {
+        return true;
+    }
+    if (request.kind != ServiceActionKind::SetStartType)
+    {
+        return false;
+    }
+    // Manual stops a critical service starting at boot: after the next restart a headless machine may
+    // have no network or SSH (#2118).
+    const bool startedAtBoot = request.fromStartType == Automatic || request.fromStartType == AutomaticDelayed;
+    return request.startType == Disabled || (request.startType == Manual && request.critical && startedAtBoot);
 }
 
 ServiceActionRequest makeRequest(ServiceActionKind kind, const Platform::ServiceInfo& service, Platform::ServiceStartType startType)
@@ -155,6 +195,7 @@ ServiceActionRequest makeRequest(ServiceActionKind kind, const Platform::Service
             .name = service.name,
             .displayName = service.displayName.empty() ? service.name : service.displayName,
             .startType = startType,
+            .fromStartType = service.startType,
             .critical = isCriticalService(service.name, service.serviceType)};
 }
 
@@ -170,7 +211,11 @@ const char* confirmLabel(const ServiceActionRequest& request)
     case ServiceActionKind::SetStartType:
         break;
     }
-    return request.kind == ServiceActionKind::Start ? "Start" : "Disable";
+    if (request.kind == ServiceActionKind::Start)
+    {
+        return "Start";
+    }
+    return request.startType == Platform::ServiceStartType::Manual ? "Set to Manual" : "Disable";
 }
 
 std::string confirmTitle(const ServiceActionRequest& request)
@@ -183,9 +228,11 @@ std::string confirmQuestion(const ServiceActionRequest& request)
     std::string question;
     if (request.critical)
     {
-        question = std::format(ICON_FA_TRIANGLE_EXCLAMATION "  {} is critical to Windows. Stopping or disabling it can make Windows "
+        question = std::format(ICON_FA_TRIANGLE_EXCLAMATION "  {} is critical to {}. Stopping or disabling it can make {} "
                                                             "unstable, cut network access or sign you out.\n\n",
-                               request.name);
+                               request.name,
+                               SYSTEM_NAME,
+                               SYSTEM_NAME);
     }
     switch (request.kind)
     {
@@ -194,6 +241,13 @@ std::string confirmQuestion(const ServiceActionRequest& request)
             "Restart {} ({})? It is stopped and started again; programs using it may be interrupted.", request.displayName, request.name);
         break;
     case ServiceActionKind::SetStartType:
+        if (request.startType == Platform::ServiceStartType::Manual)
+        {
+            question += std::format("Set {} ({}) to Manual? It won't start at boot any more, only when something asks for it.",
+                                    request.displayName,
+                                    request.name);
+            break;
+        }
         question += std::format("Disable {} ({})? It won't start at all, at boot or on demand, until its startup type is changed back.",
                                 request.displayName,
                                 request.name);
