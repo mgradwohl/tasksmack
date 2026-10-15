@@ -28,6 +28,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -50,6 +51,11 @@ namespace Platform
 {
 namespace
 {
+
+/// A PID no process can have: above PID_MAX_LIMIT (4194304, the most kernel.pid_max allows), so the
+/// "non-existent process" tests reach the no-such-process path and can never signal a real process --
+/// a PID like 99999 is often in use on a machine that has been up a while (#2132).
+constexpr std::int32_t IMPOSSIBLE_PID = std::numeric_limits<std::int32_t>::max();
 
 /// This test process as an action target, with the start time read the same way the probe reads it.
 [[nodiscard]] ProcessTarget ownTarget()
@@ -243,52 +249,48 @@ TEST(LinuxProcessActionsTest, TerminateNonExistentProcess)
 {
     LinuxProcessActions actions;
 
-    // PID 99999 is very unlikely to exist
-    const int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = IMPOSSIBLE_PID;
     const auto result = actions.terminate({.pid = nonExistentPid, .startTimeTicks = 1});
 
-    // Should fail
+    // The no-such-process path, not the identity check: no process can hold this PID.
     EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
 }
 
 TEST(LinuxProcessActionsTest, KillNonExistentProcess)
 {
     LinuxProcessActions actions;
 
-    // PID 99999 is very unlikely to exist
-    const int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = IMPOSSIBLE_PID;
     const auto result = actions.kill({.pid = nonExistentPid, .startTimeTicks = 1});
 
-    // Should fail
+    // The no-such-process path, not the identity check: no process can hold this PID.
     EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
 }
 
 TEST(LinuxProcessActionsTest, StopNonExistentProcess)
 {
     LinuxProcessActions actions;
 
-    // PID 99999 is very unlikely to exist
-    const int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = IMPOSSIBLE_PID;
     const auto result = actions.stop({.pid = nonExistentPid, .startTimeTicks = 1});
 
-    // Should fail
+    // The no-such-process path, not the identity check: no process can hold this PID.
     EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
 }
 
 TEST(LinuxProcessActionsTest, ResumeNonExistentProcess)
 {
     LinuxProcessActions actions;
 
-    // PID 99999 is very unlikely to exist
-    const int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = IMPOSSIBLE_PID;
     const auto result = actions.resume({.pid = nonExistentPid, .startTimeTicks = 1});
 
-    // Should fail
+    // The no-such-process path, not the identity check: no process can hold this PID.
     EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
 }
 
 TEST(LinuxProcessActionsTest, TerminateInvalidPid)
@@ -353,13 +355,12 @@ TEST(LinuxProcessActionsTest, SetPriorityNonExistentProcess)
 {
     LinuxProcessActions actions;
 
-    // PID 99999 is very unlikely to exist
-    const int32_t nonExistentPid = 99999;
+    const int32_t nonExistentPid = IMPOSSIBLE_PID;
     const auto result = actions.setPriority({.pid = nonExistentPid, .startTimeTicks = 1}, 0);
 
-    // Should fail
+    // The no-such-process path, not the identity check: no process can hold this PID.
     EXPECT_FALSE(result.success);
-    EXPECT_GT(result.errorMessage.size(), 0ULL);
+    EXPECT_EQ(result.errorMessage, "Process not found - may have already exited");
 }
 
 TEST(LinuxProcessActionsTest, SetPriorityInvalidPid)
@@ -751,7 +752,7 @@ TEST(LinuxProcessActionsTest, GetIoPriorityRefusesAnotherOrUnknownIdentity)
 TEST(LinuxProcessActionsTest, SetIoPriorityOfAMissingOrInvalidProcessFails)
 {
     LinuxProcessActions actions;
-    const auto missing = actions.setIoPriority({.pid = 99999, .startTimeTicks = 1}, IoPriorityClass::Idle, 0);
+    const auto missing = actions.setIoPriority({.pid = IMPOSSIBLE_PID, .startTimeTicks = 1}, IoPriorityClass::Idle, 0);
     EXPECT_FALSE(missing.success);
     EXPECT_FALSE(missing.errorMessage.empty());
 
@@ -972,7 +973,7 @@ TEST(LinuxProcessActionsTest, SyscallTraceNeedingRootRefusesATerminalThatHandsIt
     const TestSupport::ScopedTempDir dir("tasksmack_trace_server_terminal");
     SyscallTrace::Tools tools = fakeTraceTools(dir.path);
     const std::filesystem::path server = dir.path / "gnome-terminal";
-    std::filesystem::copy_file(tools.terminal->path, server);
+    std::filesystem::copy_file(dir.path / "fake-terminal", server); // fakeTraceTools()'s terminal
     const std::filesystem::path link = dir.path / "x-terminal-emulator";
     std::filesystem::create_symlink(server, link);
     tools.terminal = SyscallTrace::Terminal{.path = link.string(), .syntax = SyscallTrace::TerminalSyntax::DashE};
