@@ -72,12 +72,17 @@ jobs:
               - '!.github/pull_request_template.md'
               - '!.github/PULL_REQUEST_TEMPLATE/**'
               - '!LICENSE'
+            # Only a platform's .cpp files are its own. Its headers can be compiled into the other
+            # OS's build: the shared test binary includes about 20 header-only Linux parsers
+            # (test_LinuxOsInfo.cpp and others in COMMON_TEST_SOURCES), and Linux builds the Windows
+            # *Math.h headers (WINDOWS_MATH_TEST_SOURCES). So a header change runs both OSes' builds,
+            # or a break in the other OS's compile would only show on main (#2130).
             outside_linux_platform:
               - '**'
-              - '!src/Platform/Linux/**'
+              - '!src/Platform/Linux/**/*.cpp'
             outside_windows_platform:
               - '**'
-              - '!src/Platform/Windows/**'
+              - '!src/Platform/Windows/**/*.cpp'
 
       - name: Normalize outputs
         id: set_output
