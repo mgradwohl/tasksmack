@@ -5,6 +5,17 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        # A dispatched run is a rehearsal unless explicitly told otherwise: it builds, tests,
+        # packages, validates, generates the SBOM and signs exactly as a tag run does, but
+        # skips the tag checks in `validate` and creates/publishes nothing -- create-release
+        # uploads the would-be release assets as a workflow artifact instead. Dispatch it from
+        # main (or a PR branch) to rehearse the whole pipeline before pushing a tag. Turning it
+        # off only makes sense when dispatching against an existing tag ref, to re-run a release.
+        description: 'Dry run: build, package, validate and sign, but create no release'
+        type: boolean
+        default: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -26,6 +37,10 @@ env:
   # than a change in apt repository state between two runs of the same tag.
   LLVM_LINUX_EXACT_VERSION: '1:22.1.8~++20260714014902+ca7933e47d3a-1~exp1~20260714135019.80'
 
+  # 'true' only for a dispatched run with dry_run left on; a tag push has no inputs, so it is
+  # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+
 permissions: {}
 
 jobs:
@@ -39,16 +54,22 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Report dry run
+        if: env.DRY_RUN == 'true'
+        run: |
+          echo "::notice::Dry run from '$TAG_NAME' ($REF_TYPE): the tag, main-ancestry, existing-release and version-equals-tag checks are skipped, and create-release creates and publishes nothing."
+
       - name: Validate ref is an actual tag
         # github.ref_name is just the short name with no "refs/tags/"/"refs/heads/"
         # prefix, so a workflow_dispatch run manually triggered from a branch named
         # e.g. "v0.8.0" would pass the semver regex below identically to a real tag --
-        # and if that branch happened to point at main HEAD, every later check would
+        # and if that branch happened to be on main, every later check would
         # also pass, letting build/sign/publish run without an actual tag ever having
         # been pushed. Reject anything that isn't really a tag ref before checking its name.
+        if: env.DRY_RUN != 'true'
         run: |
           if [ "$REF_TYPE" != "tag" ]; then
-            echo "Ref '$TAG_NAME' is a $REF_TYPE, not a tag. Releases must be triggered by an actual tag push (or a workflow_dispatch run against an existing tag ref). Aborting release." >&2
+            echo "Ref '$TAG_NAME' is a $REF_TYPE, not a tag. Releases must be triggered by an actual tag push (or a workflow_dispatch run against an existing tag ref with dry_run off). Aborting release." >&2
             exit 1
           fi
 
@@ -58,34 +79,60 @@ jobs:
         # from a stray workflow_dispatch) before any build/sign/publish work runs.
         # Each numeric identifier must be "0" or have no leading zero (real SemVer
         # rule) -- v01.2.3 is invalid, so a bare [0-9]+ per component is too loose.
+        if: env.DRY_RUN != 'true'
         run: |
           if ! [[ "$TAG_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "Ref '$TAG_NAME' is not strict semver (vMAJOR.MINOR.PATCH, no leading zeroes). Aborting release." >&2
             exit 1
           fi
 
+      - name: Refuse to replace a published release
+        # A re-pushed (deleted and recreated) tag must not silently swap the assets of a
+        # release users may already have downloaded and verified. The releases/tags endpoint
+        # returns only published releases, never drafts, so any hit here is a public release;
+        # a draft left by a failed earlier run is fine, and create-release reuses it.
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          err=$(mktemp)
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG_NAME" --jq '.html_url' 2> "$err"; then
+            echo "A published release for '$TAG_NAME' already exists (above). Delete it, or bump the version, before re-running; refusing to replace its assets." >&2
+            exit 1
+          fi
+          if ! grep -q 'HTTP 404' "$err"; then
+            echo "Could not check for an existing release for '$TAG_NAME':" >&2
+            cat "$err" >&2
+            exit 1
+          fi
+          echo "No published release for '$TAG_NAME' yet."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history is required to resolve the tag SHA and compare it
+          # Full history is required to resolve the tag SHA and check it
           # against origin/main below.
           fetch-depth: 0
 
       - name: Verify tag is on main
-        # A release must publish exactly what is on main. Abort if the tag
-        # was created from, or has drifted from, the current main HEAD.
+        # A release must publish something that is on main: the tag's commit must be
+        # main's HEAD or an ancestor of it. Ancestry rather than equality, so a merge
+        # landing on main between the tag push and this job can't abort the release.
+        if: env.DRY_RUN != 'true'
         run: |
           TAG_SHA=$(git rev-list -n1 "$TAG_NAME")
-          MAIN_SHA=$(git rev-parse origin/main)
-          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
-            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting release." >&2
+          if ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            MAIN_SHA=$(git rev-parse origin/main)
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not on main (not an ancestor of origin/main, currently ${MAIN_SHA}). Aborting release." >&2
             exit 1
           fi
+          echo "Tag '$TAG_NAME' (${TAG_SHA}) is on main."
 
       - name: Verify tag matches project version
         # Catches a missed version bump before it ships assets whose embedded
-        # metadata/filenames disagree with the GitHub Release tag.
+        # metadata/filenames disagree with the GitHub Release tag. A dry run still
+        # reads PROJECT_VERSION, so a malformed project() line fails the rehearsal
+        # too, but has no tag to compare it with.
         run: |
-          TAG_VERSION="${TAG_NAME#v}"
           # \S+ (not a fixed X.Y.Z group count) so a 4-component or otherwise malformed
           # PROJECT_VERSION is compared in full rather than silently truncated to a false
           # match. "|| true" stops a non-matching grep (exit 1) from tripping this job's
@@ -95,6 +142,11 @@ jobs:
             echo "Could not determine PROJECT_VERSION from CMakeLists.txt." >&2
             exit 1
           fi
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: PROJECT_VERSION is $PROJECT_VERSION (a real release needs tag v$PROJECT_VERSION)."
+            exit 0
+          fi
+          TAG_VERSION="${TAG_NAME#v}"
           if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
             echo "Tag version '$TAG_VERSION' does not match CMakeLists.txt PROJECT_VERSION '$PROJECT_VERSION'. Aborting release." >&2
             exit 1
@@ -448,6 +500,29 @@ jobs:
           name: linux-packages
           path: dist/
 
+      - name: Verify .deb contains only the app's files
+        # cmake/InstallRules.cmake's rules are shared with every bundled dependency's own
+        # install() calls, so a dependency that installs its static libraries, headers or CMake
+        # package files (or a TaskSmack rule with a bare "." destination) silently ships them
+        # to users under /usr. Allow exactly the executable and the app's data, desktop entry,
+        # icons, docs, AppStream metadata and man pages; fail on anything else.
+        run: |
+          shopt -s nullglob
+          debs=(dist/*.deb)
+          if [[ ${#debs[@]} -ne 1 ]]; then
+            echo "Expected exactly one .deb in dist/, found ${#debs[@]}." >&2
+            exit 1
+          fi
+          dpkg -c "${debs[0]}"
+          allowed='^(|usr/|usr/share/|usr/bin/[^/]*|usr/share/(tasksmack|applications|icons|doc|metainfo|pixmaps|man)(/.*)?)$'
+          unexpected=$(dpkg-deb --fsys-tarfile "${debs[0]}" | tar -tf - | sed -e 's|^\./||' | grep -Ev "$allowed" || true)
+          if [[ -n "$unexpected" ]]; then
+            echo "The .deb ships files outside usr/bin and usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man}:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+          echo "The .deb contains only the expected locations."
+
       - name: Install .deb in a clean environment
         run: |
           apt-get update
@@ -570,6 +645,33 @@ jobs:
           "TASKSMACK_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TASKSMACK_PKG_ROOT=$($topLevelDirs[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Verify .zip contains no development files
+        # Same reason as validate-linux-package's content check: a bundled dependency's own
+        # install() rules (or a TaskSmack rule's ARCHIVE destination) can ship import/static
+        # libraries, headers and CMake package files that users have no use for. Checked on the
+        # archive's entry names, so it doesn't depend on how Expand-Archive lays them out.
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipFile = Get-ChildItem dist/*.zip | Select-Object -First 1
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($zipFile.FullName)
+          try {
+            $entries = $zip.Entries | ForEach-Object { $_.FullName -replace '\\', '/' }
+          } finally {
+            $zip.Dispose()
+          }
+          $entries | ForEach-Object { Write-Host $_ }
+          $unexpected = @($entries | Where-Object {
+            $_ -match '\.(lib|a)$' -or $_ -match '(^|/)include/' -or $_ -match '(^|/)lib/cmake/'
+          })
+          if ($unexpected.Count -gt 0) {
+            Write-Host "The .zip ships development files (*.lib, *.a, include/ or lib/cmake/):"
+            $unexpected | ForEach-Object { Write-Host "  $_" }
+            Write-Error "Unexpected development files in $($zipFile.Name)."
+            exit 1
+          }
+          Write-Host "The .zip contains no import/static libraries, headers or CMake package files ($($entries.Count) entries)."
+
       - name: Verify packaged asset layout
         # The smoke check below only proves the process stays alive; src/UI/AssetPath.cpp and
         # Theme.cpp both fall back gracefully on missing assets, so a broken packaged asset
@@ -650,6 +752,13 @@ jobs:
           name: windows-packages
           path: dist/
 
+      - name: Drop CPack staging directories
+        # The package artifacts also carry CPack's _CPack_Packages staging directory (see
+        # verify-reproducibility's comment). Only the regular files at the top of dist/ are
+        # release assets, so remove everything else: signing, the upload and the asset-count
+        # check below then all see exactly the same set.
+        run: find dist -mindepth 1 -maxdepth 1 ! -type f -exec rm -rf -- {} +
+
       - name: Stage SBOM into dist
         env:
           VERSION_LABEL: ${{ steps.version.outputs.label }}
@@ -668,11 +777,84 @@ jobs:
             cosign sign-blob --yes --bundle "${f}.bundle" "$f"
           done
 
-      - name: Create Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+      - name: Upload would-be release assets (dry run)
+        # A dry run creates no release; keep exactly what would have been attached to it
+        # (packages, source SBOM and their Sigstore bundles) for inspection instead.
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          files: |
-            dist/*
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+          name: release-assets-dry-run
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+      # The real release is built as a draft, filled, checked and only then published, so a
+      # failure part-way through never leaves a public release with missing assets. Every
+      # step below is rerun-safe: a draft left by an earlier failed attempt is reused, and
+      # its assets are overwritten (--clobber) rather than duplicated.
+      - name: Create or reuse draft release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # `gh release view` finds drafts by tag too (the REST releases/tags endpoint doesn't).
+          err=$(mktemp)
+          if is_draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2> "$err"); then
+            if [[ "$is_draft" != "true" ]]; then
+              echo "A published release for '$TAG' already exists; refusing to replace its assets." >&2
+              exit 1
+            fi
+            echo "Reusing the existing draft release for '$TAG'."
+          elif grep -qi 'release not found' "$err"; then
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+            echo "Created draft release for '$TAG'."
+          else
+            echo "Could not check for an existing release for '$TAG':" >&2
+            cat "$err" >&2
+            exit 1
+          fi
+
+      - name: Upload assets to the draft
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" dist/* --clobber
+
+      - name: Verify draft assets match dist
+        # Same names and sizes as dist/, nothing missing, nothing extra. A stale asset from
+        # an earlier attempt whose file names differed would otherwise ship alongside the
+        # real ones, so extras are deleted from the draft (it isn't public yet) and the
+        # comparison is then repeated.
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          expected=$(find dist -maxdepth 1 -type f -printf '%f %s\n' | LC_ALL=C sort)
+          list_assets() {
+            gh release view "$TAG" --json assets --jq '.assets[] | "\(.name) \(.size)"' | LC_ALL=C sort
+          }
+          actual=$(list_assets)
+          while read -r name _; do
+            [[ -n "$name" ]] || continue
+            if [[ ! -f "dist/$name" ]]; then
+              echo "Deleting stale draft asset: $name"
+              gh release delete-asset "$TAG" "$name" --yes
+            fi
+          done <<< "$actual"
+          actual=$(list_assets)
+          if [[ "$expected" != "$actual" ]]; then
+            echo "Draft release assets do not match dist/:" >&2
+            diff <(echo "$expected") <(echo "$actual") >&2 || true
+            exit 1
+          fi
+          echo "Draft has all $(wc -l <<< "$expected") assets from dist/ with matching sizes."
+
+      - name: Publish release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false --latest

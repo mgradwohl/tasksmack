@@ -27,7 +27,7 @@ body = """
 {% for commit in commits %}\
 - {% if commit.breaking %}**BREAKING CHANGE:** {% endif %}\
 {{ commit.message | upper_first }}\
-{% if commit.github.username %} ([@{{ commit.github.username }}](https://github.com/{{ commit.github.username }})){% endif %} \
+{% if commit.remote.username %} ([@{{ commit.remote.username }}](https://github.com/{{ commit.remote.username }})){% endif %} \
 ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}/commit/{{ commit.id }}))
 {% endfor %}
 {% endfor %}\

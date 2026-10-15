@@ -1,5 +1,7 @@
 name: Changelog
 
+# Tag pushes only. release.yml's dispatched dry runs never push a tag, so they never
+# trigger this workflow, and there is deliberately no workflow_dispatch trigger here.
 on:
   push:
     tags:
@@ -18,10 +20,12 @@ jobs:
     timeout-minutes: 10
     env:
       TAG_NAME: ${{ github.ref_name }}
+    # contents/pull-requests: write are only used by the GITHUB_TOKEN fallback below; with
+    # CHANGELOG_TOKEN set, the branch push and the PR use that token instead. Labelling the
+    # PR is covered by pull-requests: write, so no issues permission is needed.
     permissions:
       contents: write
       pull-requests: write
-      issues: write
 
     steps:
       - name: Validate tag is strict semver
@@ -36,6 +40,18 @@ jobs:
             exit 1
           fi
 
+      - name: Check changelog token
+        # Pushes and pull requests made with GITHUB_TOKEN don't trigger other workflows, so a
+        # changelog PR opened with it never gets the required CI checks. CHANGELOG_TOKEN is a
+        # fine-grained PAT for this repository only (Contents: read/write, Pull requests:
+        # read/write; see CONTRIBUTING.md's Release section) whose pushes and PRs do run CI.
+        env:
+          HAS_CHANGELOG_TOKEN: ${{ secrets.CHANGELOG_TOKEN != '' }}
+        run: |
+          if [ "$HAS_CHANGELOG_TOKEN" != "true" ]; then
+            echo "::warning title=CHANGELOG_TOKEN not set::Falling back to GITHUB_TOKEN, so required CI will not run on the changelog PR and it cannot merge until CI is triggered another way. Add the CHANGELOG_TOKEN repository secret (see CONTRIBUTING.md's Release section)."
+          fi
+
       - name: Checkout main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,16 +59,20 @@ jobs:
           fetch-depth: 0
           # Check out main so we can commit CHANGELOG.md back to the branch
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # The branch pushes below use these persisted credentials, so they must be the PAT
+          # too, or a rerun's push to an existing changelog PR wouldn't re-run its CI.
+          token: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Verify tag is on main
-        # Abort if the tag was not pushed from main to prevent generating a
-        # changelog from the wrong set of commits and committing it to main.
+        # Abort if the tag's commit is not on main (main's HEAD or an ancestor of it), so a
+        # changelog is never generated from the wrong set of commits and committed to main.
+        # Ancestry rather than equality, so a merge landing on main right after the tag push
+        # can't abort the changelog; such commits are listed under [Unreleased].
         run: |
           TAG_SHA=$(git rev-list -n1 "$TAG_NAME")
-          MAIN_SHA=$(git rev-parse origin/main)
-          if [ "$TAG_SHA" != "$MAIN_SHA" ]; then
-            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not the current HEAD of main (${MAIN_SHA}). Aborting."
+          if ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            MAIN_SHA=$(git rev-parse origin/main)
+            echo "Tag '$TAG_NAME' (${TAG_SHA}) is not on main (not an ancestor of origin/main, currently ${MAIN_SHA}). Aborting."
             exit 1
           fi
 
@@ -72,12 +92,15 @@ jobs:
           fi
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Generate Changelog
         uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
         id: git-cliff
         with:
+          # Pinned explicitly rather than taking the action's default, so a git-cliff
+          # upgrade (template or config semantics) is a reviewed change here.
+          version: v2.14.2
           config: cliff.toml
           args: --verbose
         env:
@@ -120,19 +143,19 @@ jobs:
               --title "Update CHANGELOG.md for $TAG_NAME" \
               --body "Auto-generated changelog for the $TAG_NAME release via git-cliff." \
               --label "documentation" 2>"$PR_CREATE_ERROR_FILE"; then
-              if grep -Eq 'not permitted to create or approve pull requests|Resource not accessible by integration|createPullRequest' "$PR_CREATE_ERROR_FILE"; then
-                echo "Unable to create PR from workflow token."
-                # Encode slashes in branch name so the compare URL works correctly
-                ENCODED_BRANCH="${BRANCH//\//%2F}"
-                echo "Create it manually: https://github.com/${{ github.repository }}/compare/main...${ENCODED_BRANCH}?expand=1"
-                exit 0
-              fi
-
               cat "$PR_CREATE_ERROR_FILE" >&2
+              # Encode slashes in branch name so the compare URL works correctly
+              ENCODED_BRANCH="${BRANCH//\//%2F}"
+              COMPARE_URL="https://github.com/${GITHUB_REPOSITORY}/compare/main...${ENCODED_BRANCH}?expand=1"
+              if grep -Eq 'not permitted to create or approve pull requests|Resource not accessible|createPullRequest' "$PR_CREATE_ERROR_FILE"; then
+                echo "::error title=Changelog PR not created::The token was not allowed to open the changelog PR (check CHANGELOG_TOKEN's Pull requests: read/write permission). The branch $BRANCH was pushed; open the PR manually: $COMPARE_URL"
+              else
+                echo "::error title=Changelog PR not created::gh pr create failed (see the log above). The branch $BRANCH was pushed; open the PR manually: $COMPARE_URL"
+              fi
               exit 1
             fi
           else
             echo "PR for $BRANCH already exists — branch updated."
           fi
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHANGELOG_TOKEN || secrets.GITHUB_TOKEN }}

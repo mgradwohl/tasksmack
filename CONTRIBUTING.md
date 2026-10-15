@@ -2370,7 +2370,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` and warn (never fail) when it drops below a floor set a few points under the current baseline; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job. The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 
 ### Release & Operations
-- **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases on `v*.*.*` tags.
+- **`release.yml`**: Handles compiling production binaries, packaging them (ZIP/tarballs, deb), and publishing GitHub Releases (draft first, published last) on `v*.*.*` tags; a `workflow_dispatch` run is a dry run by default (see [Cutting a Release](#cutting-a-release)).
 - **`changelog.yml`**: Automates changelog generation using `git-cliff` for strict `vMAJOR.MINOR.PATCH` tags.
 - **`pr-labeler.yml`**: Automatically assigns labels (e.g., `bug`, `enhancement`, `docs`) to pull requests based on `.github/labeler.yml` file globs.
 - **`copilot-setup-steps.yml`**: Bootstraps the repository environment (CMake, LLVM, etc.) for GitHub Copilot cloud agent sessions.
@@ -2579,10 +2579,22 @@ environments with no warning. Bump these by hand when there's an actual reason t
 Pushing a strict `vMAJOR.MINOR.PATCH` tag on `main` is what triggers both an official TaskSmack
 release (`release.yml`: validates the tag, builds and signs Linux/Windows packages, and publishes
 a GitHub Release) and the corresponding `CHANGELOG.md` update (`changelog.yml`, tag push only --
-it has no `workflow_dispatch` trigger). `release.yml` can also be re-run via `workflow_dispatch`
-against an existing tag ref (e.g. to retry a failed run without creating a new tag) -- it still
-validates that the ref really is a tag either way, so a stray dispatch from a branch can't
-impersonate one.
+it has no `workflow_dispatch` trigger).
+
+`release.yml` can also be dispatched (`workflow_dispatch`). Its `dry_run` input defaults to
+**true**: a dry run builds, tests, packages, validates, generates the SBOM and signs exactly like a
+tag run, but skips `validate`'s tag, main-ancestry, existing-release and version-equals-tag checks
+(it still reads `PROJECT_VERSION`) and creates and publishes nothing -- `create-release` uploads the
+would-be release assets as a `release-assets-dry-run` workflow artifact instead. No tag is pushed,
+so `changelog.yml` doesn't run. Rehearse the whole pipeline before tagging with:
+
+```bash
+gh workflow run release.yml --ref main -f dry_run=true
+```
+
+Dispatching with `dry_run=false` against an existing tag ref re-runs a real release (e.g. to retry a
+failed run without creating a new tag); `validate` still checks that the ref really is a tag, so a
+stray dispatch from a branch can't impersonate one.
 
 ```bash
 # 1. Bump CMakeLists.txt's project(TaskSmack VERSION ...) to the target version in its own PR,
@@ -2603,8 +2615,12 @@ That single push runs two independent workflows:
 - **`release.yml`** validates the tag (see [Release Environment](#release-environment)), builds
   and packages both platforms, validates the packaged artifacts (see [Release Artifact
   Validation](#release-artifact-validation)), signs everything with Sigstore, and publishes the
-  GitHub Release (see [Release Artifacts](#release-artifacts) for what it contains and [Release
-  Reproducibility](#release-reproducibility) for the determinism policy). Watch it under
+  GitHub Release: it creates the release as a **draft**, uploads every asset and `.bundle`,
+  checks the draft's assets match `dist/` by name and size, and only then publishes it
+  (`gh release edit --draft=false --latest`), so a failure part-way leaves a draft, never a
+  public release with missing assets; re-running reuses that draft and overwrites its assets.
+  See [Release Artifacts](#release-artifacts) for what it contains and [Release
+  Reproducibility](#release-reproducibility) for the determinism policy. Watch it under
   **Actions → Release**.
 - **`changelog.yml`** regenerates `CHANGELOG.md` and opens a `chore/changelog-vX.Y.Z → main` pull
   request that must be merged separately -- see [Changelog](#changelog) below. Watch it under
@@ -2634,12 +2650,19 @@ least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` b
 gracefully on missing assets, so a plain liveness check alone would not catch a broken installed
 asset layout. These are still smoke checks, not a functional test suite.
 
+Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
+can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
+`usr/bin` and `usr/share/{tasksmack,applications,icons,doc,metainfo,pixmaps,man}`, and the `.zip`
+may hold no `*.lib`/`*.a` files and no `include/` or `lib/cmake/` directories.
+
 ### Release Environment
 
 `release.yml`'s `validate` job rejects a tag before any build/sign/publish work runs if it is not
-strict `vMAJOR.MINOR.PATCH`, does not resolve to the current `main` HEAD, or does not match
-`CMakeLists.txt`'s `project(TaskSmack VERSION ...)` — a missed version bump fails the release
-instead of publishing mismatched metadata. Concretely: **bump and merge `CMakeLists.txt`'s
+strict `vMAJOR.MINOR.PATCH`, does not resolve to a commit on `main` (`main`'s HEAD or an ancestor
+of it, so a merge landing right after the tag push doesn't abort the release), already has a
+published (non-draft) GitHub Release (so a re-pushed tag can't silently swap a public release's
+assets), or does not match `CMakeLists.txt`'s `project(TaskSmack VERSION ...)` — a missed version
+bump fails the release instead of publishing mismatched metadata. Concretely: **bump and merge `CMakeLists.txt`'s
 `project(TaskSmack VERSION ...)` to the target version first**, then tag that merged commit on
 `main` — see step 1 in [Cutting a Release](#cutting-a-release), which creates the same tag that
 also triggers this release workflow. Tagging before the version bump lands fails this check
@@ -2691,12 +2714,23 @@ tag push also triggers `release.yml`. Once pushed, the `changelog` workflow runs
 and:
 
 1. Validates the tag is strict semver (`vMAJOR.MINOR.PATCH`). Tags like `v1.0.0-rc1` or `v1.0.0.4` are rejected.
-2. Verifies the tag points to the current `HEAD` of `main`. Tagging from a branch or an older commit will abort the workflow.
-3. Runs git-cliff over the full commit history to generate `CHANGELOG.md`.
-4. Opens a pull request (`chore/changelog-vX.Y.Z → main`) with the updated `CHANGELOG.md`.
+2. Verifies the tag's commit is on `main` (its HEAD or an ancestor). Tagging a commit that isn't on `main` aborts the workflow; commits merged after the tag are listed under `[Unreleased]`.
+3. Runs git-cliff (pinned to a fixed version in `changelog.yml`) over the full commit history to generate `CHANGELOG.md`.
+4. Opens a pull request (`chore/changelog-vX.Y.Z → main`) with the updated `CHANGELOG.md`. If the PR can't be created, the workflow fails with an error that links the compare page for opening it by hand.
 5. Merge the PR once CI passes — it will be labeled `documentation` for easy filtering.
 
 You can watch the progress under **Actions → Changelog** in the GitHub UI.
+
+#### The `CHANGELOG_TOKEN` secret
+
+Pushes and pull requests made with the workflow's own `GITHUB_TOKEN` don't trigger other workflows,
+so a changelog PR opened with it never gets the required CI checks. `changelog.yml` therefore pushes
+the branch and opens the PR with the `CHANGELOG_TOKEN` repository secret: a **fine-grained personal
+access token** limited to this repository, with **Contents: Read and write** and **Pull requests:
+Read and write** (metadata read is implied). Create it under *Settings → Developer settings →
+Fine-grained tokens*, add it under the repository's *Settings → Secrets and variables → Actions*,
+and renew it before it expires. If the secret is missing or empty the workflow falls back to
+`GITHUB_TOKEN` and emits a warning that CI won't run on the PR.
 
 #### Writing Commits for Meaningful Changelog Entries
 
