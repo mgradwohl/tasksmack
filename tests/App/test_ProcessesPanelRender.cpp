@@ -35,6 +35,7 @@
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/GPUTypes.h"
+#include "Platform/IProcessActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/IconsFontAwesome6.h"
@@ -46,6 +47,7 @@
 #include <implot.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -732,6 +734,59 @@ TEST_F(ProcessesPanelRenderTest, KillFromTheRowMenuIsConfirmedThenSentForThatPro
     EXPECT_EQ(actions->killCount(), 1);
     EXPECT_EQ(actions->lastKillPid(), menuPid.value_or(-1));
     EXPECT_EQ(ImGui::GetTopMostPopupModal(), nullptr);
+    panel->onDetach();
+}
+
+// #1891: an action result too long for the toolbar is cut off with an ellipsis, and hovering it shows
+// the whole message in a tooltip.
+TEST_F(ProcessesPanelRenderTest, AClippedActionResultShowsInFullOnHover)
+{
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = attachedPanelWithActions([](Core::Event&) {}, actions);
+    ASSERT_NE(actions, nullptr);
+    constexpr std::string_view TAIL = "END-OF-THE-LONG-MESSAGE";
+    actions->setKillResult(Platform::ProcessActionResult::error(std::string(400, 'x') + " " + std::string(TAIL)));
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, std::format("{} Kill...###Kill", ICON_FA_SKULL));
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+    ASSERT_NE(modal, nullptr);
+    ImGui::ActivateItemByID(ImHashStr("##filled", 0, ImHashStr("Kill", 0, modal->ID)));
+    static_cast<void>(renderAndCapture(*panel));
+    // The cut-off text is logged once as drawn; the tooltip, when shown, logs it a second time.
+    const auto copies = [&panel, TAIL]
+    {
+        const std::string text = renderAndCapture(*panel);
+        int n = 0;
+        for (std::size_t at = text.find(TAIL); at != std::string::npos; at = text.find(TAIL, at + 1))
+        {
+            ++n;
+        }
+        return n;
+    };
+    ASSERT_EQ(copies(), 1) << "drawn once, cut off";
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverStationaryDelay = 0.0F;
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    // Along the toolbar row at the top of the panel, right to left (the status sits at its right end).
+    const float lineHeight = ImGui::GetFrameHeight();
+    bool shown = false;
+    for (int row = 1; row <= 4 && !shown; ++row)
+    {
+        const float y = lineHeight * 0.5F * static_cast<float>(row);
+        for (int step = 0; static_cast<float>(step) * 8.0F < DISPLAY_WIDTH && !shown; ++step)
+        {
+            ImGui::GetIO().AddMousePosEvent(DISPLAY_WIDTH - 2.0F - (static_cast<float>(step) * 8.0F), y);
+            static_cast<void>(renderAndCapture(*panel));
+            shown = copies() >= 2;
+        }
+    }
+    EXPECT_TRUE(shown) << "the cut-off result's tooltip";
+    ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     panel->onDetach();
 }
 
